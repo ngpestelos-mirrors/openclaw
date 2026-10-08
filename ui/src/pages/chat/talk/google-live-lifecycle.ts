@@ -32,7 +32,13 @@ export function buildGoogleLiveUrl(session: RealtimeTalkJsonPcmWebSocketSessionR
   return url.toString();
 }
 
-type GoogleLiveConnectionState = "idle" | "connecting" | "ready" | "active" | "cancelled" | Error;
+type GoogleLiveConnectionState =
+  | "idle"
+  | "connecting"
+  | "ready"
+  | "active"
+  | "cancelled"
+  | "failed";
 
 type StartupWaiter = {
   resolve: (result: RealtimeTalkTransportStartResult) => void;
@@ -43,6 +49,7 @@ export class GoogleLiveConnectionLifecycle {
   private state: GoogleLiveConnectionState = "idle";
   private socket: WebSocket | null = null;
   private waiter: StartupWaiter | null = null;
+  private error: Error | null = null;
 
   get isActive(): boolean {
     return this.state === "active";
@@ -51,6 +58,7 @@ export class GoogleLiveConnectionLifecycle {
   begin(socket: WebSocket): Promise<RealtimeTalkTransportStartResult> {
     this.state = "connecting";
     this.socket = socket;
+    this.error = null;
     return new Promise((resolve, reject) => {
       this.waiter = { resolve, reject };
     });
@@ -66,8 +74,8 @@ export class GoogleLiveConnectionLifecycle {
   }
 
   finishStart(result: RealtimeTalkTransportStartResult): RealtimeTalkTransportStartResult {
-    if (typeof this.state !== "string") {
-      throw this.state;
+    if (this.error) {
+      throw this.error;
     }
     return this.state === "cancelled" ? "cancelled" : result;
   }
@@ -76,8 +84,8 @@ export class GoogleLiveConnectionLifecycle {
     if (this.state === "active") {
       return false;
     }
-    if (typeof this.state !== "string") {
-      throw this.state;
+    if (this.error) {
+      throw this.error;
     }
     if (this.state === "cancelled" || this.state === "idle") {
       return false;
@@ -93,13 +101,14 @@ export class GoogleLiveConnectionLifecycle {
     if (this.socket !== socket || (this.state !== "connecting" && this.state !== "ready")) {
       return false;
     }
-    this.state = error;
+    this.state = "failed";
+    this.error = error;
     this.takeWaiter()?.reject(error);
     return true;
   }
 
   cancel(): void {
-    if (this.state === "cancelled" || typeof this.state !== "string") {
+    if (this.state === "cancelled" || this.state === "failed") {
       return;
     }
     this.state = "cancelled";

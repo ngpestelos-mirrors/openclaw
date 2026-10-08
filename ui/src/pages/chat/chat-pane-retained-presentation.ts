@@ -360,6 +360,7 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
     }
     const { promise, resolve } = createDeferredCore<boolean>();
     this.resetConfirmation = { scopeKey, promise, resolve };
+    this.resetConfirmationOpen = true;
     return promise;
   }
 
@@ -376,11 +377,12 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
       return;
     }
     this.resetConfirmation = undefined;
+    this.resetConfirmationOpen = false;
     pending.resolve(confirmed);
   }
 
   protected renderResetConfirmation() {
-    if (!this.resetConfirmation) {
+    if (!this.resetConfirmationOpen) {
       return nothing;
     }
     const title = t("chat.board.resetTitle");

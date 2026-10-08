@@ -227,13 +227,6 @@ type TranscriptInteractionProps = Pick<
 >;
 
 const transcriptStates = new Map<string, ChatThreadState>();
-const transcriptSearchDefaults = {
-  searchOpen: false,
-  searchQuery: "",
-  searchFocusPending: false,
-  searchReturnFocusTarget: null,
-  searchReturnFocusOwner: null,
-};
 
 export function getTranscriptState(paneId: string): ChatThreadState {
   const existing = transcriptStates.get(paneId);
@@ -244,7 +237,11 @@ export function getTranscriptState(paneId: string): ChatThreadState {
     asyncQuestionDrafts: new Map(),
     asyncQuestionRevision: 0,
     turnRecapWatch: null,
-    ...transcriptSearchDefaults,
+    searchOpen: false,
+    searchQuery: "",
+    searchFocusPending: false,
+    searchReturnFocusTarget: null,
+    searchReturnFocusOwner: null,
     transcriptRenderDependencies: [],
     transcriptRenderContext: {},
   };
@@ -284,7 +281,11 @@ export function resetTranscriptSession(paneId: string, owner?: ParentNode): void
     // Parked rows must commit fresh bindings on return even when visible props match.
     state.transcriptRenderDependencies = [];
     // Search input belongs to the outgoing transcript; pane preferences survive.
-    Object.assign(state, transcriptSearchDefaults);
+    state.searchOpen = false;
+    state.searchQuery = "";
+    state.searchFocusPending = false;
+    state.searchReturnFocusTarget = null;
+    state.searchReturnFocusOwner = null;
   }
 }
 
@@ -374,7 +375,11 @@ export function renderTranscriptSearch(
 export function closeTranscriptSearch(state: ChatThreadState, requestUpdate: () => void): void {
   const returnFocusTarget = state.searchReturnFocusTarget;
   const returnFocusOwner = state.searchReturnFocusOwner;
-  Object.assign(state, transcriptSearchDefaults);
+  state.searchOpen = false;
+  state.searchQuery = "";
+  state.searchFocusPending = false;
+  state.searchReturnFocusTarget = null;
+  state.searchReturnFocusOwner = null;
   requestUpdate();
   queueMicrotask(() => {
     const target = returnFocusTarget?.isConnected
@@ -402,10 +407,14 @@ export function toggleTranscriptSearch(
   state.searchFocusPending = true;
   const returnFocusTarget = triggerEvent?.target;
   const returnFocusOwner = triggerEvent?.currentTarget;
-  const connectedElement = (target: EventTarget | null | undefined) =>
-    target instanceof HTMLElement && target.isConnected ? target : null;
-  state.searchReturnFocusTarget = connectedElement(returnFocusTarget);
-  state.searchReturnFocusOwner = connectedElement(returnFocusOwner);
+  state.searchReturnFocusTarget =
+    returnFocusTarget instanceof HTMLElement && returnFocusTarget.isConnected
+      ? returnFocusTarget
+      : null;
+  state.searchReturnFocusOwner =
+    returnFocusOwner instanceof HTMLElement && returnFocusOwner.isConnected
+      ? returnFocusOwner
+      : null;
   requestUpdate();
 }
 

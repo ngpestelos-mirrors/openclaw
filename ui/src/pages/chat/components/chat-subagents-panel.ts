@@ -1,28 +1,35 @@
+import { consume } from "@lit/context";
 import { html, nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
 import { keyed } from "lit/directives/keyed.js";
 import { repeat } from "lit/directives/repeat.js";
 import type { ChatInputRegion } from "../../../app/chat-input-owner.ts";
+import { applicationContext, type ApplicationContext } from "../../../app/context.ts";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import { formatDurationCompact } from "../../../lib/format-duration.ts";
 import { resolveSessionDisplayName } from "../../../lib/session-display.ts";
 import { isSessionRunActive } from "../../../lib/session-run-state.ts";
 import { parseAgentSessionKey } from "../../../lib/sessions/session-key.ts";
+import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
 import type { PaneSessionChangeOptions } from "../chat-pane-shared.ts";
 import { isUnfinishedSubagent } from "../chat-spawned-subagent.ts";
 import { SubagentsPanelData, type SubagentsPanelRow } from "../subagents-panel-data.ts";
-import { ChatSessionPanel } from "./chat-session-panel.ts";
 import "../../../components/elapsed-time.ts";
 import "./chat-session-panels.css";
 import "./chat-subagents-panel.css";
 
 let panelSequence = 0;
 
-class ChatSubagentsPanel extends ChatSessionPanel<SubagentsPanelData> {
+class ChatSubagentsPanel extends OpenClawLightDomElement {
+  @consume({ context: applicationContext, subscribe: true })
+  protected context!: ApplicationContext;
+  @property({ attribute: false }) sessionKey = "";
+  @property({ attribute: false }) agentId = "main";
   @property({ attribute: false }) paneId = "single";
   @property({ attribute: false }) presentationId = "single";
   @property({ attribute: false }) inputRegion: ChatInputRegion = "page";
+  @property({ type: Boolean }) presented = true;
   /** The pane's request to show one subagent, or the list for null; taken once. */
   @property({ attribute: false }) showRequest?: () => string | null | undefined;
   @property({ attribute: false }) onSessionSelect?: (
@@ -33,7 +40,8 @@ class ChatSubagentsPanel extends ChatSessionPanel<SubagentsPanelData> {
   @state() private selected: { key: string; agentId: string } | null = null;
   @state() private finishedOpen = true;
   private readonly finishedId: string;
-  protected readonly dataType = SubagentsPanelData;
+  private data: SubagentsPanelData | null = null;
+  private dataContext: ApplicationContext | null = null;
 
   constructor() {
     super();
@@ -41,17 +49,34 @@ class ChatSubagentsPanel extends ChatSessionPanel<SubagentsPanelData> {
     this.finishedId = `chat-subagents-finished-${panelSequence}`;
   }
 
-  protected override clearSelection(): void {
-    this.selected = null;
-  }
-
   override connectedCallback(): void {
     super.connectedCallback();
     this.requestUpdate();
   }
 
+  override disconnectedCallback(): void {
+    this.data?.dispose();
+    this.data = null;
+    super.disconnectedCallback();
+  }
+
   protected override willUpdate(changed: PropertyValues<this>): void {
-    super.willUpdate(changed);
+    const contextChanged = this.dataContext !== this.context;
+    const parentChanged = changed.has("sessionKey") || changed.has("agentId");
+    if (contextChanged || parentChanged) {
+      this.selected = null;
+    }
+    if (contextChanged) {
+      this.data?.dispose();
+      this.data = null;
+      this.dataContext = this.context;
+    }
+    if (this.context && !this.data) {
+      this.data = new SubagentsPanelData(this.context, () => this.requestUpdate());
+      this.syncData();
+    } else if (parentChanged || changed.has("presented")) {
+      this.syncData();
+    }
     const requested = changed.has("showRequest") ? this.showRequest?.() : undefined;
     if (requested !== undefined) {
       this.selected = requested
@@ -70,6 +95,18 @@ class ChatSubagentsPanel extends ChatSessionPanel<SubagentsPanelData> {
         this.selected = null;
       }
     }
+  }
+
+  private syncData(): void {
+    this.data?.sync({
+      sessionKey: this.sessionKey,
+      agentId: this.agentId,
+      presented: this.presented,
+    });
+  }
+
+  async refresh(): Promise<void> {
+    await this.data?.refresh();
   }
 
   private subagentAgentId(key: string): string {

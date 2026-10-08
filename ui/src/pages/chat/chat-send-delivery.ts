@@ -262,19 +262,6 @@ async function sendPreparedChatMessage(
   const recoverNativeRuntime =
     allowNativeRecovery && isVisible() ? captureChatNativeRuntimeRecovery(host, route) : undefined;
   let steerSubmission: ReturnType<ChatHost["chatSubmissions"]["retain"]>;
-  const buildSubmittedUserMessage = (steerTargetRunId?: string) =>
-    buildLocalUserMessage(
-      {
-        ...prepared,
-        text: message,
-        mentions: submitted.mentions,
-        attachments,
-        createdAt: startedAt,
-        runId,
-        ...(steerTargetRunId ? { steerTargetRunId } : {}),
-      },
-      steerTargetRunId ? "complete" : undefined,
-    );
   if (isVisible()) {
     host.chatSendingScopeKey = storedChatOutboxScopeKey(scope);
     host.chatSending = true;
@@ -307,7 +294,18 @@ async function sendPreparedChatMessage(
       : expectedLeafEntryId;
     if (prepared.queueMode === "steer" && isVisible() && host.chatRunId) {
       const steerTargetRunId = host.chatRunId;
-      const projectedMessage = buildSubmittedUserMessage(steerTargetRunId);
+      const projectedMessage = buildLocalUserMessage(
+        {
+          ...prepared,
+          text: message,
+          mentions: submitted.mentions,
+          attachments,
+          createdAt: startedAt,
+          runId,
+          steerTargetRunId,
+        },
+        "complete",
+      );
       if (projectedMessage) {
         steerSubmission = host.chatSubmissions.retain({
           kind: "delivered",
@@ -419,7 +417,14 @@ async function sendPreparedChatMessage(
           sessionKey,
           agentId: prepared.agentId,
         });
-        const projectedMessage = buildSubmittedUserMessage();
+        const projectedMessage = buildLocalUserMessage({
+          ...prepared,
+          text: message,
+          mentions: submitted.mentions,
+          attachments,
+          createdAt: startedAt,
+          runId,
+        });
         if (projectedMessage) {
           reduceChatSessionProjection(
             host,

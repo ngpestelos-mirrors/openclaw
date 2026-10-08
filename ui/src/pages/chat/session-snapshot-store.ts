@@ -94,6 +94,17 @@ type PendingSessionState = {
 
 const activeStores = new Set<SessionSnapshotStore>();
 
+function sanitizeSnapshot(
+  snapshot: ChatSessionSnapshot,
+): { snapshot: unknown; weight: number } | null {
+  try {
+    const json = JSON.stringify(snapshot);
+    return json ? { snapshot: JSON.parse(json), weight: json.length } : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseSnapshotRecord(value: unknown, sessionKey?: string): SessionSnapshotRecord | null {
   const parsed = recordSchema.safeParse(value);
   return parsed.success && (!sessionKey || parsed.data.sessionKey === sessionKey)
@@ -105,17 +116,8 @@ function createSnapshotRecord(
   sessionKey: string,
   pending: PendingSessionState,
 ): PreparedSnapshotRecord | null {
-  const sourceSnapshot = pending.snapshot;
-  let snapshot: unknown;
-  let weight: number;
-  try {
-    const json = JSON.stringify(sourceSnapshot);
-    if (!json) {
-      return null;
-    }
-    snapshot = JSON.parse(json);
-    weight = json.length;
-  } catch {
+  const sanitized = sanitizeSnapshot(pending.snapshot);
+  if (!sanitized) {
     return null;
   }
   const envelope = {
@@ -124,7 +126,7 @@ function createSnapshotRecord(
     sessionId: pending.snapshot.sessionId,
     sessionKey,
   };
-  const record = parseSnapshotRecord({ ...envelope, snapshot });
+  const record = parseSnapshotRecord({ ...envelope, snapshot: sanitized.snapshot });
   // Validation does not transform JSON values. Preserve the existing code-unit
   // budget: snapshot JSON plus envelope JSON, excluding the enclosing snapshot key.
   return record
@@ -133,7 +135,7 @@ function createSnapshotRecord(
         metadata: {
           savedAt: record.savedAt,
           sessionKey,
-          weight: weight + JSON.stringify(envelope).length,
+          weight: sanitized.weight + JSON.stringify(envelope).length,
         },
       }
     : null;

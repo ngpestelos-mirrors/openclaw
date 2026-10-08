@@ -192,6 +192,7 @@ export abstract class ChatPaneHistory extends ChatPaneReplyNavigation {
     this.loadingOlder = false;
     this.historyObserverArmed = false;
     this.historyAutoLoadBlocked = false;
+    this.historyIntentConsumed = false;
     this.historyTouchY = null;
     if (this.historyIntentTimer !== null) {
       window.clearTimeout(this.historyIntentTimer);
@@ -205,6 +206,7 @@ export abstract class ChatPaneHistory extends ChatPaneReplyNavigation {
   protected clearHistoryObserver(): void {
     this.historyObserver?.disconnect();
     this.historyObserver = null;
+    this.historyObserverRoot = null;
     this.historyObserverSentinel = null;
     this.historyObserverBootstrap = false;
   }
@@ -243,7 +245,7 @@ export abstract class ChatPaneHistory extends ChatPaneReplyNavigation {
     }
     if (
       this.historyObserver &&
-      this.historyObserver.root === root &&
+      this.historyObserverRoot === root &&
       this.historyObserverSentinel === sentinel &&
       this.historyObserverBootstrap === bootstrap
     ) {
@@ -271,6 +273,7 @@ export abstract class ChatPaneHistory extends ChatPaneReplyNavigation {
       // arming gates above share this constant, so the trigger distance is real.
       { root, rootMargin: `${CHAT_HISTORY_PREFETCH_EDGE_PX}px 0px 0px`, threshold: 0 },
     );
+    this.historyObserverRoot = root;
     this.historyObserverSentinel = sentinel;
     this.historyObserverBootstrap = bootstrap;
     this.historyObserver.observe(sentinel);
@@ -325,14 +328,18 @@ export abstract class ChatPaneHistory extends ChatPaneReplyNavigation {
   }
 
   protected consumeHistoryIntent(): boolean {
-    const consumed = this.historyIntentTimer !== null;
     if (this.historyIntentTimer !== null) {
       window.clearTimeout(this.historyIntentTimer);
     }
     this.historyIntentTimer = window.setTimeout(() => {
       this.historyIntentTimer = null;
+      this.historyIntentConsumed = false;
     }, CHAT_HISTORY_INTENT_IDLE_MS);
-    return !consumed;
+    if (this.historyIntentConsumed) {
+      return false;
+    }
+    this.historyIntentConsumed = true;
+    return true;
   }
 
   protected handleTranscriptHistoryIntent(event: Event): void {

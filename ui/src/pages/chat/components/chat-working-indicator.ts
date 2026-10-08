@@ -89,13 +89,6 @@ export function renderChatWorkingIndicator(
     runningSubagents === 1
       ? t("chat.subagentsRunningOne")
       : t("chat.subagentsRunning", { count: String(runningSubagents) });
-  const renderSubagentsButton = (label: string) => html`<button
-    class="chat-working-indicator__subagents"
-    type="button"
-    @click=${() => options.onOpenSubagents?.()}
-  >
-    ${label}
-  </button>`;
   const working = !waitingSubagents && !waitingApproval && !options.startupLabel;
   // Providers report exact usage at response boundaries, not per text delta.
   // Keep the latest count visible while the run continues through tools.
@@ -133,7 +126,13 @@ export function renderChatWorkingIndicator(
           child
             ? html`${sentencePart(beforeChild)}${childName}${sentencePart(afterChild.join(""))}`
             : waitingOnCount
-              ? renderSubagentsButton(statusLabel)
+              ? html`<button
+                  class="chat-working-indicator__subagents"
+                  type="button"
+                  @click=${() => options.onOpenSubagents?.()}
+                >
+                  ${statusLabel}
+                </button>`
               : html`<span class=${working && !continuation ? "sr-only" : ""}>${statusLabel}</span>`
         }
         ${
@@ -171,7 +170,13 @@ export function renderChatWorkingIndicator(
                 <span aria-hidden="true">·</span>
                 ${
                   options.onOpenSubagents
-                    ? renderSubagentsButton(runningLabel)
+                    ? html`<button
+                        class="chat-working-indicator__subagents"
+                        type="button"
+                        @click=${() => options.onOpenSubagents?.()}
+                      >
+                        ${runningLabel}
+                      </button>`
                     : html`<span class="chat-working-indicator__subagents">${runningLabel}</span>`
                 }
               `

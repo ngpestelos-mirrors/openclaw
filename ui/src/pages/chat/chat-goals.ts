@@ -106,7 +106,11 @@ function goalOperationTarget(host: ChatHost) {
               saved.sessionKey === sessionKey &&
               saved.agentId === agentId &&
               saved.sessionId === sessionId
-            ? { params: saved, pending: false }
+            ? {
+                // SAFETY: The exact action schema and session ownership fields were checked above.
+                params: saved as GoalParams,
+                pending: false,
+              }
             : { retired: "invalid", pending: false };
       if (operation.retired) {
         storage?.setItem(storageKey, JSON.stringify(operation.retired));

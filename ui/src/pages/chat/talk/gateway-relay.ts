@@ -491,7 +491,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
             message:
               "Tell the person briefly that you are checking, then wait for the final OpenClaw result before answering with the actual result.",
           },
-          true,
+          { willContinue: true },
         );
         if (this.completedToolCalls.has(callId)) {
           return;
@@ -519,28 +519,30 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
   private async submitToolResult(
     callId: string,
     result: unknown,
-    willContinue = false,
+    options?: { suppressResponse?: boolean; willContinue?: boolean },
   ): Promise<void> {
     if (this.completedToolCalls.has(callId)) {
       return;
     }
+    const shouldAllowProviderResponse =
+      options?.suppressResponse !== true && options?.willContinue !== true;
     if (
       !this.closed &&
-      !willContinue &&
+      shouldAllowProviderResponse &&
       (this.pendingOutputCancellations > 0 || this.outputPlaybackDelayMs() > 0)
     ) {
-      const pending = { callId, result };
+      const pending = { callId, result, ...(options ? { options } : {}) };
       this.delayedToolResults.add(pending);
       this.rescheduleDelayedToolResult(pending);
       return;
     }
-    await this.sendToolResultNow(callId, result, willContinue);
+    await this.sendToolResultNow(callId, result, options);
   }
 
   private async sendToolResultNow(
     callId: string,
     result: unknown,
-    willContinue = false,
+    options?: { suppressResponse?: boolean; willContinue?: boolean },
   ): Promise<void> {
     if (this.completedToolCalls.has(callId)) {
       return;
@@ -551,7 +553,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
         sessionId: this.session.relaySessionId,
         callId,
         result,
-        ...(willContinue ? { options: { willContinue: true } } : {}),
+        ...(options ? { options } : {}),
       });
     } finally {
       this.submittingToolCalls.delete(callId);
@@ -585,9 +587,11 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
       return;
     }
     this.discardDelayedToolResult(pending);
-    void this.sendToolResultNow(pending.callId, pending.result).catch((error: unknown) => {
-      this.reportToolResultSubmissionError(error);
-    });
+    void this.sendToolResultNow(pending.callId, pending.result, pending.options).catch(
+      (error: unknown) => {
+        this.reportToolResultSubmissionError(error);
+      },
+    );
   }
 
   private rescheduleDelayedToolResults(): void {

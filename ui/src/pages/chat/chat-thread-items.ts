@@ -550,8 +550,11 @@ export function insertChatItemsByTimestamp(items: ChatItem[], inserts: ChatProje
       };
     })
     .toSorted((a, b) => {
+      if (a.effectiveTimestamp == null && b.effectiveTimestamp == null) {
+        return a.index - b.index;
+      }
       if (a.effectiveTimestamp == null) {
-        return b.effectiveTimestamp == null ? a.index - b.index : 1;
+        return 1;
       }
       if (b.effectiveTimestamp == null) {
         return -1;

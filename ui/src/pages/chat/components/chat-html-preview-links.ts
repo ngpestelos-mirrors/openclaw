@@ -1,5 +1,4 @@
 import { defaultTreeAdapter, html, parse, type DefaultTreeAdapterTypes } from "parse5";
-import { applyHtmlPreviewEdits, type HtmlPreviewEdit } from "./chat-html-preview-source.ts";
 
 /** Prepare display bytes without serializing the author's document or changing its base URL. */
 export function prepareHtmlPreviewLinks(source: string, allowScripts: boolean): string {
@@ -33,7 +32,7 @@ export function prepareHtmlPreviewLinks(source: string, allowScripts: boolean): 
       pending.push(node.childNodes[index]!);
     }
   }
-  const replacements: HtmlPreviewEdit[] = [];
+  const replacements = new Map<number, { start: number; end: number; text: string }>();
   for (const link of links) {
     // URL parsing ignores leading C0 controls and space, but not other Unicode whitespace.
     const authoredHref = link.attrs.find((attribute) => attribute.name === "href")?.value ?? "";
@@ -53,11 +52,19 @@ export function prepareHtmlPreviewLinks(source: string, allowScripts: boolean): 
       continue;
     }
     const escapedHref = href.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
-    replacements.push({
+    // HTML recovery can reconstruct several elements from the same authored start tag.
+    replacements.set(location.startOffset, {
       start: location.startOffset,
       end: location.endOffset,
       text: `href="about:srcdoc${escapedHref}"`,
     });
   }
-  return applyHtmlPreviewEdits(source, replacements);
+  const parts: string[] = [];
+  let position = 0;
+  for (const replacement of [...replacements.values()].toSorted((a, b) => a.start - b.start)) {
+    parts.push(source.slice(position, replacement.start), replacement.text);
+    position = replacement.end;
+  }
+  parts.push(source.slice(position));
+  return parts.join("");
 }

@@ -103,14 +103,6 @@ function workspaceBrowserFilePath(root: string | undefined, filePath: string): s
   return base ? `${base}${separator}${relative}` : `${separator}${relative}`;
 }
 
-function readWorkspaceFileText(file: SessionWorkspaceGetResult["file"] | undefined): string | null {
-  return file?.previewKind === "text" &&
-    file.contentEncoding === "utf8" &&
-    typeof file.content === "string"
-    ? file.content
-    : null;
-}
-
 async function loadArtifactSidebarContent(
   result: ArtifactDownloadResult & { blob?: Blob },
   download: (signal: AbortSignal) => Promise<Blob | null>,
@@ -230,13 +222,16 @@ function openFile(
           fileLinkSessionKey: result.sessionKey,
         };
       }
-      const text = readWorkspaceFileText(file);
-      if (text === null) {
+      if (
+        file.previewKind !== "text" ||
+        file.contentEncoding !== "utf8" ||
+        typeof file.content !== "string"
+      ) {
         return null;
       }
       const canEdit =
         typeof file.hash === "string" &&
-        hasUniformLineEndings(text) &&
+        hasUniformLineEndings(file.content) &&
         isGatewayMethodAdvertised(state, "sessions.files.set") === true &&
         hasOperatorAdminAccess(state.hello?.auth ?? null);
       const edit = canEdit
@@ -313,7 +308,7 @@ function openFile(
         kind: "file",
         path: filePath,
         name,
-        content: text,
+        content: file.content,
         sessionFileSource: {
           sessionKey: result.sessionKey,
           agentId,
@@ -337,7 +332,7 @@ function openFile(
         mimeType: file.mimeType,
         language: languageForFile(name),
         line: opts.line ?? null,
-        rawText: text,
+        rawText: file.content,
         ...(edit ? { edit } : {}),
       };
     },
@@ -564,7 +559,16 @@ export function resolveSessionDiffSidebarContent(
             const result = await state.sessions.getFile(sessionKey, path, {
               agentId,
             });
-            return readWorkspaceFileText(result?.file);
+            const file = result?.file;
+            if (
+              !file ||
+              file.previewKind !== "text" ||
+              file.contentEncoding !== "utf8" ||
+              typeof file.content !== "string"
+            ) {
+              return null;
+            }
+            return file.content;
           } catch {
             return null;
           }

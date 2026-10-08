@@ -70,7 +70,10 @@ export class TranscriptEndAnchor {
     canFollow: boolean,
     suspended: boolean,
   ) {
-    if (!this.composerResizePending || !changed || suspended) {
+    if (!this.composerResizePending) {
+      return null;
+    }
+    if (!changed || suspended) {
       // At the height cap, native caret scrolling can move the transcript
       // after overflow settles without producing a viewport ResizeObserver.
       return null;

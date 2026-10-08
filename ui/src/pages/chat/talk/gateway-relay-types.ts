@@ -11,5 +11,6 @@ export type GatewayRelayEvent = {
 export type DelayedToolResult = {
   callId: string;
   result: unknown;
+  options?: { suppressResponse?: boolean; willContinue?: boolean };
   timer?: number;
 };

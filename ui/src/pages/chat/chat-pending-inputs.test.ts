@@ -18,7 +18,6 @@ import { createStorageMock } from "../../test-helpers/storage.ts";
 import { getChatHistoryLoadState } from "./chat-history-state.ts";
 import { loadChatHistory } from "./chat-history.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
-import { admitQueuedMessageForSession } from "./chat-outbox-admission.test-support.ts";
 import {
   input,
   makeChatPageHost,
@@ -31,7 +30,7 @@ import {
   buildPendingInputItems,
   getChatPendingInputs,
 } from "./chat-pending-inputs.ts";
-import { readChatQueueForScope } from "./chat-queue.ts";
+import { admitQueuedMessageForSession, readChatQueueForScope } from "./chat-queue.ts";
 import { retireDeliveredQueuedUserTurn } from "./chat-send-support.ts";
 import { handlePageGatewayEvent } from "./chat-state-events.ts";
 import { buildChatItems } from "./chat-thread-build.ts";

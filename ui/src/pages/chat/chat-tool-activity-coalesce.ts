@@ -266,8 +266,11 @@ function coalesceTurn(items: ChatItem[]): ChatItem[] {
       projections: [],
     };
     invocation.projections.push(projection);
-    const kind = projection.call ? "call" : "result";
-    invocation[kind] = preferProjection(invocation[kind], projection);
+    if (projection.call) {
+      invocation.call = preferProjection(invocation.call, projection);
+    } else {
+      invocation.result = preferProjection(invocation.result, projection);
+    }
     if (projection.source.message["__openclawToolStreamLive"] === true) {
       invocation.live = projection.source.message;
     }

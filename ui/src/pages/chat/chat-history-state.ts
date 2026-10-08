@@ -180,11 +180,13 @@ export function waitForInitialChatSnapshot(state: ChatHistoryHost): Promise<bool
       }
       resolve(current);
     };
-    const complete = () => finish(true);
-    hydration.complete = complete;
+    hydration.complete = () => finish(true);
     hydration.cancel = () => finish(false);
-    const timer = setTimeout(complete, remaining);
-    void hydration.promise.then(complete, complete);
+    const timer = setTimeout(() => finish(true), remaining);
+    void hydration.promise.then(
+      () => finish(true),
+      () => finish(true),
+    );
   });
   return hydration.wait;
 }

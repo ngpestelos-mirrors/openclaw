@@ -27,7 +27,11 @@ import { isInitialChatHistoryUnavailable, setChatError } from "./chat-history-st
 import { loadChatHistory } from "./chat-history.ts";
 import { chatOutboxOwner } from "./chat-outbox-owner.ts";
 import { chatProviderReviewRow } from "./chat-provider-review.ts";
-import { enqueueChatMessage, readQueuedMessageById } from "./chat-queue.ts";
+import {
+  admitQueuedMessageForSession,
+  enqueueChatMessage,
+  readQueuedMessageById,
+} from "./chat-queue.ts";
 import {
   captureChatCommandComposerRecovery,
   cancelChatDelivery,
@@ -43,7 +47,6 @@ import { deliverChatQueueItem } from "./chat-send-delivery.ts";
 import { sendDetachedCommandMessage } from "./chat-send-detached-command.ts";
 import {
   canSendVolatileQueueItem,
-  captureChatConnectionOwner,
   createPendingSendMessage,
   publishPendingSendMessage,
   reconnectSafeQueuedSendState,
@@ -130,7 +133,8 @@ export async function handleSendChat(
   const userMessage = intent ? rawMessage : submitted.text;
   const submittedAtMs = controlUiNowMs();
   const submittedSessionKey = host.sessionKey;
-  const submittedConnectionIsCurrent = captureChatConnectionOwner(host, false);
+  const submittedClient = host.client;
+  const submittedEpoch = host.connectionEpoch;
   const submittedOwnerIsCurrent = captureOutboxPayloadOwner(host);
   let expectedLeafEntryId = resolveDisplayedLeafEntryId(host);
   const attachmentsToSend = snapshotChatAttachments(
@@ -141,7 +145,8 @@ export async function handleSendChat(
     scope: resolveUiConversationIdentity(host, submittedSessionKey),
     isCurrent: () =>
       submittedOwnerIsCurrent() &&
-      submittedConnectionIsCurrent() &&
+      host.client === submittedClient &&
+      host.connectionEpoch === submittedEpoch &&
       host.sessionKey === submittedSessionKey,
   };
   const clearComposer = (retainAttachments: "none" | "annotations" | "all" = "none") =>
@@ -373,7 +378,7 @@ export async function handleSendChat(
             return;
           }
           queued.sendState = reconnectSafeQueuedSendState(host);
-          if (chatOutboxOwner(host).admit(host, admission, queued) !== "admitted") {
+          if (!admitQueuedMessageForSession(host, admission, queued)) {
             chatOutboxOwner(host).remove(host, queued.id);
             if (messageOverride == null) {
               host.chatMessage = previousDraft;

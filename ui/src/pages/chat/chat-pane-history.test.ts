@@ -775,9 +775,7 @@ describe("chat pane native history pagination", () => {
     const construct =
       vi.fn<(callback: IntersectionObserverCallback, observer: IntersectionObserver) => void>();
     class FakeIntersectionObserver {
-      readonly root: IntersectionObserver["root"];
-      constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
-        this.root = options?.root ?? null;
+      constructor(callback: IntersectionObserverCallback) {
         construct(callback, this as unknown as IntersectionObserver);
       }
       disconnect() {

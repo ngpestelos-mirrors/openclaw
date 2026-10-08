@@ -56,16 +56,24 @@ export function prepareInitialTurnHandoff(
   }
 }
 
-export function admitInitialTurnHandoff(host: ChatHost, sessionKey: string): boolean {
+function consumeInitialTurnHandoff(host: ChatHost, sessionKey: string): InitialTurnHandoff | null {
   if (
     !pending ||
     !areUiSessionKeysEquivalent(pending.sessionKey, sessionKey) ||
     !outboxPayloadMatchesOwner(host, pending.item)
   ) {
-    return false;
+    return null;
   }
   const handoff = pending;
   clearPending(false);
+  return handoff;
+}
+
+export function admitInitialTurnHandoff(host: ChatHost, sessionKey: string): boolean {
+  const handoff = consumeInitialTurnHandoff(host, sessionKey);
+  if (!handoff) {
+    return false;
+  }
   const { item, retryAfter } = handoff;
   const queue = readChatQueueForScope(host, sessionKey, item.agentId);
   const alreadyQueued = queue.some((entry) => entry.id === item.id);

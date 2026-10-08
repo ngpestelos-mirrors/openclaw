@@ -304,12 +304,17 @@ async function executeThink(
     const { session, defaults } = await loadCurrentSessionState(context, sessionKey);
     const modelCatalog = context.chatModelCatalog ?? [];
     const level = resolveThinkingLevelInput(rawLevel, session, defaults, modelCatalog);
-    if (
-      !level ||
-      isThinkingLevelOptionForSession(session, defaults, level, modelCatalog) === false
-    ) {
+    if (!level) {
       return {
-        content: t(`chat.commandResults.thinking.${level ? "unsupported" : "unrecognized"}`, {
+        content: t("chat.commandResults.thinking.unrecognized", {
+          level: rawLevel,
+          options: formatThinkingCommandOptionsForSession(session, defaults, modelCatalog),
+        }),
+      };
+    }
+    if (isThinkingLevelOptionForSession(session, defaults, level, modelCatalog) === false) {
+      return {
+        content: t("chat.commandResults.thinking.unsupported", {
           level: rawLevel,
           options: formatThinkingCommandOptionsForSession(session, defaults, modelCatalog),
         }),
@@ -389,9 +394,17 @@ async function executeFast(
     }
   }
 
-  const nextMode = isSessionDefaultDirectiveValue(rawMode)
-    ? null
-    : normalizeChatFastModeInput(rawMode);
+  if (isSessionDefaultDirectiveValue(rawMode)) {
+    return patchSession(
+      context,
+      sessionKey,
+      { fastMode: null },
+      () => ({ content: t("chat.commandResults.fast.reset") }),
+      "chat.commandResults.fast.resetFailed",
+    );
+  }
+
+  const nextMode = normalizeChatFastModeInput(rawMode);
   if (nextMode === undefined) {
     return {
       content: t("chat.commandResults.fast.unrecognized", { mode: args.trim() }),
@@ -404,17 +417,11 @@ async function executeFast(
     { fastMode: nextMode },
     () => ({
       content:
-        nextMode === null
-          ? t("chat.commandResults.fast.reset")
-          : nextMode === "auto"
-            ? t("chat.commandResults.fast.setAuto")
-            : t(
-                nextMode ? "chat.commandResults.fast.enabled" : "chat.commandResults.fast.disabled",
-              ),
+        nextMode === "auto"
+          ? t("chat.commandResults.fast.setAuto")
+          : t(nextMode ? "chat.commandResults.fast.enabled" : "chat.commandResults.fast.disabled"),
     }),
-    nextMode === null
-      ? "chat.commandResults.fast.resetFailed"
-      : "chat.commandResults.fast.setFailed",
+    "chat.commandResults.fast.setFailed",
   );
 }
 

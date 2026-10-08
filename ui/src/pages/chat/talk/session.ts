@@ -65,6 +65,7 @@ export class RealtimeTalkSession {
   private closed = false;
   private closeCompletion: Promise<void> = Promise.resolve();
   private lifecycleGeneration = 0;
+  private videoEnabled = false;
   private videoOperation = 0;
   private voiceSessionId: string | undefined;
   private transportGeneration = 0;
@@ -611,7 +612,7 @@ export class RealtimeTalkSession {
       throw new Error("Camera is unavailable for this realtime session");
     }
     const operation = ++this.videoOperation;
-    const previousEnabled = activeRealtimeTalkSessions.has(this);
+    const previousEnabled = this.videoEnabled;
     this.rememberVideoEnabled(enabled);
     try {
       await transport.setVideoEnabled(enabled);
@@ -627,6 +628,7 @@ export class RealtimeTalkSession {
   }
 
   private rememberVideoEnabled(enabled: boolean): void {
+    this.videoEnabled = enabled;
     if (enabled) {
       activeRealtimeTalkSessions.add(this);
     } else {
@@ -644,7 +646,7 @@ export class RealtimeTalkSession {
   }
 
   async switchCameraIfEnabled(videoDeviceId: string | undefined): Promise<void> {
-    if (!activeRealtimeTalkSessions.has(this)) {
+    if (!this.videoEnabled) {
       return;
     }
     try {

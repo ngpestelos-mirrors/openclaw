@@ -71,16 +71,6 @@ import { renderTurnRecapRow } from "./chat-working-indicator.ts";
 
 type GroupedMessageRenderOptions = Parameters<typeof renderGroupedMessage>[2];
 
-function renderMessageActionsRow(
-  messageKey: string | undefined,
-  content: ReturnType<typeof html> | typeof nothing,
-  className = "chat-group-footer-actions",
-) {
-  return html`<div class=${className} data-message-actions-for=${messageKey ?? nothing}>
-    ${content}
-  </div>`;
-}
-
 function prepareGroupMessage(
   group: MessageGroup,
   item: MessageGroup["messages"][number],
@@ -517,9 +507,11 @@ export function renderMessageGroup(group: MessageGroup, options: RenderMessageGr
     normalizedRole === "user" &&
     ((opts.onRewind && !opts.rewindDisabled) || hasMessageActionButtons(footerActionDetails, opts));
   const userFooterActions = hasUserFooterActions
-    ? renderMessageActionsRow(
-        footerActionMessageKey,
-        html`
+    ? html`
+        <div
+          class="chat-group-footer-actions"
+          data-message-actions-for=${footerActionMessageKey ?? nothing}
+        >
           ${
             footerActionDetails?.replyTarget && opts.onReply
               ? renderReplyButton(footerActionDetails.replyTarget, opts.onReply)
@@ -527,8 +519,8 @@ export function renderMessageGroup(group: MessageGroup, options: RenderMessageGr
           }
           ${opts.onRewind && !opts.rewindDisabled ? renderRewindButton(opts.onRewind) : nothing}
           ${renderMessageActionButtons(footerActionDetails, messageReactionOptions(group, opts))}
-        `,
-      )
+        </div>
+      `
     : nothing;
 
   // Source sessions share the stable sender hue machinery; CSS owns contrast
@@ -605,13 +597,19 @@ export function renderMessageGroup(group: MessageGroup, options: RenderMessageGr
                             ${renderSenderIdentity()}
                             ${renderMessageMeta(prepared.source.normalizedMessage.timestamp, null)}
                           </div>
-                          ${renderMessageActionsRow(item.key, renderMessageActionButtons(actionDetails, opts))}
+                          <div
+                            class="chat-group-footer-actions"
+                            data-message-actions-for=${item.key}
+                          >
+                            ${renderMessageActionButtons(actionDetails, opts)}
+                          </div>
                         </div>`
-                      : renderMessageActionsRow(
-                          item.key,
-                          renderMessageActionButtons(actionDetails, opts),
-                          "chat-message-actions-row",
-                        )
+                      : html`<div
+                          class="chat-message-actions-row"
+                          data-message-actions-for=${item.key}
+                        >
+                          ${renderMessageActionButtons(actionDetails, opts)}
+                        </div>`
                     : nothing;
                 // Assistant groups carry one line; your own replies keep theirs in the
                 // bubble, and a participant's sits above the message beside its avatar.
@@ -702,10 +700,14 @@ export function renderMessageGroup(group: MessageGroup, options: RenderMessageGr
                   isPeerGroup
                     ? userFooterActions
                     : normalizedRole !== "user" && footerActionDetails
-                      ? renderMessageActionsRow(
-                          footerActionMessageKey,
-                          renderMessageActionButtons(footerActionDetails, opts),
-                        )
+                      ? html`
+                          <div
+                            class="chat-group-footer-actions"
+                            data-message-actions-for=${footerActionMessageKey ?? nothing}
+                          >
+                            ${renderMessageActionButtons(footerActionDetails, opts)}
+                          </div>
+                        `
                       : nothing
                 }
               </div>`

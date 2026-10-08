@@ -544,24 +544,17 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     );
   };
 
-  private readonly reloadFile = () => this.startLatestFileOperation("reload");
-
-  private readonly overwriteFile = () => this.startLatestFileOperation("overwrite");
-
-  private startLatestFileOperation(action: "reload" | "overwrite"): void {
+  private readonly reloadFile = () => {
     const content = this.visibleContent;
     if (content?.kind !== "file" || !content.edit || this.fileSaving) {
       return;
     }
     const version = this.fileOperationVersion;
-    let onLatest: (
-      latest: Awaited<ReturnType<NonNullable<FileSidebarContent["edit"]>["fetchLatest"]>>,
-    ) => void | Promise<void>;
-    if (action === "reload") {
-      this.fileSaving = true;
-      this.fileReloading = true;
-      this.fileEditor?.setEditable(false);
-      onLatest = (latest) => {
+    this.fileSaving = true;
+    this.fileReloading = true;
+    this.fileEditor?.setEditable(false);
+    this.trackFileOperation(
+      content.edit.fetchLatest().then((latest) => {
         if (version !== this.fileOperationVersion || this.visibleContent?.kind !== "file") {
           return;
         }
@@ -586,13 +579,23 @@ class ChatDetailPanel extends OpenClawLightDomElement {
           const { edit: _removed, ...readOnly } = this.visibleContent;
           this.visibleContent = readOnly;
         }
-      };
-    } else {
-      // Overwrite deliberately replaces whatever is on disk (even content that
-      // would fail the edit gates) with the local editor text the user chose.
-      const localContent = this.currentFileText();
-      this.fileSaving = true;
-      onLatest = async (latest) => {
+      }),
+      version,
+    );
+  };
+
+  private readonly overwriteFile = () => {
+    const content = this.visibleContent;
+    if (content?.kind !== "file" || !content.edit || this.fileSaving) {
+      return;
+    }
+    const version = this.fileOperationVersion;
+    // Overwrite deliberately replaces whatever is on disk (even content that
+    // would fail the edit gates) with the local editor text the user chose.
+    const localContent = this.currentFileText();
+    this.fileSaving = true;
+    this.trackFileOperation(
+      content.edit.fetchLatest().then(async (latest) => {
         if (version !== this.fileOperationVersion) {
           return;
         }
@@ -604,10 +607,10 @@ class ChatDetailPanel extends OpenClawLightDomElement {
           return;
         }
         await this.saveFileContent(content, localContent, latest.hash, version);
-      };
-    }
-    this.trackFileOperation(content.edit.fetchLatest().then(onLatest), version);
-  }
+      }),
+      version,
+    );
+  };
 
   private trackFileOperation(operation: Promise<unknown>, version: number) {
     void operation

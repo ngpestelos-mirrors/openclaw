@@ -292,10 +292,10 @@ export class WebRtcSdpRealtimeTalkTransport implements RealtimeTalkTransport {
     }
     switch (event.type) {
       case "session.input_transcript.delta":
-        this.emitTranscript("user", event.delta, false, undefined, "verbatim");
+        this.emitFramelessTranscript("user", event.delta, false, { textMode: "verbatim" });
         return;
       case "session.output_transcript.delta":
-        this.emitTranscript("assistant", event.delta, false, undefined, "verbatim");
+        this.emitFramelessTranscript("assistant", event.delta, false, { textMode: "verbatim" });
         return;
       case "session.closed":
         if (event.reason === "content" || event.reason === "connection_lost") {
@@ -310,18 +310,20 @@ export class WebRtcSdpRealtimeTalkTransport implements RealtimeTalkTransport {
         return;
       case "input_transcript.added":
       case "output_transcript.added":
-        this.emitTranscript(
+        this.emitFramelessTranscript(
           event.type === "input_transcript.added" ? "user" : "assistant",
           event.item?.text,
           false,
-          event.item?.id,
-          "verbatim",
+          { itemId: event.item?.id, textMode: "verbatim" },
         );
         return;
       case "turn.done": {
         const role = event.turn?.role;
         if (role === "user" || role === "assistant") {
-          this.emitTranscript(role, event.turn?.transcript, true, event.turn?.id, "snapshot");
+          this.emitFramelessTranscript(role, event.turn?.transcript, true, {
+            itemId: event.turn?.id,
+            textMode: "snapshot",
+          });
           if (this.closed) {
             return;
           }
@@ -338,9 +340,21 @@ export class WebRtcSdpRealtimeTalkTransport implements RealtimeTalkTransport {
       }
       case "conversation.item.input_audio_transcription.completed":
         if (typeof event.transcript === "string") {
-          if (!this.emitTranscript("user", event.transcript, true, event.item_id)) {
+          this.ctx.callbacks.onTranscript?.({
+            role: "user",
+            text: event.transcript,
+            final: true,
+            itemId: event.item_id,
+          });
+          if (this.closed) {
             return;
           }
+          this.emitTalkEvent({
+            type: "transcript.done",
+            final: true,
+            itemId: event.item_id,
+            payload: { role: "user", text: event.transcript },
+          });
           if (
             this.consultAbortControllers.size > 0 &&
             shouldAutoControlRealtimeVoiceAgentText(event.transcript)
@@ -360,12 +374,12 @@ export class WebRtcSdpRealtimeTalkTransport implements RealtimeTalkTransport {
       case "response.output_text.delta":
       case "response.audio_transcript.delta":
       case "response.output_audio_transcript.delta":
-        this.emitTranscript("assistant", event.delta, false, event.item_id);
+        this.emitAssistantTranscript(event, false);
         return;
       case "response.output_text.done":
       case "response.audio_transcript.done":
       case "response.output_audio_transcript.done":
-        this.emitTranscript("assistant", event.transcript ?? event.text, true, event.item_id);
+        this.emitAssistantTranscript(event, true);
         break;
       case "response.function_call_arguments.delta":
       case "response.function_call_arguments.done":
@@ -446,29 +460,40 @@ export class WebRtcSdpRealtimeTalkTransport implements RealtimeTalkTransport {
     }
   }
 
-  private emitTranscript(
+  private emitAssistantTranscript(event: RealtimeServerEvent, final: boolean): void {
+    const text = final ? (event.transcript ?? event.text) : event.delta;
+    if (typeof text !== "string") {
+      return;
+    }
+    this.ctx.callbacks.onTranscript?.({
+      role: "assistant",
+      text,
+      final,
+      itemId: event.item_id,
+    });
+    if (this.closed) {
+      return;
+    }
+    this.emitTalkEvent({
+      type: final ? "output.text.done" : "output.text.delta",
+      final,
+      itemId: event.item_id,
+      payload: { text },
+    });
+  }
+
+  private emitFramelessTranscript(
     role: "user" | "assistant",
     text: string | undefined,
     final: boolean,
-    itemId?: string,
-    textMode?: RealtimeTalkTranscript["textMode"],
-  ): boolean {
-    let entry: RealtimeTalkTranscript;
-    if (textMode) {
-      if (!text) {
-        return false;
-      }
-      entry = { role, text, final, textMode };
-    } else {
-      if (typeof text !== "string") {
-        return false;
-      }
-      entry = { role, text, final, itemId };
+    { itemId, textMode }: Pick<RealtimeTalkTranscript, "itemId" | "textMode"> = {},
+  ): void {
+    if (!text) {
+      return;
     }
-    const eventText = entry.text;
-    this.ctx.callbacks.onTranscript?.(entry);
+    this.ctx.callbacks.onTranscript?.({ role, text, final, ...(textMode ? { textMode } : {}) });
     if (this.closed) {
-      return false;
+      return;
     }
     const type =
       role === "user"
@@ -482,9 +507,8 @@ export class WebRtcSdpRealtimeTalkTransport implements RealtimeTalkTransport {
       type,
       final,
       itemId,
-      payload: role === "user" || textMode ? { role, text: eventText } : { text: eventText },
+      payload: { role, text },
     });
-    return true;
   }
 
   private extractErrorDetail(error: unknown): string {

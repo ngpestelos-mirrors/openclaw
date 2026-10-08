@@ -243,27 +243,29 @@ export function buildRawContent(
   if (!content) {
     return null;
   }
-  const textDocument = content.kind === "markdown" || content.kind === "file";
-  const rawText = content.rawText ?? (textDocument ? content.content : "");
-  if (!textDocument && !rawText.trim()) {
-    return null;
-  }
-  return {
-    kind: "markdown",
-    content: formatFencedCodeBlock(
+  if (content.kind === "markdown" || content.kind === "file") {
+    const rawText = content.rawText ?? content.content;
+    return {
+      kind: "markdown",
+      content: formatFencedCodeBlock(
+        rawText,
+        content.kind === "file" ? content.language : undefined,
+      ),
       rawText,
-      content.kind === "file" ? content.language : textDocument ? undefined : "json",
-    ),
-    rawText,
-    ...(textDocument
-      ? {
-          fileLinkSessionKey:
-            content.kind === "file"
-              ? content.sessionFileSource?.sessionKey
-              : content.fileLinkSessionKey,
-        }
-      : {}),
-  };
+      fileLinkSessionKey:
+        content.kind === "file"
+          ? content.sessionFileSource?.sessionKey
+          : content.fileLinkSessionKey,
+    };
+  }
+  if (content.rawText?.trim()) {
+    return {
+      kind: "markdown",
+      content: formatFencedCodeBlock(content.rawText, "json"),
+      rawText: content.rawText,
+    };
+  }
+  return null;
 }
 
 type MarkdownSidebarProps = {

@@ -397,9 +397,6 @@ export function buildChatItems(
   const currentTurnBounds =
     (currentRunId ? canvasRunBounds(currentRunId) : null) ??
     (activeInputKey ? { afterKey: activeInputKey } : historyTurnBounds);
-  const resolveRunBounds = (lookup: typeof canvasRunBounds, runId: unknown) =>
-    resolveRunInsertionBounds(lookup, runId, currentRunId, currentTurnBounds) ??
-    (!runId && activeInputKey ? currentTurnBounds : undefined);
   const boundToPendingInputs = (
     bounds: TurnInsertionBounds | null | undefined,
   ): TurnInsertionBounds | undefined => {
@@ -418,7 +415,12 @@ export function buildChatItems(
       continue;
     }
     const canvasBounds = boundToPendingInputs(
-      resolveRunBounds(canvasRunBounds, projection.item.message.runId),
+      resolveRunInsertionBounds(
+        canvasRunBounds,
+        projection.item.message.runId,
+        currentRunId,
+        currentTurnBounds,
+      ) ?? (!projection.item.message.runId && activeInputKey ? currentTurnBounds : undefined),
     );
     const { minimum: canvasMinimumIndex, maximum: canvasMaximumIndex } = insertionIndexesForBounds(
       items,
@@ -504,7 +506,10 @@ export function buildChatItems(
   // earlier current-turn fallback, but resolve exact bounds over rendered rows.
   const projectionRunBounds = createRunTurnLookup(executionItems());
   const resolveProjectionBounds = (runId: unknown): TurnInsertionBounds | undefined =>
-    boundToPendingInputs(resolveRunBounds(projectionRunBounds, runId));
+    boundToPendingInputs(
+      resolveRunInsertionBounds(projectionRunBounds, runId, currentRunId, currentTurnBounds) ??
+        (!runId && activeInputKey ? currentTurnBounds : undefined),
+    );
   if (!searchFiltering) {
     if (props.archiveNotice) {
       projections.push({ item: props.archiveNotice });

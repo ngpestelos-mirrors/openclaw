@@ -9,7 +9,6 @@ import {
   openAttachmentCardFromClick,
   renderAttachmentCardHeader,
   renderCompactAttachmentCard,
-  type AttachmentCardHeaderOptions,
 } from "./chat-attachment-card.ts";
 import { safeMediaAttachmentHref } from "./chat-attachment-href.ts";
 import { ChatAttachmentViewportRef } from "./chat-attachment-viewport.ts";
@@ -126,15 +125,15 @@ class ChatVideoPlayer extends OpenClawLightDomContentsElement {
   override render() {
     const downloadHref = safeMediaAttachmentHref(this.src);
     const preparing = this.sourceController.readiness === "preparing" && !this.preview;
-    const card: AttachmentCardHeaderOptions = {
-      kind: "video",
-      label: this.label,
-      mimeType: this.mimeType,
-      sizeBytes: this.sizeBytes,
-      downloadHref,
-    };
     if (this.sourceController.readiness === "unavailable") {
-      return renderCompactAttachmentCard({ ...card, onExpand: this.onFallbackExpand });
+      return renderCompactAttachmentCard({
+        kind: "video",
+        label: this.label,
+        mimeType: this.mimeType,
+        sizeBytes: this.sizeBytes,
+        downloadHref,
+        onExpand: this.onFallbackExpand,
+      });
     }
     const loading = this.preview && !this.frameReady;
     const onExpand = this.onExpand && this.sourceController.readySource ? this.expand : undefined;
@@ -155,7 +154,11 @@ class ChatVideoPlayer extends OpenClawLightDomContentsElement {
         @click=${(event: MouseEvent) => openAttachmentCardFromClick(event, onExpand)}
       >
         ${renderAttachmentCardHeader({
-          ...card,
+          kind: "video",
+          label: this.label,
+          mimeType: this.mimeType,
+          sizeBytes: this.sizeBytes,
+          downloadHref,
           downloadPending: this.preview && !downloadHref,
           loading,
           expandLabel: t("chat.mediaPlayer.openVideo", { filename: this.label }),

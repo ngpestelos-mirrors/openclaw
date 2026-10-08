@@ -45,6 +45,7 @@ type PendingPermissionChange = {
   expectedSessionId?: string;
   nextMode: ChatPermissionPickerProps["mode"];
   ownsSelection: () => boolean;
+  pending: boolean;
   retainWhileCurrent?: () => boolean;
 };
 
@@ -211,7 +212,7 @@ export function renderChatPaneComposerControls(params: {
   }
   const currentChange = pendingChange?.ownsSelection() ? pendingChange : undefined;
   const permissionPending = Boolean(
-    (currentChange && !currentChange.retainWhileCurrent) || selectedSession?.permissionModePending,
+    currentChange?.pending || selectedSession?.permissionModePending,
   );
   const modelCatalogState = resolveModelCatalogState(
     {
@@ -347,7 +348,7 @@ export function renderChatPaneComposerControls(params: {
           !permissionAccess.allowed ||
           !canPatch({ permissionMode }) ||
           selectedSession?.permissionModePending ||
-          (activeChange && !activeChange.retainWhileCurrent && activeChange.ownsSelection())
+          (activeChange?.pending && activeChange.ownsSelection())
         ) {
           return;
         }
@@ -357,6 +358,7 @@ export function renderChatPaneComposerControls(params: {
           expectedSessionId,
           nextMode: permissionMode ?? undefined,
           ownsSelection,
+          pending: true,
         };
         const outcomeOwner = Symbol(permissionScopeKey);
         const outcomeOwners = permissionOutcomeOwners.get(state) ?? new Map<string, symbol>();
@@ -397,6 +399,7 @@ export function renderChatPaneComposerControls(params: {
             return;
           }
           if (outcome.status !== "refreshed") {
+            change.pending = false;
             change.retainWhileCurrent = retainWhileCurrent;
           }
           state.chatError = state.lastError = t("chat.permissionControls.updateFailed", {
