@@ -244,6 +244,7 @@ async function runPreparedChannelTurnCoreInTrace<
         sessionKey: recordSessionKey,
         admission: admission.kind,
       });
+      params.assertAuthority?.();
       await params.recordInboundSession({
         storePath: params.storePath,
         sessionKey: recordSessionKey,
@@ -253,6 +254,7 @@ async function runPreparedChannelTurnCoreInTrace<
         updateLastRoute: params.record?.updateLastRoute,
         onRecordError: params.record?.onRecordError ?? (() => undefined),
         trackSessionMetaTask: params.record?.trackSessionMetaTask,
+        assertAuthority: params.assertAuthority,
       });
       emit(params, {
         stage: "record",
@@ -285,6 +287,7 @@ async function runPreparedChannelTurnCoreInTrace<
     });
     let dispatchResult: TDispatchResult;
     try {
+      params.assertAuthority?.();
       let processedOutcome: DispatchProcessedNote | undefined;
       if (admission.kind === "observeOnly") {
         if (options.suppressObserveOnlyDispatch) {

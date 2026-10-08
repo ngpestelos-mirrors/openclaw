@@ -189,6 +189,16 @@ export const observePluginStateInWorker = createOperation(
   undefined,
   () => true,
 );
+export const observePluginStateBatchInWorker = createOperation(
+  "pluginState.observeBatch",
+  undefined,
+  () => true,
+);
+export const comparePluginStateBatchInWorker = createOperation(
+  "pluginState.compareBatch",
+  undefined,
+  (result) => result.status === "conflict",
+);
 export const comparePluginStateUpdateInWorker = createOperation(
   "pluginState.compareUpdate",
   undefined,
@@ -202,6 +212,10 @@ export const comparePluginStateDeleteInWorker = createOperation(
 export const registerPluginStateIfAbsentInWorker = createOperation("pluginState.registerIfAbsent");
 export const deletePluginStateIfEqualInWorker = createOperation("pluginState.deleteIfEqual");
 export const lookupPluginStateInWorker = createOperation("pluginState.lookup", () => undefined);
+export const observeExistingPluginStateBatchInWorker = createOperation(
+  "pluginState.observeExisting",
+  () => undefined,
+);
 
 export async function lookupManyPluginStateInWorker(
   params: Input<"pluginState.lookupMany">,

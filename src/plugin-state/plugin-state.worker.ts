@@ -8,6 +8,9 @@ import type {
 } from "../state/openclaw-state-db-contract.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import {
+  compareAndApplyPluginStateBatch,
+  observePluginStateBatch,
+  observeMissingPluginStateBatch,
   compareAndApplyPluginStateEntry,
   observePluginStateEntry,
 } from "./plugin-state-store.comparison.js";
@@ -21,6 +24,7 @@ import {
   deleteExpiredPluginStateEntries,
   deletePluginStateEntry,
   lookupPluginStateEntry,
+  type PluginStateDatabase,
 } from "./plugin-state-store.kernel.js";
 import {
   clearPluginStateNamespace,
@@ -74,6 +78,7 @@ export function executePluginStateCommand(
     );
   if (
     command.type === "pluginState.lookup" ||
+    command.type === "pluginState.observeExisting" ||
     command.type === "pluginState.lookupMany" ||
     command.type === "pluginState.entries" ||
     command.type === "pluginState.entriesInKeyRange" ||
@@ -81,6 +86,26 @@ export function executePluginStateCommand(
   ) {
     try {
       switch (command.type) {
+        case "pluginState.observeExisting": {
+          let admitted: { store: PluginStateDatabase; identity: string } | undefined;
+          const observations = withPluginStateDatabaseReadOnly(
+            "lookup",
+            (store) => {
+              admitted = {
+                store,
+                identity: captureOpenClawStateDatabaseReadAdmission(store.path).identity.key,
+              };
+              return observePluginStateBatch(store, command.input, admitted.identity);
+            },
+            options,
+          );
+          return ok(
+            observations ??
+              (admitted
+                ? observeMissingPluginStateBatch(admitted.store, command.input, admitted.identity)
+                : undefined),
+          );
+        }
         case "pluginState.lookup":
           return ok(
             withPluginStateDatabaseReadOnly(
@@ -187,6 +212,18 @@ export function executePluginStateCommand(
                 return registerPluginStateSequencedJournalEntryInDatabase(store, command.input);
               case "pluginState.observe":
                 return observePluginStateEntry(
+                  store,
+                  command.input,
+                  captureOpenClawStateDatabaseReadAdmission(store.path).identity.key,
+                );
+              case "pluginState.observeBatch":
+                return observePluginStateBatch(
+                  store,
+                  command.input,
+                  captureOpenClawStateDatabaseReadAdmission(store.path).identity.key,
+                );
+              case "pluginState.compareBatch":
+                return compareAndApplyPluginStateBatch(
                   store,
                   command.input,
                   captureOpenClawStateDatabaseReadAdmission(store.path).identity.key,

@@ -4,6 +4,13 @@
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 
 export type {
+  PluginStateBatch,
+  PluginStateBatchKey,
+  PluginStateBatchChange,
+  PluginStateBatchResult,
+} from "../plugin-state/plugin-state-store.types.js";
+
+export type {
   SessionEntryCurrentCheck,
   SessionEntryCurrentPreparation,
 } from "../config/sessions/session-entry-current.types.js";

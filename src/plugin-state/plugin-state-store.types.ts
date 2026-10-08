@@ -35,6 +35,32 @@ export type PluginStateCompareResult<T> =
   | { status: "applied" | "unchanged" }
   | { status: "conflict"; current: PluginStateObservation<T> };
 
+export type PluginStateBatchKey = { store: number; key: string };
+
+export type PluginStateBatchChange<T> = PluginStateBatchKey & {
+  comparison: string;
+  intent: PluginStateCompareIntent<T>;
+};
+
+export type PluginStateBatchResult<T> =
+  | { status: "applied" | "unchanged" }
+  | { status: "conflict"; current: PluginStateObservation<T>[] };
+
+/** Source-bound cross-namespace operations over at most 10,000 unique keys. */
+export type PluginStateBatch<T = unknown> = {
+  /** Noncreating observations from the captured source; undefined means no physical database. */
+  observeExisting(
+    keys: readonly PluginStateBatchKey[],
+  ): Promise<PluginStateObservation<T>[] | undefined>;
+  /** Lists one captured namespace without resolving its source again. */
+  entries(store: number): Promise<PluginStateEntry<T>[]>;
+  observe(keys: readonly PluginStateBatchKey[]): Promise<PluginStateObservation<T>[]>;
+  /** Compares all keys before applying intents in order; exceptions never authorize replay. */
+  compareAndApply(
+    changes: readonly PluginStateBatchChange<T>[],
+  ): Promise<PluginStateBatchResult<T>>;
+};
+
 export type PluginStateKeyRange = {
   keyStartInclusive: string;
   keyEndExclusive: string;
@@ -49,6 +75,11 @@ export type PluginStateMoveEntries = {
 };
 
 type PluginStateKeyedStoreBase<T> = {
+  /** Captures same-plugin async handles for one source-bound cross-row operation. */
+  createBatch?: <TValue = T>(
+    stores: readonly Pick<PluginStateKeyedStore<TValue>, "lookup" | "entries">[],
+    authority?: { assertCurrent: () => void },
+  ) => PluginStateBatch<TValue>;
   /** Prepares a mutation observation through canonical writable admission; may create state. */
   observe?: (key: string) => Promise<PluginStateObservation<T>>;
   /** Compares the observed row before applying prepared data; only explicit conflicts may retry. */
@@ -103,7 +134,8 @@ type PluginStateKeyedStoreBase<T> = {
 
 /** Version 2 is an action-bound, data-only view; legacy stores remain source-compatible. */
 export type PluginStateKeyedStore<T, Version extends 1 | 2 = 1> = Version extends 2
-  ? Required<Omit<PluginStateKeyedStoreBase<T>, "update" | "deleteIf">>
+  ? Required<Omit<PluginStateKeyedStoreBase<T>, "update" | "deleteIf" | "createBatch">> &
+      Pick<PluginStateKeyedStoreBase<T>, "createBatch">
   : PluginStateKeyedStoreBase<T> & {
       /** Bind current action authority through read completion and final write admission. */
       withCurrent?: (authority: {

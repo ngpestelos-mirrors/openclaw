@@ -240,8 +240,16 @@ export class ReefTransportClient {
     peer: string,
     envelope: Envelope,
     signal?: AbortSignal,
+    assertCurrent?: () => void,
   ): Promise<{ id: string; status: string }> {
-    return this.signed("POST", `/v1/mail/${encodeURIComponent(peer)}`, envelope, signal);
+    return this.signed(
+      "POST",
+      `/v1/mail/${encodeURIComponent(peer)}`,
+      envelope,
+      signal,
+      [],
+      assertCurrent,
+    );
   }
   acknowledge(peer: string, id: string, receipt: SignedReceipt): Promise<{ result: string }> {
     return this.signed("POST", `/v1/mail/${encodeURIComponent(peer)}/ack`, { id, receipt });
@@ -267,6 +275,7 @@ export class ReefTransportClient {
     body?: unknown,
     signal?: AbortSignal,
     secrets: readonly string[] = [],
+    assertCurrent?: () => void,
   ): Promise<T> {
     const bytes = body === undefined ? new Uint8Array() : utf8(JSON.stringify(body));
     const auth = this.auth(path, bytes, method);
@@ -281,6 +290,7 @@ export class ReefTransportClient {
       },
       signal,
       [auth.signature, ...secrets],
+      assertCurrent,
     );
   }
 
@@ -317,6 +327,7 @@ export class ReefTransportClient {
     headers: Record<string, string>,
     signal?: AbortSignal,
     secrets: readonly string[] = [],
+    assertCurrent?: () => void,
   ): Promise<T> {
     const effect = captureEffectAuthority();
     const url = new URL(path, this.relayUrl).toString();
@@ -332,6 +343,8 @@ export class ReefTransportClient {
       try {
         response = await effect.initiate(() => {
           timeout.signal?.throwIfAborted();
+          // Host effect preparation may yield after the peer was last observed.
+          assertCurrent?.();
           initiated = true;
           return this.fetcher(url, {
             method,

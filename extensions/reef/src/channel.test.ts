@@ -146,7 +146,7 @@ describe("Reef message-tool threading", () => {
 describe("Reef conversation directory", () => {
   let stateDir = "";
 
-  beforeEach(() => {
+  beforeEach(async () => {
     resetPluginStateStoreForTests();
     // openclaw-temp-dir: allow Reef directory tests need an on-disk state root; afterEach removes it.
     stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "reef-directory-"));
@@ -163,17 +163,17 @@ describe("Reef conversation directory", () => {
       });
     setReefRuntime(runtime);
     const identity = generateIdentity();
-    openReefTrustStore(runtime, resolveReefConfig({ channels: { reef: { handle: "clawd" } } })).set(
-      "molty",
-      {
-        autonomy: "bounded",
-        ed25519PublicKey: identity.signing.publicKey,
-        x25519PublicKey: identity.encryption.publicKey,
-        keyEpoch: 1,
-        safetyNumberChanged: false,
-        approvedAt: 1_752_537_600_000,
-      },
-    );
+    await openReefTrustStore(
+      runtime,
+      resolveReefConfig({ channels: { reef: { handle: "clawd" } } }),
+    ).set("molty", {
+      autonomy: "bounded",
+      ed25519PublicKey: identity.signing.publicKey,
+      x25519PublicKey: identity.encryption.publicKey,
+      keyEpoch: 1,
+      safetyNumberChanged: false,
+      approvedAt: 1_752_537_600_000,
+    });
   });
 
   afterEach(async () => {

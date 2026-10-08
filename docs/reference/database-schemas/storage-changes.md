@@ -893,14 +893,24 @@ and leaves physical cleanup with its existing deferred owner.
 Reef registration binding reads, reservations, finalization, release, and setup-session
 persistence use the shared-state worker. Reservation mutations compare the current
 row before writing; a conflict rereads ownership before retrying. The CLI, setup
-wizard, and channel startup await these operations. Keys, migration gates, trust,
-audit, and review mutations retain their existing native
-owners. Key creation still performs its synchronous guard checks and insert without
-an event-loop yield; those separate operations do not form a cross-process transaction.
+wizard, and channel startup await these operations. Current hosts also prepare keys
+and migration markers through that owner. Key creation compares the migration,
+registration, and key rows before inserting in one transaction. Trust mutations
+compare their complete peer and delivery preconditions before applying changes;
+rejection completion updates the peer notice and retires the delivery together.
+Only explicit comparison conflicts repeat preparation; unknown write outcomes do not.
 Stored registration JSON, reservation expiry, namespace limits, and Doctor imports
-are unchanged. Hosts predating the comparison API retain their existing atomic native
-registration callbacks until an approved minimum host version permits removal. A
-worker failure never switches an operation to that compatibility path.
+are unchanged. Hosts predating the comparison or batch capability select their
+original native adapters before awaiting. These released-host adapters remain until
+an approved minimum host version permits removal; worker failures never select them.
+
+Current Reef audit appends compare the migration marker, head, and affected entries
+in the existing shared-state worker. Recovery of expired staged entries, predecessor
+linking, retention, and head advancement commit together. Existing live append leases
+are respected, and existing pending and garbage records remain readable on upgrade
+and rollback. Audit reads validate the head around their bounded retained entries.
+The audit format, cryptography, retention window, schema, and update behavior are
+unchanged. Released hosts without batch support retain the original native adapter.
 
 Reef inbox-cursor loads and monotonic advances use the shared-state worker.
 Advances compare the current row before changing progress or reporting an invalid
@@ -912,11 +922,12 @@ approved minimum host version guarantees comparison support. Worker failures nev
 switch to that path. Invalid-row diagnostics on current hosts report
 the Reef validation error directly; older hosts retain native store error wrapping.
 
-Reef review-decision lookups and pending-review lists use the shared-state worker.
-Both reads recheck the live channel authority after storage settles, before returning
-results. Older hosts retain their existing asynchronous read adapter. Review requests,
-decisions, and completed-review eviction keep their uninterrupted native authority
-check and mutation path; worker read failures never fall back to native reads.
+Reef review reads and mutations use the shared-state worker on current hosts.
+Request insertion and eviction of the selected completed review commit together;
+a concurrent replacement of either observed row restarts preparation. Decisions
+return the request they actually changed. Reads recheck live channel authority
+before returning; mutations require it at transaction and commit admission.
+Released hosts without batch support retain their original native mutation adapter.
 Review JSON, digest identity, ordering, capacity, and retention are unchanged.
 
 Reef delivered-message markers use the shared-state worker for lookup and atomic

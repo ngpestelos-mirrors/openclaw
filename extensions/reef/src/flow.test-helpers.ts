@@ -23,10 +23,20 @@ import {
 } from "../protocol/index.js";
 import { MemoryAuditStore } from "../protocol/memory-stores.test-support.js";
 import { ReefChannelConfigSchema } from "./config-schema.js";
-import { sameReefPeerIdentity, type ReefPeerIdentity, type ReefPeerTrust } from "./friend-types.js";
+import {
+  matchesReefPeerIdentity,
+  sameReefPeerIdentity,
+  type ReefAutonomy,
+  type ReefPeerIdentity,
+  type ReefPeerTrust,
+} from "./friend-types.js";
 import { ReefDeliveredStore, ReviewApprovalStore } from "./state.js";
 import type { ReefTransportClient } from "./transport.js";
-import type { ReefTrustStore } from "./trust-store.js";
+import type {
+  ReefDeliverySettlement,
+  ReefOutboundDeliveryPreparation,
+} from "./trust-store-format.js";
+import { ReefPeerTrustChangedError, type ReefTrustStore } from "./trust-store.js";
 import type { ReefKeys, ReefRejectionNoticeState } from "./types.js";
 
 const model = "mock-2026-07-12";
@@ -142,78 +152,77 @@ export function trust(initial: Record<string, ReefPeerTrust>) {
     rejectionNotices,
     store: {
       get: (peer: string) => values.get(peer),
-      recordOutboundDelivery: (
-        peer: string,
-        id: string,
-        binding: { bodyHash: string; textHash?: string; recipient: ReefPeerIdentity },
-        options: { resendDisabled?: true } = {},
-      ) => {
-        const key = `${peer}:${id}`;
-        if (deliveries.has(key)) {
-          throw new Error(`duplicate delivery ${id}`);
-        }
-        deliveries.set(key, { ...binding, ...options });
-      },
-      outboundDelivery: (peer: string, id: string) => deliveries.get(`${peer}:${id}`),
-      consumeOutboundDelivery: (
-        peer: string,
-        id: string,
-        binding: { bodyHash: string; textHash?: string; recipient: ReefPeerIdentity },
-      ) => {
-        const key = `${peer}:${id}`;
-        const current = deliveries.get(key);
+      assertCurrent: (peer: string, expected: ReefPeerIdentity, autonomy?: ReefAutonomy) => {
+        const current = values.get(peer);
         if (
-          current?.bodyHash !== binding.bodyHash ||
-          current.textHash !== binding.textHash ||
-          !sameReefPeerIdentity(current.recipient, binding.recipient) ||
-          current.rejection
+          !matchesReefPeerIdentity(current, expected) ||
+          (autonomy !== undefined && current?.autonomy !== autonomy)
         ) {
-          return false;
+          throw new ReefPeerTrustChangedError(peer);
         }
-        return deliveries.delete(key);
       },
-      discardOutboundDelivery: (
+      prepareOutboundDelivery: (
         peer: string,
         id: string,
-        binding: { bodyHash: string; textHash?: string; recipient: ReefPeerIdentity },
-      ) => {
+      ): ReefOutboundDeliveryPreparation | undefined => {
+        const friend = values.get(peer);
+        if (!friend) {
+          return undefined;
+        }
         const key = `${peer}:${id}`;
-        const current = deliveries.get(key);
-        if (
-          current?.bodyHash !== binding.bodyHash ||
-          current.textHash !== binding.textHash ||
-          !sameReefPeerIdentity(current.recipient, binding.recipient)
-        ) {
-          return false;
-        }
-        return deliveries.delete(key);
-      },
-      recordOutboundRejection: (
-        peer: string,
-        id: string,
-        binding: { bodyHash: string; textHash?: string; recipient: ReefPeerIdentity },
-        category?: string,
-      ) => {
-        const key = `${peer}:${id}`;
-        const current = deliveries.get(key);
-        if (
-          current?.bodyHash !== binding.bodyHash ||
-          current.textHash !== binding.textHash ||
-          !sameReefPeerIdentity(current.recipient, binding.recipient)
-        ) {
-          return false;
-        }
-        if (current.rejection) {
-          return true;
-        }
-        deliveries.set(key, {
-          ...current,
-          rejection: {
-            ...(category ? { category } : {}),
-            ...(current.resendDisabled ? { notice: { lastRejectionAt: Date.now() } } : {}),
+        return {
+          trust: structuredClone(friend),
+          async record(binding, options = {}) {
+            if (!matchesReefPeerIdentity(values.get(peer), binding.recipient)) {
+              throw new ReefPeerTrustChangedError(peer);
+            }
+            if (deliveries.has(key)) {
+              throw new Error(`duplicate delivery ${id}`);
+            }
+            deliveries.set(key, structuredClone({ ...binding, ...options }));
           },
-        });
-        return true;
+        };
+      },
+      readOutboundDelivery: (peer: string, id: string): ReefDeliverySettlement | undefined => {
+        const key = `${peer}:${id}`;
+        const current = deliveries.get(key);
+        if (!current) {
+          return undefined;
+        }
+        const delivery = structuredClone(current);
+        const matches = (value: typeof current | undefined) =>
+          value !== undefined &&
+          value.bodyHash === delivery.bodyHash &&
+          value.textHash === delivery.textHash &&
+          sameReefPeerIdentity(value.recipient, delivery.recipient);
+        return {
+          delivery,
+          async consume() {
+            const latest = deliveries.get(key);
+            if (latest?.rejection) {
+              return "rejected";
+            }
+            return matches(latest) && deliveries.delete(key) ? "consumed" : "unavailable";
+          },
+          async discard() {
+            return matches(deliveries.get(key)) && deliveries.delete(key);
+          },
+          async reject(category) {
+            const latest = deliveries.get(key);
+            if (!latest || !matches(latest)) {
+              return undefined;
+            }
+            if (latest.rejection) {
+              return latest.rejection;
+            }
+            const rejection = {
+              ...(category ? { category } : {}),
+              ...(latest.resendDisabled ? { notice: { lastRejectionAt: Date.now() } } : {}),
+            };
+            deliveries.set(key, { ...latest, rejection });
+            return rejection;
+          },
+        };
       },
       reserveOutboundRejectionNotice: (
         peer: string,

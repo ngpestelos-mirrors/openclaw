@@ -36,12 +36,17 @@ interface ReefReceiptNotifierOptions {
 }
 
 interface ReefRejectionNoticeStore {
-  loadState(peer: string): ReefRejectionNoticeState | undefined;
+  loadState(
+    peer: string,
+  ): ReefRejectionNoticeState | undefined | Promise<ReefRejectionNoticeState | undefined>;
   reserve(
     rejection: ReefDeliveryRejection,
     state: ReefRejectionNoticeState,
-  ): { kind: "reserved" } | { kind: "existing"; state: ReefRejectionNoticeState };
-  complete(rejection: ReefDeliveryRejection, state: ReefRejectionNoticeState): void;
+  ):
+    | { kind: "reserved" }
+    | { kind: "existing"; state: ReefRejectionNoticeState }
+    | Promise<{ kind: "reserved" } | { kind: "existing"; state: ReefRejectionNoticeState }>;
+  complete(rejection: ReefDeliveryRejection, state: ReefRejectionNoticeState): void | Promise<void>;
 }
 
 interface ReefPeerNoticeState {
@@ -75,13 +80,13 @@ export class ReefReceiptNotifier {
   ) {}
 
   async notifyRejections(rejections: readonly ReefDeliveryRejection[]): Promise<void> {
-    this.seedRecoveredStates(rejections);
+    await this.seedRecoveredStates(rejections);
     for (const rejection of rejections) {
       await this.peerQueues.enqueue(rejection.peer, () => this.notifyRejection(rejection, 0));
     }
   }
 
-  private seedRecoveredStates(rejections: readonly ReefDeliveryRejection[]): void {
+  private async seedRecoveredStates(rejections: readonly ReefDeliveryRejection[]): Promise<void> {
     const recoveredByPeer = new Map<string, ReefDeliveryRejection[]>();
     for (const rejection of rejections) {
       if (!rejection.reservedNotice) {
@@ -92,22 +97,24 @@ export class ReefReceiptNotifier {
       recoveredByPeer.set(rejection.peer, recovered);
     }
     for (const [peer, recovered] of recoveredByPeer) {
-      let state: ReefPeerNoticeState;
-      try {
-        state = this.touchPeerState(peer);
-      } catch (error) {
-        this.reportError(error, recovered[0]!.id);
-        // Unknown durable state may contain a newer rejection. Keep this
-        // notifier stop-only for the peer until cache eviction or restart.
-        state = { resendBlocked: true };
-      }
-      for (const rejection of recovered) {
-        this.applyState(
-          state,
-          this.mergeStates(this.snapshotState(state), rejection.reservedNotice!),
-        );
-      }
-      this.rememberPeerState(peer, state);
+      await this.peerQueues.enqueue(peer, async () => {
+        let state: ReefPeerNoticeState;
+        try {
+          state = await this.touchPeerState(peer);
+        } catch (error) {
+          this.reportError(error, recovered[0]!.id);
+          // Unknown durable state may contain a newer rejection. Keep this
+          // notifier stop-only for the peer until cache eviction or restart.
+          state = { resendBlocked: true };
+        }
+        for (const rejection of recovered) {
+          this.applyState(
+            state,
+            this.mergeStates(this.snapshotState(state), rejection.reservedNotice!),
+          );
+        }
+        this.rememberPeerState(peer, state);
+      });
     }
   }
 
@@ -123,7 +130,7 @@ export class ReefReceiptNotifier {
 
     let peerState: ReefPeerNoticeState;
     try {
-      peerState = this.touchPeerState(rejection.peer);
+      peerState = await this.touchPeerState(rejection.peer);
     } catch (error) {
       this.reportError(error, rejection.id);
       this.scheduleNotificationRetry(rejection, retryAttempt);
@@ -138,7 +145,7 @@ export class ReefReceiptNotifier {
       peerState.resendBlocked === true,
     );
     try {
-      const reservation = this.store.reserve(rejection, plan.state);
+      const reservation = await this.store.reserve(rejection, plan.state);
       if (reservation.kind === "existing") {
         plan = this.planNotice(
           rejection,
@@ -162,7 +169,7 @@ export class ReefReceiptNotifier {
     }
 
     this.applyState(peerState, plan.state);
-    this.completeNotice(rejection, plan.state, 0);
+    await this.completeNotice(rejection, plan.state, 0);
   }
 
   private planNotice(
@@ -207,10 +214,10 @@ export class ReefReceiptNotifier {
     return this.options.now?.() ?? Date.now();
   }
 
-  private touchPeerState(peer: string): ReefPeerNoticeState {
+  private async touchPeerState(peer: string): Promise<ReefPeerNoticeState> {
     let state = this.peerStates.get(peer);
     if (!state) {
-      const persisted = this.store.loadState(peer);
+      const persisted = await this.store.loadState(peer);
       state = persisted ? { ...persisted } : {};
     }
     this.rememberPeerState(peer, state);
@@ -233,13 +240,13 @@ export class ReefReceiptNotifier {
     }
   }
 
-  private completeNotice(
+  private async completeNotice(
     rejection: ReefDeliveryRejection,
     state: ReefRejectionNoticeState,
     retryAttempt: number,
-  ): void {
+  ): Promise<void> {
     try {
-      this.store.complete(rejection, state);
+      await this.store.complete(rejection, state);
       this.markCompleted(rejection);
     } catch (error) {
       this.reportError(error, rejection.id);
@@ -388,8 +395,10 @@ const REEF_DELIVERY_OVERDUE_NOTICE_MS = 10 * 60 * 1_000;
 interface ReefOverdueDeliveryStore {
   overdueOutboundDeliveries(
     olderThanMs: number,
-  ): Array<{ peer: string; id: string; sentAt: number }>;
-  markOutboundDeliveryOverdueNotified(peer: string, id: string): boolean;
+  ):
+    | Array<{ peer: string; id: string; sentAt: number }>
+    | Promise<Array<{ peer: string; id: string; sentAt: number }>>;
+  markOutboundDeliveryOverdueNotified(peer: string, id: string): boolean | Promise<boolean>;
 }
 
 /**
@@ -403,7 +412,9 @@ export async function notifyOverdueReefDeliveries(params: {
   trust: ReefOverdueDeliveryStore;
   ownerNotice: (notice: ReefOwnerNotice) => Promise<void>;
 }): Promise<void> {
-  for (const overdue of params.trust.overdueOutboundDeliveries(REEF_DELIVERY_OVERDUE_NOTICE_MS)) {
+  for (const overdue of await params.trust.overdueOutboundDeliveries(
+    REEF_DELIVERY_OVERDUE_NOTICE_MS,
+  )) {
     const elapsedMs = Date.now() - overdue.sentAt;
     const minutes = Math.max(1, Math.round(elapsedMs / 60_000));
     // Dispatch before marking: a crash in between re-sends one deduped notice
@@ -423,7 +434,7 @@ export async function notifyOverdueReefDeliveries(params: {
     // "delivered after all", and a reply that races this notice corrects it
     // naturally. Accepted tradeoff: in that sliver the delay notice stands
     // uncorrected rather than risking a false delivery claim.
-    params.trust.markOutboundDeliveryOverdueNotified(overdue.peer, overdue.id);
+    await params.trust.markOutboundDeliveryOverdueNotified(overdue.peer, overdue.id);
   }
 }
 

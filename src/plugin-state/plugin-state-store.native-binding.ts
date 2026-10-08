@@ -1,18 +1,29 @@
+import type {
+  SessionEntryCurrentCheck,
+  SessionEntriesCurrentCheck,
+} from "../config/sessions/session-entry-current.types.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { PreparedKeyedStoreOptions } from "./plugin-state-store.validation.js";
 
-// Only stores minted by the keyed owner can lend their admitted storage scope.
+type PluginStateStoreBinding = {
+  options: PreparedKeyedStoreOptions;
+  assertCurrent?: () => void;
+  sessionEntryCurrent?: SessionEntryCurrentCheck | SessionEntriesCurrentCheck;
+};
+
+// Only async stores minted by the keyed owner can lend their admitted storage scope.
 const stores = resolveGlobalSingleton(
   Symbol.for("openclaw.pluginStateNativeBindingStores"),
-  () => new WeakMap<object, { options: PreparedKeyedStoreOptions; assertCurrent?: () => void }>(),
+  () => new WeakMap<object, PluginStateStoreBinding>(),
 );
 
 export function bindPluginStateNativeBindingStore<T extends object>(
   store: T,
   options: PreparedKeyedStoreOptions,
   assertCurrent?: () => void,
+  sessionEntryCurrent?: SessionEntryCurrentCheck | SessionEntriesCurrentCheck,
 ): T {
-  stores.set(store, { options, assertCurrent });
+  stores.set(store, { options, assertCurrent, sessionEntryCurrent });
   return store;
 }
 

@@ -63,6 +63,37 @@ describe("isRetryableReefRelayFailure", () => {
 });
 
 describe("ReefTransportClient network failures", () => {
+  it("rechecks peer authority after ambient effect preparation before fetch", async () => {
+    const refusal = new Error("peer trust revoked");
+    let current = true;
+    effectInput.current = {
+      active: true,
+      run: (run) => run(),
+      async initiate(effect) {
+        await Promise.resolve();
+        current = false;
+        return effect();
+      },
+    };
+    const fetcher = vi.fn<typeof fetch>();
+    const completion = createClient(fetcher).signed(
+      "POST",
+      "/v1/mail/bob",
+      undefined,
+      undefined,
+      [],
+      () => {
+        if (!current) {
+          throw refusal;
+        }
+      },
+    );
+
+    await expect(completion).rejects.toBe(refusal);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(isRetryableReefRelayFailure(refusal)).toBe(false);
+  });
+
   it.each([false, true])(
     "keeps authority refusal outside transport retries (allowed=%s)",
     async (allowed) => {

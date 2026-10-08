@@ -80,7 +80,14 @@ export async function patchSessionEntryInWorker(params: {
       if (candidate.entry !== null) {
         params.guard?.assertCurrent?.();
         source?.assertCurrent();
+        params.guard?.assertMutationAllowed?.();
       }
+    },
+    onTransactionFacts: (facts) => {
+      if (isRecord(facts) && facts.kind === "session-entry-patch-validated") {
+        params.guard?.assertMutationAllowed?.();
+      }
+      return false;
     },
     prepareWorker: params.reduction
       ? undefined

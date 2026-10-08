@@ -266,6 +266,49 @@ major. Schemas, stored bytes, retention, and update behavior are unchanged.
 
 ## Keep one store owner
 
+Plugin-state cross-row decisions use `store.createBatch` over host-owned
+asynchronous store handles. One bounded, indexed selection reads the requested
+namespace/key pairs inside the existing shared-state writer transaction. All
+comparisons finish before ordered mutations begin; conflicts and exceptions
+leave the complete change unapplied. Physical source identity is captured before
+asynchronous planning, and existing plugin, action, and session restrictions are
+rechecked at transaction and commit admission. The operation shares writer FIFO
+and accepted-work settlement, without adding a connection, schema check, or
+storage format. Namespace quotas, TTLs, durability, and update behavior remain
+unchanged. Read-only batch `observeExisting` and namespace `entries` retain that captured
+source through the existing read-only owner, preserve foreign-commit freshness,
+and never create absent state or request writer admission. Read observations carry
+the existing comparison image into a later atomic mutation; receipt settlement
+does not need a separate writable observation transaction.
+See [plugin-state comparisons](/plugins/sdk-runtime/state-and-system#synchronous-keyed-store-migration).
+
+Reef uses that owner for current-host state preparation and cross-row mutations.
+It captures the selected account and registration binding before startup awaits, and
+binds each message to the peer identity and autonomy selected before composition.
+Prepared values and comparison results do not grant later delivery authority.
+Outbound delivery rereads current peer trust inside the transport's effect
+initiation callback, after host preparation and immediately before fetch.
+Current hosts carry the inbound live check to metadata recording, its native
+transaction and commit admission, and agent dispatch. Preparation does not poll
+peer trust. Direct owner notices check at their effect boundary.
+
+Those final peer checks retain a narrow synchronous read. Released synchronous
+SDK writers and foreign database connections can change trust without a complete
+host publication stream, so an in-memory trust projection would not preserve
+freshness. Reef also retains synchronous `listCurrent` reads for the released
+`ChannelPlugin` config, account-description, and security-policy adapters;
+directory listings use the worker. At the next Plugin SDK major, retire these
+native reads only after replacing the synchronous policy adapters and supplying
+an initiation contract that observes every trust writer. Moving preparation to
+a worker alone does not satisfy either boundary.
+
+Older hosts without the additive direct-DM authority callback retain their
+historical host behavior and do not gain the current host's checks after their
+own awaits. See the
+[channel authority contract](/plugins/sdk-channel-plugins) for current-host
+checks. These changes preserve schemas, stored formats, retention, permissions,
+and update behavior.
+
 Live Gateway clients, call authentication, public-share codecs, goal receipts,
 APNs consumers, probes, and monitor reconciliation prepare device identity through
 the existing shared-state worker. Read-only discovery never creates identity state.

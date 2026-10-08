@@ -7,6 +7,7 @@ import type {
 } from "../config/sessions/session-entry-current.types.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { createPluginStateBatch } from "./plugin-state-batch.js";
 import { validatePluginStateComparison } from "./plugin-state-store.comparison.js";
 import {
   preparePluginStateJournalValue,
@@ -117,7 +118,7 @@ function createKeyedStoreForPluginId<T>(
   const prepared = prepareKeyedStoreOptions(pluginId, options);
   const assertRetainedActive = options.retention === "retained" ? assertActive : undefined;
   const store = createSyncKeyedStore<T>(prepared, assertRetainedActive);
-  return {
+  const asyncStore: Required<PluginStateKeyedStore<T>> = {
     ...createAsyncKeyedStore<T>(prepared, assertRetainedActive, assertActive),
     withCurrent: ({ assertCurrent, sessionEntryCurrent }) => {
       if (typeof assertCurrent !== "function") {
@@ -138,6 +139,7 @@ function createKeyedStoreForPluginId<T>(
     update: async (...args) => store.update(...args),
     deleteIf: async (...args) => store.deleteIf(...args),
   };
+  return bindPluginStateNativeBindingStore(asyncStore, prepared, assertActive);
 }
 
 function createAsyncKeyedStore<T>(
@@ -145,7 +147,7 @@ function createAsyncKeyedStore<T>(
   assertActive?: () => void,
   assertRangeActive = assertActive,
   sessionEntryCurrent?: SessionEntryCurrentCheck | SessionEntriesCurrentCheck,
-): PluginStateKeyedStore<T, 2> {
+): Required<PluginStateKeyedStore<T, 2>> {
   const scope = {
     pluginId: prepared.pluginId,
     namespace: prepared.namespace,
@@ -154,7 +156,8 @@ function createAsyncKeyedStore<T>(
     sessionEntryCurrent,
   };
 
-  const store: PluginStateKeyedStore<T, 2> = {
+  const store: Required<PluginStateKeyedStore<T, 2>> = {
+    createBatch: (stores, authority) => createPluginStateBatch(store, stores, authority),
     observe: async (key) => {
       const observation = await observePluginStateInWorker({
         ...scope,
@@ -341,7 +344,7 @@ function createAsyncKeyedStore<T>(
       await clearPluginStateInWorker(scope);
     },
   };
-  return bindPluginStateNativeBindingStore(store, prepared, assertActive);
+  return bindPluginStateNativeBindingStore(store, prepared, assertRangeActive, sessionEntryCurrent);
 }
 
 function createSyncKeyedStoreForPluginId<T>(

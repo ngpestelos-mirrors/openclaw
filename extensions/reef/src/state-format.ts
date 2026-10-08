@@ -1,0 +1,42 @@
+import { fromBase64url } from "../protocol/encoding.js";
+import type { ReviewRequest } from "../protocol/pipeline.js";
+import type { ReefKeys } from "./types.js";
+
+export const REEF_KEYS_NAMESPACE = "identity";
+export const REEF_KEYS_KEY = "keys";
+export const REEF_KEYS_MAX_ENTRIES = 1;
+export const REEF_KEYS_MIGRATION_NAMESPACE = "identity-migration";
+export const REEF_KEYS_MIGRATION_KEY = "keys-json";
+export const REEF_KEYS_MIGRATION_MAX_ENTRIES = 1;
+export const REEF_DURABLE_MIGRATION_NAMESPACE = "durable-migration";
+export const REEF_DURABLE_MIGRATION_KEY = "legacy-files";
+export const REEF_DURABLE_MIGRATION_MAX_ENTRIES = 1;
+export const REEF_REVIEWS_NAMESPACE = "reviews";
+export const REEF_REVIEWS_MAX_ENTRIES = 2_000;
+export type ReefReviewRecord = { review: ReviewRequest; approved?: boolean };
+
+export type ReefIdentityMigrationRecord = {
+  pending: true;
+  identityBindingRequired: boolean;
+};
+export type ReefDurableMigrationRecord = { pending: true };
+
+export function parseReefKeys(value: unknown): ReefKeys {
+  if (!value || typeof value !== "object") {
+    throw new Error("invalid Reef keys");
+  }
+  const keys = value as ReefKeys;
+  if (
+    fromBase64url(keys.signing?.publicKey ?? "").length !== 32 ||
+    fromBase64url(keys.signing?.secretKey ?? "").length !== 32 ||
+    fromBase64url(keys.encryption?.publicKey ?? "").length !== 32 ||
+    fromBase64url(keys.encryption?.secretKey ?? "").length !== 32 ||
+    fromBase64url(keys.auditKey ?? "").length !== 32 ||
+    fromBase64url(keys.replayKey ?? "").length !== 32 ||
+    !Number.isSafeInteger(keys.keyEpoch) ||
+    keys.keyEpoch < 1
+  ) {
+    throw new Error("invalid Reef keys");
+  }
+  return structuredClone(keys);
+}

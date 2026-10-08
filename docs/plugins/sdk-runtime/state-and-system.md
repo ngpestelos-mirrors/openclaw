@@ -322,6 +322,67 @@ outside that decision. Never retry transport failures, unknown outcomes, or
 arbitrary callbacks. Check both optional methods before using this capability;
 there is no safe fallback consisting of a separate lookup and unconditional write.
 
+For a decision spanning several keys or namespaces, use the optional
+`store.createBatch` method. Pass the original async store
+handles belonging to one plugin and one physical state source. Copied adapters,
+synchronous stores, and handles from another source are refused. The factory
+captures that source immediately; create the batch before awaiting planning work.
+
+```typescript
+if (!requests.createBatch) {
+  throw new Error("This operation requires plugin-state batch support.");
+}
+const batch = requests.createBatch<unknown>([requests, results], { assertCurrent });
+const keys = [
+  { store: 0, key: requestId },
+  { store: 1, key: requestId },
+];
+const [request, result] = await batch.observe(keys);
+const outcome = await batch.compareAndApply([
+  { ...keys[0], comparison: request.comparison, intent: { operation: "delete", action: "delete" } },
+  {
+    ...keys[1],
+    comparison: result.comparison,
+    intent: { operation: "update", action: "set", value: preparedResult },
+  },
+]);
+```
+
+Each operation accepts at most 10,000 unique namespace/key pairs. `store` indexes
+the factory's handles. For read-only planning, `observeExisting(keys)` returns
+observations in input order using one read-only worker selection, or `undefined`
+when the physical database is absent. A missing or expired key has an observation
+whose `value` is `undefined`. The comparison retains the stored row image, so a
+later mutation can use that same observation without another preparation read.
+`entries(store)` lists the selected namespace. Both
+retain the batch's captured physical source, observe foreign commits on a new
+unpinned use, and leave a missing database absent. They neither request writable
+admission nor authorize later mutations. `compareAndApply` still rereads the
+authoritative rows inside its write transaction.
+
+`observe` returns observations in input order from one
+worker transaction. `compareAndApply` reads and compares every requested row
+before applying any intent, then applies intents in input order in that same
+transaction. A conflict changes no rows and returns current observations for
+every supplied key, in order. A quota or validation failure rolls back the whole
+operation, including earlier deletions. Existing TTL, namespace limits, and
+comparison semantics remain in force; using a batch requires no migration.
+
+The optional batch assertion, the creating store, and every supplied handle's action, session, and
+plugin lifecycle restrictions remain active at transaction and commit admission.
+Read results and observations also require authority at return. Physical source replacement
+refuses the batch; it never redirects a pending write. As with single-key
+comparisons, only an explicit conflict permits recomputing a pure decision.
+Errors and unknown acknowledgments never authorize replay. Recheck live authority
+at the initiation of a later external effect.
+
+`createBatch` remains optional in both version 1 and version 2 store types for
+older hosts and third-party adapters. Detect
+that method before selecting a documented compatibility path; a failed batch
+operation never selects a fallback. Current host factories provide the method
+on both ordinary and action-bound stores. No new runtime helper import or minimum-host version
+change is needed to detect support.
+
 `registerIfAbsent` and the optional `deleteIfEqual(key, expected)` operation use
 the shared-state SQLite worker. `deleteIfEqual` accepts a string, finite number,
 boolean, or `null`, and compares it with the decoded live value in the same

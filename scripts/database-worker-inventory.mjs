@@ -172,6 +172,17 @@ const reviewed = new Map([
 // Match lexical operation paths, not moving line numbers or whole mixed modules.
 const reviewedOperations = new Map([
   [
+    "src/plugin-state/plugin-state-store.comparison.ts",
+    [
+      {
+        tier: "W",
+        operations: ["readBatchRows"],
+        evidence:
+          "Only observePluginStateBatch and compareAndApplyPluginStateBatch call this row reader; both execute exclusively in plugin-state.worker.ts. Host imports only comparison validation.",
+      },
+    ],
+  ],
+  [
     "src/infra/gateway-boot-lifecycle.kernel.ts",
     [
       {
