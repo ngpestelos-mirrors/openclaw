@@ -290,8 +290,12 @@ export function projectWorkerSessionPlacement(
   }
   return {
     state: record.state,
-    ...workspace,
+    ...worker,
+    environmentId: record.environmentId,
     activeOwnerEpoch: record.activeOwnerEpoch,
+    workerBundleHash: record.workerBundleHash,
+    workspaceBaseManifestRef: record.workspaceBaseManifestRef,
+    remoteWorkspaceDir: record.remoteWorkspaceDir,
     ...progress,
     ...(record.state === "active" && inference ? { inference } : {}),
     ...(record.state === "active" && diskSpace ? { diskSpace } : {}),
