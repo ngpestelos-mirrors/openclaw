@@ -1,49 +1,86 @@
-import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
-import type { PreparedModelCatalogRefreshOptions } from "./prepared-model-runtime.types.js";
+import type {
+  PreparedModelCatalogInventory,
+  PreparedModelCatalogProviderFacts,
+  PreparedModelCatalogRefreshOptions,
+} from "./prepared-model-runtime.types.js";
 
 // Failed discovery keeps saved rows; its catalog owner retries off the read path with capped backoff.
 const FAILED_DISCOVERY_RETRY_MS = 30_000;
 const FAILED_DISCOVERY_RETRY_MAX_MS = 30 * 60_000;
 
+function failedDiscoveryFacts(previous: PreparedModelCatalogProviderFacts | undefined) {
+  const discoveryFailures = (previous?.discoveryFailures ?? 0) + 1;
+  const delay = FAILED_DISCOVERY_RETRY_MS * 2 ** (discoveryFailures - 1);
+  return {
+    discoveryFailures,
+    expiresAt: Date.now() + Math.min(delay, FAILED_DISCOVERY_RETRY_MAX_MS),
+  };
+}
+
+/** A successful discovery keeps its cache deadline; a failed one gets a backed-off retry deadline. */
+export function discoveryDeadline(
+  failed: boolean | undefined,
+  expiresAt: number | undefined,
+  previous: PreparedModelCatalogProviderFacts | undefined,
+): Pick<PreparedModelCatalogProviderFacts, "expiresAt" | "discoveryFailures"> {
+  if (failed) {
+    return failedDiscoveryFacts(previous);
+  }
+  return expiresAt === undefined ? {} : { expiresAt };
+}
+
+/** Failed renewal retains rows, but replaces a successful deadline with its retry deadline. */
+export function recordFailedDiscovery(
+  inventory: PreparedModelCatalogInventory,
+  providerIds: Iterable<string> = inventory.providers.keys(),
+): PreparedModelCatalogInventory {
+  const providers = new Map(inventory.providers);
+  for (const provider of providerIds) {
+    const facts = providers.get(provider);
+    if (facts) {
+      providers.set(provider, { ...facts, ...failedDiscoveryFacts(facts) });
+    }
+  }
+  return { ...inventory, providers };
+}
+
+/**
+ * Keeps one timer at the earliest failed-provider deadline of the current catalog owner.
+ * Every settled acquisition re-arms it, so a retry never joins the acquisition that failed.
+ * `readIdleInventory` returns nothing while an acquisition is pending.
+ */
 export function createFailedDiscoveryRetry(
   isCurrent: () => boolean,
-  normalizeProvider: (provider: string) => string,
+  readIdleInventory: () => PreparedModelCatalogInventory | undefined,
   acquire: (
     options: PreparedModelCatalogRefreshOptions,
     acquireNative: boolean,
   ) => Promise<unknown>,
 ) {
-  const failures = new Map<string, number>();
-  const failed = (providers: Iterable<string>) => {
-    for (const provider of providers) {
-      const attempt = (failures.get(provider) ?? 0) + 1;
-      failures.set(provider, attempt);
-      setTimeout(
-        () => {
-          if (isCurrent() && failures.get(provider) === attempt) {
-            void acquire({ providerIds: [provider], refresh: true }, false).catch(() => undefined);
-          }
-        },
-        Math.min(FAILED_DISCOVERY_RETRY_MS * 2 ** (attempt - 1), FAILED_DISCOVERY_RETRY_MAX_MS),
-      ).unref?.();
+  let timer: NodeJS.Timeout | undefined;
+  const arm = (): void => {
+    clearTimeout(timer);
+    const failed = [...(readIdleInventory()?.providers ?? [])].filter(
+      ([, facts]) => facts.discoveryFailures && facts.expiresAt !== undefined,
+    );
+    if (!isCurrent() || !failed.length) {
+      return;
     }
-  };
-  return {
-    failed,
-    /** Records one acquisition's provider outcomes and returns the providers that failed. */
-    observe: (scope: ReadonlySet<string>, outcomes: ModelCatalogSnapshot["providerOutcomes"]) => {
-      const failedProviders = new Set(
-        outcomes?.flatMap((outcome) =>
-          outcome.status === "ready" ? [] : [normalizeProvider(outcome.provider)],
-        ),
-      );
-      for (const provider of scope) {
-        if (!failedProviders.has(provider)) {
-          failures.delete(provider);
+    const due = Math.min(...failed.map(([, facts]) => facts.expiresAt!));
+    timer = setTimeout(
+      () => {
+        const now = Date.now();
+        const providerIds = failed
+          .filter(([, facts]) => facts.expiresAt! <= now)
+          .map(([provider]) => provider);
+        if (isCurrent() && readIdleInventory()) {
+          void acquire({ providerIds, refresh: true }, false).catch(() => undefined);
         }
-      }
-      failed([...failedProviders].filter((provider) => scope.has(provider)));
-      return failedProviders;
-    },
+      },
+      Math.max(0, due - Date.now()),
+    ).unref();
   };
+  // A compatible reload retains failed facts; its new owner resumes their retry.
+  arm();
+  return arm;
 }
