@@ -82,7 +82,7 @@ export function createTelegramUpdateOffsetPersistence(
 
   return {
     getCommittedUpdateId: () => committedUpdateId,
-    persistUpdateId(updateId: number) {
+    persistUpdateId: (updateId: number) => {
       if (retrySignal.aborted) {
         return;
       }
