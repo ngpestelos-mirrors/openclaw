@@ -265,6 +265,12 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
       let recoveredAdmission = false;
       let admissionReported = false;
       let userMessagePersisted = inputTurn.suppressNextUserMessagePersistence === true;
+      // Initial placement and result facts share one read. Admission waits discard
+      // that preparation; the claim transaction still checks current ownership.
+      let preparedResultPending: boolean | undefined = Boolean(
+        prepared.pendingResult &&
+        (prepared.pendingResult.runId !== claim.runId || !current.turnClaim),
+      );
       for (;;) {
         if (routablePlacement.state === "local") {
           return await runLocalTurn();
@@ -281,6 +287,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
             );
           }
           reportProvisioning();
+          preparedResultPending = undefined;
           const ready = await waitForInitialWorkerPlacement({
             placements: options.placements,
             placement: routablePlacement,
@@ -296,6 +303,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
           (routablePlacement.state === "failed" && routablePlacement.activeOwnerEpoch !== null)
         ) {
           reportProvisioning();
+          preparedResultPending = undefined;
           routablePlacement = await options.redispatchPlacement(routablePlacement, {
             assertCurrent: assertAdmissionCurrent,
             signal: inputTurn.abortSignal,
@@ -306,7 +314,11 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
             routablePlacement,
           );
         }
-        if (await hasPendingWorkspaceResultToSettle(identity.sessionId, claim.runId)) {
+        const resultPending =
+          preparedResultPending ??
+          (await hasPendingWorkspaceResultToSettle(identity.sessionId, claim.runId));
+        preparedResultPending = undefined;
+        if (resultPending) {
           await waitForPendingWorkerResult({
             placements: options.placements,
             sessionId: identity.sessionId,
