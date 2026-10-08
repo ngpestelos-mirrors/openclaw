@@ -142,7 +142,7 @@ describe("ConfigPage synced preference provenance", () => {
     const page = new ConfigPage() as unknown as {
       context: ApplicationContext;
       settings: ReturnType<typeof loadSettings>;
-      resetSyncedAppearancePref: (key: "theme") => void;
+      resetSyncedPref: (key: "theme") => void;
     };
     page.context = {
       gateway: {
@@ -161,7 +161,7 @@ describe("ConfigPage synced preference provenance", () => {
     const beforeReset = loadSettings();
     page.settings = beforeReset;
 
-    page.resetSyncedAppearancePref("theme");
+    page.resetSyncedPref("theme");
 
     expect(page.settings.theme).toBe("dash");
     expect(changedServerUiPrefs(beforeReset, page.settings)).toEqual({
@@ -218,7 +218,7 @@ describe("ConfigPage synced preference provenance", () => {
       const page = new ConfigPage() as unknown as {
         context: ApplicationContext;
         settings: ReturnType<typeof loadSettings>;
-        resetSyncedAppearancePref: (key: "accent") => void;
+        resetSyncedPref: (key: "accent") => void;
       };
       page.context = {
         gateway: {
@@ -236,7 +236,7 @@ describe("ConfigPage synced preference provenance", () => {
       } as unknown as ApplicationContext;
       const previous = loadSettings();
       page.settings = previous;
-      page.resetSyncedAppearancePref("accent");
+      page.resetSyncedPref("accent");
       expect(page.settings.accent).toBe("#123456");
       expect(changedServerUiPrefs(previous, page.settings)).toBeNull();
 
