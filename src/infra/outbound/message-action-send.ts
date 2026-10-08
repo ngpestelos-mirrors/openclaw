@@ -37,12 +37,12 @@ import type {
   ResolvedActionContext,
 } from "./message-action-contracts.js";
 import {
-  annotateSourceDelivery,
   applyMessageCrossContextMarker,
   executeGatewayAction,
 } from "./message-action-execution.js";
 import { stageGatewayWorkspaceMedia } from "./message-action-gateway-media.js";
 import { collectAttachmentSources, normalizeSandboxMediaSource } from "./message-action-params.js";
+import { annotateSourceDelivery } from "./message-action-result-acceptance.js";
 import {
   applySendLocationToActionParams,
   applySendPayloadPartsToActionParams,
@@ -135,48 +135,31 @@ export async function buildMessagePayload(params: {
   });
   const topLevelFilename = readToolStringParam(actionParams, "filename");
   const topLevelMimeType = readToolStringParam(actionParams, "contentType");
+  const attachmentEntries = attachmentSources.map((source) => ({
+    url: source.value,
+    filename: source.filename,
+    mimeType: source.contentType,
+    type: resolveReplyMediaAttachmentType(source.attachment.type),
+  }));
   const attachmentByUrl = new Map(
-    attachmentSources.map((source) => [
-      normalizeOptionalString(source.value),
-      {
-        filename: source.filename,
-        mimeType: source.contentType,
-        type: resolveReplyMediaAttachmentType(source.attachment.type),
-      },
-    ]),
+    attachmentEntries.map(({ url, ...metadata }) => [normalizeOptionalString(url), metadata]),
   );
-  const mediaEntries: Array<{
-    url: string;
-    filename?: string;
-    mimeType?: string;
-    type?: ReplyMediaAttachment["type"];
-  }> = [];
-  const pushMedia = (
-    value?: string | null,
-    metadata?: { filename?: string; mimeType?: string; type?: ReplyMediaAttachment["type"] },
-  ) => {
-    const trimmed = normalizeOptionalString(value);
-    if (!trimmed) {
-      return;
-    }
-    mediaEntries.push({ url: trimmed, ...metadata });
-  };
   const primaryAttachment = attachmentByUrl.get(normalizeOptionalString(mediaHint));
-  pushMedia(mediaHint, {
-    ...primaryAttachment,
-    filename: topLevelFilename ?? primaryAttachment?.filename,
-    mimeType: topLevelMimeType ?? primaryAttachment?.mimeType,
+  const mediaEntries = [
+    {
+      url: mediaHint,
+      ...primaryAttachment,
+      filename: topLevelFilename ?? primaryAttachment?.filename,
+      mimeType: topLevelMimeType ?? primaryAttachment?.mimeType,
+    },
+    ...mediaUrlHints.map((url) =>
+      Object.assign({ url }, attachmentByUrl.get(normalizeOptionalString(url))),
+    ),
+    ...attachmentEntries,
+  ].flatMap((entry) => {
+    const url = normalizeOptionalString(entry.url);
+    return url ? [{ ...entry, url }] : [];
   });
-  for (const mediaUrlHint of mediaUrlHints) {
-    pushMedia(mediaUrlHint, attachmentByUrl.get(normalizeOptionalString(mediaUrlHint)));
-  }
-  for (const attachmentSource of attachmentSources) {
-    pushMedia(attachmentSource.value, {
-      filename: attachmentSource.filename,
-      mimeType: attachmentSource.contentType,
-      type: resolveReplyMediaAttachmentType(attachmentSource.attachment.type),
-    });
-  }
 
   const normalizedMedia = await Promise.all(
     mediaEntries.map(async (entry) => {

@@ -160,7 +160,7 @@ Its bounded summary lists observed refusals before derivative blocked steps;
 the full receipt list retains the complete chain.
 
 Doctor imports recognized legacy workspace setup files during preflight, before
-Workshop migration accesses workspace state. An existing canonical SQLite setup record wins,
+other migrations access workspace state. An existing canonical SQLite setup record wins,
 including milestones that are absent in SQLite. Doctor does not replay stale
 milestones over it. Before removing a validated setup file or interrupted claim,
 Doctor preserves its exact bytes beside the original as
@@ -172,11 +172,26 @@ run has no workspace setup migration to repeat. Invalid files and workspace
 identity/version conflicts remain blocked for inspection.
 
 Update rehearsals write only inside their copied state directory. Workspace
-files are not copied by the rehearsal, so absolute paths retained in proposal,
-rollback, and backup records remain read-only inventory. Doctor reports how many
-legacy workspace files it left untouched; it does not retire their files or
-proposal history. After the candidate is installed, the real Doctor runs the
-normal import, archival, and relocation against the operator's state.
+files are not copied by the rehearsal, so absolute paths retained in legacy
+records remain read-only inventory. After the candidate is installed, the real
+Doctor runs the normal import and archival against the operator's state.
+
+Skill Workshop proposals were removed. Doctor exports each pending or
+quarantined proposal draft, with its support files, to
+`<state-dir>/agents/<agentId>/agent/workshop-skills/.archive/.retired-proposals/<proposal-id>/`,
+then drops the proposal tables. Exported drafts are not live skills; to keep
+one, ask the agent to save it with `/learn` so it goes through the normal
+validated, versioned Workshop write.
+
+Doctor keeps the proposal tables and files, with a recoverable warning, when no
+configured agent owns a proposal, it cannot export a draft, or it finds a
+half-finished apply it cannot safely undo. That is a deliberate holdback, not a
+failed migration, and Doctor still exits successfully: follow the warning. For
+an unowned draft, add its agent back to the config, or save the whole proposal
+directory (draft and support files) with `/learn` and delete it; then rerun
+`openclaw doctor --fix` to finish the retirement. The pre-apply contents of a
+half-finished apply are in the `skill_workshop_proposal_rollbacks` table until
+then.
 
 Plugin migrations with declared files outside the copied state are deferred as
 one plugin operation. Doctor leaves their files and pending markers intact and
@@ -201,6 +216,18 @@ path preserves unknown deletion history; retained external stores still need Doc
 reconstruction before maintenance.
 Verified fresh SQLite setup initializes the journal normally, without a missing-history
 warning. Legacy JSON session files alone do not require journal reconstruction.
+Agent-directory discovery selects `openclaw-agent.sqlite` and the reserved
+`incognito-openclaw-agent.sqlite` name from the agent path owner; custom database
+names need a configured store, registry entry, or recorded deletion path.
+Incognito runtime state stays in memory. An existing file at its reserved path
+is a collision that recovery must inventory and protect, not replace or silently
+activate as an in-memory store. Normal incognito admission still requires moving
+or renaming that file before retrying.
+Sibling reindex locks, captures, and SQLite sidecars are not separate agent stores.
+Canonical database sidecars still preserve evidence of a missing main database.
+Previously recorded coordination-file holds remain preserved in recovery receipts
+but do not produce held-agent warnings. The reindex lock file can remain after
+its SQLite lease is released; its presence does not mean an agent was deleted.
 Session SQLite import and recovery hold existing agent databases and their sidecars
 when deletion history is unavailable, preserving legacy sources without importing
 or archiving them. Recorded deletion and reconstruction holds and retained plugin

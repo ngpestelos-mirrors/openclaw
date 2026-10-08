@@ -32,6 +32,13 @@ replacement. Choose an empty `OPENCLAW_GIT_DIR` and retry.
 
 ### Validation and activation
 
+On Windows, candidate commands verify their recorded handoff lease and their own
+PID/start identity even when the launcher process tree changes. A different
+immediate parent no longer causes a valid candidate to fail with `Candidate
+executor binding does not match its parent`. The update owner must remain live,
+and changed or revoked leases still refuse mutation. This check runs in the
+candidate, so it also accepts valid handoffs from older installed updaters.
+
 Channel health collection timeouts are warnings during post-update verification.
 The Gateway must still answer, report the expected version and build, pass HTTP
 readiness, and remain in the same running generation. An explicit negative channel
@@ -128,6 +135,14 @@ Linux service checks treat an implicit systemd unit name and its explicit
 installed name as the same selection, including names with or without the
 `.service` suffix. The updater still rechecks service ownership before stopping
 the Gateway.
+
+Linux user-service stops use the same sequence during updates and standalone
+`openclaw gateway stop`: inspect the manager route, check current custody, then
+stop the selected unit. Manager inspection has its own 60-second allowance and
+retries one transient timeout with a recorded warning. A second timeout names
+the stalled check and leaves the original Gateway running; ownership refusals
+are never retried. The installed updater owns this sequence, so a candidate
+cannot change an older updater's stop behavior during its first update.
 
 Unavailable service inspection produces a recorded `managed-service` warning,
 including the manual restart action. A stale, uninspectable service record cannot
