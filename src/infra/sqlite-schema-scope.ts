@@ -1,11 +1,13 @@
 import type { DatabaseSync } from "node:sqlite";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { publishSqliteDatabaseSchemaChange } from "./sqlite-database-admission.js";
+import type { SqliteSchemaMarkers } from "./sqlite-pinned-read-snapshot.js";
 import type { SqliteSchemaFacts } from "./sqlite-schema-admission.js";
+import type { SqliteTempTrackingSchema } from "./sqlite-temp-generation-schema.js";
 import { readDatabasePathIdentitySync } from "./sqlite-worker-identity.js";
 
 type SchemaScope = { key?: string; revision: number; users: number };
-export type SqliteSchemaScopeOwner = { scope?: SchemaScope; scopeRevision?: number };
+type SqliteSchemaScopeOwner = { scope?: SchemaScope; scopeRevision?: number };
 
 const scopes = resolveGlobalSingleton(Symbol.for("openclaw.sqliteSchemaScopes"), () => {
   const byIdentity = new Map<string, SchemaScope>();
@@ -71,3 +73,37 @@ export type SqliteReadScopeRevision = Readonly<
       | { snapshot: object; writeRevision: undefined }
     )
 >;
+
+export type SchemaMutationListener = (observed?: SqliteSchemaMarkers) => void;
+
+export type SqliteSchemaOwner = SqliteSchemaScopeOwner & {
+  writable: boolean;
+  admitted: boolean;
+  revision: number;
+  facts?: SqliteSchemaFacts;
+  readDepth: number;
+  mutationRevision: number;
+  mutationDepth: number;
+  transactionOpen: boolean;
+  transactionSnapshot?: object;
+  transactionRead: boolean;
+  transactionCatalogBound: boolean;
+  nativeDepth: number;
+  pendingSchema: boolean;
+  schemaMutationRevision: number;
+  settling: boolean;
+  capturing: boolean;
+  readRevision?: SqliteReadScopeRevision;
+  transactionalSchema: boolean;
+  transactionBaseFacts?: SqliteSchemaFacts;
+  transactionalFacts: boolean;
+  snapshot?: object;
+  qualifiedSnapshot?: object;
+  unmanagedSnapshots: Set<object>;
+  iteratorFacts: boolean;
+  authorizerActive: boolean;
+  processRevision?: number;
+  mutationListeners?: Set<SchemaMutationListener>;
+  isolatedTempTables: Set<string>;
+  installTempTrackingSchema?: (schema: SqliteTempTrackingSchema) => void;
+};

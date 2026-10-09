@@ -99,6 +99,7 @@ export function deferSqliteWorkerNativeCommitReceipt(
   owner: SqliteWorkerOperationContext,
   database: DatabaseSync,
   facts: unknown,
+  delivery: "commit" | "settlement",
 ): void {
   if (serialize(facts).byteLength > SQLITE_WORKER_MAX_MESSAGE_BYTES) {
     throw new SqliteWorkerError(
@@ -122,7 +123,9 @@ export function deferSqliteWorkerNativeCommitReceipt(
         };
         nativeCommitReceipts.set(owner, receipt);
         owner.committed = { facts: captured };
-        owner.port.postMessage({ kind: "native-commit", committed: receipt }, []);
+        if (delivery === "commit") {
+          owner.port.postMessage({ kind: "native-commit", committed: receipt }, []);
+        }
       },
     })
   ) {

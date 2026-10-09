@@ -18,7 +18,10 @@ import {
   getAdmittedSqliteSchemaFacts,
   registerSqliteSchemaMutationListener,
 } from "../infra/sqlite-schema-facts.js";
-import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
+import {
+  assertTransactionUsable,
+  type SqliteTransactionOptions,
+} from "../infra/sqlite-transaction.js";
 import { withStateDatabaseSchemaMaintenance } from "../infra/state-database-maintenance.js";
 import { createStateSchemaAdmission } from "./openclaw-state-db-admission.js";
 import { openClawStateDatabaseCache } from "./openclaw-state-db-cache.js";
@@ -41,7 +44,7 @@ import { resolveDatabasePath } from "./openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowed } from "./openclaw-state-ownership.js";
 
 type ExistingWriteOptions = OpenClawStateDatabaseOptions & { busyTimeoutMs?: number };
-type ExistingWriteContract = {
+type ExistingWriteContract = Pick<SqliteTransactionOptions, "beginLockFailureReporting"> & {
   schemaSql: string;
   schemaCompatibility?: SqliteSchemaCompatibility;
   operationLabel: string;
@@ -279,6 +282,7 @@ function createExistingOpenClawStateWriter(
           return value;
         },
         {
+          beginLockFailureReporting: contract.beginLockFailureReporting,
           busyTimeoutMs,
           databaseLabel: pathname,
           operationLabel: contract.operationLabel,

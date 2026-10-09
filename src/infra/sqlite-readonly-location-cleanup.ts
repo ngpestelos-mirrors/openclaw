@@ -101,6 +101,14 @@ function releaseSnapshotDirectoryCustody(directory: string, owner: SnapshotDirec
   }
 }
 
+function completeSnapshotDirectoryRemoval(directory: string, owner: SnapshotDirectory | undefined) {
+  if (owner) {
+    owner.removed = true;
+  }
+  releaseSnapshotDirectoryCustody(directory, owner);
+  return true;
+}
+
 export function cleanupSnapshotOperations(): Promise<void> {
   cleanupState.pendingSignalCleanup ??= (async () => {
     const directories = snapshotDirectories.entries();
@@ -330,11 +338,7 @@ export function removeTempDirectory(
     } finally {
       retirement?.release();
     }
-    if (owner) {
-      owner.removed = true;
-    }
-    releaseSnapshotDirectoryCustody(tempDir, owner);
-    return true;
+    return completeSnapshotDirectoryRemoval(tempDir, owner);
   } catch (error) {
     onFailure?.(error);
     registerSnapshotTempDirectory(tempDir);
@@ -376,11 +380,7 @@ export async function removeTempDirectoryAsync(
     } finally {
       retirement?.release();
     }
-    if (owner) {
-      owner.removed = true;
-    }
-    releaseSnapshotDirectoryCustody(tempDir, owner);
-    return true;
+    return completeSnapshotDirectoryRemoval(tempDir, owner);
   } catch (error) {
     onFailure?.(error);
     registerSnapshotTempDirectory(tempDir);
@@ -413,11 +413,7 @@ export function startRemoveTempDirectory(
       onFailure?.(outcome.error);
       retained.resolve(false);
     } else {
-      if (owner) {
-        owner.removed = true;
-      }
-      releaseSnapshotDirectoryCustody(directory, owner);
-      retained.resolve(true);
+      retained.resolve(completeSnapshotDirectoryRemoval(directory, owner));
     }
   });
   if (owner?.removed) {

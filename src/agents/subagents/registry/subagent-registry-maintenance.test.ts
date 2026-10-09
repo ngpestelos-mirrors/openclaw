@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { observeSqliteReadSql } from "../../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
 import { prepareSessionMaintenancePreservation } from "../../../config/sessions/store-maintenance-preserve.js";
+import { openNodeSqliteDatabase } from "../../../infra/node-sqlite.js";
 import type { AdmissionOperations } from "../../../infra/sqlite-database-admission.worker.test-support.js";
 import { SqliteWorkerBroker } from "../../../infra/sqlite-worker-broker.js";
 import {
@@ -72,6 +73,41 @@ afterEach(async () => {
 });
 
 describe("subagent maintenance protection", () => {
+  it("refreshes each candidate subset after a sibling writer adds protection", async () => {
+    const first = createRun({
+      runId: "first",
+      childSessionKey: "agent:main:subagent:first",
+      cleanupCompletedAt: 3,
+    });
+    const second = createRun({
+      runId: "second",
+      childSessionKey: "agent:main:subagent:second",
+      cleanupCompletedAt: 3,
+    });
+    saveSubagentRegistryToSqlite(new Map([first, second].map((entry) => [entry.runId, entry])));
+    const prepared = await prepareSessionMaintenancePreservation(storePath, { native: true });
+    const foreign = openNodeSqliteDatabase(openOpenClawStateDatabase().path);
+    try {
+      expect(prepared.refreshCandidates([first.childSessionKey]).providerKeys).toEqual([]);
+      for (const run of [first, second]) {
+        const { cleanupCompletedAt: _, ...active } = run;
+        foreign
+          .prepare("UPDATE subagent_runs SET payload_json = ? WHERE run_id = ?")
+          .run(JSON.stringify(active), run.runId);
+      }
+      expect(prepared.refreshCandidates([first.childSessionKey]).providerKeys).toContain(
+        first.childSessionKey,
+      );
+      // No intervening commit: certifying the first subset would hide this second protector.
+      expect(prepared.refreshCandidates([second.childSessionKey]).providerKeys).toContain(
+        second.childSessionKey,
+      );
+    } finally {
+      foreign.close();
+      prepared.dispose();
+    }
+  });
+
   it("collects protection keys without decoding retained task and reply text", async () => {
     const publicRun = createRun();
     const privateRun = createRun({

@@ -20,14 +20,14 @@ function resolveUnique(pathnames: readonly string[]): string[] {
 export async function closeDeletedAgentDatabases(
   agentId: string,
   databasePaths: readonly string[],
-  authority: { assertCurrent(): void; assertCurrentAsync(): Promise<void> },
+  authority: { assertCurrentFinal(): void; assertCurrentAsync(): Promise<void> },
 ): Promise<void> {
   await authority.assertCurrentAsync();
   const candidates = resolveUnique(databasePaths).map((pathname) => ({ path: pathname }));
   if (candidates.length > 0) {
     await applyAcrossProcess({ kind: "close", candidates, deleted: true, agentId });
     for (const candidate of candidates) {
-      authority.assertCurrent();
+      authority.assertCurrentFinal();
       retireSqliteDatabaseAdmissionForPath(candidate.path);
     }
   }

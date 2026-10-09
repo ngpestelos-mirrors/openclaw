@@ -9,7 +9,6 @@ import {
 } from "node:worker_threads";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { resolveIdentityPathViaExistingAncestorSync } from "./boundary-path.js";
 import {
   captureSqliteDatabaseAdmissions,
@@ -41,18 +40,6 @@ const GRANTED = 1;
 const REFUSED = 2;
 
 export { bindSqliteDatabaseAdmissionUpstream } from "./sqlite-worker-operation-settlement.js";
-
-/** Only the factory's admission before agent open may certify this refusal. */
-export const SqliteWorkerOpenRefusedError = resolveGlobalSingleton(
-  Symbol.for("openclaw.sqliteWorkerOpenRefusedError"),
-  () =>
-    class OpenRefusedError extends Error {
-      constructor(readonly originalError: unknown) {
-        super("SQLite worker admission was refused before agent open", { cause: originalError });
-        this.name = "SqliteWorkerOpenRefusedError";
-      }
-    },
-);
 
 export type SqliteWorkerAdmissionRequest = {
   stage: "open" | "prepare" | "transaction" | "commit";
@@ -668,12 +655,16 @@ function exchangeDatabaseAdmissions(
 }
 
 /** Record facts only after the real transaction commits, before native settlement is announced. */
-export function deferSqliteWorkerCommitReceipt(database: DatabaseSync, facts: unknown): void {
+export function deferSqliteWorkerCommitReceipt(
+  database: DatabaseSync,
+  facts: unknown,
+  delivery: "commit" | "settlement" = "commit",
+): void {
   const scope = currentAdmission.getStore();
   if (!scope?.active) {
     throw new SqliteWorkerError("SQLite receipt requires its retained admission", "unavailable");
   }
-  deferSqliteWorkerNativeCommitReceipt(scope.owner, database, facts);
+  deferSqliteWorkerNativeCommitReceipt(scope.owner, database, facts, delivery);
 }
 /** Called on the SQLite worker, after transaction entry and before its row mutation. */
 export function requestSqliteWorkerOperationAdmission(

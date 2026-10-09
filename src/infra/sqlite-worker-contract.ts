@@ -1,5 +1,6 @@
 import { isNativeError, isProxy } from "node:util/types";
 import type { MessagePort } from "node:worker_threads";
+import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { OpenClawStateWorkerErrorPayload } from "../state/openclaw-state-worker-error.js";
 import type { SqliteDatabaseAdmissions } from "./sqlite-database-admission.js";
 import type { SqliteWalCheckpointSnapshot } from "./sqlite-wal-checkpoint.js";
@@ -121,6 +122,18 @@ export const SQLITE_WORKER_MAX_RESULT_BYTES = 64 * 1024 * 1024;
 
 // The process-global broker can return errors to a different source/built module copy.
 const retainedWorkerErrorCode = Symbol.for("openclaw.sqliteWorkerErrorCode");
+
+/** Only the factory's admission before agent open may certify this refusal. */
+export const SqliteWorkerOpenRefusedError = resolveGlobalSingleton(
+  Symbol.for("openclaw.sqliteWorkerOpenRefusedError"),
+  () =>
+    class OpenRefusedError extends Error {
+      constructor(readonly originalError: unknown) {
+        super("SQLite worker admission was refused before agent open", { cause: originalError });
+        this.name = "SqliteWorkerOpenRefusedError";
+      }
+    },
+);
 
 export class SqliteWorkerError extends Error {
   constructor(

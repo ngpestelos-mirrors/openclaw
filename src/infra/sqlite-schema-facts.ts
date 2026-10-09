@@ -25,10 +25,7 @@ import {
   observeSqliteNativeOperations,
   type NativeSqlite,
 } from "./sqlite-native-observer.js";
-import {
-  getSqlitePinnedReadSnapshot,
-  type SqliteSchemaMarkers,
-} from "./sqlite-pinned-read-snapshot.js";
+import { getSqlitePinnedReadSnapshot } from "./sqlite-pinned-read-snapshot.js";
 import {
   captureTrackedSqliteSchemaFacts as captureFacts,
   invalidateTrackedSqliteSchemaFacts as invalidate,
@@ -40,7 +37,8 @@ import {
   bindSqliteSchemaScope as bindScope,
   releaseSqliteSchemaScope,
   publishSqliteSchemaChange as publishSchemaChange,
-  type SqliteSchemaScopeOwner,
+  type SqliteSchemaOwner as SchemaOwner,
+  type SchemaMutationListener,
   type SqliteReadOperationRevision,
   type SqliteReadScopeRevision,
 } from "./sqlite-schema-scope.js";
@@ -54,40 +52,6 @@ export type {
   SqliteReadOperationRevision,
   SqliteReadScopeRevision,
 } from "./sqlite-schema-scope.js";
-
-type SchemaMutationListener = (observed?: SqliteSchemaMarkers) => void;
-
-type SchemaOwner = SqliteSchemaScopeOwner & {
-  writable: boolean;
-  admitted: boolean;
-  revision: number;
-  facts?: SqliteSchemaFacts;
-  readDepth: number;
-  mutationRevision: number;
-  mutationDepth: number;
-  transactionOpen: boolean;
-  transactionSnapshot?: object;
-  transactionRead: boolean;
-  transactionCatalogBound: boolean;
-  nativeDepth: number;
-  pendingSchema: boolean;
-  schemaMutationRevision: number;
-  settling: boolean;
-  capturing: boolean;
-  readRevision?: SqliteReadScopeRevision;
-  transactionalSchema: boolean;
-  transactionBaseFacts?: SqliteSchemaFacts;
-  transactionalFacts: boolean;
-  snapshot?: object;
-  qualifiedSnapshot?: object;
-  unmanagedSnapshots: Set<object>;
-  iteratorFacts: boolean;
-  authorizerActive: boolean;
-  processRevision?: number;
-  mutationListeners?: Set<SchemaMutationListener>;
-  isolatedTempTables: Set<string>;
-  installTempTrackingSchema?: (schema: SqliteTempTrackingSchema) => void;
-};
 
 const owners = resolveGlobalSingleton(
   Symbol.for("openclaw.sqliteSchemaFacts"),

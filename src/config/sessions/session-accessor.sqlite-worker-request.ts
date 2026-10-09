@@ -42,7 +42,9 @@ export function withSqliteMutationWorkerLifetime<T>(
     commitGate: SharedArrayBuffer;
     signal: AbortSignal;
   }) => Promise<T>,
+  callerSignal?: AbortSignal,
 ): Promise<T> {
+  callerSignal?.throwIfAborted();
   const completion = createDeferredCore();
   const state = captureOpenClawStateDatabaseReadAdmission(
     resolveOpenClawStateSqlitePath(options.env),
@@ -51,7 +53,11 @@ export function withSqliteMutationWorkerLifetime<T>(
   const controller = new AbortController();
   const revoke = () => {
     revokeSqliteReclamationCommit(commitGate);
-    controller.abort(new Error("SQLite mutation Worker request was revoked"));
+    controller.abort(
+      callerSignal?.aborted
+        ? callerSignal.reason
+        : new Error("SQLite mutation Worker request was revoked"),
+    );
   };
   const assertCurrent = () => {
     controller.signal.throwIfAborted();
@@ -77,12 +83,17 @@ export function withSqliteMutationWorkerLifetime<T>(
     unregisterAgent();
     throw error;
   }
+  callerSignal?.addEventListener("abort", revoke, { once: true });
+  if (callerSignal?.aborted) {
+    revoke();
+  }
   return Promise.resolve()
     .then(() => {
       assertCurrent();
       return run({ assertCurrent, commitGate, signal: controller.signal });
     })
     .finally(() => {
+      callerSignal?.removeEventListener("abort", revoke);
       revoke();
       completion.resolve();
       unregisterAgent();
