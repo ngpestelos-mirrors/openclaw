@@ -4,11 +4,11 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { pluginDoctorContractRegistryLoaderState } from "../plugins/doctor-contract-registry-loader-state.js";
 import {
   EMPTY_LEGACY_SESSION_SURFACES,
   type PreparedLegacySessionSurfaces,
 } from "../plugins/legacy-session-surfaces.types.js";
+import * as pluginSetupModule from "../plugins/plugin-setup-module.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import * as stateDatabase from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -117,7 +117,6 @@ function planFixture(fixture: Awaited<ReturnType<typeof makeFixture>>) {
 }
 
 afterEach(async () => {
-  pluginDoctorContractRegistryLoaderState.moduleLoaderFactory = undefined;
   resetAutoMigrateLegacyStateDirForTest();
   closeOpenClawAgentDatabasesForTest();
   stateDatabase.closeOpenClawStateDatabaseForTest();
@@ -673,10 +672,11 @@ describe("legacy state migration caller execution", () => {
     database.exec("CREATE TABLE audit_events (broken TEXT);");
     database.close();
     const plan = await planFixture(fixture);
-    const pluginLoader = vi.fn(() => {
-      throw new Error("blocked-plan closure must not load plugins");
-    });
-    pluginDoctorContractRegistryLoaderState.moduleLoaderFactory = pluginLoader;
+    const pluginLoader = vi
+      .spyOn(pluginSetupModule, "getPluginSetupModuleLoader")
+      .mockImplementation(() => {
+        throw new Error("blocked-plan closure must not load plugins");
+      });
 
     const result = await autoMigrateLegacyState({
       cfg: config,

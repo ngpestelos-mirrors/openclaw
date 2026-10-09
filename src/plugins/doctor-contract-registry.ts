@@ -28,7 +28,6 @@ import {
   type PluginDoctorContractModule,
   type PluginDoctorStateMigrationEntry,
 } from "./doctor-contract-module.js";
-import { pluginDoctorContractRegistryLoaderState } from "./doctor-contract-registry-loader-state.js";
 import {
   collectRelevantDoctorPluginIds,
   collectRelevantDoctorPluginIdsForTouchedPaths,
@@ -41,7 +40,6 @@ import { loadBundledPluginManifestRegistry } from "./manifest-registry-build.js"
 import type { PluginManifestRegistry } from "./manifest-registry.types.js";
 import type { PluginManifestDoctorContract } from "./manifest-types.js";
 import { unwrapDefaultModuleExport } from "./module-export.js";
-import { getCachedPluginModuleLoader } from "./plugin-module-loader-cache.js";
 import { loadPluginManifestRegistryForPluginRegistry } from "./plugin-registry.js";
 import { getPluginSetupModuleLoader } from "./plugin-setup-module.js";
 import { loadBundledPluginPublicArtifactModuleFromCandidatesSync } from "./public-surface-loader.js";
@@ -105,16 +103,6 @@ type PluginDoctorRegistryParams = {
   startup?: boolean;
 };
 
-function loadPluginDoctorContractModule(modulePath: string): PluginDoctorContractModule {
-  return getCachedPluginModuleLoader({
-    modulePath,
-    importerUrl: import.meta.url,
-    ...(pluginDoctorContractRegistryLoaderState.moduleLoaderFactory
-      ? { createLoader: pluginDoctorContractRegistryLoaderState.moduleLoaderFactory }
-      : {}),
-  })(modulePath) as PluginDoctorContractModule;
-}
-
 /** Include manifest-owned legacy roots for config repair, never session ownership. */
 export function collectDoctorConfigRepairPluginIds(
   raw: unknown,
@@ -161,8 +149,19 @@ function loadPluginDoctorContractEntry(
     return null;
   }
   try {
-    const mod = loadPluginDoctorContractModule(contractArtifact.modulePath);
-    const { summary, ...contract } = coercePluginDoctorContractModule(mod, record.channels);
+    // External packages can be replaced at the same path during this process.
+    // Bind Doctor callbacks to the selected inventory, like other setup contracts.
+    const loader = getPluginSetupModuleLoader(
+      record,
+      contractArtifact.modulePath,
+      contractArtifact.boundaryRoot,
+    );
+    const { summary, ...contract } = loader.initialize(() =>
+      coercePluginDoctorContractModule(
+        loader(contractArtifact.modulePath) as PluginDoctorContractModule,
+        record.channels,
+      ),
+    );
     if (!Object.values(summary).some(Boolean) && surface !== "stateMigrations") {
       return null;
     }
