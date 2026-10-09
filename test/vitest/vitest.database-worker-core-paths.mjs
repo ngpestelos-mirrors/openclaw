@@ -630,6 +630,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/embedded-agent-runner/transcript-rewrite.test.ts",
   "src/agents/embedded-agent-runner/tool-result-truncation.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-prompt-submit.test.ts",
+  "src/agents/embedded-agent-runner/run/attempt-prompt-submit.projections.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-session-boundary.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-session-boundary.orphan.test.ts",
   "src/agents/embedded-agent-runner/run/attempt.sessions-yield.test.ts",
@@ -787,6 +788,7 @@ export const databaseWorkerCoreTestFiles = [
   "packages/memory-host-sdk/src/host/session-memory-sync.test.ts",
   "packages/memory-host-sdk/src/host/session-files-archive-identity.test.ts",
   "packages/memory-host-sdk/src/host/session-files.test.ts",
+  "packages/memory-host-sdk/src/host/session-files.windows-ownership.test.ts",
   "packages/memory-host-sdk/src/host/session-transcript-corpus.test.ts",
   "src/agents/harness/native-hook-relay-store.test.ts",
   "src/agents/harness/native-hook-relay.approval-wait.test.ts",
@@ -938,6 +940,12 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/simple-completion-runtime.selected-model.test.ts",
   "src/agents/tools/pdf-tool.resources.test.ts",
   "src/talk/agent-consult-runtime.storage.test.ts",
+  "src/talk/agent-consult-runtime.test.ts",
+  "src/talk/client-voice-confirmation-lifecycle.test.ts",
+  "src/talk/client-voice-confirmation-transcript.test.ts",
+  "src/talk/client-voice-session.digest-source.test.ts",
+  "src/talk/client-voice-session.test.ts",
+  "src/talk/client-voice-session.worker.test.ts",
   "src/tts/tts-summary.static-catalog.test.ts",
   "src/tts/tts-summary.selection.test.ts",
   "src/agents/prepared-model-catalog.resources.test.ts",
@@ -1123,6 +1131,7 @@ const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);
 
 // Preserve watch admission for consumers previously inferred into fast lanes.
 export const databaseWorkerCoreFormerFastKinds = new Map([
+  ["src/talk/agent-consult-runtime.test.ts", "unitFast"],
   ["src/agents/sandbox/runtime-status.session-override.test.ts", "unitFast"],
   ["src/system-agent/audit.test.ts", "unitFastIsolated"],
   ["src/system-agent/operations.test.ts", "unitFastIsolated"],

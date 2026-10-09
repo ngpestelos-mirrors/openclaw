@@ -63,6 +63,9 @@ function useAdmittedHistoryReader() {
         assertCurrent() {},
         captureGenerationClaim: () => claim,
         capturePreparedGenerationClaim: () => claim,
+        async adoptNativeDatabase() {
+          throw new Error("Readonly history must not adopt a writer");
+        },
         async prepare() {
           throw new Error("Readonly history must not prepare a writer");
         },

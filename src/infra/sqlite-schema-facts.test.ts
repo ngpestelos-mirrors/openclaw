@@ -280,7 +280,9 @@ describe("admitted SQLite schema facts", () => {
     const peer = openNodeSqliteDatabase(filename);
     databases.push(peer);
     runSqliteReadOperationSync(database, () => {
-      peer.exec("DROP TRIGGER session_nodes_canonical_pending_after_update");
+      peer.exec(
+        "CREATE TRIGGER unexpected_node_validation AFTER UPDATE ON session_nodes BEGIN SELECT 1; END",
+      );
       expect(() =>
         runSqliteImmediateTransactionSync(database, () =>
           assertCanonicalSessionValidationSchema(database),
