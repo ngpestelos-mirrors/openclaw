@@ -62,6 +62,8 @@ export type WorkerTaskOptions<Input> = {
   inputBytes?: number;
   /** When supplied, queueing and asynchronous preparation consume the execution deadline. */
   timeoutMs?: number;
+  /** Approval-aware host owners provide their own remaining callback budget. */
+  hostTimeout?: "owner";
   signal?: AbortSignal;
   transferList?: (input: Input) => readonly Transferable[];
   onRequest?: (value: unknown, context: WorkerTaskRequestContext) => Promise<WorkerTaskResponse>;
@@ -102,6 +104,7 @@ type TaskOwner = {
 
 type WorkerHostExchange = {
   id: number;
+  name: string;
   pressure: AbortController;
   onConsumed?: () => void;
   sent: boolean;

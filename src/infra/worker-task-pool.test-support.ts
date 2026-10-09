@@ -7,6 +7,8 @@ export type PoolFixtureInput = {
   label: string;
   readStartupOptions?: boolean;
   exchanges?: number;
+  opaqueRequest?: boolean;
+  rawRequest?: boolean;
   consumeInput?: boolean;
   notifications?: number;
   counters?: SharedArrayBuffer;
@@ -55,7 +57,13 @@ serveWorkerTasks<PoolFixtureResult>(
         const buffer =
           input.relayBuffer && input.buffer instanceof ArrayBuffer ? input.buffer : undefined;
         const response = await channel.request(
-          { label: input.label, buffer },
+          input.rawRequest
+            ? "synthetic-private-request"
+            : {
+                kind: input.opaqueRequest ? undefined : "fixture-exchange",
+                label: input.label,
+                buffer,
+              },
           buffer ? [buffer] : undefined,
         );
         if (buffer) {

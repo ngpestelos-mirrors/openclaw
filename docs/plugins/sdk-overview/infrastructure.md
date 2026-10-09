@@ -174,6 +174,14 @@ include `hostWaitMs` alongside the existing timing fields; host wait is included
 in `runMs`, not added to it. This field is diagnostic data, not a public config
 option.
 
+The caller deadline also bounds host callbacks. Pass their signal into queued
+reads, writes, and locks so canceled work is removed before admission. Only an
+approval-aware owner with its own deadline uses `hostTimeout: "owner"` to pause
+the pool clock. Responses may shorten the deadline, never renew it. A timeout
+preserves its abort reason and emits `WORKER_HOST_CALLBACK_TIMEOUT` with a
+bounded operation label, without payloads. Accepted native effects still require
+their existing owner's settlement and cleanup receipts.
+
 Pass static Node.js Worker settings in `workerOptions`. For per-worker settings,
 `prepareWorker()` runs once per Worker creation attempt and returns
 `{ options, temporaryDirectory? }`. Its `options` shallowly override
