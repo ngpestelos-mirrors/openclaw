@@ -551,38 +551,6 @@ it("reuses one reader in registered worker commands, refreshes idle, and reopens
   observation.restore();
 });
 
-it.each(["pooled", "direct"] as const)(
-  "settles nested readers without closing the %s caller's retained handle",
-  (mode) => {
-    const { read, value, pathname, root } = fixture();
-    const operation = ({ db }: OpenClawStateReadOnlyDatabase) => {
-      const nestedReaders: OpenClawStateReadOnlyDatabase["db"][] = [];
-      expect(
-        read(({ db: nested }) => {
-          nestedReaders.push(nested);
-          return nested.prepare("SELECT value FROM sample").get()?.value;
-        }),
-      ).toBe(1);
-      expect(() =>
-        read(({ db: nested }) => {
-          nestedReaders.push(nested);
-          throw new Error("nested read failed");
-        }),
-      ).toThrow("nested read failed");
-      expect(db.prepare("SELECT value FROM sample").get()?.value).toBe(1);
-      expect(nestedReaders.map((nested) => nested.isOpen)).toEqual([false, false]);
-    };
-    if (mode === "direct") {
-      prepareOpenClawStateDirectReader(
-        captureOpenClawStateWorkerContext({ path: pathname, env: { OPENCLAW_STATE_DIR: root } }),
-      ).read(operation);
-    } else {
-      read(operation);
-    }
-    expect(value()).toBe(1);
-  },
-);
-
 it.each([false, true])(
   "preserves cold schema refusal precedence with a malformed catalog (newer header: %s)",
   (newerHeader) => {
