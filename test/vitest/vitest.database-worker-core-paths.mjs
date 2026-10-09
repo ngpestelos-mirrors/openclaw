@@ -1,6 +1,10 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
   // Physical admission and descriptor custody belong to the application host, not an unhosted test Worker.
+  "src/acp/runtime/session-meta-read.cache.test.ts",
+  "src/state/user-profile-catalog-identity.read.test.ts",
+  "src/talk/client-voice-session-store.test.ts",
+  "src/trajectory/runtime-retention.sqlite.test.ts",
   "src/state/openclaw-agent-db.checkonce.test.ts",
   "src/state/openclaw-state-db-checkonce.test.ts",
   "src/state/openclaw-state-db-read-connection.cache.test.ts",

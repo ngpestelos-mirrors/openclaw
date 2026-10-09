@@ -8,11 +8,11 @@ import {
   getNodeSqliteKysely,
   prepareSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
+import { readSqliteDatabaseSiblingWriteRevision } from "../../infra/sqlite-database-admission.js";
 import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
 import {
   getAdmittedSqliteSchemaFacts,
   installSqliteTempTrackingSchema,
-  readSqliteCacheDataVersion,
 } from "../../infra/sqlite-schema-facts.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import { sessionTranscriptIndexNeedsReconcile } from "./session-transcript-index.js";
@@ -37,7 +37,7 @@ type StatusDatabase = Pick<DB, "session_windows" | "transcript_events"> & {
 } & {
   openclaw_transcript_index_status: {
     id: number;
-    data_version: number;
+    sibling_write_revision: number;
     schema_version: number;
     complete: number;
     after_session: string | null;
@@ -106,9 +106,13 @@ function installStatusTracking(db: DatabaseSync, schemaVersion: number): void {
 
 /** Consume the writer's clean receipt without taking a write lock or host write grants. */
 export function isSessionTranscriptIndexStatusClean(db: DatabaseSync): boolean {
-  const dataVersion = readSqliteCacheDataVersion(db, "fresh");
+  const siblingWriteRevision = readSqliteDatabaseSiblingWriteRevision(db);
   const schema = getAdmittedSqliteSchemaFacts(db);
-  if (!schema || installations.get(db)?.schemaVersion !== schema.schemaVersion) {
+  if (
+    siblingWriteRevision === undefined ||
+    !schema ||
+    installations.get(db)?.schemaVersion !== schema.schemaVersion
+  ) {
     return false;
   }
   const temporary = getNodeSqliteKysely<StatusDatabase>(db).withSchema("temp");
@@ -119,7 +123,7 @@ export function isSessionTranscriptIndexStatusClean(db: DatabaseSync): boolean {
         .selectFrom("openclaw_transcript_index_status")
         .select("id")
         .where("id", "=", 1)
-        .where("data_version", "=", dataVersion)
+        .where("sibling_write_revision", "=", siblingWriteRevision)
         .where("schema_version", "=", schema.schemaVersion)
         .where("complete", "=", 1)
         .where((eb) =>
@@ -129,7 +133,7 @@ export function isSessionTranscriptIndexStatusClean(db: DatabaseSync): boolean {
             ),
           ),
         ),
-    ) !== undefined
+    ) !== undefined && readSqliteDatabaseSiblingWriteRevision(db) === siblingWriteRevision
   );
 }
 
@@ -144,7 +148,7 @@ export function maintainSessionTranscriptIndexStatus(db: DatabaseSync): {
   if (!db.isTransaction) {
     throw new Error("Transcript projection status requires its writer transaction");
   }
-  const dataVersion = readSqliteCacheDataVersion(db, "fresh");
+  const siblingWriteRevision = readSqliteDatabaseSiblingWriteRevision(db);
   const schema = getAdmittedSqliteSchemaFacts(db);
   if (!schema) {
     throw new Error("Transcript projection status requires admitted schema facts");
@@ -156,15 +160,15 @@ export function maintainSessionTranscriptIndexStatus(db: DatabaseSync): {
     db,
     temporary.selectFrom("openclaw_transcript_index_status").selectAll().where("id", "=", 1),
   )!;
-  if (state.data_version === -1 || state.schema_version !== schema.schemaVersion) {
+  if (state.sibling_write_revision === -1 || state.schema_version !== schema.schemaVersion) {
     executeSqliteQuerySync(db, temporary.deleteFrom("openclaw_transcript_index_pending"));
     state.complete = 0;
     state.after_session = null;
-    state.data_version = dataVersion;
-  } else if (state.complete && state.data_version !== dataVersion) {
+    state.sibling_write_revision = siblingWriteRevision ?? -1;
+  } else if (state.complete && state.sibling_write_revision !== siblingWriteRevision) {
     state.complete = 0;
     state.after_session = null;
-    state.data_version = dataVersion;
+    state.sibling_write_revision = siblingWriteRevision ?? -1;
   }
   const candidates = new Set(
     executeSqliteQuerySync(
@@ -177,7 +181,7 @@ export function maintainSessionTranscriptIndexStatus(db: DatabaseSync): {
         .limit(state.complete ? MAX_SESSIONS : MAX_SESSIONS / 2),
     ).rows.map((row) => row.session_id),
   );
-  // Reserve traversal work despite local churn; TEMP candidates retain foreign-deleted sessions.
+  // Reserve traversal work despite local churn; TEMP candidates retain deleted sessions.
   const seek = admissionSeeks(db);
   let seeks = 0;
   let reachedTraversalEnd = false;
@@ -260,25 +264,24 @@ export function maintainSessionTranscriptIndexStatus(db: DatabaseSync): {
         .where("state", "=", 0)
         .limit(1),
     ) !== undefined;
-  // Rebuild known work after enumeration without waiting for foreign writers to become quiet.
+  // Rebuild known work after enumeration without waiting for sibling writers to become quiet.
   const traversalComplete = reachedTraversalEnd || (state.complete !== 0 && !hasUnknown);
-  // Resume fair traversal when local churn outgrows queue classification; foreign commits
+  // Resume fair traversal when local churn outgrows queue classification. Sibling commits
   // restart only after reaching the end, so neither source of writes can starve late keys.
-  // Only a complete pass at one foreign revision can certify a clean store.
   if (
     state.complete &&
-    (state.data_version !== dataVersion || (hasUnknown && !reachedTraversalEnd))
+    (state.sibling_write_revision !== siblingWriteRevision || (hasUnknown && !reachedTraversalEnd))
   ) {
     state.complete = 0;
     state.after_session = null;
-    state.data_version = dataVersion;
+    state.sibling_write_revision = siblingWriteRevision ?? -1;
   }
   executeSqliteQuerySync(
     db,
     temporary
       .updateTable("openclaw_transcript_index_status")
       .set({
-        data_version: state.data_version,
+        sibling_write_revision: state.sibling_write_revision,
         schema_version: schema.schemaVersion,
         complete: state.complete,
         after_session: state.after_session,
@@ -296,8 +299,8 @@ export function maintainSessionTranscriptIndexStatus(db: DatabaseSync): {
   ).rows.map((row) => row.session_id);
   return {
     sessionIds,
-    hasMore: !state.complete || hasUnknown,
-    traversalComplete,
+    hasMore: siblingWriteRevision === undefined || !state.complete || hasUnknown,
+    traversalComplete: siblingWriteRevision !== undefined && traversalComplete,
     traversal: {
       schemaVersion: schema.schemaVersion,
       completedTraversals: state.completed_traversals,

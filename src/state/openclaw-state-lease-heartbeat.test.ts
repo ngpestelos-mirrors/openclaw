@@ -6,7 +6,12 @@ import { Worker, type WorkerOptions } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { resolveRuntimeWorkerThreadExecArgv } from "../infra/runtime-worker-url.js";
+import {
+  readSqliteDatabaseWriteRevision,
+  trackSqliteDatabaseAdmissionWorker,
+} from "../infra/sqlite-database-admission.js";
 import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
+import { createSqliteDatabaseAdmissionRelay } from "../infra/sqlite-worker-operation-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { holdStateDatabaseWriteTransaction } from "../test-utils/state-database-contention.js";
@@ -354,8 +359,10 @@ it("keeps deferred activation pending until renewal commits after contention", a
     `,
     );
     const driverUrl = pathToFileURL(driver);
+    const databaseAdmission = createSqliteDatabaseAdmissionRelay(() => {});
     const worker = new Worker(driverUrl, {
       workerData: {
+        databaseAdmissionPort: databaseAdmission.port,
         path: database.path,
         expectedIdentity: readDatabasePathIdentitySync(database.path).key,
         identity,
@@ -366,9 +373,12 @@ it("keeps deferred activation pending until renewal commits after contention", a
         shared: shared.buffer,
         renewalProgress: new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT),
       } satisfies LeaseHeartbeatWorkerData,
+      transferList: [databaseAdmission.port],
       execArgv: resolveRuntimeWorkerThreadExecArgv(driverUrl),
       env: {},
     });
+    trackSqliteDatabaseAdmissionWorker(worker);
+    worker.once("exit", () => databaseAdmission.finish());
     const prepared = createDeferredCore();
     const processed = createDeferredCore();
     const ready = createDeferredCore();
@@ -443,6 +453,10 @@ it("admits heartbeat-owned worker writes without blocking the host and rolls bac
         heartbeat: "worker",
       },
       async (lease) => {
+        const beforeRenewal = readSqliteDatabaseWriteRevision(database.db);
+        expect(beforeRenewal).toBeTypeOf("number");
+        await lease.renew?.();
+        expect(readSqliteDatabaseWriteRevision(database.db)).not.toBe(beforeRenewal);
         const { StatementSync } = requireNodeSqlite();
         const hostCalls = [
           vi.spyOn(DatabaseSync.prototype, "prepare"),

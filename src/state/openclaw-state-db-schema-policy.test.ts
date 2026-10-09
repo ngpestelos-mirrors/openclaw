@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { runSqlitePinnedReadSnapshotSync } from "../infra/sqlite-pinned-read-snapshot.js";
+import { runSqliteSchemaReadSnapshotSync } from "../infra/sqlite-pinned-read-snapshot.js";
 import { admitSqliteSchema, runSqliteReadOperationSync } from "../infra/sqlite-schema-facts.js";
 import { SqliteSchemaMismatchError } from "../infra/sqlite-schema-issues.js";
 import {
@@ -147,7 +147,7 @@ describe("ordinary shared-state reader admission", () => {
         coldContentVersion: 1,
         warmPublishedVersion: 0,
         warmContentVersion: 0,
-        warmFreshness: 1,
+        warmFreshness: 0,
       });
     } finally {
       reads.restore();
@@ -574,7 +574,7 @@ describe("existing shared-state schema admission", () => {
             readSnapshot();
             db.exec("COMMIT");
           } else {
-            runSqlitePinnedReadSnapshotSync(db, readSnapshot);
+            runSqliteSchemaReadSnapshotSync(db, readSnapshot);
           }
           expect(read()).toBe(OPENCLAW_STATE_SCHEMA_VERSION + 1);
         } finally {

@@ -175,44 +175,40 @@ export function readVoiceSessionFacts(
   voiceSessionId: string,
 ): VoiceSessionFacts | undefined {
   const database = openOpenClawAgentDatabase({ agentId });
-  return runSqliteReadOperationSync(
-    database.db,
-    () => {
-      const revision = getSqliteReadOperationRevision(database.db);
-      let cache = factsByDatabase.get(database.db);
-      if (
-        revision &&
-        (cache?.schema !== revision.schema ||
-          cache.dataVersion !== revision.dataVersion ||
-          cache.mutationRevision !== revision.mutationRevision)
-      ) {
-        cache = { ...revision, sessions: new Map() };
-        factsByDatabase.set(database.db, cache);
+  return runSqliteReadOperationSync(database.db, () => {
+    const revision = getSqliteReadOperationRevision(database.db);
+    let cache = factsByDatabase.get(database.db);
+    if (
+      revision &&
+      (cache?.schema !== revision.schema ||
+        cache.writeRevision !== revision.writeRevision ||
+        cache.mutationRevision !== revision.mutationRevision)
+    ) {
+      cache = { ...revision, sessions: new Map() };
+      factsByDatabase.set(database.db, cache);
+    }
+    if (revision && cache?.sessions.has(voiceSessionId)) {
+      return cache.sessions.get(voiceSessionId);
+    }
+    const record = readVoiceSessionRecordInTransaction(database, voiceSessionId);
+    const facts =
+      record &&
+      Object.freeze({
+        agentId: record.agentId,
+        sessionKey: record.sessionKey,
+        origin: record.origin,
+        status: record.status,
+        transcriptCapable: record.transcriptCapable,
+        hasUserTranscript: record.hasUserTranscript,
+      });
+    if (revision && cache && getSqliteReadOperationRevision(database.db) === revision) {
+      if (cache.sessions.size >= 128) {
+        cache.sessions.clear();
       }
-      if (revision && cache?.sessions.has(voiceSessionId)) {
-        return cache.sessions.get(voiceSessionId);
-      }
-      const record = readVoiceSessionRecordInTransaction(database, voiceSessionId);
-      const facts =
-        record &&
-        Object.freeze({
-          agentId: record.agentId,
-          sessionKey: record.sessionKey,
-          origin: record.origin,
-          status: record.status,
-          transcriptCapable: record.transcriptCapable,
-          hasUserTranscript: record.hasUserTranscript,
-        });
-      if (revision && cache) {
-        if (cache.sessions.size >= 128) {
-          cache.sessions.clear();
-        }
-        cache.sessions.set(voiceSessionId, facts);
-      }
-      return facts;
-    },
-    "fresh",
-  );
+      cache.sessions.set(voiceSessionId, facts);
+    }
+    return facts;
+  });
 }
 
 export function readOwnedVoiceSessionFacts(params: ClientVoiceRunBinding): VoiceSessionFacts {

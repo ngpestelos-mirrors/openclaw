@@ -14,9 +14,10 @@ const fixture = vi.hoisted(() => ({
   receive: undefined as ((message: LeaseHeartbeatParentMessage) => void) | undefined,
 }));
 
-vi.mock("node:worker_threads", async () => {
+vi.mock("node:worker_threads", async (importOriginal) => {
   const { EventEmitter } = await import("node:events");
   return {
+    ...(await importOriginal<typeof import("node:worker_threads")>()),
     isMainThread: false,
     get workerData() {
       return fixture.data;

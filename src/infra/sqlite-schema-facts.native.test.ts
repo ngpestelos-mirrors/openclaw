@@ -13,7 +13,7 @@ import {
   hasPendingSqliteDatabaseSchemaMutation,
   publishSqliteDatabaseAdmission,
 } from "./sqlite-database-admission.js";
-import { runSqlitePinnedReadSnapshotSync } from "./sqlite-pinned-read-snapshot.js";
+import { runSqliteSchemaReadSnapshotSync } from "./sqlite-pinned-read-snapshot.js";
 import { schemaAdmission } from "./sqlite-schema-admission.js";
 import {
   admitSqliteSchema,
@@ -639,7 +639,7 @@ describe("native SQLite schema snapshots and callbacks", () => {
       expect(reader.prepare("PRAGMA user_version").get()?.user_version).toBe(1);
     });
     reader.exec("ROLLBACK");
-    runSqlitePinnedReadSnapshotSync(reader, () => {
+    runSqliteSchemaReadSnapshotSync(reader, () => {
       expect(getAdmittedSqliteSchemaFacts(reader)?.userVersion).toBe(2);
       expect(reader.prepare("PRAGMA user_version").get()?.user_version).toBe(2);
     }); // The pin marker exists before SQLite steps its first row.
@@ -649,7 +649,7 @@ describe("native SQLite schema snapshots and callbacks", () => {
     const race = vi.spyOn(StatementSync.prototype, "iterate").mockImplementation(
       new Proxy(iterate, {
         apply(target, receiver: StatementSync, args) {
-          if (!changed && receiver.sourceSQL === "PRAGMA data_version") {
+          if (!changed && receiver.sourceSQL === "PRAGMA schema_version") {
             changed = true;
             writer.exec("CREATE TABLE raced_sibling (id); PRAGMA user_version=3");
           }
@@ -658,7 +658,7 @@ describe("native SQLite schema snapshots and callbacks", () => {
       }),
     );
     try {
-      runSqlitePinnedReadSnapshotSync(reader, () => {
+      runSqliteSchemaReadSnapshotSync(reader, () => {
         expect(changed).toBe(true);
         expect(getAdmittedSqliteSchemaFacts(reader)?.userVersion).toBe(3);
         expect(reader.prepare("PRAGMA user_version").get()?.user_version).toBe(3);

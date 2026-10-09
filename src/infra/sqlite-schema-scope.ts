@@ -59,12 +59,8 @@ export function publishSqliteSchemaChange(
 
 export type SqliteReadOperationRevision = {
   schema: SqliteSchemaFacts;
-  dataVersion: number;
+  writeRevision: number;
   mutationRevision: number;
 };
 
-export type SqliteReadScopeRevision = Readonly<
-  SqliteReadOperationRevision & {
-    snapshot: object | undefined;
-  }
->;
+export type SqliteReadScopeRevision = Readonly<SqliteReadOperationRevision>;

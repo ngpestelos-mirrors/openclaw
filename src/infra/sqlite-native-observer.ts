@@ -93,6 +93,7 @@ const bindingMutation: SqliteNativeMutation = {
   schemaChange: false,
   mainSchemaChange: false,
   dataChange: false,
+  temporaryWriteTables: undefined,
   control: undefined,
 };
 

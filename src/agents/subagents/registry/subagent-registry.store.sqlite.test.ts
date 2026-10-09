@@ -39,6 +39,7 @@ import {
 } from "./subagent-registry.store.released-reader.test-support.js";
 import { subagentRunRowVersion } from "./subagent-registry.store.row.js";
 import {
+  loadSubagentMaintenanceRunsInDatabase,
   readSubagentRun,
   loadSubagentRunsForChildSessionFromSqlite,
   loadSubagentSessionListRunsFromSqlite,
@@ -108,6 +109,20 @@ describe("subagent registry sqlite store", () => {
       await fs.rm(tempStateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       tempStateDir = null;
     }
+  });
+
+  it("hashes current maintenance rows in one statement without a transaction envelope", () => {
+    const run = createRun();
+    saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
+    const database = openOpenClawStateDatabase();
+    using transactionSql = vi.spyOn(database.db, "exec");
+    const first = loadSubagentMaintenanceRunsInDatabase(database);
+    expect([...first.runs.keys()]).toEqual([run.runId]);
+    expect(transactionSql).not.toHaveBeenCalled();
+    saveSubagentRegistryToSqlite(new Map());
+    const next = loadSubagentMaintenanceRunsInDatabase(database);
+    expect(next.runs.size).toBe(0);
+    expect(next.digest).not.toBe(first.digest);
   });
 
   it("reads unbound old-schema rows and rolls back first-use parent-store columns with registration", async () => {

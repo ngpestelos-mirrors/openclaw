@@ -1,4 +1,4 @@
-import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import { runSqliteReadSnapshotSync } from "../../infra/sqlite-transaction.js";
 import { toAgentStoreSessionKey } from "../../routing/session-key.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
@@ -11,7 +11,7 @@ export function readSessionPendingInputAuthorityFacts(
   sessionKey: string,
   agentId = database.agentId,
 ): SessionPendingInputAuthorityFacts {
-  return runSqliteDeferredTransactionSync(database.db, () => {
+  return runSqliteReadSnapshotSync(database.db, () => {
     const identity = readOpenClawAgentDatabaseIdentity(database);
     return {
       agentId,

@@ -7,6 +7,7 @@ import {
   resolveRuntimeWorkerThreadExecArgv,
   resolveRuntimeWorkerUrl,
 } from "../../infra/runtime-worker-url.js";
+import { trackSqliteDatabaseAdmissionWorker } from "../../infra/sqlite-database-admission.js";
 import { createCpuTrackedWorker } from "../../infra/worker-cpu.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
@@ -40,11 +41,13 @@ import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-ru
 
 export function createSqliteTranscriptArchiveWorker(workerData: object): Worker {
   const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sessionTranscriptArchive);
-  return createCpuTrackedWorker(workerUrl, {
+  const worker = createCpuTrackedWorker(workerUrl, {
     resourceLimits: { maxOldGenerationSizeMb: 512 },
     workerData,
     execArgv: resolveRuntimeWorkerThreadExecArgv(workerUrl),
   });
+  trackSqliteDatabaseAdmissionWorker(worker);
+  return worker;
 }
 
 type TranscriptArchiveWorkerOperation<Result> = {

@@ -75,7 +75,8 @@ vi.mock("node:worker_threads", async (importOriginal) => {
         if (controls.constructorError) {
           throw controls.constructorError;
         }
-        this.data = structuredClone(workerOptions.workerData);
+        const { databaseAdmissionPort, ...data } = workerOptions.workerData;
+        this.data = { ...structuredClone(data), databaseAdmissionPort };
         // Keep the same behavioral fixture runnable against the pre-repair payload.
         this.data.renewalProgress ??= new SharedArrayBuffer(BigInt64Array.BYTES_PER_ELEMENT);
         this.shared = new BigInt64Array(this.data.shared);

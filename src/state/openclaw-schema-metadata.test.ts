@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { probeSqliteIteratorBehavior } from "../infra/sqlite-native-observer.js";
-import { runSqlitePinnedReadSnapshotSync } from "../infra/sqlite-pinned-read-snapshot.js";
+import { runSqliteSchemaReadSnapshotSync } from "../infra/sqlite-pinned-read-snapshot.js";
 import {
   admitSqliteSchema,
   runSqliteReadOperationSync,
@@ -172,7 +172,7 @@ it.each(["transaction", "pinned snapshot"] as const)(
           reader.exec("ROLLBACK");
         }
       } else {
-        runSqlitePinnedReadSnapshotSync(reader, readSnapshot);
+        runSqliteSchemaReadSnapshotSync(reader, readSnapshot);
       }
       expect(read()?.agentId).toBe("foreign");
       expect(read()?.agentId).toBe("foreign");

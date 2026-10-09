@@ -1,21 +1,17 @@
 import type { DatabaseSync } from "node:sqlite";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
+import { readSqliteDatabaseWriteRevision } from "../infra/sqlite-database-admission.js";
 import {
   SqliteCoordinatorError,
   throwSqliteLifecycleErrors,
 } from "../infra/sqlite-lifecycle-errors.js";
 import {
-  getSqlitePinnedReadSnapshot,
-  runSqlitePinnedReadSnapshotSync,
-} from "../infra/sqlite-pinned-read-snapshot.js";
-import {
   admitSqliteSchema,
   getAdmittedSqliteSchemaFacts,
-  readSqliteDataVersion,
   runSqliteReadOperationSync,
   type SqliteSchemaFacts,
 } from "../infra/sqlite-schema-facts.js";
-import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
+import { assertTransactionUsable, runSqliteReadSnapshotSync } from "../infra/sqlite-transaction.js";
 import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -54,12 +50,12 @@ import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context
 
 const log = createSubsystemLogger("state/db");
 
-/** One private live connection witnesses foreign commits without inheriting a caller's cursor. */
+/** One private live connection reads current state without inheriting a caller's cursor. */
 export async function prepareOpenClawStateCurrentReader(
   context: OpenClawStateWorkerContext,
 ): Promise<
   | {
-      dataVersion(): number;
+      writeRevision(): number | undefined;
       read<T>(operation: (database: OpenClawStateReadOnlyDatabase) => T): T;
       dispose(): void;
     }
@@ -121,10 +117,7 @@ export async function prepareOpenClawStateCurrentReader(
     }
     assertSource();
     assertExistingDatabaseIdentity(pathname, key, birthtime);
-    if (
-      connection.database.db.isTransaction ||
-      getSqlitePinnedReadSnapshot(connection.database.db)
-    ) {
+    if (connection.database.db.isTransaction) {
       throw new Error("Current shared-state reader cannot retain a transaction or snapshot");
     }
   };
@@ -133,9 +126,9 @@ export async function prepareOpenClawStateCurrentReader(
     context.maintenanceScope?.own(resource, "shared-resources", () => resource.close());
     assertCurrent();
     return {
-      dataVersion() {
+      writeRevision() {
         assertCurrent();
-        const version = readSqliteDataVersion(connection.database.db);
+        const version = readSqliteDatabaseWriteRevision(connection.database.db);
         assertCurrent();
         return version;
       },
@@ -325,7 +318,7 @@ function runOpenClawStateCurrentReadConnection<T>(
   let result!: T;
   try {
     const previous = currentReaderSchemaAdmissions.get(db);
-    // Row freshness remains connection-local; physical schema admission is shared.
+    // Physical schema admission is shared across current reader handles.
     const facts =
       previous && !previous.legacyAdmission
         ? runSqliteReadOperationSync(db, () => getAdmittedSqliteSchemaFacts(db))
@@ -363,7 +356,7 @@ function runOpenClawStateCurrentReadConnection<T>(
       }
     };
     runSqliteReadOperationSync(db, admit);
-    result = runSqlitePinnedReadSnapshotSync(db, () => {
+    result = runSqliteReadSnapshotSync(db, () => {
       const value = operation(connection.database);
       if (isPromiseLike(value)) {
         throw new SqliteCoordinatorError("SQLite current-authority read must remain synchronous");

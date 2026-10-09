@@ -695,6 +695,7 @@ describe("SQLite session participants", () => {
           const params = { identity: profile(current.id), promptedAt: 40 };
           for (const writer of ["native", "worker"] as const) {
             const profileReads = observeSqliteReadSql(StatementSync.prototype);
+            const transactionSql = vi.spyOn(database.db, "exec");
             try {
               if (writer === "native") {
                 expect(recordSessionParticipant(scope, params)).toBe("updated");
@@ -713,7 +714,13 @@ describe("SQLite session participants", () => {
               } else {
                 expect(aliases.length).toBeGreaterThan(0);
               }
+              if (writer === "worker") {
+                expect(transactionSql.mock.calls.some(([sql]) => /SAVEPOINT/i.test(sql))).toBe(
+                  false,
+                );
+              }
             } finally {
+              transactionSql.mockRestore();
               profileReads.restore();
             }
           }
