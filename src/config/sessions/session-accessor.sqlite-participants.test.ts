@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { StatementSync, type DatabaseSync } from "node:sqlite";
+import { MessageChannel } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import {
@@ -7,6 +8,7 @@ import {
   trackSqliteStatementExecutions,
 } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
+import { withSqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
 import { onSessionLifecycleEvent } from "../../sessions/session-lifecycle-events.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
@@ -722,6 +724,7 @@ describe("SQLite session participants", () => {
           databasePath: database.path,
           admit() {},
         });
+        const { port1, port2 } = new MessageChannel();
         try {
           const params = { identity: profile(current.id), promptedAt: 40 };
           for (const writer of ["native", "worker"] as const) {
@@ -732,7 +735,9 @@ describe("SQLite session participants", () => {
                 expect(recordSessionParticipant(scope, params)).toBe("updated");
               } else {
                 expect(
-                  backend.execute({ type: "participant", input: { scope, params } }),
+                  withSqliteWorkerOperationAdmission({ port: port1 }, () =>
+                    backend.execute({ type: "participant", input: { scope, params } }),
+                  ),
                 ).toMatchObject({
                   value: "updated",
                 });
@@ -757,6 +762,8 @@ describe("SQLite session participants", () => {
           }
           backend.assertSettled?.();
         } finally {
+          port1.close();
+          port2.close();
           await backend.close();
         }
         const records = listSessionParticipantsReadOnly(scope).get(scope.sessionKey) ?? [];
