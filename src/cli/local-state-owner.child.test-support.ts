@@ -125,6 +125,12 @@ try {
             if (process.argv[2] === "sandbox") {
               const { registerSandboxCli } = await import("./sandbox-cli.js");
               registerSandboxCli(program);
+            } else if (process.argv[2] === "config") {
+              const { registerConfigCli } = await import("./config-cli.js");
+              registerConfigCli(program);
+            } else if (process.argv[2] === "migrate") {
+              const { registerMigrateCommand } = await import("./program/register.migrate.js");
+              registerMigrateCommand(program);
             } else if (process.argv[2] === "exec-policy") {
               const { registerExecPolicyCli } = await import("./exec-policy-cli.js");
               registerExecPolicyCli(program);

@@ -7,10 +7,11 @@ import {
   readStringField,
 } from "@openclaw/normalization-core/record-coerce";
 import { normalizeNullableString } from "@openclaw/normalization-core/string-coerce";
-import { createSqliteAuditRecordWriter } from "../infra/sqlite-audit-record-store.async.js";
 import { createSqliteAuditRecordStore } from "../infra/sqlite-audit-record-store.js";
 import { redactSecrets } from "../logging/redact.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { resolveConfigAuditStoreEnv } from "./config-journal-snapshot.js";
+import { mutateConfigState } from "./config-state-mutation.js";
 import type { ConfigHealthFingerprint } from "./io.health-state.types.js";
 import type { ConfigWriteAuditOrigin } from "./io.types.js";
 import { resolveStateDir } from "./paths.js";
@@ -537,29 +538,26 @@ export function captureConfigAuditAppender(
   params: Pick<ConfigAuditAppendParams, "env" | "homedir">,
   assertCurrent?: () => void,
 ): (record: ConfigAuditRecord) => Promise<void> {
-  let captured:
-    | { writer: ReturnType<typeof createSqliteAuditRecordWriter<ConfigAuditRecord>> }
-    | { error: unknown };
+  const env = resolveConfigAuditStoreEnv(params);
+  let captured: ReturnType<typeof captureOpenClawStateWorkerContext> | undefined;
+  let captureError: unknown;
   try {
-    captured = {
-      writer: createSqliteAuditRecordWriter<ConfigAuditRecord>({
-        scope: CONFIG_AUDIT_SCOPE,
-        maxEntries: CONFIG_AUDIT_MAX_ENTRIES,
-        env: resolveConfigAuditStoreEnv(params),
-        assertCurrent,
-      }),
-    };
+    captured = captureOpenClawStateWorkerContext({ env });
   } catch (error) {
-    captured = { error };
+    captureError = error;
   }
   return async (input) => {
     assertCurrent?.();
     try {
-      if ("error" in captured) {
-        throw captured.error;
+      if (!captured) {
+        throw captureError;
       }
+      const context = captured;
       const record = sanitizeConfigAuditRecord(input);
-      await captured.writer.register(configAuditEntryKey(record), record, Date.parse(record.ts));
+      await mutateConfigState({ kind: "audit", record }, env, () => {
+        context.admission.assertCurrent();
+        assertCurrent?.();
+      });
     } catch {
       assertCurrent?.();
       // best-effort
