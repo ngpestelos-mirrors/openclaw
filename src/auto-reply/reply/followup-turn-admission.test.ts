@@ -136,6 +136,24 @@ beforeEach(() => {
   state.refreshGoal.mockImplementation((context) => context);
 });
 
+function createActiveGoalEntry(): SessionEntry {
+  return {
+    sessionId: "queued-session",
+    updatedAt: 1,
+    goal: {
+      schemaVersion: 1,
+      id: "goal",
+      objective: "Finish",
+      status: "active",
+      createdAt: 1,
+      updatedAt: 1,
+      tokenStart: 0,
+      tokensUsed: 0,
+      continuationTurns: 0,
+    },
+  };
+}
+
 describe("admitFollowupTurn", () => {
   it.each([
     "paused",
@@ -148,21 +166,7 @@ describe("admitFollowupTurn", () => {
     "new input",
   ] as const)("drops an automatic Goal nudge when admission observes %s", async (change) => {
     const operation = createOperation();
-    const original: SessionEntry = {
-      sessionId: "queued-session",
-      updatedAt: 1,
-      goal: {
-        schemaVersion: 1,
-        id: "goal",
-        objective: "Finish",
-        status: "active",
-        createdAt: 1,
-        updatedAt: 1,
-        tokenStart: 0,
-        tokensUsed: 0,
-        continuationTurns: 0,
-      },
-    };
+    const original = createActiveGoalEntry();
     const onQueuedFollowupAdmitted = vi.fn(async () => {});
     const onQueuedFollowupSettled = vi.fn(async () => {});
     const current = structuredClone(original);
@@ -196,21 +200,7 @@ describe("admitFollowupTurn", () => {
 
   it("rechecks the Goal after awaited compaction preparation", async () => {
     const operation = createOperation();
-    const original: SessionEntry = {
-      sessionId: "queued-session",
-      updatedAt: 1,
-      goal: {
-        schemaVersion: 1,
-        id: "goal",
-        objective: "Finish",
-        status: "active",
-        createdAt: 1,
-        updatedAt: 1,
-        tokenStart: 0,
-        tokensUsed: 0,
-        continuationTurns: 0,
-      },
-    };
+    const original = createActiveGoalEntry();
     const onQueuedFollowupAdmitted = vi.fn(async () => {});
     const onQueuedFollowupSettled = vi.fn(async () => {});
     let current = original;
@@ -238,6 +228,26 @@ describe("admitFollowupTurn", () => {
     expect(onQueuedFollowupAdmitted).toHaveBeenCalledOnce();
     expect(onQueuedFollowupSettled).toHaveBeenCalledOnce();
     expect(operation.complete).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { sessionKey: " agent:main:session ", expected: "agent:main:session" },
+    { sessionKey: undefined, expected: "legacy-target" },
+  ])("preserves the admitted transcript target $expected", async ({ sessionKey, expected }) => {
+    const queued = createRun();
+    queued.run.sessionKey = sessionKey;
+    queued.run.sessionFile = "legacy-target";
+    state.admitReply.mockResolvedValue({
+      status: "owned",
+      operation: createOperation("admitted-session"),
+    });
+
+    const result = await admitFollowupTurn({ queued, defaults: createDefaults({ sessionKey }) });
+
+    expect(result.kind).toBe("admitted");
+    if (result.kind === "admitted") {
+      expect(result.turn.queued.run.sessionFile).toBe(expected);
+    }
   });
 
   it("reports each active-run deferral without adopting the queued source", async () => {
