@@ -94,11 +94,13 @@ describe("sendMessageSlack Enterprise listener scope", () => {
     const injectedClient = createEnterpriseClient();
     getSlackWriteClientMock.mockReturnValue(scopedClient);
     const installationState = registerSlackInstallationState("default", "enterprise");
+    const onDeliveryResult = vi.fn();
     try {
-      await sendMessageSlack("team:T123:channel:C08GQH53EJM", "hello", {
+      const result = await sendMessageSlack("team:T123:channel:C08GQH53EJM", "hello", {
         cfg: ENTERPRISE_CFG,
         token: "xoxb-enterprise",
         client: injectedClient,
+        onDeliveryResult,
       });
 
       expect(getSlackWriteClientMock).toHaveBeenCalledWith("xoxb-enterprise", {
@@ -108,6 +110,26 @@ describe("sendMessageSlack Enterprise listener scope", () => {
         expect.objectContaining({ channel: "C08GQH53EJM", text: "hello" }),
       );
       expect(injectedClient.chat.postMessage).not.toHaveBeenCalled();
+      // Scope comes from the validated writer, while C123 is the actual response,
+      // deliberately different from the requested channel in this fixture.
+      expect(result).toMatchObject({
+        channelId: "C123",
+        teamId: "T123",
+        receipt: { parts: [{ raw: { channelId: "team:T123:channel:C123" } }] },
+      });
+      expect(onDeliveryResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channelId: "C123",
+          teamId: "T123",
+          receipt: expect.objectContaining({
+            parts: [
+              expect.objectContaining({
+                raw: expect.objectContaining({ channelId: "team:T123:channel:C123" }),
+              }),
+            ],
+          }),
+        }),
+      );
     } finally {
       installationState.release();
     }

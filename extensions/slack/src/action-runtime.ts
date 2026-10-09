@@ -16,13 +16,12 @@ import {
   createLazyRuntimeMethodBinder,
   createLazyRuntimeModule,
 } from "openclaw/plugin-sdk/lazy-runtime";
-import { isSingleUseReplyToMode } from "openclaw/plugin-sdk/reply-reference";
 import { resolveOpenProviderRuntimeGroupPolicy } from "openclaw/plugin-sdk/runtime-group-policy";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { ResolvedSlackAccount } from "./accounts.js";
 import type { SlackActionContext } from "./action-context.js";
 import {
-  resolveSlackAutoThreadId,
+  resolveThreadTsFromContext,
   SLACK_PRIVATE_ACTION_DELIVERY_RESULT,
 } from "./action-threading.js";
 import { parseSlackBlocksInput } from "./blocks-input.js";
@@ -34,7 +33,7 @@ import { SLACK_TEXT_LIMIT } from "./limits.js";
 import { resolveSlackChannelConfig } from "./monitor/channel-config.js";
 import { isSlackChannelAllowedByPolicy } from "./monitor/policy.js";
 import { hasSlackNativeDataBlock } from "./native-data-blocks.js";
-import { mergeSlackSendResults } from "./send-results.js";
+import { mergeSlackSendResults, qualifySlackSendResult } from "./send-results.js";
 import type { SlackSendResult } from "./send.js";
 import { formatSlackTarget } from "./target-parsing.js";
 import { parseSlackTarget, resolveSlackChannelId, slackContextTargetsMatch } from "./targets.js";
@@ -87,26 +86,6 @@ export const slackActionRuntime = {
 };
 
 export type { SlackActionContext } from "./action-context.js";
-
-function resolveThreadTsFromContext(
-  explicitThreadTs: string | undefined,
-  targetChannel: string,
-  context: SlackActionContext | undefined,
-  opts?: { suppressImplicitThread?: boolean },
-): string | undefined {
-  if (explicitThreadTs) {
-    return explicitThreadTs;
-  }
-  if (opts?.suppressImplicitThread) {
-    return undefined;
-  }
-  const threadTs = resolveSlackAutoThreadId({ to: targetChannel, toolContext: context });
-  if (isSingleUseReplyToMode(context?.replyToMode ?? "off") && !context?.hasRepliedRef) {
-    return undefined;
-  }
-  // Planning stays pure so failed sends cannot consume a thread before delivery.
-  return threadTs;
-}
 
 function hasPotentialSlackNamedPolicy(params: {
   channels: ResolvedSlackAccount["config"]["channels"];
@@ -616,16 +595,18 @@ export async function handleSlackAction(
         context?.hasRepliedRef && slackContextTargetsMatch(target, context)
           ? context.hasRepliedRef
           : undefined;
-      const result = await slackActionRuntime.sendSlackMessage(target, content, {
-        ...options,
-        ...(replyReference
-          ? {
-              [SLACK_PRIVATE_ACTION_DELIVERY_RESULT]: () => {
-                replyReference.value = true;
-              },
-            }
-          : {}),
-      });
+      const result = qualifySlackSendResult(
+        await slackActionRuntime.sendSlackMessage(target, content, {
+          ...options,
+          ...(replyReference
+            ? {
+                [SLACK_PRIVATE_ACTION_DELIVERY_RESULT]: () => {
+                  replyReference.value = true;
+                },
+              }
+            : {}),
+        }),
+      );
       // Injected adapters may expose only their complete delivery result.
       if (replyReference) {
         replyReference.value = true;

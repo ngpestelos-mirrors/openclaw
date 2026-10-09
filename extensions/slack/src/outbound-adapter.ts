@@ -4,10 +4,7 @@ import {
   resolveOutboundSendDep,
   type OutboundIdentity,
 } from "openclaw/plugin-sdk/channel-outbound";
-import {
-  attachChannelToResult,
-  type ChannelOutboundAdapter,
-} from "openclaw/plugin-sdk/channel-send-result";
+import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk/channel-send-result";
 import {
   normalizeMessagePresentation,
   resolveLegacyInteractiveTextFallback,
@@ -43,22 +40,12 @@ import {
   type SlackReplyBlockResolution,
   type SlackReplyBlockSegment,
 } from "./reply-blocks.js";
-import { mergeSlackSendResults } from "./send-results.js";
+import { mergeSlackSendResults, toSlackOutboundResult } from "./send-results.js";
 import type { SlackSendIdentity, SlackSendResult } from "./send.js";
 import { parseSlackTarget } from "./target-parsing.js";
 import { resolveSlackThreadTsValue } from "./thread-ts.js";
 
 type SlackSendFn = typeof import("./send.js").sendMessageSlack;
-
-function toSlackOutboundResult<T extends { channelId?: string }>(result: T) {
-  const { channelId, ...delivery } = result;
-  return attachChannelToResult(
-    "slack",
-    channelId === undefined
-      ? delivery
-      : { ...delivery, target: { kind: "channel" as const, id: channelId } },
-  );
-}
 
 type SlackOutboundChannelData = Record<string, unknown> & {
   authoredPresentationText?: string;

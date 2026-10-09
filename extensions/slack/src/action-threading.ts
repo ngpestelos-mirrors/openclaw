@@ -4,6 +4,26 @@ import { slackContextTargetsMatch } from "./targets.js";
 
 export const SLACK_PRIVATE_ACTION_DELIVERY_RESULT = Symbol("slack.action.delivery-result");
 
+export function resolveThreadTsFromContext(
+  explicitThreadTs: string | undefined,
+  targetChannel: string,
+  context: SlackActionContext | undefined,
+  opts?: { suppressImplicitThread?: boolean },
+): string | undefined {
+  if (explicitThreadTs) {
+    return explicitThreadTs;
+  }
+  if (opts?.suppressImplicitThread) {
+    return undefined;
+  }
+  const threadTs = resolveSlackAutoThreadId({ to: targetChannel, toolContext: context });
+  if (isSingleUseReplyToMode(context?.replyToMode ?? "off") && !context?.hasRepliedRef) {
+    return undefined;
+  }
+  // Planning stays pure so failed sends cannot consume a thread before delivery.
+  return threadTs;
+}
+
 export function resolveSlackAutoThreadId(params: {
   to: string;
   toolContext?: SlackActionContext;
