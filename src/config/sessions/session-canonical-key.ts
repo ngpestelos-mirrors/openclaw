@@ -12,6 +12,7 @@ import {
   getSqliteDatabaseAdmission,
   publishSqliteDatabaseAdmission,
   revokeSqliteDatabaseAdmissions,
+  type SqliteDatabaseAdmissionKey,
 } from "../../infra/sqlite-database-admission.js";
 import {
   hasSqlitePostCommitScope,
@@ -86,7 +87,11 @@ const mainKeyAdmission = {
     return typeof value === "string" || value === null ? value : undefined;
   },
 };
-const mainKeyPublication = { ...mainKeyAdmission, name: "canonical-session-main-key-write" };
+const mainKeyPublication: SqliteDatabaseAdmissionKey<string | null> = {
+  ...mainKeyAdmission,
+  name: "canonical-session-main-key-write",
+  writer: "host",
+};
 
 type ReaderAdmission = {
   mainKey: string;

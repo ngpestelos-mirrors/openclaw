@@ -20,6 +20,8 @@ export type Admission = {
   descriptorOwner: number;
   generationId: string;
   generation: SharedArrayBuffer;
+  /** Last complete host snapshot; relays preserve this value without advancing it. */
+  hostRevision?: number;
   writers: Map<number, Writer>;
   facts: Map<string, AdmissionFact>;
 };
@@ -53,7 +55,9 @@ function readInheritedAdmission(value: unknown): Admission | undefined {
     typeof value.descriptorOwner !== "number" ||
     typeof value.generationId !== "string" ||
     !(value.generation instanceof SharedArrayBuffer) ||
-    value.generation.byteLength !== 5 * Int32Array.BYTES_PER_ELEMENT ||
+    value.generation.byteLength !== 6 * Int32Array.BYTES_PER_ELEMENT ||
+    (value.hostRevision !== undefined &&
+      (typeof value.hostRevision !== "number" || !Number.isInteger(value.hostRevision))) ||
     !(value.facts instanceof Map)
   ) {
     return undefined;
@@ -94,6 +98,7 @@ function readInheritedAdmission(value: unknown): Admission | undefined {
     descriptorOwner: value.descriptorOwner,
     generationId: value.generationId,
     generation: value.generation,
+    ...(value.hostRevision !== undefined ? { hostRevision: value.hostRevision } : {}),
     writers,
     facts,
   };
@@ -142,4 +147,33 @@ export function isSqliteDatabaseAdmissionFactCurrent(
     Atomics.load(new Int32Array(fact.current), 0) === 1 &&
     fact.revision === Atomics.load(cell, fact.schemaDependent ? 0 : 1)
   );
+}
+
+export function captureSqliteDatabaseAdmissionRecords(
+  records: Map<string, Admission>,
+  cursor?: Map<string, string>,
+): SqliteDatabaseAdmissions {
+  const result: SqliteDatabaseAdmissions = [];
+  for (const record of records.values()) {
+    if (isSqliteDatabaseAdmissionRetired(record)) {
+      records.delete(record.identity);
+      continue;
+    }
+    const cell = new Int32Array(record.generation);
+    // Only the host can certify new completeness. Worker relays retain the exact
+    // host snapshot they received, including when the shared epoch has advanced.
+    const hostRevision = threadId === 0 ? Atomics.load(cell, 5) : record.hostRevision;
+    const facts = new Map(
+      [...record.facts].filter(([, fact]) => isSqliteDatabaseAdmissionFactCurrent(record, fact)),
+    );
+    if (cursor) {
+      const revision = `${Atomics.load(cell, 0)}:${Atomics.load(cell, 1)}:${Atomics.load(cell, 4)}:${hostRevision ?? ""}:${[...record.writers.keys()].join(",")}:${[...facts.values()].map((fact) => fact.publication).join(",")}`;
+      if (cursor.get(record.identity) === revision) {
+        continue;
+      }
+      cursor.set(record.identity, revision);
+    }
+    result.push({ ...record, facts, hostRevision });
+  }
+  return result;
 }

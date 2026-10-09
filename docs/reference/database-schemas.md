@@ -176,7 +176,10 @@ unrelated writes do not invalidate these facts. The Gateway owns runtime writes.
 Other processes must use that owner or run while it is stopped. Explicit ownership
 inspection and Doctor still read the database, and live lifecycle and lease checks
 remain at effect boundaries. Cached policy facts do not grant canonical admission
-or continuation authority.
+or continuation authority. Main-key writer publications carry a host revision, so
+workers can retain an absent publication without polling after unrelated writes.
+Nested workers forward only the host completeness they actually received.
+Uncertain rollback can discard a data fact and require one repair read before reuse.
 
 The Mentions Inbox retains its committed head through the same physical owner.
 An unchanged head skips snapshot worker dispatch. A changed or uncertain mutation

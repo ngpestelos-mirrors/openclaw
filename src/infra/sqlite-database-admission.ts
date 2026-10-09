@@ -8,6 +8,7 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { hasErrnoCode } from "./errno.js";
 import { SQLITE_DATABASE_ADMISSIONS_KEY } from "./sqlite-database-admission-key.js";
 import {
+  captureSqliteDatabaseAdmissionRecords,
   readSqliteDatabaseAdmissions,
   registerWriterCustody,
   isSqliteDatabaseAdmissionRetired as isRetired,
@@ -35,6 +36,7 @@ export type SqliteDatabaseAdmissionKey<T> = {
   name: string;
   read(this: void, value: unknown): T | undefined;
   schemaDependent?: boolean;
+  writer?: "host";
 };
 
 export type SqliteDatabaseAdmissionCursor = Map<string, string>;
@@ -92,7 +94,7 @@ function retainDescriptor(location: string, descriptor: number, opened: fs.BigIn
     descriptor,
     descriptorOwner: 0,
     generationId: randomUUID(),
-    generation: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 5),
+    generation: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 6),
     writers: new Map(),
     facts: new Map(),
   };
@@ -269,10 +271,7 @@ export function getSqliteDatabaseAdmission<T>(
     return undefined;
   }
   const record = admission(database, options.existingOnly !== true);
-  if (!record) {
-    return undefined;
-  }
-  if (key.schemaDependent && hasForeignSchemaWriter(database, record)) {
+  if (!record || (key.schemaDependent && hasForeignSchemaWriter(database, record))) {
     return undefined;
   }
   const local =
@@ -297,6 +296,17 @@ export function getSqliteDatabaseAdmission<T>(
   }
   let fact = record.facts.get(key.name);
   if (!fact || !valid(record, fact)) {
+    if (key.writer === "host") {
+      if (
+        threadId === 0 ||
+        record.hostRevision === Atomics.load(new Int32Array(record.generation), 5)
+      ) {
+        return undefined;
+      }
+      exchange(record.location);
+      fact = record.facts.get(key.name);
+      return fact && valid(record, fact) ? key.read(fact.value) : undefined;
+    }
     const revision = Atomics.load(new Int32Array(record.generation), 2);
     const misses = state.misses.get(record) ?? new Map<string, number>();
     state.misses.set(record, misses);
@@ -349,8 +359,15 @@ function publishFact<T>(
   value: T,
   revision: number,
 ): void {
+  if (key.writer === "host" && threadId !== 0) {
+    throw new Error("SQLite host-owned admission facts require the host publisher");
+  }
   if (revision !== Atomics.load(new Int32Array(record.generation), key.schemaDependent ? 0 : 1)) {
     return;
+  }
+  if (key.writer === "host") {
+    // Missing-key consumers must stop reusing absence before the postimage replaces it.
+    Atomics.add(new Int32Array(record.generation), 5, 1);
   }
   const previous = record.facts.get(key.name);
   if (previous) {
@@ -487,6 +504,9 @@ export function publishSqliteDatabaseAdmission<T>(
   const record = admission(database);
   if (!record || isRetired(record) || state.suspended.has(database)) {
     return;
+  }
+  if (key.writer === "host" && threadId !== 0) {
+    throw new Error("SQLite host-owned admission facts require the host publisher");
   }
   const revision =
     (key.schemaDependent ? options.schemaRevision : undefined) ??
@@ -684,24 +704,7 @@ export function createSqliteDatabaseAdmissionCursor(): SqliteDatabaseAdmissionCu
 export function captureSqliteDatabaseAdmissions(
   cursor?: SqliteDatabaseAdmissionCursor,
 ): SqliteDatabaseAdmissions {
-  const result: SqliteDatabaseAdmissions = [];
-  for (const record of state.admissions.values()) {
-    if (isRetired(record)) {
-      state.admissions.delete(record.identity);
-      continue;
-    }
-    const facts = new Map([...record.facts].filter(([, fact]) => valid(record, fact)));
-    if (cursor) {
-      const cell = new Int32Array(record.generation);
-      const revision = `${Atomics.load(cell, 0)}:${Atomics.load(cell, 1)}:${Atomics.load(cell, 4)}:${[...record.writers.keys()].join(",")}:${[...facts.values()].map((fact) => fact.publication).join(",")}`;
-      if (cursor.get(record.identity) === revision) {
-        continue;
-      }
-      cursor.set(record.identity, revision);
-    }
-    result.push({ ...record, facts });
-  }
-  return result;
+  return captureSqliteDatabaseAdmissionRecords(state.admissions, cursor);
 }
 
 export function installSqliteDatabaseAdmissions(admissions: SqliteDatabaseAdmissions): void {
@@ -715,8 +718,8 @@ export function installSqliteDatabaseAdmissions(admissions: SqliteDatabaseAdmiss
       record = undefined;
     }
     if (!record) {
-      state.admissions.set(incoming.identity, incoming);
-      record = incoming;
+      record = { ...incoming, hostRevision: undefined };
+      state.admissions.set(incoming.identity, record);
     } else if (record.generationId !== incoming.generationId) {
       // Only the host creates a generation; unrelated revocation cells cannot certify its facts.
       continue;
@@ -730,6 +733,12 @@ export function installSqliteDatabaseAdmissions(admissions: SqliteDatabaseAdmiss
       if (!record.writers.has(writer)) {
         record.writers.set(writer, cell);
       }
+    }
+    if (
+      incoming.hostRevision !== undefined &&
+      incoming.hostRevision === Atomics.load(new Int32Array(record.generation), 5)
+    ) {
+      record.hostRevision = incoming.hostRevision;
     }
     registerWriterCustody(record);
   }

@@ -123,6 +123,18 @@ it("bounds schema and freshness probes across admitted session reader entry poin
     input: undefined,
   });
   try {
+    const lookupDatabase = openOpenClawAgentDatabase({
+      ...options,
+      path: path.join(path.dirname(writer.path), "lookup-traffic.sqlite"),
+    });
+    expect(readCanonicalSessionMainKey(lookupDatabase)).toBe("main");
+    expect(
+      await worker.execute({ type: "mainKeyLookupTraffic", input: { path: lookupDatabase.path } }),
+    ).toEqual({
+      mainKeys: ["main", "main", "main"],
+      lookupMessages: 0,
+      workerPublishRefused: true,
+    });
     const raced = await runSqliteWorkerStoreOperation(
       worker,
       (scope) => scope.execute({ type: "mainKey", input: { yieldAfterRead: true } }),
