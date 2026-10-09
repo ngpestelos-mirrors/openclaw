@@ -33,10 +33,7 @@ import {
   SQLITE_SNAPSHOT_LEGACY_MARKER as legacyMarker,
   SQLITE_SNAPSHOT_PREFIX as prefix,
 } from "./sqlite-snapshot-retirement.js";
-import {
-  SQLITE_STAGING_TOKEN_FILES,
-  type SqliteStagingToken as SnapshotToken,
-} from "./sqlite-staging-token.js";
+import type { SqliteStagingToken as SnapshotToken } from "./sqlite-staging-token.js";
 
 const pendingReclamations = new Map<string, Promise<void>>();
 const currentAgeMs = 15 * 60 * 1000;
@@ -329,11 +326,6 @@ export function createSqliteSnapshotStagingTokenSync(
       // Launch and token-admission failures are not directory write failures.
       throw sqliteSnapshotStagingError(root, error, true);
     }
-    // This private directory is not published yet; its owner creates the token before worker admission.
-    fs.writeFileSync(path.join(directory, SQLITE_STAGING_TOKEN_FILES[0]), "", {
-      flag: "wx",
-      mode: 0o644,
-    });
     return { directory, release: snapshotToken(directory, "create") };
   } catch (error) {
     if (directory) {

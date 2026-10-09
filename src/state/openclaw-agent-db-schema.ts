@@ -537,13 +537,14 @@ function ensureAgentSchema(
       migrateSessionNodesAndWindows(db, previousVersion);
       maintenanceAuthority.renewAgentDatabaseMaintenanceAuthorityIfPresent();
       ensureSessionAdditiveColumns(db);
-      ensureSessionEntryValidityProjection(db);
       if (targetVersion >= 18 && previousVersion < 18) {
         migrateSessionParticipantsSchema(db, pathname);
       }
       if (targetVersion >= 19) {
         migrateSessionCreatorNamespaces(db, previousVersion);
       }
+      // Creator migration rewrites entry_json and invalidates its stored validity.
+      ensureSessionEntryValidityProjection(db);
       maintenanceAuthority.renewAgentDatabaseMaintenanceAuthorityIfPresent();
       db.exec(migrationSchemaSql);
       if (previousVersion !== AGENT_MEDIA_SCHEMA_VERSION) {

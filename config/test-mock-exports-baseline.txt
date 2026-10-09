@@ -6681,7 +6681,6 @@
 ["src/config/sessions/session-history-worker-errors.test-support.ts","./disk-budget-runtime.js","96a65b3e512a97eba31cc8e5ed1fa56260dfff775469ff1bb329454dbaafdc39",1]
 ["src/config/sessions/session-history-worker-errors.test-support.ts","./session-accessor.sqlite-exact-read.js","1e84b077c2aed79b63160020fb76d506a01ac6cbe78685ea27272d4e894cae80",1]
 ["src/config/sessions/session-history-worker-errors.test-support.ts","./session-sharing-store.js","d93387a76c2b387d2225899320c50734ff8d78387a34173f26a4290bb794fd66",1]
-["src/config/sessions/session-history-worker-errors.test-support.ts","./session-transcript-hydration.worker.js","e1b02784fd81a97e71650beaece130d3771e123f4011a105c0fef338d2e44364",1]
 ["src/config/sessions/session-store-target-inventory.test.ts","./targets-read-availability.js","703ea4103b77aee18350705892581a8e996f72ef21ae4d7cdb5a0606230e24cc",1]
 ["src/config/sessions/transcript-resolve.runtime.test.ts","./transcript.js","a9a3538ede0e4276a9cc437c63137d88daca3506765e3892a5612812147ee487",1]
 ["src/config/state-dir-dotenv.test.ts","../logging/subsystem.js","6b154f74290d6c84838b4a5b1e90ccd0fb1ccc3f52262c70817046790e4337ab",1]

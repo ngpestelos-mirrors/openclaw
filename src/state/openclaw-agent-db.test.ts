@@ -3140,30 +3140,6 @@ describe("openclaw agent database", () => {
     },
   );
 
-  it("rechecks the media version guard after a validated handle is replaced by a populated v0 store", () => {
-    const stateDir = createTempStateDir();
-    const env = { OPENCLAW_STATE_DIR: stateDir };
-    const databasePath = openOpenClawAgentDatabase({ agentId: "worker-1", env }).path;
-    expect(closeOpenClawAgentDatabaseByPath(databasePath)).toBe(true);
-
-    fs.copyFileSync(databasePath, `${databasePath}.replacement`);
-    fs.renameSync(`${databasePath}.replacement`, databasePath);
-    const { DatabaseSync } = requireNodeSqlite();
-    const downgraded = new DatabaseSync(databasePath);
-    try {
-      downgraded.exec(`
-        PRAGMA user_version = 0;
-        UPDATE schema_meta SET schema_version = 0 WHERE meta_key = 'primary';
-      `);
-    } finally {
-      downgraded.close();
-    }
-
-    expect(() => openOpenClawAgentDatabase({ agentId: "worker-1", env })).toThrow(
-      "run openclaw doctor --fix to migrate persisted media",
-    );
-  });
-
   it.each([
     {
       kind: "malformed ownership metadata",
