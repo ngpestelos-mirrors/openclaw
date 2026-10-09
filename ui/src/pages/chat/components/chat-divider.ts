@@ -100,7 +100,7 @@ export function renderChatDivider(item: Extract<ChatItem, { kind: "divider" }>) 
 export function renderChatNotice(item: Extract<ChatItem, { kind: "notice" }>) {
   if (item.skillChanges) {
     return html`
-      <div class="chat-notice" data-chat-row-key=${item.key} data-ts=${String(item.timestamp)}>
+      <div data-chat-row-key=${item.key} data-ts=${String(item.timestamp)}>
         <openclaw-chat-skill-learned-notice
           .notice=${item.skillChanges}
         ></openclaw-chat-skill-learned-notice>

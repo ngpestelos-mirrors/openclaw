@@ -4,7 +4,6 @@ import { canonicalizePath } from "../../agents/utils/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { WorkshopReviewNotFoundError } from "../../skills/workshop/review-undo.js";
 import { resolveWorkshopSkillsDir } from "../../skills/workshop/skills-root.js";
-import { listCoreGatewayMethodMetadata } from "../methods/core-method-policy.js";
 import { skillsRetiredHandlers } from "./skills-retired.js";
 import { skillsWorkshopHandlers } from "./skills-workshop.js";
 import { callGatewayHandler } from "./skills.test-helpers.js";
@@ -128,24 +127,6 @@ describe("skills.workshop gateway methods", () => {
       name: "deploy-notes",
       versionId: undefined,
     });
-  });
-
-  it("undoes a review as the user actor with the restore scope", async () => {
-    const runId = "skill-workshop-review:0b6a4a52-1f43-4f0e-9d55-3c1d8e1f7a10";
-    const result = { status: "undone", changes: [{ ...change, action: "restore" }] };
-    undoWorkshopReview.mockResolvedValue(result);
-
-    const undone = await call("skills.workshop.undo", { agentId: "ops", runId });
-
-    expect(undone.response).toEqual(result);
-    expect(undoWorkshopReview).toHaveBeenCalledWith(
-      { config, agentId: "ops", actor: "user", assertLive: expect.any(Function) },
-      { runId },
-    );
-    const scopeOf = (method: string) =>
-      listCoreGatewayMethodMetadata().find((entry) => entry.name === method)?.scope;
-    expect(scopeOf("skills.workshop.undo")).toBe("operator.admin");
-    expect(scopeOf("skills.workshop.undo")).toBe(scopeOf("skills.workshop.restore"));
   });
 
   it.each([

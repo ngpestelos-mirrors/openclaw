@@ -1,10 +1,8 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { SKILL_WORKSHOP_CHANGE_NOTICE_KIND } from "./transcript-only-openclaw-assistant.js";
 
-/**
- * Transcript marker on the notice a background skill review posts after changing learned
- * skills. The row's text serves every client; the marker lets the Control UI render it natively.
- */
-export const SKILL_WORKSHOP_CHANGE_NOTICE_KIND = "skill-workshop-change" as const;
+// Transcript marker on the notice a background skill review posts after changing learned
+// skills. The row's text serves every client; the marker lets the Control UI render it natively.
 
 const NOTICE_ACTIONS = ["created", "updated", "archived", "restored"] as const;
 

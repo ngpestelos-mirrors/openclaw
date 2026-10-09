@@ -9,11 +9,11 @@ import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.j
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import type { MessagePresentation } from "../../interactive/payload.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import {
-  SKILL_WORKSHOP_CHANGE_NOTICE_KIND,
-  type SkillWorkshopChangeNoticeSkill,
-  type SkillWorkshopNoticeAction,
+import type {
+  SkillWorkshopChangeNoticeSkill,
+  SkillWorkshopNoticeAction,
 } from "../../shared/skill-workshop-change-notice.js";
+import { SKILL_WORKSHOP_CHANGE_NOTICE_KIND } from "../../shared/transcript-only-openclaw-assistant.js";
 import {
   isDeliverableMessageChannel,
   normalizeMessageChannel,

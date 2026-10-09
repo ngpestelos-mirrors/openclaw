@@ -2,10 +2,7 @@ import { consume } from "@lit/context";
 import type { SkillsWorkshopUndoResult } from "@openclaw/gateway-protocol";
 import { html, nothing } from "lit";
 import { property } from "lit/decorators.js";
-import type {
-  SkillWorkshopChangeNotice,
-  SkillWorkshopNoticeAction,
-} from "../../../../../src/shared/skill-workshop-change-notice.js";
+import type { SkillWorkshopChangeNotice } from "../../../../../src/shared/skill-workshop-change-notice.js";
 import { applicationContext, type ApplicationContext } from "../../../app/context.ts";
 import { toolIcons } from "../../../components/icons-tools.ts";
 import { icons } from "../../../components/icons.ts";
@@ -16,13 +13,6 @@ import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
 import "../../../styles/chat/skill-learned-notice.css";
 
 type UndoState = "idle" | "pending" | "done" | { error: string };
-
-const ACTION_ICONS: Record<SkillWorkshopNoticeAction, keyof typeof toolIcons> = {
-  created: "plus",
-  updated: "edit",
-  archived: "trash",
-  restored: "refresh",
-};
 
 /**
  * A background skill review's changes as one divider row: each skill opens in the Workshop,
@@ -78,7 +68,7 @@ class ChatSkillLearnedNotice extends OpenClawLightDomElement {
     const pending = this.undo === "pending";
     return html`<button
       type="button"
-      class="btn btn--xs btn--ghost chat-skill-notice__undo"
+      class="chat-skill-notice__undo"
       ?disabled=${pending}
       aria-busy=${pending ? "true" : "false"}
       @click=${this.runUndo}
@@ -88,58 +78,47 @@ class ChatSkillLearnedNotice extends OpenClawLightDomElement {
     </button>`;
   }
 
+  // Mirrors the Carapace turn recap: hairline rules around one muted line of text.
   override render() {
     const notice = this.notice;
     if (!notice) {
       return nothing;
     }
     const undo = this.undo;
-    const single = notice.skills.length === 1 ? notice.skills[0] : undefined;
-    const description = typeof undo === "object" ? undefined : single?.summary;
     return html`
       <div
-        class="chat-divider chat-skill-notice ${undo === "done" ? "chat-skill-notice--undone" : ""}"
+        class="chat-skill-notice ${undo === "done" ? "chat-skill-notice--undone" : ""}"
         role="group"
         aria-label=${t("chat.skillLearned.label")}
       >
-        <div class="chat-divider__rule">
-          <span class="chat-divider__line"></span>
-          <span class="chat-skill-notice__content">
-            <span class="chat-divider__label">
-              <span class="chat-divider__icon" aria-hidden="true">${toolIcons.spark}</span>
-              <span class="chat-divider__title">${t("chat.skillLearned.label")}</span>
-            </span>
-            ${notice.skills.map((skill) => {
-              const verb = t(`chat.skillLearned.${skill.action}`);
-              const detail = skill.summary ? `${verb}: ${skill.summary}` : verb;
-              return html`<button
+        <div class="chat-skill-notice__line">
+          <span class="chat-skill-notice__icon" aria-hidden="true">${toolIcons.wrench}</span>
+          <span class="chat-skill-notice__label">${t("chat.skillLearned.label")}</span>
+          ${notice.skills.map((skill) => {
+            const verb = t(`chat.skillLearned.${skill.action}`);
+            const open = t("chat.skillLearned.open", { name: skill.name });
+            return html`<span class="chat-skill-notice__skill">
+              <span class="chat-skill-notice__sep" aria-hidden="true">·</span>
+              ${verb}
+              <button
                 type="button"
-                class="chip chat-skill-notice__chip"
-                title=${`${detail}. ${t("chat.skillLearned.open", { name: skill.name })}`}
-                aria-label=${`${detail}. ${t("chat.skillLearned.open", { name: skill.name })}`}
+                class="chat-skill-notice__name"
+                title=${skill.summary ? `${skill.summary}\n${open}` : open}
+                aria-label=${`${verb} ${skill.name}${skill.summary ? `: ${skill.summary}` : ""}. ${open}`}
                 @click=${() => this.openSkill(skill.name)}
               >
-                <span class="chat-skill-notice__verb" aria-hidden="true"
-                  >${toolIcons[ACTION_ICONS[skill.action]]}</span
-                >${skill.name}
-              </button>`;
-            })}
-            ${this.renderUndo()}
-          </span>
-          <span class="chat-divider__line"></span>
+                ${skill.name}
+              </button>
+            </span>`;
+          })}
+          ${this.renderUndo()}
         </div>
         ${
           typeof undo === "object"
-            ? html`<div class="chat-divider__details">
-                <span class="chat-skill-notice__error" role="alert"
-                  >${t("chat.skillLearned.undoError", { error: undo.error })}</span
-                >
-              </div>`
-            : description
-              ? html`<div class="chat-divider__details">
-                  <span class="chat-divider__description">${description}</span>
-                </div>`
-              : nothing
+            ? html`<p class="chat-skill-notice__error" role="alert">
+                ${t("chat.skillLearned.undoError", { error: undo.error })}
+              </p>`
+            : nothing
         }
       </div>
     `;

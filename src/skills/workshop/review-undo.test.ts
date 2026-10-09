@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   enqueueSystemEvent: vi.fn(() => true),
   listWorkshopChanges: vi.fn(),
   listWorkshopSkills: vi.fn(),
+  listWorkshopArchive: vi.fn(),
   restoreWorkshopSkill: vi.fn(),
   archiveWorkshopSkill: vi.fn(),
 }));
@@ -25,6 +26,7 @@ vi.mock("./library.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./library.js")>()),
   listWorkshopChanges: mocks.listWorkshopChanges,
   listWorkshopSkills: mocks.listWorkshopSkills,
+  listWorkshopArchive: mocks.listWorkshopArchive,
   restoreWorkshopSkill: mocks.restoreWorkshopSkill,
   archiveWorkshopSkill: mocks.archiveWorkshopSkill,
 }));
@@ -56,11 +58,26 @@ beforeEach(() => {
   vi.clearAllMocks();
   feed.length = 0;
   mocks.listWorkshopChanges.mockImplementation(
-    async (agentId: string, options: { runId?: string }) =>
+    async (agentId: string, options: { runId?: string; limit: number }) =>
       feed
-        .filter((change) => change.agentId === agentId && change.runId === options.runId)
-        .toReversed(),
+        .filter(
+          (change) =>
+            change.agentId === agentId &&
+            (options.runId === undefined || change.runId === options.runId),
+        )
+        .toReversed()
+        .slice(0, options.limit),
   );
+  // Every version the feed recorded is still kept unless a test prunes it.
+  mocks.listWorkshopArchive.mockImplementation(async () => {
+    const versions = new Map<string, { id: string }[]>();
+    for (const { skillName, versionId } of feed) {
+      if (versionId) {
+        versions.set(skillName, [...(versions.get(skillName) ?? []), { id: versionId }]);
+      }
+    }
+    return [...versions].map(([name, kept]) => ({ name, live: true, versions: kept }));
+  });
   // Live skills are those whose newest change did not archive them.
   mocks.listWorkshopSkills.mockImplementation(async () => {
     const latest = new Map(feed.map((change) => [change.skillName, change.action]));
@@ -152,5 +169,41 @@ describe("undoWorkshopReview", () => {
       WorkshopReviewNotFoundError,
     );
     expect(mocks.restoreWorkshopSkill).not.toHaveBeenCalled();
+  });
+
+  it("refuses a review whose first changes were pruned from the full feed", async () => {
+    // The review's create of "release" was the oldest row and fell off the 500-row feed.
+    feed.splice(1, 1);
+    while (feed.length < 500) {
+      record({ ...user, runId: "later" }, { skillName: `other-${feed.length}`, action: "patch" });
+    }
+
+    await expect(undoWorkshopReview(user, { runId: REVIEW_RUN_ID })).rejects.toThrow(
+      /too old to undo in one step/,
+    );
+    expect(mocks.restoreWorkshopSkill).not.toHaveBeenCalled();
+    expect(mocks.archiveWorkshopSkill).not.toHaveBeenCalled();
+  });
+
+  it("refuses before any write when a saved version is no longer kept", async () => {
+    mocks.listWorkshopArchive.mockResolvedValue([]);
+
+    await expect(undoWorkshopReview(user, { runId: REVIEW_RUN_ID })).rejects.toThrow(
+      /version of "deploy" saved before it is no longer kept/,
+    );
+    expect(mocks.archiveWorkshopSkill).not.toHaveBeenCalled();
+    expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
+  });
+
+  it("reports and announces the reverts that committed before a later one failed", async () => {
+    mocks.archiveWorkshopSkill.mockRejectedValueOnce(new Error("Learning is off."));
+
+    await expect(undoWorkshopReview(user, { runId: REVIEW_RUN_ID })).rejects.toThrow(
+      "Partly undone (restored `deploy`); Learning is off.",
+    );
+    expect(mocks.enqueueSystemEvent).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("restored `deploy`"),
+      { sessionKey: resolveSystemEventQueueKey(REVIEWED_SESSION, "main") },
+    );
   });
 });

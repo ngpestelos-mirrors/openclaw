@@ -3,6 +3,7 @@ import { enqueueSystemEvent } from "../../infra/system-events.js";
 import type { WorkshopChange } from "./changes.kernel.js";
 import {
   archiveWorkshopSkill,
+  listWorkshopArchive,
   listWorkshopChanges,
   listWorkshopSkills,
   restoreWorkshopSkill,
@@ -47,6 +48,23 @@ export function describeWorkshopReviewUndo(changes: readonly WorkshopChange[]): 
     .join("; ");
 }
 
+function notifyReviewedSession(
+  ctx: WorkshopMutationContext,
+  reviewChanges: readonly WorkshopChange[],
+  reviewId: string,
+  reverted: readonly WorkshopChange[],
+) {
+  const sessionKey = reviewChanges.find((change) => change.sessionKey)?.sessionKey;
+  if (!sessionKey || reverted.length === 0) {
+    return;
+  }
+  // The review's notice event told the agent how to revert; without this it would do it again.
+  enqueueSystemEvent(
+    `The user already undid background skill review ${reviewId} from its notice (${describeWorkshopReviewUndo(reverted)}). That skill change is reverted; do not revert it again if asked to undo it.`,
+    { sessionKey: resolveSystemEventQueueKey(sessionKey, ctx.agentId) },
+  );
+}
+
 async function revertReview(
   ctx: WorkshopMutationContext,
   runId: string,
@@ -56,8 +74,23 @@ async function revertReview(
   const reviewChanges = (
     await listWorkshopChanges(ctx.agentId, { runId, limit: MAX_RUN_CHANGES })
   ).toReversed();
-  if (reviewChanges.length === 0) {
+  const reviewStart = reviewChanges[0];
+  if (!reviewStart) {
     throw new WorkshopReviewNotFoundError(`No skill changes recorded for review ${runId}.`);
+  }
+  // The feed drops its oldest rows past the cap. If it is full and nothing older than this
+  // review's first retained row is left, the review's first changes may be gone, and their
+  // revert anchors with them; refuse rather than restore the wrong version.
+  const feed = await listWorkshopChanges(ctx.agentId, { limit: MAX_RUN_CHANGES });
+  const oldestRetained = feed.at(-1);
+  if (
+    feed.length >= MAX_RUN_CHANGES &&
+    oldestRetained &&
+    oldestRetained.createdAtMs >= reviewStart.createdAtMs
+  ) {
+    throw new WorkshopWriteError(
+      `Review ${reviewId} is too old to undo in one step: part of its history was pruned. Restore its skills one by one in the Skill Workshop.`,
+    );
   }
   const undoRunId = `${UNDO_RUN_PREFIX}${reviewId}`;
   const undone = new Set(
@@ -71,38 +104,59 @@ async function revertReview(
       firstBySkill.set(change.skillName, change);
     }
   }
-  const undoCtx = { ...ctx, runId: undoRunId };
   // A created skill that is no longer live was already reverted, e.g. by the agent after a chat "undo".
   const live = new Set(
     (await listWorkshopSkills(ctx.config, ctx.agentId)).map((skill) => skill.name),
   );
+  const targets = [...firstBySkill.values()].filter(
+    ({ skillName, versionId }) => !undone.has(skillName) && (versionId || live.has(skillName)),
+  );
+  // Check every saved version before the first write, so a pruned one refuses the whole undo.
+  const retained = new Map(
+    (await listWorkshopArchive(ctx.config, ctx.agentId)).map((skill) => [
+      skill.name,
+      new Set(skill.versions.map((version) => version.id)),
+    ]),
+  );
+  const pruned = targets.find(
+    ({ skillName, versionId }) => versionId && !retained.get(skillName)?.has(versionId),
+  );
+  if (pruned) {
+    throw new WorkshopWriteError(
+      `Cannot undo review ${reviewId}: the version of "${pruned.skillName}" saved before it is no longer kept. Restore that skill from the Skill Workshop.`,
+    );
+  }
+  const undoCtx = { ...ctx, runId: undoRunId };
   const changes: WorkshopChange[] = [];
-  for (const { skillName: name, versionId } of firstBySkill.values()) {
-    if (undone.has(name) || (!versionId && !live.has(name))) {
-      continue;
+  try {
+    for (const { skillName: name, versionId } of targets) {
+      // No saved version before the review's first change means the review created the skill.
+      changes.push(
+        versionId
+          ? await restoreWorkshopSkill(undoCtx, {
+              name,
+              versionId,
+              summary: "undid background review",
+            })
+          : await archiveWorkshopSkill(undoCtx, { name, reason: "undo" }),
+      );
     }
-    // No saved version before the review's first change means the review created the skill.
-    changes.push(
-      versionId
-        ? await restoreWorkshopSkill(undoCtx, {
-            name,
-            versionId,
-            summary: "undid background review",
-          })
-        : await archiveWorkshopSkill(undoCtx, { name, reason: "undo" }),
+  } catch (error) {
+    if (changes.length === 0) {
+      throw error;
+    }
+    // Reverts already committed stay; report them and tell the agent, then surface the refusal.
+    notifyReviewedSession(ctx, reviewChanges, reviewId, changes);
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new WorkshopWriteError(
+      `Partly undone (${describeWorkshopReviewUndo(changes)}); ${reason}`,
+      { cause: error },
     );
   }
   if (changes.length === 0) {
     return { status: "already-undone", changes };
   }
-  const sessionKey = reviewChanges.find((change) => change.sessionKey)?.sessionKey;
-  if (sessionKey) {
-    // The review's notice event told the agent how to revert; without this it would do it again.
-    enqueueSystemEvent(
-      `The user already undid background skill review ${reviewId} from its notice (${describeWorkshopReviewUndo(changes)}). That skill change is reverted; do not revert it again if asked to undo it.`,
-      { sessionKey: resolveSystemEventQueueKey(sessionKey, ctx.agentId) },
-    );
-  }
+  notifyReviewedSession(ctx, reviewChanges, reviewId, changes);
   return { status: "undone", changes };
 }
 
