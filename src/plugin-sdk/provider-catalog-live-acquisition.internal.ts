@@ -48,6 +48,8 @@ export type FetchLiveProviderModelIdsParams = {
 export type FetchLiveProviderModelRowsParams = Omit<FetchLiveProviderModelIdsParams, "readModelId">;
 
 export type CachedLiveProviderModelRowsParams = FetchLiveProviderModelRowsParams & {
+  /** Bypass a completed response once per explicit catalog refresh, not automatic renewal. */
+  refreshOnExplicitRequest?: boolean;
   ttlMs?: number;
   cacheKeyParts?: readonly unknown[];
   shouldCacheRows?: (rows: readonly unknown[]) => boolean;
@@ -379,6 +381,7 @@ export async function getCachedLiveProviderModelRows(
     signal: params.signal,
     load: async (signal) => await fetchLiveProviderModelRows({ ...params, signal }),
     shouldCache: params.shouldCacheRows,
+    refreshOnExplicitRequest: params.refreshOnExplicitRequest,
   });
 }
 

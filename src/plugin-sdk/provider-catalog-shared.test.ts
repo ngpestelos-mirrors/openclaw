@@ -386,3 +386,67 @@ describe("provider-catalog-shared manifest provider configs", () => {
     ).toBe("example/example-model");
   });
 });
+
+describe("explicit response refresh", () => {
+  it("refreshes opted-in responses once per acquisition without shortening metadata TTL or changing other providers", async () => {
+    clearLiveCatalogCacheForTests();
+    let now = 1000;
+    const inventory = vi.fn(async () => "inventory");
+    const featured = vi.fn(async () => "featured");
+    const other = vi.fn(async () => "other");
+    const read = (refresh = false) =>
+      captureProviderCatalogExpiries(async () => {
+        const load = () =>
+          Promise.all([
+            getCachedLiveCatalogValue({
+              keyParts: ["nvidia", "inventory"],
+              load: inventory,
+              ttlMs: 30000,
+              now: () => now,
+              refreshOnExplicitRequest: true,
+            }),
+            getCachedLiveCatalogValue({
+              keyParts: ["nvidia", "featured"],
+              load: featured,
+              ttlMs: 86400000,
+              now: () => now,
+              refreshOnExplicitRequest: true,
+            }),
+            getCachedLiveCatalogValue({
+              keyParts: ["other"],
+              load: other,
+              ttlMs: 86400000,
+              now: () => now,
+            }),
+          ]);
+        await Promise.all([load(), load()]);
+        return load();
+      }, refresh);
+    await read();
+    await read();
+    expect([
+      inventory.mock.calls.length,
+      featured.mock.calls.length,
+      other.mock.calls.length,
+    ]).toEqual([1, 1, 1]);
+    now += 30001;
+    await read();
+    expect([
+      inventory.mock.calls.length,
+      featured.mock.calls.length,
+      other.mock.calls.length,
+    ]).toEqual([2, 1, 1]);
+    await read(true);
+    expect([
+      inventory.mock.calls.length,
+      featured.mock.calls.length,
+      other.mock.calls.length,
+    ]).toEqual([3, 2, 1]);
+    await read();
+    expect([
+      inventory.mock.calls.length,
+      featured.mock.calls.length,
+      other.mock.calls.length,
+    ]).toEqual([3, 2, 1]);
+  });
+});

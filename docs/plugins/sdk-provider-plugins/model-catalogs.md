@@ -70,6 +70,22 @@ An explicit `ready` outcome may include `modelOrder: string[]` to rank its
 already discovered models in the picker. This does not add models or grant
 access; absent models are ignored, and outcomes without `modelOrder` retain
 the manifest order.
+A ready outcome may also include provider-owned ordered `recommendedModels`.
+This replaces OpenClaw's hosted recommendations for that provider, rather than
+merging with them. Omission uses the hosted list; an explicit `[]` recommends
+none. Only already available, supported catalog rows can be recommended. The
+catalog snapshot carries this fact to Web and TUI pickers without fetching
+metadata during rendering. Fail the acquisition normally when recommendations
+cannot be loaded, retaining the last-good inventory and recommendations. If
+inventory succeeds independently (for example an empty inventory), use `null`
+to report recommendation acquisition failure and retain only the previous
+recommendations under the same configuration and credentials.
+
+Cached-row acquisitions may opt into `refreshOnExplicitRequest: true`. The
+prepared catalog owner then bypasses each completed response once per explicit
+Refresh, preserving pending-load sharing and each feed's TTL on automatic renewal.
+Other providers keep their existing cache behavior.
+
 Provider-scoped refreshes preserve explicit outcomes reported under a registered
 alias of the selected provider; unrelated sibling outcomes remain excluded.
 With a positive cache lifetime, validated empty results use the same

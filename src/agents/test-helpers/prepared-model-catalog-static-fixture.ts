@@ -20,6 +20,7 @@ export function createStaticCatalogSnapshotFixture(params: {
       codexNativeOwner?: boolean;
       builtPluginVersion?: string;
       asyncSyntheticAuth?: boolean;
+      catalogResponseCache?: boolean;
       credentialOnlySyntheticAuth?: boolean;
       prepareInboundPluginRegistry?: boolean;
       readOnly?: boolean;

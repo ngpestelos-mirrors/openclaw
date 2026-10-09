@@ -5,6 +5,7 @@ type CatalogExpiryCapture = {
   providers: Map<string, number>;
   models: Map<string, Set<string>>;
   expiresAt?: number;
+  refreshKeys?: Set<string>;
 };
 
 const capture = resolveGlobalSingleton(
@@ -12,10 +13,13 @@ const capture = resolveGlobalSingleton(
   () => new AsyncLocalStorage<CatalogExpiryCapture>(),
 );
 
-export async function captureProviderCatalogExpiries<T>(load: () => Promise<T>) {
+export async function captureProviderCatalogExpiries<T>(load: () => Promise<T>, refresh = false) {
   const providers = new Map<string, number>();
   const models = new Map<string, Set<string>>();
-  const value = await capture.run({ providers, models }, load);
+  const value = await capture.run(
+    { providers, models, ...(refresh ? { refreshKeys: new Set<string>() } : {}) },
+    load,
+  );
   return { value, providerExpiries: providers, providerModels: models };
 }
 
@@ -27,7 +31,11 @@ export async function withProviderCatalogExpiry<T>(
   if (!parent) {
     return load();
   }
-  const current: CatalogExpiryCapture = { providers: parent.providers, models: parent.models };
+  const current: CatalogExpiryCapture = {
+    providers: parent.providers,
+    models: parent.models,
+    refreshKeys: parent.refreshKeys,
+  };
   const value = await capture.run(current, load);
   if (current.expiresAt !== undefined) {
     for (const provider of providerIds(value)) {
@@ -59,4 +67,14 @@ export function recordLiveCatalogExpiry(expiresAt: number): void {
   if (current) {
     current.expiresAt = Math.min(current.expiresAt ?? Infinity, expiresAt);
   }
+}
+
+/** Refresh each opted-in response key once within an explicit acquisition, not TTL renewal. */
+export function consumeLiveCatalogRefresh(key: string): boolean {
+  const keys = capture.getStore()?.refreshKeys;
+  if (!keys || keys.has(key)) {
+    return false;
+  }
+  keys.add(key);
+  return true;
 }

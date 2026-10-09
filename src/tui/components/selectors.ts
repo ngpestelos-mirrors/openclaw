@@ -9,14 +9,14 @@ export function createSearchableSelectList(items: SearchableSelectItem[], maxVis
 
 /**
  * Lists the current model and recommended models first; other models of a
- * provider that recommends any wait behind an "All models" row.
+ * provider with a recommendation policy wait behind an "All models" row.
  */
 export function modelSelectItems(
   models: readonly TuiModelChoice[],
   currentRef?: string,
 ): SearchableSelectItem[] {
   const recommendingProviders = new Set(
-    models.filter((model) => model.recommended).map((model) => model.provider),
+    models.filter((model) => model.recommended !== undefined).map((model) => model.provider),
   );
   const items = models.map((model) => {
     const ref = modelKey(model.provider, model.id);

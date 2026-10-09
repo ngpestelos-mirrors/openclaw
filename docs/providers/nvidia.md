@@ -70,9 +70,15 @@ When an NVIDIA API key is configured, setup and model-selection paths check
 `https://integrate.api.nvidia.com/v1/models` for available model IDs, cached for
 30 seconds. NVIDIA's public
 `https://assets.ngc.nvidia.com/products/api-catalog/featured-models.json` feed
-provides ranking and token limits, cached for 24 hours. Featured models appear
-first only while the inference inventory still lists them; other available
-bundled chat models follow. A fresh inventory can restore a previously hidden
+provides recommendations and token limits, cached for 24 hours. Every valid entry
+is recommended in feed order, replacing OpenClaw's global recommendations for
+NVIDIA. Recommendations only appear while the inference inventory still lists
+the exact model ID. Other available bundled chat models remain searchable under
+**All models**; Default and the current selection stay visible. An empty featured
+list recommends no models instead of restoring the global list. Explicit
+**Refresh** fetches both public sources again, while automatic inventory renewal
+keeps the featured feed's longer cache lifetime. New featured chat models do not
+need an OpenClaw release or hosted-catalog update. A fresh inventory can restore a previously hidden
 model that NVIDIA has republished.
 
 The inventory also contains embeddings and other non-chat endpoints, without

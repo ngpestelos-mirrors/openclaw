@@ -117,6 +117,7 @@ export function copyProviderCatalogOutcomes(
     const rejectionScope = readRecordValue(entry, "rejectionScope");
     const status = readRecordValue(entry, "status");
     const rawModelOrder = readRecordValue(entry, "modelOrder");
+    const recommendedModels = readRecordValue(entry, "recommendedModels");
     if (
       typeof provider !== "string" ||
       provider.trim().length === 0 ||
@@ -150,6 +151,12 @@ export function copyProviderCatalogOutcomes(
             }
           : {}),
         ...(modelOrder.length > 0 ? { modelOrder } : {}),
+        ...(status === "ready" &&
+        (recommendedModels === null ||
+          (Array.isArray(recommendedModels) &&
+            recommendedModels.every((id): id is string => typeof id === "string")))
+          ? { recommendedModels }
+          : {}),
       },
     ];
   });

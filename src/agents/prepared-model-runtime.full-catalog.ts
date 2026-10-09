@@ -272,89 +272,6 @@ export function mergePreparedNativeCatalog(
   };
 }
 
-export function filterNativeModelCatalogScopes<T extends { provider: string }>(
-  scopes: Readonly<Record<string, readonly T[]>> | undefined,
-  includesProvider: (provider: string) => boolean,
-): Readonly<Record<string, readonly T[]>> | undefined {
-  return (
-    scopes &&
-    Object.fromEntries(
-      Object.entries(scopes).map(([runtime, rows]) => [
-        runtime,
-        rows.filter(({ provider }) => includesProvider(provider)),
-      ]),
-    )
-  );
-}
-
-export function filterPreparedProviderCatalog(
-  catalog: ModelCatalogSnapshot,
-  includesProvider: (provider: string) => boolean,
-): ModelCatalogSnapshot {
-  return {
-    ...catalog,
-    entries: catalog.entries.filter((entry) => includesProvider(entry.provider)),
-    routeVariants: catalog.routeVariants.filter((entry) => includesProvider(entry.provider)),
-    staticEntries: catalog.staticEntries?.filter((entry) => includesProvider(entry.provider)),
-    providerOutcomes: catalog.providerOutcomes?.filter((outcome) =>
-      includesProvider(outcome.provider),
-    ),
-    nativeProviderOutcomes: filterNativeModelCatalogScopes(
-      catalog.nativeProviderOutcomes,
-      includesProvider,
-    ),
-    nativeHostRows: filterNativeModelCatalogScopes(catalog.nativeHostRows, includesProvider),
-  };
-}
-
-export function selectPreparedModelCatalogInventory(
-  inventory: PreparedModelCatalogInventory,
-  includesProvider: (provider: string) => boolean,
-): PreparedModelCatalogInventory {
-  return {
-    ...inventory,
-    catalog: filterPreparedProviderCatalog(inventory.catalog, includesProvider),
-    runtimeModels: new Map(
-      [...inventory.runtimeModels].filter(([provider]) => includesProvider(provider)),
-    ),
-    providers: new Map([...inventory.providers].filter(([provider]) => includesProvider(provider))),
-    discoveryOrigins: inventory.discoveryOrigins.filter(({ provider }) =>
-      includesProvider(provider),
-    ),
-  };
-}
-
-export function mergePreparedModelCatalogInventory(
-  previous: PreparedModelCatalogInventory | undefined,
-  discovered: PreparedModelCatalogInventory,
-  providers: ReadonlySet<string>,
-  normalize: (provider: string) => string,
-): PreparedModelCatalogInventory {
-  const retained =
-    previous &&
-    selectPreparedModelCatalogInventory(
-      previous,
-      (provider) => !providers.has(normalize(provider)),
-    );
-  const catalog = discovered.catalog;
-  const before = retained?.catalog;
-  const outcomes = [...(before?.providerOutcomes ?? []), ...(catalog.providerOutcomes ?? [])];
-  return {
-    ...discovered,
-    catalog: {
-      ...catalog,
-      entries: [...(before?.entries ?? []), ...catalog.entries],
-      routeVariants: [...(before?.routeVariants ?? []), ...catalog.routeVariants],
-      staticEntries: [...(before?.staticEntries ?? []), ...(catalog.staticEntries ?? [])],
-      providerOutcomes: outcomes,
-      authoritative: outcomes.every((outcome) => outcome.status === "ready"),
-    },
-    runtimeModels: new Map([...(retained?.runtimeModels ?? []), ...discovered.runtimeModels]),
-    providers: new Map([...(retained?.providers ?? []), ...discovered.providers]),
-    discoveryOrigins: [...(retained?.discoveryOrigins ?? []), ...discovered.discoveryOrigins],
-  };
-}
-
 export function prepareModelCatalogPublication(
   discovered: ModelCatalogSnapshot,
   runtimeModels: ReadonlyMap<string, readonly Model[]>,
@@ -413,11 +330,33 @@ export function prepareModelCatalogPublication(
     keys.add(key);
     legacyRows.set(provider, keys);
   }
+  const previous = inventory?.catalog;
+  const previousAuth = previous && getPreparedModelFullCatalogAuth(previous);
+  // Metadata acquisition can fail while inventory successfully publishes no models.
+  // Retain only recommendation authority, never resurrect rows from an empty inventory.
+  for (const outcome of catalog.providerOutcomes ?? []) {
+    const provider = normalizeProvider(outcome.provider);
+    const recommended = previous?.providerRecommendations?.[provider];
+    if (
+      outcome.status === "ready" &&
+      outcome.recommendedModels === null &&
+      recommended &&
+      previousAuth?.authModes[provider] === auth.authModes[provider] &&
+      hasSamePreparedModelCatalogAuth(
+        previousAuth,
+        auth,
+        (candidate) => normalizeProvider(candidate) === provider,
+      )
+    ) {
+      catalog.providerRecommendations = {
+        ...catalog.providerRecommendations,
+        [provider]: recommended,
+      };
+    }
+  }
   if (failed.length === 0) {
     return { catalog, discoveryOrigins, runtimeModels, legacyRows };
   }
-  const previous = inventory?.catalog;
-  const previousAuth = previous && getPreparedModelFullCatalogAuth(previous);
   const previousLegacyRows = new Map<string, Set<string>>();
   for (const entry of [...(previous?.entries ?? []), ...(previous?.routeVariants ?? [])]) {
     const provider = normalizeProvider(entry.provider);
@@ -507,6 +446,18 @@ export function prepareModelCatalogPublication(
   const routeKeyOf = createModelCatalogIdentityKeyResolver();
   const published: ModelCatalogSnapshot = {
     ...catalog,
+    ...(previous?.providerRecommendations || catalog.providerRecommendations
+      ? {
+          providerRecommendations: {
+            ...Object.fromEntries(
+              Object.entries(previous?.providerRecommendations ?? {}).filter(([provider]) =>
+                retainedProviders.has(normalizeProvider(provider)),
+              ),
+            ),
+            ...catalog.providerRecommendations,
+          },
+        }
+      : {}),
     entries: retain(catalog.entries, previous?.entries ?? []),
     routeVariants: retain(catalog.routeVariants, previous?.routeVariants ?? [], (entry) =>
       JSON.stringify([routeKeyOf(entry), entry.api, entry.baseUrl, entry.nativeRuntime]),

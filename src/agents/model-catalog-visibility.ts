@@ -20,7 +20,7 @@ import type {
   ModelCatalogRouteProjection,
 } from "./model-catalog-route.js";
 import { createModelCatalogView } from "./model-catalog-view.js";
-import type { ModelCatalogEntry } from "./model-catalog.js";
+import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
 import type { ModelRef } from "./model-ref-shared.js";
 import { dedupeModelCatalogEntries } from "./model-selection-shared.js";
 import {
@@ -78,6 +78,7 @@ type LogicalModelCatalogParams = {
   policy?: ModelVisibilityPolicy;
   routePolicy: ModelCatalogRoutePolicy;
   routeVariants?: readonly ModelCatalogEntry[];
+  providerRecommendations?: ModelCatalogSnapshot["providerRecommendations"];
   retainedModel?: ModelRef;
   selectedModel?: ModelRef;
   metadataSnapshot?: PluginMetadataSnapshot;
@@ -242,7 +243,7 @@ export async function prepareLogicalVisibleModelCatalog(
       return orderModelCatalogForPicker(
         dedupeByKey(projected, publicationKeyOf),
         params.selectedModel ?? params.retainedModel,
-        createModelPickerRecommendationRank(params.cfg),
+        createModelPickerRecommendationRank(params.cfg, params.providerRecommendations),
       );
     };
     if (params.view === "all") {

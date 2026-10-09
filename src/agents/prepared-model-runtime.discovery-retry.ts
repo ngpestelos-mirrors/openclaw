@@ -1,3 +1,5 @@
+import { raceWithTimeout } from "@openclaw/retry";
+import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import type {
   PreparedModelCatalogInventory,
   PreparedModelCatalogProviderFacts,
@@ -91,4 +93,20 @@ export function createFailedDiscoveryRetry(
   // A compatible reload retains failed facts; its new owner resumes their retry.
   arm();
   return arm;
+}
+
+/** Standalone refreshes settle acquisition; interactive readers may keep published inventory. */
+export async function waitForCatalogForeground(params: {
+  options?: PreparedModelCatalogRefreshOptions;
+  standalone: boolean;
+  acquire: (options?: PreparedModelCatalogRefreshOptions) => Promise<ModelCatalogSnapshot>;
+  readPublished: () => ModelCatalogSnapshot;
+}): Promise<ModelCatalogSnapshot> {
+  // Standalone commands cannot publish background discovery after their process exits.
+  if (params.options?.refresh && (params.options.wait || params.standalone)) {
+    return await params.acquire(params.options);
+  }
+  return await raceWithTimeout(params.acquire(params.options), 5_000, params.readPublished, {
+    ref: false,
+  });
 }

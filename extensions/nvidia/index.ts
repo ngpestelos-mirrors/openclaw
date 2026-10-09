@@ -1,9 +1,31 @@
+import { runLiveProviderCatalog } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
+import type {
+  ProviderCatalogContext,
+  ProviderCatalogResult,
+} from "openclaw/plugin-sdk/provider-catalog-shared";
 import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-entry";
 import { applyNvidiaConnectionConfig, NVIDIA_DEFAULT_MODEL_REF } from "./onboard.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
-import { buildLiveNvidiaProvider, buildSelectableNvidiaProvider } from "./provider-catalog.js";
+import { buildLiveNvidiaCatalog, buildSelectableNvidiaProvider } from "./provider-catalog.js";
 
 const PROVIDER_ID = "nvidia";
+
+async function runNvidiaCatalog(ctx: ProviderCatalogContext): Promise<ProviderCatalogResult> {
+  if (ctx.providerIds && !ctx.providerIds.includes("nvidia")) {
+    return null;
+  }
+  const { apiKey } = ctx.resolveProviderApiKey("nvidia");
+  if (!apiKey) {
+    return null;
+  }
+  return runLiveProviderCatalog({
+    providerId: "nvidia",
+    run: async () => {
+      const catalog = await buildLiveNvidiaCatalog();
+      return { ...catalog, provider: { ...catalog.provider, apiKey } };
+    },
+  });
+}
 
 export default defineSingleProviderPluginEntry({
   id: PROVIDER_ID,
@@ -19,9 +41,8 @@ export default defineSingleProviderPluginEntry({
       applyConfig: applyNvidiaConnectionConfig,
     },
     catalog: {
-      discoveryMode: "strict",
-      buildProvider: buildLiveNvidiaProvider,
-      buildStaticProvider: buildSelectableNvidiaProvider,
+      run: runNvidiaCatalog,
+      staticRun: async () => ({ provider: buildSelectableNvidiaProvider() }),
     },
     wizard: {
       setup: {

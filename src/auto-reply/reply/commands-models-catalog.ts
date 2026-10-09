@@ -237,6 +237,7 @@ export async function loadModelsProviderData(
     policy: visibilityPolicy,
     routePolicy: openAIModelCatalogRoutePolicy,
     routeVariants: snapshot.routeVariants,
+    providerRecommendations: snapshot.providerRecommendations,
     evaluateEntry: async (entry, routeVariants) => {
       const evaluation = evaluateEntry(entry, routeVariants);
       recordModelAvailability(entry, evaluation);

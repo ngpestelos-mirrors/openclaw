@@ -280,6 +280,7 @@ type PreparedModelCatalogWorker = Readonly<{
   loadCatalog: (
     providerIds?: readonly string[],
     onRecovery?: (error: Error) => void,
+    refresh?: boolean,
   ) => Promise<
     Pick<PreparedModelRuntimeCatalogFacts, "modelCatalog" | "configuredRuntimeModels"> & {
       runtimeModels: Map<string, Model[]>;
@@ -562,9 +563,13 @@ export function createPreparedModelCatalogWorker(
   };
 
   return {
-    loadCatalog: async (providerIds, onRecovery) => {
+    loadCatalog: async (providerIds, onRecovery, refresh) => {
       const message = await request(
-        { kind: "catalog", ...(providerIds ? { providerIds } : {}) },
+        {
+          kind: "catalog",
+          ...(providerIds ? { providerIds } : {}),
+          ...(refresh ? { refresh: true } : {}),
+        },
         onRecovery,
       );
       if (message.kind !== "catalog") {

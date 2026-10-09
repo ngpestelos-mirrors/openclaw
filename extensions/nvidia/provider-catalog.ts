@@ -83,22 +83,22 @@ export function buildSelectableNvidiaProvider(): ModelProviderConfig {
   };
 }
 
-export async function buildLiveNvidiaProvider(): Promise<ModelProviderConfig> {
+export async function buildLiveNvidiaCatalog() {
   const provider = buildNvidiaProvider();
+  const { models, recommendedModels } = await loadNvidiaLiveModels(provider.models);
   return {
-    ...provider,
-    models: await loadNvidiaLiveModels(provider.models),
+    provider: { ...provider, models },
+    outcomes: [{ provider: "nvidia", status: "ready" as const, recommendedModels }],
   };
 }
 
-async function loadNvidiaLiveModels(
-  bundledModels: ModelDefinitionConfig[],
-): Promise<ModelDefinitionConfig[]> {
+async function loadNvidiaLiveModels(bundledModels: ModelDefinitionConfig[]) {
   const [inventory, featured] = await Promise.allSettled([
     getCachedLiveProviderModelRows({
       providerId: "nvidia",
       endpoint: NVIDIA_MODELS_URL,
       requireHttps: true,
+      refreshOnExplicitRequest: true,
       readRows: (payload) => {
         if (!isRecord(payload) || !Array.isArray(payload.data)) {
           throw new Error("NVIDIA model inventory must contain data[]");
@@ -116,7 +116,11 @@ async function loadNvidiaLiveModels(
   }
   // Empty inference inventory is authoritative even when featured metadata is unavailable.
   if (inventory.value.length === 0) {
-    return [];
+    return {
+      models: [],
+      recommendedModels:
+        featured.status === "fulfilled" ? featured.value.map(({ id }) => id) : null,
+    };
   }
   if (featured.status === "rejected") {
     throw featured.reason;
@@ -150,7 +154,10 @@ async function loadNvidiaLiveModels(
   }
   // A fresh inventory can restore a republished legacy id, but a stale featured
   // recommendation cannot restore an id the inference endpoint no longer lists.
-  return [...ranked.values()].filter((model) => available.has(model.id));
+  return {
+    models: [...ranked.values()].filter((model) => available.has(model.id)),
+    recommendedModels: featured.value.map(({ id }) => id),
+  };
 }
 
 async function loadNvidiaFeaturedModels(): Promise<ModelDefinitionConfig[]> {
@@ -160,6 +167,7 @@ async function loadNvidiaFeaturedModels(): Promise<ModelDefinitionConfig[]> {
     timeoutMs: FEATURED_MODEL_FETCH_TIMEOUT_MS,
     ttlMs: FEATURED_MODEL_CACHE_TTL_MS,
     requireHttps: true,
+    refreshOnExplicitRequest: true,
     policy: ssrfPolicyFromHttpBaseUrlAllowedHostname(NVIDIA_FEATURED_MODELS_URL),
     // The featured catalog is an NVIDIA-owned CloudFront URL. Some resolvers
     // stall for seconds on the default all-family lookup; IPv4 pinning keeps

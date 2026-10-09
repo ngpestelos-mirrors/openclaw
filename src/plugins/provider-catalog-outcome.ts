@@ -15,4 +15,9 @@ export type ProviderCatalogOutcome = {
   }[];
   /** Optional successful discovery order for models already present in the catalog. */
   modelOrder?: readonly string[];
+  /**
+   * Provider-owned ordered picker recommendations. Absent uses OpenClaw defaults;
+   * [] recommends none; null reports failed metadata acquisition independently of inventory.
+   */
+  recommendedModels?: readonly string[] | null;
 };

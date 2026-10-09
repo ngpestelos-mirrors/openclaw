@@ -1,7 +1,7 @@
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getRemoteModelCatalogProviderOverlay } from "../model-catalog/remote-overlay.js";
-import type { ModelCatalogEntry } from "./model-catalog.types.js";
+import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { createModelCatalogIdentityKeyResolver } from "./openai-model-routes.js";
 
 /**
@@ -62,12 +62,13 @@ export type ModelPickerRecommendationRank = (
 ) => number | undefined;
 
 /**
- * Ranks a row by its provider's hosted-catalog `recommendedModels`, best first.
+ * Provider-owned lists replace (never supplement) the hosted-catalog `recommendedModels`, best first.
  * Ids the provider no longer serves simply never match a row. Create one per
  * synchronous read: identity keys reuse provider policy only for that operation.
  */
 export function createModelPickerRecommendationRank(
   config: OpenClawConfig,
+  providerRecommendations?: ModelCatalogSnapshot["providerRecommendations"],
 ): ModelPickerRecommendationRank {
   const keyOf = createModelCatalogIdentityKeyResolver();
   const ranksByProvider = new Map<string, Map<string, number>>();
@@ -76,7 +77,9 @@ export function createModelPickerRecommendationRank(
     let ranks = ranksByProvider.get(provider);
     if (!ranks) {
       ranks = new Map();
-      const recommended = getRemoteModelCatalogProviderOverlay(config, provider)?.recommendedModels;
+      const recommended =
+        providerRecommendations?.[provider] ??
+        getRemoteModelCatalogProviderOverlay(config, provider)?.recommendedModels;
       for (const [rank, id] of (recommended ?? []).entries()) {
         const key = keyOf({ provider, id });
         if (!ranks.has(key)) {

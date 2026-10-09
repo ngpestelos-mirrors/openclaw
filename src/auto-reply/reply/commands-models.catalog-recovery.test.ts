@@ -19,6 +19,8 @@ import {
 import * as preparedRuntime from "../../agents/prepared-model-runtime.js";
 import type { PreparedModelRuntimeSnapshot } from "../../agents/prepared-model-runtime.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { resolveRemoteCatalogUrl } from "../../model-catalog/remote-config.js";
+import { withRemoteModelCatalogSnapshot } from "../../model-catalog/remote-overlay.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import type { ReplyPayload } from "../types.js";
 import { buildPreparedModelsProviderData } from "./commands-models-catalog.js";
@@ -99,6 +101,76 @@ afterEach(() => {
 });
 
 describe("/models browse catalog recovery", () => {
+  it.each([
+    {
+      recommended: ["vendor/first", "vendor/second", "vendor/missing"],
+      expected: [
+        "vendor/current",
+        "vendor/first",
+        "vendor/second",
+        "vendor/ordinary",
+        "vendor/global",
+      ],
+    },
+    {
+      recommended: [],
+      expected: [
+        "vendor/current",
+        "vendor/ordinary",
+        "vendor/global",
+        "vendor/second",
+        "vendor/first",
+      ],
+    },
+    {
+      recommended: undefined,
+      expected: [
+        "vendor/current",
+        "vendor/global",
+        "vendor/ordinary",
+        "vendor/second",
+        "vendor/first",
+      ],
+    },
+  ])(
+    "retains provider-owned recommendation order in text /models: $recommended",
+    async ({ recommended, expected }) => {
+      const cfg: OpenClawConfig = { agents: { defaults: { model: { primary: "other/default" } } } };
+      const entries = [
+        "vendor/ordinary",
+        "vendor/global",
+        "vendor/second",
+        "vendor/first",
+        "vendor/current",
+      ].map((id, providerOrder) => ({ provider: "nvidia", id, name: id, providerOrder }));
+      catalogMocks.readSnapshot.mockReturnValue({
+        entries,
+        routeVariants: entries,
+        ...(recommended !== undefined ? { providerRecommendations: { nvidia: recommended } } : {}),
+      });
+      const reply = await withRemoteModelCatalogSnapshot(
+        {
+          sourceUrl: resolveRemoteCatalogUrl(cfg),
+          generatedAt: 1,
+          revision: "text-order-fixture",
+          providers: { nvidia: { models: [], recommendedModels: ["vendor/global"] } },
+          pricing: {},
+          upstreamPricing: {},
+        },
+        () =>
+          resolveModelsCommandReply({
+            cfg,
+            surface: "slack",
+            currentModel: "nvidia/vendor/current",
+            commandBodyNormalized: "/models nvidia all",
+          }),
+      );
+      expect(
+        [...(reply?.text ?? "").matchAll(/^- nvidia\/(\S+)/gm)].map((match) => match[1]),
+      ).toEqual(expected);
+    },
+  );
+
   it("replies with known models while acquisition is held and includes newly published rows next time", async () => {
     const pendingCatalog: ModelCatalogSnapshot = {
       entries: [{ provider: "anthropic", id: "claude-opus-4-5", name: "Known model" }],

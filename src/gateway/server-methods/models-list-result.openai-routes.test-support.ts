@@ -49,7 +49,7 @@ type ListModelsParams = {
   catalogComplete?: boolean;
   catalogDiagnostics?: Pick<
     PreparedGatewayModelCatalogSnapshot,
-    "pendingProviders" | "providerOutcomes" | "refreshFailed"
+    "pendingProviders" | "providerOutcomes" | "refreshFailed" | "providerRecommendations"
   >;
   preparedAuthModes?: PreparedAgentCredentialModes;
   preparedAuthStore?: AuthProfileStore;

@@ -1,6 +1,6 @@
 import { clearLiveCatalogCacheForTests } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildLiveNvidiaProvider, buildNvidiaProvider } from "./provider-catalog.js";
+import { buildLiveNvidiaCatalog, buildNvidiaProvider } from "./provider-catalog.js";
 
 const NVIDIA_FEATURED_MODELS_URL =
   "https://assets.ngc.nvidia.com/products/api-catalog/featured-models.json";
@@ -107,7 +107,7 @@ describe("nvidia provider catalog", () => {
       ],
     });
 
-    const provider = await buildLiveNvidiaProvider();
+    const { provider } = await buildLiveNvidiaCatalog();
 
     expect(provider.models.map((model) => model.id)).toEqual([
       "nvidia/nemotron-3-super-120b-a12b",
@@ -129,7 +129,7 @@ describe("nvidia provider catalog", () => {
       ],
     });
 
-    expect((await buildLiveNvidiaProvider()).models).toMatchObject([
+    expect((await buildLiveNvidiaCatalog()).provider.models).toMatchObject([
       { id: "moonshotai/kimi-k2.6", reasoning: true, input: ["text", "image"] },
     ]);
   });
@@ -141,7 +141,7 @@ describe("nvidia provider catalog", () => {
       featuredStatus: 503,
     });
 
-    await expect(buildLiveNvidiaProvider()).rejects.toThrow("HTTP 503");
+    await expect(buildLiveNvidiaCatalog()).rejects.toThrow("HTTP 503");
   });
 
   it.each([200, 503])(
@@ -160,8 +160,8 @@ describe("nvidia provider catalog", () => {
         ],
       });
 
-      expect((await buildLiveNvidiaProvider()).models).toEqual([]);
-      expect((await buildLiveNvidiaProvider()).models).toEqual([]);
+      expect((await buildLiveNvidiaCatalog()).provider.models).toEqual([]);
+      expect((await buildLiveNvidiaCatalog()).provider.models).toEqual([]);
     },
   );
 
@@ -174,7 +174,7 @@ describe("nvidia provider catalog", () => {
       ],
     });
 
-    await expect(buildLiveNvidiaProvider()).rejects.toThrow("HTTP 503");
+    await expect(buildLiveNvidiaCatalog()).rejects.toThrow("HTTP 503");
   });
 
   it("builds the bundled NVIDIA provider defaults", () => {
@@ -232,7 +232,7 @@ describe("nvidia provider catalog", () => {
       ],
     });
 
-    const provider = await buildLiveNvidiaProvider();
+    const { provider } = await buildLiveNvidiaCatalog();
 
     expect(provider.models.map((model) => model.id)).toEqual([
       "z-ai/glm-5.2",
@@ -288,7 +288,7 @@ describe("nvidia provider catalog", () => {
       ],
     });
 
-    const provider = await buildLiveNvidiaProvider();
+    const { provider } = await buildLiveNvidiaCatalog();
 
     expect(
       provider.models.map(({ id, contextWindow, maxTokens }) => ({
@@ -341,7 +341,7 @@ describe("nvidia provider catalog", () => {
       ],
     });
 
-    const provider = await buildLiveNvidiaProvider();
+    const { provider } = await buildLiveNvidiaCatalog();
 
     expect(provider.models.map((model) => model.id)).toEqual(["minimaxai/minimax-m3"]);
   });
@@ -372,8 +372,8 @@ describe("nvidia provider catalog", () => {
       ],
     });
 
-    await expect(buildLiveNvidiaProvider()).rejects.toThrow("no usable model metadata");
-    const second = await buildLiveNvidiaProvider();
+    await expect(buildLiveNvidiaCatalog()).rejects.toThrow("no usable model metadata");
+    const { provider: second } = await buildLiveNvidiaCatalog();
     expect(second.models).toMatchObject([
       { id: "z-ai/glm-5.2", name: "Updated GLM 5.2", contextWindow: 262144 },
     ]);
@@ -398,7 +398,7 @@ describe("nvidia provider catalog", () => {
       ],
     });
 
-    const provider = await buildLiveNvidiaProvider();
+    const { provider } = await buildLiveNvidiaCatalog();
 
     expect(provider.models.map((model) => model.id)).toEqual([
       "nvidia/nemotron-3-ultra-550b-a55b",

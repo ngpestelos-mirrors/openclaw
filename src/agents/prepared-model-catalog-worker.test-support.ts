@@ -31,6 +31,7 @@ import type {
   PreparedModelRuntimeOwner,
   PreparedModelRuntimeSnapshot,
 } from "./prepared-model-runtime.types.js";
+import { catalogResponseCacheFixtureSource } from "./test-helpers/prepared-model-catalog-response-cache-fixture.js";
 import {
   refreshNativeCatalogDuringBoundedRead,
   seedFixturePluginModelCatalog,
@@ -124,6 +125,7 @@ export function writeFixturePlugin(params: {
   asyncSyntheticAuth?: boolean;
   syntheticAuthAvailable?: boolean;
   catalogControl?: boolean;
+  catalogResponseCache?: boolean;
 }): string {
   const pluginDir = path.join(params.root, "plugin");
   fs.mkdirSync(pluginDir, { recursive: true });
@@ -227,7 +229,8 @@ module.exports = {
         }];
       },
       catalog: {
-        run(context) {
+        async run(context) {
+          ${params.catalogResponseCache ? catalogResponseCacheFixtureSource(PROVIDER_ID) : ""}
           ${catalogControlSource}
           const refOnlyApi = context.resolveProviderApiKey(${JSON.stringify(REF_ONLY_API_PROVIDER_ID)}).apiKey;
           const refOnlyToken = context.resolveProviderApiKey(${JSON.stringify(REF_ONLY_TOKEN_PROVIDER_ID)}).apiKey;
@@ -308,6 +311,7 @@ module.exports = {
       asyncSyntheticAuth: params.asyncSyntheticAuth,
       syntheticAuthAvailable: params.syntheticAuthAvailable,
       catalogControl: params.catalogControl,
+      catalogResponseCache: params.catalogResponseCache,
     });
     const distDir = path.join(pluginDir, "dist");
     fs.mkdirSync(distDir);
@@ -370,6 +374,7 @@ export async function createCatalogFixture(
     builtPluginVersion?: string;
     asyncSyntheticAuth?: boolean;
     catalogControl?: boolean;
+    catalogResponseCache?: boolean;
   },
 ) {
   const root = makeTempDir("openclaw-model-catalog-worker-");

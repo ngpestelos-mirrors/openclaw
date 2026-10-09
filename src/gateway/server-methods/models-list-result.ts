@@ -552,6 +552,7 @@ async function prepareOwnedModelsListResult({
       selectedModel,
       routePolicy: openAIModelCatalogRoutePolicy,
       routeVariants,
+      providerRecommendations: projector.snapshot.providerRecommendations,
       prepareEntry: (entry, variants) => {
         const key = resolveModelCatalogIdentityKey(entry);
         const twin =
@@ -623,7 +624,8 @@ async function prepareOwnedModelsListResult({
     read: () => {
       const currentCatalog = readCatalog();
       const keyOf = createModelCatalogIdentityKeyResolver();
-      const recommendationRank = createModelPickerRecommendationRank(cfg);
+      const providerRecommendations = projector.snapshot.providerRecommendations;
+      const recommendationRank = createModelPickerRecommendationRank(cfg, providerRecommendations);
       return {
         models: omitCliRuntimeAliasTwins(
           currentCatalog.filter(matchesProvider).map((entry) => {
@@ -639,6 +641,10 @@ async function prepareOwnedModelsListResult({
             }
             if (recommendationRank(entry) !== undefined) {
               projected.recommended = true;
+            } else if (
+              providerRecommendations?.[normalizeProviderId(entry.provider)] !== undefined
+            ) {
+              projected.recommended = false;
             }
             return { row: projected, twin: twinRoutes.get(key) };
           }),

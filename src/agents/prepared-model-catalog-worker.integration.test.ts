@@ -889,6 +889,20 @@ describe("prepared model catalog worker boundary", () => {
     }
   });
 
+  it("carries explicit refresh through a retained worker to opted-in response caches", async () => {
+    const fixture = await createStaticSnapshot(0, {}, { catalogResponseCache: true });
+    const first = await fixture.snapshot.loadFullModelCatalog!({ refresh: true, wait: true });
+    expect(first.providerRecommendations?.[PROVIDER_ID]).toEqual(["cached-recommendation-1"]);
+    expect(await fixture.snapshot.loadFullModelCatalog!()).toBe(first);
+    const [refreshed, shared] = await Promise.all([
+      fixture.snapshot.loadFullModelCatalog!({ refresh: true, wait: true }),
+      fixture.snapshot.loadFullModelCatalog!({ refresh: true, wait: true }),
+    ]);
+    expect(shared).toBe(refreshed);
+    expect(refreshed.providerRecommendations?.[PROVIDER_ID]).toEqual(["cached-recommendation-2"]);
+    expect(fs.readFileSync(fixture.marker + ".fetches", "utf8")).toBe("2");
+  });
+
   it("shares in-flight discovery, caches completion, and explicitly refreshes prepared facts", async ({
     signal,
   }) => {

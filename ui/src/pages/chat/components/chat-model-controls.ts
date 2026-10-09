@@ -399,8 +399,8 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
     if (typeof catalogEntry?.supportsTools === "boolean") {
       pickerOption.supportsTools = catalogEntry.supportsTools;
     }
-    if (catalogEntry?.recommended) {
-      pickerOption.recommended = true;
+    if (catalogEntry?.recommended !== undefined) {
+      pickerOption.recommended = catalogEntry.recommended;
     }
     if (option.disabled) {
       pickerOption.disabled = true;
@@ -424,7 +424,9 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
         supportsTools: choice.supportsTools,
         disabled: choice.available === false,
         unavailableReason: choice.unavailableReason,
-        ...(pickerOption.recommended ? { recommended: true } : {}),
+        ...(pickerOption.recommended !== undefined
+          ? { recommended: pickerOption.recommended }
+          : {}),
       });
     }
     return options;

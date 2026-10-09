@@ -129,7 +129,15 @@ function createModelCatalogSnapshot(
   routeVariants: ModelCatalogRouteVariantCollector,
   providerOutcomes?: ModelCatalogSnapshot["providerOutcomes"],
 ): ModelCatalogSnapshot {
+  const providerRecommendations = Object.fromEntries(
+    (providerOutcomes ?? []).flatMap((outcome) =>
+      outcome.status === "ready" && outcome.recommendedModels != null
+        ? [[normalizeProviderId(outcome.provider), outcome.recommendedModels]]
+        : [],
+    ),
+  );
   return {
+    ...(Object.keys(providerRecommendations).length ? { providerRecommendations } : {}),
     entries: sortModelCatalogEntries(applyReadyCatalogModelOrder(entries, providerOutcomes)),
     routeVariants: sortModelCatalogEntries(
       applyReadyCatalogModelOrder(routeVariants.entries, providerOutcomes),

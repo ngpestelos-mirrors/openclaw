@@ -21,6 +21,14 @@ export async function runLiveProviderCatalog(params: {
   };
   try {
     const result = await params.run();
+    if (
+      result?.outcomes?.some(
+        (outcome) =>
+          outcome.provider === identity.provider && outcome.profileId === identity.profileId,
+      )
+    ) {
+      return result;
+    }
     return result
       ? { ...result, outcomes: [...(result.outcomes ?? []), { ...identity, status: "ready" }] }
       : result;

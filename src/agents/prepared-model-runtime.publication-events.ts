@@ -153,7 +153,9 @@ export function createCatalogAttemptReporter(
         get: () =>
           hasFailedProviders() ||
           nativeOutcomes.some((outcome) => outcome.status === "unavailable") ||
-          catalog.providerOutcomes?.some((outcome) => outcome.status === "unavailable") ||
+          catalog.providerOutcomes?.some(
+            (outcome) => outcome.status === "unavailable" || outcome.recommendedModels === null,
+          ) ||
           undefined,
       });
       return catalog;

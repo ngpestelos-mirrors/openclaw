@@ -397,6 +397,99 @@ describe("prepared build candidate lifetime", () => {
   });
 });
 
+describe("provider recommendation retention", () => {
+  it("replaces only the refreshed provider's recommendations, including empty and absent", async () => {
+    const entries = [
+      { provider: "provider-a", id: "first", name: "First" },
+      { provider: "provider-b", id: "other", name: "Other" },
+    ];
+    mocks.runPreparedModelCatalogWorker.mockResolvedValue({
+      entries,
+      routeVariants: entries,
+      providerOutcomes: [
+        { provider: "provider-a", status: "ready" },
+        { provider: "provider-b", status: "ready" },
+      ],
+      providerRecommendations: { "provider-a": ["first"], "provider-b": [] },
+    });
+    const owner = await publishPreparedModelRuntimeSnapshot(
+      fixture.agentInput("pro", { agents: { entries: { pro: {} } } }),
+      {
+        catalogMode: "static",
+        provenance: "standalone",
+      },
+    );
+    await owner.loadFullModelCatalog!({ refresh: true });
+    mocks.runPreparedModelCatalogWorker.mockResolvedValue({
+      entries,
+      routeVariants: entries,
+      providerOutcomes: [{ provider: "provider-a", status: "ready" }],
+      providerRecommendations: { "provider-a": [] },
+    });
+    expect(
+      (await owner.loadFullModelCatalog!({ refresh: true, providerIds: ["provider-a"] }))
+        .providerRecommendations,
+    ).toEqual({ "provider-a": [], "provider-b": [] });
+    mocks.runPreparedModelCatalogWorker.mockResolvedValue({
+      entries,
+      routeVariants: entries,
+      providerOutcomes: [{ provider: "provider-a", status: "ready" }],
+    });
+    expect(
+      (await owner.loadFullModelCatalog!({ refresh: true, providerIds: ["provider-a"] }))
+        .providerRecommendations,
+    ).toEqual({ "provider-b": [] });
+  });
+
+  it.each([{ recommended: ["learned"] }, { recommended: [] }])(
+    "retains accepted recommendation authority $recommended across failed discovery",
+    async ({ recommended }) => {
+      const row = { provider: "custom", id: "learned", name: "Learned" };
+      const ready: ModelCatalogSnapshot = {
+        entries: [row],
+        routeVariants: [row],
+        providerOutcomes: [{ provider: "custom", status: "ready", recommendedModels: recommended }],
+        providerRecommendations: { custom: recommended },
+      };
+      mocks.runPreparedModelCatalogWorker.mockResolvedValue(ready);
+      const owner = await publishPreparedModelRuntimeSnapshot(
+        fixture.agentInput("pro", { agents: { entries: { pro: {} } } }),
+        {
+          catalogMode: "static",
+          provenance: "standalone",
+        },
+      );
+      await owner.loadFullModelCatalog!({ refresh: true });
+      mocks.runPreparedModelCatalogWorker.mockResolvedValue({
+        entries: [],
+        routeVariants: [],
+        providerOutcomes: [{ provider: "custom", status: "unavailable" }],
+      });
+      const failed = await owner.loadFullModelCatalog!({ refresh: true });
+      expect(failed.providerRecommendations).toEqual({ custom: recommended });
+      expect(failed.entries.map(({ id }) => id)).toEqual(["learned"]);
+      // Empty inventory still clears rows if its independent metadata acquisition failed.
+      mocks.runPreparedModelCatalogWorker.mockResolvedValue({
+        entries: [],
+        routeVariants: [],
+        providerOutcomes: [{ provider: "custom", status: "ready", recommendedModels: null }],
+      });
+      const emptyInventory = await owner.loadFullModelCatalog!({ refresh: true });
+      expect(emptyInventory.entries).toEqual([]);
+      expect(emptyInventory.providerRecommendations).toEqual({ custom: recommended });
+      mocks.runPreparedModelCatalogWorker.mockResolvedValue({
+        entries: [],
+        routeVariants: [],
+        providerOutcomes: [{ provider: "custom", status: "ready", recommendedModels: [] }],
+        providerRecommendations: { custom: [] },
+      });
+      expect(
+        (await owner.loadFullModelCatalog!({ refresh: true })).providerRecommendations,
+      ).toEqual({ custom: [] });
+    },
+  );
+});
+
 describe("legacy provider catalog retention", () => {
   const learned = { provider: "custom", id: "learned", name: "Learned" };
   const starter = { provider: "custom", id: "starter", name: "Starter" };

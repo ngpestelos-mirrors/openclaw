@@ -29,6 +29,16 @@ describe("catalog attempt status publication", () => {
       const rejectedCatalog = publish([rejected]);
       expect(rejectedCatalog.refreshFailed).toBeUndefined();
       expect(publish([rejected, unavailable]).refreshFailed).toBe(true);
+      if (kind === "provider") {
+        expect(
+          publish([{ provider: "metadata-failed", status: "ready", recommendedModels: null }])
+            .refreshFailed,
+        ).toBe(true);
+        expect(
+          publish([{ provider: "metadata-empty", status: "ready", recommendedModels: [] }])
+            .refreshFailed,
+        ).toBeUndefined();
+      }
 
       // A thrown acquisition failure is independent of a determinate provider outcome.
       reporter.failed(new Error("catalog request timed out"), ["unreachable"], kind);

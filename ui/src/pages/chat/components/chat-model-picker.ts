@@ -153,7 +153,7 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
   // Default restores inheritance; it stays ahead of ranked model choices. When a
   // provider recommends models, they follow, and the rest collapse under "All models".
   const recommendingProviders = new Set(
-    params.modelOptions.filter((option) => option.recommended).map(groupProvider),
+    params.modelOptions.filter((option) => option.recommended !== undefined).map(groupProvider),
   );
   const providerGroups = new Map<
     string,

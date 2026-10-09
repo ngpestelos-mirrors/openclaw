@@ -411,12 +411,14 @@ async function runCatalogRequest(
       value: source,
       providerExpiries,
       providerModels,
-    } = await captureProviderCatalogExpiries(() =>
-      prepareAgentCatalogSource(exactAgentFacts, catalogGeneration, "live", false, {
-        authStore,
-        providerDiscoveryProviderIds: request.providerIds,
-        providerDiscoveryTimeoutMs: PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS,
-      }),
+    } = await captureProviderCatalogExpiries(
+      () =>
+        prepareAgentCatalogSource(exactAgentFacts, catalogGeneration, "live", false, {
+          authStore,
+          providerDiscoveryProviderIds: request.providerIds,
+          providerDiscoveryTimeoutMs: PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS,
+        }),
+      request.refresh,
     );
     const facts = await prepareFullCatalogFacts(
       exactAgentFacts,
