@@ -1,10 +1,8 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { note } from "../../packages/terminal-core/src/note.js";
-import { listAgentEntriesWithSource } from "../agents/agent-scope-config.js";
 import { listReadOnlyChannelPluginsForConfig } from "../channels/plugins/read-only.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import type { OpenClawConfig, GatewayBindMode } from "../config/config.js";
-import type { AgentConfig } from "../config/types.agents.js";
 import { hasConfiguredSecretInput, resolveSecretInputRef } from "../config/types.secrets.js";
 import { resolveGatewayAuthTokenSourceConflict } from "../gateway/auth-token-source-conflict.js";
 import { resolveGatewayAuth } from "../gateway/auth.js";
@@ -26,51 +24,6 @@ import { discoverConfigSecretTargets } from "../secrets/target-registry.js";
 import { collectChannelSecurityFindingsCore } from "../security/audit-channel.js";
 import type { SecurityAuditFinding } from "../security/audit.types.js";
 import { collectExecFilesystemPolicyDriftHits } from "../security/exec-filesystem-policy.js";
-
-function collectImplicitHeartbeatDirectPolicyWarnings(cfg: OpenClawConfig): SecurityAuditFinding[] {
-  const findings: SecurityAuditFinding[] = [];
-
-  const maybeWarn = (params: {
-    label: string;
-    heartbeat: AgentConfig["heartbeat"] | undefined;
-    pathHint: string;
-  }) => {
-    const heartbeat = params.heartbeat;
-    if (!heartbeat || heartbeat.target === undefined || heartbeat.target === "none") {
-      return;
-    }
-    if (heartbeat.directPolicy !== undefined) {
-      return;
-    }
-    findings.push({
-      checkId: "doctor.heartbeat_direct_policy_unset",
-      severity: "warn",
-      title: params.label,
-      detail: `heartbeat delivery is configured while ${params.pathHint} is unset.`,
-      remediation:
-        'Heartbeat now allows direct/DM targets by default. Set it explicitly to "allow" or "block" to pin upgrade behavior.',
-    });
-  };
-
-  maybeWarn({
-    label: "Heartbeat defaults",
-    heartbeat: cfg.agents?.defaults?.heartbeat,
-    pathHint: "agents.defaults.heartbeat.directPolicy",
-  });
-
-  for (const { entry: agent, source } of listAgentEntriesWithSource(cfg)) {
-    maybeWarn({
-      label: `Heartbeat agent "${agent.id}"`,
-      heartbeat: agent.heartbeat,
-      pathHint:
-        source.kind === "entries"
-          ? `agents.entries.${source.key}.heartbeat.directPolicy`
-          : `heartbeat.directPolicy for agent "${agent.id}"`,
-    });
-  }
-
-  return findings;
-}
 
 function collectExecPolicyConflictWarnings(
   cfg: OpenClawConfig,
@@ -248,7 +201,6 @@ export async function collectSecurityWarnings(
     });
   }
 
-  findings.push(...collectImplicitHeartbeatDirectPolicyWarnings(cfg));
   let approvals: ExecApprovalsFile | undefined;
   try {
     approvals = loadExecApprovalsReadOnly();
