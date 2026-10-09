@@ -216,16 +216,16 @@ it("settles hidden cleanup on its original actor after the run is canceled", asy
   const { hidden, cleanup } = await withIncognitoSessionActor(
     actor,
     async () => {
-      const hidden = await prepareInternalSessionEffectsSession(params);
-      const cleanup = createInternalSessionEffectsCleanup({
+      const created = await prepareInternalSessionEffectsSession(params);
+      const retainedCleanup = createInternalSessionEffectsCleanup({
         ...params,
         enabled: true,
         onError: (error) => {
           throw error;
         },
       });
-      cleanup.track(hidden);
-      return { hidden, cleanup };
+      retainedCleanup.track(created);
+      return { hidden: created, cleanup: retainedCleanup };
     },
     controller.signal,
   );
