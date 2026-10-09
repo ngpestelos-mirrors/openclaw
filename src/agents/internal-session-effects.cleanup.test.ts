@@ -16,6 +16,7 @@ const { state, remove, loadEntry } = vi.hoisted(() => {
   };
 });
 
+// mock-isolation: Control lifecycle mutations so ownership can change while cleanup is admitted.
 vi.mock("../config/sessions/session-accessor.js", () => ({
   applySessionEntryLifecycleMutation: remove,
   forkSessionFromParentTranscript: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock("../config/sessions/session-accessor.js", () => ({
   upsertSessionEntryCore: vi.fn(),
 }));
 
+// mock-isolation: Read the controlled lifecycle state without opening a separate database worker.
 vi.mock("../config/sessions/session-entry-read-runtime.js", () => ({
   readSessionEntryReadOnlyInWorker: loadEntry,
 }));
