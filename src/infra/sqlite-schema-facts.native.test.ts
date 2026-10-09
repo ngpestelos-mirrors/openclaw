@@ -1,4 +1,4 @@
-import { renameSync } from "node:fs";
+import { fstatSync, linkSync, renameSync } from "node:fs";
 import path from "node:path";
 import { constants, DatabaseSync, StatementSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
@@ -6,8 +6,12 @@ import { runNodeScript } from "../../test/helpers/run-node-script.js";
 import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { readExistingAgentSchemaMeta } from "../state/openclaw-agent-db-metadata.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
+import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import {
+  captureSqliteDatabaseAdmissions,
+  installSqliteDatabaseAdmissions,
+  retireSqliteDatabaseAdmissionForPath,
   getSqliteDatabaseAdmission,
   getSqliteDatabaseSchemaRevision,
   hasPendingSqliteDatabaseSchemaMutation,
@@ -26,6 +30,48 @@ import { storageProcessTestEntrypoints } from "./storage-process-runtime.test-su
 
 describe("native SQLite schema snapshots and callbacks", () => {
   const { tempDirs, openDatabase } = useSqliteSchemaTestFixture();
+
+  it("retains no descriptor for raw snapshot opens and retires admitted snapshot custody", () => {
+    const filename = path.join(tempDirs.make("openclaw-schema-retirement-"), "snapshot.sqlite");
+    const source = new DatabaseSync(filename);
+    source.exec("CREATE TABLE original (id)");
+    source.close();
+    const inspection = openNodeSqliteDatabase(filename, { readOnly: true });
+    try {
+      inspection.exec("BEGIN");
+      expect(inspection.prepare("SELECT id FROM original").all()).toEqual([]);
+      inspection.exec("COMMIT");
+    } finally {
+      inspection.close();
+    }
+    const database = openDatabase("", false, filename);
+    expect(captureSqliteDatabaseAdmissions().some((record) => record.location === filename)).toBe(
+      false,
+    );
+    admitSqliteSchema(database);
+    const record = captureSqliteDatabaseAdmissions().find((entry) => entry.location === filename)!;
+    expect(fstatSync(record.descriptor).isFile()).toBe(true);
+    const staleTransfer = structuredClone([record]);
+    database.close();
+    retireSqliteDatabaseAdmissionForPath(filename);
+    expect(() => fstatSync(record.descriptor)).toThrow();
+    installSqliteDatabaseAdmissions(staleTransfer);
+    expect(
+      captureSqliteDatabaseAdmissions().some((entry) => entry.identity === record.identity),
+    ).toBe(false);
+  });
+
+  it("does not retire canonical admission through a snapshot hardlink", () => {
+    const root = tempDirs.make("openclaw-schema-hardlink-");
+    const filename = path.join(root, "state.sqlite");
+    const database = openDatabase(undefined, true, filename);
+    const snapshot = path.join(root, "snapshot.sqlite");
+    linkSync(filename, snapshot);
+    const record = captureSqliteDatabaseAdmissions().find((entry) => entry.location === filename)!;
+    retireSqliteDatabaseAdmissionForPath(snapshot);
+    expect(fstatSync(record.descriptor).isFile()).toBe(true);
+    expect(tableExists(database, "original")).toBe(true);
+  });
 
   it("fences an unadmitted host writer before callbacks can admit siblings", () => {
     const filename = path.join(tempDirs.make("openclaw-schema-cold-host-"), "state.sqlite");

@@ -85,7 +85,9 @@ it("does not revive a disposed borrower when the physical reader reopens", async
   }
   try {
     expect(() => first.writeRevision()).toThrow(/closed/);
-    expect(next.read(({ db }) => db)).not.toBe(original);
+    const reopened = next.read(({ db }) => db);
+    expect(reopened.isOpen).toBe(true);
+    expect(reopened === original).toBe(false);
     expect(next.writeRevision()).toBeTypeOf("number");
   } finally {
     next.dispose();

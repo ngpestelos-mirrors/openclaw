@@ -16,6 +16,7 @@ import {
 import { withEnvAsync } from "../../../test-utils/env.js";
 import { observeMainThreadSql } from "../../../test-utils/main-thread-sql-spies.test-support.js";
 import {
+  createSubagentStoreRunFixture as createRun,
   loadSubagentRegistryFromSqlite,
   persistRegistryFixture,
   saveSubagentRegistryChangesToSqlite,
@@ -49,50 +50,6 @@ import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { resolveSubagentDisplayStatus } from "./subagent-session-metrics.js";
 
 type SubagentRegistryDatabase = Pick<OpenClawStateKyselyDatabase, "subagent_runs">;
-
-function createRun(overrides: Partial<SubagentRunRecord> = {}): SubagentRunRecord {
-  return {
-    runId: "run-one",
-    childSessionKey: "agent:main:subagent:one",
-    requesterSessionKey: "agent:main:main",
-    requesterDisplayKey: "main",
-    task: "check sqlite persistence",
-    cleanup: "keep",
-    createdAt: 100,
-    expectsCompletionMessage: true,
-    execution: {
-      status: "terminal",
-      startedAt: 110,
-      endedAt: 250,
-      outcome: { status: "ok", startedAt: 110, endedAt: 250, elapsedMs: 140 },
-    },
-    completion: {
-      required: true,
-      resultText: "done",
-      capturedAt: 260,
-      terminalReply: { disposition: "visible", text: "done" },
-    },
-    delivery: {
-      status: "pending",
-      createdAt: 270,
-      lastAttemptAt: 280,
-      attemptCount: 2,
-      lastError: "retry later",
-      payload: {
-        requesterSessionKey: "agent:main:main",
-        requesterDisplayKey: "main",
-        childSessionKey: "agent:main:subagent:one",
-        childRunId: "run-one",
-        task: "check sqlite persistence",
-        startedAt: 110,
-        endedAt: 250,
-        outcome: { status: "ok" },
-        expectsCompletionMessage: true,
-      },
-    },
-    ...overrides,
-  };
-}
 
 describe("subagent registry sqlite store", () => {
   let tempStateDir: string | null = null;
