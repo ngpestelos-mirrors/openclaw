@@ -314,65 +314,69 @@ describe("device-pair notify persistence", () => {
     expect(entries).not.toHaveBeenCalled();
   });
 
-  it.each(["subscriber command", "persisted seen receipt on restart"] as const)(
-    "reuses empty notifier state and observes a later %s",
-    async (addition) => {
-      vi.useFakeTimers();
-      vi.setSystemTime(1_000);
-      const clock = createGatewaySchedulerClock(1_000);
-      const gatewayScheduler = createTestGatewayScheduler(clock.clock);
-      let scheduler = createTestPluginServiceScheduler(gatewayScheduler);
-      const sendText = vi.fn(async () => ({ channel: "telegram", to: "chat-123" }));
-      const storage = observeNotifyStorage();
-      const api = createApi(sendText, storage.openKeyedStore);
-      const warn = vi.spyOn(api.logger, "warn");
-      const seenStore = openStore<NotifySeenRequest>({
-        namespace: DEVICE_PAIR_NOTIFY_SEEN_REQUEST_NAMESPACE,
-        maxEntries: DEVICE_PAIR_NOTIFY_SEEN_REQUEST_MAX_ENTRIES,
-        defaultTtlMs: DEVICE_PAIR_NOTIFY_MAX_SEEN_AGE_MS,
-      });
-      try {
-        startPairingNotifier(api, scheduler);
-        await clock.advanceBy(10_000);
-        expect(warn).not.toHaveBeenCalled();
-        await expect(Promise.all(storage.takeStoreReads())).resolves.toEqual([[], []]);
-        expect(listDevicePairingMock).not.toHaveBeenCalled();
-        await clock.advanceBy(20_000);
-        expect(storage.takeStoreReads()).toEqual([]);
+  it.each([
+    "subscriber command",
+    "subscriber command from another API",
+    "persisted seen receipt on restart",
+  ] as const)("reuses empty notifier state and observes a later %s", async (addition) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const clock = createGatewaySchedulerClock(1_000);
+    const gatewayScheduler = createTestGatewayScheduler(clock.clock);
+    let scheduler = createTestPluginServiceScheduler(gatewayScheduler);
+    const sendText = vi.fn(async () => ({ channel: "telegram", to: "chat-123" }));
+    const storage = observeNotifyStorage();
+    const api = createApi(sendText, storage.openKeyedStore);
+    const warn = vi.spyOn(api.logger, "warn");
+    const seenStore = openStore<NotifySeenRequest>({
+      namespace: DEVICE_PAIR_NOTIFY_SEEN_REQUEST_NAMESPACE,
+      maxEntries: DEVICE_PAIR_NOTIFY_SEEN_REQUEST_MAX_ENTRIES,
+      defaultTtlMs: DEVICE_PAIR_NOTIFY_MAX_SEEN_AGE_MS,
+    });
+    try {
+      startPairingNotifier(api, scheduler);
+      await clock.advanceBy(10_000);
+      expect(warn).not.toHaveBeenCalled();
+      await expect(Promise.all(storage.takeStoreReads())).resolves.toEqual([[], []]);
+      expect(listDevicePairingMock).not.toHaveBeenCalled();
+      await clock.advanceBy(20_000);
+      expect(storage.takeStoreReads()).toEqual([]);
 
-        if (addition === "subscriber command") {
-          await notifyCommand(api, "once");
-          setPendingRequests({});
-        } else {
-          await scheduler.stop();
-          await seenStore.register(notifyRequestStoreKey("request-1"), {
-            requestId: "request-1",
-            notifiedAtMs: 1_000,
-          });
-          scheduler = createTestPluginServiceScheduler(gatewayScheduler);
-          startPairingNotifier(api, scheduler);
-        }
-
-        await clock.advanceBy(10_000);
-
-        expect(warn).not.toHaveBeenCalled();
-        expect(listDevicePairingMock).toHaveBeenCalledTimes(1);
-        expect(sendText).toHaveBeenCalledTimes(addition === "subscriber command" ? 1 : 0);
-        if (addition === "subscriber command") {
-          expect(sendText).toHaveBeenCalledWith(
-            expect.objectContaining({ text: expect.stringContaining("ID: request-1") }),
-          );
-        } else {
-          await expect(seenStore.entries()).resolves.toEqual([]);
-        }
-      } finally {
+      const isSubscriberCommand = addition !== "persisted seen receipt on restart";
+      if (isSubscriberCommand) {
+        const writerApi =
+          addition === "subscriber command" ? api : createApi(undefined, storage.openKeyedStore);
+        await notifyCommand(writerApi, "once");
+        setPendingRequests({});
+      } else {
         await scheduler.stop();
+        await seenStore.register(notifyRequestStoreKey("request-1"), {
+          requestId: "request-1",
+          notifiedAtMs: 1_000,
+        });
+        scheduler = createTestPluginServiceScheduler(gatewayScheduler);
+        startPairingNotifier(api, scheduler);
       }
-    },
-  );
+
+      await clock.advanceBy(10_000);
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(listDevicePairingMock).toHaveBeenCalledTimes(1);
+      expect(sendText).toHaveBeenCalledTimes(isSubscriberCommand ? 1 : 0);
+      if (isSubscriberCommand) {
+        expect(sendText).toHaveBeenCalledWith(
+          expect.objectContaining({ text: expect.stringContaining("ID: request-1") }),
+        );
+      } else {
+        await expect(seenStore.entries()).resolves.toEqual([]);
+      }
+    } finally {
+      await scheduler.stop();
+    }
+  });
 
   it.each([false, true])(
-    "does not cache an empty read across a committed arm (lost reply: %s)",
+    "does not cache an empty read across another API's committed arm (lost reply: %s)",
     async (lostReply) => {
       vi.useFakeTimers();
       vi.setSystemTime(1_000);
@@ -396,13 +400,17 @@ describe("device-pair notify persistence", () => {
             }
             return result;
           };
-          if (lostReply) {
-            const register = store.register.bind(store);
-            store.register = async (...args) => {
-              await register(...args);
-              throw new Error("committed arm reply unavailable");
-            };
-          }
+        }
+        return store;
+      });
+      const writerApi = createApi(undefined, <T>(options: OpenKeyedStoreOptions) => {
+        const store = storage.openKeyedStore<T>(options);
+        if (lostReply && options.namespace === DEVICE_PAIR_NOTIFY_SUBSCRIBER_NAMESPACE) {
+          const register = store.register.bind(store);
+          store.register = async (...args) => {
+            await register(...args);
+            throw new Error("committed arm reply unavailable");
+          };
         }
         return store;
       });
@@ -410,7 +418,7 @@ describe("device-pair notify persistence", () => {
       const firstPoll = clock.advanceBy(10_000);
       try {
         await storage.waitFor(captured.promise);
-        const arm = notifyCommand(api, "once");
+        const arm = notifyCommand(writerApi, "once");
         if (lostReply) {
           await expect(arm).rejects.toThrow("committed arm reply unavailable");
         } else {

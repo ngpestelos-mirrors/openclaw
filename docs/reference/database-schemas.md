@@ -196,9 +196,10 @@ preserve schemas, stored bytes, durability, retention, permissions, and update b
 
 The device-pair notifier retains an empty subscriber and delivery-receipt state
 for its service lifetime, so idle scheduled scans do not reread both stores.
-Its own writes invalidate that fact, including uncertain outcomes, and service
-restart reloads it. Active notifications retain their current subscription checks
-and delivery receipts; persisted subscriptions and receipt retention are unchanged.
+Its own writes across Gateway and agent registries invalidate that fact, including
+uncertain outcomes, and service restart reloads it. Active notifications retain
+their current subscription checks and delivery receipts; persisted subscriptions
+and receipt retention are unchanged.
 
 The Gateway does not schedule daily full-database scans. Admission-requested
 background checks stay limited to the requested agent database: `quick_check`
