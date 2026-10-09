@@ -14,6 +14,7 @@ import {
   captureSqliteDatabaseAdmissions,
   createSqliteDatabaseAdmissionCursor,
   installSqliteDatabaseAdmissions,
+  withSqliteDatabaseAdmissionExchange,
 } from "./sqlite-database-admission.js";
 import { withSqliteReaderOwner } from "./sqlite-reader-lifecycle.js";
 import {
@@ -22,6 +23,7 @@ import {
   SQLITE_WORKER_PREPARE_ADMITTED,
   SQLITE_WORKER_OPERATION_CLEANUP,
   SQLITE_WORKER_CLOSE_RECEIPT,
+  SqliteWorkerError,
   SqliteWorkerOpenRefusedError,
   type SqliteWorkerCloseReceipt,
   type SqliteWorkerPreparedBackend,
@@ -34,6 +36,7 @@ import { assertExistingDatabaseIdentity } from "./sqlite-worker-identity.js";
 import {
   withSqliteWorkerOperationAdmission,
   requestSqliteWorkerOperationAdmission,
+  exchangeSqliteDatabaseAdmissions,
 } from "./sqlite-worker-operation-admission.js";
 import {
   settleSqliteWorkerOperationContext,
@@ -97,6 +100,28 @@ function runInActorContext<T>(actor: number, operation: () => T): T {
       ? withSqliteWorkerOperationAdmission(operationAdmission.context, operation)
       : operation(),
   );
+}
+
+async function closeInActorContext(
+  actor: number,
+  close: () => void | Promise<void>,
+): Promise<void> {
+  const admission = operationAdmission?.actor === actor ? operationAdmission.context : undefined;
+  let active = true;
+  try {
+    await runInActorContext(actor, () =>
+      admission
+        ? withSqliteDatabaseAdmissionExchange((facts, location, create) => {
+            if (!active) {
+              throw new SqliteWorkerError("SQLite close facts outlived native cleanup", "closed");
+            }
+            return exchangeSqliteDatabaseAdmissions(admission.port, facts, location, create);
+          }, close)
+        : close(),
+    );
+  } finally {
+    active = false;
+  }
 }
 
 async function receive(request: SqliteWorkerRequest): Promise<void> {
@@ -390,7 +415,8 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
         throw new Error("SQLite worker actor is closed");
       }
       try {
-        await runInActorContext(request.actor, () => backend.close());
+        // Facts settle through async close; transaction grants still expire at the synchronous boundary.
+        await closeInActorContext(request.actor, () => backend.close());
         closeReceipt = runInActorContext(request.actor, () =>
           backend[SQLITE_WORKER_CLOSE_RECEIPT]?.(),
         );

@@ -82,6 +82,9 @@ function createExistingState(mutate?: (db: DatabaseSync) => void) {
   const env = { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-existing-schema-") };
   const pathname = openOpenClawStateDatabase({ env }).path;
   closeOpenClawStateDatabase();
+  const seedPath = `${pathname}.seed`;
+  renameSync(pathname, seedPath);
+  copyFileSync(seedPath, pathname);
   const db = new DatabaseSync(pathname);
   try {
     db.prepare("UPDATE schema_meta SET app_version = ? WHERE meta_key = 'primary'").run(
@@ -304,7 +307,7 @@ describe("existing shared-state schema admission", () => {
   );
 
   it.each(["schema rollback", "canonical close", "replacement"] as const)(
-    "shares completed worker integrity admission and revokes it after %s",
+    "shares completed worker integrity admission across %s and validates replacement files",
     async (change) => {
       const replacement =
         change === "replacement" ? createExistingState(insertForeignKeyCorruption) : undefined;
@@ -339,24 +342,17 @@ describe("existing shared-state schema admission", () => {
             const fresh = capture();
             expect(read(fresh)).toEqual(before);
             expect(read(fresh)).toEqual(before);
-            expect(checkCount()).toBe(2);
+            expect(checkCount()).toBe(1);
             expect(read()).toEqual(before);
-          } else {
-            if (replacement) {
-              renameSync(options.path, `${options.path}.previous`);
-              copyFileSync(replacement.options.path, options.path);
-            } else {
-              await closeOpenClawStateDatabaseAsync();
-              const db = new DatabaseSync(options.path);
-              try {
-                insertForeignKeyCorruption(db);
-              } finally {
-                db.close();
-              }
-            }
+          } else if (replacement) {
+            renameSync(options.path, `${options.path}.previous`);
+            copyFileSync(replacement.options.path, options.path);
             expect(() => read()).toThrow(/foreign_key_check/i);
+          } else {
+            await closeOpenClawStateDatabaseAsync();
+            expect(read()).toEqual(before);
           }
-          expect(checkCount()).toBe(change === "schema rollback" ? 3 : 2);
+          expect(checkCount()).toBe(replacement ? 2 : 1);
         } finally {
           reads.restore();
         }

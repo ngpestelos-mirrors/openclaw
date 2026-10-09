@@ -3,6 +3,7 @@ import type {
   WorkerTaskOptions,
   WorkerTaskPoolOptions,
 } from "../../infra/worker-task-pool.types.js";
+import type { WorkerTaskContext } from "../../infra/worker-task-transport.js";
 import type { SessionTranscriptDisplayDeltaResult } from "./session-accessor.sqlite-history-query.js";
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
@@ -13,7 +14,7 @@ type Request = {
   taskId: number;
   interactive?: boolean;
   nativeSections: SharedArrayBuffer;
-  taskContext: [string, string][];
+  taskContext: WorkerTaskContext;
 };
 type Resource = { close: () => Promise<void>; agentId?: string; revoke: () => void };
 type QuarantineDatabase = {

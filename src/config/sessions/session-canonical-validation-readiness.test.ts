@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { renameSync } from "node:fs";
-import { DatabaseSync, StatementSync } from "node:sqlite";
+import { backup, DatabaseSync, StatementSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -8,7 +8,10 @@ import {
   resolveRuntimeWorkerUrl,
 } from "../../infra/runtime-worker-url.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { closeOpenClawAgentDatabases } from "../../state/openclaw-agent-db-lifecycle.js";
+import {
+  closeOpenClawAgentDatabaseByPathAsync,
+  closeOpenClawAgentDatabases,
+} from "../../state/openclaw-agent-db-lifecycle.js";
 import {
   hasOpenClawAgentCanonicalValidation,
   invalidateOpenClawAgentDatabaseValidation,
@@ -102,18 +105,22 @@ it.each(["pending rows", "revoked receipt"] as const)(
   },
 );
 
-it("refuses foreign schema drift before reusing a warm canonical readiness receipt", async () => {
+it("refuses replacement schema drift before reusing a warm canonical readiness receipt", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const { options, database } = seedPendingRows(0);
     expect(hasOpenClawAgentCanonicalValidation(database)).toBe(true);
     expect(hasPendingCanonicalSessionValidation(database)).toBe(false);
     await certifySessionCanonicalValidationPending(options);
-    const peer = new DatabaseSync(database.path);
+    const replacement = `${database.path}.replacement`;
+    await backup(database.db, replacement);
+    await closeOpenClawAgentDatabaseByPathAsync(database.path);
+    const peer = new DatabaseSync(replacement);
     try {
       peer.exec("DROP TRIGGER session_nodes_canonical_pending_after_update");
     } finally {
       peer.close();
     }
+    renameSync(replacement, database.path);
     await expect(certifySessionCanonicalValidationPending(options)).rejects.toThrow(
       /canonical validation schema is missing or drifted.*openclaw doctor --fix/u,
     );

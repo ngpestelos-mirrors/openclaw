@@ -615,6 +615,9 @@ describe("WorkboardStore", () => {
     const initialized = createWorkboardSqliteStores({ dbPath, workerModuleUrl });
     await initialized.ready;
     await initialized.close();
+    // Build the old format on a physical file this process has not admitted.
+    fs.renameSync(dbPath, `${dbPath}.seed`);
+    fs.copyFileSync(`${dbPath}.seed`, dbPath);
     const db = new DatabaseSync(dbPath);
     let initialMigrationIds: Array<{ id: string }>;
     try {
@@ -870,6 +873,9 @@ describe("WorkboardStore", () => {
     const initialized = createWorkboardSqliteStores({ dbPath, workerModuleUrl });
     await initialized.ready;
     await initialized.close();
+    // Build the old format on a physical file this process has not admitted.
+    fs.renameSync(dbPath, `${dbPath}.seed`);
+    fs.copyFileSync(`${dbPath}.seed`, dbPath);
     const legacy = new DatabaseSync(dbPath);
     try {
       legacy.exec(`

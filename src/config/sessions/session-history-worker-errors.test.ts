@@ -88,7 +88,7 @@ function installWorkerTransport() {
       taskId: 7,
       interactive: Boolean(options.onRequest),
       nativeSections: new SharedArrayBuffer(4),
-      taskContext: [],
+      taskContext: { deletedAgentDatabaseFences: [], databaseAdmissions: [] },
     });
     const reply = await posted.promise;
     assert(reply && typeof reply === "object" && "status" in reply);

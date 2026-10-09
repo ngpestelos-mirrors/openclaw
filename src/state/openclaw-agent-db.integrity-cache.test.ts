@@ -301,7 +301,7 @@ it.each([
         : claimOpenClawAgentDatabaseLease({ ...options, path: original.path });
     try {
       if (runtimeProof === "foreign") {
-        // A live foreign lease disallows reuse of this process's retained proof.
+        // A live foreign lease does not revoke this process's checked physical file.
         openOpenClawStateDatabase({ env })
           .db.prepare(
             "UPDATE agent_database_leases SET owner_pid = ?, owner_start_time = NULL WHERE lease_id = ?",
@@ -337,7 +337,7 @@ it.each([
           .prepare("SELECT state_json FROM auth_profile_state WHERE state_key='preserved'")
           .get(),
       ).toEqual({ state_json: '{"ok":true}' });
-      const reused = runtimeProof === "shared";
+      const reused = runtimeProof !== "reset";
       expect(diagnostics?.integrityGateOutcome).toBe(reused ? "cached" : "healthy");
       if (reused) {
         expect(logger.info).not.toHaveBeenCalled();
@@ -349,7 +349,7 @@ it.each([
             path: original.path,
             admissionMode: "sync",
             integrityGateOutcome: "healthy",
-            integrityGateReason: runtimeProof === "reset" ? "no-proof" : "lease-class",
+            integrityGateReason: "no-proof",
           }),
         );
       }

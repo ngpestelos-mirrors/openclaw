@@ -2,11 +2,19 @@ import {
   findSqlCharacter,
   normalizeSqlIdentifier,
   normalizeSqlWhitespace,
+  readSqlToken,
 } from "./sqlite-schema-sql.js";
 
 function schemaStatement(sql: string): boolean {
   if (/^(?:CREATE|ALTER|DROP|REINDEX|VACUUM)\b/iu.test(sql)) {
     return true;
+  }
+  const catalogWrite =
+    /^(?:INSERT(?: OR \w+)? INTO|UPDATE(?: OR \w+)?|DELETE FROM|REPLACE INTO)\s+/iu.exec(sql);
+  if (catalogWrite) {
+    const target = readSqlToken(sql, catalogWrite[0].length)?.raw ?? "";
+    const name = target.slice(findSqlCharacter(target, ".") + 1);
+    return ["sqlite_schema", "sqlite_master"].includes(normalizeSqlIdentifier(name));
   }
   if (!/^PRAGMA\b/iu.test(sql)) {
     return false;
@@ -23,12 +31,13 @@ function schemaStatement(sql: string): boolean {
     name.startsWith("'") && name.endsWith("'")
       ? name.slice(1, -1).toLowerCase()
       : normalizeSqlIdentifier(name);
-  return ["user_version", "schema_version", "writable_schema"].includes(pragma);
+  // writable_schema changes connection parsing; only catalog writes change physical facts.
+  return ["user_version", "schema_version"].includes(pragma);
 }
 
 // Statement kinds are mutation hints; quoted payloads and comments are not statements.
 function changesSchema(sql: string): boolean {
-  if (!/\b(?:CREATE|ALTER|DROP|REINDEX|VACUUM|PRAGMA)\b/iu.test(sql)) {
+  if (!/\b(?:CREATE|ALTER|DROP|REINDEX|VACUUM|PRAGMA|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)) {
     return false;
   }
   let remaining = normalizeSqlWhitespace(sql);

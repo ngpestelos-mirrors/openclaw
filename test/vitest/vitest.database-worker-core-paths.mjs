@@ -3,6 +3,9 @@ export const databaseWorkerCoreTestFiles = [
   // Physical admission and descriptor custody belong to the application host, not an unhosted test Worker.
   "src/state/openclaw-agent-db.checkonce.test.ts",
   "src/state/openclaw-state-db-checkonce.test.ts",
+  "src/state/openclaw-state-db-schema-version.test.ts",
+  "src/state/openclaw-agent-db.lease-owner.test.ts",
+  "src/state/openclaw-agent-db.open-timing.test.ts",
   "src/state/openclaw-state-db-read-connection.cache.test.ts",
   "src/agents/auth-profiles.sqlite-read-pool.test.ts",
   "src/state/openclaw-state-db-cron-delivery-migration.test.ts",
