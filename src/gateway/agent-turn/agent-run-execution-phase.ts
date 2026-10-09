@@ -94,9 +94,7 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
   let finishUndispatchedFollowup = false;
   try {
     await using runtimeResources = new AsyncDisposableStack();
-    let preparedModelRuntimeLease = prepared.preparedModelRuntimeLease
-      ? runtimeResources.use(prepared.preparedModelRuntimeLease)
-      : undefined;
+    let preparedModelRuntimeLease = runtimeResources.use(prepared.preparedModelRuntimeLease);
     let replyDispatchRuntime = prepared.replyDispatchRuntime;
     let workspaceOverride = prepared.workspaceOverride;
     let leaseActive = true;
@@ -165,7 +163,7 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
             agentId: params.activeSessionAgentId,
             reason: "agent.input.settled",
           },
-          { accessChanged: false },
+          { accessChanged: false, rowScope: "runtime" },
         );
       }
     };
@@ -177,7 +175,7 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
         const execution = withPreparedModelRuntimePluginGenerationScope(
           replyDispatchRuntime.pluginGeneration,
           () => dispatchAgentRunWithMedia(dispatch, params),
-          () => (leaseActive ? preparedModelRuntimeLease?.snapshot : undefined),
+          () => (leaseActive ? preparedModelRuntimeLease.snapshot : undefined),
         );
         dispatched = true;
         return execution;
