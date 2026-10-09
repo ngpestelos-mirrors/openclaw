@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { observeSqliteReadSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { prepareAgentDeleteDatabases } from "../../agents/agent-delete-databases.js";
 import { withAgentDeletion } from "../../agents/agent-lifecycle-registry.js";
@@ -71,11 +72,22 @@ it.each(["cold", "preexisting"] as const)(
       closeOpenClawAgentDatabasesForTest();
     }
 
-    await runSessionStartupMigration({
-      cfg: { agents: { entries: { main: {} } } },
-      env,
-      log: { info: vi.fn(), warn: vi.fn() },
-    });
+    const statements = observeSqliteReadSql(nodeSqlite.requireNodeSqlite().StatementSync.prototype);
+    try {
+      await runSessionStartupMigration({
+        cfg: { agents: { entries: { main: {} } } },
+        env,
+        log: { info: vi.fn(), warn: vi.fn() },
+      });
+    } finally {
+      statements.restore();
+    }
+    // Explicit fixture retirement forces schema convergence and one new policy admission.
+    expect(
+      statements.queries.filter((sql) =>
+        /select "main_key" from "session_key_contract"/iu.test(sql),
+      ),
+    ).toHaveLength(lifetime === "cold" ? 1 : 0);
 
     expect(withOpenClawAgentDatabaseReadOnly(readCanonicalSessionMainKey, options)).toEqual({
       found: true,

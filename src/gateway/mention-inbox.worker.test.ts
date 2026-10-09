@@ -95,6 +95,10 @@ describe("Mention Inbox worker snapshots", () => {
       ).toThrow("rollback mention");
       reads.queries.length = 0;
       expect(read(1, reader).snapshot).toBeUndefined();
+      // Rollback retires the carrier's staged coverage; one read repairs the committed head.
+      expect(reads.queries).toHaveLength(1);
+      reads.queries.length = 0;
+      expect(read(1, reader).snapshot).toBeUndefined();
       expect(reads.queries).toEqual([]);
       expect(read(-1, reader).snapshot).toEqual({
         head: { revision: 1, nextSequence: 1 },

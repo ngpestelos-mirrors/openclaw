@@ -1,15 +1,18 @@
 import path from "node:path";
 import { constants, DatabaseSync, StatementSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { observeSqliteReadSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
+import * as databaseAdmissions from "../../infra/sqlite-database-admission.js";
+import { withSqlitePostCommitPublications } from "../../infra/sqlite-post-commit.js";
 import { admitSqliteSchema, runSqliteReadOperationSync } from "../../infra/sqlite-schema-facts.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "../../state/openclaw-agent-schema.js";
 import {
   assertCanonicalSqliteSessionKeysCurrent,
   readCanonicalSessionMainKey,
+  readStoredCanonicalSessionMainKey,
   setCanonicalSqliteSessionMainKey,
 } from "./session-canonical-key.js";
 
@@ -57,6 +60,9 @@ describe("canonical main-key policy facts", () => {
         expect(read()).toBe("raw");
         db.prepare("DELETE FROM session_key_contract WHERE id = 1").run();
         expect(read()).toBe("main");
+        expect(readStoredCanonicalSessionMainKey(database)).toBeNull();
+        setCanonicalSqliteSessionMainKey(database, undefined);
+        expect(readStoredCanonicalSessionMainKey(database)).toBe("main");
         db.prepare(
           "REPLACE INTO session_key_contract (id, main_key, updated_at) VALUES (1, 'replacement', 1)",
         ).run();
@@ -217,6 +223,36 @@ describe("canonical main-key policy facts", () => {
           db.exec("COMMIT");
         }
       });
+    },
+  );
+
+  it.each(["autocommit", "managed"] as const)(
+    "retires stale policy when %s committed fact installation fails",
+    (mode) => {
+      const filename = path.join(tempDirs.make("canonical-policy-publication-"), "agent.sqlite");
+      const { db, database, read } = fixture(filename);
+      setCanonicalSqliteSessionMainKey(database, "previous");
+      const publication = vi
+        .spyOn(databaseAdmissions, "publishSqliteDatabaseAdmission")
+        .mockImplementationOnce(() => {
+          throw new Error("publication failed");
+        });
+      const write = () => setCanonicalSqliteSessionMainKey(database, "committed");
+      try {
+        if (mode === "managed") {
+          expect(() =>
+            withSqlitePostCommitPublications(db, () => runSqliteDeferredTransactionSync(db, write)),
+          ).not.toThrow();
+        } else {
+          expect(write).toThrow("publication failed");
+        }
+      } finally {
+        publication.mockRestore();
+      }
+      expect(db.prepare("SELECT main_key FROM session_key_contract WHERE id = 1").get()).toEqual({
+        main_key: "committed",
+      });
+      expect(read()).toBe("committed");
     },
   );
 

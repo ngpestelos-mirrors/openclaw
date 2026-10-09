@@ -1880,6 +1880,7 @@ src/config/sessions/session-accessor.sqlite-message-cut.ts	1
 src/config/sessions/session-accessor.sqlite-read.ts	2
 src/config/sessions/session-accessor.sqlite-reset-window.ts	2
 src/config/sessions/session-accessor.sqlite-transcript-message-append.ts	1
+src/config/sessions/session-accessor.sqlite-transcript-metadata-read.ts	1
 src/config/sessions/session-accessor.sqlite-transcript-mirror.ts	1
 src/config/sessions/session-accessor.sqlite-transcript-store.ts	2
 src/config/sessions/session-accessor.sqlite-transcript-write.ts	2
@@ -2590,7 +2591,6 @@ src/state/local-onboarding-state.ts	1
 src/state/openclaw-agent-db-permissions.ts	1
 src/state/openclaw-agent-db-registry-listing.ts	2
 src/state/openclaw-agent-db-session-migrations.ts	1
-src/state/openclaw-quarantine-store.ts	1
 src/state/openclaw-state-db-delivery-queue-backfill.ts	1
 src/state/openclaw-state-db-legacy-backfills.ts	4
 src/state/openclaw-state-db-schema-helpers.ts	1

@@ -496,7 +496,7 @@ export function failSqliteWorkerSlot(
   });
 }
 
-export function settleFailedSqliteWorkerJobs({
+function settleFailedSqliteWorkerJobs({
   queuedError,
   current,
   queued,

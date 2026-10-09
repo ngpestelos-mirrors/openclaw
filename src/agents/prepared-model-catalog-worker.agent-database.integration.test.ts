@@ -50,7 +50,7 @@ describe("Gateway catalog worker agent database readers", () => {
       expect(() => leaveWalMode(deleted!)).toThrow(/locked/);
       expect(() => leaveWalMode(survivor!)).toThrow(/locked/);
       await closeDeletedAgentDatabases(fixture.agentIds[0]!, [deleted!], {
-        assertCurrent() {},
+        assertCurrentFinal() {},
         async assertCurrentAsync() {},
       });
 

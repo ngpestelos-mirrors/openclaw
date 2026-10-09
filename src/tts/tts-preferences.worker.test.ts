@@ -88,12 +88,16 @@ it("carries the worker-read path through delivery and prompt rendering without c
         throw new Error("roll back preference change");
       }),
     ).toThrow("roll back preference change");
+    // Rollback retires staged coverage; one owner read restores the committed path.
     expect(await prepareTtsPreferences()).toEqual(next);
+    expect(reads).toHaveBeenCalledTimes(2);
+    expect(await prepareTtsPreferences()).toEqual(next);
+    expect(reads).toHaveBeenCalledTimes(2);
     deleteConfigMachineState("tts.prefsPath");
     expect(await prepareTtsPreferences()).toEqual({ machinePrefsPath: undefined });
     importConfigMachineState([["tts.prefsPath", firstPath]]);
     expect(await prepareTtsPreferences()).toEqual(preparedTtsPreferences);
-    expect(reads).toHaveBeenCalledTimes(1);
+    expect(reads).toHaveBeenCalledTimes(2);
   } finally {
     sql.restore();
   }
@@ -112,7 +116,7 @@ it("carries missing machine state without creating a store or falling back to a 
   expect(existsSync(path.join(root, "state", "openclaw.sqlite"))).toBe(false);
 });
 
-it("does not publish a completed path read after its database owner retires", async () => {
+it("shares concurrent cold reads and refuses their result after the database owner retires", async () => {
   const root = tempDirs.make("openclaw-tts-retired-");
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
   runOpenClawStateWriteTransaction(({ db }) => {
@@ -125,18 +129,24 @@ it("does not publish a completed path read after its database owner retires", as
   const completed = createDeferred();
   const release = createDeferred();
   const execute = stateReads.executeExistingOpenClawStateRead;
-  vi.spyOn(stateReads, "executeExistingOpenClawStateRead").mockImplementationOnce(
-    async (...args) => {
+  const reads = vi
+    .spyOn(stateReads, "executeExistingOpenClawStateRead")
+    .mockImplementationOnce(async (...args) => {
       const reply = await execute(...args);
       completed.resolve();
       await release.promise;
       return reply;
-    },
-  );
-  const pending = prepareTtsPreferences();
-  const refused = expect(pending).rejects.toThrow(/admission|closed|retired/iu);
+    });
+  const first = prepareTtsPreferences();
+  const second = prepareTtsPreferences();
+  const pending = Promise.allSettled([first, second]);
+  const refused = Promise.all([
+    expect(first).rejects.toThrow(/admission|closed|retired/iu),
+    expect(second).rejects.toThrow(/admission|closed|retired/iu),
+  ]);
   try {
     await awaitGateBeforeSettlement(completed.promise, pending, "TTS path read did not finish");
+    expect(reads).toHaveBeenCalledTimes(1);
     await closeOpenClawStateDatabaseAsync();
   } finally {
     release.resolve();

@@ -11,6 +11,7 @@ import {
 import {
   getSqliteDatabaseAdmission,
   publishSqliteDatabaseAdmission,
+  revokeSqliteDatabaseAdmissions,
 } from "../../infra/sqlite-database-admission.js";
 import {
   hasSqlitePostCommitScope,
@@ -94,7 +95,7 @@ type ReaderAdmission = {
 };
 type ReaderAdmissionCell = {
   proof?: ReaderAdmission;
-  policy?: { revision: SqliteReadScopeRevision; mainKey: string };
+  policy?: { revision: SqliteReadScopeRevision; stored: string | null };
   pendingMainKey?: { mainKey: string };
   committed: boolean;
   continuations: Set<SharedArrayBuffer>;
@@ -379,19 +380,21 @@ export function assertCanonicalSessionKeyWrite(sessionKey: string, expectedAgent
 }
 
 export function readCanonicalSessionMainKey(database: { db: DatabaseSync }): string {
+  return normalizeMainKey(readStoredCanonicalSessionMainKey(database) ?? undefined);
+}
+
+export function readStoredCanonicalSessionMainKey(database: { db: DatabaseSync }): string | null {
   const pending = readerAdmissions.get(database.db)?.pendingMainKey;
   if (database.db.isTransaction && pending !== undefined) {
     return pending.mainKey;
   }
   const published = getSqliteDatabaseAdmission(database.db, mainKeyPublication);
   if (published !== undefined) {
-    return normalizeMainKey(published ?? undefined);
+    return published;
   }
   const admitted = getSqliteDatabaseAdmission(database.db, mainKeyAdmission);
   if (admitted !== undefined) {
-    return normalizeMainKey(
-      getSqliteDatabaseAdmission(database.db, mainKeyPublication) ?? admitted ?? undefined,
-    );
+    return getSqliteDatabaseAdmission(database.db, mainKeyPublication) ?? admitted;
   }
   const revision = getSqliteReadScopeRevision(database.db);
   const admission = revision
@@ -399,23 +402,22 @@ export function readCanonicalSessionMainKey(database: { db: DatabaseSync }): str
     : readerAdmissions.get(database.db);
   const policy = admission?.policy;
   if (revision && policy?.revision === revision) {
-    return policy.mainKey;
+    return policy.stored;
   }
   const stored = mainKeyReader(database.db)()?.main_key ?? null;
   publishSqliteDatabaseAdmission(database.db, mainKeyAdmission, stored);
   // A reader that finished after a config commit cannot replace its postimage.
   const committed = getSqliteDatabaseAdmission(database.db, mainKeyPublication);
   if (committed !== undefined) {
-    return normalizeMainKey(committed ?? undefined);
+    return committed;
   }
-  const mainKey = normalizeMainKey(stored ?? undefined);
   if (admission) {
     admission.policy =
       revision && getSqliteReadScopeRevision(database.db) === revision
-        ? { revision, mainKey }
+        ? { revision, stored }
         : undefined;
   }
-  return mainKey;
+  return stored;
 }
 
 export function assertCanonicalSessionEntryLineageWrite(entry: SessionEntry): void {
@@ -623,26 +625,10 @@ export function setCanonicalSqliteSessionMainKey(
     throw new Error("Canonical main-key changes require managed transaction publication");
   }
   const canonicalMainKey = normalizeMainKey(mainKey);
-  const db = getNodeSqliteKysely<CanonicalSessionDatabase>(database.db);
-  const admitted =
-    (database.db.isTransaction
-      ? readerAdmissions.get(database.db)?.pendingMainKey?.mainKey
-      : undefined) ??
-    getSqliteDatabaseAdmission(database.db, mainKeyPublication) ??
-    getSqliteDatabaseAdmission(database.db, mainKeyAdmission);
-  const currentMainKey =
-    admitted !== undefined
-      ? admitted
-      : (executeSqliteQueryTakeFirstSync(
-          database.db,
-          db.selectFrom("session_key_contract").select("main_key").where("id", "=", 1),
-        )?.main_key ?? null);
-  if (currentMainKey === canonicalMainKey) {
-    if (admitted === undefined) {
-      publishSqliteDatabaseAdmission(database.db, mainKeyAdmission, canonicalMainKey);
-    }
+  if (readStoredCanonicalSessionMainKey(database) === canonicalMainKey) {
     return;
   }
+  const db = getNodeSqliteKysely<CanonicalSessionDatabase>(database.db);
   executeSqliteQuerySync(
     database.db,
     db
@@ -656,10 +642,21 @@ export function setCanonicalSqliteSessionMainKey(
       ),
   );
   const admission = getReaderAdmissionCell(database.db);
+  revokeReaderContinuations(admission);
+  admission.proof = undefined;
+  admission.committed = false;
   const previous = admission.pendingMainKey;
   const pending = { mainKey: canonicalMainKey };
   const publish = () =>
     publishSqliteDatabaseAdmission(database.db, mainKeyPublication, canonicalMainKey);
+  const invalidate = () => {
+    admission.pendingMainKey = undefined;
+    admission.policy = undefined;
+    revokeReaderContinuations(admission);
+    admission.proof = undefined;
+    admission.committed = false;
+    revokeSqliteDatabaseAdmissions(database.db);
+  };
   if (
     !database.db.isTransaction ||
     !stageSqliteTransactionState(database.db, {
@@ -675,11 +672,14 @@ export function setCanonicalSqliteSessionMainKey(
           admission.pendingMainKey = undefined;
         }
       },
+      invalidate,
     })
   ) {
-    publish();
+    try {
+      publish();
+    } catch (error) {
+      invalidate();
+      throw error;
+    }
   }
-  revokeReaderContinuations(admission);
-  admission.proof = undefined;
-  admission.committed = false;
 }

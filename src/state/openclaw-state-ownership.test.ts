@@ -18,6 +18,7 @@ import {
 import * as sqliteReadonlyLocation from "../infra/sqlite-snapshot-source.js";
 import { sqliteWorkerPreloadEnv } from "../infra/sqlite-worker-preload.test-support.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import { withArtifactPreservingStateReads } from "./artifact-preserving-state-reads.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -765,7 +766,7 @@ describe("external shared-state ownership", () => {
     expect(inspectOpenClawStateOwnershipAtPath(database.path)).toEqual(ownership);
   });
 
-  it("fails closed when unmarked and lets an external claim repair malformed metadata", () => {
+  it("fails closed when unmarked and lets an external claim repair malformed metadata", async () => {
     const env = createEnv(true);
     const database = openOpenClawStateDatabase({ env });
     database.db
@@ -774,7 +775,11 @@ describe("external shared-state ownership", () => {
       )
       .run(STATE_SUPERVISION_KEY, '{"version":1,"mode":"external"}', Date.now());
     database.db.exec("ALTER TABLE worktrees DROP COLUMN run_end_cleanup_json;");
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
+    // Persisted startup damage gets a new physical admission, not a live foreign edit.
+    fs.copyFileSync(database.path, `${database.path}.startup`);
+    fs.renameSync(`${database.path}.startup`, database.path);
 
     expect(() => openOpenClawStateDatabase({ env: withoutExternalMarker(env) })).toThrow(
       OpenClawStateOwnershipMetadataError,
@@ -841,13 +846,20 @@ describe("external shared-state ownership", () => {
       homedir: () => fixture.unmarkedEnv.OPENCLAW_STATE_DIR ?? "",
       logger: { warn: () => undefined },
     };
-    expect(readConfigHealthStateFromStore(healthDeps)).toEqual({ entries: {} });
+    expect(
+      withArtifactPreservingStateReads(() => readConfigHealthStateFromStore(healthDeps)),
+    ).toEqual({ entries: {} });
+    const afterRead = snapshotSqliteFamily(fixture.databasePath);
+    expect(afterRead.entries).toEqual(before.entries);
+    assert.deepStrictEqual(afterRead, before);
     expect(() =>
       patchConfigHealthEntryToStore(healthDeps, "/tmp/openclaw.json", {
         lastObservedSuspiciousSignature: "test",
       }),
     ).toThrow(OpenClawStateOwnershipError);
-    assert.deepStrictEqual(snapshotSqliteFamily(fixture.databasePath), before);
+    const afterWrite = snapshotSqliteFamily(fixture.databasePath);
+    expect(afterWrite.entries).toEqual(before.entries);
+    assert.deepStrictEqual(afterWrite, before);
   });
 
   it("allows read-only access without the external marker", async () => {

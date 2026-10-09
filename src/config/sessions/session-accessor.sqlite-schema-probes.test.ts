@@ -169,6 +169,7 @@ it("bounds schema and freshness probes across admitted session reader entry poin
       statements: 0,
     });
     runOpenClawAgentWriteTransaction((database) => {
+      setCanonicalSqliteSessionMainKey(database, "intermediate");
       setCanonicalSqliteSessionMainKey(database, "configured");
       expect(readCanonicalSessionMainKey(database)).toBe("configured");
       expect(readCanonicalSessionMainKey(reader.database)).toBe("main");
