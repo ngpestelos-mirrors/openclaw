@@ -238,10 +238,10 @@ describe("cold canonical session validation", () => {
           ),
         { ...scope, path: scope.storePath },
       );
-    // A separate writer changes policy without clearing this reader's warm validation.
+    // Config publication invalidates the previously admitted policy before another write.
     const external = new DatabaseSync(scope.storePath);
     try {
-      external.prepare("UPDATE session_key_contract SET main_key = ? WHERE id = 1").run("custom");
+      setCanonicalSqliteSessionMainKey(database, "custom");
       external
         .prepare("UPDATE session_nodes SET entry_json = '{' WHERE session_key = ?")
         .run(otherKey);

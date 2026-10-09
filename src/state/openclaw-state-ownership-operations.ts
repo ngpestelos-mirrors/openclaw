@@ -24,6 +24,7 @@ import { resolveDatabasePath } from "./openclaw-state-db.paths.js";
 import {
   inspectOpenClawStateOwnershipFromDatabase,
   normalizeOpenClawStateManagerId,
+  publishOpenClawStateOwnership,
   STATE_SUPERVISION_KEY,
   type OpenClawExternalStateOwnership,
 } from "./openclaw-state-ownership.js";
@@ -89,6 +90,7 @@ function claimOwnershipRow(
         }),
       ),
   );
+  publishOpenClawStateOwnership(database, ownership);
   return ownership;
 }
 

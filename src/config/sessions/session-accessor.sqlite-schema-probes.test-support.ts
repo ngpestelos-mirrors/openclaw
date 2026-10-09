@@ -2,10 +2,12 @@ import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { getAdmittedSqliteSchemaFacts } from "../../infra/sqlite-schema-facts.js";
 import type { SqliteWorkerBackend } from "../../infra/sqlite-worker-contract.js";
+import { requestSqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
 import { openOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly-open.js";
 import { readSessionEntryCache } from "./session-accessor.sqlite-entry-cache.js";
 import { readExactSessionEntryRowValidated } from "./session-accessor.sqlite-entry-read.js";
 import { hasSqliteSessionOwnerColumns } from "./session-accessor.sqlite-owner-projection.js";
+import { readCanonicalSessionMainKey } from "./session-canonical-key.js";
 
 const key = "agent:main:probe";
 
@@ -139,6 +141,10 @@ export function measureSqliteSchemaProbes(database: DatabaseSync, read: () => bo
 
 export type SessionProbeOperations = {
   read: { input: undefined; output: ReturnType<typeof measureSessionSchemaProbes> };
+  mainKey: {
+    input: { yieldAfterRead: true } | undefined;
+    output: { mainKey: string; statements: number };
+  };
 };
 
 export function createSqliteWorkerBackend(
@@ -150,7 +156,29 @@ export function createSqliteWorkerBackend(
     throw new Error("Session probe database is missing");
   }
   return {
-    execute: () => measureSessionSchemaProbes(opened.database),
+    execute(command) {
+      if (command.type === "read") {
+        return measureSessionSchemaProbes(opened.database);
+      }
+      const prototype = requireNodeSqlite().StatementSync.prototype;
+      const original = prototype.get;
+      let statements = 0;
+      prototype.get = function (...args) {
+        const row = Reflect.apply(original, this, args);
+        if (this.sourceSQL.includes('from "session_key_contract"')) {
+          statements += 1;
+          if (command.input?.yieldAfterRead) {
+            requestSqliteWorkerOperationAdmission({ stage: "prepare", facts: "main-key-read" });
+          }
+        }
+        return row;
+      };
+      try {
+        return { mainKey: readCanonicalSessionMainKey(opened.database), statements };
+      } finally {
+        prototype.get = original;
+      }
+    },
     close: opened.database.close,
   };
 }

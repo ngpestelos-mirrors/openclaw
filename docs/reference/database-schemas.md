@@ -169,7 +169,24 @@ use the existing primary key and require no schema or data migration.
 Session entry writes batch their saved snapshot fields in one upsert, preserving
 per-field revision triggers and rollback.
 
-Canonical main-key policy reads reuse a connection-owned value at the current read revision, including within transactions and pinned snapshots. The connection owner tracks local SQL mutations, including raw and trigger-driven writes; its mutation revision, admitted schema facts, observed foreign-commit version, and pinned snapshot identity invalidate that value. Native mutation and transaction-control callbacks and authorizer-controlled reads continue querying the policy. Policy facts do not grant canonical admission or continuation authority.
+Canonical main-key policy, external-supervision ownership, and the machine-owned
+TTS preference path are loaded once for the physical database and shared across
+handles and workers. Their owning writers publish committed replacements;
+unrelated writes do not invalidate these facts. The Gateway owns runtime writes.
+Other processes must use that owner or run while it is stopped. Explicit ownership
+inspection and Doctor still read the database, and live lifecycle and lease checks
+remain at effect boundaries. Cached policy facts do not grant canonical admission
+or continuation authority.
+
+The Mentions Inbox retains its committed head through the same physical owner.
+An unchanged head skips snapshot worker dispatch. A changed or uncertain mutation
+reads the head and retained sources in one atomic query before resuming its FIFO;
+an unknown write outcome never authorizes replay. Session-entry mutation generations
+live in JavaScript beside their connection. TEMP triggers observe exact session
+and participant writes, and rollback invalidates generations without selecting a
+TEMP counter row. Auth-profile readers use admitted catalog facts for tables,
+views, and absence instead of querying the catalog for each read. These changes
+preserve schemas, stored bytes, durability, retention, permissions, and update behavior.
 
 The Gateway does not schedule daily full-database scans. Admission-requested
 background checks stay limited to the requested agent database: `quick_check`

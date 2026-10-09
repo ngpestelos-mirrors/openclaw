@@ -61,6 +61,7 @@ function observeTransactionState(database: DatabaseSync, owner: SchemaOwner): vo
     if (owner.transactionOpen) {
       // A read error can roll back SQLite without passing through a tracked write.
       owner.mutationRevision += 1;
+      owner.rollbackRevision += 1;
     }
     owner.transactionOpen = inTransaction;
     owner.transactionRead = false;
@@ -170,6 +171,7 @@ function trackSchemaChanges(
     }
     if (!succeeded && wasTransaction && !inTransaction) {
       owner.mutationRevision += 1;
+      owner.rollbackRevision += 1;
     }
     owner.transactionOpen = inTransaction;
     if (wasTransaction !== inTransaction || expiresRead) {
@@ -235,6 +237,9 @@ function trackSchemaChanges(
     }
     if (dataChange || control?.kind === "ROLLBACK") {
       owner.mutationRevision += 1;
+    }
+    if (control?.kind === "ROLLBACK") {
+      owner.rollbackRevision += 1;
     }
     if (expiresRead) {
       owner.readDataVersion = undefined;
@@ -405,6 +410,16 @@ export function readSqliteNativeMutationRevision(database: DatabaseSync): number
   return owners.get(database)?.mutationRevision;
 }
 
+/** A callback inside native SQL cannot retain a token across that statement's rollback. */
+export function readSqliteRollbackRevision(database: DatabaseSync): number | undefined {
+  const owner = owners.get(database);
+  if (!owner) {
+    return undefined;
+  }
+  observeTransactionState(database, owner);
+  return owner.mutationDepth === 0 ? owner.rollbackRevision : undefined;
+}
+
 /** SQL-free witness for a dedicated, unpinned foreign-commit observer. */
 export function readSqliteForeignObservationRevision(database: DatabaseSync): number | undefined {
   const owner = owners.get(database);
@@ -568,6 +583,7 @@ export function trackSqliteSchema(database: DatabaseSync, native: NativeSqlite):
       revision: 0,
       readDepth: 0,
       mutationRevision: 0,
+      rollbackRevision: 0,
       mutationDepth: 0,
       transactionOpen: database.isOpen && database.isTransaction,
       transactionRead: false,

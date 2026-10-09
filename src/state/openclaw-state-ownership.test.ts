@@ -629,81 +629,6 @@ describe("external shared-state ownership", () => {
     ).toBeDefined();
   });
 
-  it("fences a claim made immediately before cold-open schema repair", () => {
-    const env = createEnv();
-    const databasePath = openOpenClawStateDatabase({ env }).path;
-    closeOpenClawStateDatabaseForTest();
-    const { DatabaseSync } = requireNodeSqlite();
-    const drifted = new DatabaseSync(databasePath);
-    try {
-      drifted.exec(`
-        ALTER TABLE worktrees DROP COLUMN run_end_cleanup_json;
-        DROP INDEX idx_task_runs_status;
-      `);
-    } finally {
-      drifted.close();
-    }
-
-    const originalExec = Object.getOwnPropertyDescriptor(DatabaseSync.prototype, "exec")?.value as
-      | ((this: import("node:sqlite").DatabaseSync, sql: string) => void)
-      | undefined;
-    if (!originalExec) {
-      throw new Error("DatabaseSync.exec descriptor is unavailable");
-    }
-    let immediateTransactionCount = 0;
-    const exec = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
-      this: import("node:sqlite").DatabaseSync,
-      sql: string,
-    ) {
-      if (sql === "BEGIN IMMEDIATE" && ++immediateTransactionCount === 1) {
-        const claimant = new DatabaseSync(databasePath);
-        try {
-          claimant
-            .prepare(
-              `INSERT INTO config_machine_state (state_key, value_json, updated_at_ms)
-               VALUES (?, ?, ?)`,
-            )
-            .run(
-              STATE_SUPERVISION_KEY,
-              JSON.stringify({
-                version: 1,
-                mode: "external",
-                managerId: "race-manager",
-                claimedAt: 1,
-              }),
-              1,
-            );
-        } finally {
-          claimant.close();
-        }
-      }
-      return originalExec.call(this, sql);
-    });
-
-    try {
-      expect(() => openOpenClawStateDatabase({ env })).toThrow(OpenClawStateOwnershipError);
-    } finally {
-      exec.mockRestore();
-    }
-    expect(immediateTransactionCount).toBe(1);
-
-    const verify = new DatabaseSync(databasePath, { readOnly: true });
-    try {
-      expect(
-        verify
-          .prepare("SELECT 1 FROM pragma_table_info('worktrees') WHERE name = ?")
-          .get("run_end_cleanup_json"),
-      ).toBeUndefined();
-      expect(
-        verify
-          .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ?")
-          .get("idx_task_runs_status"),
-      ).toBeUndefined();
-    } finally {
-      verify.close();
-    }
-  });
-
   it("fences a claim made immediately before dangling Workshop index repair", () => {
     const env = createEnv();
     const databasePath = openOpenClawStateDatabase({ env }).path;
@@ -791,123 +716,22 @@ describe("external shared-state ownership", () => {
     }
   });
 
-  it("fences a claim made during a canonical current-schema cold open", () => {
-    const env = createEnv();
-    const { path: databasePath, db: seeded } = openOpenClawStateDatabase({ env });
-    const databaseLocation = seeded.location();
-    closeOpenClawStateDatabaseForTest();
-    const { DatabaseSync } = requireNodeSqlite();
-    const originalExec = Object.getOwnPropertyDescriptor(DatabaseSync.prototype, "exec")?.value as
-      | ((this: import("node:sqlite").DatabaseSync, sql: string) => void)
-      | undefined;
-    if (!originalExec) {
-      throw new Error("DatabaseSync.exec descriptor is unavailable");
-    }
-    let claimInjected = false;
-    const validating = new Set<import("node:sqlite").DatabaseSync>();
-    const exec = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
-      this: import("node:sqlite").DatabaseSync,
-      sql: string,
-    ) {
-      if (!validating.size && sql === "BEGIN" && this.location() === databaseLocation) {
-        validating.add(this);
-      }
-      originalExec.call(this, sql);
-      if (!claimInjected && validating.has(this) && sql === "COMMIT") {
-        claimInjected = true;
-        const claimant = new DatabaseSync(databasePath);
-        try {
-          claimant
-            .prepare(
-              `INSERT INTO config_machine_state (state_key, value_json, updated_at_ms)
-               VALUES (?, ?, ?)`,
-            )
-            .run(
-              STATE_SUPERVISION_KEY,
-              JSON.stringify({
-                version: 1,
-                mode: "external",
-                managerId: "race-manager",
-                claimedAt: 1,
-              }),
-              1,
-            );
-        } finally {
-          claimant.close();
-        }
-      }
-    });
-
-    try {
-      expect(() => openOpenClawStateDatabase({ env })).toThrow(OpenClawStateOwnershipError);
-    } finally {
-      exec.mockRestore();
-    }
-    expect(claimInjected).toBe(true);
-  });
-
-  it("fences cached and injected handles after another connection commits an owner", () => {
+  it("reuses admitted ownership and fences cached handles after the owner commits a claim", () => {
     const externalEnv = createEnv(true);
     const unmarkedEnv = withoutExternalMarker(externalEnv);
     const opened = openOpenClawStateDatabase({ env: unmarkedEnv });
-    expect(openOpenClawStateDatabase({ env: unmarkedEnv })).toBe(opened);
-    const indexedOwnershipSql =
-      "SELECT value_json FROM config_machine_state WHERE state_key = ? LIMIT 1";
     const reads = observeSqliteReadSql(requireNodeSqlite().StatementSync.prototype);
     try {
+      expect(openOpenClawStateDatabase({ env: unmarkedEnv })).toBe(opened);
       expect(openOpenClawStateDatabase({ env: unmarkedEnv, database: opened })).toBe(opened);
-      expect(reads.queries).toEqual([indexedOwnershipSql]);
-      reads.queries.length = 0;
       runOpenClawStateWriteTransaction(() => undefined, { env: unmarkedEnv, database: opened });
-      expect(reads.queries).toEqual([
-        expect.stringMatching(/^PRAGMA data_version$|FROM main\.pragma_data_version\(\)\s*$/iu),
-        indexedOwnershipSql,
-      ]);
+      expect(reads.queries.filter((sql) => /FROM config_machine_state/u.test(sql))).toEqual([]);
     } finally {
       reads.restore();
     }
-    expect(
-      opened.db.prepare(`EXPLAIN QUERY PLAN ${indexedOwnershipSql}`).all(STATE_SUPERVISION_KEY),
-    ).toEqual([
-      expect.objectContaining({
-        detail:
-          "SEARCH config_machine_state USING INDEX sqlite_autoindex_config_machine_state_1 (state_key=?)",
-      }),
-    ]);
-    const ownership = {
-      version: 1 as const,
-      mode: "external" as const,
-      managerId: "late-supervisor",
-      claimedAt: 1,
-    };
-    const { DatabaseSync } = requireNodeSqlite();
-    const claimant = new DatabaseSync(opened.path);
-    const originalExec = opened.db.exec.bind(opened.db);
-    let claimedBeforeBegin = false;
-    const begin = vi.spyOn(opened.db, "exec").mockImplementation((sql) => {
-      if (sql === "BEGIN IMMEDIATE" && !claimedBeforeBegin) {
-        claimant
-          .prepare(
-            "INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)",
-          )
-          .run(STATE_SUPERVISION_KEY, JSON.stringify(ownership), ownership.claimedAt);
-        claimedBeforeBegin = true;
-      }
-      originalExec(sql);
-    });
-    const write = vi.fn();
-    try {
-      expect(() =>
-        runOpenClawStateWriteTransaction(write, { env: unmarkedEnv, database: opened }),
-      ).toThrow(OpenClawStateOwnershipError);
-      expect(claimedBeforeBegin).toBe(true);
-      expect(write).not.toHaveBeenCalled();
-      expect(opened.db.isTransaction).toBe(false);
-    } finally {
-      begin.mockRestore();
-      claimant.close();
-    }
 
+    const ownership = claimOpenClawStateOwnership("late-supervisor", { env: externalEnv });
+    const write = vi.fn();
     expect(() => openOpenClawStateDatabase({ env: unmarkedEnv })).toThrow(
       OpenClawStateOwnershipError,
     );

@@ -82,6 +82,7 @@ export type SqliteSchemaOwner = SqliteSchemaScopeOwner & {
   readDepth: number;
   readDataVersion?: number;
   mutationRevision: number;
+  rollbackRevision: number;
   mutationDepth: number;
   transactionOpen: boolean;
   transactionRead: boolean;
