@@ -52,11 +52,9 @@ export interface ReefIngressMessage {
   autonomy: ReefAutonomy;
 }
 
-export interface ReefPeerObservation {
+export interface ReefOutboundDeliveryPreparation {
   readonly trust: ReefPeerTrust;
   assertCurrent(): void;
-}
-export interface ReefOutboundDeliveryPreparation extends ReefPeerObservation {
   record(
     binding: { bodyHash: string; textHash?: string; recipient: ReefPeerIdentity },
     options?: { resendDisabled?: true },

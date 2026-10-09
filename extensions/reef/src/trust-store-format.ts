@@ -55,7 +55,7 @@ export type ReefPeerStateSnapshot = z.infer<typeof ReefPeerStateSchema>;
 export type ReefOutboundDeliveryBinding = z.infer<typeof ReefOutboundDeliveryBindingSchema>;
 export type ReefOutboundDelivery = z.infer<typeof ReefOutboundDeliverySchema>;
 
-export type { ReefPeerObservation, ReefOutboundDeliveryPreparation } from "./types.js";
+export type { ReefOutboundDeliveryPreparation } from "./types.js";
 
 export type ReefDeliverySettlement = {
   readonly delivery: ReefOutboundDelivery;
