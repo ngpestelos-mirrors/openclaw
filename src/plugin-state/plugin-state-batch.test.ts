@@ -637,6 +637,7 @@ describe("plugin state cross-namespace batches", () => {
     }).toThrow("final assertion owner closed");
     expect(effect).not.toHaveBeenCalled();
     const unbound = store.createBatch([store]);
+    // oxlint-disable-next-line typescript/no-misused-promises -- Deliberately violates the synchronous final-authority contract.
     expect(() => unbound.assertCurrentValue({ store: 0, key: "key" }, async () => {})).toThrow(
       "must remain synchronous",
     );
