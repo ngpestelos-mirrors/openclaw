@@ -3385,6 +3385,15 @@ export const en: TranslationMap & {
       },
       showContent: "Show content",
     },
+    skillLearned: {
+      label: "Learned",
+      created: "Created",
+      updated: "Updated",
+      archived: "Archived",
+      restored: "Restored",
+      open: "Open {name} in Skill Workshop",
+      undoHint: 'Say "undo" to revert',
+    },
     progressLabels: {
       shelling: "Shelling",
       scuttling: "Scuttling",

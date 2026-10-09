@@ -101,9 +101,10 @@ triggered it and mirrored into the session transcript:
 💾 Learned: updated `deploy-staging` (tightened the rollback step). Say "undo" to revert this skill change.
 ```
 
-Channel-less Control UI sessions get the line as a transcript entry. Nothing is
-posted when nothing changed. Reply "undo" and the agent restores the previous
-version.
+Channel-less Control UI sessions show it as a compact **Learned** card instead:
+one row per changed skill, and each skill name opens that skill in the Skill
+Workshop. Nothing is posted when nothing changed. Reply "undo" and the agent
+restores the previous version.
 
 A review stops without changing anything further if you turn learning off, or
 if the source session is deleted, replaced, or changes permission mode while it

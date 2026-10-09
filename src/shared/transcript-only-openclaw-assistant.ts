@@ -1,4 +1,5 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { SKILL_WORKSHOP_CHANGE_NOTICE_KIND } from "./skill-workshop-change-notice.js";
 
 // Identifies OpenClaw-authored assistant rows that are transcript bookkeeping,
 // not provider model output. Some history surfaces keep gateway-injected rows
@@ -18,6 +19,7 @@ const OPENCLAW_DELIVERY_MIRROR_KINDS = new Set([
   "channel-final-suppressed",
   "message-tool-source-reply",
   CRON_DIRECT_DELIVERY_CONTEXT_KIND,
+  SKILL_WORKSHOP_CHANGE_NOTICE_KIND,
 ]);
 
 function isOpenClawDeliveryMirrorMarker(value: unknown): boolean {

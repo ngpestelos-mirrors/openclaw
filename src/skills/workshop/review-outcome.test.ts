@@ -172,14 +172,37 @@ describe("postWorkshopChangeNotice", () => {
     );
   });
 
-  it("writes the notice into the transcript of a channel-less session", async () => {
+  it("marks a channel-less transcript notice with each skill's net change", async () => {
     mocks.extractDeliveryInfo.mockReturnValue({ deliveryContext: undefined, threadId: undefined });
-    await post([change({})]);
+    await post([
+      change({ id: "c2", versionId: "20260101T000000002Z-patch", createdAtMs: 2 }),
+      change({ id: "c1", versionId: "20260101T000000001Z-patch", createdAtMs: 1 }),
+      change({
+        id: "c3",
+        skillName: "release-notes",
+        action: "create",
+        summary: "drafting release notes",
+        createdAtMs: 3,
+      }),
+      change({ id: "c4", skillName: "release-notes", versionId: "v-typo", createdAtMs: 4 }),
+    ]);
     expect(mocks.sendDurableMessageBatchCore).not.toHaveBeenCalled();
+    // The Control UI renders this marker natively: a later edit of a created skill stays "created".
     expect(mocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionKey: "agent:main:telegram:direct:42",
         text: expect.stringContaining("💾 Learned: updated `actual-budget-operations`"),
+        deliveryMirror: {
+          kind: "skill-workshop-change",
+          skills: [
+            {
+              name: "actual-budget-operations",
+              action: "updated",
+              summary: "tightened reconciliation step",
+            },
+            { name: "release-notes", action: "created", summary: "drafting release notes" },
+          ],
+        },
       }),
     );
   });

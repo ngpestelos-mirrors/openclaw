@@ -9,6 +9,11 @@ import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.j
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
+  SKILL_WORKSHOP_CHANGE_NOTICE_KIND,
+  type SkillWorkshopChangeNoticeSkill,
+  type SkillWorkshopNoticeAction,
+} from "../../shared/skill-workshop-change-notice.js";
+import {
   isDeliverableMessageChannel,
   normalizeMessageChannel,
 } from "../../utils/message-channel.js";
@@ -35,7 +40,7 @@ export function assertSkillReviewRunSucceeded(
   }
 }
 
-const ACTION_VERB: Record<WorkshopChange["action"], string> = {
+const ACTION_VERB: Record<WorkshopChange["action"], SkillWorkshopNoticeAction> = {
   create: "created",
   patch: "updated",
   write_file: "updated",
@@ -56,10 +61,20 @@ function formatWorkshopChangeNotice(changes: readonly WorkshopChange[]) {
       bySkill.set(change.skillName, change);
     }
   }
-  const parts = [...bySkill.values()].map((change) => {
+  const skills = [...bySkill.values()].map((change) => {
+    const skill: SkillWorkshopChangeNoticeSkill = {
+      name: change.skillName,
+      action: ACTION_VERB[change.action],
+    };
     const summary = change.summary.trim();
-    return `${ACTION_VERB[change.action]} \`${change.skillName}\`${summary ? ` (${summary})` : ""}`;
+    if (summary) {
+      skill.summary = summary;
+    }
+    return skill;
   });
+  const parts = skills.map(
+    ({ name, action, summary }) => `${action} \`${name}\`${summary ? ` (${summary})` : ""}`,
+  );
   const text = `💾 Learned: ${parts.join("; ")}. Say "undo" to revert this skill change.`;
   // No prior version means the review created the skill, so undo archives it.
   const reverts = [...firstBySkill.values()].map(({ skillName, versionId }) =>
@@ -69,6 +84,7 @@ function formatWorkshopChangeNotice(changes: readonly WorkshopChange[]) {
   );
   return {
     text,
+    marker: { kind: SKILL_WORKSHOP_CHANGE_NOTICE_KIND, skills },
     undoContext: `A background skill review just changed your learned skills and told the user: ${text} If the user asks to undo or revert it, call ${reverts.join("; then ")}.`,
   };
 }
@@ -109,7 +125,7 @@ export async function postWorkshopChangeNotice(params: {
     log.debug(`skill workshop notice skipped: session ${sessionKey} was reset`);
     return;
   }
-  const { text, undoContext } = formatWorkshopChangeNotice(params.changes);
+  const { text, marker, undoContext } = formatWorkshopChangeNotice(params.changes);
   enqueueSystemEvent(undoContext, {
     sessionKey: resolveSystemEventQueueKey(sessionKey, agentId),
   });
@@ -159,6 +175,7 @@ export async function postWorkshopChangeNotice(params: {
       expectedLifecycleRevision: generation.lifecycleRevision,
       text,
       idempotencyKey,
+      deliveryMirror: marker,
       config: params.config,
     });
     if (!appended.ok) {

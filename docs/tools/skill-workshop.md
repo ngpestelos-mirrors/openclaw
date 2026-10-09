@@ -61,7 +61,8 @@ conversation that triggered it:
 
 Reply "undo" and the agent restores the previous version with `skill_workshop`.
 Nothing is posted when the review changed nothing. Channel-less Control UI
-sessions get the same line as a transcript entry.
+sessions show the change as a compact **Learned** card; each skill name in it
+opens that skill in the Workshop.
 
 You can also undo from the Control UI (**Undo** on the skill's latest change or
 in its History tab) or the
