@@ -250,7 +250,7 @@ describe("SQLite WAL checkpoint observations", () => {
     },
   );
 
-  it("refuses retention after a native row-decoding failure until the reader is returned", () => {
+  it("releases a failed native row decoder before allowing idle retention", () => {
     const databasePath = path.join(tempDirs.make("openclaw-wal-idle-reader-"), "state.sqlite");
     const db = openNodeSqliteDatabase(databasePath);
     const maintenance = configureSqliteWalMaintenance(db, {
@@ -264,7 +264,7 @@ describe("SQLite WAL checkpoint observations", () => {
       expect(maintenance.inspectIdle?.()).toBe("healthy");
       expect(() => reader.next()).toThrow(RangeError);
       expect(db.isTransaction).toBe(false);
-      expect(maintenance.inspectIdle?.()).toBe("retire");
+      expect(maintenance.inspectIdle?.()).toBe("healthy");
       expect(maintenance.health?.activeReaders).toEqual([]);
       expect(() => assertNoActiveSqliteReaders(db, "native idle probe")).not.toThrow();
       reader.return?.();

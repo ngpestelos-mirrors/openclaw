@@ -31,7 +31,6 @@ export function withSqliteWritableSchema<T>(database: DatabaseSync, operation: (
 
 /** Detect only the known v15 review index left behind after its column was retired. */
 export function hasDanglingSkillWorkshopCollectionReviewIndex(database: DatabaseSync): boolean {
-  invalidateSqliteSchemaFacts(database);
   return withSqliteWritableSchema(database, () =>
     inspectSkillWorkshopCollectionReviewIndex(database),
   );
@@ -64,6 +63,7 @@ function inspectSkillWorkshopCollectionReviewIndex(database: DatabaseSync): bool
 export function openDoctorStateSchemaReadAdmission(
   database: DatabaseSync,
 ): (() => void) | undefined {
+  invalidateSqliteSchemaFacts(database);
   const userVersion = readSqliteUserVersion(database);
   assertSupportedStateSchemaVersion(database, database.location() ?? "shared state", {
     userVersion,

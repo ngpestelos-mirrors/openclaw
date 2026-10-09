@@ -42,6 +42,8 @@ import {
   isOpenClawAgentDatabasePathCurrent,
 } from "./openclaw-agent-db-identity.js";
 import {
+  assertAgentDatabaseMaintenanceAuthority,
+  hasAgentDatabaseMaintenanceAuthority,
   readOpenClawAgentDatabaseWorkerLeaseReceiptFromClaim,
   recordOpenClawAgentDatabaseAdmission,
   releaseOpenClawAgentDatabaseLease,
@@ -187,6 +189,10 @@ export function deferOpenClawAgentPostCommitPublication(
 ): boolean {
   // Maintenance can mark projections dirty without scheduling runtime publication.
   if (!hasSqlitePostCommitScope(database.db)) {
+    return false;
+  }
+  if (hasAgentDatabaseMaintenanceAuthority()) {
+    assertAgentDatabaseMaintenanceAuthority();
     return false;
   }
   const lease = cache.leases.get(database.path);

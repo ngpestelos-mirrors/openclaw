@@ -290,7 +290,8 @@ function trackSchemaChanges(
         }
       },
       finish: (succeeded, abandoned) => {
-        if (iterator && phase === "iterate") {
+        // Eager iterators share the surrounding synchronous read's freshness admission.
+        if (iterator && phase === "iterate" && owner.readDepth === 0) {
           owner.readDataVersion = undefined;
         }
         if (iterator && owner.unmanagedSnapshots.delete(iterator) && owner.iteratorFacts) {
