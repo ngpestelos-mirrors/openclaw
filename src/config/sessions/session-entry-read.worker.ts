@@ -22,6 +22,7 @@ import { resolveSessionLifecycleTimestampsWithHeader } from "./lifecycle-timesta
 import { hasPendingSessionTranscriptArchives } from "./session-accessor.sqlite-archive-store-kernel.js";
 import { readSessionCreationSnapshotInDatabase } from "./session-accessor.sqlite-creation-read.js";
 import { readExactSessionEntryCandidatesInDatabase } from "./session-accessor.sqlite-entry-cache.js";
+import { readExactSessionEntryFactsInDatabase } from "./session-accessor.sqlite-entry-facts.js";
 import {
   listSqliteSessionEntriesFromDatabase,
   readSelectedSessionEntriesInDatabase,
@@ -77,7 +78,7 @@ import {
   type SessionRowFactsWorkerResult,
   type SessionTranscriptWorkerValues,
 } from "./session-transcript-worker.types.js";
-import { normalizeStoreSessionKey } from "./store-entry.js";
+import { collectSessionEntryLookupKeys, normalizeStoreSessionKey } from "./store-entry.js";
 
 /** Hydrate a newly admitted resident store using the projection lane's native reader. */
 export function readSessionStoreProjection(
@@ -171,6 +172,7 @@ export async function readSessionEntryWorkerRequest(
       import("./session-history-worker-errors.js"),
     ]);
   let source: SessionEntryReadWorkerResult["source"];
+  let facts: SessionEntryReadWorkerResult["facts"];
   const read = loadSessionEntryReadOnlyResultInScope(
     {
       ...request.scope,
@@ -183,6 +185,25 @@ export async function readSessionEntryWorkerRequest(
       }
       source = { ...readSource, databaseIdentity: readSource.databaseIdentity };
     },
+    (database, sessionKey, projection) => {
+      const selected = readExactSessionEntryFactsInDatabase(
+        database,
+        collectSessionEntryLookupKeys(sessionKey),
+        projection,
+      );
+      const captured = captureSessionEntryReadSource(database, undefined);
+      facts = {
+        kind: "session-exact-entries",
+        ...selected,
+        source: captured,
+        databaseIdentity: {
+          ...readOpenClawAgentDatabaseIdentity(database),
+          identity: captured.databaseIdentity,
+        },
+        lifecycleTimestamps: {},
+      };
+      return selected.entries.find((row) => row.sessionKey === sessionKey.trim())?.entry;
+    },
   );
   if (!read.ok) {
     const readError = encodeSessionTranscriptWorkerError(read.error);
@@ -191,7 +212,7 @@ export async function readSessionEntryWorkerRequest(
     }
     return { kind: "session-entry-read", entry: undefined, source, readError };
   }
-  return { kind: "session-entry-read", entry: read.value, source };
+  return { kind: "session-entry-read", entry: read.value, source, facts };
 }
 
 /** Canonical entry currency reuses parsed facts only at the same native connection revision. */
@@ -281,6 +302,47 @@ export function readExactSessionEntriesWithLifecycle(
 ): SessionExactEntriesWorkerResult {
   const { readDatabase, snapshot, assertCanonicalRead } =
     createSessionEntryReadScope(capturedDatabase);
+  if (
+    !request.selection &&
+    (request.projection === undefined ||
+      request.projection === "full" ||
+      request.projection === "exact") &&
+    !request.manualCompact &&
+    !request.lifecycleSessionKey &&
+    !request.replyInitializationSessionKey &&
+    request.sessionKeys.length <= MAX_SESSION_ROW_FACTS_KEYS
+  ) {
+    const result = readDatabase(
+      (database) => {
+        const source = captureSessionEntryReadSource(database, request.expectedIdentity);
+        const identity = readOpenClawAgentDatabaseIdentity(database);
+        const facts = readExactSessionEntryFactsInDatabase(
+          database,
+          request.sessionKeys,
+          request.snapshotFields ?? "full",
+        );
+        captureSessionEntryReadSource(database, request.expectedIdentity);
+        return {
+          kind: "session-exact-entries" as const,
+          ...facts,
+          source,
+          databaseIdentity: { ...identity, identity: source.databaseIdentity },
+          lifecycleTimestamps: {},
+        };
+      },
+      { ...request.database, env: request.env },
+    );
+    if (result.found) {
+      return result.value;
+    }
+    if (result.reason !== "database-missing") {
+      throw new SessionMetadataUnavailableError(result.reason);
+    }
+    if (request.expectedIdentity?.key.startsWith("file:")) {
+      throw new Error("Session entry read lost its captured physical owner");
+    }
+    return { kind: "session-exact-entries", entries: [], lifecycleTimestamps: {} };
+  }
   if (request.projection === "exact" || request.projection === "worktree") {
     // Logical accessors validate only their candidates; unrelated rows are not listing admission.
     let source: SessionExactEntriesWorkerResult["source"];

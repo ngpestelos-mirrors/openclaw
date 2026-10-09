@@ -35,7 +35,7 @@ const mocks = vi.hoisted(() => ({
   listAgentEntries: vi.fn((_cfg?: unknown) => [] as Array<Record<string, unknown>>),
   findAgentEntryIndex: vi.fn((_list?: unknown, _agentId?: string) => -1),
   applyAgentConfig: vi.fn((_cfg: unknown, _opts: unknown) => ({})),
-  pruneAgentConfig: vi.fn((_cfg: MockConfig, _agentId: string) => ({
+  pruneAgentConfig: vi.fn((_cfg: unknown, _agentId: string) => ({
     config: {},
     removedBindings: 0,
   })),

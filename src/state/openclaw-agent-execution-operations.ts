@@ -255,10 +255,12 @@ export async function loadAgentTranscriptReadOperations() {
 }
 
 export async function loadAgentReplacementOperations() {
-  const [kernel, { assertSessionSubagentRunsCurrent }] = await Promise.all([
-    import("../config/sessions/session-accessor.sqlite-replacement-state.js"),
-    import("../config/sessions/session-accessor.sqlite-descendant-basis.js"),
-  ]);
+  const [kernel, { assertSessionSubagentRunsCurrent }, { sealSessionEntryPublicationSource }] =
+    await Promise.all([
+      import("../config/sessions/session-accessor.sqlite-replacement-state.js"),
+      import("../config/sessions/session-accessor.sqlite-descendant-basis.js"),
+      import("../config/sessions/session-entry-publication-source.js"),
+    ]);
   return {
     "session.entries.replace": (
       input: SessionEntryReplacementCommit & { initializeTranscript?: TranscriptInitialization },
@@ -289,11 +291,18 @@ export async function loadAgentReplacementOperations() {
             });
           }
         });
-        const publication = kernel.prepareSessionEntryReplacementPublication(result, current);
+        const publication = kernel.prepareSessionEntryReplacementPublication(result, current, {
+          captureFullFacts: true,
+        });
+        const candidate = { ...result, publication };
+        if (publication.source && publication.fullEntries?.size) {
+          sealSessionEntryPublicationSource(publication.source);
+        }
+        kernel.boundSessionEntryReplacementPublication(publication, candidate);
         deferSqliteWorkerCommitReceipt(current.db, publication);
         context.admit("commit", publication);
         assertSessionSubagentRunsCurrent(input, context.options.env ?? process.env);
-        return { ...result, publication };
+        return candidate;
       }),
   } satisfies Handlers;
 }

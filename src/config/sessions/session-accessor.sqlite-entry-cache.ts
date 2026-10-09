@@ -52,6 +52,7 @@ import {
 import { readSqliteSessionParticipantProjection } from "./session-accessor.sqlite-participant-projection.js";
 import type { SessionEntryReadScope } from "./session-accessor.types.js";
 import { assertCanonicalSqliteSessionKeysCurrent } from "./session-canonical-key.js";
+import { captureSessionEntryPublicationSource } from "./session-entry-publication-source.js";
 import { collectSessionEntryLookupKeys } from "./store-entry.js";
 import type { InternalSessionEntry, SessionEntry } from "./types.js";
 
@@ -85,7 +86,12 @@ type SqliteSessionEntryCacheWriteGeneration = {
 };
 
 type SessionEntryCacheUpdate = { sessionKey: string } & (
-  | { entry: SessionEntry; entryJson: string; sideMetadata: SessionEntrySideMetadata }
+  | {
+      entry: SessionEntry;
+      entryJson: string;
+      sideMetadata: SessionEntrySideMetadata;
+      snapshotEntry?: SessionEntry;
+    }
   | { entry?: undefined; entryJson?: never }
 );
 
@@ -390,6 +396,14 @@ export function publishSessionEntryCacheInvalidation(
   const entry = update.entry
     ? (cached?.entry ?? projectSessionEntryCacheUpdate(update.entryJson, update.sideMetadata))
     : undefined;
+  const fullEntry =
+    update.entry && update.snapshotEntry
+      ? projectSessionEntryCacheUpdate(
+          update.entryJson,
+          cached?.sideMetadata ?? update.sideMetadata,
+          update.snapshotEntry,
+        )
+      : undefined;
   publishSessionSharingEntryChange(database, { ...update, facts, ...(entry ? { entry } : {}) });
   const identity = findOpenClawAgentDatabaseIdentity(database);
   const sharingChange =
@@ -410,11 +424,12 @@ export function publishSessionEntryCacheInvalidation(
             lifecycleRevision: update.previousEntry.lifecycleRevision,
           },
           prepared: {
-            source: {
+            source: captureSessionEntryPublicationSource(database.db, {
               ...identity,
               ...(writeGeneration ? { revision: writeGeneration.after } : {}),
-            },
+            }),
             entries: new Map([[update.sessionKey, entry]]),
+            ...(fullEntry ? { fullEntries: new Map([[update.sessionKey, fullEntry]]) } : {}),
           },
         }
       : { kind: "marker", sharingChange },

@@ -296,6 +296,7 @@ export function applySessionTurn<T>(
               maintenancePlans: [],
             },
             database,
+            { captureFullFacts: true },
           )
         : undefined;
       const custodyEntry =

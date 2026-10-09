@@ -475,6 +475,7 @@ export function createSessionHistoryWorkerReaders(
         ? err(decodeSessionTranscriptWorkerReadError(value.readError))
         : ok(value.entry)),
       source: value.source,
+      facts: value.facts,
     })),
     readEntryCurrent: reader(
       "session-entry-current",

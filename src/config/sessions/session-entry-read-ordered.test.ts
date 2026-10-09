@@ -1,13 +1,247 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
-import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import {
+  openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction,
+} from "../../state/openclaw-agent-db.js";
 import {
   runOpenClawAgentWorkerWrite,
   runOpenClawAgentWriteAdmission,
 } from "../../state/openclaw-agent-write-admission.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
-import { withSessionEntriesFromStoresInWorker } from "./session-entry-read-runtime.js";
+import { patchSessionEntryCore, replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
+import { recordSessionParticipant } from "./session-accessor.sqlite-participants.native.js";
+import {
+  readSessionEntriesFromStoreInWorker,
+  withSessionEntriesFromStoresInWorker,
+} from "./session-entry-read-runtime.js";
+import {
+  addSessionMemberInWorker,
+  recordSessionParticipantInWorker,
+  removeSessionMemberInWorker,
+} from "./session-sharing-store.async.js";
+import { addSessionMember, removeSessionMember } from "./session-sharing-store.native.js";
+import { projectionLane, targetDiscoveryLane } from "./session-transcript-worker-resources.js";
+
+function observeEntryReaderRequests() {
+  const requests = [projectionLane, targetDiscoveryLane].map(({ pool }) => vi.spyOn(pool, "run"));
+  return {
+    count: () => requests.reduce((count, request) => count + request.mock.calls.length, 0),
+    clear: () => requests.forEach((request) => request.mockClear()),
+    restore: () => requests.forEach((request) => request.mockRestore()),
+  };
+}
+
+it("retains exact reads without dispatch, isolates agent stores, and evicts the least recently read of 128 entries", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+    const first = openOpenClawAgentDatabase({ agentId: "first", env });
+    const second = openOpenClawAgentDatabase({ agentId: "second", env });
+    const keys = Array.from({ length: 129 }, (_, index) => `agent:first:entry-${index}`);
+    runOpenClawAgentWriteTransaction(
+      (database) => {
+        for (const [index, key] of keys.entries()) {
+          writeSessionEntry(database, key, { sessionId: `entry-${index}`, updatedAt: 1 });
+        }
+      },
+      { agentId: first.agentId, path: first.path, env },
+    );
+    const otherKey = "agent:second:entry-0";
+    writeSessionEntry(second, otherKey, { sessionId: "other-store", updatedAt: 1 });
+    const read = (sessionKeys: string[]) =>
+      readSessionEntriesFromStoreInWorker({
+        agentId: first.agentId,
+        storePath: first.path,
+        env,
+        sessionKeys,
+      });
+    const readOther = () =>
+      readSessionEntriesFromStoreInWorker({
+        agentId: second.agentId,
+        storePath: second.path,
+        env,
+        sessionKeys: [otherKey],
+      });
+    const requests = observeEntryReaderRequests();
+    try {
+      expect((await read(keys.slice(0, 64))).entries).toHaveLength(64);
+      expect((await read(keys.slice(64, 128))).entries).toHaveLength(64);
+      expect((await readOther()).entries[0]?.entry.sessionId).toBe("other-store");
+      expect(requests.count()).toBeGreaterThan(0);
+      requests.clear();
+      const repeated = await read([keys[0]!]);
+      expect(repeated.entries[0]?.entry.sessionId).toBe("entry-0");
+      repeated.entries[0]!.entry.sessionId = "caller-mutated";
+      expect((await read([keys[0]!])).entries[0]?.entry.sessionId).toBe("entry-0");
+      expect((await readOther()).entries[0]?.entry.sessionId).toBe("other-store");
+      expect(requests.count()).toBe(0);
+
+      expect((await read([keys[128]!])).entries[0]?.entry.sessionId).toBe("entry-128");
+      expect(requests.count()).toBe(1);
+      requests.clear();
+      expect((await read([keys[0]!])).entries[0]?.entry.sessionId).toBe("entry-0");
+      expect((await readOther()).entries[0]?.entry.sessionId).toBe("other-store");
+      expect(requests.count()).toBe(0);
+      expect((await read([keys[1]!])).entries[0]?.entry.sessionId).toBe("entry-1");
+      expect(requests.count()).toBe(1);
+      requests.clear();
+      expect((await read([keys[1]!])).entries[0]?.entry.sessionId).toBe("entry-1");
+      expect(requests.count()).toBe(0);
+    } finally {
+      requests.restore();
+    }
+  });
+});
+
+it("waits behind a pending worker patch before consuming a primed exact entry", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+    const database = openOpenClawAgentDatabase({ agentId: "main", env });
+    const sessionKey = "agent:main:pending-patch";
+    const scope = { agentId: "main", storePath: database.path, sessionKey, env };
+    replaceSessionEntrySync(scope, { sessionId: "same-session", updatedAt: 1, label: "before" });
+    const input = { agentId: "main", storePath: database.path, sessionKeys: [sessionKey], env };
+    expect((await readSessionEntriesFromStoreInWorker(input)).entries[0]?.entry.label).toBe(
+      "before",
+    );
+    const entered = createDeferred();
+    const ready = createDeferred();
+    const prepared = createDeferred();
+    const order: string[] = [];
+    const patch = patchSessionEntryCore(
+      scope,
+      async () => {
+        entered.resolve();
+        await ready.promise;
+        return { label: "after" };
+      },
+      {
+        workerGuard: {},
+        skipMaintenance: true,
+        onCommitted: () => {
+          order.push("write");
+        },
+      },
+    );
+    void patch.catch(() => {});
+    let read: Promise<void> | undefined;
+    try {
+      await awaitGateBeforeSettlement(entered.promise, patch, "Patch preparation did not begin");
+      read = withSessionEntriesFromStoresInWorker(
+        [input],
+        ([entry]) => {
+          entry?.assertCurrent();
+          expect(entry?.result.entries[0]?.entry.label).toBe("after");
+          order.push("read");
+        },
+        { ordered: true, prepareSource: () => prepared.resolve() },
+      );
+      void read.catch(() => {});
+      await awaitGateBeforeSettlement(prepared.promise, read, "Read source was not prepared");
+      expect(order).toEqual([]);
+      ready.resolve();
+      await Promise.all([patch, read]);
+      expect(order).toEqual(["write", "read"]);
+      const requests = observeEntryReaderRequests();
+      try {
+        expect((await readSessionEntriesFromStoreInWorker(input)).entries[0]?.entry.label).toBe(
+          "after",
+        );
+        expect(requests.count()).toBe(0);
+      } finally {
+        requests.restore();
+      }
+    } finally {
+      ready.resolve();
+      await Promise.allSettled([patch, ...(read ? [read] : [])]);
+    }
+  });
+});
+
+it("observes native and worker entry, participant, and membership writes after cache priming", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+    const database = openOpenClawAgentDatabase({ agentId: "main", env });
+    const sessionKey = "agent:main:receipt-facts";
+    const scope = { agentId: "main", storePath: database.path, sessionKey, env };
+    replaceSessionEntrySync(scope, { sessionId: "same-session", updatedAt: 1 });
+    const read = () =>
+      readSessionEntriesFromStoreInWorker({
+        ...scope,
+        sessionKeys: [sessionKey],
+        includeMembers: true,
+        includeParticipantRecords: true,
+      });
+    const missingKey = "agent:main:previously-absent";
+    const readMissing = () =>
+      readSessionEntriesFromStoreInWorker({
+        ...scope,
+        sessionKeys: [missingKey],
+        includeMembers: true,
+        includeParticipantRecords: true,
+      });
+    const requests = observeEntryReaderRequests();
+    try {
+      expect((await read()).entries[0]?.entry.sessionId).toBe("same-session");
+      requests.clear();
+      expect((await read()).members?.[sessionKey]).toEqual([]);
+      expect(requests.count()).toBe(0);
+      expect((await readMissing()).entries).toEqual([]);
+      requests.clear();
+      expect((await readMissing()).entries).toEqual([]);
+      expect(requests.count()).toBe(0);
+      replaceSessionEntrySync(
+        { ...scope, sessionKey: missingKey },
+        {
+          sessionId: "created-after-miss",
+          updatedAt: 1,
+        },
+      );
+      expect((await readMissing()).entries[0]?.entry.sessionId).toBe("created-after-miss");
+      for (const writer of ["native", "worker"] as const) {
+        const participant = { identity: { type: "agent" as const, id: writer }, promptedAt: 20 };
+        const member = { identityId: writer, addedBy: "owner", addedAt: 10 };
+        if (writer === "native") {
+          replaceSessionEntrySync(scope, {
+            sessionId: "same-session",
+            updatedAt: 2,
+            label: writer,
+          });
+          recordSessionParticipant(scope, participant);
+          addSessionMember(scope, member);
+        } else {
+          await patchSessionEntryCore(scope, () => ({ label: writer }), {
+            workerGuard: {},
+            skipMaintenance: true,
+          });
+          await recordSessionParticipantInWorker(scope, participant);
+          await addSessionMemberInWorker(scope, member);
+        }
+        const changed = await read();
+        expect(changed.entries[0]?.entry).toMatchObject({ label: writer });
+        expect(changed.entries[0]?.entry.participants).toContainEqual({
+          identity: participant.identity,
+        });
+        expect(changed.participantRecords?.[sessionKey]).toContainEqual(
+          expect.objectContaining({
+            identity: participant.identity,
+            contributionCount: 1,
+          }),
+        );
+        expect(changed.members?.[sessionKey]).toEqual([member]);
+        requests.clear();
+        expect(await read()).toEqual(changed);
+        expect(requests.count()).toBe(0);
+        if (writer === "native") {
+          removeSessionMember(scope, writer);
+        } else {
+          await removeSessionMemberInWorker(scope, writer);
+        }
+        expect((await read()).members?.[sessionKey]).toEqual([]);
+      }
+    } finally {
+      requests.restore();
+    }
+  });
+});
 
 it("retains the foreground FIFO through a nested ordered read", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {

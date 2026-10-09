@@ -1,6 +1,12 @@
+import type { BigIntStats } from "node:fs";
 import { threadId } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { readDatabaseIdentityBirthtime } from "./sqlite-worker-identity.js";
 import { readWorkerAncestors, workerAncestors } from "./worker-ancestry.js";
+
+export function readSqliteDatabaseAdmissionIdentity(file: BigIntStats): string {
+  return `${file.dev}:${file.ino}:${readDatabaseIdentityBirthtime(file)}`;
+}
 
 export type AdmissionFact = {
   value: unknown;
@@ -118,7 +124,7 @@ export function isSqliteDatabaseAdmissionRetired(record: Admission): boolean {
   return Atomics.load(new Int32Array(record.generation), 3) !== 0;
 }
 
-export function registerWriterCustody(record: Admission): void {
+function registerWriterCustody(record: Admission): void {
   if (threadId !== 0) {
     return;
   }
@@ -130,6 +136,24 @@ export function registerWriterCustody(record: Admission): void {
       Atomics.store(writer, 1, 1);
     }
   }
+}
+
+export function mergeSqliteDatabaseAdmissionRecord(record: Admission, incoming: Admission): void {
+  if (record.generationId !== incoming.generationId) {
+    // Only the host creates a generation; unrelated revocation cells cannot certify its facts.
+    return;
+  }
+  for (const [key, fact] of incoming.facts) {
+    if (isSqliteDatabaseAdmissionFactCurrent(incoming, fact)) {
+      record.facts.set(key, fact);
+    }
+  }
+  for (const [writer, cell] of incoming.writers) {
+    if (!record.writers.has(writer)) {
+      record.writers.set(writer, cell);
+    }
+  }
+  registerWriterCustody(record);
 }
 
 export function isSqliteDatabaseAdmissionFactCurrent(

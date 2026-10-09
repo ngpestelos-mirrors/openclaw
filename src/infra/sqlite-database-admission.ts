@@ -9,10 +9,11 @@ import { hasErrnoCode } from "./errno.js";
 import { SQLITE_DATABASE_ADMISSIONS_KEY } from "./sqlite-database-admission-key.js";
 import {
   readSqliteDatabaseAdmissions,
+  readSqliteDatabaseAdmissionIdentity as identity,
   activeSqliteDatabaseWriters as activeWriters,
   readSqliteDatabaseRecordWriteRevision as readWriteRevision,
   retireSqliteDatabaseWriter,
-  registerWriterCustody,
+  mergeSqliteDatabaseAdmissionRecord,
   ensureSqliteDatabaseWriter,
   publishSqliteDatabaseFact,
   isSqliteDatabaseAdmissionRetired as isRetired,
@@ -25,11 +26,8 @@ import {
   getSqliteNativeAdmissionFacts,
   hasSqliteNativeAdmissionOperation,
 } from "./sqlite-native-admission.js";
-import { stageSqliteTransactionState } from "./sqlite-post-commit.js";
-import {
-  isSoleDatabaseFileDescriptor,
-  readDatabaseIdentityBirthtime,
-} from "./sqlite-worker-identity.js";
+import { hasSqlitePostCommitScope, stageSqliteTransactionState } from "./sqlite-post-commit.js";
+import { isSoleDatabaseFileDescriptor } from "./sqlite-worker-identity.js";
 
 export { readSqliteDatabaseAdmissions } from "./sqlite-database-admission-record.js";
 export type { SqliteDatabaseAdmissions } from "./sqlite-database-admission-record.js";
@@ -67,10 +65,6 @@ const state = resolveGlobalSingleton(Symbol.for("openclaw.sqliteDatabaseAdmissio
   exchanging: false,
   publication: 0,
 }));
-
-function identity(file: fs.BigIntStats): string {
-  return `${file.dev}:${file.ino}:${readDatabaseIdentityBirthtime(file)}`;
-}
 
 function rememberEnvironment(): void {
   setEnvironmentData(SQLITE_DATABASE_ADMISSIONS_KEY, captureSqliteDatabaseAdmissions());
@@ -454,6 +448,24 @@ export function readSqliteDatabaseWriteTokenForPath(location: string): string | 
   return revision === undefined ? undefined : `${record.identity}:${revision}`;
 }
 
+/** The managed writer's next settlement advances its physical revision exactly once. */
+export function readSqliteDatabasePendingWriteToken(database: DatabaseSync): string | undefined {
+  if (
+    !database.isOpen ||
+    !database.isTransaction ||
+    !hasSqlitePostCommitScope(database) ||
+    state.suspended.has(database)
+  ) {
+    return undefined;
+  }
+  const record = state.dataWriters.get(database);
+  if (!record || isRetired(record)) {
+    return undefined;
+  }
+  const revision = readWriteRevision(record, 1, exchange);
+  return revision === undefined ? undefined : `${record.identity}:${(revision + 1) | 0}`;
+}
+
 /** TEMP-trigger owners already see their own writes and only need sibling settlement. */
 export function readSqliteDatabaseSiblingWriteRevision(database: DatabaseSync): number | undefined {
   const revision = readSqliteDatabaseWriteRevision(database);
@@ -735,21 +747,8 @@ export function installSqliteDatabaseAdmissions(admissions: SqliteDatabaseAdmiss
     if (!record) {
       state.admissions.set(incoming.identity, incoming);
       record = incoming;
-    } else if (record.generationId !== incoming.generationId) {
-      // Only the host creates a generation; unrelated revocation cells cannot certify its facts.
-      continue;
     }
-    for (const [key, fact] of incoming.facts) {
-      if (valid(incoming, fact)) {
-        record.facts.set(key, fact);
-      }
-    }
-    for (const [writer, cell] of incoming.writers) {
-      if (!record.writers.has(writer)) {
-        record.writers.set(writer, cell);
-      }
-    }
-    registerWriterCustody(record);
+    mergeSqliteDatabaseAdmissionRecord(record, incoming);
   }
   rememberEnvironment();
 }

@@ -96,8 +96,21 @@ export function readSessionEntrySideMetadata(
 export function projectSessionEntryCacheUpdate(
   entryJson: string,
   sideMetadata: SessionEntrySideMetadata | undefined,
+  snapshotEntry?: SessionEntry,
 ): SessionEntry | undefined {
   // The writer supplies its persisted bytes; the cache owns the decoded metadata graph.
-  const parsedEntry = parseSessionEntryJson({ entry_json: entryJson }, "list");
+  const parsedEntry = parseSessionEntryJson(
+    {
+      entry_json: entryJson,
+      ...(snapshotEntry
+        ? {
+            session_diff_baseline_json: JSON.stringify(snapshotEntry.sessionDiffBaseline),
+            skills_snapshot_json: JSON.stringify(snapshotEntry.skillsSnapshot),
+            system_prompt_report_json: JSON.stringify(snapshotEntry.systemPromptReport),
+          }
+        : {}),
+    },
+    snapshotEntry ? "full" : "list",
+  );
   return parsedEntry ? freezeJsonSnapshot({ ...parsedEntry, ...sideMetadata }) : undefined;
 }

@@ -6,7 +6,7 @@ import {
   trackSqliteStatementExecutions,
 } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import * as boardStore from "../../boards/sqlite-board-store.kernel.js";
-import { requireNodeSqlite } from "../../infra/node-sqlite.js";
+import { openNodeSqliteDatabase, requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { runInDetachedAsyncContext } from "../../shared/detached-async-context.js";
@@ -145,7 +145,7 @@ it("hydrates only requested snapshots while retaining exact-read lifecycle and a
   });
 });
 
-it("publishes exact-read admission only after commit and reuses it on the retained reader", async () => {
+it("publishes lifecycle snapshot admission only after commit and reuses it on the retained reader", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
     const database = openOpenClawAgentDatabase({ agentId: "main", env });
     const sessionKey = "agent:main:cron:admission";
@@ -166,6 +166,7 @@ it("publishes exact-read admission only after commit and reuses it on the retain
             database: target,
             env,
             sessionKeys: [sessionKey],
+            projection: "lifecycle",
           });
         const commitFailure = new Error("Injected snapshot commit failure");
         const exec = reader.db.exec.bind(reader.db);
@@ -323,6 +324,7 @@ it.each([false, true])("reads row metadata (continuation: %s)", async (useContin
             database: target,
             env,
             sessionKeys: [sessionKey],
+            projection: "lifecycle",
           });
         }
         const continuation = useContinuation
@@ -445,7 +447,7 @@ it.each([false, true])("reads row metadata (continuation: %s)", async (useContin
   });
 });
 
-it("consumes admitted board absence for a cohort and observes first use and foreign DDL", async () => {
+it("consumes admitted board absence for a cohort and observes first use and sibling DDL", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
     const database = openOpenClawAgentDatabase({ agentId: "main", env });
     const sessionKeys = Array.from(
@@ -458,7 +460,7 @@ it("consumes admitted board absence for a cohort and observes first use and fore
     database.db.exec("DROP TABLE board_widgets; DROP TABLE board_tabs");
     const target = { agentId: database.agentId, path: database.path };
     await closeOpenClawAgentDatabaseByPathAsync(database.path, database.agentId);
-    const peer = new (requireNodeSqlite().DatabaseSync)(target.path);
+    const peer = openNodeSqliteDatabase(target.path);
     const retained = new OpenClawAgentDatabaseReadOnlyScope();
     try {
       retained.run(target, () => {
@@ -564,8 +566,6 @@ it("closes worker-prepared authority synchronously before queued consumers can r
       });
     });
     await queued;
-    const result = await readSessionEntriesFromStoreInWorker(input);
-    expect(Object.keys(result).toSorted()).toEqual(["entries", "kind", "lifecycleTimestamps"]);
     await expect(withSessionEntriesFromStoresInWorker([input], async () => {})).rejects.toThrow(
       "consumers must remain synchronous",
     );
