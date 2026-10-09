@@ -33,7 +33,7 @@ no deletion snapshot. Preview and apply retain the selected physical database,
 and the lifecycle writer rereads the entry and snapshot before deleting anything.
 If a store first appears during reading, its native read receipt binds later
 phases to that physical identity.
-Foreign appends or rewrites invalidate stale removal plans. The Gateway retains
+Concurrent appends or rewrites invalidate stale removal plans. The Gateway retains
 caller authority, and released synchronous commit callbacks keep their native
 transaction boundary. Explicit process-held incognito selectors retain their
 native database incarnation and share the same classification kernel. Schemas,
@@ -534,7 +534,7 @@ replacement, completion, requester wakes, and recovery. Per-row FIFO admission
 precedes synchronous planning against immutable published values; multi-row plans
 admit their sorted keys together. The worker compares digests of the stored payload
 and indexed ownership columns before writing, then returns acknowledged versions.
-Foreign conflicts refresh authoritative rows through the read worker and replan up
+Conflicting writes refresh authoritative rows through the read worker and replan up
 to three times. Genuine execution, cancellation, and requester-cohort ownership
 loss remains an explicit rejection.
 
@@ -763,6 +763,9 @@ the generation retires, earlier committed interruptions still publish after relo
 before new scheduling work. Retired timer batches join reservation cleanup and release only
 the execution slots they acquired. Schemas, retention, and update behavior are
 unchanged; guarded saves and execution authority checks retain their existing owners.
+Foreign-receipt monitoring reconciles recorded run ownership and settlement; it
+does not probe SQLite versions or authorize another process to write live Gateway
+databases.
 
 Read-only Cron inspection runs its native open, row decoding, and close in a
 bounded worker task. Ordinary cold reads and artifact-preserving cold reads keep
@@ -1121,8 +1124,8 @@ Gateway `session.members.list` and `session.members.listEvidence` read full
 membership rows and current session metadata together in one SQLite snapshot on
 the projection worker lane. They do not queue a second session read behind
 transcript history. Both methods recheck the exact session instance and current
-management rights after the snapshot settles, including foreign ownership changes
-that have not published resident facts. Member ordering, actor evidence, and
+management rights after the snapshot settles, including ownership changes made
+through released synchronous SDK writers without complete resident publication. Member ordering, actor evidence, and
 missing-database behavior are unchanged. Incognito membership and metadata use the
 same snapshot kernel through their process-local native owner; the synchronous
 session-store facade retains its existing compatibility contract. Profile and
@@ -1411,7 +1414,8 @@ owner. A runtime-config replacement or changed OAuth record during the read leav
 the pending outcome for a later reconciliation. Health comparisons use conditional
 writes against every original raw field, including nulls; audit appends read their
 sequence and retention count together within the existing write transaction.
-Foreign commits remain visible on each new operation. These changes preserve
+Each new operation uses current rows or facts invalidated by owning-writer receipts.
+These changes preserve
 schemas, retention, synchronous cold-load compatibility, and update behavior.
 
 The native Gateway host supplies snapshot preparation through its registered
@@ -1498,7 +1502,7 @@ they hold the only copy of their data. Agent handles no longer retire solely
 because another agent opens a database. Idle retirement preserves WAL checkpoint
 and lease cleanup; explicit shutdown, deletion, quarantine, and replacement keep
 their existing close and revocation paths. Reuse preserves read admission and
-data-version invalidation, without changing schemas, stored retention, or update
+owning-writer invalidation, without changing schemas, stored retention, or update
 behavior. The idle window is an internal constant, not a configuration option.
 
 Explicit artifact-preserving inspections, private snapshots, and extension-enabled or nested
@@ -1936,7 +1940,7 @@ History eviction prepares its deletion snapshot in that archive worker's existin
 materialization request. The final reclamation transaction rereads durable references,
 recency, and the complete snapshot; host grants recheck live session admissions and
 the captured physical database. Archive publication keeps that same source fence.
-A foreign update after materialization is resolved by that final transaction,
+A concurrent update after materialization is resolved by that final transaction,
 and a refusal still joins worker cleanup. Retention policy, archive selection,
 schemas, and update behavior are unchanged.
 
@@ -2242,8 +2246,9 @@ suggestions, participant history, and retained ACP provenance use the logical-no
 repair owner and its existing revision and identity precedence. These copies
 transfer no live execution or membership authority. Source cleanup verifies the physical source and a complete
 destination receipt captured in the copy transaction before deleting each copied
-generation. Unchanged SQLite data versions reuse that verified receipt; any commit
-requires exact revalidation, including input and rewrite-watermark facts. Exact
+generation. An unchanged in-process writer revision reuses that verified receipt;
+a changed or unsettled writer revision requires exact revalidation, including input
+and rewrite-watermark facts. Exact
 node-artifact fingerprints protect source and destination state through entry
 removal. Source deletion checks these node payloads only at entry boundaries;
 historical-generation cleanup keeps its generation-only checks. In-place

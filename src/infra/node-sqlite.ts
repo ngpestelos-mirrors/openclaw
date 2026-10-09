@@ -16,7 +16,6 @@ import { compareValidSemver } from "./semver.js";
 import {
   bindSqliteDatabaseAdmission,
   prepareSqliteDatabaseAdmission,
-  prepareSqliteDatabaseWriter,
 } from "./sqlite-database-admission.js";
 import {
   probeSqliteIteratorBehavior,
@@ -265,9 +264,6 @@ export function openNodeSqliteDatabase(
   if (database.isOpen) {
     try {
       bindSqliteDatabaseAdmission(database, identity);
-      if (options?.readOnly !== true) {
-        prepareSqliteDatabaseWriter(database);
-      }
     } catch (error) {
       database.close();
       throw error;
@@ -280,20 +276,21 @@ export function openNodeSqliteDatabase(
     sqlite.DatabaseSync.prototype.open.call(database);
     try {
       bindSqliteDatabaseAdmission(database, reopenedIdentity);
-      if (options?.readOnly !== true) {
-        prepareSqliteDatabaseWriter(database);
-      }
     } catch (error) {
       database.close();
       throw error;
     }
   };
   // Schema tracking must precede the statement-cache authorizer wrapper.
-  trackSqliteSchema(database, {
-    DatabaseSync: sqlite.DatabaseSync,
-    StatementSync: sqlite.StatementSync,
-    iteratorBehavior: assertSafeSqliteRuntime(sqlite),
-  });
+  trackSqliteSchema(
+    database,
+    {
+      DatabaseSync: sqlite.DatabaseSync,
+      StatementSync: sqlite.StatementSync,
+      iteratorBehavior: assertSafeSqliteRuntime(sqlite),
+    },
+    options?.readOnly !== true,
+  );
   if (!getSqliteRuntimeCapabilities().explicitSqliteCloseReleasesNativeResources) {
     registerNodeSqliteDisposeCallback(database, () => {
       bunSqliteNativeCleanupPending = true;

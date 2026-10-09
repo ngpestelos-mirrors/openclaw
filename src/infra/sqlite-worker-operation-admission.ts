@@ -25,6 +25,9 @@ import { currentSqliteOperationTiming } from "./sqlite-reader-lifecycle.js";
 import { SqliteWorkerError } from "./sqlite-worker-contract.js";
 import {
   deferSqliteWorkerNativeCommitReceipt,
+  sqliteDatabaseAdmissionUpstream as admissionUpstream,
+  currentSqliteWorkerOperationAdmission as currentAdmission,
+  type WorkerAdmissionScope,
   readNativeCommitReceipt,
   type NativeCommitReceipt,
   type RetainedWorkerTransactionAdmission,
@@ -37,26 +40,7 @@ const REQUESTED = 0;
 const GRANTED = 1;
 const REFUSED = 2;
 
-const admissionUpstream = resolveGlobalSingleton<{
-  connection?: { port: MessagePort; closed: boolean };
-}>(Symbol.for("openclaw.sqliteDatabaseAdmissionUpstream"), () => ({}));
-
-/** A served worker relays descendant facts through its existing lifetime channel. */
-export function bindSqliteDatabaseAdmissionUpstream(port: MessagePort): void {
-  const current = admissionUpstream.connection;
-  if (current) {
-    if (current.port !== port) {
-      throw new SqliteWorkerError("SQLite admission upstream changed owner", "closed");
-    }
-    return;
-  }
-  const connection = { port, closed: false };
-  admissionUpstream.connection = connection;
-  port.once("close", () => {
-    connection.closed = true;
-  });
-  port.unref();
-}
+export { bindSqliteDatabaseAdmissionUpstream } from "./sqlite-worker-operation-settlement.js";
 
 /** Only the factory's admission before agent open may certify this refusal. */
 export const SqliteWorkerOpenRefusedError = resolveGlobalSingleton(
@@ -582,19 +566,6 @@ function createOperationAdmission(
   return admission;
 }
 
-type WorkerAdmissionScope = {
-  // Published SDK request helpers share these port/active carrier fields.
-  port: MessagePort;
-  owner: SqliteWorkerOperationContext;
-  active: boolean;
-};
-// Source brokers and built plugin backends can load separate module copies in
-// one Worker. Share the carrier, while each operation still owns its private port.
-const currentAdmission = resolveGlobalSingleton(
-  Symbol.for("openclaw.sqliteWorkerOperationAdmission"),
-  () => new AsyncLocalStorage<WorkerAdmissionScope>(),
-);
-
 /** Install only the private port belonging to the broker's currently executing operation. */
 export function withSqliteWorkerOperationAdmission<T>(
   owner: SqliteWorkerOperationContext,
@@ -602,20 +573,49 @@ export function withSqliteWorkerOperationAdmission<T>(
 ): T {
   const scope = { owner, port: owner.port, active: true };
   try {
-    return currentAdmission.run(scope, () =>
-      withSqliteDatabaseAdmissionExchange((admissions, location, create) => {
-        if (!scope.active) {
-          throw new SqliteWorkerError(
-            "SQLite facts require their retained admission",
-            "unavailable",
-          );
-        }
-        return exchangeSqliteDatabaseAdmissions(scope.port, admissions, location, create);
-      }, operation),
-    );
+    return runSqliteWorkerAdmissionScope(scope, operation);
   } finally {
     scope.active = false;
   }
+}
+
+/** Async factories and cleanup retain the same grant until their accepted work settles. */
+export async function withSqliteWorkerOperationAdmissionAsync<T>(
+  owner: SqliteWorkerOperationContext,
+  operation: () => T | Promise<T>,
+): Promise<T> {
+  const scope = { owner, port: owner.port, active: true };
+  try {
+    return await runSqliteWorkerAdmissionScope(scope, operation);
+  } finally {
+    scope.active = false;
+  }
+}
+
+function runSqliteWorkerAdmissionScope<T>(scope: WorkerAdmissionScope, operation: () => T): T {
+  return currentAdmission.run(scope, () =>
+    withSqliteDatabaseAdmissionExchange((admissions, location, create) => {
+      if (!scope.active) {
+        if (!create) {
+          return exchangeSqliteDatabaseLifetimeAdmissions(admissions, location);
+        }
+        throw new SqliteWorkerError("SQLite facts require their retained admission", "unavailable");
+      }
+      return exchangeSqliteDatabaseAdmissions(scope.port, admissions, location, create);
+    }, operation),
+  );
+}
+
+/** Retained cleanup may publish facts after its operation ends; creation still needs a live grant. */
+function exchangeSqliteDatabaseLifetimeAdmissions(
+  admissions: SqliteDatabaseAdmissions,
+  location?: string,
+): SqliteDatabaseAdmissions {
+  const upstream = admissionUpstream.connection;
+  if (!upstream || upstream.closed) {
+    throw new SqliteWorkerError("SQLite facts require their retained admission", "unavailable");
+  }
+  return exchangeDatabaseAdmissions(upstream.port, admissions, location);
 }
 
 /** Format facts use this private channel independently of transaction authority. */

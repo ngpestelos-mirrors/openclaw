@@ -145,6 +145,10 @@ describe("subagent registry sqlite store", () => {
     } finally {
       old.close();
     }
+    // Legacy bytes represent a previous process, not this process's admitted file generation.
+    const legacyPath = `${original.path}.legacy`;
+    await fs.copyFile(original.path, legacyPath);
+    await fs.rename(legacyPath, original.path);
     const current = openOpenClawStateDatabase();
     const version = current.db.prepare("PRAGMA user_version").get();
     const schema = current.db.prepare("PRAGMA schema_version").get();

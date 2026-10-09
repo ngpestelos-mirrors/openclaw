@@ -17,7 +17,10 @@ import {
 import { withSqliteDatabaseAdmissionExchange } from "../../infra/sqlite-database-admission.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { assertDatabasePathIdentity } from "../../infra/sqlite-worker-identity.js";
-import { exchangeSqliteDatabaseAdmissions } from "../../infra/sqlite-worker-operation-admission.js";
+import {
+  bindSqliteDatabaseAdmissionUpstream,
+  exchangeSqliteDatabaseAdmissions,
+} from "../../infra/sqlite-worker-operation-admission.js";
 import { cancelWorkerIdleGc, scheduleWorkerIdleGc } from "../../infra/worker-idle-gc.js";
 import { routeLogsToStderr } from "../../logging/console.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
@@ -458,6 +461,7 @@ if (isRecord(workerData) && workerData.type === "sqlite-transcript-archive-v2") 
   if (!parentPort) {
     throw new Error("SQLite transcript archive worker requires a parent port");
   }
+  const workerPort = parentPort;
   const run = async (port: MessagePort) => {
     // Every mode returns results over IPC; lease cleanup diagnostics must preserve CLI JSON stdout.
     routeLogsToStderr();
@@ -572,17 +576,18 @@ if (isRecord(workerData) && workerData.type === "sqlite-transcript-archive-v2") 
   };
   const admissionPort = workerData.databaseAdmissionPort;
   if (admissionPort instanceof MessagePort) {
+    bindSqliteDatabaseAdmissionUpstream(admissionPort);
     try {
       await withSqliteDatabaseAdmissionExchange(
         (admissions, location, create) =>
           exchangeSqliteDatabaseAdmissions(admissionPort, admissions, location, create),
-        () => run(parentPort),
+        () => run(workerPort),
       );
     } finally {
       admissionPort.close();
     }
   } else {
     // Task-pool dispatch installs its own existing admission exchange per task.
-    await run(parentPort);
+    await run(workerPort);
   }
 }

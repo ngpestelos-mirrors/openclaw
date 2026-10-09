@@ -14,6 +14,7 @@ import { createCpuTrackedWorker } from "../../infra/worker-cpu.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
+import { resolveQuarantineStorePath } from "../../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { runScopedSqliteArchiveOperation } from "./session-accessor.sqlite-archive-session.js";
 import type {
@@ -133,6 +134,19 @@ function spawnSqliteTranscriptArchiveWorkerOperation<Result>(
           transport: { kind: "dedicated", channel: worker },
           operationId: 0,
           completion: "exit",
+          databaseAuthority: {
+            databasePath: params.stateContext.admission.databasePath,
+            maintenanceScope: params.stateContext.maintenanceScope,
+            creationPaths: [
+              params.workerData.plan.databaseOptions.path,
+              params.stateContext.admission.databasePath,
+              resolveQuarantineStorePath(params.stateContext.environment),
+            ],
+            assertCurrent() {
+              params.stateContext.admission.assertCurrent();
+              params.assertCurrent?.();
+            },
+          },
           onCommitRequest: params.onCommitRequest,
           withWriteAdmission: params.withWriteAdmission,
           validationOwner: params.validationOwner,

@@ -33,6 +33,7 @@ import { assertExistingDatabaseIdentity } from "./sqlite-worker-identity.js";
 import {
   SqliteWorkerOpenRefusedError,
   withSqliteWorkerOperationAdmission,
+  withSqliteWorkerOperationAdmissionAsync,
   requestSqliteWorkerOperationAdmission,
 } from "./sqlite-worker-operation-admission.js";
 import {
@@ -95,6 +96,17 @@ function runInActorContext<T>(actor: number, operation: () => T): T {
   return runWithActorFacts(actor, () =>
     operationAdmission?.actor === actor
       ? withSqliteWorkerOperationAdmission(operationAdmission.context, operation)
+      : operation(),
+  );
+}
+
+async function runInActorContextAsync<T>(
+  actor: number,
+  operation: () => T | Promise<T>,
+): Promise<T> {
+  return runWithActorFacts(actor, () =>
+    operationAdmission?.actor === actor
+      ? withSqliteWorkerOperationAdmissionAsync(operationAdmission.context, operation)
       : operation(),
   );
 }
@@ -339,7 +351,7 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
       if (request.existingIdentity) {
         assertExistingDatabaseIdentity(request.databasePath, request.existingIdentity);
       }
-      const backend: unknown = await runInActorContext(request.actor, () => {
+      const backend: unknown = await runInActorContextAsync(request.actor, () => {
         const input = deserialize(request.input);
         if (request.openAdmission) {
           try {
@@ -390,7 +402,7 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
         throw new Error("SQLite worker actor is closed");
       }
       try {
-        await runInActorContext(request.actor, () => backend.close());
+        await runInActorContextAsync(request.actor, () => backend.close());
         closeReceipt = runInActorContext(request.actor, () =>
           backend[SQLITE_WORKER_CLOSE_RECEIPT]?.(),
         );

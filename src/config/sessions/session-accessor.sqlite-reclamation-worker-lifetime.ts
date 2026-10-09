@@ -23,7 +23,10 @@ import {
   publishOpenClawStateDatabaseWorkerAdmission,
   registerOpenClawStateDatabaseAsyncResource,
 } from "../../state/openclaw-state-db-cache.js";
-import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
+import {
+  resolveOpenClawStateSqlitePath,
+  resolveQuarantineStorePath,
+} from "../../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { createSqliteTranscriptArchiveWorker } from "./session-accessor.sqlite-archive.js";
 import {
@@ -403,6 +406,16 @@ export class SqliteReclamationWorker {
           transport,
           operationId,
           completion: "result",
+          databaseAuthority: {
+            databasePath: this.stateContext.admission.databasePath,
+            maintenanceScope: this.stateContext.maintenanceScope,
+            creationPaths: [
+              this.options.path,
+              this.stateContext.admission.databasePath,
+              resolveQuarantineStorePath(this.stateContext.environment),
+            ],
+            assertCurrent: params.assertCurrent,
+          },
           getFailure: () => this.failure,
           onExit: (code) => {
             exitCode = code;

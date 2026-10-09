@@ -385,7 +385,7 @@ export function beginSqliteDatabaseSchemaMutation(database: DatabaseSync): void 
   }
 }
 
-/** Writable opens establish custody before a caller can acquire any SQLite lock. */
+/** Writable transaction entry establishes custody before taking SQLite locks. */
 export function prepareSqliteDatabaseWriter(database: DatabaseSync): Admission | undefined {
   // Cold host and managed worker DDL need custody before any native callback can admit a sibling.
   const record = admission(database, threadId === 0 || state.exchange.getStore() !== undefined);
@@ -630,7 +630,8 @@ export function publishSqliteDatabaseSchemaChange(database: DatabaseSync): void 
 }
 
 export function revokeSqliteDatabaseAdmissions(database: DatabaseSync): void {
-  const record = admission(database);
+  // Native cleanup may close before corruption reaches the owner; revoke that exact file.
+  const record = state.connections.get(database) ?? admission(database);
   if (record) {
     const cell = new Int32Array(record.generation);
     Atomics.add(cell, 0, 1);

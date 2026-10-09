@@ -16,6 +16,7 @@ import {
   hasPendingSqliteDatabaseSchemaMutation,
   invalidateLocalSqliteSchemaAdmissions,
   publishSqliteDatabaseAdmission,
+  prepareSqliteDatabaseWriter,
   readSqliteDatabaseWriteRevision,
   suspendSqliteDatabaseAdmission,
 } from "./sqlite-database-admission.js";
@@ -57,6 +58,7 @@ export type {
 type SchemaMutationListener = (observed?: SqliteSchemaMarkers) => void;
 
 type SchemaOwner = SqliteSchemaScopeOwner & {
+  writable: boolean;
   admitted: boolean;
   revision: number;
   facts?: SqliteSchemaFacts;
@@ -257,6 +259,13 @@ function trackSchemaChanges(
       settle();
     }
     const wasTransaction = database.isTransaction;
+    if (
+      owner.writable &&
+      !wasTransaction &&
+      (control?.kind === "BEGIN" || control?.kind === "SAVEPOINT")
+    ) {
+      prepareSqliteDatabaseWriter(database);
+    }
     if (!wasTransaction && control?.kind === "BEGIN" && owner.admitted) {
       getAdmittedSqliteSchemaFacts(database);
     }
@@ -566,9 +575,14 @@ export function readSqliteDataVersion(database: DatabaseSync): number {
 }
 
 /** Install at native open, before callers can retain statements or install an authorizer. */
-export function trackSqliteSchema(database: DatabaseSync, native: NativeSqlite): void {
+export function trackSqliteSchema(
+  database: DatabaseSync,
+  native: NativeSqlite,
+  writable: boolean,
+): void {
   if (!owners.has(database)) {
     const owner: SchemaOwner = {
+      writable,
       admitted: false,
       revision: 0,
       readDepth: 0,

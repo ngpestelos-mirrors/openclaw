@@ -295,8 +295,9 @@ a newer publication. Each caller still applies its own published-version floor.
 
 Trajectory retention readers receive already admitted schema facts under the
 physical database identity. Cold hosts do not build a comparison database to
-prepare that handoff. Each reader retains its physical identity and row-freshness
-checks without repeating schema SQL; durable quarantine-row guards remain current.
+prepare that handoff. Each reader retains its physical identity and uses
+writer-invalidated row facts without repeating schema SQL; durable quarantine-row
+guards remain current.
 Retention selection and retry policy are unchanged.
 
 Session lifecycle result counts use the already admitted agent executor after
@@ -416,14 +417,15 @@ agent-store reader and use the existing exact entry and membership predicates at
 transaction and commit grants. Transport waits check lifetime and source custody
 without repeating those reads. Grants never rediscover shared-state registry or
 profile ownership while the placement writer holds its transaction.
-Retained readers reuse admitted schema facts and recheck ownership after foreign
-commits. Schema changes made by OpenClaw's migration or repair owner arrive through
-its fact publication.
+Retained readers reuse admitted schema facts and check current ownership rows
+at the effect boundary. Owning-writer receipts invalidate retained row facts;
+schema changes made by OpenClaw's migration or repair owner arrive through its
+fact publication.
 
 The released `getMany` and `retireSessionPlacement` methods retain synchronous
 SDK adapters through the next Plugin SDK major. Native source/reset and final
 workspace-effect predicates also retain their current checks where synchronous
-SDK or foreign writers bypass owner publication. They remain explicit migration
+SDK writers bypass complete owner publication. They remain explicit migration
 debt, as do synchronous result compatibility readers and pending-result guards.
 These changes require no schema, retention, durability, or update migration.
 
@@ -512,8 +514,8 @@ synchronous preparation retains native callback ordering until the next Plugin S
 major. Schemas, stored bytes, retention, and update behavior are unchanged.
 
 Admitted reply phases borrow the canonical agent executor for bounded session-entry,
-membership, participant, lifecycle, header, and anchor facts. Each unpinned phase
-probes the original connection again and consumes its result synchronously under
+membership, participant, lifecycle, header, and anchor facts. Each phase reads
+current rows through the original connection and consumes its result synchronously under
 the existing foreground FIFO and native-mutation witness. The borrow keeps the
 selected physical file, aliases, native incarnation, and session lifecycle; reset,
 replacement, and release revoke it. An acknowledged initialization may transfer
@@ -548,8 +550,7 @@ share one fresh history cohort. After hooks or compaction, replay acquires its
 next cohort at synchronous prompt admission. Bounded model context retains its separate
 payload projection and byte limits, with synchronous acceptance under the same
 FIFO and native mutation witness. That operation's snapshot is its serialization
-point; a foreign commit overlapping its reply is observed on the next unpinned
-read. Source replacement, live authority, and local native mutations are still
+point; a later owning-writer commit invalidates retained facts for the next read. Source replacement, live authority, and local native mutations are still
 checked before synchronous acceptance. Delivery reads candidate payloads and their
 current anchors in one history snapshot before deciding receipt coverage.
 Unbounded model-context reads prepare outside the writer FIFO and retain their
@@ -643,11 +644,11 @@ claim transaction rereads placement predicates. Bootstrap routing consumes fresh
 file absence without another setup-state read, and checks the file again after
 awaiting setup state when the file was present.
 
-Shared-state content-version reads reuse their admitted connection's exact
-schema, data, native-mutation, and snapshot revision. Foreign commits, local
-mutations, rollback, schema changes, and authorizer-controlled reads retain their
-current invalidation and uncached behavior. Schemas and update behavior are
-unchanged.
+Shared-state content-version reads reuse the physical database's admitted
+version facts across connections and workers. Ordinary data commits do not expire
+that format admission. Migration and repair owners publish replacement facts after
+DDL; snapshot-local admission and rollback retain their existing boundaries.
+Schemas and update behavior are unchanged.
 
 Accepted Memory sync borrows its existing agent executor before provider and
 maintenance-lock waits, independently of its concrete publication stores.
@@ -663,8 +664,9 @@ and uses its first expiry read to skip empty write transactions. Due deletions u
 the admitted handle and retain transaction and commit authorization; zero-row
 observations revalidate after the worker returns. Pairing notifications skip pairing snapshots when subscriptions and retained
 notification records are both empty. Outbound recovery reuses an empty queue fact
-only at the connection's current admitted read revision. Foreign commits, local mutations,
-and connection retirement invalidate these facts through their existing owners.
+only at the connection's current admitted read revision. Owning-writer receipts,
+local mutations, and connection retirement invalidate these facts through their
+existing owners.
 Worker auto-suspension takes placement reporting snapshots only when its policy is
 enabled. Placement retirement reuses its own scan for the reporting before-snapshot
 and skips reporting when that scan is empty. These reporting facts do not grant
@@ -681,7 +683,7 @@ Cleanup retains physical-store identity and current host grants. Schemas, stored
 and update behavior are unchanged.
 
 Released synchronous sandbox callbacks are held across provider waits and deferred
-process launch, and need live generation authority that observes foreign removals;
+process launch, and need live generation authority that observes committed removals;
 revisit when those callbacks get async companions (next SDK major). Their synchronous
 registry generation reader remains a retained compatibility path, without a cached
 or prepared-row replacement.
@@ -797,13 +799,13 @@ authoritative claim rows before committing. Accepted
 settlement remains joined during shutdown after caller cancellation. Input and
 recovery claims still commit before acknowledgment.
 Acknowledged entry publications carry complete membership and participant facts
-from the worker's existing metadata read. Foreign commits are observed by that
-reader; newer native publications and uncertain outcomes retain invalidation.
+from the worker's existing metadata read. Newer writer receipts, native
+publications, and uncertain outcomes invalidate retained row facts.
 Superseded membership requires fresh sharing preparation without revoking an
 independently published delivery generation.
 The compact membership projection does not need a separate read for an unchanged
-claim publication. Process-held incognito and released synchronous SDK freshness
-keep their existing owners. Schemas, retention, durability, and update behavior
+claim publication. Process-held incognito and released synchronous SDK current-row
+checks keep their existing owners. Schemas, retention, durability, and update behavior
 are unchanged.
 
 ### Incognito worker ownership (P1, inactive)
@@ -1522,7 +1524,7 @@ concurrent or later opens reuse that result. Closing a native connection does no
 discard it. A new physical file needs fresh admission, while observed corruption
 revokes existing admission before native cleanup. A migration or repair publishes
 its new schema facts only after successful transaction settlement. Mutable
-metadata retains its row-freshness checks. Explicit maintenance and copied-file
+metadata uses writer-invalidated facts or current-row reads. Explicit maintenance and copied-file
 verification keep their independent integrity checks.
 
 Cold writable agent admission uses the existing agent executor before a bundled
@@ -1538,10 +1540,11 @@ replacement facts for committed local DDL; rollback cannot publish uncommitted
 facts. Host-handle eviction preserves process admission and never falls back to
 schema scans on the Gateway thread. Ordinary execution reuses completed
 preparation, including the facts used to skip already-covered additive DDL.
-Foreign data commits refresh row facts without schema-marker queries. File
+Owning-writer receipts invalidate row facts without schema-marker queries. File
 replacement requires first admission for the replacement; revoked integrity
-requires recovery through its existing owner. Mutable agent ownership remains
-subject to its own current-row checks.
+requires recovery through its existing owner. The physical store's schema owner
+is fixed at admission; live session ownership and permissions still use their
+current-row checks.
 Cloud turns retain the admitted handle through execution and finalization, so
 their existing synchronous transcript-authority checks cannot become cold openers
 after an idle eviction.
@@ -2807,7 +2810,8 @@ wait for the worker's commit. This changes no schema, retention, or update behav
 Ordinary lifecycle upserts read their selected rows and pending-archive fact in
 one read-worker snapshot. A matching physical database with no pending archives
 skips recovery; archive-producing mutations, native scopes, and Doctor transfers
-retain publication. Later foreign archive commits are visible to the next snapshot.
+retain publication. Later committed archive writes invalidate retained facts before
+the next snapshot.
 Standalone recovery checks reuse the read worker without archive or writer admission.
 Maintenance finalization takes writer admission only when its worker requests native
 access, then rechecks current entries and retains admission through commit publication.

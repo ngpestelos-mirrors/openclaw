@@ -3,6 +3,7 @@ import { renameSync } from "node:fs";
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, expect, it, vi } from "vitest";
+import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import {
   resolveRuntimeWorkerArgv,
   resolveRuntimeWorkerUrl,
@@ -102,13 +103,13 @@ it.each(["pending rows", "revoked receipt"] as const)(
   },
 );
 
-it("refuses foreign schema drift before reusing a warm canonical readiness receipt", async () => {
+it("refuses in-process schema drift before reusing a warm canonical readiness receipt", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const { options, database } = seedPendingRows(0);
     expect(hasOpenClawAgentCanonicalValidation(database)).toBe(true);
     expect(hasPendingCanonicalSessionValidation(database)).toBe(false);
     await certifySessionCanonicalValidationPending(options);
-    const peer = new DatabaseSync(database.path);
+    const peer = openNodeSqliteDatabase(database.path);
     try {
       peer.exec("DROP TRIGGER session_nodes_canonical_pending_after_update");
     } finally {

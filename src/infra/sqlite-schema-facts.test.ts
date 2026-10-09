@@ -173,6 +173,14 @@ describe("admitted SQLite schema facts", () => {
     const source = new DatabaseSync(filename);
     source.exec("CREATE TABLE original (id)");
     source.close();
+    const inspection = openNodeSqliteDatabase(filename, { readOnly: true });
+    try {
+      inspection.exec("BEGIN");
+      expect(inspection.prepare("SELECT id FROM original").all()).toEqual([]);
+      inspection.exec("COMMIT");
+    } finally {
+      inspection.close();
+    }
     const database = openDatabase("", false, filename);
     expect(captureSqliteDatabaseAdmissions().some((record) => record.location === filename)).toBe(
       false,

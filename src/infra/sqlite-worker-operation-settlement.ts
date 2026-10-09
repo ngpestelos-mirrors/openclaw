@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { serialize } from "node:v8";
@@ -6,6 +7,27 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { stageSqliteTransactionState } from "./sqlite-post-commit.js";
 import { SQLITE_WORKER_MAX_MESSAGE_BYTES, SqliteWorkerError } from "./sqlite-worker-contract.js";
+
+export const sqliteDatabaseAdmissionUpstream = resolveGlobalSingleton<{
+  connection?: { port: MessagePort; closed: boolean };
+}>(Symbol.for("openclaw.sqliteDatabaseAdmissionUpstream"), () => ({}));
+
+/** A served worker relays descendant facts through its existing lifetime channel. */
+export function bindSqliteDatabaseAdmissionUpstream(port: MessagePort): void {
+  const current = sqliteDatabaseAdmissionUpstream.connection;
+  if (current) {
+    if (current.port !== port) {
+      throw new SqliteWorkerError("SQLite admission upstream changed owner", "closed");
+    }
+    return;
+  }
+  const connection = { port, closed: false };
+  sqliteDatabaseAdmissionUpstream.connection = connection;
+  port.once("close", () => {
+    connection.closed = true;
+  });
+  port.unref();
+}
 
 export type SqliteWorkerOperationContext = {
   port: MessagePort;
@@ -126,3 +148,16 @@ export function settleSqliteWorkerOperationContext(
     [],
   );
 }
+
+export type WorkerAdmissionScope = {
+  // Published SDK request helpers share these port/active carrier fields.
+  port: MessagePort;
+  owner: SqliteWorkerOperationContext;
+  active: boolean;
+};
+// Source brokers and built plugin backends can load separate module copies in
+// one Worker. Share the carrier, while each operation still owns its private port.
+export const currentSqliteWorkerOperationAdmission = resolveGlobalSingleton(
+  Symbol.for("openclaw.sqliteWorkerOperationAdmission"),
+  () => new AsyncLocalStorage<WorkerAdmissionScope>(),
+);
