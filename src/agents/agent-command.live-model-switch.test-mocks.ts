@@ -1,5 +1,23 @@
-import { vi } from "vitest";
+import { vi, type Mock } from "vitest";
+import * as sessionEntryReadRuntime from "../config/sessions/session-entry-read-runtime.js";
 import type { SessionEntry } from "../config/sessions/types.js";
+
+export function resetTestSessionReaders(state: {
+  loadSessionEntryMock: Mock;
+  sessionStoreMock: Record<string, SessionEntry> | undefined;
+  resolvedSessionKeyMock: string | undefined;
+}) {
+  state.loadSessionEntryMock.mockReset().mockImplementation((params: { sessionKey?: string }) => {
+    const sessionKey = params.sessionKey ?? state.resolvedSessionKeyMock ?? "agent:main:main";
+    return state.sessionStoreMock?.[sessionKey];
+  });
+  vi.spyOn(sessionEntryReadRuntime, "readSessionEntryReadOnlyInWorker").mockImplementation(
+    async (scope, assertCurrent) => {
+      assertCurrent?.();
+      return state.loadSessionEntryMock(scope);
+    },
+  );
+}
 
 export function createTestSessionResolver(state: {
   sessionEntryMock: SessionEntry | undefined;

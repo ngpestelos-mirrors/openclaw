@@ -40,6 +40,7 @@ import {
   createTestModelVisibilityPolicy,
   makeSuccessResult,
 } from "./agent-command.live-model-switch.test-helpers.js";
+import { resetTestSessionReaders } from "./agent-command.live-model-switch.test-mocks.js";
 import { registerAgentCommandPreparedConfigCases } from "./agent-command.prepared-config.test-support.js";
 import {
   registerAgentCommandRecoveryCases,
@@ -161,7 +162,7 @@ const state = vi.hoisted(() => ({
   applySessionEntryLifecycleMutationMock: vi.fn(),
   authProfileStoreMock: { profiles: {} } as { profiles: Record<string, unknown> },
   sessionEntryMock: undefined as SessionEntry | undefined,
-  sessionStoreMock: undefined as unknown,
+  sessionStoreMock: undefined as Record<string, SessionEntry> | undefined,
   storePathMock: undefined as string | undefined,
   resolvedSessionKeyMock: undefined as string | undefined,
   trajectoryRecorderParamsMock: vi.fn(),
@@ -1177,10 +1178,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       }),
     );
     state.resolveMessageChannelSelectionMock.mockRejectedValue(new Error("channel required"));
-    state.loadSessionEntryMock.mockReset().mockImplementation((params: { sessionKey?: string }) => {
-      const sessionKey = params.sessionKey ?? state.resolvedSessionKeyMock ?? "agent:main:main";
-      return (state.sessionStoreMock as Record<string, SessionEntry> | undefined)?.[sessionKey];
-    });
+    resetTestSessionReaders(state);
     state.resolveAgentDeliveryPlanMock.mockImplementation(
       (params: {
         accountId?: string;
@@ -3304,6 +3302,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     expect(state.applySessionEntryLifecycleMutationMock).toHaveBeenCalledWith({
       agentId: "default",
       storePath: commandPaths.internalStore,
+      env: expect.objectContaining({ OPENCLAW_STATE_DIR: expect.any(String) }),
       removals: [
         {
           sessionKey: "agent:default:internal-session-effects:run",
@@ -3334,6 +3333,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
         expect(state.applySessionEntryLifecycleMutationMock).toHaveBeenCalledWith({
           agentId: "default",
           storePath: commandPaths.internalStore,
+          env: expect.objectContaining({ OPENCLAW_STATE_DIR: expect.any(String) }),
           removals: [
             {
               sessionKey: target.sessionKey,
