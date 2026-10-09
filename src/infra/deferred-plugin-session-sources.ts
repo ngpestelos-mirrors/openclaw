@@ -630,10 +630,8 @@ export function prepareDeferredPluginSessionImportReader(
     if (!prepared || !isDeepStrictEqual(prepared.receipt, receipt)) {
       prepared = {
         receipt,
-        binding:
-          receipt && !receipt.removedSource
-            ? parseSessionImportReceipt(target, receipt)
-            : undefined,
+        // Retired source custody still certifies the canonical import's no-replay binding.
+        binding: receipt ? parseSessionImportReceipt(target, receipt) : undefined,
       };
       verified.set(key, prepared);
     }
