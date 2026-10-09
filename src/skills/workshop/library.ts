@@ -403,7 +403,7 @@ export async function listWorkshopArchive(
   agentId: string,
 ): Promise<WorkshopArchivedSkill[]> {
   const skillsRoot = resolveWorkshopSkillsDir(config, agentId);
-  const names = await fs
+  const names: string[] = await fs
     .readdir(path.join(skillsRoot, ARCHIVE_DIR))
     .catch(emptyForMissingDirectory);
   const archived: WorkshopArchivedSkill[] = [];
