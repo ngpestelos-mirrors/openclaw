@@ -70,8 +70,9 @@ export function resolveChatSubagentWait(
     yieldedAt !== null && typeof session.startedAt === "number" && yieldedAt > session.startedAt
       ? yieldedAt
       : null;
-  const unfinished = unfinishedChildren(session, input);
-  if (input.subagentSessionsHydrated && unfinished.length === 0) {
+  const hydrated = input.subagentSessionsHydrated && !input.subagentSessionsPending;
+  const unfinished = hydrated ? unfinishedChildren(session, input) : [];
+  if (hydrated && unfinished.length === 0) {
     // Every child the pane knows has finished. The resumed run draws the next
     // status; a wait line here could only say it is waiting on nothing.
     return null;
