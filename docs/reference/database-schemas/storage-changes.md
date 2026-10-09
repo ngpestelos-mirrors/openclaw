@@ -58,20 +58,20 @@ Transcript bytes, session recovery rows, schemas, and update behavior are unchan
 Global projection preflight and search readiness use the projection maintenance
 owner's connection-local facts. Transactional TEMP triggers queue affected sessions
 for appends, rewrites, projection publication, deletion, cold-storage moves, and raw
-local SQL. A fresh foreign-commit probe or schema change restarts bounded admission;
+local SQL. An owning-writer receipt or schema change restarts bounded admission;
 indexed seeks skip whole session ranges instead of scanning transcript rows. Each
 maintenance transaction examines at most 128 sessions and deletes at most 512
 orphan rows per projection table. A status request stops after 32 batches;
 incomplete admission remains pending and the existing reconcile cadence resumes it.
 Reconciliation yields between bounded batches until an ordered traversal completes,
 then gives the observed pending backlog to the scheduler and awaits its rebuild.
-It can rebuild that work even when foreign writes prevent clean certification;
+It can rebuild that work even when concurrent writes prevent clean certification;
 the owner retains traversal completion so another status caller cannot hide that
 progress. Changes discovered afterward continue on the existing cadence, including
 newer revisions of sessions that were already rebuilt.
-Foreign commits invalidate readiness without resetting
-an in-progress cursor. Maintenance reaches later keys before starting another pass,
-and only a full pass at a stable foreign revision can certify a clean store.
+Writer receipts invalidate readiness without resetting an in-progress cursor.
+Maintenance reaches later keys before starting another pass, and only a full pass
+at a stable owner revision can certify a clean store.
 The planner consumes this owner's pending list.
 Search keeps its hit read, host readiness exchange, and original-connection
 revision check in one worker task while independent searches remain parallel.
@@ -451,7 +451,7 @@ Subagent recovery checks session identity and execution ownership through that
 read worker. Each check acquires finite reader custody against its captured
 physical source and returns only the fields used by recovery policy. The native
 handle retains one last-key projection under the existing connection revision;
-foreign commits, local writes, rollback, and file replacement invalidate reuse.
+writer receipts, rollback, and file replacement invalidate reuse.
 Incognito checks use the process-held owner's transaction facts.
 Missing stores remain missing: interrupted-run bookkeeping and requester settlement
 continue with child effects suppressed, and a newly appearing store invalidates
@@ -1944,8 +1944,8 @@ Deletion snapshots select the window, rewrite generation, transcript and traject
 tails, and parent-stream count in one statement. Missing windows still retain their
 orphan-child comparisons. Atomic reset also reuses progress-card metadata already
 read inside its write transaction, preserving revision tombstones and numeric
-validation. Neither change retains facts across operations or weakens foreign-commit
-freshness.
+validation. Neither change retains facts across operations or weakens current-row
+predicates.
 
 Single-candidate reference checks narrow which node metadata reaches JavaScript.
 Rows with optional historical references still use the canonical entry parser, and
@@ -2186,8 +2186,9 @@ legacy-file checks retain their separate environment. Device identity creation
 retains its existing owner.
 
 Device pairing lists and lookups execute in the shared-state read-only workers.
-The pairing snapshot cache checks SQLite `data_version` there, including commits
-from a separate CLI connection. Workers project lists and node identity bindings;
+Owning-writer receipts invalidate the pairing snapshot cache across workers.
+CLI pairing mutations route through the Gateway or hold exclusive offline ownership.
+Workers project lists and node identity bindings;
 the Gateway installs bindings against the pairing revision without reopening
 SQLite. Historical inspection snapshots never publish live node authority.
 
@@ -2310,7 +2311,8 @@ The WAL checkpoint owner executes checkpoints for runtime maintenance, idle-read
 inspection, Doctor compaction, and duplicate-agent recovery. Runtime maintenance
 retains its health observations and partial-checkpoint reporting; offline
 maintenance still refuses busy truncation before compaction or recovery proceeds.
-The read cache's version-gated `NOOP` check remains a freshness observation.
+WAL frame observations remain with the WAL owner; row-cache invalidation uses
+in-process write receipts and does not issue a foreign-commit probe.
 This ownership cut changes no schema, stored bytes, admission, or update behavior.
 
 Each WAL connection owns a scheduler scope for checkpoint ticks and bounded
@@ -2403,15 +2405,15 @@ The retention owner holds mutation receipts only for the active sweep. Committed
 appends publish their retained session's run summaries, including per-session trims.
 Session metadata patches advance only the receipt's committed mutation counter
 after all patch-owned writes. They preserve trajectory rows and reuse the sweep's
-prepared run summaries without another aggregate. Foreign-commit and lease checks
+prepared run summaries without another aggregate. Owner-revision and lease checks
 still apply before accepting that metadata-only receipt.
 The owner replaces affected snapshot sessions with these receipts, so writes that
 overlap snapshot creation are neither lost nor counted twice. Its byte and expiry
 facts settle each batch without waiting for a write-free read. No receipts are
-published after a rollback. A connection-local mutation count and fresh
-`PRAGMA data_version` probes fence changes outside those receipts, including foreign
-commits. Such a change requires a new read-worker snapshot, never a writer-held
-scan. One refresh is allowed per sweep; another leaves cleanup due on the next
+published after a rollback. The owning writer's receipts and connection-local
+mutation counts invalidate facts affected by other writes. Incomplete coverage
+requires a new read-worker snapshot, never a writer-held scan or a foreign-commit
+probe. One refresh is allowed per sweep; another leaves cleanup due on the next
 append. Committed deletions survive refreshes. A shared lease fence invalidates
 receipts on cancellation or owner release; native connection replacement cannot
 reuse them. Nested synchronous appends defer cleanup until an independent append.
@@ -2452,7 +2454,7 @@ Legacy inference and stale candidate decoding run in the existing agent history
 reader. Recovery rechecks the cutoff inside the close transaction, so a concurrent
 resume is not closed from an earlier snapshot. Synchronous tool policy retains at
 most 128 compact voice facts per native connection, invalidated by the admitted
-schema, foreign-commit data version, or local mutation revision. Transactions and
+schema, owning-writer receipts, or local mutation revision. Transactions and
 pinned or authorizer-controlled reads do not reuse those facts. Closing the native
 connection retires its cache. Confirmation capability remains available to bound
 consults after call closure, independently of the open-state check.
