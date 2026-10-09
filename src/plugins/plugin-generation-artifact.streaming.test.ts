@@ -90,7 +90,9 @@ function interceptCopies(
 it.skipIf(process.platform === "win32")(
   "amortizes directory metadata reads when capturing sibling files",
   () => {
-    const source = fixture(Buffer.from("sibling bytes"), "fixture.dat");
+    // Sources of at least one transfer chunk keep fs-safe's batched guarded clone.
+    const bytes = Buffer.alloc(64 * 1024, "s");
+    const source = fixture(bytes, "fixture.dat");
     const lstatSync = fs.lstatSync;
     let directoryReads = 0;
     vi.spyOn(fs, "lstatSync").mockImplementation((filename, options) => {
@@ -106,13 +108,13 @@ it.skipIf(process.platform === "win32")(
       path.join(path.dirname(source.filename), `sibling-${index}.dat`),
     );
     for (const sibling of siblings) {
-      fs.writeFileSync(sibling, "sibling bytes");
+      fs.writeFileSync(sibling, bytes);
     }
     directoryReads = 0;
     const captured = source.capture();
     const siblingFileReads = directoryReads;
     for (const sibling of [source.filename, ...siblings]) {
-      expect(fs.readFileSync(captured.resolve(sibling), "utf8")).toBe("sibling bytes");
+      expect(fs.readFileSync(captured.resolve(sibling))).toEqual(bytes);
     }
     expect(singleFileReads).toBeGreaterThan(0);
     // Keep per-file identity checks, but amortize directory admission across siblings.

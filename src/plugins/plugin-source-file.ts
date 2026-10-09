@@ -20,9 +20,9 @@ export const isPluginSourceEntry = (name: string): boolean =>
 // Capture and native module hooks are synchronous; no read retains this scratch buffer.
 const scratch = Buffer.allocUnsafe(64 * 1024);
 
-// fs-safe's guarded clone re-resolves both trees around every step, a fixed ~2 ms per file.
-// Below one transfer chunk that cost outweighs the bytes a clone saves, so small sources copy
-// straight from OpenClaw's boundary-admitted pin into an exclusive file in the private capture.
+// Even within a batch, fs-safe's guarded clone re-checks both paths around every step. Below one
+// transfer chunk that cost outweighs the bytes a clone saves, so small sources copy straight
+// from OpenClaw's boundary-admitted pin into an exclusive file in the private capture.
 const CLONE_MIN_BYTES = scratch.length;
 
 export const pluginSourceStatIdentity = (
