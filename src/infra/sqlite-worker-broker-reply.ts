@@ -456,7 +456,9 @@ export function withSqliteWorkerCleanupFailure(failure: Error, cleanupError: unk
 }
 
 export function failSqliteWorkerSlot(
-  slot: Slot,
+  slot: Pick<Slot, "failed" | "current" | "queue"> & {
+    actors: ReadonlySet<Pick<Actor, "backendClosed" | "nativeLostObservers">>;
+  },
   reason: unknown,
   owner: {
     currentError?: Error;
@@ -496,7 +498,7 @@ export function failSqliteWorkerSlot(
   });
 }
 
-export function settleFailedSqliteWorkerJobs({
+function settleFailedSqliteWorkerJobs({
   queuedError,
   current,
   queued,
