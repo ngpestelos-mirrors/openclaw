@@ -40,6 +40,9 @@ vi.mock("../../config/sessions/session-accessor.js", () => ({
 vi.mock("../../config/sessions/session-store-owner.js", () => ({
   resolvePersistedSessionStoreOwnerForTarget: () => ({ kind: "none" }),
 }));
+vi.mock("../../config/sessions/session-incognito-binding.js", () => ({
+  captureIncognitoSessionBinding: () => undefined,
+}));
 vi.mock("../../config/sessions/transcript.js", () => ({
   appendExactAssistantMessageToSessionTranscript: vi.fn(),
 }));
