@@ -116,7 +116,7 @@ function bearerToken(req: IncomingMessage): string | undefined {
 }
 
 export function createDiscordActivityHttpHandler(deps: DiscordActivityHttpDeps): {
-  handleHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<boolean>;
+  handleHttpRequest: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 } {
   const fetchGuard = deps.fetchGuard ?? fetchWithSsrFGuard;
   const limiter = new TokenRateLimiter(deps.now ?? Date.now);
@@ -358,7 +358,7 @@ export function createDiscordActivityHttpHandler(deps: DiscordActivityHttpDeps):
   }
 
   return {
-    async handleHttpRequest(req, res) {
+    handleHttpRequest: async (req, res) => {
       const url = new URL(req.url ?? "/", "http://localhost");
       if (
         url.pathname !== DISCORD_ACTIVITY_ROUTE_PREFIX &&

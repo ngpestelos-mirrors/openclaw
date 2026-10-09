@@ -110,7 +110,7 @@ export function createDiscordMessageRunQueue(
 
   return {
     enqueue(job) {
-      const { promise: pending, resolve: resolvePending } = createDeferred<void>();
+      const { promise: pending, resolve: resolvePending } = createDeferred();
       pendingTasks.add(pending);
       const settlePending = () => {
         pendingTasks.delete(pending);

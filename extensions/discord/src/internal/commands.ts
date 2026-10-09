@@ -115,14 +115,15 @@ export abstract class Command extends BaseCommand {
   }
   serializeOptions(): APIApplicationCommandBasicOption[] | undefined {
     return this.options?.map((option): APIApplicationCommandBasicOption => {
-      switch (option.type) {
-        case ApplicationCommandOptionType.String:
-        case ApplicationCommandOptionType.Integer:
-        case ApplicationCommandOptionType.Number:
-          if (typeof option.autocomplete === "function") {
-            const { autocomplete: _autocomplete, ...rest } = option;
-            return { ...rest, autocomplete: true };
-          }
+      const type = option.type;
+      if (
+        (type === ApplicationCommandOptionType.String ||
+          type === ApplicationCommandOptionType.Integer ||
+          type === ApplicationCommandOptionType.Number) &&
+        typeof option.autocomplete === "function"
+      ) {
+        const { autocomplete: _autocomplete, ...rest } = option;
+        return { ...rest, autocomplete: true };
       }
       return option;
     });

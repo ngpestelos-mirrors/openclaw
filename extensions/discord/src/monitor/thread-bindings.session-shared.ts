@@ -38,7 +38,9 @@ export function mutateBindingsForTargetSession(
 ): Promise<ThreadBindingRecord[]> {
   const accountId = params.accountId ? normalizeAccountId(params.accountId) : undefined;
   const admittedOwners = new Map<string, { manager: ThreadBindingManager; stopping: boolean }>();
-  for (const [ownerAccountId, manager] of [...MANAGERS_BY_ACCOUNT_ID]) {
+  // Snapshot registry membership before invoking manager callbacks.
+  const ownerSnapshot = [...MANAGERS_BY_ACCOUNT_ID];
+  for (const [ownerAccountId, manager] of ownerSnapshot) {
     if (accountId === undefined || ownerAccountId === accountId) {
       admittedOwners.set(ownerAccountId, { manager, stopping: manager.isStopping() });
     }

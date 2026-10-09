@@ -22,11 +22,11 @@ function createDurationSetters<Field extends "idleTimeoutMs" | "maxAgeMs">(field
     accountId?: string;
   } & Record<Field, number>;
   return {
-    async setAsync(input: Params): Promise<ThreadBindingRecord[]> {
+    setAsync: async (input: Params): Promise<ThreadBindingRecord[]> => {
       const params = { ...input };
       return mutateBindingsForTargetSession(params, createDurationUpdate(field, params[field]));
     },
-    set(params: Params): ThreadBindingRecord[] {
+    set: (params: Params): ThreadBindingRecord[] => {
       const ids = resolveBindingIdsForTargetSession(params);
       return updateBindingsForTargetSessionSync(ids, createDurationUpdate(field, params[field]));
     },
