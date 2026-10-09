@@ -107,7 +107,7 @@ describe("Reef SQLite audit state", () => {
     const operation = state.head.createOperation!<ReefAuditOperations>(
       [state.head, state.migration, state.entries],
       {
-        moduleUrl: new URL("../audit-state-operation-api.js", import.meta.url).href,
+        moduleName: "audit-state-operation-api.js",
         exportName: "executeReefAuditOperation",
       },
     );
@@ -155,7 +155,7 @@ describe("Reef SQLite audit state", () => {
     const operation = state.head.createOperation!<ReefAuditOperations>(
       [state.head, state.migration, state.entries],
       {
-        moduleUrl: new URL("../audit-state-operation-api.js", import.meta.url).href,
+        moduleName: "audit-state-operation-api.js",
         exportName: "executeReefAuditOperation",
       },
     );

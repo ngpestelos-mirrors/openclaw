@@ -1,4 +1,3 @@
-import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
 import type { AuditStore } from "../protocol/audit.js";
 import { fromBase64url } from "../protocol/encoding.js";
 import { seal, type Envelope, type MessageBody } from "../protocol/envelope.js";
@@ -14,19 +13,10 @@ import { ReefPeerTrustChangedError, requirePeer } from "./trust-store-format.js"
 import { getReefTrustOperationState, type ReefTrustStore } from "./trust-store.js";
 import type { ReefRejectionRecovery } from "./types.js";
 
-let operationHandler: { moduleUrl: string; exportName: string } | undefined;
-function resolveOperationHandler() {
-  operationHandler ??= {
-    moduleUrl: resolveRuntimeWorkerUrl({
-      currentModuleUrl: import.meta.url,
-      sourceWorkerName: "../outbound-state-operation-api",
-      distWorkerPath: "extensions/reef/outbound-state-operation-api.js",
-      package: { name: "@openclaw/reef", distWorkerPath: "outbound-state-operation-api.js" },
-    }).href,
-    exportName: "runReefOutboundOperation",
-  };
-  return operationHandler;
-}
+const operationHandler = {
+  moduleName: "outbound-state-operation-api.js",
+  exportName: "runReefOutboundOperation",
+};
 
 /** Local policy or trust rejection that is safe to retire without retrying. */
 export class ReefOutboundRejectedError extends Error {
@@ -109,7 +99,7 @@ export function prepareReefOutboundComposition(options: {
   // A recovery from another source cannot be combined with current audit/review owners.
   const operation = state.peers.createOperation!<ReefOutboundOperations>(
     [state.peers, state.deliveries, audit.head, audit.migration, audit.entries, reviews.store],
-    resolveOperationHandler(),
+    operationHandler,
     {
       assertCurrent: assertActive,
       ...(recovery ? { sourceReceipt: recovery.sourceReceipt } : {}),

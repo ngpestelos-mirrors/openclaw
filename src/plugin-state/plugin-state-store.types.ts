@@ -90,7 +90,7 @@ type PluginStateKeyedStoreBase<T> = {
   /** Loads a plugin-owned static handler into the existing state worker. */
   createOperation?: <Operations extends PluginStateOperationDefinitions>(
     stores: readonly Pick<PluginStateKeyedStore<unknown>, "lookup" | "entries">[],
-    handler: { moduleUrl: string; exportName: string },
+    handler: { moduleName: string; exportName: string },
     authority?: { assertCurrent(): void; sourceReceipt?: PluginStateOperationReceipt<unknown> },
   ) => PluginStateOperation<Operations>;
   /** Prepares a mutation observation through canonical writable admission; may create state. */

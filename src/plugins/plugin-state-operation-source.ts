@@ -1,5 +1,4 @@
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type {
   PluginStateOperationModule,
   PluginStateOperationModuleSource,
@@ -42,35 +41,23 @@ export function bindPluginStateOperationModuleSource(params: {
   ) {
     throw new Error("Plugin operation source family is outside its plugin root");
   }
-  const directories = new Set([
-    familyDirectory,
-    path.resolve(artifact.sourceRoot, familyRelative),
-    path.resolve(artifact.rootDir, familyRelative),
-  ]);
   const extensions = PUBLIC_SURFACE_SOURCE_EXTENSIONS.filter(
     (extension) => isTypeScriptPackageEntry(`module${extension}`) === sourceFamily,
   );
   const modules = new Map<string, PluginStateOperationModule>();
   sources.set(instance, {
-    resolve(moduleUrl) {
+    resolve(moduleName) {
       instance.lifecycle.signal.throwIfAborted();
       params.assertCodeCurrent?.();
-      const existing = modules.get(moduleUrl);
+      const existing = modules.get(moduleName);
       if (existing) {
         return existing;
       }
-      const url = new URL(moduleUrl);
-      if (url.protocol !== "file:" || url.search || url.hash) {
-        throw new Error("Plugin state operations require a captured plugin-local file URL");
+      const match = /^([a-z0-9][a-z0-9.-]*-operation-api)\.[cm]?[jt]s$/u.exec(moduleName);
+      if (!match) {
+        throw new Error("Plugin state operations require a top-level operation-api filename");
       }
-      const requested = fileURLToPath(url);
-      const match = /^(.+-operation-api)\.[cm]?[jt]s$/u.exec(path.basename(requested));
-      if (!match || !directories.has(path.dirname(requested))) {
-        throw new Error(
-          "Plugin state operations require a top-level operation-api in the selected plugin source family",
-        );
-      }
-      const requestedExtension = path.extname(requested);
+      const requestedExtension = path.extname(moduleName);
       const candidates = [
         ...(extensions.some((extension) => extension === requestedExtension)
           ? [requestedExtension]
@@ -90,7 +77,7 @@ export function bindPluginStateOperationModuleSource(params: {
           origin,
           pluginId: instance.pluginId,
         });
-        modules.set(moduleUrl, captured);
+        modules.set(moduleName, captured);
         return captured;
       }
       throw new Error("Plugin state operation module is absent from its captured source family");
@@ -113,9 +100,9 @@ export function capturePluginStateOperationModuleSource(
   }
   assertCurrent();
   return {
-    resolve(moduleUrl) {
+    resolve(moduleName) {
       assertCurrent();
-      return source.resolve(moduleUrl);
+      return source.resolve(moduleName);
     },
   };
 }

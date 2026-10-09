@@ -4,7 +4,6 @@ import type {
   PluginStateKeyedStore,
   PluginStateSyncKeyedStore,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
-import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
 // Import from defining modules, not the protocol barrel: index.js re-exports
 // guard-adapters, whose provider-http graph doctor enumeration must not cold-load.
 import { fromBase64url } from "../protocol/encoding.js";
@@ -53,19 +52,10 @@ export const REEF_DELIVERED_TTL_MS = REEF_REPLAY_TTL_MS;
 const REEF_INBOX_CURSOR_NAMESPACE = "inbox-cursor";
 const REEF_INBOX_CURSOR_MAX_ENTRIES = 1;
 
-let stateOperationHandler: { moduleUrl: string; exportName: string } | undefined;
-function resolveStateOperationHandler() {
-  stateOperationHandler ??= {
-    moduleUrl: resolveRuntimeWorkerUrl({
-      currentModuleUrl: import.meta.url,
-      sourceWorkerName: "../state-operation-api",
-      distWorkerPath: "extensions/reef/state-operation-api.js",
-      package: { name: "@openclaw/reef", distWorkerPath: "state-operation-api.js" },
-    }).href,
-    exportName: "runReefStateOperation",
-  };
-  return stateOperationHandler;
-}
+const stateOperationHandler = {
+  moduleName: "state-operation-api.js",
+  exportName: "runReefStateOperation",
+};
 
 function openIdentityState(runtime: PluginRuntime, assertCurrent?: () => void) {
   const stores = [
@@ -92,7 +82,7 @@ function openIdentityState(runtime: PluginRuntime, assertCurrent?: () => void) {
   ];
   return stores[0]!.createOperation?.<ReefStateOperations>(
     stores,
-    resolveStateOperationHandler(),
+    stateOperationHandler,
     assertCurrent ? { assertCurrent } : undefined,
   );
 }
@@ -169,16 +159,12 @@ export class ReviewApprovalStore {
   }
 
   #operation(assertOwnerCurrent?: () => void) {
-    return this.#store.createOperation!<ReefStateOperations>(
-      [this.#store],
-      resolveStateOperationHandler(),
-      {
-        assertCurrent: () => {
-          this.authoritySignal?.throwIfAborted();
-          assertOwnerCurrent?.();
-        },
+    return this.#store.createOperation!<ReefStateOperations>([this.#store], stateOperationHandler, {
+      assertCurrent: () => {
+        this.authoritySignal?.throwIfAborted();
+        assertOwnerCurrent?.();
       },
-    );
+    });
   }
 
   async request(review: ReviewRequest): Promise<ReviewApproval | undefined> {
@@ -289,7 +275,7 @@ export class ReefInboxCursorStore {
   #operation() {
     return this.#store.createOperation?.<ReefStateOperations>(
       [this.#store],
-      resolveStateOperationHandler(),
+      stateOperationHandler,
       { assertCurrent: () => this.authoritySignal?.throwIfAborted() },
     );
   }

@@ -5,7 +5,6 @@ import type {
   PluginStateOperationReceipt,
   PluginStateSyncKeyedStore,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
-import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
 import type { ReefChannelConfig } from "./config-schema.js";
 import {
   ReefAutonomySchema,
@@ -48,19 +47,10 @@ export {
   ReefPeerTrustChangedError,
 } from "./trust-store-format.js";
 export type ReefTrustStore = WorkerReefTrustStore | LegacyReefTrustStore;
-let operationHandler: { moduleUrl: string; exportName: string } | undefined;
-function resolveOperationHandler() {
-  operationHandler ??= {
-    moduleUrl: resolveRuntimeWorkerUrl({
-      currentModuleUrl: import.meta.url,
-      sourceWorkerName: "../trust-state-operation-api",
-      distWorkerPath: "extensions/reef/trust-state-operation-api.js",
-      package: { name: "@openclaw/reef", distWorkerPath: "trust-state-operation-api.js" },
-    }).href,
-    exportName: "runReefTrustStateOperation",
-  };
-  return operationHandler;
-}
+const operationHandler = {
+  moduleName: "trust-state-operation-api.js",
+  exportName: "runReefTrustStateOperation",
+};
 
 function openStores(openStore: PluginRuntime["state"]["openKeyedStore"]) {
   return {
@@ -98,7 +88,7 @@ class WorkerReefTrustStore {
     const state = this.operationState;
     return state.peers.createOperation!<ReefTrustStateOperations>(
       [state.peers, state.deliveries],
-      resolveOperationHandler(),
+      operationHandler,
       {
         assertCurrent: () => {
           state.assertCurrent();
@@ -196,7 +186,7 @@ class WorkerReefTrustStore {
     let phase: "revoking" | "ready" | "settling" | "settled" = "revoking";
     const operation = state.peers.createOperation!<ReefTrustStateOperations>(
       [state.peers, state.deliveries],
-      resolveOperationHandler(),
+      operationHandler,
       {
         assertCurrent: () => {
           if (phase === "revoking") {
@@ -284,7 +274,7 @@ class WorkerReefTrustStore {
     let phase: "recording" | "ready" | "settling" | "closed" = "recording";
     const operation = state.peers.createOperation!<ReefTrustStateOperations>(
       [state.peers, state.deliveries],
-      resolveOperationHandler(),
+      operationHandler,
       {
         assertCurrent: () => {
           if (phase === "recording") {

@@ -23,7 +23,7 @@ const modulePath = fileURLToPath(
   new URL("./plugin-state-operation.test-support.ts", import.meta.url),
 );
 const handler = {
-  moduleUrl: new URL("./plugin-state-operation.test-support.ts", import.meta.url).href,
+  moduleName: "plugin-state-operation.test-support.ts",
   exportName: "execute",
 };
 

@@ -4,7 +4,6 @@ import type {
   PluginStateKeyedStore,
   PluginStateOperation,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
-import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
 import type { AuditEntry, AuditStore } from "../protocol/audit.js";
 import {
   REEF_AUDIT_NAMESPACE,
@@ -44,19 +43,10 @@ export type ReefAuditOperationState = {
   maxEntries: number;
 };
 
-let auditOperationHandler: { moduleUrl: string; exportName: string } | undefined;
-function resolveAuditOperationHandler() {
-  auditOperationHandler ??= {
-    moduleUrl: resolveRuntimeWorkerUrl({
-      currentModuleUrl: import.meta.url,
-      sourceWorkerName: "../audit-state-operation-api",
-      distWorkerPath: "extensions/reef/audit-state-operation-api.js",
-      package: { name: "@openclaw/reef", distWorkerPath: "audit-state-operation-api.js" },
-    }).href,
-    exportName: "executeReefAuditOperation",
-  };
-  return auditOperationHandler;
-}
+const auditOperationHandler = {
+  moduleName: "audit-state-operation-api.js",
+  exportName: "executeReefAuditOperation",
+};
 
 class ReefSqliteAuditStore implements AuditStore {
   readonly operationState: ReefAuditOperationState;
@@ -93,7 +83,7 @@ class ReefSqliteAuditStore implements AuditStore {
     };
     this.#operation = head.createOperation!<ReefAuditOperations>(
       [head, migration, entries],
-      resolveAuditOperationHandler(),
+      auditOperationHandler,
       { assertCurrent: () => authoritySignal?.throwIfAborted() },
     );
   }

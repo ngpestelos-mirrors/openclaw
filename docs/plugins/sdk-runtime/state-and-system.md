@@ -335,7 +335,7 @@ type MoveOperations = {
 const operation = source.createOperation<MoveOperations>(
   [source, destination],
   {
-    moduleUrl: new URL("./transfer-operation-api.js", import.meta.url).href,
+    moduleName: "transfer-operation-api.js",
     exportName: "executeTransfer",
   },
   { assertCurrent },
@@ -359,11 +359,12 @@ thenable handler results. A failure rolls back the whole operation.
 Put operation entrypoints at the plugin package root as `*-operation-api.ts`
 (or compiled JavaScript). They are captured with the admitted plugin generation
 and included by the existing bundled and standalone plugin build owners. The
-worker loads that captured module before entering the transaction. It does not
-rediscover a current plugin by id, accept an unrelated module URL, serialize a
-closure, or open another database owner. Use `resolveRuntimeWorkerUrl` from
-`plugin-sdk/process-runtime` when the calling module's source, bundled build,
-and standalone build have different relative layouts.
+worker loads that captured module before entering the transaction. The captured
+plugin owner resolves the top-level filename within its selected source or build
+family, including `.js` references to TypeScript source. Paths and URLs are refused.
+It does not rediscover a current plugin by id, serialize a closure, or open another
+database owner. Plugins do not need a process-runtime import or their own knowledge
+of source, bundled-build, and standalone-package directory layouts.
 
 An empty `writeStores` array selects a noncreating read. Supply `missingValue`
 when an absent physical database has a defined result, including explicit

@@ -35,7 +35,7 @@ const receiptSources = resolveGlobalSingleton(
 export function createPluginStateOperation<Operations extends PluginStateOperationDefinitions>(
   owner: object,
   stores: readonly Pick<PluginStateKeyedStore<unknown>, "lookup" | "entries">[],
-  handler: { moduleUrl: string; exportName: string },
+  handler: { moduleName: string; exportName: string },
   authority?: { assertCurrent(): void; sourceReceipt?: PluginStateOperationReceipt<unknown> },
 ): PluginStateOperation<Operations> {
   if (stores.length === 0 || stores.length > 10_000) {
@@ -56,7 +56,7 @@ export function createPluginStateOperation<Operations extends PluginStateOperati
   if (!ownerBinding.moduleSource) {
     throw invalidInput("Plugin state operation has no captured plugin module source.");
   }
-  const module = ownerBinding.moduleSource.resolve(handler.moduleUrl);
+  const module = ownerBinding.moduleSource.resolve(handler.moduleName);
   const bindings = stores.map(capture);
   const allBindings = [...new Set([ownerBinding, ...bindings])];
   const context = captureOpenClawStateWorkerContext({ env: ownerBinding.options.env });

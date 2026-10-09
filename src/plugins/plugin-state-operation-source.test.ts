@@ -50,13 +50,13 @@ function bind(rootDir: string, entry = "index.ts", origin: "config" | "bundled" 
 
 function readVersion(
   source: ReturnType<typeof capturePluginStateOperationModuleSource>,
-  url: string,
+  moduleName: string,
 ) {
   if (!source) {
     throw new Error("Expected captured operation source");
   }
   return loadValidatedPublicSurfaceModule({
-    ...source.resolve(url),
+    ...source.resolve(moduleName),
     capturedSource: true,
     surfaceLabel: "fixture state operation",
   });
@@ -76,32 +76,39 @@ describe("plugin state operation module ownership", () => {
     fs.writeFileSync(path.join(root, "src/operation.ts"), "export const version = 'changed';");
     fs.unlinkSync(path.join(root, "state-operation-api.ts"));
 
-    expect(
-      readVersion(source, pathToFileURL(path.join(root, "state-operation-api.js")).href),
-    ).toMatchObject({
+    expect(readVersion(source, "state-operation-api.js")).toMatchObject({
       version: "original source",
     });
   });
 
-  it("keeps a dist entry in its build family and rejects unrelated module URLs", () => {
+  it("keeps a dist entry in its build family and rejects paths and URLs", () => {
     const root = fixture({
       "package.json": '{"name":"operation-fixture","type":"module"}',
       "dist/index.js": "export const id = 'operation-fixture';",
       "dist/state-operation-api.js": "export const version = 'selected build';",
       "state-operation-api.ts": "export const version = 'wrong source';",
+      "source-only-operation-api.ts": "export const version = 'source fallback';",
       "dist/private.js": "export const version = 'private';",
     });
     const source = capturePluginStateOperationModuleSource(bind(root, "dist/index.js"), () => {});
-    const selected = pathToFileURL(path.join(root, "dist/state-operation-api.js")).href;
+    const selected = "state-operation-api.js";
     expect(readVersion(source, selected)).toMatchObject({ version: "selected build" });
-    for (const url of [
+    expect(() => source!.resolve("source-only-operation-api.js")).toThrow(
+      "absent from its captured source family",
+    );
+    for (const name of [
       "https://example.invalid/state-operation-api.js",
-      pathToFileURL(path.join(root, "state-operation-api.ts")).href,
-      pathToFileURL(path.join(root, "dist/private.js")).href,
+      pathToFileURL(path.join(root, "dist/state-operation-api.js")).href,
+      path.join(root, "dist/state-operation-api.js"),
+      "dist/state-operation-api.js",
+      "../other/state-operation-api.js",
+      "..\\other\\state-operation-api.js",
+      "private.js",
       pathToFileURL(path.join(root, "../other/state-operation-api.js")).href,
       `${selected}?replacement=1`,
+      `${selected}#replacement`,
     ]) {
-      expect(() => source!.resolve(url)).toThrow("Plugin state operations require");
+      expect(() => source!.resolve(name)).toThrow("Plugin state operations require");
     }
   });
 
@@ -118,13 +125,13 @@ describe("plugin state operation module ownership", () => {
         throw failure;
       }
     });
-    const url = pathToFileURL(path.join(root, "state-operation-api.js")).href;
-    source!.resolve(url);
+    const moduleName = "state-operation-api.js";
+    source!.resolve(moduleName);
     current = false;
-    expect(() => source!.resolve(url)).toThrow(failure);
+    expect(() => source!.resolve(moduleName)).toThrow(failure);
     current = true;
     await instance.dispose();
-    expect(() => source!.resolve(url)).toThrow("Plugin operation-fixture is retiring");
+    expect(() => source!.resolve(moduleName)).toThrow("Plugin operation-fixture is retiring");
   });
 
   it("retains bundled operation bytes through recovery after the original instance retires", async () => {
@@ -143,9 +150,7 @@ describe("plugin state operation module ownership", () => {
     recovery.bind(restored);
     const source = capturePluginStateOperationModuleSource(restored, () => {});
 
-    expect(
-      readVersion(source, pathToFileURL(path.join(root, "state-operation-api.cjs")).href),
-    ).toMatchObject({
+    expect(readVersion(source, "state-operation-api.cjs")).toMatchObject({
       version: "retained generation",
     });
   });

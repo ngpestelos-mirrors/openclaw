@@ -14,7 +14,7 @@ export type PluginStateOperationModule = {
 };
 
 export type PluginStateOperationModuleSource = {
-  resolve(moduleUrl: string): PluginStateOperationModule;
+  resolve(moduleName: string): PluginStateOperationModule;
 };
 
 type PluginStateStoreBinding = {
