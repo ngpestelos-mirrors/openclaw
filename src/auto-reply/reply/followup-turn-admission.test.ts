@@ -163,6 +163,8 @@ describe("admitFollowupTurn", () => {
         continuationTurns: 0,
       },
     };
+    const onQueuedFollowupAdmitted = vi.fn(async () => {});
+    const onQueuedFollowupSettled = vi.fn(async () => {});
     const current = structuredClone(original);
     if (change === "replaced") {
       current.goal!.id = "replacement";
@@ -179,9 +181,16 @@ describe("admitFollowupTurn", () => {
       queued: createRun({
         goalContinuation: { sessionId: "queued-session", goalId: "goal" },
       }),
-      defaults: createDefaults({ sessionEntry: original, storePath: "/fixture/sessions.json" }),
+      defaults: createDefaults({
+        sessionEntry: original,
+        storePath: "/fixture/sessions.json",
+        opts: { onQueuedFollowupAdmitted, onQueuedFollowupSettled },
+      }),
     });
-    expect(result).toMatchObject({ kind: "skipped", reason: "goal-inactive" });
+    expect(result).toMatchObject({ kind: "skipped", reason: "goal-inactive", operation });
+    expect(onQueuedFollowupAdmitted).toHaveBeenCalledOnce();
+    expect(onQueuedFollowupSettled).toHaveBeenCalledOnce();
+    expect(operation.complete).not.toHaveBeenCalled();
     expect(state.preflight).not.toHaveBeenCalled();
   });
 
@@ -202,6 +211,8 @@ describe("admitFollowupTurn", () => {
         continuationTurns: 0,
       },
     };
+    const onQueuedFollowupAdmitted = vi.fn(async () => {});
+    const onQueuedFollowupSettled = vi.fn(async () => {});
     let current = original;
     state.admitReply.mockResolvedValue({ status: "owned", operation, sessionEntry: original });
     state.loadEntry.mockImplementation(() => current);
@@ -217,9 +228,16 @@ describe("admitFollowupTurn", () => {
       queued: createRun({
         goalContinuation: { sessionId: "queued-session", goalId: "goal" },
       }),
-      defaults: createDefaults({ sessionEntry: original, storePath: "/fixture/sessions.json" }),
+      defaults: createDefaults({
+        sessionEntry: original,
+        storePath: "/fixture/sessions.json",
+        opts: { onQueuedFollowupAdmitted, onQueuedFollowupSettled },
+      }),
     });
-    expect(result).toMatchObject({ kind: "skipped", reason: "goal-inactive" });
+    expect(result).toMatchObject({ kind: "skipped", reason: "goal-inactive", operation });
+    expect(onQueuedFollowupAdmitted).toHaveBeenCalledOnce();
+    expect(onQueuedFollowupSettled).toHaveBeenCalledOnce();
+    expect(operation.complete).not.toHaveBeenCalled();
   });
 
   it("reports each active-run deferral without adopting the queued source", async () => {

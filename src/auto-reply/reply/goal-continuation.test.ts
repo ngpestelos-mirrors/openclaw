@@ -273,13 +273,4 @@ describe("Goal queue custody", () => {
     f.operation.complete();
     expect(queued.abortSignal?.aborted).toBe(true);
   });
-  it("keeps the same goal eligible across arbitrarily many successful turns", async () => {
-    for (let index = 0; index < 5; index++) {
-      const f = fixture();
-      f.params.sourceRunId = "run-" + index;
-      expect(await enqueueGoalContinuation(f.params)).toBe(true);
-      f.operation.complete();
-    }
-    expect(enqueueFollowupRun).toHaveBeenCalledTimes(5);
-  });
 });

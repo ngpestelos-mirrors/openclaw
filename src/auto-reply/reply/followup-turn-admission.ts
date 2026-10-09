@@ -150,6 +150,7 @@ export async function admitFollowupTurn(params: {
   const operation = admission.operation;
   operation.retainFailureUntilComplete();
   let queuedFollowupAdmitted = false;
+  let admissionFailed = false;
   try {
     await admitFollowupRunLifecycle(params.queued);
     if (isFollowupRunAborted(params.queued)) {
@@ -477,12 +478,18 @@ export async function admitFollowupTurn(params: {
         return { kind: "skipped", reason: "goal-inactive", operation };
       }
     }
+    // Only a returned turn transfers presentation cleanup to the runner.
+    queuedFollowupAdmitted = false;
     return { kind: "admitted", turn };
   } catch (error) {
+    admissionFailed = true;
+    throw error instanceof Error ? error : new Error(formatErrorMessage(error));
+  } finally {
     if (queuedFollowupAdmitted) {
       await settleQueuedFollowupPresentation(params.defaults.opts?.onQueuedFollowupSettled);
     }
-    operation.complete();
-    throw error instanceof Error ? error : new Error(formatErrorMessage(error));
+    if (admissionFailed) {
+      operation.complete();
+    }
   }
 }
