@@ -20,7 +20,7 @@ const VOICE_SESSION_CACHE_SCOPE = "talk-client-voice-sessions";
 export const VOICE_SESSION_RECORD_VERSION = 1;
 export const VOICE_SESSION_STALE_AFTER_MS = 6 * 60 * 60_000;
 
-export type ClientVoiceToolEffect = {
+type ClientVoiceToolEffect = {
   runId: string;
   toolCallId?: string;
   toolName: string;
@@ -173,8 +173,9 @@ const factsByDatabase = new WeakMap<
 export function readVoiceSessionFacts(
   agentId: string,
   voiceSessionId: string,
+  options?: Pick<OpenClawAgentDatabaseOptions, "env" | "path">,
 ): VoiceSessionFacts | undefined {
-  const database = openOpenClawAgentDatabase({ agentId });
+  const database = openOpenClawAgentDatabase({ ...options, agentId });
   return runSqliteReadOperationSync(
     database.db,
     () => {
@@ -215,8 +216,11 @@ export function readVoiceSessionFacts(
   );
 }
 
-export function readOwnedVoiceSessionFacts(params: ClientVoiceRunBinding): VoiceSessionFacts {
-  const record = readVoiceSessionFacts(params.agentId, params.voiceSessionId);
+export function readOwnedVoiceSessionFacts(
+  params: ClientVoiceRunBinding,
+  options?: Pick<OpenClawAgentDatabaseOptions, "env" | "path">,
+): VoiceSessionFacts {
+  const record = readVoiceSessionFacts(params.agentId, params.voiceSessionId, options);
   if (!record) {
     throw new Error("voice session not found");
   }

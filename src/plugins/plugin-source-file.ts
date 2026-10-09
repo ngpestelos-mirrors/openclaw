@@ -79,7 +79,11 @@ export function copyPluginSourceFile(
   source: string,
   boundary: string,
   target: string,
-  options: { hashCopiedContent?: boolean; preserveSourceMode?: boolean } = {},
+  options: {
+    hashCopiedContent?: boolean;
+    preserveSourceMode?: boolean;
+    copyFile?: typeof copyRootFileSync;
+  } = {},
 ) {
   return withPluginSourceFile(source, boundary, (fd) => {
     const admitted = fs.fstatSync(fd, { bigint: true });
@@ -91,7 +95,7 @@ export function copyPluginSourceFile(
         return copyPinnedPluginSourceFile(fd, admitted, target, mode, options.hashCopiedContent);
       }
       // Keep our pin alive; fs-safe binds its own admitted open to this exact inode.
-      using copied = copyRootFileSync({
+      using copied = (options.copyFile ?? copyRootFileSync)({
         source: { rootPath: boundary, absolutePath: source },
         destination: { rootPath: path.dirname(target), absolutePath: target },
         expectedSourceIdentity: { dev: admitted.dev, ino: admitted.ino },
