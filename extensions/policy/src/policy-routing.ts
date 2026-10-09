@@ -19,6 +19,19 @@ export const ROUTING_MATCH_KINDS = [
   "default",
 ] as const satisfies readonly ResolvedAgentRoute["matchedBy"][];
 
+export function validPolicyRoutingMatchKinds(
+  value: unknown,
+): value is readonly ResolvedAgentRoute["matchedBy"][] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (entry) => typeof entry === "string" && ROUTING_MATCH_KINDS.some((kind) => kind === entry),
+    ) &&
+    new Set(value).size === value.length
+  );
+}
+
 type PolicyRoutingProbe = {
   readonly id: string;
   readonly route: {
