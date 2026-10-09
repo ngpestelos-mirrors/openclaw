@@ -47,7 +47,7 @@ it("keeps upsert preparation current without a read transaction and retains remo
       backend.assertSettled?.();
     } finally {
       exec.mockRestore();
-      backend.close();
+      await backend.close();
     }
   });
 });

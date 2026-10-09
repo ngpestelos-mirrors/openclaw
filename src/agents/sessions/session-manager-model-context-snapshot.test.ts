@@ -9,6 +9,7 @@ import {
   withinTest,
 } from "../../../test/helpers/promise.js";
 import { makeUserMessage } from "../../../test/helpers/user-message.js";
+import { resolveDefaultSessionStorePath } from "../../config/sessions/paths.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { loadSessionEntryForAdmission } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
 import { readTranscriptEventRows } from "../../config/sessions/session-accessor.sqlite-read.js";
@@ -356,7 +357,14 @@ it.each(["durable", "admitted", "incognito"] as const)(
   },
 );
 
-it.each(["unchanged", "mutable-message", "native-append", "worker-append", "truncated"] as const)(
+it.each([
+  "unchanged",
+  "default-selector",
+  "mutable-message",
+  "native-append",
+  "worker-append",
+  "truncated",
+] as const)(
   "reuses complete hydration without losing durable model bytes after %s",
   async (change) => {
     await withOpenClawTestState({ label: "hydrated-model-context" }, async (state) => {
@@ -364,7 +372,10 @@ it.each(["unchanged", "mutable-message", "native-append", "worker-append", "trun
         agentId: "main",
         sessionId: "hydrated-model-context",
         sessionKey: "agent:main:hydrated-model-context",
-        storePath: state.statePath("transcript.sqlite"),
+        storePath:
+          change === "default-selector"
+            ? resolveDefaultSessionStorePath("main")
+            : state.statePath("transcript.sqlite"),
       };
       await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
       const source = await SessionManager.openAsync(target);
@@ -410,7 +421,9 @@ it.each(["unchanged", "mutable-message", "native-append", "worker-append", "trun
                 ],
           );
           expect(readModel).toHaveBeenCalledTimes(
-            change === "unchanged" || change === "mutable-message" ? 0 : 1,
+            change === "unchanged" || change === "default-selector" || change === "mutable-message"
+              ? 0
+              : 1,
           );
         } finally {
           readModel.mockRestore();

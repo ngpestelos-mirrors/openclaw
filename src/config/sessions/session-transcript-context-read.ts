@@ -119,7 +119,7 @@ export function readSessionTranscriptModelContextAsync<T>(
   limits?: SessionModelContextLimits,
   suppliedIncognito?: IncognitoSessionHistoryBinding,
   consumeSynchronously = false,
-  prepared?: PreparedSessionTranscriptModelContext,
+  preparedContext?: PreparedSessionTranscriptModelContext,
 ): Promise<T> {
   const capturedTarget = { ...target };
   const capturedAdmission = admission ? structuredClone(admission) : undefined;
@@ -252,11 +252,11 @@ export function readSessionTranscriptModelContextAsync<T>(
             assertCurrent();
             const assertNative = captureSessionEntryNativeMutationWitness([database]);
             const context =
-              prepared &&
+              preparedContext &&
               !capturedAdmission &&
               !capturedThrough &&
-              prepared.writeToken === readSqliteDatabaseWriteTokenForPath(database.path)
-                ? prepared.context
+              preparedContext.writeToken === readSqliteDatabaseWriteTokenForPath(database.path)
+                ? preparedContext.context
                 : await readSessionTranscriptModelContextInWorker(
                     captured,
                     capturedAdmission,

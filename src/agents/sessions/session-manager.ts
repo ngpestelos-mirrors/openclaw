@@ -34,6 +34,7 @@ import {
 import {
   withOwnedSessionTranscriptWriterFence,
   captureOwnedTranscriptWriteAssertion,
+  getOwnedSessionTranscriptReader,
 } from "../../config/sessions/transcript-write-context.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import { readSqliteDatabaseWriteTokenForPath } from "../../infra/sqlite-database-admission.js";
@@ -573,9 +574,8 @@ export class SessionManager extends SessionManagerBranching {
       (cwd, captured, context, limits) => {
         const manager = new SessionManager(cwd, captured, context.events, { ...context, limits });
         const branch = manager.getBranch();
-        const writeToken = context.completeActivePath
-          ? readSqliteDatabaseWriteTokenForPath(captured.storePath)
-          : undefined;
+        const reader = context.completeActivePath && getOwnedSessionTranscriptReader(captured);
+        const writeToken = reader && readSqliteDatabaseWriteTokenForPath(reader.database.path);
         if (writeToken && !manager.migrated && branch.length === context.totalEvents) {
           const events = cloneSessionModelContextEntries(manager.getHeader(), branch);
           manager.preparedInitialContext = {
