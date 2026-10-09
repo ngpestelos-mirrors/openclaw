@@ -49,6 +49,7 @@ import type {
 } from "./manager-publication-task.js";
 import {
   memoryEmbeddingCacheBatches,
+  memoryEmbeddingCacheFitsInline,
   memoryPublicationBatches,
 } from "./manager-publication-transfer.js";
 import {
@@ -62,7 +63,10 @@ import type { loadMemorySourceFileState } from "./manager-source-state.js";
 type PublicationScope = Pick<SqliteWorkerStore<MemoryPublicationOperations>, "execute">;
 const log = createSubsystemLogger("memory");
 type PublicationWorker = {
-  store: Pick<OpenClawAgentSqliteWorkerStore<MemoryPublicationOperations>, "run" | "close">;
+  store: Pick<
+    OpenClawAgentSqliteWorkerStore<MemoryPublicationOperations>,
+    "execute" | "run" | "close"
+  >;
   busyTimeoutMs: number;
 };
 
@@ -329,6 +333,10 @@ export class MemoryIndexDatabase {
       }
       return {
         store: {
+          execute: (command, assertCurrent) =>
+            runSqliteWorkerStoreWrite(store, (scope) => scope.execute(command), assertCurrent, [
+              filename,
+            ]),
           run: <T>(operation: (scope: PublicationScope) => Promise<T>, assertCurrent: () => void) =>
             runSqliteWorkerStoreWrite(store, operation, assertCurrent, [filename]),
           close: () => store.close(),
@@ -344,15 +352,15 @@ export class MemoryIndexDatabase {
     return this.publicationWorker;
   }
 
-  private runPublication<T>(
-    operation: (scope: PublicationScope) => Promise<T>,
+  private withPublicationWorker<T>(
+    operation: (store: PublicationWorker["store"]) => Promise<T>,
     assertCurrent: () => void,
   ): Promise<T> {
     const run = async () => {
       assertCurrent();
       try {
         const worker = await this.getPublicationWorker();
-        return await worker.store.run(operation, assertCurrent);
+        return await operation(worker.store);
       } catch (error) {
         const [cleanup] = await Promise.allSettled([this.closePublicationWorker()]);
         if (cleanup.status === "rejected") {
@@ -366,6 +374,26 @@ export class MemoryIndexDatabase {
       }
     };
     return this.isShadow ? this.withPrivateAccess(run, { nativeWriter: true }) : run();
+  }
+
+  private runPublication<T>(
+    operation: (scope: PublicationScope) => Promise<T>,
+    assertCurrent: () => void,
+  ): Promise<T> {
+    return this.withPublicationWorker(
+      (store) => store.run(operation, assertCurrent),
+      assertCurrent,
+    );
+  }
+
+  private executePublication<Key extends keyof MemoryPublicationOperations>(
+    command: { type: Key; input: MemoryPublicationOperations[Key]["input"] },
+    assertCurrent: () => void,
+  ): Promise<MemoryPublicationOperations[Key]["output"]> {
+    return this.withPublicationWorker(
+      (store) => store.execute(command, assertCurrent),
+      assertCurrent,
+    );
   }
 
   private async retryPublication<T>(
@@ -401,7 +429,7 @@ export class MemoryIndexDatabase {
     command: { type: Key; input: MemoryPublicationOperations[Key]["input"] },
     assertCurrent: () => void,
   ): Promise<MemoryPublicationOperations[Key]["output"]> {
-    return this.runPublication((scope) => scope.execute(command), assertCurrent);
+    return this.executePublication(command, assertCurrent);
   }
 
   admitSchema(input: MemoryPublicationOperations["schema.admit"]["input"]): Promise<void> {
@@ -448,10 +476,7 @@ export class MemoryIndexDatabase {
         query,
       );
     } else {
-      rows = await this.runPublication(
-        (scope) => scope.execute({ type: "source.state", input: query }),
-        assertCurrent,
-      );
+      rows = await this.executePublication({ type: "source.state", input: query }, assertCurrent);
     }
     assertCurrent();
     return rows;
@@ -462,10 +487,7 @@ export class MemoryIndexDatabase {
     // Each failed BEGIN releases admission before retry; successful batches yield at the caller.
     return (
       (await this.retryPublication(() =>
-        this.runPublication(
-          (scope) => scope.execute({ type: "cache.prune", input: { maxEntries } }),
-          assertCurrent,
-        ),
+        this.executePublication({ type: "cache.prune", input: { maxEntries } }, assertCurrent),
       )) ?? false
     );
   }
@@ -497,6 +519,20 @@ export class MemoryIndexDatabase {
           // The vector-space conflict is already known, even if clearing loses its reply.
           invalidate();
         }
+      }
+      if (memoryEmbeddingCacheFitsInline(mutation.header, mutation.entries)) {
+        const current = await this.retryPublication(
+          () =>
+            scope.execute({
+              type: "cache.write.inline",
+              input: { header: mutation.header, entries: mutation.entries, expectedRevision },
+            }),
+          prepare,
+        );
+        if (current === false) {
+          invalidate();
+        }
+        return current;
       }
       const operation = randomUUID();
       await scope.execute({

@@ -181,12 +181,12 @@ it("resolves runtime targets through one fresh admitted reader", async () => {
         target: { agentId: "main", sessionId, sessionKey, storePath: database.path },
         source: { agentId: database.agentId, path: database.path },
       });
-      expect(queries.counts.freshness).toBe(1);
+      expect(queries.counts.freshness).toBe(0);
     } finally {
       queries.restore();
     }
 
-    const peer = new (nodeSqlite.requireNodeSqlite().DatabaseSync)(database.path);
+    const peer = nodeSqlite.openNodeSqliteDatabase(database.path);
     try {
       peer.exec(`PRAGMA user_version = ${OPENCLAW_AGENT_SCHEMA_VERSION + 1}`);
       await expect(read()).rejects.toThrow("newer schema version");

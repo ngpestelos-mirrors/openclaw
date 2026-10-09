@@ -126,6 +126,7 @@ it("keeps admitted ownership while pinned metadata reads observe foreign commits
         expect(
           withOpenClawAgentDatabaseReadOnly(
             ({ db }) => {
+              expect(readOwner(db)).toBe("main");
               writer.exec("UPDATE schema_meta SET agent_id = 'other' WHERE meta_key = 'primary'");
               return readOwner(db);
             },

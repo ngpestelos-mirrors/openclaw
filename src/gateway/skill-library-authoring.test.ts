@@ -17,6 +17,7 @@ import {
 import {
   invalidateSkillAuthoringForOtherRequester,
   prepareGatewaySkillAuthoring,
+  prepareGatewaySkillLibrarySession,
 } from "./skill-library-authoring.js";
 
 const temps = useAutoCleanupTempDirTracker((cleanup) =>
@@ -78,7 +79,13 @@ describe("human personal namespace authority", () => {
       content,
       expectedRevision: null,
     });
-    const capability = (await prepareGatewaySkillAuthoring(owner, "agent:main:shared", true))!;
+    const prepared = await prepareGatewaySkillLibrarySession(owner, true);
+    const capability = (await prepareGatewaySkillAuthoring(
+      owner,
+      "agent:main:shared",
+      true,
+      prepared,
+    ))!;
     const run = await admitted(capability);
     const tool = createLibrarySkillWorkshopTool(capability);
     try {
@@ -226,7 +233,23 @@ describe("human personal namespace authority", () => {
       run.close();
     }
   });
-  it("enforces current roles at publication after asynchronous staging", async () => {
+  it.each(["profile", "scopes"] as const)(
+    "refuses a prepared session after replacing requester %s",
+    async (change) => {
+      const { alice, bob, request } = setup();
+      const owner = request(alice.id);
+      const prepared = await prepareGatewaySkillLibrarySession(owner, true);
+      if (change === "profile") {
+        owner.client!.authenticatedUserProfile = { profileId: bob.id };
+      } else {
+        owner.client!.connect.scopes = ["operator.read"];
+      }
+      await expect(
+        prepareGatewaySkillAuthoring(owner, "agent:main:shared", true, prepared),
+      ).rejects.toMatchObject({ code: "AUTHORITY_EXPIRED" });
+    },
+  );
+  it("enforces current roles after session preparation and at publication after staging", async () => {
     const { alice, request } = setup();
     const owner = request(alice.id);
     owner.context.getRuntimeConfig = () => ({
@@ -240,6 +263,12 @@ describe("human personal namespace authority", () => {
         },
       },
     });
+    const prepared = await prepareGatewaySkillLibrarySession(owner, true);
+    setUserProfileRole(alice.id, "reader");
+    await expect(
+      prepareGatewaySkillAuthoring(owner, "agent:main:shared", true, prepared),
+    ).rejects.toMatchObject({ code: "AUTHORITY_EXPIRED" });
+    setUserProfileRole(alice.id, "writer");
     const run = await admitted(
       (await prepareGatewaySkillAuthoring(owner, "agent:main:shared", true))!,
     );

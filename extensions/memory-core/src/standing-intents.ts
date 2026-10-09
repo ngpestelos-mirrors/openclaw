@@ -57,13 +57,10 @@ async function executeStandingIntent<Key extends keyof StandingIntentOperations>
             },
           );
           try {
-            return await worker.run(
-              (scope) => scope.execute(command),
-              () => {
-                assertAdmission();
-                assertCurrent?.();
-              },
-            );
+            return await worker.execute(command, () => {
+              assertAdmission();
+              assertCurrent?.();
+            });
           } finally {
             await worker.close();
           }

@@ -37,7 +37,7 @@ export function bindSqliteWorkerBackend(
     );
   // Preserve schema completion independently of the following business transaction.
   withSqlitePostCommitPublications(db, () =>
-    transact(() => ensureOpenClawAgentStandingIntentsSchema(db)),
+    ensureOpenClawAgentStandingIntentsSchema(db, transact),
   );
   let closed = false;
   return {
