@@ -301,10 +301,11 @@ describe("MCP OAuth refresh issuer binding", () => {
           expect(refreshedStore.tokens).toMatchObject({
             access_token: "rotated-access",
             refresh_token: "rotated-refresh-secret",
+            issuer: ORIGINAL_ISSUER,
           });
-          expect(refreshedStore.tokensAuthorizationServerUrl).toBe(ORIGINAL_ISSUER);
-          expect(refreshedStore.clientInformation).toEqual({
+          expect(refreshedStore.clientInformation).toMatchObject({
             client_id: "stored-client-id",
+            issuer: ORIGINAL_ISSUER,
           });
 
           const newIssuer = createOAuthNetwork({
@@ -329,52 +330,53 @@ describe("MCP OAuth refresh issuer binding", () => {
     },
   );
 
-  it("allows explicit login to register with the replacement issuer", async () => {
-    await withTempHome(
-      async () => {
-        await seedAuthorizedStore("tokens-then-discovery", 0);
-        const original = createOAuthNetwork({
-          challengeMetadataUrl: ORIGINAL_METADATA_URL,
-          issuer: ORIGINAL_ISSUER,
-          mintedAccessToken: "rotated-access",
-        });
-        await buildOAuthFetch(original.fetchFn)(SERVER_URL, { method: "POST", body: "{}" });
-        const refreshedStore = await readStore();
-        const replacement = createOAuthNetwork({
-          challengeMetadataUrl: REPLACEMENT_METADATA_URL,
-          issuer: REPLACEMENT_ISSUER,
-          mintedAccessToken: "replacement-access",
-          registrationClientId: "replacement-client-id",
-        });
-        await expect(
-          buildOAuthFetch(replacement.fetchFn)(SERVER_URL, { method: "POST", body: "{}" }),
-        ).rejects.toThrow(/requires OAuth authorization/);
+  it.each([false, true])(
+    "allows explicit login to register with the replacement issuer (refreshed: %s)",
+    async (refreshBeforeLogin) => {
+      await withTempHome(
+        async () => {
+          await seedAuthorizedStore("tokens-then-discovery", refreshBeforeLogin ? 0 : 3600);
+          if (refreshBeforeLogin) {
+            const original = createOAuthNetwork({
+              challengeMetadataUrl: ORIGINAL_METADATA_URL,
+              issuer: ORIGINAL_ISSUER,
+              mintedAccessToken: "rotated-access",
+            });
+            await buildOAuthFetch(original.fetchFn)(SERVER_URL, { method: "POST", body: "{}" });
+          }
+          const replacement = createOAuthNetwork({
+            challengeMetadataUrl: REPLACEMENT_METADATA_URL,
+            issuer: REPLACEMENT_ISSUER,
+            mintedAccessToken: "replacement-access",
+            registrationClientId: "replacement-client-id",
+          });
+          await expect(
+            buildOAuthFetch(replacement.fetchFn)(SERVER_URL, { method: "POST", body: "{}" }),
+          ).rejects.toThrow(/requires OAuth authorization/);
 
-        await withMcpOAuthProviderForTest(
-          { identity: IDENTITY, allowAuthorizationRedirect: true },
-          async (provider) => {
-            expect(
-              await auth(provider, {
-                serverUrl: SERVER_URL,
-                resourceMetadataUrl: new URL(REPLACEMENT_METADATA_URL),
-                fetchFn: replacement.fetchFn,
-              }),
-            ).toBe("REDIRECT");
-          },
-        );
-        expect(replacement.registrationRequests).toEqual([`${REPLACEMENT_ISSUER}/register`]);
-        expect(replacement.tokenRequests).toEqual([]);
-        const registrationStore = await readStore();
-        expect(registrationStore.clientInformation).toMatchObject({
-          client_id: "replacement-client-id",
-        });
-        expect(registrationStore.discoveryState?.authorizationServerUrl).toBe(REPLACEMENT_ISSUER);
-        expect(registrationStore.tokens).toEqual(refreshedStore.tokens);
-        expect(registrationStore.tokensAuthorizationServerUrl).toBe(ORIGINAL_ISSUER);
-      },
-      { prefix: "openclaw-mcp-oauth-issuer-explicit-login-", ...TEMP_HOME_OPTIONS },
-    );
-  });
+          await withMcpOAuthProviderForTest(
+            { identity: IDENTITY, allowAuthorizationRedirect: true },
+            async (provider) => {
+              expect(
+                await auth(provider, {
+                  serverUrl: SERVER_URL,
+                  resourceMetadataUrl: new URL(REPLACEMENT_METADATA_URL),
+                  fetchFn: replacement.fetchFn,
+                }),
+              ).toBe("REDIRECT");
+            },
+          );
+          expect(replacement.registrationRequests).toEqual([`${REPLACEMENT_ISSUER}/register`]);
+          expect(replacement.tokenRequests).toEqual([]);
+          expect((await readStore()).clientInformation).toMatchObject({
+            client_id: "replacement-client-id",
+            issuer: REPLACEMENT_ISSUER,
+          });
+        },
+        { prefix: "openclaw-mcp-oauth-issuer-explicit-login-", ...TEMP_HOME_OPTIONS },
+      );
+    },
+  );
 
   it("binds legacy stored tokens to the pre-challenge issuer before rediscovery", async () => {
     await withTempHome(
