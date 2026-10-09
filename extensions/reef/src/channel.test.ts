@@ -361,7 +361,9 @@ describe("Reef gateway account ownership", () => {
       const status = flow.options.delivered.status.bind(flow.options.delivered);
       vi.spyOn(flow.options.delivered, "status").mockImplementationOnce(async (id) => {
         const result = await status(id);
-        if (revoked) await flow.options.trust.remove("molty");
+        if (revoked) {
+          await flow.options.trust.remove("molty");
+        }
         return result;
       });
       const envelope = seal({
@@ -372,7 +374,7 @@ describe("Reef gateway account ownership", () => {
         senderSigningSecretKey: peer.signing.secretKey,
         recipientEncryptionPublicKey: flow.options.keys.encryption.publicKey,
       });
-      vi.mocked(ReefTransportClient.prototype.pull)
+      vi.spyOn(ReefTransportClient.prototype, "pull")
         .mockResolvedValue({ entries: [], cursor: 1 })
         .mockResolvedValueOnce({
           entries: [
@@ -381,8 +383,11 @@ describe("Reef gateway account ownership", () => {
           cursor: 1,
         });
       const result = inboxConnections[0]!.poll();
-      if (revoked) await expect(result).rejects.toThrow("changed trust before dispatch");
-      else await result;
+      if (revoked) {
+        await expect(result).rejects.toThrow("changed trust before dispatch");
+      } else {
+        await result;
+      }
       expect(legacyDispatch).toHaveBeenCalledTimes(revoked ? 0 : 1);
       expect(acknowledge).toHaveBeenCalledTimes(revoked ? 0 : 1);
     },
@@ -411,12 +416,16 @@ describe("Reef gateway account ownership", () => {
       const read = trust.readOutboundDelivery.bind(trust);
       vi.spyOn(trust, "readOutboundDelivery").mockImplementationOnce(async (...args) => {
         const settlement = await read(...args);
-        if (!settlement) throw new Error("missing fixture delivery");
+        if (!settlement) {
+          throw new Error("missing fixture delivery");
+        }
         const reserve = settlement.recovery.reserve.bind(settlement.recovery);
         settlement.recovery.reserve = async (state) => {
           const result = await reserve(state);
           reserved = true;
-          if (revoked) await trust.remove("molty");
+          if (revoked) {
+            await trust.remove("molty");
+          }
           return result;
         };
         return settlement;
@@ -425,7 +434,7 @@ describe("Reef gateway account ownership", () => {
         { id, bodyHash, auditHead: "b".repeat(64), status: "rejected", category: "guard_deny" },
         peer.signing.secretKey,
       );
-      vi.mocked(ReefTransportClient.prototype.pull)
+      vi.spyOn(ReefTransportClient.prototype, "pull")
         .mockResolvedValue({ entries: [], cursor: 1 })
         .mockResolvedValueOnce({
           entries: [
@@ -444,8 +453,11 @@ describe("Reef gateway account ownership", () => {
       expect(reserved).toBe(true);
       expect(legacyDispatch).toHaveBeenCalledTimes(revoked ? 0 : 1);
       const remaining = await read("molty", id);
-      if (revoked) expect(remaining?.delivery.rejection?.notice).toBeDefined();
-      else expect(remaining).toBeUndefined();
+      if (revoked) {
+        expect(remaining?.delivery.rejection?.notice).toBeDefined();
+      } else {
+        expect(remaining).toBeUndefined();
+      }
     },
   );
 
