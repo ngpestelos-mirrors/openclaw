@@ -2,9 +2,9 @@
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import { assertConfigWriteAllowedInCurrentMode } from "../config/config.js";
 import type { PreparedPluginUninstall } from "../plugins/management-uninstall.js";
-import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { shortenHomePath } from "../utils.js";
+import { runWithLocalStateOwner } from "./local-state-owner.js";
 import { resolvePluginLifecycleGateway } from "./plugins-lifecycle-client.js";
 
 export type PluginUninstallOptions = {
@@ -70,32 +70,45 @@ export async function runPluginUninstallCommand(
   };
   const execute = async (targetPluginId: string, skipPreview: boolean) => {
     // Keep errors/output inside the plugin lease; the owner emits success inside any package lease.
-    const result = await uninstallPluginWithPolicy({
-      pluginId: targetPluginId,
-      keepFiles,
-      caller: "cli",
-      clawManaged: opts.clawManaged,
-      beforePersistentApply: opts.beforePersistentApply,
-      invalidateRuntimeCache: opts.invalidateRuntimeCache,
-      onPreview: async (preview) => {
-        if (skipPreview && preview.pluginId !== targetPluginId) {
-          throw new Error(`Plugin package owner changed for "${targetPluginId}"; retry uninstall.`);
-        }
-        if (!skipPreview) {
-          await printPreview(preview);
-        }
-      },
-      onWarning: (message) => runtime.log(theme.warn(message)),
-      onComplete: ({ pluginId, requestedPluginId, pluginIds, removed }) => {
-        const subject =
-          pluginIds.length > 1 || requestedPluginId !== pluginId
-            ? `plugin package "${pluginId}" and entries ${pluginIds.join(", ")}`
-            : `plugin "${pluginId}"`;
-        runtime.log(
-          `Uninstalled ${subject}. Removed: ${removed.length ? removed.join(", ") : "nothing"}.`,
-        );
-        runtime.log("Saved for the next Gateway start.");
-      },
+    const result = await runWithLocalStateOwner({
+      method: "plugins.uninstall",
+      params: {},
+      target: targetPluginId,
+      onForeignOwner: "refuse",
+      runLocal: ({ signal, assertCurrent }) =>
+        uninstallPluginWithPolicy({
+          pluginId: targetPluginId,
+          keepFiles,
+          caller: "cli",
+          clawManaged: opts.clawManaged,
+          signal,
+          beforePersistentApply: () => {
+            assertCurrent();
+            opts.beforePersistentApply?.();
+          },
+          invalidateRuntimeCache: opts.invalidateRuntimeCache,
+          onPreview: async (preview) => {
+            if (skipPreview && preview.pluginId !== targetPluginId) {
+              throw new Error(
+                `Plugin package owner changed for "${targetPluginId}"; retry uninstall.`,
+              );
+            }
+            if (!skipPreview) {
+              await printPreview(preview);
+            }
+          },
+          onWarning: (message) => runtime.log(theme.warn(message)),
+          onComplete: ({ pluginId, requestedPluginId, pluginIds, removed }) => {
+            const subject =
+              pluginIds.length > 1 || requestedPluginId !== pluginId
+                ? `plugin package "${pluginId}" and entries ${pluginIds.join(", ")}`
+                : `plugin "${pluginId}"`;
+            runtime.log(
+              `Uninstalled ${subject}. Removed: ${removed.length ? removed.join(", ") : "nothing"}.`,
+            );
+            runtime.log("Saved for the next Gateway start.");
+          },
+        }),
     });
     if (!result.ok) {
       runtime.error(result.error);
@@ -108,7 +121,7 @@ export async function runPluginUninstallCommand(
   }
   const [onlyId] = ids;
   if (ids.length === 1 && onlyId && opts.force && !opts.dryRun && !gateway) {
-    await withPluginLifecycleLease({}, async () => await execute(onlyId, false));
+    await execute(onlyId, false);
     return;
   }
   if (!opts.dryRun) {
@@ -166,9 +179,7 @@ export async function runPluginUninstallCommand(
       runtime.log(
         `Uninstalled plugin "${result.pluginId}". Removed: ${result.removed.join(", ") || "nothing"}.`,
       );
-    } else if (
-      !(await withPluginLifecycleLease({}, async () => await execute(preview.pluginId, true)))
-    ) {
+    } else if (!(await execute(preview.pluginId, true))) {
       return;
     }
   }

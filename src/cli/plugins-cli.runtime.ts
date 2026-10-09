@@ -28,6 +28,7 @@ import { defaultRuntime } from "../runtime.js";
 import { shortenHomeInString, shortenHomePath } from "../utils.js";
 import { formatMissingPluginMessage } from "./error-format.js";
 import { formatCliJsonFailure } from "./failure-output.js";
+import { runWithLocalStateOwner } from "./local-state-owner.js";
 import { exitCliAfterOutput } from "./one-shot-exit.js";
 import { resolvePluginCapabilityConsentCliOptions } from "./plugin-capability-consent.js";
 import type {
@@ -156,38 +157,52 @@ async function runPluginPolicyCommand(
   }
   const { mutateManagedPluginEnabled } = await import("../plugins/management-mutations.js");
   const { ManagedPluginLifecycleError } = await import("../plugins/management-lifecycle-error.js");
-  await withPluginLifecycleLease({}, async () => {
-    try {
-      const result = await mutateManagedPluginEnabled({
-        pluginId: id,
-        enabled,
-        caller: "cli",
-        requestCapabilityConsent: acceptCapabilities,
-        ...resolvePluginCapabilityConsentCliOptions({ acceptCapabilities, action: "enable" }),
-      });
-      if (result.status === "missing") {
-        return reportMissingPlugin(result.pluginId);
-      }
-      if (result.status === "blocked") {
-        defaultRuntime.error(
-          `Plugin "${result.pluginId}" could not be enabled (${result.reason ?? "unknown reason"}).`,
-        );
-        return defaultRuntime.exit(1);
-      }
-      for (const warning of result.warnings) {
-        defaultRuntime.log(theme.warn(warning));
-      }
-      defaultRuntime.log(
-        `${enabled ? "Enabled" : "Disabled"} plugin "${result.pluginId}". Saved for the next Gateway start.`,
-      );
-    } catch (error) {
-      if (!(error instanceof ManagedPluginLifecycleError) || !error.capabilityConsent) {
-        throw error;
-      }
-      defaultRuntime.error(error.message);
-      return defaultRuntime.exit(1);
-    }
+  const exitCode = await runWithLocalStateOwner({
+    method: "plugins.setEnabled",
+    params: {},
+    target: id,
+    onForeignOwner: "refuse",
+    runLocal: ({ signal, assertCurrent }) =>
+      withPluginLifecycleLease({ signal, assertCurrent }, async () => {
+        try {
+          const result = await mutateManagedPluginEnabled({
+            pluginId: id,
+            enabled,
+            caller: "cli",
+            requestCapabilityConsent: acceptCapabilities,
+            ...resolvePluginCapabilityConsentCliOptions({ acceptCapabilities, action: "enable" }),
+          });
+          if (result.status === "missing") {
+            defaultRuntime.error(
+              formatMissingPluginMessage({ id: result.pluginId, includeSearch: true }),
+            );
+            return 1;
+          }
+          if (result.status === "blocked") {
+            defaultRuntime.error(
+              `Plugin "${result.pluginId}" could not be enabled (${result.reason ?? "unknown reason"}).`,
+            );
+            return 1;
+          }
+          for (const warning of result.warnings) {
+            defaultRuntime.log(theme.warn(warning));
+          }
+          defaultRuntime.log(
+            `${enabled ? "Enabled" : "Disabled"} plugin "${result.pluginId}". Saved for the next Gateway start.`,
+          );
+          return 0;
+        } catch (error) {
+          if (!(error instanceof ManagedPluginLifecycleError) || !error.capabilityConsent) {
+            throw error;
+          }
+          defaultRuntime.error(error.message);
+          return 1;
+        }
+      }),
   });
+  if (exitCode !== 0) {
+    defaultRuntime.exit(exitCode);
+  }
 }
 
 export async function runPluginsInstallAction(
@@ -225,45 +240,53 @@ export async function runPluginsRegistryCommand(opts: PluginRegistryOptions): Pr
 
   if (opts.refresh) {
     const { refreshPluginRegistry } = await import("../plugins/plugin-registry-refresh.js");
-    return await withPluginLifecycleLease({}, async () => {
-      const config = getRuntimeConfig();
-      const index = await refreshPluginRegistry({
-        config,
-        reason: "manual",
-      });
-      const inspection = await inspectPluginRegistry({ config });
-      if (inspection.state !== "fresh") {
-        const differenceLines = formatDifferences(inspection.differences);
-        const message = [
-          "Plugin registry refresh could not verify the persisted replacement.",
-          ...differenceLines.map((difference) => `- ${difference}`),
-          "Stop plugin package changes, then run `openclaw plugins registry --refresh` again.",
-        ].join("\n");
-        if (opts.json) {
-          defaultRuntime.writeJson({
-            ...formatCliJsonFailure(message),
-            refreshed: false,
-            state: inspection.state,
-            refreshReasons: inspection.refreshReasons,
-            differences: inspection.differences,
+    return await runWithLocalStateOwner({
+      method: "plugins.registry.refresh",
+      params: {},
+      target: "installed plugin registry",
+      onForeignOwner: "refuse",
+      runLocal: ({ config, signal, assertCurrent }) =>
+        withPluginLifecycleLease({ signal, assertCurrent }, async () => {
+          const index = await refreshPluginRegistry({
+            config,
+            reason: "manual",
           });
-          exitCliAfterOutput(defaultRuntime, 1);
-        }
-        throw new Error(message);
-      }
-      if (opts.json) {
-        defaultRuntime.writeJson({
-          refreshed: true,
-          state: inspection.state,
-          refreshReasons: inspection.refreshReasons,
-          differences: inspection.differences,
-          registry: index,
-        });
-        return;
-      }
-      const total = index.plugins.length;
-      const enabled = countEnabledPlugins(index.plugins);
-      defaultRuntime.log(`Plugin registry refreshed: ${enabled}/${total} enabled plugins indexed.`);
+          const inspection = await inspectPluginRegistry({ config });
+          if (inspection.state !== "fresh") {
+            const differenceLines = formatDifferences(inspection.differences);
+            const message = [
+              "Plugin registry refresh could not verify the persisted replacement.",
+              ...differenceLines.map((difference) => `- ${difference}`),
+              "Stop plugin package changes, then run `openclaw plugins registry --refresh` again.",
+            ].join("\n");
+            if (opts.json) {
+              defaultRuntime.writeJson({
+                ...formatCliJsonFailure(message),
+                refreshed: false,
+                state: inspection.state,
+                refreshReasons: inspection.refreshReasons,
+                differences: inspection.differences,
+              });
+              exitCliAfterOutput(defaultRuntime, 1);
+            }
+            throw new Error(message);
+          }
+          if (opts.json) {
+            defaultRuntime.writeJson({
+              refreshed: true,
+              state: inspection.state,
+              refreshReasons: inspection.refreshReasons,
+              differences: inspection.differences,
+              registry: index,
+            });
+            return;
+          }
+          const total = index.plugins.length;
+          const enabled = countEnabledPlugins(index.plugins);
+          defaultRuntime.log(
+            `Plugin registry refreshed: ${enabled}/${total} enabled plugins indexed.`,
+          );
+        }),
     });
   }
 

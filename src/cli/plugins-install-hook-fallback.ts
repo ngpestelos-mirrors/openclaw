@@ -30,6 +30,7 @@ import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { shortenHomePath } from "../utils.js";
 import { persistHookPackInstall } from "./hook-install-persistence.js";
+import { runWithLocalStateOwner } from "./local-state-owner.js";
 import { resolvePinnedNpmInstallRecordForCli } from "./npm-resolution.js";
 import {
   createPluginInstallLogger,
@@ -107,103 +108,116 @@ async function installHookPack(
     };
   }
   // Online plugin rejection can precede this fallback; acquire and reread only for the hook write.
-  return await withPluginLifecycleLease({ signal: params.signal }, async (lease) => {
-    const request = resolvePluginInstallRequestContext({
-      rawSpec: source.source === "local" ? source.path : source.spec,
-    });
-    if (!request.ok) {
-      return request;
-    }
-    const snapshot = await loadConfigForInstall(request.request).catch((error: unknown) => {
-      if (
-        expectedPackageKind === "hook-only" &&
-        error instanceof PluginInstallConfigError &&
-        error.blockedSnapshot
-      ) {
-        // A verified hook artifact uses the fresh hook preflight even when
-        // its official package identity independently blocks plugin writes.
-        return error.blockedSnapshot;
-      }
-      throw error;
-    });
-    if (snapshot.hookMutation.mode === "blocked") {
-      return { ok: false, error: snapshot.hookMutation.reason };
-    }
-    const linked = source.source === "local" && source.link;
-    if (linked && !fs.statSync(source.path).isDirectory()) {
-      return { ok: false, error: "Linked hook pack paths must be directories." };
-    }
-    const beforePersistentApply = () => {
-      params.signal?.throwIfAborted();
-      lease.assertOwned();
-      snapshot.writeOptions.assertConfigPathForWrite?.();
-      params.beforePersistentApply?.();
-    };
-    const result = await attemptHookInstall(
-      source,
-      { ...params, snapshot },
-      { expectedPackageKind, beforePersistentApply },
-      lease.assertOwned.bind(lease),
-    );
-    if (!result.ok) {
-      return result;
-    }
-    const runtime = params.runtime ?? defaultRuntime;
-    const config = snapshot.config;
-    const pinMessages: string[] = [];
-    await persistHookPackInstall({
-      snapshot: linked
-        ? {
-            ...snapshot,
-            config: {
-              ...config,
-              hooks: {
-                ...config.hooks,
-                internal: {
-                  ...config.hooks?.internal,
-                  load: {
-                    ...config.hooks?.internal?.load,
-                    extraDirs: uniqueStrings([
-                      ...(config.hooks?.internal?.load?.extraDirs ?? []),
-                      source.path,
-                    ]),
-                  },
-                },
-              },
-            },
+  return await runWithLocalStateOwner({
+    method: "hooks.install",
+    params: {},
+    target: source.source === "local" ? source.path : source.spec,
+    onForeignOwner: "refuse",
+    runLocal: ({ signal, assertCurrent }) =>
+      withPluginLifecycleLease(
+        {
+          signal: AbortSignal.any([signal, ...(params.signal ? [params.signal] : [])]),
+          assertCurrent,
+        },
+        async (lease) => {
+          const request = resolvePluginInstallRequestContext({
+            rawSpec: source.source === "local" ? source.path : source.spec,
+          });
+          if (!request.ok) {
+            return request;
           }
-        : snapshot,
-      hookPackId: result.hookPackId,
-      hooks: result.hooks,
-      install:
-        source.source === "local"
-          ? {
-              source: resolveArchiveKind(source.path) ? "archive" : "path",
-              sourcePath: source.path,
-              installPath: linked ? source.path : result.targetDir,
-              version: result.version,
+          const snapshot = await loadConfigForInstall(request.request).catch((error: unknown) => {
+            if (
+              expectedPackageKind === "hook-only" &&
+              error instanceof PluginInstallConfigError &&
+              error.blockedSnapshot
+            ) {
+              // A verified hook artifact uses the fresh hook preflight even when
+              // its official package identity independently blocks plugin writes.
+              return error.blockedSnapshot;
             }
-          : resolvePinnedNpmInstallRecordForCli(
-              source.spec,
-              Boolean(source.pin),
-              result.targetDir,
-              result.version,
-              result.npmResolution,
-              (message) => pinMessages.push(message),
-              theme.warn,
-            ),
-      ...(linked
-        ? { successMessage: `Linked hook pack path: ${shortenHomePath(source.path)}` }
-        : {}),
-      runtime,
-      beforePersistentApply,
-      payloadTransaction: resolvePackageDirInstallTransaction(result),
-    });
-    // Output failures must not strand a payload whose config has not committed.
-    for (const message of pinMessages) {
-      runtime.log(message);
-    }
-    return { ok: true };
+            throw error;
+          });
+          if (snapshot.hookMutation.mode === "blocked") {
+            return { ok: false, error: snapshot.hookMutation.reason };
+          }
+          const linked = source.source === "local" && source.link;
+          if (linked && !fs.statSync(source.path).isDirectory()) {
+            return { ok: false, error: "Linked hook pack paths must be directories." };
+          }
+          const beforePersistentApply = () => {
+            params.signal?.throwIfAborted();
+            lease.assertOwned();
+            snapshot.writeOptions.assertConfigPathForWrite?.();
+            params.beforePersistentApply?.();
+          };
+          const result = await attemptHookInstall(
+            source,
+            { ...params, snapshot },
+            { expectedPackageKind, beforePersistentApply },
+            lease.assertOwned.bind(lease),
+          );
+          if (!result.ok) {
+            return result;
+          }
+          const runtime = params.runtime ?? defaultRuntime;
+          const config = snapshot.config;
+          const pinMessages: string[] = [];
+          await persistHookPackInstall({
+            snapshot: linked
+              ? {
+                  ...snapshot,
+                  config: {
+                    ...config,
+                    hooks: {
+                      ...config.hooks,
+                      internal: {
+                        ...config.hooks?.internal,
+                        load: {
+                          ...config.hooks?.internal?.load,
+                          extraDirs: uniqueStrings([
+                            ...(config.hooks?.internal?.load?.extraDirs ?? []),
+                            source.path,
+                          ]),
+                        },
+                      },
+                    },
+                  },
+                }
+              : snapshot,
+            hookPackId: result.hookPackId,
+            hooks: result.hooks,
+            install:
+              source.source === "local"
+                ? {
+                    source: resolveArchiveKind(source.path) ? "archive" : "path",
+                    sourcePath: source.path,
+                    installPath: linked ? source.path : result.targetDir,
+                    version: result.version,
+                  }
+                : resolvePinnedNpmInstallRecordForCli(
+                    source.spec,
+                    Boolean(source.pin),
+                    result.targetDir,
+                    result.version,
+                    result.npmResolution,
+                    (message) => pinMessages.push(message),
+                    theme.warn,
+                  ),
+            ...(linked
+              ? { successMessage: `Linked hook pack path: ${shortenHomePath(source.path)}` }
+              : {}),
+            runtime,
+            beforePersistentApply,
+            payloadTransaction: resolvePackageDirInstallTransaction(result),
+          });
+          // Output failures must not strand a payload whose config has not committed.
+          for (const message of pinMessages) {
+            runtime.log(message);
+          }
+          return { ok: true };
+        },
+      ),
   });
 }
 
@@ -224,7 +238,25 @@ async function installInspectedHookPack(
 
 /** Every source uses the same plugin executor; hook fallback needs an eligible artifact. */
 export async function installPluginWithHookFallback(params: InstallParams): Promise<InstallResult> {
-  const { request, snapshot, install: execute = installManagedPlugin, ...options } = params;
+  const { request, snapshot, install: routedInstall, ...options } = params;
+  const execute: typeof installManagedPlugin =
+    routedInstall ??
+    (async (request) =>
+      runWithLocalStateOwner({
+        method: "plugins.install",
+        params: {},
+        target: request.request.source,
+        onForeignOwner: "refuse",
+        runLocal: ({ signal, assertCurrent }) =>
+          installManagedPlugin({
+            ...request,
+            signal: AbortSignal.any([signal, ...(request.signal ? [request.signal] : [])]),
+            beforePersistentApply: () => {
+              assertCurrent();
+              request.beforePersistentApply?.();
+            },
+          }),
+      }));
   const compatible = request.source === "local" || request.source === "npm" ? request : undefined;
   const blocked = resolveFullyBlockedConfigMutationReason(snapshot);
   if (blocked) {

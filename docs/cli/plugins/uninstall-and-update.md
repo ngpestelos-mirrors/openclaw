@@ -75,8 +75,12 @@ explicit npm spec overrides an ID-only selection of the same package; two
 different explicit specs for one package are rejected. Unknown targets and
 conflicting selections fail before updates start, including with `--dry-run`.
 The existing bulk updater processes plugin packages and then hook packs, retains
-successful updates when another package fails, and applies saved changes to the
-running Gateway with one final refresh.
+successful updates when another package fails, and saves changes for the next
+Gateway start. Stop the Gateway through its service owner before running an
+update. The command holds exclusive state ownership until package, metadata,
+and rollback work settles. If a Gateway still owns this state directory, update
+refuses before local database preparation; it never updates packages behind the
+running Gateway. `--dry-run` remains available while the Gateway is running.
 
 Before activating a replacement, plugin updates apply its Doctor config repairs
 through the normal backed-up config writer. This preserves settings such as a

@@ -15,6 +15,8 @@ Manage Gateway plugins, hook packs, and compatible bundles.
 `plugins enable` and `plugins disable` accept case-insensitive plugin IDs, including
 when the Gateway is stopped. Reported IDs retain their manifest spelling; plugin
 policy keys in config use the canonical lowercase form.
+Local install, uninstall, enable, and disable mutations hold exclusive state ownership when the Gateway is stopped. If a Gateway starts while an offline command is being admitted, the command refuses before changing its database. A serving Gateway continues to handle supported plugin lifecycle operations through RPC.
+
 The same policy applies to live activation and the next Gateway start. Runtime
 IDs and Gateway method names retain the plugin's declared spelling.
 

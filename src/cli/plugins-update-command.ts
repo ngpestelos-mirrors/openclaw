@@ -1,5 +1,4 @@
 import { isDeepStrictEqual } from "node:util";
-import type { PluginsRefreshResult } from "../../packages/gateway-protocol/src/schema/plugins.js";
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import {
   assertConfigWriteAllowedInCurrentMode,
@@ -63,9 +62,9 @@ import { defaultRuntime } from "../runtime.js";
 import { VERSION } from "../version.js";
 import { formatCliCommand } from "./command-format.js";
 import { resolveInstallPolicyWarningAcknowledgementCliOptions } from "./install-policy-warning-acknowledgement.js";
+import { runWithLocalStateOwner } from "./local-state-owner.js";
 import { resolvePluginCapabilityConsentCliOptions } from "./plugin-capability-consent.js";
 import { createPluginInstallLogger } from "./plugins-command-helpers.js";
-import { resolvePluginLifecycleGateway } from "./plugins-lifecycle-client.js";
 import {
   resolveHookPackUpdateSelection,
   resolvePluginUpdateSelection,
@@ -185,58 +184,25 @@ export async function runPluginUpdateCommand(params: RunPluginUpdateCommandParam
     return;
   }
   assertConfigWriteAllowedInCurrentMode();
-  const gateway = await resolvePluginLifecycleGateway();
-  // Verify the running owner before changing packages; an old or unreachable
-  // Gateway must not silently turn this into an offline update.
-  if (gateway) {
-    await gateway("plugins.list", {});
-  }
   let changed = false;
   let activationDeferred = false;
-  const update = withPluginLifecycleLease({}, (lease) =>
-    runPluginUpdateCommandUnlocked(params, lease, (deferred) => {
-      changed = true;
-      activationDeferred ||= deferred;
-    }),
-  );
-  let updateFailure: { error: unknown } | undefined;
-  await update.catch((error: unknown) => {
-    updateFailure = { error };
+  const exitCode = await runWithLocalStateOwner({
+    method: "plugins.update",
+    params: {},
+    target: params.opts.all ? "all plugins and hook packs" : params.ids.join(", "),
+    onForeignOwner: "refuse",
+    runLocal: ({ signal, assertCurrent }) =>
+      withPluginLifecycleLease({ signal, assertCurrent }, (lease) =>
+        runPluginUpdateCommandUnlocked(params, lease, (deferred) => {
+          changed = true;
+          activationDeferred ||= deferred;
+        }),
+      ),
   });
-  // The runtime owner takes the same lease. Old callbacks retain their captured
-  // package graph while this explicit application waits for ownership.
   if (changed && !activationDeferred) {
-    if (gateway) {
-      try {
-        const result = await gateway<PluginsRefreshResult>("plugins.refresh", {});
-        if (!result.runtime) {
-          throw new Error("Plugin update did not return a runtime application receipt.");
-        }
-        for (const warning of result.warnings ?? []) {
-          defaultRuntime.log(theme.warn(warning));
-        }
-        defaultRuntime.log(
-          `Applied plugin updates in Gateway generation ${result.runtime.generation}.`,
-        );
-      } catch (error) {
-        const failure = new Error(
-          "Plugin updates were saved but runtime application failed. Inspect the error, repair the plugin, then run openclaw plugins reload <id>.",
-          { cause: error },
-        );
-        if (updateFailure) {
-          failure.cause = new AggregateError([updateFailure.error, error], undefined, {
-            cause: error,
-          });
-        }
-        throw failure;
-      }
-    } else {
-      defaultRuntime.log("Updates saved; they will load on the next Gateway start.");
-    }
+    defaultRuntime.log("Updates saved; they will load on the next Gateway start.");
   }
-  // Recover the original settlement, including rejection with undefined, after runtime apply.
-  const exitCode = await update;
-  // Process exit skips finally blocks; release ownership and apply committed updates first.
+  // Process exit skips finally blocks; release state and plugin ownership first.
   if (exitCode !== 0) {
     defaultRuntime.exit(exitCode);
   }
