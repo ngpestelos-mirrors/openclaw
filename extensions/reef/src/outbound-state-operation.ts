@@ -45,7 +45,7 @@ type OutboundBinding = {
   bodyHash: string;
   approvalDigest: string;
 };
-export type ReefPreparedOutbound = {
+type ReefPreparedOutbound = {
   binding: OutboundBinding;
   recipient: ReefPeerIdentity;
   afterApproval: boolean;
@@ -101,13 +101,13 @@ export function runReefOutboundOperation(
   command: PluginStateOperationCommand<ReefOutboundOperations>,
   tx: PluginStateOperationTransaction,
 ): ReefOutboundOperations[keyof ReefOutboundOperations]["output"] {
-  const input = command.input;
+  const scope = command.input;
   const now = Date.now();
   const events: ReefAuditAppendEvent[] = [];
   const event = (type: string, payload: unknown) =>
     events.push({ type, payload, ts: Math.floor(now / 1000) });
   const finish = <T>(result: T): T => {
-    appendReefAuditEvents(tx, input.audit, events);
+    appendReefAuditEvents(tx, scope.audit, events);
     return result;
   };
   if (command.type === "prepare") {
@@ -240,8 +240,8 @@ export function runReefOutboundOperation(
   }
   event("envelope", { id: binding.id, approvalDigest: binding.approvalDigest, envelope });
   const [peerValue, delivery] = tx.lookupMany([
-    { store: 0, key: input.peerKey },
-    { store: 1, key: input.deliveryKey },
+    { store: 0, key: scope.peerKey },
+    { store: 1, key: scope.deliveryKey },
   ]);
   const peerState: ReefPeerStateSnapshot =
     peerValue === undefined ? { revision: 0 } : ReefPeerStateSchema.parse(peerValue);
@@ -259,9 +259,9 @@ export function runReefOutboundOperation(
     {
       peers: 0,
       deliveries: 1,
-      peerKey: input.peerKey,
-      deliveryKey: input.deliveryKey,
-      peer: input.peer,
+      peerKey: scope.peerKey,
+      deliveryKey: scope.deliveryKey,
+      peer: scope.peer,
       delivery: {
         bodyHash: binding.bodyHash,
         textHash: command.input.textHash,

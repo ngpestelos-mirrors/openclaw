@@ -4,8 +4,6 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type {
   OpenAsyncKeyedStoreOptions,
   PluginStateKeyedStore,
-  PluginStateOperation,
-  PluginStateOperationDefinitions,
   PluginStateOperationReceipt,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
@@ -49,7 +47,9 @@ import {
   saveReefSetupSession,
 } from "./state.js";
 import {
+  beforeNextStateOperation,
   cleanupStateTestDirectory,
+  expectReefStateOperationError,
   createRuntime,
   createStateTestDirectory,
 } from "./state.test-support.js";
@@ -140,48 +140,6 @@ function activateReviewStore(
   });
 }
 
-function beforeNextStateOperation(
-  runtime: ReturnType<typeof createRuntime>,
-  work: (receipt?: PluginStateOperationReceipt<unknown>) => Promise<void> | void,
-  phase: "before" | "after" = "before",
-) {
-  let pending = true;
-  const intercept = (store: Pick<PluginStateKeyedStore<unknown>, "createOperation">) => {
-    const create = store.createOperation;
-    if (!create) {
-      return;
-    }
-    store.createOperation = <Operations extends PluginStateOperationDefinitions>(
-      ...args: Parameters<typeof create>
-    ): PluginStateOperation<Operations> => {
-      const operation = create<Operations>(...args);
-      return {
-        async execute(command, options) {
-          const intercepted = pending;
-          pending = false;
-          if (intercepted && phase === "before") {
-            await work();
-          }
-          const receipt = await operation.execute(command, options);
-          if (intercepted && phase === "after") {
-            await work(receipt);
-          }
-          return receipt;
-        },
-      };
-    };
-  };
-  runtime.stateStores.forEach(intercept);
-  const open = runtime.state.openKeyedStore;
-  vi.spyOn(runtime.state, "openKeyedStore").mockImplementation(
-    <T>(options: OpenAsyncKeyedStoreOptions) => {
-      const store = open<T>(options);
-      intercept(store);
-      return store;
-    },
-  );
-}
-
 async function bindIdentity(
   runtime: ReturnType<typeof createRuntime>,
   handle: string,
@@ -214,12 +172,13 @@ describe("Reef SQLite state", () => {
     await store.advance(7);
 
     expect(await new ReefInboxCursorStore(createRuntime(stateDir), binding).load()).toBe(12);
-    await expect(
+    await expectReefStateOperationError(
       new ReefInboxCursorStore(createRuntime(stateDir), {
         handle: "clawd",
         relayUrl: "https://reefwire.ai",
       }).load(),
-    ).rejects.toThrow("different identity");
+      "Reef inbox cursor belongs to a different identity",
+    );
   });
 
   it("keeps the last inbox cursor when channel authority expires before commit", async () => {
@@ -238,13 +197,23 @@ describe("Reef SQLite state", () => {
   });
 
   it.each([
-    ["durable-migration", "legacy-files", { pending: true }, "durable state migration"],
-    ["identity-migration", "keys-json", { pending: true }, "identity migration"],
+    [
+      "durable-migration",
+      "legacy-files",
+      { pending: true },
+      "Reef durable state migration is incomplete; repair the legacy state files and rerun openclaw doctor --fix",
+    ],
+    [
+      "identity-migration",
+      "keys-json",
+      { pending: true },
+      "Reef identity migration is incomplete; repair the legacy identity files and rerun openclaw doctor --fix",
+    ],
     [
       "registration",
       "identity",
       { handle: "original", relayUrl: "https://reefwire.ai" },
-      "restore the original keys",
+      "Reef identity @original on https://reefwire.ai has no canonical keys; restore the original keys before registration",
     ],
   ] as const)(
     "rechecks a concurrent %s guard before creating keys",
@@ -257,7 +226,7 @@ describe("Reef SQLite state", () => {
       });
       beforeNextStateOperation(runtime, () => guard.register(key, value));
 
-      await expect(generateAndStoreKeys(runtime)).rejects.toThrow(error);
+      await expectReefStateOperationError(generateAndStoreKeys(runtime), error);
       await expect(
         runtime.state
           .openKeyedStore({
@@ -794,6 +763,27 @@ describe("Reef SQLite state", () => {
     await expect(stores.delivered.status("first")).resolves.toBe("delivered");
   });
 
+  it("never treats a malformed stored approval as owner authorization", async () => {
+    const runtime = createRuntime(stateDir);
+    const reviews = new ReviewApprovalStore(runtime);
+    const review = reviewRequest();
+    const raw = runtime.state.openKeyedStore({
+      namespace: REEF_REVIEWS_NAMESPACE,
+      maxEntries: 2_000,
+      overflowPolicy: "reject-new",
+    });
+    const malformed = { review, approved: "false" };
+    await raw.register(review.approvalDigest, malformed);
+    for (const operation of [
+      () => reviews.lookupDecision(review.approvalDigest),
+      () => reviews.request(review),
+      () => reviews.decide(review.approvalDigest, true),
+    ]) {
+      await expectReefStateOperationError(operation(), "invalid Reef review record");
+    }
+    await expect(raw.lookup(review.approvalDigest)).resolves.toEqual(malformed);
+  });
+
   it("preserves a review replaced by pending work before transaction admission", async () => {
     const runtime = createRuntime(stateDir);
     const reviews = new ReviewApprovalStore(runtime, 1);
@@ -808,7 +798,11 @@ describe("Reef SQLite state", () => {
     });
     beforeNextStateOperation(runtime, () => raw.register(first.approvalDigest, { review: first }));
 
-    await expect(reviews.request(next)).rejects.toThrow("pending review capacity is exhausted");
+    await expectReefStateOperationError(
+      reviews.request(next),
+      "Reef pending review capacity is exhausted",
+      "ReefReviewCapacityError",
+    );
     await expect(reviews.list()).resolves.toEqual([first]);
     await expect(reviews.lookupDecision(next.approvalDigest)).resolves.toBe("none");
   });

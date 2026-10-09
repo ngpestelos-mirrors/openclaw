@@ -16,6 +16,7 @@ import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runt
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ReefInboxCursorStore } from "./state.js";
+import { expectReefStateOperationError } from "./state.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const binding = { handle: "molty", relayUrl: "https://reefwire.ai" };
@@ -155,7 +156,10 @@ describe("Reef inbox cursor persistence", () => {
         });
       const store = new ReefInboxCursorStore(runtime, binding);
       if (change === "different identity") {
-        await expect(store.advance(12)).rejects.toThrow("different identity");
+        await expectReefStateOperationError(
+          store.advance(12),
+          "Reef inbox cursor belongs to a different identity",
+        );
       } else {
         await store.advance(12);
         await expect(store.load()).resolves.toBe(40);
@@ -184,8 +188,8 @@ describe("Reef inbox cursor persistence", () => {
       const raw = runtime.state.openKeyedStore(options);
       await raw.register("current", { ...binding, cursor: "invalid" });
       const store = new ReefInboxCursorStore(runtime, binding);
-      await expect(store.load()).rejects.toThrow("invalid Reef inbox cursor state");
       if (host === "native") {
+        await expect(store.load()).rejects.toThrow("invalid Reef inbox cursor state");
         await expect(store.advance(12)).rejects.toMatchObject({
           code: "PLUGIN_STATE_WRITE_FAILED",
           operation: "register",
@@ -193,7 +197,8 @@ describe("Reef inbox cursor persistence", () => {
           cause: expect.objectContaining({ message: "invalid Reef inbox cursor state" }),
         });
       } else {
-        await expect(store.advance(12)).rejects.toThrow("invalid Reef inbox cursor state");
+        await expectReefStateOperationError(store.load(), "invalid Reef inbox cursor state");
+        await expectReefStateOperationError(store.advance(12), "invalid Reef inbox cursor state");
       }
       await expect(raw.lookup("current")).resolves.toEqual({ ...binding, cursor: "invalid" });
     },

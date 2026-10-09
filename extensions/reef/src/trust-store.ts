@@ -379,16 +379,17 @@ class WorkerReefTrustStore {
       { writeStores: [], missingValue: [], watchStores: [0, 1] },
     );
     receipt.assertCurrent();
-    return receipt.value.map((entry) => ({
-      ...entry,
-      recovery: createReefRejectionRecovery(
-        operation,
-        this.#delivery(entry.peer, entry.id),
-        entry.recipient,
-        receipt,
-        this.operationState,
-      ),
-    }));
+    return receipt.value.map((entry) =>
+      Object.assign({}, entry, {
+        recovery: createReefRejectionRecovery(
+          operation,
+          this.#delivery(entry.peer, entry.id),
+          entry.recipient,
+          receipt,
+          this.operationState,
+        ),
+      }),
+    );
   }
 
   async rejectionNoticeState(peer: string): Promise<ReefRejectionNoticeState | undefined> {

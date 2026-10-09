@@ -92,7 +92,7 @@ export class ReefMessageFlow {
   ) {}
 
   async send(
-    peer: string,
+    peerInput: string,
     text: string,
     context: {
       thread?: string;
@@ -107,7 +107,7 @@ export class ReefMessageFlow {
   ): Promise<string> {
     const signal = this.options.authoritySignal;
     signal?.throwIfAborted();
-    peer = requirePeer(peer);
+    const peer = requirePeer(peerInput);
     const from = formatHandleEpoch(this.requireHandle(), this.options.keys.keyEpoch);
     const senderSigningSecretKey = this.options.keys.signing.secretKey;
     const id = context.messageId ?? prepareReefMessageId();

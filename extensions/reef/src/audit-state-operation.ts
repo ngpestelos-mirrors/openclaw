@@ -79,14 +79,14 @@ export function appendReefAuditEvents(
   const values = tx.lookupMany<ReefAuditStateRecord>(
     keys.map((key) => ({ store: config.entries, key })),
   );
-  const rows = new Map(keys.map((key, index) => [key, values[index]]));
+  const rows = new Map<string, unknown>(keys.map((key, index) => [key, values[index]]));
   const changes = new Map<string, ReefAuditStateRecord | undefined>();
   const read = (key: string) => {
     if (changes.has(key)) {
       return changes.get(key);
     }
     if (!rows.has(key)) {
-      rows.set(key, tx.lookup<ReefAuditStateRecord>(config.entries, key));
+      rows.set(key, tx.lookup(config.entries, key));
     }
     return rows.get(key);
   };
@@ -145,7 +145,7 @@ export function appendReefAuditEvents(
   return appended;
 }
 
-export function readReefAuditEntries(
+function readReefAuditEntries(
   tx: PluginStateOperationTransaction,
   config: ReefAuditOperationConfig,
 ): AuditEntry[] {

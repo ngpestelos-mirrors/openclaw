@@ -1,4 +1,6 @@
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { fromBase64url } from "../protocol/encoding.js";
+import { parseVerdict } from "../protocol/guard.js";
 import type { ReviewRequest } from "../protocol/pipeline.js";
 import type { ReefKeys } from "./types.js";
 
@@ -20,6 +22,42 @@ export type ReefIdentityMigrationRecord = {
   identityBindingRequired: boolean;
 };
 export type ReefDurableMigrationRecord = { pending: true };
+
+export function parseReefReviewRecord(value: unknown): ReefReviewRecord | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    !isRecord(value) ||
+    !isRecord(value.review) ||
+    (value.approved !== undefined && typeof value.approved !== "boolean")
+  ) {
+    throw new Error("invalid Reef review record");
+  }
+  const review = value.review;
+  if (
+    typeof review.id !== "string" ||
+    typeof review.from !== "string" ||
+    typeof review.to !== "string" ||
+    (review.direction !== "inbound" && review.direction !== "outbound") ||
+    typeof review.bodyHash !== "string" ||
+    typeof review.approvalDigest !== "string"
+  ) {
+    throw new Error("invalid Reef review record");
+  }
+  return {
+    review: {
+      id: review.id,
+      from: review.from,
+      to: review.to,
+      direction: review.direction,
+      bodyHash: review.bodyHash,
+      approvalDigest: review.approvalDigest,
+      verdict: parseVerdict(review.verdict),
+    },
+    ...(value.approved === undefined ? {} : { approved: value.approved }),
+  };
+}
 
 export function parseReefKeys(value: unknown): ReefKeys {
   if (!value || typeof value !== "object") {

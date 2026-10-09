@@ -67,15 +67,15 @@ function runtime(host: "worker" | "legacy" = "worker") {
     ): PluginStateOperation<Operations> => {
       const operation = createOperation<Operations>(...args);
       return {
-        async execute(command, options) {
-          const writes = options.writeStores.length > 0;
+        async execute(command, executionOptions) {
+          const writes = executionOptions.writeStores.length > 0;
           if (writes) {
             const work = nextOperationWrite;
             nextOperationWrite = undefined;
             await work?.();
           }
           workerCommands.push(command.type);
-          const receipt = await operation.execute(command, options);
+          const receipt = await operation.execute(command, executionOptions);
           if (!writes) {
             const work = nextOperationRead;
             nextOperationRead = undefined;
@@ -598,7 +598,7 @@ describe("ReefTrustStore", () => {
   it.each(["overdue", "rejections"] as const)(
     "observes sanctioned sibling writes between %s scans",
     async (kind) => {
-      const now = 1_800_000_000_000;
+      const now = Date.now();
       const clock = vi.spyOn(Date, "now").mockReturnValue(now);
       onTestFinished(() => clock.mockRestore());
       const mockRuntime = runtime();

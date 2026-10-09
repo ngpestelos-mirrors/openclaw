@@ -86,8 +86,10 @@ export const allow: Verdict = {
 
 export function guard(
   ...verdicts: Verdict[]
-): GuardAdapter & { classify: ReturnType<typeof vi.fn> } {
-  const classify = vi.fn(async () => verdicts[classify.mock.calls.length - 1] ?? verdicts.at(-1)!);
+): GuardAdapter & { classify: ReturnType<typeof vi.fn<GuardAdapter["classify"]>> } {
+  const classify = vi.fn<GuardAdapter["classify"]>(
+    async (): Promise<Verdict> => verdicts[classify.mock.calls.length - 1] ?? verdicts.at(-1)!,
+  );
   return { providerId: "mock", pinnedModel: model, classify };
 }
 

@@ -120,13 +120,18 @@ export async function readReefOutboundDelivery(
   let pending = true;
   const settle = async <Type extends "consumeDelivery" | "discardDelivery" | "rejectDelivery">(
     type: Type,
-    input: ReefTrustStateOperations[Type]["input"],
+    settlementInput: ReefTrustStateOperations[Type]["input"],
   ): Promise<ReefTrustStateOperations[Type]["output"]> => {
     if (!pending) {
       throw new Error("Reef delivery settlement was already consumed");
     }
     pending = false;
-    return (await operation.execute({ type, input }, { writeStores: [1], watchStores: [0] })).value;
+    return (
+      await operation.execute(
+        { type, input: settlementInput },
+        { writeStores: [1], watchStores: [0] },
+      )
+    ).value;
   };
   return {
     delivery,
@@ -169,7 +174,7 @@ export function createReefRejectionRecovery(
   input: ReefDeliveryOperationInput,
   recipient: ReefPeerIdentity,
   initialReceipt: PluginStateOperationReceipt<unknown>,
-  state: ReefTrustOperationState,
+  operationState: ReefTrustOperationState,
   initialAssertion?: () => void,
 ): ReefRejectionRecovery {
   const captured = { ...input };
@@ -233,7 +238,7 @@ export function createReefRejectionRecovery(
     },
   };
   recoveryStates.set(recovery, {
-    ...state,
+    ...operationState,
     get sourceReceipt() {
       return sourceReceipt;
     },

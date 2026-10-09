@@ -55,6 +55,16 @@ function interceptAuditOperation(
     });
 }
 
+async function expectAuditOperationError(result: Promise<unknown>, message: string) {
+  await expect(result).rejects.toBeInstanceOf(Error);
+  await expect(result).rejects.toMatchObject({
+    name: "PluginStateStoreError",
+    code: "PLUGIN_STATE_WRITE_FAILED",
+    operation: "register",
+    cause: { name: "Error", message },
+  });
+}
+
 describe("Reef SQLite audit state", () => {
   let stateDir = "";
 
@@ -149,7 +159,7 @@ describe("Reef SQLite audit state", () => {
         exportName: "executeReefAuditOperation",
       },
     );
-    await expect(
+    await expectAuditOperationError(
       operation.execute(
         {
           type: "append",
@@ -167,7 +177,8 @@ describe("Reef SQLite audit state", () => {
         },
         { writeStores: [0, 2] },
       ),
-    ).rejects.toThrow("invalid audit event");
+      "invalid audit event",
+    );
     expect(await audit.entries()).toEqual([initial]);
   });
 
@@ -189,7 +200,10 @@ describe("Reef SQLite audit state", () => {
       pending: { owner: "live-legacy-writer", expiresAt: Number.MAX_SAFE_INTEGER },
     };
     heads.register(REEF_AUDIT_HEAD_KEY, pending);
-    await expect(audit.appendEvent("refused", {}, 10)).rejects.toThrow("active legacy writer");
+    await expectAuditOperationError(
+      audit.appendEvent("refused", {}, 10),
+      "Reef audit append is owned by an active legacy writer",
+    );
     expect(heads.lookup(REEF_AUDIT_HEAD_KEY)).toEqual(pending);
     expect(await audit.entries()).toEqual([initial]);
   });
@@ -237,11 +251,13 @@ describe("Reef SQLite audit state", () => {
       entry: initial,
       nextHash: "unowned-successor",
     });
-    await expect(
+    await expectAuditOperationError(
       openReefAuditStore(runtime, key, 2).appendEvent("refused", { id: 3 }, 12),
-    ).rejects.toThrow("head already links a committed successor");
+      "Reef audit head already links a committed successor",
+    );
     expect(heads.lookup(REEF_AUDIT_HEAD_KEY)).toEqual(legacyHead);
     expect(raw.lookup(reefAuditEntryKey(stale.entryHash))).toEqual({ kind: "entry", entry: stale });
+    expect(raw.lookup("entry:orphan")).toEqual({ kind: "entry", entry: stale });
     raw.register(reefAuditEntryKey(initial.entryHash), {
       kind: "entry",
       entry: initial,
@@ -466,10 +482,10 @@ describe("Reef SQLite audit state", () => {
       },
     }));
     const audit = openReefAuditStore(runtime, key, 2);
-    await expect(audit.appendEvent("refused", {}, 10)).rejects.toThrow(
-      "audit migration is incomplete",
-    );
-    await expect(audit.entries()).rejects.toThrow("audit migration is incomplete");
+    const message =
+      "Reef audit migration is incomplete; repair audit.jsonl and rerun openclaw doctor --fix";
+    await expectAuditOperationError(audit.appendEvent("refused", {}, 10), message);
+    await expectAuditOperationError(audit.entries(), message);
     await migration.delete(REEF_AUDIT_MIGRATION_KEY);
     expect(await audit.entries()).toEqual([]);
   });

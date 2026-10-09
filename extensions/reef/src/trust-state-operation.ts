@@ -35,7 +35,7 @@ export type ReefDeliveryOperationInput = {
   deliveryKey: string;
   id: string;
 };
-export type ReefPendingRejection = Omit<ReefDeliveryRejection, "recovery">;
+type ReefPendingRejection = Omit<ReefDeliveryRejection, "recovery">;
 type DeliveryRead = { delivery: ReefOutboundDelivery; trust?: ReefPeerTrust };
 type Reservation =
   | { kind: "reserved" }

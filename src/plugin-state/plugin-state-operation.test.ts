@@ -197,8 +197,8 @@ describe("plugin state worker operations", () => {
     const second = open("fifo-destination");
     await first.register("key", "old");
     const operation = first.createOperation<FixtureOperations>([first, second], handler);
-    const committed = createDeferredCore<void>();
-    const release = createDeferredCore<void>();
+    const committed = createDeferredCore();
+    const release = createDeferredCore();
     const execute = workerClient.executePluginStateOperationInWorker;
     vi.spyOn(workerClient, "executePluginStateOperationInWorker").mockImplementation(
       async (...args) => {

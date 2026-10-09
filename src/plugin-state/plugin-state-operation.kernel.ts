@@ -103,9 +103,8 @@ export function executePluginStateOperation(
     return observe(live(view.entries.get(key)));
   };
   const transaction: PluginStateOperationTransaction = {
-    lookup<T>(index: number, key: string) {
-      // SAFETY: The plugin owns the JSON value type in its captured namespace.
-      return read(index, key)?.value as T | undefined;
+    lookup(index: number, key: string) {
+      return read(index, key)?.value;
     },
     lookupMany<T>(keys: readonly { store: number; key: string }[]) {
       if (!active) {

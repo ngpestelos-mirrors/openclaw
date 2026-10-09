@@ -13,6 +13,7 @@ import {
 } from "./registration-state.js";
 import {
   parseReefKeys,
+  parseReefReviewRecord,
   REEF_DURABLE_MIGRATION_KEY,
   REEF_KEYS_KEY,
   REEF_KEYS_MIGRATION_KEY,
@@ -69,7 +70,7 @@ export function requestReefReview(
   review: ReviewRequest,
 ): ReviewApproval | undefined {
   const key = review.approvalDigest;
-  const current = tx.lookup<ReefReviewRecord>(store, key);
+  const current = parseReefReviewRecord(tx.lookup(store, key));
   if (current) {
     return current.approved === undefined
       ? undefined
@@ -95,7 +96,7 @@ function decideReefReview(
   digest: string,
   approved: boolean,
 ): ReviewRequest | undefined {
-  const current = tx.lookup<ReefReviewRecord>(store, digest);
+  const current = parseReefReviewRecord(tx.lookup(store, digest));
   if (!current) {
     return undefined;
   }
@@ -108,7 +109,7 @@ export function lookupReefReviewDecision(
   store: number,
   digest: string,
 ): ReefReviewDecision {
-  const current = tx.lookup<ReefReviewRecord>(store, digest);
+  const current = parseReefReviewRecord(tx.lookup(store, digest));
   return !current
     ? "none"
     : current.approved === undefined

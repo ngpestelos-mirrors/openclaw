@@ -5,6 +5,9 @@ import type {
   OpenAsyncKeyedStoreOptions,
   OpenKeyedStoreOptions,
   PluginStateKeyedStore,
+  PluginStateOperation,
+  PluginStateOperationDefinitions,
+  PluginStateOperationReceipt,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
@@ -13,7 +16,7 @@ import {
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
-import { vi } from "vitest";
+import { expect, vi } from "vitest";
 
 export function createRuntime(stateDir: string, registrationHost: "worker" | "legacy" = "worker") {
   const runtime = createPluginRuntimeMock();
@@ -41,6 +44,65 @@ export function createRuntime(stateDir: string, registrationHost: "worker" | "le
     return store;
   };
   return Object.assign(runtime, { stateStores });
+}
+
+export function beforeNextStateOperation(
+  runtime: ReturnType<typeof createRuntime>,
+  work: (receipt?: PluginStateOperationReceipt<unknown>) => Promise<void> | void,
+  phase: "before" | "after" = "before",
+) {
+  let pending = true;
+  const intercept = (store: Pick<PluginStateKeyedStore<unknown>, "createOperation">) => {
+    const create = store.createOperation;
+    if (!create) {
+      return;
+    }
+    store.createOperation = <Operations extends PluginStateOperationDefinitions>(
+      ...args: Parameters<typeof create>
+    ): PluginStateOperation<Operations> => {
+      const operation = create<Operations>(...args);
+      return {
+        async execute(command, options) {
+          const intercepted = pending;
+          pending = false;
+          if (intercepted && phase === "before") {
+            await work();
+          }
+          const receipt = await operation.execute(command, options);
+          if (intercepted && phase === "after") {
+            await work(receipt);
+          }
+          return receipt;
+        },
+      };
+    };
+  };
+  runtime.stateStores.forEach(intercept);
+  const open = runtime.state.openKeyedStore;
+  vi.spyOn(runtime.state, "openKeyedStore").mockImplementation(
+    <T>(options: OpenAsyncKeyedStoreOptions) => {
+      const store = open<T>(options);
+      intercept(store);
+      return store;
+    },
+  );
+}
+
+export async function expectReefStateOperationError(
+  pending: Promise<unknown>,
+  message: string | RegExp,
+  name = "Error",
+): Promise<void> {
+  await expect(pending).rejects.toMatchObject({
+    name: "PluginStateStoreError",
+    code: "PLUGIN_STATE_WRITE_FAILED",
+    operation: "register",
+    message: "Failed to execute plugin state operation.",
+    cause: expect.objectContaining({
+      name,
+      message: typeof message === "string" ? message : expect.stringMatching(message),
+    }),
+  });
 }
 
 export function createStateTestDirectory(): string {

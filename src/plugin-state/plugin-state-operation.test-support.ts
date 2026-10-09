@@ -51,6 +51,7 @@ export const execute: PluginStateOperationHandler<FixtureOperations> = (command,
       return true;
     }
   }
+  throw new Error("Unknown plugin state fixture command");
 };
 
 export async function asynchronousHandler(_command: unknown, tx: PluginStateOperationTransaction) {

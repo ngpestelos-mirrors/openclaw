@@ -43,7 +43,7 @@ export type PluginStateOperationCommand<Operations extends PluginStateOperationD
 
 /** The worker owns this synchronous view for one invocation and invalidates it on return. */
 export type PluginStateOperationTransaction = {
-  lookup<T = unknown>(store: number, key: string): T | undefined;
+  lookup(store: number, key: string): unknown;
   lookupMany<T = unknown>(keys: readonly { store: number; key: string }[]): Array<T | undefined>;
   entries<T = unknown>(store: number): PluginStateEntry<T>[];
   set(store: number, key: string, value: unknown, options?: { ttlMs?: number }): void;
@@ -58,7 +58,7 @@ export type PluginStateOperationHandler<Operations extends PluginStateOperationD
 export type PluginStateOperationReceipt<T> = {
   value: T;
   /** Refuses after watched state, the captured source, or live authority changes. */
-  assertCurrent(): void;
+  assertCurrent: () => void;
 };
 
 export type PluginStateOperation<Operations extends PluginStateOperationDefinitions> = {
