@@ -101,3 +101,23 @@ export const scheduledAppApprovalPolicyCases = [
     expected: "approve",
   },
 ];
+
+export const scheduledAppHeadlessPolicyCases = [
+  { mode: "allow", annotations: undefined, nativeMode: undefined, expected: "approve" },
+  { mode: "ask", annotations: undefined, nativeMode: undefined, expected: "prompt" },
+  { mode: "auto", annotations: undefined, nativeMode: undefined, expected: "auto" },
+  { mode: "ask", annotations: { readOnlyHint: true }, nativeMode: undefined, expected: "auto" },
+  {
+    mode: "ask",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    nativeMode: undefined,
+    expected: "prompt",
+  },
+  {
+    mode: "ask",
+    annotations: { readOnlyHint: true, destructiveHint: true },
+    nativeMode: undefined,
+    expected: "prompt",
+  },
+  { mode: "ask", annotations: { readOnlyHint: true }, nativeMode: "prompt", expected: "prompt" },
+] as const;

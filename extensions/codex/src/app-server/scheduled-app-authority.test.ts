@@ -15,7 +15,10 @@ import {
   readCurrentCodexScheduledAppPolicy,
   resolveScheduledCodexAppCreatorCaptureDecision,
 } from "./scheduled-app-authority.js";
-import { scheduledAppApprovalPolicyCases } from "./scheduled-app-authority.test-support.js";
+import {
+  scheduledAppApprovalPolicyCases,
+  scheduledAppHeadlessPolicyCases,
+} from "./scheduled-app-authority.test-support.js";
 import { readCodexManagedRequirementsFingerprint } from "./thread-requests.js";
 
 function policyContext() {
@@ -443,6 +446,7 @@ describe("scheduled Codex app authority", () => {
   it.each([
     { current: "ask", captured: "allow" },
     { current: "allow", captured: "ask" },
+    { current: "ask", captured: "ask" },
   ] as const)(
     "keeps link approvals with the user for current $current and captured $captured policy",
     ({ current, captured }) => {
@@ -479,7 +483,7 @@ describe("scheduled Codex app authority", () => {
               allowDestructiveActions: true,
               allowOpenWorld: true,
               destructiveApprovalMode: captured,
-              tools: { edit: "approve", blocked: "approve" },
+              tools: { list: "auto", edit: "approve", blocked: "approve" },
             },
           ],
         }),
@@ -506,6 +510,7 @@ describe("scheduled Codex app authority", () => {
             [
               "calendar",
               new Map([
+                ["list", { readOnlyHint: true }],
                 ["edit", {}],
                 ["blocked", {}],
               ]),
@@ -523,6 +528,7 @@ describe("scheduled Codex app authority", () => {
               account: { approvals_reviewer: "user", default_tools_approval_mode: "auto" },
             },
             tools: {
+              list: { enabled: true, approval_mode: "auto" },
               edit: { enabled: true, approval_mode: "prompt" },
               blocked: { enabled: false, approval_mode: "prompt" },
             },
@@ -802,45 +808,77 @@ describe("scheduled Codex app authority", () => {
     ).toThrow("Scheduled Codex apps are unavailable under the current policy or account: calendar");
   });
 
-  it.each([
-    { mode: "allow" as const, expected: "approve" },
-    { mode: "ask" as const, expected: "prompt" },
-    { mode: "auto" as const, expected: "auto" },
-  ])("maps an app-level $mode ceiling to headless tool mode $expected", ({ mode, expected }) => {
-    const context = buildPluginAppPolicyContext(
-      {
-        calendar: {
-          source: "account",
-          appName: "Calendar",
-          allowDestructiveActions: true,
-          allowOpenWorld: true,
-          destructiveApprovalMode: mode,
-          mcpServerNames: [],
+  it.each(scheduledAppHeadlessPolicyCases)(
+    "captures and applies $mode/$annotations/$nativeMode as scheduled tool mode $expected",
+    async ({ mode, annotations, nativeMode, expected }) => {
+      const context = buildPluginAppPolicyContext(
+        {
+          calendar: {
+            source: "account",
+            appName: "Calendar",
+            allowDestructiveActions: true,
+            allowOpenWorld: true,
+            destructiveApprovalMode: mode,
+            mcpServerNames: [],
+          },
         },
-      },
-      {},
-    );
-    const config: CodexPluginThreadConfig = {
-      enabled: true,
-      fingerprint: "current",
-      inputFingerprint: "input",
-      policyContext: context,
-      diagnostics: [],
-    };
+        {},
+      );
+      const config: CodexPluginThreadConfig = {
+        enabled: true,
+        fingerprint: "current",
+        inputFingerprint: "input",
+        policyContext: context,
+        diagnostics: [],
+      };
 
-    const intersected = intersectCodexPluginThreadConfigWithScheduledAuthority(
-      config,
-      authority(),
-      {
-        config: {},
-        toolsByApp: new Map([["calendar", new Map([["edit", {}]])]]),
-      },
-    );
+      const request = vi.fn(async (method: string) => {
+        if (method === "app/installed") {
+          return { apps: [{ id: "calendar", enabled: true, callable: true }] };
+        }
+        if (method === "config/read") {
+          return {
+            config: nativeMode
+              ? { apps: { calendar: { tools: { read: { approval_mode: nativeMode } } } } }
+              : {},
+          };
+        }
+        return {
+          data: [
+            {
+              name: "codex_apps",
+              tools: { read: { _meta: { connector_id: "calendar" }, annotations } },
+            },
+          ],
+          nextCursor: null,
+        };
+      });
+      const captured = await captureScheduledCodexAppAuthority({
+        client: { request } as never,
+        threadId: "thread-final",
+        policyContext: context,
+        auth: { kind: "prepared-profile", profileId: "openai:work", accountId: "acct-1" },
+      });
+      const currentPolicy = await readCurrentCodexScheduledAppPolicy({ request });
+      const intersected = intersectCodexPluginThreadConfigWithScheduledAuthority(
+        config,
+        captured,
+        currentPolicy,
+      );
 
-    expect(intersected.configPatch).toMatchObject({
-      apps: { calendar: { tools: { edit: { enabled: true, approval_mode: expected } } } },
-    });
-  });
+      expect(intersected.configPatch).toMatchObject({
+        apps: { calendar: { tools: { read: { enabled: true, approval_mode: expected } } } },
+      });
+      // A later native relaxation must not remove a captured explicit prompt.
+      const relaxed = intersectCodexPluginThreadConfigWithScheduledAuthority(config, captured, {
+        ...currentPolicy,
+        config: { apps: { calendar: { default_tools_approval_mode: "approve" } } },
+      });
+      expect(relaxed.configPatch).toMatchObject({
+        apps: { calendar: { tools: { read: { enabled: true, approval_mode: expected } } } },
+      });
+    },
+  );
 
   it("rotates the input fingerprint when the stored cap changes", () => {
     const first = buildScheduledCodexAppAuthorityInputFingerprint("base", authority());

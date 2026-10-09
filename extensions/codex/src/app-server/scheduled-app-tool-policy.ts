@@ -6,6 +6,7 @@ export type CodexScheduledAppTool = {
   title?: string;
   linkId?: string;
   requiresExplicitLinkId?: boolean;
+  readOnlyHint?: boolean;
   destructiveHint?: boolean;
   openWorldHint?: boolean;
 };

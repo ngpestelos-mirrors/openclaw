@@ -222,6 +222,11 @@ Approval intersections keep `"prompt"` if either side requires it;
 produces `"prompt"`, because their annotation-dependent rules are not totally
 ordered.
 
+An OpenClaw `"ask"` ceiling permits native `"auto"` for tools that explicitly
+declare `readOnlyHint: true` unless they also declare `destructiveHint: true`.
+Other tools retain a prompt ceiling. A captured or current explicit approval
+requirement still applies to a read-only tool.
+
 Jobs created before app authority capture may keep their ordinary OpenClaw
 tool cap and continue non-app work, but cannot recover Codex app access
 automatically. Recreate or reauthorize only a job that needs app access, from a

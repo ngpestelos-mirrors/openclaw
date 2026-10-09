@@ -258,7 +258,12 @@ async function readCodexScheduledAppToolsByApp(params: {
                 : undefined,
             requiresExplicitLinkId:
               asOptionalRecord(appMetadata?.["_codex_apps"])?.requires_explicit_link_id === true,
-            destructiveHint: annotations?.destructiveHint === false ? false : undefined,
+            readOnlyHint:
+              typeof annotations?.readOnlyHint === "boolean" ? annotations.readOnlyHint : undefined,
+            destructiveHint:
+              typeof annotations?.destructiveHint === "boolean"
+                ? annotations.destructiveHint
+                : undefined,
             openWorldHint: annotations?.openWorldHint === false ? false : undefined,
           });
           toolsByApp.set(connectorId, tools);
@@ -405,7 +410,10 @@ export async function captureScheduledCodexAppAuthority(params: {
               id,
               toolName,
               currentPolicy.toolsByApp.get(id)?.get(toolName),
-              appApprovalCeiling(defaultApprovalMode(policy)),
+              appApprovalCeiling(
+                defaultApprovalMode(policy),
+                currentPolicy.toolsByApp.get(id)?.get(toolName),
+              ),
             ).approvalMode,
           ]),
       ),
@@ -450,11 +458,18 @@ function stricterApprovalMode(
   return APPROVAL_RANK[left] <= APPROVAL_RANK[right] ? left : right;
 }
 
-function appApprovalCeiling(mode: CodexPluginDestructiveApprovalMode): CodexAppToolApprovalMode {
+function appApprovalCeiling(
+  mode: CodexPluginDestructiveApprovalMode,
+  tool?: CodexScheduledAppTool,
+): CodexAppToolApprovalMode {
   if (mode === "allow") {
     return "approve";
   }
-  return mode === "ask" ? "prompt" : "auto";
+  // ASK gates writes, as on foreground turns. Native auto permits a confirmed
+  // read unless it is explicitly destructive; other tools still require consent.
+  return mode === "ask" && !(tool?.readOnlyHint === true && tool.destructiveHint !== true)
+    ? "prompt"
+    : "auto";
 }
 
 /** Intersects a stored app-ID cap with current policy without admitting new apps. */
@@ -534,26 +549,26 @@ export function intersectCodexPluginThreadConfigWithScheduledAuthority(
         }),
       );
     }
-    const storedAppCeiling = appApprovalCeiling(captured.destructiveApprovalMode);
-    const currentAppCeiling = appApprovalCeiling(defaultApprovalMode(currentApp));
     // Current inventory owns existence; captured modes only cap tools that
     // still exist (and tools added later within the already-authorized app).
     const tools = currentPolicy.toolsByApp.get(appId) ?? new Map<string, CodexScheduledAppTool>();
     appPatch.tools = Object.fromEntries(
       [...tools.keys()].toSorted().map((toolName) => {
+        const metadata = tools.get(toolName);
+        const storedAppCeiling = appApprovalCeiling(captured.destructiveApprovalMode, metadata);
+        const currentAppCeiling = appApprovalCeiling(defaultApprovalMode(currentApp), metadata);
         const capturedMode = captured.tools[toolName] ?? storedAppCeiling;
         const currentToolPolicy = readCurrentToolPolicy(
           currentPolicy.config,
           appId,
           toolName,
-          tools.get(toolName),
+          metadata,
           currentAppCeiling,
         );
         return [
           toolName,
           {
-            enabled:
-              currentToolPolicy.enabled && appToolHintsAllowed(tools.get(toolName), currentApp),
+            enabled: currentToolPolicy.enabled && appToolHintsAllowed(metadata, currentApp),
             approval_mode: intersectToolApprovalMode(
               intersectToolApprovalMode(capturedMode, storedAppCeiling),
               intersectToolApprovalMode(currentToolPolicy.approvalMode, currentAppCeiling),
