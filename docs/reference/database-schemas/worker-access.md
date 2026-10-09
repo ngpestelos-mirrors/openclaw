@@ -2418,7 +2418,9 @@ carry a bounded inline batch through the same revision, tombstone, capacity, and
 commit checks; larger inputs retain fragment staging. Standing-intent setup
 consumes admitted MAIN schema facts and requests a write transaction only when
 installation is needed. Temporary tables cannot redirect its canonical schema
-installation.
+installation. Cold installation commits separately from the business operation.
+A confirmed schema-only receipt permits its next dispatch with fresh grants;
+an unknown write outcome never permits replay.
 
 Ordinary human chat prepares initial skill selections and authoring presentation
 in one shared-state snapshot. Both consumers retain the original requester and

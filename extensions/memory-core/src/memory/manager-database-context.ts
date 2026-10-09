@@ -39,6 +39,7 @@ import {
   openMemoryDatabaseAtPath,
   openMemoryDatabaseReadOnlyAtPath,
 } from "./manager-db.js";
+import { publishMemoryEmbeddingCache } from "./manager-embedding-cache-publication.js";
 import { withMemoryIndexGeneration } from "./manager-index-generation-lease.js";
 import type {
   MemoryEmbeddingCacheMutation,
@@ -47,11 +48,7 @@ import type {
   MemoryPublicationResult,
   MemoryPublicationState,
 } from "./manager-publication-task.js";
-import {
-  memoryEmbeddingCacheBatches,
-  memoryEmbeddingCacheFitsInline,
-  memoryPublicationBatches,
-} from "./manager-publication-transfer.js";
+import { memoryPublicationBatches } from "./manager-publication-transfer.js";
 import {
   assertMemoryShadowIdentity,
   readMemoryShadowIdentity,
@@ -498,63 +495,17 @@ export class MemoryIndexDatabase {
     prepareRevision: () => number | undefined,
     invalidate: () => void,
   ): Promise<boolean | undefined> {
-    return this.runPublication(async (scope) => {
-      // This callback owns the original writer turn before inspecting generation facts.
-      const expectedRevision = prepareRevision();
-      if (expectedRevision === undefined) {
-        return undefined;
-      }
-      const prepare = async () => prepareRevision() !== undefined;
-      if (mutation.kind === "clear") {
-        try {
-          return await this.retryPublication(
-            () =>
-              scope.execute({
-                type: "cache.clear",
-                input: { identities: mutation.identities, expectedRevision },
-              }),
-            prepare,
-          );
-        } finally {
-          // The vector-space conflict is already known, even if clearing loses its reply.
-          invalidate();
-        }
-      }
-      if (memoryEmbeddingCacheFitsInline(mutation.header, mutation.entries)) {
-        const current = await this.retryPublication(
-          () =>
-            scope.execute({
-              type: "cache.write.inline",
-              input: { header: mutation.header, entries: mutation.entries, expectedRevision },
-            }),
-          prepare,
-        );
-        if (current === false) {
-          invalidate();
-        }
-        return current;
-      }
-      const operation = randomUUID();
-      await scope.execute({
-        type: "cache.stage.start",
-        input: { operation, header: mutation.header, rows: mutation.entries.length },
-      });
-      for (const fragments of memoryEmbeddingCacheBatches(mutation.entries)) {
-        await scope.execute({ type: "stage.append", input: { operation, fragments } });
-      }
-      const current = await this.retryPublication(
-        () => scope.execute({ type: "cache.write", input: { operation, expectedRevision } }),
-        prepare,
-      );
-      if (current === undefined) {
-        await scope.execute({ type: "stage.discard", input: { operation } });
-      }
-      if (current === false) {
-        // Publish generation invalidation before releasing this writer turn.
-        invalidate();
-      }
-      return current;
-    }, assertCurrent);
+    return this.runPublication(
+      (scope) =>
+        publishMemoryEmbeddingCache({
+          scope,
+          mutation,
+          prepareRevision,
+          invalidate,
+          retry: (run, prepare) => this.retryPublication(run, prepare),
+        }),
+      assertCurrent,
+    );
   }
 
   async replaceSource(

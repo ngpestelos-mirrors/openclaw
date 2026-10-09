@@ -610,6 +610,7 @@ async function handleChatSendWithOptions(
       toolsAllow: options?.toolsAllow,
       prepareAssistantTranscriptMessage: options?.prepareAssistantTranscriptMessage,
       skillLibrary: {
+        sessionKey,
         owner: {
           client,
           context,

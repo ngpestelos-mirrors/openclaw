@@ -25,10 +25,7 @@ import { updateChatRunProvider } from "../chat-abort.js";
 import { discardPreparedInboundMedia } from "../chat-attachments.js";
 import { chatRunBelongsToSelectedAgent } from "../chat-run-owner.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
-import {
-  prepareGatewaySkillAuthoring,
-  prepareGatewaySkillLibrarySession,
-} from "../skill-library-authoring.js";
+import { prepareGatewaySkillLibraryTurn } from "../skill-library-authoring.js";
 import { buildAbortedChatSendPayload } from "./chat-abort-authorization.js";
 import { broadcastChatDelta } from "./chat-broadcast.js";
 import type { StartChatDispatchParams } from "./chat-send-agent-dispatch.types.js";
@@ -305,17 +302,10 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
             }
           }
           phase?.mark("preparation");
-          const preparedSkillLibrary = await prepareGatewaySkillLibrarySession(
-            skillLibrary.owner,
-            skillLibrary.isHumanTurn,
-          );
-          await turn.prepareSessionCreation(preparedSkillLibrary);
-          phase?.mark("authoring");
-          const skillLibraryAuthoring = await prepareGatewaySkillAuthoring(
-            skillLibrary.owner,
-            sessionKey,
-            skillLibrary.isHumanTurn,
-            preparedSkillLibrary,
+          const skillLibraryAuthoring = await prepareGatewaySkillLibraryTurn(
+            skillLibrary,
+            turn.prepareSessionCreation,
+            () => phase?.mark("authoring"),
           );
           admission.assertWorkAdmissionCurrent();
           phase?.mark("preparation");

@@ -25,7 +25,7 @@ export type StartChatDispatchParams = {
   context: GatewayRequestHandlerOptions["context"];
   toolsAllow?: string[];
   prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
-  skillLibrary: { owner: SkillLibraryRequestOwner; isHumanTurn: boolean };
+  skillLibrary: { owner: SkillLibraryRequestOwner; isHumanTurn: boolean; sessionKey: string };
   cronCreatorAuthority: ReturnType<ChatSendExternalAuthorityAdmission["resolve"]>;
   assertDashboardReadCurrent?: () => void;
   externalAuthorityAdmission: ChatSendExternalAuthorityAdmission | undefined;

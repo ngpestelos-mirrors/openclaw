@@ -91,6 +91,22 @@ export async function prepareGatewaySkillLibrarySession(
   });
 }
 
+export async function prepareGatewaySkillLibraryTurn(
+  request: { owner: SkillLibraryRequestOwner; isHumanTurn: boolean; sessionKey: string },
+  prepareSessionCreation: (prepared?: PreparedSkillLibrarySession) => Promise<void>,
+  onAuthoring: () => void,
+): Promise<SkillLibraryAuthoringCapability | undefined> {
+  const prepared = await prepareGatewaySkillLibrarySession(request.owner, request.isHumanTurn);
+  await prepareSessionCreation(prepared);
+  onAuthoring();
+  return prepareGatewaySkillAuthoring(
+    request.owner,
+    request.sessionKey,
+    request.isHumanTurn,
+    prepared,
+  );
+}
+
 /** Only ordinary attributed human ingress may mint a namespace; actions remain normal tool policy. */
 export async function prepareGatewaySkillAuthoring(
   options: SkillLibraryRequestOwner,

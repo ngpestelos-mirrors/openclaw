@@ -240,7 +240,12 @@ describe("human personal namespace authority", () => {
       const owner = request(alice.id);
       const prepared = await prepareGatewaySkillLibrarySession(owner, true);
       if (change === "profile") {
-        owner.client!.authenticatedUserProfile = { profileId: bob.id };
+        owner.client!.authenticatedUserProfile = {
+          profileId: bob.id,
+          displayName: null,
+          hasAvatar: false,
+          updatedAt: 1,
+        };
       } else {
         owner.client!.connect.scopes = ["operator.read"];
       }
