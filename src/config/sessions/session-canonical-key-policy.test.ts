@@ -8,6 +8,7 @@ import * as databaseAdmissions from "../../infra/sqlite-database-admission.js";
 import { withSqlitePostCommitPublications } from "../../infra/sqlite-post-commit.js";
 import { admitSqliteSchema, runSqliteReadOperationSync } from "../../infra/sqlite-schema-facts.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import { ensureSessionKeyContractSchemaInTransaction } from "../../state/openclaw-agent-db-schema-helpers.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "../../state/openclaw-agent-schema.js";
 import {
   assertCanonicalSqliteSessionKeysCurrent,
@@ -172,6 +173,10 @@ describe("canonical main-key policy facts", () => {
       setCanonicalSqliteSessionMainKey(database, "configured");
       expect(read()).toBe("configured");
       expect(readCanonicalSessionMainKey({ db: peer })).toBe("configured");
+      db.exec("CREATE TABLE unrelated_policy_data (value TEXT)");
+      admitSqliteSchema(db);
+      expect(read()).toBe("configured");
+      expect(readCanonicalSessionMainKey({ db: peer })).toBe("configured");
       expect(
         observation.queries.filter((sql) => sql.includes('from "session_key_contract"')),
       ).toEqual([]);
@@ -187,6 +192,25 @@ describe("canonical main-key policy facts", () => {
     } finally {
       observation.restore();
     }
+  });
+
+  it("observes the schema owner's seed after reading a missing policy row", () => {
+    const filename = path.join(tempDirs.make("canonical-policy-seed-"), "agent.sqlite");
+    const db = openNodeSqliteDatabase(filename);
+    databases.push(db);
+    db.exec(`BEGIN; ${OPENCLAW_AGENT_SCHEMA_SQL}
+      DELETE FROM session_key_contract; COMMIT;`);
+    admitSqliteSchema(db);
+    const reader = openNodeSqliteDatabase(filename, { readOnly: true });
+    databases.push(reader);
+    admitSqliteSchema(reader);
+    expect(readStoredCanonicalSessionMainKey({ db })).toBeNull();
+    expect(readStoredCanonicalSessionMainKey({ db: reader })).toBeNull();
+    withSqlitePostCommitPublications(db, () =>
+      runSqliteDeferredTransactionSync(db, () => ensureSessionKeyContractSchemaInTransaction(db)),
+    );
+    expect(readStoredCanonicalSessionMainKey({ db: reader })).toBe("main");
+    expect(readCanonicalSessionMainKey({ db })).toBe("main");
   });
 
   it.each(["tracked", "native", "native-before-begin"] as const)(

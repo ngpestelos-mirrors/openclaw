@@ -179,6 +179,9 @@ remain at effect boundaries. Cached policy facts do not grant canonical admissio
 or continuation authority. Main-key writer publications carry a host revision, so
 workers can retain an absent publication without polling after unrelated writes.
 Nested workers forward only the host completeness they actually received.
+Present main-key values are data facts: unrelated DDL cannot retire a committed
+config postimage. A missing policy row stays with the connection's read revision
+until the schema owner's seed or canonical writer makes the policy available.
 Uncertain rollback can discard a data fact and require one repair read before reuse.
 
 The Mentions Inbox retains its committed head through the same physical owner.

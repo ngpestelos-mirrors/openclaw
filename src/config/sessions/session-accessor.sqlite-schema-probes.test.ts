@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi, describe } from "vitest";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { runSqlitePinnedReadSnapshotSync } from "../../infra/sqlite-pinned-read-snapshot.js";
+import { admitSqliteSchema } from "../../infra/sqlite-schema-facts.js";
 import { createSqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
 import {
   openSqliteWorkerStore,
@@ -144,14 +145,16 @@ it("bounds schema and freshness probes across admitted session reader entry poin
         nativeLocations: [writer.path],
         admission: createSqliteWorkerOperationAdmission((_request, grant) => {
           setCanonicalSqliteSessionMainKey(writer, "configured-during-read");
+          writer.db.exec("CREATE TABLE main_key_race_unrelated (value TEXT)");
+          admitSqliteSchema(writer.db);
           grant();
         }),
       }),
     );
-    expect(raced).toEqual({ mainKey: "configured-during-read", statements: 1 });
-    expect(await worker.execute({ type: "mainKey", input: undefined })).toEqual({
-      mainKey: "configured-during-read",
-      statements: 0,
+    const afterRace = await worker.execute({ type: "mainKey", input: undefined });
+    expect({ raced, afterRace }).toEqual({
+      raced: { mainKey: "configured-during-read", statements: 1 },
+      afterRace: { mainKey: "configured-during-read", statements: 0 },
     });
     setCanonicalSqliteSessionMainKey(writer, "main");
     writeSessionEntry(writer, "agent:main:probe", { sessionId: "probe", updatedAt: 1 });

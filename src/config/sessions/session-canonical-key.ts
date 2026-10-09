@@ -82,12 +82,11 @@ const mainKeyReader = createSqliteQueryCache((db) =>
 );
 const mainKeyAdmission = {
   name: "canonical-session-main-key",
-  schemaDependent: true,
-  read(value: unknown): string | null | undefined {
-    return typeof value === "string" || value === null ? value : undefined;
+  read(value: unknown): string | undefined {
+    return typeof value === "string" ? value : undefined;
   },
 };
-const mainKeyPublication: SqliteDatabaseAdmissionKey<string | null> = {
+const mainKeyPublication: SqliteDatabaseAdmissionKey<string> = {
   ...mainKeyAdmission,
   name: "canonical-session-main-key-write",
   writer: "host",
@@ -410,7 +409,10 @@ export function readStoredCanonicalSessionMainKey(database: { db: DatabaseSync }
     return policy.stored;
   }
   const stored = mainKeyReader(database.db)()?.main_key ?? null;
-  publishSqliteDatabaseAdmission(database.db, mainKeyAdmission, stored);
+  // Schema repair can seed a missing row; only existing policy survives unrelated DDL.
+  if (stored !== null) {
+    publishSqliteDatabaseAdmission(database.db, mainKeyAdmission, stored);
+  }
   // A reader that finished after a config commit cannot replace its postimage.
   const committed = getSqliteDatabaseAdmission(database.db, mainKeyPublication);
   if (committed !== undefined) {

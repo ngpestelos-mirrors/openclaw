@@ -82,12 +82,12 @@ it.each(["cold", "preexisting"] as const)(
     } finally {
       statements.restore();
     }
-    // Explicit fixture retirement forces schema convergence and one new policy admission.
+    // Schema re-admission preserves the unchanged stored policy.
     expect(
       statements.queries.filter((sql) =>
         /select "main_key" from "session_key_contract"/iu.test(sql),
       ),
-    ).toHaveLength(lifetime === "cold" ? 1 : 0);
+    ).toEqual([]);
 
     expect(withOpenClawAgentDatabaseReadOnly(readCanonicalSessionMainKey, options)).toEqual({
       found: true,
