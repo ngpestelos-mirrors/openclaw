@@ -17,7 +17,7 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { convertMarkdownTables } from "openclaw/plugin-sdk/text-chunking";
 import { getMattermostRuntime, getOptionalMattermostRuntime } from "../runtime.js";
-import { resolveMattermostAccount } from "./accounts.js";
+import { requireMattermostConnection, resolveMattermostAccount } from "./accounts.js";
 import {
   createMattermostClient,
   createMattermostDirectChannelWithRetry,
@@ -26,7 +26,6 @@ import {
   fetchMattermostMe,
   fetchMattermostUserByUsername,
   fetchMattermostUserTeams,
-  normalizeMattermostBaseUrl,
   parseMattermostApiStatus,
   uploadMattermostFile,
   type MattermostUser,
@@ -225,23 +224,12 @@ async function resolveMattermostSendContext(to: string, opts: MattermostSendOpts
     cfg,
     accountId: opts.accountId,
   });
-  const token = normalizeOptionalString(opts.botToken) ?? normalizeOptionalString(account.botToken);
-  if (!token) {
-    throw new Error(
-      `Mattermost bot token missing for account "${account.accountId}" (set channels.mattermost.accounts.${account.accountId}.botToken or MATTERMOST_BOT_TOKEN for default).`,
-    );
-  }
-  const baseUrl = normalizeMattermostBaseUrl(opts.baseUrl ?? account.baseUrl);
-  if (!baseUrl) {
-    throw new Error(
-      `Mattermost baseUrl missing for account "${account.accountId}" (set channels.mattermost.accounts.${account.accountId}.baseUrl or MATTERMOST_URL for default).`,
-    );
-  }
+  const { botToken, baseUrl } = requireMattermostConnection(account, opts);
 
   // Keep lookup, DM creation, and delivery on the same account transport policy.
   const client = createMattermostClient({
     baseUrl,
-    botToken: token,
+    botToken,
     allowPrivateNetwork: account.config.network?.dangerouslyAllowPrivateNetwork === true,
     assertRequestCurrent: opts.assertDirectAdapterHandoff,
   });
