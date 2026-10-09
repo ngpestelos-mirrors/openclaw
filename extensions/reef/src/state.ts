@@ -416,21 +416,27 @@ export class ReefInboxCursorStore {
   }
 
   async advance(cursor: number): Promise<void> {
-    this.authoritySignal?.throwIfAborted();
+    const assertCurrent = () => this.authoritySignal?.throwIfAborted();
+    assertCurrent();
     if (!Number.isSafeInteger(cursor) || cursor < 0) {
       throw new Error("invalid Reef inbox cursor");
     }
     const { observe, compareAndApply } = this.#store;
     if (observe && compareAndApply) {
       const batch = this.#store.createBatch?.<ReefInboxCursorRecord>([this.#store], {
-        assertCurrent: () => this.authoritySignal?.throwIfAborted(),
+        assertCurrent,
       });
+      // Binding may expose newer capabilities; retain the adapter selected above.
+      const currentStore = !batch ? this.#store.withCurrent?.({ assertCurrent }) : undefined;
       const compare = async (
         comparison: string,
         intent: PluginStateCompareIntent<ReefInboxCursorRecord>,
       ) => {
+        assertCurrent();
         if (!batch) {
-          return compareAndApply(REEF_INBOX_CURSOR_KEY, comparison, intent);
+          return currentStore
+            ? currentStore.compareAndApply(REEF_INBOX_CURSOR_KEY, comparison, intent)
+            : compareAndApply.call(this.#store, REEF_INBOX_CURSOR_KEY, comparison, intent);
         }
         const result = await batch.compareAndApply([
           {
@@ -446,8 +452,11 @@ export class ReefInboxCursorStore {
       };
       let observation = batch
         ? (await batch.observe([{ store: 0, key: REEF_INBOX_CURSOR_KEY }]))[0]!
-        : await observe(REEF_INBOX_CURSOR_KEY);
+        : currentStore
+          ? await currentStore.observe(REEF_INBOX_CURSOR_KEY)
+          : await observe.call(this.#store, REEF_INBOX_CURSOR_KEY);
       for (;;) {
+        assertCurrent();
         let existing: ReefInboxCursorRecord | undefined;
         try {
           existing =
@@ -483,7 +492,8 @@ export class ReefInboxCursorStore {
         observation = result.current;
       }
       if (!batch) {
-        const persisted = await this.#store.lookup(REEF_INBOX_CURSOR_KEY);
+        const persisted = await (currentStore ?? this.#store).lookup(REEF_INBOX_CURSOR_KEY);
+        assertCurrent();
         if (!persisted || this.#requireBoundRecord(persisted).cursor < cursor) {
           throw new Error("failed persisting Reef inbox cursor");
         }
@@ -497,7 +507,8 @@ export class ReefInboxCursorStore {
     if (!update) {
       throw new Error("Reef inbox cursor requires atomic plugin-state updates");
     }
-    update(REEF_INBOX_CURSOR_KEY, (current) => {
+    assertCurrent();
+    update.call(store, REEF_INBOX_CURSOR_KEY, (current) => {
       if (current === undefined) {
         return { ...this.#binding, cursor };
       }

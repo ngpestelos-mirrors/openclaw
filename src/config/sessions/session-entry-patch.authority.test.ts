@@ -6,7 +6,7 @@ import {
   patchSessionEntryCore as patchInternalSessionEntry,
   recordInboundSessionMeta,
 } from "./session-accessor.sqlite-entry.js";
-import { createSessionEntryPatchFixture as fixture } from "./session-entry-patch.test-support.js";
+import { createSessionCompoundWorkerFixture as fixture } from "./session-compound-worker.test-support.js";
 
 // mock-isolation: Background maintenance must not race the transaction/commit authority fixture.
 vi.mock("./session-accessor.sqlite-maintenance-kick.js", () => ({

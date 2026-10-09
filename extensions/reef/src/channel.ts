@@ -302,6 +302,8 @@ export const reefPlugin: ChannelPlugin<ReefAccount, unknown, unknown, 2> = {
           });
           return;
         }
+        // Released hosts may ignore the forwarded authority hook.
+        assertCurrent();
         await dispatchInboundDirectDm({
           channelIngress: "unsupported",
           cfg: ctx.cfg,
@@ -361,6 +363,12 @@ export const reefPlugin: ChannelPlugin<ReefAccount, unknown, unknown, 2> = {
         async (notice) => {
           let resendText = "";
           let dispatchFailure: Error | undefined;
+          const assertCurrent = () => {
+            authority.signal.throwIfAborted();
+            notice.recovery.assertCurrent();
+          };
+          // Reserve may yield; older dispatchers do not recheck this hook.
+          assertCurrent();
           await dispatchInboundDirectDm({
             channelIngress: "unsupported",
             cfg: ctx.cfg,
@@ -376,10 +384,7 @@ export const reefPlugin: ChannelPlugin<ReefAccount, unknown, unknown, 2> = {
             bodyForAgent: notice.text,
             messageId: `rejection-${notice.messageId}`,
             commandAuthorized: false,
-            assertAuthority: () => {
-              authority.signal.throwIfAborted();
-              notice.recovery.assertCurrent();
-            },
+            assertAuthority: assertCurrent,
             extraContext: {
               ReefDeliveryRejected: true,
               ReefEnvelopeId: notice.messageId,

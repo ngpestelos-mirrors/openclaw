@@ -85,11 +85,22 @@ describe("Reef inbox cursor persistence", () => {
           };
         };
       } else {
-        const compareAndApply = store.compareAndApply!;
-        store.compareAndApply = async (...args) => {
-          await beforeComparison();
-          return compareAndApply(...args);
+        const intercept = (target: Pick<PluginStateKeyedStore<T>, "compareAndApply">) => {
+          const compareAndApply = target.compareAndApply!;
+          target.compareAndApply = async (...args) => {
+            await beforeComparison();
+            return compareAndApply.call(target, ...args);
+          };
         };
+        intercept(store);
+        const withCurrent = store.withCurrent;
+        if (withCurrent) {
+          store.withCurrent = (authority) => {
+            const current = withCurrent.call(store, authority);
+            intercept(current);
+            return current;
+          };
+        }
       }
       return store;
     };
@@ -118,6 +129,76 @@ describe("Reef inbox cursor persistence", () => {
     expect(await store.load()).toBe(12);
     expect(prepare).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { phase: "observation", bound: false },
+    { phase: "observation", bound: true },
+    { phase: "comparison dispatch", bound: true },
+  ])(
+    "refuses a comparison host revoked during $phase (bound: $bound)",
+    async ({ phase, bound }) => {
+      const runtime = createRuntime("comparison");
+      const raw = runtime.state.openKeyedStore(options);
+      await raw.register("current", { ...binding, cursor: 12 });
+      const observed = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      const forbiddenBatch = vi.fn(() => {
+        observed.resolve();
+        throw new Error("comparison-only host must not switch to batches");
+      });
+      const intercept = <T>(store: PluginStateKeyedStore<T> | PluginStateKeyedStore<T, 2>) => {
+        const observe = store.observe!;
+        store.observe = async (key) => {
+          const result = await observe.call(store, key);
+          if (phase === "observation") {
+            observed.resolve();
+            await released.promise;
+          }
+          return result;
+        };
+        const compareAndApply = store.compareAndApply!;
+        store.compareAndApply = async (...args) => {
+          if (phase === "comparison dispatch") {
+            observed.resolve();
+            await released.promise;
+          }
+          return compareAndApply.call(store, ...args);
+        };
+      };
+      const open = runtime.state.openKeyedStore;
+      runtime.state.openKeyedStore = <T>(storeOptions: OpenAsyncKeyedStoreOptions) => {
+        const store = open<T>(storeOptions);
+        const withCurrent = store.withCurrent!;
+        if (bound) {
+          store.withCurrent = (authority) => {
+            const current = withCurrent.call(store, authority);
+            current.createBatch = forbiddenBatch;
+            intercept(current);
+            return current;
+          };
+        } else {
+          delete store.withCurrent;
+        }
+        intercept(store);
+        return store;
+      };
+      const native = vi.spyOn(runtime.state, "openSyncKeyedStore");
+      const controller = new AbortController();
+      const refusal = new Error("inbox authority expired");
+      const store = new ReefInboxCursorStore(runtime, binding, controller.signal);
+      const rejected = expect(store.advance(13)).rejects.toBe(refusal);
+      try {
+        await observed.promise;
+        controller.abort(refusal);
+      } finally {
+        released.resolve();
+      }
+      await rejected;
+      await expect(raw.lookup("current")).resolves.toEqual({ ...binding, cursor: 12 });
+      expect(forbiddenBatch).not.toHaveBeenCalled();
+      expect(native).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["batch", "higher cursor"],
