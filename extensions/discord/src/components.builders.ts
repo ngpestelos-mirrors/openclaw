@@ -77,11 +77,10 @@ export function createDiscordSelectMenu<Type extends DiscordComponentSelectType>
   return select;
 }
 
-function createButtonComponent(params: {
-  spec: DiscordComponentButtonSpec;
-  componentId?: string;
-  modalId?: string;
-}): { component: Button | LinkButton; entry?: DiscordComponentEntry } {
+function createButtonComponent(params: { spec: DiscordComponentButtonSpec; modalId?: string }): {
+  component: Button | LinkButton;
+  entry?: DiscordComponentEntry;
+} {
   const style = mapButtonStyle(params.spec.style);
   const isLink = style === ButtonStyle.Link || Boolean(params.spec.url);
   if (isLink) {
@@ -97,7 +96,7 @@ function createButtonComponent(params: {
     }
     return { component: new DynamicLinkButton() };
   }
-  const componentId = params.componentId ?? createShortId("btn_");
+  const componentId = createShortId("btn_");
   const internalCustomId =
     typeof params.spec.internalCustomId === "string" && params.spec.internalCustomId.trim()
       ? params.spec.internalCustomId.trim()
@@ -135,17 +134,14 @@ function createButtonComponent(params: {
   };
 }
 
-function createSelectComponent(params: {
-  spec: DiscordComponentSelectSpec;
-  componentId?: string;
-}): {
+function createSelectComponent(params: { spec: DiscordComponentSelectSpec }): {
   component: DiscordSelectMenu;
   entry: DiscordComponentEntry;
 } {
   const type = normalizeLowercaseStringOrEmpty(
     params.spec.type ?? "string",
   ) as DiscordComponentSelectType;
-  const componentId = params.componentId ?? createShortId("sel_");
+  const componentId = createShortId("sel_");
   const customId = buildDiscordComponentCustomIdImpl({ componentId });
   const options = params.spec.options ?? [];
   if (type === "string" && options.length === 0) {
@@ -340,6 +336,5 @@ export function buildDiscordComponentMessage(params: {
 export function buildDiscordComponentMessageFlags(
   components: TopLevelComponents[],
 ): number | undefined {
-  const hasV2 = components.some((component) => component.isV2);
-  return hasV2 ? MessageFlags.IsComponentsV2 : undefined;
+  return components.some((component) => component.isV2) ? MessageFlags.IsComponentsV2 : undefined;
 }
