@@ -119,6 +119,15 @@ function projectInventoryActor(actor: NonNullable<SessionListRow["createdActor"]
   return { type, id, label, identity };
 }
 
+function omitUndefinedInventoryFields<T extends object>(fields: T): T {
+  for (const key in fields) {
+    if (fields[key] === undefined) {
+      delete fields[key];
+    }
+  }
+  return fields;
+}
+
 export function createSessionsListTool(opts?: {
   agentSessionKey?: string;
   requesterAgentIdOverride?: string;
@@ -408,86 +417,66 @@ export function createSessionsListTool(opts?: {
         const sessionId = readStringValue(entry.sessionId);
         // Sentinel keys alone carry no agent identity; use the prepared store owner.
         const stateVersion = stateVersions[resolvedAgentId]?.[key];
-        const rowLabel = readStringValue(entry.label);
-        // Gateway rows carry groups under the legacy wire field `category`.
-        const group = readStringValue(entry.category);
-        const displayName = readStringValue(entry.displayName);
-        const derivedTitle = readStringValue(entry.derivedTitle);
-        const lastMessagePreview = readStringValue(entry.lastMessagePreview);
         const parentSessionKeyRaw =
           readStringValue(entry.parentSessionKey) ?? readStringValue(entry.spawnedBy);
         const parentSessionKey = parentSessionKeyRaw
           ? visibleReference(parentSessionKeyRaw)
           : undefined;
-        const updatedAt = typeof entry.updatedAt === "number" ? entry.updatedAt : undefined;
-        const model = readStringValue(entry.model);
-        // sessions.list owns runtime/context provenance; this tool only filters and
-        // narrows its GatewaySessionListRow without reinterpreting raw session state.
-        const contextTokens =
-          typeof entry.contextTokens === "number" ? entry.contextTokens : undefined;
-        const totalTokens = typeof entry.totalTokens === "number" ? entry.totalTokens : undefined;
-        const status = Value.Check(SessionRunStatusSchema, entry.status) ? entry.status : undefined;
-        const abortedLastRun =
-          typeof entry.abortedLastRun === "boolean" ? entry.abortedLastRun : undefined;
         const childSessions = Array.isArray(entry.childSessions)
           ? entry.childSessions.flatMap((value) => {
               const visible = typeof value === "string" ? visibleReference(value, key) : undefined;
               return visible ? [visible] : [];
             })
           : undefined;
-        const row: SessionListRow = {
+        // sessions.list owns runtime/context provenance. Project its public fields,
+        // preserving absent associations and omitting only undefined top-level values.
+        const row: SessionListRow = omitUndefinedInventoryFields({
           key: displayKey,
-          ...(sessionId ? { sessionId } : {}),
+          sessionId: sessionId || undefined,
           agentId: resolvedAgentId,
           kind,
           channel: derivedChannel,
           archived: entry.archived === true,
           pinned: entry.pinned === true,
-          ...(rowLabel ? { label: rowLabel } : {}),
-          ...(entry.createdActor
-            ? { createdActor: projectInventoryActor(entry.createdActor) }
-            : {}),
-          ...(entry.owner ? { owner: { actor: projectInventoryActor(entry.owner.actor) } } : {}),
-          ...(entry.worktree
+          label: readStringValue(entry.label) || undefined,
+          createdActor: entry.createdActor ? projectInventoryActor(entry.createdActor) : undefined,
+          owner: entry.owner ? { actor: projectInventoryActor(entry.owner.actor) } : undefined,
+          worktree: entry.worktree
             ? {
-                worktree: {
-                  id: entry.worktree.id,
-                  branch: entry.worktree.branch,
-                  repoRoot: entry.worktree.repoRoot,
-                },
+                id: entry.worktree.id,
+                branch: entry.worktree.branch,
+                repoRoot: entry.worktree.repoRoot,
               }
-            : {}),
-          ...(entry.repositoryWorkspaceId
-            ? { repositoryWorkspaceId: entry.repositoryWorkspaceId }
-            : {}),
-          ...(entry.repository
+            : undefined,
+          repositoryWorkspaceId: entry.repositoryWorkspaceId || undefined,
+          repository: entry.repository
             ? {
-                repository: {
-                  url: entry.repository.url,
-                  ref: entry.repository.ref,
-                  branch: entry.repository.branch,
-                },
+                url: entry.repository.url,
+                ref: entry.repository.ref,
+                branch: entry.repository.branch,
               }
-            : {}),
-          ...(entry.execCwd ? { execCwd: entry.execCwd } : {}),
-          ...(entry.spawnedCwd ? { spawnedCwd: entry.spawnedCwd } : {}),
-          ...(entry.spawnedWorkspaceDir ? { spawnedWorkspaceDir: entry.spawnedWorkspaceDir } : {}),
-          ...(entry.projectId ? { projectId: entry.projectId } : {}),
-          ...(entry.workspaceDir ? { workspaceDir: entry.workspaceDir } : {}),
-          ...(group ? { group } : {}),
-          ...(displayName ? { displayName } : {}),
-          ...(derivedTitle ? { derivedTitle } : {}),
-          ...(lastMessagePreview ? { lastMessagePreview } : {}),
-          ...(parentSessionKey ? { parentSessionKey } : {}),
-          ...(updatedAt !== undefined ? { updatedAt } : {}),
-          ...(stateVersion ? { stateVersion } : {}),
-          ...(model ? { model } : {}),
-          ...(contextTokens !== undefined ? { contextTokens } : {}),
-          ...(totalTokens !== undefined ? { totalTokens } : {}),
-          ...(status ? { status } : {}),
-          ...(abortedLastRun !== undefined ? { abortedLastRun } : {}),
-          ...(childSessions ? { childSessions } : {}),
-        };
+            : undefined,
+          execCwd: entry.execCwd || undefined,
+          spawnedCwd: entry.spawnedCwd || undefined,
+          spawnedWorkspaceDir: entry.spawnedWorkspaceDir || undefined,
+          projectId: entry.projectId || undefined,
+          workspaceDir: entry.workspaceDir || undefined,
+          // Gateway rows carry groups under the legacy wire field `category`.
+          group: readStringValue(entry.category) || undefined,
+          displayName: readStringValue(entry.displayName) || undefined,
+          derivedTitle: readStringValue(entry.derivedTitle) || undefined,
+          lastMessagePreview: readStringValue(entry.lastMessagePreview) || undefined,
+          parentSessionKey: parentSessionKey || undefined,
+          updatedAt: typeof entry.updatedAt === "number" ? entry.updatedAt : undefined,
+          stateVersion: stateVersion || undefined,
+          model: readStringValue(entry.model) || undefined,
+          contextTokens: typeof entry.contextTokens === "number" ? entry.contextTokens : undefined,
+          totalTokens: typeof entry.totalTokens === "number" ? entry.totalTokens : undefined,
+          status: Value.Check(SessionRunStatusSchema, entry.status) ? entry.status : undefined,
+          abortedLastRun:
+            typeof entry.abortedLastRun === "boolean" ? entry.abortedLastRun : undefined,
+          childSessions,
+        });
         if (
           sessionId &&
           hydrateTranscriptFieldsAfterFiltering &&
