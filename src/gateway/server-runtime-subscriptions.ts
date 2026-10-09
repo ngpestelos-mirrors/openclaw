@@ -657,7 +657,7 @@ export function startGatewayEventSubscriptions(params: GatewayEventSubscriptionP
     const agentHandler = agentEventHandlerLoader.peek();
     const publication = createDeferredCore();
     const dispatch = runOutsideAsyncWorkScope(() =>
-      dispatchEventHandler({
+      dispatchEventHandler<typeof evt>({
         loadHandler: agentHandler
           ? () =>
               agentHandler

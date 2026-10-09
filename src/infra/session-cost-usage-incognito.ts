@@ -223,6 +223,7 @@ export function createIncognitoUsageCostAdapter(
   instances: IncognitoComputeInstance[],
   initialStats?: { value: IncognitoComputeOperations["session.compute.usage.stats"]["output"] },
 ) {
+  let pendingInitialStats = initialStats;
   const selected = new Map(
     (target ? [target] : instances).map((entry) => [
       formatSqliteSessionFileMarker({ ...marker, sessionId: entry.sessionId }),
@@ -311,10 +312,10 @@ export function createIncognitoUsageCostAdapter(
           return Promise.all(
             request.input.map((input) => {
               const selectedTarget = assertMarker(input);
-              if (initialStats) {
-                const { value } = initialStats;
-                initialStats = undefined;
-                return value;
+              if (pendingInitialStats) {
+                const { value } = pendingInitialStats;
+                pendingInitialStats = undefined;
+                return Promise.resolve(value);
               }
               return compute.execute({
                 type: "session.compute.usage.stats",

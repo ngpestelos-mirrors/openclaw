@@ -139,6 +139,7 @@ async function startProvider() {
 describe("session notification store ownership through the Gateway", () => {
   it.for(["different store", "same-store replacement"] as const)(
     "handles a queued child notice after %s",
+    { timeout: 180_000 },
     async (transition, { signal }) => {
       resetGatewayTestState();
       resetHeartbeatEventsForTest();
@@ -322,6 +323,5 @@ describe("session notification store ownership through the Gateway", () => {
         resetGatewayTestState,
       );
     },
-    180_000,
   );
 });

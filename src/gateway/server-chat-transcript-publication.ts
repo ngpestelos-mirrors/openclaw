@@ -83,7 +83,7 @@ export function createChatTranscriptPublication(params: {
     ): TranscriptChatStreamReplacement | undefined => {
       const sourceRunId = readSessionTranscriptRunId(event.message);
       if (!sourceRunId || getTranscriptMessageRole(event.message) !== "assistant") {
-        return;
+        return undefined;
       }
       const link = chatRunState.registry.peek(sourceRunId);
       const clientRunId = link?.clientRunId ?? sourceRunId;
@@ -98,7 +98,7 @@ export function createChatTranscriptPublication(params: {
         sessionKey !== event.sessionKey ||
         (context?.sessionId && context.sessionId !== event.sessionId)
       ) {
-        return;
+        return undefined;
       }
       const isCurrent = () => {
         const currentContext = getAgentRunContext(sourceRunId);
@@ -155,7 +155,7 @@ export function createChatTranscriptPublication(params: {
           ? chatRunState.retireSource(clientRunId, source)
           : chatRunState.retireBuffer(clientRunId, itemIds))
       ) {
-        return;
+        return undefined;
       }
       run.liveTextEpoch = {};
       const replacement = params.flush(

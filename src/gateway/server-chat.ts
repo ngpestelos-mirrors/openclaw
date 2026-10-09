@@ -677,7 +677,7 @@ export function createAgentEventHandler({
       ),
     );
     if (!preparedDelta.delta) {
-      return;
+      return undefined;
     }
     const now = Date.now();
     const spawnedBy = resolveSpawnedBy(sessionKey);
@@ -731,7 +731,7 @@ export function createAgentEventHandler({
         }),
       ),
     });
-    return;
+    return undefined;
   };
 
   const emitChatDelta = (
@@ -806,7 +806,7 @@ export function createAgentEventHandler({
       opts?.isHeartbeat,
     );
     if (shouldSuppressHeartbeatStreaming) {
-      return;
+      return undefined;
     }
 
     // Suppression replaces a prior visible snapshot; omission would leave the UI
