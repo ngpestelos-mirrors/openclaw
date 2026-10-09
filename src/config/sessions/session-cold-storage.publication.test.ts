@@ -61,6 +61,7 @@ vi.mock("./session-accessor.sqlite-scope.js", async () => ({
     return await run();
   },
 }));
+// mock-isolation: exercise receipt handling without native lifecycle resources.
 vi.mock("./session-accessor.sqlite-worker-request.js", () => ({
   withSqliteMutationWorkerLifetime: async <T>(
     _options: unknown,
@@ -69,11 +70,12 @@ vi.mock("./session-accessor.sqlite-worker-request.js", () => ({
       commitGate: SharedArrayBuffer;
       signal: AbortSignal;
     }) => Promise<T>,
+    callerSignal?: AbortSignal,
   ) =>
     await run({
       assertCurrent: observed.request,
       commitGate: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
-      signal: new AbortController().signal,
+      signal: callerSignal ?? new AbortController().signal,
     }),
 }));
 vi.mock("./session-accessor.sqlite-reclamation-commit.js", async (importOriginal) => ({

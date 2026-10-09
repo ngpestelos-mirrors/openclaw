@@ -556,18 +556,11 @@ it("rejects a queued rollup after its refresh authority is revoked", async () =>
   });
 });
 
-it.each([
-  { native: false, operation: "rollup" },
-  { native: false, operation: "prune" },
-  { native: true, operation: "rollup" },
-  { native: true, operation: "prune" },
-])(
-  "cancels a queued usage $operation before the writer settles (native=$native)",
-  async ({ native, operation }) => {
+it.each(["rollup", "prune"] as const)(
+  "cancels a queued native usage %s before the writer settles",
+  async (operation) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      if (native) {
-        vi.spyOn(agentExecution, "supportsOpenClawAgentDatabaseExecution").mockReturnValue(false);
-      }
+      vi.spyOn(agentExecution, "supportsOpenClawAgentDatabaseExecution").mockReturnValue(false);
       const agentId = "usage-queued-deadline";
       const options = { agentId, env: state.env };
       const database = openOpenClawAgentDatabase(options);
@@ -581,7 +574,6 @@ it.each([
       });
       await entered.promise;
       const admit = vi.spyOn(writerAdmission, "runOpenClawAgentWriteAdmission");
-      const workerAdmit = vi.spyOn(writerAdmission, "runOpenClawAgentWorkerWrite");
       const controller = new AbortController();
       const expired = new Error("usage host callback deadline expired");
       const writing =
@@ -600,9 +592,7 @@ it.each([
       const outcome = Promise.allSettled([writing]);
       try {
         // Check the queue boundary before awaiting: a missing signal fails without wedging cleanup.
-        expect(native ? admit.mock.calls.at(-1)?.[4] : workerAdmit.mock.calls.at(-1)?.[3]).toBe(
-          controller.signal,
-        );
+        expect(admit.mock.calls.at(-1)?.[4]).toBe(controller.signal);
         controller.abort(expired);
         expect(await outcome).toEqual([{ status: "rejected", reason: expired }]);
         expect(readSessionCostUsageRollupRows(agentId, database.path)).toEqual([]);

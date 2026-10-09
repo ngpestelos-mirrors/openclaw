@@ -6677,7 +6677,6 @@
 ["src/config/sessions/session-cold-storage.publication.test.ts","../../state/openclaw-state-worker-context.js","f2758876e706bceceebaf7a3157bfa159a974cb1ee9f28ade2494b8aee1e6399",1]
 ["src/config/sessions/session-cold-storage.publication.test.ts","./session-accessor.sqlite-archive.js","e312cfe4c91c38ce8c2bd6efbd89ccb425bd20d24b808c9272a264f5342a53e2",1]
 ["src/config/sessions/session-cold-storage.publication.test.ts","./session-accessor.sqlite-page-reclamation.js","12289ceeb5a5afa80223024e6d83d50d086a01be4ba71fe1c041205fa7c258ee",1]
-["src/config/sessions/session-cold-storage.publication.test.ts","./session-accessor.sqlite-worker-request.js","7dec15152b011cdaf9f829c51b4f0d03798f269e4a7e1188703648364e39bf1d",1]
 ["src/config/sessions/session-cold-storage.publication.test.ts","./session-history-archive-pruning.js","aa9e25b6bd4e00abf901aa32594d8abd94eb29b988199b0fd0301fef40811e31",1]
 ["src/config/sessions/session-cold-storage.publication.test.ts","./session-history-eviction.js","7aec835ff68a77820a3685081ae35607820f3a26be047832b5b8199dec6f55f0",1]
 ["src/config/sessions/session-cold-storage.publication.test.ts","./session-transcript-worker-runtime.js","d589aebb4d7c09f6a200f476c0f60b39ebe97c4f036eddac8e633f9ad365a2ca",1]
