@@ -3,7 +3,6 @@ import path from "node:path";
 import { constants, DatabaseSync, StatementSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
 import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
-import { readSessionNodesGeneration } from "../config/sessions/session-accessor.sqlite-entry-revision.js";
 import { hasSqliteSessionOwnerColumns } from "../config/sessions/session-accessor.sqlite-owner-projection.js";
 import { assertCanonicalSessionValidationSchema } from "../state/openclaw-agent-canonical-validation-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
@@ -342,7 +341,9 @@ describe("admitted SQLite schema facts", () => {
     const peer = openNodeSqliteDatabase(filename);
     databases.push(peer);
     runSqliteReadOperationSync(database, () => {
-      peer.exec("DROP TRIGGER session_nodes_canonical_pending_after_update");
+      peer.exec(
+        "CREATE TRIGGER unexpected_node_validation AFTER UPDATE ON session_nodes BEGIN SELECT 1; END",
+      );
       expect(() =>
         runSqliteImmediateTransactionSync(database, () =>
           assertCanonicalSessionValidationSchema(database),

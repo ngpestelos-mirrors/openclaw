@@ -377,7 +377,6 @@ const currentReaderSchemaAdmissions = new WeakMap<
     facts: SqliteSchemaFacts;
     existingSchema: boolean;
     admission?: OpenClawStateSchemaReadAdmission;
-    legacyAdmission: boolean;
   }
 >();
 
@@ -393,20 +392,8 @@ function runOpenClawStateCurrentReadConnection<T>(
   const errors: unknown[] = [];
   let result!: T;
   try {
-    const previous = currentReaderSchemaAdmissions.get(db);
-    // Row freshness remains connection-local; physical schema admission is shared.
-    const facts =
-      previous && !previous.legacyAdmission
-        ? runSqliteReadOperationSync(db, () => getAdmittedSqliteSchemaFacts(db))
-        : undefined;
-    if (
-      !previous ||
-      previous.admission !== openStateSchemaReadAdmission ||
-      previous.legacyAdmission ||
-      previous.facts !== facts
-    ) {
-      closeAdmission = openStateSchemaReadAdmission?.(db);
-    }
+    // Explicit Doctor inspection retains its checks; ordinary runtime reads have no callback.
+    closeAdmission = openStateSchemaReadAdmission?.(db);
     const existingSchema = isExistingOpenClawStateSchema(pathname, db);
     const admit = () => {
       const current = getAdmittedSqliteSchemaFacts(db);
@@ -427,7 +414,6 @@ function runOpenClawStateCurrentReadConnection<T>(
           facts: admitted,
           existingSchema,
           admission: openStateSchemaReadAdmission,
-          legacyAdmission: closeAdmission !== undefined,
         });
       }
     };

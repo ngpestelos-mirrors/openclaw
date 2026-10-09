@@ -31,6 +31,7 @@ import {
 import { canPreserveTransactionSnapshot } from "./sqlite-schema-mutation.js";
 import {
   bindSqliteSchemaScope as bindScope,
+  observeSqliteTransactionState as observeTransactionState,
   releaseSqliteSchemaScope,
   publishSqliteSchemaChange as publishSchemaChange,
   type SqliteSchemaOwner as SchemaOwner,
@@ -54,21 +55,6 @@ const owners = resolveGlobalSingleton(
   () => new WeakMap<DatabaseSync, SchemaOwner>(),
 );
 
-function observeTransactionState(database: DatabaseSync, owner: SchemaOwner): void {
-  const inTransaction = database.isTransaction;
-  if (owner.transactionOpen !== inTransaction) {
-    owner.readDataVersion = undefined;
-    if (owner.transactionOpen) {
-      // A read error can roll back SQLite without passing through a tracked write.
-      owner.mutationRevision += 1;
-      owner.rollbackRevision += 1;
-    }
-    owner.transactionOpen = inTransaction;
-    owner.transactionRead = false;
-    owner.transactionCatalogBound = false;
-  }
-}
-
 /** Schema publications outside DDL (such as a deferred version marker) share this revision. */
 export function invalidateSqliteSchemaFacts(database: DatabaseSync): void {
   invalidateSchemaFacts(database, true);
@@ -77,6 +63,9 @@ export function invalidateSqliteSchemaFacts(database: DatabaseSync): void {
 function invalidateSchemaFacts(database: DatabaseSync, publish: boolean, changesMain = true): void {
   const owner = owners.get(database);
   if (owner) {
+    if (database.isTransaction) {
+      owner.transactionMutationRevision = undefined;
+    }
     if (changesMain) {
       beginSqliteDatabaseSchemaMutation(database);
       invalidateLocalSqliteSchemaAdmissions(database);
@@ -164,7 +153,12 @@ function trackSchemaChanges(
       owner.transactionalFacts = false;
     }
   };
-  const finishReadScope = (wasTransaction: boolean, expiresRead: boolean, succeeded: boolean) => {
+  const finishReadScope = (
+    wasTransaction: boolean,
+    expiresRead: boolean,
+    succeeded: boolean,
+    openingMutationRevision?: number,
+  ) => {
     const inTransaction = database.isTransaction;
     if (expiresRead || wasTransaction !== inTransaction) {
       owner.readDataVersion = undefined;
@@ -174,6 +168,9 @@ function trackSchemaChanges(
       owner.rollbackRevision += 1;
     }
     owner.transactionOpen = inTransaction;
+    if (!wasTransaction || !inTransaction) {
+      owner.transactionMutationRevision = inTransaction ? openingMutationRevision : undefined;
+    }
     if (wasTransaction !== inTransaction || expiresRead) {
       owner.transactionRead = false;
       owner.transactionCatalogBound = false;
@@ -222,6 +219,10 @@ function trackSchemaChanges(
       settle();
     }
     const wasTransaction = database.isTransaction;
+    const openingMutationRevision =
+      !wasTransaction && control?.kind === "BEGIN" && control.single
+        ? owner.mutationRevision
+        : undefined;
     if (!wasTransaction && control?.kind === "BEGIN" && owner.admitted) {
       getAdmittedSqliteSchemaFacts(database);
     }
@@ -295,7 +296,8 @@ function trackSchemaChanges(
         }
       },
       finish: (succeeded, abandoned) => {
-        if (iterator && phase === "iterate") {
+        // Eager iterators share the surrounding synchronous read's freshness admission.
+        if (iterator && phase === "iterate" && owner.readDepth === 0) {
           owner.readDataVersion = undefined;
         }
         if (iterator && owner.unmanagedSnapshots.delete(iterator) && owner.iteratorFacts) {
@@ -364,7 +366,7 @@ function trackSchemaChanges(
             owner.settling = false;
           }
         }
-        finishReadScope(wasTransaction, expiresRead, succeeded);
+        finishReadScope(wasTransaction, expiresRead, succeeded, openingMutationRevision);
         // A control batch may open a transaction and read before returning, even on error.
         owner.transactionRead ||= database.isTransaction && Boolean(control && !control.single);
       },
@@ -418,6 +420,24 @@ export function readSqliteRollbackRevision(database: DatabaseSync): number | und
   }
   observeTransactionState(database, owner);
   return owner.mutationDepth === 0 ? owner.rollbackRevision : undefined;
+}
+
+/** Derived caches may retain reads from a tracked transaction until its first mutation. */
+export function hasUncommittedSqliteWrites(database: DatabaseSync): boolean {
+  const owner = owners.get(database);
+  if (owner) {
+    observeTransactionState(database, owner);
+  }
+  return (
+    !owner ||
+    owner.authorizerActive ||
+    owner.mutationDepth > 0 ||
+    owner.unmanagedSnapshots.size > 0 ||
+    getSqlitePinnedReadSnapshot(database) !== undefined ||
+    (database.isTransaction &&
+      (owner.transactionMutationRevision === undefined ||
+        owner.transactionMutationRevision !== owner.mutationRevision))
+  );
 }
 
 /** SQL-free witness for a dedicated, unpinned foreign-commit observer. */

@@ -633,7 +633,8 @@ export function publishSqliteDatabaseSchemaChange(database: DatabaseSync): void 
 }
 
 export function revokeSqliteDatabaseAdmissions(database: DatabaseSync): void {
-  const record = admission(database);
+  // A close failure can report corruption after native disposal; keep revocation on that file.
+  const record = state.connections.get(database) ?? admission(database);
   if (record) {
     const cell = new Int32Array(record.generation);
     Atomics.add(cell, 0, 1);

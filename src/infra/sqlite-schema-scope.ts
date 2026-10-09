@@ -7,7 +7,7 @@ import type { SqliteTempTrackingSchema } from "./sqlite-temp-generation-schema.j
 import { readDatabasePathIdentitySync } from "./sqlite-worker-identity.js";
 
 type SchemaScope = { key?: string; revision: number; users: number };
-export type SqliteSchemaScopeOwner = { scope?: SchemaScope; scopeRevision?: number };
+type SqliteSchemaScopeOwner = { scope?: SchemaScope; scopeRevision?: number };
 
 const scopes = resolveGlobalSingleton(Symbol.for("openclaw.sqliteSchemaScopes"), () => {
   const byIdentity = new Map<string, SchemaScope>();
@@ -85,6 +85,7 @@ export type SqliteSchemaOwner = SqliteSchemaScopeOwner & {
   rollbackRevision: number;
   mutationDepth: number;
   transactionOpen: boolean;
+  transactionMutationRevision?: number;
   transactionRead: boolean;
   transactionCatalogBound: boolean;
   nativeDepth: number;
@@ -105,3 +106,22 @@ export type SqliteSchemaOwner = SqliteSchemaScopeOwner & {
   mutationListeners?: Set<SchemaMutationListener>;
   installTempTrackingSchema?: (schema: SqliteTempTrackingSchema) => void;
 };
+
+export function observeSqliteTransactionState(
+  database: DatabaseSync,
+  owner: SqliteSchemaOwner,
+): void {
+  const inTransaction = database.isTransaction;
+  if (owner.transactionOpen !== inTransaction) {
+    owner.readDataVersion = undefined;
+    if (owner.transactionOpen) {
+      // A read error can roll back SQLite without passing through a tracked write.
+      owner.mutationRevision += 1;
+      owner.rollbackRevision += 1;
+    }
+    owner.transactionOpen = inTransaction;
+    owner.transactionMutationRevision = undefined;
+    owner.transactionRead = false;
+    owner.transactionCatalogBound = false;
+  }
+}

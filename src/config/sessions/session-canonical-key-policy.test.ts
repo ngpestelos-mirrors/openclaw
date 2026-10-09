@@ -216,7 +216,7 @@ describe("canonical main-key policy facts", () => {
   it.each(["tracked", "native", "native-before-begin"] as const)(
     "discards uncommitted policy after %s implicit rollback",
     (mode) => {
-      const { db, read } = fixture();
+      const { db, database, read } = fixture();
       db.exec(`PRAGMA journal_mode=WAL;
       CREATE TABLE policy_abort (value);
       CREATE TRIGGER abort_policy BEFORE INSERT ON policy_abort
@@ -239,7 +239,7 @@ describe("canonical main-key policy facts", () => {
         if (db.isTransaction) {
           db.exec("COMMIT");
         }
-        setCanonicalSqliteSessionMainKey({ db }, "committed-after-rollback");
+        setCanonicalSqliteSessionMainKey(database, "committed-after-rollback");
         db.exec("BEGIN");
         try {
           expect(read()).toBe("committed-after-rollback");

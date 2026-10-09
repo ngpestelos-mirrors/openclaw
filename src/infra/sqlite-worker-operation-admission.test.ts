@@ -481,6 +481,8 @@ it.each([
   { receipt: "native commit", publicationFails: true },
   { receipt: "settlement fallback", publicationFails: true },
   { receipt: "failed commit delivery", publicationFails: false },
+  { receipt: "settlement only", publicationFails: false },
+  { receipt: "settlement only", publicationFails: true },
 ] as const)(
   "installs $receipt before reply acknowledgement (publication failure: $publicationFails)",
   ({ receipt, publicationFails }) => {
@@ -533,12 +535,18 @@ it.each([
         withSqlitePostCommitPublications(db, () =>
           runSqliteImmediateTransactionSync(db, () => {
             db.prepare("INSERT INTO proof VALUES (1)").run();
-            deferSqliteWorkerCommitReceipt(db, { value: 1 });
+            deferSqliteWorkerCommitReceipt(
+              db,
+              { value: 1 },
+              receipt === "settlement only" ? "settlement" : "commit",
+            );
           }),
         ),
       );
       // Redelivery and settlement's retained copy must not repeat installation.
-      if (receipt !== "failed commit delivery") {
+      if (receipt === "settlement only") {
+        expect(nativeCommit).toBeUndefined();
+      } else if (receipt !== "failed commit delivery") {
         admission.port.postMessage(nativeCommit, []);
       }
       settleSqliteWorkerOperationContext(owner, "completed");
