@@ -81,14 +81,12 @@ function prepareGenerationSchema(schema: SqliteTempGenerationSchema): {
   `;
   return {
     sql,
-    objects: [
-      ...triggers.map((trigger): SqliteTempObject => ({
-        name: trigger.name,
-        type: "trigger",
-        table: trigger.table,
-        sql: `CREATE ${trigger.definition}`,
-      })),
-    ],
+    objects: triggers.map((trigger): SqliteTempObject => ({
+      name: trigger.name,
+      type: "trigger",
+      table: trigger.table,
+      sql: `CREATE ${trigger.definition}`,
+    })),
   };
 }
 

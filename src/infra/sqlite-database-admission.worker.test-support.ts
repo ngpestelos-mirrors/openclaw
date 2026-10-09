@@ -53,6 +53,7 @@ const workerFactKey = {
 
 function countLookupMessages(read: () => void): number {
   let messages = 0;
+  // oxlint-disable-next-line typescript/unbound-method -- Retain the raw method for restoration; Reflect.apply supplies the live receiver.
   const original = MessagePort.prototype.postMessage;
   MessagePort.prototype.postMessage = function (...args) {
     const message: unknown = args[0];

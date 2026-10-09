@@ -167,6 +167,7 @@ function measureMainKeyLookupTraffic(path: string) {
   let lookupMessages = 0;
   let observingLookup = false;
   let workerPublishRefused = false;
+  // oxlint-disable-next-line typescript/unbound-method -- Retain the raw method for restoration; Reflect.apply supplies the live receiver.
   const original = MessagePort.prototype.postMessage;
   MessagePort.prototype.postMessage = function (...args) {
     const message: unknown = args[0];
@@ -218,6 +219,7 @@ export function createSqliteWorkerBackend(
         return measureMainKeyLookupTraffic(command.input.path);
       }
       const prototype = requireNodeSqlite().StatementSync.prototype;
+      // oxlint-disable-next-line typescript/unbound-method -- Retain the raw method for restoration; Reflect.apply supplies the live receiver.
       const original = prototype.get;
       let statements = 0;
       prototype.get = function (...args) {
