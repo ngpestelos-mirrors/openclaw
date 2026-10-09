@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import fs from "node:fs/promises";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { runWithLocalStateOwner } from "../cli/local-state-owner.js";
 import { applyAgentBindings, parseBindingSpecs } from "../commands/agents.bindings.js";
 import {
   applyAgentConfig,
@@ -300,6 +301,23 @@ async function writeIdentityFile(params: {
 }
 
 export async function createAgent(params: CreateAgentParams): Promise<CreateAgentResult> {
+  return await runWithLocalStateOwner({
+    method: "agents.create",
+    params: {},
+    target: params.entry?.id ?? params.name ?? "new agent",
+    onForeignOwner: "refuse",
+    runLocal: ({ assertCurrent }) =>
+      createAgentUnderOwner({
+        ...params,
+        beforePersistentApply: () => {
+          assertCurrent();
+          params.beforePersistentApply?.();
+        },
+      }),
+  });
+}
+
+async function createAgentUnderOwner(params: CreateAgentParams): Promise<CreateAgentResult> {
   const expectedConfigHash = params.stagedConfig
     ? (params.stagedConfig.writeSnapshot.snapshot.hash ?? null)
     : params.expectedConfigHash;

@@ -113,6 +113,10 @@ import {
   writeWorkspaceFileOrRespond,
 } from "./agents-files.js";
 import { agentListHandler } from "./agents-list.js";
+import {
+  captureLocalStateMutationGuard,
+  localStateOwnerChangedError,
+} from "./local-state-owner.js";
 import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -161,11 +165,21 @@ function agentOwnsSharedAuthStore(cfg: OpenClawConfig, agentId: string): boolean
 
 export const agentsHandlers: GatewayRequestHandlers = {
   "agents.list": agentListHandler,
-  "agents.create": async ({ params, respond, client, context }) => {
+  "agents.create": async (options) => {
+    const { params, respond, client, context } = options;
     if (!assertValidParams(params, validateAgentsCreateParams, "agents.create", respond)) {
       return;
     }
 
+    let assertOwnerCurrent: (() => void) | undefined;
+    try {
+      assertOwnerCurrent = params.expectedOwnerId
+        ? captureLocalStateMutationGuard(params.expectedOwnerId, options)
+        : undefined;
+    } catch (error) {
+      respond(false, undefined, localStateOwnerChangedError(error));
+      return;
+    }
     const application = createAgentConfigApplication(respond);
     try {
       const result = await createAgent({
@@ -174,6 +188,7 @@ export const agentsHandlers: GatewayRequestHandlers = {
         model: params.model,
         emoji: params.emoji,
         avatar: params.avatar,
+        beforePersistentApply: assertOwnerCurrent,
         transformConfig: (mutation) =>
           transformConfigFileWithRetry({
             ...mutation,
@@ -203,6 +218,7 @@ export const agentsHandlers: GatewayRequestHandlers = {
           agentId: result.agentId,
           name: result.name,
           workspace: result.workspace,
+          agentDir: result.agentDir,
           ...(result.model ? { model: result.model } : {}),
         },
         undefined,

@@ -15,6 +15,11 @@ title: "Setup CLI"
 falls through to guided onboarding. Use `-m`/`--message` for one request or
 `--baseline` to initialize config/workspace folders without the wizard.
 
+Baseline setup and local agent/workspace provisioning require the local Gateway
+to be stopped. They hold exclusive ownership while writing agent state. Stop the
+Gateway through its service owner, wait for it to exit, then rerun setup. Normal
+system-agent chat continues to use the running Gateway.
+
 Routing order:
 
 1. Any onboarding option (`--wizard`, `--baseline`, workspace, reset,

@@ -35,6 +35,8 @@ class LocalStateOwnerError extends Error {
 /** Select one owner before domain admission and retain offline custody through resource settlement. */
 export async function runWithLocalStateOwner<T>(params: {
   method: string;
+  /** Explicit configuration targets retain their own selector environment. */
+  env?: NodeJS.ProcessEnv;
   params: Record<string, unknown>;
   target: string;
   recoveryCommand?: string;
@@ -44,7 +46,8 @@ export async function runWithLocalStateOwner<T>(params: {
   assertTargetCurrent?: () => void;
   runLocal: (scope: LocalMutationScope) => Promise<T>;
 }): Promise<T> {
-  const selectedEnv = { ...process.env };
+  const sourceEnv = params.env ?? process.env;
+  const selectedEnv = { ...sourceEnv };
   const selectedStateDir = resolveStateDir(selectedEnv);
   const stateDir = resolveIdentityPathViaExistingAncestorSync(selectedStateDir);
   const rootIdentity = statSync(stateDir, { bigint: true, throwIfNoEntry: false });
@@ -77,7 +80,7 @@ export async function runWithLocalStateOwner<T>(params: {
   const releaseExitGate = registerSignalExitGate(finished.promise, () => controller.abort());
   const assertTargetCurrent = () => {
     controller.signal.throwIfAborted();
-    const ambientPaths = resolveGatewayLockPaths(process.env);
+    const ambientPaths = resolveGatewayLockPaths(sourceEnv);
     const currentRoot = rootIdentity
       ? statSync(stateDir, { bigint: true, throwIfNoEntry: false })
       : undefined;
@@ -125,9 +128,15 @@ export async function runWithLocalStateOwner<T>(params: {
     assertCurrent();
     const { getRuntimeConfig } = await import("../config/config.js");
     assertCurrent();
-    const config = getRuntimeConfig();
-    assertCurrent();
-    return await params.runLocal({ env, config, signal: controller.signal, assertCurrent });
+    return await params.runLocal({
+      env,
+      get config() {
+        assertCurrent();
+        return getRuntimeConfig();
+      },
+      signal: controller.signal,
+      assertCurrent,
+    });
   };
   const route = async (owner: GatewayLockIdentity): Promise<T> => {
     if (typeof params.onForeignOwner === "function") {
