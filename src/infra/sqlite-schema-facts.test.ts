@@ -24,6 +24,7 @@ import {
   readSqliteDataVersion,
   registerSqliteSchemaMutationListener,
   runSqliteReadOperationSync,
+  runSqliteOwnedStateOperationSync,
 } from "./sqlite-schema-facts.js";
 import { runSqliteImmediateTransactionSync } from "./sqlite-transaction.js";
 
@@ -80,6 +81,31 @@ describe("admitted SQLite schema facts", () => {
         assertCanonicalSessionValidationSchema(database);
       }
       expect(observation.queries).toEqual([]);
+    } finally {
+      observation.restore();
+    }
+  });
+
+  it("uses owned-state admission without foreign probes while tracking local changes and other databases", () => {
+    const filename = path.join(tempDirs.make("openclaw-owned-schema-facts-"), "state.sqlite");
+    const database = openDatabase(undefined, true, filename);
+    const sibling = openDatabase();
+    const observation = observeSqliteReadSql(StatementSync.prototype);
+    try {
+      runSqliteOwnedStateOperationSync(filename, () => {
+        runSqliteImmediateTransactionSync(database, () => {
+          database.prepare("INSERT INTO original VALUES (1)").run();
+          expect(database.prepare("SELECT id FROM original").get()).toEqual({ id: 1 });
+        });
+        expect(observation.queries.filter((sql) => /data_version/iu.test(sql))).toEqual([]);
+        database.exec("CREATE TABLE added_locally (id INTEGER)");
+        expect(getAdmittedSqliteSchemaFacts(database)?.tables.has("added_locally")).toBe(true);
+        expect(observation.queries.filter((sql) => /data_version/iu.test(sql))).toEqual([]);
+        runSqliteReadOperationSync(sibling, () => {});
+        expect(observation.queries.filter((sql) => /data_version/iu.test(sql))).toHaveLength(1);
+      });
+      runSqliteReadOperationSync(database, () => {});
+      expect(observation.queries.filter((sql) => /data_version/iu.test(sql))).toHaveLength(2);
     } finally {
       observation.restore();
     }

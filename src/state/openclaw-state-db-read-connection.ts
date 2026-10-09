@@ -325,7 +325,6 @@ export function closeRetainedOpenClawStateReadConnections(identity?: string): vo
 function borrowStateReadConnection(
   pathname: string,
   expectedIdentity?: string,
-  requireUnpinned = false,
 ): OpenClawStateSettledRead<OpenClawStateReadConnection> {
   isExistingOpenClawStateSchema(pathname);
   const identity = readDatabasePathIdentitySync(pathname);
@@ -348,14 +347,8 @@ function borrowStateReadConnection(
     retireReader(reader);
     reader = undefined;
   }
-  if (
-    reader &&
-    (reader.borrowed ||
-      (requireUnpinned &&
-        (reader.connection.database.db.isTransaction ||
-          getSqlitePinnedReadSnapshot(reader.connection.database.db))))
-  ) {
-    // A nested current guard borrows fresh bytes without closing its caller's reader.
+  if (reader?.borrowed) {
+    // A nested reader must not close its caller's retained connection.
     return openStateReadConnectionResult(pathname, pathname, identity.key);
   }
   if (!reader) {
@@ -418,7 +411,7 @@ export function withOpenClawStateReadOnlyLocation<T>(
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
   expectedIdentity?: string,
   snapshotRoot?: string,
-  retainConnection: boolean | "unpinned" = false,
+  retainConnection = false,
   readContentVersionRow?: StateSchemaContentVersionRowReader,
 ): T {
   const result = readOpenClawStateReadOnlyLocation(
@@ -445,12 +438,12 @@ export function readOpenClawStateReadOnlyLocation<T>(
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
   expectedIdentity?: string,
   snapshotRoot?: string,
-  retainConnection: boolean | "unpinned" = false,
+  retainConnection = false,
   readContentVersionRow?: StateSchemaContentVersionRowReader,
 ): OpenClawStateSettledRead<T> {
   const opening =
     retainConnection && source === pathname && !snapshotRoot
-      ? borrowStateReadConnection(pathname, expectedIdentity, retainConnection === "unpinned")
+      ? borrowStateReadConnection(pathname, expectedIdentity)
       : openStateReadConnectionResult(pathname, source, expectedIdentity, snapshotRoot, true);
   if (opening.status === "unavailable") {
     return opening;

@@ -910,52 +910,48 @@ An unconfirmed native wait joins accepted result persistence, rejects late frame
 and leaves physical cleanup with its existing deferred owner.
 
 Reef registration binding reads, reservations, finalization, release, and setup-session
-persistence use the shared-state worker. Reservation mutations compare the current
-row before writing; a conflict rereads ownership before retrying. The CLI, setup
-wizard, and channel startup await these operations. Current hosts also prepare keys
-and migration markers through that owner. Key creation compares the migration,
-registration, and key rows before inserting in one transaction. Trust mutations
-compare their complete peer and delivery preconditions before applying changes;
-rejection completion updates the peer notice and retires the delivery together.
-Only explicit comparison conflicts repeat preparation; unknown write outcomes do not.
+persistence use the shared-state worker. Their existing comparison contracts
+remain unchanged. Keys and migration guards, trust edits, review decisions and
+capacity changes, cursor advances, and rejection reservation/completion now use
+complete synchronous worker operations. Each command reads authoritative rows
+and applies its whole change in one transaction. These operations share the
+existing writer FIFO, quotas, TTLs, and accepted-work settlement. A lost response
+does not permit replay.
+
+Audit appends and ordered event groups recover expired staged entries, link
+predecessors, enforce the retained suffix, and advance the head in the same
+transaction. A still-live legacy append lease is refused without mutation;
+pending and garbage records remain readable after upgrade and rollback. Audit
+reads observe the head and retained entries in one worker operation. The audit
+format, cryptography, retention window, schema, and update behavior are unchanged.
+
+Cursor operations validate the bound identity and monotonically advance the row
+inside the worker. The inbox awaits persistence before publishing its cursor and
+joins admitted writes on shutdown. Review insertion and eviction of the selected
+completed record commit together; decisions return the request they changed.
+Stored bindings, cursor JSON, review digests, ordering, capacity, and expiry remain
+unchanged.
+
+Outbound preparation commits the proposal and reads current peer/review facts in
+one command. After external guard classification, finalization commits the audit
+event group plus either review state or the exact delivery binding. Final relay
+initiation checks an in-process receipt. Sanctioned mutations invalidate receipt
+authority before they queue; online foreign database writers are unsupported.
+This path adds no freshness or schema probes between operation steps. External
+guard and transport work remain outside SQLite transactions.
+
+Hosts without the optional operation capability retain their original native
+adapters until an approved minimum-host increase permits removal. Capability
+selection precedes awaits; worker errors never activate that compatibility path.
 Stored registration JSON, reservation expiry, namespace limits, and Doctor imports
-are unchanged. Hosts predating the comparison or batch capability select their
-original native adapters before awaiting. These released-host adapters remain until
-an approved minimum host version permits removal; worker failures never select them.
-
-Current Reef audit appends compare the migration marker, head, and affected entries
-in the existing shared-state worker. Recovery of expired staged entries, predecessor
-linking, retention, and head advancement commit together. Existing live append leases
-are respected, and existing pending and garbage records remain readable on upgrade
-and rollback. Audit reads validate the head around their bounded retained entries.
-The audit format, cryptography, retention window, schema, and update behavior are
-unchanged. Released hosts without batch support retain the original native adapter.
-
-Reef inbox-cursor loads and monotonic advances use the shared-state worker.
-Advances compare the current row before changing progress or reporting an invalid
-identity binding, and revalidate explicit conflicts. The inbox awaits persistence
-before publishing its cursor and joins admitted writes during shutdown. Stored
-bindings, cursor JSON, namespace capacity, and expiry remain unchanged. Older
-supported hosts without comparison operations retain atomic native updates until an
-approved minimum host version guarantees comparison support. Worker failures never
-switch to that path. Invalid-row diagnostics on current hosts report
-the Reef validation error directly; older hosts retain native store error wrapping.
-
-Reef review reads and mutations use the shared-state worker on current hosts.
-Request insertion and eviction of the selected completed review commit together;
-a concurrent replacement of either observed row restarts preparation. Decisions
-return the request they actually changed. Reads recheck live channel authority
-before returning; mutations require it at transaction and commit admission.
-Released hosts without batch support retain their original native mutation adapter.
-Review JSON, digest identity, ordering, capacity, and retention are unchanged.
+remain unchanged.
 
 Reef delivered-message markers use the shared-state worker for lookup and atomic
 insert-if-absent confirmation on current hosts. The inbound flow awaits ingress,
 then durable confirmation, then relay acknowledgment. Capacity failures keep the
 entry parked for retry without evicting live markers. The existing marker JSON,
 expiry, namespace and plugin-wide limits are unchanged; older hosts keep the
-behavior of their existing asynchronous keyed-store adapter. This cut does not
-move Reef's trust, audit, replay, review, key, migration-gate, or cursor owners.
+behavior of their existing asynchronous keyed-store adapter. These markers retain their existing owner alongside the compound operations above.
 
 Reef replay claims, renewals, completion, consumption, release, and reads use the
 shared-state worker. The replay owner preserves invocation order through durable

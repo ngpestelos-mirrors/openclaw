@@ -1,6 +1,5 @@
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { SqliteCoordinatorError } from "../infra/sqlite-lifecycle-errors.js";
-import { getSqlitePinnedReadSnapshot } from "../infra/sqlite-pinned-read-snapshot.js";
 import { runSqliteReadOperationSync } from "../infra/sqlite-schema-facts.js";
 import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
 import {
@@ -105,7 +104,6 @@ export function withCachedOpenClawStateDatabaseReadOnly<T>(
   operation: (database: OpenClawStateReadOnlyDatabase) => T,
   pathname: string,
   currentAuthority: boolean,
-  requireUnpinned = false,
 ): ReusedOpenClawStateReadOnlyDatabase<T> {
   return (
     openClawStateDatabaseCache.withCachedOpenClawStateDatabase(
@@ -113,12 +111,6 @@ export function withCachedOpenClawStateDatabaseReadOnly<T>(
       { readOnly: true },
       (opened): ReusedOpenClawStateReadOnlyDatabase<T> => {
         if (!opened.db.isOpen) {
-          return { reused: false };
-        }
-        if (
-          requireUnpinned &&
-          (opened.db.isTransaction || getSqlitePinnedReadSnapshot(opened.db))
-        ) {
           return { reused: false };
         }
         const ownedTransaction = currentAuthority && isManagedStateTransaction(opened.db);

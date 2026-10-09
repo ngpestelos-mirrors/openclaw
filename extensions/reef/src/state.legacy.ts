@@ -33,8 +33,8 @@ import {
 } from "./state-format.js";
 import type { ReefKeys } from "./types.js";
 
-// Released hosts without worker batches retain their original native owner until
-// an approved minimum host version guarantees the batch capability.
+// Released hosts without worker operations retain their original native owner until
+// an approved minimum host version guarantees the operation capability.
 function openKeysStore(runtime: PluginRuntime): PluginStateSyncKeyedStore<ReefKeys> {
   return runtime.state.openSyncKeyedStore<ReefKeys>({
     namespace: REEF_KEYS_NAMESPACE,

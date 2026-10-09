@@ -1,10 +1,8 @@
 import { createHash } from "node:crypto";
-import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
 import {
   createPluginStateError,
   deleteExpiredPluginStateEntries,
   deletePluginStateEntry,
-  getPluginStateKysely,
   parseStoredJson,
   selectPluginStateEntry,
   type PluginStateDatabase,
@@ -14,16 +12,11 @@ import { updatePluginStateEntry } from "./plugin-state-store.mutations.js";
 import type { PluginStateRegisterEntryParams } from "./plugin-state-store.retention.js";
 import type {
   PluginStateCompareResult,
-  PluginStateBatchResult,
   PluginStateObservation,
   PluginStateStoreOperation,
 } from "./plugin-state-store.types.js";
 
 type Key = { pluginId: string; namespace: string; key: string };
-export type PluginStateBatchObservationParams = { entries: readonly Key[] };
-export type PluginStateBatchComparisonParams = {
-  entries: readonly (PluginStatePreparedComparison & PluginStateComparisonLimits)[];
-};
 export type PluginStatePreparedComparison = Key & { comparison: string } & (
     | { operation: "update"; action: "set"; valueJson: string; ttlMs?: number }
     | { operation: "update" | "delete"; action: "keep" }
@@ -88,71 +81,6 @@ export function observePluginStateEntry(
   );
 }
 
-function readBatchRows(
-  store: PluginStateDatabase,
-  entries: readonly Key[],
-  now: number,
-): Array<PluginStateReadRow | undefined> {
-  const first = entries[0];
-  if (!first) {
-    return [];
-  }
-  const query = getPluginStateKysely(store.db)
-    .selectFrom((eb) =>
-      eb
-        .fn<{ key: number; value: string }>("json_each", [
-          eb.val(JSON.stringify(entries.map(({ namespace, key }) => [namespace, key]))),
-        ])
-        .as("requested"),
-    )
-    // Keep requested keys outermost so each row seeks the complete primary key.
-    .crossJoin("plugin_state_entries")
-    .where("plugin_id", "=", first.pluginId)
-    .where((eb) =>
-      eb(
-        "namespace",
-        "=",
-        eb.fn<string>("json_extract", [eb.ref("requested.value"), eb.val("$[0]")]),
-      ),
-    )
-    .where((eb) =>
-      eb(
-        "entry_key",
-        "=",
-        eb.fn<string>("json_extract", [eb.ref("requested.value"), eb.val("$[1]")]),
-      ),
-    )
-    .select(["requested.key as position", "entry_key", "value_json", "created_at", "expires_at"])
-    .where((eb) => eb.or([eb("expires_at", "is", null), eb("expires_at", ">", now)]));
-  const rows = new Map(
-    executeSqliteQuerySync(store.db, query).rows.map((row) => [row.position, row]),
-  );
-  return entries.map((_, index) => rows.get(index));
-}
-
-/** A bootstrap-only physical source has no rows, but still owns comparison identities. */
-export function observeMissingPluginStateBatch(
-  store: PluginStateDatabase,
-  params: PluginStateBatchObservationParams,
-  storeIdentity: string,
-): PluginStateObservation<unknown>[] {
-  return params.entries.map((entry) =>
-    observation(store, comparisonScope(storeIdentity, entry), undefined, "lookup"),
-  );
-}
-
-/** One indexed row set under the caller's admitted read or canonical writer transaction. */
-export function observePluginStateBatch(
-  store: PluginStateDatabase,
-  params: PluginStateBatchObservationParams,
-  storeIdentity: string,
-): PluginStateObservation<unknown>[] {
-  const rows = readBatchRows(store, params.entries, Date.now());
-  return params.entries.map((entry, index) =>
-    observation(store, comparisonScope(storeIdentity, entry), rows[index], "lookup"),
-  );
-}
-
 function validateComparisonScope(
   store: PluginStateDatabase,
   params: PluginStatePreparedComparison,
@@ -192,32 +120,6 @@ function applyComparedEntry(
   }
   updatePluginStateEntry(store, params, now, row !== undefined);
   return { status: "applied" };
-}
-
-/** Compare the complete precondition set before any ordered mutation can change it. */
-export function compareAndApplyPluginStateBatch(
-  store: PluginStateDatabase,
-  params: PluginStateBatchComparisonParams,
-  storeIdentity: string,
-): PluginStateBatchResult<unknown> {
-  const scopes = params.entries.map((entry) =>
-    validateComparisonScope(store, entry, storeIdentity),
-  );
-  const now = Date.now();
-  const rows = readBatchRows(store, params.entries, now);
-  const current = params.entries.map((_, index) =>
-    observation(store, scopes[index]!, rows[index], "lookup"),
-  );
-  if (params.entries.some((entry, index) => entry.comparison !== current[index]!.comparison)) {
-    return { status: "conflict", current };
-  }
-  let applied = false;
-  for (const [index, entry] of params.entries.entries()) {
-    if (applyComparedEntry(store, entry, now, rows[index]).status === "applied") {
-      applied = true;
-    }
-  }
-  return { status: applied ? "applied" : "unchanged" };
 }
 
 /** The caller owns the IMMEDIATE transaction containing comparison, expiry, quotas and mutation. */

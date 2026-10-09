@@ -294,7 +294,6 @@ function withOpenClawStateDatabaseReadOnlyIfOpen<T>(
   operation: (database: OpenClawStateReadOnlyDatabase) => T,
   pathname: string,
   currentAuthority = false,
-  requireUnpinned = false,
 ): ReusedOpenClawStateReadOnlyDatabase<T> {
   const snapshot = stateSnapshotReads.getStore();
   if (snapshot?.active && snapshot.path === pathname) {
@@ -318,7 +317,6 @@ function withOpenClawStateDatabaseReadOnlyIfOpen<T>(
     operation,
     pathname,
     currentAuthority || synchronousReadSnapshots.currentAuthorityPath === pathname,
-    requireUnpinned,
   );
 }
 
@@ -570,8 +568,6 @@ export function withExistingOpenClawStateDatabaseCurrentReadOnly<T>(
   options: OpenClawStateDatabaseOptions & {
     /** Existing host mutation guards may read natively outside worker admission grants. */
     allowNativeRead?: true;
-    /** Effect guards must not reuse a transaction or implicit snapshot from another caller. */
-    requireUnpinned?: true;
   } = {},
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
 ): T | undefined {
@@ -579,12 +575,7 @@ export function withExistingOpenClawStateDatabaseCurrentReadOnly<T>(
   return stateSnapshotReads.exit(() => {
     // Maintenance admission belongs to a fresh private reader, never a cached writer.
     if (!openStateSchemaReadAdmission) {
-      const reused = withOpenClawStateDatabaseReadOnlyIfOpen(
-        operation,
-        pathname,
-        true,
-        options.requireUnpinned,
-      );
+      const reused = withOpenClawStateDatabaseReadOnlyIfOpen(operation, pathname, true);
       if (reused.reused) {
         return reused.value;
       }
@@ -596,16 +587,13 @@ export function withExistingOpenClawStateDatabaseCurrentReadOnly<T>(
       pathname,
       options.env ?? process.env,
     );
-    const live =
-      options.allowNativeRead && !isArtifactPreservingStateRead() && !openStateSchemaReadAdmission;
     return withOpenClawStateReadOnlyLocation(
       operation,
       pathname,
-      live ? pathname : prepareSqliteReadOnlyLocationSync(pathname),
+      options.allowNativeRead && !isArtifactPreservingStateRead() && !openStateSchemaReadAdmission
+        ? pathname
+        : prepareSqliteReadOnlyLocationSync(pathname),
       openStateSchemaReadAdmission,
-      undefined,
-      undefined,
-      live && options.requireUnpinned ? "unpinned" : false,
     );
   });
 }

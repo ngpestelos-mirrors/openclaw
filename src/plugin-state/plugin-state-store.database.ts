@@ -1,10 +1,7 @@
 import { hasErrnoCode } from "../infra/errno.js";
 import { isTerminalSqliteIntegrityError } from "../infra/sqlite-integrity.js";
 import { isSqliteSchemaVersionError } from "../infra/sqlite-user-version.js";
-import {
-  withExistingOpenClawStateDatabaseCurrentReadOnly,
-  withExistingOpenClawStateDatabaseReadOnly,
-} from "../state/openclaw-state-db-readonly.js";
+import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { hasOpenClawStateTablesBeyondStartupCheckpoint } from "../state/openclaw-state-db-schema-helpers.js";
 import {
   isOpenClawStateDatabaseOpen,
@@ -72,7 +69,7 @@ function openPluginStateDatabase(
   }
 }
 
-function isMissingPluginStateTableError(error: unknown): boolean {
+export function isMissingPluginStateTableError(error: unknown): boolean {
   return (
     error instanceof Error &&
     hasErrnoCode(error, "ERR_SQLITE_ERROR") &&
@@ -85,35 +82,25 @@ export function withPluginStateDatabaseReadOnly<T>(
   operationName: PluginStateStoreOperation,
   operation: (store: PluginStateDatabase) => T,
   options: OpenClawStateDatabaseOptions = {},
-  selection: "ordinary" | "current" = "ordinary",
 ): T | undefined {
   const pathname = resolveDatabasePath(options);
   let operationStarted = false;
   try {
-    const read =
-      selection === "current"
-        ? withExistingOpenClawStateDatabaseCurrentReadOnly
-        : withExistingOpenClawStateDatabaseReadOnly;
-    return read(
-      ({ db, path }) => {
-        operationStarted = true;
-        try {
-          return operation({ db, path });
-        } catch (error) {
-          if (isMissingPluginStateTableError(error)) {
-            // The lease bootstrap creates exactly schema_meta + state_leases before the first write;
-            // any other table means the missing plugin-state table is damage, not fresh state.
-            if (!hasOpenClawStateTablesBeyondStartupCheckpoint(db)) {
-              return undefined;
-            }
+    return withExistingOpenClawStateDatabaseReadOnly(({ db, path }) => {
+      operationStarted = true;
+      try {
+        return operation({ db, path });
+      } catch (error) {
+        if (isMissingPluginStateTableError(error)) {
+          // The lease bootstrap creates exactly schema_meta + state_leases before the first write;
+          // any other table means the missing plugin-state table is damage, not fresh state.
+          if (!hasOpenClawStateTablesBeyondStartupCheckpoint(db)) {
+            return undefined;
           }
-          throw error;
         }
-      },
-      selection === "current"
-        ? { ...options, allowNativeRead: true, requireUnpinned: true }
-        : options,
-    );
+        throw error;
+      }
+    }, options);
   } catch (error) {
     if (!operationStarted) {
       throw wrapPluginStateError(

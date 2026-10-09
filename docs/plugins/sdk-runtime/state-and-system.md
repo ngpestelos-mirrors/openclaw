@@ -322,77 +322,74 @@ outside that decision. Never retry transport failures, unknown outcomes, or
 arbitrary callbacks. Check both optional methods before using this capability;
 there is no safe fallback consisting of a separate lookup and unconditional write.
 
-For a decision spanning several keys or namespaces, use the optional
-`store.createBatch` method. Pass the original async store
-handles belonging to one plugin and one physical state source. Copied adapters,
-synchronous stores, and handles from another source are refused. The factory
-captures that source immediately; create the batch before awaiting planning work.
+For a complete operation spanning keys or namespaces, use the optional
+`store.createOperation` capability. Its named plugin module runs inside the
+existing shared-state worker, with all reads and writes in one synchronous
+transaction. The factory captures the admitted plugin generation, physical state
+source, namespace handles, and live action authority before any await.
 
 ```typescript
-if (!requests.createBatch) {
-  throw new Error("This operation requires plugin-state batch support.");
-}
-const batch = requests.createBatch<unknown>([requests, results], { assertCurrent });
-const keys = [
-  { store: 0, key: requestId },
-  { store: 1, key: requestId },
-];
-const [request, result] = await batch.observe(keys);
-const outcome = await batch.compareAndApply([
-  { ...keys[0], comparison: request.comparison, intent: { operation: "delete", action: "delete" } },
+type MoveOperations = {
+  move: { input: { key: string }; output: boolean };
+};
+const operation = source.createOperation<MoveOperations>(
+  [source, destination],
   {
-    ...keys[1],
-    comparison: result.comparison,
-    intent: { operation: "update", action: "set", value: preparedResult },
+    moduleUrl: new URL("./transfer-operation-api.js", import.meta.url).href,
+    exportName: "executeTransfer",
   },
-]);
+  { assertCurrent },
+);
+const receipt = await operation.execute(
+  { type: "move", input: { key } },
+  { writeStores: [0, 1], watchStores: [1] },
+);
+receipt.assertCurrent();
 ```
 
-Each operation accepts at most 10,000 unique namespace/key pairs. `store` indexes
-the factory's handles. For read-only planning, `observeExisting(keys)` returns
-observations in input order using one read-only worker selection, or `undefined`
-when the physical database is absent. A missing or expired key has an observation
-whose `value` is `undefined`. The comparison retains the stored row image, so a
-later mutation can use that same observation without another preparation read.
-`entries(store)` lists the selected namespace. Both
-retain the batch's captured physical source, observe foreign commits on a new
-unpinned use, and leave a missing database absent. They neither request writable
-admission nor authorize later mutations. `compareAndApply` still rereads the
-authoritative rows inside its write transaction.
+The worker export accepts the typed command and a
+`PluginStateOperationTransaction`. Its synchronous `lookup`, `lookupMany`,
+`entries`, `set`, and `delete` methods address the captured stores by index.
+Repeated reads share the transaction's row view; `lookupMany` selects uncached
+keys together. Writes update that view and preserve existing JSON limits,
+namespace quotas, eviction, and TTL rules. The host rejects writes outside
+`writeStores`, retained transaction methods used after return, and Promise or
+thenable handler results. A failure rolls back the whole operation.
 
-`observe` returns observations in input order from one
-worker transaction. `compareAndApply` reads and compares every requested row
-before applying any intent, then applies intents in input order in that same
-transaction. A conflict changes no rows and returns current observations for
-every supplied key, in order. A quota or validation failure rolls back the whole
-operation, including earlier deletions. Existing TTL, namespace limits, and
-comparison semantics remain in force; using a batch requires no migration.
+Put operation entrypoints at the plugin package root as `*-operation-api.ts`
+(or compiled JavaScript). They are captured with the admitted plugin generation
+and included by the existing bundled and standalone plugin build owners. The
+worker loads that captured module before entering the transaction. It does not
+rediscover a current plugin by id, accept an unrelated module URL, serialize a
+closure, or open another database owner. Use `resolveRuntimeWorkerUrl` from
+`plugin-sdk/process-runtime` when the calling module's source, bundled build,
+and standalone build have different relative layouts.
 
-The optional batch assertion, the creating store, and every supplied handle's action, session, and
-plugin lifecycle restrictions remain active at transaction and commit admission.
-Read results and observations also require authority at return. Physical source replacement
-refuses the batch; it never redirects a pending write. As with single-key
-comparisons, only an explicit conflict permits recomputing a pure decision.
-Errors and unknown acknowledgments never authorize replay. Recheck live authority
-at the initiation of a later external effect.
+An empty `writeStores` array selects a noncreating read. Supply `missingValue`
+when an absent physical database has a defined result, including explicit
+`undefined`; the host returns that value without creating the database or
+executing the handler. An absent source without `missingValue` refuses the call.
 
-When a final authority decision depends on a stored row, call
-`batch.assertCurrentValue(key, assertion)` immediately before the effect. It reads
-that row synchronously from the batch's captured physical source, outside cached
-snapshots and pinned reads, then runs the synchronous assertion. A replaced
-database or revoked handle refuses the check. Use this narrow exception only at
-effect initiation; planning and ordinary reads belong on the worker. A prepared
-value cannot substitute for this live check while foreign or released native
-writers can revoke authority. This facet refuses batches containing
-`sessionEntryCurrent` restrictions; their native session checks belong to the
-asynchronous worker admission path.
+The Gateway owns online database mutation. Operation receipts use its in-process
+write publications, pending-mutation invalidation, expiry, and lifecycle state.
+They do not poll SQLite for foreign commits or reread rows on the main thread.
+Call `receipt.assertCurrent()` immediately before a later external effect.
+`watchStores` selects the namespaces on which that effect depends; unrelated
+writes to other namespaces do not invalidate it. A queued mutation invalidates
+older receipts before native commit. Unknown outcomes never authorize replay.
+Accepted writes still settle when their caller closes; a returned historical
+result does not grant permission for a new effect.
 
-`createBatch` remains optional in both version 1 and version 2 store types for
-older hosts and third-party adapters. Detect
-that method before selecting a documented compatibility path; a failed batch
-operation never selects a fallback. Current host factories provide the method
-on both ordinary and action-bound stores. No new runtime helper import or minimum-host version
-change is needed to detect support.
+When composing a continuation with more store handles, pass its original
+`sourceReceipt` in the factory's authority options. The host verifies that all
+participants belong to that captured source before awaiting; a new environment
+selection cannot redirect a recovery operation.
+
+`createOperation` remains optional in version 1 and version 2 store types so
+released hosts and third-party adapters remain source-compatible. Select a named
+compatibility path only when the capability is absent, before awaiting. A worker,
+authority, or module-loading failure never selects a synchronous fallback.
+No schema, retention, durability, or minimum-host version change is required.
 
 `registerIfAbsent` and the optional `deleteIfEqual(key, expected)` operation use
 the shared-state SQLite worker. `deleteIfEqual` accepts a string, finite number,

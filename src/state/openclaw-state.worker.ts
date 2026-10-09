@@ -179,6 +179,14 @@ function createSharedStateWorkerBackend(
     }, options);
   };
   return {
+    async prepare(command) {
+      if (command.type === "pluginState.executeOperation") {
+        if (!pluginState) {
+          pluginState = await import("../plugin-state/plugin-state.worker.js");
+        }
+        await pluginState.preparePluginStateOperation(command.input);
+      }
+    },
     [SQLITE_WORKER_PREPARE_COMMAND](commandType) {
       if (
         commandType.startsWith("deviceAuth.") ||

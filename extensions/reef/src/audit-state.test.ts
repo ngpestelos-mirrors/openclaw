@@ -4,14 +4,21 @@ import path from "node:path";
 import timers from "node:timers/promises";
 import type {
   OpenAsyncKeyedStoreOptions,
-  PluginStateBatch,
-  PluginStateKeyedStore,
+  PluginStateOperation,
+  PluginStateOperationDefinitions,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { createPluginStateKeyedStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { observeHostDataSql } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createAuditEntry, verifyChain, verifyChainSegment } from "../protocol/audit.js";
 import {
+  createAuditEntry,
+  decryptAuditText,
+  verifyChain,
+  verifyChainSegment,
+} from "../protocol/audit.js";
+import type { ReefAuditOperations } from "./audit-state-operation.js";
+import {
+  getReefAuditOperationState,
   openReefAuditStore,
   reefAuditEntryKey,
   REEF_AUDIT_HEAD_KEY,
@@ -28,21 +35,21 @@ import {
   createStateTestDirectory,
 } from "./state.test-support.js";
 
-function interceptAuditBatch(
+function interceptAuditOperation(
   runtime: ReturnType<typeof createRuntime>,
-  transform: <T>(batch: PluginStateBatch<T>) => PluginStateBatch<T>,
+  transform: <Operations extends PluginStateOperationDefinitions>(
+    operation: PluginStateOperation<Operations>,
+  ) => PluginStateOperation<Operations>,
 ) {
   const open = runtime.state.openKeyedStore;
   return vi
     .spyOn(runtime.state, "openKeyedStore")
     .mockImplementation(<T>(options: OpenAsyncKeyedStoreOptions) => {
       const store = open<T>(options);
-      if (options.namespace === REEF_AUDIT_HEAD_NAMESPACE && store.createBatch) {
-        const createBatch = store.createBatch;
-        store.createBatch = <V>(
-          stores: readonly Pick<PluginStateKeyedStore<V>, "lookup" | "entries">[],
-          authority?: { assertCurrent: () => void },
-        ) => transform(createBatch<V>(stores, authority));
+      if (options.namespace === REEF_AUDIT_HEAD_NAMESPACE && store.createOperation) {
+        const createOperation = store.createOperation;
+        store.createOperation = (stores, handler, authority) =>
+          transform(createOperation(stores, handler, authority));
       }
       return store;
     });
@@ -59,31 +66,132 @@ describe("Reef SQLite audit state", () => {
     await cleanupStateTestDirectory(stateDir);
   });
 
-  it("revalidates a competing audit append before linking its successor", async () => {
+  it("serializes a competing append before linking its successor", async () => {
     const runtime = createRuntime(stateDir);
     const key = new Uint8Array(32).fill(1);
     const initial = openReefAuditStore(runtime, key, 2);
     await initial.appendEvent("initial", { id: 1 }, 10);
     const competing = openReefAuditStore(runtime, key, 2);
     let interleaved = false;
-    interceptAuditBatch(runtime, <T>(batch: PluginStateBatch<T>): PluginStateBatch<T> => {
-      return {
-        ...batch,
-        async observe(rows) {
-          const observed = await batch.observe(rows);
-          if (!interleaved && rows.some((row) => row.key.startsWith("entry:"))) {
-            interleaved = true;
-            await competing.appendEvent("winner", { id: 2 }, 11);
-          }
-          return observed;
-        },
-      };
-    });
+    interceptAuditOperation(runtime, (operation) => ({
+      ...operation,
+      async execute(command, options) {
+        if (!interleaved && command.type === "append") {
+          interleaved = true;
+          await competing.appendEvent("winner", { id: 2 }, 11);
+        }
+        return operation.execute(command, options);
+      },
+    }));
     const contender = openReefAuditStore(runtime, key, 2);
     await contender.appendEvent("contender", { id: 3 }, 12);
     const retained = await initial.entries();
     expect(retained.map((entry) => entry.event.type)).toEqual(["winner", "contender"]);
     expect(retained[1]!.prevHash).toBe(retained[0]!.entryHash);
+  });
+
+  it("commits an ordered event group with encryption and the retained suffix", async () => {
+    const key = new Uint8Array(32).fill(1);
+    const audit = openReefAuditStore(createRuntime(stateDir), key, 2);
+    const state = getReefAuditOperationState(audit)!;
+    const operation = state.head.createOperation!<ReefAuditOperations>(
+      [state.head, state.migration, state.entries],
+      {
+        moduleUrl: new URL("../audit-state-operation-api.js", import.meta.url).href,
+        exportName: "executeReefAuditOperation",
+      },
+    );
+    await audit.appendEvent("before", {}, 9);
+    const result = await operation.execute(
+      {
+        type: "append",
+        input: {
+          head: 0,
+          migration: 1,
+          entries: 2,
+          auditKey: key,
+          maxEntries: 2,
+          events: [
+            { type: "proposal", payload: { text: "Synthetic private text" }, ts: 10 },
+            { type: "verdict", payload: { reason: "Synthetic private reason" }, ts: 11 },
+            { type: "envelope", payload: { id: 3 }, ts: 12 },
+          ],
+        },
+      },
+      { writeStores: [0, 2] },
+    );
+    expect(result.value.map((entry) => entry.event.seq)).toEqual([2, 3, 4]);
+    expect(decryptAuditText(result.value[0]!, key).event.payload).toEqual({
+      text: "Synthetic private text",
+    });
+    expect(JSON.stringify(result.value)).not.toContain("Synthetic private");
+    const retained = await audit.entries();
+    expect(retained.map((entry) => entry.event.type)).toEqual(["verdict", "envelope"]);
+    expect(retained).toEqual(result.value.slice(1));
+    expect(
+      verifyChainSegment(retained, {
+        previousHash: result.value[0]!.entryHash,
+        previousSeq: 2,
+        head: result.value[2]!.entryHash,
+      }),
+    ).toBe(true);
+  });
+
+  it("refuses an invalid event group without publishing a partial chain", async () => {
+    const key = new Uint8Array(32).fill(1);
+    const audit = openReefAuditStore(createRuntime(stateDir), key, 2);
+    const initial = await audit.appendEvent("before", {}, 9);
+    const state = getReefAuditOperationState(audit)!;
+    const operation = state.head.createOperation!<ReefAuditOperations>(
+      [state.head, state.migration, state.entries],
+      {
+        moduleUrl: new URL("../audit-state-operation-api.js", import.meta.url).href,
+        exportName: "executeReefAuditOperation",
+      },
+    );
+    await expect(
+      operation.execute(
+        {
+          type: "append",
+          input: {
+            head: 0,
+            migration: 1,
+            entries: 2,
+            auditKey: key,
+            maxEntries: 2,
+            events: [
+              { type: "valid", payload: {}, ts: 10 },
+              { type: "invalid", payload: {}, ts: -1 },
+            ],
+          },
+        },
+        { writeStores: [0, 2] },
+      ),
+    ).rejects.toThrow("invalid audit event");
+    expect(await audit.entries()).toEqual([initial]);
+  });
+
+  it("refuses a live legacy append lease without stealing or mutating it", async () => {
+    const runtime = createRuntime(stateDir);
+    const key = new Uint8Array(32).fill(1);
+    const audit = openReefAuditStore(runtime, key, 2);
+    const initial = await audit.appendEvent("before", {}, 9);
+    const heads = runtime.state.openSyncKeyedStore<ReefAuditHeadRecord>({
+      namespace: REEF_AUDIT_HEAD_NAMESPACE,
+      maxEntries: 1,
+      overflowPolicy: "reject-new",
+    });
+    const pending: ReefAuditHeadRecord = {
+      kind: "head",
+      hash: initial.entryHash,
+      seq: 1,
+      oldestHash: initial.entryHash,
+      pending: { owner: "live-legacy-writer", expiresAt: Number.MAX_SAFE_INTEGER },
+    };
+    heads.register(REEF_AUDIT_HEAD_KEY, pending);
+    await expect(audit.appendEvent("refused", {}, 10)).rejects.toThrow("active legacy writer");
+    expect(heads.lookup(REEF_AUDIT_HEAD_KEY)).toEqual(pending);
+    expect(await audit.entries()).toEqual([initial]);
   });
 
   it("preserves legacy staged cleanup on failure and recovers it atomically", async () => {
@@ -124,23 +232,21 @@ describe("Reef SQLite audit state", () => {
       garbageEntryKey: "entry:orphan",
     };
     heads.register(REEF_AUDIT_HEAD_KEY, legacyHead);
-    const intercepted = interceptAuditBatch(
-      runtime,
-      <T>(batch: PluginStateBatch<T>): PluginStateBatch<T> => {
-        return {
-          ...batch,
-          compareAndApply: async () => {
-            throw new Error("simulated worker refusal");
-          },
-        };
-      },
-    );
+    raw.register(reefAuditEntryKey(initial.entryHash), {
+      kind: "entry",
+      entry: initial,
+      nextHash: "unowned-successor",
+    });
     await expect(
       openReefAuditStore(runtime, key, 2).appendEvent("refused", { id: 3 }, 12),
-    ).rejects.toThrow("simulated worker refusal");
+    ).rejects.toThrow("head already links a committed successor");
     expect(heads.lookup(REEF_AUDIT_HEAD_KEY)).toEqual(legacyHead);
     expect(raw.lookup(reefAuditEntryKey(stale.entryHash))).toEqual({ kind: "entry", entry: stale });
-    intercepted.mockRestore();
+    raw.register(reefAuditEntryKey(initial.entryHash), {
+      kind: "entry",
+      entry: initial,
+      nextHash: stale.entryHash,
+    });
     const recovered = openReefAuditStore(runtime, key, 2);
     await recovered.appendEvent("recovered", { id: 4 }, 13);
     expect((await recovered.entries()).map((entry) => entry.event.type)).toEqual([
@@ -152,12 +258,12 @@ describe("Reef SQLite audit state", () => {
     expect(heads.lookup(REEF_AUDIT_HEAD_KEY)?.pending).toBeUndefined();
   });
 
-  it("appends and reads audit history on a released host without worker batches", async () => {
+  it("appends and reads audit history on a released host without worker operations", async () => {
     const runtime = createRuntime(stateDir);
     const open = runtime.state.openKeyedStore;
     runtime.state.openKeyedStore = <T>(options: OpenAsyncKeyedStoreOptions) => {
       const store = open<T>(options);
-      delete store.createBatch;
+      delete store.createOperation;
       return store;
     };
     const key = new Uint8Array(32).fill(1);
@@ -259,20 +365,19 @@ describe("Reef SQLite audit state", () => {
     ]);
   });
 
-  it("appends in invocation order and reopens a verified audit chain without native SQL", async () => {
+  it("preserves invocation order across shared-source handles without native SQL", async () => {
     const key = new Uint8Array(32).fill(1);
     const observation = observeHostDataSql();
     try {
       const first = openReefAuditStore(createRuntime(stateDir), key);
-      await Promise.all(
-        Array.from({ length: 20 }, (_, index) =>
-          first.appendEvent("test", { id: index }, 10 + index),
-        ),
-      );
+      const second = openReefAuditStore(createRuntime(stateDir), key);
+      await Promise.all([
+        first.appendEvent("one", { id: 1 }, 10),
+        first.appendEvent("two", { id: 2 }, 11),
+        second.appendEvent("three", { id: 3 }, 12),
+      ]);
       const reopened = await openReefAuditStore(createRuntime(stateDir), key).entries();
-      expect(reopened.map((entry) => entry.event.payload)).toEqual(
-        Array.from({ length: 20 }, (_, id) => ({ id })),
-      );
+      expect(reopened.map((entry) => entry.event.type)).toEqual(["one", "two", "three"]);
       expect(verifyChain(reopened)).toBe(true);
       expect(observation.queries).toEqual([]);
     } finally {
@@ -306,18 +411,13 @@ describe("Reef SQLite audit state", () => {
     const initial = openReefAuditStore(runtime, key, 2);
     await initial.appendEvent("one", { id: 1 }, 10);
     await initial.appendEvent("two", { id: 2 }, 11);
-    const intercepted = interceptAuditBatch(
-      runtime,
-      <T>(batch: PluginStateBatch<T>): PluginStateBatch<T> => {
-        return {
-          ...batch,
-          async compareAndApply(changes) {
-            await batch.compareAndApply(changes);
-            throw new Error("simulated lost acknowledgement");
-          },
-        };
+    const intercepted = interceptAuditOperation(runtime, (operation) => ({
+      ...operation,
+      async execute(command, options) {
+        await operation.execute(command, options);
+        throw new Error("simulated lost acknowledgement");
       },
-    );
+    }));
     await expect(
       openReefAuditStore(runtime, key, 2).appendEvent("three", { id: 3 }, 12),
     ).rejects.toThrow("simulated lost acknowledgement");
@@ -333,15 +433,13 @@ describe("Reef SQLite audit state", () => {
     const current = openReefAuditStore(runtime, key, 2);
     await current.appendEvent("current", {}, 10);
     const controller = new AbortController();
-    interceptAuditBatch(runtime, <T>(batch: PluginStateBatch<T>): PluginStateBatch<T> => {
-      return {
-        ...batch,
-        async compareAndApply(changes) {
-          controller.abort(new Error("Reef owner retired"));
-          return batch.compareAndApply(changes);
-        },
-      };
-    });
+    interceptAuditOperation(runtime, (operation) => ({
+      ...operation,
+      async execute(command, options) {
+        controller.abort(new Error("Reef owner retired"));
+        return operation.execute(command, options);
+      },
+    }));
     await expect(
       openReefAuditStore(runtime, key, 2, controller.signal).appendEvent("revoked", {}, 11),
     ).rejects.toThrow("Reef owner retired");
@@ -357,19 +455,16 @@ describe("Reef SQLite audit state", () => {
       overflowPolicy: "reject-new",
     });
     let interleaved = false;
-    interceptAuditBatch(runtime, <T>(batch: PluginStateBatch<T>): PluginStateBatch<T> => {
-      return {
-        ...batch,
-        async observe(rows) {
-          const observed = await batch.observe(rows);
-          if (!interleaved && rows.some((row) => row.key.startsWith("entry:"))) {
-            interleaved = true;
-            await migration.register(REEF_AUDIT_MIGRATION_KEY, { pending: true });
-          }
-          return observed;
-        },
-      };
-    });
+    interceptAuditOperation(runtime, (operation) => ({
+      ...operation,
+      async execute(command, options) {
+        if (!interleaved) {
+          interleaved = true;
+          await migration.register(REEF_AUDIT_MIGRATION_KEY, { pending: true });
+        }
+        return operation.execute(command, options);
+      },
+    }));
     const audit = openReefAuditStore(runtime, key, 2);
     await expect(audit.appendEvent("refused", {}, 10)).rejects.toThrow(
       "audit migration is incomplete",
@@ -386,28 +481,18 @@ describe("Reef SQLite audit state", () => {
     expect(fs.existsSync(path.join(stateDir, "state", "openclaw.sqlite"))).toBe(false);
   });
 
-  it("retries an audit suffix read when a foreign append changes its retained head", async () => {
+  it("observes foreign appends on a new read of the retained suffix", async () => {
     const runtime = createRuntime(stateDir);
     const key = new Uint8Array(32).fill(1);
     const current = openReefAuditStore(runtime, key, 1);
-    await current.appendEvent("old", {}, 10);
-    let lookups = 0;
-    interceptAuditBatch(runtime, <T>(batch: PluginStateBatch<T>): PluginStateBatch<T> => {
-      return {
-        ...batch,
-        async observeExisting(keys) {
-          if (++lookups === 2) {
-            await current.appendEvent("new", {}, 11);
-          }
-          return batch.observeExisting(keys);
-        },
-      };
-    });
     const reader = openReefAuditStore(runtime, key, 1);
+    await current.appendEvent("old", {}, 10);
+    expect((await reader.entries()).map((entry) => entry.event.type)).toEqual(["old"]);
+    await current.appendEvent("new", {}, 11);
     expect((await reader.entries()).map((entry) => entry.event.type)).toEqual(["new"]);
   });
 
-  it("retains the audit read source when environment routing changes between lookups", async () => {
+  it("retains its captured audit source when routing changes before execution", async () => {
     const runtime = createRuntime(stateDir);
     const key = new Uint8Array(32).fill(1);
     const original = openReefAuditStore(runtime, key, 1);
@@ -421,12 +506,11 @@ describe("Reef SQLite audit state", () => {
     const env = { OPENCLAW_STATE_DIR: stateDir };
     runtime.state.openKeyedStore = <T>(options: OpenAsyncKeyedStoreOptions) =>
       createPluginStateKeyedStoreForTests<T>("reef", { ...options, env });
-    interceptAuditBatch(runtime, <T>(batch: PluginStateBatch<T>): PluginStateBatch<T> => ({
-      ...batch,
-      async observeExisting(keys) {
-        const rows = await batch.observeExisting(keys);
+    interceptAuditOperation(runtime, (operation) => ({
+      ...operation,
+      async execute(command, options) {
         env.OPENCLAW_STATE_DIR = replacementDir;
-        return rows;
+        return operation.execute(command, options);
       },
     }));
     const reader = openReefAuditStore(runtime, key, 1);

@@ -17,7 +17,7 @@ import { vi } from "vitest";
 
 export function createRuntime(stateDir: string, registrationHost: "worker" | "legacy" = "worker") {
   const runtime = createPluginRuntimeMock();
-  const stateStores: Array<Pick<PluginStateKeyedStore<unknown>, "createBatch">> = [];
+  const stateStores: Array<Pick<PluginStateKeyedStore<unknown>, "createOperation">> = [];
   runtime.state.openSyncKeyedStore = <T>(options: OpenKeyedStoreOptions) =>
     createPluginStateSyncKeyedStoreForTests<T>("reef", {
       ...options,
@@ -31,7 +31,7 @@ export function createRuntime(stateDir: string, registrationHost: "worker" | "le
     stateStores.push(store);
     if (registrationHost === "legacy") {
       const {
-        createBatch: _createBatch,
+        createOperation: _createOperation,
         observe: _observe,
         compareAndApply: _compareAndApply,
         ...legacy

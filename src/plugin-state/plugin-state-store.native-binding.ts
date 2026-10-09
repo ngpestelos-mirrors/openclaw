@@ -2,13 +2,26 @@ import type {
   SessionEntryCurrentCheck,
   SessionEntriesCurrentCheck,
 } from "../config/sessions/session-entry-current.types.js";
+import type { PluginOrigin } from "../plugins/plugin-origin.types.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { PreparedKeyedStoreOptions } from "./plugin-state-store.validation.js";
+
+export type PluginStateOperationModule = {
+  modulePath: string;
+  boundaryRoot: string;
+  origin: PluginOrigin;
+  pluginId: string;
+};
+
+export type PluginStateOperationModuleSource = {
+  resolve(moduleUrl: string): PluginStateOperationModule;
+};
 
 type PluginStateStoreBinding = {
   options: PreparedKeyedStoreOptions;
   assertCurrent?: () => void;
   sessionEntryCurrent?: SessionEntryCurrentCheck | SessionEntriesCurrentCheck;
+  moduleSource?: PluginStateOperationModuleSource;
 };
 
 // Only async stores minted by the keyed owner can lend their admitted storage scope.
@@ -22,8 +35,9 @@ export function bindPluginStateNativeBindingStore<T extends object>(
   options: PreparedKeyedStoreOptions,
   assertCurrent?: () => void,
   sessionEntryCurrent?: SessionEntryCurrentCheck | SessionEntriesCurrentCheck,
+  moduleSource?: PluginStateOperationModuleSource,
 ): T {
-  stores.set(store, { options, assertCurrent, sessionEntryCurrent });
+  stores.set(store, { options, assertCurrent, sessionEntryCurrent, moduleSource });
   return store;
 }
 

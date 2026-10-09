@@ -4,6 +4,9 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type {
   OpenAsyncKeyedStoreOptions,
   PluginStateKeyedStore,
+  PluginStateOperation,
+  PluginStateOperationDefinitions,
+  PluginStateOperationReceipt,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
@@ -137,29 +140,33 @@ function activateReviewStore(
   });
 }
 
-function beforeNextBatchCommit(
+function beforeNextStateOperation(
   runtime: ReturnType<typeof createRuntime>,
-  work: () => Promise<void> | void,
+  work: (receipt?: PluginStateOperationReceipt<unknown>) => Promise<void> | void,
+  phase: "before" | "after" = "before",
 ) {
   let pending = true;
-  const intercept = (store: Pick<PluginStateKeyedStore<unknown>, "createBatch">) => {
-    const create = store.createBatch;
+  const intercept = (store: Pick<PluginStateKeyedStore<unknown>, "createOperation">) => {
+    const create = store.createOperation;
     if (!create) {
       return;
     }
-    store.createBatch = <T>(
-      stores: readonly Pick<PluginStateKeyedStore<T>, "lookup" | "entries">[],
-      authority?: { assertCurrent: () => void },
-    ) => {
-      const batch = create<T>(stores, authority);
+    store.createOperation = <Operations extends PluginStateOperationDefinitions>(
+      ...args: Parameters<typeof create>
+    ): PluginStateOperation<Operations> => {
+      const operation = create<Operations>(...args);
       return {
-        ...batch,
-        async compareAndApply(changes: Parameters<typeof batch.compareAndApply>[0]) {
-          if (pending) {
-            pending = false;
+        async execute(command, options) {
+          const intercepted = pending;
+          pending = false;
+          if (intercepted && phase === "before") {
             await work();
           }
-          return batch.compareAndApply(changes);
+          const receipt = await operation.execute(command, options);
+          if (intercepted && phase === "after") {
+            await work(receipt);
+          }
+          return receipt;
         },
       };
     };
@@ -222,7 +229,7 @@ describe("Reef SQLite state", () => {
     const store = new ReefInboxCursorStore(runtime, binding, controller.signal);
     await store.advance(12);
     const revoked = new Error("inbox authority expired");
-    beforeNextBatchCommit(runtime, () => controller.abort(revoked));
+    beforeNextStateOperation(runtime, () => controller.abort(revoked));
 
     await expect(store.advance(13)).rejects.toBe(revoked);
     await expect(new ReefInboxCursorStore(createRuntime(stateDir), binding).load()).resolves.toBe(
@@ -248,7 +255,7 @@ describe("Reef SQLite state", () => {
         maxEntries: namespace === "registration" ? 2 : 1,
         overflowPolicy: "reject-new",
       });
-      beforeNextBatchCommit(runtime, () => guard.register(key, value));
+      beforeNextStateOperation(runtime, () => guard.register(key, value));
 
       await expect(generateAndStoreKeys(runtime)).rejects.toThrow(error);
       await expect(
@@ -303,7 +310,7 @@ describe("Reef SQLite state", () => {
     expect(fs.existsSync(path.join(stateDir, "data", "reef"))).toBe(false);
   });
 
-  it("retains native key and review semantics on released hosts without batches", async () => {
+  it("retains native key and review semantics on released hosts without operations", async () => {
     const runtime = createRuntime(stateDir, "legacy");
     const creation = generateAndStoreKeys(runtime);
     const rawKeys = runtime.state.openSyncKeyedStore({
@@ -347,11 +354,11 @@ describe("Reef SQLite state", () => {
   });
 
   it.each(["keys", "review", "cursor"] as const)(
-    "never switches %s to native storage after a current-host batch failure",
+    "never switches %s to native storage after a current-host operation failure",
     async (operation) => {
       const runtime = createRuntime(stateDir);
-      const failure = new Error("batch worker unavailable");
-      beforeNextBatchCommit(runtime, () => {
+      const failure = new Error("operation worker unavailable");
+      beforeNextStateOperation(runtime, () => {
         throw failure;
       });
       const native = vi.spyOn(runtime.state, "openSyncKeyedStore");
@@ -668,6 +675,30 @@ describe("Reef SQLite state", () => {
     ).resolves.toBe("delivered");
   });
 
+  it.each(["keys", "lookup", "list"] as const)(
+    "rejects a borrowed worker %s result after authority revocation",
+    async (method) => {
+      const runtime = createRuntime(stateDir);
+      const controller = new AbortController();
+      const reviews = new ReviewApprovalStore(runtime, undefined, controller.signal);
+      if (method === "keys") {
+        await generateAndStoreKeys(runtime);
+      } else {
+        await reviews.request(reviewRequest());
+      }
+      const refusal = new Error("borrowed worker state expired");
+      beforeNextStateOperation(runtime, () => controller.abort(refusal), "after");
+
+      await expect(
+        method === "keys"
+          ? loadKeys(runtime, () => controller.signal.throwIfAborted())
+          : method === "lookup"
+            ? reviews.lookupDecision(reviewRequest().approvalDigest)
+            : reviews.list(),
+      ).rejects.toBe(refusal);
+    },
+  );
+
   it.each(["lookup", "entries"] as const)(
     "rejects borrowed review %s results after channel revocation",
     async (method) => {
@@ -763,7 +794,7 @@ describe("Reef SQLite state", () => {
     await expect(stores.delivered.status("first")).resolves.toBe("delivered");
   });
 
-  it("preserves a review replaced by pending work before eviction commits", async () => {
+  it("preserves a review replaced by pending work before transaction admission", async () => {
     const runtime = createRuntime(stateDir);
     const reviews = new ReviewApprovalStore(runtime, 1);
     const first = reviewRequest("first", "1".repeat(64));
@@ -775,7 +806,7 @@ describe("Reef SQLite state", () => {
       maxEntries: 1,
       overflowPolicy: "reject-new",
     });
-    beforeNextBatchCommit(runtime, () => raw.register(first.approvalDigest, { review: first }));
+    beforeNextStateOperation(runtime, () => raw.register(first.approvalDigest, { review: first }));
 
     await expect(reviews.request(next)).rejects.toThrow("pending review capacity is exhausted");
     await expect(reviews.list()).resolves.toEqual([first]);
@@ -783,7 +814,7 @@ describe("Reef SQLite state", () => {
   });
 
   it.each(["request", "channel decision", "owner decision"] as const)(
-    "refuses %s after authority expires during worker preparation",
+    "refuses %s after authority expires before worker admission",
     async (action) => {
       const runtime = createRuntime(stateDir);
       const controller = new AbortController();
@@ -800,7 +831,7 @@ describe("Reef SQLite state", () => {
           throw revoked;
         }
       };
-      beforeNextBatchCommit(runtime, () => {
+      beforeNextStateOperation(runtime, () => {
         if (action === "owner decision") {
           ownerCurrent = false;
         } else {
@@ -820,7 +851,48 @@ describe("Reef SQLite state", () => {
     },
   );
 
-  it("captures review identity and source before queued requests, decisions and reads wait", async () => {
+  it("invalidates approval receipts immediately and orders review mutations across handles", async () => {
+    const runtime = createRuntime(stateDir);
+    const reviews = new ReviewApprovalStore(runtime);
+    const sibling = new ReviewApprovalStore(runtime);
+    const review = reviewRequest();
+    await reviews.request(review);
+    await reviews.decide(review.approvalDigest, true);
+    const receipts: PluginStateOperationReceipt<unknown>[] = [];
+    beforeNextStateOperation(
+      runtime,
+      (receipt) => {
+        if (!receipt) {
+          throw new Error("Expected a completed review operation receipt");
+        }
+        receipts.push(receipt);
+      },
+      "after",
+    );
+    await expect(reviews.lookupDecision(review.approvalDigest)).resolves.toEqual({
+      approved: true,
+    });
+    const receipt = receipts[0]!;
+    receipt.assertCurrent();
+
+    const revocation = reviews.decide(review.approvalDigest, false);
+    const pending: Promise<unknown>[] = [revocation];
+    try {
+      expect(() => receipt.assertCurrent()).toThrow("no longer current");
+      const reapproval = reviews.decide(review.approvalDigest, true);
+      const finalRevocation = sibling.decide(review.approvalDigest, false);
+      const observed = reviews.lookupDecision(review.approvalDigest);
+      pending.push(reapproval, finalRevocation, observed);
+      await expect(revocation).resolves.toEqual(review);
+      await expect(reapproval).resolves.toEqual(review);
+      await expect(finalRevocation).resolves.toEqual(review);
+      await expect(observed).resolves.toEqual({ approved: false });
+    } finally {
+      await Promise.allSettled(pending);
+    }
+  });
+
+  it("captures review identity and source while an earlier acknowledgement waits", async () => {
     const runtime = createRuntime(stateDir);
     const env = { OPENCLAW_STATE_DIR: stateDir };
     runtime.state.openKeyedStore = <T>(options: OpenAsyncKeyedStoreOptions) => {
@@ -842,10 +914,14 @@ describe("Reef SQLite state", () => {
 
     const entered = createDeferred<void>();
     const finish = createDeferred<void>();
-    beforeNextBatchCommit(runtime, async () => {
-      entered.resolve();
-      await finish.promise;
-    });
+    beforeNextStateOperation(
+      runtime,
+      async () => {
+        entered.resolve();
+        await finish.promise;
+      },
+      "after",
+    );
     const request = reviews.request(review);
     review.id = "changed";
     review.approvalDigest = "c".repeat(64);

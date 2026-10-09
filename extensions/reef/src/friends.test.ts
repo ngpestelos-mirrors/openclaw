@@ -66,7 +66,7 @@ function runtime(host: "worker" | "legacy" = "worker") {
       env: { OPENCLAW_STATE_DIR: stateDir },
     });
     if (host === "legacy") {
-      const { createBatch: _createBatch, ...legacy } = store;
+      const { createOperation: _createOperation, ...legacy } = store;
       return legacy;
     }
     return store;

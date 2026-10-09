@@ -3,6 +3,8 @@ import type {
   OpenAsyncKeyedStoreOptions,
   OpenKeyedStoreOptions,
   PluginStateKeyedStore,
+  PluginStateOperation,
+  PluginStateOperationDefinitions,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
@@ -18,7 +20,6 @@ import { ReefInboxCursorStore } from "./state.js";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const binding = { handle: "molty", relayUrl: "https://reefwire.ai" };
 const options = { namespace: "inbox-cursor", maxEntries: 1, overflowPolicy: "reject-new" as const };
-type CursorHost = "batch" | "comparison" | "native";
 
 describe("Reef inbox cursor persistence", () => {
   let stateDir: string;
@@ -34,19 +35,37 @@ describe("Reef inbox cursor persistence", () => {
     resetPluginStateStoreForTests();
   });
 
-  function createRuntime(host: CursorHost = "batch") {
+  function createRuntime(host: "worker" | "native" = "worker") {
     const runtime = createPluginRuntimeMock();
+    const commands: string[] = [];
+    const hooks: { before?: () => Promise<void> | void; after?: () => Promise<void> | void } = {};
     runtime.state.openKeyedStore = <T>(storeOptions: OpenAsyncKeyedStoreOptions) => {
       const store: PluginStateKeyedStore<T> = createPluginStateKeyedStoreForTests<T>("reef", {
         ...storeOptions,
         env: { OPENCLAW_STATE_DIR: stateDir },
       });
-      if (host !== "batch") {
-        delete store.createBatch;
-      }
       if (host === "native") {
-        delete store.observe;
-        delete store.compareAndApply;
+        delete store.createOperation;
+      } else {
+        const createOperation = store.createOperation!;
+        store.createOperation = <Operations extends PluginStateOperationDefinitions>(
+          ...args: Parameters<typeof createOperation>
+        ): PluginStateOperation<Operations> => {
+          const operation = createOperation<Operations>(...args);
+          return {
+            async execute(command, selection) {
+              commands.push(command.type);
+              const before = hooks.before;
+              hooks.before = undefined;
+              await before?.();
+              const result = await operation.execute(command, selection);
+              const after = hooks.after;
+              hooks.after = undefined;
+              await after?.();
+              return result;
+            },
+          };
+        };
       }
       return store;
     };
@@ -55,58 +74,10 @@ describe("Reef inbox cursor persistence", () => {
         ...storeOptions,
         env: { OPENCLAW_STATE_DIR: stateDir },
       });
-    return runtime;
+    return Object.assign(runtime, { commands, hooks });
   }
 
-  function beforeFirstComparison(
-    runtime: ReturnType<typeof createRuntime>,
-    change: () => Promise<void>,
-  ) {
-    const open = runtime.state.openKeyedStore;
-    let changed = false;
-    const beforeComparison = async () => {
-      if (!changed) {
-        changed = true;
-        await change();
-      }
-    };
-    runtime.state.openKeyedStore = <T>(storeOptions: OpenAsyncKeyedStoreOptions) => {
-      const store = open<T>(storeOptions);
-      const createBatch = store.createBatch;
-      if (createBatch) {
-        store.createBatch = (stores, authority) => {
-          const batch = createBatch(stores, authority);
-          return {
-            ...batch,
-            async compareAndApply(changes) {
-              await beforeComparison();
-              return batch.compareAndApply(changes);
-            },
-          };
-        };
-      } else {
-        const intercept = (target: Pick<PluginStateKeyedStore<T>, "compareAndApply">) => {
-          const compareAndApply = target.compareAndApply!;
-          target.compareAndApply = async (...args) => {
-            await beforeComparison();
-            return compareAndApply.call(target, ...args);
-          };
-        };
-        intercept(store);
-        const withCurrent = store.withCurrent;
-        if (withCurrent) {
-          store.withCurrent = (authority) => {
-            const current = withCurrent.call(store, authority);
-            intercept(current);
-            return current;
-          };
-        }
-      }
-      return store;
-    };
-  }
-
-  it.each(["batch", "comparison", "native"] as const)(
+  it.each(["worker", "native"] as const)(
     "preserves monotonic progress on a %s host",
     async (host) => {
       const runtime = createRuntime(host);
@@ -119,7 +90,7 @@ describe("Reef inbox cursor persistence", () => {
     },
   );
 
-  it("loads and advances without application-thread SQL", async () => {
+  it("uses one operation per cursor call without application-thread SQL", async () => {
     const runtime = createRuntime();
     const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
     const store = new ReefInboxCursorStore(runtime, binding);
@@ -127,123 +98,86 @@ describe("Reef inbox cursor persistence", () => {
     await store.advance(12);
     await store.advance(7);
     expect(await store.load()).toBe(12);
+    expect(runtime.commands).toEqual([
+      "cursor.load",
+      "cursor.advance",
+      "cursor.advance",
+      "cursor.load",
+    ]);
     expect(prepare).not.toHaveBeenCalled();
   });
 
-  it.each([
-    { phase: "observation", bound: false },
-    { phase: "observation", bound: true },
-    { phase: "comparison dispatch", bound: true },
-  ])(
-    "refuses a comparison host revoked during $phase (bound: $bound)",
-    async ({ phase, bound }) => {
-      const runtime = createRuntime("comparison");
-      const raw = runtime.state.openKeyedStore(options);
-      await raw.register("current", { ...binding, cursor: 12 });
-      const observed = Promise.withResolvers<void>();
+  it.each(["advance", "load"] as const)(
+    "refuses cursor %s when authority expires across worker admission or read completion",
+    async (method) => {
+      const runtime = createRuntime();
+      const store = new ReefInboxCursorStore(runtime, binding);
+      await store.advance(12);
+      const entered = Promise.withResolvers<void>();
       const released = Promise.withResolvers<void>();
-      const forbiddenBatch = vi.fn(() => {
-        observed.resolve();
-        throw new Error("comparison-only host must not switch to batches");
-      });
-      const intercept = <T>(store: PluginStateKeyedStore<T> | PluginStateKeyedStore<T, 2>) => {
-        const observe = store.observe!;
-        store.observe = async (key) => {
-          const result = await observe.call(store, key);
-          if (phase === "observation") {
-            observed.resolve();
-            await released.promise;
-          }
-          return result;
-        };
-        const compareAndApply = store.compareAndApply!;
-        store.compareAndApply = async (...args) => {
-          if (phase === "comparison dispatch") {
-            observed.resolve();
-            await released.promise;
-          }
-          return compareAndApply.call(store, ...args);
-        };
-      };
-      const open = runtime.state.openKeyedStore;
-      runtime.state.openKeyedStore = <T>(storeOptions: OpenAsyncKeyedStoreOptions) => {
-        const store = open<T>(storeOptions);
-        const withCurrent = store.withCurrent!;
-        if (bound) {
-          store.withCurrent = (authority) => {
-            const current = withCurrent.call(store, authority);
-            current.createBatch = forbiddenBatch;
-            intercept(current);
-            return current;
-          };
-        } else {
-          delete store.withCurrent;
-        }
-        intercept(store);
-        return store;
-      };
-      const native = vi.spyOn(runtime.state, "openSyncKeyedStore");
       const controller = new AbortController();
       const refusal = new Error("inbox authority expired");
-      const store = new ReefInboxCursorStore(runtime, binding, controller.signal);
-      const rejected = expect(store.advance(13)).rejects.toBe(refusal);
+      const pause = async () => {
+        entered.resolve();
+        await released.promise;
+      };
+      if (method === "advance") {
+        runtime.hooks.before = pause;
+      } else {
+        runtime.hooks.after = pause;
+      }
+      const native = vi.spyOn(runtime.state, "openSyncKeyedStore");
+      const guarded = new ReefInboxCursorStore(runtime, binding, controller.signal);
+      const pending = method === "advance" ? guarded.advance(13) : guarded.load();
+      const rejected = expect(pending).rejects.toBe(refusal);
       try {
-        await observed.promise;
+        await entered.promise;
         controller.abort(refusal);
       } finally {
         released.resolve();
       }
       await rejected;
-      await expect(raw.lookup("current")).resolves.toEqual({ ...binding, cursor: 12 });
-      expect(forbiddenBatch).not.toHaveBeenCalled();
+      await expect(store.load()).resolves.toBe(12);
       expect(native).not.toHaveBeenCalled();
     },
   );
 
-  it.each([
-    ["batch", "higher cursor"],
-    ["comparison", "higher cursor"],
-    ["batch", "different identity"],
-    ["comparison", "different identity"],
-  ] as const)("revalidates a %s host's conflicting %s before advancing", async (host, conflict) => {
-    const runtime = createRuntime(host);
-    const competing = runtime.state.openKeyedStore(options);
-    beforeFirstComparison(runtime, async () => {
-      await competing.register("current", {
-        ...binding,
-        ...(conflict === "different identity" ? { handle: "clawd" } : {}),
+  it.each(["higher cursor", "different identity"] as const)(
+    "observes a foreign %s committed before cursor admission",
+    async (change) => {
+      const runtime = createRuntime();
+      const competing = runtime.state.openKeyedStore(options);
+      runtime.hooks.before = () =>
+        competing.register("current", {
+          ...binding,
+          ...(change === "different identity" ? { handle: "clawd" } : {}),
+          cursor: 40,
+        });
+      const store = new ReefInboxCursorStore(runtime, binding);
+      if (change === "different identity") {
+        await expect(store.advance(12)).rejects.toThrow("different identity");
+      } else {
+        await store.advance(12);
+        await expect(store.load()).resolves.toBe(40);
+      }
+      await expect(competing.lookup("current")).resolves.toMatchObject({
+        handle: change === "different identity" ? "clawd" : "molty",
         cursor: 40,
       });
-    });
-    const store = new ReefInboxCursorStore(runtime, binding);
-    if (conflict === "different identity") {
-      await expect(store.advance(12)).rejects.toThrow("different identity");
-    } else {
-      await store.advance(12);
-      await expect(store.load()).resolves.toBe(40);
-    }
-    await expect(competing.lookup("current")).resolves.toMatchObject({
-      handle: conflict === "different identity" ? "clawd" : "molty",
-      cursor: 40,
-    });
-  });
-
-  it.each(["batch", "comparison"] as const)(
-    "revalidates a repaired row on a %s host instead of publishing a stale binding error",
-    async (host) => {
-      const runtime = createRuntime(host);
-      const competing = runtime.state.openKeyedStore(options);
-      await competing.register("current", { ...binding, handle: "clawd", cursor: 3 });
-      beforeFirstComparison(runtime, async () => {
-        await competing.register("current", { ...binding, cursor: 5 });
-      });
-      const store = new ReefInboxCursorStore(runtime, binding);
-      await store.advance(12);
-      await expect(store.load()).resolves.toBe(12);
     },
   );
 
-  it.each(["batch", "comparison", "native"] as const)(
+  it("uses a repair committed before its worker transaction", async () => {
+    const runtime = createRuntime();
+    const competing = runtime.state.openKeyedStore(options);
+    await competing.register("current", { ...binding, handle: "clawd", cursor: 3 });
+    runtime.hooks.before = () => competing.register("current", { ...binding, cursor: 5 });
+    const store = new ReefInboxCursorStore(runtime, binding);
+    await store.advance(12);
+    await expect(store.load()).resolves.toBe(12);
+  });
+
+  it.each(["worker", "native"] as const)(
     "refuses invalid stored state on a %s host",
     async (host) => {
       const runtime = createRuntime(host);
@@ -265,19 +199,16 @@ describe("Reef inbox cursor persistence", () => {
     },
   );
 
-  it.each(["batch", "comparison"] as const)(
-    "propagates a failed comparison on a %s host without falling back to native writes",
-    async (host) => {
-      const runtime = createRuntime(host);
-      const failure = new Error("comparison unavailable");
-      beforeFirstComparison(runtime, async () => {
-        throw failure;
-      });
-      const native = vi.spyOn(runtime.state, "openSyncKeyedStore");
-      const store = new ReefInboxCursorStore(runtime, binding);
-      await expect(store.advance(12)).rejects.toBe(failure);
-      await expect(store.load()).resolves.toBe(0);
-      expect(native).not.toHaveBeenCalled();
-    },
-  );
+  it("propagates a failed operation without falling back to native writes", async () => {
+    const runtime = createRuntime();
+    const failure = new Error("worker operation unavailable");
+    runtime.hooks.before = () => {
+      throw failure;
+    };
+    const native = vi.spyOn(runtime.state, "openSyncKeyedStore");
+    const store = new ReefInboxCursorStore(runtime, binding);
+    await expect(store.advance(12)).rejects.toBe(failure);
+    await expect(store.load()).resolves.toBe(0);
+    expect(native).not.toHaveBeenCalled();
+  });
 });

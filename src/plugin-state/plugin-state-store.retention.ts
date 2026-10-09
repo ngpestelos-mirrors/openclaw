@@ -94,9 +94,9 @@ export function enforcePostRegisterLimits(params: {
   now: number;
   retention?: PluginStateRetention;
   protectedKey: string;
-}): void {
+}): string[] {
   if (isRetainedPluginStateNamespace(params.namespace)) {
-    return;
+    return [];
   }
   if (params.maxEntries === undefined) {
     throw createPluginStateError({
@@ -106,7 +106,7 @@ export function enforcePostRegisterLimits(params: {
     });
   }
   if (params.overflowPolicy === "reject-new") {
-    return;
+    return [];
   }
   const namespaceCount =
     params.retention?.namespaceCount ??
@@ -116,7 +116,7 @@ export function enforcePostRegisterLimits(params: {
       now: params.now,
     });
   if (namespaceCount <= params.maxEntries) {
-    return;
+    return [];
   }
   const kysely = getPluginStateKysely(params.store.db);
   const keys = kysely
@@ -135,12 +135,14 @@ export function enforcePostRegisterLimits(params: {
       .deleteFrom("plugin_state_entries")
       .where("plugin_id", "=", params.pluginId)
       .where("namespace", "=", params.namespace)
-      .where("entry_key", "in", keys),
+      .where("entry_key", "in", keys)
+      .returning("entry_key"),
   );
-  const deleted = Number(result.numAffectedRows ?? 0);
+  const deleted = result.rows.length;
   if (params.retention) {
     params.retention.namespaceCount -= deleted;
   }
+  return result.rows.map((row) => row.entry_key);
 }
 
 export function assertCanInsertPluginStateEntry(params: {
@@ -200,8 +202,10 @@ export function registerPluginStateEntry(
   store: PluginStateDatabase,
   params: PluginStateRegisterEntryParams,
   retention?: PluginStateRetention,
+  existingEntry?: boolean,
+  onEviction?: (keys: readonly string[]) => void,
+  now = Date.now(),
 ): void {
-  const now = Date.now();
   const expiresAt = resolvePluginStateExpiresAtMs({
     ttlMs: params.ttlMs,
     namespace: params.namespace,
@@ -222,9 +226,10 @@ export function registerPluginStateEntry(
   }
   // Quotas and batch counts need existence, never the previous JSON payload.
   const existing =
-    retention || params.overflowPolicy === "reject-new"
+    existingEntry ??
+    (retention || params.overflowPolicy === "reject-new"
       ? hasPluginStateEntry(store.db, { ...params, now })
-      : false;
+      : false);
   if (!existing) {
     assertCanInsertPluginStateEntry({
       store,
@@ -248,11 +253,12 @@ export function registerPluginStateEntry(
     retention.nextExpiry = Math.min(retention.nextExpiry, expiresAt ?? Infinity);
     retention.now = now;
   }
-  enforcePostRegisterLimits({
+  const evicted = enforcePostRegisterLimits({
     store,
     ...params,
     now,
     protectedKey: params.key,
     retention,
   });
+  onEviction?.(evicted);
 }

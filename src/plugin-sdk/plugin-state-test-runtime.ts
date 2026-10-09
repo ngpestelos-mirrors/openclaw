@@ -1,8 +1,38 @@
 /**
  * Test SDK subpath for plugin state stores, ingress queues, and state DB helpers.
  */
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { createPluginStateKeyedStore } from "../plugin-state/plugin-state-store.js";
+
+/** Bundled fixtures use package-local operation entries without constructing a live registry. */
+export function createPluginStateKeyedStoreForTests<T>(
+  ...args: Parameters<typeof createPluginStateKeyedStore<T>>
+) {
+  const [pluginId, options, assertCurrent, moduleSource] = args;
+  return createPluginStateKeyedStore<T>(
+    pluginId,
+    options,
+    assertCurrent,
+    moduleSource ?? {
+      resolve(moduleUrl) {
+        const requested = fileURLToPath(moduleUrl);
+        const boundaryRoot = path.dirname(requested);
+        if (
+          path.basename(boundaryRoot) !== pluginId ||
+          !/-operation-api\.[cm]?[jt]s$/u.test(path.basename(requested))
+        ) {
+          throw new Error("Fixture operation must belong to its bundled plugin package");
+        }
+        const modulePath = existsSync(requested) ? requested : requested.replace(/\.js$/u, ".ts");
+        return { modulePath, boundaryRoot, origin: "bundled", pluginId };
+      },
+    },
+  );
+}
+
 export {
-  createPluginStateKeyedStore as createPluginStateKeyedStoreForTests,
   createPluginStateSyncKeyedStore as createPluginStateSyncKeyedStoreForTests,
   getPluginStateCapacity as getPluginStateCapacityForTests,
   importPluginStateEntriesForDoctor as importPluginStateEntriesForDoctorForTests,

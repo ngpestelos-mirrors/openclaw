@@ -12,18 +12,19 @@ import {
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateIdentity } from "../protocol/index.js";
-import { MemoryAuditStore, MemoryReplayStore } from "../protocol/memory-stores.test-support.js";
+import { MemoryReplayStore } from "../protocol/memory-stores.test-support.js";
+import { openReefAuditStore } from "./audit-state.js";
 import { ReefMessageFlow } from "./flow.js";
 import {
   allow,
   config,
   envelope,
-  flowStores,
   guard,
   peerTrust,
   reefKeys,
   resetFlowStoresForTests,
 } from "./flow.test-helpers.js";
+import { ReefDeliveredStore, ReviewApprovalStore } from "./state.js";
 import { ReefTransportClient } from "./transport.js";
 import { openReefTrustStore } from "./trust-store.js";
 
@@ -61,12 +62,16 @@ describe("Reef captured source authority", () => {
       const alternate = openReefTrustStore(runtime(alternateEnv), cfg);
       await original.set("alice", peerTrust(peer));
       await alternate.set("alice", peerTrust(peer));
-      const trust = openReefTrustStore(runtime(movingEnv), cfg);
+      const currentRuntime = runtime(movingEnv);
+      const trust = openReefTrustStore(currentRuntime, cfg);
       const fetcher = vi
         .fn<typeof fetch>()
         .mockRejectedValue(new Error("unexpected relay request"));
       const ingress = vi.fn(async () => {});
-      const stores = flowStores();
+      const stores = {
+        reviews: new ReviewApprovalStore(currentRuntime),
+        delivered: new ReefDeliveredStore(currentRuntime),
+      };
       const revokeAndReroute = async () => {
         await original.remove("alice");
         movingEnv.OPENCLAW_STATE_DIR = alternateEnv.OPENCLAW_STATE_DIR;
@@ -77,7 +82,7 @@ describe("Reef captured source authority", () => {
         keys,
         transport: new ReefTransportClient(cfg.relayUrl, cfg.handle!, keys, fetcher),
         guard: guard(allow),
-        audit: new MemoryAuditStore(new Uint8Array(32).fill(8)),
+        audit: openReefAuditStore(currentRuntime, new Uint8Array(32).fill(8)),
         replay: new MemoryReplayStore(),
         ...stores,
         onIngress: async (_message, assertCurrent) => {
@@ -111,13 +116,14 @@ describe("Reef captured source authority", () => {
         await expect(
           flow.send("alice", "rephrased coordination", {
             prepareDelivery: recovery.prepareOutboundDelivery.bind(recovery),
+            recovery,
             onPlatformSendDispatch: revokeAndReroute,
           }),
-        ).rejects.toThrow("changed trust before dispatch");
+        ).rejects.toThrow(/source|receipt/u);
       } else if (direction === "outbound") {
         await expect(
           flow.send("alice", "private coordination", { onPlatformSendDispatch: revokeAndReroute }),
-        ).rejects.toThrow("changed trust before dispatch");
+        ).rejects.toThrow(/receipt is no longer current/u);
       } else {
         vi.spyOn(stores.delivered, "status").mockImplementationOnce(async () => {
           await revokeAndReroute();
@@ -133,7 +139,7 @@ describe("Reef captured source authority", () => {
           flow.processEntries([
             { seq: 1, peer: "alice", id: message.id, kind: "message", envelope: message, ts: 1 },
           ]),
-        ).rejects.toThrow("changed trust before dispatch");
+        ).rejects.toThrow(/receipt is no longer current/u);
       }
       expect(await alternate.get("alice")).toBeDefined();
       expect(fetcher).not.toHaveBeenCalled();

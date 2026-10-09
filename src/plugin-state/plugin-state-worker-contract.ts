@@ -2,8 +2,10 @@ import type { Result } from "@openclaw/normalization-core/result";
 import type { SessionEntryCurrentSource } from "../config/sessions/session-entry-current.types.js";
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
 import type {
-  PluginStateBatchObservationParams,
-  PluginStateBatchComparisonParams,
+  PluginStateOperationInput,
+  PluginStateOperationResult,
+} from "./plugin-state-operation-contract.js";
+import type {
   PluginStateComparisonLimits,
   PluginStatePreparedComparison,
 } from "./plugin-state-store.comparison.js";
@@ -12,7 +14,6 @@ import type { PluginStateMoveEntriesParams } from "./plugin-state-store.mutation
 import type { PluginStateKeyRangeParams } from "./plugin-state-store.reads.js";
 import type { PluginStateRegisterEntryParams } from "./plugin-state-store.retention.js";
 import type {
-  PluginStateBatchResult,
   PluginStateCompareResult,
   PluginStateEntry,
   PluginStateObservation,
@@ -27,17 +28,9 @@ type Key = Namespace & { key: string };
 type Register = Omit<PluginStateRegisterEntryParams, "createdAtMs">;
 
 export type PluginStateWorkerRequests = {
-  "pluginState.observeExisting": {
-    input: PluginStateBatchObservationParams;
-    output: PluginStateObservation<unknown>[] | undefined;
-  };
-  "pluginState.observeBatch": {
-    input: PluginStateBatchObservationParams;
-    output: PluginStateObservation<unknown>[];
-  };
-  "pluginState.compareBatch": {
-    input: PluginStateBatchComparisonParams;
-    output: PluginStateBatchResult<unknown>;
+  "pluginState.executeOperation": {
+    input: PluginStateOperationInput;
+    output: PluginStateOperationResult;
   };
   "pluginState.appendJournal": {
     input: PluginStateSequencedJournalParams;
@@ -111,20 +104,10 @@ export type PluginStateWorkerOperations = {
 };
 
 export const pluginStateWorkerOperations = {
-  "pluginState.observeExisting": {
-    operation: "lookup",
-    code: "PLUGIN_STATE_READ_FAILED",
-    message: "Failed to read plugin state entries.",
-  },
-  "pluginState.observeBatch": {
-    operation: "lookup",
-    code: "PLUGIN_STATE_READ_FAILED",
-    message: "Failed to observe plugin state entries.",
-  },
-  "pluginState.compareBatch": {
+  "pluginState.executeOperation": {
     operation: "register",
     code: "PLUGIN_STATE_WRITE_FAILED",
-    message: "Failed to compare and apply plugin state entries.",
+    message: "Failed to execute plugin state operation.",
   },
   "pluginState.appendJournal": {
     operation: "register",

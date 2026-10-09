@@ -9,6 +9,7 @@ import {
   parseStoredJson,
   rowToEntry,
   type PluginStateDatabase,
+  type PluginStateReadRow,
 } from "./plugin-state-store.kernel.js";
 import {
   PluginStateStoreError,
@@ -113,4 +114,46 @@ export function listPluginStateEntriesInKeyRange(
     order: params.order ?? "asc",
     now: Date.now(),
   }).map((row) => rowToEntry(row, "entries", store.path));
+}
+
+export function selectPluginStateBatchRows(
+  store: PluginStateDatabase,
+  entries: readonly { pluginId: string; namespace: string; key: string }[],
+  now: number,
+): Array<PluginStateReadRow | undefined> {
+  const first = entries[0];
+  if (!first) {
+    return [];
+  }
+  const query = getPluginStateKysely(store.db)
+    .selectFrom((eb) =>
+      eb
+        .fn<{ key: number; value: string }>("json_each", [
+          eb.val(JSON.stringify(entries.map(({ namespace, key }) => [namespace, key]))),
+        ])
+        .as("requested"),
+    )
+    // Keep requested keys outermost so each row seeks the complete primary key.
+    .crossJoin("plugin_state_entries")
+    .where("plugin_id", "=", first.pluginId)
+    .where((eb) =>
+      eb(
+        "namespace",
+        "=",
+        eb.fn<string>("json_extract", [eb.ref("requested.value"), eb.val("$[0]")]),
+      ),
+    )
+    .where((eb) =>
+      eb(
+        "entry_key",
+        "=",
+        eb.fn<string>("json_extract", [eb.ref("requested.value"), eb.val("$[1]")]),
+      ),
+    )
+    .select(["requested.key as position", "entry_key", "value_json", "created_at", "expires_at"])
+    .where((eb) => eb.or([eb("expires_at", "is", null), eb("expires_at", ">", now)]));
+  const rows = new Map(
+    executeSqliteQuerySync(store.db, query).rows.map((row) => [row.position, row]),
+  );
+  return entries.map((_, index) => rows.get(index));
 }

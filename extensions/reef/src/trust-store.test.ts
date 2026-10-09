@@ -4,6 +4,8 @@ import path from "node:path";
 import type {
   OpenAsyncKeyedStoreOptions,
   OpenKeyedStoreOptions,
+  PluginStateOperation,
+  PluginStateOperationDefinitions,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
@@ -32,8 +34,9 @@ import {
 import type { RelayFriend } from "./types.js";
 
 let stateDir: string;
-let nextBatchCommit: (() => Promise<void> | void) | undefined;
-let nextBatchRead: (() => void) | undefined;
+let nextOperationWrite: (() => Promise<void> | void) | undefined;
+let nextOperationRead: (() => void) | undefined;
+let workerCommands: string[] = [];
 
 function config(handle = "molty", relayUrl = "https://reefwire.ai") {
   return ReefChannelConfigSchema.parse({ handle, relayUrl });
@@ -52,29 +55,33 @@ function runtime(host: "worker" | "legacy" = "worker") {
       env: { OPENCLAW_STATE_DIR: stateDir },
     });
     if (host === "legacy") {
-      const { createBatch: _createBatch, ...legacy } = store;
+      const { createOperation: _createOperation, ...legacy } = store;
       return legacy;
     }
-    const createBatch = store.createBatch;
-    if (!createBatch) {
-      throw new Error("Expected worker batch capability");
+    const createOperation = store.createOperation;
+    if (!createOperation) {
+      throw new Error("Expected worker operation capability");
     }
-    store.createBatch = (stores, authority) => {
-      const batch = createBatch(stores, authority);
+    store.createOperation = <Operations extends PluginStateOperationDefinitions>(
+      ...args: Parameters<typeof createOperation<Operations>>
+    ): PluginStateOperation<Operations> => {
+      const operation = createOperation<Operations>(...args);
       return {
-        ...batch,
-        async observeExisting(keys) {
-          const result = await batch.observeExisting(keys);
-          const work = nextBatchRead;
-          nextBatchRead = undefined;
-          work?.();
-          return result;
-        },
-        async compareAndApply(changes) {
-          const work = nextBatchCommit;
-          nextBatchCommit = undefined;
-          await work?.();
-          return batch.compareAndApply(changes);
+        async execute(command, options) {
+          const writes = options.writeStores.length > 0;
+          if (writes) {
+            const work = nextOperationWrite;
+            nextOperationWrite = undefined;
+            await work?.();
+          }
+          workerCommands.push(command.type);
+          const receipt = await operation.execute(command, options);
+          if (!writes) {
+            const work = nextOperationRead;
+            nextOperationRead = undefined;
+            work?.();
+          }
+          return receipt;
         },
       };
     };
@@ -83,8 +90,8 @@ function runtime(host: "worker" | "legacy" = "worker") {
   return mockRuntime;
 }
 
-function beforeNextBatchCommit(work: () => Promise<void> | void) {
-  nextBatchCommit = work;
+function beforeNextOperationWrite(work: () => Promise<void> | void) {
+  nextOperationWrite = work;
 }
 
 function nativePeerWriter() {
@@ -149,12 +156,13 @@ function relayFriend(peer = "clawd", keyEpoch = 1): RelayFriend {
 
 beforeEach(() => {
   resetPluginStateStoreForTests();
+  workerCommands = [];
   stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "reef-trust-"));
 });
 
 afterEach(async () => {
-  nextBatchCommit = undefined;
-  nextBatchRead = undefined;
+  nextOperationWrite = undefined;
+  nextOperationRead = undefined;
   vi.restoreAllMocks();
   await closeOpenClawStateDatabaseAsync();
   resetPluginStateStoreForTests();
@@ -226,8 +234,12 @@ describe("ReefTrustStore", () => {
 
   it("persists peer pins and autonomy in shared plugin-state SQLite", async () => {
     const first = openReefTrustStore(runtime(), config());
+    workerCommands = [];
     await first.set("clawd", peerTrust());
+    expect(workerCommands).toHaveLength(1);
+    workerCommands = [];
     await first.setAutonomy("clawd", "extended");
+    expect(workerCommands).toHaveLength(1);
 
     const reopened = openReefTrustStore(runtime(), config());
     expect(await reopened.get("@clawd")).toMatchObject({
@@ -239,7 +251,7 @@ describe("ReefTrustStore", () => {
     expect(fs.existsSync(path.join(stateDir, "state", "openclaw.sqlite"))).toBe(true);
   });
 
-  it("preserves trust and rejection notices on released hosts without worker batches", async () => {
+  it("preserves trust and rejection notices on released hosts without worker operations", async () => {
     const store = openReefTrustStore(runtime("legacy"), config());
     const trustedPeer = peerTrust();
     const recipient = reefPeerIdentity(trustedPeer);
@@ -261,11 +273,11 @@ describe("ReefTrustStore", () => {
     expect(await reopened.readOutboundDelivery("clawd", id)).toBeUndefined();
   });
 
-  it("surfaces worker batch failures without applying a native fallback mutation", async () => {
+  it("surfaces worker operation failures without applying a native fallback mutation", async () => {
     const store = openReefTrustStore(runtime(), config());
     await store.set("clawd", peerTrust());
-    const failure = new Error("worker batch failed");
-    beforeNextBatchCommit(() => {
+    const failure = new Error("worker operation failed");
+    beforeNextOperationWrite(() => {
       throw failure;
     });
 
@@ -345,7 +357,7 @@ describe("ReefTrustStore", () => {
     await store.set("clawd", trustedPeer);
     const id = "01JZ0000000000000000000126";
     const preparation = (await store.prepareOutboundDelivery("clawd", id))!;
-    beforeNextBatchCommit(() => authority.abort(revoked));
+    beforeNextOperationWrite(() => authority.abort(revoked));
     await expect(
       preparation.record({ bodyHash: "a".repeat(64), recipient: reefPeerIdentity(trustedPeer) }),
     ).rejects.toThrow("outbound authority closed");
@@ -355,7 +367,7 @@ describe("ReefTrustStore", () => {
   });
 
   it.each(["worker", "legacy"] as const)(
-    "refuses a prepared %s delivery after a foreign peer key rotation",
+    "refuses a prepared %s delivery after a sanctioned peer key rotation",
     async (host) => {
       const store = openReefTrustStore(runtime(host), config());
       const trustedPeer = peerTrust();
@@ -376,6 +388,20 @@ describe("ReefTrustStore", () => {
     },
   );
 
+  it("revokes captured peer authority on sanctioned writes without another worker request", async () => {
+    const store = openReefTrustStore(runtime(), config());
+    await store.set("clawd", peerTrust());
+    const observed = (await store.observePeer("clawd"))!;
+    workerCommands = [];
+    observed.assertCurrent();
+    expect(workerCommands).toHaveLength(0);
+
+    nativePeerWriter().register(resolveReefTrustStoreKey(config(), "clawd"), { revision: 2 });
+    expect(() => observed.assertCurrent()).toThrow();
+    expect(workerCommands).toHaveLength(0);
+    expect(await store.get("clawd")).toBeUndefined();
+  });
+
   it.each(["prepare", "read"] as const)(
     "rejects a borrowed delivery %s result after channel closure",
     async (operation) => {
@@ -385,7 +411,7 @@ describe("ReefTrustStore", () => {
         authority.signal.throwIfAborted(),
       );
       await store.set("clawd", peerTrust());
-      nextBatchRead = () => authority.abort(revoked);
+      nextOperationRead = () => authority.abort(revoked);
       await expect(
         operation === "prepare"
           ? store.prepareOutboundDelivery("clawd", "01JZ0000000000000000000136")
@@ -424,35 +450,12 @@ describe("ReefTrustStore", () => {
   it.each(["snapshot", "list"] as const)(
     "rejects a borrowed %s result after channel closure",
     async (read) => {
-      const mockRuntime = runtime();
-      const openStore = mockRuntime.state.openKeyedStore;
       const authority = new AbortController();
       const revoked = new Error("read authority closed");
-      mockRuntime.state.openKeyedStore = <T>(options: OpenAsyncKeyedStoreOptions) => {
-        const store = openStore<T>(options);
-        const namespace = "peer-state";
-        if (options.namespace === namespace) {
-          if (read === "list") {
-            const entries = store.entries.bind(store);
-            store.entries = async () => {
-              const result = await entries();
-              authority.abort(revoked);
-              return result;
-            };
-          } else {
-            const lookup = store.lookup.bind(store);
-            store.lookup = async (key) => {
-              const result = await lookup(key);
-              authority.abort(revoked);
-              return result;
-            };
-          }
-        }
-        return store;
-      };
-      const store = openReefTrustStore(mockRuntime, config(), () =>
+      const store = openReefTrustStore(runtime(), config(), () =>
         authority.signal.throwIfAborted(),
       );
+      nextOperationRead = () => authority.abort(revoked);
       await expect(read === "list" ? store.list() : store.snapshot("clawd")).rejects.toBe(revoked);
     },
   );
@@ -511,9 +514,13 @@ describe("ReefTrustStore", () => {
     expect(await (await reopened.readOutboundDelivery("clawd", id))!.consume()).toBe("rejected");
     const noticeState = { lastRejectionAt: 10_000, lastResendAt: 10_100 };
     const recovery = (await reopened.readOutboundDelivery("clawd", id))!.recovery;
+    workerCommands = [];
     expect(await recovery.reserve(noticeState)).toEqual({
       kind: "reserved",
     });
+    expect(workerCommands).toHaveLength(1);
+    recovery.assertCurrent();
+    expect(workerCommands).toHaveLength(1);
     expect(await reopened.pendingOutboundRejections()).toMatchObject([
       {
         id,
@@ -524,7 +531,9 @@ describe("ReefTrustStore", () => {
         reservedNotice: noticeState,
       },
     ]);
+    workerCommands = [];
     expect(await recovery.complete(noticeState)).toBe(true);
+    expect(workerCommands).toHaveLength(1);
     expect(await reopened.pendingOutboundRejections()).toMatchObject([]);
     expect(await reopened.readOutboundDelivery("clawd", id)).toBeUndefined();
     expect(await reopened.rejectionNoticeState("clawd")).toEqual(noticeState);
@@ -552,7 +561,7 @@ describe("ReefTrustStore", () => {
     ]);
   });
 
-  it("rejects recovery if peer keys change between cross-row observation and reservation", async () => {
+  it("rejects recovery if peer keys change before rejection reservation", async () => {
     const id = "01JZ0000000000000000000124";
     const store = openReefTrustStore(runtime(), config());
     const trustedPeer = peerTrust();
@@ -568,7 +577,7 @@ describe("ReefTrustStore", () => {
     }
     const previous = await store.snapshot("clawd");
     const writer = nativePeerWriter();
-    beforeNextBatchCommit(() =>
+    beforeNextOperationWrite(() =>
       writer.register(resolveReefTrustStoreKey(config(), "clawd"), {
         ...previous,
         revision: previous.revision + 1,
@@ -587,7 +596,7 @@ describe("ReefTrustStore", () => {
   });
 
   it.each(["overdue", "rejections"] as const)(
-    "observes foreign commits between %s scans",
+    "observes sanctioned sibling writes between %s scans",
     async (kind) => {
       const now = 1_800_000_000_000;
       const clock = vi.spyOn(Date, "now").mockReturnValue(now);
@@ -665,7 +674,7 @@ describe("ReefTrustStore", () => {
     };
     const olderRecovery = (await reopened.readOutboundDelivery("clawd", olderId))!.recovery;
     await olderRecovery.reserve(olderState);
-    beforeNextBatchCommit(async () => {
+    beforeNextOperationWrite(async () => {
       await latestRecovery.complete(latestState);
       await store.setAutonomy("clawd", "extended");
     });
@@ -709,7 +718,7 @@ describe("ReefTrustStore", () => {
         authority === "channel" ? assertCurrent : undefined,
       );
       await store.set("clawd", peerTrust());
-      beforeNextBatchCommit(() => {
+      beforeNextOperationWrite(() => {
         current = false;
       });
 
@@ -769,14 +778,18 @@ describe("ReefTrustStore", () => {
     const requestId = request.requestId;
     const beforeRemoval = await store.snapshot("clawd");
 
+    workerCommands = [];
     await store.remove("clawd");
+    expect(workerCommands).toHaveLength(1);
 
+    workerCommands = [];
     expect(
       await store.commitPeerTrust(relayFriend(), {
         expectedRevision: beforeRemoval.revision,
         expectedOutboundRequestId: requestId,
       }),
     ).toBe(false);
+    expect(workerCommands).toHaveLength(1);
     expect(await store.get("clawd")).toBeUndefined();
     expect(await store.hasOutboundRequest("clawd")).toBe(false);
   });

@@ -1,30 +1,53 @@
 import type {
-  PluginStateBatch,
-  PluginStateBatchKey,
+  PluginStateKeyedStore,
+  PluginStateOperationReceipt,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   matchesReefPeerIdentity,
   type ReefAutonomy,
   type ReefPeerIdentity,
+  type ReefPeerTrust,
 } from "./friend-types.js";
-import { ReefPeerStateSchema, ReefPeerTrustChangedError } from "./trust-store-format.js";
+import {
+  ReefPeerTrustChangedError,
+  type ReefOutboundDelivery,
+  type ReefPeerStateSnapshot,
+} from "./trust-store-format.js";
 
-export function createReefPeerAssertion(
-  batch: PluginStateBatch,
-  key: PluginStateBatchKey,
+export type ReefTrustOperationState = {
+  peers: PluginStateKeyedStore<ReefPeerStateSnapshot>;
+  deliveries: PluginStateKeyedStore<ReefOutboundDelivery>;
+  identityScope: string;
+  assertCurrent(): void;
+};
+
+export function validateReefPeerIdentity(
+  current: ReefPeerTrust | undefined,
   peer: string,
   expected: ReefPeerIdentity,
   autonomy?: ReefAutonomy,
+): ReefPeerTrust {
+  if (
+    !current ||
+    !matchesReefPeerIdentity(current, expected) ||
+    (autonomy !== undefined && current.autonomy !== autonomy)
+  ) {
+    throw new ReefPeerTrustChangedError(peer);
+  }
+  return current;
+}
+
+export function createReefPeerAssertion(
+  receipt: Pick<PluginStateOperationReceipt<unknown>, "assertCurrent">,
+  peer: string,
+  current: ReefPeerTrust | undefined,
+  expected: ReefPeerIdentity,
+  autonomy?: ReefAutonomy,
 ): () => void {
+  const captured = current ? { ...current } : undefined;
   const identity = { ...expected };
-  return () =>
-    batch.assertCurrentValue(key, (value) => {
-      const current = value === undefined ? undefined : ReefPeerStateSchema.parse(value).trust;
-      if (
-        !matchesReefPeerIdentity(current, identity) ||
-        (autonomy !== undefined && current?.autonomy !== autonomy)
-      ) {
-        throw new ReefPeerTrustChangedError(peer);
-      }
-    });
+  return () => {
+    receipt.assertCurrent();
+    validateReefPeerIdentity(captured, peer, identity, autonomy);
+  };
 }

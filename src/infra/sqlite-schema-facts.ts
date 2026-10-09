@@ -16,7 +16,7 @@ import {
   prepareSqliteTempTrackingSchema,
   type SqliteTempTrackingSchema,
 } from "./sqlite-temp-generation-schema.js";
-import { readDatabasePathIdentitySync } from "./sqlite-worker-identity.js";
+import { normalizeDatabasePath, readDatabasePathIdentitySync } from "./sqlite-worker-identity.js";
 
 type NativeSqlite = Pick<typeof import("node:sqlite"), "DatabaseSync" | "StatementSync">;
 
@@ -522,6 +522,25 @@ export function runSqliteReadOperationSync<T>(
   }
 }
 
+const ownedStateOperations = new Map<string, number>();
+
+/** The shared-state actor owns all writers in this operation; admission and local SQL
+ * mutation tracking remain authoritative, without polling for out-of-process writers. */
+export function runSqliteOwnedStateOperationSync<T>(databasePath: string, operation: () => T): T {
+  const location = normalizeDatabasePath(databasePath);
+  const previous = ownedStateOperations.get(location) ?? 0;
+  ownedStateOperations.set(location, previous + 1);
+  try {
+    return operation();
+  } finally {
+    if (previous === 0) {
+      ownedStateOperations.delete(location);
+    } else {
+      ownedStateOperations.set(location, previous);
+    }
+  }
+}
+
 /** Always execute a fresh probe; compare versions only on the same connection. */
 export function readSqliteDataVersion(database: DatabaseSync): number {
   const row = executeWithCachedStatement(database, "PRAGMA data_version", [], (statement) =>
@@ -547,6 +566,14 @@ export function readSqliteCacheDataVersion(
     observeTransactionState(database, tracked);
   }
   const owner = tracked?.admitted ? tracked : undefined;
+  if (
+    ownedStateOperations.size > 0 &&
+    ownedStateOperations.has(normalizeDatabasePath(database.location() ?? ":memory:")) &&
+    owner?.dataVersion !== undefined &&
+    !owner.authorizerActive
+  ) {
+    return owner.dataVersion;
+  }
   if (
     mode === "cached" &&
     owner &&

@@ -1,3 +1,4 @@
+import * as pluginStateRuntime from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   bodyHash as hashMessageBody,
   composeInbound,
@@ -10,6 +11,7 @@ import {
   parseHandleEpoch,
   PipelineError,
   type AuditStore,
+  type Envelope,
   type GuardAdapter,
   type ReplayStore,
   type ReviewGate,
@@ -21,9 +23,14 @@ import {
   reefPeerIdentity,
   type ReefPeerIdentity,
 } from "./friend-types.js";
+import {
+  prepareReefOutboundComposition,
+  ReefOutboundRejectedError,
+} from "./outbound-state-client.js";
 import { reefMessageTextHash } from "./rejection-resend.js";
 import { ReefDeliveredStore, ReviewApprovalStore } from "./state.js";
 import { ReefInboxEntryParkedError, ReefTransportClient } from "./transport.js";
+import { requirePeer } from "./trust-store-format.js";
 import { ReefPeerTrustChangedError, type ReefTrustStore } from "./trust-store.js";
 import type {
   InboxEntry,
@@ -31,21 +38,19 @@ import type {
   ReefIngressMessage,
   ReefKeys,
   ReefOutboundDeliveryPreparation,
+  ReefRejectionRecovery,
 } from "./types.js";
 
 /** Reserves a protocol-valid id before recipient-visible Reef delivery starts. */
 export const prepareReefMessageId = createMonotonicUlidFactory();
 
-/** Local policy or trust rejection that is safe to retire without retrying. */
-class ReefOutboundRejectedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ReefOutboundRejectedError";
-  }
-}
-
 export function isPermanentReefOutboundRejection(error: unknown): boolean {
-  if (error instanceof ReefOutboundRejectedError || error instanceof ReefPeerTrustChangedError) {
+  const InvalidatedError = pluginStateRuntime.PluginStateOperationInvalidatedError;
+  if (
+    error instanceof ReefOutboundRejectedError ||
+    error instanceof ReefPeerTrustChangedError ||
+    (InvalidatedError && error instanceof InvalidatedError)
+  ) {
     return true;
   }
   if (!(error instanceof PipelineError)) {
@@ -67,6 +72,7 @@ export class ReefMessageFlow {
   // Entry ids whose last processing outcome parked (pending review, guard
   // outage): their re-polls skip the duplicate durable read observation.
   private readonly parkedReadIds = new Set<string>();
+  private readonly pendingOutbound = new Set<string>();
 
   constructor(
     readonly options: {
@@ -96,66 +102,108 @@ export class ReefMessageFlow {
       messageId?: string;
       onPlatformSendDispatch?: () => Promise<void>;
       prepareDelivery?: (id: string) => Promise<ReefOutboundDeliveryPreparation | undefined>;
+      recovery?: ReefRejectionRecovery;
     } = {},
   ): Promise<string> {
     const signal = this.options.authoritySignal;
     signal?.throwIfAborted();
+    peer = requirePeer(peer);
     const from = formatHandleEpoch(this.requireHandle(), this.options.keys.keyEpoch);
     const senderSigningSecretKey = this.options.keys.signing.secretKey;
     const id = context.messageId ?? prepareReefMessageId();
-    const preparation = await (context.prepareDelivery
-      ? context.prepareDelivery(id)
-      : this.options.trust.prepareOutboundDelivery(peer, id));
-    const friend = preparation?.trust;
-    signal?.throwIfAborted();
-    if (
-      !preparation ||
-      !friend ||
-      friend.safetyNumberChanged ||
-      (context.expectedRecipient !== undefined &&
-        !matchesReefPeerIdentity(friend, context.expectedRecipient))
-    ) {
-      throw new ReefOutboundRejectedError(`Reef peer @${peer} is not approved with current keys`);
+    const pendingKey = `${peer}:${id}`;
+    if (this.pendingOutbound.has(pendingKey)) {
+      throw new Error(`Duplicate outbound Reef delivery id ${id}`);
     }
-    const recipient = reefPeerIdentity(friend);
     const body = {
       text,
       ...(context.thread ? { thread: context.thread } : {}),
       ...(context.replyTo ? { replyTo: context.replyTo } : {}),
     };
-    const result = await composeOutbound({
+    const policyVersion = this.guardPolicyVersion();
+    const expectedRecipient = context.expectedRecipient
+      ? { ...context.expectedRecipient }
+      : undefined;
+    const resendDisabled = context.resendDisabled;
+    const onPlatformSendDispatch = context.onPlatformSendDispatch;
+    const prepareDelivery = context.prepareDelivery;
+    const transport = this.options.transport;
+    const composition = prepareReefOutboundComposition({
+      trust: this.options.trust,
+      audit: this.options.audit,
+      reviews: this.options.reviews,
+      guard: this.options.guard,
+      peer,
       id,
       from,
-      to: formatHandleEpoch(peer, friend.keyEpoch),
       body,
       senderSigningSecretKey,
-      recipientEncryptionPublicKey: friend.x25519PublicKey,
-      guard: this.options.guard,
-      audit: this.options.audit,
-      policyVersion: this.guardPolicyVersion(),
-      reviewGate: reviewGateFor(this.options.reviews),
+      policyVersion,
+      expectedRecipient,
+      resendDisabled,
+      recovery: context.recovery,
+      authoritySignal: signal,
     });
-    signal?.throwIfAborted();
-    // Persist the exact peer/id/body binding before the relay can return a
-    // receipt. Only a matching durable record may later authorize a resend turn.
-    await preparation.record(
-      {
-        bodyHash: hashMessageBody(body),
-        textHash: reefMessageTextHash(text),
-        recipient,
-      },
-      context.resendDisabled ? { resendDisabled: true } : {},
-    );
-    // Guard/review/encryption are local and may reject safely. Mark ambiguity
-    // only at the relay boundary so recovery never treats those failures as sent.
-    await context.onPlatformSendDispatch?.();
-    signal?.throwIfAborted();
-    await this.options.transport.sendEnvelope(peer, result.envelope, signal, () => {
+    if (composition && prepareDelivery && !context.recovery) {
+      throw new Error("Reef worker send requires a source-bound recovery continuation");
+    }
+    this.pendingOutbound.add(pendingKey);
+    try {
+      let prepared: { envelope: Envelope; assertCurrent(): void };
+      if (composition) {
+        prepared = await composition.compose();
+      } else {
+        const preparation = await (prepareDelivery
+          ? prepareDelivery(id)
+          : this.options.trust.prepareOutboundDelivery(peer, id));
+        const friend = preparation?.trust;
+        signal?.throwIfAborted();
+        if (
+          !preparation ||
+          !friend ||
+          friend.safetyNumberChanged ||
+          (expectedRecipient !== undefined && !matchesReefPeerIdentity(friend, expectedRecipient))
+        ) {
+          throw new ReefOutboundRejectedError(
+            `Reef peer @${peer} is not approved with current keys`,
+          );
+        }
+        const result = await composeOutbound({
+          id,
+          from,
+          to: formatHandleEpoch(peer, friend.keyEpoch),
+          body,
+          senderSigningSecretKey,
+          recipientEncryptionPublicKey: friend.x25519PublicKey,
+          guard: this.options.guard,
+          audit: this.options.audit,
+          policyVersion,
+          reviewGate: reviewGateFor(this.options.reviews),
+        });
+        signal?.throwIfAborted();
+        await preparation.record(
+          {
+            bodyHash: hashMessageBody(body),
+            textHash: reefMessageTextHash(text),
+            recipient: reefPeerIdentity(friend),
+          },
+          resendDisabled ? { resendDisabled: true } : {},
+        );
+        prepared = { envelope: result.envelope, assertCurrent: () => preparation.assertCurrent() };
+      }
+      // Guard/review/encryption may reject safely. Mark ambiguity only at the
+      // relay boundary, after the exact delivery binding has committed.
+      await onPlatformSendDispatch?.();
       signal?.throwIfAborted();
-      preparation.assertCurrent();
-    });
-    signal?.throwIfAborted();
-    return id;
+      await transport.sendEnvelope(peer, prepared.envelope, signal, () => {
+        signal?.throwIfAborted();
+        prepared.assertCurrent();
+      });
+      signal?.throwIfAborted();
+      return id;
+    } finally {
+      this.pendingOutbound.delete(pendingKey);
+    }
   }
 
   async processEntries(entries: InboxEntry[]): Promise<ReefDeliveryRejection[]> {

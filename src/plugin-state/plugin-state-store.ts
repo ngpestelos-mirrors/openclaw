@@ -6,14 +6,17 @@ import type {
 } from "../config/sessions/session-entry-current.types.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
-import { createPluginStateBatch } from "./plugin-state-batch.js";
+import { createPluginStateOperation } from "./plugin-state-operation.js";
 import { validatePluginStateComparison } from "./plugin-state-store.comparison.js";
 import {
   preparePluginStateJournalValue,
   type PluginStateSequencedJournalParams,
 } from "./plugin-state-store.journal.js";
 import { isRetainedPluginStateNamespace } from "./plugin-state-store.kernel.js";
-import { bindPluginStateNativeBindingStore } from "./plugin-state-store.native-binding.js";
+import {
+  bindPluginStateNativeBindingStore,
+  type PluginStateOperationModuleSource,
+} from "./plugin-state-store.native-binding.js";
 import {
   validatePluginStateKeyRange,
   type PluginStateKeyRangeParams,
@@ -111,12 +114,19 @@ function createKeyedStoreForPluginId<T>(
   pluginId: string,
   options: OpenAsyncKeyedStoreOptions,
   assertActive?: () => void,
+  moduleSource?: PluginStateOperationModuleSource,
 ): Required<PluginStateKeyedStore<T>> {
   const prepared = prepareKeyedStoreOptions(pluginId, options);
   const assertRetainedActive = options.retention === "retained" ? assertActive : undefined;
   const store = createSyncKeyedStore<T>(prepared, assertRetainedActive);
   const asyncStore: Required<PluginStateKeyedStore<T>> = {
-    ...createAsyncKeyedStore<T>(prepared, assertRetainedActive, assertActive),
+    ...createAsyncKeyedStore<T>(
+      prepared,
+      assertRetainedActive,
+      assertActive,
+      undefined,
+      moduleSource,
+    ),
     withCurrent: ({ assertCurrent, sessionEntryCurrent }) => {
       if (typeof assertCurrent !== "function") {
         throw invalidInput("Plugin state action authority requires assertCurrent.");
@@ -131,12 +141,19 @@ function createKeyedStoreForPluginId<T>(
         assertBoundCurrent,
         assertBoundCurrent,
         sessionEntryCurrent,
+        moduleSource,
       );
     },
     update: async (...args) => store.update(...args),
     deleteIf: async (...args) => store.deleteIf(...args),
   };
-  return bindPluginStateNativeBindingStore(asyncStore, prepared, assertActive);
+  return bindPluginStateNativeBindingStore(
+    asyncStore,
+    prepared,
+    assertActive,
+    undefined,
+    moduleSource,
+  );
 }
 
 function createAsyncKeyedStore<T>(
@@ -144,6 +161,7 @@ function createAsyncKeyedStore<T>(
   assertActive?: () => void,
   assertRangeActive = assertActive,
   sessionEntryCurrent?: SessionEntryCurrentCheck | SessionEntriesCurrentCheck,
+  moduleSource?: PluginStateOperationModuleSource,
 ): Required<PluginStateKeyedStore<T, 2>> {
   const scope = {
     pluginId: prepared.pluginId,
@@ -154,7 +172,8 @@ function createAsyncKeyedStore<T>(
   };
 
   const store: Required<PluginStateKeyedStore<T, 2>> = {
-    createBatch: (stores, authority) => createPluginStateBatch(store, stores, authority),
+    createOperation: (stores, handler, authority) =>
+      createPluginStateOperation(store, stores, handler, authority),
     observe: async (key) => {
       const observation = await observePluginStateInWorker({
         ...scope,
@@ -341,7 +360,13 @@ function createAsyncKeyedStore<T>(
       await clearPluginStateInWorker(scope);
     },
   };
-  return bindPluginStateNativeBindingStore(store, prepared, assertRangeActive, sessionEntryCurrent);
+  return bindPluginStateNativeBindingStore(
+    store,
+    prepared,
+    assertRangeActive,
+    sessionEntryCurrent,
+    moduleSource,
+  );
 }
 
 function createSyncKeyedStoreForPluginId<T>(
@@ -478,11 +503,12 @@ export function createPluginStateKeyedStore<T>(
   pluginId: string,
   options: OpenAsyncKeyedStoreOptions,
   assertActive?: () => void,
+  moduleSource?: PluginStateOperationModuleSource,
 ): Required<PluginStateKeyedStore<T>> {
   if (pluginId.startsWith("core:")) {
     throw invalidInput("Plugin ids starting with 'core:' are reserved for core consumers.", "open");
   }
-  return createKeyedStoreForPluginId<T>(pluginId, options, assertActive);
+  return createKeyedStoreForPluginId<T>(pluginId, options, assertActive, moduleSource);
 }
 
 /**

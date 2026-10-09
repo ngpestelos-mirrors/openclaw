@@ -35,32 +35,42 @@ export type PluginStateCompareResult<T> =
   | { status: "applied" | "unchanged" }
   | { status: "conflict"; current: PluginStateObservation<T> };
 
-export type PluginStateBatchKey = { store: number; key: string };
+export type PluginStateOperationDefinitions = Record<string, { input: unknown; output: unknown }>;
 
-export type PluginStateBatchChange<T> = PluginStateBatchKey & {
-  comparison: string;
-  intent: PluginStateCompareIntent<T>;
+export type PluginStateOperationCommand<Operations extends PluginStateOperationDefinitions> = {
+  [Type in keyof Operations & string]: { type: Type; input: Operations[Type]["input"] };
+}[keyof Operations & string];
+
+/** The worker owns this synchronous view for one invocation and invalidates it on return. */
+export type PluginStateOperationTransaction = {
+  lookup<T = unknown>(store: number, key: string): T | undefined;
+  lookupMany<T = unknown>(keys: readonly { store: number; key: string }[]): Array<T | undefined>;
+  entries<T = unknown>(store: number): PluginStateEntry<T>[];
+  set(store: number, key: string, value: unknown, options?: { ttlMs?: number }): void;
+  delete(store: number, key: string): boolean;
 };
 
-export type PluginStateBatchResult<T> =
-  | { status: "applied" | "unchanged" }
-  | { status: "conflict"; current: PluginStateObservation<T>[] };
+export type PluginStateOperationHandler<Operations extends PluginStateOperationDefinitions> = (
+  command: PluginStateOperationCommand<Operations>,
+  transaction: PluginStateOperationTransaction,
+) => Operations[keyof Operations]["output"];
 
-/** Source-bound cross-namespace operations over at most 10,000 unique keys. */
-export type PluginStateBatch<T = unknown> = {
-  /** Final-effect live assertion on the captured source; refuses session-restricted handles. */
-  assertCurrentValue(key: PluginStateBatchKey, assertion: (value: T | undefined) => void): void;
-  /** Noncreating observations from the captured source; undefined means no physical database. */
-  observeExisting(
-    keys: readonly PluginStateBatchKey[],
-  ): Promise<PluginStateObservation<T>[] | undefined>;
-  /** Lists one captured namespace without resolving its source again. */
-  entries(store: number): Promise<PluginStateEntry<T>[]>;
-  observe(keys: readonly PluginStateBatchKey[]): Promise<PluginStateObservation<T>[]>;
-  /** Compares all keys before applying intents in order; exceptions never authorize replay. */
-  compareAndApply(
-    changes: readonly PluginStateBatchChange<T>[],
-  ): Promise<PluginStateBatchResult<T>>;
+export type PluginStateOperationReceipt<T> = {
+  value: T;
+  /** Refuses after watched state, the captured source, or live authority changes. */
+  assertCurrent(): void;
+};
+
+export type PluginStateOperation<Operations extends PluginStateOperationDefinitions> = {
+  execute<Type extends keyof Operations & string>(
+    command: { type: Type; input: Operations[Type]["input"] },
+    options: {
+      writeStores: readonly number[];
+      watchStores?: readonly number[];
+      /** Explicit noncreating result when a read-only source does not exist. */
+      missingValue?: Operations[Type]["output"];
+    },
+  ): Promise<PluginStateOperationReceipt<Operations[Type]["output"]>>;
 };
 
 export type PluginStateKeyRange = {
@@ -77,11 +87,12 @@ export type PluginStateMoveEntries = {
 };
 
 type PluginStateKeyedStoreBase<T> = {
-  /** Captures same-plugin async handles for one source-bound cross-row operation. */
-  createBatch?: <TValue = T>(
-    stores: readonly Pick<PluginStateKeyedStore<TValue>, "lookup" | "entries">[],
-    authority?: { assertCurrent: () => void },
-  ) => PluginStateBatch<TValue>;
+  /** Loads a plugin-owned static handler into the existing state worker. */
+  createOperation?: <Operations extends PluginStateOperationDefinitions>(
+    stores: readonly Pick<PluginStateKeyedStore<unknown>, "lookup" | "entries">[],
+    handler: { moduleUrl: string; exportName: string },
+    authority?: { assertCurrent(): void; sourceReceipt?: PluginStateOperationReceipt<unknown> },
+  ) => PluginStateOperation<Operations>;
   /** Prepares a mutation observation through canonical writable admission; may create state. */
   observe?: (key: string) => Promise<PluginStateObservation<T>>;
   /** Compares the observed row before applying prepared data; only explicit conflicts may retry. */
@@ -136,8 +147,8 @@ type PluginStateKeyedStoreBase<T> = {
 
 /** Version 2 is an action-bound, data-only view; legacy stores remain source-compatible. */
 export type PluginStateKeyedStore<T, Version extends 1 | 2 = 1> = Version extends 2
-  ? Required<Omit<PluginStateKeyedStoreBase<T>, "update" | "deleteIf" | "createBatch">> &
-      Pick<PluginStateKeyedStoreBase<T>, "createBatch">
+  ? Required<Omit<PluginStateKeyedStoreBase<T>, "update" | "deleteIf" | "createOperation">> &
+      Pick<PluginStateKeyedStoreBase<T>, "createOperation">
   : PluginStateKeyedStoreBase<T> & {
       /** Bind current action authority through read completion and final write admission. */
       withCurrent?: (authority: {
