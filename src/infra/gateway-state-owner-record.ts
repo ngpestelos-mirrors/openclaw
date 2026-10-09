@@ -82,6 +82,11 @@ export function assertPersistedStateDatabaseAccessAllowed(params: {
   }
   const role = owner.role ?? "gateway";
   if (role === "gateway" || role === "agent-embedded") {
+    if (owner.pid !== process.pid) {
+      throw new Error(
+        `OpenClaw state at ${databasePath} is owned by a live ${role} process; route writes through that owner or stop it before running offline commands.`,
+      );
+    }
     return;
   }
   if (owner.pid === process.pid) {
