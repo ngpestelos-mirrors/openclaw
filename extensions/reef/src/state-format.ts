@@ -25,6 +25,7 @@ export function parseReefKeys(value: unknown): ReefKeys {
   if (!value || typeof value !== "object") {
     throw new Error("invalid Reef keys");
   }
+  // SAFETY: Every key is checked for canonical 32-byte encoding and the epoch is validated below.
   const keys = value as ReefKeys;
   if (
     fromBase64url(keys.signing?.publicKey ?? "").length !== 32 ||

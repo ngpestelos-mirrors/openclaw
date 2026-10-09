@@ -161,11 +161,7 @@ export async function loadKeys(
   assertReefIdentityMigrationComplete(observations?.[0]?.value, observations?.[1]?.value);
   const value = observations?.[2]?.value;
   if (!value) {
-    const error = new Error("Reef keys are missing from plugin state") as Error & {
-      code?: string;
-    };
-    error.code = "ENOENT";
-    throw error;
+    throw Object.assign(new Error("Reef keys are missing from plugin state"), { code: "ENOENT" });
   }
   return parseReefKeys(value);
 }

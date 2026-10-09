@@ -555,7 +555,7 @@ describe("Reef doctor contract", () => {
     await expect(migrationStore.lookup(REEF_AUDIT_MIGRATION_KEY)).resolves.toEqual({
       pending: true,
     });
-    expect(() => openStores(createRuntime(env), reefKeys())).toThrow(
+    await expect(openStores(createRuntime(env), reefKeys())).rejects.toThrow(
       "Reef durable state migration is incomplete",
     );
 
@@ -569,7 +569,7 @@ describe("Reef doctor contract", () => {
     expect(repaired.warnings).toEqual([]);
     await expect(migrationStore.lookup(REEF_AUDIT_MIGRATION_KEY)).resolves.toBeUndefined();
     await migrationById("reef-runtime-files-to-plugin-state").migrateLegacyState(params);
-    expect(() => openStores(createRuntime(env), reefKeys())).not.toThrow();
+    await expect(openStores(createRuntime(env), reefKeys())).resolves.toBeDefined();
   });
 
   it("imports registration and durable runtime state before archiving files", async () => {

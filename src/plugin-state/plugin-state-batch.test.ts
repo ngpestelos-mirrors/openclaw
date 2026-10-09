@@ -320,7 +320,7 @@ describe("plugin state cross-namespace batches", () => {
       assertCurrent: read.assertSourceCurrent,
       sessionEntryCurrent: {
         source: read.source,
-        assertCurrent(current) {
+        assertCurrent(current: SessionEntryCurrentFacts | undefined) {
           facts.push(current);
           if (current?.lifecycleRevision !== "original") {
             throw new Error("session claim changed");

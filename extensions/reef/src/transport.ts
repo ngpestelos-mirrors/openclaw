@@ -1,13 +1,13 @@
 import { toStringifiedError as asError } from "openclaw/plugin-sdk/error-runtime";
 import { buildTimeoutAbortSignal } from "openclaw/plugin-sdk/extension-shared";
 import * as fetchRuntime from "openclaw/plugin-sdk/fetch-runtime";
-import { redactSensitiveText } from "openclaw/plugin-sdk/logging-core";
 import { readProviderJsonResponse } from "openclaw/plugin-sdk/provider-http";
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { WebSocket } from "openclaw/plugin-sdk/websocket-runtime";
 import { sha256Hex, signDeviceRequest, utf8 } from "../protocol/index.js";
 import type { Envelope, SignedReceipt } from "../protocol/index.js";
+import { redactReefRelayErrorMessage } from "./transport-errors.js";
 import type { InboxEntry, ReefKeys, RelayFriend } from "./types.js";
 
 type FetchLike = typeof fetch;
@@ -38,16 +38,6 @@ const REEF_INBOX_KEEPALIVE_MS = 45_000;
 // Cover headers and body consumption. A relay that accepts the request but
 // stops producing bytes must not pin inbox recovery forever.
 const REEF_RELAY_REQUEST_TIMEOUT_MS = 15_000;
-
-function redactReefRelayErrorMessage(message: string, secrets: readonly string[]): string {
-  let redacted = message;
-  for (const secret of secrets) {
-    if (secret.length > 0) {
-      redacted = redacted.replaceAll(secret, "<redacted>");
-    }
-  }
-  return redactSensitiveText(redacted, { mode: "tools" });
-}
 
 export class ReefRelayError extends Error {
   constructor(

@@ -100,11 +100,7 @@ export async function loadLegacyKeys(runtime: PluginRuntime): Promise<ReefKeys> 
   assertLegacyReefIdentityMigrationComplete(runtime);
   const value = openKeysStore(runtime).lookup(REEF_KEYS_KEY);
   if (!value) {
-    const error = new Error("Reef keys are missing from plugin state") as Error & {
-      code?: string;
-    };
-    error.code = "ENOENT";
-    throw error;
+    throw Object.assign(new Error("Reef keys are missing from plugin state"), { code: "ENOENT" });
   }
   return parseReefKeys(value);
 }

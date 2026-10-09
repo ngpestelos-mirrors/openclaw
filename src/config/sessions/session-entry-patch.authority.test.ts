@@ -8,9 +8,11 @@ import {
 } from "./session-accessor.sqlite-entry.js";
 import { createSessionEntryPatchFixture as fixture } from "./session-entry-patch.test-support.js";
 
+// mock-isolation: Background maintenance must not race the transaction/commit authority fixture.
 vi.mock("./session-accessor.sqlite-maintenance-kick.js", () => ({
   kickSessionEntryMaintenanceAfterWrite() {},
 }));
+// mock-isolation: History eviction is independent of the live mutation authority being tested.
 vi.mock("./session-history-eviction.js", () => ({ kickSessionHistoryDiskBudgetMaintenance() {} }));
 
 afterEach(() => vi.restoreAllMocks());

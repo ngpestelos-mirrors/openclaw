@@ -35,6 +35,7 @@ export function reefAuditEntryKey(entryHash: string): string {
 }
 
 export function parseReefAuditHead(input: unknown): ReefAuditHeadRecord {
+  // SAFETY: All head fields are checked below before the record is returned.
   const value = input as ReefAuditHeadRecord | undefined;
   if (value === undefined) {
     return { kind: "head", hash: "", seq: 0, oldestHash: "" };
@@ -64,6 +65,7 @@ export function parseReefAuditHead(input: unknown): ReefAuditHeadRecord {
 }
 
 export function parseAuditEntryRecord(input: unknown): AuditEntry {
+  // SAFETY: The audit namespace writes typed entry records; readers verify their hash chain.
   const value = input as ReefAuditStateRecord | undefined;
   if (!value || value.kind !== "entry") {
     throw new Error("missing Reef audit entry");
@@ -73,6 +75,7 @@ export function parseAuditEntryRecord(input: unknown): AuditEntry {
 
 export function parseAuditStateRecord(input: unknown): ReefAuditStateRecord {
   parseAuditEntryRecord(input);
+  // SAFETY: The entry discriminator was checked above; the optional link is checked below.
   const value = input as ReefAuditStateRecord;
   if (
     value?.nextHash !== undefined &&
