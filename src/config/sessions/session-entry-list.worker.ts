@@ -1,7 +1,9 @@
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
-import { runSqlitePinnedReadSnapshotSync } from "../../infra/sqlite-pinned-read-snapshot.js";
 import { withSqlitePostCommitPublications } from "../../infra/sqlite-post-commit.js";
-import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import {
+  runSqliteDeferredTransactionSync,
+  runSqliteReadSnapshotSync,
+} from "../../infra/sqlite-transaction.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
@@ -53,15 +55,18 @@ export function readSessionEntryList(
           ) {
             return read();
           }
-          // The token describes this metadata snapshot, including foreign commits and reopened readers.
-          return runSqlitePinnedReadSnapshotSync(database.db, () => {
+          // Writer receipts and the connection's local generation cover this metadata snapshot.
+          return runSqliteReadSnapshotSync(database.db, () => {
             const current = readSessionEntryCacheValidityToken(database.db);
-            revision = JSON.stringify([
-              readOpenClawAgentDatabaseIdentity(database).incarnation,
-              current.dataVersion,
-              current.sessionNodesGeneration,
-            ]);
-            if (request.ifRevision === revision) {
+            revision =
+              current.siblingWriteRevision === undefined
+                ? undefined
+                : JSON.stringify([
+                    readOpenClawAgentDatabaseIdentity(database).incarnation,
+                    current.siblingWriteRevision,
+                    current.sessionNodesGeneration,
+                  ]);
+            if (revision !== undefined && request.ifRevision === revision) {
               unchanged = true;
               return [];
             }
