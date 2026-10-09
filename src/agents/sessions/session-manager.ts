@@ -41,9 +41,9 @@ import type { Message } from "../../llm/types.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
-import { projectModelContextMessages } from "../../shared/model-context-message.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import { SessionManagerBranching } from "./session-manager-branching.js";
+import { cloneSessionModelContextEntries } from "./session-manager-codec.js";
 import { sessionManagerOpenTranscriptCohort } from "./session-manager-core.js";
 import {
   sessionManagerReadInitialContext,
@@ -577,14 +577,7 @@ export class SessionManager extends SessionManagerBranching {
           ? readSqliteDatabaseWriteTokenForPath(captured.storePath)
           : undefined;
         if (writeToken && !manager.migrated && branch.length === context.totalEvents) {
-          // Public manager entries are mutable; preserve the worker's durable bytes before publication.
-          const header = manager.getHeader();
-          const events = structuredClone([...(header ? [header] : []), ...branch]);
-          for (const entry of events) {
-            if (entry.type === "message") {
-              entry.message = projectModelContextMessages([entry.message])[0]!;
-            }
-          }
+          const events = cloneSessionModelContextEntries(manager.getHeader(), branch);
           manager.preparedInitialContext = {
             context: { events, version: context.version },
             writeToken,
