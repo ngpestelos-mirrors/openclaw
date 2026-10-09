@@ -345,7 +345,7 @@ describe("Reef gateway account ownership", () => {
   }
 
   it.each([false, true])(
-    "rechecks inbound trust at the legacy host handoff after delivered lookup (revoked=%s)",
+    "rejects inbound trust revocation after delivered lookup before legacy dispatch (revoked=%s)",
     async (revoked) => {
       await startAccount().ready;
       const { flow } = getActiveReef();
@@ -384,7 +384,7 @@ describe("Reef gateway account ownership", () => {
         });
       const result = inboxConnections[0]!.poll();
       if (revoked) {
-        await expect(result).rejects.toThrow("changed trust before dispatch");
+        await expect(result).rejects.toThrow("Plugin state operation receipt is no longer current");
       } else {
         await result;
       }
