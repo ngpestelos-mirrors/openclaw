@@ -272,7 +272,7 @@ function prepareLegacySessionImport(
     sessionKey: record.sessionKey,
   });
   const params = {
-    historicalOnly: Boolean(record.historical),
+    historicalOnly: Boolean(record.historical || record.preserveCurrentSession),
     allowMalformedRowRepair: true,
     repairLegacyTranscript: true,
     agentId: target.agentId,
