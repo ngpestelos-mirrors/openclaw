@@ -3392,7 +3392,10 @@ export const en: TranslationMap & {
       archived: "Archived",
       restored: "Restored",
       open: "Open {name} in Skill Workshop",
-      undoHint: 'Say "undo" to revert',
+      undo: "Undo",
+      undoing: "Undoing…",
+      undone: "Undone",
+      undoError: "Could not undo: {error}",
     },
     progressLabels: {
       shelling: "Shelling",

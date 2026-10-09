@@ -7,6 +7,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { buildOutboundSessionContext } from "../../infra/outbound/session-context.js";
 import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
+import type { MessagePresentation } from "../../interactive/payload.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   SKILL_WORKSHOP_CHANGE_NOTICE_KIND,
@@ -18,6 +19,7 @@ import {
   normalizeMessageChannel,
 } from "../../utils/message-channel.js";
 import type { WorkshopChange } from "./changes.kernel.js";
+import { workshopReviewIdOf } from "./review-undo.js";
 
 const log = createSubsystemLogger("skills/workshop");
 
@@ -50,7 +52,11 @@ const ACTION_VERB: Record<WorkshopChange["action"], SkillWorkshopNoticeAction> =
 };
 
 /** The notice keeps a creation or latest edit; undo keeps the version before the first edit. */
-function formatWorkshopChangeNotice(changes: readonly WorkshopChange[]) {
+function formatWorkshopChangeNotice(
+  agentId: string,
+  runId: string,
+  changes: readonly WorkshopChange[],
+) {
   const bySkill = new Map<string, WorkshopChange>();
   const firstBySkill = new Map<string, WorkshopChange>();
   for (const change of changes.toSorted((a, b) => a.createdAtMs - b.createdAtMs)) {
@@ -82,9 +88,23 @@ function formatWorkshopChangeNotice(changes: readonly WorkshopChange[]) {
       ? `skill_workshop action=restore name=${skillName} version=${versionId}`
       : `skill_workshop action=archive name=${skillName} reason="undo"`,
   );
+  const reviewId = workshopReviewIdOf(runId);
+  const presentation: MessagePresentation | undefined = reviewId
+    ? {
+        blocks: [
+          {
+            type: "buttons",
+            buttons: [
+              { label: "Undo", action: { type: "command", command: `/learn undo ${reviewId}` } },
+            ],
+          },
+        ],
+      }
+    : undefined;
   return {
     text,
-    marker: { kind: SKILL_WORKSHOP_CHANGE_NOTICE_KIND, skills },
+    presentation,
+    marker: { kind: SKILL_WORKSHOP_CHANGE_NOTICE_KIND, agentId, runId, skills },
     undoContext: `A background skill review just changed your learned skills and told the user: ${text} If the user asks to undo or revert it, call ${reverts.join("; then ")}.`,
   };
 }
@@ -125,16 +145,25 @@ export async function postWorkshopChangeNotice(params: {
     log.debug(`skill workshop notice skipped: session ${sessionKey} was reset`);
     return;
   }
-  const { text, marker, undoContext } = formatWorkshopChangeNotice(params.changes);
+  const { deliveryContext: target, threadId } = extractDeliveryInfo(sessionKey, {
+    cfg: params.config,
+  });
+  const channel = target?.channel ? normalizeMessageChannel(target.channel) : undefined;
+  // Slack conversations get no notice (owner decision); the change stays in the Workshop.
+  if (channel === "slack") {
+    log.debug(`skill workshop notice skipped: Slack session ${sessionKey}`);
+    return;
+  }
+  const { text, presentation, marker, undoContext } = formatWorkshopChangeNotice(
+    agentId,
+    params.runId,
+    params.changes,
+  );
   enqueueSystemEvent(undoContext, {
     sessionKey: resolveSystemEventQueueKey(sessionKey, agentId),
   });
   const idempotencyKey = `skill-workshop-notice:${params.runId}`;
   try {
-    const { deliveryContext: target, threadId } = extractDeliveryInfo(sessionKey, {
-      cfg: params.config,
-    });
-    const channel = target?.channel ? normalizeMessageChannel(target.channel) : undefined;
     if (channel && isDeliverableMessageChannel(channel) && target?.to) {
       // Delivery and transcript runtimes stay lazy: most reviews change nothing.
       const { sendDurableMessageBatchCore } = await import("../../channels/message/runtime.js");
@@ -146,7 +175,8 @@ export async function postWorkshopChangeNotice(params: {
           accountId: target.accountId,
           // The session key's thread is canonical; stored context may name a stale thread.
           threadId: threadId ?? target.threadId,
-          payloads: [{ text }],
+          // Channels with buttons run the Undo command; plain-text channels show it to copy.
+          payloads: [presentation ? { text, presentation } : { text }],
           session: buildOutboundSessionContext({ cfg: params.config, sessionKey, agentId }),
           mirror: {
             sessionKey,

@@ -184,7 +184,12 @@ describe("skill review notices", () => {
     provider: "openclaw",
     model: "delivery-mirror",
     timestamp: 2000,
-    openclawDeliveryMirror: { kind: "skill-workshop-change", skills },
+    openclawDeliveryMirror: {
+      kind: "skill-workshop-change",
+      agentId: "main",
+      runId: "skill-workshop-review:r1",
+      skills,
+    },
     __openclaw: { id: "notice-1", seq: 3 },
   });
   const question = { role: "user", content: "deploy it", timestamp: 1000 };
@@ -204,7 +209,12 @@ describe("skill review notices", () => {
         kind: "notice",
         text: "",
         timestamp: 2000,
-        skillChanges: { kind: "skill-workshop-change", skills },
+        skillChanges: {
+          kind: "skill-workshop-change",
+          agentId: "main",
+          runId: "skill-workshop-review:r1",
+          skills,
+        },
       },
     ]);
 

@@ -18,6 +18,9 @@ export type SkillWorkshopChangeNoticeSkill = {
 
 export type SkillWorkshopChangeNotice = {
   kind: typeof SKILL_WORKSHOP_CHANGE_NOTICE_KIND;
+  agentId: string;
+  /** The background review's run id; `skills.workshop.undo` reverts all of its changes. */
+  runId: string;
   skills: SkillWorkshopChangeNoticeSkill[];
 };
 
@@ -41,6 +44,10 @@ export function readSkillWorkshopChangeNotice(
   const marker = asOptionalRecord(asOptionalRecord(message)?.openclawDeliveryMirror);
   if (
     marker?.kind !== SKILL_WORKSHOP_CHANGE_NOTICE_KIND ||
+    typeof marker.agentId !== "string" ||
+    !marker.agentId ||
+    typeof marker.runId !== "string" ||
+    !marker.runId ||
     !Array.isArray(marker.skills) ||
     marker.skills.length === 0
   ) {
@@ -52,6 +59,8 @@ export function readSkillWorkshopChangeNotice(
   }
   return {
     kind: SKILL_WORKSHOP_CHANGE_NOTICE_KIND,
+    agentId: marker.agentId,
+    runId: marker.runId,
     skills: skills.filter((skill) => skill !== undefined),
   };
 }

@@ -89,11 +89,13 @@ describe("postWorkshopChangeNotice", () => {
     sessionId: "reviewed-session",
     lifecycleRevision: "reviewed-revision",
   });
+  const reviewId = "0b6a4a52-1f43-4f0e-9d55-3c1d8e1f7a10";
+  const runId = `skill-workshop-review:${reviewId}`;
   const post = (changes: WorkshopChange[], sessionKey = "agent:main:telegram:direct:42") =>
     postWorkshopChangeNotice({
       config: {},
       generation: generation(sessionKey),
-      runId: "skill-workshop-review:1",
+      runId,
       changes,
     });
 
@@ -113,7 +115,7 @@ describe("postWorkshopChangeNotice", () => {
     expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
   });
 
-  it("sends one line to the originating chat and mirrors it into the session", async () => {
+  it("sends one line with an Undo command button to the originating chat", async () => {
     mocks.extractDeliveryInfo.mockReturnValue({
       deliveryContext: { channel: "telegram", to: "42" },
       threadId: undefined,
@@ -148,6 +150,19 @@ describe("postWorkshopChangeNotice", () => {
         payloads: [
           {
             text: '💾 Learned: updated `actual-budget-operations` (tightened reconciliation step); created `release-notes` (drafting release notes). Say "undo" to revert this skill change.',
+            presentation: {
+              blocks: [
+                {
+                  type: "buttons",
+                  buttons: [
+                    {
+                      label: "Undo",
+                      action: { type: "command", command: `/learn undo ${reviewId}` },
+                    },
+                  ],
+                },
+              ],
+            },
           },
         ],
         mirror: expect.objectContaining({ sessionKey: "agent:main:telegram:direct:42" }),
@@ -194,6 +209,8 @@ describe("postWorkshopChangeNotice", () => {
         text: expect.stringContaining("💾 Learned: updated `actual-budget-operations`"),
         deliveryMirror: {
           kind: "skill-workshop-change",
+          agentId: "main",
+          runId,
           skills: [
             {
               name: "actual-budget-operations",
@@ -209,21 +226,28 @@ describe("postWorkshopChangeNotice", () => {
 
   it("delivers into the thread named by the session key", async () => {
     mocks.extractDeliveryInfo.mockReturnValue({
-      deliveryContext: { channel: "slack", to: "slack:C0123ABC", accountId: "workspace-1" },
-      threadId: "1234567890.123456",
+      deliveryContext: { channel: "discord", to: "channel:123", accountId: "default" },
+      threadId: "456",
     });
-    const sessionKey = "agent:main:slack:channel:C0123ABC:thread:1234567890.123456";
+    const sessionKey = "agent:main:discord:channel:123:thread:456";
     await post([change({})], sessionKey);
     expect(mocks.sendDurableMessageBatchCore).toHaveBeenCalledWith(
-      expect.objectContaining({
-        channel: "slack",
-        to: "slack:C0123ABC",
-        threadId: "1234567890.123456",
-      }),
+      expect.objectContaining({ channel: "discord", to: "channel:123", threadId: "456" }),
       undefined,
       undefined,
       generation(sessionKey),
     );
+  });
+
+  it("posts nothing for a Slack conversation and leaves the agent unprompted", async () => {
+    mocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: { channel: "slack", to: "slack:C0123ABC", accountId: "workspace-1" },
+      threadId: "1234567890.123456",
+    });
+    await post([change({})], "agent:main:slack:channel:C0123ABC:thread:1234567890.123456");
+    expect(mocks.sendDurableMessageBatchCore).not.toHaveBeenCalled();
+    expect(mocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
+    expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
   });
 
   it("leaves a conversation reset since the review started untouched", async () => {
