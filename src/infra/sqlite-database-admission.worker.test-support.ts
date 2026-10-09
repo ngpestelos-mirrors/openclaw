@@ -105,7 +105,9 @@ export function createSqliteWorkerBackend(
   function execute(
     command: SqliteWorkerCommand<AdmissionOperations>,
   ): AdmissionOperations[keyof AdmissionOperations]["output"];
-  function execute(command: SqliteWorkerCommand<AdmissionOperations>) {
+  function execute(
+    command: SqliteWorkerCommand<AdmissionOperations>,
+  ): AdmissionOperations[keyof AdmissionOperations]["output"] {
     if (command.type === "admitted") {
       if (command.input?.measureHostAbsence) {
         publishSqliteDatabaseAdmission(database, workerFactKey, 1);
