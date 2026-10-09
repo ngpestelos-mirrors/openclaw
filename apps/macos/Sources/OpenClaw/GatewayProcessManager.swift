@@ -1013,7 +1013,9 @@ extension GatewayProcessManager {
                     deadline: deadline,
                     finalProbeDeadline: finalProbeDeadline,
                     responsiveStartupProgressObserved: responsiveStartupProgressObserved,
-                    freshInstallGraceAuthorized: freshInstallGraceAuthorized)
+                    freshInstallGraceAuthorized: freshInstallGraceAuthorized,
+                    reusedLaunchdPID: context.purpose == .launchd &&
+                        self.launchAgentFreshInstallGeneration != context.generation && readinessPID != nil)
                 else { break readinessLoop }
                 let extensionAuthorization = await self.authorizeReadinessExtension(
                     context: context,
