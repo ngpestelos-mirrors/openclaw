@@ -51,12 +51,6 @@ type DiscordActivityHttpDeps = {
   bodyTimeoutMs?: number;
 };
 
-function setCommonHeaders(res: ServerResponse): void {
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader("X-Content-Type-Options", "nosniff");
-}
-
 function respond(
   res: ServerResponse,
   statusCode: number,
@@ -65,7 +59,9 @@ function respond(
   headers?: Record<string, string>,
 ): true {
   res.statusCode = statusCode;
-  setCommonHeaders(res);
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Type", contentType);
   for (const [key, value] of Object.entries(headers ?? {})) {
     res.setHeader(key, value);
@@ -117,13 +113,6 @@ function bearerToken(req: IncomingMessage): string | undefined {
   const authorization = readHeader(req, "authorization")?.trim();
   const match = authorization?.match(/^Bearer\s+([A-Za-z0-9_-]{43})$/i);
   return match?.[1];
-}
-
-function widgetIdFromCustomId(customId: string): string | undefined {
-  if (WIDGET_ID_PATTERN.test(customId)) {
-    return customId;
-  }
-  return parseDiscordActivityCustomId(customId)?.widgetId;
 }
 
 export function createDiscordActivityHttpHandler(deps: DiscordActivityHttpDeps): {
@@ -286,7 +275,9 @@ export function createDiscordActivityHttpHandler(deps: DiscordActivityHttpDeps):
       widget: NonNullable<Awaited<ReturnType<typeof deps.runtime.store.lookupWidget>>>;
     } | null = null;
     // Prefer an explicit ID, then the click-time launch record, then the newest posted widget.
-    const requestedWidgetId = widgetIdFromCustomId(customId);
+    const requestedWidgetId = WIDGET_ID_PATTERN.test(customId)
+      ? customId
+      : parseDiscordActivityCustomId(customId)?.widgetId;
     if (requestedWidgetId) {
       const widget = await deps.runtime.store.lookupWidget(requestedWidgetId);
       // A parseable ID is an explicit widget selection. Missing or foreign widgets fail closed

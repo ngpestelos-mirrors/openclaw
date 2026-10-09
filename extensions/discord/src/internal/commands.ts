@@ -25,12 +25,6 @@ type CommandOption =
 export type CommandOptions = CommandOption[];
 export type DiscordCommand = Command | CommandWithSubcommands;
 
-type RawSubcommandOption = {
-  name?: unknown;
-  type?: unknown;
-  options?: RawSubcommandOption[];
-};
-
 export async function deferCommandInteractionIfNeeded(
   command: BaseCommand,
   interaction: CommandInteraction,
@@ -43,9 +37,9 @@ export async function deferCommandInteractionIfNeeded(
   });
 }
 
-function readRawCommandOptions(interaction: CommandInteraction): RawSubcommandOption[] {
-  const options = (interaction.rawData as { data?: { options?: unknown } }).data?.options;
-  return Array.isArray(options) ? (options as RawSubcommandOption[]) : [];
+function readRawCommandOptions(interaction: CommandInteraction) {
+  const options = interaction.rawData.data?.options;
+  return Array.isArray(options) ? options : [];
 }
 
 function findSelectedSubcommand(
@@ -129,10 +123,8 @@ export abstract class Command extends BaseCommand {
             const { autocomplete: _autocomplete, ...rest } = option;
             return { ...rest, autocomplete: true };
           }
-          return option;
-        default:
-          return option;
       }
+      return option;
     });
   }
 }

@@ -204,6 +204,18 @@ export function buildDiscordComponentMessage(params: {
     });
   };
 
+  const buildButton = (
+    options: Parameters<typeof createButtonComponent>[0],
+    row?: Array<Button | LinkButton | DiscordSelectMenu>,
+  ) => {
+    const { component, entry } = createButtonComponent(options);
+    row?.push(component);
+    if (entry) {
+      addEntry(entry);
+    }
+    return component;
+  };
+
   const text = params.spec.text ?? params.fallbackText;
   if (text) {
     containerChildren.push(new TextDisplay(text));
@@ -225,11 +237,7 @@ export function buildDiscordComponentMessage(params: {
       if (block.accessory?.type === "thumbnail") {
         accessory = new Thumbnail(block.accessory.url);
       } else if (block.accessory?.type === "button") {
-        const { component, entry } = createButtonComponent({ spec: block.accessory.button });
-        accessory = component;
-        if (entry) {
-          addEntry(entry);
-        }
+        accessory = buildButton({ spec: block.accessory.button });
       }
       containerChildren.push(new Section(displays, accessory));
       continue;
@@ -253,11 +261,7 @@ export function buildDiscordComponentMessage(params: {
           throw new Error("Action rows support up to 5 buttons");
         }
         for (const button of block.buttons) {
-          const { component, entry } = createButtonComponent({ spec: button });
-          rowComponents.push(component);
-          if (entry) {
-            addEntry(entry);
-          }
+          buildButton({ spec: button }, rowComponents);
         }
       } else if (block.select) {
         const { component, entry } = createSelectComponent({ spec: block.select });
@@ -307,14 +311,7 @@ export function buildDiscordComponentMessage(params: {
       allowedUsers: params.spec.modal.allowedUsers,
     };
 
-    const { component, entry } = createButtonComponent({
-      spec: triggerSpec,
-      modalId,
-    });
-
-    if (entry) {
-      addEntry(entry);
-    }
+    const component = buildButton({ spec: triggerSpec, modalId });
 
     const lastChild = containerChildren.at(-1);
     if (
