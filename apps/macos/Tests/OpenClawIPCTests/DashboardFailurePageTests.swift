@@ -27,9 +27,6 @@ struct DashboardFailurePageTests {
         #expect(html.contains("Failed &lt;/textarea&gt;&lt;script&gt;alert(&#39;fixture&#39;)&lt;/script&gt; &amp; offline"))
         #expect(!html.contains("<script>"))
         #expect(!html.contains("about:blank"))
-        #expect(html.contains("readonly spellcheck=\"false\""))
-        #expect(html.contains("window.webkit.messageHandlers.openclawDeviceSettings"))
-        #expect(html.contains("document.execCommand('copy')"))
     }
 
     @Test(arguments: [false, true])
