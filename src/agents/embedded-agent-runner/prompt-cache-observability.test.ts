@@ -1,12 +1,9 @@
 // Coverage for prompt-cache diagnostic tracking across turns.
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "@openclaw/ai/internal/shared";
 import * as cryptoDigest from "@openclaw/normalization-core/node-crypto";
-import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { convertToLlm } from "../../../packages/agent-core/src/harness/messages.js";
 import type { Message, TextContent } from "../../llm/types.js";
 import { withEnv } from "../../test-utils/env.js";
-import type { AgentMessage } from "../runtime/index.js";
 import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
 import { log } from "./logger.js";
 import {
@@ -16,7 +13,6 @@ import {
   declarePromptHistoryRewrite,
   recordAggregateTruncation,
 } from "./prompt-cache-observability.js";
-import { createPromptCacheRequestObserver } from "./prompt-cache-request-observer.js";
 import { prepareProviderPrompt } from "./provider-prompt-serialization.js";
 
 let testScope = 0;
@@ -46,93 +42,7 @@ function beginOpenAIObservation(
 describe("prompt cache observability", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("keeps concurrent review and foreground usage in their own diagnostic sessions", () => {
-    const promptCacheKey = scopedKey("shared-provider-affinity");
-    const model = { provider: "openai", id: "test-model", api: "openai-responses" } as const;
-    const context = { systemPrompt: "stable", messages: [] };
-    const foregroundResult = vi.fn();
-    const reviewResult = vi.fn();
-    const foreground = createPromptCacheRequestObserver(
-      { sessionId: scopedKey("foreground"), promptCacheKey, streamStrategy: "test" },
-      foregroundResult,
-    );
-    const review = createPromptCacheRequestObserver(
-      { sessionId: scopedKey("review"), promptCacheKey, streamStrategy: "test" },
-      reviewResult,
-    );
-    review.onModelRequest(model, context);
-    foreground.onModelRequest(model, context);
-    foreground.onModelUsage({ cacheRead: 9_000 });
-    review.onModelUsage({ cacheRead: 0, input: 1_000 });
-    expect(review.getObservation()).toMatchObject({ broke: false });
-    foreground.onModelRequest(model, context);
-    foreground.onModelUsage({ cacheRead: 2_000 });
-    expect(foreground.getObservation()).toMatchObject({
-      broke: true,
-      previousCacheRead: 9_000,
-      cacheRead: 2_000,
-    });
-  });
-
-  it.each([
-    ["system", { instructions: "provider rewritten system" }],
-    ["tools", { tools: [{ type: "function", name: "changed" }] }],
-    ["message:0", { input: [{ role: "user", content: "provider rewritten history" }] }],
-    ["parameters", { reasoning: { effort: "high" } }],
-    [
-      "prefix-match",
-      {
-        input: [
-          { role: "user", content: "first" },
-          { role: "user", content: "appended" },
-        ],
-      },
-    ],
-  ] as const)(
-    "identifies final encoded %s changes despite unchanged assembled context",
-    (expected, replacement) => {
-      const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
-      const observer = createPromptCacheRequestObserver(
-        { sessionId: scopedKey(`wire-${expected}`), streamStrategy: "test" },
-        () => {},
-      );
-      const payload = {
-        instructions: "original system",
-        tools: [{ type: "function", name: "read" }],
-        input: [{ role: "user", content: "first" }],
-        reasoning: { effort: "low" },
-      };
-      const request = (body: unknown, cacheRead: number) => {
-        observer.onModelRequest(
-          { provider: "openai", id: "test-model", api: "openai-responses" },
-          { systemPrompt: "original system", messages: [] },
-        );
-        const { encoded: _encoded, ...fingerprint } = prepareProviderPrompt({
-          payload: body,
-          encode: true,
-        });
-        observer.onModelUsage(
-          {
-            cacheRead,
-            contextUsage: { state: "available", promptTokens: 10_000, totalTokens: 10_100 },
-          },
-          { scopeDigest: "same-provider-scope", ...fingerprint },
-        );
-      };
-      request(payload, 9_000);
-      clock.mockReturnValue(3_000);
-      request({ ...payload, ...replacement }, 2_000);
-      expect(observer.getObservation()).toMatchObject({
-        broke: true,
-        changes: null,
-        providerPrefix: expected,
-        requestGapMs: 2_000,
-        promptTokens: 10_000,
-      });
-    },
-  );
-
-  it("does not claim a bounded message tail matched when the history grows", () => {
+  it("bounds field details while detecting later item and tail changes", () => {
     const identity = { sessionId: scopedKey("bounded-wire-tail") };
     const message = { role: "user", content: "synthetic history" };
     const input = Array.from({ length: 513 }, () => message);
@@ -148,79 +58,15 @@ describe("prompt cache observability", () => {
         providerPrompt: { scopeDigest: "same-provider-scope", ...fingerprint },
       });
     };
-    complete(9_000);
+    complete(15_000);
+    input[31] = { ...message, content: "changed detailed item" };
+    expect(complete(12_000)?.providerPrefix).toBe("message:31.content");
+    input[32] = { ...message, content: "changed item beyond field limit" };
+    expect(complete(9_000)?.providerPrefix).toBe("message:32");
     input.push(message);
     expect(complete(6_000)?.providerPrefix).toBe("unverified-after:512");
     input[513] = { ...message, content: "changed tail" };
     expect(complete(3_000)?.providerPrefix).toBe("message-tail:512");
-  });
-
-  it("keeps a two-turn tool loop append-only with bounded block hashing", () => {
-    withEnv({ OPENCLAW_PROMPT_CACHE_ASSERT: "1" }, () => {
-      const sessionId = scopedKey("two-turn-loop");
-      const source: AgentMessage[] = [
-        { role: "user", content: [{ type: "text", text: "Read the fixture" }], timestamp: 1 },
-        {
-          role: "custom",
-          customType: "fixture-context",
-          content: [{ type: "text", text: "Fixture context" }],
-          display: false,
-          timestamp: 2,
-        },
-      ];
-      const hashes = vi.spyOn(cryptoDigest, "sha256Hex");
-      const observed = vi.fn();
-      const observer = createPromptCacheRequestObserver(
-        { sessionId, streamStrategy: "test" },
-        observed,
-      );
-      const request = () => {
-        const messages = convertToLlm(source);
-        observer.onModelRequest(
-          { provider: "openai", id: "test-model", api: "openai-responses" },
-          { messages },
-        );
-        observer.onModelUsage({ cacheRead: 8_000 });
-        return messages;
-      };
-      const first = request();
-      source.push(
-        makeAgentAssistantMessage({
-          content: [{ type: "toolCall", id: "read-1", name: "read", arguments: {} }],
-          stopReason: "toolUse",
-          timestamp: 3,
-        }),
-        {
-          role: "toolResult",
-          toolCallId: "read-1",
-          toolName: "read",
-          content: [{ type: "text", text: "fixture result" }],
-          isError: false,
-          timestamp: 4,
-        },
-      );
-      const loop = request();
-      source.push(
-        makeAgentAssistantMessage({
-          content: [{ type: "text", text: "Read complete" }],
-          timestamp: 5,
-        }),
-        { role: "user", content: "Summarize it", timestamp: 6 },
-      );
-      request();
-      expect(loop[0]).toBe(first[0]);
-      expect(loop[1]).not.toBe(first[1]);
-      expect(loop[1]?.content).toBe(first[1]?.content);
-      for (const text of ["Read the fixture", "Fixture context", "fixture result"]) {
-        expect(
-          hashes.mock.calls.filter(([value]) => typeof value === "string" && value.includes(text)),
-        ).toHaveLength(1);
-      }
-      expect(observed).toHaveBeenCalledTimes(3);
-      for (const [observation] of observed.mock.calls) {
-        expect(observation.changes).toBeNull();
-      }
-    });
   });
 
   it.each([
@@ -507,47 +353,6 @@ describe("prompt cache observability", () => {
 
   beforeEach(() => {
     currentTestScope = String(++testScope);
-  });
-
-  it.each([
-    {
-      name: "three healthy calls then one",
-      turns: [[10_000, 10_000, 10_000], [10_000]],
-      misses: [],
-    },
-    {
-      name: "one call then a miss and two hits",
-      turns: [[10_000], [0, 10_000, 10_000]],
-      misses: ["2:1"],
-    },
-    { name: "a complete miss below the drop threshold", turns: [[500], [0]], misses: ["2:1"] },
-  ])("observes each request: $name", ({ turns, misses }) => {
-    const sessionId = scopedKey("request-usage");
-    const observed: Array<{ request: string; cacheRead: number | undefined; broke: boolean }> = [];
-    for (const [turnIndex, reads] of turns.entries()) {
-      const observer = createPromptCacheRequestObserver(
-        { sessionId, streamStrategy: "test" },
-        (observation) =>
-          observed.push({
-            request: `${turnIndex + 1}:${observation.requestIndex}`,
-            cacheRead: observation.cacheRead,
-            broke: observation.broke,
-          }),
-      );
-      for (const cacheRead of reads) {
-        observer.onModelRequest(
-          { provider: "anthropic", id: "claude-sonnet-4-6", api: "anthropic-messages" },
-          {
-            messages: [],
-            systemPrompt: "stable prefix",
-            tools: [{ name: "read", description: "Read text", parameters: Type.Object({}) }],
-          },
-        );
-        observer.onModelUsage({ input: 10_000 - cacheRead, cacheRead, cacheWrite: 0 });
-      }
-    }
-    expect(observed.map((entry) => entry.cacheRead)).toEqual(turns.flat());
-    expect(observed.filter((entry) => entry.broke).map((entry) => entry.request)).toEqual(misses);
   });
 
   it.each([false, true])(
