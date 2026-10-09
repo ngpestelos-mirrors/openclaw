@@ -7,7 +7,7 @@ import type {
 export const REEF_STATE_KEEP = { operation: "delete", action: "keep" } as const;
 
 export async function applyReefStateBatch<T>(
-  batch: PluginStateBatch<unknown>,
+  batch: PluginStateBatch,
   rows: { store: number; key: string }[],
   prepare: (values: unknown[]) => { intents: PluginStateCompareIntent<unknown>[]; value: T },
   captured?: PluginStateObservation<unknown>[],

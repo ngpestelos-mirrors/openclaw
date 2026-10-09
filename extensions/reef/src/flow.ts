@@ -205,7 +205,7 @@ export class ReefMessageFlow {
     const delivery = settlement.delivery;
     try {
       await confirmDelivery(receipt, delivery.recipient.ed25519PublicKey, this.options.audit, {
-        id: id,
+        id,
         bodyHash: delivery.bodyHash,
         ...(delivery.rejection ? { status: "rejected" as const } : {}),
       });
@@ -241,7 +241,7 @@ export class ReefMessageFlow {
       }
       return {
         id: receipt.id,
-        peer: peer,
+        peer,
         recovery: settlement.recovery,
         recipient: delivery.recipient,
         ...(delivery.textHash ? { textHash: delivery.textHash } : {}),

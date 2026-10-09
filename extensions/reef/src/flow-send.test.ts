@@ -46,7 +46,7 @@ describe("ReefMessageFlow send recovery", () => {
           trusted.values.delete("bob");
         },
       })
-      .catch((error: unknown) => error);
+      .catch((cause: unknown) => cause);
 
     expect(error).toMatchObject({ message: "Reef peer @bob changed trust before dispatch" });
     expect(isPermanentReefOutboundRejection(error)).toBe(true);

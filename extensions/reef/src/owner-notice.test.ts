@@ -287,7 +287,7 @@ describe("ReefReceiptNotifier", () => {
     const notices = createNoticeStore();
     const recovered = rejection("alice", "01JZ0000000000000000000111");
     const reservedNotice = { lastRejectionAt: 10_000, lastResendAt: 10_000 };
-    notices.store.reserve(recovered, reservedNotice);
+    await notices.store.reserve(recovered, reservedNotice);
     const notify = vi.fn(consumeNotice);
     const notifier = new ReefReceiptNotifier(notify, notices.store, {
       scheduler: createScheduler(),
@@ -349,7 +349,7 @@ describe("ReefReceiptNotifier", () => {
     const notices = createNoticeStore();
     const recovered = rejection("alice", "01JZ0000000000000000000116");
     const reservedNotice = { lastRejectionAt: 10_000, lastResendAt: 10_000 };
-    notices.store.reserve(recovered, reservedNotice);
+    await notices.store.reserve(recovered, reservedNotice);
     const loadError = new Error("state unavailable");
     vi.spyOn(notices.store, "loadState").mockImplementationOnce(() => {
       throw loadError;
@@ -376,8 +376,8 @@ describe("ReefReceiptNotifier", () => {
   it("keeps cached cooldown time monotonic after a backward clock adjustment", async () => {
     const notices = createNoticeStore();
     const previous = rejection("alice", "01JZ0000000000000000000113", "deterministic_deny");
-    notices.store.reserve(previous, { lastRejectionAt: 1_000_000 });
-    notices.store.complete(previous, { lastRejectionAt: 1_000_000 });
+    await notices.store.reserve(previous, { lastRejectionAt: 1_000_000 });
+    await notices.store.complete(previous, { lastRejectionAt: 1_000_000 });
     const notify = vi.fn(consumeNotice);
     let now = 900_000;
     const notifier = new ReefReceiptNotifier(notify, notices.store, {
@@ -445,7 +445,7 @@ describe("ReefReceiptNotifier", () => {
     const notices = createNoticeStore();
     const pending = rejection("alice", "01JZ0000000000000000000125");
     const reservedNotice = { lastRejectionAt: 10_000, lastResendAt: 10_000 };
-    notices.store.reserve(pending, reservedNotice);
+    await notices.store.reserve(pending, reservedNotice);
     const notify = vi
       .fn(consumeNotice)
       .mockRejectedValueOnce(new Error("dispatch unavailable"))

@@ -433,14 +433,14 @@ describe("ReefTrustStore", () => {
         const namespace = "peer-state";
         if (options.namespace === namespace) {
           if (read === "list") {
-            const entries = store.entries;
+            const entries = store.entries.bind(store);
             store.entries = async () => {
               const result = await entries();
               authority.abort(revoked);
               return result;
             };
           } else {
-            const lookup = store.lookup;
+            const lookup = store.lookup.bind(store);
             store.lookup = async (key) => {
               const result = await lookup(key);
               authority.abort(revoked);

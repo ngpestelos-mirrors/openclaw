@@ -265,7 +265,7 @@ export class LegacyReefTrustStore {
     const requestId = randomUUID();
     const key = this.#key(peer);
     const update = this.#requireUpdate();
-    const lookup = this.stores.peers.lookup;
+    const lookup = this.stores.peers.lookup.bind(this.stores.peers);
     this.assertActive?.();
     assertOwnerCurrent?.();
     if (

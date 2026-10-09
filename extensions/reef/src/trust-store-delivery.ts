@@ -40,7 +40,7 @@ function matchesBinding(
 }
 
 export async function prepareReefOutboundDelivery(
-  batch: PluginStateBatch<unknown>,
+  batch: PluginStateBatch,
   peerKey: string,
   deliveryKey: string,
   peer: string,
@@ -96,7 +96,7 @@ export async function prepareReefOutboundDelivery(
 }
 
 export async function readReefOutboundDelivery(
-  batch: PluginStateBatch<unknown>,
+  batch: PluginStateBatch,
   peerKey: string,
   key: string,
   peer: string,
@@ -200,7 +200,7 @@ export async function readReefOutboundDelivery(
 }
 
 export function createReefRejectionRecovery(
-  batch: PluginStateBatch<unknown>,
+  batch: PluginStateBatch,
   peerKey: string,
   deliveryKey: string,
   peer: string,

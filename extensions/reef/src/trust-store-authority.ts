@@ -10,7 +10,7 @@ import {
 import { ReefPeerStateSchema, ReefPeerTrustChangedError } from "./trust-store-format.js";
 
 export function createReefPeerAssertion(
-  batch: PluginStateBatch<unknown>,
+  batch: PluginStateBatch,
   key: PluginStateBatchKey,
   peer: string,
   expected: ReefPeerIdentity,

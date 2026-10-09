@@ -163,7 +163,7 @@ class ReefSqliteAuditStore implements AuditStore {
         keys.map((key, index) => [key, observed[index]!]),
       );
       const intents = new Map<string, PluginStateCompareIntent<unknown>>();
-      let preparationError: unknown;
+      let preparationError: Error | undefined;
       try {
         // Old writers may leave a staged append or a committed retention orphan.
         // Their cleanup joins the new append so failure cannot shorten the chain.
@@ -213,7 +213,10 @@ class ReefSqliteAuditStore implements AuditStore {
           value: { kind: "head", hash: entry.entryHash, seq: entry.event.seq, oldestHash },
         };
       } catch (error) {
-        preparationError = error;
+        preparationError =
+          error instanceof Error
+            ? error
+            : new Error("Reef audit append preparation failed", { cause: error });
       }
       for (const [key, row] of rows) {
         changes.push({

@@ -413,7 +413,7 @@ export const reefPlugin: ChannelPlugin<ReefAccount, unknown, unknown, 2> = {
               replyTo: notice.messageId,
               expectedRecipient: notice.recipient,
               resendDisabled: true,
-              prepareDelivery: notice.recovery.prepareOutboundDelivery,
+              prepareDelivery: notice.recovery.prepareOutboundDelivery.bind(notice.recovery),
             });
           }
         },

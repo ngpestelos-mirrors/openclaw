@@ -110,7 +110,7 @@ describe("Reef captured source authority", () => {
         expect(await original.readOutboundDelivery("alice", id)).toBeUndefined();
         await expect(
           flow.send("alice", "rephrased coordination", {
-            prepareDelivery: recovery.prepareOutboundDelivery,
+            prepareDelivery: recovery.prepareOutboundDelivery.bind(recovery),
             onPlatformSendDispatch: revokeAndReroute,
           }),
         ).rejects.toThrow("changed trust before dispatch");
