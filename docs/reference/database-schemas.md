@@ -194,6 +194,12 @@ TEMP counter row. Auth-profile readers use admitted catalog facts for tables,
 views, and absence instead of querying the catalog for each read. These changes
 preserve schemas, stored bytes, durability, retention, permissions, and update behavior.
 
+The device-pair notifier retains an empty subscriber and delivery-receipt state
+for its service lifetime, so idle scheduled scans do not reread both stores.
+Its own writes invalidate that fact, including uncertain outcomes, and service
+restart reloads it. Active notifications retain their current subscription checks
+and delivery receipts; persisted subscriptions and receipt retention are unchanged.
+
 The Gateway does not schedule daily full-database scans. Admission-requested
 background checks stay limited to the requested agent database: `quick_check`
 for clean restart proof, or a full check after proven same-boot process death.
