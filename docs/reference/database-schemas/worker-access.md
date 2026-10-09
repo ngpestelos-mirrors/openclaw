@@ -265,10 +265,12 @@ request's cancellation through queued admission; already admitted writes still
 settle before releasing custody. Development and test runtimes reject cleanup of
 independent transcript, usage, and shared-state reader pools while holding the
 agent database writer queue; unrelated logical session locks remain valid.
-Ordered delivery and Board reads, assistant-mirror validation, and bounded
-transcript cohorts use the existing reserved target-discovery lane so error
-cleanup cannot drain independent readers while holding FIFO admission. That lane
-preserves its reentrant host-write contract.
+Ordered delivery and Board reads, assistant-mirror validation and correction,
+bounded transcript cohorts, and writer-held SessionManager reload, suffix,
+rewrite, and branch preparation use the existing reserved target-discovery lane
+so error cleanup cannot drain independent readers while holding FIFO admission.
+That lane preserves its reentrant host-write contract. Ordinary manager opens and
+independent retargets keep their foreground history-reader concurrency.
 These scheduling changes require no schema, stored-data, configuration, or update
 migration.
 
