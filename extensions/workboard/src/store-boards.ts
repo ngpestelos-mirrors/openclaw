@@ -80,7 +80,10 @@ export class WorkboardBoardStore extends WorkboardStoreRuntime {
       if (cached) {
         return cached;
       }
-      const pending = Promise.all([this.list({ boardId }), this.listBoards()])
+      const pending: ReturnType<WorkboardBoardStore["listCards"]> = Promise.all([
+        this.list({ boardId }),
+        this.listBoards(),
+      ])
         .then(([cards, { boards }]) => {
           const currentToken = this.refreshWriteReceipt();
           const replacement = this.cardLists.get(boardId);
