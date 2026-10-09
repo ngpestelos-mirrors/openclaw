@@ -103,7 +103,7 @@ describe("canonical proof on physical database validation", () => {
           expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(false);
           expect(warm.counts).toEqual({ data_version: 1, schema_version: 0, user_version: 0 });
         } finally {
-          database.db.exec("ROLLBACK");
+          database.db.exec("COMMIT");
         }
       } finally {
         warm.restore();

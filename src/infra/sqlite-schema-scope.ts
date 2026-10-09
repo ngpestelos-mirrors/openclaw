@@ -7,7 +7,7 @@ import type { SqliteTempTrackingSchema } from "./sqlite-temp-generation-schema.j
 import { readDatabasePathIdentitySync } from "./sqlite-worker-identity.js";
 
 type SchemaScope = { key?: string; revision: number; users: number };
-export type SqliteSchemaScopeOwner = { scope?: SchemaScope; scopeRevision?: number };
+type SqliteSchemaScopeOwner = { scope?: SchemaScope; scopeRevision?: number };
 
 const scopes = resolveGlobalSingleton(Symbol.for("openclaw.sqliteSchemaScopes"), () => {
   const byIdentity = new Map<string, SchemaScope>();

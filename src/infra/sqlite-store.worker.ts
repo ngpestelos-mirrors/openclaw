@@ -22,6 +22,7 @@ import {
   SQLITE_WORKER_PREPARE_ADMITTED,
   SQLITE_WORKER_OPERATION_CLEANUP,
   SQLITE_WORKER_CLOSE_RECEIPT,
+  SqliteWorkerOpenRefusedError,
   type SqliteWorkerCloseReceipt,
   type SqliteWorkerPreparedBackend,
   type SqliteWorkerCommand,
@@ -31,7 +32,6 @@ import {
 } from "./sqlite-worker-contract.js";
 import { assertExistingDatabaseIdentity } from "./sqlite-worker-identity.js";
 import {
-  SqliteWorkerOpenRefusedError,
   withSqliteWorkerOperationAdmission,
   requestSqliteWorkerOperationAdmission,
 } from "./sqlite-worker-operation-admission.js";
