@@ -52,13 +52,28 @@ function changesSchema(sql: string): boolean {
   return false;
 }
 
-function createsOnlyTemporaryTable(sql: string): boolean {
-  const normalized = normalizeSqlWhitespace(sql);
-  if (!/^\s*CREATE\s+(?:TEMP|TEMPORARY)\s+TABLE\b/iu.test(normalized)) {
+function createsOnlyTemporaryObject(sql: string): boolean {
+  let remaining = normalizeSqlWhitespace(sql);
+  const kind = /^\s*CREATE\s+(?:TEMP|TEMPORARY)\s+(TABLE|TRIGGER)\b/iu
+    .exec(remaining)?.[1]
+    ?.toUpperCase();
+  if (!kind) {
     return false;
   }
-  const end = findSqlCharacter(normalized, ";");
-  return end < 0 || normalized.slice(end + 1).trim() === "";
+  let end = findSqlCharacter(remaining, ";");
+  if (kind === "TABLE") {
+    return end < 0 || remaining.slice(end + 1).trim() === "";
+  }
+  // Trigger steps end with semicolons; CASE END stays within its statement.
+  while (end >= 0) {
+    remaining = remaining.slice(end + 1).trim();
+    end = findSqlCharacter(remaining, ";");
+    const step = (end < 0 ? remaining : remaining.slice(0, end)).trim();
+    if (/^END$/iu.test(step)) {
+      return end < 0 || remaining.slice(end + 1).trim() === "";
+    }
+  }
+  return false;
 }
 
 // A write to another table can change policy through a trigger.
@@ -132,7 +147,7 @@ export function classifySqliteMutation(sql: string, mode: "batch" | "statement")
   const schemaChange = changesSchema(sql);
   return {
     schemaChange,
-    mainSchemaChange: schemaChange && !createsOnlyTemporaryTable(sql),
+    mainSchemaChange: schemaChange && !createsOnlyTemporaryObject(sql),
     dataChange: changesData(sql),
     control: readTransactionControl(sql, mode),
   };
