@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { patchSessionEntryWithKey } from "../../config/sessions/session-accessor.js";
 import { readLegacyAcpMigrationContext } from "../../config/sessions/session-accessor.sqlite-acp-provenance.js";
 import {
@@ -181,7 +180,6 @@ export async function upsertAcpSessionMetaNative(params: {
         return next;
       },
       {
-        activeSessionKey: normalizeLowercaseStringOrEmpty(storageSessionKey),
         ...(params.skipMaintenance === true ? { skipMaintenance: true } : {}),
         ...(params.takeCacheOwnership === true ? { takeCacheOwnership: true } : {}),
         ...(metaToPersist === null ? {} : { fallbackEntry: preparedEntry }),

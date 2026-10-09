@@ -80,7 +80,7 @@ export async function runSetManagerSessionRuntimeOption(
     ...("key" in update ? { includeStatusConfigOptionKeys: true } : {}),
   });
   assertCurrentAcpActor(params.isCurrentActor(), params.sessionKey);
-  let result: AcpRuntimeConfigOptionResult | void;
+  let result: AcpRuntimeConfigOptionResult | void = undefined;
   if ("runtimeMode" in update) {
     if (!capabilities.controls.includes("session/set_mode") || !runtime.setMode) {
       throw createUnsupportedControlError({
