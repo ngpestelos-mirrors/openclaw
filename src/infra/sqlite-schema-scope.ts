@@ -57,10 +57,17 @@ export function publishSqliteSchemaChange(
   owner.scopeRevision = scope.revision;
 }
 
-export type SqliteReadOperationRevision = {
+type SqliteReadRevision = {
   schema: SqliteSchemaFacts;
-  writeRevision: number;
   mutationRevision: number;
 };
 
-export type SqliteReadScopeRevision = Readonly<SqliteReadOperationRevision>;
+export type SqliteReadOperationRevision = SqliteReadRevision & { writeRevision: number };
+
+export type SqliteReadScopeRevision = Readonly<
+  SqliteReadRevision &
+    (
+      | { snapshot: undefined; writeRevision: number }
+      | { snapshot: object; writeRevision: undefined }
+    )
+>;

@@ -459,11 +459,14 @@ export class SqliteReclamationWorker {
       ? await startCanonicalValidationTask(this.execution, this.options)
       : {
           kind: "dedicated",
-          channel: createSqliteTranscriptArchiveWorker({
-            type: "sqlite-transcript-archive-v2",
-            operation: "reclaim",
-            databaseOptions: this.options,
-          }),
+          channel: createSqliteTranscriptArchiveWorker(
+            {
+              type: "sqlite-transcript-archive-v2",
+              operation: "reclaim",
+              databaseOptions: this.options,
+            },
+            [this.options.path, this.stateContext.admission.databasePath],
+          ),
         };
     const worker = transport.channel;
     this.workerThreadId = sqliteMutationWorkerThreadId(transport);

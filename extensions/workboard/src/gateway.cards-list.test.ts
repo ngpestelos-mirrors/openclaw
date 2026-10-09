@@ -1,4 +1,3 @@
-import { DatabaseSync } from "node:sqlite";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
@@ -29,7 +28,7 @@ function captureCardsList(store: WorkboardStore) {
 
 describe("workboard card list revisions", () => {
   it("shares one frozen card payload per revision and publishes one invalidation per mutation", async () => {
-    const { store, stores, dbPath } = createWorkboardSqliteTestHarness();
+    const { store, stores } = createWorkboardSqliteTestHarness();
     const card = await store.create({ title: "Before", boardId: "ops" });
     await store.claim(card.id, { ownerId: "worker", token: "test-claim-token" });
     const reads = vi.spyOn(stores.cards, "entries");
@@ -87,13 +86,30 @@ describe("workboard card list revisions", () => {
     expect(withBoard.boards).toContainEqual(expect.objectContaining({ id: "empty" }));
     expect(withBoard).not.toBe(next);
 
-    using external = new DatabaseSync(dbPath);
-    external.prepare("UPDATE workboard_cards SET title = ? WHERE id = ?").run("External", card.id);
-    expect(await store.reconcileExternalChanges()).toBe(true);
-    const reconciled = await list("ops");
-    expect(reconciled.cards[0].title).toBe("External");
-    expect(await list("ops")).toBe(reconciled);
-    expect(changes).toHaveBeenCalledTimes(3);
+    expect(changes).toHaveBeenCalledTimes(2);
+  });
+
+  it("retires cached cards when a worker write commits but its reply rejects", async () => {
+    const { store, stores } = createWorkboardSqliteTestHarness();
+    const card = await store.create({ title: "Before" });
+    const listCards = captureCardsList(store);
+    const before = await listCards({});
+    expect(before.mock.calls[0]?.[1].cards[0].title).toBe("Before");
+    const register = stores.cards.registerIfUpdatedAt.bind(stores.cards);
+    vi.spyOn(stores.cards, "registerIfUpdatedAt").mockImplementationOnce(async (...args) => {
+      await register(...args);
+      throw new Error("committed reply lost");
+    });
+
+    await expect(store.update(card.id, { title: "Committed" })).rejects.toThrow(
+      "committed reply lost",
+    );
+
+    const after = await listCards({});
+    expect(after.mock.calls[0]?.[1].cards[0].title).toBe("Committed");
+    expect(after.mock.calls[0]?.[1].revision.revision).toBeGreaterThan(
+      before.mock.calls[0]?.[1].revision.revision,
+    );
   });
 
   it("replaces a pending card read when a mutation advances its revision", async () => {

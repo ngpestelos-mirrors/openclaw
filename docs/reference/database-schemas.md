@@ -26,9 +26,7 @@ migration, repair, and final live-authority checks retain their existing owners.
 Native SQLite initialization reads the loaded library's version and extension
 capability in one query before admitting real state databases. Auth-profile
 readers install their lock-wait timeout at connection open.
-Non-mutating WAL observations reuse the loaded library's admitted capability;
-they still observe current WAL frames and read freshness on each use. Quarantine
-decision readers and writers set their existing lock-wait timeout at connection
+Quarantine decision readers and writers set their existing lock-wait timeout at connection
 open. The quarantine store's format is admitted once per physical database per
 process, while existing guards retain the indexed durable quarantine-row lookup
 in one SQLite snapshot and validate any recorded file generation.
@@ -59,8 +57,11 @@ under their native connection lifecycle. Prepared-statement reuse alone does not
 retain query results. Schema-fact lookups use the process's admitted facts without
 SQL. Writer receipts invalidate cached row results across connections without
 querying `data_version`, `schema_version`, `user_version`, or the catalog again.
-Current-row authority checks remain at their effect boundaries. Active SQLite snapshots
-keep their view until they end. Closing a connection clears its prepared statements
+Current-row authority checks remain at their effect boundaries. Cached rows inside
+an active SQLite snapshot use that snapshot's identity and the connection's local
+mutation revision. They never carry a current committed-write revision or become
+reusable after the snapshot ends. Autocommit caches use the owning writer's receipts.
+Closing a connection clears its prepared statements
 and row caches, while physical-database admission survives for the process lifetime.
 
 Shared-state content-version checks reuse the physical database's admitted version

@@ -11,6 +11,7 @@ import {
 } from "../infra/runtime-worker-url.js";
 import { trackSqliteDatabaseAdmissionWorker } from "../infra/sqlite-database-admission.js";
 import { formatSqliteErrorCodeSuffix } from "../infra/sqlite-error-diagnostics.js";
+import { retainSqliteWriteAdmissionService } from "../infra/sqlite-transaction.js";
 import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import { createSqliteDatabaseAdmissionRelay } from "../infra/sqlite-worker-operation-admission.js";
 import { createCpuTrackedWorker } from "../infra/worker-cpu.js";
@@ -378,6 +379,13 @@ export function startOpenClawStateLeaseHeartbeat(
       throw new Error("State lease heartbeat database admission is closed");
     }
   });
+  const releaseAdmissionService = retainSqliteWriteAdmissionService([databasePath], () =>
+    databaseAdmission.service(),
+  );
+  const finishAdmission = () => {
+    databaseAdmission.finish();
+    releaseAdmissionService();
+  };
   try {
     params.retainCleanup?.(lifecycle.cleanup);
     const url = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.stateLeaseHeartbeat);
@@ -415,11 +423,11 @@ export function startOpenClawStateLeaseHeartbeat(
       ),
     );
   } catch (error) {
-    databaseAdmission.finish();
+    finishAdmission();
     return lifecycle.failStartup(error);
   }
   trackSqliteDatabaseAdmissionWorker(worker);
-  worker.once("exit", () => databaseAdmission.finish());
+  worker.once("exit", finishAdmission);
   worker.once("online", () => {
     onlineObserved = true;
   });

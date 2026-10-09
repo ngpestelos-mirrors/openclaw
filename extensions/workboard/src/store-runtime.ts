@@ -29,19 +29,15 @@ export class WorkboardStoreRuntime {
   protected cardsRevision: WorkboardChange = { epoch: randomUUID(), revision: 1 };
   sessionsRevision: WorkboardChange = { epoch: this.cardsRevision.epoch, revision: 1 };
   private revision = 0;
-  private externalDataVersion: number | undefined;
   private readonly listeners = new Set<(change: WorkboardChange) => void>();
   private readonly initialization: Promise<void>;
 
   constructor(
-    private readonly readDataVersion?: () => number | Promise<number>,
     private readonly closePersistence?: () => void | Promise<void>,
-    ready?: Promise<number>,
+    ready?: Promise<void>,
     private readonly runWithWriteAuthority?: WorkboardWriteAuthority,
   ) {
-    this.initialization = Promise.resolve(ready ?? readDataVersion?.()).then((version) => {
-      this.externalDataVersion = version;
-    });
+    this.initialization = ready ?? Promise.resolve();
     void this.initialization.catch(() => {});
   }
 
@@ -141,14 +137,23 @@ export class WorkboardStoreRuntime {
     sessions = false,
   ): Promise<T> {
     return this.runOperation(async () => {
-      const result = await run();
-      if (changed(result)) {
+      try {
+        const result = await run();
+        if (changed(result)) {
+          this.invalidateCards();
+          if (sessions) {
+            this.invalidateSessionBoards();
+          }
+        }
+        return result;
+      } catch (error) {
+        // A rejected reply may follow a commit. Retire cached facts without replaying the write.
         this.invalidateCards();
         if (sessions) {
           this.invalidateSessionBoards();
         }
+        throw error;
       }
-      return result;
     });
   }
 
@@ -166,23 +171,6 @@ export class WorkboardStoreRuntime {
 
   announceChangeEpoch(): void {
     this.emit();
-  }
-
-  reconcileExternalChanges(): Promise<boolean> {
-    return this.runOperation(async () => {
-      if (!this.readDataVersion) {
-        return false;
-      }
-      const current = await this.readDataVersion();
-      if (current === this.externalDataVersion) {
-        return false;
-      }
-      this.externalDataVersion = current;
-      this.invalidateCards();
-      this.invalidateSessionBoards();
-      this.emit();
-      return true;
-    });
   }
 
   protected async enqueueMutation<T>(
@@ -227,7 +215,7 @@ export class WorkboardStoreRuntime {
 
   private invalidateCards(): void {
     // Every list includes all board summaries, so even a board-scoped payload
-    // depends on the whole store revision, including foreign SQLite commits.
+    // depends on the whole store revision published by the owning writer.
     this.cardLists.clear();
     this.cardsRevision = { ...this.cardsRevision, revision: this.cardsRevision.revision + 1 };
   }

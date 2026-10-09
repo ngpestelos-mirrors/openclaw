@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi, describe } from "vitest";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { runSqliteReadSnapshotSync } from "../../infra/sqlite-transaction.js";
-import { openSqliteWorkerStore } from "../../infra/sqlite-worker-store.js";
+import { SqliteWorkerBroker } from "../../infra/sqlite-worker-broker.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import {
   openOpenClawAgentDatabaseReadOnly,
@@ -112,12 +112,19 @@ it("refreshes admitted session readers after worker commits without schema or fr
   if (!reader.found) {
     throw new Error("Session probe reader is missing");
   }
-  const worker = await openSqliteWorkerStore<SessionProbeOperations>({
-    moduleUrl: new URL("./session-accessor.sqlite-schema-probes.test-support.ts", import.meta.url),
-    databasePath: writer.path,
-    input: undefined,
-  });
+  const broker = new SqliteWorkerBroker();
   try {
+    const worker = await broker.open<SessionProbeOperations>({
+      moduleUrl: new URL(
+        "./session-accessor.sqlite-schema-probes.test-support.ts",
+        import.meta.url,
+      ),
+      databasePath: writer.path,
+      input: undefined,
+    });
+    if (!worker) {
+      throw new Error("Session probe worker is unavailable");
+    }
     const borrowed = withOpenClawAgentDatabaseReadOnly(measureSessionSchemaProbes, options);
     if (!borrowed.found) {
       throw new Error("Session probe borrowed reader is missing");
@@ -231,7 +238,7 @@ it("refreshes admitted session readers after worker commits without schema or fr
       expect(read()?.label).toBe("current");
     }
   } finally {
-    await worker.close();
+    await broker.close();
     reader.database.close();
   }
 });

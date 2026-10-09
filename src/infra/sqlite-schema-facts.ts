@@ -64,6 +64,7 @@ type SchemaOwner = SqliteSchemaScopeOwner & {
   mutationRevision: number;
   mutationDepth: number;
   transactionOpen: boolean;
+  transactionSnapshot?: object;
   transactionRead: boolean;
   transactionCatalogBound: boolean;
   nativeDepth: number;
@@ -99,6 +100,7 @@ function observeTransactionState(database: DatabaseSync, owner: SchemaOwner): vo
       owner.mutationRevision += 1;
     }
     owner.transactionOpen = inTransaction;
+    owner.transactionSnapshot = undefined;
     owner.transactionRead = false;
     owner.transactionCatalogBound = false;
   }
@@ -207,6 +209,7 @@ function trackSchemaChanges(
     }
     owner.transactionOpen = inTransaction;
     if (wasTransaction !== inTransaction || expiresRead) {
+      owner.transactionSnapshot = undefined;
       owner.transactionRead = false;
       owner.transactionCatalogBound = false;
     }
@@ -449,6 +452,7 @@ function trackSchemaChanges(
   registerNodeSqliteDisposeCallback(database, () => {
     invalidate(owner);
     owner.readRevision = undefined;
+    owner.transactionSnapshot = undefined;
     // Native close can still fail; transaction settlement retains pending DDL publication.
     releaseSqliteSchemaScope(owner);
   });
@@ -472,7 +476,8 @@ export function getSqliteReadOperationRevision(
   if (database.isTransaction || getSqlitePinnedReadSnapshot(database)) {
     return undefined;
   }
-  return getSqliteReadScopeRevision(database);
+  const revision = getSqliteReadScopeRevision(database);
+  return revision?.snapshot === undefined ? revision : undefined;
 }
 
 /** Stable identity for row facts in the admitted operation's current SQLite snapshot. */
@@ -489,19 +494,36 @@ export function getSqliteReadScopeRevision(
     owner.authorizerActive ||
     owner.readDepth === 0 ||
     owner.mutationDepth !== 0 ||
-    owner.unmanagedSnapshots.size > 0 ||
-    database.isTransaction ||
-    getSqlitePinnedReadSnapshot(database)
+    owner.unmanagedSnapshots.size > 0
   ) {
     return undefined;
+  }
+  const snapshot =
+    getSqlitePinnedReadSnapshot(database) ??
+    (database.isTransaction ? (owner.transactionSnapshot ??= {}) : undefined);
+  const previous = owner.readRevision;
+  if (snapshot) {
+    if (
+      previous?.schema === owner.facts &&
+      previous.snapshot === snapshot &&
+      previous.mutationRevision === owner.mutationRevision
+    ) {
+      return previous;
+    }
+    return (owner.readRevision = {
+      schema: owner.facts,
+      mutationRevision: owner.mutationRevision,
+      snapshot,
+      writeRevision: undefined,
+    });
   }
   const writeRevision = readSqliteDatabaseWriteRevision(database);
   if (writeRevision === undefined) {
     return undefined;
   }
-  const previous = owner.readRevision;
   if (
     previous?.schema === owner.facts &&
+    previous.snapshot === undefined &&
     previous.writeRevision === writeRevision &&
     previous.mutationRevision === owner.mutationRevision
   ) {
@@ -509,6 +531,7 @@ export function getSqliteReadScopeRevision(
   }
   return (owner.readRevision = {
     schema: owner.facts,
+    snapshot: undefined,
     writeRevision,
     mutationRevision: owner.mutationRevision,
   });

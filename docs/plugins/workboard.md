@@ -504,9 +504,15 @@ openclaw workboard dispatch [--board <id>] [--json]
 `list` text output hides archived cards by default (`--include-archived`
 overrides). `--json` always includes archived cards, matching the full-card
 contract used by existing scripts. `show` and `move` accept an unambiguous id
-prefix. `list`, `create`, `show`, and `move` always read/write local plugin
-state directly. Only `dispatch` calls the running Gateway, with the fallback
-described above.
+prefix. `list`, `create`, `show`, and `move` access local plugin state directly.
+Stop the Gateway before local `create` or `move`; while it is running, use the
+Control UI or Gateway RPC for mutations. Only `dispatch` calls the running
+Gateway, with the fallback described above. Data-only dispatch also requires the
+Gateway to be stopped; a connection error alone does not establish that it stopped.
+Plugin loading can also initialize or upgrade the local database before choosing
+the subcommand. Do that preparation with the Gateway stopped, including when the
+requested command is `list` or `show`. Use the Control UI or Gateway RPC for online
+access when local state still needs preparation.
 
 See [Workboard CLI](/cli/workboard) for full flags, JSON output, Gateway
 fallback behavior, id-prefix handling, dispatch selection rules, and
@@ -681,6 +687,12 @@ conversation remain in the normal session store.
 SQLite opening, queries, and transactions run in a background database worker.
 Disabling or reloading the plugin drains admitted storage work before closing
 its connections.
+
+The Gateway's Workboard owner invalidates cached card lists and board revisions
+when its worker writes settle. Change notifications use those publications;
+there is no timer polling SQLite for writes from other processes. If a worker
+reply fails after a possible commit, the owner discards cached facts and rereads
+them on the next use without replaying the mutation.
 
 Installations with retained pre-July 2026 Workboard plugin-state KV data must
 upgrade through OpenClaw `2026.9.7` and run `openclaw doctor --fix` before upgrading

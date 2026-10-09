@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
-import { DatabaseSync, StatementSync } from "node:sqlite";
+import { StatementSync, type DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   observeSqliteReadSql,
   trackSqliteStatementExecutions,
 } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import { onSessionLifecycleEvent } from "../../sessions/session-lifecycle-events.js";
 import {
   closeOpenClawAgentDatabasesAsync,
@@ -62,7 +63,8 @@ describe("SQLite session participants", () => {
         await patchSessionEntryCore(
           scope,
           () => {
-            const connection = writer === "foreign" ? new DatabaseSync(database.path) : database.db;
+            const connection =
+              writer === "foreign" ? openNodeSqliteDatabase(database.path) : database.db;
             try {
               connection
                 .prepare("UPDATE session_participants SET actor_id = ? WHERE session_key = ?")
@@ -186,7 +188,7 @@ describe("SQLite session participants", () => {
           if (kind === "participant") {
             recordSessionParticipant(scope, { identity: profile(label), promptedAt: time });
           } else if (external) {
-            const database = new DatabaseSync(openOpenClawAgentDatabase(scope).path);
+            const database = openNodeSqliteDatabase(openOpenClawAgentDatabase(scope).path);
             try {
               database
                 .prepare(
@@ -297,7 +299,7 @@ describe("SQLite session participants", () => {
           }
         };
         if (mutation === "external-participant") {
-          const external = new DatabaseSync(database.path);
+          const external = openNodeSqliteDatabase(database.path);
           try {
             mutate(external);
           } finally {
@@ -810,12 +812,13 @@ describe("SQLite session participants", () => {
       });
       await upsertSessionEntryCore(scope, { sessionId: "bounded-reset", updatedAt: 30 });
       expect(loadSessionEntry(scope)?.participants).toHaveLength(MAX_SESSION_PARTICIPANTS);
-      await deleteSessionEntryLifecycle({
+      const deletion = await deleteSessionEntryLifecycle({
         agentId: "main",
         storePath: database.path,
         target: { canonicalKey: scope.sessionKey, storeKeys: [scope.sessionKey] },
         archiveTranscript: false,
       });
+      expect(deletion.deleted).toBe(true);
       expect(listSessionParticipantsReadOnly(scope).get(scope.sessionKey)).toBeUndefined();
     });
   });

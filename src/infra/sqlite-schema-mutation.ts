@@ -66,13 +66,14 @@ function temporaryWriteTables(sql: string): string[] | undefined {
     const statement = end < 0 ? remaining : remaining.slice(0, end);
     if (changesData(statement)) {
       const target =
-        /^(?:INSERT(?: OR \w+)? INTO|REPLACE INTO|UPDATE(?: OR \w+)?|DELETE FROM)\s+(?:temp|"temp"|`temp`|\[temp\])\s*\.\s*("(?:[^"]|"")+"|`(?:[^`]|``)+`|\[[^\]]+\]|[a-z_]\w*)/iu.exec(
+        /^(?:INSERT(?: OR \w+)? INTO|REPLACE INTO|UPDATE(?: OR \w+)?|DELETE FROM)\s+(?:temp|"temp"|`temp`|\[temp\])\s*\.\s*("(?:[^"]|"")+"|`(?:[^`]|``)+`|\[[^\]]+\]|[a-z_]\w*)(?=\s|\(|$)/iu.exec(
           statement,
         );
-      if (!target) {
+      const table = target?.[1];
+      if (table === undefined) {
         return undefined;
       }
-      tables.push(normalizeSqlIdentifier(target[1]));
+      tables.push(normalizeSqlIdentifier(table));
     }
     remaining = end < 0 ? "" : remaining.slice(end + 1);
   }

@@ -4,6 +4,7 @@ import { DatabaseSync, StatementSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import * as maintenance from "../infra/state-database-maintenance.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "./openclaw-state-db-cache.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
@@ -134,7 +135,7 @@ describe("retained existing-state writer", () => {
     }
   });
 
-  it("retains WAL files and one integrity admission through ordinary local and foreign writes", () => {
+  it("retains WAL files and one integrity admission through ordinary local and sibling writes", () => {
     const options = fixture();
     const reads = observeSqliteReadSql(StatementSync.prototype);
     const writer = openExistingOpenClawStateWriter(options, contract);
@@ -148,7 +149,7 @@ describe("retained existing-state writer", () => {
         const stat = fs.statSync(`${options.path}${suffix}`);
         return { dev: stat.dev, ino: stat.ino };
       });
-      const external = new DatabaseSync(options.path);
+      const external = openNodeSqliteDatabase(options.path);
       try {
         external.prepare("INSERT INTO records VALUES (?, ?)").run(2, "foreign");
       } finally {
@@ -331,7 +332,7 @@ describe("retained existing-state writer", () => {
       sql: "INSERT INTO config_machine_state VALUES ('state.schema.contentVersion', '{', 1)",
       error: /invalid shared state schema content version/iu,
     },
-  ])("rejects $change before a retained write", ({ sql, error, markersChange, deferred }) => {
+  ])("rejects $change at first admission", ({ sql, error, markersChange, deferred }) => {
     const options = fixture(deferred);
     if (deferred) {
       const setup = new DatabaseSync(options.path);
@@ -348,30 +349,25 @@ describe("retained existing-state writer", () => {
       }
     }
     const run = () => {
+      // Raw fixture connections leave this physical file unadmitted until the writer opens it.
+      const external = new DatabaseSync(options.path);
+      try {
+        const before = readSchemaMarkers(external);
+        external.exec(sql);
+        if (!markersChange) {
+          expect(readSchemaMarkers(external)).toEqual(before);
+        }
+      } finally {
+        external.close();
+      }
       const writer = openExistingOpenClawStateWriter(options, contract);
       try {
-        writer.run(({ db }) => {
-          if (deferred) {
-            db.exec("INSERT INTO records VALUES (1, 'before removal')");
-          }
-        }, options);
-        writer.run(() => undefined, options);
-        const external = new DatabaseSync(options.path);
-        try {
-          const before = readSchemaMarkers(external);
-          external.exec(sql);
-          if (!markersChange) {
-            expect(readSchemaMarkers(external)).toEqual(before);
-          }
-        } finally {
-          external.close();
-        }
         const mutate = vi.fn(({ db }: { db: DatabaseSync }) => {
           db.exec("INSERT INTO records VALUES (2, 'refused')");
         });
         expect(() => writer.run(mutate, options)).toThrow(error);
         expect(mutate).not.toHaveBeenCalled();
-        expect(readValues(options.path)).toEqual(deferred ? [{ value: "before removal" }] : []);
+        expect(readValues(options.path)).toEqual([]);
       } finally {
         writer.close();
       }

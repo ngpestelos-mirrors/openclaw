@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { readSessionNodesGeneration } from "../config/sessions/session-accessor.sqlite-entry-revision.js";
 import { hasSqliteSessionOwnerColumns } from "../config/sessions/session-accessor.sqlite-owner-projection.js";
+import { participantRecordsBySessionKey } from "../config/sessions/session-accessor.sqlite-participant-projection.js";
 import { assertCanonicalSessionValidationSchema } from "../state/openclaw-agent-canonical-validation-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import { assertSupportedAgentSchemaVersion } from "../state/openclaw-agent-db-schema-read.js";
@@ -588,6 +589,17 @@ describe("admitted SQLite schema facts", () => {
       writer.exec("BEGIN; INSERT INTO original VALUES (2); ROLLBACK");
       expect(revision()).not.toBe(committed);
       expect(reader.prepare("SELECT id FROM original").all()).toEqual([{ id: 1 }]);
+      writer.exec(`
+        CREATE TEMP TABLE local_status$extra (value);
+        CREATE TEMP TRIGGER suffix_tracking_write AFTER INSERT ON local_status$extra
+        BEGIN INSERT INTO original VALUES (NEW.value); END;
+      `);
+      const insertSuffix = writer.prepare("INSERT INTO temp.local_status$extra VALUES (8)");
+      installSqliteTempTrackingSchema(writer, tracking);
+      const beforeSuffix = revision();
+      insertSuffix.run();
+      expect(revision()).not.toBe(beforeSuffix);
+      expect(reader.prepare("SELECT id FROM original").all()).toEqual([{ id: 1 }, { id: 8 }]);
       const updateTracking = writer.prepare("UPDATE temp.local_status SET generation=3");
       writer.exec(
         "CREATE TEMP TRIGGER custom_tracking_write AFTER UPDATE ON local_status BEGIN INSERT INTO original VALUES (9); END",
@@ -596,7 +608,66 @@ describe("admitted SQLite schema facts", () => {
       const beforeTrigger = revision();
       updateTracking.run();
       expect(revision()).not.toBe(beforeTrigger);
-      expect(reader.prepare("SELECT id FROM original").all()).toEqual([{ id: 1 }, { id: 9 }]);
+      expect(reader.prepare("SELECT id FROM original").all()).toEqual([
+        { id: 1 },
+        { id: 8 },
+        { id: 9 },
+      ]);
+      expect(observation.queries.filter((sql) => /data_version/iu.test(sql))).toEqual([]);
+    } finally {
+      observation.restore();
+    }
+  });
+
+  it("reuses rows only within their explicit snapshot and observes the next committed rows", () => {
+    const filename = path.join(tempDirs.make("openclaw-row-snapshot-"), "state.sqlite");
+    const reader = openDatabase(
+      `
+      PRAGMA journal_mode=WAL;
+      CREATE TABLE session_participants (
+        session_key TEXT, identity_namespace TEXT, actor_id TEXT,
+        contribution_count INTEGER, first_prompted_at INTEGER, last_prompted_at INTEGER
+      );
+      INSERT INTO session_participants VALUES ('session', '{"type":"profile"}', 'first', 1, 1, 1);
+    `,
+      true,
+      filename,
+    );
+    const writer = openDatabase("", true, filename);
+    const read = () =>
+      participantRecordsBySessionKey(reader, ["session"])
+        .get("session")
+        ?.map((row) => row.identity.id);
+    const observation = observeSqliteReadSql(StatementSync.prototype);
+    const rowReads = () =>
+      observation.queries.filter((sql) => /from "session_participants"/iu.test(sql)).length;
+    try {
+      expect(read()).toEqual(["first"]);
+      runSqliteReadOperationSync(reader, () => {
+        reader.exec("BEGIN");
+        try {
+          expect(read()).toEqual(["first"]);
+          const reads = rowReads();
+          writer.exec("UPDATE session_participants SET actor_id='second'");
+          expect(read()).toEqual(["first"]);
+          expect(rowReads()).toBe(reads);
+          reader.exec("COMMIT; BEGIN");
+          expect(read()).toEqual(["second"]);
+        } finally {
+          reader.exec("COMMIT");
+        }
+        expect(read()).toEqual(["second"]);
+        writer.exec("UPDATE session_participants SET actor_id='third'");
+        expect(read()).toEqual(["third"]);
+      });
+      runSqliteSchemaReadSnapshotSync(reader, () => {
+        expect(read()).toEqual(["third"]);
+        const reads = rowReads();
+        writer.exec("UPDATE session_participants SET actor_id='fourth'");
+        expect(read()).toEqual(["third"]);
+        expect(rowReads()).toBe(reads);
+      });
+      expect(read()).toEqual(["fourth"]);
       expect(observation.queries.filter((sql) => /data_version/iu.test(sql))).toEqual([]);
     } finally {
       observation.restore();

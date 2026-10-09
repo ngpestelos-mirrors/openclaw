@@ -89,18 +89,14 @@ describe("canonical proof on physical database validation", () => {
         );
       const warm = observe(database.db);
       try {
-        runSqliteReadOperationSync(
-          database.db,
-          () => {
-            expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(true);
-            expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(true);
-          },
-          "fresh",
-        );
+        runSqliteReadOperationSync(database.db, () => {
+          expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(true);
+          expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(true);
+        });
         expect(warm.counts).toEqual({ data_version: 0, schema_version: 0, user_version: 0 });
         database.db.exec("BEGIN");
         try {
-          expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(true);
+          expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(false);
           expect(warm.counts).toEqual({ data_version: 0, schema_version: 0, user_version: 0 });
         } finally {
           database.db.exec("ROLLBACK");
@@ -109,6 +105,8 @@ describe("canonical proof on physical database validation", () => {
         warm.restore();
       }
 
+      expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(false);
+      refreshOpenClawAgentDatabaseSchema(database, () => {});
       const reader = openOpenClawAgentDatabaseReadOnly(options);
       if (!reader.found) {
         throw new Error("Expected independent reader");
@@ -117,10 +115,8 @@ describe("canonical proof on physical database validation", () => {
       try {
         expect(adoptOpenClawAgentDatabaseSchema(reader.database)).toBe(true);
         expect(cold.counts).toEqual({ data_version: 0, schema_version: 0, user_version: 0 });
-        runSqliteReadOperationSync(
-          reader.database.db,
-          () => expect(adoptOpenClawAgentDatabaseSchema(reader.database)).toBe(true),
-          "fresh",
+        runSqliteReadOperationSync(reader.database.db, () =>
+          expect(adoptOpenClawAgentDatabaseSchema(reader.database)).toBe(true),
         );
         expect(cold.counts).toEqual({ data_version: 0, schema_version: 0, user_version: 0 });
       } finally {

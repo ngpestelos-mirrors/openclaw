@@ -7,6 +7,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/trajectory/runtime-retention.sqlite.test.ts",
   "src/state/openclaw-agent-db.checkonce.test.ts",
   "src/state/openclaw-state-db-checkonce.test.ts",
+  "src/state/openclaw-state-db-existing-write.test.ts",
   "src/state/openclaw-state-db-read-connection.cache.test.ts",
   "src/agents/auth-profiles.sqlite-read-pool.test.ts",
   "src/state/openclaw-state-db-cron-delivery-migration.test.ts",

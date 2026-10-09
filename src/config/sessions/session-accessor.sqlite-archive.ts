@@ -8,6 +8,8 @@ import {
   resolveRuntimeWorkerUrl,
 } from "../../infra/runtime-worker-url.js";
 import { trackSqliteDatabaseAdmissionWorker } from "../../infra/sqlite-database-admission.js";
+import { retainSqliteWriteAdmissionService } from "../../infra/sqlite-transaction.js";
+import { createSqliteDatabaseAdmissionRelay } from "../../infra/sqlite-worker-operation-admission.js";
 import { createCpuTrackedWorker } from "../../infra/worker-cpu.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
@@ -39,14 +41,39 @@ import {
 import type { SessionColdWorkerData } from "./session-cold-storage-worker.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 
-export function createSqliteTranscriptArchiveWorker(workerData: object): Worker {
+export function createSqliteTranscriptArchiveWorker(
+  workerData: object,
+  nativeLocations: readonly string[] = [],
+): Worker {
   const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sessionTranscriptArchive);
-  const worker = createCpuTrackedWorker(workerUrl, {
-    resourceLimits: { maxOldGenerationSizeMb: 512 },
-    workerData,
-    execArgv: resolveRuntimeWorkerThreadExecArgv(workerUrl),
+  let active = true;
+  const admission = createSqliteDatabaseAdmissionRelay(() => {
+    if (!active) {
+      throw new Error("SQLite archive database admission is closed");
+    }
   });
+  const releaseService = retainSqliteWriteAdmissionService(nativeLocations, () =>
+    admission.service(),
+  );
+  const finish = () => {
+    active = false;
+    admission.finish();
+    releaseService();
+  };
+  let worker: Worker;
+  try {
+    worker = createCpuTrackedWorker(workerUrl, {
+      resourceLimits: { maxOldGenerationSizeMb: 512 },
+      workerData: { ...workerData, databaseAdmissionPort: admission.port },
+      transferList: [admission.port],
+      execArgv: resolveRuntimeWorkerThreadExecArgv(workerUrl),
+    });
+  } catch (error) {
+    finish();
+    throw error;
+  }
   trackSqliteDatabaseAdmissionWorker(worker);
+  worker.once("exit", finish);
   return worker;
 }
 
@@ -79,7 +106,12 @@ function spawnSqliteTranscriptArchiveWorkerOperation<Result>(
       : input;
   let worker: Worker;
   try {
-    worker = createSqliteTranscriptArchiveWorker(params.workerData);
+    worker = createSqliteTranscriptArchiveWorker(
+      params.workerData,
+      params.expectedMessageType === "reclaimed"
+        ? [params.workerData.plan.databaseOptions.path, params.stateContext.admission.databasePath]
+        : [],
+    );
   } catch (error) {
     return Promise.reject(toStringifiedError(error));
   }

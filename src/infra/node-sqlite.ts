@@ -16,6 +16,7 @@ import { compareValidSemver } from "./semver.js";
 import {
   bindSqliteDatabaseAdmission,
   prepareSqliteDatabaseAdmission,
+  prepareSqliteDatabaseWriter,
 } from "./sqlite-database-admission.js";
 import {
   probeSqliteIteratorBehavior,
@@ -32,7 +33,6 @@ let validatedSqliteModule:
   | undefined;
 let extensionLoadingSupported = false;
 let jsonbSupported = false;
-let walCheckpointNoopSupported = false;
 // Unqualified runtimes cannot confirm native disposal until the owning worker exits.
 export let bunSqliteNativeCleanupPending = false;
 
@@ -183,7 +183,6 @@ function assertSafeSqliteRuntime(sqlite: typeof import("node:sqlite")): SqliteIt
   if (inherited) {
     assertSqliteWalResetSafeVersion(inherited.version, process.versions.node);
     jsonbSupported = (compareValidSemver(inherited.version, "3.45.0") ?? -1) >= 0;
-    walCheckpointNoopSupported = (compareValidSemver(inherited.version, "3.53.0") ?? -1) >= 0;
     extensionLoadingSupported = inherited.extensionLoadingSupported;
     validatedSqliteModule = { sqlite, iteratorBehavior: inherited.iteratorBehavior };
     return inherited.iteratorBehavior;
@@ -207,7 +206,6 @@ function assertSafeSqliteRuntime(sqlite: typeof import("node:sqlite")): SqliteIt
     database.close();
   }
   jsonbSupported = (compareValidSemver(version, "3.45.0") ?? -1) >= 0;
-  walCheckpointNoopSupported = (compareValidSemver(version, "3.53.0") ?? -1) >= 0;
   extensionLoadingSupported = extensions;
   validatedSqliteModule = { sqlite, iteratorBehavior };
   setEnvironmentData(SQLITE_NATIVE_RUNTIME_ADMISSION_KEY, {
@@ -250,12 +248,6 @@ export function supportsNodeSqliteJsonb(): boolean {
   return jsonbSupported;
 }
 
-/** Older SQLite versions can interpret NOOP as a mutating checkpoint mode. */
-export function supportsNodeSqliteWalCheckpointNoop(): boolean {
-  requireNodeSqlite();
-  return walCheckpointNoopSupported;
-}
-
 /** Open node:sqlite through OpenClaw's runtime and filesystem-location boundary. */
 export function openNodeSqliteDatabase(
   location: string,
@@ -273,6 +265,9 @@ export function openNodeSqliteDatabase(
   if (database.isOpen) {
     try {
       bindSqliteDatabaseAdmission(database, identity);
+      if (options?.readOnly !== true) {
+        prepareSqliteDatabaseWriter(database);
+      }
     } catch (error) {
       database.close();
       throw error;
@@ -285,6 +280,9 @@ export function openNodeSqliteDatabase(
     sqlite.DatabaseSync.prototype.open.call(database);
     try {
       bindSqliteDatabaseAdmission(database, reopenedIdentity);
+      if (options?.readOnly !== true) {
+        prepareSqliteDatabaseWriter(database);
+      }
     } catch (error) {
       database.close();
       throw error;

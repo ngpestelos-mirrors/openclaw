@@ -40,13 +40,12 @@ export class WorkboardBoardStore extends WorkboardStoreRuntime {
       sessionsBoard: WorkboardSessionsBoardStore;
       subscriptions: WorkboardSubscriptionStore;
       attachments: WorkboardKeyedStore<PersistedWorkboardAttachment>;
-      ready?: Promise<number>;
-      dataVersion?: () => number | Promise<number>;
+      ready?: Promise<void>;
       close?: () => void | Promise<void>;
       runWithWriteAuthority?: WorkboardWriteAuthority;
     },
   ) {
-    super(stores.dataVersion, stores.close, stores.ready, stores.runWithWriteAuthority);
+    super(stores.close, stores.ready, stores.runWithWriteAuthority);
     this.store = this.trackCardStore(store);
     this.boardStore = this.track(stores.boards, { sessions: true });
     this.sessionsBoardStore = stores.sessionsBoard;
@@ -80,7 +79,7 @@ export class WorkboardBoardStore extends WorkboardStoreRuntime {
       }
       const pending = Promise.all([this.list({ boardId }), this.listBoards()])
         .then(([cards, { boards }]) => {
-          // A write or external-change publication during the read retires this
+          // An owning-writer publication during the read retires this
           // snapshot; readers join the replacement instead of publishing stale data.
           if (this.cardLists.get(boardId) !== pending) {
             return this.listCards(boardId);

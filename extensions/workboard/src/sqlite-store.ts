@@ -14,8 +14,7 @@ import type {
 import { unwrapWorkboardSqliteResult } from "./sqlite-store-errors.js";
 
 type WorkboardSqliteStores = WorkboardPersistence & {
-  ready: Promise<number>;
-  dataVersion(this: void): Promise<number>;
+  ready: Promise<void>;
   close(this: void): Promise<void>;
   runWithWriteAuthority: WorkboardWriteAuthority;
 };
@@ -93,7 +92,7 @@ export function createWorkboardSqliteStores(options: {
       }
       throw error;
     });
-  const ready = opened.then((value) => value.dataVersion);
+  const ready = opened.then(() => undefined);
   void ready.catch(() => {});
   async function execute<K extends keyof WorkboardSqliteOperations>(
     type: K,
@@ -162,7 +161,6 @@ export function createWorkboardSqliteStores(options: {
       }
     },
     ready,
-    dataVersion: () => run(undefined, (connection) => execute("dataVersion", { connection })),
     cards: {
       register: bindOperation((input) => execute("cards.register", input, true)),
       registerIfAbsent: bindOperation((input) => execute("cards.registerIfAbsent", input, true)),

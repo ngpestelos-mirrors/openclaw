@@ -8,6 +8,7 @@ import {
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+import { retainAgentDatabase } from "../state/openclaw-agent-db-lifecycle.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import {
   openOpenClawAgentDatabase,
@@ -450,6 +451,7 @@ describe("SQLite trajectory runtime retention", () => {
       createTrajectoryEvent({ sessionId: "history", type: "old" }),
     ]);
     const database = openOpenClawAgentDatabase({ agentId: "main", path: sqlitePath() });
+    using _ = { [Symbol.dispose]: retainAgentDatabase(database.db) };
     database.db.exec(`CREATE TEMP TRIGGER reject_retention
       BEFORE DELETE ON trajectory_runtime_events WHEN OLD.session_id = 'history'
       BEGIN SELECT RAISE(ABORT, 'synthetic retention failure'); END`);
@@ -518,6 +520,7 @@ describe("SQLite trajectory runtime retention", () => {
         delta;
 
       const database = openOpenClawAgentDatabase({ agentId: "main", path: sqlitePath() });
+      using _ = { [Symbol.dispose]: retainAgentDatabase(database.db) };
       clearNodeSqliteKyselyCacheForDatabase(database.db);
       const prepare = database.db.prepare.bind(database.db);
       let aggregates = 0;
@@ -628,6 +631,7 @@ describe("SQLite trajectory runtime retention", () => {
       );
     }
     const database = openOpenClawAgentDatabase({ agentId: "main", path: sqlitePath() });
+    using _ = { [Symbol.dispose]: retainAgentDatabase(database.db) };
     const competing = openNodeSqliteDatabase(sqlitePath());
     const retainedRuns = () =>
       database.db

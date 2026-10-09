@@ -152,7 +152,7 @@ it.each(["transaction", "pinned snapshot"] as const)(
     writer.exec("PRAGMA journal_mode=WAL");
     const reader = new DatabaseSync(filename, { readOnly: true });
     const read = () =>
-      runSqliteReadOperationSync(reader, () => readExistingAgentSchemaMeta(reader), "fresh");
+      runSqliteReadOperationSync(reader, () => readExistingAgentSchemaMeta(reader));
     const observation = observeSqliteReadSql(StatementSync.prototype);
     const metadataReads = () =>
       observation.queries.filter((sql) => /^SELECT role, schema_version, agent_id/iu.test(sql));
@@ -199,7 +199,7 @@ it("keeps admitted ownership current through local writes, rollback, and authori
   });
   admitSqliteSchema(database);
   const read = () =>
-    runSqliteReadOperationSync(database, () => readExistingAgentSchemaMeta(database), "fresh");
+    runSqliteReadOperationSync(database, () => readExistingAgentSchemaMeta(database));
   try {
     const first = read();
     expect(first?.agentId).toBe("main");

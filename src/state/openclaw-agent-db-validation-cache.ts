@@ -135,7 +135,10 @@ export function adoptOpenClawAgentDatabaseSchema(
   const schema = validation?.schema;
   // The physical receipt is checked above; current read admission supplies the same
   // schema markers as native adoption, even when a sibling retained its own catalog.
-  const admitted = reuseIntegrity && schema ? getAdmittedSqliteSchemaFacts(database.db) : undefined;
+  const admitted =
+    reuseIntegrity && schema && !database.db.isTransaction
+      ? getAdmittedSqliteSchemaFacts(database.db)
+      : undefined;
   const adopted = Boolean(
     reuseIntegrity &&
     schema &&

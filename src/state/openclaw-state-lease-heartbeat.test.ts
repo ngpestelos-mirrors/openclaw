@@ -414,12 +414,17 @@ it("keeps deferred activation pending until renewal commits after contention", a
     const writer = new DatabaseSync(database.path);
     try {
       await prepared.promise;
+      const beforeRenewal = readSqliteDatabaseWriteRevision(database.db);
+      expect(beforeRenewal).toBeTypeOf("number");
       writer.exec("BEGIN IMMEDIATE");
       worker.postMessage({ startup: "activate" }, []);
       await processed.promise;
       expect(Atomics.load(shared, leaseHeartbeatState.status)).toBe(leaseHeartbeatState.starting);
       writer.exec("ROLLBACK");
       await ready.promise;
+      const afterRenewal = readSqliteDatabaseWriteRevision(database.db);
+      expect(afterRenewal).toBeTypeOf("number");
+      expect(afterRenewal).not.toBe(beforeRenewal);
       expect(Atomics.load(shared, leaseHeartbeatState.status)).toBe(leaseHeartbeatState.ready);
       const row = database.db
         .prepare("SELECT expires_at FROM state_leases WHERE scope = ? AND lease_key = ?")
@@ -453,10 +458,6 @@ it("admits heartbeat-owned worker writes without blocking the host and rolls bac
         heartbeat: "worker",
       },
       async (lease) => {
-        const beforeRenewal = readSqliteDatabaseWriteRevision(database.db);
-        expect(beforeRenewal).toBeTypeOf("number");
-        await lease.renew?.();
-        expect(readSqliteDatabaseWriteRevision(database.db)).not.toBe(beforeRenewal);
         const { StatementSync } = requireNodeSqlite();
         const hostCalls = [
           vi.spyOn(DatabaseSync.prototype, "prepare"),

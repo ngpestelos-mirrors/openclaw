@@ -378,14 +378,15 @@ export function beginSqliteDatabaseSchemaMutation(database: DatabaseSync): void 
   if (state.schemaWriters.has(database)) {
     return;
   }
-  const record = acquireDatabaseWriter(database);
+  const record = prepareSqliteDatabaseWriter(database);
   if (record) {
     state.schemaWriters.set(database, record);
     Atomics.add(new Int32Array(record.writers.get(threadId)!.cell), 0, 1);
   }
 }
 
-function acquireDatabaseWriter(database: DatabaseSync): Admission | undefined {
+/** Writable opens establish custody before a caller can acquire any SQLite lock. */
+export function prepareSqliteDatabaseWriter(database: DatabaseSync): Admission | undefined {
   // Cold host and managed worker DDL need custody before any native callback can admit a sibling.
   const record = admission(database, threadId === 0 || state.exchange.getStore() !== undefined);
   if (record) {
@@ -407,7 +408,7 @@ export function beginSqliteDatabaseWrite(database: DatabaseSync): void {
   if (state.dataWriters.has(database)) {
     return;
   }
-  const record = acquireDatabaseWriter(database);
+  const record = prepareSqliteDatabaseWriter(database);
   state.dataWriters.set(database, record);
   if (record) {
     Atomics.add(new Int32Array(record.writers.get(threadId)!.cell), 2, 1);

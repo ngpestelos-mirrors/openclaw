@@ -7,6 +7,7 @@ import type { WorkboardCard, WorkboardExecution } from "@openclaw/workboard-cont
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { MAX_DATE_TIMESTAMP_MS } from "openclaw/plugin-sdk/number-runtime";
 import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
+import { openNodeSqliteDatabase } from "openclaw/plugin-sdk/sqlite-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersistedWorkboardCard, WorkboardCardStore } from "./persistence-types.js";
@@ -261,38 +262,6 @@ describe("WorkboardStore", () => {
 
     expect(changes.mock.calls.map(([change]) => change.revision)).toEqual([1, 2, 3]);
     await expect(store.get(card.id)).resolves.toBeUndefined();
-  });
-
-  it("emits when another sqlite connection commits", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-workboard-change-"));
-    const dbPath = path.join(dir, "workboard.sqlite");
-    const readerStores = createWorkboardSqliteStores({ dbPath, workerModuleUrl });
-    const writerStores = createWorkboardSqliteStores({ dbPath, workerModuleUrl });
-    try {
-      const reader = new WorkboardStore(readerStores.cards, {
-        ...sqliteTestAuxStores(readerStores),
-        dataVersion: readerStores.dataVersion,
-      });
-      const writer = new WorkboardStore(writerStores.cards, {
-        ...sqliteTestAuxStores(writerStores),
-        dataVersion: writerStores.dataVersion,
-      });
-      const changes = vi.fn();
-      reader.subscribeChanges(changes);
-
-      expect(await reader.reconcileExternalChanges()).toBe(false);
-      await writer.create({ title: "External" });
-      expect(await reader.reconcileExternalChanges()).toBe(true);
-      expect(await reader.reconcileExternalChanges()).toBe(false);
-      expect(changes).toHaveBeenCalledOnce();
-      await expect(reader.list()).resolves.toEqual([
-        expect.objectContaining({ title: "External" }),
-      ]);
-    } finally {
-      await writerStores.close();
-      await readerStores.close();
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
   });
 
   it("reports committed reference cleanup revisions after a concurrent peer edit", async () => {
@@ -615,7 +584,7 @@ describe("WorkboardStore", () => {
     const initialized = createWorkboardSqliteStores({ dbPath, workerModuleUrl });
     await initialized.ready;
     await initialized.close();
-    const db = new DatabaseSync(dbPath);
+    const db = openNodeSqliteDatabase(dbPath);
     let initialMigrationIds: Array<{ id: string }>;
     try {
       initialMigrationIds = db
@@ -870,7 +839,7 @@ describe("WorkboardStore", () => {
     const initialized = createWorkboardSqliteStores({ dbPath, workerModuleUrl });
     await initialized.ready;
     await initialized.close();
-    const legacy = new DatabaseSync(dbPath);
+    const legacy = openNodeSqliteDatabase(dbPath);
     try {
       legacy.exec(`
         INSERT INTO workboard_boards (
