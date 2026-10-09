@@ -98,7 +98,10 @@ function captureRecoverySource({
         return false;
       },
     });
-    const assertReference = createPluginNativeReferenceValidator(recovery.directory);
+    const assertReference = createPluginNativeReferenceValidator(
+      recovery.directory,
+      "native-recovery",
+    );
     for (const [target, fact] of hardlinkedTargets) {
       assertReference(target, fact, native!.namespaces.get(fact.namespace)!);
     }
