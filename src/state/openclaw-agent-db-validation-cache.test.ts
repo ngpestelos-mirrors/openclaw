@@ -101,12 +101,12 @@ describe("canonical proof on physical database validation", () => {
         } finally {
           database.db.exec("COMMIT");
         }
+        expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(true);
+        expect(warm.counts).toEqual({ data_version: 0, schema_version: 0, user_version: 0 });
       } finally {
         warm.restore();
       }
 
-      expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(false);
-      refreshOpenClawAgentDatabaseSchema(database, () => {});
       const reader = openOpenClawAgentDatabaseReadOnly(options);
       if (!reader.found) {
         throw new Error("Expected independent reader");
@@ -175,10 +175,9 @@ describe("canonical proof on physical database validation", () => {
             ),
           ).toBe(true);
 
-          // Local TEMP DDL still revokes even though main's schema markers do not change.
+          // Connection-local TEMP tables do not revoke physical MAIN admission.
           reader.database.db.exec("CREATE TEMP TABLE local_fixture(value TEXT)");
-          expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(false);
-          refreshOpenClawAgentDatabaseSchema(database, () => {});
+          expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(true);
           expect(hasOpenClawAgentReadOnlySchema(reader.database)).toBe(true);
           expect(adoptOpenClawAgentDatabaseSchema(database, true, true)).toBe(true);
 
@@ -423,7 +422,7 @@ describe("canonical proof on physical database validation", () => {
             if (transition === "schema-revocation" || transition === "optional-schema-revocation") {
               invalidateOpenClawAgentDatabaseSchema(reopened);
             } else if (transition === "local-ddl" || transition === "optional-local-ddl") {
-              reopened.db.exec("CREATE TEMP TABLE revoked_promotion(value TEXT)");
+              reopened.db.exec("CREATE TABLE revoked_promotion(value TEXT)");
             }
             if (transition === "replacement") {
               expect(promoted.identity).not.toBe(received.identity);

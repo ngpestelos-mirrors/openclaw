@@ -1,3 +1,4 @@
+import { readSqliteDatabaseWriteTokenForPath } from "openclaw/plugin-sdk/sqlite-runtime";
 import type { WorkboardKeyedStore } from "../persistence-types.js";
 import { createWorkboardSqliteKernel } from "../sqlite-store-kernel.js";
 import type { createWorkboardSqliteStores } from "../sqlite-store.js";
@@ -23,6 +24,7 @@ export function createKernelStores(
   const kernel = createWorkboardSqliteKernel(dbPath);
   return {
     ready: Promise.resolve(),
+    readWriteToken: () => readSqliteDatabaseWriteTokenForPath(dbPath),
     close: async () => kernel.close(),
     cards: {
       ...asyncKeyedStore(kernel.cards),

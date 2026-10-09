@@ -192,11 +192,15 @@ it("keeps admitted ownership current through local writes, rollback, and authori
     CREATE TRIGGER replace_owner AFTER INSERT ON selected_owner
       BEGIN UPDATE schema_meta SET agent_id = new.agent_id; END;
   `);
-  trackSqliteSchema(database, {
-    DatabaseSync,
-    StatementSync,
-    iteratorBehavior: probeSqliteIteratorBehavior(database.prepare("SELECT 1")),
-  });
+  trackSqliteSchema(
+    database,
+    {
+      DatabaseSync,
+      StatementSync,
+      iteratorBehavior: probeSqliteIteratorBehavior(database.prepare("SELECT 1")),
+    },
+    true,
+  );
   admitSqliteSchema(database);
   const read = () =>
     runSqliteReadOperationSync(database, () => readExistingAgentSchemaMeta(database));

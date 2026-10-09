@@ -43,9 +43,10 @@ export class WorkboardBoardStore extends WorkboardStoreRuntime {
       ready?: Promise<void>;
       close?: () => void | Promise<void>;
       runWithWriteAuthority?: WorkboardWriteAuthority;
+      readWriteToken?: () => string | undefined;
     },
   ) {
-    super(stores.close, stores.ready, stores.runWithWriteAuthority);
+    super(stores.close, stores.ready, stores.runWithWriteAuthority, stores.readWriteToken);
     this.store = this.trackCardStore(store);
     this.boardStore = this.track(stores.boards, { sessions: true });
     this.sessionsBoardStore = stores.sessionsBoard;
@@ -73,26 +74,33 @@ export class WorkboardBoardStore extends WorkboardStoreRuntime {
   > {
     return this.runOperation(() => {
       const boardId = normalizeBoardId(board);
+      const writeToken = this.refreshWriteReceipt();
+      const revision = this.cardsRevision;
       const cached = this.cardLists.get(boardId);
       if (cached) {
         return cached;
       }
       const pending = Promise.all([this.list({ boardId }), this.listBoards()])
         .then(([cards, { boards }]) => {
-          // An owning-writer publication during the read retires this
-          // snapshot; readers join the replacement instead of publishing stale data.
-          if (this.cardLists.get(boardId) !== pending) {
-            return this.listCards(boardId);
+          const currentToken = this.refreshWriteReceipt();
+          const replacement = this.cardLists.get(boardId);
+          if (currentToken !== undefined && replacement && replacement !== pending) {
+            return replacement;
           }
           const result = {
             cards: cards.map(redactClaimToken),
             boards,
             statuses: WORKBOARD_STATUSES,
-            revision: { ...this.cardsRevision, ...(boardId === undefined ? {} : { boardId }) },
+            revision: { ...revision, ...(boardId === undefined ? {} : { boardId }) },
           };
           freezeCardList(result);
-          // Arbitrary missing-board queries must not grow the retained cache.
-          if (boardId !== undefined && !boards.some((entry) => entry.id === boardId)) {
+          // Unbracketed reads keep their original revision and are never reused.
+          if (
+            writeToken === undefined ||
+            currentToken !== writeToken ||
+            this.cardsRevision !== revision ||
+            (boardId !== undefined && !boards.some((entry) => entry.id === boardId))
+          ) {
             this.cardLists.delete(boardId);
           }
           return result;
@@ -103,7 +111,9 @@ export class WorkboardBoardStore extends WorkboardStoreRuntime {
           }
           throw error;
         });
-      this.cardLists.set(boardId, pending);
+      if (writeToken !== undefined) {
+        this.cardLists.set(boardId, pending);
+      }
       return pending;
     });
   }

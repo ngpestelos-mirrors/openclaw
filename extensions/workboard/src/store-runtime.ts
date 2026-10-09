@@ -27,7 +27,8 @@ export class WorkboardStoreRuntime {
   private closePromise: Promise<void> | undefined;
   private sealed = false;
   protected cardsRevision: WorkboardChange = { epoch: randomUUID(), revision: 1 };
-  sessionsRevision: WorkboardChange = { epoch: this.cardsRevision.epoch, revision: 1 };
+  private sessionBoardRevision: WorkboardChange = { epoch: this.cardsRevision.epoch, revision: 1 };
+  private writeToken: string | undefined;
   private revision = 0;
   private readonly listeners = new Set<(change: WorkboardChange) => void>();
   private readonly initialization: Promise<void>;
@@ -36,6 +37,7 @@ export class WorkboardStoreRuntime {
     private readonly closePersistence?: () => void | Promise<void>,
     ready?: Promise<void>,
     private readonly runWithWriteAuthority?: WorkboardWriteAuthority,
+    private readonly readWriteToken?: () => string | undefined,
   ) {
     this.initialization = ready ?? Promise.resolve();
     void this.initialization.catch(() => {});
@@ -43,6 +45,24 @@ export class WorkboardStoreRuntime {
 
   ready(): Promise<void> {
     return this.runOperation(() => undefined);
+  }
+
+  get sessionsRevision(): WorkboardChange {
+    this.refreshWriteReceipt();
+    return this.sessionBoardRevision;
+  }
+
+  protected refreshWriteReceipt(): string | undefined {
+    if (!this.readWriteToken) {
+      return "local";
+    }
+    const current = this.readWriteToken();
+    if (current === undefined || current !== this.writeToken) {
+      this.writeToken = current;
+      this.invalidateCards();
+      this.invalidateSessionBoards();
+    }
+    return current;
   }
 
   async runOperation<T>(run: () => T | Promise<T>): Promise<T> {
@@ -163,9 +183,9 @@ export class WorkboardStoreRuntime {
   }
 
   invalidateSessionBoards(): void {
-    this.sessionsRevision = {
-      ...this.sessionsRevision,
-      revision: this.sessionsRevision.revision + 1,
+    this.sessionBoardRevision = {
+      ...this.sessionBoardRevision,
+      revision: this.sessionBoardRevision.revision + 1,
     };
   }
 
@@ -221,11 +241,12 @@ export class WorkboardStoreRuntime {
   }
 
   private emit(): void {
+    this.refreshWriteReceipt();
     const change = {
       epoch: this.cardsRevision.epoch,
       revision: ++this.revision,
       cardsRevision: this.cardsRevision.revision,
-      sessionsRevision: this.sessionsRevision.revision,
+      sessionsRevision: this.sessionBoardRevision.revision,
     };
     for (const listener of this.listeners) {
       try {

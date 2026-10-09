@@ -77,9 +77,14 @@ export function invalidateSqliteSchemaFacts(database: DatabaseSync): void {
   invalidateSchemaFacts(database, true);
 }
 
-function invalidateSchemaFacts(database: DatabaseSync, publish: boolean, changesMain = true): void {
+function invalidateSchemaFacts(
+  database: DatabaseSync,
+  publish: boolean,
+  change: "main" | "temp" | "rollback" = "main",
+): void {
   const owner = owners.get(database);
   if (owner) {
+    const changesMain = change === "main";
     owner.isolatedTempTables.clear();
     if (changesMain) {
       beginSqliteDatabaseSchemaMutation(database);
@@ -88,8 +93,10 @@ function invalidateSchemaFacts(database: DatabaseSync, publish: boolean, changes
     if (changesMain && database.isTransaction && !owner.transactionalSchema) {
       owner.transactionBaseFacts = owner.facts;
     }
-    for (const listener of owner.mutationListeners ?? []) {
-      listener(undefined);
+    if (change !== "temp") {
+      for (const listener of owner.mutationListeners ?? []) {
+        listener(undefined);
+      }
     }
     // Capture physical identity before DDL, while the caller owns cleanup on admission failure.
     bindScope(database, owner);
@@ -103,7 +110,7 @@ function invalidateSchemaFacts(database: DatabaseSync, publish: boolean, changes
   }
 }
 
-/** Local mutations revoke before execution; the DDL owner publishes committed facts. */
+/** MAIN mutations and rollback revoke before execution; TEMP DDL only revokes local facts. */
 export function registerSqliteSchemaMutationListener(
   database: DatabaseSync,
   listener: SchemaMutationListener,
@@ -237,11 +244,13 @@ function trackSchemaChanges(
       Boolean(control) && !canPreserveTransactionSnapshot(control, wasTransaction);
     const rollback = control?.kind === "ROLLBACK";
     const rollsBackSchema = rollback && owner.transactionalSchema && !control.outerRollback;
+    const schemaInvalidation =
+      mainSchemaChange || rollsBackSchema ? "main" : rollback ? "rollback" : "temp";
     if (rollback) {
       discardSqliteDatabaseTransactionAdmissions(database);
     }
     if (schemaChange || rollback) {
-      invalidateSchemaFacts(database, false, mainSchemaChange || rollsBackSchema);
+      invalidateSchemaFacts(database, false, schemaInvalidation);
     }
     if (dataChange || control?.kind === "ROLLBACK") {
       owner.mutationRevision += 1;
@@ -329,7 +338,7 @@ function trackSchemaChanges(
           if (rollback) {
             discardSqliteDatabaseTransactionAdmissions(database);
           }
-          invalidateSchemaFacts(database, false, mainSchemaChange || rollsBackSchema);
+          invalidateSchemaFacts(database, false, schemaInvalidation);
         }
         const rolledBack =
           succeeded &&

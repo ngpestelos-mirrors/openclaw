@@ -237,8 +237,10 @@ describe("admitted SQLite schema facts", () => {
   });
 
   it.each([
-    "CREATE TEMP TABLE unexpected (id INTEGER)",
     "CREATE TABLE unexpected (id INTEGER)",
+    "DROP TABLE session_nodes",
+    "DROP TABLE main.session_nodes",
+    "DROP TABLE temp.openclaw_session_nodes_cache_generation; CREATE TABLE unexpected (id)",
     "DROP TRIGGER temp.openclaw_session_nodes_cache_generation_update",
     "ALTER TABLE temp.openclaw_session_nodes_cache_generation ADD COLUMN unexpected INTEGER",
   ])("still revokes admission for ordinary DDL after tracker installation: %s", (sql) => {
@@ -250,13 +252,13 @@ describe("admitted SQLite schema facts", () => {
     expect(schemaMutation).toHaveBeenCalledWith(undefined);
   });
 
-  it("observes reentrant TEMP DDL during a declared tracker installation", () => {
+  it("observes reentrant MAIN DDL during a declared tracker installation", () => {
     const database = openDatabase("CREATE TABLE session_nodes (id INTEGER)");
     const schemaMutation = vi.fn();
     registerSqliteSchemaMutationListener(database, schemaMutation);
     const nativeExec = DatabaseSync.prototype.exec.bind(database);
     const exec = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementationOnce((sql) => {
-      database.exec("CREATE TEMP TABLE unexpected (id INTEGER)");
+      database.exec("CREATE TABLE unexpected (id INTEGER)");
       return nativeExec(sql);
     });
     try {
