@@ -391,9 +391,7 @@ function readQuarantineSchemaVersion(
   if (admitted) {
     return admitted.version;
   }
-  const row = database.prepare("PRAGMA user_version").get() as
-    | { user_version?: unknown }
-    | undefined;
+  const row = database.prepare("PRAGMA user_version").get();
   const userVersion = row?.user_version;
   if (typeof userVersion !== "number" || !Number.isInteger(userVersion)) {
     throw new Error(`OpenClaw quarantine store ${storePath} has an invalid schema version.`);
@@ -489,14 +487,7 @@ function readQuarantineDecision(
     .prepare(
       `SELECT kind, reason, quarantined_at${generationColumn} FROM quarantined_databases WHERE path = ? LIMIT 1`,
     )
-    .get(path.resolve(pathname)) as
-    | {
-        kind?: unknown;
-        quarantined_at?: unknown;
-        reason?: unknown;
-        verified_generation?: unknown;
-      }
-    | undefined;
+    .get(path.resolve(pathname));
   if (!row) {
     return undefined;
   }

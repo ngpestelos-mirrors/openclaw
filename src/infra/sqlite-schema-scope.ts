@@ -1,7 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { publishSqliteDatabaseSchemaChange } from "./sqlite-database-admission.js";
+import type { SqliteSchemaMarkers } from "./sqlite-pinned-read-snapshot.js";
 import type { SqliteSchemaFacts } from "./sqlite-schema-admission.js";
+import type { SqliteTempTrackingSchema } from "./sqlite-temp-generation-schema.js";
 import { readDatabasePathIdentitySync } from "./sqlite-worker-identity.js";
 
 type SchemaScope = { key?: string; revision: number; users: number };
@@ -68,3 +70,37 @@ export type SqliteReadScopeRevision = Readonly<
     snapshot: object | undefined;
   }
 >;
+
+export type SchemaMutationListener = (observed?: SqliteSchemaMarkers) => void;
+
+export type SqliteSchemaOwner = SqliteSchemaScopeOwner & {
+  admitted: boolean;
+  revision: number;
+  facts?: SqliteSchemaFacts;
+  dataVersion?: number;
+  observedDataVersion?: number;
+  readDepth: number;
+  readDataVersion?: number;
+  mutationRevision: number;
+  mutationDepth: number;
+  transactionOpen: boolean;
+  transactionRead: boolean;
+  transactionCatalogBound: boolean;
+  nativeDepth: number;
+  pendingSchema: boolean;
+  schemaMutationRevision: number;
+  settling: boolean;
+  capturing: boolean;
+  readRevision?: SqliteReadScopeRevision;
+  transactionalSchema: boolean;
+  transactionBaseFacts?: SqliteSchemaFacts;
+  transactionalFacts: boolean;
+  snapshot?: object;
+  qualifiedSnapshot?: object;
+  unmanagedSnapshots: Set<object>;
+  iteratorFacts: boolean;
+  authorizerActive: boolean;
+  processRevision?: number;
+  mutationListeners?: Set<SchemaMutationListener>;
+  installTempTrackingSchema?: (schema: SqliteTempTrackingSchema) => void;
+};

@@ -1,6 +1,7 @@
 import { deserialize, serialize } from "node:v8";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { createDeferredCore } from "../shared/deferred.js";
+import { notifyListeners } from "../shared/listeners.js";
 import { resolveQuarantineStorePath } from "../state/openclaw-state-db.paths.js";
 import {
   retainOpenClawStateWorkerErrorPayload,
@@ -28,7 +29,6 @@ import {
   retainSqliteWorkerErrorCode,
   SqliteWorkerError,
   type SqliteWorkerReply,
-  type SqliteWorkerCloseReceipt,
   type SqliteWorkerRequest,
 } from "./sqlite-worker-contract.js";
 import { createSqliteWorkerOperationAdmission } from "./sqlite-worker-operation-admission.js";
@@ -330,13 +330,15 @@ export type SqliteWorkerReplyOwner = {
     error?: unknown,
     value?: unknown,
     settlement?: SqliteWorkerOperationSettlement,
-    closeReceipt?: SqliteWorkerCloseReceipt,
   ): void;
   dispatch(): void;
 };
 
 export function receiveSqliteWorkerReply(
-  slot: Pick<Slot, "current" | "failed"> & { worker: Pick<Slot["worker"], "postMessage"> },
+  slot: Pick<Slot, "current" | "failed"> & {
+    actors: ReadonlySet<Pick<Actor, "id" | "closeReceipt">>;
+    worker: Pick<Slot["worker"], "postMessage">;
+  },
   reply: SqliteWorkerReply,
   owner: SqliteWorkerReplyOwner,
 ): void {
@@ -421,7 +423,13 @@ export function receiveSqliteWorkerReply(
   }
   slot.current = undefined;
   if (job.request.type === "close") {
-    owner.finish(job, undefined, value, undefined, reply.closeReceipt);
+    if (reply.closeReceipt) {
+      const actor = [...slot.actors].find((candidate) => candidate.id === job.request.actor);
+      if (actor) {
+        actor.closeReceipt = reply.closeReceipt;
+      }
+    }
+    owner.finish(job, undefined, value);
   } else {
     // Domains own handled refusal results; physical and request authority still fence delivery.
     const admission = job.operationAdmission?.admission;
@@ -445,6 +453,47 @@ export function withSqliteWorkerCleanupFailure(failure: Error, cleanupError: unk
     { cause: failure },
   );
   return retainSqliteWorkerErrorCode(combined, failure);
+}
+
+export function failSqliteWorkerSlot(
+  slot: Slot,
+  reason: unknown,
+  owner: {
+    currentError?: Error;
+    openOutcome?: "refused-before-agent-open";
+    completed?: CompletedSqliteWorkerOutcome;
+    waiters?: Iterable<(error?: unknown) => void>;
+    retire(): Promise<void>;
+    finish: typeof settleSqliteWorkerJob;
+  },
+): void {
+  if (slot.failed) {
+    return;
+  }
+  const error = toErrorObject(reason, "SQLite worker failed");
+  slot.failed = new SqliteWorkerError(error.message, "unavailable");
+  for (const actor of slot.actors) {
+    if (!actor.backendClosed) {
+      notifyListeners(actor.nativeLostObservers ?? [], slot.failed);
+    }
+  }
+  for (const resume of owner.waiters ?? []) {
+    resume(slot.failed);
+  }
+  const current = slot.current;
+  slot.current = undefined;
+  if (current) {
+    current.inputTransfer?.producer.cancel();
+    current.inputTransfer = undefined;
+    current.transfer = undefined;
+  }
+  settleFailedSqliteWorkerJobs({
+    ...owner,
+    queuedError: slot.failed,
+    current,
+    queued: slot.queue.splice(0),
+    error,
+  });
 }
 
 export function settleFailedSqliteWorkerJobs({

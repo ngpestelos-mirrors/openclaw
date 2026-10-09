@@ -21,10 +21,7 @@ import {
   observeSqliteNativeOperations,
   type NativeSqlite,
 } from "./sqlite-native-observer.js";
-import {
-  getSqlitePinnedReadSnapshot,
-  type SqliteSchemaMarkers,
-} from "./sqlite-pinned-read-snapshot.js";
+import { getSqlitePinnedReadSnapshot } from "./sqlite-pinned-read-snapshot.js";
 import {
   captureTrackedSqliteSchemaFacts as captureFacts,
   invalidateTrackedSqliteSchemaFacts as invalidate,
@@ -36,7 +33,8 @@ import {
   bindSqliteSchemaScope as bindScope,
   releaseSqliteSchemaScope,
   publishSqliteSchemaChange as publishSchemaChange,
-  type SqliteSchemaScopeOwner,
+  type SqliteSchemaOwner as SchemaOwner,
+  type SchemaMutationListener,
   type SqliteReadOperationRevision,
   type SqliteReadScopeRevision,
 } from "./sqlite-schema-scope.js";
@@ -50,40 +48,6 @@ export type {
   SqliteReadOperationRevision,
   SqliteReadScopeRevision,
 } from "./sqlite-schema-scope.js";
-
-type SchemaMutationListener = (observed?: SqliteSchemaMarkers) => void;
-
-type SchemaOwner = SqliteSchemaScopeOwner & {
-  admitted: boolean;
-  revision: number;
-  facts?: SqliteSchemaFacts;
-  dataVersion?: number;
-  observedDataVersion?: number;
-  readDepth: number;
-  readDataVersion?: number;
-  mutationRevision: number;
-  mutationDepth: number;
-  transactionOpen: boolean;
-  transactionRead: boolean;
-  transactionCatalogBound: boolean;
-  nativeDepth: number;
-  pendingSchema: boolean;
-  schemaMutationRevision: number;
-  settling: boolean;
-  capturing: boolean;
-  readRevision?: SqliteReadScopeRevision;
-  transactionalSchema: boolean;
-  transactionBaseFacts?: SqliteSchemaFacts;
-  transactionalFacts: boolean;
-  snapshot?: object;
-  qualifiedSnapshot?: object;
-  unmanagedSnapshots: Set<object>;
-  iteratorFacts: boolean;
-  authorizerActive: boolean;
-  processRevision?: number;
-  mutationListeners?: Set<SchemaMutationListener>;
-  installTempTrackingSchema?: (schema: SqliteTempTrackingSchema) => void;
-};
 
 const owners = resolveGlobalSingleton(
   Symbol.for("openclaw.sqliteSchemaFacts"),
@@ -439,6 +403,15 @@ function trackSchemaChanges(
 /** Local mutation witness only; foreign writers still require their owning admission fence. */
 export function readSqliteNativeMutationRevision(database: DatabaseSync): number | undefined {
   return owners.get(database)?.mutationRevision;
+}
+
+/** SQL-free witness for a dedicated, unpinned foreign-commit observer. */
+export function readSqliteForeignObservationRevision(database: DatabaseSync): number | undefined {
+  const owner = owners.get(database);
+  if (!owner || owner.authorizerActive || owner.mutationDepth !== 0) {
+    return undefined;
+  }
+  return owner.mutationRevision;
 }
 
 /** Reuse schema only through unchanged synchronous transaction work, never as write authority. */
