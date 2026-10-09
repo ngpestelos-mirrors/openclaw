@@ -18,10 +18,8 @@ import { createMeetingRealtimeEngineBindings } from "./agent-consult.js";
 import { startMeetingAgentRealtimeEngine } from "./realtime-agent-engine.js";
 import * as audioFormat from "./realtime-audio-format.js";
 import type { MeetingRealtimeAudioTransport } from "./realtime-audio-transport.js";
-import {
-  MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS,
-  startMeetingRealtimeEngine,
-} from "./realtime-engine.js";
+import { MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS } from "./realtime-engine-support.js";
+import { startMeetingRealtimeEngine } from "./realtime-engine.js";
 
 const environment = captureEnv(["OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH"]);
 let stateDir: string;
