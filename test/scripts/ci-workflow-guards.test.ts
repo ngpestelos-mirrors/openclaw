@@ -4313,8 +4313,8 @@ ${step.run}`,
     expect(shellcheckStep.run).toContain("--retry 5 --retry-delay 2 --retry-all-errors");
   });
 
-  it("pins workflow and pre-commit actionlint to the large-stdin deadlock fix", () => {
-    const revision = "011a6d15e749bb3f2d771eed9c7aa0e7e3e10ee7";
+  it("pins workflow and pre-commit actionlint to the queue-capable deadlock-fixed build", () => {
+    const revision = "644076a59742c2d1540ebd4686eab3c308f0e562";
     const steps: WorkflowStep[] = readWorkflowSanityWorkflow().jobs.actionlint.steps;
     const setupGo = expectDefined(
       steps.find((step) => step.uses === SETUP_GO_V6),
@@ -4330,17 +4330,22 @@ ${step.run}`,
     expect(install.run).toContain(`ACTIONLINT_REVISION="${revision}"`);
     expect(install.run).toContain('export GOBIN="$RUNNER_TEMP/actionlint-bin"');
     expect(install.run).toContain(
-      'go install "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_REVISION}"',
+      "cd tools/actionlint && go install -mod=readonly github.com/rhysd/actionlint/cmd/actionlint",
     );
     expect(install.run).toContain('"$GOBIN/actionlint" -version');
-    expect(install.run).toContain("v1.7.13-0.20260419144658-${ACTIONLINT_REVISION:0:12}");
+    expect(install.run).toContain("v1.7.13-0.20260520150004-${ACTIONLINT_REVISION:0:12}");
     expect(install.run).toContain('echo "$GOBIN" >> "$GITHUB_PATH"');
     const preCommit = parse(readFileSync(".pre-commit-config.yaml", "utf8"));
     expect(
       preCommit.repos.find(
-        (repo: { repo: string }) => repo.repo === "https://github.com/rhysd/actionlint",
+        (repo: { repo: string }) => repo.repo === "https://github.com/vvoland/actionlint",
       ).rev,
     ).toBe(revision);
+    const manifest = readFileSync("tools/actionlint/go.mod", "utf8");
+    expect(manifest).toContain("tool github.com/rhysd/actionlint/cmd/actionlint");
+    expect(manifest).toContain(
+      "replace github.com/rhysd/actionlint => github.com/vvoland/actionlint v1.7.13-0.20260520150004-644076a59742",
+    );
   });
 
   it.each([
