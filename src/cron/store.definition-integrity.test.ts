@@ -76,25 +76,29 @@ describe("cron store", () => {
     }
   });
 
-  it("preserves separately stored authority through reads and older-writer edits", async () => {
+  it.each([false, true])("round-trips private authority (native=%s)", async (native) => {
     const { storePath } = await makeStorePath();
     const authorityStore = makeAuthorityStore("authority-companion-row");
     const job = authorityStore.jobs[0];
+    job.runtimeAuthority = {
+      ...expectDefined(job.runtimeAuthority, "runtime authority fixture"),
+      ...(native ? { allowOwnerToolDefaults: true as const } : {}),
+    };
 
     await saveCronStore(storePath, authorityStore);
 
     const database = openOpenClawStateDatabase().db;
     const parent = database
-      .prepare("SELECT job_json FROM cron_jobs WHERE job_id = ?")
-      .get(job.id) as { job_json: string };
+      .prepare("SELECT job_json FROM cron_jobs WHERE store_key = ? AND job_id = ?")
+      .get(cronStoreKey(storePath), job.id) as { job_json: string };
     const parentJson = JSON.parse(parent.job_json) as Record<string, unknown>;
     expect(parentJson).not.toHaveProperty("runtimeAuthority");
     expect(parentJson).not.toHaveProperty("runtimeAuthorityRecoveryRequired");
     const child = database
       .prepare(
-        "SELECT authority_json, authority_input_fingerprint, recovery_required FROM cron_job_runtime_authorities WHERE job_id = ?",
+        "SELECT authority_json, authority_input_fingerprint, recovery_required FROM cron_job_runtime_authorities WHERE store_key = ? AND job_id = ?",
       )
-      .get(job.id) as {
+      .get(cronStoreKey(storePath), job.id) as {
       authority_json: string;
       authority_input_fingerprint: string;
       recovery_required: number;
@@ -104,6 +108,7 @@ describe("cron store", () => {
     expect(child.recovery_required).toBe(0);
 
     const reloaded = (await loadCronStore(storePath)).jobs[0];
+    expect(reloaded?.payload.toolsAllow).toEqual(["read", "cron"]);
     expect(reloaded?.runtimeAuthority).toEqual(job.runtimeAuthority);
     expect(reloaded?.runtimeAuthorityRecoveryRequired).toBeUndefined();
     const readOnly = (await loadCronJobsStoreWithConfigJobsReadOnly(storePath)).store.jobs[0];
@@ -113,8 +118,15 @@ describe("cron store", () => {
     delete downgradedJob.runtimeAuthorityRecoveryRequired;
     downgradedJob.description = "edited by an older build";
     database
-      .prepare("UPDATE cron_jobs SET description = ?, job_json = ? WHERE job_id = ?")
-      .run("edited by an older build", JSON.stringify(downgradedJob), job.id);
+      .prepare(
+        "UPDATE cron_jobs SET description = ?, job_json = ? WHERE store_key = ? AND job_id = ?",
+      )
+      .run(
+        "edited by an older build",
+        JSON.stringify(downgradedJob),
+        cronStoreKey(storePath),
+        job.id,
+      );
 
     const downgraded = (await loadCronStore(storePath)).jobs[0];
     expect(downgraded?.description).toBe("edited by an older build");

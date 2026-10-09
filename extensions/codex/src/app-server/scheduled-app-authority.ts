@@ -315,6 +315,7 @@ export async function captureScheduledCodexAppAuthority(params: {
   configCwd?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  nativeToolSurfaceEnabled?: boolean;
 }): Promise<CronRuntimeAuthority | undefined> {
   const requestedTimeoutMs = params.timeoutMs ?? CODEX_APP_AUTHORITY_CAPTURE_TIMEOUT_MS;
   const timeoutMs = Math.min(
@@ -417,6 +418,9 @@ export async function captureScheduledCodexAppAuthority(params: {
     version: 1,
     runtimeId: "codex",
     namespace: CODEX_SCHEDULED_APP_AUTHORITY_NAMESPACE,
+    // Native filesystem/MCP tools are absent from the dynamic snapshot. Apps
+    // remain independently capped by this payload and the current app policy.
+    ...(params.nativeToolSurfaceEnabled === true ? { allowOwnerToolDefaults: true as const } : {}),
     payload: {
       version: 1,
       auth,

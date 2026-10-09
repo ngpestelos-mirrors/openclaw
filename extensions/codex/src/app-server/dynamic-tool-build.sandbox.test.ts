@@ -61,6 +61,28 @@ describe("Codex app-server sandbox shell tools", () => {
     return { params, workspaceDir };
   }
 
+  it("uses the prepared explicit-policy fact to disable the native surface", () => {
+    const params = createParams("/tmp/session.jsonl", "/tmp/workspace");
+    params.disableTools = false;
+    params.trigger = "cron";
+    params.toolsAllow = ["*"];
+    params.scheduledRuntimeAuthority = {
+      version: 1,
+      runtimeId: "codex",
+      namespace: "codex.apps",
+      payload: {},
+      allowOwnerToolDefaults: true,
+    };
+
+    expect(shouldEnableCodexAppServerNativeToolSurface(params)).toBe(true);
+    params.config = { tools: { profile: "coding" } };
+    expect(shouldEnableCodexAppServerNativeToolSurface(params)).toBe(true);
+    params.conversationToolPolicy = { deny: ["exec"] };
+    expect(shouldEnableCodexAppServerNativeToolSurface(params)).toBe(true);
+    params.pluginHarnessToolPolicyRestricted = true;
+    expect(shouldEnableCodexAppServerNativeToolSurface(params)).toBe(false);
+  });
+
   it("keeps required-root Codex file tools confined without native or shell tools", async () => {
     const workspaceDir = path.join(tempDir, "workspace");
     await fs.mkdir(workspaceDir);

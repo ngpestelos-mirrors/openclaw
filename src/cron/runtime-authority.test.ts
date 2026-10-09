@@ -39,6 +39,28 @@ describe("normalizeCronRuntimeAuthority", () => {
     expect(normalizeCronRuntimeAuthority(input)).toBeUndefined();
   });
 
+  it("retains an issuer's owner-tool default permission through JSON persistence", () => {
+    const input = { ...authority({ apps: [] }), allowOwnerToolDefaults: true };
+
+    // oxlint-disable-next-line unicorn/prefer-structured-clone -- Verify JSON persistence, not an in-memory clone.
+    const normalized = normalizeCronRuntimeAuthority(JSON.parse(JSON.stringify(input)));
+
+    expect(normalized).toEqual(input);
+    expect(Object.isFrozen(normalized)).toBe(true);
+  });
+
+  it.each([false, null, "true", 1])("rejects invalid owner-tool default permission %s", (value) => {
+    expect(
+      normalizeCronRuntimeAuthority({ ...authority({}), allowOwnerToolDefaults: value }),
+    ).toBeUndefined();
+  });
+
+  it("does not inherit an issuer's owner-tool default permission", () => {
+    const input = Object.assign(Object.create({ allowOwnerToolDefaults: true }), authority({}));
+
+    expect(normalizeCronRuntimeAuthority(input)).toEqual(authority({}));
+  });
+
   it("rejects cyclic and excessively deep payloads", () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;

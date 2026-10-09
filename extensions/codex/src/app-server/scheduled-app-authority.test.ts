@@ -150,7 +150,7 @@ describe("scheduled Codex app authority", () => {
     ).toEqual({ required: true, supported: true });
   });
 
-  it("captures only connector-backed apps callable on the exact active thread", async () => {
+  it.each([undefined, false, true])("captures exact-thread apps (native=%s)", async (native) => {
     const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
       if (method === "app/installed") {
         expect(params).toEqual({ threadId: "thread-final", forceRefresh: false });
@@ -179,7 +179,9 @@ describe("scheduled Codex app authority", () => {
       }
       if (method === "config/read") {
         return {
-          config: { apps: { calendar: { tools: { "List events": { approval_mode: "writes" } } } } },
+          config: {
+            apps: { calendar: { tools: { "List events": { approval_mode: "writes" } } } },
+          },
         };
       }
       throw new Error(`unexpected method ${method}`);
@@ -195,10 +197,11 @@ describe("scheduled Codex app authority", () => {
         accountId: "acct-1",
       },
       configCwd: "/workspace",
+      nativeToolSurfaceEnabled: native,
     });
 
-    expect(captured).toEqual(
-      authority({
+    expect(captured).toEqual({
+      ...authority({
         apps: [
           {
             id: "calendar",
@@ -209,7 +212,8 @@ describe("scheduled Codex app authority", () => {
           },
         ],
       }),
-    );
+      ...(native ? { allowOwnerToolDefaults: true } : {}),
+    });
     expect(request).toHaveBeenCalledWith(
       "config/read",
       { includeLayers: false, cwd: "/workspace" },
@@ -372,10 +376,13 @@ describe("scheduled Codex app authority", () => {
     );
   });
 
-  it("intersects stored and current app/tool authority without admitting new apps", () => {
+  it.each([false, true])("bounds apps with owner defaults %s", (native) => {
     const intersected = intersectCodexPluginThreadConfigWithScheduledAuthority(
       threadConfig(),
-      authority(),
+      {
+        ...authority(),
+        ...(native ? { allowOwnerToolDefaults: true as const } : {}),
+      },
       {
         config: {
           apps: {
@@ -900,11 +907,14 @@ describe("scheduled Codex app authority", () => {
     ).toBeUndefined();
   });
 
-  it("requires a deny-default app config for scheduled authority even when native tools are enabled", () => {
+  it.each([false, true])("denies unlisted apps (owner defaults=%s)", (native) => {
     const startup = resolveCodexPluginThreadConfigStartupPolicy({
       pluginConfig: {},
       nativeToolSurfaceEnabled: true,
-      scheduledRuntimeAuthority: authority(),
+      scheduledRuntimeAuthority: {
+        ...authority(),
+        ...(native ? { allowOwnerToolDefaults: true as const } : {}),
+      },
     });
 
     expect(startup.pluginThreadConfigRequired).toBe(true);

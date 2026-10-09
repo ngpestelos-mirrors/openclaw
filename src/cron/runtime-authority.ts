@@ -7,7 +7,13 @@ const CRON_RUNTIME_AUTHORITY_MAX_BYTES = 64 * 1024;
 const CRON_RUNTIME_AUTHORITY_MAX_ID_LENGTH = 128;
 const CRON_RUNTIME_AUTHORITY_MAX_DEPTH = 16;
 const CRON_RUNTIME_AUTHORITY_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/u;
-const CRON_RUNTIME_AUTHORITY_KEYS = new Set(["version", "runtimeId", "namespace", "payload"]);
+const CRON_RUNTIME_AUTHORITY_KEYS = new Set([
+  "version",
+  "runtimeId",
+  "namespace",
+  "payload",
+  "allowOwnerToolDefaults",
+]);
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -19,6 +25,8 @@ export type CronRuntimeAuthority = Readonly<{
   /** Runtime-owned payload discriminator; core never interprets its value. */
   namespace: string;
   payload: Readonly<Record<string, unknown>>;
+  /** Issuer separately bounds its authority; default agent turns may use current owner tools. */
+  allowOwnerToolDefaults?: true;
 }>;
 
 function normalizeAuthorityId(value: unknown): string | undefined {
@@ -100,7 +108,8 @@ export function normalizeCronRuntimeAuthority(value: unknown): CronRuntimeAuthor
     Object.keys(input).some((key) => !CRON_RUNTIME_AUTHORITY_KEYS.has(key)) ||
     !("runtimeId" in input) ||
     !("namespace" in input) ||
-    !("payload" in input)
+    !("payload" in input) ||
+    ("allowOwnerToolDefaults" in input && input.allowOwnerToolDefaults !== true)
   ) {
     return undefined;
   }
@@ -115,6 +124,7 @@ export function normalizeCronRuntimeAuthority(value: unknown): CronRuntimeAuthor
     runtimeId,
     namespace,
     payload: freezeJsonSnapshot(payload),
+    ...(input.allowOwnerToolDefaults === true ? { allowOwnerToolDefaults: true as const } : {}),
   } as const;
   if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > CRON_RUNTIME_AUTHORITY_MAX_BYTES) {
     return undefined;

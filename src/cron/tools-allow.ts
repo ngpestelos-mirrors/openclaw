@@ -24,7 +24,8 @@ export function applyDefaultCronToolsAllow(job: CronToolRuntimeSpec): void {
  * tools the creator had. Such an agent turn runs like a `*` job, with its owner
  * conversation's tools. Condition triggers keep their list (scripts reach MCP only
  * through named servers), as do jobs without a valid owner policy or whose Codex app
- * authority is bound to the captured list.
+ * authority is bound to the captured list unless its issuer independently bounds
+ * that authority and permits the owner's current default tools.
  */
 export function resolveCronRunToolsAllow(
   job: Pick<
@@ -40,7 +41,7 @@ export function resolveCronRunToolsAllow(
   return job.payload.kind === "agentTurn" &&
     job.payload.toolsAllowIsDefault === true &&
     !job.trigger?.script.trim() &&
-    !job.runtimeAuthority &&
+    (!job.runtimeAuthority || job.runtimeAuthority.allowOwnerToolDefaults === true) &&
     !job.runtimeAuthorityRecoveryRequired &&
     resolveCronScheduledToolPolicy({
       toolsAllow: job.payload.toolsAllow,

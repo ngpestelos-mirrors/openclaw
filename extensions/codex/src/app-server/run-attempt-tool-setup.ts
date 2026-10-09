@@ -609,6 +609,7 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
                   ...appSource,
                   auth: scheduledCodexAppAuth,
                   signal: options?.signal,
+                  nativeToolSurfaceEnabled,
                 })
               : (() => {
                   throw new Error(

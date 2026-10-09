@@ -64,13 +64,17 @@ finite list is capped to the tools available to its creating turn and cannot wid
 stored list. `automations edit --clear-tools` restores `*`. Existing jobs that predate an
 explicit tool policy retain their current behavior until their tool policy is explicitly
 edited or the job is recreated. Agent-created script payloads, condition triggers, and jobs
-whose creator captured Codex app authority store the creating turn's tools instead: scripts
-reach MCP only through servers their list names, and app authority is bound to that list.
+whose creator captured Codex app authority still store the creating turn's tools: scripts
+reach MCP only through servers their list names. A default Codex agent turn created with
+native tools enabled uses its owner's current tool policy, preserving native filesystem
+and MCP access. Captured app identity, app permissions, and current approval policy remain
+independent limits; explicit finite tool lists still restrict the run.
 
 Earlier releases saved a copy of the creating turn's tool list on agent-created agent turns.
 That copy could miss tools the creator had, such as the native shell. Those jobs now run with
 their owner conversation's tools, like a `*` job; the stored copy is left as it is. Jobs whose
-creator captured Codex app authority keep using their copy.
+creator captured Codex app authority without permission to use owner defaults keep using
+their copy. Recreate or reauthorize those jobs from a fresh native-enabled owner turn.
 
 Changing an account-bound job to a payload that does not run tools and later back
 to an agent turn preserves its account restriction. A payload conversion does not

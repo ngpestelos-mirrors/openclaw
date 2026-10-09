@@ -199,19 +199,6 @@ describe("Codex app-server dynamic tool build", () => {
     expect(factory).not.toHaveBeenCalled();
   });
 
-  it("uses the prepared explicit-policy fact to disable the native surface", () => {
-    const params = createParams("/tmp/session.jsonl", "/tmp/workspace");
-    params.disableTools = false;
-
-    expect(shouldEnableCodexAppServerNativeToolSurface(params)).toBe(true);
-    params.config = { tools: { profile: "coding" } };
-    expect(shouldEnableCodexAppServerNativeToolSurface(params)).toBe(true);
-    params.conversationToolPolicy = { deny: ["exec"] };
-    expect(shouldEnableCodexAppServerNativeToolSurface(params)).toBe(true);
-    params.pluginHarnessToolPolicyRestricted = true;
-    expect(shouldEnableCodexAppServerNativeToolSurface(params)).toBe(false);
-  });
-
   it("keeps policy-filterable OpenClaw coding replacements when native tools are disabled", () => {
     const tools = [
       "read",

@@ -13,6 +13,7 @@ import {
   loadRunCronIsolatedAgentTurn,
   mockRunCronFallbackPassthrough,
   resolveConfiguredModelRefMock,
+  resolveEffectiveAgentRuntimeMock,
   runEmbeddedAgentMock,
   runWithModelFallbackMock,
 } from "./run.test-harness.js";
@@ -99,6 +100,36 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
     expect(result.status).toBe("ok");
     expect(runEmbeddedAgentMock.mock.calls[0]?.[0]?.toolsAllow).toEqual(["*"]);
   });
+
+  it(
+    "preserves native owner defaults and the independently bounded app authority",
+    options,
+    async () => {
+      resolveEffectiveAgentRuntimeMock.mockReturnValue("codex");
+      const runtimeAuthority = {
+        version: 1 as const,
+        runtimeId: "codex",
+        namespace: "codex.apps",
+        payload: { version: 1, apps: [{ id: "calendar" }] },
+        allowOwnerToolDefaults: true as const,
+      };
+      const result = await runCronIsolatedAgentTurn(
+        makeParams(
+          ["message", "read", "exec"],
+          { toolsAllowIsDefault: true },
+          { runtimeAuthority },
+        ),
+      );
+
+      expect(result.status).toBe("ok");
+      expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
+      expect(runEmbeddedAgentMock.mock.calls[0]?.[0]).toMatchObject({
+        toolsAllow: ["*"],
+        scheduledRuntimeAuthority: runtimeAuthority,
+        scheduledToolPolicy: { ...policy, ownerOrigin: { kind: "external", channel: "whatsapp" } },
+      });
+    },
+  );
 
   it.each([
     { label: "runs with its owner's tools", job: {}, expected: ["*"] },
