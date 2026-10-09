@@ -1,6 +1,9 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { createSqliteCommitReceipt } from "../../infra/sqlite-commit-receipt.js";
-import { getAdmittedSqliteSchemaFacts } from "../../infra/sqlite-schema-facts.js";
+import {
+  getAdmittedSqliteSchemaFacts,
+  readSqliteNativeMutationRevision,
+} from "../../infra/sqlite-schema-facts.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
@@ -15,7 +18,10 @@ import {
   type SessionEntryReplacementPublication,
 } from "./session-accessor.sqlite-entry-cache.types.js";
 import { sqliteSessionEntriesEqual } from "./session-accessor.sqlite-entry-equality.js";
-import { prepareExactSessionEntryRowReads } from "./session-accessor.sqlite-entry-read.js";
+import {
+  prepareExactSessionEntryRowReads,
+  type ResolvedSessionEntryRow,
+} from "./session-accessor.sqlite-entry-read.js";
 import { readSessionNodesGeneration } from "./session-accessor.sqlite-entry-revision.js";
 import {
   deleteLegacySessionEntryRows,
@@ -39,11 +45,26 @@ import { readStagedSessionTranscriptAuthority } from "./session-transcript-autho
 import type { SessionMaintenancePreservationSnapshot } from "./store-maintenance-preserve-snapshot.types.js";
 import type { SessionEntry } from "./types.js";
 
+/** Transaction-local entry and participant facts from an ordinary patch, before other writes. */
+export type SessionEntryReplacementPostimages = {
+  database: OpenClawAgentDatabase["db"];
+  revision: number;
+  entries: ReadonlyMap<string, SessionEntry>;
+};
+
 /** Receipts carry only publication facts, never saved prompts or maintenance payloads. */
 export function prepareSessionEntryReplacementPublication(
   result: SessionEntryReplacementCommitted,
   database: OpenClawAgentDatabase,
+  postimages?: SessionEntryReplacementPostimages,
 ): SessionEntryReplacementPublication {
+  const retained =
+    postimages?.database === database.db &&
+    postimages.revision === readSqliteNativeMutationRevision(database.db)
+      ? postimages.entries
+      : undefined;
+  const reusePostimages =
+    retained !== undefined && [...result.current.keys()].every((key) => retained.has(key));
   const archived = new Set(
     result.maintenancePlans.flatMap((plan) =>
       plan.archivedEntries.map(({ sessionKey }) => sessionKey),
@@ -63,6 +84,7 @@ export function prepareSessionEntryReplacementPublication(
       {
         includeBoardPresence: true,
         includeMembership: true,
+        ...(reusePostimages ? { projectParticipants: false as const } : {}),
         onParticipantProjectionError: (sessionKey) => unavailableParticipantKeys.add(sessionKey),
       },
     );
@@ -78,11 +100,12 @@ export function prepareSessionEntryReplacementPublication(
     ) {
       throw new Error(`Session publication lost its committed membership: ${key}`);
     }
-    current.set(key, freezeJsonSnapshot(committed.entry));
+    // Side-table writes after the patch revoke the complete retained projection above.
+    const entry = (reusePostimages ? retained?.get(key) : undefined) ?? committed.entry;
+    current.set(key, freezeJsonSnapshot(entry));
     if (unavailableParticipantKeys.has(key)) {
       continue;
     }
-    const { entry } = committed;
     projection.set(
       key,
       freezeJsonSnapshot({
@@ -202,7 +225,7 @@ export function commitSessionEntryReplacementsInDatabase(
   ) {
     throw new Error("SQLite session label owners changed before replacement");
   }
-  const transactionEntries = new Map<string, SessionEntry>();
+  const transactionRows = new Map<string, ResolvedSessionEntryRow>();
   for (const sessionKey of input.validationKeys) {
     const transactionRow = readExactSessionEntryRow(database, sessionKey);
     const expectedRow = input.expectedRows.get(sessionKey);
@@ -213,7 +236,7 @@ export function commitSessionEntryReplacementsInDatabase(
       throw new Error(`SQLite session entry changed before replacement for ${sessionKey}`);
     }
     if (transactionRow) {
-      transactionEntries.set(sessionKey, transactionRow.entry);
+      transactionRows.set(sessionKey, transactionRow);
     }
   }
   beforeReplacements();
@@ -233,7 +256,7 @@ export function commitSessionEntryReplacementsInDatabase(
       replacement.sessionKey,
       ...(replacement.previousSessionKeys ?? []),
     ].flatMap((sessionKey) => {
-      const entry = transactionEntries.get(sessionKey);
+      const entry = transactionRows.get(sessionKey)?.entry;
       return entry ? [{ entry, sessionKey }] : [];
     });
     const selectedBefore = sourceEntries.toSorted(
@@ -249,7 +272,8 @@ export function commitSessionEntryReplacementsInDatabase(
       {
         ...(input.consumePendingReset ? { consumePendingReset: true } : {}),
         previousEntry: selectedBefore ?? null,
-        canonicalPreviousEntry: transactionEntries.get(replacement.sessionKey) ?? null,
+        canonicalPreviousEntry: transactionRows.get(replacement.sessionKey)?.entry ?? null,
+        canonicalPreviousRow: transactionRows.get(replacement.sessionKey)?.row,
       },
     );
     deleteLegacySessionEntryRows(

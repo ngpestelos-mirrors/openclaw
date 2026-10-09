@@ -90,10 +90,12 @@ export function patchIncognitoSessionEntry(params: {
           { type: "session.entry.patch.commit", input },
           undefined,
           (result) => {
-            if (result.wrote && result.entry) {
+            if (result.applied && result.entry) {
               try {
                 const entry = structuredClone(result.entry);
-                if (result.transcriptPredicate) {
+                if (result.outcomes?.length) {
+                  params.onCommitted?.(entry, result.transcriptPredicate, result.outcomes);
+                } else if (result.transcriptPredicate) {
                   params.onCommitted?.(entry, result.transcriptPredicate);
                 } else {
                   params.onCommitted?.(entry);
@@ -107,7 +109,9 @@ export function patchIncognitoSessionEntry(params: {
                   structuredClone(result.entry),
                 );
               } finally {
-                publishIncognitoSessionEntry(actor, sessionKey, prepared[0]?.entry, result.entry);
+                if (result.wrote) {
+                  publishIncognitoSessionEntry(actor, sessionKey, prepared[0]?.entry, result.entry);
+                }
               }
             }
           },

@@ -1,4 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { isSubagentSessionListEntry } from "../../shared/session-list-visibility.js";
 import { buildRestartRecoveryClaimCleanupPatch } from "./restart-recovery-state.js";
 import { preserveSqliteSameKeySessionRolloverLineage } from "./session-entry-lineage.js";
 import { projectCompactionAccountingPatch } from "./session-entry-projection.js";
@@ -26,8 +27,19 @@ type ExpectedSession = Pick<SessionEntry, "sessionId"> &
   Partial<Pick<SessionEntry, "lifecycleRevision" | "activeWriterRunId">>;
 
 /** Closed internal operations; arbitrary updater callbacks retain prepare/CAS. */
-export type SessionEntryPatchOperation = (
+type SessionEntryPatchStep = (
   | { kind: "fields"; patch: Partial<SessionEntry> }
+  | {
+      kind: "observer-digest";
+      sessionId?: string;
+      digest: NonNullable<SessionEntry["observerDigest"]>;
+      skip?: boolean;
+    }
+  | {
+      kind: "activity-summary";
+      sessionKey: string;
+      summary: NonNullable<SessionEntry["activitySummary"]>;
+    }
   | {
       kind: "ensure-identity";
       sessionId: string;
@@ -68,10 +80,47 @@ export type SessionEntryPatchOperation = (
     }
 ) & { expected?: ExpectedSession };
 
+export type SessionEntryPatchOperation =
+  | SessionEntryPatchStep
+  | { kind: "compound"; operations: readonly SessionEntryPatchStep[] };
+
+export type SessionEntryPatchOutcome = {
+  kind: "pending-final-settle";
+  state: ReturnType<typeof projectPendingFinalDeliverySettlement>["state"];
+  wakeRecovery: boolean;
+};
+
+/** Apply each pure step to its predecessor's postimage, then persist once. */
+export function projectSessionEntryPatch(
+  params: Omit<Parameters<typeof mergeSessionEntryPatch>[0], "patch"> & {
+    operation: SessionEntryPatchOperation;
+  },
+): { next: SessionEntry | undefined; outcomes: SessionEntryPatchOutcome[] } {
+  const operations =
+    params.operation.kind === "compound" ? params.operation.operations : [params.operation];
+  const outcomes: SessionEntryPatchOutcome[] = [];
+  let existing = params.existing;
+  let writeBase = params.writeBase;
+  let next: SessionEntry | undefined;
+  for (const operation of operations) {
+    const patch = reduceSessionEntryPatch(operation, writeBase, existing, outcomes);
+    if (patch === null) {
+      continue;
+    }
+    next = mergeSessionEntryPatch({ ...params, existing, writeBase, patch });
+    if (next) {
+      existing = next;
+      writeBase = next;
+    }
+  }
+  return { next, outcomes };
+}
+
 export function reduceSessionEntryPatch(
-  operation: SessionEntryPatchOperation,
+  operation: SessionEntryPatchStep,
   entry: SessionEntry,
   existingEntry: SessionEntry | undefined,
+  outcomes?: SessionEntryPatchOutcome[],
 ): Partial<SessionEntry> | null {
   const expected = operation.expected;
   if (
@@ -85,6 +134,37 @@ export function reduceSessionEntryPatch(
     return null;
   }
   switch (operation.kind) {
+    case "observer-digest": {
+      const digest = operation.digest;
+      if (
+        operation.skip ||
+        (operation.sessionId !== undefined && entry.sessionId !== operation.sessionId) ||
+        (digest.sessionId !== undefined && entry.sessionId !== digest.sessionId) ||
+        ((operation.sessionId !== undefined ||
+          digest.sessionId !== undefined ||
+          digest.lifecycleRevision !== undefined) &&
+          entry.lifecycleRevision !== digest.lifecycleRevision)
+      ) {
+        return null;
+      }
+      let previous = entry.observerDigest;
+      if (
+        previous &&
+        ((previous.sessionId !== undefined && previous.sessionId !== entry.sessionId) ||
+          ((previous.sessionId !== undefined || previous.lifecycleRevision !== undefined) &&
+            previous.lifecycleRevision !== entry.lifecycleRevision))
+      ) {
+        previous = undefined;
+      }
+      return (previous?.revision ?? 0) >= digest.revision ? null : { observerDigest: digest };
+    }
+    case "activity-summary":
+      return entry.initializationPending ||
+        isSubagentSessionListEntry(operation.sessionKey, entry) ||
+        entry.sessionId !== operation.summary.sessionId ||
+        entry.lifecycleRevision !== operation.summary.lifecycleRevision
+        ? null
+        : { activitySummary: operation.summary };
     case "ensure-identity":
       return existingEntry?.sessionId
         ? null
@@ -97,8 +177,15 @@ export function reduceSessionEntryPatch(
       return projectCompactionAccountingPatch(entry, operation.accounting);
     case "usage-accounting":
       return projectSessionEntryUsageUpdate(entry, operation.usage);
-    case "pending-final-settle":
-      return projectPendingFinalDeliverySettlement(entry, operation.settlement).patch;
+    case "pending-final-settle": {
+      const result = projectPendingFinalDeliverySettlement(entry, operation.settlement);
+      outcomes?.push({
+        kind: "pending-final-settle",
+        state: result.state,
+        wakeRecovery: result.wakeRecovery,
+      });
+      return result.patch;
+    }
     case "restart-admission":
       return sessionMatchesExpectedTranscriptTurn(
         { entry },

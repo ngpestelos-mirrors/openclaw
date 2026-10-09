@@ -409,23 +409,32 @@ vi.mock("../../config/sessions/session-entry-read-runtime.js", async (importOrig
 vi.mock("../../config/sessions/session-accessor.sqlite-entry.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../config/sessions/session-accessor.sqlite-entry.js")>();
-  const { reduceSessionEntryPatch } =
+  const { projectSessionEntryPatch } =
     await import("../../config/sessions/session-entry-patch-operation.js");
   return {
     ...actual,
     applySessionEntryOperation: async (
       ...[scope, operation, options]: Parameters<typeof actual.applySessionEntryOperation>
     ) => {
-      let wrote = false;
+      let projected: ReturnType<typeof projectSessionEntryPatch> | undefined;
       const result = await sessionStoreMocks.updateSessionEntry(scope, (entry) => {
         const currentEntry = { sessionId: "", updatedAt: 0, ...entry };
-        const patch = reduceSessionEntryPatch(operation, currentEntry, currentEntry);
-        wrote = patch !== null;
-        return patch;
+        projected = projectSessionEntryPatch({
+          operation,
+          existing: currentEntry,
+          writeBase: currentEntry,
+          sessionKey: scope.sessionKey,
+          ...options,
+        });
+        return projected.next ?? null;
       });
       const entry = result ? { sessionId: "", updatedAt: 0, ...result } : null;
-      if (wrote && entry) {
-        options?.onCommitted?.(entry);
+      if (projected?.next && entry) {
+        if (projected.outcomes.length) {
+          options?.onCommitted?.(entry, undefined, projected.outcomes);
+        } else {
+          options?.onCommitted?.(entry);
+        }
       }
       return entry;
     },

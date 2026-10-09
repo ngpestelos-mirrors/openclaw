@@ -130,6 +130,8 @@ export function createIncognitoEntryPatchWorker(
             result = {
               entry: mutation.entry,
               wrote: Boolean(mutation.identity),
+              applied: mutation.applied,
+              outcomes: input.outcomes,
               transcriptPredicate:
                 mutation.entry.sessionId === predicate.transcriptPredicate?.sessionId
                   ? predicate.transcriptPredicate

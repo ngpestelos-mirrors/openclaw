@@ -20,13 +20,15 @@ export async function suppressPendingFinalDelivery(
     ? getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion
     : undefined;
   if (completion) {
-    await settlePendingFinalDelivery(
+    const settled = await settlePendingFinalDelivery(
       { kind: "pending-final", ...completion },
       "suppressed",
       ["prepared"],
-      options,
+      { ...options, clearAfterSuccess: true },
     );
-    await clearPendingFinalDeliveryAfterSuccess(completion, options);
+    if (!settled.clearedPendingFinal) {
+      await clearPendingFinalDeliveryAfterSuccess(completion, options);
+    }
   }
 }
 

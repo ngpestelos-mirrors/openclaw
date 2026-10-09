@@ -2,7 +2,10 @@ import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-tur
 import type { ConversationAuthority } from "./conversation-authority.types.js";
 import type { SessionEntryReplacementPublication } from "./session-accessor.sqlite-entry-cache.types.js";
 import type { SqliteLifecycleTargetSnapshot } from "./session-accessor.sqlite-entry-equality.js";
-import type { SessionEntryPatchOperation } from "./session-entry-patch-operation.js";
+import type {
+  SessionEntryPatchOperation,
+  SessionEntryPatchOutcome,
+} from "./session-entry-patch-operation.js";
 import type { SessionTranscriptWatermark } from "./session-history-read.types.js";
 import type {
   SessionSourceAssertion,
@@ -44,6 +47,7 @@ export type SessionEntryPatchCommit = {
   sessionKey: string;
   writeBase: SessionEntry;
   next: SessionEntry | undefined;
+  outcomes?: SessionEntryPatchOutcome[];
   operationLabel: "session-entry.patch" | "session-entry-target.patch";
   validateCanonicalKeys: boolean;
   consumePendingReset?: boolean;
@@ -58,6 +62,8 @@ export type SessionEntryPatchCommit = {
 export type SessionEntryPatchCommitted = {
   kind: "session-entry-patch";
   entry: SessionEntry | null;
+  applied?: boolean;
+  outcomes?: SessionEntryPatchOutcome[];
   publication?: SessionEntryReplacementPublication;
   /** Guard snapshot before the entry patch, carried only while the session ID is unchanged. */
   transcriptPredicate?: {
@@ -71,6 +77,7 @@ export type SessionEntryPatchCommitObserver = (
   entry: SessionEntry,
   /** Historical predicate facts from the committed transaction, never current authority. */
   transcriptPredicate?: SessionEntryPatchCommitted["transcriptPredicate"],
+  outcomes?: readonly SessionEntryPatchOutcome[],
 ) => void;
 
 export type SessionEntryPatchReduction = Omit<

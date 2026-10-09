@@ -124,6 +124,25 @@ also retain native atomicity while the released synchronous transcript SDK can
 bypass async queues; revisit that compatibility path at the next SDK major.
 Schemas, retained bytes, durability, and update behavior are unchanged.
 
+Pure entry bookkeeping uses typed reducers against the writer transaction's current
+row. A compound command applies each reducer to the previous reducer's postimage
+and persists the final result once. Observer digests and activity summaries retain
+their revision, lifecycle, transcript, and live host checks without a separate
+preparation request. Opaque updater callbacks keep their preparation and compare-and-swap
+boundary; they are never included in a compound reducer.
+
+Entry patches compare normalized node, snapshot, and window postimages before
+issuing writes. An unchanged patch still validates its authority and completes its
+caller callback. Current transcript observation is independent of unchanged entry
+metadata. Existing canonical patches carry window, participant, membership, and
+board facts within that same transaction; intervening writes invalidate reuse.
+Creation, session rotation, and callbacks that write retain the corresponding
+fresh reads. Ordinary callback-free final delivery can combine terminal settlement
+and conditional cleanup of its exact intent. Queue custody still commits before
+send I/O, and delivery completion still commits afterward. The finalizer consumes
+the committed cleanup receipt instead of submitting a duplicate cleanup request.
+Schemas, retained data, permissions, and update behavior are unchanged.
+
 Bundled plugins obtain prepared currentness checks and compose entry commit guards
 through the existing private `session-binding-runtime` facade. Its async capture
 retains the selected session generation and optional conversation alternatives;

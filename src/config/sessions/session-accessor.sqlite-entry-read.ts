@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { toUSVString } from "node:util";
 import { expressionBuilder, sql, type Selectable, type SqlBool } from "kysely";
+import { jsonObjectFrom } from "kysely/helpers/sqlite";
 import {
   createSqliteQueryCache,
   getNodeSqliteKysely,
@@ -30,6 +31,7 @@ import {
   projectSqliteSessionParticipants,
   projectSqliteSessionParticipantsBatch,
 } from "./session-accessor.sqlite-participant-projection.js";
+import { sessionEntryWindowColumns } from "./session-accessor.sqlite-provenance.js";
 import {
   parseSessionEntryJson as parseSessionEntryRow,
   selectSessionEntryRows,
@@ -144,6 +146,7 @@ export type ResolvedSessionEntryRow = {
     Partial<Pick<SessionEntryRow, "legacy_acp_migration_json">> & {
       board_present?: SqlBool;
       member_ids_json?: string;
+      window_json?: string | null;
     };
 };
 
@@ -454,7 +457,11 @@ function readSelectedSessionEntryRows(
   selection: string | readonly string[],
   projection: SessionEntryProjection | "delivery",
   validation?: "canonical",
-  options?: { includeBoardPresence?: boolean; includeMembership?: boolean },
+  options?: {
+    includeBoardPresence?: boolean;
+    includeMembership?: boolean;
+    includeWindowFacts?: true;
+  },
 ): ReadableSessionEntryRow[] {
   const key =
     typeof selection === "string" ? selection : selection.length === 1 ? selection[0] : undefined;
@@ -462,7 +469,8 @@ function readSelectedSessionEntryRows(
     key !== undefined &&
     projection !== "delivery" &&
     !options?.includeBoardPresence &&
-    !options?.includeMembership
+    !options?.includeMembership &&
+    !options?.includeWindowFacts
   ) {
     const queries = getExactSessionEntryQueries(database.db);
     const row =
@@ -482,10 +490,22 @@ function readSelectedSessionEntryRows(
             ),
           )
       : selectReadableSessionEntryRows(database, projection);
+  const windowQuery = options?.includeWindowFacts
+    ? baseQuery.select((eb) =>
+        jsonObjectFrom(
+          eb
+            .selectFrom("session_windows")
+            .select(sessionEntryWindowColumns)
+            .whereRef("session_windows.session_id", "=", "session_nodes.current_session_id"),
+        )
+          .$castTo<string | null>()
+          .as("window_json"),
+      )
+    : baseQuery;
   const eb = expressionBuilder<OpenClawAgentKyselyDatabase, "session_nodes">();
   // Old stores have no board tables until first use; branch before compiling SQL.
   const boardQuery = options?.includeBoardPresence
-    ? baseQuery.select(
+    ? windowQuery.select(
         (tableExists(database.db, "board_widgets")
           ? eb.exists(
               eb
@@ -496,7 +516,7 @@ function readSelectedSessionEntryRows(
           : eb.lit(0)
         ).as("board_present"),
       )
-    : baseQuery;
+    : windowQuery;
   const query = options?.includeMembership
     ? boardQuery.select((outer) =>
         outer
@@ -527,6 +547,7 @@ export function prepareExactSessionEntryRowReads(
   options?: {
     includeBoardPresence?: boolean;
     includeMembership?: boolean;
+    includeWindowFacts?: true;
     /** Commit receipts retain canonical metadata but withhold failed display projections. */
     onParticipantProjectionError?: (sessionKey: string) => void;
     projectParticipants?: false;
@@ -543,6 +564,7 @@ export function prepareExactSessionEntryRowReads(
       if (
         options?.includeBoardPresence ||
         options?.includeMembership ||
+        options?.includeWindowFacts ||
         options?.onParticipantProjectionError ||
         options?.projectParticipants === false
       ) {

@@ -62,6 +62,7 @@ type DurableDeliveryCompletionResult = {
   state: "prepared" | "queued" | "delivered" | "suppressed" | "rejected" | "unknown" | "stale";
   platformMessageId?: string;
   rejectionError?: string;
+  clearedPendingFinal?: true;
 };
 
 export function resolveConversationDeliveryScope(
@@ -135,10 +136,12 @@ export async function settlePendingFinalDelivery(
     preserveActivity?: boolean;
     stateContext?: DeliveryQueueStateContext;
     identifiedResult?: OutboundDeliveryResult;
+    clearAfterSuccess?: boolean;
   } = {},
 ): Promise<DurableDeliveryCompletionResult> {
   let settled: DurableDeliveryCompletionResult["state"] = "stale";
   let wakeRecovery = false;
+  let clearedPendingFinal = false;
   const scope = {
     agentId: completion.agentId,
     sessionKey: completion.sessionKey,
@@ -169,21 +172,40 @@ export async function settlePendingFinalDelivery(
       return { state: "stale" };
     }
     let committed = false;
+    const operation = { kind: "pending-final-settle" as const, settlement };
+    const clearAfterSuccess =
+      options.clearAfterSuccess === true && (state === "delivered" || state === "suppressed");
     const entry = await applySessionEntryOperation(
       scope,
-      { kind: "pending-final-settle", settlement },
+      clearAfterSuccess
+        ? {
+            kind: "compound",
+            operations: [
+              operation,
+              {
+                kind: "pending-final-clear",
+                sessionId: completion.sessionId,
+                intentId: completion.intentId,
+                recoveryRunId: completion.recoveryRunId,
+                now: Date.now(),
+              },
+            ],
+          }
+        : operation,
       {
         ...patchOptions,
-        onCommitted(current) {
-          const delivery = current.pendingFinalDelivery?.deliveries?.find(
-            ({ id }) => id === settlement.deliveryId,
-          );
-          if (!delivery) {
-            throw new Error("Pending final settlement omitted its committed delivery");
+        onCommitted(current, _transcript, outcomes) {
+          const outcome = outcomes?.find((result) => result.kind === "pending-final-settle");
+          if (!outcome) {
+            throw new Error("Pending final settlement omitted its committed outcome");
           }
           committed = true;
-          settled = delivery.state;
-          wakeRecovery = settled !== "queued" && current.abortedLastRun === true;
+          settled = outcome.state;
+          wakeRecovery = outcome.wakeRecovery;
+          clearedPendingFinal =
+            clearAfterSuccess &&
+            (settled === "delivered" || settled === "suppressed") &&
+            current.pendingFinalDelivery === undefined;
         },
       },
     );
@@ -256,7 +278,7 @@ export async function settlePendingFinalDelivery(
       storePath: completion.storePath,
     });
   }
-  return { state: settled };
+  return { state: settled, ...(clearedPendingFinal ? { clearedPendingFinal: true } : {}) };
 }
 
 function readPlatformMessageId(result: OutboundDeliveryResult): string | undefined {

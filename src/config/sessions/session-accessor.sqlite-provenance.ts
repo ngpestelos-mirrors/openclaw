@@ -1,7 +1,50 @@
+import type { Selectable } from "kysely";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import { readSqliteNativeMutationRevision } from "../../infra/sqlite-schema-facts.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { SessionEntry } from "./types.js";
+
+export const sessionEntryWindowColumns = [
+  "session_id",
+  "session_key",
+  "reason",
+  "created_at",
+  "updated_at",
+  "session_entry_provenance",
+  "acp_owned",
+  "plugin_owner_id",
+  "hook_external_content_source",
+  "previous_session_id",
+  "session_scope",
+  "started_at",
+  "ended_at",
+  "status",
+  "chat_type",
+  "channel",
+  "account_id",
+  "model_provider",
+  "model",
+  "agent_harness_id",
+  "parent_session_key",
+  "spawned_by",
+  "display_name",
+  "primary_conversation_id",
+  "transcript_observed_at",
+  "transcript_updated_at",
+] as const;
+
+export type SessionEntryWindowRow = Pick<
+  Selectable<OpenClawAgentKyselyDatabase["session_windows"]>,
+  (typeof sessionEntryWindowColumns)[number]
+>;
+
+export type SessionEntryWindowFacts = {
+  database: OpenClawAgentDatabase["db"];
+  revision: number;
+  sessionId: string;
+  row: SessionEntryWindowRow | null;
+};
 
 type SessionProvenanceRow = {
   acp_owned: number;
@@ -34,25 +77,26 @@ export function prepareSessionEntryWindowRow<T extends SessionProvenanceRow>(par
   database: OpenClawAgentDatabase;
   entry: SessionEntry;
   previousEntry?: SessionEntry;
-}): T & { transcript_observed_at: number } {
+  retainOwner: boolean;
+  prepared?: SessionEntryWindowFacts;
+}): { row: T & { transcript_observed_at: number }; changed: boolean } {
   const db = getNodeSqliteKysely<OpenClawAgentKyselyDatabase>(params.database.db);
-  const existingRoot = executeSqliteQueryTakeFirstSync(
-    params.database.db,
-    db
-      .selectFrom("session_windows")
-      .select([
-        "session_entry_provenance",
-        "acp_owned",
-        "plugin_owner_id",
-        "hook_external_content_source",
-        "transcript_observed_at",
-        "transcript_updated_at",
-      ])
-      .where("session_id", "=", params.entry.sessionId),
-  );
+  const prepared = params.prepared;
+  const existingRoot =
+    prepared?.database === params.database.db &&
+    prepared.sessionId === params.entry.sessionId &&
+    prepared.revision === readSqliteNativeMutationRevision(params.database.db)
+      ? prepared.row
+      : executeSqliteQueryTakeFirstSync(
+          params.database.db,
+          db
+            .selectFrom("session_windows")
+            .select(sessionEntryWindowColumns)
+            .where("session_id", "=", params.entry.sessionId),
+        );
   // Registry writes snapshot the current transcript watermark so recovery can
   // distinguish same-millisecond transcript writes before and after this row.
-  const boundSessionRow = {
+  let row = {
     ...params.boundSessionRow,
     transcript_observed_at: existingRoot?.transcript_updated_at ?? params.entry.updatedAt,
   };
@@ -71,21 +115,33 @@ export function prepareSessionEntryWindowRow<T extends SessionProvenanceRow>(par
         ),
       ))
   ) {
-    return {
-      ...boundSessionRow,
+    row = {
+      ...row,
       session_entry_provenance: 0,
       acp_owned: 0,
       plugin_owner_id: null,
       hook_external_content_source: null,
     };
+  } else if (existingRoot?.session_entry_provenance === 1) {
+    row = {
+      ...row,
+      acp_owned: existingRoot.acp_owned === 1 ? 1 : row.acp_owned,
+      plugin_owner_id: row.plugin_owner_id ?? existingRoot.plugin_owner_id,
+      hook_external_content_source:
+        row.hook_external_content_source ?? existingRoot.hook_external_content_source,
+    };
   }
-  return existingRoot?.session_entry_provenance === 1
-    ? {
-        ...boundSessionRow,
-        acp_owned: existingRoot.acp_owned === 1 ? 1 : boundSessionRow.acp_owned,
-        plugin_owner_id: boundSessionRow.plugin_owner_id ?? existingRoot.plugin_owner_id,
-        hook_external_content_source:
-          boundSessionRow.hook_external_content_source ?? existingRoot.hook_external_content_source,
-      }
-    : boundSessionRow;
+  const previous = new Map(Object.entries(existingRoot ?? {}));
+  return {
+    row,
+    changed:
+      !existingRoot ||
+      Object.entries(row).some(
+        ([key, value]) =>
+          // Conflict updates retain creation time and, for metadata patches, window ownership.
+          key !== "created_at" &&
+          !(params.retainOwner && key === "session_key") &&
+          previous.get(key) !== value,
+      ),
+  };
 }

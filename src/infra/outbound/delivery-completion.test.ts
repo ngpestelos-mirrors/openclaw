@@ -152,6 +152,43 @@ describe("pending-final delivery completion", () => {
     ).resolves.toMatchObject({ transition: { kind: "rejected", reason: "stale_revision" } });
   });
 
+  it("returns terminal settlement while clearing only the completed intent in one commit", async () => {
+    const observed = observePatchCommands();
+    try {
+      await expect(
+        settlePendingFinalDelivery(completion, "delivered", ["prepared"], {
+          clearAfterSuccess: true,
+        }),
+      ).resolves.toEqual({ state: "delivered", clearedPendingFinal: true });
+      expect(observed.commands).toEqual(["session.entry.patch.commit"]);
+      expect(loadSessionEntry({ sessionKey, storePath })?.pendingFinalDelivery).toBeUndefined();
+
+      const current = loadSessionEntry({ sessionKey, storePath })!;
+      replaceSessionEntrySync(
+        { sessionKey, storePath },
+        {
+          ...current,
+          pendingFinalDelivery: {
+            kind: "transport-only",
+            createdAt: 1,
+            intentId: "successor",
+            deliveries: [{ id: completion.deliveryId, state: "prepared" }],
+          },
+        },
+      );
+      await expect(
+        settlePendingFinalDelivery(completion, "delivered", undefined, {
+          clearAfterSuccess: true,
+        }),
+      ).resolves.toEqual({ state: "stale" });
+      expect(loadSessionEntry({ sessionKey, storePath })?.pendingFinalDelivery?.intentId).toBe(
+        "successor",
+      );
+    } finally {
+      observed.restore();
+    }
+  });
+
   it("records queue custody without waking recovery", async () => {
     await expect(settlePendingFinalDelivery(completion, "queued", ["prepared"])).resolves.toEqual({
       state: "queued",

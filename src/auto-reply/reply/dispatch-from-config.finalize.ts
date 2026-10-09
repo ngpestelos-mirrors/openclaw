@@ -11,6 +11,7 @@ import {
   getReplyPayloadMetadata,
   isReplyPayloadTerminalContent,
   markReplyPayloadAsTtsSupplement,
+  setReplyPayloadMetadata,
   type ReplyPayload,
 } from "../reply-payload.js";
 import { isDispatchReplyOperationAbortedError } from "./dispatch-from-config.abort.js";
@@ -70,6 +71,17 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
   const pendingFinalDeliveryIdentity = replies
     .map((reply) => getReplyPayloadMetadata(reply)?.pendingFinalDeliveryCompletion)
     .find((completion) => completion !== undefined);
+  const reconciliation =
+    replies.length === 1 &&
+    pendingFinalDeliveryIdentity &&
+    !heartbeatReply?.settle &&
+    !pendingContinuationSettlement &&
+    !getReplyPayloadMetadata(replies[0]!)?.onFinalDeliverySuccess
+      ? { cleared: false, preserveActivity: pendingFinalOptions.preserveActivity }
+      : undefined;
+  if (reconciliation) {
+    setReplyPayloadMetadata(replies[0]!, { pendingFinalDeliveryReconciliation: reconciliation });
+  }
   const beforeAgentRunBlocked =
     state.replyOperationRunState.replyCompletion?.outcome === "blocked" ||
     replies.some((reply) => getReplyPayloadMetadata(reply)?.beforeAgentRunBlocked === true);
@@ -256,10 +268,12 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
         ),
       )
         .then(async () => {
-          await clearPendingFinalDeliveryAfterSuccess(
-            pendingFinalDeliveryIdentity,
-            pendingFinalOptions,
-          );
+          if (!reconciliation?.cleared) {
+            await clearPendingFinalDeliveryAfterSuccess(
+              pendingFinalDeliveryIdentity,
+              pendingFinalOptions,
+            );
+          }
         })
         .catch((error: unknown) => {
           logVerbose(
@@ -270,10 +284,12 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
     } else {
       // Routed delivery has a transport result already. Custom dispatchers that
       // do not expose the core observer retain the legacy queue-admission behavior.
-      await clearPendingFinalDeliveryAfterSuccess(
-        pendingFinalDeliveryIdentity,
-        pendingFinalOptions,
-      );
+      if (!reconciliation?.cleared) {
+        await clearPendingFinalDeliveryAfterSuccess(
+          pendingFinalDeliveryIdentity,
+          pendingFinalOptions,
+        );
+      }
     }
     // Register successful queued cleanup before honoring a late abort. The
     // outer settle owner still runs it from finally (#89115).

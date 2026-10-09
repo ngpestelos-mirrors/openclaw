@@ -292,6 +292,8 @@ export type ReplyPayloadMetadata = {
     sessionKey: string;
     storePath: string;
   };
+  /** One dispatch's committed cleanup receipt; shared only through payload metadata. */
+  pendingFinalDeliveryReconciliation?: { cleared: boolean; preserveActivity: boolean };
   /** replyToId existed before reply threading could inject an implicit target. */
   replyToIdExplicit?: boolean;
   /** The host's single-use reply policy already consumed its target. */

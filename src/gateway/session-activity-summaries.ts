@@ -16,10 +16,8 @@ import {
   type SessionActivitySummary,
 } from "../config/sessions/activity-summary.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
-import {
-  loadSessionEntryReadOnly,
-  patchSessionEntryCore,
-} from "../config/sessions/session-accessor.js";
+import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
+import { applySessionEntryOperation } from "../config/sessions/session-accessor.sqlite-entry.js";
 import type { SessionEntryPatchCommitted } from "../config/sessions/session-entry-patch.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
@@ -433,12 +431,9 @@ export function createSessionActivitySummaries(deps: {
         omittedContent: omitted,
       };
       let committedTranscript: SessionEntryPatchCommitted["transcriptPredicate"];
-      const committed = await patchSessionEntryCore(
+      const committed = await applySessionEntryOperation(
         scope(state),
-        (fresh) => {
-          assertCurrentEntry(state, fresh);
-          return { activitySummary: summary };
-        },
+        { kind: "activity-summary", sessionKey: state.key, summary },
         {
           preserveActivity: true,
           onCommitted: (_entry, transcriptPredicate) => {
@@ -455,6 +450,9 @@ export function createSessionActivitySummaries(deps: {
           },
         },
       );
+      if (committed) {
+        assertCurrentEntry(state, committed);
+      }
       if (!committed || !current(state)) {
         state.dirty = true;
         return;

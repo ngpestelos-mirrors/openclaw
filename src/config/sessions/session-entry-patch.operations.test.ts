@@ -1,12 +1,15 @@
 import "./session-entry-patch-delivery.test-support.js";
 import { expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { buildConversationIdentity } from "./conversation-identity.js";
 import { readConversation, registerConversationAddresses } from "./conversation-registry.js";
 import { resolveConversationRouteFingerprint } from "./conversation-route-fingerprint.js";
 import {
   applySessionEntryOperation,
+  patchSessionEntryCore,
   replaceSessionEntrySync,
   updateSessionLastRouteInScope,
 } from "./session-accessor.sqlite-entry.js";
@@ -17,6 +20,58 @@ import type { SessionEntry } from "./types.js";
 const { getSessionEntryPatchDelivery } =
   await import("./session-entry-patch-delivery.test-support.js");
 const delivery = getSessionEntryPatchDelivery();
+
+it("commits compound reducers in order while an impure callback retains its FIFO boundary", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const f = fixture();
+    const entered = createDeferredCore();
+    const release = createDeferredCore();
+    const observed: number[] = [];
+    const compound = applySessionEntryOperation(
+      f.scope,
+      {
+        kind: "compound",
+        operations: [
+          { kind: "fields", patch: { compactionCount: 2 } },
+          { kind: "compaction-accounting", accounting: { amount: 3 } },
+        ],
+      },
+      { skipMaintenance: true },
+    );
+    const callback = patchSessionEntryCore(
+      f.scope,
+      async (entry) => {
+        observed.push(entry.compactionCount!);
+        entered.resolve();
+        await release.promise;
+        return { compactionCount: entry.compactionCount! + 1 };
+      },
+      { skipMaintenance: true },
+    );
+    const following = applySessionEntryOperation(
+      f.scope,
+      { kind: "compaction-accounting", accounting: { amount: 4 } },
+      { skipMaintenance: true },
+    );
+    try {
+      expect(await compound).toMatchObject({ compactionCount: 5 });
+      await awaitGateBeforeSettlement(entered.promise, callback, "callback did not enter");
+      expect(observed).toEqual([5]);
+      expect(f.read()?.compactionCount).toBe(5);
+    } finally {
+      release.resolve();
+    }
+    expect(await callback).toMatchObject({ compactionCount: 6 });
+    expect(await following).toMatchObject({ compactionCount: 10 });
+    expect(f.read()?.compactionCount).toBe(10);
+    expect(delivery.commands).toEqual([
+      "session.entry.patch.commit",
+      "session.entry.patch.prepare",
+      "session.entry.patch.commit",
+      "session.entry.patch.commit",
+    ]);
+  });
+});
 
 it("reduces a fixed patch against the current row in one worker request without losing foreign metadata", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
