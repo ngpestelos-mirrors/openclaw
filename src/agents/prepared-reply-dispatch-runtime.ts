@@ -2,9 +2,12 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createAbortError, racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { resolvePublishedModelCatalogOwner } from "./prepared-model-catalog-owner.js";
 import { assertPreparedModelRuntimeAdmissionCanWait } from "./prepared-model-runtime-admission.js";
+import { readCapturedPreparedModelRuntimeCatalog } from "./prepared-model-runtime.capture.js";
 import { PreparedModelRuntimeOwnerNotPublishedError } from "./prepared-model-runtime.errors.js";
 import type {
+  PreparedModelRuntimeLease,
   PreparedModelRuntimeOwner,
+  PreparedModelRuntimeSnapshot,
   PreparedReplyDispatchRuntime,
 } from "./prepared-model-runtime.types.js";
 
@@ -57,6 +60,10 @@ function buildReplyDispatchPublication(
 }
 
 type PreparedReplyDispatchPublicationHost = Readonly<{
+  retainOwner: (
+    owner: PreparedModelRuntimeOwner,
+    snapshot: PreparedModelRuntimeSnapshot,
+  ) => PreparedModelRuntimeLease;
   isGatewayLifecycleActive: () => boolean;
   getConfiguredOwner: (agentId: string) => PreparedModelRuntimeOwner | undefined;
   getPendingReplacement: () => Promise<void> | undefined;
@@ -115,9 +122,12 @@ export class PreparedReplyDispatchPublicationOwner {
   readonly load = async ({
     agentId,
     abortSignal,
+    onRuntimeLease,
   }: {
     agentId: string;
     abortSignal?: AbortSignal;
+    /** Transfers the captured generation to a request preparing execution from these facts. */
+    onRuntimeLease?: (lease: PreparedModelRuntimeLease) => void;
   }): Promise<PreparedReplyDispatchRuntime | undefined> => {
     for (;;) {
       if (abortSignal?.aborted) {
@@ -145,6 +155,28 @@ export class PreparedReplyDispatchPublicationOwner {
         throw new PreparedModelRuntimeOwnerNotPublishedError(
           `prepared reply dispatch runtime owner was not published for ${agentId}`,
         );
+      }
+      if (onRuntimeLease) {
+        if (
+          !pendingOwner?.snapshot ||
+          pendingOwner.needsRefresh ||
+          pendingOwner.pluginGeneration !== runtime.pluginGeneration
+        ) {
+          throw new PreparedModelRuntimeOwnerNotPublishedError(
+            `prepared reply dispatch runtime owner was not published for ${agentId}`,
+          );
+        }
+        // Retain before the projection crosses an await: catalog adoption may retire
+        // its publication while the caller is still preparing the first run.
+        const lease = this.host.retainOwner(pendingOwner, pendingOwner.snapshot);
+        try {
+          onRuntimeLease(lease);
+          const catalog = readCapturedPreparedModelRuntimeCatalog(lease.snapshot);
+          return Object.freeze({ ...runtime, readFullModelCatalog: () => catalog });
+        } catch (error) {
+          await lease[Symbol.asyncDispose]();
+          throw error;
+        }
       }
       return runtime;
     }
