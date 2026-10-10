@@ -1319,20 +1319,11 @@ describe("Codex app-server dynamic tool build", () => {
     const workspaceDir = path.join(tempDir, "workspace");
     const params = createParams(sessionFile, workspaceDir);
     await bindProductionCodexHostCapabilities(params, hostCapabilityClosers);
-    const resolveExecutionPolicy = vi.spyOn(
-      nativeExecutionPolicy,
-      "resolveCodexNativeExecutionPolicy",
-    );
-
     const tools = await buildDynamicToolsForTest(params, workspaceDir, {
       sandbox: null,
       nativeToolSurfaceEnabled: true,
     });
 
-    expect(resolveExecutionPolicy).toHaveBeenCalledOnce();
-    expect(resolveExecutionPolicy).toHaveBeenCalledWith(
-      expect.objectContaining({ sandboxAvailable: false }),
-    );
     expect(shellTestToolNames(tools)).toEqual([
       "message",
       "gateway_exec",

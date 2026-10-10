@@ -1,4 +1,4 @@
-import type { PluginCommandContext, PluginCommandResult } from "openclaw/plugin-sdk/plugin-entry";
+import type { PluginCommandResult } from "openclaw/plugin-sdk/plugin-entry";
 import { defaultCodexAppInventoryCache } from "./app-server/app-inventory-cache.js";
 import { resolveCodexAppServerAuthAccountCacheKey } from "./app-server/auth-bridge.js";
 import { resolveCodexAppServerFallbackApiKeyCacheKey } from "./app-server/auth-cache-key.js";
@@ -18,6 +18,7 @@ import {
   canMutateCodexHost,
   CODEX_HOST_INSPECTION_AUTH_ERROR,
   CODEX_NATIVE_EXECUTION_AUTH_ERROR,
+  type CodexCommandContext,
 } from "./command-authorization.js";
 import { handleCodexDiagnosticsFeedback } from "./command-diagnostics.js";
 import {
@@ -80,7 +81,7 @@ const CODEX_HOST_INSPECTION_SUBCOMMANDS = new Set([
 ]);
 
 export async function handleCodexSubcommand(
-  ctx: PluginCommandContext,
+  ctx: CodexCommandContext,
   options: { pluginConfig?: unknown; deps: CodexCommandDepsOverride },
 ): Promise<PluginCommandResult> {
   const deps = resolveCodexCommandDeps(options.deps);
@@ -104,10 +105,18 @@ export async function handleCodexSubcommand(
   ) {
     return { text: CODEX_NATIVE_EXECUTION_AUTH_ERROR };
   }
-  const sandboxBlock = resolveCodexNativeCommandSandboxBlock(ctx, normalized, rest);
-  if (sandboxBlock) {
-    return { text: sandboxBlock };
+  const nativePolicy = await resolveCodexNativeCommandSandboxBlock(ctx, normalized, rest);
+  if (nativePolicy.block) {
+    return { text: nativePolicy.block };
   }
+  const previousPolicyCheck = ctx.assertNativePolicyCurrent;
+  ctx = {
+    ...ctx,
+    assertNativePolicyCurrent: () => {
+      previousPolicyCheck?.();
+      nativePolicy.assertCurrent();
+    },
+  };
   const usageCommand = normalized === "unbind" ? "detach" : normalized;
   if (
     rest.length > 0 &&

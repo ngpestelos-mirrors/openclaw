@@ -9,6 +9,8 @@ import {
   sqliteSessionFileMarkerMatchesTarget,
 } from "../config/sessions/legacy-sqlite-marker.js";
 import { resolveSessionEntryAccessTarget } from "../config/sessions/session-accessor.entry.js";
+import { resolveSqliteSessionKey } from "../config/sessions/session-accessor.sqlite-scope-helpers.js";
+import { captureIncognitoSessionSource } from "../config/sessions/session-incognito-binding.js";
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -61,7 +63,8 @@ const PLUGIN_GATEWAY_GLOBAL_SESSION_MUTATION_METHODS = new Set([
 export function createPluginSessionOwnership(
   state: PluginRegistryState,
   pluginId: string,
-  resolveRegistry: () => PluginRegistry = () => state.registry,
+  resolveRegistry: () => PluginRegistry,
+  assertRuntimeCurrent: () => void,
 ) {
   const { registryParams } = state;
   // SAFETY: Logical session resolution only reads the immutable runtime config snapshot.
@@ -179,6 +182,79 @@ export function createPluginSessionOwnership(
     }
     assertReservedSessionKeyOwned(params.sessionKey, params.action);
   };
+  const readOwnershipEntry = (
+    params: Parameters<PluginRuntime["agent"]["session"]["getSessionEntry"]>[0],
+  ) => {
+    const source = captureIncognitoSessionSource(params);
+    if (!source) {
+      return registryParams.runtime.agent.session.getSessionEntry(params);
+    }
+    if ("kind" in source) {
+      return undefined;
+    }
+    const key = resolveSqliteSessionKey(params.sessionKey, source.actor.agentId);
+    const sharing = source.actor.sessions.readSharing(key)?.entry;
+    if (!sharing) {
+      return undefined;
+    }
+    const policy = source.actor.sessions.readCapability(key);
+    return {
+      ...sharing,
+      pluginOwnerId: policy?.pluginOwnerId,
+      agentHarnessId: policy?.agentHarnessId,
+      agentRuntimeOverride: policy?.agentRuntimeOverride,
+    };
+  };
+  const listOwnershipEntries = (params: { agentId?: string; storePath?: string }) => {
+    const ambient = params.storePath ? undefined : captureIncognitoSessionSource();
+    const source = captureIncognitoSessionSource(
+      ambient
+        ? { ...params, storePath: "kind" in ambient ? ambient.path : ambient.actor.path }
+        : params,
+    );
+    if (!source) {
+      return registryParams.runtime.agent.session.listSessionEntries({ ...params, readOnly: true });
+    }
+    if ("kind" in source) {
+      return [];
+    }
+    return source.actor.sessions.deadlines().flatMap(({ sessionKey }) => {
+      const entry = readOwnershipEntry({ ...params, sessionKey, storePath: source.actor.path });
+      return entry ? [{ sessionKey, entry }] : [];
+    });
+  };
+  const withPreparedSessionOwnership = async <T>(
+    params: { agentId?: string; storePath?: string; sessionKey?: string; sessionFile?: string },
+    run: () => Promise<T>,
+  ): Promise<T> => {
+    const marker = params.sessionFile && parseSqliteSessionFileMarker(params.sessionFile);
+    const target = marker ? { ...params, ...marker } : params;
+    const ambient =
+      !target.sessionKey && !target.storePath ? captureIncognitoSessionSource() : undefined;
+    const source = captureIncognitoSessionSource(
+      ambient
+        ? { ...target, storePath: "kind" in ambient ? ambient.path : ambient.actor.path }
+        : target,
+    );
+    if (!source || "kind" in source) {
+      return await run();
+    }
+    return source.actor.sessions.withSharedState(async () => {
+      const assertCurrent = () => {
+        assertRuntimeCurrent();
+        source.admissionSignal?.throwIfAborted();
+        source.actor.assertReadable();
+      };
+      // Publish exact ownership facts once; final guards consume their live postimages.
+      await source.actor.sessions.list(
+        { assertCurrent },
+        { projection: "list" },
+        source.admissionSignal,
+      );
+      assertCurrent();
+      return await run();
+    });
+  };
   const resolveStoredSessionOwnershipTarget = (params: {
     agentId?: string;
     env?: NodeJS.ProcessEnv;
@@ -200,7 +276,7 @@ export function createPluginSessionOwnership(
       return { entry: target.entry, sessionKey: target.canonicalKey };
     }
     return {
-      entry: registryParams.runtime.agent.session.getSessionEntry({
+      entry: readOwnershipEntry({
         sessionKey: params.sessionKey,
         readConsistency: "latest",
         ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
@@ -272,10 +348,9 @@ export function createPluginSessionOwnership(
     if (sessionIds.size === 0 && sessionFiles.size === 0) {
       return;
     }
-    const entries = registryParams.runtime.agent.session.listSessionEntries({
+    const entries = listOwnershipEntries({
       ...(agentId ? { agentId } : {}),
       ...(storePath ? { storePath } : {}),
-      readOnly: true,
     });
     for (const { sessionKey, entry } of entries) {
       if (sessionIds.has(entry.sessionId)) {
@@ -311,10 +386,9 @@ export function createPluginSessionOwnership(
       if (!marker) {
         throw new Error("Plugin session ownership checks require a SQLite transcript marker.");
       }
-      const markerEntries = registryParams.runtime.agent.session.listSessionEntries({
+      const markerEntries = listOwnershipEntries({
         agentId: marker.agentId,
         storePath: marker.storePath,
-        readOnly: true,
       });
       const matches = markerEntries.filter(({ entry }) => entry.sessionId === marker.sessionId);
       if (matches.length === 0) {
@@ -360,7 +434,7 @@ export function createPluginSessionOwnership(
           })
         : storePath;
     const entry = sessionKey
-      ? registryParams.runtime.agent.session.getSessionEntry({
+      ? readOwnershipEntry({
           sessionKey,
           readConsistency: "latest",
           ...(agentId ? { agentId } : {}),
@@ -526,6 +600,7 @@ export function createPluginSessionOwnership(
     }
   };
   return {
+    withPreparedSessionOwnership,
     assertOwnedHarness,
     assertReservedSessionKeyOwned,
     assertStoredSessionEntryOwned,

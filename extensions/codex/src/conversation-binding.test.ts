@@ -871,6 +871,7 @@ describe("codex conversation binding", () => {
           sessionId: "source-mixed-lifecycle",
           threadId: "thread-source-mixed-lifecycle",
           sessionKey: sourceSessionKey,
+          storePath,
         },
         start: { id: "start-mixed-source-lifecycle" },
       };
@@ -878,7 +879,7 @@ describe("codex conversation binding", () => {
 
       await expect(
         handleCodexConversationInboundClaim(event, ctx, {
-          config: { session: { store: storePath } },
+          config: { session: { store: path.join(tempDir, "unrelated-session.sqlite") } },
         }),
       ).resolves.toMatchObject({
         handled: true,

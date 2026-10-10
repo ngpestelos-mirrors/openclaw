@@ -5,6 +5,7 @@ import {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { normalizeAgentId, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import { resolveSandboxRuntimeStatus } from "openclaw/plugin-sdk/sandbox";
+import { captureSessionEntryCurrentCheck } from "openclaw/plugin-sdk/session-binding-runtime";
 import { getSessionEntry, type SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 
 type ExecHost = "sandbox" | "gateway" | "node";
@@ -24,6 +25,36 @@ export type CodexNativeExecutionPolicy = {
   blockReason?: string;
 };
 
+export type PreparedCodexNativeExecutionPolicy = {
+  policy: CodexNativeExecutionPolicy;
+  assertCurrent(): void;
+};
+
+/** Prepare the selected row once; retained checks use its exact execution policy. */
+export async function prepareCodexNativeExecutionPolicy(
+  params: Parameters<typeof resolveCodexNativeExecutionPolicy>[0],
+): Promise<PreparedCodexNativeExecutionPolicy> {
+  const { sourceAgentId, sourceSessionKey, canReadSessionEntry } = resolveSessionSelection(params);
+  if (!canReadSessionEntry || !sourceAgentId || !sourceSessionKey) {
+    return { policy: resolveCodexNativeExecutionPolicy(params), assertCurrent() {} };
+  }
+  const selected = await captureSessionEntryCurrentCheck({
+    agentId: sourceAgentId,
+    sessionKey: sourceSessionKey,
+    storePath: params.sessionTarget?.storePath ?? params.storePath,
+    fields: ["sessionId", "lifecycleRevision", "execHost", "execNode"],
+    errorMessage: "Codex session execution policy changed; prepare the operation again.",
+  });
+  return {
+    policy: resolveCodexNativeExecutionPolicy({
+      ...params,
+      sessionEntry: selected.entry,
+      readRuntimeSessionEntry: false,
+    }),
+    assertCurrent: selected.assertCurrent,
+  };
+}
+
 /** Projects node execution ownership into the runtime tool factory options. */
 export function resolveCodexNodeExecToolOverrides(
   policy: CodexNativeExecutionPolicy,
@@ -42,28 +73,25 @@ export function resolveCodexNativeExecutionPolicy(params: {
   sessionKey?: string;
   sessionId?: string;
   agentId?: string;
+  storePath?: string;
+  sessionTarget?: { agentId?: string; sessionKey?: string; storePath?: string };
   execOverrides?: ExecHostOverride;
   sandboxAvailable?: boolean;
   readRuntimeSessionEntry?: boolean;
 }): CodexNativeExecutionPolicy {
   const config = params.config ?? {};
-  const sessionKey = params.sessionKey?.trim() || params.sessionId?.trim() || undefined;
-  const agentId =
-    normalizeAgentIdOrDefault(params.agentId) ??
-    parseAgentIdFromSessionKey(sessionKey) ??
-    tryResolveDefaultAgentId(config);
-  const canReadSessionEntry =
-    agentId &&
-    sessionKey &&
-    params.readRuntimeSessionEntry &&
-    (parseAgentIdFromSessionKey(sessionKey) ?? tryResolveDefaultAgentId(config)) === agentId;
+  const { agentId, sessionKey, sourceAgentId, sourceSessionKey, canReadSessionEntry } =
+    resolveSessionSelection(params);
   let sessionEntry = params.sessionEntry ?? undefined;
-  if (sessionEntry === undefined && canReadSessionEntry && sessionKey && agentId) {
-    try {
-      sessionEntry = getSessionEntry({ sessionKey, agentId, hydrateSkillPromptRefs: false });
-    } catch {
-      sessionEntry = undefined;
-    }
+  if (sessionEntry === undefined && canReadSessionEntry && sourceSessionKey && sourceAgentId) {
+    sessionEntry = getSessionEntry({
+      sessionKey: sourceSessionKey,
+      agentId: sourceAgentId,
+      ...((params.sessionTarget?.storePath ?? params.storePath)
+        ? { storePath: params.sessionTarget?.storePath ?? params.storePath }
+        : {}),
+      hydrateSkillPromptRefs: false,
+    });
   }
   const sandboxAgentId = parseAgentSessionKey(sessionKey)?.agentId ?? agentId;
   const sandboxAvailable =
@@ -99,6 +127,26 @@ export function resolveCodexNativeExecutionPolicy(params: {
             "OpenClaw exec host=node is active for this session. Codex app-server native execution cannot route shell, filesystem, MCP, or app-backed work through the selected OpenClaw node.",
         }
       : {}),
+  };
+}
+
+function resolveSessionSelection(params: Parameters<typeof resolveCodexNativeExecutionPolicy>[0]) {
+  const config = params.config ?? {};
+  const sessionKey = params.sessionKey?.trim() || params.sessionId?.trim() || undefined;
+  const agentId =
+    normalizeAgentIdOrDefault(params.agentId) ??
+    parseAgentIdFromSessionKey(sessionKey) ??
+    tryResolveDefaultAgentId(config);
+  return {
+    sessionKey,
+    agentId,
+    sourceSessionKey: params.sessionTarget?.sessionKey ?? sessionKey,
+    sourceAgentId: params.sessionTarget?.agentId ?? agentId,
+    canReadSessionEntry:
+      params.sessionEntry === undefined &&
+      params.readRuntimeSessionEntry &&
+      (params.sessionTarget !== undefined ||
+        (parseAgentIdFromSessionKey(sessionKey) ?? tryResolveDefaultAgentId(config)) === agentId),
   };
 }
 

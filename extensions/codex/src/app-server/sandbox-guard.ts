@@ -10,7 +10,9 @@ import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { isCodexRemoteExecPlacementSandbox } from "./config-parsing.js";
 import {
   formatCodexNativeNodeExecBlock,
+  prepareCodexNativeExecutionPolicy,
   resolveCodexNativeExecutionPolicy,
+  type CodexNativeExecutionPolicy,
 } from "./native-execution-policy.js";
 
 const ALLOWED_CONTROL_PLANE_METHODS = new Set([
@@ -57,6 +59,10 @@ export function resolveCodexAppServerDirectSandboxBypassBlock(params: {
   config?: OpenClawConfig;
   sessionKey?: string;
   sessionId?: string;
+  agentId?: string;
+  storePath?: string;
+  sessionTarget?: Parameters<typeof resolveCodexNativeExecutionPolicy>[0]["sessionTarget"];
+  executionPolicy?: CodexNativeExecutionPolicy;
   sandbox?: Pick<SandboxContext, "enabled"> | null;
 }): string | undefined {
   const controlPlane = ALLOWED_CONTROL_PLANE_METHODS.has(params.method);
@@ -66,6 +72,10 @@ export function resolveCodexAppServerDirectSandboxBypassBlock(params: {
       config: params.config,
       sessionKey: params.sessionKey,
       sessionId: params.sessionId,
+      agentId: params.agentId,
+      storePath: params.storePath,
+      sessionTarget: params.sessionTarget,
+      executionPolicy: params.executionPolicy,
       surface: `app-server method \`${params.method}\``,
     });
     if (nodeExecBlock) {
@@ -92,6 +102,42 @@ export function resolveCodexAppServerDirectSandboxBypassBlock(params: {
     : sandboxBlock;
 }
 
+/** Resolve policy before yielding to client acquisition and recheck it at each write. */
+export async function prepareCodexAppServerDirectSandboxBypassBlock(
+  params: Parameters<typeof resolveCodexAppServerDirectSandboxBypassBlock>[0],
+): Promise<{ block: string | undefined; assertCurrent(): void }> {
+  if (
+    ALLOWED_CONTROL_PLANE_METHODS.has(params.method) &&
+    params.method !== "config/mcpServer/reload"
+  ) {
+    return { block: undefined, assertCurrent() {} };
+  }
+  const selected = await prepareCodexNativeExecutionPolicy({
+    ...params,
+    readRuntimeSessionEntry: true,
+  });
+  return {
+    block: resolveCodexAppServerDirectSandboxBypassBlock({
+      ...params,
+      executionPolicy: selected.policy,
+    }),
+    assertCurrent: selected.assertCurrent,
+  };
+}
+
+export async function prepareCodexNativeExecutionBlock(
+  params: Parameters<typeof resolveCodexNativeExecutionBlock>[0],
+): Promise<{ block: string | undefined; assertCurrent(): void }> {
+  const selected = await prepareCodexNativeExecutionPolicy({
+    ...params,
+    readRuntimeSessionEntry: true,
+  });
+  return {
+    block: resolveCodexNativeExecutionBlock({ ...params, executionPolicy: selected.policy }),
+    assertCurrent: selected.assertCurrent,
+  };
+}
+
 /** Resolves the generic native-execution block for sandboxed or node-hosted sessions. */
 export function resolveCodexNativeExecutionBlock(
   params: Parameters<typeof resolveCodexNativeSandboxBlock>[0],
@@ -105,6 +151,9 @@ export function resolveCodexNativeSandboxBlock(params: {
   sessionKey?: string;
   sessionId?: string;
   agentId?: string;
+  storePath?: string;
+  sessionTarget?: Parameters<typeof resolveCodexNativeExecutionPolicy>[0]["sessionTarget"];
+  executionPolicy?: CodexNativeExecutionPolicy;
   sandbox?: Pick<SandboxContext, "enabled"> | null;
   sandboxEnvironmentSelected?: boolean;
   surface: string;
@@ -170,15 +219,22 @@ function resolveCodexNativeNodeExecBlock(params: {
   sessionKey?: string;
   sessionId?: string;
   agentId?: string;
+  storePath?: string;
+  sessionTarget?: Parameters<typeof resolveCodexNativeExecutionPolicy>[0]["sessionTarget"];
+  executionPolicy?: CodexNativeExecutionPolicy;
   surface: string;
 }): string | undefined {
   const sessionKey = params.sessionKey?.trim() || params.sessionId?.trim();
-  const policy = resolveCodexNativeExecutionPolicy({
-    config: params.config,
-    sessionKey,
-    agentId: params.agentId,
-    readRuntimeSessionEntry: Boolean(sessionKey),
-  });
+  const policy =
+    params.executionPolicy ??
+    resolveCodexNativeExecutionPolicy({
+      config: params.config,
+      sessionKey,
+      agentId: params.agentId,
+      storePath: params.storePath,
+      sessionTarget: params.sessionTarget,
+      readRuntimeSessionEntry: Boolean(sessionKey),
+    });
   if (policy.nativeToolSurfaceAllowed) {
     return undefined;
   }

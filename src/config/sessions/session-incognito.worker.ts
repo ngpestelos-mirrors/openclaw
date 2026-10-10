@@ -35,7 +35,10 @@ import { readTranscriptContextVersionInTransaction } from "./session-accessor.sq
 import { assertCanonicalSessionKeyWrite } from "./session-canonical-key.js";
 import { projectSessionEntryCapabilityFacts } from "./session-entry-capability-facts.js";
 import { transferSessionEntryWorkerCandidate } from "./session-entry-patch.worker.js";
-import { sessionEntryReadRevision } from "./session-entry-read-revision.js";
+import {
+  sessionEntryReadRevision,
+  sessionInitializationFingerprint,
+} from "./session-entry-read-revision.js";
 import {
   isIncognitoComputeCommand,
   isIncognitoComputeWrite,
@@ -114,6 +117,7 @@ export function createIncognitoSessionWorker(
           completionSources: history.completionFacts(sessionKey),
           capability: entry ? projectSessionEntryCapabilityFacts(entry) : undefined,
           entryReadRevision: entry ? sessionEntryReadRevision(entry) : undefined,
+          initializationFingerprint: entry ? sessionInitializationFingerprint(entry) : undefined,
           chatMetadataRevision: entry
             ? createHash("sha256")
                 .update(JSON.stringify(chatMetadataSessionFields.map((field) => entry[field])))

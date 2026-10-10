@@ -189,6 +189,7 @@ describe("plugin runtime command execution", () => {
   it("prepares the live sandbox before returning workspace authority", async () => {
     const runtime = createPluginRuntime();
     vi.spyOn(runtime.agent.session, "getSessionEntry").mockReturnValue(undefined);
+    vi.spyOn(runtime.agent.session, "getSessionEntryAsync").mockResolvedValue(undefined);
     sandboxContextMocks.resolveSandboxContext.mockResolvedValue({ backendId: "docker" });
     const config: OpenClawConfig = {
       agents: {

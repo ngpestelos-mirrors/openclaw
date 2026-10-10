@@ -1,6 +1,8 @@
+import { isDeepStrictEqual } from "node:util";
 import { resolveSandboxWorkspaceAuthority } from "../../agents/sandbox/workspace-authority.js";
 import { runWithLocalStateOwner } from "../../cli/local-state-owner.js";
 import { getRuntimeConfig } from "../../config/config.js";
+import { captureIncognitoSessionSource } from "../../config/sessions/session-incognito-binding.js";
 import { onAgentEvent } from "../../infra/agent-events.js";
 import {
   listImageGenerationProviders,
@@ -219,30 +221,70 @@ function createRuntimeWorktrees(): PluginRuntime["worktrees"] {
 function createRuntimeSandbox(agent: PluginRuntime["agent"]): PluginRuntime["sandbox"] {
   const resolveWorkspaceAuthority = (
     params: Parameters<PluginRuntime["sandbox"]["resolveWorkspaceAuthority"]>[0],
-  ) =>
-    resolveSandboxWorkspaceAuthority({
-      ...params,
-      sessionEntry: agent.session.getSessionEntry({
-        agentId: params.agentId,
-        sessionKey: params.sessionKey,
-      }),
-    });
+  ) => {
+    const source = captureIncognitoSessionSource(params);
+    const sessionEntry = source
+      ? "kind" in source
+        ? undefined
+        : source.actor.sessions.readCapability(params.sessionKey)
+      : agent.session.getSessionEntry({
+          agentId: params.agentId,
+          sessionKey: params.sessionKey,
+          ...(params.storePath ? { storePath: params.storePath } : {}),
+        });
+    return resolveSandboxWorkspaceAuthority({ ...params, sessionEntry });
+  };
   return {
     resolveWorkspaceAuthority,
-    async prepareWorkspaceAuthority(params) {
-      const authority = resolveWorkspaceAuthority(params);
-      if (!authority.sandboxed || authority.confinementError) {
+    async prepareWorkspaceAuthority(input) {
+      const params = { ...input };
+      const source = captureIncognitoSessionSource(params);
+      const prepare = async () => {
+        const sessionEntry = await agent.session.getSessionEntryAsync({
+          agentId: params.agentId,
+          sessionKey: params.sessionKey,
+          ...(params.storePath ? { storePath: params.storePath } : {}),
+        });
+        const authority = resolveSandboxWorkspaceAuthority({ ...params, sessionEntry });
+        if (!authority.sandboxed || authority.confinementError) {
+          return authority;
+        }
+        const { resolveSandboxContext } = await import("../../agents/sandbox/context.js");
+        await resolveSandboxContext({
+          config: params.config,
+          agentId: params.agentId,
+          sessionKey: params.sessionKey,
+          workspaceDir: params.workspaceDir,
+          requireCurrentConfig: true,
+        });
+        const current = source
+          ? "kind" in source
+            ? (source.assertCurrent(), undefined)
+            : source.actor.sessions.readCapability(params.sessionKey)
+          : agent.session.getSessionEntry({
+              agentId: params.agentId,
+              sessionKey: params.sessionKey,
+              ...(params.storePath ? { storePath: params.storePath } : {}),
+            });
+        const fields = [
+          "sessionId",
+          "lifecycleRevision",
+          "execHost",
+          "execNode",
+          "model",
+          "modelProvider",
+          "modelOverride",
+          "providerOverride",
+        ] as const;
+        if (fields.some((field) => !isDeepStrictEqual(sessionEntry?.[field], current?.[field]))) {
+          throw new Error("Session workspace authority changed during sandbox preparation.");
+        }
+        source?.admissionSignal?.throwIfAborted();
         return authority;
-      }
-      const { resolveSandboxContext } = await import("../../agents/sandbox/context.js");
-      await resolveSandboxContext({
-        config: params.config,
-        agentId: params.agentId,
-        sessionKey: params.sessionKey,
-        workspaceDir: params.workspaceDir,
-        requireCurrentConfig: true,
-      });
-      return authority;
+      };
+      return source && !("kind" in source)
+        ? source.actor.sessions.withSharedState(prepare)
+        : prepare();
     },
   };
 }

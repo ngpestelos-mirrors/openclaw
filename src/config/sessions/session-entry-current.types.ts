@@ -1,7 +1,23 @@
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
+import type { SessionEntry } from "./types.js";
 /** Identity is parser-validated; optional owner values retain their exact stored semantics. */
 export type SessionEntryCurrentFacts = {
   sessionId: string;
+  modelSelectionLocked?: SessionEntry["modelSelectionLocked"];
+  pluginOwnerId?: SessionEntry["pluginOwnerId"];
+  agentHarnessId?: SessionEntry["agentHarnessId"];
+  agentRuntimeOverride?: SessionEntry["agentRuntimeOverride"];
+  initializationPending?: SessionEntry["initializationPending"];
+  execHost?: SessionEntry["execHost"];
+  execNode?: SessionEntry["execNode"];
+  permissionMode?: SessionEntry["permissionMode"];
+  sessionRoot?: SessionEntry["sessionRoot"];
+  authProfileOverride?: SessionEntry["authProfileOverride"];
+  authProfileOverrideSource?: SessionEntry["authProfileOverrideSource"];
+  modelOverride?: SessionEntry["modelOverride"];
+  providerOverride?: SessionEntry["providerOverride"];
+  model?: SessionEntry["model"];
+  modelProvider?: SessionEntry["modelProvider"];
   previousSessionId?: unknown;
   archivedAt?: unknown;
   repositoryWorkspaceId?: unknown;

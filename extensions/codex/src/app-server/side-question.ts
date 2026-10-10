@@ -50,6 +50,7 @@ import {
   resolveCodexMessageToolProvider,
   resolveCodexSandboxEnvironmentSelection,
   shouldEnableCodexAppServerNativeToolSurface,
+  prepareCodexNativeExecutionPolicyForRun,
   shouldRequireCodexSandboxExecServerEnvironment,
 } from "./dynamic-tool-build.js";
 import { createCodexDynamicToolDiagnostics } from "./dynamic-tool-diagnostics.js";
@@ -312,10 +313,15 @@ export async function runCodexAppServerSideQuestion(
     mode: sessionPermissionPolicy.execMode,
   };
   const sandboxExecServerEnabled = isCodexSandboxExecServerEnabled(pluginConfig, params.sandbox);
+  const nativeExecutionPolicy = await prepareCodexNativeExecutionPolicyForRun(sideRunParams, {
+    agentId: sideRunParams.agentId,
+    sandbox: params.sandbox,
+  });
+  assertCurrent();
   const nativeToolSurfaceEnabled = shouldEnableCodexAppServerNativeToolSurface(
     sideRunParams,
     params.sandbox ?? undefined,
-    { agentId: sideRunParams.agentId, sandboxExecServerEnabled },
+    { agentId: sideRunParams.agentId, sandboxExecServerEnabled, nativeExecutionPolicy },
   );
   const sandboxEnvironmentRequired = shouldRequireCodexSandboxExecServerEnvironment({
     sandbox: params.sandbox ?? undefined,
@@ -327,6 +333,7 @@ export async function runCodexAppServerSideQuestion(
     sessionKey: sideRunParams.sandboxSessionKey?.trim() || sideRunParams.sessionKey,
     sessionId: sideRunParams.sessionId,
     agentId: sideRunParams.agentId,
+    executionPolicy: nativeExecutionPolicy.policy,
     sandbox: params.sandbox,
     sandboxEnvironmentSelected: sandboxEnvironmentRequired,
     surface: "/btw side-question mode",
@@ -341,7 +348,10 @@ export async function runCodexAppServerSideQuestion(
   }
   const clientOptions = {
     // Existing synchronous process startup admission.
-    assertCurrent: authority.assertLegacyCurrent,
+    assertCurrent: () => {
+      authority.assertLegacyCurrent();
+      nativeExecutionPolicy.assertCurrent();
+    },
     startOptions: appServer.start,
     timeoutMs: appServer.requestTimeoutMs,
     authRequirement: preparedRuntimeAuth.plan.modelRoute?.authRequirement,
@@ -445,6 +455,7 @@ export async function runCodexAppServerSideQuestion(
       sandboxSessionKey,
       sandbox,
       nativeToolSurfaceEnabled,
+      nativeExecutionPolicy,
       nativeProviderWebSearchSupport,
       sessionPermissionPolicy,
       runAbortController,
@@ -473,6 +484,7 @@ export async function runCodexAppServerSideQuestion(
     );
     return {
       toolBridge: createCodexDynamicToolBridge({
+        assertCurrent: nativeExecutionPolicy.assertCurrent,
         tools: exposedTools,
         signal: runAbortController.signal,
         loading: resolveCodexDynamicToolsLoading(pluginConfig),
@@ -656,7 +668,10 @@ export async function runCodexAppServerSideQuestion(
         }),
         signal: runAbortController.signal,
         runBeforeToolCall: sideRunParams.hostCapabilities.runBeforeToolCall,
-        assertActive: authority.assertLegacyCurrent,
+        assertActive: () => {
+          authority.assertLegacyCurrent();
+          nativeExecutionPolicy.assertCurrent();
+        },
         onPreToolUseFailure: (failure) => {
           if (!nativePreToolUseFailures.active && nativeToolLifecycleProjector) {
             nativeToolLifecycleProjector.recordPreToolUseFailure(

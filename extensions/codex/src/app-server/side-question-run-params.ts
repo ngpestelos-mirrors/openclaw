@@ -20,6 +20,16 @@ export function buildSideRunAttemptParams(
     sessionId: params.sessionId,
     sessionFile: params.sessionFile,
     sessionKey: params.sessionKey,
+    ...(params.sessionKey && params.storePath
+      ? {
+          sessionTarget: {
+            agentId: params.agentId,
+            sessionId: params.sessionId,
+            sessionKey: params.sessionKey,
+            storePath: params.storePath,
+          },
+        }
+      : {}),
     ...(params.sandboxSessionKey ? { sandboxSessionKey: params.sandboxSessionKey } : {}),
     agentId: params.agentId,
     ...(params.messageChannel ? { messageChannel: params.messageChannel } : {}),

@@ -211,6 +211,7 @@ export function createCodexDynamicToolBridge(params: {
   registeredFallbackTools?: AnyAgentTool[];
   registeredSpecs?: readonly CodexDynamicToolSpec[];
   signal: AbortSignal;
+  assertCurrent?: () => void;
   computerContextEpoch?: CodexComputerContextEpoch;
   hookContext?: CodexDynamicToolHookContext;
   loading?: CodexDynamicToolsLoading;
@@ -421,6 +422,7 @@ export function createCodexDynamicToolBridge(params: {
         runId: toolResultHookContext.runId,
         startedAt: invocationStartedAt,
         signal,
+        assertCurrent: params.assertCurrent,
         boundaries: executionBoundaries,
         retainExecutionSnapshot: options?.retainExecutionSnapshot,
         initialArguments: args,
