@@ -5,6 +5,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/cli-runner/history-boundary.incognito.test.ts",
   "src/agents/sandbox/runtime-status.incognito.test.ts",
   "src/agents/harness/host-capability.node-authority.test.ts",
+  "src/agents/embedded-agent-runner.prompt-cache.test.ts",
   "src/infra/sqlite-foreign-observation.worker.test.ts",
   "src/state/openclaw-state-db-current-reader.test.ts",
   "src/cli/admin-state-owner.process.test.ts",
