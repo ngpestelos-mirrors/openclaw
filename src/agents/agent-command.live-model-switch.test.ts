@@ -39,8 +39,8 @@ import {
   createTestModelSelection,
   createTestModelVisibilityPolicy,
   makeSuccessResult,
+  resetTestSessionReaders,
 } from "./agent-command.live-model-switch.test-helpers.js";
-import { resetTestSessionReaders } from "./agent-command.live-model-switch.test-mocks.js";
 import { registerAgentCommandPreparedConfigCases } from "./agent-command.prepared-config.test-support.js";
 import {
   registerAgentCommandRecoveryCases,
@@ -1028,7 +1028,7 @@ function getAgentCommandRecoveryFixture() {
 }
 
 describe("agentCommand – LiveSessionModelSwitchError retry", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     commandPaths = createCommandSessionPaths(commandDirectories.make());
     vi.clearAllMocks();
     state.acpResolveSessionMock.mockReturnValue(null);
@@ -1178,7 +1178,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       }),
     );
     state.resolveMessageChannelSelectionMock.mockRejectedValue(new Error("channel required"));
-    resetTestSessionReaders(state);
+    await resetTestSessionReaders(state);
     state.resolveAgentDeliveryPlanMock.mockImplementation(
       (params: {
         accountId?: string;
