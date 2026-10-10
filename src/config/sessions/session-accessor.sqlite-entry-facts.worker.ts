@@ -54,15 +54,15 @@ export function readExactSessionEntryFactsInDatabase(
   const eb = expressionBuilder<DB, "session_nodes">();
   const participants = eb
     .selectFrom("session_participants")
-    .select(({ fn, ref }) =>
-      fn
+    .select((builder) =>
+      builder.fn
         .agg<string>("json_group_array", [
-          fn("json_array", [
-            ref("identity_namespace"),
-            ref("actor_id"),
-            ref("contribution_count"),
-            ref("first_prompted_at"),
-            ref("last_prompted_at"),
+          builder.fn("json_array", [
+            builder.ref("identity_namespace"),
+            builder.ref("actor_id"),
+            builder.ref("contribution_count"),
+            builder.ref("first_prompted_at"),
+            builder.ref("last_prompted_at"),
           ]),
         ])
         .orderBy("first_prompted_at")
@@ -74,10 +74,14 @@ export function readExactSessionEntryFactsInDatabase(
     .$asScalar();
   const membership = eb
     .selectFrom("session_members")
-    .select(({ fn, ref }) =>
-      fn
+    .select((builder) =>
+      builder.fn
         .agg<string>("json_group_array", [
-          fn("json_array", [ref("identity_id"), ref("added_by"), ref("added_at")]),
+          builder.fn("json_array", [
+            builder.ref("identity_id"),
+            builder.ref("added_by"),
+            builder.ref("added_at"),
+          ]),
         ])
         .orderBy("identity_id")
         .as("records"),
