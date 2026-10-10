@@ -479,14 +479,22 @@ export async function applyClawUpdatePlan(
   }
 
   const agentAction = fresh.actions.find((action) => action.kind === "agent");
-  const commit: ConfigCommit =
-    options.commitConfig ??
-    (async (transform) => {
-      await transformConfigFileWithRetry({
-        afterWrite: { mode: "auto" },
-        transform: (config) => ({ nextConfig: transform(config) }),
-      });
+  const commit = async (
+    transform: Parameters<ConfigCommit>[0],
+    assertCurrent = () => {
+      options.signal?.throwIfAborted();
+      options.assertCurrent?.();
+    },
+  ) => {
+    if (options.commitConfig) {
+      return await options.commitConfig(transform);
+    }
+    await transformConfigFileWithRetry({
+      afterWrite: { mode: "auto" },
+      writeOptions: { assertCurrent },
+      transform: (config) => ({ nextConfig: transform(config) }),
     });
+  };
   let previousAgent: AgentConfig | undefined;
   let agentChanged = false;
   const liveAgentDigest = (config: OpenClawConfig, agent: AgentConfig | undefined) => {
@@ -531,7 +539,7 @@ export async function applyClawUpdatePlan(
           delete nextEntries[fresh.agentId];
         }
         return { ...config, agents: { ...config.agents, entries: nextEntries } };
-      });
+      }, settlementOptions.assertCurrent);
       agentChanged = false;
     });
   const rollbackCompleted = (cron?: ClawCronUpdateExecution) =>

@@ -1,4 +1,4 @@
-import { stableStringify } from "@openclaw/normalization-core";
+import { coerceErrorMessage, stableStringify } from "@openclaw/normalization-core";
 import {
   listAgentEntries,
   listAgentIds,
@@ -9,43 +9,25 @@ import {
   emitClawFailure,
   formatClawDiagnostics,
   logClawExperimentalWarning,
-  logClawAddPlanSummary,
-  requireClawPlanConsent,
 } from "../cli/claws-cli-output.js";
-import { waitUntilGatewayAgentAvailable } from "../cli/claws-cli.gateway-readiness.js";
+import { logClawAddPlanSummary, requireClawPlanConsent } from "../cli/claws-cli-output.js";
 import type { ClawsAddOptions } from "../cli/claws-cli.js";
-import { listCronJobsFromGateway } from "../cli/cron-cli/list-jobs.js";
-import { callGatewayFromCli } from "../cli/gateway-rpc.js";
-import { resolvePluginBatchReload } from "../cli/plugins-lifecycle-client.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { listConfiguredMcpServers } from "../config/mcp-config.js";
-import {
-  loadCronJobsStoreWithConfigJobsReadOnly,
-  resolveCronJobsStorePath,
-} from "../cron/store.js";
-import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
+import { writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
 import { applyClawAddPlan, CLAW_ADD_RESULT_SCHEMA_VERSION, ClawAddMutationError } from "./add.js";
-import { assertExperimentalClawsEnabled } from "./experimental.js";
+import type { ClawCommandServices } from "./command-runtime.js";
 import { buildClawAddPlan } from "./lifecycle.js";
-import {
-  findResumableIntroducedPluginRequirement,
-  readClawResumeStateReadOnly,
-} from "./package-resume.js";
+import { findResumableIntroducedPluginRequirement } from "./package-resume.js";
 import { preflightClawPackage } from "./packages.js";
-import {
-  clawInstallRecordMatchesPlan,
-  readClawInstallRecord,
-  readClawPackageRefs,
-  type PersistedClawInstall,
-} from "./provenance.js";
+import { readClawPackageOwnership } from "./provenance-async.js";
+import { clawInstallRecordMatchesPlan, type PersistedClawInstall } from "./provenance.js";
 import { readClawManifestFile } from "./reader.js";
 import { CLAW_ADD_PLAN_SCHEMA_VERSION, CLAW_OUTPUT_STABILITY, type ClawAddPlan } from "./types.js";
 
-async function matchingResumeState(plan: ClawAddPlan, opts: ClawsAddOptions) {
-  const readOnlyState = opts.dryRun
-    ? await readClawResumeStateReadOnly(plan.agent.finalId)
-    : undefined;
-  const record = opts.dryRun ? readOnlyState?.record : readClawInstallRecord(plan.agent.finalId);
+async function matchingResumeState(plan: ClawAddPlan) {
+  const snapshot = await readClawPackageOwnership({ agentId: plan.agent.finalId });
+  const record = snapshot.install;
   if (
     !record ||
     record.status === "complete" ||
@@ -59,23 +41,24 @@ async function matchingResumeState(plan: ClawAddPlan, opts: ClawsAddOptions) {
   }
   return {
     record,
-    packageRefs: readOnlyState?.packageRefs ?? readClawPackageRefs({ agentId: plan.agent.finalId }),
+    packageRefs: snapshot.packageRefs,
   };
 }
 
 export async function executeClawAddCommand(
   sourcePath: string,
   opts: ClawsAddOptions,
-  runtime: RuntimeEnv = defaultRuntime,
+  runtime: RuntimeEnv,
+  services: ClawCommandServices,
 ): Promise<void> {
-  assertExperimentalClawsEnabled();
+  services.assertCurrent();
   if (requireClawPlanConsent("add", opts, runtime)) {
     return;
   }
   let legacyV1ResumeRecord: PersistedClawInstall | undefined;
   const result = await readClawManifestFile(sourcePath, {
-    authorizeLegacyDynamicToolProfile: ({ manifest, source }) => {
-      legacyV1ResumeRecord = authorizeLegacyV1Resume({ manifest, source, opts });
+    authorizeLegacyDynamicToolProfile: async ({ manifest, source }) => {
+      legacyV1ResumeRecord = await authorizeLegacyV1Resume({ manifest, source, opts });
       return legacyV1ResumeRecord !== undefined;
     },
   });
@@ -100,7 +83,6 @@ export async function executeClawAddCommand(
   const existingWorkspacePaths = existingAgentIds.map((agentId) =>
     resolveAgentWorkspaceDir(config, agentId),
   );
-  const cronStore = await loadCronJobsStoreWithConfigJobsReadOnly(resolveCronJobsStorePath());
   const basePlanContext = {
     config,
     ...(opts.agentId ? { agentId: opts.agentId } : {}),
@@ -108,7 +90,6 @@ export async function executeClawAddCommand(
     existingAgentIds,
     existingWorkspacePaths,
     existingMcpServers: listedMcpServers.mcpServers,
-    existingCronJobIds: cronStore.store.jobs.map((job) => job.id),
     packagePreflight: preflightClawPackage,
   };
   const planInput = {
@@ -129,7 +110,7 @@ export async function executeClawAddCommand(
       })
     : undefined;
   let resumableInstallRecord: PersistedClawInstall | undefined;
-  const resumeState = await matchingResumeState(legacyResumePlan ?? plan, opts);
+  const resumeState = await matchingResumeState(legacyResumePlan ?? plan);
   if (result.legacyOpenClawProfile && !resumeState) {
     plan = {
       ...plan,
@@ -264,21 +245,24 @@ export async function executeClawAddCommand(
   }
   try {
     addResult = await applyClawAddPlan(plan, {
-      reloadPlugins: await resolvePluginBatchReload(),
+      reloadPlugins: services.reloadPlugins,
+      commitConfig: services.commitConfig,
+      createConfigApplication: services.createConfigApplication,
+      assertCurrent: services.assertCurrent,
+      assertSettlementCurrent: services.assertSettlementCurrent,
+      runSettlement: services.runSettlement,
+      env: services.env,
+      signal: services.signal,
+      waitMs: services.waitMs,
       consentPlanIntegrity: opts.planIntegrity,
       resumeRecord: resumableInstallRecord,
       resumePlan: legacyResumePlan,
       runtime: opts.json ? { ...runtime, log: () => undefined } : runtime,
-      cronGateway: {
-        add: async (input) => await callGatewayFromCli("cron.add", {}, input),
-        list: async (agentId) =>
-          await listCronJobsFromGateway({}, { agentId, includeDisabled: true }),
-        waitUntilAgentAvailable: waitUntilGatewayAgentAvailable,
-      },
+      cronGateway: services.cronGateway,
     });
   } catch (error) {
     const code = error instanceof ClawAddMutationError ? error.code : "add_failed";
-    const message = (error as Error).message;
+    const message = coerceErrorMessage(error);
     emitClawFailure(runtime, opts.json, message, {
       schemaVersion: CLAW_ADD_RESULT_SCHEMA_VERSION,
       stability: CLAW_OUTPUT_STABILITY,

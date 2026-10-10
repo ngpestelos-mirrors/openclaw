@@ -1,16 +1,16 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  GatewayProtocolRequestError,
-  retainGatewayResponsePayload,
-} from "../../packages/gateway-client/src/protocol-request.js";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { err, ok } from "@openclaw/normalization-core/result";
+import { describe, expect, it } from "vitest";
 import type { ErrorShape } from "../../packages/gateway-protocol/src/schema/frames.js";
 import { withAgentDeletion } from "../agents/agent-lifecycle-registry.js";
 import { digestClawValue } from "../claws/digest.js";
 import { buildClawRemovalFixture } from "../claws/lifecycle-remove.test-support.js";
-import { persistClawInstallRecord, readClawInstallRecord } from "../claws/provenance.js";
-import { clawRemovalJournalResultSchema } from "../claws/removal-journal-contract.js";
-import { clawRemovalJournalGateway } from "../cli/claws-cli.removal-journal.js";
-import * as gatewayRpc from "../cli/gateway-rpc.js";
+import { resolveClawMonitorCleanupBinding } from "../claws/monitor-cleanup-binding.js";
+import { persistClawInstallRecord, readClawInstallRecordAsync } from "../claws/provenance.js";
+import {
+  clawRemovalJournalRequestSchema,
+  clawRemovalJournalResultSchema,
+} from "../claws/removal-journal-contract.js";
 import { getRuntimeConfig, resetConfigRuntimeState } from "../config/config.js";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import type { AgentDeletionJournalTransport } from "../state/agent-deletion-journal-transport.js";
@@ -20,8 +20,6 @@ import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { readOpenClawStateLease } from "../state/openclaw-state-lease-store.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { clawsRemovalJournalHandlers } from "./server-methods/claws-removal-journal.js";
-
-afterEach(() => vi.restoreAllMocks());
 
 describe("Gateway-owned Claw removal journal", () => {
   it.each([
@@ -50,59 +48,68 @@ describe("Gateway-owned Claw removal journal", () => {
         openOpenClawAgentDatabase({ agentId: "worker", path: sharedStorePath, env: state.env });
       }
       const config = getRuntimeConfig();
+      const cronStorePath = resolveCronJobsStorePathFromConfig(config);
       const phases: string[] = [];
       let committedOperation: string | undefined;
-      vi.spyOn(gatewayRpc, "callGatewayFromCli").mockImplementation(
-        async (method, _opts, params, extra) => {
-          expect(method).toBe("claws.removalJournal");
-          // Only the transport is substituted; the journal worker and both live owners are real.
-          if (
-            !params ||
-            typeof params !== "object" ||
-            !("phase" in params) ||
-            !("agentId" in params)
-          ) {
-            throw new Error("Missing synthetic transport request");
-          }
-          let response: unknown;
-          let failure: ErrorShape | undefined;
-          await clawsRemovalJournalHandlers["claws.removalJournal"]({
-            params: { ...params },
-            context: {
-              cronStorePath: resolveCronJobsStorePathFromConfig(config),
-              getRuntimeConfig: () => config,
-              isConfigReloadSettled: () => true,
-            },
-            signal: extra?.signal,
-            hasCurrentClientAuthority: () => scenario !== "revoked-request",
-            respond: (accepted, payload, error) => {
-              response = payload;
-              failure = accepted ? undefined : error;
-            },
-          });
-          if (failure) {
-            const error = new GatewayProtocolRequestError(failure);
-            retainGatewayResponsePayload(error, response);
-            throw error;
-          }
-          if (scenario === "lost-reply") {
-            committedOperation = readAgentDeletionJournal("worker")?.operationId;
-            expect(committedOperation).toBeTruthy();
-            throw new Error("Synthetic connection lost after the native journal commit");
-          }
-          return clawRemovalJournalResultSchema.parse(response);
-        },
-      );
-      const journalTransport: AgentDeletionJournalTransport = (mutation, authority) => {
+      const journalTransport: AgentDeletionJournalTransport = async (mutation, authority) => {
         phases.push(mutation.kind);
-        return clawRemovalJournalGateway(
-          {
-            ...mutation,
-            expectedInstallDigest: digestClawValue(scenario === "stale-install" ? null : install),
-            configDigest: digestClawValue(config),
+        authority.assertCurrent();
+        const request = clawRemovalJournalRequestSchema.parse({
+          phase: mutation.kind,
+          agentId: mutation.kind === "begin" ? mutation.entry.agentId : mutation.journal.agentId,
+          operationId:
+            mutation.kind === "begin" ? mutation.operationId : mutation.journal.operationId,
+          binding: resolveClawMonitorCleanupBinding(cronStorePath),
+          lease: authority.identity,
+          sourceIdentity: authority.sourceIdentity,
+          expectedInstallDigest: digestClawValue(scenario === "stale-install" ? null : install),
+          expectedJournalDigest: digestClawValue(
+            mutation.kind === "begin" ? mutation.expectedJournal : mutation.journal,
+          ),
+          configDigest: digestClawValue(config),
+        });
+        let response: unknown;
+        let failure: ErrorShape | undefined;
+        await clawsRemovalJournalHandlers["claws.removalJournal"]({
+          params: request,
+          context: {
+            cronStorePath,
+            getRuntimeConfig: () => config,
+            isConfigReloadSettled: () => true,
           },
-          authority,
-        );
+          signal: authority.signal,
+          hasCurrentClientAuthority: () => scenario !== "revoked-request",
+          respond: (accepted, payload, error) => {
+            response = payload;
+            failure = accepted ? undefined : error;
+          },
+        });
+        if (failure) {
+          const error = new Error(failure.message);
+          if (isRecord(failure.details) && failure.details.outcomeUnknown === false) {
+            return err(error);
+          }
+          throw error;
+        }
+        if (scenario === "lost-reply") {
+          committedOperation = readAgentDeletionJournal("worker")?.operationId;
+          expect(committedOperation).toBeTruthy();
+          throw new Error("Synthetic connection lost after the native journal commit");
+        }
+        const result = clawRemovalJournalResultSchema.parse(response);
+        if (!result.ok) {
+          return err(new Error(result.error));
+        }
+        if (mutation.kind === "begin") {
+          expect(result.journal).toMatchObject({
+            agentId: request.agentId,
+            operationId: request.operationId,
+            cleanupCompleted: false,
+          });
+        } else {
+          expect(result.journal).toBeNull();
+        }
+        return ok(result.journal);
       };
       const removal = withAgentDeletion(
         "worker",
@@ -155,7 +162,7 @@ describe("Gateway-owned Claw removal journal", () => {
         expect(lease).toBeUndefined();
       }
       if (scenario === "shared-session-owner") {
-        expect(readClawInstallRecord("worker")).toEqual(install);
+        expect(await readClawInstallRecordAsync("worker")).toEqual(install);
         expect(
           openOpenClawAgentDatabase({ agentId: "worker", path: sharedStorePath, env: state.env })
             .agentId,

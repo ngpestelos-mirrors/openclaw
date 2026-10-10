@@ -15,8 +15,7 @@ vi.mock("../gateway/call.js", async (importOriginal) => ({
 }));
 vi.mock("../utils/sleep.js", () => ({ sleep: mocks.sleep }));
 vi.mock("../config/config.js", () => ({ getRuntimeConfig: mocks.config }));
-const { resolvePluginLifecycleGateway, resolvePluginBatchReload } =
-  await import("./plugins-lifecycle-client.js");
+const { resolvePluginLifecycleGateway } = await import("./plugins-lifecycle-client.js");
 
 describe("plugin lifecycle CLI transport", () => {
   beforeEach(() => {
@@ -110,30 +109,6 @@ describe("plugin lifecycle CLI transport", () => {
     expect(await resolvePluginLifecycleGateway()).toBeNull();
     expect(mocks.call).not.toHaveBeenCalled();
   });
-
-  it.each([true, false])(
-    "requires an actual batch application receipt (present=%s)",
-    async (present) => {
-      const runtime = { operationId: "batch", generation: 2, pluginIds: ["demo"] };
-      const targets = [{ pluginId: "demo", installHash: "a".repeat(64) }];
-      const warnings = ["Previous plugin cleanup did not finish."];
-      mocks.call.mockResolvedValue(present ? { runtime, warnings, restartRequired: true } : {});
-      const reload = await resolvePluginBatchReload();
-      expect(reload).toBeDefined();
-      if (present) {
-        await expect(reload!(targets)).resolves.toEqual({
-          ...runtime,
-          warnings,
-          restartRequired: true,
-        });
-      } else {
-        await expect(reload!(targets)).rejects.toThrow("did not confirm");
-      }
-      expect(mocks.call).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ method: "plugins.reload", params: { plugins: targets } }),
-      );
-    },
-  );
 
   it("does not select offline mutation when an existing owner cannot be inspected", async () => {
     const { readActiveGatewayLockIdentity, GatewayLockError } = await vi.importActual<

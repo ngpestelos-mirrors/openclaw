@@ -109,7 +109,7 @@ describe("Claw committed plugin requirement handoff", () => {
       });
     });
   });
-  it.each(["none", "metadata", "cancellation"] as const)(
+  it.each(["none", "metadata", "cancellation", "retirement"] as const)(
     "applies retained writes once after lease release (late failure=%s)",
     async (failure) => {
       const lateFailure = failure !== "none";
@@ -125,6 +125,12 @@ describe("Claw committed plugin requirement handoff", () => {
       await withEnvAsync(env, async () => {
         let records: Record<string, PluginInstallRecord> = {};
         let heldPackages = 0;
+        let ownerCurrent = true;
+        const assertSettlementCurrent = () => {
+          if (!ownerCurrent) {
+            throw new Error("physical owner retired");
+          }
+        };
         const cleanup = vi.fn();
         const log = vi.fn();
         const reloadPlugins = vi.fn<PluginInstallBatchReload>(async (targets) => {
@@ -137,6 +143,7 @@ describe("Claw committed plugin requirement handoff", () => {
           expect(targets.map((target: { pluginId: string }) => target.pluginId)).toEqual(
             lateFailure ? ["first"] : ["first", "second"],
           );
+          ownerCurrent = failure !== "retirement";
           return {
             operationId: "batch",
             generation: 2,
@@ -148,8 +155,11 @@ describe("Claw committed plugin requirement handoff", () => {
           Pick<ClawCommandServices, "assertSettlementCurrent" | "runSettlement"> = {
           env,
           signal: controller.signal,
-          assertCurrent: () => controller.signal.throwIfAborted(),
-          assertSettlementCurrent: () => undefined,
+          assertCurrent: () => {
+            assertSettlementCurrent();
+            controller.signal.throwIfAborted();
+          },
+          assertSettlementCurrent,
           runSettlement: (run) => settlement.run(true, run),
           runtime: {
             log,
@@ -236,9 +246,11 @@ describe("Claw committed plugin requirement handoff", () => {
           await expect(pending).rejects.toMatchObject({
             code: "package_install_failed",
             message:
-              failure === "cancellation"
-                ? expect.stringContaining("postcommit metadata failure")
-                : "postcommit metadata failure",
+              failure === "retirement"
+                ? expect.stringContaining("physical owner retired")
+                : failure === "cancellation"
+                  ? expect.stringContaining("postcommit metadata failure")
+                  : "postcommit metadata failure",
           });
         } else {
           completed = await pending;
@@ -246,8 +258,10 @@ describe("Claw committed plugin requirement handoff", () => {
         }
         expect(reloadPlugins).toHaveBeenCalledOnce();
         expect(log).toHaveBeenCalledWith("Previous plugin cleanup did not finish.");
-        expect(cleanup).toHaveBeenCalledTimes(lateFailure ? 1 : 2);
-        expect(log).toHaveBeenCalledWith("Source cleanup warning for first");
+        expect(cleanup).toHaveBeenCalledTimes(failure === "retirement" ? 0 : lateFailure ? 1 : 2);
+        if (failure !== "retirement") {
+          expect(log).toHaveBeenCalledWith("Source cleanup warning for first");
+        }
         if (completed) {
           const installedRefs = completed;
           cleanup.mockClear();

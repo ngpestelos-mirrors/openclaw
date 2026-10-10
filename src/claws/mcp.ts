@@ -7,7 +7,6 @@ import { hasSqliteWorkerOutcomeUnknown } from "../infra/sqlite-worker-contract.j
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { digestClawMcpServer } from "./mcp-digest.js";
 import { ClawMcpInstallError, type PersistedClawMcpServerRef } from "./mcp-records.js";
-import { readClawMcpServerRefsByName } from "./mcp.kernel.js";
 import type { ClawReferencedCleanup } from "./package-remove.js";
 import {
   executeClawProvenanceWrite,
@@ -21,7 +20,7 @@ export {
   ClawMcpInstallError,
   type PersistedClawMcpServerRef,
 } from "./mcp-records.js";
-export { readClawMcpServerRefs, readClawMcpServerRefsByName } from "./mcp.kernel.js";
+export { readClawMcpServerRefsByName } from "./mcp.kernel.js";
 export { digestClawMcpServer } from "./mcp-digest.js";
 function mcpServerFromActionDetails(details: Record<string, unknown>): ClawMcpServer | undefined {
   const { expectedState: _expectedState, prerequisites: _prerequisites, ...server } = details;
@@ -262,12 +261,6 @@ export function reconcileClawMcpServerRefs(
   );
 }
 
-export function planClawMcpServerRemoval(
-  ref: PersistedClawMcpServerRef,
-  options: OpenClawStateDatabaseOptions & { referencedCleanup?: ClawReferencedCleanup } = {},
-) {
-  return planMcpRemoval(ref, readClawMcpServerRefsByName(ref.name, options), options);
-}
 export async function planClawMcpServerRemovalAsync(
   ref: PersistedClawMcpServerRef,
   options: OpenClawStateDatabaseOptions & { referencedCleanup?: ClawReferencedCleanup } = {},

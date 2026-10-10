@@ -19,7 +19,7 @@ import { planClawPackageRemovals } from "../claws/package-remove.js";
 import {
   persistClawInstallRecord,
   persistClawPackageRef,
-  readClawInstallRecord,
+  readClawInstallRecordAsync,
   readClawPackageRefs,
   updateClawInstallRecordStatus,
 } from "../claws/provenance.js";
@@ -84,7 +84,7 @@ async function fixture(uninstallWarnings: string[] = []) {
   const journal = claim();
   const application = { operationId: "runtime-removal", generation: 2, pluginIds: ["audit"] };
   mocks.status.mockImplementation(async () => ({
-    install: readClawInstallRecord("worker"),
+    install: await readClawInstallRecordAsync("worker"),
     packages: readClawPackageRefs({ agentId: "worker" }),
   }));
   mocks.resolve.mockResolvedValue({
@@ -192,14 +192,14 @@ describe("Gateway Claw package cleanup owner", () => {
     }
     await withAgentDeletion("worker", async (begin) => {
       const deletion = await begin(previous, {
-        expectedClawInstall: readClawInstallRecord("worker"),
+        expectedClawInstall: await readClawInstallRecordAsync("worker"),
       });
       const oldOperationId = deletion.entry.operationId;
       f.input.operationId = oldOperationId;
       const entered = createDeferred();
       const release = createDeferred();
       const snapshot = {
-        install: readClawInstallRecord("worker"),
+        install: await readClawInstallRecordAsync("worker"),
         packages: readClawPackageRefs({ agentId: "worker" }),
       };
       mocks.status.mockImplementationOnce(async () => {
@@ -238,7 +238,7 @@ describe("Gateway Claw package cleanup owner", () => {
       const entered = createDeferred();
       const release = createDeferred();
       const snapshot = {
-        install: readClawInstallRecord("worker"),
+        install: await readClawInstallRecordAsync("worker"),
         packages: readClawPackageRefs({ agentId: "worker" }),
       };
       mocks.status.mockImplementationOnce(async () => {
@@ -265,7 +265,7 @@ describe("Gateway Claw package cleanup owner", () => {
           await expect(updateClawInstallRecordStatus("worker", "partial")).rejects.toThrow(
             /deletion/i,
           );
-          expect(readClawInstallRecord("worker")).toEqual(snapshot.install);
+          expect(await readClawInstallRecordAsync("worker")).toEqual(snapshot.install);
         }
       } finally {
         release.resolve();

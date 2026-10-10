@@ -1,14 +1,19 @@
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/config.js";
+import {
+  getRuntimeConfigSnapshotRefreshHandler,
+  setRuntimeConfigSnapshotRefreshHandler,
+} from "../config/runtime-snapshot.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { applyClawAddPlan } from "./add.js";
 import { readClawStatus } from "./lifecycle-state.js";
 import { buildClawAddPlan } from "./lifecycle.js";
-import { persistClawInstallRecord, readClawInstallRecord } from "./provenance.js";
+import { persistClawInstallRecord, readClawInstallRecordAsync } from "./provenance.js";
 import { makeProvenancePlan, stateEnv } from "./provenance.test-helpers.js";
 import type { ClawOpenClawProfile } from "./types.js";
 import { applyClawUpdatePlan } from "./update-apply.js";
@@ -23,6 +28,53 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
 );
 
 describe("Claw add lifecycle", () => {
+  it("does not publish agent config when canceled during config preflight", async () => {
+    await withOpenClawTestState({ label: "claw-add-config-canceled" }, async (state) => {
+      await state.writeConfig({});
+      const originalConfig = await readFile(state.configPath, "utf8");
+      const { plan } = await makeProvenancePlan(state.root, {
+        schemaVersion: 1,
+        agent: { id: "worker" },
+      });
+      const controller = new AbortController();
+      const previousHandler = getRuntimeConfigSnapshotRefreshHandler();
+      let reachedPreflight = false;
+      setRuntimeConfigSnapshotRefreshHandler({
+        preflight: async ({ sourceConfig }) => {
+          if (sourceConfig.agents?.entries?.worker) {
+            reachedPreflight = true;
+            controller.abort(new Error("request canceled during config preflight"));
+          }
+        },
+        refresh: () => false,
+      });
+      try {
+        await expect(
+          applyClawAddPlan(plan, {
+            env: state.env,
+            consentPlanIntegrity: plan.planIntegrity,
+            signal: controller.signal,
+            assertCurrent: () => controller.signal.throwIfAborted(),
+            assertSettlementCurrent: () => undefined,
+            runSettlement: async (operation) => operation(),
+          }),
+        ).resolves.toMatchObject({
+          status: "partial",
+          workspaceCreated: false,
+          configCommitted: false,
+        });
+        expect(reachedPreflight).toBe(true);
+        expect(await readFile(state.configPath, "utf8")).toBe(originalConfig);
+        await expect(access(plan.agent.workspace)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await readClawInstallRecordAsync("worker", { env: state.env })).toMatchObject({
+          status: "partial",
+        });
+      } finally {
+        setRuntimeConfigSnapshotRefreshHandler(previousHandler);
+      }
+    });
+  });
+
   it("settles accepted workspace cleanup when add is canceled before config commit", async () => {
     const root = tempDirs.make("openclaw-claw-add-canceled-");
     const { plan } = await makeProvenancePlan(root, { schemaVersion: 1, agent: { id: "worker" } });
@@ -50,7 +102,9 @@ describe("Claw add lifecycle", () => {
     });
     expect(commitConfig).not.toHaveBeenCalled();
     await expect(access(plan.agent.workspace)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(readClawInstallRecord("worker", { env })).toMatchObject({ status: "partial" });
+    expect(await readClawInstallRecordAsync("worker", { env })).toMatchObject({
+      status: "partial",
+    });
   });
 
   it("applies, tracks drift, updates, and removes profile model and delegation settings", async () => {
@@ -162,7 +216,7 @@ describe("Claw add lifecycle", () => {
       error: { code: "config_commit_failed", message: "config unavailable after transform" },
     });
     await expect(access(plan.agent.workspace)).rejects.toThrow();
-    expect(readClawInstallRecord("worker", { env })?.status).toBe("partial");
+    expect((await readClawInstallRecordAsync("worker", { env }))?.status).toBe("partial");
   });
 
   it("retries after v1 promotion fails behind the bounded config commit", async () => {
@@ -200,7 +254,7 @@ describe("Claw add lifecycle", () => {
       .db /* sqlite-allow-raw: test-only downgrade simulates an interrupted v1 add. */
       .prepare("UPDATE claw_installs SET schema_version = ? WHERE agent_id = ?")
       .run("openclaw.clawInstallRecord.v1", "worker");
-    const legacyRecord = readClawInstallRecord("worker", { env });
+    const legacyRecord = await readClawInstallRecordAsync("worker", { env });
     if (!legacyRecord) {
       throw new Error("expected legacy install record");
     }
@@ -245,7 +299,7 @@ describe("Claw add lifecycle", () => {
     expect(config.agents?.entries?.worker).toMatchObject({
       tools: { profile: "full", allow: ["read"] },
     });
-    expect(readClawInstallRecord("worker", { env })).toMatchObject({
+    expect(await readClawInstallRecordAsync("worker", { env })).toMatchObject({
       schemaVersion: "openclaw.clawInstallRecord.v1",
       planIntegrity: legacyPlan.planIntegrity,
       status: "workspace_ready",
@@ -254,7 +308,7 @@ describe("Claw add lifecycle", () => {
     const second = await applyClawAddPlan(boundedPlan, dependencies);
 
     expect(second.status).toBe("complete");
-    expect(readClawInstallRecord("worker", { env })).toMatchObject({
+    expect(await readClawInstallRecordAsync("worker", { env })).toMatchObject({
       schemaVersion: "openclaw.clawInstallRecord.v2",
       planIntegrity: boundedPlan.planIntegrity,
       status: "complete",

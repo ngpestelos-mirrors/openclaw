@@ -7,8 +7,8 @@ import { buildClawAddPlan } from "./lifecycle.js";
 import {
   deleteClawMcpServerRef,
   installClawMcpServers,
-  planClawMcpServerRemoval,
-  readClawMcpServerRefs,
+  planClawMcpServerRemovalAsync,
+  readClawMcpServerRefsAsync,
 } from "./mcp.js";
 import { parseClawManifest } from "./schema.js";
 import type { ClawSourceIdentity } from "./types.js";
@@ -164,7 +164,9 @@ describe("installClawMcpServers", () => {
         status: "complete",
       },
     ]);
-    expect(planClawMcpServerRemoval(refs[0]!, { env: current.env }).action).toBe("release");
+    expect((await planClawMcpServerRemovalAsync(refs[0]!, { env: current.env })).action).toBe(
+      "release",
+    );
   });
 
   it("allows another Claw to share an exact Claw-created server", async () => {
@@ -200,17 +202,23 @@ describe("installClawMcpServers", () => {
       },
     ]);
     const firstDocs = firstRefs[0]!;
-    expect(planClawMcpServerRemoval(firstDocs, { env: first.env }).action).toBe("release");
+    expect((await planClawMcpServerRemovalAsync(firstDocs, { env: first.env })).action).toBe(
+      "release",
+    );
     const secondDocs = refs[0]!;
     await deleteClawMcpServerRef("worker", "docs", { env: first.env });
     expect(
-      planClawMcpServerRemoval(secondDocs, {
-        env: first.env,
-        referencedCleanup: { mode: "remove-if-unused" },
-      }).action,
+      (
+        await planClawMcpServerRemovalAsync(secondDocs, {
+          env: first.env,
+          referencedCleanup: { mode: "remove-if-unused" },
+        })
+      ).action,
     ).toBe("remove");
     await deleteClawMcpServerRef("analyst", "docs", { env: first.env });
-    expect(planClawMcpServerRemoval(firstDocs, { env: first.env }).action).toBe("remove");
+    expect((await planClawMcpServerRemovalAsync(firstDocs, { env: first.env })).action).toBe(
+      "remove",
+    );
   });
 
   it("serializes concurrent claims for the same MCP server", async () => {
@@ -284,13 +292,13 @@ describe("installClawMcpServers", () => {
     const selector = `mcp:${ref!.name}`;
 
     expect(
-      planClawMcpServerRemoval(ref!, {
+      await planClawMcpServerRemovalAsync(ref!, {
         env: current.env,
         referencedCleanup: { mode: "remove-selected", selected: [selector] },
       }),
     ).toMatchObject({ action: "release", blocked: true });
     expect(
-      planClawMcpServerRemoval(ref!, {
+      await planClawMcpServerRemovalAsync(ref!, {
         env: current.env,
         referencedCleanup: {
           mode: "remove-selected",
@@ -311,12 +319,12 @@ describe("installClawMcpServers", () => {
 
     expect(markClawMcpServerIndependentlyOwned("docs", { env: current.env, nowMs: 50 })).toBe(1);
     expect(markClawMcpServerIndependentlyOwned("docs", { env: current.env, nowMs: 60 })).toBe(0);
-    const refs = readClawMcpServerRefs("worker", { env: current.env });
+    const refs = await readClawMcpServerRefsAsync("worker", { env: current.env });
     expect(refs).toMatchObject([
       { name: "docs", independentOwner: true, updatedAtMs: 50 },
       { name: "linear", independentOwner: false },
     ]);
-    const status = planClawMcpServerRemoval(refs[0]!, { env: current.env });
+    const status = await planClawMcpServerRemovalAsync(refs[0]!, { env: current.env });
     expect(status).toMatchObject({ action: "release", blocked: false });
   });
 

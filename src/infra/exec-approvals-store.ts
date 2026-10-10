@@ -474,6 +474,7 @@ export async function withAgentExecApprovalsRemoved<T>(
           });
         },
         {
+          settlement: input.action === "restore",
           onAdmission(request, identityKey) {
             if (request.stage !== "commit") {
               return;

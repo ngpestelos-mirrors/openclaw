@@ -15,7 +15,7 @@ import { readClawCronRefs } from "./cron.js";
 import { readClawStatus } from "./lifecycle-status.js";
 import { applyClawMigrationPlan, buildClawMigrationPlan } from "./migrate.js";
 import { ClawPackageUpdateError } from "./package-update.js";
-import { persistClawInstallRecord, readClawInstallRecord } from "./provenance.js";
+import { persistClawInstallRecord, readClawInstallRecordAsync } from "./provenance.js";
 import type { ClawAddPlan, ClawManifest, ClawOpenClawProfile } from "./types.js";
 import { applyClawUpdatePlan } from "./update-apply.js";
 import { addPlan, consent, install, manifest, plan, source } from "./update-apply.test-helpers.js";
@@ -79,6 +79,7 @@ describe("applyClawUpdatePlan", () => {
     const order: string[] = [];
     let config: OpenClawConfig = { agents: { entries: {} } };
     let runtimeConfig = config;
+    const readinessEntered = createDeferred();
     const runtimeApplied = createDeferred();
 
     const update = applyClawUpdatePlan(
@@ -102,16 +103,12 @@ describe("applyClawUpdatePlan", () => {
         commitConfig: async (transform) => {
           order.push("agent");
           config = transform(config);
-          setImmediate(() => {
-            runtimeConfig = config;
-            order.push("runtime");
-            runtimeApplied.resolve();
-          });
         },
         cronGateway: {
           waitUntilAgentAvailable: async (agentId) => {
             expect(agentId).toBe("worker");
             order.push("wait");
+            readinessEntered.resolve();
             await runtimeApplied.promise;
           },
           add: async () => {
@@ -132,10 +129,14 @@ describe("applyClawUpdatePlan", () => {
     );
 
     try {
-      await expect(update).resolves.toMatchObject({ status: "complete" });
+      await Promise.race([readinessEntered.promise, update]);
+      expect(order).toEqual(["workspace", "mcp", "agent", "wait"]);
+      runtimeConfig = config;
+      order.push("runtime");
     } finally {
-      await runtimeApplied.promise;
+      runtimeApplied.resolve();
     }
+    await expect(update).resolves.toMatchObject({ status: "complete" });
     expect(order).toEqual(["workspace", "mcp", "agent", "wait", "runtime", "cron", "provenance"]);
     expect(readClawCronRefs("worker", { env })).toMatchObject([
       { manifestId: job.id, schedulerJobId: "scheduler-daily", status: "complete" },
@@ -314,7 +315,7 @@ describe("applyClawUpdatePlan", () => {
         expect(readClawCronRefs("worker", { env })).toEqual([]);
         expect(add).not.toHaveBeenCalled();
         expect(config.agents?.entries?.worker).toBeUndefined();
-        expect(readClawInstallRecord("worker", { env })).toEqual(currentRecord);
+        expect(await readClawInstallRecordAsync("worker", { env })).toEqual(currentRecord);
         expect(mcpRollback).toHaveBeenCalledOnce();
         expect(workspaceRollback).toHaveBeenCalledOnce();
         return;
@@ -324,7 +325,7 @@ describe("applyClawUpdatePlan", () => {
       ]);
       expect(add).toHaveBeenCalledOnce();
 
-      const partialRecord = readClawInstallRecord("worker", { env });
+      const partialRecord = await readClawInstallRecordAsync("worker", { env });
       expect(config.agents?.entries?.worker).toEqual({
         name: "Worker v2",
         workspace: "/tmp/workspace-worker",
@@ -869,7 +870,9 @@ describe("updating an adopted agent", () => {
       expect(reachedCron).toBe(true);
       expect(config.agents?.defaults?.model).toBe("provider/operator-change");
       expect(config.agents?.entries?.worker?.name).toBe("Worker v2");
-      expect(readClawInstallRecord("worker", { env: current.env })?.status).toBe("partial");
+      expect((await readClawInstallRecordAsync("worker", { env: current.env }))?.status).toBe(
+        "partial",
+      );
     },
   );
 });

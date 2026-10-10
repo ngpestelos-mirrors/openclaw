@@ -46,7 +46,7 @@ import {
 import { quiescentClawMonitorGateway } from "./lifecycle-remove.test-support.js";
 import { applyClawRemovePlan, buildClawRemovePlan, readClawStatus } from "./lifecycle-state.js";
 import { buildClawAddPlan } from "./lifecycle.js";
-import { installClawMcpServers, readClawMcpServerRefs } from "./mcp.js";
+import { installClawMcpServers, readClawMcpServerRefsAsync } from "./mcp.js";
 import { parseClawManifest } from "./schema.js";
 import type { ClawSourceIdentity } from "./types.js";
 
@@ -322,7 +322,7 @@ describe("Claw exec approvals removal", () => {
         expect(readAgentProvenance("worker")).toEqual(provenanceBefore);
         expect(trashPath).not.toHaveBeenCalled();
         expect(unsetMcpServer).not.toHaveBeenCalled();
-        expect(readClawMcpServerRefs("worker")).toHaveLength(1);
+        expect(await readClawMcpServerRefsAsync("worker")).toHaveLength(1);
         expect(readAgentDeletionJournal("worker")).toMatchObject({ cleanupCompleted: false });
         const agentDir = join(home, ".openclaw", "agents", "worker", "agent");
         await withAgentDeletion("worker", async (begin) => {

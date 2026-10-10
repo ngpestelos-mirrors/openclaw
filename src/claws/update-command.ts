@@ -1,35 +1,32 @@
+import { readClawStatus } from "../claws/lifecycle-state.js";
+import { withAuthoredAgentRoster } from "../claws/migrate-validation.js";
+import { preflightClawPackage } from "../claws/packages.js";
+import { readClawManifestFile } from "../claws/reader.js";
+import { CLAW_OUTPUT_STABILITY } from "../claws/types.js";
+import {
+  applyClawUpdatePlan,
+  CLAW_UPDATE_RESULT_SCHEMA_VERSION,
+  ClawUpdateMutationError,
+} from "../claws/update-apply.js";
+import { buildClawUpdatePlan, CLAW_UPDATE_PLAN_SCHEMA_VERSION } from "../claws/update-plan.js";
 import {
   emitClawFailure,
   formatClawDiagnostics,
   logClawExperimentalWarning,
   logClawUpdatePlanSummary,
 } from "../cli/claws-cli-output.js";
-import { waitUntilGatewayAgentAvailable } from "../cli/claws-cli.gateway-readiness.js";
 import type { ClawsUpdateOptions } from "../cli/claws-cli.js";
-import { callGatewayFromCli } from "../cli/gateway-rpc.js";
-import { resolvePluginBatchReload } from "../cli/plugins-lifecycle-client.js";
 import { listConfiguredMcpServers } from "../config/mcp-config.js";
-import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
-import { openExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db.js";
-import { assertExperimentalClawsEnabled } from "./experimental.js";
-import { readClawStatus } from "./lifecycle-state.js";
-import { withAuthoredAgentRoster } from "./migrate-validation.js";
-import { preflightClawPackage } from "./packages.js";
-import { readClawManifestFile } from "./reader.js";
-import { CLAW_OUTPUT_STABILITY } from "./types.js";
-import {
-  applyClawUpdatePlan,
-  CLAW_UPDATE_RESULT_SCHEMA_VERSION,
-  ClawUpdateMutationError,
-} from "./update-apply.js";
-import { buildClawUpdatePlan, CLAW_UPDATE_PLAN_SCHEMA_VERSION } from "./update-plan.js";
+import { writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
+import type { ClawCommandServices } from "./command-runtime.js";
 
 export async function executeClawUpdateCommand(
   target: string,
   opts: ClawsUpdateOptions,
-  runtime: RuntimeEnv = defaultRuntime,
+  runtime: RuntimeEnv,
+  services: ClawCommandServices,
 ): Promise<void> {
-  assertExperimentalClawsEnabled();
+  services.assertCurrent();
   if (!opts.dryRun && (!opts.yes || !opts.planIntegrity)) {
     const message =
       "Claw update requires explicit consent; pass --dry-run to preview or --yes with --plan-integrity to apply supported actions.";
@@ -68,27 +65,10 @@ export async function executeClawUpdateCommand(
   );
   let source = opts.from;
   if (!source) {
-    const database = await openExistingOpenClawStateDatabaseReadOnly();
-    let status: Awaited<ReturnType<typeof readClawStatus>> | { records: never[] } = {
-      records: [],
-    };
-    if (database) {
-      try {
-        const hasClawInstalls =
-          database.db /* sqlite-allow-raw: read-only Claw install table-existence probe. */
-            .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'claw_installs'")
-            .get();
-        if (hasClawInstalls) {
-          status = await readClawStatus(target, {
-            database,
-            readOnly: true,
-            sourceMcpServers: listedMcpServers.mcpServers,
-          });
-        }
-      } finally {
-        database.walMaintenance.close();
-      }
-    }
+    const status = await readClawStatus(target, {
+      readOnly: true,
+      sourceMcpServers: listedMcpServers.mcpServers,
+    });
     if (status.records.length !== 1) {
       const message =
         status.records.length === 0
@@ -182,17 +162,20 @@ export async function executeClawUpdateCommand(
       },
       {
         config,
-        reloadPlugins: await resolvePluginBatchReload(),
+        reloadPlugins: services.reloadPlugins,
+        commitConfig: services.commitConfig,
+        createConfigApplication: services.createConfigApplication,
+        assertCurrent: services.assertCurrent,
+        assertSettlementCurrent: services.assertSettlementCurrent,
+        runSettlement: services.runSettlement,
+        env: services.env,
+        signal: services.signal,
+        waitMs: services.waitMs,
         sourceMcpServers: listedMcpServers.mcpServers,
         consentPlanIntegrity: opts.planIntegrity,
         packagePreflight: preflightClawPackage,
         runtime: opts.json ? { ...runtime, log: () => undefined } : runtime,
-        cronGateway: {
-          waitUntilAgentAvailable: waitUntilGatewayAgentAvailable,
-          add: async (input) => await callGatewayFromCli("cron.add", {}, input),
-          get: async (id) => await callGatewayFromCli("cron.get", {}, { id }),
-          remove: async (id) => await callGatewayFromCli("cron.remove", {}, { id }),
-        },
+        cronGateway: services.cronGateway,
       },
     );
     if (opts.json) {

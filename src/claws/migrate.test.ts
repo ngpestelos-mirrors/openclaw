@@ -13,7 +13,7 @@ import { applyClawMigrationPlan, buildClawMigrationPlan, ClawMigrationError } fr
 import {
   persistClawMigrationOwnership,
   persistClawPackageRef,
-  readClawInstallRecord,
+  readClawInstallRecordAsync,
 } from "./provenance.js";
 import {
   CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
@@ -145,7 +145,7 @@ describe("Claw migration planning", () => {
     expect(() =>
       persistClawMigrationOwnership(migration.addPlan, migration.ownershipFiles, { env }),
     ).toThrow(/unclaimed Claw resource references/u);
-    expect(readClawInstallRecord("worker", { env })).toBeUndefined();
+    expect(await readClawInstallRecordAsync("worker", { env })).toBeUndefined();
   });
 
   it("rejects orphan workspace ownership rows during planning and the ownership transaction", async () => {
@@ -169,7 +169,7 @@ describe("Claw migration planning", () => {
     expect(() =>
       persistClawMigrationOwnership(migration.addPlan, migration.ownershipFiles, { env }),
     ).toThrow(/unclaimed Claw workspace-file ownership record/u);
-    expect(readClawInstallRecord("worker", { env })).toBeUndefined();
+    expect(await readClawInstallRecordAsync("worker", { env })).toBeUndefined();
     await expect(build()).rejects.toMatchObject({ code: "workspace_ownership_unclaimed" });
   });
 

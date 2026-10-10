@@ -24,7 +24,7 @@ import { withClawAgentConfigRemoval } from "./lifecycle-config-removal.js";
 import { quiescentClawMonitorGateway } from "./lifecycle-remove.test-support.js";
 import { applyClawRemovePlan, buildClawRemovePlan, readClawStatus } from "./lifecycle-state.js";
 import { createClawRemoveTestFixtures } from "./lifecycle-state.test-helpers.js";
-import { digestClawMcpServer, readClawMcpServerRefs, upsertClawMcpServerRef } from "./mcp.js";
+import { digestClawMcpServer, readClawMcpServerRefsAsync, upsertClawMcpServerRef } from "./mcp.js";
 import {
   persistClawInstallRecord,
   persistClawPackageRef,
@@ -164,7 +164,7 @@ describe("Claw status and remove", () => {
         ...mcpOptions,
       }),
     ).rejects.toMatchObject({ code: "monitor_gateway_required" });
-    expect(readClawMcpServerRefs("worker", { env: current.env })).toMatchObject([
+    expect(await readClawMcpServerRefsAsync("worker", { env: current.env })).toMatchObject([
       { name: "docs", status: "pending" },
     ]);
   });

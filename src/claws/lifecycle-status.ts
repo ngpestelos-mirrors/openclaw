@@ -225,6 +225,7 @@ export async function readClawPackageRemovalStatus(
 export async function readClawStatus(
   target?: string,
   options: OpenClawStateDatabaseOptions & {
+    assertCurrent?: () => void;
     config?: OpenClawConfig;
     sourceMcpServers?: Record<string, Record<string, unknown>>;
     listMcpServers?: typeof listConfiguredMcpServers;

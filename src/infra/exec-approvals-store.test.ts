@@ -101,22 +101,32 @@ function makeStateDatabaseUnavailable(): void {
 async function withDeletion<T>(
   agentId: string,
   run: (deletion: AgentDeletionOperation) => Promise<T>,
+  assertCurrent?: () => void,
 ): Promise<T> {
-  return withAgentDeletion(agentId, async (begin) =>
-    run(
-      await begin({
-        agentId: normalizeAgentId(agentId),
-        agentDir: "/agent",
-        workspaceDir: "/workspace",
-        sessionsDir: "/sessions",
-      }),
-    ),
+  return withAgentDeletion(
+    agentId,
+    async (begin) =>
+      run(
+        await begin({
+          agentId: normalizeAgentId(agentId),
+          agentDir: "/agent",
+          workspaceDir: "/workspace",
+          sessionsDir: "/sessions",
+        }),
+      ),
+    { assertCurrent },
   );
 }
 
-async function removeAgentPolicies<T>(agentId: string, commit: () => Promise<T>): Promise<T> {
-  return withDeletion(agentId, (deletion) =>
-    withAgentExecApprovalsRemoved(agentId, commit, deletion),
+async function removeAgentPolicies<T>(
+  agentId: string,
+  commit: () => Promise<T>,
+  assertCurrent?: () => void,
+): Promise<T> {
+  return withDeletion(
+    agentId,
+    (deletion) => withAgentExecApprovalsRemoved(agentId, commit, deletion),
+    assertCurrent,
   );
 }
 
@@ -309,31 +319,44 @@ describe("exec approvals SQLite store", () => {
     await deletion;
   });
 
-  it("removes and restores every policy alias when the surrounding commit fails", async () => {
-    saveExecApprovals({
-      version: 1,
-      agents: {
+  it.each([false, true])(
+    "restores every policy alias after commit failure (request revoked: %s)",
+    async (revoke) => {
+      saveExecApprovals({
+        version: 1,
+        agents: {
+          "Agent A": { security: "allowlist" },
+          "agent-a": { security: "full" },
+          kept: { security: "deny" },
+        },
+      });
+      let policiesDuringCommit: ReturnType<typeof loadExecApprovals>["agents"] = undefined;
+      let authorized = true;
+
+      await expect(
+        removeAgentPolicies(
+          "Agent A",
+          async () => {
+            policiesDuringCommit = loadExecApprovals().agents;
+            authorized = !revoke;
+            throw new Error("roster commit failed");
+          },
+          () => {
+            if (!authorized) {
+              throw new Error("request revoked");
+            }
+          },
+        ),
+      ).rejects.toThrow("roster commit failed");
+
+      expect(policiesDuringCommit).toEqual({ kept: { security: "deny" } });
+      expect(loadExecApprovals().agents).toEqual({
         "Agent A": { security: "allowlist" },
         "agent-a": { security: "full" },
         kept: { security: "deny" },
-      },
-    });
-    let policiesDuringCommit: ReturnType<typeof loadExecApprovals>["agents"] = undefined;
-
-    await expect(
-      removeAgentPolicies("Agent A", async () => {
-        policiesDuringCommit = loadExecApprovals().agents;
-        throw new Error("roster commit failed");
-      }),
-    ).rejects.toThrow("roster commit failed");
-
-    expect(policiesDuringCommit).toEqual({ kept: { security: "deny" } });
-    expect(loadExecApprovals().agents).toEqual({
-      "Agent A": { security: "allowlist" },
-      "agent-a": { security: "full" },
-      kept: { security: "deny" },
-    });
-  });
+      });
+    },
+  );
 
   it.each(["missing", "superseded"] as const)(
     "requires current deletion authority before removing policy or committing the roster (%s)",

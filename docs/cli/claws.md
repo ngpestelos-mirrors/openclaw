@@ -30,6 +30,19 @@ The current CLI reads a local package directory, `CLAW.md`, or grouped JSON mani
 Publishing, searching, and installing whole Claws through ClawHub are a
 separate registry track and are not part of this command surface yet.
 
+`add` and `update` use the Gateway that owns the selected local state
+directory. Planning, consent validation, and database changes run in that owner;
+the next Gateway read sees committed changes. Run the command on the Gateway
+host so its local source and workspace paths identify the same files. An older
+or unreachable owner causes a clear refusal; the CLI never retries an uncertain
+Gateway mutation locally. Inspect `claws status` before retrying after an
+uncertain result.
+
+When the Gateway is stopped, `add` and `update` retain exclusive state ownership
+until their writes and cleanup settle. Operations that need live scheduling or
+removal drainage still require the Gateway. These routing changes do not change
+schemas, stored data, retention, or update compatibility.
+
 ## Bundled role Claws
 
 The bundled `coordinator`, `researcher`, `writer`, and `reviewer` roles are Claw

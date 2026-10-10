@@ -2,16 +2,17 @@ import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
-import {
-  findResumableIntroducedPluginRequirement,
-  readClawResumeStateReadOnly,
-} from "./package-resume.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
+import { findResumableIntroducedPluginRequirement } from "./package-resume.js";
+import { readClawPackageOwnership } from "./provenance-async.js";
 import type { PersistedClawPackageRef } from "./provenance.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
-afterEach(() => closeOpenClawStateDatabaseForTest());
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 const integrity = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const pkg = {
@@ -98,8 +99,8 @@ describe("findResumableIntroducedPluginRequirement", () => {
     const databasePath = join(tempDirs.make("openclaw-claw-resume-"), "missing.sqlite");
 
     await expect(
-      readClawResumeStateReadOnly("incident-2", { path: databasePath }),
-    ).resolves.toBeUndefined();
+      readClawPackageOwnership({ agentId: "incident-2", path: databasePath }),
+    ).resolves.toMatchObject({ install: undefined, packageRefs: [] });
     await expect(access(databasePath)).rejects.toThrow();
   });
 });

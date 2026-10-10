@@ -9,7 +9,6 @@ import { applyClawMcpUpdate as applyClawMcpUpdateRaw } from "./mcp-update.js";
 import {
   CLAW_MCP_REF_SCHEMA_VERSION,
   digestClawMcpServer,
-  readClawMcpServerRefs,
   readClawMcpServerRefsAsync,
   upsertClawMcpServerRef,
   type PersistedClawMcpServerRef,
@@ -249,7 +248,12 @@ describe("applyClawMcpUpdate", () => {
             manifest(),
             options,
           ),
-        ).rejects.toThrow(retireOwner ? "physical owner retired" : "missing");
+        ).rejects.toMatchObject({
+          message: expect.stringContaining(
+            retireOwner ? "physical owner retired" : "operation was aborted",
+          ),
+          partial: retireOwner,
+        });
         const configured = await listConfiguredMcpServers();
         expect(configured.ok).toBe(true);
         if (!configured.ok) {
@@ -334,10 +338,10 @@ describe("applyClawMcpUpdate", () => {
         sourceMcpServers: { legacy },
       },
     );
-    expect(readClawMcpServerRefs("worker", stateOptions)).toEqual([]);
+    expect(await readClawMcpServerRefsAsync("worker", stateOptions)).toEqual([]);
 
     await execution.rollback();
-    expect(readClawMcpServerRefs("worker", stateOptions)).toEqual([independent]);
+    expect(await readClawMcpServerRefsAsync("worker", stateOptions)).toEqual([independent]);
     expect(setServer).not.toHaveBeenCalled();
     expect(unsetServer).not.toHaveBeenCalled();
   });
@@ -374,7 +378,7 @@ describe("applyClawMcpUpdate", () => {
     ).rejects.toThrow("changed");
     expect(setServer).toHaveBeenCalledTimes(1);
     expect(unsetServer).not.toHaveBeenCalled();
-    expect(readClawMcpServerRefs("worker", stateOptions)).toEqual([previous]);
+    expect(await readClawMcpServerRefsAsync("worker", stateOptions)).toEqual([previous]);
   });
 
   it("deletes pending ownership when an added server write is rejected", async () => {
@@ -406,7 +410,7 @@ describe("applyClawMcpUpdate", () => {
         },
       ),
     ).rejects.toThrow("changed");
-    expect(readClawMcpServerRefs("worker", stateOptions)).toEqual([]);
+    expect(await readClawMcpServerRefsAsync("worker", stateOptions)).toEqual([]);
   });
 
   it("restores complete ownership when a removal write is rejected", async () => {
@@ -440,7 +444,7 @@ describe("applyClawMcpUpdate", () => {
         },
       ),
     ).rejects.toThrow("changed");
-    expect(readClawMcpServerRefs("worker", stateOptions)).toEqual([previous]);
+    expect(await readClawMcpServerRefsAsync("worker", stateOptions)).toEqual([previous]);
   });
 
   it("reports partial failure when rejected-write provenance cannot be restored", async () => {

@@ -19,7 +19,7 @@ import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
 import {
   digestClawMcpServer,
-  readClawMcpServerRefs,
+  readClawMcpServerRefsAsync,
   reconcileClawMcpServerRefs,
   upsertClawMcpServerRef,
   type PersistedClawMcpServerRef,
@@ -216,8 +216,8 @@ describe("Claw provenance worker writes", () => {
     } finally {
       sql.restore();
     }
-    expect(readClawMcpServerRefs(agentId, options)).toEqual([drifted, failed, complete]);
-    expect(readClawMcpServerRefs(other.agentId, options)).toEqual([other]);
+    expect(await readClawMcpServerRefsAsync(agentId, options)).toEqual([drifted, failed, complete]);
+    expect(await readClawMcpServerRefsAsync(other.agentId, options)).toEqual([other]);
   });
 
   it.each(["transaction", "commit"] as const)(

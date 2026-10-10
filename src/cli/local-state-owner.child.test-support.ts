@@ -148,6 +148,9 @@ try {
             } else if (process.argv[2] === "config") {
               const { registerConfigCli } = await import("./config-cli.js");
               registerConfigCli(program);
+            } else if (process.argv[2] === "claws") {
+              const { registerClawsCli } = await import("./claws-cli.js");
+              registerClawsCli(program);
             } else if (process.argv[2] === "migrate") {
               const { registerMigrateCommand } = await import("./program/register.migrate.js");
               registerMigrateCommand(program);

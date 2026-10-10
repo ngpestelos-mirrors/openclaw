@@ -18,7 +18,7 @@ import {
   persistClawInstallRecord,
   persistClawMigrationOwnership,
   releaseAdoptedClawInstallRecord,
-  readClawInstallRecord,
+  readClawInstallRecordAsync,
   updateClawInstallRecord,
   updateClawInstallRecordStatus,
 } from "./provenance.js";
@@ -108,7 +108,7 @@ describe("Claw installation identity during deletion", () => {
           await expect(deleteClawInstallRecord("worker", options)).rejects.toThrow(
             "pending deletion",
           );
-          expect(readClawInstallRecord("worker", options)).toEqual(original);
+          expect(await readClawInstallRecordAsync("worker", options)).toEqual(original);
           expect(readAgentDeletionJournal("worker", options)).toEqual(journal);
           await withAgentDeletion(
             "other",
@@ -116,7 +116,7 @@ describe("Claw installation identity during deletion", () => {
               const foreign = await begin(deletionEntry(root, "other"));
               try {
                 await foreign.handoffClawRetry();
-                expect(readClawInstallRecord("worker", options)).toEqual(original);
+                expect(await readClawInstallRecordAsync("worker", options)).toEqual(original);
               } finally {
                 await foreign.rollback();
               }
@@ -127,7 +127,7 @@ describe("Claw installation identity during deletion", () => {
           resume.resolve();
           await removal;
         }
-        expect(readClawInstallRecord("worker", options)).toEqual({
+        expect(await readClawInstallRecordAsync("worker", options)).toEqual({
           ...original,
           status: "partial",
           updatedAtMs: expect.any(Number),
@@ -137,14 +137,14 @@ describe("Claw installation identity during deletion", () => {
           "worker",
           async (begin) => {
             const recovery = await begin(deletionEntry(root), {
-              expectedClawInstall: readClawInstallRecord("worker", options),
+              expectedClawInstall: await readClawInstallRecordAsync("worker", options),
             });
             await expect(operation.assertCurrentAsync()).rejects.toThrow("no longer owns");
             expect(await releaseClawRemoveRows(recovery, [], [], options)).toBe(true);
           },
           options,
         );
-        expect(readClawInstallRecord("worker", options)).toBeUndefined();
+        expect(await readClawInstallRecordAsync("worker", options)).toBeUndefined();
         expect(readAgentDeletionJournal("worker", options)?.cleanupCompleted).toBe(true);
         expect((await persistClawInstallRecord(next, { ...options, nowMs: 3 })).claw.version).toBe(
           "2.0.0",
@@ -178,7 +178,7 @@ describe("Claw installation identity during deletion", () => {
               db.exec("DROP TRIGGER reject_claw_retry");
             }
             expect(readAgentDeletionJournal("worker", options)).toEqual(journal);
-            expect(readClawInstallRecord("worker", options)).toEqual(original);
+            expect(await readClawInstallRecordAsync("worker", options)).toEqual(original);
             await expect(deletion.assertCurrentAsync()).resolves.toBeUndefined();
             await deletion.rollback();
           },
@@ -209,7 +209,7 @@ describe("Claw installation identity during deletion", () => {
               );
             }, options);
           }
-          const original = readClawInstallRecord("worker", options);
+          const original = await readClawInstallRecordAsync("worker", options);
           beginAgentDeletionJournal(
             { ...deletionEntry(root), operationId: "interrupted-deletion" },
             options,
@@ -221,7 +221,7 @@ describe("Claw installation identity during deletion", () => {
               expectedExistingRecord: original,
             }),
           ).rejects.toThrow("pending deletion");
-          expect(readClawInstallRecord("worker", options)).toEqual(original);
+          expect(await readClawInstallRecordAsync("worker", options)).toEqual(original);
           await withAgentDeletion(
             "worker",
             async (begin) => (await begin(deletionEntry(root))).rollback(),

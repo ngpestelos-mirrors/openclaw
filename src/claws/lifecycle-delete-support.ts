@@ -39,9 +39,8 @@ import {
   openOpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
-import { readAttachedCronJobsInDatabase } from "./lifecycle-cron-read.kernel.js";
-export type { AttachedCronJob } from "./lifecycle-cron-read.kernel.js";
 import { digestClawBytes } from "./digest.js";
+import { readAttachedCronJobsInDatabase } from "./lifecycle-cron-read.kernel.js";
 import type { ClawMonitorCleanupGateway, ClawMonitorSnapshot } from "./monitor-cleanup-contract.js";
 import { deleteCachedClawInstallSchemaVersion } from "./provenance-runtime-read.js";
 import type { PersistedClawInstall } from "./provenance.js";
@@ -116,10 +115,7 @@ export function readAttachedCronJobs(agentId: string, options: OpenClawStateData
   return readAttachedCronJobsInDatabase(openOpenClawStateDatabase(options).db, agentId);
 }
 
-export async function readAttachedCronJobsAsync(
-  agentId: string,
-  options: OpenClawStateDatabaseOptions,
-) {
+async function readAttachedCronJobsAsync(agentId: string, options: OpenClawStateDatabaseOptions) {
   const result = await executeExistingOpenClawStateRead(options, {
     type: "claws.attachedCronJobs",
     agentId,

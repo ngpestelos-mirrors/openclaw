@@ -9,6 +9,7 @@ import {
 } from "../agents/agent-lifecycle-registry.js";
 import { listAgentEntries } from "../agents/agent-scope.js";
 import { getRuntimeConfig } from "../config/config.js";
+import type { ConfigWriteOptions } from "../config/io.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   AgentConfigPreconditionError,
@@ -33,7 +34,10 @@ type ClawAgentConfigRemovalParams = {
   fallbackWorkspace: string;
   config?: OpenClawConfig;
   stateDatabase?: OpenClawStateDatabaseOptions;
+  assertCurrent?: () => void;
   journalGateway?: ClawRemovalJournalGateway;
+  configWriteOptions?: ConfigWriteOptions;
+  onConfigCommitted?: (agentId: string) => Promise<void>;
   onModified: () => Error;
   quiesceMonitors?: (operationId: string) => Promise<void>;
   drainMonitors?: (operationId: string) => Promise<void>;
@@ -70,6 +74,7 @@ async function commitClawAgentConfigRemoval(
       assertCurrent: deletion.assertCurrentFinal,
       assertCurrentAsync: deletion.assertCurrentAsync,
       allowConfigSizeDrop: true,
+      writeOptions: params.configWriteOptions,
       allowMissing: params.expectedState === "missing",
       fallbackWorkspace: params.fallbackWorkspace,
       validateConfig: async (config) => {
@@ -234,6 +239,7 @@ export async function withClawAgentConfigRemoval<T>(
           return {
             ...result,
             drainMonitors: async () => {
+              await params.onConfigCommitted?.(params.agentId);
               await deletion.assertCurrentAsync();
               await params.drainMonitors?.(deletion.entry.operationId);
               await deletion.assertCurrentAsync();
@@ -253,6 +259,7 @@ export async function withClawAgentConfigRemoval<T>(
     },
     {
       ...stateOptions,
+      assertCurrent: params.assertCurrent,
       ...(journalTransport ? { journalTransport } : {}),
     },
   );

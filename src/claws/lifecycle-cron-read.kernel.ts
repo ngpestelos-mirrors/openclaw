@@ -5,17 +5,7 @@ import type { CronJobRow } from "../cron/store/schema.js";
 import { compileSqliteQueryBindings, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
-
-export type AttachedCronJob = {
-  id: string;
-  name: string;
-  enabled: boolean;
-  agentId: string | null;
-  ownerAgentId: string | null;
-  storeKey: string;
-  declarationKey: string | null;
-  revision?: string;
-};
+import type { AttachedCronJob } from "./lifecycle-cron-read.types.js";
 
 /** Inventories cron jobs that would retain a reference to a removed agent. */
 export function readAttachedCronJobsInDatabase(
@@ -39,6 +29,7 @@ export function readAttachedCronJobsInDatabase(
   const rows =
     db /* sqlite-allow-raw: preserve native inventory errors outside the write-transaction owner. */
       .prepare(compiled.sql)
+      // SAFETY: The admitted cron_jobs schema and selectAll projection supply CronJobRow.
       .all(...bind(agentId)) as CronJobRow[];
   return rows.map((row) => {
     const job = loadedCronStoreFromRows([row]).store.jobs[0];

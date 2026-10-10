@@ -1,18 +1,19 @@
-import { readClawInstallRecord, type PersistedClawInstall } from "../claws/provenance.js";
+import { readClawPackageOwnership } from "../claws/provenance-async.js";
+import type { PersistedClawInstall } from "../claws/provenance.js";
 import type { ClawManifest, ClawSourceIdentity } from "../claws/types.js";
 import type { ClawsAddOptions } from "./claws-cli.js";
 
-export function authorizeLegacyV1Resume(params: {
+export async function authorizeLegacyV1Resume(params: {
   manifest: ClawManifest;
   source: Pick<ClawSourceIdentity, "kind" | "name" | "version" | "packageRoot" | "manifestPath">;
   opts: ClawsAddOptions;
-}): PersistedClawInstall | undefined {
+}): Promise<PersistedClawInstall | undefined> {
   const finalAgentId = params.opts.agentId?.trim() || params.manifest.agent?.id?.trim();
   const consentPlanIntegrity = params.opts.planIntegrity?.trim();
   if (!finalAgentId || !consentPlanIntegrity) {
     return undefined;
   }
-  const record = readClawInstallRecord(finalAgentId);
+  const { install: record } = await readClawPackageOwnership({ agentId: finalAgentId });
   if (
     !record ||
     record.schemaVersion !== "openclaw.clawInstallRecord.v1" ||

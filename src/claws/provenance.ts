@@ -4,7 +4,6 @@ import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { readClawPackageOwnership } from "./provenance-async.js";
 import {
-  readClawInstallRecordFromDatabase,
   readClawInstallRecordsInDatabase,
   readClawPackageRefsInDatabase,
   type ClawPackageRefQuery,
@@ -161,13 +160,6 @@ export async function updateClawPackageRefStatus(
     options,
   );
   return result;
-}
-
-export function readClawInstallRecord(
-  agentId: string,
-  options: OpenClawStateDatabaseOptions = {},
-): PersistedClawInstall | undefined {
-  return readClawInstallRecordFromDatabase(openOpenClawStateDatabase(options).db, agentId);
 }
 
 export function readClawInstallRecords(

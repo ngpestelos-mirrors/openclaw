@@ -14,7 +14,7 @@ import {
   clawInstallRecordMatchesPlan,
   persistClawInstallRecord,
   persistClawPackageRef,
-  readClawInstallRecord,
+  readClawInstallRecordAsync,
   readClawPackageRefs,
   updateClawInstallRecord,
   updateClawInstallRecordStatus,
@@ -188,7 +188,7 @@ describe("Claw root install provenance", () => {
     expect(clawInstallRecordMatchesPlan(first, { ...plan, planIntegrity: "sha256:changed" })).toBe(
       false,
     );
-    expect(readClawInstallRecord("worker", { env: stateEnv(root) })).toMatchObject({
+    expect(await readClawInstallRecordAsync("worker", { env: stateEnv(root) })).toMatchObject({
       agentId: "worker",
       status: "pending",
       addedAtMs: 1,
@@ -222,7 +222,7 @@ describe("Claw root install provenance", () => {
         nowMs: 5,
       }),
     ).rejects.toThrow("did not match the expected phase");
-    expect(readClawInstallRecord("worker", options)?.status).toBe("complete");
+    expect((await readClawInstallRecordAsync("worker", options))?.status).toBe("complete");
   });
 
   it("advances package identity while preserving install creation time", async () => {
@@ -246,7 +246,7 @@ describe("Claw root install provenance", () => {
       status: "complete",
     });
     expect(updated.agentConfigDigest).not.toBe(original.agentConfigDigest);
-    expect(readClawInstallRecord("worker", { env: stateEnv(root) })).toEqual(updated);
+    expect(await readClawInstallRecordAsync("worker", { env: stateEnv(root) })).toEqual(updated);
   });
 
   it("rejects an update when package provenance changed after planning", async () => {
@@ -264,7 +264,7 @@ describe("Claw root install provenance", () => {
         expectedClaw: { version: "0.9.0", integrity: "sha256:stale" },
       }),
     ).rejects.toThrow("changed");
-    expect(readClawInstallRecord("worker", { env: stateEnv(root) })).toEqual(original);
+    expect(await readClawInstallRecordAsync("worker", { env: stateEnv(root) })).toEqual(original);
   });
 
   it("records package references independently of shared package ownership", async () => {
@@ -827,7 +827,7 @@ describe("applyClawAddPlan", () => {
     ).rejects.toMatchObject({ code: "workspace_collision" });
 
     expect(config.agents?.entries).toBeUndefined();
-    expect(readClawInstallRecord("worker", { env: stateEnv(root) })?.status).toBe(
+    expect((await readClawInstallRecordAsync("worker", { env: stateEnv(root) }))?.status).toBe(
       "workspace_ready",
     );
   });

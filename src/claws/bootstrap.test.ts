@@ -15,7 +15,7 @@ import { applyClawRemovePlan, buildClawRemovePlan, readClawStatus } from "./life
 import { buildClawAddPlan } from "./lifecycle.js";
 import {
   persistClawInstallRecord,
-  readClawInstallRecord,
+  readClawInstallRecordAsync,
   updateClawInstallRecord,
 } from "./provenance.js";
 import { readClawManifestFile } from "./reader.js";
@@ -207,7 +207,9 @@ describe("package-root BOOTSTRAP.md", () => {
       error: { code: "bootstrap_write_failed" },
     });
     expect(config).toEqual({});
-    expect(readClawInstallRecord("bootstrap-worker", { env })?.status).toBe("workspace_ready");
+    expect((await readClawInstallRecordAsync("bootstrap-worker", { env }))?.status).toBe(
+      "workspace_ready",
+    );
     expect(
       (await readWorkspaceStateSnapshot(workspace, { env })).setup.bootstrapSeededAt,
     ).toBeUndefined();
@@ -250,7 +252,9 @@ describe("package-root BOOTSTRAP.md", () => {
 
     expect(added).toMatchObject({ status: "partial", configCommitted: false });
     expect(config).toEqual({});
-    expect(readClawInstallRecord("bootstrap-worker", { env })?.status).toBe("workspace_ready");
+    expect((await readClawInstallRecordAsync("bootstrap-worker", { env }))?.status).toBe(
+      "workspace_ready",
+    );
 
     await rm(join(workspace, "BOOTSTRAP.md"));
     const resumed = await applyClawAddPlan(plan, {
@@ -345,7 +349,7 @@ describe("package-root BOOTSTRAP.md", () => {
       status: "complete",
       bootstrap: { path: "BOOTSTRAP.md", action: "deleted" },
     });
-    expect(readClawInstallRecord("bootstrap-worker", { env })).toBeUndefined();
+    expect(await readClawInstallRecordAsync("bootstrap-worker", { env })).toBeUndefined();
   });
 
   it("preserves bootstrap provenance when update omits the seed-once action", async () => {
@@ -362,7 +366,7 @@ describe("package-root BOOTSTRAP.md", () => {
     expect(updatePlan.actions.some((action) => action.kind === "bootstrap")).toBe(false);
     await updateClawInstallRecord(updatePlan, { env });
 
-    expect(readClawInstallRecord("bootstrap-worker", { env })?.bootstrap).toEqual(
+    expect((await readClawInstallRecordAsync("bootstrap-worker", { env }))?.bootstrap).toEqual(
       initial.bootstrap,
     );
   });

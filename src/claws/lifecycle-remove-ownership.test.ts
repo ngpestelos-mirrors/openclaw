@@ -20,7 +20,11 @@ import {
   quiescentClawMonitorGateway,
 } from "./lifecycle-remove.test-support.js";
 import { applyClawRemovePlan, buildClawRemovePlan } from "./lifecycle-state.js";
-import { readClawInstallRecord, persistClawPackageRef, readClawPackageRefs } from "./provenance.js";
+import {
+  readClawInstallRecordAsync,
+  persistClawPackageRef,
+  readClawPackageRefs,
+} from "./provenance.js";
 import { readClawWorkspaceFiles, upsertClawWorkspaceFileAsync } from "./workspace.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -85,6 +89,59 @@ function expireDeletionLease(): void {
 }
 
 describe("Claw removal operation ownership", () => {
+  it("waits for the Gateway config application before draining removed monitors", async () => {
+    const current = await fixture();
+    const committed = createDeferred<void>();
+    const applied = createDeferred<void>();
+    const drain = vi.fn(quiescentClawMonitorGateway.drain);
+    const removal = current.remove({
+      onConfigCommitted: async () => {
+        committed.resolve();
+        await applied.promise;
+      },
+      monitorGateway: { ...quiescentClawMonitorGateway, drain },
+    });
+    await committed.promise;
+    try {
+      expect((await readSourceConfigBestEffort()).agents?.entries?.worker).toBeUndefined();
+      expect(drain).not.toHaveBeenCalled();
+    } finally {
+      applied.resolve();
+    }
+    await expect(removal).resolves.toMatchObject({ status: "complete", agentRemoved: true });
+    expect(drain).toHaveBeenCalledOnce();
+  });
+
+  it("settles the retry fence after request revocation without removing agent config", async () => {
+    const current = await fixture();
+    let authorized = true;
+    let startedOperation: string | undefined;
+    const result = await current.remove({
+      assertCurrent: () => {
+        if (!authorized) {
+          throw new Error("Claw request authority revoked");
+        }
+      },
+      monitorGateway: {
+        ...quiescentClawMonitorGateway,
+        quiesce: async (_agentId, operationId) => {
+          startedOperation = operationId;
+          authorized = false;
+        },
+      },
+    });
+    expect(result).toMatchObject({
+      status: "partial",
+      agentRemoved: false,
+      error: { message: "Claw request authority revoked" },
+    });
+    expect((await readSourceConfigBestEffort()).agents?.entries?.worker).toBeDefined();
+    const retry = readAgentDeletionJournal("worker");
+    expect(retry?.operationId).toBeDefined();
+    expect(retry?.operationId).not.toBe(startedOperation);
+    expect((await readClawInstallRecordAsync("worker"))?.status).toBe("partial");
+  });
+
   it("preserves operator files when a tracked directory disappears during child enumeration", async () => {
     const current = await fixture(true);
     const trackedDirectory = path.join(current.workspace, "a");
@@ -221,7 +278,7 @@ describe("Claw removal operation ownership", () => {
       expect(packageGateway).toHaveBeenCalledOnce();
       expect(uninstallPlugin).not.toHaveBeenCalled();
       expect(readAgentDeletionJournal("worker")?.cleanupCompleted).toBe(false);
-      expect(readClawInstallRecord("worker")?.status).toBe("partial");
+      expect((await readClawInstallRecordAsync("worker"))?.status).toBe("partial");
       expect(readClawPackageRefs({ agentId: "worker" })[0]?.status).toBe("complete");
       await expect(fs.readFile(path.join(current.workspace, "SOUL.md"), "utf8")).resolves.toBe(
         "managed\n",
@@ -276,7 +333,7 @@ describe("Claw removal operation ownership", () => {
           await current.install("replacement");
         }
       }
-      const before = readClawInstallRecord("worker");
+      const before = await readClawInstallRecordAsync("worker");
       const journal = readAgentDeletionJournal("worker");
       expect(before?.status).toBe(test.successor === "removed" ? undefined : "complete");
       release.resolve();
@@ -291,7 +348,7 @@ describe("Claw removal operation ownership", () => {
           ),
         },
       });
-      expect(readClawInstallRecord("worker")).toEqual(before);
+      expect(await readClawInstallRecordAsync("worker")).toEqual(before);
       expect(readAgentDeletionJournal("worker")).toEqual(journal);
       releaseNext.resolve();
       expect(await next).toMatchObject({ status: "complete" });
@@ -329,7 +386,7 @@ describe("Claw removal operation ownership", () => {
         },
       });
       await enteredNext.promise;
-      const before = readClawInstallRecord("worker");
+      const before = await readClawInstallRecordAsync("worker");
       const journal = readAgentDeletionJournal("worker");
       release.resolve();
       expect(await stale).toMatchObject({
@@ -342,7 +399,7 @@ describe("Claw removal operation ownership", () => {
           ),
         },
       });
-      expect(readClawInstallRecord("worker")).toEqual(before);
+      expect(await readClawInstallRecordAsync("worker")).toEqual(before);
       expect(readAgentDeletionJournal("worker")).toEqual(journal);
       releaseNext.resolve();
       expect(await next).toMatchObject({ status: "complete" });
@@ -393,7 +450,7 @@ describe("Claw removal operation ownership", () => {
         });
         await enteredNext.promise;
         const registry = listOpenClawRegisteredAgentDatabases();
-        const install = readClawInstallRecord("worker");
+        const install = await readClawInstallRecordAsync("worker");
         const files = readClawWorkspaceFiles("worker");
         const journal = readAgentDeletionJournal("worker");
         expect(registry.some((entry) => entry.agentId === "worker")).toBe(true);
@@ -411,7 +468,7 @@ describe("Claw removal operation ownership", () => {
         });
         expect(listOpenClawRegisteredAgentDatabases()).toEqual(registry);
         expect(readClawWorkspaceFiles("worker")).toEqual(files);
-        expect(readClawInstallRecord("worker")).toEqual(install);
+        expect(await readClawInstallRecordAsync("worker")).toEqual(install);
         expect(readAgentDeletionJournal("worker")).toEqual(journal);
         releaseNext.resolve();
         expect(await next).toMatchObject({ status: "complete" });

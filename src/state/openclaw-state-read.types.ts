@@ -31,7 +31,7 @@ import type {
   ChannelIngressReadCommand,
   ChannelIngressReadReply,
 } from "../channels/message/ingress-queue-read-contract.js";
-import type { AttachedCronJob } from "../claws/lifecycle-cron-read.kernel.js";
+import type { AttachedCronJob } from "../claws/lifecycle-cron-read.types.js";
 import type { PersistedClawPackageRef } from "../claws/package-extension-provenance.js";
 import type { ClawOrphanWorkspace, PersistedClawInstall } from "../claws/provenance-types.js";
 import type { ConfigSnapshotAuditRecord } from "../config/config-journal-snapshot.kernel.js";

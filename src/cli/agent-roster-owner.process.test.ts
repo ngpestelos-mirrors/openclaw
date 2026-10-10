@@ -28,6 +28,7 @@ function environment(root: string): NodeJS.ProcessEnv {
     OPENCLAW_CONFIG_PATH: path.join(root, "openclaw.json"),
     OPENCLAW_NO_RESPAWN: "1",
     OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+    OPENCLAW_EXPERIMENTAL_CLAWS: "1",
     NODE_DISABLE_COMPILE_CACHE: "1",
   };
 }
@@ -62,6 +63,10 @@ describe("agent roster offline ownership", () => {
     ["native creation", ["native-agent-create", "WORKSPACE"]],
     ["onboarding workspace", ["onboard-workspace", "WORKSPACE"]],
     ["setup", ["setup", "--baseline", "--workspace", "WORKSPACE", "--json"]],
+    [
+      "Claw migration",
+      ["claws", "migrate", "main", "--yes", "--plan-integrity", "synthetic", "--json"],
+    ],
     [
       "advanced creation",
       ["agents", "add", "advanced", "--role", "researcher", "--workspace", "WORKSPACE", "--json"],
@@ -114,5 +119,40 @@ describe("agent roster offline ownership", () => {
     const successor = await acquireGatewayLock({ env, allowInTests: true, timeoutMs: 0 });
     expect(successor).not.toBeNull();
     await successor?.release();
+  });
+
+  it("creates a Claw through the offline owner after the Gateway stops", async () => {
+    const source = path.join(root, "openclaw.claw.json");
+    const workspace = path.join(root, "offline-claw-workspace");
+    await fs.writeFile(source, JSON.stringify({ schemaVersion: 1, agent: { id: "offline-claw" } }));
+    const run = (...args: string[]) =>
+      runCliProcessChild({
+        nodeArgs: [
+          ...entrypoint,
+          "claws",
+          "add",
+          source,
+          "--workspace",
+          workspace,
+          "--json",
+          ...args,
+        ],
+        env,
+      });
+    const preview = await run("--dry-run");
+    expect(preview.code, preview.stderr).toBe(0);
+    const plan: { planIntegrity: string } = JSON.parse(preview.stdout);
+    expect(plan.planIntegrity).toEqual(expect.any(String));
+    const added = await run("--yes", "--plan-integrity", plan.planIntegrity);
+    expect(added.code, added.stderr).toBe(0);
+    expect(JSON.parse(added.stdout)).toMatchObject({ status: "complete" });
+    const listed = await runCliProcessChild({
+      nodeArgs: [...entrypoint, "agents", "list", "--json"],
+      env,
+    });
+    expect(listed.code, listed.stderr).toBe(0);
+    expect(JSON.parse(listed.stdout)).toContainEqual(
+      expect.objectContaining({ id: "offline-claw", workspace }),
+    );
   });
 });

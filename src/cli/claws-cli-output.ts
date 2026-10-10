@@ -111,7 +111,7 @@ export function logClawAddPlanSummary(plan: ClawAddPlan, runtime: RuntimeEnv): v
   }
   runtime.log(`MCP servers: ${plan.summary.mcpServerActions}`);
   for (const action of plan.actions.filter((candidate) => candidate.kind === "mcpServer")) {
-    const server = action.details as Record<string, unknown> | undefined;
+    const server = action.details;
     const target =
       typeof server?.url === "string"
         ? redactSensitiveUrlLikeString(server.url)

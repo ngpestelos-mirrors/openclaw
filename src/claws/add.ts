@@ -41,6 +41,7 @@ import {
   type PersistedClawPackageRef,
 } from "./provenance.js";
 import { CLAW_OUTPUT_STABILITY, type ClawAddPlan } from "./types.js";
+import { runClawSettlement } from "./update-rollback.js";
 import {
   ClawWorkspaceWriteError,
   createClawWorkspaceFiles,
@@ -436,6 +437,12 @@ export async function applyClawAddPlan(
       (async (transform) => {
         await transformConfigFileWithRetry({
           afterWrite: { mode: "auto" },
+          writeOptions: {
+            assertCurrent: () => {
+              options.signal?.throwIfAborted();
+              options.assertCurrent?.();
+            },
+          },
           transform: (config) => ({ nextConfig: transform(config) }),
         });
       });
@@ -537,19 +544,20 @@ export async function applyClawAddPlan(
     }
     let installStatus: ClawInstallStatus = "workspace_ready";
     if (!configCommitted) {
-      const removedWorkspace = await rmdir(workspace)
-        .then(() => true)
-        .catch(() => false);
-      if (removedWorkspace) {
-        workspaceCreated = false;
-        installStatus = "partial";
-        await markInstallStatus(
-          plan.agent.finalId,
-          "partial",
-          ["workspace_ready", "partial"],
-          options,
-        );
-      }
+      await runClawSettlement(options, async () => {
+        const removedWorkspace = await rmdir(workspace)
+          .then(() => true)
+          .catch(() => false);
+        if (removedWorkspace) {
+          workspaceCreated = false;
+          installStatus = "partial";
+          await markInstallStatus(plan.agent.finalId, "partial", ["workspace_ready", "partial"], {
+            ...options,
+            signal: undefined,
+            assertCurrent: options.assertSettlementCurrent ?? options.assertCurrent,
+          });
+        }
+      });
     }
     return partialResult({
       installStatus,

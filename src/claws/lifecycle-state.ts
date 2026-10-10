@@ -53,10 +53,7 @@ import { planClawPackageRemovals } from "./package-remove.js";
 import { CLAW_OUTPUT_STABILITY } from "./types.js";
 
 export { ClawRemoveError } from "./lifecycle-delete-support.js";
-export {
-  CLAW_REMOVE_PLAN_SCHEMA_VERSION,
-  CLAW_REMOVE_RESULT_SCHEMA_VERSION,
-} from "./lifecycle-remove-contract.js";
+export { CLAW_REMOVE_RESULT_SCHEMA_VERSION } from "./lifecycle-remove-contract.js";
 export { readClawStatus, type ClawStatusRecord } from "./lifecycle-status.js";
 
 export async function buildClawRemovePlan(
@@ -394,6 +391,7 @@ export async function applyClawRemovePlan(
   plan: ClawRemovePlan,
   options: ClawRemoveApplyOptions = {},
 ): Promise<ClawRemoveResult> {
+  options.assertCurrent?.();
   if (options.consentPlanIntegrity !== plan.planIntegrity) {
     throw new ClawRemoveError(
       "plan_integrity_mismatch",
@@ -501,7 +499,10 @@ export async function applyClawRemovePlan(
       fallbackWorkspace: record.install.workspace,
       config: options.config,
       stateDatabase: options,
+      assertCurrent: options.assertCurrent,
       journalGateway: options.journalGateway,
+      configWriteOptions: options.configWriteOptions,
+      onConfigCommitted: options.onConfigCommitted,
       onModified: () =>
         new ClawRemoveError("agent_modified", "Agent config changed during remove."),
       quiesceMonitors: (operationId) => monitorGateway.quiesce(agentId, operationId, monitors),

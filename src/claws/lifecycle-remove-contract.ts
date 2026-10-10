@@ -1,5 +1,6 @@
 import type { PluginRuntimeApplication } from "../../packages/gateway-protocol/src/schema/plugins.js";
 import type { unsetConfiguredMcpServer } from "../agents/mcp-config-mutation.js";
+import type { ConfigWriteOptions } from "../config/io.types.js";
 import type { listConfiguredMcpServers } from "../config/mcp-config.js";
 import type { purgeAgentSessionStoreEntries } from "../config/sessions/cleanup-service.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -68,6 +69,7 @@ export type RemovedMcpServer = {
 };
 
 export type ClawRemovePlanOptions = OpenClawStateDatabaseOptions & {
+  assertCurrent?: () => void;
   config?: OpenClawConfig;
   sourceMcpServers?: Record<string, Record<string, unknown>>;
   listMcpServers?: typeof listConfiguredMcpServers;
@@ -78,6 +80,8 @@ export type ClawRemovePlanOptions = OpenClawStateDatabaseOptions & {
 
 export type ClawRemoveApplyOptions = ClawRemovePlanOptions & {
   journalGateway?: ClawRemovalJournalGateway;
+  configWriteOptions?: ConfigWriteOptions;
+  onConfigCommitted?: (agentId: string) => Promise<void>;
   packageGateway?: ClawPackageRemovalGateway;
   purgeSessions?: (
     ...args: Parameters<typeof purgeAgentSessionStoreEntries>

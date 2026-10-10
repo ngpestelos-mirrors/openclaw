@@ -11,16 +11,20 @@ import {
   openExistingOpenClawStateDatabaseReadOnly,
   repairOpenClawStateDatabaseSchema,
 } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { readClawCronRefs } from "./cron.kernel.js";
-import { readClawMcpServerRefs, readClawMcpServerRefsByName } from "./mcp.kernel.js";
-import { readClawResumeStateReadOnly } from "./package-resume.js";
+import { readClawMcpServerRefsByName, readMcpRefsByIdentity } from "./mcp.kernel.js";
+import { readClawPackageOwnership } from "./provenance-async.js";
 import { parseClawManifest } from "./schema.js";
 import type { ClawSourceIdentity } from "./types.js";
 import { buildClawUpdatePlan } from "./update-plan.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
-afterEach(() => closeOpenClawStateDatabaseForTest());
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 function createBaseShapeState(params: {
   env: { OPENCLAW_STATE_DIR: string };
@@ -108,13 +112,23 @@ describe("read-only Claw state admission", () => {
       }
       try {
         const options = { path: pathname, database, readOnly: true };
-        for (const read of [readClawCronRefs, readClawMcpServerRefs, readClawMcpServerRefsByName]) {
+        for (const read of [readClawCronRefs, readClawMcpServerRefsByName]) {
           if (shape === "missing") {
             expect(read("legacy", options)).toEqual([]);
             expect(() => read("legacy", { ...options, readOnly: false })).toThrow("no such table");
           } else {
             expect(() => read("legacy", options)).toThrow("no such column");
           }
+        }
+        if (shape === "missing") {
+          expect(readMcpRefsByIdentity(database.db, "agent_id", "legacy", true)).toEqual([]);
+          expect(() => readMcpRefsByIdentity(database.db, "agent_id", "legacy")).toThrow(
+            "no such table",
+          );
+        } else {
+          expect(() => readMcpRefsByIdentity(database.db, "agent_id", "legacy", true)).toThrow(
+            "no such column",
+          );
         }
       } finally {
         database.walMaintenance.close();
@@ -160,7 +174,7 @@ describe("read-only Claw state admission", () => {
         }),
       });
     const resume = () =>
-      readClawResumeStateReadOnly("legacy-worker", { path: fixture.databasePath });
+      readClawPackageOwnership({ agentId: "legacy-worker", path: fixture.databasePath });
     await expect(planUpdate()).rejects.toThrow("openclaw doctor --fix");
     await expect(resume()).rejects.toThrow("openclaw doctor --fix");
     expect(await readFile(fixture.databasePath)).toEqual(before);
@@ -205,7 +219,7 @@ describe("read-only Claw state admission", () => {
       expect.objectContaining({ code: "claw_identity_mismatch" }),
     );
     const state = await resume();
-    expect(state?.record).toMatchObject({ agentId: "legacy-worker", status: "complete" });
-    expect(state?.record.bootstrap).toBeUndefined();
+    expect(state.install).toMatchObject({ agentId: "legacy-worker", status: "complete" });
+    expect(state.install?.bootstrap).toBeUndefined();
   });
 });

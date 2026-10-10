@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { assert, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred, withinTest } from "../../test/helpers/promise.js";
+import { readClawInstallRecordAsync } from "../claws/provenance.js";
 import { localStateOwnerFixtureEntrypoint } from "../cli/cli-entrypoint.test-support.js";
 import { runCliProcessChild } from "../cli/cli-process-child.test-helpers.js";
 import {
@@ -85,6 +86,7 @@ it("publishes agent mutations before acknowledging immediate session and roster 
         OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
         OPENCLAW_SKIP_PROVIDERS: "1",
         OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+        OPENCLAW_EXPERIMENTAL_CLAWS: "1",
       },
     },
     async (state) => {
@@ -248,6 +250,50 @@ it("publishes agent mutations before acknowledging immediate session and roster 
             ).rejects.toThrow(`Unknown agent id "${agentId}"`);
           }
           expect(getRuntimeConfig().agents?.entries?.[agentId]).toBeUndefined();
+
+          const clawSource = path.join(state.home, "openclaw.claw.json");
+          const clawWorkspace = path.join(state.home, "workspace-claw");
+          await fs.writeFile(
+            clawSource,
+            JSON.stringify({ schemaVersion: 1, agent: { id: "claw-worker" } }),
+          );
+          const runClaw = (...args: string[]) =>
+            runCliProcessChild({
+              nodeArgs: [
+                ...cliEntrypoint,
+                "claws",
+                "add",
+                clawSource,
+                "--workspace",
+                clawWorkspace,
+                "--json",
+                ...args,
+              ],
+              env: {
+                PATH: process.env.PATH,
+                SystemRoot: process.env.SystemRoot,
+                ...state.envVars,
+                OPENCLAW_GATEWAY_TOKEN: token,
+                OPENCLAW_NO_RESPAWN: "1",
+                OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+                OPENCLAW_EXPERIMENTAL_CLAWS: "1",
+              },
+            });
+          const preview = await runClaw("--dry-run");
+          expect(preview.code, preview.stderr).toBe(0);
+          const plan: { planIntegrity: string } = JSON.parse(preview.stdout);
+          expect(plan.planIntegrity).toEqual(expect.any(String));
+          const added = await runClaw("--yes", "--plan-integrity", plan.planIntegrity);
+          expect(added.code, added.stderr).toBe(0);
+          expect(JSON.parse(added.stdout)).toMatchObject({ status: "complete" });
+          await expect(client.request("agents.list", {})).resolves.toMatchObject({
+            agents: expect.arrayContaining([expect.objectContaining({ id: "claw-worker" })]),
+          });
+          expect(await readClawInstallRecordAsync("claw-worker")).toMatchObject({
+            agentId: "claw-worker",
+            status: "complete",
+            workspace: clawWorkspace,
+          });
 
           assert.isDefined(reloadScheduler);
           const clock = createGatewaySchedulerClock();

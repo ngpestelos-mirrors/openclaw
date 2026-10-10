@@ -33,7 +33,16 @@ export async function runClawPluginBatch<T>(
       `A live Claw requirement batch supports at most ${MAX_PLUGIN_RELOAD_TARGETS} plugin packages. Split the requirement batch before installing.`,
     );
   }
-  const batch = new PluginInstallRuntimeBatch(options, options.reloadPlugins);
+  const batch = new PluginInstallRuntimeBatch(
+    {
+      env: options.env,
+      path: options.path,
+      database: options.database,
+      waitMs: options.waitMs,
+      assertCurrent: options.assertSettlementCurrent ?? options.assertCurrent,
+    },
+    options.reloadPlugins,
+  );
   let completed: Result<T, unknown> | undefined;
   const operation = await withPluginLifecycleSettlementLease(options, async (lease) => {
     let result: Result<T, unknown>;

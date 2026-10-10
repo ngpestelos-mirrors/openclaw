@@ -143,18 +143,6 @@ export function readMcpRefsByIdentity(
     throw error;
   }
 }
-export function readClawMcpServerRefs(
-  agentId: string,
-  options: OpenClawStateDatabaseOptions = {},
-): PersistedClawMcpServerRef[] {
-  return readMcpRefsByIdentity(
-    openOpenClawStateDatabase(options).db,
-    "agent_id",
-    agentId,
-    options.readOnly,
-  );
-}
-
 export function readClawMcpServerRefsByName(
   name: string,
   options: OpenClawStateDatabaseOptions = {},
