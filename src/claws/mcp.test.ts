@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { markClawMcpServerIndependentlyOwned } from "../state/claw-mcp-adoption.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { buildClawAddPlan } from "./lifecycle.js";
 import {
   deleteClawMcpServerRef,
@@ -13,8 +13,12 @@ import {
 import { parseClawManifest } from "./schema.js";
 import type { ClawSourceIdentity } from "./types.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(() => closeOpenClawStateDatabaseForTest());
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 function configuredServers() {
   return {
@@ -198,14 +202,14 @@ describe("installClawMcpServers", () => {
     const firstDocs = firstRefs[0]!;
     expect(planClawMcpServerRemoval(firstDocs, { env: first.env }).action).toBe("release");
     const secondDocs = refs[0]!;
-    deleteClawMcpServerRef("worker", "docs", { env: first.env });
+    await deleteClawMcpServerRef("worker", "docs", { env: first.env });
     expect(
       planClawMcpServerRemoval(secondDocs, {
         env: first.env,
         referencedCleanup: { mode: "remove-if-unused" },
       }).action,
     ).toBe("remove");
-    deleteClawMcpServerRef("analyst", "docs", { env: first.env });
+    await deleteClawMcpServerRef("analyst", "docs", { env: first.env });
     expect(planClawMcpServerRemoval(firstDocs, { env: first.env }).action).toBe("remove");
   });
 

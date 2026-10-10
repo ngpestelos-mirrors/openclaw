@@ -149,14 +149,14 @@ describe("Claw status and remove", () => {
       createdAtMs: 1,
       updatedAtMs: 1,
     };
-    upsertClawMcpServerRef(ref, { env: current.env });
+    await upsertClawMcpServerRef(ref, { env: current.env });
     const config = current.getConfig();
     const plan = await buildClawRemovePlan("worker", {
       env: current.env,
       config,
       ...mcpOptions,
     });
-    upsertClawMcpServerRef({ ...ref, status: "pending" }, { env: current.env });
+    await upsertClawMcpServerRef({ ...ref, status: "pending" }, { env: current.env });
 
     await expect(
       applyClawRemovePlan(plan, {

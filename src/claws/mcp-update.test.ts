@@ -1,13 +1,16 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { listConfiguredMcpServers } from "../config/mcp-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { applyClawMcpUpdate as applyClawMcpUpdateRaw } from "./mcp-update.js";
 import {
   CLAW_MCP_REF_SCHEMA_VERSION,
   digestClawMcpServer,
   readClawMcpServerRefs,
+  readClawMcpServerRefsAsync,
   upsertClawMcpServerRef,
   type PersistedClawMcpServerRef,
 } from "./mcp.js";
@@ -23,13 +26,17 @@ const remote: ClawMcpServer = {
   auth: "oauth",
 };
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    cleanup();
+  }),
+);
 let leaseEnv: NodeJS.ProcessEnv;
 
 beforeEach(() => {
   leaseEnv = { OPENCLAW_STATE_DIR: join(tempDirs.make("openclaw-mcp-update-"), "state") };
 });
-afterEach(() => closeOpenClawStateDatabaseForTest());
 
 function applyClawMcpUpdate(...args: Parameters<typeof applyClawMcpUpdateRaw>) {
   const [updatePlan, targetManifest, options] = args;
@@ -114,8 +121,8 @@ describe("applyClawMcpUpdate", () => {
         } as OpenClawConfig,
         sourceMcpServers: { docs: oldDocs, legacy },
         nowMs: 20,
-        readRefs: () => currentRefs,
-        planRemoval: () => ({ action: "remove" }),
+        readRefs: async () => currentRefs,
+        planRemoval: async () => ({ action: "remove" }),
         setServer,
         unsetServer,
         upsertRef,
@@ -164,6 +171,106 @@ describe("applyClawMcpUpdate", () => {
     expect(deleteRef).toHaveBeenCalledTimes(2);
   });
 
+  it.each([false, true])(
+    "settles interrupted MCP updates only under their retained owner (retired=%s)",
+    async (retireOwner) => {
+      await withOpenClawTestState({ label: "claw-mcp-canceled-update" }, async (state) => {
+        const previous = ref("docs", oldDocs);
+        await state.writeConfig({ mcp: { servers: { docs: oldDocs } } });
+        await upsertClawMcpServerRef(previous, { env: state.env });
+        const controller = new AbortController();
+        let ownerCurrent = true;
+        let settling = false;
+        let reads = 0;
+        const assertSettlementCurrent = () => {
+          if (!ownerCurrent) {
+            throw new Error("physical owner retired");
+          }
+        };
+        const assertCurrent = () => {
+          assertSettlementCurrent();
+          controller.signal.throwIfAborted();
+        };
+        const options = {
+          env: state.env,
+          config: { mcp: { servers: { docs: oldDocs } } },
+          sourceMcpServers: { docs: oldDocs },
+          signal: controller.signal,
+          assertCurrent,
+          assertSettlementCurrent,
+          runSettlement: async <T>(operation: () => Promise<T>): Promise<T> => {
+            assertSettlementCurrent();
+            settling = true;
+            try {
+              return await operation();
+            } finally {
+              settling = false;
+            }
+          },
+          createConfigApplication: () => {
+            const assertApplicationCurrent = settling ? assertSettlementCurrent : assertCurrent;
+            return {
+              writeOptions: { assertCurrent: assertApplicationCurrent },
+              confirm: async () => assertApplicationCurrent(),
+            };
+          },
+          readRefs: async (agentId: string) => {
+            const refs = await readClawMcpServerRefsAsync(agentId, { env: state.env });
+            if (++reads === 2) {
+              expect(refs).toMatchObject([
+                { name: "docs", configDigest: digestClawMcpServer(newDocs), status: "complete" },
+              ]);
+              ownerCurrent = !retireOwner;
+              controller.abort(new Error("request canceled after the first accepted update"));
+            }
+            return refs;
+          },
+        };
+        await expect(
+          applyClawMcpUpdateRaw(
+            plan([
+              {
+                kind: "mcpServer",
+                id: "docs",
+                action: "change",
+                target: "mcp.servers.docs",
+                blocked: false,
+                reason: "change",
+              },
+              {
+                kind: "mcpServer",
+                id: "missing",
+                action: "add",
+                target: "mcp.servers.missing",
+                blocked: false,
+                reason: "missing target",
+              },
+            ]),
+            manifest(),
+            options,
+          ),
+        ).rejects.toThrow(retireOwner ? "physical owner retired" : "missing");
+        const configured = await listConfiguredMcpServers();
+        expect(configured.ok).toBe(true);
+        if (!configured.ok) {
+          throw new Error(configured.error);
+        }
+        expect(configured.mcpServers.docs).toEqual(retireOwner ? newDocs : oldDocs);
+        expect(await readClawMcpServerRefsAsync("worker", { env: state.env })).toEqual(
+          retireOwner
+            ? [
+                expect.objectContaining({
+                  name: "docs",
+                  configDigest: digestClawMcpServer(newDocs),
+                  status: "complete",
+                }),
+              ]
+            : [previous],
+        );
+      });
+    },
+  );
+
   it("rejects release when exact config becomes solely Claw-owned", async () => {
     const previous = ref("legacy", legacy);
     const deleteRef = vi.fn();
@@ -183,8 +290,8 @@ describe("applyClawMcpUpdate", () => {
         {
           config: { mcp: { servers: { legacy } } },
           sourceMcpServers: { legacy },
-          readRefs: () => [previous],
-          planRemoval: () => ({ action: "remove" }),
+          readRefs: async () => [previous],
+          planRemoval: async () => ({ action: "remove" }),
           deleteRef,
         },
       ),
@@ -201,8 +308,8 @@ describe("applyClawMcpUpdate", () => {
       origin: "pre-existing" as const,
       independentOwner: true,
     };
-    upsertClawMcpServerRef(independent, stateOptions);
-    upsertClawMcpServerRef({ ...independent, createdAtMs: 99 }, stateOptions);
+    await upsertClawMcpServerRef(independent, stateOptions);
+    await upsertClawMcpServerRef({ ...independent, createdAtMs: 99 }, stateOptions);
 
     const setServer = vi.fn();
     const unsetServer = vi.fn();
@@ -239,7 +346,7 @@ describe("applyClawMcpUpdate", () => {
     const root = tempDirs.make("openclaw-mcp-update-rejected-");
     const stateOptions = { env: { OPENCLAW_STATE_DIR: join(root, "state") } };
     const previous = ref("docs", oldDocs);
-    upsertClawMcpServerRef(previous, stateOptions);
+    await upsertClawMcpServerRef(previous, stateOptions);
     const setServer = vi.fn(async () => ({ ok: false as const, path: "config", error: "changed" }));
     const unsetServer = vi.fn();
 
@@ -306,7 +413,7 @@ describe("applyClawMcpUpdate", () => {
     const root = tempDirs.make("openclaw-mcp-remove-rejected-");
     const stateOptions = { env: { OPENCLAW_STATE_DIR: join(root, "state") } };
     const previous = ref("legacy", legacy);
-    upsertClawMcpServerRef(previous, stateOptions);
+    await upsertClawMcpServerRef(previous, stateOptions);
 
     await expect(
       applyClawMcpUpdate(
@@ -361,7 +468,7 @@ describe("applyClawMcpUpdate", () => {
         {
           config: { mcp: { servers: { docs: oldDocs } } },
           sourceMcpServers: { docs: oldDocs },
-          readRefs: () => [previous],
+          readRefs: async () => [previous],
           setServer: vi.fn().mockResolvedValue({ ok: false, path: "config", error: "changed" }),
           upsertRef,
         },
@@ -386,8 +493,8 @@ describe("applyClawMcpUpdate", () => {
       {
         config: {},
         sourceMcpServers: {},
-        readRefs: () => [],
-        readRefsByName: () => [{ ...ref("remote", remote), agentId: "analyst" }],
+        readRefs: async () => [],
+        readRefsByName: async () => [{ ...ref("remote", remote), agentId: "analyst" }],
         setServer: vi.fn().mockResolvedValue({
           ok: true,
           path: "config",
@@ -420,8 +527,8 @@ describe("applyClawMcpUpdate", () => {
       {
         config: {},
         sourceMcpServers: {},
-        readRefs: () => [],
-        readRefsByName: () => [{ ...ref("remote", remote), independentOwner: true }],
+        readRefs: async () => [],
+        readRefsByName: async () => [{ ...ref("remote", remote), independentOwner: true }],
         setServer: vi.fn().mockResolvedValue({
           ok: true,
           path: "config",
@@ -455,7 +562,7 @@ describe("applyClawMcpUpdate", () => {
         {
           config: { mcp: { servers: { remote } } },
           sourceMcpServers: { remote },
-          readRefs: () => [],
+          readRefs: async () => [],
           setServer,
         },
       ),

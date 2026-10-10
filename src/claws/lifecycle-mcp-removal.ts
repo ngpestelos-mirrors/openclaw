@@ -12,8 +12,8 @@ import type { ClawStatusRecord } from "./lifecycle-status.js";
 import {
   deleteClawMcpServerRef,
   digestClawMcpServer,
-  planClawMcpServerRemoval,
-  readClawMcpServerRefsByName,
+  planClawMcpServerRemovalAsync,
+  readClawMcpServerRefsByNameAsync,
 } from "./mcp.js";
 import type { ClawReferencedCleanup } from "./package-remove.js";
 
@@ -29,7 +29,7 @@ export async function removeClawMcpServers(params: {
   agentId: string;
   servers: ClawStatusRecord["mcpServers"];
   options: RemoveMcpServerOptions;
-  deletion: Pick<AgentDeletionOperation, "assertCurrentFinal" | "assertCurrentAsync">;
+  deletion: AgentDeletionOperation;
 }): Promise<{ mcpServers: RemovedMcpServer[]; error?: string }> {
   const listed = params.options.sourceMcpServers
     ? undefined
@@ -52,75 +52,92 @@ export async function removeClawMcpServers(params: {
   for (const server of params.servers) {
     let removalError: string | undefined;
     await params.deletion.assertCurrentAsync();
-    await withClawMcpLifecycleLease(server.name, params.options, async (assertMcpCurrent) => {
-      const assertCurrent = () => {
-        params.deletion.assertCurrentFinal();
-        assertMcpCurrent();
-      };
-      const assertCurrentAsync = async () => {
-        await params.deletion.assertCurrentAsync();
-        assertMcpCurrent();
-      };
-      await assertCurrentAsync();
-      assertCurrent();
-      const currentRef = readClawMcpServerRefsByName(server.name, params.options).find(
-        (candidate) => candidate.agentId === params.agentId,
-      );
-      if (!currentRef) {
-        throw new ClawRemoveError(
-          "mcp_cleanup_changed",
-          `MCP ownership for ${JSON.stringify(server.name)} changed during removal.`,
-        );
-      }
-      const ownerAction = planClawMcpServerRemoval(currentRef, params.options).action;
-      if (ownerAction === "release") {
+    await withClawMcpLifecycleLease(
+      server.name,
+      params.options,
+      async (assertMcpCurrent, lease) => {
+        const assertCurrent = () => {
+          params.deletion.assertCurrentFinal();
+          assertMcpCurrent();
+        };
+        const assertCurrentAsync = async () => {
+          await params.deletion.assertCurrentAsync();
+          assertMcpCurrent();
+        };
+        await assertCurrentAsync();
         assertCurrent();
-        deleteClawMcpServerRef(params.agentId, server.name, params.options);
-        mcpServers.push({
-          name: server.name,
-          action: server.state === "missing" ? "missing" : "released",
-        });
-        return;
-      }
-      const expectedServer = configured[server.name];
-      if (!expectedServer) {
-        if (server.state === "present") {
+        const currentRef = (
+          await readClawMcpServerRefsByNameAsync(server.name, params.options)
+        ).find((candidate) => candidate.agentId === params.agentId);
+        if (!currentRef) {
           throw new ClawRemoveError(
             "mcp_cleanup_changed",
-            `MCP server ${JSON.stringify(server.name)} disappeared during removal.`,
+            `MCP ownership for ${JSON.stringify(server.name)} changed during removal.`,
           );
         }
-        assertCurrent();
-        deleteClawMcpServerRef(params.agentId, server.name, params.options);
-        mcpServers.push({ name: server.name, action: "missing" });
-        return;
-      }
-      if (digestClawMcpServer(expectedServer) !== currentRef.configDigest) {
-        throw new ClawRemoveError(
-          "mcp_cleanup_changed",
-          `MCP server ${JSON.stringify(server.name)} changed during removal.`,
-        );
-      }
-      try {
-        const result = await unsetMcpServer({
-          name: server.name,
-          expectedServer,
-          recordIndependentOwner: false,
-          assertCurrent,
-          assertCurrentAsync,
-        });
-        if (!result.ok) {
-          throw new Error(result.error);
+        const ownerAction = (await planClawMcpServerRemovalAsync(currentRef, params.options))
+          .action;
+        if (ownerAction === "release") {
+          assertCurrent();
+          await deleteClawMcpServerRef(params.agentId, server.name, {
+            ...params.options,
+            lease,
+            deletion: params.deletion,
+          });
+          mcpServers.push({
+            name: server.name,
+            action: server.state === "missing" ? "missing" : "released",
+          });
+          return;
         }
-        assertCurrent();
-        deleteClawMcpServerRef(params.agentId, server.name, params.options);
-        mcpServers.push({ name: server.name, action: result.removed ? "removed" : "missing" });
-      } catch (cause) {
-        const message = coerceErrorMessage(cause);
-        mcpServers.push({ name: server.name, action: "error", message });
-        removalError = message;
-      }
-    });
+        const expectedServer = configured[server.name];
+        if (!expectedServer) {
+          if (server.state === "present") {
+            throw new ClawRemoveError(
+              "mcp_cleanup_changed",
+              `MCP server ${JSON.stringify(server.name)} disappeared during removal.`,
+            );
+          }
+          assertCurrent();
+          await deleteClawMcpServerRef(params.agentId, server.name, {
+            ...params.options,
+            lease,
+            deletion: params.deletion,
+          });
+          mcpServers.push({ name: server.name, action: "missing" });
+          return;
+        }
+        if (digestClawMcpServer(expectedServer) !== currentRef.configDigest) {
+          throw new ClawRemoveError(
+            "mcp_cleanup_changed",
+            `MCP server ${JSON.stringify(server.name)} changed during removal.`,
+          );
+        }
+        try {
+          const result = await unsetMcpServer({
+            name: server.name,
+            expectedServer,
+            recordIndependentOwner: false,
+            assertCurrent,
+            assertCurrentAsync,
+          });
+          if (!result.ok) {
+            throw new Error(result.error);
+          }
+          assertCurrent();
+          await deleteClawMcpServerRef(params.agentId, server.name, {
+            ...params.options,
+            lease,
+            deletion: params.deletion,
+          });
+          mcpServers.push({ name: server.name, action: result.removed ? "removed" : "missing" });
+        } catch (cause) {
+          const message = coerceErrorMessage(cause);
+          mcpServers.push({ name: server.name, action: "error", message });
+          removalError = message;
+        }
+      },
+    );
     await params.deletion.assertCurrentAsync();
     if (removalError) {
       return { mcpServers, error: removalError };

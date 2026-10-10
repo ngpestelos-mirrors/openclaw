@@ -1,4 +1,5 @@
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
+import type { OpenClawStateLeaseContext } from "../state/openclaw-state-lease-context.js";
 import { withOpenClawStateLease } from "../state/openclaw-state-lease.js";
 
 const MCP_LIFECYCLE_LEASE_SCOPE = "core:claw-mcp-lifecycle";
@@ -13,7 +14,7 @@ type McpLifecycleLeaseOptions = Pick<OpenClawStateDatabaseOptions, "env" | "path
 export async function withMcpLifecycleLease<T>(
   name: string,
   options: McpLifecycleLeaseOptions,
-  run: (assertOwned: () => void) => Promise<T>,
+  run: (assertOwned: () => void, lease: OpenClawStateLeaseContext) => Promise<T>,
 ): Promise<T> {
   return await withOpenClawStateLease(
     {
@@ -35,7 +36,7 @@ export async function withMcpLifecycleLease<T>(
     },
     async (lease) => {
       lease.assertOwned();
-      const result = await run(() => lease.assertOwned());
+      const result = await run(() => lease.assertOwned(), lease);
       lease.assertOwned();
       return result;
     },

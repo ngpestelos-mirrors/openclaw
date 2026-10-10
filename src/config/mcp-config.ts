@@ -13,6 +13,7 @@ import {
 import { replaceConfigFile } from "./mutate.js";
 import { redactSensitiveArgv } from "./redact-argv.js";
 import { REDACTED_SENTINEL, restoreRedactedValues } from "./redact-snapshot.js";
+import { copyRuntimeConfigWriteApplication } from "./runtime-write-application.js";
 import { buildConfigSchemaCore } from "./schema.js";
 import type { McpServerToolFilterConfig } from "./types.mcp.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
@@ -135,6 +136,8 @@ export async function listConfiguredMcpServers(): Promise<ConfigMcpReadResult> {
 async function commitConfiguredMcpServers(params: {
   loaded: LoadedConfigMcpServers;
   writeOptions: ConfigWriteOptions;
+  configWriteOptions?: ConfigWriteOptions;
+  onConfigCommitted?: () => Promise<void>;
   servers: ConfigMcpServers;
   errorLabel: string;
   success?: { removed?: boolean; updated?: boolean };
@@ -166,17 +169,24 @@ async function commitConfiguredMcpServers(params: {
   const committed = await replaceConfigFile({
     sourceConfig: next,
     baseHash: params.loaded.baseHash,
-    writeOptions: {
+    writeOptions: copyRuntimeConfigWriteApplication(params.configWriteOptions, {
       ...params.writeOptions,
+      ...params.configWriteOptions,
+      assertConfigPathForWrite: () => {
+        params.writeOptions.assertConfigPathForWrite?.();
+        params.configWriteOptions?.assertConfigPathForWrite?.();
+      },
       assertCurrent: () => {
         params.writeOptions.assertCurrent?.();
+        params.configWriteOptions?.assertCurrent?.();
         params.assertCurrent?.();
       },
       beforeCommit: async () => {
         await params.writeOptions.beforeCommit?.();
+        await params.configWriteOptions?.beforeCommit?.();
         await params.assertCurrentAsync?.();
       },
-    },
+    }),
   });
   if (params.mutation?.onCommitted) {
     const previous = params.loaded.mcpServers[params.mutation.name];
@@ -187,6 +197,7 @@ async function commitConfiguredMcpServers(params: {
       ...(nextServer ? { next: nextServer } : {}),
     });
   }
+  await params.onConfigCommitted?.();
   if (params.independentlyOwnedName) {
     markClawMcpServerIndependentlyOwned(params.independentlyOwnedName);
   }
@@ -287,6 +298,8 @@ async function mutateConfiguredMcpServer(
   return commitConfiguredMcpServers({
     loaded,
     writeOptions,
+    configWriteOptions: params.kind === "update" ? undefined : params.configWriteOptions,
+    onConfigCommitted: params.kind === "update" ? undefined : params.onConfigCommitted,
     servers,
     errorLabel: params.kind === "update" ? params.errorLabel : params.kind,
     success: params.kind === "set" ? undefined : { [successKey]: true },
@@ -366,6 +379,8 @@ async function setConfiguredMcpServer(
     createOnly?: boolean;
     recordIndependentOwner?: boolean;
     expectedServer?: Record<string, unknown>;
+    configWriteOptions?: ConfigWriteOptions;
+    onConfigCommitted?: () => Promise<void>;
     assertCurrent?: () => void;
   },
   onCommitted?: McpConfigMutationHook,
@@ -384,6 +399,8 @@ async function unsetConfiguredMcpServer(
   params: {
     name: string;
     expectedServer?: Record<string, unknown>;
+    configWriteOptions?: ConfigWriteOptions;
+    onConfigCommitted?: () => Promise<void>;
     assertCurrent?: () => void;
     assertCurrentAsync?: () => Promise<void>;
   },

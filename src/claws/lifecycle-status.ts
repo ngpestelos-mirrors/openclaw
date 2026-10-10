@@ -25,7 +25,7 @@ import {
 } from "./lifecycle-delete-support.js";
 import {
   digestClawMcpServer,
-  readClawMcpServerRefs,
+  readClawMcpServerRefsAsync,
   reconcileClawMcpServerRefs,
   type PersistedClawMcpServerRef,
 } from "./mcp.js";
@@ -334,7 +334,7 @@ export async function readClawStatus(
         ),
       ),
       mcpServers: (options.readOnly
-        ? readClawMcpServerRefs(install.agentId, options)
+        ? await readClawMcpServerRefsAsync(install.agentId, options)
         : await reconcileClawMcpServerRefs(install.agentId, configuredMcpServers, options)
       ).map((ref) => inspectMcpServer(ref, configuredMcpServers)),
       cronJobs: await readClawCronRefsAsync(install.agentId, options),

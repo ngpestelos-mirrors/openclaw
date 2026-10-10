@@ -45,7 +45,7 @@ import {
 } from "./lifecycle-remove-contract.js";
 import { clawRemoveStateBlockers } from "./lifecycle-remove-state-blockers.js";
 import { readClawStatus } from "./lifecycle-status.js";
-import { clawMcpRemovalSelector, planClawMcpServerRemoval } from "./mcp.js";
+import { clawMcpRemovalSelector, planClawMcpServerRemovalAsync } from "./mcp.js";
 import { clawMonitorSnapshotSchema } from "./monitor-cleanup-contract.js";
 import { applyClawPackageRemovalPhase } from "./package-remove-phase.js";
 import { filterReferencedCleanup, projectClawPackageRemovePlan } from "./package-remove-plan.js";
@@ -297,7 +297,7 @@ export async function buildClawRemovePlan(
     const unmatchedMcpSelectors = new Set(mcpCleanup?.selected ?? []);
     for (const server of record.mcpServers) {
       const blocked = server.state === "pending";
-      const decision = planClawMcpServerRemoval(server, {
+      const decision = await planClawMcpServerRemovalAsync(server, {
         ...options,
         referencedCleanup: mcpCleanup,
       });
@@ -460,9 +460,14 @@ export async function applyClawRemovePlan(
     .filter((action) => action.kind === "mcpServer")
     .map((action) => `${action.id}:${action.action}`)
     .toSorted();
-  const currentMcpServers = record.mcpServers
-    .map((server) => `${server.name}:${planClawMcpServerRemoval(server, options).action}`)
-    .toSorted();
+  const currentMcpServers = (
+    await Promise.all(
+      record.mcpServers.map(
+        async (server) =>
+          `${server.name}:${(await planClawMcpServerRemovalAsync(server, options)).action}`,
+      ),
+    )
+  ).toSorted();
   if (JSON.stringify(plannedMcpServers) !== JSON.stringify(currentMcpServers)) {
     throw new ClawRemoveError("remove_changed", "MCP ownership changed after remove planning.");
   }

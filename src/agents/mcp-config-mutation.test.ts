@@ -3,12 +3,21 @@ import path from "node:path";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withContendedConfigMutation } from "../../test/helpers/config-mutation-lock.js";
-import { createDeferred } from "../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
 import {
+  clearRuntimeConfigSnapshot,
   readConfigFileSnapshot,
+  setRuntimeConfigSnapshot,
   setRuntimeConfigSnapshotRefreshHandler,
 } from "../config/config.js";
 import { listConfiguredMcpServers, mcpConfigInternal } from "../config/mcp-config.js";
+import { registerRuntimeConfigWriteListener } from "../config/runtime-snapshot.js";
+import {
+  attachRuntimeConfigWriteApplication,
+  createRuntimeConfigWriteApplication,
+  getRuntimeConfigWriteApplication,
+  type RuntimeConfigWriteApplicationClaim,
+} from "../config/runtime-write-application.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -200,6 +209,75 @@ describe("configured MCP OAuth cleanup", () => {
 });
 
 describe("configured MCP ownership coordination", () => {
+  it.each(["set", "unset"] as const)(
+    "retains the caller application receipt through %s and awaits runtime confirmation",
+    async (kind) => {
+      await withMcpConfigHome(async () => {
+        const initial = await setConfiguredMcpServer({
+          name: "fixture",
+          server: { command: "node" },
+        });
+        expect(initial.ok).toBe(true);
+        if (!initial.ok) {
+          throw new Error(initial.error);
+        }
+        setRuntimeConfigSnapshot(initial.config, initial.config);
+        const application = createRuntimeConfigWriteApplication();
+        const confirmed = createDeferred();
+        const receipt: { claim?: RuntimeConfigWriteApplicationClaim } = {};
+        const unregister = registerRuntimeConfigWriteListener((event) => {
+          if (event.configPath === initial.path) {
+            receipt.claim = getRuntimeConfigWriteApplication(event)?.claim() ?? undefined;
+          }
+        });
+        const params = {
+          name: "fixture",
+          recordIndependentOwner: false,
+          configWriteOptions: attachRuntimeConfigWriteApplication({}, application),
+          onConfigCommitted: async () => {
+            expect(application.claimed).toBe(true);
+            confirmed.resolve();
+            expect(await application.result).toBe("applied");
+          },
+        };
+        try {
+          const mutation =
+            kind === "set"
+              ? setConfiguredMcpServer({
+                  ...params,
+                  server: { command: "uvx", args: ["replacement-mcp"] },
+                })
+              : unsetConfiguredMcpServer(params);
+          let returned = false;
+          void mutation.then(
+            () => {
+              returned = true;
+            },
+            () => {
+              returned = true;
+            },
+          );
+          await awaitGateBeforeSettlement(
+            confirmed.promise,
+            mutation,
+            "MCP mutation returned without awaiting runtime confirmation",
+          );
+          const saved = JSON.parse(await fs.readFile(initial.path, "utf8"));
+          expect(saved.mcp?.servers?.fixture).toEqual(
+            kind === "set" ? { command: "uvx", args: ["replacement-mcp"] } : undefined,
+          );
+          expect(returned).toBe(false);
+          expect(receipt.claim).toBeDefined();
+          receipt.claim!.settle("applied");
+          await expect(mutation).resolves.toMatchObject({ ok: true });
+        } finally {
+          receipt.claim?.settle("stopped");
+          unregister();
+          clearRuntimeConfigSnapshot();
+        }
+      });
+    },
+  );
   it("waits for active Claw ownership reconciliation before an ordinary mutation", async () => {
     await withMcpConfigHome(async () => {
       const leaseEntered = createDeferred();
@@ -275,7 +353,9 @@ describe("configured MCP read-only results", () => {
         "runtimeConfig",
         "sourceConfigBeforeMigrations",
       ]);
-      const missing = await unsetConfiguredMcpServer({ name: "missing" });
+      const onConfigCommitted = vi.fn(async () => undefined);
+      const missing = await unsetConfiguredMcpServer({ name: "missing", onConfigCommitted });
+      expect(onConfigCommitted).not.toHaveBeenCalled();
       expect(missing).toMatchObject({ ok: true, removed: false });
       expect(Object.keys(missing)).not.toContain("writeOptions");
       expect(Object.keys(missing)).not.toContain("snapshot");
