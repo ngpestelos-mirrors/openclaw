@@ -192,21 +192,21 @@ describe("AgentMemoryPanel gateway lifecycle", () => {
     document.body.append(page);
     await page.updateComplete;
     const previousState = page.dreaming;
-    previousState.dreamDiaryContent = "main-only";
+    previousState.resources.dreamDiary.value = { path: "DREAMS.md", content: "main-only" };
 
     page.agentId = "support";
     await page.updateComplete;
 
     expect(page.dreaming).not.toBe(previousState);
     expect(page.dreaming.selectedAgentId).toBe("support");
-    expect(page.dreaming.dreamDiaryContent).toBeNull();
+    expect(page.dreaming.resources.dreamDiary.value).toBeNull();
 
-    page.dreaming.dreamDiaryContent = "support-only";
+    page.dreaming.resources.dreamDiary.value = { path: "DREAMS.md", content: "support-only" };
     page.agentId = "";
     await page.updateComplete;
 
     expect(page.dreaming.selectedAgentId).toBeNull();
-    expect(page.dreaming.dreamDiaryContent).toBeNull();
+    expect(page.dreaming.resources.dreamDiary.value).toBeNull();
   });
 
   it("resets provider and modal state when the gateway source changes", async () => {
@@ -215,7 +215,7 @@ describe("AgentMemoryPanel gateway lifecycle", () => {
     document.body.append(page);
     await page.updateComplete;
     const previousState = page.dreaming;
-    previousState.dreamDiaryContent = "old provider";
+    previousState.resources.dreamDiary.value = { path: "DREAMS.md", content: "old provider" };
     const wikiPreview = {
       loading: true,
       error: null,
@@ -228,7 +228,7 @@ describe("AgentMemoryPanel gateway lifecycle", () => {
     await replaceContext(page, contextWithGateway(client, false));
 
     expect(page.dreaming).not.toBe(previousState);
-    expect(page.dreaming.dreamDiaryContent).toBeNull();
+    expect(page.dreaming.resources.dreamDiary.value).toBeNull();
     expect(page.viewState.wikiPreview).toBeNull();
     expect(page.toggleConfirmLoading).toBe(false);
     expect(page.pendingEnabled).toBeNull();
@@ -341,7 +341,7 @@ describe("AgentMemoryPanel gateway lifecycle", () => {
     const page = document.createElement("openclaw-agent-memory-panel") as TestMemoryPanel;
     page.context = context;
     page.agentId = "main";
-    page.dreaming.dreamingStatus = {
+    page.dreaming.resources.dreamingStatus.value = {
       enabled: true,
       promotedToday: 7,
       timezone: "Mars/Base",
@@ -366,7 +366,7 @@ describe("AgentMemoryPanel gateway lifecycle", () => {
           minPatternStrength: 0,
         },
       },
-    } as NonNullable<DreamingState["dreamingStatus"]>;
+    } as NonNullable<DreamingState["resources"]["dreamingStatus"]["value"]>;
     const container = document.createElement("div");
 
     render(page.render(), container);

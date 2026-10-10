@@ -5,11 +5,13 @@ import { render } from "lit";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fullDreamingViewAccess,
+  dreamingViewProps,
+  type DreamingViewFixture,
   installDreamingViewTestTranslations,
 } from "./view.test-helpers.ts";
 import { createDreamingViewState, renderDreaming, type DreamingViewState } from "./view.ts";
 
-type DreamingProps = Parameters<typeof renderDreaming>[0];
+type DreamingProps = DreamingViewFixture;
 
 let viewState = createDreamingViewState();
 const restoreTranslations = installDreamingViewTestTranslations();
@@ -216,7 +218,7 @@ function buildProps(overrides?: Partial<DreamingProps>): DreamingProps {
 
 function renderInto(props: DreamingProps): HTMLDivElement {
   const container = document.createElement("div");
-  render(renderDreaming(props), container);
+  render(renderDreaming(dreamingViewProps(props)), container);
   return container;
 }
 
@@ -396,7 +398,7 @@ describe("dreaming view", () => {
       totalLines: 6001,
       truncated: true,
     });
-    const rerender = () => render(renderDreaming(props), container);
+    const rerender = () => render(renderDreaming(dreamingViewProps(props)), container);
     const props: DreamingProps = buildProps({
       onOpenWikiPage,
       onViewStateChange: rerender,
@@ -467,7 +469,7 @@ describe("dreaming view", () => {
     setDreamSubTab("diary");
     setDreamDiarySubTab("wiki");
     const container = document.createElement("div");
-    const rerender = () => render(renderDreaming(props), container);
+    const rerender = () => render(renderDreaming(dreamingViewProps(props)), container);
     const props: DreamingProps = buildProps({ onViewStateChange: rerender });
     rerender();
 
@@ -490,7 +492,7 @@ describe("dreaming view", () => {
       truncated: false,
     });
     const container = document.createElement("div");
-    const rerender = () => render(renderDreaming(props), container);
+    const rerender = () => render(renderDreaming(dreamingViewProps(props)), container);
     const props: DreamingProps = buildProps({
       onOpenWikiPage,
       onViewStateChange: rerender,

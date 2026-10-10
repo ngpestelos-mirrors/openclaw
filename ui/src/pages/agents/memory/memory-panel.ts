@@ -47,7 +47,9 @@ type DreamingTaskScope = {
   state: DreamingState;
 };
 
-function resolveDreamingNextCycle(status: DreamingState["dreamingStatus"]): string | null {
+function resolveDreamingNextCycle(
+  status: DreamingState["resources"]["dreamingStatus"]["value"],
+): string | null {
   const nextRunAtMs = Object.values(status?.phases ?? {})
     .flatMap((phase) =>
       phase.enabled && typeof phase.nextRunAtMs === "number" ? [phase.nextRunAtMs] : [],
@@ -246,7 +248,7 @@ class AgentMemoryPanel extends OpenClawLightDomElement {
       return;
     }
     this.pendingEnabled = enabled;
-    this.dreaming.dreamingStatusError = null;
+    this.dreaming.resources.dreamingStatus.error = null;
   }
 
   private cancelToggle() {
@@ -254,7 +256,7 @@ class AgentMemoryPanel extends OpenClawLightDomElement {
       return;
     }
     this.pendingEnabled = null;
-    this.dreaming.dreamingStatusError = null;
+    this.dreaming.resources.dreamingStatus.error = null;
   }
 
   private async confirmToggle() {
@@ -267,7 +269,7 @@ class AgentMemoryPanel extends OpenClawLightDomElement {
       return;
     }
     this.toggleConfirmLoading = true;
-    this.dreaming.dreamingStatusError = null;
+    this.dreaming.resources.dreamingStatus.error = null;
     const scope = this.captureTaskScope();
     const runtimeConfig = this.context.runtimeConfig;
     if (!scope) {
@@ -288,7 +290,7 @@ class AgentMemoryPanel extends OpenClawLightDomElement {
         return;
       }
       if (!updated) {
-        this.dreaming.dreamingStatusError ??= t("dreaming.toggleConfirmation.failed");
+        this.dreaming.resources.dreamingStatus.error ??= t("dreaming.toggleConfirmation.failed");
         return;
       }
       await runtimeConfig.refresh();
@@ -353,13 +355,16 @@ class AgentMemoryPanel extends OpenClawLightDomElement {
     const configuredDreaming = resolveConfiguredDreaming(currentConfigObject(configState));
     // The status RPC can complete after config switches the engine Off. Keep the
     // cached payload for a future refresh, but never present it as current runtime state.
-    const dreamingStatus = configuredDreaming.engineOff ? null : dreaming.dreamingStatus;
+    const dreamingStatus = configuredDreaming.engineOff
+      ? null
+      : dreaming.resources.dreamingStatus.value;
     const dreamingOn = dreamingStatus?.enabled ?? configuredDreaming.enabled;
-    const loading = dreaming.dreamingStatusLoading || dreaming.dreamingModeSaving;
+    const loading = dreaming.resources.dreamingStatus.loading || dreaming.dreamingModeSaving;
     const canUpdateConfig = canCallDreamingMethod(dreaming, "config.patch", "operator.admin");
     const canRunAction = (method: DreamDiaryActionMethod) =>
       canCallDreamingMethod(dreaming, method, "operator.write");
-    const refreshLoading = dreaming.dreamingStatusLoading || dreaming.dreamDiaryLoading;
+    const refreshLoading =
+      dreaming.resources.dreamingStatus.loading || dreaming.resources.dreamDiary.loading;
     const selectedAgentId = dreaming.selectedAgentId ?? "";
 
     return html`
@@ -371,7 +376,7 @@ class AgentMemoryPanel extends OpenClawLightDomElement {
           <div class="dreaming-header-controls">
             <button
               class="btn btn--subtle btn--sm"
-              ?disabled=${loading || dreaming.dreamDiaryLoading}
+              ?disabled=${loading || dreaming.resources.dreamDiary.loading}
               @click=${() => void this.loadResources("all", true)}
             >
               ${refreshLoading ? t("dreaming.header.refreshing") : t("dreaming.header.refresh")}
@@ -420,25 +425,17 @@ class AgentMemoryPanel extends OpenClawLightDomElement {
         promotedEntries: dreamingStatus?.promotedEntries ?? [],
         nextCycle: resolveDreamingNextCycle(dreamingStatus),
         timezone: dreamingStatus?.timezone ?? null,
-        statusError: dreaming.dreamingStatusError,
+        statusError: dreaming.resources.dreamingStatus.error,
         modeSaving: dreaming.dreamingModeSaving,
-        dreamDiaryLoading: dreaming.dreamDiaryLoading,
         dreamDiaryActionLoading: dreaming.dreamDiaryActionLoading,
         dreamDiaryActionMessage: dreaming.dreamDiaryActionMessage,
         dreamDiaryActionArchivePath: dreaming.dreamDiaryActionArchivePath,
-        dreamDiaryError: dreaming.dreamDiaryError,
-        dreamDiaryContent: dreaming.dreamDiaryContent,
+        resources: dreaming.resources,
         memoryWikiEnabled: isPluginEnabledInConfigSnapshot(
           configState.configSnapshot,
           "memory-wiki",
           { enabledByDefault: false },
         ),
-        wikiImportInsightsLoading: dreaming.wikiImportInsightsLoading,
-        wikiImportInsightsError: dreaming.wikiImportInsightsError,
-        wikiImportInsights: dreaming.wikiImportInsights,
-        wikiOverviewLoading: dreaming.wikiOverviewLoading,
-        wikiOverviewError: dreaming.wikiOverviewError,
-        wikiOverview: dreaming.wikiOverview,
         onRefreshDiary: () =>
           void this.runDreamingTask((current) => loadDreamingResource(current, "dreamDiary")),
         onRefreshImports: () => void this.loadResources("wikiImportInsights"),
@@ -471,7 +468,7 @@ class AgentMemoryPanel extends OpenClawLightDomElement {
         loading: this.toggleConfirmLoading,
         onConfirm: () => void this.confirmToggle(),
         onCancel: () => this.cancelToggle(),
-        hasError: Boolean(dreaming.dreamingStatusError),
+        hasError: Boolean(dreaming.resources.dreamingStatus.error),
       })}
     `;
   }

@@ -1,6 +1,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { render } from "lit";
 import { afterEach, describe, expect, it } from "vitest";
+import { dreamingViewProps, type DreamingViewFixture } from "./view.test-helpers.ts";
 import { createDreamingViewState, renderDreaming } from "./view.ts";
 
 const hasBrowserLayout = !navigator.userAgent.toLowerCase().includes("jsdom");
@@ -22,7 +23,7 @@ describe.skipIf(!hasBrowserLayout)("dream diary browser layout", () => {
     const viewState = createDreamingViewState();
     viewState.activeSubTab = "diary";
     viewState.activeDiarySubTab = "dreams";
-    const props: Parameters<typeof renderDreaming>[0] = {
+    const props: DreamingViewFixture = {
       access: {
         canOpenConfig: true,
         canBackfillDiary: true,
@@ -77,9 +78,9 @@ describe.skipIf(!hasBrowserLayout)("dream diary browser layout", () => {
       onResetDiary: () => {},
       onResetGroundedShortTerm: () => {},
       onRepairDreamingArtifacts: () => {},
-      onViewStateChange: () => render(renderDreaming(props), host!),
+      onViewStateChange: () => render(renderDreaming(dreamingViewProps(props)), host!),
     };
-    render(renderDreaming(props), host);
+    render(renderDreaming(dreamingViewProps(props)), host);
 
     const diary = host.querySelector<HTMLElement>(".dreams-diary");
     const navigation = host.querySelector<HTMLElement>(".dreams-diary__daychips");

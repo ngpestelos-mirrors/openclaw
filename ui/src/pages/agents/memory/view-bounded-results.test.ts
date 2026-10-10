@@ -4,11 +4,13 @@ import { render } from "lit";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   fullDreamingViewAccess,
+  dreamingViewProps,
+  type DreamingViewFixture,
   installDreamingViewTestTranslations,
 } from "./view.test-helpers.ts";
 import { createDreamingViewState, renderDreaming } from "./view.ts";
 
-type DreamingProps = Parameters<typeof renderDreaming>[0];
+type DreamingProps = DreamingViewFixture;
 
 let restoreTranslations = () => {};
 
@@ -134,7 +136,7 @@ function buildBoundedDashboardProps(tab: "insights" | "wiki"): DreamingProps {
 describe("bounded Memory Wiki dashboard results", () => {
   it.each(["insights", "wiki"] as const)("discloses returned and total %s item counts", (tab) => {
     const container = document.createElement("div");
-    render(renderDreaming(buildBoundedDashboardProps(tab)), container);
+    render(renderDreaming(dreamingViewProps(buildBoundedDashboardProps(tab))), container);
 
     expect(container.querySelector(".dreams-diary__bounded-result")?.textContent?.trim()).toBe(
       "Showing the newest 2,500 of 2,501 items.",
