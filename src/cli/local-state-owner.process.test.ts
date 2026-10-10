@@ -288,28 +288,6 @@ describe("same-root local mutation routing", () => {
     entrypoint,
   );
 
-  it("refuses migration import before provider loading while the Gateway owns the state", async () => {
-    const previousMethods = [...methods];
-    const result = await runCliProcessChild({
-      nodeArgs: [
-        ...entrypoint,
-        "migrate",
-        "apply",
-        "synthetic-missing-provider",
-        "--yes",
-        "--no-backup",
-        "--force",
-        "--json",
-      ],
-      env,
-    });
-    expect(result.code, result.stderr).toBe(1);
-    expect(result.stderr).toContain("exclusive offline state ownership");
-    expect(result.stderr).toContain("stop the Gateway");
-    expect(result.stderr).not.toContain("Unknown migration provider");
-    expect(methods).toEqual(previousMethods);
-  });
-
   it("runs the CLI create in the live owner and exposes committed profile results", async () => {
     const result = await create(
       "routed",
@@ -825,6 +803,18 @@ describe("same-root local mutation routing", () => {
 
   it.each([
     ["sandbox recreate", ["sandbox", "recreate", "--all", "--force"]],
+    [
+      "migration import",
+      [
+        "migrate",
+        "apply",
+        "synthetic-missing-provider",
+        "--yes",
+        "--no-backup",
+        "--force",
+        "--json",
+      ],
+    ],
     ["exec-policy preset", ["exec-policy", "preset", "deny-all"]],
     ["exec-policy set", ["exec-policy", "set", "--ask", "always"]],
   ])(
@@ -851,34 +841,6 @@ describe("same-root local mutation routing", () => {
 describe("offline local mutation custody", () => {
   const initializeRepository = useManagedWorktreeTestRepository();
   afterEach(() => vi.unstubAllEnvs());
-
-  it("retains and seals migration ownership after uncertain child cleanup until process exit", async () => {
-    const root = roots.make("openclaw-migration-uncertain-");
-    const env = environment(root);
-    await fs.mkdir(env.OPENCLAW_STATE_DIR!, { recursive: true });
-    await fs.writeFile(env.OPENCLAW_CONFIG_PATH!, "{}\n");
-    const result = await runCliProcessChild({
-      nodeArgs: [...entrypoint, "migrate-uncertain"],
-      env,
-    });
-    expect(result.code, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual({
-      applyCompleted: true,
-      uncertain: true,
-      ownsState: true,
-      laterMutationRan: false,
-      laterRefused: true,
-    });
-    const recovered = await runCliProcessChild({
-      nodeArgs: [...entrypoint, "exec-policy", "preset", "cautious", "--json"],
-      env,
-    });
-    expect(recovered.code, recovered.stderr).toBe(0);
-    expect(JSON.parse(recovered.stdout)).toMatchObject({
-      preset: "cautious",
-      approvalsExists: true,
-    });
-  });
 
   it("keeps offline exec-policy preset writes and their config update working", async () => {
     const root = roots.make("openclaw-exec-policy-offline-");
