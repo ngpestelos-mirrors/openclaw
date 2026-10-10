@@ -347,7 +347,8 @@ html:is(.openclaw-native-macos, .openclaw-native-desktop) .new-session-page__inc
 }
 
 .new-session-page__trigger:hover:not(:disabled),
-.new-session-page__trigger[aria-expanded="true"] {
+.new-session-page__trigger[aria-expanded="true"],
+.new-session-page__browser-nav:hover:not(:disabled) {
   color: var(--text);
   background: color-mix(in srgb, var(--bg-hover) 84%, transparent);
 }
@@ -1013,11 +1014,6 @@ wa-popover.new-session-page__where-popover {
   background: transparent;
   color: var(--muted);
   cursor: var(--cursor-action);
-}
-
-.new-session-page__browser-nav:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--bg-hover) 84%, transparent);
-  color: var(--text);
 }
 
 .new-session-page__browser-nav:disabled {
