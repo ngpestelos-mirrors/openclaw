@@ -154,9 +154,8 @@ it.each(["direct", "destructured"] as const)(
         expect(persisted).toMatchObject({ appended: true, message: { content: "approved input" } });
         expect(recorder.isPendingInputConsumed?.()).toBe(true);
         expect(
-          readSessionPendingInputByKey(owner, recorderTarget, "native-input:user")
-            ?.consumed_event_id,
-        ).toBe(persisted?.messageId);
+          readSessionPendingInputByKey(owner, recorderTarget, "native-input:user"),
+        ).toBeUndefined();
         expect(adopt).toHaveBeenCalledOnce();
         expect(accept).toHaveBeenCalledOnce();
         await recorder.persistFallback();
@@ -165,15 +164,16 @@ it.each(["direct", "destructured"] as const)(
         const retry = createRecorder();
         await expect(
           retry.stageApproved?.({ runId: "native-run", assertCurrent() {} }),
-        ).resolves.toBe(false);
+        ).resolves.toBe(true);
         expect(retry.getPendingInputMessage?.()).toMatchObject({ content: "approved input" });
-        const replay = createRecorder();
-        bindUserTurnInputActor(replay, { phase: "adoptRun", acquire: async () => input });
-        await expect(replay.persistApproved()).resolves.toMatchObject({
+        bindUserTurnInputActor(retry, { phase: "adoptRun", acquire: async () => input });
+        await expect(retry.persistApproved()).resolves.toMatchObject({
           appended: false,
           messageId: persisted?.messageId,
           message: { content: "approved input", timestamp: 1 },
         });
+        retry.finishPendingInput?.("interrupted");
+        await retry.waitForPendingInputSettlement?.();
         expect(approvals).toBe(1);
         expect(
           readTranscriptEventRows(owner, recorderTarget.sessionId)
@@ -298,9 +298,8 @@ it("retains recorder custody when the native actor's committed publication fails
         message: { content: "accepted input" },
       });
       expect(
-        readSessionPendingInputByKey(owner, recorderTarget, "native-publication:user")
-          ?.consumed_event_id,
-      ).toBe(admission.entryId);
+        readSessionPendingInputByKey(owner, recorderTarget, "native-publication:user"),
+      ).toBeUndefined();
       expect(
         readTranscriptEventRows(owner, recorderTarget.sessionId)
           .map((row) => JSON.parse(row.eventJson))
