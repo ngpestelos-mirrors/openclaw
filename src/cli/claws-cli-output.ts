@@ -1,7 +1,17 @@
-import type { ClawAddPlan, ClawDiagnostic } from "../claws/types.js";
+import { redactSensitiveUrlLikeString } from "@openclaw/net-policy/redact-sensitive-url";
+import { filterStringEntries } from "@openclaw/normalization-core";
+import { CLAW_REMOVE_PLAN_SCHEMA_VERSION } from "../claws/lifecycle-remove-contract.js";
+import {
+  CLAW_ADD_PLAN_SCHEMA_VERSION,
+  CLAW_OUTPUT_STABILITY,
+  type ClawAddPlan,
+  type ClawDiagnostic,
+} from "../claws/types.js";
 import type { ClawUpdatePlan } from "../claws/update-plan.js";
+import { redactSensitiveArgv } from "../config/redact-argv.js";
 import { redactSensitiveText } from "../logging/redact.js";
 import { writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
+import type { ClawsAddOptions, ClawsRemoveOptions } from "./claws-cli.js";
 
 export function emitClawFailure(
   runtime: RuntimeEnv,
@@ -82,4 +92,67 @@ export function logClawUpdatePlanSummary(plan: ClawUpdatePlan, runtime: RuntimeE
   if (plan.blockers.length > 0) {
     runtime.error(formatClawDiagnostics(plan.blockers));
   }
+}
+
+export function logClawAddPlanSummary(plan: ClawAddPlan, runtime: RuntimeEnv): void {
+  runtime.log(`Agent: ${plan.agent.finalId}`);
+  runtime.log(`Workspace: ${plan.agent.workspace}`);
+  logClawAgentConfiguration(plan, runtime);
+  runtime.log(`Actions: ${plan.summary.totalActions}`);
+  runtime.log(`Packages: ${plan.summary.packageActions}`);
+  for (const action of plan.actions.filter((candidate) => candidate.kind === "package")) {
+    const requirementState =
+      typeof action.details?.requirementState === "string"
+        ? action.details.requirementState
+        : "unresolved";
+    runtime.log(
+      `  Requirement ${action.target}: ${requirementState}${action.action === "install" ? " (installation requires this exact plan consent)" : ""}`,
+    );
+  }
+  runtime.log(`MCP servers: ${plan.summary.mcpServerActions}`);
+  for (const action of plan.actions.filter((candidate) => candidate.kind === "mcpServer")) {
+    const server = action.details as Record<string, unknown> | undefined;
+    const target =
+      typeof server?.url === "string"
+        ? redactSensitiveUrlLikeString(server.url)
+        : typeof server?.command === "string"
+          ? redactSensitiveArgv([server.command, ...filterStringEntries(server.args)]).join(" ")
+          : "invalid declaration";
+    runtime.log(`  MCP ${action.id}: ${target}`);
+  }
+  runtime.log(`Cron jobs: ${plan.summary.cronJobActions}`);
+  if (plan.capabilityChanges.length > 0) {
+    runtime.log(`Capability escalations (${plan.capabilityChanges.length}):`);
+    for (const change of plan.capabilityChanges) {
+      runtime.log(
+        redactSensitiveText(`  ! ${change.kind}:${change.id} ${JSON.stringify(change.effect)}`),
+      );
+    }
+    runtime.log("The plan integrity binds every capability line above.");
+  }
+  if (plan.summary.blockedActions > 0) {
+    runtime.log(`Blocked actions: ${plan.summary.blockedActions}`);
+  }
+}
+
+export function requireClawPlanConsent(
+  action: "add" | "remove",
+  opts: ClawsAddOptions | ClawsRemoveOptions,
+  runtime: RuntimeEnv,
+): boolean {
+  if (opts.dryRun || (opts.yes && opts.planIntegrity)) {
+    return false;
+  }
+  const code = opts.yes ? "plan_integrity_required" : "consent_required";
+  const message = opts.yes
+    ? `Claw ${action} consent must include --plan-integrity from the exact dry-run plan.`
+    : `Claw ${action} requires explicit consent; pass --dry-run to preview or --yes with --plan-integrity to ${action === "add" ? "create the new agent and workspace" : "remove owned state"}.`;
+  emitClawFailure(runtime, opts.json, message, {
+    schemaVersion:
+      action === "add" ? CLAW_ADD_PLAN_SCHEMA_VERSION : CLAW_REMOVE_PLAN_SCHEMA_VERSION,
+    stability: CLAW_OUTPUT_STABILITY,
+    ok: false,
+    error: { code, message },
+  });
+  return true;
 }
