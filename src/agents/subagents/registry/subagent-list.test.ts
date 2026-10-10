@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { replaceSessionEntry } from "../../../config/sessions/session-accessor.js";
 import { withIncognitoSessionBinding } from "../../../config/sessions/session-incognito-binding.js";
+import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { captureOpenClawAgentDatabaseExecution } from "../../../state/openclaw-agent-execution.js";
 import { withEnvAsync } from "../../../test-utils/env.js";
@@ -67,7 +68,7 @@ describe("buildSubagentList", () => {
               ? `agent:${actor.agentId}:subagent:incognito-list`
               : "global";
             const runId = `${actor.agentId}-${incognito ? "private" : "durable"}`;
-            const entry = {
+            const entry: SessionEntry = {
               sessionId: runId,
               lifecycleRevision: runId,
               updatedAt: now,

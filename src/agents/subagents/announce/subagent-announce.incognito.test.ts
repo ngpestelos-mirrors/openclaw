@@ -1,4 +1,5 @@
 import "../../../test-utils/prepare-compiled-subprocesses.js";
+import assert from "node:assert/strict";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { awaitGateBeforeSettlement } from "../../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
@@ -100,10 +101,9 @@ describe("selected incognito announcement requester", () => {
         "Wake settled before injection preparation",
       );
       await withIncognitoSessionBinding({ actor }, () =>
-        patchSessionEntryCore(
-          { agentId: "main", storePath: actor.path, sessionKey },
-          { lifecycleRevision: "replacement" },
-        ),
+        patchSessionEntryCore({ agentId: "main", storePath: actor.path, sessionKey }, () => ({
+          lifecycleRevision: "replacement",
+        })),
       );
       resume.resolve();
       await expect(pending).resolves.toEqual({ status: "source_owner_changed" });
@@ -211,7 +211,7 @@ describe("selected incognito announcement requester", () => {
           await withIncognitoSessionBinding({ actor: childActor }, () =>
             patchSessionEntryCore(
               { agentId: "child", storePath: childActor.path, sessionKey },
-              { lifecycleRevision: "replacement" },
+              () => ({ lifecycleRevision: "replacement" }),
             ),
           );
         } else {
@@ -240,15 +240,22 @@ describe("selected incognito announcement requester", () => {
     setRuntimeConfigSnapshot({
       session: { store: `${actorEnv.OPENCLAW_STATE_DIR}/agents/{agentId}/sessions/sessions.json` },
     });
-    await childActor.sessions.create(authority, {
+    const created = await childActor.sessions.create(authority, {
       sessionKey,
-      entry: { sessionId: "child-result", updatedAt: 1, incognito: true },
+      entry: {
+        sessionId: "child-result",
+        updatedAt: 1,
+        lifecycleRevision: "child-result-initial",
+        incognito: true,
+      },
     });
+    assert(created.entry);
     await childActor.sessions.transcript(authority, {
       type: "session.message.append",
       input: {
         sessionKey,
-        sessionId: "child-result",
+        sessionId: created.entry.sessionId,
+        fence: { expectedLifecycleRevision: created.entry.lifecycleRevision },
         message: {
           role: "assistant",
           stopReason: "stop",
