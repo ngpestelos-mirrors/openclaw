@@ -260,6 +260,21 @@ describe("JSX icon-grid fixtures", () => {
     return collect(`${imports}\nconst View = () => ${markup};`, "ui/src/control.tsx", document);
   }
 
+  it("ignores unnamed array-binding slots when checking component shadowing", () => {
+    const dom = new JSDOM();
+    try {
+      for (const source of [
+        "const [, value] = items; const View = () => <button><svg /></button>;",
+        "const { x: [, value] } = items; const View = () => <button><svg /></button>;",
+        "function View([, value]) { return <button><svg /></button>; }",
+      ]) {
+        expect(collect(source, "ui/src/control.tsx", dom.window.document)).toHaveLength(1);
+      }
+    } finally {
+      dom.window.close();
+    }
+  });
+
   it("preserves literal ancestors through JSX branches, Show, and For", () => {
     const dom = new JSDOM();
     try {

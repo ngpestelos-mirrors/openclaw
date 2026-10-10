@@ -515,7 +515,8 @@ export function collectIconFixtures(
       }
     } else {
       for (const element of name.elements) {
-        if (ts.isBindingElement(element)) shadowed(element.name);
+        // Native AST array elisions are binding elements without a name.
+        if (ts.isBindingElement(element) && element.name) shadowed(element.name);
       }
     }
   };
