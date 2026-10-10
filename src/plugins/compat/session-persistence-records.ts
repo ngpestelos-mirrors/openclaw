@@ -207,7 +207,7 @@ export const SESSION_PERSISTENCE_COMPAT_RECORDS = [
     docsPath: "/plugins/sdk-migration/how-to-migrate#await-session-transcript-persistence",
     surfaces: ["SessionManager.readSessionContext"],
     diagnostics: [
-      "TypeScript @deprecated annotation and one runtime DEP_SESSION_PERSISTENCE warning per method per process",
+      "TypeScript @deprecated annotation and one runtime DEP_SESSION_PERSISTENCE warning per plugin and capability family per process",
     ],
     tests: [
       "src/plugin-sdk/agent-sessions.context-compat.test.ts",
@@ -320,7 +320,7 @@ export const SESSION_PERSISTENCE_COMPAT_RECORDS = [
     ],
     diagnostics: [
       "TypeScript @deprecated annotations naming awaited twins",
-      "one runtime DEP_SESSION_PERSISTENCE warning per method per process",
+      "one runtime DEP_SESSION_PERSISTENCE warning per plugin and capability family per process",
     ],
     tests: [
       "src/plugins/compat/registry.test.ts",
@@ -347,7 +347,7 @@ export const SESSION_PERSISTENCE_COMPAT_RECORDS = [
       "AgentSession.setSessionName",
     ],
     diagnostics: [
-      "TypeScript @deprecated annotations, migration guide, and once-per-method DEP_SESSION_PERSISTENCE warning",
+      "TypeScript @deprecated annotations, migration guide, and shared once-per-plugin-and-family DEP_SESSION_PERSISTENCE warning",
     ],
     tests: [
       "src/plugins/compat/registry.test.ts",
@@ -372,7 +372,7 @@ export const SESSION_PERSISTENCE_COMPAT_RECORDS = [
       "sanitizeGoogleGeminiReplayHistory",
     ],
     diagnostics: [
-      "TypeScript @deprecated annotations, versioned migration guide, and once-per-method DEP_SESSION_PERSISTENCE warning",
+      "TypeScript @deprecated annotations, versioned migration guide, and shared once-per-plugin-and-family DEP_SESSION_PERSISTENCE warning",
     ],
     tests: [
       "src/plugins/compat/registry.test.ts",
