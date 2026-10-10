@@ -20,6 +20,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { isSubagentSessionKey } from "../routing/session-key.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
+import { isSubagentCoordinationInputProvenance } from "../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../sessions/send-policy.js";
 import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
 import { classifySessionStateActor } from "../sessions/session-state-events.js";
@@ -197,8 +198,23 @@ async function agentCommandInternal(
       scope: storePath ?? `agent:${sessionAgentId}`,
       isSettling: opts.isTerminalOutcomeObserved,
       identities: [sessionKey, sessionId],
+      run: {
+        runId,
+        sessionKey,
+        sessionId,
+        agentId: sessionAgentId,
+        controlUiVisible:
+          !suppressVisibleSessionEffects &&
+          !isSubagentCoordinationInputProvenance(opts.inputProvenance),
+      },
       signal: opts.abortSignal,
-      onInterrupt: (reason) => lifecycleAbortController.abort(reason),
+      onInterrupt: (reason) => {
+        if (opts.abortSignal?.aborted) {
+          return undefined;
+        }
+        lifecycleAbortController.abort(reason);
+        return { runId };
+      },
       assertAllowed: async () => {
         const scope = { agentId: sessionAgentId, storePath, sessionKey: sessionKey ?? "" };
         const currentEntry =
