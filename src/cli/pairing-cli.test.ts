@@ -81,6 +81,8 @@ describe("pairing cli", () => {
         config: {},
         signal: new AbortController().signal,
         assertCurrent() {},
+        assertSettlementCurrent() {},
+        runSettlement: (run) => run(),
       }),
     );
     listChannelPairingRequests.mockClear();
