@@ -2401,7 +2401,7 @@ describe("runReplyAgent pending final delivery capture", () => {
       runOverrides: { verboseLevelOverride: "off" },
     });
 
-    await expect(run()).rejects.toThrow("pending final delivery session changed or was deleted");
+    await expect(run()).rejects.toThrow("Terminal accounting session changed");
     const stored = loadSessionEntry({ sessionKey, storePath });
     if (reset) {
       expect(stored).toMatchObject({ sessionId: "session-after-reset" });
@@ -5271,7 +5271,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
           activeModel: "deepinfra/moonshotai/Kimi-K2.5",
           reason: "rate limit",
         };
-        expect(sessionEntry.fallbackNotice).toEqual(activeFallback);
+        expect(sessionStore.main.fallbackNotice).toEqual(activeFallback);
         expect(requireStoredSessionEntry(storePath).fallbackNotice).toEqual(activeFallback);
         const second = await run();
         const third = await run();
@@ -5289,7 +5289,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
         }
         expect(phases.filter((phase) => phase === "fallback").length).toBe(1);
         expect(phases.filter((phase) => phase === "fallback_cleared").length).toBe(1);
-        expect(sessionEntry.fallbackNotice).toBeUndefined();
+        expect(sessionStore.main.fallbackNotice).toBeUndefined();
         expect(requireStoredSessionEntry(storePath).fallbackNotice).toBeUndefined();
       } finally {
         fallbackSpy.mockRestore();
@@ -5700,7 +5700,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
     await run();
 
     const stored = requireStoredSessionEntry(storePath);
-    expect(sessionEntry.fallbackNotice).toBeUndefined();
+    expect(sessionStore.main.fallbackNotice).toBeUndefined();
     expect(stored.fallbackNotice).toBeUndefined();
     expect(stored.modelProvider).toBe("claude-cli");
     expect(stored.model).toBe("claude-opus-4-7");

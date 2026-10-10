@@ -41,7 +41,10 @@ const usage: SessionActorReducer = {
   },
 };
 
-async function nativeSession(env: NodeJS.ProcessEnv) {
+async function nativeSession(
+  env: NodeJS.ProcessEnv,
+  sessionKey = "agent:main:dashboard:incognito-native-completion",
+) {
   const database = {
     agentId: "main",
     path: resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main", env }),
@@ -50,7 +53,7 @@ async function nativeSession(env: NodeJS.ProcessEnv) {
   const scope = {
     agentId: database.agentId,
     storePath: database.path,
-    sessionKey: "agent:main:dashboard:incognito-native-completion",
+    sessionKey,
     env,
   };
   replaceSessionEntrySync(scope, {
@@ -69,107 +72,110 @@ async function nativeSession(env: NodeJS.ProcessEnv) {
   return { actor, database, factory, owner, scope, target };
 }
 
-it("completes usage through the existing unbound native incognito owner", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
-    const { actor, database, owner, scope, target } = await nativeSession(env);
-    let callbackCount = 0;
-    try {
-      expect(captureOpenClawAgentDatabaseExecution.listIncognito(env)).toEqual([]);
-      const before = await actor.read(authority);
-      const entry = expectDefined(before.entry, "native session entry");
-      const source = {
-        agentId: database.agentId,
-        path: database.path,
-        databaseIdentity: readOpenClawAgentDatabaseIdentity(owner).identity,
-      };
-      const ownerSources = captureNativeIncognitoSessionActorSources({
-        database,
-        target,
-        sources: [
-          {
-            source,
-            sessionKey: scope.sessionKey,
-            fields: ["sessionId"],
-            expected: { sessionId: entry.sessionId },
-          },
-        ],
-      });
-      expect(() =>
-        captureNativeIncognitoSessionActorSources({
+it.each(["agent:main:dashboard:incognito-native-completion", "agent:main:main"])(
+  "completes usage through the existing unbound native incognito owner for %s",
+  async (sessionKey) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+      const { actor, database, owner, scope, target } = await nativeSession(env, sessionKey);
+      let callbackCount = 0;
+      try {
+        expect(captureOpenClawAgentDatabaseExecution.listIncognito(env)).toEqual([]);
+        const before = await actor.read(authority);
+        const entry = expectDefined(before.entry, "native session entry");
+        const source = {
+          agentId: database.agentId,
+          path: database.path,
+          databaseIdentity: readOpenClawAgentDatabaseIdentity(owner).identity,
+        };
+        const ownerSources = captureNativeIncognitoSessionActorSources({
           database,
           target,
           sources: [
             {
-              source: { ...source, databaseIdentity: Symbol("other-owner") },
+              source,
               sessionKey: scope.sessionKey,
-              fields: [],
-              expected: undefined,
+              fields: ["sessionId"],
+              expected: { sessionId: entry.sessionId },
             },
           ],
-        }),
-      ).toThrow("another database");
-      const outcome = await actor.withPhase(
-        "terminal",
-        authority,
-        async ({ actor: held, patch }) => {
-          callbackCount += 1;
-          patch([usage]);
-          return held.completeTurn(
-            {
-              commandId: "native-complete",
-              phaseId: "terminal",
-              expected: before.version,
-              turn: {
-                agentId: scope.agentId,
+        });
+        expect(() =>
+          captureNativeIncognitoSessionActorSources({
+            database,
+            target,
+            sources: [
+              {
+                source: { ...source, databaseIdentity: Symbol("other-owner") },
                 sessionKey: scope.sessionKey,
-                ownerSources,
-                options: {
-                  expectedSessionId: entry.sessionId,
-                  expectedWriterRunId: "native-run",
-                  expectedSessionState: buildRestartRecoveryExpectedState(entry),
-                  sessionLifecyclePatch: { status: "done", endedAt: 50 },
-                  sessionFile: "native-session.jsonl",
-                  messages: [],
+                fields: [],
+                expected: undefined,
+              },
+            ],
+          }),
+        ).toThrow("another database");
+        const outcome = await actor.withPhase(
+          "terminal",
+          authority,
+          async ({ actor: held, patch }) => {
+            callbackCount += 1;
+            patch([usage]);
+            return held.completeTurn(
+              {
+                commandId: "native-complete",
+                phaseId: "terminal",
+                expected: before.version,
+                turn: {
+                  agentId: scope.agentId,
+                  sessionKey: scope.sessionKey,
+                  ownerSources,
+                  options: {
+                    expectedSessionId: entry.sessionId,
+                    expectedWriterRunId: "native-run",
+                    expectedSessionState: buildRestartRecoveryExpectedState(entry),
+                    sessionLifecyclePatch: { status: "done", endedAt: 50 },
+                    sessionFile: "native-session.jsonl",
+                    messages: [],
+                  },
                 },
               },
-            },
-            authority,
-          );
-        },
-      );
-      expect(callbackCount).toBe(1);
-      expect(outcome.kind).toBe("committed");
-      if (outcome.kind !== "committed") {
-        throw new Error("Native completion did not commit");
+              authority,
+            );
+          },
+        );
+        expect(callbackCount).toBe(1);
+        expect(outcome.kind).toBe("committed");
+        if (outcome.kind !== "committed") {
+          throw new Error("Native completion did not commit");
+        }
+        expect(outcome.failure).toBeUndefined();
+        expect(outcome.receipt).toMatchObject({
+          commandId: "native-complete",
+          phase: "completeTurn",
+          beforeVersion: before.version,
+          afterVersion: { epoch: before.version.epoch, sequence: before.version.sequence + 1 },
+          reducers: [{ index: 0, kind: "usage", changed: true }],
+          transcript: { appendedMessages: [] },
+        });
+        expect(actor.snapshot(authority)).toEqual(outcome.receipt.postimage);
+        expect(readExactSessionEntryRow(owner, scope.sessionKey)?.entry).toMatchObject({
+          incognito: true,
+          inputTokens: 120,
+          outputTokens: 8,
+          status: "done",
+          endedAt: 50,
+        });
+        expect(getOpenClawAgentDatabaseIfOpen(database)).toBe(owner);
+        expect(captureOpenClawAgentDatabaseExecution.listIncognito(env)).toEqual([]);
+        expect(existsSync(scope.storePath)).toBe(false);
+        expect(existsSync(resolveOpenClawAgentSqlitePath({ agentId: scope.agentId, env }))).toBe(
+          false,
+        );
+      } finally {
+        await actor.release();
       }
-      expect(outcome.failure).toBeUndefined();
-      expect(outcome.receipt).toMatchObject({
-        commandId: "native-complete",
-        phase: "completeTurn",
-        beforeVersion: before.version,
-        afterVersion: { epoch: before.version.epoch, sequence: before.version.sequence + 1 },
-        reducers: [{ index: 0, kind: "usage", changed: true }],
-        transcript: { appendedMessages: [] },
-      });
-      expect(actor.snapshot(authority)).toEqual(outcome.receipt.postimage);
-      expect(readExactSessionEntryRow(owner, scope.sessionKey)?.entry).toMatchObject({
-        incognito: true,
-        inputTokens: 120,
-        outputTokens: 8,
-        status: "done",
-        endedAt: 50,
-      });
-      expect(getOpenClawAgentDatabaseIfOpen(database)).toBe(owner);
-      expect(captureOpenClawAgentDatabaseExecution.listIncognito(env)).toEqual([]);
-      expect(existsSync(scope.storePath)).toBe(false);
-      expect(existsSync(resolveOpenClawAgentSqlitePath({ agentId: scope.agentId, env }))).toBe(
-        false,
-      );
-    } finally {
-      await actor.release();
-    }
-  });
-});
+    });
+  },
+);
 
 it("preserves the native committed receipt and replica when a commit observer fails", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {

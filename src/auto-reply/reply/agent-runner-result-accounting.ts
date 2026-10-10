@@ -3,6 +3,9 @@ import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { resolveFastModeState } from "../../agents/fast-mode.js";
 import { prepareLiveModelSwitchAfterRun } from "../../agents/live-model-switch.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
+import type { SessionActorReducer } from "../../config/sessions/session-actor-contract.js";
+import { reduceSessionActorEntry } from "../../config/sessions/session-actor-reducers.js";
+import type { SessionEntry } from "../../config/sessions/types.js";
 import { logVerbose } from "../../globals.js";
 import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
 import { resolveFallbackTransition } from "../fallback-state.js";
@@ -98,6 +101,18 @@ export async function accountAgentTurn(context: AgentTurnAccountingContext) {
   let { activeSessionEntry } = context;
   const completion = context.completion;
   activeSessionEntry = completion?.current() ?? activeSessionEntry;
+  const patchBookkeeping = (entry: SessionEntry | undefined, reducers: SessionActorReducer[]) => {
+    if (completion) {
+      for (const reducer of reducers) completion.patch(reducer);
+      return completion.current();
+    }
+    // Entry-only callers keep their transient projection, without a second durable writer.
+    if (entry && !context.storePath) {
+      Object.assign(entry, reduceSessionActorEntry(entry, reducers));
+      if (activeSessionStore && sessionKey) activeSessionStore[sessionKey] = entry;
+    }
+    return entry;
+  };
   const latestCompaction = execution.compaction?.durable.at(-1);
   const currentContextSnapshot = execution.compaction
     ? (latestCompaction?.currentContextSnapshot ?? { tokens: undefined })
@@ -123,9 +138,10 @@ export async function accountAgentTurn(context: AgentTurnAccountingContext) {
     sessionKey &&
     activeSessionEntry.groupActivationNeedsSystemIntro
   ) {
-    completion?.patch({ kind: "group-intro", needsSystemIntro: false });
-    completion?.patch({ kind: "activity", updatedAt: Date.now() });
-    activeSessionEntry = completion?.current() ?? activeSessionEntry;
+    activeSessionEntry = patchBookkeeping(activeSessionEntry, [
+      { kind: "group-intro", needsSystemIntro: false },
+      { kind: "activity", updatedAt: Date.now() },
+    ]);
   }
 
   const payloadArray = runResult.payloads ?? [];
@@ -226,9 +242,10 @@ export async function accountAgentTurn(context: AgentTurnAccountingContext) {
             : {}),
         }
       : undefined;
-    completion?.patch({ kind: "fallback-notice", notice: fallbackNotice });
-    completion?.patch({ kind: "activity", updatedAt: Date.now() });
-    activeSessionEntry = completion?.current() ?? activeSessionEntry;
+    activeSessionEntry = patchBookkeeping(fallbackStateEntry, [
+      { kind: "fallback-notice", notice: fallbackNotice },
+      { kind: "activity", updatedAt: Date.now() },
+    ]);
   }
   const runtimeContextTokens =
     typeof ctxTokens === "number" && Number.isFinite(ctxTokens) && ctxTokens > 0
