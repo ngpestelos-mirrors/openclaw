@@ -50,6 +50,8 @@ on `PATH` and uses it only when all of these hold:
   `codex` from the Gateway's `PATH`.
 - A real app-server `initialize` handshake against a throwaway `CODEX_HOME`
   succeeds within the remaining selection budget and reports the same version.
+  Its SQLite location is also forced into that temporary home; inherited
+  database-location overrides cannot redirect the probe into existing state.
   No auth or turn is involved.
 
 Otherwise OpenClaw uses the shipped binary. The Gateway logs one line with the

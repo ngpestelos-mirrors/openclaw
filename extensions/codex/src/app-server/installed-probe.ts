@@ -52,7 +52,8 @@ async function exchangeInitialize(
     commandSource: "resolved-managed",
     args: ["app-server", "--listen", "stdio://"],
     headers: {},
-    env: { CODEX_HOME: codexHome },
+    // Codex may otherwise prefer an inherited database root over CODEX_HOME.
+    env: { CODEX_HOME: codexHome, CODEX_SQLITE_HOME: codexHome },
   };
   // Same argv and environment filtering as the real start, minus registration.
   const env = resolveCodexAppServerSpawnEnv(options);
