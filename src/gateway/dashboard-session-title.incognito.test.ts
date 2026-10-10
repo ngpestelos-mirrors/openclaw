@@ -7,6 +7,8 @@ import { patchSessionEntryCore } from "../config/sessions/session-accessor.sqlit
 import { withIncognitoSessionActor } from "../config/sessions/session-incognito-binding.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { withPluginMetadataSnapshotScope } from "../plugins/current-plugin-metadata-snapshot.js";
+import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { openIncognitoTestActor } from "../state/openclaw-agent-execution-incognito.test-support.js";
 import { maybeGenerateSessionTitle } from "./dashboard-session-title.js";
 
@@ -35,27 +37,34 @@ it("titles the bound session through actor history and commits without host sess
   const entry: SessionEntry = { sessionId: "title", updatedAt: Date.now(), incognito: true };
   await actor.sessions.create(authority, { sessionKey, entry });
   generate.mockResolvedValue("Workspace planning");
-  const sql = observeHostDataSql();
-  try {
-    expect(
-      await withIncognitoSessionActor(actor, () =>
-        maybeGenerateSessionTitle({
-          cfg,
-          agentId: "main",
-          sessionKey,
-          sessionId: entry.sessionId,
-          storePath: actor.path,
-          userMessage: "Plan my workspace",
-        }),
-      ),
-    ).toBe(true);
-    expect((await actor.sessions.read(authority, { sessionKey })).entry?.displayName).toBe(
-      "Workspace planning",
-    );
-    expect(sql.queries).toEqual([]);
-  } finally {
-    sql.restore();
-  }
+  // Title requests inherit the Gateway's admitted metadata generation.
+  await withPluginMetadataSnapshotScope(
+    createPluginMetadataSnapshotFixture(),
+    async () => {
+      const sql = observeHostDataSql();
+      try {
+        expect(
+          await withIncognitoSessionActor(actor, () =>
+            maybeGenerateSessionTitle({
+              cfg,
+              agentId: "main",
+              sessionKey,
+              sessionId: entry.sessionId,
+              storePath: actor.path,
+              userMessage: "Plan my workspace",
+            }),
+          ),
+        ).toBe(true);
+        expect((await actor.sessions.read(authority, { sessionKey })).entry?.displayName).toBe(
+          "Workspace planning",
+        );
+        expect(sql.queries).toEqual([]);
+      } finally {
+        sql.restore();
+      }
+    },
+    { config: cfg, trustConfigIdentity: true },
+  );
 });
 
 it("refuses a title after the same session ID acquires another lifecycle during inference", async () => {

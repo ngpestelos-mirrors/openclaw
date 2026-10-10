@@ -455,7 +455,6 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/worker-environments/worker-turn-run-owner.test.ts",
   "src/gateway/worker-environments/worker-turn-shutdown.test.ts",
   "src/gateway/worker-environments/worker-turn-trajectory.test.ts",
-  "src/gateway/worker-environments/worker-turn-transcript-target.test.ts",
   "src/gateway/worker-environments/workspace-result-finalize.test.ts",
   "src/gateway/worker-environments/workspace-result-ref-mutation.test.ts",
   "src/gateway/worker-environments/workspace-result-repository.editor-admission.test.ts",

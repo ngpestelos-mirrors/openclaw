@@ -51,10 +51,12 @@ import {
   applyPreparedTranscriptCommit,
   isCommittedAgentMessage,
   prepareTranscriptCommit,
-  type ApplyTranscriptCommitResult,
-  type CommittedAgentMessage,
-  type TranscriptCommitInput,
 } from "./transcript-commit.kernel.js";
+import type {
+  ApplyTranscriptCommitResult,
+  CommittedAgentMessage,
+  TranscriptCommitInput,
+} from "./transcript-commit.types.js";
 import type { WorkerTranscriptOperations } from "./transcript-commit.worker.js";
 
 const log = createSubsystemLogger("gateway/worker-transcript");

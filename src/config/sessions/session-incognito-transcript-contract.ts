@@ -3,7 +3,7 @@ import type {
   ApplyTranscriptCommitResult,
   CommittedAgentMessage,
   TranscriptCommitInput,
-} from "../../gateway/worker-environments/transcript-commit.kernel.js";
+} from "../../gateway/worker-environments/transcript-commit.types.js";
 import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js";
 import type {
   SessionGoalManagementInput,
