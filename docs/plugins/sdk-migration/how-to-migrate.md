@@ -35,6 +35,12 @@ try {
 }
 ```
 
+`execute` and `executeExisting` admit one transaction across backend binding and
+the command. If binding commits independent schema initialization, use
+`store.run((scope) => scope.execute(command), owner.assertCurrent)` to keep
+binding and the command in separate admissions. This callback sequences worker
+commands; it never receives a native database handle.
+
 `executeExisting` preserves absence and never creates a missing database. Store
 closure refuses new work and joins accepted operations. Completion includes the
 owning domain's committed-fact installation; an unknown outcome never permits a

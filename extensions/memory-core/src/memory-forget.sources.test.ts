@@ -110,7 +110,7 @@ describe("memory forget source removal", () => {
     ["newer schema", /uses newer schema version 999/],
     ["unreadable source", /file is not a database/],
   ] as const)(
-    "refuses %s during read planning without repairing its source",
+    "refuses %s during source validation without repairing its source",
     async (failure, message) => {
       openOpenClawAgentDatabase({ agentId: "main" });
       const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
@@ -142,7 +142,11 @@ describe("memory forget source removal", () => {
                 retainedEntryKeys: new Set(),
               })
             : listMemoryEntryOrigins({ agentId: "main" });
-        await expect(reading()).rejects.toThrow(message);
+        await expect(reading()).rejects.toThrow(
+          failure === "missing required table"
+            ? /missing table memory_index_chunks; run openclaw doctor --fix to repair it/
+            : message,
+        );
         await expect(
           planMemoryIndex(indexSelection(), {
             agentId: "main",
