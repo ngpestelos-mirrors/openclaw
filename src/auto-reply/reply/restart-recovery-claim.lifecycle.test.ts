@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -25,7 +26,11 @@ import { createSqliteLifecycleAggregateError } from "../../infra/sqlite-lifecycl
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import { sqliteWorkerOwnerProbe as probe } from "../../infra/sqlite-worker-owner-probe.test-support.js";
 import { clearOpenClawAgentDatabaseValidationCache } from "../../state/openclaw-agent-db-validation-cache.js";
-import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  getOpenClawAgentDatabaseIfOpen,
+  resolveIncognitoOpenClawAgentSqlitePath,
+} from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import { handleReplyAgentRunError } from "./agent-runner-core.js";
@@ -44,20 +49,32 @@ async function withTrackedReply(
     releaseDatabase: () => Promise<void>;
     readEntry: () => ReturnType<typeof loadSessionEntry>;
   }) => Promise<void>,
+  storage: "durable" | "native-incognito" = "durable",
 ) {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const scope = {
       agentId: "main",
-      sessionKey: "agent:main:retired-readiness",
-      storePath: state.statePath("sessions.json"),
+      sessionKey:
+        storage === "native-incognito"
+          ? "agent:main:dashboard:incognito-recovery"
+          : "agent:main:retired-readiness",
+      storePath:
+        storage === "native-incognito"
+          ? resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main", env: state.env })
+          : state.statePath("sessions.json"),
     };
     let entry: InternalSessionEntry = {
       sessionId: "old-session",
       updatedAt: 1,
       status: undefined,
       restartRecoveryDeliveryRunId: "old-recovery",
+      ...(storage === "native-incognito" ? { incognito: true } : {}),
     };
     await replaceSessionEntry(scope, entry);
+    const native =
+      storage === "native-incognito"
+        ? getOpenClawAgentDatabaseIfOpen({ ...scope, path: scope.storePath })
+        : undefined;
     const operation = createReplyOperation({
       ...scope,
       sessionId: entry.sessionId,
@@ -106,11 +123,47 @@ async function withTrackedReply(
         readEntry: () => loadSessionEntry(scope),
         releaseDatabase: actor.release,
       });
+      if (storage === "native-incognito") {
+        expect(native).toBeDefined();
+        expect(getOpenClawAgentDatabaseIfOpen({ ...scope, path: scope.storePath })).toBe(native);
+        expect(fs.existsSync(scope.storePath)).toBe(false);
+      }
     } finally {
       operation.complete();
     }
   });
 }
+
+it("settles native-incognito recovery through hook checkpoints and restart readiness", async () => {
+  await withTrackedReply(async ({ controller, operation, confirmArmed, readEntry }) => {
+    await expect(controller.beginBeforeAgentReply()).resolves.toBe(true);
+    await controller.checkpointBeforeAgentReply({ state: "handled-silent" });
+    expect(readEntry()?.restartRecoveryBeforeAgentReplyState).toBe("handled-silent");
+    await confirmArmed();
+    operation.abortForRestart();
+    let drains = 0;
+    const reply = await handleReplyAgentRunError(new Error("Backend stopped"), {
+      resolveVisibleReplyDelivery: async () => false,
+      isHeartbeat: false,
+      replyExpectation: "required",
+      isRestartRecoveryArmed: controller.isArmed,
+      replyOperation: operation,
+      resolvedVerboseLevel: "off",
+      returnWithQueuedFollowupDrain: (value) => {
+        drains += 1;
+        return value;
+      },
+      sessionCtx: {},
+    });
+    expect(reply?.text).toBe(SILENT_REPLY_TOKEN);
+    expect(drains).toBe(1);
+    expect(readEntry()).toMatchObject({
+      sessionId: "old-session",
+      restartRecoveryDeliveryRunId: "old-recovery",
+      abortedLastRun: true,
+    });
+  }, "native-incognito");
+});
 
 it.each([
   { stage: "before-read", confirmed: false },
