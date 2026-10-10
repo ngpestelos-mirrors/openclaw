@@ -4,8 +4,10 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
-import { isUserGitHubConnectionCommit } from "./user-github-connections.kernel.js";
-import type { UserGitHubConnectionCommit } from "./user-github-connections.types.js";
+import {
+  isUserGitHubConnectionCommit,
+  type UserGitHubConnectionCommit,
+} from "./user-github-connections.types.js";
 import { isProfileDisplayRow } from "./user-profile-display-validation.js";
 import type { ProfileDisplayRow, UserProfileEmailBinding } from "./user-profiles.types.js";
 
