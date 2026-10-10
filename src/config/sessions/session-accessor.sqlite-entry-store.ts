@@ -24,6 +24,7 @@ import {
 import { sessionSharingEntriesEqual } from "./session-accessor.sqlite-entry-cache.types.js";
 import type { SqliteLifecycleTargetSnapshot } from "./session-accessor.sqlite-entry-equality.js";
 import {
+  parseReadableSessionEntryData,
   readExactSessionEntryRow,
   readSessionEntryTargetRow,
   readSessionEntryRowScan,
@@ -38,6 +39,7 @@ import {
   deleteSessionNodeArtifacts,
 } from "./session-accessor.sqlite-node-artifacts.js";
 import { hasSqliteSessionOwnerColumns } from "./session-accessor.sqlite-owner-projection.js";
+import { withProjectedParticipants } from "./session-accessor.sqlite-participant-projection.js";
 import { prepareSessionEntryWindowRow } from "./session-accessor.sqlite-provenance.js";
 import { collectSessionStateIdsForEntry } from "./session-accessor.sqlite-references.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
@@ -50,6 +52,7 @@ import {
   hasValidSessionEntryIdentity,
   parseSessionEntryJson as parseSessionEntryRow,
 } from "./session-accessor.sqlite-status.js";
+import { readSessionActorTransactionState } from "./session-actor-transaction.js";
 import {
   assertCanonicalSessionEntryLineageWrite,
   assertCanonicalSessionKeyWrite,
@@ -414,6 +417,10 @@ export function writeSessionEntry(
     routeContext?: ConversationRouteContext | null;
   } = {},
 ): SessionEntry {
+  const actor = readSessionActorTransactionState(database, { sessionKey });
+  if (actor && sessionKey !== actor.hot.target.sessionKey) {
+    throw new Error("Session actor cannot write a lookup sibling");
+  }
   if (!options.allowStoredAliases) {
     assertCanonicalSessionKeyWrite(sessionKey);
     assertCanonicalSessionEntryLineageWrite(entry);
@@ -663,5 +670,34 @@ export function writeSessionEntry(
     },
     writeGeneration,
   );
+  if (actor) {
+    const previousRow = actor.entryRows.get(sessionKey)?.row;
+    const row = {
+      ...previousRow,
+      ...sessionNode,
+      session_diff_baseline_json: JSON.stringify(canonicalEntry.sessionDiffBaseline) ?? null,
+      skills_snapshot_json: JSON.stringify(canonicalEntry.skillsSnapshot) ?? null,
+      system_prompt_report_json: JSON.stringify(canonicalEntry.systemPromptReport) ?? null,
+    };
+    const persistedEntry = parseReadableSessionEntryData(database, row, "full");
+    if (!persistedEntry) throw new Error("Session actor entry write lost its persisted identity");
+    const committedEntry = withProjectedParticipants(persistedEntry, actor.hot.participants);
+    actor.entryRows.set(sessionKey, {
+      entry: structuredClone(committedEntry),
+      row,
+    });
+    actor.hot.entry = structuredClone(committedEntry);
+    if (actor.window) {
+      actor.window = {
+        ...actor.window,
+        ...sessionRow,
+        created_at: actor.window.created_at,
+        session_key:
+          canonicalPreviousEntry?.sessionId === normalizedEntry.sessionId
+            ? actor.window.session_key
+            : sessionRow.session_key,
+      };
+    }
+  }
   return normalizedEntry;
 }

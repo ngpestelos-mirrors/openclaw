@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import type { SessionTreeEntry } from "@openclaw/agent-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import { getCodeModeSourceAppend } from "../../agents/transcript-code-mode-source.js";
@@ -47,6 +48,7 @@ import {
   touchTranscriptMutationInTransaction,
 } from "./session-accessor.sqlite-transcript-state.js";
 import type { SessionTranscriptRuntimeScope } from "./session-accessor.types.js";
+import { readSessionActorTransactionState } from "./session-actor-transaction.js";
 import { readHotSessionTranscriptSnapshot } from "./session-cold-storage-read.js";
 import {
   createTranscriptIndexAppenderInTransaction,
@@ -170,6 +172,7 @@ export function appendTranscriptEventInTransaction(
   const persistedEvent =
     options.eventJson === undefined ? canonicalizeTranscriptEventMedia(event) : event;
   const db = getSessionKysely(database.db);
+  const actor = readSessionActorTransactionState(database, scope);
   const createdAt = readEventTimestamp(persistedEvent) ?? Date.now();
   if (cursor.initialized) {
     // The first attempt established this window and the batch cannot delete it.
@@ -181,6 +184,7 @@ export function appendTranscriptEventInTransaction(
         .where("session_id", "=", scope.sessionId),
     );
     cursor.updateWindow(createdAt);
+    if (actor?.window) actor.window.updated_at = createdAt;
   } else {
     ensureTranscriptSessionRoot(database, scope, createdAt, {
       allowStoredAlias: options.allowStoredAlias === true,
@@ -213,6 +217,14 @@ export function appendTranscriptEventInTransaction(
     parsedEvent: options.eventJson === undefined ? undefined : persistedEvent,
     preparedPayload: options.preparedPayload,
   });
+  if (actor) {
+    actor.hot.transcript.version.rawSeq = seq;
+    actor.hot.transcript.watermark.maxSeq = seq;
+    const stored: unknown = JSON.parse(eventJson);
+    actor.transcript.payloads.set(seq, stored);
+    // SAFETY: The same canonical event feeds the existing projection and tree codecs.
+    actor.transcript.navigation.push({ ...(stored as SessionTreeEntry), seq });
+  }
   cursor.nextSeq = seq + 1;
   cursor.appendToIndex ??= createTranscriptIndexAppenderInTransaction(database.db, scope.sessionId);
   const projectionNeedsRebuild = cursor.appendToIndex({
@@ -236,6 +248,12 @@ export function appendTranscriptEventInTransaction(
           .where("session_id", "=", scope.sessionId)
           .where("event_id", "=", idempotencyKeyOwner.eventId),
       );
+      const previous = actor?.transcript.identities.get(idempotencyKeyOwner.eventId);
+      if (previous)
+        actor?.transcript.identities.set(previous.event_id, {
+          ...previous,
+          message_idempotency_key: null,
+        });
     }
     identity.messageIdempotencyKey =
       idempotencyKeyOwner && options.idempotencyKeyMode !== "relocate-owner"
@@ -243,6 +261,15 @@ export function appendTranscriptEventInTransaction(
         : identity.messageIdempotencyKey;
     cursor.insertIdentity ??= createTranscriptIdentityInserter(database, scope.sessionId, true);
     cursor.insertIdentity({ ...identity, seq, createdAt });
+    actor?.transcript.identities.set(identity.eventId, {
+      session_id: scope.sessionId,
+      event_id: identity.eventId,
+      seq,
+      event_type: identity.eventType,
+      parent_id: identity.parentId,
+      message_idempotency_key: identity.messageIdempotencyKey,
+      created_at: createdAt,
+    });
   }
   advanceCliHistoryBoundaryInTransaction(database, scope, seq);
   if (options.touchMutation !== false) {
@@ -579,6 +606,13 @@ function readIdempotencyKeyOwner(
   sessionId: string,
   idempotencyKey: string,
 ): { eventId: string; seq: number } | undefined {
+  const actor = readSessionActorTransactionState(database, { sessionId });
+  if (actor) {
+    const row = [...actor.transcript.identities.values()].findLast(
+      (candidate) => candidate.message_idempotency_key === idempotencyKey,
+    );
+    return row ? { eventId: row.event_id, seq: row.seq } : undefined;
+  }
   const db = getSessionKysely(database.db);
   const row = executeSqliteQueryTakeFirstSync(
     database.db,
@@ -638,6 +672,11 @@ function readTranscriptMessageByIdentity(
   scope: ResolvedTranscriptScope,
   identity: { eventId: string; seq: number },
 ): { messageId: string; message: unknown } | undefined {
+  const actor = readSessionActorTransactionState(database, scope);
+  if (actor?.transcript.payloads.has(identity.seq)) {
+    const event = actor.transcript.payloads.get(identity.seq);
+    return { messageId: identity.eventId, message: isRecord(event) ? event.message : undefined };
+  }
   const db = getSessionKysely(database.db);
   const eventRow = executeSqliteQueryTakeFirstSync(
     database.db,

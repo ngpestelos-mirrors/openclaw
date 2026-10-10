@@ -13,6 +13,7 @@ import type { SessionTranscriptContextVersion } from "./session-accessor.sqlite-
 import { publishSessionEntryPlaceholderInsertion } from "./session-accessor.sqlite-entry-cache.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import { parseSessionEntryJson } from "./session-accessor.sqlite-status.js";
+import { readSessionActorTransactionState } from "./session-actor-transaction.js";
 import {
   assertCanonicalSqliteSessionRootWrite,
   canonicalSessionKeyMigrationRequiredError,
@@ -85,6 +86,8 @@ export function readTranscriptContextVersionInTransaction(
   database: Pick<OpenClawAgentDatabase, "db">,
   sessionId: string,
 ) {
+  const actor = readSessionActorTransactionState(database, { sessionId });
+  if (actor) return { ...actor.hot.transcript.version };
   return transcriptContextVersionQuery(database.db)(sessionId)!;
 }
 
@@ -93,6 +96,12 @@ export function readTranscriptContextStateInTransaction(
   database: Pick<OpenClawAgentDatabase, "db">,
   sessionId: string,
 ) {
+  const actor = readSessionActorTransactionState(database, { sessionId });
+  if (actor)
+    return {
+      coldArchive: actor.transcript.coldArchive,
+      version: { ...actor.hot.transcript.version },
+    };
   return {
     coldArchive: readSessionColdTranscript(database.db, sessionId),
     version: readTranscriptContextVersionInTransaction(database, sessionId),
@@ -108,6 +117,8 @@ export function readTranscriptGenerationInTransaction(
   database: OpenClawAgentDatabase,
   sessionId: string,
 ): string | undefined {
+  const actor = readSessionActorTransactionState(database, { sessionId });
+  if (actor) return actor.hot.transcript.version.generation ?? undefined;
   const db = getSessionKysely(database.db);
   return executeSqliteQueryTakeFirstSync(
     database.db,
@@ -123,6 +134,8 @@ export function ensureTranscriptGenerationInTransaction(
   database: OpenClawAgentDatabase,
   sessionId: string,
 ): void {
+  const actor = readSessionActorTransactionState(database, { sessionId });
+  if (actor?.hot.transcript.version.generation) return;
   const db = getSessionKysely(database.db);
   const generation = createTranscriptGeneration();
   executeSqliteQuerySync(
@@ -132,6 +145,10 @@ export function ensureTranscriptGenerationInTransaction(
       .values({ session_id: sessionId, generation, updated_at: Date.now() })
       .onConflict((conflict) => conflict.column("session_id").doNothing()),
   );
+  if (actor) {
+    actor.hot.transcript.version.generation = generation;
+    actor.hot.transcript.watermark.generation = generation;
+  }
 }
 
 /** Rotate the watermark in the same transaction as destructive transcript replacement. */
@@ -163,6 +180,21 @@ export function ensureTranscriptSessionRoot(
   } = {},
 ): void {
   const db = getSessionKysely(database.db);
+  const actor = readSessionActorTransactionState(database, scope);
+  if (actor?.window) {
+    if (actor.window.session_key !== scope.sessionKey) {
+      throw new Error("Session actor transcript window belongs to another logical owner");
+    }
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .updateTable("session_windows")
+        .set({ updated_at: updatedAt })
+        .where("session_id", "=", scope.sessionId),
+    );
+    actor.window.updated_at = updatedAt;
+    return;
+  }
   let nodeExists = false;
   if (!options.allowStoredAlias) {
     assertCanonicalSqliteSessionRootWrite(database, scope.sessionKey);
@@ -288,6 +320,11 @@ export function ensureTranscriptSessionRoot(
 }
 
 export function readNextTranscriptSeq(database: OpenClawAgentDatabase, sessionId: string): number {
+  const actor = readSessionActorTransactionState(database, { sessionId });
+  if (actor) {
+    if (actor.transcript.coldArchive) throw new SessionTranscriptColdError(sessionId);
+    return (actor.hot.transcript.version.rawSeq ?? -1) + 1;
+  }
   const db = getSessionKysely(database.db);
   const row = executeSqliteQueryTakeFirstSync(
     database.db,
@@ -336,6 +373,12 @@ export function readTranscriptMutationStateInTransaction(
   database: OpenClawAgentDatabase,
   sessionId: string,
 ): { observedAt: number | null; updatedAt: number | null } {
+  const actor = readSessionActorTransactionState(database, { sessionId });
+  if (actor)
+    return {
+      observedAt: actor.window?.transcript_observed_at ?? null,
+      updatedAt: actor.window?.transcript_updated_at ?? null,
+    };
   const row = transcriptMutationStateQuery(database.db)(sessionId);
   return {
     observedAt: row?.transcript_observed_at ?? null,
@@ -361,6 +404,36 @@ export function advanceTranscriptMutationAtInTransaction(
     }
   }
   const db = getSessionKysely(database.db);
+  const actor = readSessionActorTransactionState(database, { sessionId });
+  if (actor?.window) {
+    const updatedAt = options.strictly
+      ? Math.max(
+          transcriptUpdatedAt,
+          (actor.window.transcript_updated_at ?? -1) + 1,
+          (actor.window.transcript_observed_at ?? -1) + 1,
+        )
+      : transcriptUpdatedAt;
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .updateTable("session_windows")
+        .set({ transcript_updated_at: updatedAt })
+        .where("session_id", "=", sessionId),
+    );
+    actor.window.transcript_updated_at = updatedAt;
+    actor.hot.transcript.version.updatedAt = updatedAt;
+    const projection = actor.transcript.projection;
+    publishSessionTranscriptAuthority(database, {
+      ...actor.hot.transcript.version,
+      sessionId,
+      sessionKey: actor.hot.target.sessionKey,
+      leafEventId: projection?.leafEventId ?? null,
+      indexedSeq: projection?.indexedSeq ?? null,
+      activeMessageCount: projection?.activeMessageCount ?? null,
+      needsRebuild: projection ? (projection.needsRebuild ? 1 : 0) : null,
+    });
+    return;
+  }
   const update = db
     .updateTable("session_windows")
     .set((eb) => ({

@@ -1,3 +1,4 @@
+import type { SessionActorOperations } from "../config/sessions/session-actor-contract.js";
 import type {
   SqliteWalPeriodicRequest,
   SqliteWalPeriodicResult,
@@ -125,6 +126,7 @@ export type AgentDatabaseExecutionOpen =
 export type AgentDatabaseIncognitoAuthority = { assertCurrent(): void };
 
 export type AgentDatabaseOperations = AgentDatabaseDomainOperations &
+  SessionActorOperations &
   RegisteredAgentWorkerOperations & {
     "database.walMaintenance": { input: SqliteWalPeriodicRequest; output: SqliteWalPeriodicResult };
     "database.prepareWrite": { input: undefined; output: void };

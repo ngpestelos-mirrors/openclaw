@@ -683,6 +683,11 @@ export function createIncognitoSessionWorker(
       transcript.assertSettled();
       outbox.assertSettled();
     },
+    recordExternalWrite(sessionKey: string) {
+      assertKey(sessionKey);
+      revision += 1;
+      sessionRevisions.set(sessionKey, revision);
+    },
     close() {
       sessionRevisions.clear();
       manager.close();
