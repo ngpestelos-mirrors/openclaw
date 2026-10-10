@@ -56,7 +56,7 @@ const panelToggleEvents = [
 
 type PanelTagName = (typeof panelToggleEvents)[number][2];
 
-function canOpenLinkReader(owner: ActivePanelOwner | null, url: unknown): boolean {
+function canOpenLinkReader(owner: ActivePanelOwner | null, url: string | undefined): boolean {
   return Boolean(
     owner?.state.connected &&
     owner.state.client &&
