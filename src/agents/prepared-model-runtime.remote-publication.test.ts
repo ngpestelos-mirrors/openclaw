@@ -219,7 +219,7 @@ it("delivers the first reply when catalog adoption retires its captured dispatch
   expect(deliver.mock.calls.map(([payload]) => payload.text)).toEqual(["first reply completed"]);
 });
 
-it("derives a run owner from the admitted generation when a catalog publication supersedes it", async () => {
+it("re-admits an uncovered selection on the configured generation after a catalog publication", async () => {
   await setup();
   const input = fixture.agentInput("default", config);
   // Admission retains the configured generation before the downloaded catalog commits.
@@ -230,33 +230,29 @@ it("derives a run owner from the admitted generation when a catalog publication 
   expect(await applyRemoteModelCatalogUpdate(() => config)).toBe("published");
   await using configured = await acquirePublishedPreparedModelRuntime(input);
   expect(configured.pluginGeneration.remoteCatalog?.generatedAt).toBe(300);
-  // Provider-owner plugins activated per selection are absent from the configured registry.
-  const resolveOwners = runtimePluginLoadPlan.resolveAgentRuntimePluginSelectionOwners;
+  // Provider-owner plugins activated per selection are absent from the admitted registry.
   const ownersSpy = vi
     .spyOn(runtimePluginLoadPlan, "resolveAgentRuntimePluginSelectionOwners")
-    .mockImplementation((params) =>
-      params.selections.some((selection) => selection.provider === "openai")
-        ? { pluginIds: ["openai"], forceActivatedPluginIds: ["openai"] }
-        : resolveOwners(params),
-    );
+    .mockReturnValue({ pluginIds: ["openai"], forceActivatedPluginIds: ["openai"] });
   try {
+    // The configured owner's own key, as cron and Gateway chat admission resolve it.
     await using lease = await parent.run(() =>
       acquireAgentRunPreparedModelRuntime(
         {
           ...input,
           workspaceDir: parent.snapshot.workspaceDir,
           runtimePluginSelections: [
-            { provider: "openai", modelId: "gpt-5.6-luna", runtime: "openclaw" },
+            { provider: "custom", modelId: "remote-200", agentId: "default" },
           ],
         },
         { catalogMode: "static", pluginGeneration: parent.pluginGeneration },
       ),
     );
-    expect(lease.pluginGeneration.remoteCatalog?.generatedAt).toBe(200);
+    expect(lease.pluginGeneration).toBe(configured.pluginGeneration);
   } finally {
     ownersSpy.mockRestore();
   }
-  // The historic generation served only that run; new work still sees the published owner.
+  // Historic work never replaced the published owner for newly admitted work.
   await using next = await acquirePublishedPreparedModelRuntime(input);
   expect(next.pluginGeneration).toBe(configured.pluginGeneration);
 });

@@ -135,6 +135,7 @@ export async function acquirePreparedModelRuntimeLeaseFromOwners(
       currentOwner?.needsRefresh,
       configuredCatalog,
       lastExternalPublication,
+      options.pluginGeneration,
     ];
     if (previousAttempt?.every((value, index) => value === attempt[index])) {
       // Failed dynamic owners can disappear. A newly accepted catalog is still progress;
@@ -238,7 +239,7 @@ export async function acquirePreparedModelRuntimeLeaseFromOwners(
           configuredOwner.pluginGeneration !== options.pluginGeneration)
       ) {
         const borrowed = getPreparedModelRuntimeBorrowedSnapshot(options.pluginGeneration);
-        const admittedRuntimeMatches =
+        if (
           !configuredOwner.needsRefresh &&
           borrowed &&
           borrowed.metadataSnapshot === options.pluginGeneration.pluginMetadataSnapshot &&
@@ -251,28 +252,28 @@ export async function acquirePreparedModelRuntimeLeaseFromOwners(
           !input.readOnly &&
           !input.loadRuntimePlugins &&
           !input.skipCredentials &&
-          !input.env;
-        // A turn may finish under its still-open parent lease after reload. Its historic
-        // generation must never publish over the configured owner for newly admitted work.
-        if (
-          admittedRuntimeMatches &&
-          preparedPluginGenerationSupportsSelections(options.pluginGeneration, input)
+          !input.env
         ) {
-          assertAdmission();
-          return {
-            snapshot: borrowed,
-            pluginGeneration: options.pluginGeneration,
-            [Symbol.asyncDispose]: retainPreparedPluginGeneration(options.pluginGeneration),
-          };
+          // A turn may finish under its still-open parent lease after reload. Its historic
+          // generation must never publish over the configured owner for newly admitted work.
+          if (preparedPluginGenerationSupportsSelections(options.pluginGeneration, input)) {
+            assertAdmission();
+            return {
+              snapshot: borrowed,
+              pluginGeneration: options.pluginGeneration,
+              [Symbol.asyncDispose]: retainPreparedPluginGeneration(options.pluginGeneration),
+            };
+          }
+          // Acquisition precedes run side effects. A selection the admitted generation cannot
+          // serve (e.g. a per-run provider owner) is admitted afresh on the current generation.
+          if (configuredOwner.pluginGeneration) {
+            options = { ...options, pluginGeneration: configuredOwner.pluginGeneration };
+            continue;
+          }
         }
-        // Uncovered selections (for example a provider owner activated per run) derive their
-        // run-keyed owner from the admitted generation below, as they would without the newer
-        // publication. Only the configured key itself must never receive historic work.
-        if (!admittedRuntimeMatches || key === ownerKey(configuredOwner.input)) {
-          throw new PreparedModelRuntimePublicationSupersededError(
-            `prepared model runtime plugin generation was superseded for ${input.agentDir}`,
-          );
-        }
+        throw new PreparedModelRuntimePublicationSupersededError(
+          `prepared model runtime plugin generation was superseded for ${input.agentDir}`,
+        );
       }
     }
     if (
