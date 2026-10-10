@@ -11,6 +11,7 @@ import type {
 import type { DiffStat } from "../../lib/chat/tool-call-diff.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
 import type { UiSessionDefaultsHost } from "../../lib/sessions/session-key.ts";
+import type { ChatReasoning } from "./chat-reasoning.ts";
 import type { ChatRunStartupState } from "./chat-run-startup.ts";
 
 export type AgentEventPayload = AgentEvent & {
@@ -87,6 +88,7 @@ export type ToolStreamHost = {
   chatRunUsageById?: Map<string, RunOutputUsage>;
   chatStream: string | null;
   chatStreamStartedAt: number | null;
+  chatReasoning?: ChatReasoning | null;
   chatRunStartup?: ChatRunStartupState | null;
   chatStreamSegments: ChatStreamSegment[];
   toolStreamById: Map<string, ToolStreamEntry>;

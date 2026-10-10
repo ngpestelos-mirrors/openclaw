@@ -1,5 +1,6 @@
+import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { getTranscriptMessageRole } from "../agents/embedded-agent-runner/message-visibility.js";
-import { readAgentAssistantSource } from "../infra/agent-events.js";
+import { emitAgentEventForRunContext, readAgentAssistantSource } from "../infra/agent-events.js";
 import { getAgentRunContext } from "../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { logError } from "../logger.js";
@@ -136,9 +137,35 @@ export function createChatTranscriptPublication(params: {
         void settled.then(() => publications.delete(settled));
       }
       const run = chatRunState.getOrCreate(clientRunId);
+      if (run.bufferIsCurrent?.() === false || isChatAbortMarkerCurrent(run.abortMarker, link)) {
+        return;
+      }
+      const content = asNullableRecord(event.message)?.content;
       if (
-        run.bufferIsCurrent?.() === false ||
-        isChatAbortMarkerCurrent(run.abortMarker, link) ||
+        context &&
+        event.messageSeq !== undefined &&
+        Array.isArray(content) &&
+        content.some((block) => asNullableRecord(block)?.type === "thinking")
+      ) {
+        // Commit receipts identify the exact preview before later model turns;
+        // their text-free event flushes paced thinking without inventing a new occurrence.
+        for (const itemId of source?.itemId ? [source.itemId] : (event.assistantItemIds ?? [])) {
+          emitAgentEventForRunContext(
+            {
+              runId: sourceRunId,
+              stream: "thinking",
+              data: {
+                phase: "persisted",
+                itemId,
+                messageSeq: event.messageSeq,
+                messageRunId: sourceRunId,
+              },
+            },
+            context,
+          );
+        }
+      }
+      if (
         !(source
           ? chatRunState.retireSource(clientRunId, source)
           : chatRunState.retireBuffer(clientRunId, itemIds))

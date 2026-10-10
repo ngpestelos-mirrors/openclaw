@@ -12,6 +12,7 @@ import type {
 } from "../../lib/chat/chat-types.ts";
 import type { SessionCapability, SessionMessageSubscription } from "../../lib/sessions/index.ts";
 import type { ChatHistoryCursor, ChatHistoryPagination } from "./chat-history-pagination.ts";
+import type { ChatReasoning } from "./chat-reasoning.ts";
 import type { ChatRunStartupState } from "./chat-run-startup.ts";
 import type { ChatRunError, LocalTerminalReconcile } from "./run-lifecycle.ts";
 import type { ChatMessageCache } from "./session-message-cache.ts";
@@ -73,6 +74,7 @@ export type ChatState = StreamCausalBoundaryState & {
   chatStream: string | null;
   /** Identified assistant item at the tail of the current cumulative stream. */
   chatStreamStartedAt: number | null;
+  chatReasoning?: ChatReasoning | null;
   chatRunStartup?: ChatRunStartupState | null;
   lastError: string | null;
   chatError?: string | null;
