@@ -1,13 +1,23 @@
+import { CRON_AGENT_SELECTION_REQUIRED_MESSAGE } from "../../cron/agent-id.js";
+import { CRON_DELIVERY_REPAIR_REQUIRED_MESSAGE } from "../../cron/store/delivery-codec.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 
 export function isCronInvalidRequestError(err: unknown): boolean {
   const message = formatErrorMessage(err);
   return (
+    message === CRON_AGENT_SELECTION_REQUIRED_MESSAGE ||
+    message === CRON_DELIVERY_REPAIR_REQUIRED_MESSAGE ||
     message.startsWith("unknown cron job id:") ||
     message.startsWith("cron job already exists:") ||
     message.includes("cron job id must not be blank") ||
     message.includes("cron declarationKey") ||
     message.includes("cron displayName") ||
+    message.includes("cron announce delivery requires an explicit channel") ||
+    message.includes("cron script payload has a syntax error") ||
+    message.includes("cron trigger script has a syntax error") ||
+    message.includes("cron script payload must not be empty") ||
+    message.includes("cron script payloads cannot be combined") ||
+    message.includes("cron script payloads are disabled") ||
     message.includes("cron triggers are disabled") ||
     message.includes("cron triggers require") ||
     message.includes("cron trigger every interval") ||

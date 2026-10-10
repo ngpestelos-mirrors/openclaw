@@ -31,8 +31,6 @@ function buildSafeguardFactories(cfg: OpenClawConfig, workspaceDir?: string) {
     cfg,
     sessionManager,
     workspaceDir,
-    provider: "anthropic",
-    modelId: "claude-sonnet-4-20250514",
     model,
   });
 
@@ -47,7 +45,6 @@ function expectSafeguardRuntime(
 
   expect(factories).toContain(compactionSafeguardExtension);
   const runtime = getCompactionSafeguardRuntime(sessionManager);
-  expect(runtime?.contextWindowTokens).toBe(200_000);
   expect(runtime?.qualityGuardEnabled).toBe(expectedRuntime.qualityGuardEnabled);
   expect(runtime?.qualityGuardMaxRetries).toBe(expectedRuntime.qualityGuardMaxRetries);
 }

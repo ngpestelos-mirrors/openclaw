@@ -6,6 +6,14 @@ export const mattermostChannelConfigUiHints = {
     label: "Mattermost",
     help: "Mattermost channel provider configuration for bot auth, access policy, slash commands, and preview streaming.",
   },
+  requireMentionInBotThreads: {
+    label: "Mention in Bot Threads",
+    help: "Require an explicit mention or configured trigger in threads rooted in this bot's own posts. Set false to accept unmentioned follow-ups; omit to preserve existing mention and participation behavior.",
+  },
+  "groups.*.requireMentionInBotThreads": {
+    label: "Mention in Bot Threads",
+    help: "Override bot-created thread mention policy for this Mattermost channel. Exact channel settings override the wildcard, then the account setting.",
+  },
   ...createChannelConfigUiHints({
     channelLabel: "Mattermost",
     dmPolicy: { channelKey: "mattermost" },
@@ -19,7 +27,7 @@ export const mattermostChannelConfigUiHints = {
       "preview.toolProgress":
         "Show tool/progress activity in the live draft preview post (default: true). Set false to hide interim tool updates while the draft preview stays active.",
       "preview.commandText":
-        'Command/exec detail in preview tool-progress lines: "raw" preserves released behavior; "status" shows only the tool label.',
+        'Command/exec detail in preview tool-progress lines: "status" is the safe default; "raw" opts into command text.',
     },
     progress: {},
   }),

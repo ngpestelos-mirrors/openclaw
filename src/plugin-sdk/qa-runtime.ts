@@ -1,16 +1,13 @@
-import fs from "node:fs";
-import fsp from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 // QA runtime helpers register and execute plugin QA scenarios from local files.
-import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
-import { formatErrorMessage } from "./error-runtime.js";
-import { loadBundledPluginPublicSurfaceModuleSync } from "./facade-runtime.js";
-import { resolvePrivateQaBundledPluginsEnv } from "./private-qa-bundled-env.js";
 import { runExec } from "./process-runtime.js";
+import { loadQaRuntimeModule as loadQaRunnerRuntimeModule } from "./qa-runner-runtime.js";
 import { fetchWithSsrFGuard } from "./ssrf-runtime.js";
 import { normalizeStringEntries } from "./string-coerce-runtime.js";
 
+export { mergeAttemptToolMediaPayloads } from "../agents/embedded-agent-runner/run/tool-media-payloads.js";
+export { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
 export { writeGatewayRestartIntentSync } from "../infra/restart-intent.js";
 export {
   createLazyCliRuntimeLoader,
@@ -25,7 +22,71 @@ export type {
   LiveTransportQaSuiteCommandOptions,
 } from "./qa-runner-runtime.js";
 
-type QaRuntimeSurface = {
+/** Inspect hot transcript evidence without admitting a writer or restoring cold sessions. */
+export async function visitQaSqliteTranscriptEvents(
+  databasePath: string,
+  visit: (eventJson: string) => void,
+): Promise<void> {
+  const [{ openNodeSqliteDatabase }, { tableExists, tableHasColumn }, queries, payload] =
+    await Promise.all([
+      import("../infra/node-sqlite.js"),
+      import("../state/openclaw-state-db-schema-helpers.js"),
+      import("../infra/kysely-sync.js"),
+      import("../config/sessions/transcript-payload.js"),
+    ]);
+  const database = openNodeSqliteDatabase(databasePath, { readOnly: true });
+  try {
+    if (!tableExists(database, "transcript_events")) {
+      return;
+    }
+    const db = queries.getNodeSqliteKysely<{
+      transcript_events: { session_id: string; seq: number; event_json: string };
+    }>(database);
+    // QA release fixtures can belong to a published pre-compression schema.
+    const eventJson = tableHasColumn(database, "transcript_events", "event_zstd")
+      ? payload.transcriptEventJsonSql(database).as("event_json")
+      : "event_json";
+    for (const row of queries.iterateSqliteQuerySync(
+      database,
+      db.selectFrom("transcript_events").select(eventJson).orderBy("session_id").orderBy("seq"),
+    )) {
+      if (typeof row.event_json === "string") {
+        visit(row.event_json);
+      }
+    }
+  } finally {
+    database.close();
+  }
+}
+
+/** Release only this QA root's parent stores before its files are removed. */
+export async function closeQaRuntimeStores(tempRoot: string): Promise<void> {
+  const [auth, { closeOpenClawAgentDatabasesAsync }, state, { openClawStateDatabaseCache }, paths] =
+    await Promise.all([
+      import("../agents/auth-profiles/sqlite.js"),
+      import("../state/openclaw-agent-db.js"),
+      import("../state/openclaw-state-db.js"),
+      import("../state/openclaw-state-db-cache.js"),
+      import("../state/openclaw-state-db.paths.js"),
+    ]);
+  // Agent close releases leases through shared state. Keep that owner alive
+  // until every scoped handle closes, or exit-time release can recreate the root.
+  auth.closeAuthProfileReadPool({ kind: "root", rootPath: tempRoot });
+  await closeOpenClawAgentDatabasesAsync(tempRoot);
+  const statePath = paths.resolveOpenClawStateSqlitePath({
+    OPENCLAW_STATE_DIR: path.join(tempRoot, "state"),
+  });
+  // Packaged auth can hand this tree to a different UID before Gateway startup.
+  // Close only admitted parent state, never discover a child-private database.
+  if (openClawStateDatabaseCache.getKnownOpenClawStateDatabaseIdentity(statePath)) {
+    await state.closeOpenClawStateDatabaseByPathAsync(statePath);
+  }
+}
+
+type QaRuntimeSurface = Pick<
+  ReturnType<typeof loadQaRunnerRuntimeModule>,
+  "defaultQaRuntimeModelForMode" | "createQaLiveLaneGateway"
+> & {
   acquireQaCredentialLease: <TPayload>(options: {
     env?: NodeJS.ProcessEnv;
     kind: string;
@@ -40,14 +101,6 @@ type QaRuntimeSurface = {
     release(): Promise<void>;
     source: "convex" | "env";
   }>;
-  defaultQaRuntimeModelForMode: (
-    mode: string,
-    options?: {
-      alternate?: boolean;
-      preferredLiveModel?: string;
-    },
-  ) => string;
-  startQaLiveLaneGateway: (...args: unknown[]) => Promise<unknown>;
   startQaCredentialLeaseHeartbeat: (lease: {
     heartbeat(): Promise<void>;
     heartbeatIntervalMs: number;
@@ -59,36 +112,26 @@ type QaRuntimeSurface = {
   };
 };
 
-function isMissingQaRuntimeError(error: unknown) {
-  return (
-    error instanceof Error &&
-    (error.message === "Unable to resolve bundled plugin public surface qa-lab/runtime-api.js" ||
-      error.message.startsWith("Unable to open bundled plugin public surface "))
-  );
-}
+const loadQaLabRuntimeModule = loadQaRunnerRuntimeModule as unknown as () => QaRuntimeSurface;
+export { loadQaLabRuntimeModule as loadQaRuntimeModule };
 
-/** Load the bundled QA lab runtime surface, throwing when the private bundle is absent. */
-export function loadQaRuntimeModule(): QaRuntimeSurface {
-  const env = resolvePrivateQaBundledPluginsEnv();
-  return loadBundledPluginPublicSurfaceModuleSync<QaRuntimeSurface>({
-    dirName: "qa-lab",
-    artifactBasename: "runtime-api.js",
-    ...(env ? { env } : {}),
-  });
-}
-
-/** Check whether the bundled QA lab runtime surface is present without hiding other load errors. */
-export function isQaRuntimeAvailable(): boolean {
+function isQaRuntimeAvailableStrict(): boolean {
   try {
-    loadQaRuntimeModule();
+    loadQaLabRuntimeModule();
     return true;
   } catch (error) {
-    if (isMissingQaRuntimeError(error)) {
+    if (
+      error instanceof Error &&
+      (error.message === "Unable to resolve bundled plugin public surface qa-lab/runtime-api.js" ||
+        error.message.startsWith("Unable to open bundled plugin public surface "))
+    ) {
       return false;
     }
     throw error;
   }
 }
+
+export { isQaRuntimeAvailableStrict as isQaRuntimeAvailable };
 
 /** Docker command runner abstraction used by QA Docker helpers and tests. */
 export type QaDockerRunCommand = (
@@ -109,35 +152,6 @@ export type QaDockerFetchLike = (
 
 const DEFAULT_QA_DOCKER_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_QA_DOCKER_HEALTH_REQUEST_TIMEOUT_MS = 2_000;
-
-/** Append a formatted live-lane issue while preserving the caller-owned issue list. */
-export function appendQaLiveLaneIssue(issues: string[], label: string, error: unknown) {
-  issues.push(`${label}: ${formatErrorMessage(error)}`);
-}
-
-/** Format a live-lane failure message that includes artifact labels and paths. */
-export function buildQaLiveLaneArtifactsError(params: {
-  heading: string;
-  artifacts: Record<string, string>;
-  details?: string[];
-}) {
-  return [
-    params.heading,
-    ...(params.details ?? []),
-    "Artifacts:",
-    ...Object.entries(params.artifacts).map(([label, filePath]) => `- ${label}: ${filePath}`),
-  ].join("\n");
-}
-
-/** Print live-transport QA artifact paths with a lane label for CI log parsers. */
-export function printLiveTransportQaArtifacts(
-  laneLabel: string,
-  artifacts: Record<string, string>,
-) {
-  for (const [label, filePath] of Object.entries(artifacts)) {
-    process.stdout.write(`${laneLabel} ${label}: ${filePath}\n`);
-  }
-}
 
 function describeQaDockerError(error: unknown) {
   if (error instanceof Error) {
@@ -190,12 +204,7 @@ export async function resolveQaDockerHostPort(preferredPort: number, pinned: boo
 }
 
 function trimQaDockerCommandOutput(output: string) {
-  const trimmed = output.trim();
-  if (!trimmed) {
-    return "";
-  }
-  const lines = trimmed.split("\n");
-  return lines.length <= 120 ? trimmed : lines.slice(-120).join("\n");
+  return output.trim().split("\n").slice(-120).join("\n");
 }
 
 function renderQaDockerCommandFailure(command: string, args: string[], error: unknown) {
@@ -214,18 +223,6 @@ function renderQaDockerCommandFailure(command: string, args: string[], error: un
   );
 }
 
-function normalizeDockerServiceStatus(row?: { Health?: string; State?: string }) {
-  const health = row?.Health?.trim();
-  if (health) {
-    return health;
-  }
-  const state = row?.State?.trim();
-  if (state) {
-    return state;
-  }
-  return "unknown";
-}
-
 function firstDockerOutputLine(stdout: string) {
   return normalizeStringEntries(stdout.split("\n"))[0] ?? "";
 }
@@ -240,10 +237,7 @@ function parseDockerComposePsRows(stdout: string) {
     const parsed = JSON.parse(trimmed) as
       | Array<{ Health?: string; State?: string }>
       | { Health?: string; State?: string };
-    if (Array.isArray(parsed)) {
-      return parsed;
-    }
-    return [parsed];
+    return Array.isArray(parsed) ? parsed : [parsed];
   } catch {
     return normalizeStringEntries(trimmed.split("\n")).map(
       (line) => JSON.parse(line) as { Health?: string; State?: string },
@@ -394,7 +388,7 @@ export function createQaDockerRuntime(params: {
           repoRoot,
         );
         const row = parseDockerComposePsRows(stdout)[0];
-        lastStatus = normalizeDockerServiceStatus(row);
+        lastStatus = row?.Health?.trim() || row?.State?.trim() || "unknown";
         if (lastStatus === "healthy" || lastStatus === "running") {
           return;
         }
@@ -459,68 +453,5 @@ export function createQaDockerRuntime(params: {
     resolveHostPort: resolveQaDockerHostPort,
     waitForDockerServiceHealth,
     waitForHealth,
-  };
-}
-
-type ProcessWriteCallback = (err?: Error | null) => void;
-
-/** Tee stdout and stderr into a private artifact file until the returned stop hook runs. */
-export async function startLiveTransportQaOutputTee(params: {
-  fileName: string;
-  outputDir: string;
-}) {
-  await fsp.mkdir(params.outputDir, { recursive: true });
-  const outputPath = path.join(params.outputDir, params.fileName);
-  const output = fs.createWriteStream(outputPath, {
-    encoding: "utf8",
-    flags: "a",
-    mode: 0o600,
-  });
-  let outputError: Error | null = null;
-  output.on("error", (error) => {
-    outputError ??= error;
-  });
-  const originalStdoutWrite = Reflect.get(process.stdout, "write");
-  const originalStderrWrite = Reflect.get(process.stderr, "write");
-  const boundStdoutWrite = originalStdoutWrite.bind(process.stdout);
-  const boundStderrWrite = originalStderrWrite.bind(process.stderr);
-  let stopped = false;
-
-  const tee = (originalWrite: typeof process.stdout.write) =>
-    function writeWithTee(
-      this: NodeJS.WriteStream,
-      chunk: string | Uint8Array,
-      encodingOrCallback?: BufferEncoding | ProcessWriteCallback,
-      callback?: ProcessWriteCallback,
-    ) {
-      if (!stopped && !outputError) {
-        output.write(chunk);
-      }
-      return Reflect.apply(originalWrite, this, [chunk, encodingOrCallback, callback]) as boolean;
-    };
-
-  process.stdout.write = tee(boundStdoutWrite) as typeof process.stdout.write;
-  process.stderr.write = tee(boundStderrWrite) as typeof process.stderr.write;
-
-  return {
-    outputPath,
-    async stop() {
-      if (stopped) {
-        return;
-      }
-      stopped = true;
-      process.stdout.write = originalStdoutWrite;
-      process.stderr.write = originalStderrWrite;
-      if (outputError) {
-        throw outputError;
-      }
-      await new Promise<void>((resolve, reject) => {
-        output.once("error", reject);
-        output.end(resolve);
-      });
-      if (outputError) {
-        throw toErrorObject(outputError, "Non-Error thrown");
-      }
-    },
   };
 }

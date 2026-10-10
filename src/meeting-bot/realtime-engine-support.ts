@@ -1,3 +1,4 @@
+import { normalizeOptionalString as readLogString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type {
   RealtimeTranscriptionProviderPlugin,
@@ -8,24 +9,23 @@ import {
   listRealtimeTranscriptionProviders,
 } from "../realtime-transcription/provider-registry.js";
 import type { RealtimeTranscriptionProviderConfig } from "../realtime-transcription/provider-types.js";
-import { resolveConfiguredRealtimeVoiceProvider } from "../talk/provider-resolver.js";
+import {
+  resolveConfiguredRealtimeVoiceProvider,
+  type ResolvedRealtimeVoiceProvider,
+} from "../talk/provider-resolver.js";
 import type { RealtimeVoiceProviderConfig } from "../talk/provider-types.js";
 import { truncateUtf16Safe } from "../utils.js";
 import type { MeetingRealtimeAudioFormat } from "./realtime-audio-format.js";
 
 type MeetingRealtimeProviderSelectionConfig = {
   realtime: {
+    agentId?: string;
     provider?: string;
     transcriptionProvider?: string;
     voiceProvider?: string;
     model?: string;
     providers: Record<string, Record<string, unknown>>;
   };
-};
-
-type ResolvedRealtimeProvider = {
-  provider: RealtimeVoiceProviderPlugin;
-  providerConfig: RealtimeVoiceProviderConfig;
 };
 
 type ResolvedRealtimeTranscriptionProvider = {
@@ -41,12 +41,15 @@ export function resolveMeetingRealtimeProvider(params: {
   config: MeetingRealtimeProviderSelectionConfig;
   fullConfig: OpenClawConfig;
   providers?: RealtimeVoiceProviderPlugin[];
-}): ResolvedRealtimeProvider {
+}): ResolvedRealtimeVoiceProvider {
   const providerId = params.config.realtime.voiceProvider ?? params.config.realtime.provider;
   return resolveConfiguredRealtimeVoiceProvider({
     configuredProviderId: providerId,
     providerConfigs: params.config.realtime.providers,
     cfg: params.fullConfig,
+    agentId: params.config.realtime.agentId,
+    surface: "gateway-relay",
+    useProviderDefaultModel: true,
     providers: params.providers,
     defaultModel: params.config.realtime.model,
     noRegisteredProviderMessage: "No configured realtime voice provider registered",
@@ -94,10 +97,6 @@ export function buildMeetingSpeakExactUserMessage(text: string): string {
   ].join("\n");
 }
 
-function readLogString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function formatLogValue(value: string | undefined): string {
   const normalized = value ? truncateUtf16Safe(value.replace(/\s+/g, "_"), 180) : undefined;
   return normalized || "unknown";
@@ -128,13 +127,7 @@ export function formatMeetingRealtimeVoiceModelLog(params: {
   return [
     `${params.logScope} realtime voice bridge starting: strategy=${formatLogValue(params.strategy)}`,
     `provider=${formatLogValue(params.provider.id)}`,
-    `model=${formatLogValue(
-      resolveProviderModelForLog({
-        provider: params.provider,
-        providerConfig: params.providerConfig,
-        fallbackModel: params.fallbackModel,
-      }),
-    )}`,
+    `model=${formatLogValue(resolveProviderModelForLog(params))}`,
     `audioFormat=${formatLogValue(params.audioFormat)}`,
   ].join(" ");
 }
@@ -149,12 +142,7 @@ export function formatMeetingAgentAudioModelLog(params: {
     `${params.logScope} agent audio bridge starting: transcriptionProvider=${formatLogValue(
       params.provider.id,
     )}`,
-    `transcriptionModel=${formatLogValue(
-      resolveProviderModelForLog({
-        provider: params.provider,
-        providerConfig: params.providerConfig,
-      }),
-    )}`,
+    `transcriptionModel=${formatLogValue(resolveProviderModelForLog(params))}`,
     "tts=telephony",
     `audioFormat=${formatLogValue(params.audioFormat)}`,
   ].join(" ");

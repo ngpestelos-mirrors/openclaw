@@ -1,10 +1,23 @@
 /**
  * Runtime SDK subpath for model overrides and agent concurrency session helpers.
  */
+import {
+  applySessionModelSelectionInternal,
+  type ApplySessionModelSelectionParams,
+  type ApplySessionModelSelectionResult,
+} from "../model-picker/apply-session-model-selection.js";
+
 export { resolveChannelModelOverride } from "../channels/model-overrides.js";
 export { resolveAgentMaxConcurrent } from "../config/agent-limits.js";
 export { resolvePersistedSessionRuntimeId } from "../agents/session-runtime-compat.js";
-export { applySessionModelSelection } from "../model-picker/apply-session-model-selection.js";
+export { resolveSessionModelRef } from "../agents/session-model-ref.js";
+export const applySessionModelSelection: (
+  params: ApplySessionModelSelectionParams,
+) => Promise<ApplySessionModelSelectionResult> = (params) =>
+  applySessionModelSelectionInternal({
+    ...params,
+    ...(params.validateAuthProfileSelection ? { nativeCommitValidation: true } : {}),
+  });
 export type {
   ApplySessionModelSelectionParams,
   ApplySessionModelSelectionResult,
@@ -16,3 +29,4 @@ export {
   MODEL_SELECTION_LOCKED_MESSAGE,
   ModelSelectionLockedError,
 } from "../sessions/model-overrides.js";
+export { applyModelOverrideWithAuthProfileCompatibility } from "../sessions/auth-profile-preservation.js";

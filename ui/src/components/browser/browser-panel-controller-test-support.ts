@@ -1,19 +1,25 @@
+import type { GatewayClientRequestOptions } from "@openclaw/gateway-client";
 import type { ReactiveController } from "lit";
 import { afterEach, vi } from "vitest";
-import type { GatewayBrowserClient } from "../../api/gateway.ts";
-import type { BrowserInspectedNode } from "./browser-client.ts";
+import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gateway.ts";
+import type { BrowserDashboardTarget, BrowserInspectedNode } from "./browser-client.ts";
 import {
   BrowserPanelController,
   type BrowserPanelControllerHost,
 } from "./browser-panel-controller.ts";
 import type { BrowserPanelView } from "./browser-panel-surface.ts";
+import type { BrowserTabTarget } from "./browser-target.ts";
 
 const BROWSER_PANEL_TEST_PAGE_TITLE = "Page";
 
 export type BrowserRequestEnvelope = {
   method: string;
   path: string;
+  target?: "host" | "node";
+  node?: string;
+  query?: Record<string, unknown>;
   body?: Record<string, unknown>;
+  tabScope?: { sessionKey: string; referencedTabs?: readonly BrowserTabTarget[] };
 };
 
 export function setupBrowserPanelTestCleanup(): void {
@@ -24,26 +30,33 @@ export function setupBrowserPanelTestCleanup(): void {
   });
 }
 
-export function createDeferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 export function createBrowserClient(
   handleRequest: (envelope: BrowserRequestEnvelope) => Promise<unknown>,
+  options: { screencast?: boolean; sessionScoped?: boolean } = {},
 ) {
-  const request = vi.fn(async (method: string, params?: unknown) => {
-    if (method !== "browser.request") {
-      throw new Error(`Unexpected Gateway method: ${method}`);
-    }
-    return await handleRequest(params as BrowserRequestEnvelope);
-  });
-  return { client: { request } as unknown as GatewayBrowserClient, request };
+  const request = vi.fn(
+    async (method: string, params?: unknown, _options?: GatewayClientRequestOptions) => {
+      if (method !== (options.sessionScoped ? "browser.dashboard.request" : "browser.request")) {
+        throw new Error(`Unexpected Gateway method: ${method}`);
+      }
+      const envelope = params as BrowserRequestEnvelope;
+      if (envelope.path === "/screencast" && !options.screencast) {
+        throw new GatewayRequestError({
+          code: "INVALID_REQUEST",
+          message: "Screencast unavailable",
+          details: { code: "SCREENCAST_UNSUPPORTED", reason: "playwright" },
+        });
+      }
+      return await handleRequest(envelope);
+    },
+  );
+  return {
+    client: {
+      request,
+      gatewayUrl: "https://gateway.example.test",
+    } as unknown as GatewayBrowserClient,
+    request,
+  };
 }
 
 export function createBrowserPanelTestTab(id: string, url: string, title: string) {
@@ -64,8 +77,11 @@ export class TestBrowserPanelHost implements BrowserPanelControllerHost {
   readonly requestUpdate = vi.fn();
   readonly updateComplete = Promise.resolve(true);
   readonly renderRoot = document.createElement("div");
-  readonly basePath = "";
+  readonly resourceBasePath = "";
   readonly authToken = null;
+  sessionKey = "";
+  sessionTabs: BrowserTabTarget[] = [];
+  dashboardTarget?: BrowserDashboardTarget;
   available = true;
   isConnected = true;
   open = true;
@@ -161,8 +177,22 @@ class TestBrowserImage extends EventTarget {
   }
 }
 
+class TestBrowserFileReader extends EventTarget {
+  result: string | ArrayBuffer | null = null;
+  error: DOMException | null = null;
+
+  readAsDataURL(blob: Blob): void {
+    void blob.arrayBuffer().then((buffer) => {
+      const binary = String.fromCharCode(...new Uint8Array(buffer));
+      this.result = `data:${blob.type};base64,${btoa(binary)}`;
+      this.dispatchEvent(new Event("load"));
+    });
+  }
+}
+
 export function stubScreenshotMedia(): void {
   vi.stubGlobal("Image", TestBrowserImage);
+  vi.stubGlobal("FileReader", TestBrowserFileReader);
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string | URL | Request) => {

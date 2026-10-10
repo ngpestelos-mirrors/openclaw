@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import {
+  readSessionIngestionState,
+  writeSessionIngestionState,
+} from "./dreaming-ingestion-state.js";
+import {
   deleteMemoryCoreWorkspaceEntry,
   readMemoryCoreWorkspaceEntries,
   SESSION_BACKFILL_REWIND_NAMESPACE,
@@ -9,10 +13,7 @@ import type {
   SessionBackfillExecution,
   SessionBackfillResult,
 } from "./session-backfill-contract.js";
-import { readSessionIngestionState, writeSessionIngestionState } from "./session-ingestion.js";
 
-const DEFAULT_SESSION_BACKFILL_LIMIT_DAYS = 92;
-const MEMORY_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Batch keys are SHA-256 hex digests, so this colon-delimited marker cannot collide.
 const SESSION_BACKFILL_BASELINE_KEY_PREFIX = "complete-baseline:";
 
@@ -33,45 +34,6 @@ type SessionBackfillBaseline = {
   complete: true;
   agentId: string;
 };
-
-function normalizeMemoryDay(value: string | undefined, flag: string): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const day = value.trim();
-  if (!MEMORY_DAY_RE.test(day)) {
-    throw new Error(`${flag} must use YYYY-MM-DD.`);
-  }
-  const parsed = new Date(`${day}T00:00:00.000Z`);
-  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== day) {
-    throw new Error(`${flag} must be a valid calendar day.`);
-  }
-  return day;
-}
-
-export function normalizeSessionBackfillSelection(
-  params: { from?: string; to?: string; limitDays?: number },
-  labels: { from: string; to: string; limitDays: string } = {
-    from: "--from",
-    to: "--to",
-    limitDays: "--limit-days",
-  },
-): { from?: string; to?: string; limitDays: number } {
-  const from = normalizeMemoryDay(params.from, labels.from);
-  const to = normalizeMemoryDay(params.to, labels.to);
-  if (from !== undefined && to !== undefined && from > to) {
-    throw new Error(`${labels.from} must not be after ${labels.to}.`);
-  }
-  const limitDays = params.limitDays ?? DEFAULT_SESSION_BACKFILL_LIMIT_DAYS;
-  if (!Number.isInteger(limitDays) || limitDays <= 0) {
-    throw new Error(`${labels.limitDays} must be a positive integer.`);
-  }
-  return {
-    ...(from !== undefined ? { from } : {}),
-    ...(to !== undefined ? { to } : {}),
-    limitDays,
-  };
-}
 
 export async function recordSessionBackfillRewindBatch(params: {
   workspaceDir: string;
@@ -200,19 +162,19 @@ async function deleteSessionBackfillRewindBatches(
   workspaceDir: string,
   entries: Array<{ key: string }>,
 ): Promise<void> {
-  await Promise.all(
-    entries.map((entry) =>
-      deleteMemoryCoreWorkspaceEntry({
-        namespace: SESSION_BACKFILL_REWIND_NAMESPACE,
-        workspaceDir,
-        key: entry.key,
-      }),
-    ),
+  const deletions = entries.map((entry) =>
+    deleteMemoryCoreWorkspaceEntry({
+      namespace: SESSION_BACKFILL_REWIND_NAMESPACE,
+      workspaceDir,
+      key: entry.key,
+    }),
   );
-}
-
-function belongsToAgentFileState(key: string, agentId: string): boolean {
-  return key.startsWith(`${agentId}:`);
+  try {
+    await Promise.all(deletions);
+  } finally {
+    // A failed deletion cannot leave journal mutations running after rollback returns.
+    await Promise.allSettled(deletions);
+  }
 }
 
 function belongsToAgentSeenState(key: string, agentId: string): boolean {
@@ -235,7 +197,7 @@ export async function resetSessionBackfillIngestionState(params: {
   await writeSessionIngestionState(params.workspaceDir, {
     ...state,
     files: Object.fromEntries(
-      Object.entries(state.files).filter(([key]) => !belongsToAgentFileState(key, params.agentId)),
+      Object.entries(state.files).filter(([key]) => !key.startsWith(`${params.agentId}:`)),
     ),
     seenMessages: Object.fromEntries(
       Object.entries(state.seenMessages).filter(
@@ -288,19 +250,16 @@ function aggregateSessionBackfillBatches(
       });
     }
   }
+  const total = (
+    field: "candidateCount" | "stagedEntries" | "writtenDiaryEntries" | "replacedDiaryEntries",
+  ) => executions.reduce((sum, { result }) => sum + result[field], 0);
   return {
     ...first,
     days: [...days.values()].toSorted((a, b) => a.day.localeCompare(b.day)),
-    candidateCount: executions.reduce((sum, execution) => sum + execution.result.candidateCount, 0),
-    stagedEntries: executions.reduce((sum, execution) => sum + execution.result.stagedEntries, 0),
-    writtenDiaryEntries: executions.reduce(
-      (sum, execution) => sum + execution.result.writtenDiaryEntries,
-      0,
-    ),
-    replacedDiaryEntries: executions.reduce(
-      (sum, execution) => sum + execution.result.replacedDiaryEntries,
-      0,
-    ),
+    candidateCount: total("candidateCount"),
+    stagedEntries: total("stagedEntries"),
+    writtenDiaryEntries: total("writtenDiaryEntries"),
+    replacedDiaryEntries: total("replacedDiaryEntries"),
     batchCount: executions.length,
     batches: executions.map((execution, index) => ({
       batch: index + 1,

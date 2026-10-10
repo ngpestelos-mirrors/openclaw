@@ -5,44 +5,20 @@ import {
   errorShape,
   type GatewayRequestHandlerOptions,
 } from "openclaw/plugin-sdk/gateway-runtime";
-import { resolveSessionAgentIds } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
+import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import { listAgentIds } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { resolveMemoryRemDreamingConfig } from "openclaw/plugin-sdk/memory-core-host-status";
 import { resolvePluginConfigObject } from "openclaw/plugin-sdk/plugin-config-runtime";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
-import {
-  executeSessionBackfill,
-  executeSessionBackfillBatch,
-  normalizeSessionBackfillSelection,
-  type RunSessionBackfillParams,
-  type SessionBackfillResult,
-} from "./session-backfill.js";
-
-const SESSION_BACKFILL_GATEWAY_METHODS = {
-  preview: "memory.sessionBackfill.preview",
-  apply: "memory.sessionBackfill.apply",
-  rollback: "memory.sessionBackfill.rollback",
-} as const;
-
-type SessionBackfillGatewayParams = Pick<
-  RunSessionBackfillParams,
-  "agentId" | "from" | "to" | "limitDays"
->;
-
-type SessionBackfillGatewayResult = {
-  days: number;
-  candidates: number;
-  perDay: Array<{ day: string; candidateCount: number; sample: string[] }>;
-  staged: number;
-  truncated?: boolean;
-  cursor?: {
-    advanced: boolean;
-    exhausted: boolean;
-    hasMore: boolean;
-  };
-};
+import type { SessionBackfillResult } from "./session-backfill-contract.js";
+import { normalizeSessionBackfillSelection } from "./session-backfill-selection.js";
 
 class InvalidSessionBackfillRequestError extends Error {}
+
+const loadSessionBackfillGatewayRuntime = createLazyRuntimeModule(
+  () => import("./session-backfill-gateway.runtime.js"),
+);
 
 function paramsRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -58,7 +34,7 @@ function assertOnlyKeys(params: Record<string, unknown>, allowed: ReadonlySet<st
   }
 }
 
-function readOptionalString(params: Record<string, unknown>, key: "from" | "to") {
+function readOptionalSessionBoundary(params: Record<string, unknown>, key: "from" | "to") {
   const raw = params[key];
   if (raw !== undefined && typeof raw !== "string") {
     throw new Error(`${key} must be a string.`);
@@ -66,14 +42,17 @@ function readOptionalString(params: Record<string, unknown>, key: "from" | "to")
   return readStringParam(params, key);
 }
 
-function readGatewayParams(value: unknown): SessionBackfillGatewayParams {
+function readGatewayParams(value: unknown, rollback: boolean) {
   const params = paramsRecord(value);
-  assertOnlyKeys(params, new Set(["agentId", "from", "to", "limitDays"]));
+  assertOnlyKeys(params, new Set(rollback ? ["agentId"] : ["agentId", "from", "to", "limitDays"]));
   const agentId = normalizeAgentId(readStringParam(params, "agentId", { required: true }));
+  if (rollback) {
+    return { agentId };
+  }
   const selection = normalizeSessionBackfillSelection(
     {
-      from: readOptionalString(params, "from"),
-      to: readOptionalString(params, "to"),
+      from: readOptionalSessionBoundary(params, "from"),
+      to: readOptionalSessionBoundary(params, "to"),
       limitDays: readPositiveIntegerParam(params, "limitDays"),
     },
     { from: "from", to: "to", limitDays: "limitDays" },
@@ -81,30 +60,21 @@ function readGatewayParams(value: unknown): SessionBackfillGatewayParams {
   return { agentId, ...selection };
 }
 
-function readRollbackParams(value: unknown): { agentId: string } {
-  const params = paramsRecord(value);
-  assertOnlyKeys(params, new Set(["agentId"]));
-  return {
-    agentId: normalizeAgentId(readStringParam(params, "agentId", { required: true })),
-  };
-}
-
 function resolveExecutionContext(api: OpenClawPluginApi, agentId: string) {
   const config = api.runtime.config.current() as OpenClawConfig;
-  const configuredAgentIds = (config.agents?.list ?? []).map((entry) => normalizeAgentId(entry.id));
-  if (configuredAgentIds.length === 0) {
-    configuredAgentIds.push(resolveSessionAgentIds({ config }).sessionAgentId);
-  }
+  const configuredAgentIds = listAgentIds(config);
   if (!configuredAgentIds.includes(agentId)) {
     throw new InvalidSessionBackfillRequestError(`Unknown agent id "${agentId}".`);
   }
   const workspaceDir = api.runtime.agent.resolveAgentWorkspaceDir(config, agentId);
+  const pluginConfig = resolvePluginConfigObject(config, "memory-core");
   const remConfig = resolveMemoryRemDreamingConfig({
     cfg: config,
-    pluginConfig: resolvePluginConfigObject(config, "memory-core"),
+    pluginConfig,
   });
   return {
     workspaceDir,
+    ...(pluginConfig ? { pluginConfig } : {}),
     ...(remConfig.timezone !== undefined ? { timezone: remConfig.timezone } : {}),
   };
 }
@@ -115,7 +85,7 @@ function gatewayResult(
     includeCursor: boolean;
     continuation: { advanced: boolean; hasMore: boolean };
   },
-): SessionBackfillGatewayResult {
+) {
   return {
     days: result.days.length,
     candidates: result.candidateCount,
@@ -143,82 +113,48 @@ function respondInvalid(respond: GatewayRequestHandlerOptions["respond"], error:
   respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, message));
 }
 
-function respondUnavailable(
-  respond: GatewayRequestHandlerOptions["respond"],
-  error: unknown,
-): void {
-  const message = error instanceof Error ? error.message : String(error);
-  respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, message));
-}
-
 export function registerSessionBackfillGatewayMethods(api: OpenClawPluginApi): void {
-  const registerBackfill = (
-    method: (typeof SESSION_BACKFILL_GATEWAY_METHODS)["preview" | "apply"],
-    apply: boolean,
-  ) => {
+  for (const operation of ["preview", "apply", "rollback"] as const) {
+    const apply = operation === "apply";
+    const rollback = operation === "rollback";
     api.registerGatewayMethod(
-      method,
+      `memory.sessionBackfill.${operation}`,
       async ({ params, respond }: GatewayRequestHandlerOptions) => {
-        let request: SessionBackfillGatewayParams;
+        let request: ReturnType<typeof readGatewayParams>;
         try {
-          request = readGatewayParams(params);
+          request = readGatewayParams(params, rollback);
         } catch (error) {
           respondInvalid(respond, error);
           return;
         }
         try {
           const context = resolveExecutionContext(api, request.agentId);
-          const execution = await executeSessionBackfillBatch({
+          const { executeSessionBackfillBatch } = await loadSessionBackfillGatewayRuntime();
+          const { result, continuation } = await executeSessionBackfillBatch({
             ...request,
             ...context,
             ...(apply ? { apply: true } : {}),
+            ...(rollback ? { rollback: true } : {}),
           });
           respond(
             true,
-            gatewayResult(execution.result, {
-              includeCursor: apply,
-              continuation: execution.continuation,
-            }),
+            rollback
+              ? {
+                  removedDiaryEntries: result.rollback?.removedDiaryEntries ?? 0,
+                  removedStagedEntries: result.rollback?.removedStagedEntries ?? 0,
+                }
+              : gatewayResult(result, { includeCursor: apply, continuation }),
           );
         } catch (error) {
           if (error instanceof InvalidSessionBackfillRequestError) {
             respondInvalid(respond, error);
           } else {
-            respondUnavailable(respond, error);
+            const message = error instanceof Error ? error.message : String(error);
+            respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, message));
           }
         }
       },
-      { scope: apply ? "operator.admin" : "operator.read" },
+      { scope: operation === "preview" ? "operator.read" : "operator.admin" },
     );
-  };
-
-  registerBackfill(SESSION_BACKFILL_GATEWAY_METHODS.preview, false);
-  registerBackfill(SESSION_BACKFILL_GATEWAY_METHODS.apply, true);
-  api.registerGatewayMethod(
-    SESSION_BACKFILL_GATEWAY_METHODS.rollback,
-    async ({ params, respond }: GatewayRequestHandlerOptions) => {
-      let request: { agentId: string };
-      try {
-        request = readRollbackParams(params);
-      } catch (error) {
-        respondInvalid(respond, error);
-        return;
-      }
-      try {
-        const context = resolveExecutionContext(api, request.agentId);
-        const result = await executeSessionBackfill({ ...request, ...context, rollback: true });
-        respond(true, {
-          removedDiaryEntries: result.rollback?.removedDiaryEntries ?? 0,
-          removedStagedEntries: result.rollback?.removedStagedEntries ?? 0,
-        });
-      } catch (error) {
-        if (error instanceof InvalidSessionBackfillRequestError) {
-          respondInvalid(respond, error);
-        } else {
-          respondUnavailable(respond, error);
-        }
-      }
-    },
-    { scope: "operator.admin" },
-  );
+  }
 }

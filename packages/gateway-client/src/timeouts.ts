@@ -1,12 +1,4 @@
-// Gateway Client module implements timeouts behavior.
-function parseStrictPositiveInteger(value: string): number | undefined {
-  const trimmed = value.trim();
-  if (!/^\+?\d+$/u.test(trimmed)) {
-    return undefined;
-  }
-  const parsed = Number(trimmed);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
+import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
 
 function isTestRuntimeEnv(env: NodeJS.ProcessEnv): boolean {
   return (
@@ -15,12 +7,7 @@ function isTestRuntimeEnv(env: NodeJS.ProcessEnv): boolean {
     env.VITEST_POOL_ID !== undefined ||
     env.VITEST_WORKER_ID !== undefined ||
     env.NODE_ENV === "test" ||
-    (env !== process.env &&
-      (process.env.VITEST === "true" ||
-        process.env.VITEST === "1" ||
-        process.env.VITEST_POOL_ID !== undefined ||
-        process.env.VITEST_WORKER_ID !== undefined ||
-        process.env.NODE_ENV === "test"))
+    (env !== process.env && isTestRuntimeEnv(process.env))
   );
 }
 

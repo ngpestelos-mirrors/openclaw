@@ -1,15 +1,17 @@
-// Control UI route classifier for base-path and root-mounted SPA serving.
-import { isReadHttpMethod } from "./control-ui-http-utils.js";
+import { resolvePluginDiscoveryIdentity } from "../plugins/catalog-discovery.js";
+import { acceptsControlUiHtmlResponse, isReadHttpMethod } from "./control-ui-http-utils.js";
 import {
   classifyGatewayProbePath,
   classifyMcpAppStandalonePath,
+  classifyNodeWorkspaceTransferPath,
+  classifyWorkerGatewayPath,
 } from "./gateway-http-route-contracts.js";
 
 type ControlUiRequestClassification =
   | { kind: "not-control-ui" }
   | { kind: "not-found" }
   | { kind: "redirect"; location: string }
-  | { kind: "serve" };
+  | { kind: "serve"; spaFallback: boolean };
 
 const CONTROL_UI_PLUGIN_MANAGER_PATH = "/settings/plugins";
 
@@ -49,48 +51,52 @@ export function classifyControlUiRequest(params: {
   pathname: string;
   search: string;
   method: string | undefined;
+  accept?: string;
 }): ControlUiRequestClassification {
   const { basePath, pathname, search, method } = params;
+  // SPA fallback owns ambiguous browser reads, while plugin recovery is explicit.
+  // Decline only clearly non-HTML Accept values so headerless/wildcard clients keep working.
+  const spaFallback =
+    isControlUiPluginManagerRequest(params) || acceptsControlUiHtmlResponse(params.accept);
   if (!basePath) {
     if (pathname === "/ui" || pathname.startsWith("/ui/")) {
       return { kind: "not-found" };
     }
-    // Keep probe namespaces outside the root SPA: exact paths reach the probe
-    // handler, while malformed variants must not look healthy by serving HTML.
-    if (classifyGatewayProbePath(pathname) !== "outside") {
+    // Reserve each owner's entire namespace, including malformed descendants,
+    // so the SPA cannot turn a failed probe, transfer, or upgrade into successful HTML.
+    if (
+      classifyGatewayProbePath(pathname) !== "outside" ||
+      classifyMcpAppStandalonePath(pathname) !== "outside" ||
+      classifyWorkerGatewayPath(pathname) !== "outside" ||
+      classifyNodeWorkspaceTransferPath(pathname) !== "outside"
+    ) {
       return { kind: "not-control-ui" };
     }
-    // The standalone host owns this namespace when enabled. When disabled or
-    // malformed, plugins may still claim it before the final Gateway 404.
-    if (classifyMcpAppStandalonePath(pathname) !== "outside") {
-      return { kind: "not-control-ui" };
-    }
-    // Keep plugin-owned HTTP routes outside the root-mounted Control UI SPA
-    // fallback so untrusted plugins cannot claim arbitrary UI paths.
+    // Marketplace documents own the catalogue root and canonical generated catalog IDs.
+    // Other descendants and non-document requests remain plugin HTTP routes.
     if (pathname === "/plugins" || pathname.startsWith("/plugins/")) {
+      const marketplaceDocument =
+        pathname === "/plugins" ||
+        pathname === "/plugins/" ||
+        resolvePluginDiscoveryIdentity(pathname.slice("/plugins/".length)) !== undefined;
+      if (!marketplaceDocument || !isReadHttpMethod(method) || !spaFallback) {
+        return { kind: "not-control-ui" };
+      }
+    }
+    // API and join namespaces, including disabled OpenAI endpoints, never serve the SPA.
+    if (
+      ["/api", "/j", "/v1"].some((root) => pathname === root || pathname.startsWith(`${root}/`))
+    ) {
       return { kind: "not-control-ui" };
     }
-    if (pathname === "/api" || pathname.startsWith("/api/")) {
-      return { kind: "not-control-ui" };
-    }
-    // Disabled OpenAI-compatible endpoints must return 404, not the SPA HTML.
-    if (pathname === "/v1" || pathname.startsWith("/v1/")) {
-      return { kind: "not-control-ui" };
-    }
-    if (!isReadHttpMethod(method)) {
-      return { kind: "not-control-ui" };
-    }
-    return { kind: "serve" };
-  }
-
-  if (!pathname.startsWith(`${basePath}/`) && pathname !== basePath) {
+  } else if (!pathname.startsWith(`${basePath}/`) && pathname !== basePath) {
     return { kind: "not-control-ui" };
   }
   if (!isReadHttpMethod(method)) {
     return { kind: "not-control-ui" };
   }
-  if (pathname === basePath) {
+  if (basePath && pathname === basePath) {
     return { kind: "redirect", location: `${basePath}/${search}` };
   }
-  return { kind: "serve" };
+  return { kind: "serve", spaFallback };
 }

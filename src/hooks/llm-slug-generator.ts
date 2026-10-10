@@ -1,15 +1,8 @@
-/**
- * LLM-based slug generator for session memory filenames
- */
-
 import { randomUUID } from "node:crypto";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import {
-  resolveDefaultAgentId,
-  resolveAgentWorkspaceDir,
-  resolveAgentDir,
-} from "../agents/agent-scope.js";
+import { prepareSystemAgentRunAdmission } from "../agents/admitted-run-context.js";
+import { resolveAgentWorkspaceDir, resolveAgentDir } from "../agents/agent-scope.js";
 import { runEmbeddedAgent } from "../agents/embedded-agent.js";
 import { SessionManager } from "../agents/sessions/index.js";
 import { resolveAgentTimeoutMs } from "../agents/timeout.js";
@@ -66,17 +59,15 @@ function isErrorSlugPayload(payload: { text?: string; isError?: boolean } | unde
   return PROVIDER_ERROR_PREFIX_RE.test(text) || PROVIDER_ERROR_DETAIL_RE.test(text);
 }
 
-/**
- * Generate a short 1-2 word filename slug from session content using LLM
- */
 export async function generateSlugViaLLM(params: {
   sessionContent: string;
   cfg: OpenClawConfig;
+  agentId: string;
   /** Optional hook-level override; the embedded runner owns model resolution. */
   model?: string;
 }): Promise<string | null> {
   try {
-    const agentId = resolveDefaultAgentId(params.cfg);
+    const agentId = params.agentId;
     const workspaceDir = resolveAgentWorkspaceDir(params.cfg, agentId);
     const agentDir = resolveAgentDir(params.cfg, agentId);
 
@@ -92,46 +83,52 @@ Reply with ONLY the slug, nothing else. Examples: "vendor-pitch", "api-design", 
 
     const timeoutMs = resolveSlugGeneratorTimeoutMs(params.cfg);
 
-    const result = await runEmbeddedAgent({
-      sessionId,
-      sessionKey,
-      sessionManager: SessionManager.inMemory(workspaceDir),
+    const runId = `slug-gen-${Date.now()}`;
+    const preparedRunAdmission = prepareSystemAgentRunAdmission(
+      params.cfg,
+      runId,
       agentId,
-      workspaceDir,
-      agentDir,
-      config: params.cfg,
-      prompt,
-      model: params.model,
-      timeoutMs,
-      runId: `slug-gen-${Date.now()}`,
-      disableTrajectory: true,
-      cleanupBundleMcpOnRunEnd: true,
-      // Internal helper run: route failures lane-local so an upstream 400/billing
-      // here cannot poison the shared profile (#71709).
-      authProfileFailurePolicy: "local",
-    });
+      "hooks.slug-generator",
+    );
+    try {
+      const result = await runEmbeddedAgent({
+        preparedRunAdmission,
+        sessionId,
+        sessionKey,
+        sessionManager: SessionManager.inMemory(workspaceDir),
+        agentId,
+        workspaceDir,
+        agentDir,
+        config: params.cfg,
+        prompt,
+        model: params.model,
+        timeoutMs,
+        runId,
+        // Conversation-derived utility input must never regain caller-denied capabilities.
+        disableTools: true,
+        toolsAllow: [],
+        disableTrajectory: true,
+        cleanupBundleMcpOnRunEnd: true,
+        // Internal helper run: route failures lane-local so an upstream 400/billing
+        // here cannot poison the shared profile (#71709).
+        authProfileFailurePolicy: "local",
+      });
 
-    // Extract text from payloads
-    if (result.payloads && result.payloads.length > 0) {
-      const payload = result.payloads[0];
+      const payload = result.payloads?.[0];
       const text = payload?.text;
-      if (text) {
-        if (isErrorSlugPayload(payload)) {
-          return null;
-        }
-        // Clean up the response - extract just the slug
-        const slug = normalizeLowercaseStringOrEmpty(text)
-          .replace(/[^a-z0-9-]/g, "-")
-          .replace(/-+/g, "-")
-          .replace(/^-+|-+$/g, "")
-          .slice(0, 30)
-          .replace(/^-+|-+$/g, ""); // Max 30 chars
-
-        return slug || null;
+      if (!text || isErrorSlugPayload(payload)) {
+        return null;
       }
+      const slug = normalizeLowercaseStringOrEmpty(text)
+        .replace(/[^a-z0-9-]/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 30)
+        .replace(/^-+|-+$/g, "");
+      return slug || null;
+    } finally {
+      preparedRunAdmission.close();
     }
-
-    return null;
   } catch (err) {
     const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
     log.error(`Failed to generate slug: ${message}`);

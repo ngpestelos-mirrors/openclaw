@@ -1,10 +1,18 @@
 import { once } from "node:events";
 import { createServer } from "node:http";
 import type { Socket } from "node:net";
+import { setImmediate as nextTurn } from "node:timers/promises";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { WizardPrompter } from "openclaw/plugin-sdk/setup";
+import { jsonResponse } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  enrichOllamaModelsWithContext,
+  fetchOllamaModels,
+  readOllamaModelShowInfo,
+} from "./provider-models.js";
 import { pullOllamaModel } from "./setup-pull.js";
-import { checkOllamaCloudAuth } from "./setup.js";
+import { checkOllamaCloudAuth } from "./setup.runtime.js";
 
 const fetchWithSsrFGuardMock = vi.hoisted(() => vi.fn());
 
@@ -16,32 +24,49 @@ vi.mock("openclaw/plugin-sdk/ssrf-runtime", async (importOriginal) => {
   };
 });
 
-function cancelTrackedResponse(
-  text: string,
-  init: ResponseInit,
-): {
-  response: Response;
-  wasCanceled: () => boolean;
-} {
-  let canceled = false;
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode(text));
-    },
-    cancel() {
-      canceled = true;
-    },
-  });
-  return {
-    response: new Response(body, init),
-    wasCanceled: () => canceled,
-  };
-}
-
 function createPullPrompter(): WizardPrompter {
   return {
     progress: vi.fn(() => ({ update: vi.fn(), stop: vi.fn() })),
   } as unknown as WizardPrompter;
+}
+
+async function expectReleaseWithoutWaitingForCapture(params: {
+  body: string;
+  status: number;
+  run: () => Promise<unknown>;
+}): Promise<void> {
+  const source = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(params.body));
+    },
+  });
+  const response = new Response(source, { status: params.status });
+  const captureClone = response.clone();
+  const release = vi.fn(async () => {});
+  fetchWithSsrFGuardMock.mockResolvedValueOnce({
+    response,
+    finalUrl: "http://127.0.0.1:11434/api/test",
+    release,
+  });
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      params.run(),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error("Ollama cleanup waited for a captured response clone"));
+        }, 500);
+      }),
+    ]);
+    expect(response.bodyUsed).toBe(true);
+    expect(release).toHaveBeenCalledOnce();
+  } finally {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
+    await captureClone.body?.cancel().catch(() => undefined);
+  }
 }
 
 async function waitForSocketClose(closed: Promise<void> | undefined): Promise<void> {
@@ -70,45 +95,101 @@ describe("Ollama setup response cleanup", () => {
     fetchWithSsrFGuardMock.mockReset();
   });
 
-  it.each([200, 503])("cancels the /api/me body for HTTP %s", async (status) => {
-    const tracked = cancelTrackedResponse('{"status":"unused"}\n', { status });
-    const release = vi.fn(async () => {});
-    fetchWithSsrFGuardMock.mockResolvedValueOnce({
-      response: tracked.response,
-      finalUrl: "https://ollama.com/api/me",
-      release,
-    });
-
-    await checkOllamaCloudAuth("https://ollama.com");
-
-    expect(tracked.wasCanceled()).toBe(true);
-    expect(release).toHaveBeenCalledOnce();
-  });
-
   it.each([
     {
-      name: "non-OK /api/pull response",
-      response: () => cancelTrackedResponse("ollama unavailable", { status: 503 }),
+      name: "model inspection error",
+      body: "ollama unavailable",
+      status: 503,
+      run: async () => {
+        await readOllamaModelShowInfo("http://127.0.0.1:11434", "gemma4:e2b").catch(
+          () => undefined,
+        );
+      },
     },
     {
-      name: "streamed /api/pull error",
-      response: () => cancelTrackedResponse('{"error":"disk full"}\n', { status: 200 }),
+      name: "model discovery error",
+      body: "ollama unavailable",
+      status: 503,
+      run: async () => {
+        await fetchOllamaModels("http://127.0.0.1:11434");
+      },
     },
-  ])("cancels a $name body before returning", async ({ response: createResponse }) => {
-    const tracked = createResponse();
-    const release = vi.fn(async () => {});
-    fetchWithSsrFGuardMock.mockResolvedValueOnce({
-      response: tracked.response,
-      finalUrl: "http://127.0.0.1:11434/api/pull",
-      release,
-    });
+    {
+      name: "auth probe fallback",
+      body: "ollama unavailable",
+      status: 503,
+      run: async () => {
+        await checkOllamaCloudAuth("http://127.0.0.1:11434");
+      },
+    },
+    {
+      name: "pull response error",
+      body: "ollama unavailable",
+      status: 503,
+      run: async () => {
+        await pullOllamaModel("http://127.0.0.1:11434", "gemma4:e2b", createPullPrompter());
+      },
+    },
+    {
+      name: "pull stream error",
+      body: '{"error":"disk full"}\n',
+      status: 200,
+      run: async () => {
+        await pullOllamaModel("http://127.0.0.1:11434", "gemma4:e2b", createPullPrompter());
+      },
+    },
+  ])("releases a $name while capture retains a response clone", async ({ body, run, status }) => {
+    await expectReleaseWithoutWaitingForCapture({ body, run, status });
+  });
 
-    await expect(
-      pullOllamaModel("http://127.0.0.1:11434", "gemma4:e2b", createPullPrompter()),
-    ).resolves.toBe(false);
+  it("joins sibling model-probe cleanup before rejecting with the original cancellation", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("model discovery canceled");
+    const firstCleanup = createDeferred<void>();
+    const siblingCleanup = createDeferred<void>();
+    const firstRelease = vi.fn(() => firstCleanup.promise);
+    const siblingRelease = vi.fn(() => siblingCleanup.promise);
+    for (const release of [firstRelease, siblingRelease]) {
+      fetchWithSsrFGuardMock.mockResolvedValueOnce({
+        response: jsonResponse({ capabilities: ["completion"] }),
+        finalUrl: "http://127.0.0.1:11434/api/show",
+        release,
+      });
+    }
+    let settled = false;
+    let failure: unknown;
+    const completed = enrichOllamaModelsWithContext(
+      "http://127.0.0.1:11434",
+      [{ name: "first-model" }, { name: "sibling-model" }],
+      { signal: controller.signal },
+    ).then(
+      () => {
+        settled = true;
+      },
+      (error: unknown) => {
+        failure = error;
+        settled = true;
+      },
+    );
+    try {
+      await vi.waitFor(() => {
+        expect(firstRelease).toHaveBeenCalledOnce();
+        expect(siblingRelease).toHaveBeenCalledOnce();
+      });
+      controller.abort(cancellation);
+      firstCleanup.reject(new Error("first request closed"));
+      await nextTurn();
+      expect(settled).toBe(false);
 
-    expect(tracked.wasCanceled()).toBe(true);
-    expect(release).toHaveBeenCalledOnce();
+      siblingCleanup.reject(new Error("sibling request closed"));
+      await completed;
+      expect(settled).toBe(true);
+      expect(failure).toBe(cancellation);
+    } finally {
+      firstCleanup.resolve();
+      siblingCleanup.resolve();
+      await completed;
+    }
   });
 
   it.each([
@@ -136,7 +217,9 @@ describe("Ollama setup response cleanup", () => {
       status: 503,
       body: "ollama unavailable",
       run: async (baseUrl: string) => {
-        await pullOllamaModel(baseUrl, "gemma4:e2b", createPullPrompter());
+        await expect(pullOllamaModel(baseUrl, "gemma4:e2b", createPullPrompter())).resolves.toBe(
+          false,
+        );
       },
     },
     {
@@ -145,7 +228,9 @@ describe("Ollama setup response cleanup", () => {
       status: 200,
       body: '{"error":"disk full"}\n',
       run: async (baseUrl: string) => {
-        await pullOllamaModel(baseUrl, "gemma4:e2b", createPullPrompter());
+        await expect(pullOllamaModel(baseUrl, "gemma4:e2b", createPullPrompter())).resolves.toBe(
+          false,
+        );
       },
     },
   ])("closes the real socket after a $name", async ({ path, status, body, run }) => {

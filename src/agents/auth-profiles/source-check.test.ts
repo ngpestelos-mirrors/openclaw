@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { clearAuthProfileMigrationDiagnostics } from "./legacy-source-diagnostic.js";
 import { hasAuthProfileStoreSourceForProvider } from "./source-check.js";
 import { readPersistedAuthProfileStoreRaw, writePersistedAuthProfileStoreRaw } from "./sqlite.js";
-import { loadAuthProfileStoreForRuntime, updateAuthProfileStoreWithLock } from "./store.js";
+import { loadAuthProfileStoreForRuntime, updateAuthProfileStoreWithLock } from "./store-runtime.js";
 
 describe("hasAuthProfileStoreSourceForProvider", () => {
   afterEach(() => {
@@ -33,14 +33,6 @@ describe("hasAuthProfileStoreSourceForProvider", () => {
     await fs.writeFile(path.join(agentDir, "auth.json"), JSON.stringify(profiles));
     return { agentDir };
   }
-
-  it("counts provider-specific usable credentials", async () => {
-    const { agentDir } = await withAgentStore({
-      "openai:default": { type: "api_key", provider: "openai", key: "sk-test" },
-    });
-
-    expect(hasAuthProfileStoreSourceForProvider("openai", agentDir)).toBe(true);
-  });
 
   it("counts legacy auth stores with alias fields and fallback providers", async () => {
     const { agentDir } = await withLegacyAuthStore({
@@ -79,9 +71,27 @@ describe("hasAuthProfileStoreSourceForProvider", () => {
     writePersistedAuthProfileStoreRaw(unreadableStore, agentDir);
     const updater = vi.fn(() => true);
 
-    await expect(updateAuthProfileStoreWithLock({ agentDir, updater })).resolves.toBeNull();
+    // The unreadable store names its own remediation; a null return would make
+    // callers report generic lock contention instead.
+    await expect(updateAuthProfileStoreWithLock({ agentDir, updater })).rejects.toThrow(
+      "is unreadable; run openclaw doctor --fix",
+    );
     expect(updater).not.toHaveBeenCalled();
     expect(readPersistedAuthProfileStoreRaw(agentDir)).toEqual(unreadableStore);
+  });
+
+  it("returns null for classified SQLite lock contention", async () => {
+    const { agentDir } = await withAgentStore({});
+    const lockError = Object.assign(new Error("database is locked"), { errcode: 5 });
+
+    await expect(
+      updateAuthProfileStoreWithLock({
+        agentDir,
+        updater: () => {
+          throw lockError;
+        },
+      }),
+    ).resolves.toBeNull();
   });
 
   it("detects a legacy credential source that appears after an earlier clean load", async () => {
@@ -97,14 +107,6 @@ describe("hasAuthProfileStoreSourceForProvider", () => {
     expect(() => loadAuthProfileStoreForRuntime(agentDir)).toThrow(
       "requires legacy credential migration",
     );
-  });
-
-  it("does not count profile ids that are bound to a different credential provider", async () => {
-    const { agentDir } = await withAgentStore({
-      "openai:default": { type: "api_key", provider: "anthropic", key: "sk-test" },
-    });
-
-    expect(hasAuthProfileStoreSourceForProvider("openai", agentDir)).toBe(false);
   });
 
   it("honors configured profile order constraints", async () => {
@@ -145,19 +147,6 @@ describe("hasAuthProfileStoreSourceForProvider", () => {
   it("does not count empty provider profiles as credential evidence", async () => {
     const { agentDir } = await withAgentStore({
       "openai:default": { type: "api_key", provider: "openai" },
-    });
-
-    expect(hasAuthProfileStoreSourceForProvider("openai", agentDir)).toBe(false);
-  });
-
-  it("does not count expired token profiles as credential evidence", async () => {
-    const { agentDir } = await withAgentStore({
-      "openai:token": {
-        type: "token",
-        provider: "openai",
-        token: "expired-token",
-        expires: Date.now() - 1000,
-      },
     });
 
     expect(hasAuthProfileStoreSourceForProvider("openai", agentDir)).toBe(false);

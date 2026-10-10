@@ -100,16 +100,18 @@ normalized agent id:
 
 This resolves agents such as `support` and `marketing` to
 `~/.openclaw/wiki/support` and `~/.openclaw/wiki/marketing`. With no explicit
-path, the parent defaults to `~/.openclaw/wiki`; the default `main` agent
-therefore keeps the existing `~/.openclaw/wiki/main` path. In global scope,
-`vault.path` remains the exact shared vault path.
+path, the parent defaults to `<state-dir>/wiki`; the default `main` agent
+therefore uses `<state-dir>/wiki/main`. The state directory is `~/.openclaw` by
+default and follows `OPENCLAW_STATE_DIR` when configured. In global scope,
+`vault.path` remains the exact shared vault path; explicit paths and `~/`
+expansion keep their existing behavior.
 
 Wiki tools and compiled prompt/corpus supplements resolve the active runtime
 agent on each call. In bridge mode, an agent vault imports only public memory
 artifacts whose `agentIds` includes that agent; unowned and other-agent
-artifacts are skipped. CLI and Gateway operations require an explicit agent in
-multi-agent setups; use `openclaw wiki --agent <agentId> ...` or pass `agentId`
-to the `wiki.*` RPC request. A single configured agent may remain implicit.
+artifacts are skipped. CLI operations use the configured default agent unless
+the command passes `--agent <agentId>`; Gateway operations in multi-agent
+setups require `agentId` on the `wiki.*` RPC request.
 
 Configuration validation rejects agent scope with either
 `vaultMode: "unsafe-local"` or `obsidian.useOfficialCli: true`. Obsidian-friendly
@@ -182,8 +184,8 @@ openclaw wiki obsidian command workspace:quick-switcher
 openclaw wiki obsidian daily
 
 # Agent-scoped vault
-openclaw wiki --agent support status
-openclaw wiki --agent support search "refund policy"
+openclaw wiki status --agent support
+openclaw wiki search "refund policy" --agent support
 ```
 
 ## Agent tools
@@ -209,7 +211,6 @@ Read methods:
 - `wiki.search`
 - `wiki.get`
 - `wiki.obsidian.status`
-- `wiki.obsidian.search`
 
 Write methods:
 
@@ -220,6 +221,7 @@ Write methods:
 - `wiki.bridge.import`
 - `wiki.unsafeLocal.import`
 - `wiki.apply`
+- `wiki.obsidian.search`
 - `wiki.obsidian.open`
 - `wiki.obsidian.command`
 - `wiki.obsidian.daily`
@@ -234,6 +236,7 @@ unknown ids fail in multi-agent setups.
 - Agent scope is incompatible with `unsafe-local` and official Obsidian CLI actions.
 - Wiki pages are compiled artifacts, not the ultimate source of truth. Keep provenance attached to raw sources, memory artifacts, and daily notes.
 - The compiled snapshot in shared SQLite plugin state is the stable machine-facing view of the wiki.
+- Upgrades support state written by July 2026 or newer releases. Doctor no longer imports the older `.openclaw-wiki/source-sync.json` or `import-runs/<runId>.json` formats. Canonical SQLite state stays authoritative, and retired JSON and import snapshots remain untouched. If Doctor cannot find canonical state, it reports how to restore a supported backup or safely set aside the retired file; an empty source-sync store cannot be distinguished from unmigrated state.
 - After editing or restoring vault files, compile again before expecting tools or prompts to use that source state. Lifecycle refresh rejects SQLite snapshots newer than a restored vault, and causal publication chaining rejects compilers started before the restore, without polling or watching files.
 - Rollback quarantine clears immediately for an in-process compile. After a separate compiler process publishes, refresh the plugin lifecycle so the daemon can validate that durable publication.
 - Pre-publication-epoch cache rows are rebuildable misses, not migrated state; the next compile replaces them.

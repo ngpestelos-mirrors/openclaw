@@ -1,13 +1,27 @@
+import type { SubagentRunsDurableBasis } from "../../agents/subagents/registry/subagent-registry-read.types.js";
+import type { OpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
-import type { SessionUnreferencedArtifactSweepResult } from "./disk-budget.js";
-import type { SessionResetBoundaryReason } from "./session-reset-boundary-event.js";
-import type { SessionMaintenanceApplyReport } from "./store-maintenance-operations.js";
-import type { SessionEntry } from "./types.js";
+import type { ConversationRouteContext } from "./conversation-route-context.js";
+import type { SessionStateDeleteSnapshot } from "./session-accessor.sqlite-delete-snapshot.types.js";
+import type { SqliteSessionGenerationClaim } from "./session-accessor.sqlite-generation.types.js";
+import type { SessionEntryCommitContext } from "./session-entry-commit-context.js";
+import type { SessionResetBoundaryRequest } from "./session-reset-boundary-event.js";
+import type { InternalSessionEntry as SessionEntry } from "./types.js";
+
+/** Reset is an append: an empty transcript needs the caller's workspace for its header. */
+export type SessionResetBoundaryWrite = SessionResetBoundaryRequest & {
+  /** Caller-prepared identity when a lifecycle consumer must reopen this exact window. */
+  boundaryId?: string;
+  cwd: string;
+};
 
 export type SessionLifecycleArtifactCleanupParams = {
   agentId?: string;
+  env?: NodeJS.ProcessEnv;
   storePath: string;
   archiveRemovedEntryTranscripts?: boolean;
+  /** Preserve explicitly foreign plugin-owned state while retaining ownerless legacy rows. */
+  pluginOwnerId?: string;
   sessionKeySegmentPrefix: string;
   transcriptContentMarker: string;
   orphanTranscriptMinAgeMs: number;
@@ -25,6 +39,9 @@ export type SessionLifecycleStoreTarget = {
 };
 
 export type SessionLifecycleArchivedTranscript = {
+  /** Canonical SQLite archive identity used for idempotent derived-file publication. */
+  generation: string;
+  sessionId: string;
   sourcePath: string;
   archivedPath: string;
 };
@@ -42,11 +59,20 @@ export type ResetSessionEntryLifecycleMutation = Omit<
   "archivedTranscripts"
 >;
 
+export type SessionResetCommitContext = SessionEntryCommitContext & {
+  source: { agentId: string; path: string };
+};
+
 export type ResetSessionEntryLifecycleParams = {
+  /** Revalidate caller authority before preparation and synchronous reset commit. */
+  commitGuard?: () => void;
   /** Preserve legacy rotation archival unless the caller appended an in-log boundary. */
   archivePreviousTranscript?: boolean;
   /** Runs after the persisted entry changes and any requested archival completes. */
-  afterEntryMutation?: (mutation: ResetSessionEntryLifecycleMutation) => Promise<void> | void;
+  afterEntryMutation?: (
+    mutation: ResetSessionEntryLifecycleMutation,
+    context: SessionResetCommitContext,
+  ) => Promise<void> | void;
   /** Agent owner used to resolve backend transcript artifacts. */
   agentId?: string;
   /** Builds the persisted replacement entry from the current backend row. */
@@ -55,7 +81,7 @@ export type ResetSessionEntryLifecycleParams = {
     primaryKey: string;
   }) => Promise<SessionEntry> | SessionEntry;
   /** Atomically append this boundary with the reset entry mutation. */
-  resetBoundaryReason?: SessionResetBoundaryReason;
+  resetBoundary?: SessionResetBoundaryWrite;
   /** Explicit store target for SQLite session ownership. */
   storePath: string;
   /** Canonical key plus aliases that identify the logical entry. */
@@ -67,19 +93,35 @@ export type DeleteSessionEntryLifecycleResult = {
   deleted: boolean;
   expectedEntryMismatch?: true;
   deletedEntry?: SessionEntry;
-  deletedSessionFile?: string;
   deletedSessionId?: string;
 };
 
 export type DeleteSessionEntryLifecycleParams = {
+  /** Captured host state source; never part of the cloneable deletion plan. */
+  env?: NodeJS.ProcessEnv;
+  /** Internal durable comparison paired with the caller's live descendant guard. */
+  descendantRunBasis?: SubagentRunsDurableBasis;
+  /**
+   * Revalidate caller and external lifecycle owners at each synchronous deletion boundary.
+   * Must not write the deleting agent database: its Worker may hold the transaction lock.
+   */
+  commitGuard?: () => void;
   /** Agent owner used to resolve backend transcript artifacts. */
   agentId?: string;
   /** Whether transcript artifacts should be archived/deleted with the entry. */
   archiveTranscript: boolean;
   /** Delete transcript rows without writing an archive artifact. */
   deleteTranscriptWithoutArchive?: boolean;
+  /** Full teardown only: delete durable operations sourced from this logical session. */
+  deleteDeliveryArtifacts?: boolean;
   /** Optional exact row guard checked under the storage writer lock. */
   expectedEntry?: SessionEntry;
+  /** Bind a cross-store handoff to the original physical source at deletion admission. */
+  expectedDatabaseIdentity?: OpenClawAgentDatabaseIdentity;
+  /** Compare remaining source generations with their verified cross-store handoff. */
+  expectedGenerations?: readonly SqliteSessionGenerationClaim[];
+  /** Guard logical-node artifacts when planning or committing entry removal. */
+  expectedNodeArtifactFingerprint?: string;
   /** Optional provider-run identity guard checked under the storage writer lock. */
   expectedSessionId?: string | null;
   /** Optional owner revision guard checked under the storage writer lock. */
@@ -103,6 +145,8 @@ type SessionEntryLifecycleRemovalBase = {
   /** Doctor cross-store repair only: delivery aliases copied under the canonical destination key. */
   deliveryCleanupKeys?: readonly string[];
   archiveRemovedTranscript?: boolean;
+  /** Omit removal when the transcript changed after the caller's positive classification. */
+  expectedTranscriptSnapshot?: SessionStateDeleteSnapshot;
   expectedSessionId?: string;
   expectedLifecycleRevision?: string;
   expectedUpdatedAt?: number;
@@ -111,19 +155,25 @@ type SessionEntryLifecycleRemovalBase = {
 export type SessionEntryLifecycleRemoval = SessionEntryLifecycleRemovalBase &
   (
     | {
-        /** Doctor repair only: compare-and-delete an entry_json blob that cannot be parsed. */
+        /** Doctor repair only: compare the rejected hot blob and its detached snapshot revision. */
         expectedRawEntryJson: string;
+        expectedSnapshotRevision: number;
         expectedEntry: SessionEntry;
       }
     | {
         expectedRawEntryJson?: never;
+        expectedSnapshotRevision?: never;
         expectedEntry?: SessionEntry;
       }
   );
 
 export type SessionEntryLifecycleUpsert = {
   sessionKey: string;
-  resetBoundaryReason?: SessionResetBoundaryReason;
+  /** Apply this upsert only when the named removal was projected in the same mutation. */
+  requiresRemovalSessionKey?: string;
+  /** Authoritative route observation for this write; omitted writes preserve valid evidence. */
+  routeContext?: ConversationRouteContext | null;
+  resetBoundary?: SessionResetBoundaryWrite;
 } & (
   | {
       entry: SessionEntry;
@@ -133,7 +183,6 @@ export type SessionEntryLifecycleUpsert = {
       buildEntry: (context: {
         currentEntry?: SessionEntry;
         sessionKey: string;
-        store: Record<string, SessionEntry>;
       }) => Promise<SessionEntry | null | undefined> | SessionEntry | null | undefined;
       entry?: never;
     }
@@ -145,17 +194,22 @@ export type SessionArchivedTranscriptCleanupRule = {
 };
 
 export type SessionEntryLifecycleMutationResult = {
+  beforeCount: number;
   removedEntries: number;
   removedSessionKeys: string[];
+  archived: number;
+  capArchived?: number;
+  modelRunPruned: number;
+  pruned: number;
+  capped: number;
   archivedTranscriptDirectories: string[];
-  unreferencedArtifacts: SessionUnreferencedArtifactSweepResult | null;
-  maintenanceReport: SessionMaintenanceApplyReport | null;
   afterCount: number;
   artifactCleanupError?: unknown;
 };
 
 export type DeletedAgentSessionEntryPurgeParams = {
   cfg: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
   agentId: string;
   storeAgentId: string;
   storePath: string;

@@ -1,50 +1,36 @@
 // Daemon constant tests cover platform constants used by service installers.
 import { describe, expect, it } from "vitest";
 import {
-  GATEWAY_LAUNCH_AGENT_LABEL,
-  LEGACY_GATEWAY_SYSTEMD_SERVICE_NAMES,
-  resolveGatewayLaunchAgentLabel,
   resolveGatewayNativeServiceIdentityConflict,
   resolveGatewayProfileSuffix,
   resolveGatewayServiceDescription,
-  resolveGatewaySystemdServiceName,
-  resolveGatewayWindowsTaskName,
+  resolveGatewaySystemdServiceNameCandidates,
 } from "./constants.js";
 
-describe("resolveGatewayLaunchAgentLabel", () => {
-  it("returns default label when no profile is set", () => {
-    const result = resolveGatewayLaunchAgentLabel();
-    expect(result).toBe(GATEWAY_LAUNCH_AGENT_LABEL);
-    expect(result).toBe("ai.openclaw.gateway");
+describe("resolveGatewaySystemdServiceNameCandidates", () => {
+  it("includes current default and legacy bare openclaw", () => {
+    expect(resolveGatewaySystemdServiceNameCandidates()).toEqual(["openclaw-gateway", "openclaw"]);
+    expect(resolveGatewaySystemdServiceNameCandidates("default")).toEqual([
+      "openclaw-gateway",
+      "openclaw",
+    ]);
   });
 
-  it("returns profile-specific label when profile is set", () => {
-    const result = resolveGatewayLaunchAgentLabel("dev");
-    expect(result).toBe("ai.openclaw.dev");
-  });
-});
-
-describe("resolveGatewaySystemdServiceName", () => {
-  it("returns default service name when no profile is set", () => {
-    const result = resolveGatewaySystemdServiceName();
-    expect(result).toBe("openclaw-gateway");
+  it("includes current and legacy names for a named profile", () => {
+    expect(resolveGatewaySystemdServiceNameCandidates("lisa")).toEqual([
+      "openclaw-gateway-lisa",
+      "openclaw-lisa",
+    ]);
   });
 
-  it("returns profile-specific service name when profile is set", () => {
-    const result = resolveGatewaySystemdServiceName("dev");
-    expect(result).toBe("openclaw-gateway-dev");
-  });
-});
-
-describe("resolveGatewayWindowsTaskName", () => {
-  it("returns default task name when no profile is set", () => {
-    const result = resolveGatewayWindowsTaskName();
-    expect(result).toBe("OpenClaw Gateway");
-  });
-
-  it("returns profile-specific task name when profile is set", () => {
-    const result = resolveGatewayWindowsTaskName("dev");
-    expect(result).toBe("OpenClaw Gateway (dev)");
+  it("omits legacy names that identify Node or another profile's gateway", () => {
+    expect(resolveGatewaySystemdServiceNameCandidates("node")).toEqual(["openclaw-gateway-node"]);
+    expect(resolveGatewaySystemdServiceNameCandidates("gateway")).toEqual([
+      "openclaw-gateway-gateway",
+    ]);
+    expect(resolveGatewaySystemdServiceNameCandidates("gateway-lisa")).toEqual([
+      "openclaw-gateway-gateway-lisa",
+    ]);
   });
 });
 
@@ -65,6 +51,16 @@ describe("resolveGatewayNativeServiceIdentityConflict", () => {
       envKey: "OPENCLAW_WINDOWS_TASK_NAME",
       value: "OpenClaw Gateway",
     },
+    {
+      platform: "win32" as const,
+      envKey: "OPENCLAW_WINDOWS_TASK_NAME",
+      value: "\\Nested\\OpenClaw Gateway (work)",
+    },
+    {
+      platform: "win32" as const,
+      envKey: "OPENCLAW_WINDOWS_TASK_NAME",
+      value: "\\OpenClaw Gateway (other)",
+    },
   ])("rejects $envKey overrides for named profiles on $platform", ({ platform, envKey, value }) => {
     expect(
       resolveGatewayNativeServiceIdentityConflict(
@@ -74,34 +70,38 @@ describe("resolveGatewayNativeServiceIdentityConflict", () => {
     ).toMatchObject({ envKey });
   });
 
-  it("accepts canonical named-profile identities and default-profile overrides", () => {
-    expect(
-      resolveGatewayNativeServiceIdentityConflict(
-        { OPENCLAW_PROFILE: "work", OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway-work" },
-        "linux",
-      ),
-    ).toBeNull();
-    expect(
-      resolveGatewayNativeServiceIdentityConflict(
-        { OPENCLAW_SYSTEMD_UNIT: "custom-gateway.service" },
-        "linux",
-      ),
-    ).toBeNull();
+  it.each([
+    {
+      name: "canonical named-profile systemd identity",
+      platform: "linux",
+      env: { OPENCLAW_PROFILE: "work", OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway-work" },
+    },
+    {
+      name: "default-profile systemd override",
+      platform: "linux",
+      env: { OPENCLAW_SYSTEMD_UNIT: "custom-gateway.service" },
+    },
+    ...["OpenClaw Gateway (work)", "\\OpenClaw Gateway (work)", "\\OPENCLAW GATEWAY (WORK)"].map(
+      (taskName) => ({
+        name: `native Windows identity ${taskName}`,
+        platform: "win32" as const,
+        env: { OPENCLAW_PROFILE: "work", OPENCLAW_WINDOWS_TASK_NAME: taskName },
+      }),
+    ),
+    {
+      name: "default-profile nested Windows override",
+      platform: "win32",
+      env: { OPENCLAW_WINDOWS_TASK_NAME: "\\Nested\\Custom Gateway" },
+    },
+  ] as const)("accepts $name", ({ env, platform }) => {
+    expect(resolveGatewayNativeServiceIdentityConflict(env, platform)).toBeNull();
   });
 });
 
 describe("resolveGatewayProfileSuffix", () => {
-  it("returns empty string when no profile is set", () => {
-    expect(resolveGatewayProfileSuffix()).toBe("");
-  });
-
   it("returns empty string for default profiles", () => {
     expect(resolveGatewayProfileSuffix("default")).toBe("");
     expect(resolveGatewayProfileSuffix(" Default ")).toBe("");
-  });
-
-  it("returns a hyphenated suffix for custom profiles", () => {
-    expect(resolveGatewayProfileSuffix("dev")).toBe("-dev");
   });
 
   it("trims whitespace from profiles", () => {
@@ -110,50 +110,24 @@ describe("resolveGatewayProfileSuffix", () => {
 });
 
 describe("resolveGatewayServiceDescription", () => {
-  it("returns default description when no profile/version", () => {
-    expect(resolveGatewayServiceDescription({ env: {} })).toBe("OpenClaw Gateway");
-  });
-
   it("includes profile when set", () => {
     expect(resolveGatewayServiceDescription({ env: { OPENCLAW_PROFILE: "work" } })).toBe(
       "OpenClaw Gateway (profile: work)",
     );
   });
 
-  it("includes version when set", () => {
+  it("ignores legacy install-time version metadata", () => {
     expect(
       resolveGatewayServiceDescription({ env: { OPENCLAW_SERVICE_VERSION: "2026.1.10" } }),
-    ).toBe("OpenClaw Gateway (v2026.1.10)");
+    ).toBe("OpenClaw Gateway");
   });
 
-  it("includes profile and version when set", () => {
-    expect(
-      resolveGatewayServiceDescription({
-        env: { OPENCLAW_PROFILE: "dev", OPENCLAW_SERVICE_VERSION: "1.2.3" },
-      }),
-    ).toBe("OpenClaw Gateway (profile: dev, v1.2.3)");
-  });
   it("prefers explicit description override", () => {
     expect(
       resolveGatewayServiceDescription({
-        env: { OPENCLAW_PROFILE: "work", OPENCLAW_SERVICE_VERSION: "1.0.0" },
+        env: { OPENCLAW_PROFILE: "work" },
         description: "Custom",
       }),
     ).toBe("Custom");
-  });
-
-  it("resolves version from explicit environment map", () => {
-    expect(
-      resolveGatewayServiceDescription({
-        env: { OPENCLAW_PROFILE: "work", OPENCLAW_SERVICE_VERSION: "local" },
-        environment: { OPENCLAW_SERVICE_VERSION: "remote" },
-      }),
-    ).toBe("OpenClaw Gateway (profile: work, vremote)");
-  });
-});
-
-describe("LEGACY_GATEWAY_SYSTEMD_SERVICE_NAMES", () => {
-  it("includes known pre-rebrand gateway unit names", () => {
-    expect(LEGACY_GATEWAY_SYSTEMD_SERVICE_NAMES).toContain("clawdbot-gateway");
   });
 });

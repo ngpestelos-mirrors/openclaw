@@ -6,8 +6,10 @@ import {
   type ChannelIngressMonitorDeliveryResult,
   type ChannelIngressMonitorLifecycle,
 } from "openclaw/plugin-sdk/channel-outbound";
+import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeNullableString as nonEmptyString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { raceWithTimeout } from "openclaw/plugin-sdk/time-runtime";
 import { classifyMSTeamsSendError } from "./errors.js";
 import { MSTEAMS_REQUEST_TIMEOUT_MS } from "./request-timeout.js";
 import { getMSTeamsRuntime } from "./runtime.js";
@@ -39,12 +41,6 @@ type MSTeamsIngressOptions = {
     liveContext?: MSTeamsTurnContext,
   ) => Promise<MSTeamsIngressDispatchResult | void> | MSTeamsIngressDispatchResult | void;
   queue?: ChannelIngressQueue<MSTeamsIngressPayload>;
-};
-
-type MSTeamsIngress = {
-  accept: (activity: MSTeamsIngressActivity, liveContext?: MSTeamsTurnContext) => Promise<void>;
-  start: () => void;
-  stop: () => Promise<void>;
 };
 
 const MSTeamsIngressPayloadError = createChannelIngressError<
@@ -132,11 +128,7 @@ function parseClaimedActivity(
   return parsed;
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-export function createMSTeamsIngress(options: MSTeamsIngressOptions): MSTeamsIngress {
+export function createMSTeamsIngress(options: MSTeamsIngressOptions) {
   const queue =
     options.queue ??
     getMSTeamsRuntime().state.openChannelIngressQueue<MSTeamsIngressPayload>({
@@ -193,19 +185,19 @@ export function createMSTeamsIngress(options: MSTeamsIngressOptions): MSTeamsIng
         }
         const classification = classifyMSTeamsSendError(error);
         return classification.kind === "auth"
-          ? { reason: "authentication-failed", message: errorText(error) }
+          ? { reason: "authentication-failed", message: formatErrorMessage(error) }
           : null;
       },
       onLog: (message) => options.runtime.error?.(`msteams: ${message}`),
     },
     createStoppedError: () => new Error("Microsoft Teams ingress stopped."),
     onError: (error) =>
-      options.runtime.error?.(`msteams ingress drain failed: ${errorText(error)}`),
+      options.runtime.error?.(`msteams ingress drain failed: ${formatErrorMessage(error)}`),
   });
   let stopTask: Promise<void> | undefined;
 
   return {
-    accept: async (activity, liveContext) => {
+    accept: async (activity: MSTeamsIngressActivity, liveContext?: MSTeamsTurnContext) => {
       const facts = inspectMSTeamsIngressActivity(activity);
       if (!facts) {
         return;
@@ -248,17 +240,18 @@ export function createMSTeamsIngress(options: MSTeamsIngressOptions): MSTeamsIng
     stop: () => {
       stopTask ??= (async () => {
         await monitor.pause();
-        let graceTimer: ReturnType<typeof setTimeout> | undefined;
-        const graceElapsed = new Promise<void>((resolve) => {
-          graceTimer = setTimeout(resolve, MSTEAMS_REQUEST_TIMEOUT_MS);
-          graceTimer.unref?.();
-        });
         try {
           // Preserve completed side effects when possible, but retain an abort path for
           // deliveries that themselves wait on the lifecycle signal.
-          await Promise.race([monitor.waitForIdle(), graceElapsed]);
+          await raceWithTimeout(
+            () => monitor.waitForIdle(),
+            MSTEAMS_REQUEST_TIMEOUT_MS,
+            () => undefined,
+            {
+              ref: false,
+            },
+          );
         } finally {
-          clearTimeout(graceTimer);
           await monitor.stop();
           liveContexts.clear();
         }

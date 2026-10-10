@@ -6,6 +6,7 @@ import { asNullableObjectRecord } from "@openclaw/normalization-core/record-coer
 import { note } from "../../packages/terminal-core/src/note.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { cancelUnreadResponseBody } from "../infra/http-body.js";
 
 const OPENAI_AUTH_PROBE_URL =
   "https://auth.openai.com/oauth/authorize?response_type=code&client_id=openclaw-preflight&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile+email";
@@ -61,32 +62,16 @@ function resolveHomebrewPrefixFromExecPath(execPath: string): string | null {
   return envPrefix ? envPrefix : null;
 }
 
-function resolveCertBundlePath(): string | null {
-  const prefix = resolveHomebrewPrefixFromExecPath(process.execPath);
-  if (!prefix) {
-    return null;
-  }
-  return path.join(prefix, "etc", "openssl@3", "cert.pem");
-}
-
-function hasOpenAICodexOAuthProfile(cfg: OpenClawConfig): boolean {
-  const profiles = cfg.auth?.profiles;
-  if (!profiles) {
-    return false;
-  }
-  return Object.values(profiles).some(
-    (profile) => profile.provider === OPENAI_PROVIDER_ID && profile.mode === "oauth",
-  );
-}
-
 export function shouldRunOpenAIOAuthTlsPrerequisites(params: {
   cfg: OpenClawConfig;
   deep?: boolean;
 }): boolean {
-  if (params.deep === true) {
-    return true;
-  }
-  return hasOpenAICodexOAuthProfile(params.cfg);
+  return (
+    params.deep === true ||
+    Object.values(params.cfg.auth?.profiles ?? {}).some(
+      (profile) => profile.provider === OPENAI_PROVIDER_ID && profile.mode === "oauth",
+    )
+  );
 }
 
 export async function runOpenAIOAuthTlsPreflight(options?: {
@@ -104,17 +89,9 @@ export async function runOpenAIOAuthTlsPreflight(options?: {
     });
     return { ok: true };
   } catch (error) {
-    const failure = extractFailure(error);
-    return {
-      ok: false,
-      kind: failure.kind,
-      code: failure.code,
-      message: failure.message,
-    };
+    return { ok: false, ...extractFailure(error) };
   } finally {
-    if (response?.bodyUsed !== true) {
-      await response?.body?.cancel().catch(() => undefined);
-    }
+    await cancelUnreadResponseBody(response);
   }
 }
 
@@ -128,7 +105,8 @@ export function formatOpenAIOAuthTlsPreflightFix(
       "Verify DNS/firewall/proxy access to auth.openai.com and retry.",
     ].join("\n");
   }
-  const certBundlePath = resolveCertBundlePath();
+  const prefix = resolveHomebrewPrefixFromExecPath(process.execPath);
+  const certBundlePath = prefix ? path.join(prefix, "etc", "openssl@3", "cert.pem") : null;
   const lines = [
     "OpenAI OAuth prerequisites check failed: Node/OpenSSL cannot validate TLS certificates.",
     `Cause: ${result.code ? `${result.code} (${result.message})` : result.message}`,

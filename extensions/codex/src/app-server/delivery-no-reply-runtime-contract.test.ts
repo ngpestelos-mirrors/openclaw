@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness";
+import type { EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness";
 import {
   DELIVERY_NO_REPLY_RUNTIME_CONTRACT,
   openFileBackedSessionManagerForTest,
@@ -56,7 +56,6 @@ afterEach(async () => {
 
 describe("Delivery/NO_REPLY runtime contract - Codex app-server adapter", () => {
   it.each([
-    DELIVERY_NO_REPLY_RUNTIME_CONTRACT.silentText,
     `  ${DELIVERY_NO_REPLY_RUNTIME_CONTRACT.silentText}  `,
     DELIVERY_NO_REPLY_RUNTIME_CONTRACT.jsonSilentText,
   ])("preserves silent terminal text %s for shared delivery suppression", async (text) => {

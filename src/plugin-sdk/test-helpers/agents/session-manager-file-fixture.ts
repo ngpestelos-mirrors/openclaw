@@ -8,6 +8,13 @@ type FileBackedSessionManagerForTest = SessionManager & {
   getSessionFile(): string;
 };
 
+type OpenFileBackedSessionManagerForTestOptions = {
+  sessionId?: string;
+  sessionDir?: string;
+  cwd?: string;
+  SessionManagerClass?: typeof SessionManager;
+};
+
 // Legacy JSONL tests need observable write-through files, but the production
 // constructor must stay SQLite/in-memory only. Decorate each fixture instance.
 function attachFilePersistence(params: {
@@ -19,7 +26,6 @@ function attachFilePersistence(params: {
 }): FileBackedSessionManagerForTest {
   const manager = params.manager as FileBackedSessionManagerForTest & {
     persistRecord(entry: unknown): void;
-    replacePersistedTranscript(): void;
   };
   const writeFullFile = () => {
     const target = params.target();
@@ -28,6 +34,9 @@ function attachFilePersistence(params: {
     fs.writeFileSync(target, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
   };
   const originalNewSession = manager.newSession.bind(manager);
+  const originalRemoveTrailingEntries = manager.removeTrailingEntries.bind(manager);
+  const originalRemoveTrailingEntriesAsync = manager.removeTrailingEntriesAsync.bind(manager);
+  const originalPrepareTranscriptRewriteAsync = manager.prepareTranscriptRewriteAsync.bind(manager);
   Object.assign(manager, {
     getSessionDir: () => params.sessionDir,
     getSessionFile: () => params.target(),
@@ -37,6 +46,32 @@ function attachFilePersistence(params: {
       const result = originalNewSession({ ...options, id: sessionId });
       writeFullFile();
       return result;
+    },
+    removeTrailingEntries(...args: Parameters<SessionManager["removeTrailingEntries"]>) {
+      const removed = originalRemoveTrailingEntries(...args);
+      if (removed > 0) {
+        writeFullFile();
+      }
+      return removed;
+    },
+    async removeTrailingEntriesAsync(
+      ...args: Parameters<SessionManager["removeTrailingEntriesAsync"]>
+    ) {
+      const removed = await originalRemoveTrailingEntriesAsync(...args);
+      if (removed > 0) {
+        writeFullFile();
+      }
+      return removed;
+    },
+    async prepareTranscriptRewriteAsync() {
+      const rewrite = await originalPrepareTranscriptRewriteAsync();
+      return {
+        sessionManager: rewrite.sessionManager,
+        commit: async (rewrittenEntryIds: ReadonlyMap<string, string>) => {
+          await rewrite.commit(rewrittenEntryIds);
+          writeFullFile();
+        },
+      };
     },
     persistRecord(entry: unknown) {
       const target = params.target();
@@ -49,7 +84,6 @@ function attachFilePersistence(params: {
       }
       fs.appendFileSync(target, `${JSON.stringify(entry)}\n`);
     },
-    replacePersistedTranscript: writeFullFile,
   });
   if (params.initialize) {
     writeFullFile();
@@ -73,23 +107,38 @@ export function createFileBackedSessionManagerForTest(
 
 export function openFileBackedSessionManagerForTest(
   target: string,
-  sessionDir?: string,
-  cwd?: string,
-  SessionManagerClass: typeof SessionManager = SessionManager,
+  sessionDirOrOptions?: string | OpenFileBackedSessionManagerForTestOptions,
+  legacyCwd?: string,
+  legacySessionManagerClass: typeof SessionManager = SessionManager,
 ): FileBackedSessionManagerForTest {
+  const options = typeof sessionDirOrOptions === "object" ? sessionDirOrOptions : undefined;
+  const sessionId = options?.sessionId;
+  const sessionDir =
+    options?.sessionDir ??
+    (typeof sessionDirOrOptions === "string" ? sessionDirOrOptions : undefined);
+  const cwd = options?.cwd ?? legacyCwd;
+  const SessionManagerClass = options?.SessionManagerClass ?? legacySessionManagerClass;
   let activeTarget = target;
   const resolvedSessionDir = sessionDir ?? path.dirname(target);
   const exists = fs.existsSync(target);
   const manager = exists
     ? SessionManagerClass.fromEntries(parseSessionEntries(fs.readFileSync(target, "utf8")), cwd)
     : SessionManagerClass.inMemory(cwd ?? sessionDir ?? process.cwd());
+  if (sessionId !== undefined && manager.getSessionId() !== sessionId) {
+    if (exists) {
+      throw new Error(
+        `Session fixture ${target} belongs to ${manager.getSessionId()}, not ${sessionId}`,
+      );
+    }
+    manager.newSession({ id: sessionId });
+  }
   return attachFilePersistence({
     manager,
     sessionDir: resolvedSessionDir,
     target: () => activeTarget,
     initialize: !exists,
-    rotateTarget: (sessionId) => {
-      activeTarget = path.join(resolvedSessionDir, `${sessionId}.jsonl`);
+    rotateTarget: (nextSessionId) => {
+      activeTarget = path.join(resolvedSessionDir, `${nextSessionId}.jsonl`);
     },
   });
 }

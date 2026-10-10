@@ -1,14 +1,23 @@
-import { Buffer } from "node:buffer";
-import crypto from "node:crypto";
+import { isProxy } from "node:util/types";
+import { modelRequestBodyState, responsesPromptObserver } from "@openclaw/ai/internal/openai";
+import { stableStringify } from "@openclaw/normalization-core";
+import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import type { Model } from "openclaw/plugin-sdk/llm";
+import { resolveRuntimeProcessEntrypointUrl } from "../../infra/runtime-process-url.js";
+import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
-import { stableStringify } from "../stable-stringify.js";
+import {
+  prepareProviderPrompt,
+  type ProviderPromptCachePrefix,
+  type ProviderPromptTask,
+} from "./provider-prompt-serialization.js";
 
 type ProviderPromptSnapshot = {
   scopeDigest: string;
   digest: string;
   byteWeight: number;
+  cachePrefix?: ProviderPromptCachePrefix;
 };
 
 export type ProviderPromptState = {
@@ -22,45 +31,84 @@ const providerPromptStates = resolveGlobalSingleton(
   () => new Map<string, ProviderPromptState>(),
 );
 
-class ProviderPromptRetryNoProgressError extends Error {
-  constructor(payloadBytes: number) {
-    super(
-      "Context overflow: refusing to resend the byte-identical provider payload after a " +
-        `context rejection (payloadBytes=${payloadBytes}).`,
-    );
-    this.name = "ProviderPromptRetryNoProgressError";
-  }
-}
-
-function digest(serialized: string): string {
-  return crypto.createHash("sha256").update(serialized).digest("hex");
-}
-
-function createProviderPromptState(): ProviderPromptState {
-  return {};
-}
-
 /** Returns run-local retry state; restarts and new run ids intentionally have no baseline. */
 export function getProviderPromptState(runId: string): ProviderPromptState {
-  const existing = providerPromptStates.get(runId);
-  if (existing) {
-    return existing;
-  }
-  const created = createProviderPromptState();
-  providerPromptStates.set(runId, created);
-  return created;
+  const state = providerPromptStates.get(runId) ?? {};
+  providerPromptStates.set(runId, state);
+  return state;
 }
 
 export function clearProviderPromptState(runId: string): void {
   providerPromptStates.delete(runId);
 }
 
+const promptHashPool = resolveGlobalSingleton(
+  Symbol.for("openclaw.providerPromptHashPool"),
+  () =>
+    new WorkerTaskPool<ProviderPromptTask, ReturnType<typeof prepareProviderPrompt>>({
+      workerUrl: resolveRuntimeProcessEntrypointUrl("providerPromptState"),
+      workerClass: "compute",
+      sharedCompute: true,
+    }),
+);
+
+// onPayload accepts arbitrary hook values. Only ordinary data retains exactly the
+// same stable identity across a structured clone; getters and custom objects stay local.
+function providerPromptWorkerBytes(
+  value: unknown,
+  seen = new WeakSet<object>(),
+): number | undefined {
+  if (value === null || typeof value !== "object") {
+    if (typeof value === "function" || typeof value === "symbol" || typeof value === "bigint") {
+      return undefined;
+    }
+    return typeof value === "string" ? value.length * 2 : 8;
+  }
+  if (isProxy(value) || "toJSON" in value) {
+    return undefined;
+  }
+  const array = Array.isArray(value);
+  const prototype = Object.getPrototypeOf(value);
+  if (
+    (array && (prototype !== Array.prototype || Object.hasOwn(value, Symbol.iterator))) ||
+    (!array && prototype !== Object.prototype && prototype !== null)
+  ) {
+    return undefined;
+  }
+  if (seen.has(value)) {
+    return 0;
+  }
+  seen.add(value);
+  const keys = Object.keys(value);
+  if (array && keys.length !== value.length) {
+    return undefined;
+  }
+  let bytes = 64;
+  for (const [index, key] of keys.entries()) {
+    if (array && key !== String(index)) {
+      return undefined;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    const childBytes =
+      "value" in descriptor ? providerPromptWorkerBytes(descriptor.value, seen) : undefined;
+    if (childBytes === undefined) {
+      return undefined;
+    }
+    // Count UTF-16 strings and container overhead without scanning prompt text.
+    bytes += key.length * 2 + 16 + childBytes;
+  }
+  return bytes;
+}
+
 /** Captures the final provider request identity without retaining payload content. */
-function snapshotProviderPrompt(params: {
+async function recordProviderPrompt(params: {
+  state: ProviderPromptState;
   model: Model;
   payload: unknown;
+  signal?: AbortSignal;
   effectiveContextTokenBudget: number;
-}): ProviderPromptSnapshot {
+  encode?: boolean;
+}) {
   const scope = stableStringify({
     provider: params.model.provider,
     api: params.model.api,
@@ -68,39 +116,37 @@ function snapshotProviderPrompt(params: {
     baseUrl: params.model.baseUrl,
     effectiveContextTokenBudget: params.effectiveContextTokenBudget,
   });
-  const serialized = stableStringify(params.payload);
-  return {
-    scopeDigest: digest(scope),
-    digest: digest(serialized),
-    byteWeight: Buffer.byteLength(serialized),
+  // Retry admission needs exact content equality, including hook replacements and
+  // edits to earlier messages. The shared compute pool owns the full traversal.
+  const inputBytes = providerPromptWorkerBytes(params.payload);
+  const task = { payload: params.payload, encode: params.encode === true };
+  const payload =
+    inputBytes !== undefined
+      ? await promptHashPool
+          .run(() => task, { inputBytes, signal: params.signal })
+          .catch((error: unknown) => {
+            if (params.signal?.aborted) {
+              throw error;
+            }
+            // Bookkeeping worker failure must not make an otherwise valid model call unavailable.
+            return prepareProviderPrompt(task);
+          })
+      : prepareProviderPrompt(task);
+  const snapshot = {
+    scopeDigest: sha256Hex(scope),
+    digest: payload.digest,
+    byteWeight: payload.byteWeight,
+    ...(payload.cachePrefix ? { cachePrefix: payload.cachePrefix } : {}),
   };
-}
-
-/** Rejects only an exact replay of the last provider-rejected request body. */
-function assertProviderPromptRetryProgress(
-  state: ProviderPromptState,
-  candidate: ProviderPromptSnapshot,
-): void {
-  const rejected = state.lastRejected;
-  if (!rejected || rejected.scopeDigest !== candidate.scopeDigest) {
-    return;
+  const rejected = params.state.lastRejected;
+  if (rejected?.scopeDigest === snapshot.scopeDigest && rejected.digest === snapshot.digest) {
+    throw new Error(
+      "Context overflow: refusing to resend the byte-identical provider payload after a " +
+        `context rejection (payloadBytes=${snapshot.byteWeight}).`,
+    );
   }
-  if (rejected.digest === candidate.digest) {
-    throw new ProviderPromptRetryNoProgressError(candidate.byteWeight);
-  }
-}
-
-function beginProviderPromptAttempt(state: ProviderPromptState): void {
-  // A transport that does not implement onPayload must not leave a stale body
-  // eligible to be marked as the current provider rejection.
-  state.lastAttempt = undefined;
-}
-
-function recordProviderPromptAttempt(
-  state: ProviderPromptState,
-  snapshot: ProviderPromptSnapshot,
-): void {
-  state.lastAttempt = snapshot;
+  params.state.lastAttempt = snapshot;
+  return payload.encoded;
 }
 
 export function markLastProviderPromptContextRejected(
@@ -113,30 +159,50 @@ export function markLastProviderPromptContextRejected(
   return attempted;
 }
 
-/** Observes the request body after every provider wrapper and caller payload hook. */
+/** Hashes the post-onPayload body for context-retry admission. */
 export function wrapStreamFnWithProviderPromptState(params: {
   streamFn: StreamFn;
   state: ProviderPromptState;
   effectiveContextTokenBudget: number;
+  recordEvent?: (type: string, data?: Record<string, unknown>) => void;
 }): StreamFn {
   return async (model, context, options) => {
-    beginProviderPromptAttempt(params.state);
+    params.state.lastAttempt = undefined; // Custom transports must not leave a stale candidate.
     const originalOnPayload = options?.onPayload;
-    const stream = await params.streamFn(model, context, {
+    const observedOptions: NonNullable<Parameters<StreamFn>[2]> = {
       ...options,
       onPayload: async (payload, payloadModel) => {
         const replacement = await originalOnPayload?.(payload, payloadModel);
         const finalPayload = replacement === undefined ? payload : replacement;
-        const snapshot = snapshotProviderPrompt({
+        if (modelRequestBodyState(observedOptions).enabled) {
+          return finalPayload;
+        }
+        await recordProviderPrompt({
+          state: params.state,
           model: payloadModel,
           payload: finalPayload,
+          signal: options?.signal,
           effectiveContextTokenBudget: params.effectiveContextTokenBudget,
         });
-        assertProviderPromptRetryProgress(params.state, snapshot);
-        recordProviderPromptAttempt(params.state, snapshot);
         return finalPayload;
       },
-    });
-    return stream;
+    };
+    modelRequestBodyState(observedOptions).encode = async (payload) => {
+      const encoded = await recordProviderPrompt({
+        state: params.state,
+        model,
+        payload,
+        signal: options?.signal,
+        effectiveContextTokenBudget: params.effectiveContextTokenBudget,
+        encode: true,
+      });
+      return encoded!;
+    };
+    if (params.recordEvent) {
+      responsesPromptObserver.set(observedOptions, (observation) =>
+        params.recordEvent?.("provider.prompt.observed", { ...observation }),
+      );
+    }
+    return params.streamFn(model, context, observedOptions);
   };
 }

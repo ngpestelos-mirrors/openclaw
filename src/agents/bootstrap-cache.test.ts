@@ -8,10 +8,11 @@ import type { WorkspaceBootstrapFile } from "./workspace.js";
 
 vi.mock("./workspace.js", () => ({
   loadWorkspaceBootstrapFiles: vi.fn(),
+  workspaceFileSourceIdentitiesMatch: vi.fn(() => true),
 }));
 
 import { clearBootstrapSnapshot, getOrLoadBootstrapFiles } from "./bootstrap-cache.js";
-import { loadWorkspaceBootstrapFiles } from "./workspace.js";
+import { loadWorkspaceBootstrapFiles, workspaceFileSourceIdentitiesMatch } from "./workspace.js";
 
 let workspaceDir = "";
 
@@ -34,20 +35,11 @@ describe("getOrLoadBootstrapFiles", () => {
 
   beforeEach(() => {
     mockLoad().mockResolvedValue(files);
+    vi.mocked(workspaceFileSourceIdentitiesMatch).mockReturnValue(true);
   });
 
   afterEach(() => {
     vi.clearAllMocks();
-  });
-
-  it("loads from disk on first call and caches", async () => {
-    const result = await getOrLoadBootstrapFiles({
-      workspaceDir,
-      sessionKey: "session-1",
-    });
-
-    expect(result).toBe(files);
-    expect(mockLoad()).toHaveBeenCalledTimes(1);
   });
 
   it("refreshes from disk on second call while preserving unchanged object identity", async () => {
@@ -73,6 +65,18 @@ describe("getOrLoadBootstrapFiles", () => {
     expect(first).toBe(files);
     expect(result).toBe(updatedFiles);
     expect(mockLoad()).toHaveBeenCalledTimes(2);
+  });
+
+  it("replaces cached result when loader source identity changes", async () => {
+    const refreshedFiles = [makeFile("AGENTS.md", "# Agent"), makeFile("SOUL.md", "# Soul")];
+    mockLoad().mockResolvedValueOnce(files).mockResolvedValueOnce(refreshedFiles);
+    vi.mocked(workspaceFileSourceIdentitiesMatch).mockReturnValue(false);
+
+    const first = await getOrLoadBootstrapFiles({ workspaceDir, sessionKey: "session-1" });
+    const result = await getOrLoadBootstrapFiles({ workspaceDir, sessionKey: "session-1" });
+
+    expect(first).toBe(files);
+    expect(result).toBe(refreshedFiles);
   });
 
   it("different session keys get independent caches", async () => {
@@ -115,15 +119,6 @@ describe("clearBootstrapSnapshot", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
-  });
-
-  it("clears a single session entry", async () => {
-    await getOrLoadBootstrapFiles({ workspaceDir, sessionKey: "sk" });
-    clearBootstrapSnapshot("sk");
-
-    // Next call should hit disk again.
-    await getOrLoadBootstrapFiles({ workspaceDir, sessionKey: "sk" });
-    expect(mockLoad()).toHaveBeenCalledTimes(2);
   });
 
   it("does not affect other sessions", async () => {

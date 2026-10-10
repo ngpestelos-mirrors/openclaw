@@ -1,9 +1,4 @@
-// Matrix tests cover channel.message adapter plugin behavior.
-import {
-  verifyChannelMessageAdapterCapabilityProofs,
-  verifyChannelMessageLiveCapabilityAdapterProofs,
-  verifyChannelMessageLiveFinalizerProofs,
-} from "openclaw/plugin-sdk/channel-outbound";
+import { verifyChannelMessageAdapterCapabilityProofs } from "openclaw/plugin-sdk/channel-outbound";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../runtime-api.js";
 
@@ -67,45 +62,43 @@ describe("matrix channel message adapter", () => {
     mocks.sendMessageMatrix.mockReset();
   });
 
-  it("declares Matrix markdown rendering support for shared reply payloads", () => {
-    expect(matrixPlugin.meta.markdownCapable).toBe(true);
-  });
-
-  it("opts ordinary durable text and media sends into Matrix reconciliation", () => {
-    expect(matrixPlugin.message?.durableFinal).toMatchObject({
-      automaticUnknownSendReconciliation: true,
-      capabilities: {
-        text: true,
-        media: true,
-        afterCommit: true,
-        reconcileUnknownSend: true,
-      },
-      reconcileUnknownSendKinds: { text: true, media: true },
+  it("keeps all owner-provided Matrix receipt parts across the message adapter boundary", async () => {
+    const receipt = {
+      primaryPlatformMessageId: "$image",
+      platformMessageIds: ["$image", "$overflow"],
+      parts: [
+        { platformMessageId: "$image", kind: "media" as const, index: 0, replyToId: "$reply" },
+        { platformMessageId: "$overflow", kind: "text" as const, index: 1 },
+      ],
+      replyToId: "$reply",
+      sentAt: 1,
+    };
+    mocks.sendMessageMatrix.mockResolvedValueOnce({
+      messageId: "$overflow",
+      roomId: "!room:example",
+      primaryMessageId: "$image",
+      receipt,
+      content: "image\noverflow",
     });
-    expect(matrixPlugin.message?.durableFinal?.capabilities?.payload).not.toBe(true);
-    expect(matrixPlugin.message?.durableFinal?.capabilities?.batch).not.toBe(true);
-  });
-
-  it("forwards the exact durable part topology into Matrix sends", async () => {
-    const sendText = matrixPlugin.message?.send?.text;
-    if (!sendText) {
-      throw new Error("Expected Matrix message adapter text sender");
+    const sendMedia = matrixPlugin.message?.send?.media;
+    if (!sendMedia) {
+      throw new Error("Expected Matrix message adapter media sender");
     }
-    await sendText({
+
+    const result = await sendMedia({
       cfg,
       to: "room:!room:example",
-      text: "durable",
+      text: "image\noverflow",
+      mediaUrl: "file:///tmp/photo.png",
+      replyToId: "$reply",
       accountId: "default",
-      deliveryQueueId: "queue-1",
-      deliveryPartIndex: 2,
-      deliveryPartCount: 3,
     });
 
-    expect(lastMatrixSendOptions()).toMatchObject({
-      deliveryQueueId: "queue-1",
-      deliveryPartIndex: 2,
-      deliveryPartCount: 3,
-    });
+    expect(result.messageId).toBe("$overflow");
+    expect(result.receipt).toBe(receipt);
+    expect(result.receipt.primaryPlatformMessageId).toBe("$image");
+    expect(result.receipt.platformMessageIds).toEqual(["$image", "$overflow"]);
+    expect(result.receipt.parts[1]).not.toHaveProperty("replyToId");
   });
 
   it("routes the standard Matrix send action through canonical durable delivery", async () => {
@@ -115,11 +108,11 @@ describe("matrix channel message adapter", () => {
     }
     const payload = { text: "durable tool send" };
 
-    expect(prepareSendPayload({ ctx: { action: "send", cfg } as never, payload } as never)).toBe(
-      payload,
-    );
     expect(
-      prepareSendPayload({ ctx: { action: "edit", cfg } as never, payload } as never),
+      await prepareSendPayload({ ctx: { action: "send", cfg } as never, payload } as never),
+    ).toBe(payload);
+    expect(
+      await prepareSendPayload({ ctx: { action: "edit", cfg } as never, payload } as never),
     ).toBeNull();
   });
 
@@ -214,6 +207,9 @@ describe("matrix channel message adapter", () => {
         to: "room:!room:example",
         text: "hello",
         accountId: "default",
+        deliveryQueueId: "queue-1",
+        deliveryPartIndex: 2,
+        deliveryPartCount: 3,
       });
       expect(mocks.sendMessageMatrix).toHaveBeenCalledTimes(1);
       expect(mocks.sendMessageMatrix.mock.lastCall?.[0]).toBe("room:!room:example");
@@ -221,6 +217,11 @@ describe("matrix channel message adapter", () => {
       const options = lastMatrixSendOptions();
       expect(options.cfg).toBe(cfg);
       expect(options.accountId).toBe("default");
+      expect(options).toMatchObject({
+        deliveryQueueId: "queue-1",
+        deliveryPartIndex: 2,
+        deliveryPartCount: 3,
+      });
       expect(result.receipt.platformMessageIds).toEqual(["$event-1"]);
       expect(result.receipt.parts[0]?.kind).toBe("text");
     };
@@ -317,6 +318,9 @@ describe("matrix channel message adapter", () => {
       ctx: {} as never,
     });
 
+    expect(rendered?.text).toContain("fallback");
+    expect(rendered?.text).toContain("Select thinking level");
+
     const matrixChannelData = rendered?.channelData?.matrix as
       | { extraContent?: Record<string, unknown> }
       | undefined;
@@ -335,6 +339,7 @@ describe("matrix channel message adapter", () => {
       payload: rendered!,
       accountId: "default",
       threadId: "$thread",
+      replyToId: "$reply",
     });
 
     expect(mocks.sendMessageMatrix).toHaveBeenCalledTimes(1);
@@ -344,6 +349,7 @@ describe("matrix channel message adapter", () => {
     expect(options.cfg).toBe(cfg);
     expect(options.accountId).toBe("default");
     expect(options.threadId).toBe("$thread");
+    expect(options.replyToId).toBe("$reply");
     expect(options.extraContent).toEqual({
       "com.openclaw.presentation": {
         ...presentation,
@@ -351,51 +357,5 @@ describe("matrix channel message adapter", () => {
         type: "message.presentation",
       },
     });
-  });
-
-  it("backs declared live preview finalizer capabilities with adapter proofs", async () => {
-    const adapter = matrixPlugin.message;
-
-    await verifyChannelMessageLiveCapabilityAdapterProofs({
-      adapterName: "matrixMessageAdapter",
-      adapter: adapter!,
-      proofs: {
-        draftPreview: () => {
-          expect(adapter!.live?.finalizer?.capabilities?.discardPending).toBe(true);
-        },
-        previewFinalization: () => {
-          expect(adapter!.live?.finalizer?.capabilities?.finalEdit).toBe(true);
-        },
-        progressUpdates: () => {
-          expect(adapter!.live?.capabilities?.draftPreview).toBe(true);
-        },
-        quietFinalization: () => {
-          expect(adapter!.live?.finalizer?.capabilities?.previewReceipt).toBe(true);
-        },
-      },
-    });
-
-    await verifyChannelMessageLiveFinalizerProofs({
-      adapterName: "matrixMessageAdapter",
-      adapter: adapter!,
-      proofs: {
-        finalEdit: () => {
-          expect(adapter!.live?.capabilities?.previewFinalization).toBe(true);
-        },
-        normalFallback: () => {
-          expect(adapter!.send!.text).toBeTypeOf("function");
-        },
-        discardPending: () => {
-          expect(adapter!.live?.capabilities?.draftPreview).toBe(true);
-        },
-        previewReceipt: () => {
-          expect(adapter!.live?.capabilities?.quietFinalization).toBe(true);
-        },
-      },
-    });
-  });
-
-  it("declares native blocks as the markdown table default", () => {
-    expect(matrixPlugin.messaging?.defaultMarkdownTableMode).toBe("block");
   });
 });

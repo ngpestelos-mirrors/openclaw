@@ -2,13 +2,13 @@
  * Reads prior session transcript context for `/btw` side-question handoffs.
  */
 import {
-  resolveSessionFilePath,
+  resolveSessionFilePathCore,
   resolveSessionFilePathOptions,
   type SessionEntry as StoredSessionEntry,
 } from "../config/sessions.js";
 import { parseSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-marker.js";
 import {
-  listSessionEntries,
+  listSessionEntriesCore,
   loadSessionEntry,
   loadTranscriptEvents,
 } from "../config/sessions/session-accessor.js";
@@ -25,6 +25,16 @@ import {
   type SessionEntry as AgentSessionEntry,
 } from "./sessions/session-manager.js";
 
+export function normalizeBtwContentBlocks(content: unknown): unknown[] | undefined {
+  if (Array.isArray(content)) {
+    return content;
+  }
+  if (content && typeof content === "object") {
+    return [content];
+  }
+  return undefined;
+}
+
 /** Resolves the persisted transcript file for a BTW session handoff. */
 export function resolveBtwSessionTranscriptPath(params: {
   sessionId: string;
@@ -38,7 +48,7 @@ export function resolveBtwSessionTranscriptPath(params: {
       agentId,
       storePath: params.storePath,
     });
-    return resolveSessionFilePath(params.sessionId, params.sessionEntry, pathOpts);
+    return resolveSessionFilePathCore(params.sessionId, params.sessionEntry, pathOpts);
   } catch (error) {
     diag.debug(
       `resolveSessionTranscriptPath failed: sessionId=${params.sessionId} err=${String(error)}`,
@@ -125,7 +135,7 @@ export async function readBtwTranscriptMessages(params: {
     const storePath = completeTarget ? params.storePath : (params.storePath ?? marker?.storePath);
     const markerMatches =
       marker && !completeTarget
-        ? listSessionEntries({
+        ? listSessionEntriesCore({
             agentId: marker.agentId,
             storePath: marker.storePath,
           }).filter(({ entry }) => entry.sessionId === marker.sessionId)

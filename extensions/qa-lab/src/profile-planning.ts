@@ -1,4 +1,3 @@
-// Qa Lab plugin module owns canonical taxonomy profile membership planning.
 import { uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { QaCliBackendAuthMode } from "./gateway-child.js";
 import {
@@ -15,19 +14,6 @@ import {
   type QaScorecardTaxonomyReport,
   type QaScorecardChannelDriver,
 } from "./scorecard-taxonomy.js";
-
-type QaRunProfileMembership = {
-  categories: QaScorecardCategoryCoverageReport[];
-  excludedScenarioIds: string[];
-  profile: QaScorecardTaxonomyReport["profiles"][number];
-  profileScenarios: QaSeedScenarioWithSource[];
-  selectedScenarios: QaSeedScenarioWithSource[];
-};
-
-type QaRunProfileExecutionSelection = {
-  excludedScenarios: Array<{ scenario: QaSeedScenarioWithSource; reasons: string[] }>;
-  selectedScenarios: QaSeedScenarioWithSource[];
-};
 
 function categoryMatchesRunProfile(
   category: QaScorecardCategoryCoverageReport,
@@ -56,7 +42,7 @@ export function resolveQaRunProfileMembership(
     scenarios?: QaSeedScenarioWithSource[];
     scorecardReport?: QaScorecardTaxonomyReport;
   },
-): QaRunProfileMembership {
+) {
   const scenarios = source?.scenarios ?? readQaScenarioPack().scenarios;
   const scorecardReport = source?.scorecardReport ?? readQaScorecardTaxonomyReport(scenarios);
   const profileId = opts.profile.trim();
@@ -88,19 +74,10 @@ export function resolveQaRunProfileMembership(
   const requestedScenarioIds = uniqueStrings(
     (opts.scenarioIds ?? []).map((scenarioId) => scenarioId.trim()).filter(Boolean),
   );
-  if (requestedScenarioIds.length === 0) {
-    return {
-      categories,
-      excludedScenarioIds: [],
-      profile,
-      profileScenarios,
-      selectedScenarios: profileScenarios,
-    };
-  }
   const requestedScenarioIdSet = new Set(requestedScenarioIds);
-  const selectedScenarios = profileScenarios.filter((scenario) =>
-    requestedScenarioIdSet.has(scenario.id),
-  );
+  const selectedScenarios = requestedScenarioIds.length
+    ? profileScenarios.filter((scenario) => requestedScenarioIdSet.has(scenario.id))
+    : profileScenarios;
   const selectedScenarioIdSet = new Set(selectedScenarios.map((scenario) => scenario.id));
   return {
     categories,
@@ -123,16 +100,21 @@ export function resolveQaRunProfileExecutionSelection(params: {
   claudeCliAuthMode?: QaCliBackendAuthMode;
   executionKind?: QaSeedScenarioWithSource["execution"]["kind"];
   supportsChannel?: (channel: string) => boolean;
-}): QaRunProfileExecutionSelection {
+  resolveModuleFlowSupport?: (channel?: string) => boolean;
+}) {
   const selectedScenarios: QaSeedScenarioWithSource[] = [];
-  const excludedScenarios: QaRunProfileExecutionSelection["excludedScenarios"] = [];
+  const excludedScenarios: Array<{ scenario: QaSeedScenarioWithSource; reasons: string[] }> = [];
   for (const scenario of params.scenarios) {
     const reasons: string[] = [];
     if (params.executionKind && scenario.execution.kind !== params.executionKind) {
       reasons.push(`execution.kind=${params.executionKind}`);
     }
     // qa-channel is the built-in harness channel, so another driver cannot implement it.
-    if (scenario.execution.channel === "qa-channel" && params.channelDriver !== "qa-channel") {
+    if (
+      scenario.execution.channels?.length === 1 &&
+      scenario.execution.channels[0] === "qa-channel" &&
+      params.channelDriver !== "qa-channel"
+    ) {
       reasons.push("channelDriver=qa-channel");
     }
     const effectiveChannel = resolveQaScenarioLaneChannel({
@@ -150,6 +132,7 @@ export function resolveQaRunProfileExecutionSelection(params: {
         channelDriver: params.channelDriver,
         channel: effectiveChannel,
         claudeCliAuthMode: params.claudeCliAuthMode,
+        supportsModuleFlows: params.resolveModuleFlowSupport?.(effectiveChannel),
       }),
     );
     if (
@@ -173,13 +156,7 @@ export function resolveQaRunProfileExecutionSelection(params: {
 
 export function scenarioDeclaresQaChannel(scenario: QaSeedScenarioWithSource, channel: string) {
   const normalizedChannel = channel.trim().toLowerCase();
-  if (scenario.execution.channel === normalizedChannel) {
-    return true;
-  }
-  return (
-    scenario.execution.kind === "flow" &&
-    scenario.execution.channels?.includes(normalizedChannel) === true
-  );
+  return scenario.execution.channels?.includes(normalizedChannel) === true;
 }
 
 export function resolveQaProfileScenarios(params: {
@@ -191,6 +168,7 @@ export function resolveQaProfileScenarios(params: {
   eligibleChannels?: readonly string[];
   executionKind?: QaSeedScenarioWithSource["execution"]["kind"];
   requireDeclaredChannel?: boolean;
+  resolveModuleFlowSupport?: (channel?: string) => boolean;
   scenarioIds?: readonly string[];
 }) {
   const membership = resolveQaRunProfileMembership({
@@ -214,11 +192,7 @@ export function resolveQaProfileScenarios(params: {
       reasons.push(`does not declare channel ${channel}`);
     }
     if (eligibleChannels.size > 0) {
-      const declaredChannels = scenario.execution.channel
-        ? [scenario.execution.channel]
-        : scenario.execution.kind === "flow"
-          ? (scenario.execution.channels ?? [])
-          : [];
+      const declaredChannels = scenario.execution.channels ?? [];
       if (
         declaredChannels.length > 0 &&
         !declaredChannels.some((declaredChannel) => eligibleChannels.has(declaredChannel))
@@ -236,6 +210,7 @@ export function resolveQaProfileScenarios(params: {
         channelDriver,
         channel: channel ?? scenario.execution.channel,
         executionKind: params.executionKind,
+        resolveModuleFlowSupport: params.resolveModuleFlowSupport,
       }).excludedScenarios.flatMap((entry) => entry.reasons),
     );
     return { scenario, reasons: uniqueStrings(reasons) };

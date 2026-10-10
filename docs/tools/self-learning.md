@@ -1,312 +1,169 @@
 ---
-summary: "Turn corrections and successful work into reusable skills through Skill Workshop"
+summary: "How OpenClaw reviews finished work in the background and saves lessons as learned skills"
 read_when:
-  - You want OpenClaw to learn reusable procedures from completed conversations
-  - You are choosing between off, propose, and auto self-learning modes
-  - You need to understand self-learning safety, cost, privacy, or troubleshooting
+  - You want OpenClaw to learn reusable procedures from its conversations
+  - You are deciding whether to leave self-learning on or turn it off
+  - You need to know what a background review sees, costs, or changes
+  - Nothing is being learned and you want to know why
 title: "Self-learning"
 sidebarTitle: "Self-learning"
 ---
 
-Self-learning turns corrections and successful work into reusable skills. Skills
-are the durable unit: they hold procedures that future sessions can discover and
-follow. Every learned skill flows through [Skill Workshop](/tools/skill-workshop),
-the same governed proposal, scan, apply, and lifecycle path used for explicit
-skill authoring.
+Self-learning turns corrections and hard-won procedures into
+[learned skills](/tools/skill-workshop) that future sessions load. It is on by
+default (`skills.workshop.autonomous.mode: "auto"`).
 
-The default mode is `auto`. OpenClaw captures strong learning signals and applies
-them through the normal scanner-gated Workshop service without asking for
-approval. Choose `propose` to review every capture before it becomes active, or
-`off` to keep only the suggestion nudge.
+Learning happens in three places:
 
-## Capture paths
+- **The foreground agent** patches a learned skill that misled it and saves a
+  procedure after hard multi-step work, in the same turn.
+- **A background review** looks back over a conversation after enough work and
+  saves what the foreground agent did not. This page covers it.
+- **Unused-skill cleanup** archives learned skills unused for 30 days. See
+  [Unused-skill cleanup](/tools/skill-workshop#unused-skill-cleanup).
 
-OpenClaw uses two complementary capture paths.
+Every change applies immediately, is announced in the conversation, and can be
+undone. See [Undo](/tools/skill-workshop#undo).
 
-### Deterministic correction capture
+## When a review runs
 
-When an interactive turn ends, OpenClaw looks for durable instructions such as
-"from now on," "next time," and direct corrections to a failed approach. This
-path is deterministic and does not start another model run. It can:
+OpenClaw counts model iterations per session, across turns. When a session
+reaches 10 since its last review, a review is queued and the count starts over.
+The count also resets when the foreground turn itself changed a learned skill,
+so work the agent already saved is not reviewed again.
 
-- group related instructions into up to three focused skills;
-- route a correction to a matching writable workspace skill;
-- revise its own related pending proposal; and
-- capture after a failed turn because the user instruction remains useful even
-  when the work did not complete.
+A turn that read or viewed a learned skill also queues a review, whatever the
+count, so a skill that just misled or helped the agent gets a fresh look. The
+same eligibility rules apply, and a turn that changed a learned skill itself
+still skips the review.
 
-Detection is intentionally heuristic. A durable phrase can occasionally produce
-an overly broad or low-value capture. That is an accepted tradeoff because
-miscaptures are cheap to inspect and remove, while Workshop governance keeps the
-write bounded and recoverable.
+A queued review starts after 30 seconds with no agent or reply run active; later
+activity in the same session restarts that wait. Reviews run one at a time.
+The foreground reply never waits for a review.
 
-### Experience review
+These turns do not count:
 
-After substantial work, OpenClaw can run one isolated background review to find
-a reusable recovery technique or a stable procedure that would remove at least
-two future model or tool round trips. Deep turns the user interrupted qualify
-too: the wrong path and its correction are exactly the evidence worth keeping.
-The reviewer is told when a turn was interrupted and captures only procedures
-that visibly worked before the stop. Turns that ended in a provider or prompt
-error never schedule a review; that failure is transient environment noise, and
-a review on the same model would likely hit it again.
+- turns that ended in a provider or prompt error. Turns you interrupted still
+  count.
+- cron, heartbeat, hook, subagent, memory, and Incognito sessions, and
+  background Workshop runs themselves.
+- turns on a runtime that does not report its resolved model and whether
+  `skill_workshop` was available. The embedded runner and the Codex app-server
+  harness report both.
+- turns where tool policy hides `skill_workshop`.
 
-Experience review starts only when all of these conditions hold:
+Compacted sessions are eligible. Counts are kept in memory, so a Gateway restart
+starts them over.
 
-- the foreground turn completed or was interrupted, but did not end in a
-  provider or prompt error;
-- the current turn used at least 10 model iterations;
-- the run was an eligible foreground conversation, not cron, heartbeat, memory,
-  overflow, hook, subagent, or review work;
-- the runtime reported the resolved provider, model, and actual availability of
-  `skill_workshop`;
-- the system has been quiet for 30 seconds; and
-- no agent or reply run is still active.
+## What a review does
 
-A later foreground completion in the same session restarts the quiet period.
-Only one experience review runs at a time. The foreground answer is never delayed.
+The review forks the conversation through the finished turn and appends one
+instruction, reusing the foreground provider, model, auth profile, and tool
+schemas so the provider's prompt cache applies. Model fallbacks are disabled. It
+runs on the embedded OpenClaw harness under a private session that never
+appears in your transcript.
 
-The reviewer is isolated and conservative. It can list or inspect proposals and
-create or revise at most one pending proposal. Its one-mutation budget is shared
-across retries. It cannot apply, reject, quarantine, message, update a live skill,
-or use general agent tools. The reviewed trajectory is evidence, not instructions.
+The review can look things up with `read`, `ls`, `view_image`, `web_search`,
+`web_fetch`, `sessions_history`, `sessions_search`, `memory_search`, and
+`memory_get`; `skill_workshop` is the only tool that changes anything. Tools that
+act, such as `exec`, `write`, or `message`, return a normal result such as
+`exec is not available in this background run.` That result is not a failure,
+and the review never re-runs your task. The review must `view` a skill
+before it patches, writes, or archives it, and an archive needs `absorbed_into`
+or `reason`.
 
-Good candidates include:
+The reviewer looks for:
 
-- a reliable recovery after repeated tool or model failures;
-- a non-obvious ordering constraint that prevented a recurring error;
-- a stable multi-step workflow that required repeated discovery; or
-- a reusable preflight that would avoid several future calls.
+- a correction to your approach, output, or style.
+- a non-obvious technique, fix, or command sequence that worked after trial and
+  error.
+- a learned skill that was wrong, missing a step, or outdated.
 
-The reviewer should abstain for:
+It lists learned skills first, then prefers patching a skill that was used or
+already covers the task, then adding a `references/`, `templates/`, or
+`scripts/` file to one, and creates a new skill only when none covers the task.
+Listed skills that cover the same class of task get merged into one umbrella
+skill: the review patches the survivor and archives the rest with
+`absorbed_into`. When the turn was interrupted, it keeps only steps that visibly
+worked before the stop.
 
-- routine successful work or a one-time request;
-- personal facts and simple preferences;
-- transient environment or service failures;
-- generic advice without concrete supporting evidence;
-- unsupported negative claims; or
-- secrets and credential material.
+It does not capture environment-specific or transient failures, negative claims
+about tools, unresolved failures or guesses, knowledge about one codebase,
+one-off tasks, personal facts, secrets, or generic advice without concrete
+commands, paths, or ids. When nothing durable was learned, it changes nothing.
 
-## Mode policy
+## What you see
 
-| Mode      | Capture behavior                                                                                          | Suggestion nudge                                                    |
-| --------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `off`     | Does not create deterministic or experience-review captures.                                              | Enabled. OpenClaw can offer to save a detected durable instruction. |
-| `propose` | Creates or revises pending proposals through both capture paths. Nothing applies automatically.           | Suppressed.                                                         |
-| `auto`    | Creates or revises proposals, then immediately calls the normal Workshop apply path. This is the default. | Suppressed.                                                         |
+If the review changed a skill, one line is posted to the conversation that
+triggered it and mirrored into the session transcript:
 
-Set the mode with the CLI:
+```text
+💾 Learned: updated `deploy-staging` (tightened the rollback step). Say "undo" to revert this skill change.
+```
+
+Channel-less Control UI sessions get the line as a transcript entry. Nothing is
+posted when nothing changed. Reply "undo" and the agent restores the previous
+version.
+
+A review stops without changing anything further if you turn learning off, or
+if the source session is deleted, replaced, or changes permission mode while it
+runs. Changes it already made stay, each with a saved previous version.
+
+## Turn it on or off
 
 ```bash
-openclaw config set skills.workshop.autonomous.mode auto
-openclaw config set skills.workshop.autonomous.mode propose
 openclaw config set skills.workshop.autonomous.mode off
+openclaw config set skills.workshop.autonomous.mode auto
 ```
 
-Or edit `~/.openclaw/openclaw.json`:
-
-```json5
-{
-  skills: {
-    workshop: {
-      autonomous: {
-        mode: "auto",
-      },
-    },
-  },
-}
-```
-
-Changing the mode does not alter existing proposals or applied skills. Manual
-history review, `/learn`, and explicit Workshop requests remain available in all
-three modes.
-
-## Why auto is safe to default
-
-Automatic learning uses the same apply path as an operator-approved Workshop
-proposal. It does not give the isolated reviewer new tools or a way to bypass
-lifecycle checks.
-
-Every learned skill receives these controls:
-
-- **Security scan at apply:** Workshop reruns the scanner immediately before the
-  live write. A critical finding quarantines the proposal instead of applying it.
-- **Workspace-only writes:** creates and updates can target only writable skills
-  in the selected workspace. Bundled, plugin, managed, personal-agent, system,
-  and extra-root skills remain outside the write boundary.
-- **Hash binding:** update proposals bind to the current live skill and go stale
-  if that target changes before apply.
-- **Rollback metadata:** apply records the prior skill and support-file contents
-  before the live write.
-- **Curator lifecycle:** learned skills unused for 30 days become stale and after
-  90 days become archived. Pin keeps a skill active; restore returns an archived
-  skill to new session snapshots.
-- **Authoring standards:** learned skills use class-level names, trigger-first
-  descriptions, evidence-backed steps, and token-efficient language.
-- **Bounded failure:** an automatic apply is attempted once. A normal apply
-  failure leaves the proposal pending, while a scanner-critical proposal is
-  quarantined. OpenClaw does not retry in a loop.
-
-Reject a pending miscapture with one command:
-
-```bash
-openclaw skills workshop reject <proposal-id> --reason "Not reusable"
-```
-
-Applied captures remain visible in `openclaw skills workshop list`, retain their
-rollback metadata, and enter curator lifecycle management. This makes
-approval-free learning reversible and observable rather than silent.
-
-Residual risk remains: learned content comes from conversation and tool output,
-and the scanner blocks recognized dangerous patterns, not every possible piece
-of bad advice. Review `openclaw skills workshop list` when in doubt.
-
-## Runtime support
-
-Delayed experience review requires the runtime to report its resolved model and
-actual `skill_workshop` availability. The embedded runner and Codex app-server
-harness report those facts; Codex also reports its exact model-iteration count.
-Other CLI-backed runtimes fail closed until they provide the same runtime facts.
-
-Deterministic correction capture and `/learn` do not depend on delayed review and
-continue to work on those runtimes. In `auto` mode, a runtime that does not report
-actual Workshop availability leaves deterministic captures pending instead of
-applying them.
+The Control UI **Plugins → Skill workshop** page has the same switch. `off`
+stops background reviews and unused-skill cleanup. The agent can still create or
+update learned skills when you ask, through `/learn`, or in a
+**Learn from past conversations** session.
 
 ## Cost and privacy
 
-Deterministic correction capture does not make an extra model call. Experience
-review adds one bounded model run on the configured provider only after a
-substantial turn, not after every message. The review can make more
-than one provider request while it inspects or drafts its single proposal.
+A review is one extra model run on the foreground provider and model after
+substantial work, not after every message. It can make several requests while
+it views and edits skills. Prompt-cache reuse lowers the cost of re-reading the
+conversation; provider pricing still applies.
 
-The reviewer receives only the current turn beginning with its most recent user
-message. The rendered trajectory is limited to 60,000 characters. When the
-bundle is too large, OpenClaw keeps the first message and newest evidence and
-marks the omitted middle.
-
-The reviewer reuses the foreground provider, model, and available auth identity,
-with model fallbacks disabled. Provider pricing and data-handling terms apply to
-the additional run.
-
-Manual history scan uses a separate bounded path. It reviews up to 20 substantial
-sessions with at least six model turns, redacts recognized secrets, bounds the
-transcript bundle, and can create or revise at most three pending proposals. It
-stores cursor and coverage metadata in the shared state database without copying
-transcript content into scan state.
+**Learn from history** in the Control UI opens a normal chat in which the agent reads
+earlier conversations it can access, with its configured model and tools. You
+can watch, steer, or stop it. Starting one does not change the learning mode.
 
 <Warning>
-  Experience review and manual history scan can send eligible conversation
-  content, including tool inputs and results, to the configured model provider.
-  Choose a provider and mode that match the workspace privacy and data-handling
-  requirements.
+  Background reviews and learning sessions send conversation content, including
+  tool inputs and results, to the configured model provider. Choose a provider
+  and mode that match the workspace's privacy and data-handling requirements.
 </Warning>
-
-## Review and revert learning
-
-List and inspect every pending, applied, rejected, quarantined, or stale capture:
-
-```bash
-openclaw skills workshop list
-openclaw skills workshop inspect <proposal-id>
-```
-
-Stop a pending capture from becoming active or quarantine it for safety review:
-
-```bash
-openclaw skills workshop reject <proposal-id> --reason "Too specific"
-openclaw skills workshop quarantine <proposal-id> --reason "Needs security review"
-```
-
-Inspect and manage applied learned skills through the curator:
-
-```bash
-openclaw skills curator status
-openclaw skills curator pin <skill>
-openclaw skills curator unpin <skill>
-openclaw skills curator restore <skill>
-```
-
-Use `/learn` when you want an explicit proposal from the current conversation or
-named sources:
-
-```text
-/learn
-/learn docs/runbook.md; focus on recovery
-```
-
-`/learn` always creates a pending proposal and never auto-applies it.
-
-To review older work manually, open **Plugins -> Workshop** in Control UI and
-select **Find skill ideas**. Each click reviews one bounded window and leaves any
-result pending regardless of autonomous mode.
-
-## Configuration reference
-
-| Setting                                    | Default  | Effect                                                                                                                   |
-| ------------------------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `skills.workshop.autonomous.mode`          | `"auto"` | Chooses `off`, `propose`, or `auto` capture behavior.                                                                    |
-| `skills.workshop.approvalPolicy`           | `"auto"` | Controls prompts for normal agent-initiated lifecycle calls. It never expands the isolated reviewer tool surface.        |
-| `skills.workshop.maxPending`               | `50`     | Caps pending and quarantined proposals per workspace.                                                                    |
-| `skills.workshop.maxSkillBytes`            | `40000`  | Caps proposal body size in bytes.                                                                                        |
-| `skills.workshop.allowSymlinkTargetWrites` | `false`  | Allows apply through explicitly trusted workspace skill symlinks. Capture itself does not widen the trusted target list. |
-
-See [Skills config](/tools/skills-config#workshop-skills-workshop) for ranges and
-the complete `skills.*` schema.
 
 ## Troubleshooting
 
-### No capture appears
+### Nothing is learned
 
-Check the following:
+1. `skills.workshop.autonomous.mode` is `auto` in the active Gateway config.
+2. The session did at least 10 model iterations since its last review, without
+   provider or prompt errors.
+3. The session is an ordinary conversation, not cron, heartbeat, hook,
+   subagent, or Incognito.
+4. Tool policy allows `skill_workshop` and the session is not sandboxed. In
+   `auto` mode, `openclaw doctor` reports the setting that hides it.
+5. The Gateway stayed up and idle for the 30-second wait.
 
-1. `skills.workshop.autonomous.mode` is `propose` or `auto` in the active Gateway
-   config.
-2. The correction uses durable language, or the turn reached at least 10 model
-   iterations without ending in a provider or prompt error.
-3. The conversation is eligible foreground work.
-4. The runtime reported the resolved model and actual `skill_workshop`
-   availability.
-5. The run was not sandboxed and tool policy still permits `skill_workshop`.
-6. For experience review, the Gateway stayed running and idle through the
-   30-second quiet period.
+A review that ran can still decide nothing is worth saving. That is the
+expected result for routine work.
 
-An eligible experience review can still abstain. No proposal is the expected
-result when the evidence does not clear the reusable-procedure bar.
+### Too many or unwanted changes
 
-### Doctor reports that Workshop is hidden
-
-In `propose` and `auto` modes, `openclaw doctor` checks whether the default agent
-tool policy permits `skill_workshop`. Apply the reported `tools.allow` or
-`tools.alsoAllow` change, or set the autonomous mode to `off`.
-
-### A proposal remains pending in auto mode
-
-Automatic apply runs once. Inspect the proposal and its scanner state:
-
-```bash
-openclaw skills workshop inspect <proposal-id>
-```
-
-A normal write or target failure leaves it pending for manual review. A critical
-scanner result moves it to quarantine. Fix the cause and apply manually; do not
-build a retry loop around automatic capture.
-
-### Too many low-value captures appear
-
-Switch to `propose` to review every capture, or `off` to keep only the suggestion
-nudge:
-
-```bash
-openclaw config set skills.workshop.autonomous.mode propose
-openclaw config set skills.workshop.autonomous.mode off
-```
-
-Existing proposals and applied skills remain visible after the mode changes.
+Undo individual changes with "undo", the Control UI **Undo** button, or
+`openclaw skills workshop restore <name>`. Archive a skill you do not want with
+`openclaw skills workshop archive <name>`. To stop background learning, set the
+mode to `off`.
 
 ## Related
 
-- [Skill Workshop](/tools/skill-workshop) for proposal lifecycle and storage
-- [Creating skills](/tools/creating-skills) for hand-authored skills
-- [Skills config](/tools/skills-config) for every `skills.*` setting
-- [Skills CLI](/cli/skills) for Workshop and curator commands
+- [Skill Workshop](/tools/skill-workshop) for the tool, storage, undo, and unused-skill cleanup
+- [Creating skills](/tools/creating-skills) for hand-written skills
+- [Skills config](/tools/skills-config#workshop-skills-workshop) for `skills.workshop`
+- [Skills CLI](/cli/skills#skill-workshop) for `openclaw skills workshop`

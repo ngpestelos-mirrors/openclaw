@@ -1,4 +1,6 @@
-export function hasValidSqliteSessionEntryIdentity(entry: {
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+
+export function hasValidSessionEntryIdentity(entry: {
   sessionId?: unknown;
   updatedAt?: unknown;
 }): entry is { sessionId: string; updatedAt: number } {
@@ -15,12 +17,11 @@ export function parseSqliteSessionEntryRecord(row: {
   updated_at?: number;
 }): (Record<string, unknown> & { sessionId: string; updatedAt: number }) | null {
   try {
-    const parsed = JSON.parse(row.entry_json) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    const record: unknown = JSON.parse(row.entry_json);
+    if (!isRecord(record)) {
       return null;
     }
-    const record = parsed as Record<string, unknown>;
-    if (!hasValidSqliteSessionEntryIdentity(record)) {
+    if (!hasValidSessionEntryIdentity(record)) {
       return null;
     }
     if (

@@ -1,7 +1,8 @@
-// ClawRouter plugin entrypoint registers credential-scoped model routing and quota reporting.
 import type {
+  ProviderDefaultThinkingPolicyContext,
   ProviderResolveDynamicModelContext,
   ProviderRuntimeModel,
+  ProviderThinkingProfile,
 } from "openclaw/plugin-sdk/plugin-entry";
 import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-entry";
 import { buildProviderReplayFamilyHooks } from "openclaw/plugin-sdk/provider-model-shared";
@@ -9,7 +10,9 @@ import { buildProviderToolCompatFamilyHooks } from "openclaw/plugin-sdk/provider
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import {
   buildClawRouterProviderConfig,
+  CLAWROUTER_REASONING_EFFORT_LEVELS,
   normalizeClawRouterApiBaseUrl,
+  normalizeClawRouterReasoningEfforts,
   normalizeClawRouterRootUrl,
   normalizeClawRouterResolvedModel,
 } from "./provider-catalog.js";
@@ -35,6 +38,28 @@ const perplexityTools = {
   normalizeToolSchemas: normalizePerplexityToolSchemas,
   inspectToolSchemas: inspectPerplexityToolSchemas,
 };
+
+function resolveClawRouterThinkingProfile(
+  ctx: ProviderDefaultThinkingPolicyContext,
+): ProviderThinkingProfile | undefined {
+  const efforts = normalizeClawRouterReasoningEfforts(ctx.compat?.supportedReasoningEfforts);
+  if (!efforts) {
+    return undefined;
+  }
+  const supported = new Set(efforts);
+  const levels: Array<ProviderThinkingProfile["levels"][number]> =
+    CLAWROUTER_REASONING_EFFORT_LEVELS.filter(([effort]) => supported.has(effort)).map(
+      ([, id]) => ({ id }),
+    );
+  const runtime = ctx.agentRuntime?.trim().toLowerCase();
+  if (
+    levels.some((level) => level.id === "max") &&
+    (runtime === "openclaw" || runtime === "auto")
+  ) {
+    levels.push({ id: "ultra" });
+  }
+  return { levels };
+}
 
 function configuredBaseUrl(
   config: { models?: { providers?: Record<string, { baseUrl?: unknown }> } } | null | undefined,
@@ -205,14 +230,15 @@ export default defineSingleProviderPluginEntry({
         }
         return openAiReplay.buildReplayPolicy?.(ctx);
       },
-      sanitizeReplayHistory: (ctx) =>
+      sanitizeReplayHistoryAsync: (ctx) =>
         ctx.modelApi === "google-generative-ai"
-          ? googleReplay.sanitizeReplayHistory?.(ctx)
+          ? googleReplay.sanitizeReplayHistoryAsync?.(ctx)
           : undefined,
       resolveReasoningOutputMode: (ctx) =>
         ctx.modelApi === "google-generative-ai"
           ? googleReplay.resolveReasoningOutputMode?.(ctx)
           : undefined,
+      resolveThinkingProfile: resolveClawRouterThinkingProfile,
       normalizeToolSchemas: (ctx) => resolveToolFamily(ctx.modelId ?? "").normalizeToolSchemas(ctx),
       inspectToolSchemas: (ctx) => resolveToolFamily(ctx.modelId ?? "").inspectToolSchemas(ctx),
       isModernModelRef: () => true,
@@ -227,6 +253,7 @@ export default defineSingleProviderPluginEntry({
           token: ctx.token,
           baseUrl: configuredBaseUrl(ctx.config),
           timeoutMs: ctx.timeoutMs,
+          signal: ctx.signal,
         }),
     };
   },

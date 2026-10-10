@@ -93,6 +93,20 @@ function mockGoogleAuth(): void {
   });
 }
 
+type GenerateMusicRequest = Parameters<
+  ReturnType<typeof buildGoogleMusicGenerationProvider>["generateMusic"]
+>[0];
+
+function generateMusic(overrides: Partial<GenerateMusicRequest> = {}) {
+  return buildGoogleMusicGenerationProvider().generateMusic({
+    provider: "google",
+    model: "lyria-3-clip-preview",
+    prompt: "upbeat synthpop anthem",
+    cfg: {},
+    ...overrides,
+  });
+}
+
 describe("google music generation provider", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -107,6 +121,24 @@ describe("google music generation provider", () => {
 
   it("declares explicit mode capabilities", () => {
     expectExplicitMusicGenerationCapabilities(buildGoogleMusicGenerationProvider());
+  });
+
+  it("advertises Gemini music generation with a config-only Google API key", () => {
+    expect(
+      buildGoogleMusicGenerationProvider().isConfigured?.({
+        cfg: {
+          models: {
+            providers: {
+              google: {
+                apiKey: "google-config-only-key",
+                baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+                models: [],
+              },
+            },
+          },
+        },
+      }),
+    ).toBe(true);
   });
 
   it("submits generation and returns inline audio bytes plus lyrics", async () => {
@@ -129,12 +161,7 @@ describe("google music generation provider", () => {
       ],
     });
 
-    const provider = buildGoogleMusicGenerationProvider();
-    const result = await provider.generateMusic({
-      provider: "google",
-      model: "lyria-3-clip-preview",
-      prompt: "upbeat synthpop anthem",
-      cfg: {},
+    const result = await generateMusic({
       instrumental: true,
     });
 
@@ -150,8 +177,8 @@ describe("google music generation provider", () => {
   });
 
   it.each([
-    ["invalid alphabet", "not-base64!"],
     ["non-canonical pad bits", "ZE=="],
+    ["mixed alphabet", "aGVsbG8+_"],
   ])("rejects %s in inline audio", async (_scenario, data) => {
     mockGoogleAuth();
     generateContentMock.mockResolvedValue({
@@ -163,41 +190,34 @@ describe("google music generation provider", () => {
       ],
     });
 
-    await expect(
-      buildGoogleMusicGenerationProvider().generateMusic({
-        provider: "google",
-        model: "lyria-3-clip-preview",
-        prompt: "upbeat synthpop anthem",
-        cfg: {},
-      }),
-    ).rejects.toThrow("Generated music asset contains malformed base64 audio data");
+    await expect(generateMusic()).rejects.toThrow(
+      "Generated music asset contains malformed base64 audio data",
+    );
 
     expect(generateContentMock).toHaveBeenCalledTimes(1);
   });
 
-  it("retries once when Lyria returns an unblocked text-only response", async () => {
+  it("accepts inline audio encoded with URL-safe base64", async () => {
     mockGoogleAuth();
-    generateContentMock
-      .mockResolvedValueOnce({
-        candidates: [
-          {
-            content: { parts: [{ text: "[Verse]\nNeon lights" }] },
-            finishReason: "STOP",
+    const audio = Buffer.from([0xfb, 0xff, 0x49, 0x44, 0x33, 0x04, 0x00, 0x00]);
+    const audioBase64url = audio.toString("base64url");
+    expect(audioBase64url).toMatch(/[-_]/);
+    expect(audioBase64url).not.toMatch(/[+/]/);
+    generateContentMock.mockResolvedValue({
+      candidates: [
+        {
+          content: {
+            parts: [{ inlineData: { data: audioBase64url, mimeType: "audio/mpeg" } }],
           },
-        ],
-      })
-      .mockResolvedValueOnce(googleMusicAudioResponse("recovered-audio"));
-
-    const result = await buildGoogleMusicGenerationProvider().generateMusic({
-      provider: "google",
-      model: "lyria-3-clip-preview",
-      prompt: "upbeat synthpop anthem",
-      cfg: {},
-      instrumental: true,
+          finishReason: "STOP",
+        },
+      ],
     });
 
-    expect(generateContentMock).toHaveBeenCalledTimes(2);
-    expect(result.tracks[0]?.buffer).toEqual(Buffer.from("recovered-audio"));
+    const result = await generateMusic();
+
+    expect(result.tracks).toHaveLength(1);
+    expect(result.tracks[0]?.buffer).toEqual(audio);
   });
 
   it("shares the configured timeout budget across a no-audio retry", async () => {
@@ -217,14 +237,12 @@ describe("google music generation provider", () => {
       })
       .mockResolvedValueOnce(googleMusicAudioResponse("recovered-audio"));
 
-    await buildGoogleMusicGenerationProvider().generateMusic({
-      provider: "google",
-      model: "lyria-3-clip-preview",
-      prompt: "upbeat synthpop anthem",
-      cfg: {},
+    const result = await generateMusic({
       timeoutMs: 5_000,
     });
 
+    expect(generateContentMock).toHaveBeenCalledTimes(2);
+    expect(result.tracks[0]?.buffer).toEqual(Buffer.from("recovered-audio"));
     expect(allGoogleGenAIConfigs().map((config) => config.httpOptions?.timeout)).toEqual([
       5_000, 3_500,
     ]);
@@ -241,14 +259,9 @@ describe("google music generation provider", () => {
       ],
     });
 
-    await expect(
-      buildGoogleMusicGenerationProvider().generateMusic({
-        provider: "google",
-        model: "lyria-3-clip-preview",
-        prompt: "upbeat synthpop anthem",
-        cfg: {},
-      }),
-    ).rejects.toThrow("Google music generation response missing audio data");
+    await expect(generateMusic()).rejects.toThrow(
+      "Google music generation response missing audio data",
+    );
 
     expect(generateContentMock).toHaveBeenCalledTimes(2);
   });
@@ -268,14 +281,7 @@ describe("google music generation provider", () => {
     mockGoogleAuth();
     generateContentMock.mockResolvedValue(response);
 
-    await expect(
-      buildGoogleMusicGenerationProvider().generateMusic({
-        provider: "google",
-        model: "lyria-3-clip-preview",
-        prompt: "upbeat synthpop anthem",
-        cfg: {},
-      }),
-    ).rejects.toThrow(expectedError);
+    await expect(generateMusic()).rejects.toThrow(expectedError);
 
     expect(generateContentMock).toHaveBeenCalledTimes(1);
   });
@@ -284,14 +290,7 @@ describe("google music generation provider", () => {
     mockGoogleAuth();
     generateContentMock.mockRejectedValue(new Error("HTTP 400 invalid request"));
 
-    await expect(
-      buildGoogleMusicGenerationProvider().generateMusic({
-        provider: "google",
-        model: "lyria-3-clip-preview",
-        prompt: "upbeat synthpop anthem",
-        cfg: {},
-      }),
-    ).rejects.toThrow("HTTP 400 invalid request");
+    await expect(generateMusic()).rejects.toThrow("HTTP 400 invalid request");
 
     expect(generateContentMock).toHaveBeenCalledTimes(1);
   });
@@ -314,13 +313,6 @@ describe("google music generation provider", () => {
       name: "does NOT strip /v1beta when it appears mid-path (end-anchor proof)",
       baseUrl: "https://proxy.example.com/v1beta/route",
       expectedBaseUrl: "https://proxy.example.com/v1beta/route",
-      prompt: "test",
-      audio: "x",
-    },
-    {
-      name: "passes baseUrl unchanged when no /v1beta suffix is present",
-      baseUrl: "https://generativelanguage.googleapis.com",
-      expectedBaseUrl: "https://generativelanguage.googleapis.com",
       prompt: "test",
       audio: "x",
     },

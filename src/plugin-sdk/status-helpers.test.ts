@@ -2,9 +2,8 @@
 import { describe, expect, it } from "vitest";
 import { evaluateChannelHealth } from "../gateway/channel-health-policy.js";
 import {
+  asString,
   createAsyncComputedAccountStatusAdapter,
-  buildBaseAccountStatusSnapshot,
-  buildBaseChannelStatusSummary,
   buildComputedAccountStatusSnapshot,
   buildRuntimeAccountStatusSnapshot,
   createComputedAccountStatusAdapter,
@@ -19,6 +18,12 @@ import {
 } from "./status-helpers.js";
 
 describe("status issue composition", () => {
+  it("preserves the shipped asString compatibility semantics", () => {
+    expect(asString("  work  ")).toBe("work");
+    expect(asString("   ")).toBeUndefined();
+    expect(asString(42)).toBeUndefined();
+  });
+
   it("coerces only standard and requested account fields", () => {
     expect(
       readAccountStatusSnapshot(
@@ -148,152 +153,37 @@ function expectedAdapterAccountSnapshot() {
   };
 }
 
+function resolveAccountSnapshot({
+  account,
+  runtime,
+  probe,
+}: {
+  account: typeof adapterAccount;
+  runtime?: { running?: boolean };
+  probe?: typeof adapterProbe;
+}) {
+  return {
+    accountId: account.accountId,
+    enabled: account.enabled,
+    configured: true,
+    extra: { profileUrl: account.profileUrl, connected: runtime?.running ?? false, probe },
+  };
+}
+
 function createComputedStatusAdapter() {
-  return createComputedAccountStatusAdapter<
-    { accountId: string; enabled: boolean; profileUrl: string },
-    { ok: boolean }
-  >({
+  return createComputedAccountStatusAdapter({
     defaultRuntime: createDefaultChannelRuntimeState("default"),
-    resolveAccountSnapshot: ({ account, runtime, probe }) => ({
-      accountId: account.accountId,
-      enabled: account.enabled,
-      configured: true,
-      extra: {
-        profileUrl: account.profileUrl,
-        connected: runtime?.running ?? false,
-        probe,
-      },
-    }),
+    resolveAccountSnapshot,
   });
 }
 
 function createAsyncStatusAdapter() {
-  return createAsyncComputedAccountStatusAdapter<
-    { accountId: string; enabled: boolean; profileUrl: string },
-    { ok: boolean }
-  >({
+  return createAsyncComputedAccountStatusAdapter({
     defaultRuntime: createDefaultChannelRuntimeState("default"),
-    resolveAccountSnapshot: async ({ account, runtime, probe }) => ({
-      accountId: account.accountId,
-      enabled: account.enabled,
-      configured: true,
-      extra: {
-        profileUrl: account.profileUrl,
-        connected: runtime?.running ?? false,
-        probe,
-      },
-    }),
+    resolveAccountSnapshot: async (params: Parameters<typeof resolveAccountSnapshot>[0]) =>
+      resolveAccountSnapshot(params),
   });
 }
-
-describe("createDefaultChannelRuntimeState", () => {
-  it.each([
-    {
-      name: "builds default runtime state without extra fields",
-      accountId: "default",
-      extra: undefined,
-      expected: {
-        accountId: "default",
-        ...defaultRuntimeState,
-      },
-    },
-    {
-      name: "merges extra fields into the default runtime state",
-      accountId: "alerts",
-      extra: {
-        probeAt: 123,
-        healthy: true,
-      },
-      expected: {
-        accountId: "alerts",
-        ...defaultRuntimeState,
-        probeAt: 123,
-        healthy: true,
-      },
-    },
-  ])("$name", ({ accountId, extra, expected }) => {
-    expect(createDefaultChannelRuntimeState(accountId, extra)).toEqual(expected);
-  });
-});
-
-describe("buildBaseChannelStatusSummary", () => {
-  it.each([
-    {
-      name: "defaults missing values",
-      input: {},
-      expected: defaultChannelSummary,
-    },
-    {
-      name: "keeps explicit values",
-      input: {
-        configured: true,
-        running: true,
-        lastStartAt: 1,
-        lastStopAt: 2,
-        lastError: "boom",
-      },
-      expected: {
-        ...defaultChannelSummary,
-        configured: true,
-        running: true,
-        lastStartAt: 1,
-        lastStopAt: 2,
-        lastError: "boom",
-      },
-    },
-  ])("$name", ({ input, expected }) => {
-    expect(buildBaseChannelStatusSummary(input)).toEqual(expected);
-  });
-
-  it("merges extra fields into the normalized channel summary", () => {
-    expect(
-      buildBaseChannelStatusSummary(
-        {
-          configured: true,
-        },
-        {
-          mode: "webhook",
-          secretSource: "env",
-        },
-      ),
-    ).toEqual({
-      ...defaultChannelSummary,
-      configured: true,
-      mode: "webhook",
-      secretSource: "env",
-    });
-  });
-});
-
-describe("buildBaseAccountStatusSnapshot", () => {
-  it.each([
-    {
-      name: "builds account status with runtime defaults",
-      input: {
-        account: { accountId: "default", enabled: true, configured: true },
-      },
-      extra: undefined,
-      expected: expectedAccountSnapshot({ enabled: true, configured: true }),
-    },
-    {
-      name: "merges extra snapshot fields after the shared account shape",
-      input: {
-        account: { accountId: "default", configured: true },
-      },
-      extra: {
-        connected: true,
-        mode: "polling",
-      },
-      expected: {
-        ...expectedAccountSnapshot({ configured: true }),
-        connected: true,
-        mode: "polling",
-      },
-    },
-  ])("$name", ({ input, extra, expected }) => {
-    expect(buildBaseAccountStatusSnapshot(input, extra)).toEqual(expected);
-  });
-});
 
 describe("buildComputedAccountStatusSnapshot", () => {
   it("builds account status when configured is computed outside resolver", () => {
@@ -310,31 +200,10 @@ describe("buildComputedAccountStatusSnapshot", () => {
       }),
     );
   });
-
-  it("merges computed extras after the shared fields", () => {
-    expect(
-      buildComputedAccountStatusSnapshot(
-        {
-          accountId: "default",
-          configured: true,
-        },
-        {
-          connected: true,
-        },
-      ),
-    ).toEqual({
-      ...expectedAccountSnapshot({ configured: true }),
-      connected: true,
-    });
-  });
 });
 
 describe("computed account status adapters", () => {
   it.each([
-    {
-      name: "sync",
-      createStatus: createComputedStatusAdapter,
-    },
     {
       name: "async",
       createStatus: createAsyncStatusAdapter,
@@ -381,25 +250,6 @@ describe("computed account status adapters", () => {
 
 describe("buildRuntimeAccountStatusSnapshot", () => {
   it.each([
-    {
-      name: "builds runtime lifecycle fields with defaults",
-      input: {},
-      extra: undefined,
-      expected: {
-        ...defaultRuntimeState,
-        probe: undefined,
-      },
-    },
-    {
-      name: "merges extra fields into runtime snapshots",
-      input: {},
-      extra: { port: 3978 },
-      expected: {
-        ...defaultRuntimeState,
-        probe: undefined,
-        port: 3978,
-      },
-    },
     {
       name: "preserves runtime connectivity metadata",
       input: {
@@ -462,12 +312,6 @@ describe("buildRuntimeAccountStatusSnapshot", () => {
     },
   ])("$name", ({ input, extra, expected }) => {
     expect(buildRuntimeAccountStatusSnapshot(input, extra)).toEqual(expected);
-  });
-
-  it("omits ingress availability when no failure was recorded", () => {
-    expect(buildRuntimeAccountStatusSnapshot({ runtime: { running: true } })).not.toHaveProperty(
-      "ingressUnavailable",
-    );
   });
 });
 

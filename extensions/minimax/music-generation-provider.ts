@@ -1,33 +1,27 @@
-// Minimax provider module implements model/runtime integration.
 import { resolveGeneratedMediaMaxBytes } from "openclaw/plugin-sdk/media-generation-runtime";
 import { extensionForMime } from "openclaw/plugin-sdk/media-mime";
-import type {
-  GeneratedMusicAsset,
-  MusicGenerationProvider,
+import {
+  downloadGeneratedMusicAsset,
+  type GeneratedMusicAsset,
+  type MusicGenerationProvider,
 } from "openclaw/plugin-sdk/music-generation";
 import { isProviderApiKeyConfigured } from "openclaw/plugin-sdk/provider-auth";
 import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runtime";
 import {
   assertOkOrThrowHttpError,
-  assertProviderBinaryResponseContent,
   createProviderOperationDeadline,
-  createProviderOperationTimeoutResolver,
-  executeProviderOperationWithRetry,
-  fetchWithTimeoutGuarded,
+  createProviderOperationTimeoutError,
   postJsonRequest,
   resolveProviderOperationTimeoutMs,
-  resolveProviderHttpRequestConfig,
-  sanitizeConfiguredModelProviderRequest,
   type ProviderOperationDeadline,
 } from "openclaw/plugin-sdk/provider-http";
 import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   assertMinimaxBaseResp,
-  DEFAULT_MINIMAX_MEDIA_BASE_URL,
   normalizeMinimaxHexAudio,
-  resolveMinimaxGuardedRequestOptions,
-  resolveMinimaxMediaBaseUrl,
+  fetchMinimaxResponse,
+  resolveMinimaxMediaRequestConfig,
   type MinimaxBaseResp,
   type MinimaxRequestPolicy,
 } from "./media-provider-runtime.js";
@@ -90,72 +84,32 @@ async function downloadTrackFromUrl(params: {
   maxBytes: number;
   policy: MinimaxRequestPolicy;
 }): Promise<GeneratedMusicAsset> {
-  const deadline = createProviderOperationDeadline({
+  return await downloadGeneratedMusicAsset({
+    candidate: { url: params.url },
     timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    label: "MiniMax generated music download",
-  });
-  const timeoutMs = createProviderOperationTimeoutResolver({
-    deadline,
-    defaultTimeoutMs: deadline.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-  });
-  const result = await executeProviderOperationWithRetry({
-    provider: "minimax",
-    stage: "download",
-    operation: async () => {
-      const guardedResult = await fetchWithTimeoutGuarded(
-        params.url,
-        { method: "GET" },
-        timeoutMs(),
-        params.fetchFn,
-        resolveMinimaxGuardedRequestOptions(params.policy),
-      );
-      try {
-        await assertOkOrThrowHttpError(
-          guardedResult.response,
-          "MiniMax generated music download failed",
-        );
-      } catch (error) {
-        await guardedResult.release();
-        throw error;
-      }
-      return guardedResult;
+    fetchFn: params.fetchFn,
+    provider: "MiniMax",
+    requestFailedMessage: "MiniMax generated music download failed",
+    maxBytes: params.maxBytes,
+    validateBinaryResponse: true,
+    includeSourceUrl: false,
+    fetchResponse: async ({ timeoutMs }) => {
+      const result = await fetchMinimaxResponse({
+        stage: "download",
+        url: params.url,
+        init: { method: "GET" },
+        timeoutMs,
+        fetchFn: params.fetchFn,
+        requestFailedMessage: "MiniMax generated music download failed",
+        policy: params.policy,
+      });
+      return {
+        ...result,
+        mimeType:
+          normalizeOptionalString(result.response.headers.get("content-type")) ?? "audio/mpeg",
+      };
     },
   });
-  try {
-    try {
-      assertProviderBinaryResponseContent(
-        result.response,
-        "MiniMax generated music download",
-        "audio",
-      );
-    } catch (error) {
-      // Release the unread response before its guarded dispatcher is closed.
-      await result.response.body?.cancel().catch(() => undefined);
-      throw error;
-    }
-    const mimeType =
-      normalizeOptionalString(result.response.headers.get("content-type")) ?? "audio/mpeg";
-    const ext = extensionForMime(mimeType)?.replace(/^\./u, "") || "mp3";
-    const buffer = await readResponseWithLimit(result.response, params.maxBytes, {
-      timeoutMs,
-      onTimeout: ({ timeoutMs: bodyTimeoutMs }) =>
-        new Error(
-          `MiniMax generated music download timed out after ${deadline.timeoutMs ?? bodyTimeoutMs}ms`,
-        ),
-      onOverflow: ({ maxBytes }) =>
-        new Error(`MiniMax generated music download exceeds ${maxBytes} bytes`),
-    });
-    if (buffer.byteLength === 0) {
-      throw new Error("MiniMax generated music download: malformed audio response");
-    }
-    return {
-      buffer,
-      mimeType,
-      fileName: `track-1.${ext}`,
-    };
-  } finally {
-    await result.release();
-  }
 }
 
 function resolveBodyReadTimeoutMs(deadline: ProviderOperationDeadline): number {
@@ -167,12 +121,6 @@ function resolveBodyReadTimeoutMs(deadline: ProviderOperationDeadline): number {
 
 function createGeneratedMusicTooLargeError(maxBytes: number): Error {
   return new Error(`MiniMax generated music download exceeds ${maxBytes} bytes`);
-}
-
-function createMinimaxMusicTimeoutError(deadline: ProviderOperationDeadline): Error {
-  const timeoutLabel =
-    typeof deadline.timeoutMs === "number" ? ` after ${deadline.timeoutMs}ms` : "";
-  return new Error(`${deadline.label} timed out${timeoutLabel}`);
 }
 
 function resolveStreamEnvelopeMaxBytes(maxBytes: number): number {
@@ -189,7 +137,7 @@ async function readResponseBufferWithDeadline(
 ): Promise<Buffer> {
   return await readResponseWithLimit(response, maxBytes, {
     timeoutMs: () => resolveBodyReadTimeoutMs(deadline),
-    onTimeout: () => createMinimaxMusicTimeoutError(deadline),
+    onTimeout: () => createProviderOperationTimeoutError(deadline),
     onOverflow: ({ maxBytes: limit }) => createGeneratedMusicTooLargeError(limit),
   });
 }
@@ -256,25 +204,15 @@ async function readStreamingTrack(
   };
 }
 
-function resolveMinimaxMusicModel(model: string | undefined): string {
-  const trimmed = normalizeOptionalString(model);
-  if (!trimmed) {
-    return DEFAULT_MINIMAX_MUSIC_MODEL;
-  }
-  return trimmed;
-}
-
-function buildMinimaxMusicProvider(providerId: string): MusicGenerationProvider {
+export function buildMinimaxMusicGenerationProvider(
+  providerId = "minimax",
+): MusicGenerationProvider {
   return {
     id: providerId,
     label: "MiniMax",
     defaultModel: DEFAULT_MINIMAX_MUSIC_MODEL,
     models: [DEFAULT_MINIMAX_MUSIC_MODEL, "music-2.6-free", "music-cover", "music-cover-free"],
-    isConfigured: ({ agentDir }) =>
-      isProviderApiKeyConfigured({
-        provider: providerId,
-        agentDir,
-      }),
+    isConfigured: (ctx) => isProviderApiKeyConfigured({ provider: providerId, ...ctx }),
     capabilities: {
       generate: {
         maxTracks: 1,
@@ -315,24 +253,17 @@ function buildMinimaxMusicProvider(providerId: string): MusicGenerationProvider 
         label: "MiniMax music generation",
       });
       const { baseUrl, allowPrivateNetwork, headers, dispatcherPolicy } =
-        resolveProviderHttpRequestConfig({
-          baseUrl: resolveMinimaxMediaBaseUrl(req.cfg, providerId),
-          defaultBaseUrl: DEFAULT_MINIMAX_MEDIA_BASE_URL,
-          defaultHeaders: {
-            Authorization: `Bearer ${auth.apiKey}`,
-          },
-          provider: providerId,
+        resolveMinimaxMediaRequestConfig({
+          cfg: req.cfg,
+          providerId,
+          apiKey: auth.apiKey,
           capability: "audio",
-          transport: "http",
-          request: sanitizeConfiguredModelProviderRequest(
-            req.cfg.models?.providers?.[providerId]?.request,
-          ),
         });
       const requestPolicy: MinimaxRequestPolicy = { allowPrivateNetwork, dispatcherPolicy };
       const jsonHeaders = new Headers(headers);
       jsonHeaders.set("Content-Type", "application/json");
 
-      const model = resolveMinimaxMusicModel(req.model);
+      const model = normalizeOptionalString(req.model) ?? DEFAULT_MINIMAX_MUSIC_MODEL;
       const requestedLyrics = normalizeOptionalString(req.lyrics);
       const body = {
         model,
@@ -408,14 +339,11 @@ function buildMinimaxMusicProvider(providerId: string): MusicGenerationProvider 
               policy: requestPolicy,
             })
           : inlineAudio
-            ? (() => {
-                const buffer = decodeHexAudioWithLimit(inlineAudio, maxGeneratedMusicBytes);
-                return {
-                  buffer,
-                  mimeType: "audio/mpeg",
-                  fileName: "track-1.mp3",
-                };
-              })()
+            ? {
+                buffer: decodeHexAudioWithLimit(inlineAudio, maxGeneratedMusicBytes),
+                mimeType: "audio/mpeg",
+                fileName: "track-1.mp3",
+              }
             : await readStreamingTrack(res, deadline, maxGeneratedMusicBytes);
         return {
           tracks: [track],
@@ -435,12 +363,4 @@ function buildMinimaxMusicProvider(providerId: string): MusicGenerationProvider 
       }
     },
   };
-}
-
-export function buildMinimaxMusicGenerationProvider(): MusicGenerationProvider {
-  return buildMinimaxMusicProvider("minimax");
-}
-
-export function buildMinimaxPortalMusicGenerationProvider(): MusicGenerationProvider {
-  return buildMinimaxMusicProvider("minimax-portal");
 }

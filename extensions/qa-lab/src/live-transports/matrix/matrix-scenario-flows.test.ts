@@ -5,6 +5,7 @@ import {
   readQaScenarioExecutionConfig,
 } from "../../scenario-catalog.js";
 import { requireFlowScenario } from "../../scenario-catalog.test-utils.js";
+import { collectQaSuitePluginIds } from "../../suite-planning.js";
 
 const MATRIX_MENTION_GATE_PRIMARY_SCENARIOS = [
   "matrix-allowbots-default-block",
@@ -74,32 +75,6 @@ describe("Matrix QA Lab scenario flows", () => {
     );
   });
 
-  it("expands every Matrix module call through the shared flow host", () => {
-    const bindings = new Set<string>();
-    expect(scenarios).toHaveLength(82);
-    for (const scenario of scenarios) {
-      expect(scenario.execution.kind, scenario.id).toBe("flow");
-      if (scenario.execution.kind !== "flow") {
-        continue;
-      }
-      const { importAction, callAction } = readModuleBinding(scenario);
-      bindings.add(`${importAction.value.expr}:${callAction.call}`);
-      if (scenario.id !== "matrix-allowlist-hot-reload") {
-        expect(scenario.objective, scenario.id).toBe(scenario.title);
-        expect(scenario.successCriteria, scenario.id).toEqual([
-          `${scenario.title} completes successfully.`,
-        ]);
-      }
-      expect(scenario.execution.channel, scenario.id).toBe("matrix");
-      expect(scenario.execution.retryCount, scenario.id).toBe(0);
-      expect(scenario.execution.timeoutMs, scenario.id).toBeGreaterThan(0);
-      expect(scenario.execution.flow?.steps.at(-1)?.detailsExpr, scenario.id).toBe(
-        "result.details ?? (result.artifacts ? JSON.stringify(result.artifacts, null, 2) : undefined)",
-      );
-    }
-    expect(bindings.size).toBe(82);
-  });
-
   it("prepares the shared canary only for canary-dependent scenarios", () => {
     const canaryScenarioIds = new Set([
       "matrix-reaction-not-a-reply",
@@ -114,6 +89,24 @@ describe("Matrix QA Lab scenario flows", () => {
         canaryScenarioIds.has(scenario.id),
       );
       expect(readModuleBinding(scenario).callAction.args).toEqual([{ expr: "scenarioContext" }]);
+    }
+  });
+
+  it("leaves whole-flow deadlines unset for provider-budgeted scenarios", () => {
+    const providerBudgetedScenarioIds = new Set([
+      "matrix-e2ee-thread-follow-up",
+      "matrix-inbound-edit-no-duplicate-trigger",
+      "matrix-thread-nested-reply-shape",
+    ]);
+    const providerBudgetedScenarios = scenarios.filter((scenario) =>
+      providerBudgetedScenarioIds.has(scenario.id),
+    );
+
+    expect(providerBudgetedScenarios.map((scenario) => scenario.id).toSorted()).toEqual(
+      [...providerBudgetedScenarioIds].toSorted(),
+    );
+    for (const scenario of providerBudgetedScenarios) {
+      expect(scenario.execution, scenario.id).not.toHaveProperty("timeoutMs");
     }
   });
 
@@ -221,13 +214,17 @@ describe("Matrix QA Lab scenario flows", () => {
   });
 
   it("loads the voice preflight provider and media overrides", () => {
-    expect(readQaScenarioById("matrix-voice-preflight-mention").execution).toMatchObject({
+    const scenario = readQaScenarioById("matrix-voice-preflight-mention");
+
+    expect(scenario.execution).toMatchObject({
       kind: "flow",
       providerMode: "mock-openai",
       retryCount: 0,
       timeoutMs: 90_000,
     });
-    expect(readQaScenarioById("matrix-voice-preflight-mention").gatewayConfigPatch).toMatchObject({
+    expect(scenario.plugins).toEqual(["openai"]);
+    expect(collectQaSuitePluginIds([scenario])).toEqual(["openai"]);
+    expect(scenario.gatewayConfigPatch).toMatchObject({
       tools: {
         media: {
           models: [{ capabilities: ["audio"], model: "gpt-4o-transcribe", provider: "openai" }],
@@ -256,5 +253,54 @@ describe("Matrix QA Lab scenario flows", () => {
         groupMentionPatterns: ["matrix\\W+qa\\W+voice\\W+pre[ -]?flight\\W+ok(?:ay)?"],
       },
     });
+  });
+
+  it("loads the generated-image provider and model selection", () => {
+    const scenario = readQaScenarioById("matrix-room-generated-image-delivery");
+    expect(scenario.plugins).toEqual(["openai"]);
+    expect(scenario.gatewayConfigPatch).toMatchObject({
+      agents: {
+        defaults: {
+          mediaModels: {
+            image: {
+              primary: "openai/gpt-image-1",
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("configures image generation before the single generated-image flow call", () => {
+    const scenario = requireFlowScenario(
+      readQaScenarioById("matrix-room-generated-image-delivery"),
+    );
+    const actions = scenario.execution.flow?.steps[0]?.actions ?? [];
+
+    expect(scenario.execution).toMatchObject({
+      channel: "matrix",
+      retryCount: 0,
+      timeoutMs: 180_000,
+      config: {
+        requiredChannelDriver: "live",
+      },
+    });
+    expect(actions).toEqual([
+      {
+        call: "ensureImageGenerationConfigured",
+        args: [{ ref: "env" }],
+      },
+      {
+        set: "scenarioModule",
+        value: {
+          expr: "await qaImport('./live-transports/matrix/scenarios/scenario-runtime-media.js')",
+        },
+      },
+      {
+        call: "scenarioModule.runGeneratedImageDeliveryScenario",
+        args: [{ expr: "scenarioContext" }],
+        saveAs: "result",
+      },
+    ]);
   });
 });

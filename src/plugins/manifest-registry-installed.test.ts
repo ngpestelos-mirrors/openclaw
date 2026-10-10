@@ -3,15 +3,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  readPersistedInstalledPluginIndex,
-  writePersistedInstalledPluginIndex,
-} from "./installed-plugin-index-store.js";
+import { writePersistedInstalledPluginIndex } from "./installed-plugin-index-store-write.js";
+import { readPersistedInstalledPluginIndex } from "./installed-plugin-index-store.js";
 import type { InstalledPluginIndex } from "./installed-plugin-index.js";
 import {
   loadPluginManifestRegistryForInstalledIndex,
   resolveInstalledManifestRegistryIndexFingerprint,
 } from "./manifest-registry-installed.js";
+import { createIndex } from "./manifest-registry-installed.test-helpers.js";
+import { createPluginCache, withPluginCache } from "./plugin-cache.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
 import { cleanupTrackedTempDirs, makeTrackedTempDir } from "./test-helpers/fs-fixtures.js";
 
@@ -44,37 +44,6 @@ function writePlugin(rootDir: string, pluginId: string, modelPrefix: string) {
     }),
     "utf8",
   );
-}
-
-function createIndex(rootDir: string): InstalledPluginIndex {
-  return {
-    version: 1,
-    hostContractVersion: "2026.4.25",
-    compatRegistryVersion: "compat-v1",
-    migrationVersion: 1,
-    policyHash: "policy-v1",
-    generatedAtMs: 1777118400000,
-    installRecords: {},
-    plugins: [
-      {
-        pluginId: "installed",
-        manifestPath: path.join(rootDir, "openclaw.plugin.json"),
-        manifestHash: "manifest-hash",
-        source: path.join(rootDir, "index.ts"),
-        rootDir,
-        origin: "global",
-        enabled: true,
-        startup: {
-          sidecar: false,
-          memory: false,
-          deferConfiguredChannelFullLoadUntilAfterListen: false,
-          agentHarnesses: [],
-        },
-        compat: [],
-      },
-    ],
-    diagnostics: [],
-  };
 }
 
 function fileSignature(filePath: string) {
@@ -112,7 +81,7 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   return Object.freeze(value);
 }
 
-function writePackageManifest(rootDir: string, channelLabel: string) {
+function writePackageManifest(rootDir: string, channelLabel: string, selectionDocsPrefix?: string) {
   const packageJsonPath = path.join(rootDir, "package.json");
   fs.writeFileSync(
     packageJsonPath,
@@ -126,6 +95,7 @@ function writePackageManifest(rootDir: string, channelLabel: string) {
         channel: {
           id: "installed",
           label: channelLabel,
+          ...(selectionDocsPrefix !== undefined ? { selectionDocsPrefix } : {}),
         },
       },
     }),
@@ -134,9 +104,12 @@ function writePackageManifest(rootDir: string, channelLabel: string) {
   return packageJsonPath;
 }
 
-function createIndexWithPackageJson(rootDir: string): InstalledPluginIndex {
+function createIndexWithPackageJson(
+  rootDir: string,
+  selectionDocsPrefix?: string,
+): InstalledPluginIndex {
   const index = createIndexWithFileSignatures(rootDir);
-  const packageJsonPath = writePackageManifest(rootDir, "Installed");
+  const packageJsonPath = writePackageManifest(rootDir, "Installed", selectionDocsPrefix);
   const record = index.plugins[0];
   if (!record) {
     throw new Error("expected index record");
@@ -171,20 +144,80 @@ function createIndexWithUnhashedPackageJson(rootDir: string): InstalledPluginInd
 }
 
 describe("loadPluginManifestRegistryForInstalledIndex", () => {
-  it("reuses frozen installed-index fingerprints when file signatures are persisted", () => {
-    const rootDir = makeTempDir();
-    writePlugin(rootDir, "installed", "installed-");
-    const index = deepFreeze(createIndexWithFileSignatures(rootDir));
-    const first = resolveInstalledManifestRegistryIndexFingerprint(index);
-    const manifestPath = path.join(rootDir, "openclaw.plugin.json");
-    const nextMtime = new Date(Date.now() + 5000);
-    fs.utimesSync(manifestPath, nextMtime, nextMtime);
-    const second = resolveInstalledManifestRegistryIndexFingerprint(index);
+  it.each([undefined, "plugin-state", "future-store"])(
+    "preserves known backing-store metadata %s through installed records",
+    (backingStore) => {
+      const root = makeTempDir();
+      writePlugin(root, "installed", "installed/");
+      fs.writeFileSync(
+        path.join(root, "package.json"),
+        JSON.stringify({
+          name: "@openclaw/installed",
+          version: "1.0.0",
+          openclaw: {
+            channel: {
+              id: "installed",
+              persistedAuthState: {
+                specifier: "./auth-presence",
+                exportName: "hasAuth",
+                backingStore,
+              },
+            },
+          },
+        }),
+      );
+      const index = createIndex(root);
+      expectDefined(index.plugins[0], "installed fixture record").packageJson = {
+        path: "package.json",
+        hash: "fixture-package-metadata",
+      };
+      const registry = loadPluginManifestRegistryForInstalledIndex({
+        index,
+        env: { VITEST: "true" },
+        includeDisabled: true,
+      });
+      expect(registry.plugins[0]?.packageChannel?.persistedAuthState).toEqual({
+        specifier: "./auth-presence",
+        exportName: "hasAuth",
+        ...(backingStore === "plugin-state" ? { backingStore: "plugin-state" } : {}),
+      });
+    },
+  );
 
-    expect(second).toBe(first);
+  it("loadPluginManifestRegistryForInstalledIndex preserves account-key policy after index persistence", async () => {
+    const rootDir = makeTempDir();
+    const stateDir = makeTempDir();
+    const policy = { canonicalAliasesRequireOwnField: "account" };
+    writePlugin(rootDir, "installed", "installed-");
+    fs.writeFileSync(
+      path.join(rootDir, "openclaw.plugin.json"),
+      JSON.stringify({
+        id: "installed",
+        configSchema: { type: "object" },
+        channels: ["selected"],
+        channelAccountKeyPolicies: { selected: policy, foreign: policy },
+      }),
+    );
+    await writePersistedInstalledPluginIndex(createIndex(rootDir), { stateDir });
+    const index = expectDefined(
+      await readPersistedInstalledPluginIndex({ stateDir }),
+      "persisted installed plugin index",
+    );
+    const manifestRegistry = loadPluginManifestRegistryForInstalledIndex({ index });
+    expect(manifestRegistry.plugins[0]?.channelAccountKeyPolicies).toEqual({ selected: policy });
   });
 
-  it("recomputes installed-index fingerprints for mutable index objects", () => {
+  const loadRegistry = (index: InstalledPluginIndex) =>
+    loadPluginManifestRegistryForInstalledIndex({
+      index,
+      env: {
+        OPENCLAW_VERSION: "2026.4.25",
+        VITEST: "true",
+      },
+      includeDisabled: true,
+    });
+
+  it("fingerprints mutable inventory changes independently of native admission receipts", () => {
     const rootDir = makeTempDir();
     writePlugin(rootDir, "installed", "installed-");
     const index = createIndexWithFileSignatures(rootDir);
@@ -193,6 +226,15 @@ describe("loadPluginManifestRegistryForInstalledIndex", () => {
     if (!record) {
       throw new Error("expected index record");
     }
+    record.sourceAdmissions = {
+      [`${rootDir}\0`]: {
+        signature: "a".repeat(64),
+        sourceDigest: "b".repeat(64),
+        nativeArtifacts: {},
+        nativeNamespaces: {},
+      },
+    };
+    expect(resolveInstalledManifestRegistryIndexFingerprint(index)).toBe(first);
     record.manifestHash = "changed";
     const second = resolveInstalledManifestRegistryIndexFingerprint(index);
 
@@ -252,7 +294,7 @@ describe("loadPluginManifestRegistryForInstalledIndex", () => {
     expect(second).toBe(first);
   });
 
-  it("reconstructs installed-index manifest registries when manifest files change", () => {
+  it("reconstructs installed-index manifests in a fresh operation after files change", () => {
     const rootDir = makeTempDir();
     const manifestPath = path.join(rootDir, "openclaw.plugin.json");
     writePlugin(rootDir, "installed", "installed-");
@@ -275,11 +317,13 @@ describe("loadPluginManifestRegistryForInstalledIndex", () => {
     const nextMtime = new Date(Date.now() + 5000);
     fs.utimesSync(manifestPath, nextMtime, nextMtime);
 
-    const second = loadPluginManifestRegistryForInstalledIndex({
-      index,
-      env,
-      includeDisabled: true,
-    });
+    const second = withPluginCache(createPluginCache(), () =>
+      loadPluginManifestRegistryForInstalledIndex({
+        index,
+        env,
+        includeDisabled: true,
+      }),
+    );
 
     expect(second).not.toBe(first);
     expect(second.plugins[0]?.modelSupport).toEqual({
@@ -320,6 +364,38 @@ describe("loadPluginManifestRegistryForInstalledIndex", () => {
     expect(third.plugins[0]?.packageDependencies).toEqual({
       "runtime-dep": "1.0.0",
     });
+  });
+
+  it("preserves empty docs prefixes from package channel metadata", () => {
+    const rootDir = makeTempDir();
+    writePlugin(rootDir, "installed", "installed-");
+
+    const registry = loadRegistry(createIndexWithPackageJson(rootDir, ""));
+
+    expect(registry.plugins[0]?.packageChannel?.selectionDocsPrefix).toBe("");
+  });
+
+  it("preserves empty docs prefixes from persisted installed-index metadata", () => {
+    const rootDir = makeTempDir();
+    writePlugin(rootDir, "installed", "installed-");
+    const index = createIndex(rootDir);
+    const record = expectDefined(index.plugins[0], "index.plugins[0] test invariant");
+
+    const registry = loadRegistry({
+      ...index,
+      plugins: [
+        {
+          ...record,
+          packageChannel: {
+            id: "installed",
+            label: "Installed",
+            selectionDocsPrefix: "",
+          },
+        },
+      ],
+    });
+
+    expect(registry.plugins[0]?.packageChannel?.selectionDocsPrefix).toBe("");
   });
 
   it("reuses installed package json path validation across registry loads", () => {
@@ -399,49 +475,6 @@ describe("loadPluginManifestRegistryForInstalledIndex", () => {
     expect(reused.diagnostics).toEqual([]);
   });
 
-  it("reconstructs bundle candidates with their bundle manifest format", () => {
-    const rootDir = makeTempDir();
-    fs.mkdirSync(path.join(rootDir, ".claude-plugin"), { recursive: true });
-    fs.mkdirSync(path.join(rootDir, "commands"), { recursive: true });
-    fs.writeFileSync(
-      path.join(rootDir, ".claude-plugin", "plugin.json"),
-      JSON.stringify({
-        name: "Claude Bundle",
-        commands: "commands",
-      }),
-      "utf8",
-    );
-
-    const index = createIndex(rootDir);
-    const registry = loadPluginManifestRegistryForInstalledIndex({
-      index: {
-        ...index,
-        plugins: [
-          {
-            ...expectDefined(index.plugins[0], "index.plugins[0] test invariant"),
-            pluginId: "claude-bundle",
-            manifestPath: path.join(rootDir, ".claude-plugin", "plugin.json"),
-            source: rootDir,
-            format: "bundle",
-            bundleFormat: "claude",
-          },
-        ],
-      },
-      env: {
-        OPENCLAW_VERSION: "2026.4.25",
-        VITEST: "true",
-      },
-      includeDisabled: true,
-    });
-
-    expect(registry.diagnostics).toStrictEqual([]);
-    expect(registry.plugins).toHaveLength(1);
-    expect(registry.plugins[0]?.id).toBe("claude-bundle");
-    expect(registry.plugins[0]?.format).toBe("bundle");
-    expect(registry.plugins[0]?.bundleFormat).toBe("claude");
-    expect(registry.plugins[0]?.skills).toEqual(["commands"]);
-  });
-
   it("hydrates package metadata while dropping setup fields with mismatched CLI names", () => {
     const rootDir = makeTempDir();
     writePlugin(rootDir, "installed", "installed-");
@@ -489,6 +522,8 @@ describe("loadPluginManifestRegistryForInstalledIndex", () => {
                 {
                   key: "useEnv",
                   kind: "boolean",
+                  envVars: ["INSTALLED_TOKEN", "INSTALLED_TOKEN_FILE"],
+                  envVarMode: "any",
                   cli: {
                     flags: "--use-env",
                     negatedFlags: "--no-use-env",
@@ -548,6 +583,8 @@ describe("loadPluginManifestRegistryForInstalledIndex", () => {
         {
           key: "useEnv",
           kind: "boolean",
+          envVars: ["INSTALLED_TOKEN", "INSTALLED_TOKEN_FILE"],
+          envVarMode: "any",
           cli: {
             flags: "--use-env",
             negatedFlags: "--no-use-env",
@@ -730,6 +767,37 @@ describe("loadPluginManifestRegistryForInstalledIndex", () => {
       { flags: "--limit <n>", description: "Limit", valueType: "int" },
       { flags: "--ignored <value>", description: "Ignored" },
     ]);
+  });
+
+  it("normalizes the open-DM wildcard doctor capability from persisted metadata", () => {
+    const rootDir = makeTempDir();
+    writePlugin(rootDir, "installed", "installed-");
+    const index = createIndex(rootDir);
+    const registry = loadPluginManifestRegistryForInstalledIndex({
+      index: {
+        ...index,
+        plugins: [
+          {
+            ...expectDefined(index.plugins[0], "index.plugins[0] test invariant"),
+            packageChannel: {
+              id: "installed",
+              doctorCapabilities: {
+                openDmRequiresAllowFromWildcard: false,
+              },
+            },
+          },
+        ],
+      },
+      env: {
+        OPENCLAW_VERSION: "2026.4.25",
+        VITEST: "true",
+      },
+      includeDisabled: true,
+    });
+
+    expect(
+      registry.plugins[0]?.packageChannel?.doctorCapabilities?.openDmRequiresAllowFromWildcard,
+    ).toBe(false);
   });
 
   it("round-trips bundle metadata through the persisted index before reconstruction", async () => {

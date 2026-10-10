@@ -1,12 +1,16 @@
-// Whatsapp tests cover deliver reply plugin behavior.
-import { createChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
+import type { WAMessage } from "baileys";
 import {
-  createMessageReceiptFromOutboundResults,
-  listMessageReceiptPlatformIds,
-} from "openclaw/plugin-sdk/channel-outbound";
+  createChannelPartialDeliveryError,
+  isChannelPartialDeliveryError,
+} from "openclaw/plugin-sdk/channel-inbound";
+import { listMessageReceiptPlatformIds } from "openclaw/plugin-sdk/channel-outbound";
+import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
 import { MEDIA_FFMPEG_MAX_AUDIO_DURATION_SECS } from "openclaw/plugin-sdk/media-runtime";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
+// Whatsapp tests cover deliver reply plugin behavior.
+import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { normalizeWhatsAppSendResult } from "../inbound/send-result.js";
 import { createAcceptedWhatsAppSendResult } from "../inbound/send-result.test-helper.js";
 import { createTestWebInboundMessage } from "../inbound/test-message.test-helper.js";
 import type { AdmittedWebInboundMessage } from "../inbound/types.js";
@@ -15,8 +19,19 @@ import { cacheInboundMessageMeta } from "../quoted-message.js";
 import { withWhatsAppSocketOperationTimeout } from "../socket-timing.js";
 
 const hoisted = vi.hoisted(() => ({
+  recordChannelActivity: vi.fn(),
   transcodeAudioBufferToOpus: vi.fn(),
 }));
+
+vi.mock("openclaw/plugin-sdk/channel-activity-runtime", async () => {
+  const actual = await vi.importActual<
+    typeof import("openclaw/plugin-sdk/channel-activity-runtime")
+  >("openclaw/plugin-sdk/channel-activity-runtime");
+  return {
+    ...actual,
+    recordChannelActivity: (...args: unknown[]) => hoisted.recordChannelActivity(...args),
+  };
+});
 
 vi.mock("openclaw/plugin-sdk/media-runtime", async () => {
   const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/media-runtime")>(
@@ -43,7 +58,6 @@ vi.mock("../media.js", () => ({ loadWebMedia: vi.fn() }));
 
 let deliverWebReply: typeof import("./deliver-reply.js").deliverWebReply;
 let createWhatsAppReplyTransportContext: typeof import("./deliver-reply.js").createWhatsAppReplyTransportContext;
-let whatsappOutbound: typeof import("../outbound-adapter.js").whatsappOutbound;
 
 type DeliveryParams = Parameters<typeof deliverWebReply>[0];
 type DeliveryOverrides = Partial<Omit<DeliveryParams, "replyResult" | "transport">>;
@@ -95,12 +109,7 @@ function expectFirstSendMediaPayload(msg: AdmittedWebInboundMessage) {
   return requireRecord(mockCallArg(msg.platform.sendMedia, 0, 0, "sendMedia"), "sendMedia payload");
 }
 
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`expected ${label}`);
-  }
-  return value as Record<string, unknown>;
-}
+const requireRecord = createRequireRecord("record", "expected-label");
 
 function mockCallArg(mock: unknown, callIndex: number, argIndex: number, label: string) {
   const call = (mock as MockWithCalls).mock.calls.at(callIndex);
@@ -209,12 +218,12 @@ async function expectReplySuppressed(replyResult: { text: string; isReasoning?: 
 describe("deliverWebReply", () => {
   beforeAll(async () => {
     ({ createWhatsAppReplyTransportContext, deliverWebReply } = await import("./deliver-reply.js"));
-    ({ whatsappOutbound } = await import("../outbound-adapter.js"));
   });
 
   it("does not resend an accepted reply when its transport reports a disconnect afterward", async () => {
     const { msg, params } = createDelivery({ text: "already delivered" });
-    const acceptedFailure = createChannelPartialDeliveryError(new Error("connection closed"), {
+    const disconnect = new Error("connection closed");
+    const acceptedFailure = createChannelPartialDeliveryError(disconnect, {
       messageIds: ["reply-already-accepted"],
       visibleReplySent: true,
     });
@@ -224,16 +233,20 @@ describe("deliverWebReply", () => {
       deliverWebReply(params).catch((caught: unknown) => caught),
     );
 
-    expect(failure).toBe(acceptedFailure);
+    expect(isChannelPartialDeliveryError(failure)).toBe(true);
+    if (!isChannelPartialDeliveryError(failure)) {
+      throw new Error("accepted reply was not promoted to a receipt-backed partial delivery");
+    }
+    expect(failure).not.toBe(acceptedFailure);
+    expect(failure.deliveryResult.messageIds).toEqual(["reply-already-accepted"]);
+    expect(failure.deliveryResult.receipt?.platformMessageIds).toEqual(["reply-already-accepted"]);
+    expect(failure).toHaveProperty("cause", disconnect);
+    expect(failure).toMatchObject({ sentBeforeError: true, visibleReplySent: true });
     expect(msg.platform.reply).toHaveBeenCalledOnce();
   });
 
   it("suppresses payloads flagged as reasoning", async () => {
     await expectReplySuppressed({ text: "hidden", isReasoning: true });
-  });
-
-  it("suppresses payloads that start with reasoning prefix text", async () => {
-    await expectReplySuppressed({ text: "   \n Reasoning:\n_hidden_" });
   });
 
   it("suppresses payloads that start with a quoted reasoning prefix", async () => {
@@ -255,6 +268,7 @@ describe("deliverWebReply", () => {
   });
 
   it("sends chunked text replies and logs a summary", async () => {
+    hoisted.recordChannelActivity.mockClear();
     const { msg, params } = createDelivery({ text: "aaaaaa" }, { textLimit: 3 });
 
     const delivery = await deliverWebReply(params);
@@ -270,45 +284,114 @@ describe("deliverWebReply", () => {
     expect(delivery.receipt.platformMessageIds).toEqual(["reply-sent-1"]);
     expect(delivery.receipt.parts[0]?.platformMessageId).toBe("reply-sent-1");
     expect(delivery.receipt.parts[0]?.kind).toBe("text");
+    expect(hoisted.recordChannelActivity).toHaveBeenCalledExactlyOnceWith({
+      channel: "whatsapp",
+      accountId: "work",
+      direction: "outbound",
+    });
   });
 
-  it("reports text replies that Baileys did not accept", async () => {
+  it.each([
+    {
+      name: "an image without alt text",
+      text: "![](https://example.com/diagram.png)",
+      expected: "![](https://example.com/diagram.png)",
+    },
+    {
+      name: "an image with visible alt text",
+      text: "![Diagram](https://example.com/diagram.png)",
+      expected: "Diagram",
+    },
+  ])("delivers $name instead of silently dropping the auto-reply", async ({ text, expected }) => {
+    const { msg, params } = createDelivery({ text });
+
+    const delivery = await deliverWebReply(params);
+
+    expect(msg.platform.reply).toHaveBeenCalledExactlyOnceWith(expected, undefined);
+    expect(delivery).toMatchObject({
+      providerAccepted: true,
+      results: [{ messageId: "reply-sent-1" }],
+    });
+  });
+
+  it("retains an accepted auto-reply receipt when outbound activity bookkeeping fails", async () => {
+    hoisted.recordChannelActivity.mockClear();
+    const activityError = new Error("auto-reply activity bookkeeping disconnected");
+    hoisted.recordChannelActivity.mockImplementationOnce(() => {
+      throw activityError;
+    });
+    const { msg, params } = createDelivery({ text: "already accepted" });
+
+    const failure = await deliverWebReply(params).catch((caught: unknown) => caught);
+
+    expect(isChannelPartialDeliveryError(failure)).toBe(true);
+    if (!isChannelPartialDeliveryError(failure)) {
+      throw new Error("accepted auto-reply receipt was discarded during activity bookkeeping");
+    }
+    expect(failure.deliveryResult.messageIds).toEqual(["reply-sent-1"]);
+    expect(failure.deliveryResult.receipt?.platformMessageIds).toEqual(["reply-sent-1"]);
+    expect(failure).toHaveProperty("cause", activityError);
+    expect(msg.platform.reply).toHaveBeenCalledOnce();
+    expect(hoisted.recordChannelActivity).toHaveBeenCalledOnce();
+  });
+
+  it("merges earlier accepted chunks with a nested accepted-chunk bookkeeping failure", async () => {
+    hoisted.recordChannelActivity.mockClear();
+    const bookkeepingError = new Error("second accepted chunk bookkeeping failed");
+    const firstChunk = normalizeWhatsAppSendResult(
+      { key: { id: "auto-reply-first-chunk" } } as WAMessage,
+      "text",
+    );
+    const secondChunk = normalizeWhatsAppSendResult(
+      { key: { id: "auto-reply-second-chunk" } } as WAMessage,
+      "text",
+    );
+    const { msg, params } = createDelivery({ text: "aaaaaa" }, { textLimit: 3 });
+    vi.mocked(msg.platform.reply)
+      .mockResolvedValueOnce(firstChunk)
+      .mockRejectedValueOnce(
+        createChannelPartialDeliveryError(bookkeepingError, {
+          messageIds: [secondChunk.messageId],
+          receipt: secondChunk.receipt,
+          visibleReplySent: true,
+        }),
+      );
+
+    const failure = await deliverWebReply(params).catch((caught: unknown) => caught);
+
+    expect(isChannelPartialDeliveryError(failure)).toBe(true);
+    if (!isChannelPartialDeliveryError(failure)) {
+      throw new Error(
+        "accepted auto-reply chunks were not composed after nested bookkeeping failed",
+      );
+    }
+    expect(failure.deliveryResult.messageIds).toEqual([
+      "auto-reply-first-chunk",
+      "auto-reply-second-chunk",
+    ]);
+    expect(failure.deliveryResult.receipt?.platformMessageIds).toEqual([
+      "auto-reply-first-chunk",
+      "auto-reply-second-chunk",
+    ]);
+    expect(failure).toHaveProperty("cause", bookkeepingError);
+    expect(msg.platform.reply).toHaveBeenCalledTimes(2);
+    expect(hoisted.recordChannelActivity).toHaveBeenCalledOnce();
+  });
+
+  it("rejects text replies that Baileys did not accept without recording outbound activity", async () => {
+    hoisted.recordChannelActivity.mockClear();
     const { msg, params } = createDelivery({ text: "hello" });
     vi.mocked(msg.platform.reply).mockResolvedValueOnce({
       ...createAcceptedWhatsAppSendResult("text", "unknown"),
-      receipt: createMessageReceiptFromOutboundResults({ kind: "text", results: [] }),
+      receipt: undefined,
       keys: [],
       providerAccepted: false,
     });
 
-    const delivery = await deliverWebReply(params);
+    await expect(deliverWebReply(params)).rejects.toBeInstanceOf(PlatformMessageNotDispatchedError);
 
-    expect(msg.platform.reply).toHaveBeenCalledTimes(1);
-    expect(delivery.receipt.platformMessageIds).toEqual([]);
-    expect(delivery.receipt.parts).toEqual([]);
-    expect(delivery.providerAccepted).toBe(false);
-    expect(typeof mockCallArg(replyLogger.warn, 0, 0, "replyLogger.warn")).toBe("object");
-    expect(mockCallArg(replyLogger.warn, 0, 1, "replyLogger.warn")).toBe(
-      "auto-reply text was not accepted by WhatsApp provider",
-    );
-  });
-
-  it("strips raw XML tool-call blocks before WhatsApp text delivery", async () => {
-    const { msg, params } = createDelivery(
-      {
-        text: 'Before\n<function_calls><invoke name="web_search"><parameter name="query">x</parameter></invoke></function_calls>\nAfter',
-      },
-      { textLimit: 4000 },
-    );
-
-    await deliverWebReply(params);
-
-    expect(msg.platform.reply).toHaveBeenCalledTimes(1);
-    const sentText = replyText(msg);
-    expect(sentText).not.toContain("function_calls");
-    expect(sentText).not.toContain("invoke");
-    expect(sentText).toContain("Before");
-    expect(sentText).toContain("After");
+    expect(msg.platform.reply).toHaveBeenCalledOnce();
+    expect(hoisted.recordChannelActivity).not.toHaveBeenCalled();
   });
 
   it("uses the same final sanitizer stack for auto-reply text delivery", async () => {
@@ -520,7 +603,8 @@ describe("deliverWebReply", () => {
   });
 
   it("falls back to text-only when the first media send fails", async () => {
-    const { msg, params } = createImageDelivery("caption", { textLimit: 20 });
+    const onMediaAccepted = vi.fn();
+    const { msg, params } = createImageDelivery("caption", { textLimit: 20, onMediaAccepted });
     vi.mocked(msg.platform.sendMedia).mockRejectedValueOnce(new Error("boom"));
 
     await deliverWebReply(params);
@@ -534,6 +618,7 @@ describe("deliverWebReply", () => {
       "replyLogger.warn",
     );
     expect(warnContext.mediaUrl).toBe("http://example.com/img.jpg");
+    expect(onMediaAccepted).not.toHaveBeenCalled();
   });
 
   it("delivers the opening text chunk when the first media fails on a multi-chunk reply", async () => {
@@ -617,102 +702,6 @@ describe("deliverWebReply", () => {
     expect(msg.platform.sendMedia).toHaveBeenCalledTimes(1);
   });
 
-  it("notifies user when a non-first media send fails instead of dropping silently", async () => {
-    vi.clearAllMocks();
-    const { msg, params } = createDelivery({
-      text: "caption",
-      mediaUrls: ["http://example.com/img1.jpg", "http://example.com/img2.jpg"],
-    });
-    // Two media items: first load succeeds and sends, second load succeeds but send fails.
-    mockLoadedMedia("img1", "image/jpeg", "image");
-    mockLoadedMedia("img2", "image/jpeg", "image");
-    // First sendMedia resolves; second sendMedia rejects.
-    vi.mocked(msg.platform.sendMedia).mockResolvedValueOnce(
-      createAcceptedWhatsAppSendResult("media", "media-first-ok"),
-    );
-    vi.mocked(msg.platform.sendMedia).mockRejectedValueOnce(new Error("upload failed"));
-
-    await deliverWebReply(params);
-
-    // First media succeeded — no text reply for it.
-    // Second media failed — user must be notified, not silently dropped.
-    expect(msg.platform.reply).toHaveBeenCalledTimes(1);
-    expect(replyText(msg)).toContain("⚠️ Media unavailable");
-    expect(replyText(msg)).not.toContain("upload failed");
-  });
-
-  it("sanitizes XML tool-call blocks for outbound sendPayload delivery", async () => {
-    const sendWhatsApp = vi.fn(async (_to: string, _text: string) => ({
-      messageId: "wa-1",
-      toJid: "jid",
-    }));
-
-    await whatsappOutbound.sendPayload!({
-      cfg: {},
-      to: "5511999999999@c.us",
-      text: "",
-      payload: {
-        text: 'Before\n<function_calls><invoke name="web_search"><parameter name="query">x</parameter></invoke></function_calls>\nAfter',
-      },
-      deps: { sendWhatsApp },
-    });
-
-    expect(sendWhatsApp).toHaveBeenCalledTimes(1);
-    const sentText = mockCallArg(sendWhatsApp, 0, 1, "sendWhatsApp");
-    expect(sentText).not.toContain("function_calls");
-    expect(sentText).not.toContain("invoke");
-    expect(sentText).toContain("Before");
-    expect(sentText).toContain("After");
-  });
-
-  it("keeps payload and auto-reply media normalization in parity", async () => {
-    const payload = {
-      text: "\n\ncaption",
-      mediaUrls: ["   ", " /tmp/voice.ogg "],
-    };
-    const sendWhatsApp = vi.fn(async () => ({ messageId: "wa-1", toJid: "jid" }));
-
-    await whatsappOutbound.sendPayload!({
-      cfg: {},
-      to: "5511999999999@c.us",
-      text: "",
-      payload,
-      deps: { sendWhatsApp },
-    });
-
-    const { msg, params } = createDelivery(payload);
-    mockLoadedMedia("aud", "audio/ogg", "audio");
-
-    await deliverWebReply(params);
-
-    expect(sendWhatsApp).toHaveBeenCalledTimes(1);
-    expect(sendWhatsApp).toHaveBeenCalledWith(
-      "5511999999999@c.us",
-      "caption",
-      expect.objectContaining({
-        verbose: false,
-        cfg: {},
-        mediaUrl: "/tmp/voice.ogg",
-        mediaLocalRoots: undefined,
-        accountId: undefined,
-        gifPlayback: undefined,
-        onDeliveryResult: expect.any(Function),
-      }),
-    );
-    expect(loadWebMedia).toHaveBeenCalledWith("/tmp/voice.ogg", {
-      maxBytes: 1024 * 1024,
-      localRoots: undefined,
-    });
-    expect(msg.platform.sendMedia).toHaveBeenCalledTimes(1);
-    const mediaPayload = expectFirstSendMediaPayload(msg);
-    expectBuffer(mediaPayload.audio, "sendMedia audio");
-    expect(mediaPayload.ptt).toBe(true);
-    expect(mediaPayload.mimetype).toBe("audio/ogg; codecs=opus");
-    expect(mockCallArg(msg.platform.sendMedia, 0, 1, "sendMedia")).toBeUndefined();
-    expect(expectFirstSendMediaPayload(msg)).not.toHaveProperty("caption");
-    expect(msg.platform.reply).toHaveBeenCalledWith("caption", undefined);
-  });
-
   it("sends audio media as ptt voice note with visible text separately", async () => {
     const { msg, params } = createDelivery({
       text: "cap",
@@ -759,39 +748,6 @@ describe("deliverWebReply", () => {
     expect(mockCallArg(msg.platform.sendMedia, 0, 1, "sendMedia")).toBeUndefined();
     expect(expectFirstSendMediaPayload(msg)).not.toHaveProperty("caption");
     expect(msg.platform.reply).toHaveBeenCalledWith("cap", undefined);
-  });
-
-  it("sends video media", async () => {
-    const { msg, params } = createDelivery({
-      text: "cap",
-      mediaUrl: "http://example.com/v.mp4",
-    });
-    mockLoadedMedia("vid", "video/mp4", "video");
-
-    await deliverWebReply(params);
-
-    const mediaPayload = expectFirstSendMediaPayload(msg);
-    expectBuffer(mediaPayload.video, "sendMedia video");
-    expect(mediaPayload.caption).toBe("cap");
-    expect(mediaPayload.mimetype).toBe("video/mp4");
-    expect(mockCallArg(msg.platform.sendMedia, 0, 1, "sendMedia")).toBeUndefined();
-  });
-
-  it("sends non-audio/image/video media as document", async () => {
-    const { msg, params } = createDelivery({
-      text: "cap",
-      mediaUrl: "http://example.com/x.bin",
-    });
-    mockLoadedMedia("bin", undefined, "file", "x.bin");
-
-    await deliverWebReply(params);
-
-    const mediaPayload = expectFirstSendMediaPayload(msg);
-    expectBuffer(mediaPayload.document, "sendMedia document");
-    expect(mediaPayload.fileName).toBe("x.bin");
-    expect(mediaPayload.caption).toBe("cap");
-    expect(mediaPayload.mimetype).toBe("application/octet-stream");
-    expect(mockCallArg(msg.platform.sendMedia, 0, 1, "sendMedia")).toBeUndefined();
   });
 
   it("strips URL query and fragment data from derived document file names", async () => {

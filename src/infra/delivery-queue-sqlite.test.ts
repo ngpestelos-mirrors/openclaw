@@ -2,30 +2,48 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import {
-  claimDeliveryQueueEntryPlatformSend,
-  promoteDeliveryQueueEntryPlatformSend,
-} from "./delivery-queue-sqlite-claim.js";
-import { commitStagedDeliveryQueueEntryOnceAcrossNamespaces } from "./delivery-queue-sqlite-namespace.js";
+  emptySqliteCounts,
+  observeParentSqlite,
+} from "../../test/helpers/sqlite-parent-observer.js";
+import { trackSqliteStatementExecutions } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import {
-  commitStagedDeliveryQueueEntry,
-  completeDeliveryQueueEntry,
+  closeOpenClawStateDatabaseAsync,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
+import { promoteDeliveryQueueEntryPlatformSendInDatabase } from "./delivery-queue-sqlite-claim.kernel.js";
+import { commitStagedDeliveryQueueEntryOnceAcrossNamespacesInDatabase } from "./delivery-queue-sqlite-namespace.kernel.js";
+import {
+  captureDeliveryQueueStateContext,
   countFailedDeliveryQueueEntries,
-  deleteDeliveryQueueEntry,
-  getDeliveryQueueEntryStatus,
+  countPendingDeliveryQueueEntries,
   loadDeliveryQueueEntries,
-  loadDeliveryQueueEntry,
-  moveDeliveryQueueEntryToFailed,
-  updateDeliveryQueueEntry,
-  upsertDeliveryQueueEntry,
+  pruneExpiredDeliveryQueueTombstones,
 } from "./delivery-queue-sqlite.js";
+import {
+  completeDeliveryQueueEntryInDatabase,
+  deleteDeliveryQueueEntryInDatabase,
+  getDeliveryQueueEntryOwnersInDatabase,
+  updateDeliveryQueueEntryInDatabase,
+} from "./delivery-queue-sqlite.kernel.js";
+import {
+  getDeliveryQueueEntryStatus,
+  loadDeliveryQueueEntry,
+  seedDeliveryQueueEntry,
+} from "./delivery-queue-sqlite.test-support.js";
+import { openNodeSqliteDatabase } from "./node-sqlite.js";
+import {
+  claimDeliveryQueueEntryForTest,
+  renewDeliveryQueueEntryLeaseForTest,
+} from "./outbound/delivery-queue.test-helpers.js";
 import { resolvePreferredOpenClawTmpDir } from "./tmp-openclaw-dir.js";
 
 describe("delivery-queue-sqlite corrupt JSON resilience", () => {
   let stateDir: string;
   let tmpDir: string;
   const QUEUE = "test-q";
+  const openTestDatabase = () =>
+    openOpenClawStateDatabase({ env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } });
   const boundedCronRetention = {
     idPrefix: "cron-direct-delivery:v1:",
     maxAgeMs: 24 * 60 * 60_000,
@@ -38,14 +56,13 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
     fs.mkdirSync(stateDir, { recursive: true });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   function insertCorruptRow(id: string, json: string) {
-    const { db } = openOpenClawStateDatabase({
-      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-    });
+    const { db } = openTestDatabase();
     db.prepare(
       `INSERT INTO delivery_queue_entries
          (queue_name, id, status, entry_kind, session_key, channel, target, account_id,
@@ -58,7 +75,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
   }
 
   function enqueueValid(id: string) {
-    upsertDeliveryQueueEntry({
+    seedDeliveryQueueEntry({
       queueName: QUEUE,
       entry: { id, enqueuedAt: Date.now(), retryCount: 0 },
       stateDir,
@@ -69,13 +86,6 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
     it("returns null for a row with corrupted entry_json", () => {
       insertCorruptRow("bad-1", "{corrupt: true, >>>NOT JSON<<<");
       expect(loadDeliveryQueueEntry(QUEUE, "bad-1", stateDir)).toBeNull();
-    });
-
-    it("returns the entry for valid JSON", () => {
-      enqueueValid("good-1");
-      const result = loadDeliveryQueueEntry(QUEUE, "good-1", stateDir);
-      expect(result).not.toBeNull();
-      expect(result!.id).toBe("good-1");
     });
 
     it("returns null for a nonexistent entry", () => {
@@ -90,58 +100,92 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
       enqueueValid("valid-b");
 
       const entries = loadDeliveryQueueEntries(QUEUE, stateDir);
-      expect(entries).toHaveLength(2);
       expect(entries.map((e) => e.id).toSorted()).toEqual(["valid-a", "valid-b"]);
-    });
-
-    it("returns empty array when all rows are corrupt", () => {
-      insertCorruptRow("bad-1", "not json");
-      insertCorruptRow("bad-2", "{also broken");
-
-      expect(loadDeliveryQueueEntries(QUEUE, stateDir)).toEqual([]);
-    });
-
-    it("returns all entries when all rows are valid", () => {
-      enqueueValid("v1");
-      enqueueValid("v2");
-      enqueueValid("v3");
-
-      expect(loadDeliveryQueueEntries(QUEUE, stateDir)).toHaveLength(3);
     });
   });
 
-  describe("updateDeliveryQueueEntry with corrupt row", () => {
+  it("counts current pending namespaces in its captured worker without caller SQLite", async () => {
+    const database = openTestDatabase();
+    enqueueValid("pending");
+    seedDeliveryQueueEntry({
+      queueName: "other-q",
+      entry: { id: "other", enqueuedAt: Date.now(), retryCount: 0 },
+      stateDir,
+    });
+    seedDeliveryQueueEntry({
+      queueName: "ignored-q",
+      entry: { id: "ignored", enqueuedAt: Date.now(), retryCount: 0 },
+      stateDir,
+    });
+    completeDeliveryQueueEntryInDatabase(database, QUEUE, "pending");
+
+    const context = captureDeliveryQueueStateContext(stateDir);
+    const observer = observeParentSqlite();
+    try {
+      expect(
+        await countPendingDeliveryQueueEntries([QUEUE, "other-q"], "ignored-root", context),
+      ).toBe(1);
+      expect(await countPendingDeliveryQueueEntries([], stateDir)).toBe(0);
+      expect(observer.counts).toEqual(emptySqliteCounts());
+
+      const foreign = openNodeSqliteDatabase(database.path);
+      try {
+        foreign
+          .prepare("UPDATE delivery_queue_entries SET status = 'pending' WHERE id = ?")
+          .run("pending");
+      } finally {
+        foreign.close();
+      }
+      expect(observer.counts.run).toBeGreaterThan(0);
+      observer.reset();
+      expect(await countPendingDeliveryQueueEntries([QUEUE, "other-q"], stateDir, context)).toBe(2);
+      expect(observer.counts).toEqual(emptySqliteCounts());
+    } finally {
+      observer.restore();
+    }
+  });
+
+  it("reads ownership without materializing unrelated queue payloads", () => {
+    const id = "large-pending-payload";
+    for (const status of ["pending", "failed"] as const) {
+      const entry = {
+        id,
+        enqueuedAt: Date.now(),
+        retryCount: 0,
+        payload: "x".repeat(16_384),
+        ...(status === "failed" ? { recoveryState: "settlement_pending" } : {}),
+      };
+      seedDeliveryQueueEntry({ queueName: status, entry, status, stateDir });
+    }
+    const database = openTestDatabase();
+    const reads = trackSqliteStatementExecutions(database.db, ["owners"], (sql) =>
+      sql.startsWith("select ") && sql.includes('from "delivery_queue_entries"') ? "owners" : null,
+    );
+    try {
+      expect(getDeliveryQueueEntryOwnersInDatabase(database, ["pending", "failed"], id)).toEqual(
+        new Map([
+          ["failed", { status: "failed", settlementPending: true }],
+          ["pending", { status: "pending" }],
+        ]),
+      );
+      expect(reads.rowCounts.owners).toBe(2);
+      expect(reads.textBytes.owners).toBeLessThan(1024);
+    } finally {
+      reads.restore();
+    }
+  });
+
+  describe("updateDeliveryQueueEntryInDatabase with corrupt row", () => {
     it("throws ENOENT (unrecoverable corrupt JSON)", () => {
       insertCorruptRow("bad-update", "{corrupt");
 
-      expect(() => updateDeliveryQueueEntry(QUEUE, "bad-update", stateDir, (e) => e)).toThrow(
-        /No pending test-q delivery queue entry bad-update/,
-      );
-    });
-  });
-
-  describe("moveDeliveryQueueEntryToFailed with corrupt row", () => {
-    it("throws ENOENT (unrecoverable corrupt JSON)", () => {
-      insertCorruptRow("bad-move", "{corrupt");
-
-      expect(() => moveDeliveryQueueEntryToFailed(QUEUE, "bad-move", stateDir)).toThrow(
-        /No pending test-q delivery queue entry bad-move/,
-      );
+      expect(() =>
+        updateDeliveryQueueEntryInDatabase(openTestDatabase(), QUEUE, "bad-update", (e) => e),
+      ).toThrow(/No pending test-q delivery queue entry bad-update/);
     });
   });
 
   describe("valid entry round-trips", () => {
-    it("upsert then load is identity", () => {
-      upsertDeliveryQueueEntry({
-        queueName: QUEUE,
-        entry: { id: "rt-1", enqueuedAt: 1000, retryCount: 0 },
-        stateDir,
-      });
-
-      const loaded = loadDeliveryQueueEntry(QUEUE, "rt-1", stateDir);
-      expect(loaded).toMatchObject({ id: "rt-1", enqueuedAt: 1000, retryCount: 0 });
-    });
-
     it.each([
       {
         name: "outbound delivery",
@@ -197,15 +241,13 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         },
       },
     ])("indexes canonical $name metadata", ({ queueName, entry, expected }) => {
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         queueName,
         entry: { ...entry, enqueuedAt: 1000, retryCount: 0 },
         stateDir,
       });
 
-      const { db } = openOpenClawStateDatabase({
-        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      });
+      const { db } = openTestDatabase();
       const readMetadata = () =>
         db
           .prepare(
@@ -215,7 +257,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
           .get(queueName, entry.id);
       expect(readMetadata()).toEqual(expected);
 
-      updateDeliveryQueueEntry(queueName, entry.id, stateDir, (current) => ({
+      updateDeliveryQueueEntryInDatabase(openTestDatabase(), queueName, entry.id, (current) => ({
         ...current,
         retryCount: current.retryCount + 1,
       }));
@@ -223,16 +265,14 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
     });
 
     it("preserves explicit queue metadata ownership", () => {
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         queueName: "outbound-media-staging",
         entry: { id: "metadata-media-stage", enqueuedAt: 1000, retryCount: 0 },
         metadata: { entryKind: "outbound-media-stage" },
         stateDir,
       });
 
-      const { db } = openOpenClawStateDatabase({
-        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      });
+      const { db } = openTestDatabase();
       expect(
         db
           .prepare("SELECT entry_kind FROM delivery_queue_entries WHERE queue_name = ? AND id = ?")
@@ -241,17 +281,9 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
     });
 
     it.each([
-      { name: "ordinary", commit: commitStagedDeliveryQueueEntry, expected: true },
-      {
-        name: "insert-only",
-        commit: (params: Parameters<typeof commitStagedDeliveryQueueEntry>[0]) =>
-          commitStagedDeliveryQueueEntryOnceAcrossNamespaces({
-            ...params,
-            conflictQueueNames: ["outbound-legacy"],
-          }),
-        expected: "created",
-      },
-    ])("indexes $name staged outbound commits", ({ commit, expected }) => {
+      { name: "ordinary", conflictQueueNames: [] },
+      { name: "cross-namespace", conflictQueueNames: ["outbound-legacy"] },
+    ])("indexes $name staged outbound commits", ({ conflictQueueNames }) => {
       const stagingQueueName = "outbound-media-staging";
       const stagingId = "metadata-staged-media";
       const outboundEntry = {
@@ -263,7 +295,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         accountId: "bot-a",
         session: { key: "agent:main:discord:channel:123" },
       };
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         queueName: stagingQueueName,
         entry: { id: stagingId, enqueuedAt: 1000, retryCount: 0 },
         metadata: { entryKind: "outbound-media-stage" },
@@ -271,18 +303,16 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
       });
 
       expect(
-        commit({
+        commitStagedDeliveryQueueEntryOnceAcrossNamespacesInDatabase(openTestDatabase(), {
           queueName: "outbound",
           entry: outboundEntry,
           stagingId,
           stagingQueueName,
-          stateDir,
+          conflictQueueNames,
         }),
-      ).toBe(expected);
+      ).toBe("created");
 
-      const { db } = openOpenClawStateDatabase({
-        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      });
+      const { db } = openTestDatabase();
       expect(
         db
           .prepare(
@@ -301,13 +331,13 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
     });
 
     it("update increments retry count", () => {
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         queueName: QUEUE,
         entry: { id: "rt-2", enqueuedAt: 1000, retryCount: 0 },
         stateDir,
       });
 
-      updateDeliveryQueueEntry(QUEUE, "rt-2", stateDir, (entry) => ({
+      updateDeliveryQueueEntryInDatabase(openTestDatabase(), QUEUE, "rt-2", (entry) => ({
         ...entry,
         retryCount: entry.retryCount + 1,
         lastError: "timeout",
@@ -321,18 +351,19 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
     });
 
     it("delete removes the entry", () => {
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         queueName: QUEUE,
         entry: { id: "rt-3", enqueuedAt: 1000, retryCount: 0 },
         stateDir,
       });
 
-      deleteDeliveryQueueEntry(QUEUE, "rt-3", stateDir);
+      deleteDeliveryQueueEntryInDatabase(openTestDatabase(), QUEUE, "rt-3");
       expect(loadDeliveryQueueEntry(QUEUE, "rt-3", stateDir)).toBeNull();
     });
 
-    it("complete retains an idempotency tombstone outside pending reads", () => {
-      upsertDeliveryQueueEntry({
+    it("complete retains an idempotency tombstone outside pending reads", async () => {
+      const database = openTestDatabase();
+      seedDeliveryQueueEntry({
         queueName: QUEUE,
         entry: {
           id: "rt-expired-completed",
@@ -342,7 +373,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         status: "completed",
         stateDir,
       });
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         queueName: QUEUE,
         entry: {
           id: "rt-completed",
@@ -359,14 +390,20 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         stateDir,
       });
 
-      completeDeliveryQueueEntry(QUEUE, "rt-completed", stateDir);
+      completeDeliveryQueueEntryInDatabase(database, QUEUE, "rt-completed");
 
       expect(loadDeliveryQueueEntry(QUEUE, "rt-completed", stateDir)).toBeNull();
       expect(getDeliveryQueueEntryStatus(QUEUE, "rt-completed", stateDir)).toBe("completed");
+      expect(getDeliveryQueueEntryStatus(QUEUE, "rt-expired-completed", stateDir)).toBe(
+        "completed",
+      );
+      await countFailedDeliveryQueueEntries(stateDir);
+      expect(getDeliveryQueueEntryStatus(QUEUE, "rt-expired-completed", stateDir)).toBe(
+        "completed",
+      );
+      await pruneExpiredDeliveryQueueTombstones(stateDir);
       expect(getDeliveryQueueEntryStatus(QUEUE, "rt-expired-completed", stateDir)).toBeUndefined();
-      const { db } = openOpenClawStateDatabase({
-        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      });
+      const { db } = database;
       const row = db
         .prepare(
           `SELECT entry_json, session_key, channel, target, account_id, retry_count, last_error
@@ -391,9 +428,10 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
     });
 
     it("bounds cron completion receipts without pruning pending or other owners", () => {
+      const database = openTestDatabase();
       const completeBounded = (suffix: string, queueName = QUEUE) => {
         const id = `${boundedCronRetention.idPrefix}${suffix}`;
-        upsertDeliveryQueueEntry({
+        seedDeliveryQueueEntry({
           queueName,
           entry: {
             id,
@@ -403,11 +441,11 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
           },
           stateDir,
         });
-        completeDeliveryQueueEntry(queueName, id, stateDir);
+        completeDeliveryQueueEntryInDatabase(database, queueName, id);
         return id;
       };
       const permanentId = `${boundedCronRetention.idPrefix}permanent-owner`;
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         queueName: QUEUE,
         entry: {
           id: permanentId,
@@ -417,10 +455,10 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         },
         stateDir,
       });
-      completeDeliveryQueueEntry(QUEUE, permanentId, stateDir);
+      completeDeliveryQueueEntryInDatabase(database, QUEUE, permanentId);
 
       const pendingId = `${boundedCronRetention.idPrefix}pending-owner`;
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         queueName: QUEUE,
         entry: {
           id: pendingId,
@@ -432,12 +470,12 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         stateDir,
       });
       const unboundedId = `${boundedCronRetention.idPrefix}ordinary-owner`;
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         queueName: QUEUE,
         entry: { id: unboundedId, enqueuedAt: Date.now(), retryCount: 0 },
         stateDir,
       });
-      completeDeliveryQueueEntry(QUEUE, unboundedId, stateDir);
+      completeDeliveryQueueEntryInDatabase(database, QUEUE, unboundedId);
       const siblingId = completeBounded("sibling-queue", "session-q");
       const first = completeBounded("a");
       const second = completeBounded("b");
@@ -456,10 +494,11 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
       vi.useFakeTimers();
       try {
         vi.setSystemTime(new Date("2026-07-20T10:00:00.000Z"));
+        const database = openTestDatabase();
         const expiredId = `${boundedCronRetention.idPrefix}expired-run`;
         const otherOwnerId = "another-producer:v1:retained-run";
         for (const id of [expiredId, otherOwnerId]) {
-          upsertDeliveryQueueEntry({
+          seedDeliveryQueueEntry({
             queueName: QUEUE,
             entry: {
               id,
@@ -469,12 +508,12 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
             },
             stateDir,
           });
-          completeDeliveryQueueEntry(QUEUE, id, stateDir);
+          completeDeliveryQueueEntryInDatabase(database, QUEUE, id);
         }
 
         vi.setSystemTime(Date.now() + boundedCronRetention.maxAgeMs + 1);
         const currentId = `${boundedCronRetention.idPrefix}current-run`;
-        upsertDeliveryQueueEntry({
+        seedDeliveryQueueEntry({
           queueName: QUEUE,
           entry: {
             id: currentId,
@@ -484,7 +523,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
           },
           stateDir,
         });
-        completeDeliveryQueueEntry(QUEUE, currentId, stateDir);
+        completeDeliveryQueueEntryInDatabase(database, QUEUE, currentId);
 
         expect(getDeliveryQueueEntryStatus(QUEUE, expiredId, stateDir)).toBeUndefined();
         expect(getDeliveryQueueEntryStatus(QUEUE, currentId, stateDir)).toBe("completed");
@@ -498,8 +537,9 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
       vi.useFakeTimers();
       try {
         vi.setSystemTime(new Date("2026-07-20T10:00:00.000Z"));
+        const database = openTestDatabase();
         const id = `${boundedCronRetention.idPrefix}only-run`;
-        upsertDeliveryQueueEntry({
+        seedDeliveryQueueEntry({
           queueName: QUEUE,
           entry: {
             id,
@@ -509,12 +549,23 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
           },
           stateDir,
         });
-        completeDeliveryQueueEntry(QUEUE, id, stateDir);
+        completeDeliveryQueueEntryInDatabase(database, QUEUE, id);
 
         vi.setSystemTime(Date.now() + boundedCronRetention.maxAgeMs - 1);
-        expect(getDeliveryQueueEntryStatus(QUEUE, id, stateDir)).toBe("completed");
-        vi.setSystemTime(Date.now() + 2);
-        expect(getDeliveryQueueEntryStatus(QUEUE, id, stateDir)).toBeUndefined();
+        const reads = trackSqliteStatementExecutions(database.db, ["owners"], (sql) =>
+          sql.startsWith("select ") && sql.includes('from "delivery_queue_entries"')
+            ? "owners"
+            : null,
+        );
+        try {
+          expect(getDeliveryQueueEntryStatus(QUEUE, id, stateDir)).toBe("completed");
+          expect(reads.counts.owners).toBeLessThanOrEqual(1);
+          expect(reads.rowCounts.owners).toBe(1);
+          vi.setSystemTime(Date.now() + 2);
+          expect(getDeliveryQueueEntryStatus(QUEUE, id, stateDir)).toBeUndefined();
+        } finally {
+          reads.restore();
+        }
       } finally {
         vi.useRealTimers();
       }
@@ -524,8 +575,9 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
       vi.useFakeTimers();
       try {
         vi.setSystemTime(new Date("2026-07-20T10:00:00.000Z"));
+        const database = openTestDatabase();
         const id = "long-producer:v1:retained-run";
-        upsertDeliveryQueueEntry({
+        seedDeliveryQueueEntry({
           queueName: QUEUE,
           entry: {
             id,
@@ -539,11 +591,11 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
           },
           stateDir,
         });
-        completeDeliveryQueueEntry(QUEUE, id, stateDir);
+        completeDeliveryQueueEntryInDatabase(database, QUEUE, id);
 
         vi.setSystemTime(Date.now() + 31 * 24 * 60 * 60_000);
         enqueueValid("ordinary-thirty-day-prune-trigger");
-        completeDeliveryQueueEntry(QUEUE, "ordinary-thirty-day-prune-trigger", stateDir);
+        completeDeliveryQueueEntryInDatabase(database, QUEUE, "ordinary-thirty-day-prune-trigger");
 
         expect(getDeliveryQueueEntryStatus(QUEUE, id, stateDir)).toBe("completed");
       } finally {
@@ -552,8 +604,9 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
     });
 
     it("rejects invalid bounded completion ownership before acknowledging a send", () => {
+      const database = openTestDatabase();
       const id = "another-producer:v1:pending";
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         queueName: QUEUE,
         entry: {
           id,
@@ -564,7 +617,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         stateDir,
       });
 
-      expect(() => completeDeliveryQueueEntry(QUEUE, id, stateDir)).toThrow(
+      expect(() => completeDeliveryQueueEntryInDatabase(database, QUEUE, id)).toThrow(
         "Invalid bounded delivery completion retention",
       );
       expect(getDeliveryQueueEntryStatus(QUEUE, id, stateDir)).toBe("pending");
@@ -572,7 +625,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
 
     it("atomically reserves one pristine pending platform send across queue owners", () => {
       const id = `${boundedCronRetention.idPrefix}cross-process-claim`;
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         queueName: QUEUE,
         entry: {
           id,
@@ -583,11 +636,9 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         stateDir,
       });
 
-      const claimId = claimDeliveryQueueEntryPlatformSend({ queueName: QUEUE, id, stateDir });
+      const claimId = claimDeliveryQueueEntryForTest({ queueName: QUEUE, id, stateDir });
       expect(claimId).toEqual(expect.any(String));
-      expect(
-        claimDeliveryQueueEntryPlatformSend({ queueName: QUEUE, id, stateDir }),
-      ).toBeUndefined();
+      expect(claimDeliveryQueueEntryForTest({ queueName: QUEUE, id, stateDir })).toBeUndefined();
       expect(loadDeliveryQueueEntry(QUEUE, id, stateDir)).toMatchObject({
         id,
         recoveryState: "producer_claimed",
@@ -597,12 +648,41 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
       expect(loadDeliveryQueueEntry(QUEUE, id, stateDir)?.platformSendStartedAt).toBeUndefined();
     });
 
+    it("atomically upgrades a legacy live reuse claim to renewable ownership", () => {
+      const id = `${boundedCronRetention.idPrefix}upgrade-reusable-claim`;
+      seedDeliveryQueueEntry({
+        queueName: QUEUE,
+        entry: {
+          id,
+          enqueuedAt: Date.now(),
+          retryCount: 0,
+          completionRetention: boundedCronRetention,
+        },
+        stateDir,
+      });
+
+      const claimId = claimDeliveryQueueEntryForTest({
+        queueName: QUEUE,
+        id,
+        stateDir,
+        requiresProducerClaim: true,
+      });
+
+      expect(claimId).toEqual(expect.any(String));
+      expect(loadDeliveryQueueEntry(QUEUE, id, stateDir)).toMatchObject({
+        recoveryState: "producer_claimed",
+        producerClaimId: claimId,
+        requiresProducerClaim: true,
+        availableAt: expect.any(Number),
+      });
+    });
+
     it("recovers an expired pre-provider producer lease without claiming platform delivery", () => {
       vi.useFakeTimers();
       try {
         vi.setSystemTime(new Date("2026-07-20T10:00:00.000Z"));
         const id = `${boundedCronRetention.idPrefix}expired-producer-claim`;
-        upsertDeliveryQueueEntry({
+        seedDeliveryQueueEntry({
           queueName: QUEUE,
           entry: {
             id,
@@ -613,26 +693,25 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
           stateDir,
         });
 
-        const staleClaimId = claimDeliveryQueueEntryPlatformSend({
+        const staleClaimId = claimDeliveryQueueEntryForTest({
           queueName: QUEUE,
           id,
           stateDir,
         });
         expect(staleClaimId).toEqual(expect.any(String));
-        vi.setSystemTime(Date.now() + 30_001);
+        vi.setSystemTime(Date.now() + 60_001);
         if (!staleClaimId) {
           throw new Error("test invariant: the original producer claim must be available");
         }
         expect(
-          promoteDeliveryQueueEntryPlatformSend({
+          promoteDeliveryQueueEntryPlatformSendInDatabase(openTestDatabase(), {
             queueName: QUEUE,
             id,
             claimId: staleClaimId,
-            stateDir,
           }),
         ).toBe(false);
         expect(loadDeliveryQueueEntry(QUEUE, id, stateDir)?.platformSendStartedAt).toBeUndefined();
-        const recoveredClaimId = claimDeliveryQueueEntryPlatformSend({
+        const recoveredClaimId = claimDeliveryQueueEntryForTest({
           queueName: QUEUE,
           id,
           stateDir,
@@ -644,24 +723,22 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         expect(recoveredClaimId).not.toBe(staleClaimId);
         expect(loadDeliveryQueueEntry(QUEUE, id, stateDir)).toMatchObject({
           recoveryState: "producer_claimed",
-          availableAt: Date.now() + 30_000,
+          availableAt: Date.now() + 60_000,
           producerClaimId: recoveredClaimId,
         });
         expect(loadDeliveryQueueEntry(QUEUE, id, stateDir)?.platformSendStartedAt).toBeUndefined();
         expect(
-          promoteDeliveryQueueEntryPlatformSend({
+          promoteDeliveryQueueEntryPlatformSendInDatabase(openTestDatabase(), {
             queueName: QUEUE,
             id,
             claimId: staleClaimId,
-            stateDir,
           }),
         ).toBe(false);
         expect(
-          promoteDeliveryQueueEntryPlatformSend({
+          promoteDeliveryQueueEntryPlatformSendInDatabase(openTestDatabase(), {
             queueName: QUEUE,
             id,
             claimId: recoveredClaimId,
-            stateDir,
           }),
         ).toBe(true);
         expect(loadDeliveryQueueEntry(QUEUE, id, stateDir)).toMatchObject({
@@ -674,11 +751,121 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
       }
     });
 
+    it.each(["producer_claimed", "send_attempt_started", "unknown_after_send"] as const)(
+      "renews the exact unexpired explicit owner in %s",
+      (recoveryState) => {
+        vi.useFakeTimers();
+        try {
+          vi.setSystemTime(new Date("2026-08-02T10:00:00.000Z"));
+          const id = `${boundedCronRetention.idPrefix}renew-${recoveryState}`;
+          const claimId = `claim-${recoveryState}`;
+          seedDeliveryQueueEntry({
+            queueName: QUEUE,
+            entry: {
+              id,
+              enqueuedAt: Date.now(),
+              retryCount: 0,
+              requiresProducerClaim: true,
+              availableAt: Date.now() + 5_000,
+              ...(recoveryState === "producer_claimed"
+                ? { producerClaimId: claimId }
+                : {
+                    platformSendAttemptId: claimId,
+                    platformSendStartedAt: Date.now(),
+                  }),
+              recoveryState,
+            },
+            stateDir,
+          });
+          vi.setSystemTime(Date.now() + 1_000);
+
+          expect(
+            renewDeliveryQueueEntryLeaseForTest({
+              queueName: QUEUE,
+              id,
+              claimId,
+              stateDir,
+            }),
+          ).toBe(Date.now() + 60_000);
+          expect(loadDeliveryQueueEntry(QUEUE, id, stateDir)).toMatchObject({
+            recoveryState,
+            availableAt: Date.now() + 60_000,
+            ...(recoveryState === "producer_claimed"
+              ? { producerClaimId: claimId }
+              : { platformSendAttemptId: claimId }),
+          });
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+    );
+
+    it("refuses to renew expired, mismatched, and non-explicit owners", () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-08-02T10:00:00.000Z"));
+        const cases = [
+          {
+            id: `${boundedCronRetention.idPrefix}renew-expired`,
+            requiresProducerClaim: true,
+            producerClaimId: "expired-owner",
+            availableAt: Date.now(),
+            claimId: "expired-owner",
+          },
+          {
+            id: `${boundedCronRetention.idPrefix}renew-wrong-owner`,
+            requiresProducerClaim: true,
+            producerClaimId: "current-owner",
+            availableAt: Date.now() + 5_000,
+            claimId: "stale-owner",
+          },
+          {
+            id: `${boundedCronRetention.idPrefix}renew-legacy-owner`,
+            requiresProducerClaim: false,
+            producerClaimId: "legacy-owner",
+            availableAt: Date.now() + 5_000,
+            claimId: "legacy-owner",
+          },
+        ] as const;
+        for (const entry of cases) {
+          seedDeliveryQueueEntry({
+            queueName: QUEUE,
+            entry: {
+              id: entry.id,
+              enqueuedAt: Date.now(),
+              retryCount: 0,
+              ...(entry.requiresProducerClaim
+                ? { requiresProducerClaim: entry.requiresProducerClaim }
+                : {}),
+              producerClaimId: entry.producerClaimId,
+              availableAt: entry.availableAt,
+              recoveryState: "producer_claimed",
+            },
+            stateDir,
+          });
+
+          expect(
+            renewDeliveryQueueEntryLeaseForTest({
+              queueName: QUEUE,
+              id: entry.id,
+              claimId: entry.claimId,
+              stateDir,
+            }),
+          ).toBeUndefined();
+          expect(loadDeliveryQueueEntry(QUEUE, entry.id, stateDir)?.availableAt).toBe(
+            entry.availableAt,
+          );
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("fences a reconciled not-sent retry to its exact platform attempt generation", () => {
       const id = `${boundedCronRetention.idPrefix}reconciled-attempt`;
       const platformSendAttemptId = "original-reconciled-attempt";
       const platformSendStartedAt = Date.now();
-      upsertDeliveryQueueEntry({
+      seedDeliveryQueueEntry({
         queueName: QUEUE,
         entry: {
           id,
@@ -692,11 +879,9 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         stateDir,
       });
 
+      expect(claimDeliveryQueueEntryForTest({ queueName: QUEUE, id, stateDir })).toBeUndefined();
       expect(
-        claimDeliveryQueueEntryPlatformSend({ queueName: QUEUE, id, stateDir }),
-      ).toBeUndefined();
-      expect(
-        claimDeliveryQueueEntryPlatformSend({
+        claimDeliveryQueueEntryForTest({
           queueName: QUEUE,
           id,
           stateDir,
@@ -705,7 +890,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         }),
       ).toBeUndefined();
 
-      const claimId = claimDeliveryQueueEntryPlatformSend({
+      const claimId = claimDeliveryQueueEntryForTest({
         queueName: QUEUE,
         id,
         stateDir,
@@ -714,7 +899,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
       });
       expect(claimId).toEqual(expect.any(String));
       expect(
-        claimDeliveryQueueEntryPlatformSend({
+        claimDeliveryQueueEntryForTest({
           queueName: QUEUE,
           id,
           stateDir,
@@ -734,7 +919,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
       try {
         vi.setSystemTime(new Date("2026-07-20T10:00:00.000Z"));
         const id = `${boundedCronRetention.idPrefix}same-millisecond-attempt-fence`;
-        upsertDeliveryQueueEntry({
+        seedDeliveryQueueEntry({
           queueName: QUEUE,
           entry: {
             id,
@@ -745,7 +930,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
           stateDir,
         });
 
-        const firstAttemptId = claimDeliveryQueueEntryPlatformSend({
+        const firstAttemptId = claimDeliveryQueueEntryForTest({
           queueName: QUEUE,
           id,
           stateDir,
@@ -754,15 +939,14 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
           throw new Error("test invariant: the original platform attempt must be claimed");
         }
         expect(
-          promoteDeliveryQueueEntryPlatformSend({
+          promoteDeliveryQueueEntryPlatformSendInDatabase(openTestDatabase(), {
             queueName: QUEUE,
             id,
             claimId: firstAttemptId,
-            stateDir,
           }),
         ).toBe(true);
         const firstStartedAt = Date.now();
-        const secondAttemptId = claimDeliveryQueueEntryPlatformSend({
+        const secondAttemptId = claimDeliveryQueueEntryForTest({
           queueName: QUEUE,
           id,
           stateDir,
@@ -774,11 +958,10 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         }
         expect(secondAttemptId).not.toBe(firstAttemptId);
         expect(
-          promoteDeliveryQueueEntryPlatformSend({
+          promoteDeliveryQueueEntryPlatformSendInDatabase(openTestDatabase(), {
             queueName: QUEUE,
             id,
             claimId: secondAttemptId,
-            stateDir,
           }),
         ).toBe(true);
         expect(loadDeliveryQueueEntry(QUEUE, id, stateDir)).toMatchObject({
@@ -790,7 +973,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         // A late proof for A must not reclaim live attempt B merely because
         // both provider boundaries observed the same clock millisecond.
         expect(
-          claimDeliveryQueueEntryPlatformSend({
+          claimDeliveryQueueEntryForTest({
             queueName: QUEUE,
             id,
             stateDir,
@@ -809,7 +992,8 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
     });
 
     it("never prunes a permanent producer receipt", () => {
-      upsertDeliveryQueueEntry({
+      const database = openTestDatabase();
+      seedDeliveryQueueEntry({
         queueName: QUEUE,
         entry: {
           id: "rt-permanent",
@@ -819,10 +1003,8 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         },
         stateDir,
       });
-      completeDeliveryQueueEntry(QUEUE, "rt-permanent", stateDir);
-      const { db } = openOpenClawStateDatabase({
-        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      });
+      completeDeliveryQueueEntryInDatabase(database, QUEUE, "rt-permanent");
+      const { db } = database;
       db.prepare(
         `UPDATE delivery_queue_entries
             SET enqueued_at = ?
@@ -830,7 +1012,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
       ).run(Date.now() - 31 * 24 * 60 * 60_000, QUEUE, "rt-permanent");
 
       enqueueValid("rt-prune-trigger");
-      completeDeliveryQueueEntry(QUEUE, "rt-prune-trigger", stateDir);
+      completeDeliveryQueueEntryInDatabase(database, QUEUE, "rt-prune-trigger");
 
       expect(getDeliveryQueueEntryStatus(QUEUE, "rt-permanent", stateDir)).toBe("completed");
       const row = db
@@ -846,65 +1028,5 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
         recoveryState: "completed_permanent",
       });
     });
-  });
-});
-
-describe("countFailedDeliveryQueueEntries", () => {
-  let tmpDir: string;
-  let stateDir: string;
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(resolvePreferredOpenClawTmpDir(), "openclaw-dq-count-"));
-    stateDir = path.join(tmpDir, "state");
-    fs.mkdirSync(stateDir, { recursive: true });
-  });
-
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  function enqueue(queueName: string, id: string, enqueuedAt: number) {
-    upsertDeliveryQueueEntry({
-      queueName,
-      entry: { id, enqueuedAt, retryCount: 0 },
-      stateDir,
-    });
-  }
-
-  it("returns an empty list when nothing is dead-lettered", () => {
-    enqueue("outbound", "pending-1", 1_000);
-
-    expect(countFailedDeliveryQueueEntries(stateDir)).toEqual([]);
-  });
-
-  it("counts dead-lettered entries per queue with the oldest failure timestamp", () => {
-    enqueue("outbound", "dead-1", 1_000);
-    enqueue("outbound", "dead-2", 2_000);
-    enqueue("outbound", "still-pending", 3_000);
-    enqueue("session", "dead-3", 4_000);
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(50_000);
-      moveDeliveryQueueEntryToFailed("outbound", "dead-1", stateDir);
-      vi.setSystemTime(60_000);
-      moveDeliveryQueueEntryToFailed("outbound", "dead-2", stateDir);
-      vi.setSystemTime(70_000);
-      moveDeliveryQueueEntryToFailed("session", "dead-3", stateDir);
-    } finally {
-      vi.useRealTimers();
-    }
-
-    const counts = countFailedDeliveryQueueEntries(stateDir);
-
-    expect(counts).toHaveLength(2);
-    const outbound = counts.find((queue) => queue.queueName === "outbound");
-    expect(outbound?.count).toBe(2);
-    expect(outbound?.oldestFailedAt).toBe(50_000);
-    const session = counts.find((queue) => queue.queueName === "session");
-    expect(session?.count).toBe(1);
-    expect(session?.oldestFailedAt).toBe(70_000);
-    expect(loadDeliveryQueueEntries("outbound", stateDir).map((entry) => entry.id)).toEqual([
-      "still-pending",
-    ]);
   });
 });

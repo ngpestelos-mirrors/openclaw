@@ -1,8 +1,10 @@
 // Feishu tests cover doctor contract plugin behavior.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { describe, expect, it } from "vitest";
+import { resolveFeishuAccount } from "./accounts.js";
 import { FeishuConfigSchema } from "./config-schema.js";
 import { legacyConfigRules, normalizeCompatibilityConfig } from "./doctor-contract.js";
+import type { FeishuConfig } from "./types.js";
 
 function feishuConfig(entry: Record<string, unknown>): OpenClawConfig {
   return { channels: { feishu: entry } } as never;
@@ -225,4 +227,95 @@ describe("feishu normalizeCompatibilityConfig streaming aliases", () => {
     expect(second.changes).toEqual([]);
     expect(second.config).toBe(first.config);
   });
+});
+
+describe("feishu webhook route doctor migration", () => {
+  const webhookRule = legacyConfigRules.find((rule) => rule.message.includes("webhookPath"));
+
+  it("detects noncanonical webhook paths at root and account scope", () => {
+    expect(webhookRule?.match?.({ webhookPath: "/hook#fragment" }, {})).toBe(true);
+    expect(webhookRule?.match?.({ accounts: { main: { webhookPath: "hook" } } }, {})).toBe(true);
+    expect(webhookRule?.match?.({ webhookPath: "/hook/?tenant=alpha" }, {})).toBe(false);
+  });
+
+  it.each([
+    ["hook?tenant=alpha#fragment", "/hook?tenant=alpha"],
+    ["/hook?", "/hook?"],
+    ["/hook?#", "/hook"],
+    ["   ", "/feishu/events"],
+    ["javascript:alert(1)", "/feishu/events"],
+    ["//[", "/feishu/events"],
+  ])("repairs root and account webhook path %j to %j", (webhookPath, expectedPath) => {
+    const result = normalizeCompatibilityConfig({
+      cfg: feishuConfig({ webhookPath, accounts: { main: { webhookPath } } }),
+    });
+    const feishu = result.config.channels?.feishu as unknown as {
+      webhookPath?: string;
+      accounts?: Record<string, { webhookPath?: string }>;
+    };
+
+    expect(feishu.webhookPath).toBe(expectedPath);
+    expect(feishu.accounts?.main?.webhookPath).toBe(expectedPath);
+    expect(FeishuConfigSchema.safeParse(feishu).success).toBe(true);
+    if (webhookPath === expectedPath) {
+      expect(result.changes).toEqual([]);
+    } else {
+      expect(result.changes).toEqual([
+        expect.stringContaining("channels.feishu.webhookPath"),
+        expect.stringContaining("channels.feishu.accounts.main.webhookPath"),
+      ]);
+    }
+
+    const second = normalizeCompatibilityConfig({ cfg: result.config });
+    expect(second.changes).toEqual([]);
+    expect(second.config).toBe(result.config);
+  });
+
+  it("reports actionable default repairs without echoing malformed operator URLs", () => {
+    const result = normalizeCompatibilityConfig({
+      cfg: feishuConfig({ webhookPath: "javascript:alert(operator-private-value)" }),
+    });
+
+    expect(result.changes).toEqual([
+      "Reset invalid channels.feishu.webhookPath to /feishu/events.",
+    ]);
+  });
+});
+
+describe("feishu Gateway listener migration", () => {
+  it("preserves explicit root and account listeners through canonical config and is idempotent", () => {
+    const old: Partial<FeishuConfig> = {
+      webhookPort: 3000,
+      webhookHost: "127.0.0.1",
+      accounts: { second: { webhookPort: 3001 } },
+    };
+    const result = normalizeCompatibilityConfig({
+      cfg: { channels: { feishu: old } },
+    });
+    const parsed = FeishuConfigSchema.parse(result.config.channels?.feishu);
+    expect(parsed.legacyWebhook).toEqual({ port: 3000, host: "127.0.0.1" });
+    expect(parsed.accounts?.second?.legacyWebhook).toEqual({ port: 3001, host: "127.0.0.1" });
+    expect(normalizeCompatibilityConfig({ cfg: result.config }).changes).toEqual([]);
+    expect(FeishuConfigSchema.safeParse({ webhookPort: 3000 }).success).toBe(false);
+  });
+});
+
+it("preserves root and account legacyWebhook:false when migrating obsolete ports", () => {
+  const result = normalizeCompatibilityConfig({
+    cfg: feishuConfig({
+      legacyWebhook: false,
+      webhookPort: 3000,
+      accounts: {
+        inherited: { webhookPort: 3001 },
+        disabled: { webhookPort: 3002, legacyWebhook: false },
+      },
+    }),
+  });
+  expect(FeishuConfigSchema.parse(result.config.channels?.feishu).legacyWebhook).toBe(false);
+  for (const accountId of ["inherited", "disabled"]) {
+    expect(resolveFeishuAccount({ cfg: result.config, accountId }).config.legacyWebhook).toBe(
+      false,
+    );
+  }
+  expect(normalizeCompatibilityConfig({ cfg: result.config }).changes).toEqual([]);
 });

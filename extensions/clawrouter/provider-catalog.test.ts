@@ -37,9 +37,10 @@ const CATALOG = {
       ],
       models: [
         {
-          id: "openai/gpt-5.5",
-          upstream: "gpt-5.5",
+          id: "openai/gpt-5.6",
+          upstream: "gpt-5.6",
           capabilities: ["llm.responses", "llm.chat"],
+          supportedReasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
           pricing: PRICING,
         },
       ],
@@ -157,9 +158,11 @@ describe("ClawRouter provider catalog", () => {
       "anthropic/claude-sonnet-4-6",
       "deepseek/deepseek-v4-flash",
       "google/gemini-3.5-flash",
-      "openai/gpt-5.5",
+      "openai/gpt-5.6",
     ]);
-    expect(provider.models.find((model) => model.id === "openai/gpt-5.5")).toMatchObject({
+    const openai = provider.models.find((model) => model.id === "openai/gpt-5.6");
+    expect(openai).toMatchObject({
+      name: "OpenAI · gpt-5.6",
       api: "openai-responses",
       baseUrl: "https://clawrouter.example/v1",
       reasoning: true,
@@ -168,20 +171,90 @@ describe("ClawRouter provider catalog", () => {
       contextWindow: 1_000_000,
       maxTokens: 64_000,
     });
-    expect(
-      provider.models.find((model) => model.id === "deepseek/deepseek-v4-flash"),
-    ).toMatchObject({ api: "openai-completions" });
+    expect(openai?.thinkingLevelMap).toEqual({
+      off: "none",
+      minimal: null,
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    });
+    expect(openai?.compat).toEqual({
+      supportsReasoningEffort: true,
+      supportedReasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    });
+    const deepseek = provider.models.find((model) => model.id === "deepseek/deepseek-v4-flash");
+    expect(deepseek).toMatchObject({
+      name: "DeepSeek · deepseek-v4-flash",
+      api: "openai-completions",
+    });
+    expect(deepseek?.compat).toBeUndefined();
+    expect(deepseek?.thinkingLevelMap).toBeUndefined();
     expect(
       provider.models.find((model) => model.id === "anthropic/claude-sonnet-4-6"),
     ).toMatchObject({
+      name: "Anthropic · claude-sonnet-4-6",
       api: "anthropic-messages",
       baseUrl: "https://clawrouter.example/v1/native/anthropic",
     });
     expect(provider.models.find((model) => model.id === "google/gemini-3.5-flash")).toMatchObject({
+      name: "Google Gemini · google/gemini-3.5-flash",
       api: "google-generative-ai",
       baseUrl: "https://clawrouter.example/v1/native/google-gemini/v1beta",
     });
     expect(provider.models.map((model) => model.id)).not.toContain("cohere/command-a-plus-05-2026");
+  });
+
+  it("preserves the catalog display name and Responses alias instead of the upstream id", async () => {
+    const catalog = {
+      providers: [
+        {
+          ...CATALOG.providers[0],
+          models: [
+            {
+              id: "codex-latest",
+              displayName: "Codex (Latest)",
+              upstream: "synthetic-upstream-sentinel",
+              capabilities: ["llm.responses"],
+            },
+          ],
+        },
+      ],
+    };
+    const provider = await buildClawRouterProviderConfig({
+      apiKey: "isolated-workload-test-key",
+      baseUrl: "https://clawrouter.example/private",
+      fetchGuard: buildFetchGuard(catalog).fetchGuard,
+    });
+    expect(provider.models).toHaveLength(1);
+    const model = expectDefined(provider.models[0], "catalog alias");
+    expect(model).toMatchObject({
+      id: "codex-latest",
+      name: "Codex (Latest)",
+      api: "openai-responses",
+      baseUrl: "https://clawrouter.example/private/v1",
+    });
+    const normalized = expectDefined(
+      normalizeClawRouterResolvedModel({
+        ...model,
+        provider: "clawrouter",
+      } as ProviderRuntimeModel),
+      "resolved catalog alias",
+    );
+    expect(prepareClawRouterRequestModel(normalized)).toMatchObject({
+      id: "codex-latest",
+      name: "Codex (Latest)",
+      params: undefined,
+    });
+    expect(JSON.stringify(provider)).not.toContain("synthetic-upstream-sentinel");
+
+    const publicProvider = await buildClawRouterProviderConfig({
+      apiKey: "public-workload-test-key",
+      baseUrl: "https://clawrouter.example",
+      fetchGuard: buildFetchGuard().fetchGuard,
+    });
+    expect(publicProvider.models.map((entry) => entry.id)).not.toContain("codex-latest");
   });
 
   it("rewrites only native protocol model ids at the request boundary", async () => {
@@ -206,32 +279,102 @@ describe("ClawRouter provider catalog", () => {
       params: undefined,
     });
 
-    const openai = provider.models.find((model) => model.id === "openai/gpt-5.5");
+    const openaiModel = provider.models.find((model) => model.id === "openai/gpt-5.6");
     const normalizedOpenAi = normalizeClawRouterResolvedModel({
-      ...openai,
+      ...openaiModel,
       baseUrl: provider.baseUrl,
       provider: "clawrouter",
     } as ProviderRuntimeModel);
     expect(prepareClawRouterRequestModel(normalizedOpenAi as ProviderRuntimeModel).id).toBe(
-      "openai/gpt-5.5",
+      "openai/gpt-5.6",
     );
   });
 
-  it("caches catalog rows per credential scope", async () => {
-    const { fetchGuard, fetchGuardMock } = buildFetchGuard();
-    const params = {
+  it("bounds reasoning effort metadata to exact canonical wire values", async () => {
+    const catalog = structuredClone(CATALOG);
+    const model = expectDefined(catalog.providers[0]?.models[0], "OpenAI ClawRouter model");
+    (model as unknown as Record<string, unknown>).supportedReasoningEfforts = [
+      "max",
+      "none",
+      "ultra",
+      "low",
+      "low",
+      null,
+      "xhigh",
+    ];
+    const provider = await buildClawRouterProviderConfig({
       apiKey: "clawrouter-test-key",
+      fetchGuard: buildFetchGuard(catalog).fetchGuard,
+    });
+    const bounded = provider.models.find((entry) => entry.id === "openai/gpt-5.6");
+
+    expect(bounded?.compat?.supportedReasoningEfforts).toEqual(["none", "low", "xhigh", "max"]);
+    expect(bounded?.thinkingLevelMap).toEqual({
+      off: "none",
+      minimal: null,
+      low: "low",
+      medium: null,
+      high: null,
+      xhigh: "xhigh",
+      max: "max",
+    });
+
+    const malformedCatalog = structuredClone(CATALOG);
+    const malformed = expectDefined(
+      malformedCatalog.providers[0]?.models[0],
+      "OpenAI ClawRouter model",
+    );
+    (malformed as unknown as Record<string, unknown>).supportedReasoningEfforts = [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ];
+    clearLiveCatalogCacheForTests();
+    const rejected = await buildClawRouterProviderConfig({
+      apiKey: "clawrouter-test-key",
+      fetchGuard: buildFetchGuard(malformedCatalog).fetchGuard,
+    });
+    const rejectedModel = rejected.models.find((entry) => entry.id === "openai/gpt-5.6");
+    expect(rejectedModel?.compat).toBeUndefined();
+    expect(rejectedModel?.thinkingLevelMap).toBeUndefined();
+  });
+
+  it.each([
+    ["granted models", CATALOG],
+    ["no granted models", { providers: [] }],
+  ])("reuses %s for an hour without mixing credentials or endpoints", async (_label, catalog) => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    const { fetchGuard, fetchGuardMock } = buildFetchGuard(catalog);
+    const params = {
+      apiKey: "catalog-key-a",
       baseUrl: "https://clawrouter.example",
       fetchGuard,
     };
+    try {
+      const first = await buildClawRouterProviderConfig(params);
+      now.mockReturnValue(1_800_000_000_000 + 59 * 60_000);
+      expect(await buildClawRouterProviderConfig(params)).toEqual(first);
+      expect(fetchGuardMock).toHaveBeenCalledOnce();
 
-    await buildClawRouterProviderConfig(params);
-    await buildClawRouterProviderConfig(params);
+      await buildClawRouterProviderConfig({ ...params, discoveryApiKey: "catalog-key-b" });
+      await buildClawRouterProviderConfig({ ...params, baseUrl: "https://other.example" });
+      expect(fetchGuardMock).toHaveBeenCalledTimes(3);
+      const headers = fetchGuardMock.mock.calls[1]?.[0].init?.headers;
+      expect(headers).toBeInstanceOf(Headers);
+      expect((headers as Headers).get("authorization")).toBe("Bearer catalog-key-b");
 
-    expect(fetchGuardMock).toHaveBeenCalledOnce();
-    const headers = fetchGuardMock.mock.calls[0]?.[0].init?.headers;
-    expect(headers).toBeInstanceOf(Headers);
-    expect((headers as Headers).get("authorization")).toBe("Bearer clawrouter-test-key");
+      // A cache hit does not renew the original deadline indefinitely.
+      now.mockReturnValue(1_800_000_000_000 + 60 * 60_000);
+      await buildClawRouterProviderConfig(params);
+      expect(fetchGuardMock).toHaveBeenCalledTimes(4);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it("does not advertise Gemini without a streaming route", async () => {

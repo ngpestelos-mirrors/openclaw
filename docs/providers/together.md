@@ -10,12 +10,12 @@ read_when:
 models including Llama, DeepSeek, Kimi, and more through a unified API.
 OpenClaw bundles it as the `together` provider.
 
-| Property | Value                         |
-| -------- | ----------------------------- |
-| Provider | `together`                    |
-| Auth     | `TOGETHER_API_KEY`            |
-| API      | OpenAI-compatible             |
-| Base URL | `https://api.together.xyz/v1` |
+| Property | Value                            |
+| -------- | -------------------------------- |
+| Provider | `together` (alias: `togetherai`) |
+| Auth     | `TOGETHER_API_KEY`               |
+| API      | OpenAI-compatible                |
+| Base URL | `https://api.together.xyz/v1`    |
 
 ## Getting started
 
@@ -47,7 +47,7 @@ OpenClaw bundles it as the `together` provider.
 ### Non-interactive example
 
 ```bash
-openclaw onboard --non-interactive \
+openclaw onboard --non-interactive --accept-risk --skip-health \
   --mode local \
   --auth-choice together-api-key \
   --together-api-key "$TOGETHER_API_KEY"
@@ -88,8 +88,10 @@ To use Together as the default video provider:
 {
   agents: {
     defaults: {
-      videoGenerationModel: {
-        primary: "together/Wan-AI/Wan2.2-T2V-A14B",
+      mediaModels: {
+        video: {
+          primary: "together/Wan-AI/Wan2.2-T2V-A14B",
+        },
       },
     },
   },

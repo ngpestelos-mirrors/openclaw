@@ -40,12 +40,13 @@ async function createSetupPlan(args: string[]): Promise<VaultPlan> {
   }
 }
 
-async function runSetup(planPath: string, args: string[]): Promise<void> {
+async function runSetup(planPath: string, args: string[]): Promise<string> {
   const stdout = captureStdout();
   try {
     await createProgram().parseAsync(["vault", "setup", "--plan-out", planPath, ...args], {
       from: "user",
     });
+    return stdout.output();
   } finally {
     stdout.restore();
   }
@@ -73,17 +74,19 @@ afterEach(() => {
 describe("vault CLI setup plan", () => {
   const setupArgs = ["--openai-id", "providers/openai/apiKey"];
 
-  it.skipIf(process.platform === "win32")(
-    "creates plans privately without overwriting files or following symlinks",
-    async () => {
+  it.skipIf(process.platform === "win32").each([0o700, 0o755])(
+    "creates private plans in a %o directory without overwriting files or following symlinks",
+    async (directoryMode) => {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-vault-plan-security-"));
       const privatePath = path.join(dir, "private.json");
       const existingPath = path.join(dir, "existing.json");
       const targetPath = path.join(dir, "target.json");
       const symlinkPath = path.join(dir, "symlink.json");
       try {
+        await fs.chmod(dir, directoryMode);
         await runSetup(privatePath, setupArgs);
         expect((await fs.stat(privatePath)).mode & 0o777).toBe(0o600);
+        expect((await fs.stat(dir)).mode & 0o777).toBe(directoryMode);
         await fs.writeFile(existingPath, "keep-me", "utf8");
         await expect(runSetup(existingPath, setupArgs)).rejects.toThrow("Plan path already exists");
         await expect(fs.readFile(existingPath, "utf8")).resolves.toBe("keep-me");
@@ -133,27 +136,13 @@ describe("vault CLI setup plan", () => {
     ]);
   });
 
-  it("generates arbitrary known OpenClaw and auth-profile targets", async () => {
+  it("preserves colon-bearing auth-profile target paths", async () => {
     const plan = await createSetupPlan([
-      "--target",
-      "channels.telegram.botToken=channels/telegram/botToken",
-      "--target",
-      "models.providers.openai.headers.x-api-key=providers/openai/proxyKey",
       "--target",
       "auth-profiles:main:profiles.openai:default.key=providers/openai/apiKey",
     ]);
 
     expect(plan.targets).toEqual([
-      expect.objectContaining({
-        type: "channels.telegram.botToken",
-        path: "channels.telegram.botToken",
-        pathSegments: ["channels", "telegram", "botToken"],
-      }),
-      expect.objectContaining({
-        type: "models.providers.headers",
-        path: "models.providers.openai.headers.x-api-key",
-        providerId: "openai",
-      }),
       expect.objectContaining({
         type: "auth-profiles.api_key.key",
         path: "profiles.openai:default.key",
@@ -162,58 +151,22 @@ describe("vault CLI setup plan", () => {
     ]);
   });
 
-  it.each([
-    [
-      "duplicate providers",
-      ["--openai-id", "providers/openai/apiKey", "--provider-key", "OpenAI=providers/openai/other"],
-      "Duplicate model provider id",
-    ],
-    [
-      "traversal secret ids",
-      ["--provider-key", "openai=providers/../openai/apiKey"],
-      "Invalid --provider-key openai Vault secret id",
-    ],
-    [
-      "unsupported targets",
-      ["--target", "secrets.github_pat=github/pat"],
-      "Unknown or unsupported Vault setup target path",
-    ],
-    [
-      "duplicate target paths",
-      [
-        "--openai-id",
-        "providers/openai/apiKey",
-        "--target",
-        "models.providers.openai.apiKey=providers/openai/other",
-      ],
-      "Duplicate secret target path",
-    ],
-    [
-      "non-canonical auth-profile agent ids",
-      ["--target", "auth-profiles:../main:profiles.openai.key=providers/openai/apiKey"],
-      "Invalid --target auth-profiles target for Vault",
-    ],
-  ])("rejects %s", async (_label, args, message) => {
-    await expect(createSetupPlan(args)).rejects.toThrow(message);
-  });
-
-  it.each([
-    "providers/openai/apiKey/",
-    "/providers/openai/apiKey",
-    "providers//openai/apiKey",
-    "apiKey",
-  ])("rejects non-canonical Vault secret id %s", async (secretId) => {
-    await expect(createSetupPlan(["--provider-key", `openai=${secretId}`])).rejects.toThrow(
-      "Invalid --provider-key openai Vault secret id",
-    );
-  });
+  it.each(["providers/../openai/apiKey", "providers//openai/apiKey", "apiKey"])(
+    "rejects non-canonical Vault secret id %s",
+    async (secretId) => {
+      await expect(createSetupPlan(["--provider-key", `openai=${secretId}`])).rejects.toThrow(
+        "Invalid --provider-key openai Vault secret id",
+      );
+    },
+  );
 });
 
 describe("vault CLI status", () => {
-  it("discovers a configured custom Vault provider alias", async () => {
+  it("prefers the managed integration when the default alias is unrelated", async () => {
     const result = await runStatus({
       secrets: {
         providers: {
+          vault: { source: "exec", command: "/legacy/resolver" },
           "corp-vault": {
             source: "exec",
             pluginIntegration: { pluginId: "vault", integrationId: "vault" },

@@ -1,15 +1,18 @@
 import {
   context as otelContextApi,
+  isSpanContextValid,
   trace,
   type SpanContext,
   type SpanKind,
   type Tracer,
 } from "@opentelemetry/api";
+import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
+import { normalizeDiagnosticValue } from "openclaw/plugin-sdk/diagnostic-runtime";
 import type {
   DiagnosticEventMetadata,
   DiagnosticEventPayload,
   DiagnosticTraceContext,
-} from "../api.js";
+} from "openclaw/plugin-sdk/diagnostic-runtime";
 import { redactOtelAttributes } from "./service-attributes.js";
 import { MAX_RETAINED_TRUSTED_SPAN_CONTEXTS } from "./service-constants.js";
 import {
@@ -62,18 +65,15 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
         : typeof durationMs === "number" && durationMs >= 0
           ? endTimeMs - durationMs
           : undefined;
-    const parentContext =
-      "parentContext" in options ? (options.parentContext ?? undefined) : undefined;
-    const span = tracer.startSpan(
+    return tracer.startSpan(
       name,
       {
         attributes: redactOtelAttributes(attributes),
         ...(options.kind !== undefined ? { kind: options.kind } : {}),
         ...(startTime !== undefined ? { startTime } : {}),
       },
-      parentContext,
+      options.parentContext ?? undefined,
     );
-    return span;
   };
   const trustedTraceContext = (evt: DiagnosticEventPayload, metadata: DiagnosticEventMetadata) =>
     metadata.trusted ? normalizeTraceContext(evt.trace) : undefined;
@@ -218,6 +218,17 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
       ? trace.setSpanContext(otelContextApi.active(), retainedSpanContext)
       : undefined;
   };
+  const exportedSpanContextForDiagnosticTraceContext = (
+    traceContext: DiagnosticTraceContext,
+  ): SpanContext | undefined => {
+    if (!traceContext.spanId) {
+      return undefined;
+    }
+    const activeSpan = activeTrustedSpans.get(traceContext.spanId);
+    const spanContext =
+      activeSpan?.spanContext() ?? retainedTrustedSpanContext(traceContext, traceContext.spanId);
+    return spanContext && isSpanContextValid(spanContext) ? spanContext : undefined;
+  };
   // Message spans additionally accept a remote parent, because their trace context can
   // come from an inbound traceparent whose span really does live in another process.
   const activeInternalOrTrustedContext = (
@@ -288,44 +299,31 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
       spanContext,
       ...(owner ? { owner } : {}),
     });
-    // Map iteration is insertion-ordered, so this removes the oldest mapping first.
-    while (retainedTrustedSpanContexts.size > MAX_RETAINED_TRUSTED_SPAN_CONTEXTS) {
-      const oldestKey = retainedTrustedSpanContexts.keys().next().value;
-      if (!oldestKey) {
-        break;
-      }
-      retainedTrustedSpanContexts.delete(oldestKey);
-    }
+    pruneMapToMaxSize(retainedTrustedSpanContexts, MAX_RETAINED_TRUSTED_SPAN_CONTEXTS);
   };
   // Retention keys on the diagnostic ids the event carries. Taking the whole context
   // (not a bare trace id) makes an OTel SpanContext a type error here; keying by OTel
   // ids instead would silently split every late child into its own trace.
   const completeTrackedLifecycleSpan = (
-    traceContext: DiagnosticTraceContext,
+    traceContext: DiagnosticTraceContext | undefined,
     span: ReturnType<typeof tracer.startSpan>,
     endTimeMs: number,
   ) => {
-    const spanId = traceContext.spanId;
-    if (!spanId) {
+    if (!traceContext?.spanId) {
       span.end(endTimeMs);
       return;
     }
+    const spanId = traceContext.spanId;
     const spanContext = span.spanContext();
     const retainedKeys: Array<{ spanId: string; owner?: TrustedSpanAliasOwner }> = [{ spanId }];
-    const retainedAliasKeys: string[] = [];
     for (const [aliasKey, alias] of activeTrustedSpanAliases) {
       if (alias.span === span) {
         retainedKeys.push({ spanId: alias.spanId, owner: alias.owner });
-        retainedAliasKeys.push(aliasKey);
+        activeTrustedSpanAliases.delete(aliasKey);
       }
     }
     if (activeTrustedSpans.get(spanId) === span) {
       activeTrustedSpans.delete(spanId);
-    }
-    for (const aliasKey of retainedAliasKeys) {
-      if (activeTrustedSpanAliases.get(aliasKey)?.span === span) {
-        activeTrustedSpanAliases.delete(aliasKey);
-      }
     }
     span.end(endTimeMs);
     for (const retainedKey of retainedKeys) {
@@ -344,6 +342,7 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
       runId?: string;
       sessionKey?: string;
       sessionId?: string;
+      agentId?: string;
       provider?: string;
       model?: string;
       channel?: string;
@@ -361,6 +360,9 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     }
     if (evt.trigger) {
       spanAttrs["openclaw.trigger"] = evt.trigger;
+    }
+    if (evt.agentId) {
+      spanAttrs["openclaw.agent"] = normalizeDiagnosticValue(evt.agentId);
     }
   };
 
@@ -380,15 +382,14 @@ export function createDiagnosticsTraceRuntime(tracer: Tracer) {
     activeTrustedSpans,
     activeTrustedSpanAliases,
     trustedSpanAliasKey,
-    trustedSpanAliasOwner,
     spanWithDuration,
     trustedTraceContext,
     internalOrTrustedTraceContext,
-    internalOrTrustedParentContext,
     internalOrTrustedExplicitParentContext,
     activeTrustedParentContext,
     activeInternalOrTrustedContext,
     exportedInternalOrTrustedContext,
+    exportedSpanContextForDiagnosticTraceContext,
     trackTrustedSpan,
     trackInternalOrTrustedSpan,
     takeTrackedTrustedSpan,

@@ -95,11 +95,19 @@
       "model": "gpt-5.5",
       "responseId": "chatcmpl-parity",
       "responseModel": "gpt-5.5-response",
+      "openclawDelivery": {
+        "textPhaseRequiresTerminal": true
+      },
       "usage": {
         "input": 6,
         "output": 4,
         "cacheRead": 2,
         "cacheWrite": 0,
+        "contextUsage": {
+          "state": "available",
+          "promptTokens": 8,
+          "totalTokens": 12
+        },
         "totalTokens": 12,
         "cost": {
           "input": 0,
@@ -204,12 +212,21 @@
       "provider": "openai",
       "model": "gpt-5.5",
       "responseId": "chatcmpl-parity",
+      "responseModel": "gpt-5.5-response",
+      "openclawDelivery": {
+        "textPhaseRequiresTerminal": true
+      },
       "usage": {
         "input": 6,
         "output": 4,
         "cacheRead": 2,
         "cacheWrite": 0,
         "reasoningTokens": 1,
+        "contextUsage": {
+          "state": "available",
+          "promptTokens": 8,
+          "totalTokens": 12
+        },
         "totalTokens": 12,
         "cost": {
           "input": 0,

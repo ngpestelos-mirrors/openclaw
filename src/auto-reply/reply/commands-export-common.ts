@@ -1,30 +1,24 @@
-/** Shared export-command parsing and target session resolution helpers. */
 import {
   resolveDefaultSessionStorePath,
-  resolveSessionFilePath,
+  resolveSessionFilePathCore,
   resolveSessionFilePathOptions,
 } from "../../config/sessions/paths.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { escapeRegExp } from "../../shared/regexp.js";
-import type { ReplyPayload } from "../types.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
-/** Resolved session entry and scoped transcript identity targeted by an export command. */
 interface ExportCommandSessionTarget {
   agentId: string;
   entry: SessionEntry;
   sessionId: string;
-  sessionFile: string;
   sessionKey: string;
   storePath: string;
 }
 
 const MAX_EXPORT_COMMAND_OUTPUT_PATH_CHARS = 512;
 
-/** Parses an optional non-flag output path from export command text. */
 export function parseExportCommandOutputPath(
   commandBodyNormalized: string,
   aliases: readonly string[],
@@ -44,14 +38,10 @@ export function parseExportCommandOutputPath(
   return { outputPath };
 }
 
-/** Resolves the session store entry and transcript file for an export command. */
 export function resolveExportCommandSessionTarget(
   params: HandleCommandsParams,
-): ExportCommandSessionTarget | ReplyPayload {
-  const targetAgentId = resolveAgentIdFromSessionKey(params.sessionKey) || params.agentId;
-  if (!targetAgentId) {
-    return { text: `❌ Failed to resolve agent for session: ${params.sessionKey}` };
-  }
+): ExportCommandSessionTarget | { text: string } {
+  const targetAgentId = params.agentId;
   const storePath = params.storePath ?? resolveDefaultSessionStorePath(targetAgentId);
   const entry = loadSessionEntryReadOnly({
     storePath,
@@ -64,7 +54,7 @@ export function resolveExportCommandSessionTarget(
   }
 
   try {
-    const sessionFile = resolveSessionFilePath(
+    resolveSessionFilePathCore(
       sessionId,
       entry,
       resolveSessionFilePathOptions({ agentId: targetAgentId, storePath }),
@@ -72,7 +62,6 @@ export function resolveExportCommandSessionTarget(
     return {
       agentId: targetAgentId,
       entry,
-      sessionFile,
       sessionId,
       sessionKey: params.sessionKey,
       storePath,
@@ -82,11 +71,4 @@ export function resolveExportCommandSessionTarget(
       text: `❌ Failed to resolve session file: ${formatErrorMessage(err)}`,
     };
   }
-}
-
-/** Distinguishes command error replies from successful export session targets. */
-export function isReplyPayload(
-  value: ExportCommandSessionTarget | ReplyPayload,
-): value is ReplyPayload {
-  return "text" in value;
 }

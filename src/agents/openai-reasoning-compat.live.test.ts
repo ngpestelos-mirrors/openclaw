@@ -4,7 +4,7 @@ import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import type { Model } from "openclaw/plugin-sdk/llm";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { discoverAuthStorage, discoverModels } from "./agent-model-discovery.js";
+import { discoverAuthStorageFacts, discoverModels } from "./agent-model-discovery.js";
 import { resolveDefaultAgentDir } from "./agent-scope.js";
 import { sanitizeSessionHistory } from "./embedded-agent-runner/replay-history.js";
 import {
@@ -12,11 +12,10 @@ import {
   isLiveProfileKeyModeEnabled,
   isLiveTestEnabled,
   logLiveProgress,
-  requiresLiveProfileCredential,
   readLiveTestConfig,
   resolveLiveCredentialPrecedence,
 } from "./live-test-helpers.js";
-import { getApiKeyForModel, requireApiKey } from "./model-auth.js";
+import { getApiKeyForModelCore, requireApiKey } from "./model-auth.js";
 import { ensureOpenClawModelsJson } from "./models-config.js";
 
 const LIVE = isLiveTestEnabled();
@@ -107,7 +106,7 @@ describeLive("openai reasoning compat live", () => {
       await ensureOpenClawModelsJson(cfg);
 
       const agentDir = resolveDefaultAgentDir(cfg);
-      const authStorage = discoverAuthStorage(agentDir);
+      const { authStorage } = discoverAuthStorageFacts(agentDir);
       const modelRegistry = discoverModels(authStorage, agentDir);
       const model = modelRegistry.find(provider, modelId) as Model | null;
 
@@ -118,7 +117,7 @@ describeLive("openai reasoning compat live", () => {
 
       let apiKeyInfo;
       try {
-        apiKeyInfo = await getApiKeyForModel({
+        apiKeyInfo = await getApiKeyForModelCore({
           model,
           cfg,
           credentialPrecedence: resolveLiveCredentialPrecedence(
@@ -131,10 +130,7 @@ describeLive("openai reasoning compat live", () => {
         return;
       }
 
-      if (
-        requiresLiveProfileCredential(model.provider, REQUIRE_PROFILE_KEYS) &&
-        !apiKeyInfo.source.startsWith("profile:")
-      ) {
+      if (REQUIRE_PROFILE_KEYS && !apiKeyInfo.source.startsWith("profile:")) {
         logProgress(
           `[openai-reasoning-compat] skip (non-profile credential source: ${apiKeyInfo.source})`,
         );
@@ -167,7 +163,7 @@ describeLive("openai reasoning compat live", () => {
       await ensureOpenClawModelsJson(cfg);
 
       const agentDir = resolveDefaultAgentDir(cfg);
-      const authStorage = discoverAuthStorage(agentDir);
+      const { authStorage } = discoverAuthStorageFacts(agentDir);
       const modelRegistry = discoverModels(authStorage, agentDir);
       const model = modelRegistry.find(provider, modelId) as Model | null;
 
@@ -178,7 +174,7 @@ describeLive("openai reasoning compat live", () => {
 
       let apiKeyInfo;
       try {
-        apiKeyInfo = await getApiKeyForModel({
+        apiKeyInfo = await getApiKeyForModelCore({
           model,
           cfg,
           credentialPrecedence: resolveLiveCredentialPrecedence(
@@ -191,10 +187,7 @@ describeLive("openai reasoning compat live", () => {
         return;
       }
 
-      if (
-        requiresLiveProfileCredential(model.provider, REQUIRE_PROFILE_KEYS) &&
-        !apiKeyInfo.source.startsWith("profile:")
-      ) {
+      if (REQUIRE_PROFILE_KEYS && !apiKeyInfo.source.startsWith("profile:")) {
         logProgress(
           `[openai-reasoning-compat] skip (non-profile credential source: ${apiKeyInfo.source})`,
         );

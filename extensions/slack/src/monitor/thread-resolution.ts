@@ -1,7 +1,7 @@
-// Slack plugin module implements thread resolution behavior.
 import {
   type WebClient as SlackWebClient,
   WebAPIHTTPError,
+  WebAPIPlatformError,
   WebAPIRateLimitedError,
   WebAPIRequestError,
 } from "@slack/web-api";
@@ -13,14 +13,14 @@ import {
 } from "openclaw/plugin-sdk/error-runtime";
 import {
   asDateTimestampMs,
-  parseFiniteNumber,
   resolveExpiresAtMsFromDurationMs,
 } from "openclaw/plugin-sdk/number-runtime";
 import { classifyTransientNetworkErrorCode } from "openclaw/plugin-sdk/retry-runtime";
 import { logVerbose, shouldLogVerbose } from "openclaw/plugin-sdk/runtime-env";
+import { normalizeOptionalString as normalizeThreadTs } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { formatSlackError } from "../errors.js";
 import type { SlackMessageEvent } from "../types.js";
-import type { SlackIngressTurnLifecycle } from "./ingress.js";
+import type { SlackIngressTurnLifecycle } from "./ingress.types.js";
 
 type ThreadTsCacheEntry = {
   threadTs: string | null;
@@ -30,17 +30,12 @@ type ThreadTsCacheEntry = {
 const DEFAULT_THREAD_TS_CACHE_TTL_MS = 60_000;
 const DEFAULT_THREAD_TS_CACHE_MAX = 500;
 
-const normalizeThreadTs = (threadTs?: string | null) => {
-  const trimmed = threadTs?.trim();
-  return trimmed ? trimmed : undefined;
-};
-
 const markAmbiguousThreadReply = (message: SlackMessageEvent): SlackMessageEvent => ({
   ...message,
   _ambiguousThreadReply: true,
 });
 
-function isTransientSlackThreadLookupError(error: unknown): boolean {
+export function isTransientSlackThreadLookupError(error: unknown): boolean {
   if (error instanceof WebAPIRateLimitedError) {
     return true;
   }
@@ -51,8 +46,16 @@ function isTransientSlackThreadLookupError(error: unknown): boolean {
       (error.statusCode >= 500 && error.statusCode < 600)
     );
   }
+  // Slack documents these users.info response codes as transient service failures.
+  if (error instanceof WebAPIPlatformError) {
+    return error.data.error === "internal_error" || error.data.error === "service_unavailable";
+  }
   if (!(error instanceof WebAPIRequestError)) {
     return false;
+  }
+  // Slack Web API 8.0.0 wraps exhausted 429 retries as this uncoded request error.
+  if (/^A rate limit was exceeded \(url: .+, retry-after: \d+\)$/.test(error.original.message)) {
+    return true;
   }
   return collectErrorGraphCandidates(error.original, (current) => [
     current.cause,
@@ -70,25 +73,19 @@ async function resolveThreadTsFromHistory(params: {
   channelId: string;
   messageTs: string;
 }) {
-  const response = (await params.client.conversations.history({
+  const response = await params.client.conversations.history({
     channel: params.channelId,
     latest: params.messageTs,
     oldest: params.messageTs,
     inclusive: true,
     limit: 1,
-  })) as { messages?: Array<{ ts?: string; thread_ts?: string }> };
+  });
   const message =
     response.messages?.find((entry) => entry.ts === params.messageTs) ?? response.messages?.[0];
   return normalizeThreadTs(message?.thread_ts);
 }
 
-export function createSlackThreadTsResolver(params: {
-  client: SlackWebClient;
-  cacheTtlMs?: number;
-  maxSize?: number;
-}) {
-  const ttlMs = Math.max(0, parseFiniteNumber(params.cacheTtlMs) ?? DEFAULT_THREAD_TS_CACHE_TTL_MS);
-  const maxSize = Math.max(0, parseFiniteNumber(params.maxSize) ?? DEFAULT_THREAD_TS_CACHE_MAX);
+export function createSlackThreadTsResolver(params: { client: SlackWebClient }) {
   const cache = new Map<string, ThreadTsCacheEntry>();
   const inflight = new Map<string, Promise<string | undefined>>();
 
@@ -97,17 +94,8 @@ export function createSlackThreadTsResolver(params: {
     if (!entry) {
       return undefined;
     }
-    if (entry.expiresAt === 0) {
-      cache.delete(key);
-      cache.set(key, entry);
-      return entry.threadTs;
-    }
     const normalizedNow = asDateTimestampMs(now);
-    if (
-      normalizedNow === undefined ||
-      asDateTimestampMs(entry.expiresAt) === undefined ||
-      entry.expiresAt <= normalizedNow
-    ) {
+    if (normalizedNow === undefined || entry.expiresAt <= normalizedNow) {
       cache.delete(key);
       return undefined;
     }
@@ -117,14 +105,16 @@ export function createSlackThreadTsResolver(params: {
   };
 
   const setCached = (key: string, threadTs: string | null, now: number) => {
-    const expiresAt = ttlMs > 0 ? resolveExpiresAtMsFromDurationMs(ttlMs, { nowMs: now }) : 0;
+    const expiresAt = resolveExpiresAtMsFromDurationMs(DEFAULT_THREAD_TS_CACHE_TTL_MS, {
+      nowMs: now,
+    });
     if (expiresAt === undefined) {
       cache.delete(key);
       return;
     }
     cache.delete(key);
     cache.set(key, { threadTs, expiresAt });
-    pruneMapToMaxSize(cache, maxSize);
+    pruneMapToMaxSize(cache, DEFAULT_THREAD_TS_CACHE_MAX);
   };
 
   return {

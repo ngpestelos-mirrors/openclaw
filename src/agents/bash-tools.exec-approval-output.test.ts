@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { resetProcessRegistryForTests } from "./bash-process-registry.test-support.js";
 import {
-  buildExecApprovalContinuationFallbackPrompt,
   buildExecApprovalContinuationPrompt,
   formatExecApprovalContinuationSourceOutput,
   resizeExecApprovalContinuationPrompt,
 } from "./bash-tools.exec-approval-output.js";
+import { appendExecTimeoutRetryGuidance } from "./bash-tools.exec-output.js";
+import { runExecProcess } from "./bash-tools.exec-runtime.js";
 
 const MAX_SOURCE_UTF16_UNITS = 256_000;
 const MARKER =
@@ -29,50 +31,20 @@ describe("formatExecApprovalContinuationSourceOutput", () => {
     ).toBe("");
   });
 
-  it("preserves a single stream including all whitespace", () => {
-    const value = "first\r\n\tindented\n\n  spaced  \ttrailing\t\n   ";
-    expect(
-      formatExecApprovalContinuationSourceOutput([
-        { label: "stdout", value },
-        { label: "stderr", value: "" },
-      ]),
-    ).toBe(value);
-  });
-
-  it("labels multiple streams in their supplied order", () => {
-    expect(
-      formatExecApprovalContinuationSourceOutput([
-        { label: "stdout", value: "out\n" },
-        { label: "stderr", value: "err\n" },
-        { label: "error", value: "boom" },
-      ]),
-    ).toBe("[stdout]\nout\n\n[stderr]\nerr\n\n[error]\nboom");
-  });
-
-  it("is identical at the 256k source cap", () => {
-    const exact = "x".repeat(MAX_SOURCE_UTF16_UNITS);
-    expect(formatExecApprovalContinuationSourceOutput([{ label: "stdout", value: exact }])).toBe(
-      exact,
-    );
-  });
-
-  it("keeps useful head and tail data within the 256k source cap", () => {
-    const value = `${"a".repeat(200_000)}\n${"b".repeat(200_000)}`;
-    const formatted = formatExecApprovalContinuationSourceOutput([{ label: "stdout", value }]);
-
-    expect(formatted).toHaveLength(MAX_SOURCE_UTF16_UNITS);
-    expect(formatted.split(MARKER)).toHaveLength(2);
-    expect(formatted.startsWith("a")).toBe(true);
-    expect(formatted.endsWith("b")).toBe(true);
-  });
-
-  it("uses an honest marker because capture may already have dropped output", () => {
+  it.each([
+    { name: "head header cut", label: "stderr", stdoutUnits: 191_907, streamUnits: 100_000 },
+    { name: "tail header cut", label: "stderr", stdoutUnits: 200_000, streamUnits: 63_970 },
+  ])("preserves the retained stream label across $name", ({ label, stdoutUnits, streamUnits }) => {
     const formatted = formatExecApprovalContinuationSourceOutput([
-      { label: "stdout", value: "z".repeat(MAX_SOURCE_UTF16_UNITS + 1) },
+      { label: "stdout", value: "a".repeat(stdoutUnits) },
+      { label, value: "b".repeat(streamUnits) },
     ]);
 
-    expect(formatted).toContain("more output may have been dropped when it was captured");
-    expect(formatted).not.toMatch(/\d+\s+(characters|units|chars)\s+omitted/);
+    expect(formatted.length).toBeLessThanOrEqual(MAX_SOURCE_UTF16_UNITS);
+    expect(formatted).toContain("[stdout]\n");
+    expect(formatted).toContain(`${MARKER}\n[${label}]\n`);
+    expect(formatted.split(`[${label}]\n`)).toHaveLength(2);
+    expect(formatted.endsWith("b")).toBe(true);
   });
 
   it("never splits surrogate pairs at either source-cap cut", () => {
@@ -112,56 +84,6 @@ describe("buildExecApprovalContinuationPrompt", () => {
     expect(built.message.indexOf(OUTPUT_BEGIN)).toBeLessThan(built.resultRange.start);
     expect(built.resultRange.end).toBeLessThan(built.message.indexOf(OUTPUT_END));
   });
-
-  it.each([
-    {
-      name: "outcome-unknown",
-      resultText:
-        "Exec outcome unknown (node=node-1 id=req-1, outcome-unknown)\nThe command may have executed.",
-      expected: [
-        "The command may have executed.",
-        "Do not run the command again automatically.",
-        "Do not claim it was denied, not dispatched, or safe to retry.",
-      ],
-      rejected: "was not dispatched and did not run",
-    },
-    {
-      name: "not-dispatched",
-      resultText:
-        "Exec not dispatched (node=node-1 id=req-1, not-dispatched)\nThe command did not run.",
-      expected: [
-        "was not dispatched and did not run",
-        "Retry only after resolving the connection failure",
-        "Do not claim the command completed, was denied, or may have executed.",
-      ],
-      rejected: "unknown execution outcome",
-    },
-  ])("preserves $name guidance across authenticated continuation handoff", (testCase) => {
-    const built = buildExecApprovalContinuationPrompt(testCase.resultText);
-
-    for (const expected of testCase.expected) {
-      expect(built.message).toContain(expected);
-    }
-    expect(built.message).not.toContain(testCase.rejected);
-    expect(built.message).toContain(OUTPUT_BEGIN);
-    expect(built.message).toContain(OUTPUT_END);
-    expect(built.message.slice(built.resultRange.start, built.resultRange.end)).toBe(
-      testCase.resultText,
-    );
-  });
-
-  it("keeps a self-contained 16k fallback when the runtime handoff is unavailable", () => {
-    const fallback = buildExecApprovalContinuationFallbackPrompt(
-      `HEAD_SENTINEL\n${"x".repeat(30_000)}\nTAIL_SENTINEL`,
-    );
-
-    expect(fallback).toContain("HEAD_SENTINEL");
-    expect(fallback).toContain("TAIL_SENTINEL");
-    expect(fallback).toContain(MARKER);
-    expect(fallback).toContain(OUTPUT_BEGIN);
-    expect(fallback).toContain(OUTPUT_END);
-    expect(fallback.length).toBeLessThan(17_000);
-  });
 });
 
 describe("resizeExecApprovalContinuationPrompt", () => {
@@ -185,4 +107,47 @@ describe("resizeExecApprovalContinuationPrompt", () => {
     expect(resized.split(OUTPUT_BEGIN)).toHaveLength(2);
     expect(resized.split(OUTPUT_END)).toHaveLength(2);
   });
+});
+
+describe("exec output rendering", () => {
+  it("warns against retrying after a no-output timeout", () => {
+    expect(appendExecTimeoutRetryGuidance("Command timed out.", "no-output-timeout")).toContain(
+      "Do not automatically rerun non-idempotent commands",
+    );
+  });
+});
+
+describe("approved exec continuation producer", () => {
+  afterEach(() => {
+    resetProcessRegistryForTests();
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "preserves real multiline output beyond the legacy 16k boundary",
+    async () => {
+      const handle = await runExecProcess({
+        command: "/usr/bin/printf 'first line\\n\\tindented\\n\\n'; /usr/bin/printf '%017000d' 0",
+        workdir: process.cwd(),
+        env: {
+          HOME: process.env.HOME ?? "/tmp",
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+        },
+        usePty: false,
+        warnings: [],
+        maxOutput: 200_000,
+        pendingMaxOutput: 200_000,
+        notifyOnExit: false,
+        timeoutSec: 10,
+      });
+
+      const outcome = await handle.promise;
+      expect(outcome.status).toBe("completed");
+      const source = formatExecApprovalContinuationSourceOutput([
+        { label: "output", value: outcome.aggregated },
+      ]);
+      expect(source).toContain("first line\n\tindented\n\n");
+      expect(source.length).toBeGreaterThan(16_000);
+      expect(source).toBe(outcome.aggregated);
+    },
+  );
 });

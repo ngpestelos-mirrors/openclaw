@@ -1,9 +1,10 @@
 // Verifies sessions_spawn lifecycle hooks, binding cleanup, and gateway calls.
+import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createSubagentSpawnTestConfig,
   loadSubagentSpawnModuleForTest,
-} from "./subagent-spawn.test-helpers.js";
+} from "./subagents/spawn/subagent-spawn.test-helpers.js";
 
 type GatewayRequest = { method?: string; params?: Record<string, unknown> };
 type TestBindingRequest = {
@@ -55,8 +56,8 @@ const bindingMocks = vi.hoisted(() => ({
   listBySession: vi.fn(() => []),
 }));
 
-let resetSubagentRegistryForTests: typeof import("./subagent-registry.test-helpers.js").resetSubagentRegistryForTests;
-let spawnSubagentDirect: typeof import("./subagent-spawn.js").spawnSubagentDirect;
+let resetSubagentRegistryForTests: typeof import("./subagents/registry/subagent-registry.test-helpers.js").resetSubagentRegistryForTests;
+let spawnSubagentDirect: typeof import("./subagents/spawn/subagent-spawn.js").spawnSubagentDirect;
 
 function getGatewayRequests(): GatewayRequest[] {
   // Gateway call list is the observable side effect for spawn orchestration.
@@ -71,12 +72,7 @@ function findGatewayRequest(method: string): GatewayRequest | undefined {
   return getGatewayRequests().find((request) => request.method === method);
 }
 
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object") {
-    throw new Error(`expected ${label}`);
-  }
-  return value as Record<string, unknown>;
-}
+const requireRecord = createRequireRecord("object", "expected-label");
 
 function expectFields(value: unknown, expected: Record<string, unknown>, label = "object"): void {
   const record = requireRecord(value, label);
@@ -224,8 +220,8 @@ beforeAll(async () => {
 });
 
 describe("sessions_spawn subagent lifecycle hooks", () => {
-  beforeEach(() => {
-    resetSubagentRegistryForTests();
+  beforeEach(async () => {
+    await resetSubagentRegistryForTests();
     hoisted.callGatewayMock.mockReset();
     hoisted.updateSessionStoreMock.mockReset();
     hookRunnerMocks.hasSubagentEndedHook = true;
@@ -288,9 +284,7 @@ describe("sessions_spawn subagent lifecycle hooks", () => {
     });
   });
 
-  afterEach(() => {
-    resetSubagentRegistryForTests();
-  });
+  afterEach(() => resetSubagentRegistryForTests());
 
   it("binds the subagent thread in core and emits subagent_spawned with requester metadata", async () => {
     const result = await spawn({
@@ -521,7 +515,10 @@ describe("sessions_spawn subagent lifecycle hooks", () => {
       context: "isolated",
     });
 
-    expectErrorResultMessage(result, /only available on channels that expose thread bindings/i);
+    expectErrorResultMessage(
+      result,
+      /only available on channels that open a separate thread for the worker/i,
+    );
     expect(hookRunnerMocks.runSubagentSpawned).not.toHaveBeenCalled();
     expectSessionsDeleteWithoutAgentStart();
   });

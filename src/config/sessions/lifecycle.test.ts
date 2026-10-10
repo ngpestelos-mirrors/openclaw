@@ -1,33 +1,32 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import {
-  closeOpenClawAgentDatabasesForTest,
+  openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
 } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import {
-  hasTerminalMainSessionTranscriptNewerThanRegistry,
   hasTerminalMainSessionTranscriptNewerThanRegistrySync,
   resolveSessionLifecycleTimestamps,
 } from "./lifecycle.js";
-import { appendTranscriptEvent, loadSessionEntry, upsertSessionEntry } from "./session-accessor.js";
+import {
+  appendTranscriptEvent,
+  loadSessionEntry,
+  upsertSessionEntryCore,
+} from "./session-accessor.js";
+import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import type { SessionEntry } from "./types.js";
+
+const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-session-lifecycle-");
 
 describe("terminal main session transcript freshness", () => {
   let stateDir: string;
   let storePath: string;
 
   beforeEach(() => {
-    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-session-lifecycle-"));
+    stateDir = sessionDirs.make();
     storePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
-  });
-
-  afterEach(() => {
-    closeOpenClawAgentDatabasesForTest();
-    closeOpenClawStateDatabaseForTest();
-    fs.rmSync(stateDir, { recursive: true, force: true });
   });
 
   async function createEntry(params: {
@@ -51,7 +50,7 @@ describe("terminal main session transcript freshness", () => {
       ...(params.endedAt !== undefined ? { endedAt: params.endedAt } : {}),
       ...(params.status !== undefined ? { status: params.status } : {}),
     };
-    await upsertSessionEntry({ agentId: "main", sessionKey, storePath }, sessionEntry);
+    await upsertSessionEntryCore({ agentId: "main", sessionKey, storePath }, sessionEntry);
     await appendTranscriptEvent(
       { agentId: "main", sessionId, sessionKey, storePath },
       {
@@ -92,15 +91,20 @@ describe("terminal main session transcript freshness", () => {
     });
 
     expect(entry.updatedAt).toBe(registryTimestampMs);
-    expect(check(entry, sessionKey)).toBe(true);
-    await expect(
-      hasTerminalMainSessionTranscriptNewerThanRegistry({
-        agentId: "main",
-        entry,
-        sessionKey,
-        storePath,
-      }),
-    ).resolves.toBe(true);
+    const target = resolveSqliteTargetFromSessionStorePath(storePath, { agentId: "main" });
+    if (!target.path) {
+      throw new Error("expected SQLite database path");
+    }
+    const database = openOpenClawAgentDatabase({ agentId: "main", path: target.path });
+    const reads = trackSqliteStatementExecutions(database.db, ["events"], (query) =>
+      query.includes('"transcript_events"') ? "events" : null,
+    );
+    try {
+      expect(check(entry, sessionKey)).toBe(true);
+      expect(reads.counts.events).toBe(0);
+    } finally {
+      reads.restore();
+    }
   });
 
   it.each(["done", "failed"] as const)("keeps %s terminal sessions reusable", async (status) => {
@@ -112,14 +116,15 @@ describe("terminal main session transcript freshness", () => {
     expect(check(entry, sessionKey)).toBe(false);
   });
 
-  it("rotates endedAt-only main sessions after a later transcript mutation", async () => {
+  it("keeps a yielded main session reusable after a child transcript admission", async () => {
     const { entry, sessionKey } = await createEntry({
       endedAt: Date.now() - 20_000,
       updatedAt: Date.now() - 10_000,
     });
 
     expect(entry.status).toBeUndefined();
-    expect(check(entry, sessionKey)).toBe(true);
+    expect(entry.endedAt).toBeDefined();
+    expect(check(entry, sessionKey)).toBe(false);
   });
 
   it("uses SQLite freshness for entries that still contain legacy transcript paths", async () => {
@@ -132,9 +137,9 @@ describe("terminal main session transcript freshness", () => {
     expect(check(entry, sessionKey)).toBe(true);
   });
 
-  it("reads the transcript header when the caller has no session key", async () => {
+  it("preserves Date.parse semantics for a numeric-looking transcript header", async () => {
     const sessionId = "session-header-without-key";
-    const timestamp = "2026-01-01T12:00:00.000Z";
+    const timestamp = "2026";
     await appendTranscriptEvent(
       { agentId: "main", sessionId, sessionKey: "agent:main:header", storePath },
       { type: "session", version: 3, id: sessionId, timestamp, cwd: stateDir },
@@ -158,7 +163,7 @@ describe("terminal main session transcript freshness", () => {
     });
     expect(check(entry, sessionKey)).toBe(true);
 
-    await upsertSessionEntry({ agentId: "main", sessionKey, storePath }, entry);
+    await upsertSessionEntryCore({ agentId: "main", sessionKey, storePath }, entry);
     const refreshed = loadSessionEntry({ agentId: "main", sessionKey, storePath });
     dateNow.mockRestore();
 
@@ -178,7 +183,7 @@ describe("terminal main session transcript freshness", () => {
       status: "timeout",
       updatedAt: Date.now() + 10_000,
     });
-    await upsertSessionEntry(
+    await upsertSessionEntryCore(
       { agentId: "main", sessionKey: newerRegistry.sessionKey, storePath },
       newerRegistry.entry,
     );
