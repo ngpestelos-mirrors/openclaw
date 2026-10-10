@@ -1,8 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
-import type {
-  GitHubPublicationRow,
-  RepositoryGitHubPublicationRow,
-} from "../state/github-publication-read.types.js";
+import type { RepositoryGitHubPublicationRow } from "../state/github-publication-read.types.js";
+import type { GitHubPublicationDeferral } from "../state/github-publication-worker.types.js";
 import {
   listGitHubPublicationsForClaimInDatabase,
   listSharedGitHubPublicationsInDatabase,
@@ -15,12 +13,6 @@ import {
 } from "./worker-environments/placement-record.js";
 import { readWorkerPlacementsInDatabase } from "./worker-environments/placement-row-codec.js";
 import { listPendingWorkerWorkspaceResultsInDatabase } from "./worker-environments/placement-workspace-result.js";
-
-export type GitHubPublicationDeferral =
-  | { kind: "claim"; claim: WorkerSessionTurnClaim }
-  | { kind: "claimMissingSnapshot"; claim: WorkerSessionTurnClaim }
-  | { kind: "request"; row: GitHubPublicationRow }
-  | { kind: "orphaned" };
 
 export function matchesRepositoryGitHubPublicationClaim(
   row: RepositoryGitHubPublicationRow,
