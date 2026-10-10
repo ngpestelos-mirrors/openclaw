@@ -570,6 +570,8 @@ function createIncognitoAgentExecutionOwner(
                   } else if (value && "inputId" in value) {
                     if (value.append) markReady(value.append);
                     if (value.turn) value.turn.projectionNeedsReconcile = false;
+                  } else if (value && "projectionNeedsReconcile" in value) {
+                    value.projectionNeedsReconcile = false;
                   }
                   return { value };
                 },

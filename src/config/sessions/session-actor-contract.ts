@@ -233,7 +233,9 @@ export type SessionActorPhaseResults = {
   };
   adoptRun: undefined;
   appendToolResult: SessionTurnCommitted | SessionActorAppendCommitted;
-  appendTranscriptEvent: { anchor?: TranscriptEntryAnchor } | SessionActorAppendCommitted;
+  appendTranscriptEvent:
+    | { anchor?: TranscriptEntryAnchor; projectionNeedsReconcile?: boolean }
+    | SessionActorAppendCommitted;
   completeTurn: SessionTurnCommitted | { kind: "bookkeeping" };
   deliveryPending:
     | undefined

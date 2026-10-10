@@ -1,16 +1,18 @@
 import { expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { buildAgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
-import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
+import { readSessionEntryCache } from "./session-accessor.sqlite-entry-cache.js";
+import {
+  deleteSessionEntryRows,
+  writeSessionEntry,
+} from "./session-accessor.sqlite-entry-store.js";
 import {
   readSessionInputCompletion,
   readSessionPendingInputByKey,
 } from "./session-accessor.sqlite-pending-inputs.js";
-import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import { applySessionActorAppend } from "./session-actor-append.worker.js";
 import type { SessionActorAppend, SessionActorTarget } from "./session-actor-contract.js";
@@ -94,6 +96,9 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
       }),
       expected,
     };
+    const cachedEntries = () =>
+      readSessionEntryCache(database, { projection: "list", cache: true });
+    expect(cachedEntries().entries.get(scope.sessionKey)?.label).toBe("initial");
     const reads: string[] = [];
     const counter = trackSqliteStatementExecutions(database.db, ["reads"], (query) => {
       if (!/^select\b/i.test(query)) return null;
@@ -132,6 +137,7 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
               ...working.hot.entry!,
               activeWriterRunId: "run",
               updatedAt: 2,
+              label: "actor committed",
             });
             const result = applySessionTurn(
               {
@@ -188,6 +194,7 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
     } finally {
       counter.restore();
     }
+    expect(cachedEntries().entries.get(scope.sessionKey)?.label).toBe("actor committed");
     const committed = projectSessionActorHotState(state);
     const abandoned = cloneSessionActorStoredState(state);
     expect(() =>
@@ -267,13 +274,9 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
           message: { role: "user", content: "retained" },
         },
       ]);
-      executeSqliteQuerySync(
-        db.db,
-        getSessionKysely(db.db)
-          .deleteFrom("session_nodes")
-          .where("session_key", "=", scope.sessionKey),
-      );
+      deleteSessionEntryRows(db, scope.sessionKey);
     }, options);
+    expect(f.events()).toHaveLength(2);
     const state = hydrateSessionActorState(
       database,
       target,
@@ -281,7 +284,7 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
       "initial",
     );
     expect(state.hot.entry).toBeUndefined();
-    expect(state.transcript.navigation).toHaveLength(0);
+    expect(state.transcript.navigation).toHaveLength(2);
     let rejectFresh = false;
     let freshChecks = 0;
     const context = {
@@ -338,13 +341,23 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
         initialWriterRunId: "first-run",
       },
     };
-    const committed = runOpenClawAgentWriteTransaction(
-      (db) =>
-        withSessionActorTransactionState(db, state, () =>
-          applySessionActorAppend(append, state, context),
-        ),
-      options,
+    const retainedReads = trackSqliteStatementExecutions(database.db, ["entry"], (query) =>
+      query.toLowerCase().includes('from "session_nodes"') ? "entry" : null,
     );
+    const committed = (() => {
+      try {
+        return runOpenClawAgentWriteTransaction(
+          (db) =>
+            withSessionActorTransactionState(db, state, () =>
+              applySessionActorAppend(append, state, context),
+            ),
+          options,
+        );
+      } finally {
+        retainedReads.restore();
+      }
+    })();
+    expect(retainedReads.counts.entry).toBe(0);
     expect(committed.kind).toBe("metadata");
     if (committed.kind !== "metadata") throw new Error("Expected prepared metadata append");
     expect(committed.initialEntry).toMatchObject({

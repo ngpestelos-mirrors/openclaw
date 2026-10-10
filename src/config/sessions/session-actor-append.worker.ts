@@ -85,6 +85,7 @@ export function applySessionActorAppend(
     }
     context.admit("transaction");
     const absent = state.hot.entry === undefined;
+    const heldTranscript = state.window?.session_id === input.entry.sessionId;
     initialEntry = ensureSessionEntryInTransaction(
       database,
       resolveSqliteTranscriptScope(scope),
@@ -93,9 +94,9 @@ export function applySessionActorAppend(
       input.initialWriterRunId,
     );
     if (!initialEntry.owned) throw new Error("Session actor initializer lost its session identity");
-    if (absent) {
-      // A missing node does not prove its chosen transcript has no retained window or rows.
-      // Acquire those previously unheld facts once, after the canonical initializer claims it.
+    if (absent && !heldTranscript) {
+      // Acquire only previously unheld transcript facts after the initializer claims its target.
+      // A retained tombstone window already carries the complete hydrated preimage.
       Object.assign(
         state,
         hydrateSessionActorState(
