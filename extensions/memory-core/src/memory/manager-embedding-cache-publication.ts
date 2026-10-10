@@ -16,10 +16,10 @@ export async function publishMemoryEmbeddingCache(params: {
   mutation: MemoryEmbeddingCacheMutation;
   prepareRevision: () => number | undefined;
   invalidate: () => void;
-  retry<T>(
+  retry: <T>(
     run: () => Promise<MemoryPublicationResult<T>>,
     prepare: () => Promise<boolean>,
-  ): Promise<T | undefined>;
+  ) => Promise<T | undefined>;
 }): Promise<boolean | undefined> {
   const { scope, mutation, prepareRevision, invalidate, retry } = params;
   const expectedRevision = prepareRevision();

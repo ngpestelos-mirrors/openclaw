@@ -71,6 +71,7 @@ export function bindSqliteWorkerBackend(
           case "match":
             return { kind: "result", value: matchStandingIntentsInDatabase(db, command.input) };
         }
+        throw new Error("Unknown standing-intent command");
       });
     },
     assertSettled() {
