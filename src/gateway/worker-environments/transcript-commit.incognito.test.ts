@@ -120,7 +120,9 @@ it("refuses an actor batch when placement authority ends after ledger reservatio
         sessionTarget,
         request: createRequest(),
         assertCurrent: () => {
-          if (!current) throw new Error("placement owner ended");
+          if (!current) {
+            throw new Error("placement owner ended");
+          }
           return undefined;
         },
       }),

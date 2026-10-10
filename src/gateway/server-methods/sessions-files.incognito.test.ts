@@ -241,8 +241,8 @@ it("keeps MCP file and upload authority on the original actor when a same-ID act
     expect(uploaded).toHaveLength(1);
     expect(await readFile(new URL(uploaded[0]!.uri), "utf8")).toBe("uploaded");
     await subscribeMcpAppHostFile(options, view, file.resourceUri, true);
-    const entered = createDeferred<void>();
-    const release = createDeferred<void>();
+    const entered = createDeferred();
+    const release = createDeferred();
     const original = workspaceFs.readWorkspaceFile;
     vi.spyOn(workspaceFs, "readWorkspaceFile").mockImplementationOnce(async (...args) => {
       entered.resolve();
@@ -280,7 +280,9 @@ it("keeps MCP file and upload authority on the original actor when a same-ID act
     ).rejects.toThrow(/Incognito|incognito/);
     expect(sql.queries).toEqual([]);
   } finally {
-    if (viewId) releaseMcpAppView(viewId, runtime);
+    if (viewId) {
+      releaseMcpAppView(viewId, runtime);
+    }
     sql.restore();
   }
 });

@@ -127,8 +127,8 @@ describe("MCP App transcript reconstruction", () => {
         visit(toolResult(viewId, "call-1"));
       },
     );
-    const entered = createDeferred<void>();
-    const release = createDeferred<void>();
+    const entered = createDeferred();
+    const release = createDeferred();
     mocks.acquireSessionMcpRuntime.mockImplementationOnce(async () => {
       entered.resolve();
       await release.promise;

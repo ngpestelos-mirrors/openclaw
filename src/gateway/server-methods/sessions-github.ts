@@ -15,9 +15,9 @@ import { prepareControlUiSessionPrRead } from "../control-ui-session-pr-read.js"
 import {
   prepareCurrentGitHubPublicationOptionsIdentity,
   hasSupportedGitHubPublicationTarget,
+  readGitHubPublicationSession,
   type PublicationSessionIdentity,
 } from "../github-publication-availability.js";
-import { readGitHubPublicationSession } from "../github-publication-availability.js";
 import { GitHubPublicationKnownFailure } from "../github-publication-failure.js";
 import { isGitHubPublicationSuperseded } from "../github-publication-relevance.js";
 import { captureGitHubPublicationRequester } from "../github-publication-requester.js";

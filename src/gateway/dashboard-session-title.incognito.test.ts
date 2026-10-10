@@ -62,7 +62,7 @@ it("refuses a title after the same session ID acquires another lifecycle during 
   const sessionKey = "agent:main:dashboard:incognito-title-race";
   const entry: SessionEntry = { sessionId: "title-race", updatedAt: Date.now(), incognito: true };
   await actor.sessions.create(authority, { sessionKey, entry });
-  const entered = createDeferred<void>();
+  const entered = createDeferred();
   const resume = createDeferred<string>();
   generate.mockImplementation(() => {
     entered.resolve();

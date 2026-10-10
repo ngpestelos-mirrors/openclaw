@@ -373,12 +373,12 @@ describe("explicit repository move to Gateway", () => {
           } else {
             await operation;
           }
-          const entry = (await readEntry())!;
+          const materialized = (await readEntry())!;
           const worktree = (await managedWorktrees.findLiveByOwner("session", scope.sessionKey))!;
-          expect(entry.repositoryWorkspaceId).toBeUndefined();
-          expect(entry.worktree?.id).toBe(worktree.id);
+          expect(materialized.repositoryWorkspaceId).toBeUndefined();
+          expect(materialized.worktree?.id).toBe(worktree.id);
           expect(worktree.baseRef).toBe(outcome === "requested topic" ? "topic" : "HEAD");
-          expect(entry.spawnedCwd).toBe(worktree.path);
+          expect(materialized.spawnedCwd).toBe(worktree.path);
           expect(await fsp.readFile(path.join(worktree.path, "edited.txt"), "utf8")).toBe(
             "accepted\n",
           );

@@ -75,7 +75,7 @@ function prepare(sessionKey: string, entry: InternalSessionEntry) {
       storePath: actor.path,
       context: createDirectChatContext({ getRuntimeConfig: () => cfg }),
       signal: new AbortController().signal,
-      assertCurrent: authority.assertCurrent,
+      assertCurrent: () => authority.assertCurrent(),
       runSetupScript: false,
     }),
   );
@@ -117,8 +117,8 @@ it.each(["lifecycle", "intent"] as const)(
     const { sessionKey, entry } = await createPendingSession(`changed-${change}`);
     const pendingWorktree = entry.pendingWorktree;
     assert(pendingWorktree);
-    const entered = createDeferred<void>();
-    const resume = createDeferred<void>();
+    const entered = createDeferred();
+    const resume = createDeferred();
     // oxlint-disable-next-line typescript/unbound-method -- The real method is called with its original receiver below.
     const resolveRepository = ManagedWorktreeService.prototype.resolveRepositoryPaths;
     vi.spyOn(ManagedWorktreeService.prototype, "resolveRepositoryPaths").mockImplementationOnce(

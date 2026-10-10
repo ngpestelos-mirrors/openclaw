@@ -117,8 +117,8 @@ it.each(["archive", "restore"] as const)(
       archivedAt: 1,
     };
     await actor.sessions.create(authority, { sessionKey: key, entry });
-    const entered = createDeferred<void>();
-    const resume = createDeferred<void>();
+    const entered = createDeferred();
+    const resume = createDeferred();
     const placement: PlacementContext = {
       workerSessionPlacementService: {
         getMany: () => new Map(),
