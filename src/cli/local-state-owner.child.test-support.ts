@@ -135,6 +135,13 @@ try {
         withConsoleLogsRoutedToStderrForJson(
           process.argv,
           async () => {
+            if (process.argv[2] === "ownership-claim-direct") {
+              const { claimOpenClawStateOwnership } =
+                await import("../state/openclaw-state-ownership-operations.js");
+              const ownership = claimOpenClawStateOwnership("supervisor");
+              process.stdout.write(`${JSON.stringify({ ownership })}\n`);
+              return;
+            }
             const program = new Command().name("openclaw").exitOverride();
             registerWorktreesCli(program);
             if (process.argv[2] === "sandbox") {

@@ -119,12 +119,7 @@ export async function withOpenClawStateDatabaseReadSnapshot<T>(
     ? AbortSignal.any([callerSignal, controller.signal])
     : controller.signal;
   const assertHostAdmission = () =>
-    openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
-      pathname,
-      env,
-      undefined,
-      true,
-    );
+    openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(pathname, env);
   let closeSnapshotWork: ((reason: unknown) => void) | undefined;
   const run = async () => {
     let admission: ReturnType<typeof captureOpenClawStateDatabaseReadAdmission>;
@@ -305,8 +300,6 @@ function withOpenClawStateDatabaseReadOnlyIfOpen<T>(
     openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
       pathname,
       snapshot.env,
-      undefined,
-      true,
     );
     return {
       reused: true,
@@ -333,12 +326,7 @@ function withFreshOpenClawStateDatabaseReadOnly<T>(
   pathname: string,
 ): T {
   const env = options.env ?? process.env;
-  openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
-    pathname,
-    env,
-    undefined,
-    true,
-  );
+  openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(pathname, env);
   if (synchronousReadSnapshots.currentAuthorityPath === pathname) {
     const maintained = withMaintenanceOpenClawStateDatabaseReadOnly(operation, pathname);
     if (maintained.reused) {
@@ -598,8 +586,6 @@ export function withExistingOpenClawStateDatabaseCurrentReadOnly<T>(
     openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
       pathname,
       options.env ?? process.env,
-      undefined,
-      true,
     );
     return withOpenClawStateReadOnlyLocation(
       operation,
@@ -627,12 +613,7 @@ export function withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync
       return undefined;
     }
     const env = options.env ?? process.env;
-    openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
-      pathname,
-      env,
-      undefined,
-      true,
-    );
+    openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(pathname, env);
     if (!requiresArtifactPreservingSnapshot(pathname)) {
       return withOpenClawStateReadOnlyLocation(operation, pathname, pathname);
     }
@@ -641,12 +622,7 @@ export function withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync
     });
     try {
       // Verification can quarantine the live path while the snapshot child is running.
-      openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
-        pathname,
-        env,
-        undefined,
-        true,
-      );
+      openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(pathname, env);
     } catch (error) {
       prepared.cleanup();
       throw error;

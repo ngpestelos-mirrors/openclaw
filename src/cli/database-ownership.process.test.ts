@@ -44,17 +44,11 @@ function createEnvironment(): NodeJS.ProcessEnv {
   return env;
 }
 
-function claim(env: NodeJS.ProcessEnv) {
+function claim(env: NodeJS.ProcessEnv, direct = false) {
   return runCliProcessChild({
-    nodeArgs: [
-      ...entrypoint,
-      "database",
-      "ownership",
-      "claim",
-      "--manager",
-      "supervisor",
-      "--json",
-    ],
+    nodeArgs: direct
+      ? [...entrypoint, "ownership-claim-direct", "--json"]
+      : [...entrypoint, "database", "ownership", "claim", "--manager", "supervisor", "--json"],
     env,
   });
 }
@@ -90,6 +84,12 @@ describe("database ownership claim process boundary", () => {
           error: expect.stringMatching(/stop.*external supervisor/iu),
         });
         assert.deepStrictEqual(snapshot(database.path), before);
+        const direct = await claim(env, true);
+        expect(direct.code, direct.stderr).toBe(1);
+        expect(JSON.parse(direct.stdout)).toMatchObject({
+          error: { message: expect.stringMatching(/OpenClaw state database is busy/iu) },
+        });
+        assert.deepStrictEqual(snapshot(database.path), before);
         expect(inspectOpenClawStateOwnershipAtPath(database.path)).toBeNull();
         runOpenClawStateWriteTransaction(
           ({ db }) => {
@@ -112,43 +112,49 @@ describe("database ownership claim process boundary", () => {
     },
   );
 
-  it("claims under exclusive offline custody, survives the next owner, and reclaims idempotently", async () => {
-    const env = createEnvironment();
-    const databasePath = resolveOpenClawStateSqlitePath(env);
-    const first = await claim(env);
-    expect(first.code, first.stderr).toBe(0);
-    const firstResult: { ownership: OpenClawExternalStateOwnership } = JSON.parse(first.stdout);
-    expect(firstResult.ownership).toMatchObject({ managerId: "supervisor", mode: "external" });
-    const observation: { pid: number; ownershipWrites: Array<{ pid?: number; role?: string }> } =
-      JSON.parse(
-        fs.readFileSync(path.join(env.OPENCLAW_HOME!, "control/sql-observation.json"), "utf8"),
-      );
-    expect(observation.ownershipWrites.length).toBeGreaterThan(0);
-    for (const write of observation.ownershipWrites) {
-      expect(write).toEqual({ pid: observation.pid, role: "agent-embedded" });
-    }
-    expect(fs.existsSync(resolveGatewayLockPaths(env).ownerLockPath)).toBe(false);
+  it.each([false, true])(
+    "claims under exclusive offline custody and reclaims idempotently (direct=%s)",
+    async (direct) => {
+      const env = createEnvironment();
+      const databasePath = resolveOpenClawStateSqlitePath(env);
+      const first = await claim(env, direct);
+      expect(first.code, first.stderr).toBe(0);
+      const firstResult: { ownership: OpenClawExternalStateOwnership } = JSON.parse(first.stdout);
+      expect(firstResult.ownership).toMatchObject({ managerId: "supervisor", mode: "external" });
+      const observation: { pid: number; ownershipWrites: Array<{ pid?: number; role?: string }> } =
+        JSON.parse(
+          fs.readFileSync(path.join(env.OPENCLAW_HOME!, "control/sql-observation.json"), "utf8"),
+        );
+      expect(observation.ownershipWrites.length).toBeGreaterThan(0);
+      for (const write of observation.ownershipWrites) {
+        expect(write).toEqual({
+          pid: observation.pid,
+          role: direct ? "sqlite-maintenance" : "agent-embedded",
+        });
+      }
+      expect(fs.existsSync(resolveGatewayLockPaths(env).ownerLockPath)).toBe(false);
 
-    const repeated = await claim(env);
-    expect(repeated.code, repeated.stderr).toBe(0);
-    expect(JSON.parse(repeated.stdout)).toEqual(JSON.parse(first.stdout));
+      const repeated = await claim(env, direct);
+      expect(repeated.code, repeated.stderr).toBe(0);
+      expect(JSON.parse(repeated.stdout)).toEqual(JSON.parse(first.stdout));
 
-    const successor = await acquireGatewayLock({ env, allowInTests: true, timeoutMs: 0 });
-    expect(successor).not.toBeNull();
-    try {
-      await expect(
-        assertOpenClawStateWriteAllowedAtPath({ databasePath, env }),
-      ).resolves.toBeUndefined();
-      expect(inspectOpenClawStateOwnershipAtPath(databasePath)).toEqual(firstResult.ownership);
-      await expect(
-        assertOpenClawStateWriteAllowedAtPath({
-          databasePath,
-          env: { ...env, OPENCLAW_SUPERVISOR_MODE: undefined },
-        }),
-      ).rejects.toThrow(/externally supervised/iu);
-    } finally {
-      await closeOpenClawStateDatabaseAsync();
-      await successor?.release();
-    }
-  });
+      const successor = await acquireGatewayLock({ env, allowInTests: true, timeoutMs: 0 });
+      expect(successor).not.toBeNull();
+      try {
+        await expect(
+          assertOpenClawStateWriteAllowedAtPath({ databasePath, env }),
+        ).resolves.toBeUndefined();
+        expect(inspectOpenClawStateOwnershipAtPath(databasePath)).toEqual(firstResult.ownership);
+        await expect(
+          assertOpenClawStateWriteAllowedAtPath({
+            databasePath,
+            env: { ...env, OPENCLAW_SUPERVISOR_MODE: undefined },
+          }),
+        ).rejects.toThrow(/externally supervised/iu);
+      } finally {
+        await closeOpenClawStateDatabaseAsync();
+        await successor?.release();
+      }
+    },
+  );
 });

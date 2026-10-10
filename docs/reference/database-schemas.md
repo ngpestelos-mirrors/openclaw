@@ -173,8 +173,10 @@ Canonical main-key policy, external-supervision ownership, and the machine-owned
 TTS preference path are loaded once for the physical database and shared across
 handles and workers. Their owning writers publish committed replacements;
 unrelated writes do not invalidate these facts. The Gateway owns runtime writes.
-Other processes must use that owner or run while it is stopped. Explicit ownership
-inspection and Doctor still read the database, and live lifecycle and lease checks
+Other processes must use that owner or run while it is stopped, except established
+updater handoff, restart-sentinel, and update-finalization writers, which retain their
+own lifecycle fences. Ownership claims require exclusive offline custody. Explicit
+ownership inspection and Doctor still read the database, and live lifecycle and lease checks
 remain at effect boundaries. Cached policy facts do not grant canonical admission
 or continuation authority. Main-key writer publications carry a host revision, so
 workers can retain an absent publication without polling after unrelated writes.

@@ -774,10 +774,7 @@ describe("Gateway state ownership", () => {
           } else {
             for (const role of [undefined, "gateway", "agent-embedded"] as const) {
               fs.writeFileSync(pathname, JSON.stringify({ ...record, role }));
-              expect(() => assertStateDatabaseAccessAllowed(databasePath)).toThrow(
-                "owned by a live",
-              );
-              expect(() => assertStateDatabaseReadAllowed(databasePath)).not.toThrow();
+              expect(() => assertStateDatabaseAccessAllowed(databasePath)).not.toThrow();
             }
             for (const role of ["sqlite-maintenance", "skill-workshop-apply"] as const) {
               fs.writeFileSync(pathname, JSON.stringify({ ...record, role }));
