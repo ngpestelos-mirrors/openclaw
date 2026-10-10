@@ -321,11 +321,18 @@ const DREAMING_RESOURCES: {
   wikiOverview: { method: "wiki.overview", value: (payload) => payload },
 };
 
-export async function loadDreamingResource<Key extends DreamingResourceKey>(
+export function loadDreamingResource(
+  state: DreamingState,
+  key: DreamingResourceKey,
+): Promise<void> {
+  return loadDreamingResourceSpec(state, key, DREAMING_RESOURCES[key]);
+}
+
+async function loadDreamingResourceSpec<Key extends DreamingResourceKey>(
   state: DreamingState,
   key: Key,
+  spec: (typeof DREAMING_RESOURCES)[Key],
 ): Promise<void> {
-  const spec = DREAMING_RESOURCES[key];
   const agentId = resolveSelectedAgentId(state);
   const resource = state.resources[key];
   if (!agentId) {

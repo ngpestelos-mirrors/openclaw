@@ -2,7 +2,6 @@ import "../../styles/chat/startup-layout.css";
 import { consume } from "@lit/context";
 import { html, nothing, type TemplateResult } from "lit";
 import { property } from "lit/decorators.js";
-import { html as staticHtml, literal } from "lit/static-html.js";
 import { applicationContext, type ApplicationContext } from "../../app/context.ts";
 import { icons } from "../../components/icons.ts";
 import { markdownBlocks } from "../../components/markdown-blocks.ts";
@@ -184,8 +183,6 @@ class CustodianSurface extends OpenClawLightDomElement {
       store.activeVariant === "caretaker" &&
       !store.sensitive &&
       !store.hasUnresolvedQuestion();
-    const composerTag = store.sensitive ? literal`input` : literal`textarea`;
-    const composerPlaceholder = store.sensitive ? t("custodian.sensitivePlaceholder") : placeholder;
     const pluginIntro = pluginWelcome && !store.hasRealUserTurn();
     const askPlugin = pluginIntro ? createPluginHelpRequest(this.context, plugin) : undefined;
     return html`
@@ -308,22 +305,33 @@ class CustodianSurface extends OpenClawLightDomElement {
                 <div class="agent-chat__input">
                   <div class="agent-chat__composer-input-row">
                     <div class="agent-chat__composer-combobox">
-                      ${staticHtml`<${composerTag}
-                        type=${store.sensitive ? "password" : nothing}
-                        rows=${store.sensitive ? nothing : "1"}
-                        .value=${store.input}
-                        autocomplete=${store.sensitive ? "off" : "on"}
-                        placeholder=${composerPlaceholder}
-                        aria-label=${composerPlaceholder}
-                        ?disabled=${store.sensitive ? !store.canSend : !store.chatAvailable}
-                        @input=${(event: Event) =>
-                          store.setInput(
-                            (event.target as HTMLInputElement | HTMLTextAreaElement).value,
-                          )}
-                        @keydown=${(event: KeyboardEvent) => this.handleComposerKeydown(event)}
-                      ></${composerTag}>`}
+                      ${
+                        store.sensitive
+                          ? html`<input
+                              type="password"
+                              .value=${store.input}
+                              autocomplete="off"
+                              placeholder=${t("custodian.sensitivePlaceholder")}
+                              aria-label=${t("custodian.sensitivePlaceholder")}
+                              ?disabled=${!store.canSend}
+                              @input=${(event: Event) =>
+                                store.setInput((event.target as HTMLInputElement).value)}
+                              @keydown=${(event: KeyboardEvent) => this.handleComposerKeydown(event)}
+                            />`
+                          : html`<textarea
+                              rows="1"
+                              .value=${store.input}
+                              autocomplete="on"
+                              placeholder=${placeholder}
+                              aria-label=${placeholder}
+                              ?disabled=${!store.chatAvailable}
+                              @input=${(event: Event) =>
+                                store.setInput((event.target as HTMLTextAreaElement).value)}
+                              @keydown=${(event: KeyboardEvent) => this.handleComposerKeydown(event)}
+                            ></textarea>`
+                      }
                       <span class="agent-chat__composer-placeholder" aria-hidden="true"
-                        >${composerPlaceholder}</span
+                        >${store.sensitive ? t("custodian.sensitivePlaceholder") : placeholder}</span
                       >
                     </div>
                     <div class="agent-chat__composer-actions">
