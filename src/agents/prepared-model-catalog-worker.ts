@@ -10,6 +10,7 @@ import { WorkerTaskError, WorkerTaskPool } from "../infra/worker-task-pool.js";
 import type { Model } from "../llm/types.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { captureRemoteModelCatalogSnapshot } from "../model-catalog/remote-overlay.js";
+import { resolveCodexClientVersion } from "../plugin-sdk/codex-client-version-runtime.js";
 import {
   getPluginCacheRetirementSignal,
   getPluginMetadataSnapshotCache,
@@ -449,8 +450,17 @@ export function createPreparedModelCatalogWorker(
       } finally {
         captures.delete(controller);
       }
+      // Codex turns run in this process, so its binary decision is what discovery reports.
+      const codexClientVersion = await withPluginRuntimeGenerationScope(
+        { metadataSnapshot, pluginRegistry: params.pluginRegistry },
+        () => resolveCodexClientVersion({ config: input.config, env: input.env }),
+      );
       controller.signal.throwIfAborted();
-      const value = { ...command, syntheticAuth };
+      const value = {
+        ...command,
+        syntheticAuth,
+        ...(codexClientVersion ? { codexClientVersion } : {}),
+      };
       const shared = gatewayOwned
         ? await getGatewayCatalogPool(workerInput, metadataSnapshot, environmentFingerprint)
         : undefined;

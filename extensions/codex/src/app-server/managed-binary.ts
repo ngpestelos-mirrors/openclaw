@@ -4,9 +4,8 @@
  * app-server handshake, otherwise the package shipped beside the Codex plugin.
  */
 import { constants as fsConstants, existsSync, realpathSync } from "node:fs";
-import { access, mkdtemp, open, realpath, rm } from "node:fs/promises";
+import { access, open, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
-import os from "node:os";
 import path from "node:path";
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { coerceErrorMessage } from "openclaw/plugin-sdk/error-runtime";
@@ -20,8 +19,6 @@ import { CODEX_APP_SERVER_VERSION, MANAGED_CODEX_APP_SERVER_PACKAGE } from "./ve
 
 export const CODEX_VERSION_TIMEOUT_MS = 5_000;
 const CODEX_VERSION_MAX_OUTPUT_BYTES = 64 * 1024;
-// Includes first-launch OS scans of a freshly installed binary on slow hosts.
-const INSTALLED_CODEX_HANDSHAKE_TIMEOUT_MS = 15_000;
 
 // Mirrors the official launcher; native startup remains owned by its npm entrypoint.
 const NATIVE_TARGET_TRIPLES = new Map([
@@ -186,9 +183,12 @@ async function decideInstalledCodexAppServer(
   }
   let handshakeVersion: string | undefined;
   try {
-    handshakeVersion = await (probes.probeHandshake ?? probeCodexAppServerHandshake)(
-      launcher.command,
-    );
+    handshakeVersion = await (
+      probes.probeHandshake ??
+      // Lazy: the probe spawns through transport-stdio, which imports this module.
+      (async (command) =>
+        (await import("./installed-probe.js")).probeCodexAppServerHandshake(command))
+    )(launcher.command);
   } catch (error) {
     return {
       reason: `installed ${found} ${version} failed the app-server handshake: ${coerceErrorMessage(error)}`,
@@ -276,40 +276,6 @@ export async function runCodexVersionCommand(
     );
   }
   return `${result.stdout}\n${result.stderr}`;
-}
-
-/** Runs OpenClaw's real initialize against a throwaway CODEX_HOME; no auth or turn. */
-async function probeCodexAppServerHandshake(command: string): Promise<string | undefined> {
-  // Lazy: the client transport statically depends on this module.
-  const { CodexAppServerClient } = await import("./client.js");
-  const codexHome = await mkdtemp(path.join(os.tmpdir(), "openclaw-codex-probe-"));
-  let timer: NodeJS.Timeout | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`timed out after ${INSTALLED_CODEX_HANDSHAKE_TIMEOUT_MS} ms`)),
-      INSTALLED_CODEX_HANDSHAKE_TIMEOUT_MS,
-    );
-  });
-  const starting = CodexAppServerClient.start({
-    transport: "stdio",
-    command,
-    commandSource: "resolved-managed",
-    args: ["app-server", "--listen", "stdio://"],
-    headers: {},
-    env: { CODEX_HOME: codexHome },
-  });
-  try {
-    const client = await Promise.race([starting, deadline]);
-    await Promise.race([client.initialize(), deadline]);
-    return client.getServerVersion();
-  } finally {
-    clearTimeout(timer);
-    await starting.then(
-      (client) => client.closeAndWait(),
-      () => undefined,
-    );
-    await rm(codexHome, { recursive: true, force: true });
-  }
 }
 
 export async function resolveManagedCodexAppServerStartOptions(
