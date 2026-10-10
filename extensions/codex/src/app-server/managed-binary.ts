@@ -262,6 +262,9 @@ async function decideInstalledCodexAppServer(
       reason: `installed ${found} is not a native Codex executable or the official ${MANAGED_CODEX_APP_SERVER_PACKAGE} launcher`,
     };
   }
+  if (isManagedCodexDesktopCommand(launcher.command, platform)) {
+    return { reason: `installed ${found} belongs to a macOS desktop app` };
+  }
   let output: string;
   const versionTimeoutMs = Math.max(0, selectionDeadline - performance.now());
   if (versionTimeoutMs <= 0) {

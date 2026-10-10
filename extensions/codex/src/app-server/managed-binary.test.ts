@@ -8,6 +8,7 @@ import { SemVer } from "semver";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import { resolveCodexAppServerRuntimeOptions } from "./config-runtime.js";
+import * as desktopAppPaths from "./desktop-app-paths.js";
 import {
   assertInstalledCodexAppServerVersion,
   INSTALLED_CODEX_PROBE_TIMEOUT_MS,
@@ -463,6 +464,29 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
       selected: { command: standalone, nativeCommand: standalone, version: NEWER },
     });
     expect(runVersion).toHaveBeenCalledExactlyOnceWith(standalone);
+  });
+
+  it("does not adopt a desktop-owned binary found through a PATH symlink", async () => {
+    const desktop = path.join(root, "Codex.app", "Contents", "Resources", "codex");
+    await mkdir(path.dirname(desktop), { recursive: true });
+    await writeFile(desktop, "\u007fELF native fixture");
+    await chmod(desktop, 0o755);
+    await symlink(desktop, path.join(bin, "codex"));
+    vi.spyOn(desktopAppPaths, "resolveMacOSDesktopCodexAppServerCommandCandidates").mockReturnValue(
+      [desktop],
+    );
+    const runVersion = vi.fn(async () => `codex-cli ${NEWER}`);
+    const probeHandshake = vi.fn(async () => NEWER);
+
+    await expect(
+      resolveManagedCodexClientVersion("package-only", {
+        platform: "darwin",
+        probes: { env: { PATH: bin }, platform: "darwin", runVersion, probeHandshake },
+      }),
+    ).resolves.toBe(CODEX_APP_SERVER_VERSION);
+    expect(runVersion).not.toHaveBeenCalled();
+    expect(probeHandshake).not.toHaveBeenCalled();
+    expectChoice("belongs to a macOS desktop app");
   });
 
   it("starts the selected installed Codex first with the package as its fallback", async () => {

@@ -35,7 +35,9 @@ shipped binary otherwise. Once per Gateway process it checks the first `codex`
 on `PATH` and uses it only when all of these hold:
 
 - It is a native executable or the official `@openai/codex` npm launcher.
-  Other wrapper scripts, such as pnpm global shims, are skipped.
+  Other wrapper scripts, such as pnpm global shims, are skipped. A `PATH`
+  symlink to a macOS desktop-owned binary is also skipped; desktop startup
+  keeps its separate permission and auth rules.
 - `codex --version` answers with a stable version newer than the shipped one.
   The version check and selection handshake share a four-second budget. A
   managed request with a shorter remaining deadline spends at most half of it
@@ -50,9 +52,10 @@ on `PATH` and uses it only when all of these hold:
   `codex` from the Gateway's `PATH`.
 - A real app-server `initialize` handshake against a throwaway `CODEX_HOME`
   succeeds within the remaining selection budget and reports the same version.
-  Its SQLite location is also forced into that temporary home; inherited
-  database-location overrides cannot redirect the probe into existing state.
-  No auth or turn is involved.
+  Its SQLite location is forced into that temporary home through both environment
+  and CLI configuration. Legacy managed configuration that can override this
+  location disables installed selection, because the probe cannot guarantee
+  isolation from existing state. No auth or turn is involved.
 
 Otherwise OpenClaw uses the shipped binary. The Gateway logs one line with the
 chosen binary, its version, and the reason, for example

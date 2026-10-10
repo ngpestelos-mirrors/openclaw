@@ -5,11 +5,11 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { signalProcessTree } from "openclaw/plugin-sdk/process-runtime";
+import { runUtf8CommandWithTimeout, signalProcessTree } from "openclaw/plugin-sdk/process-runtime";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import {
   buildCodexAppServerInitializeParams,
@@ -26,16 +26,64 @@ const HANDSHAKE_MAX_OUTPUT_CHARS = 1024 * 1024;
 const HANDSHAKE_EXIT_TIMEOUT_MS = 2_000;
 const INITIALIZE_REQUEST_ID = 1;
 
+async function assertProbeCanOverrideStorage(timeoutMs: number): Promise<void> {
+  // Legacy managed layers override even -c flags. Do not execute a candidate
+  // when an administrator can redirect its disposable storage.
+  if (process.platform !== "win32") {
+    const managedFile = await access("/etc/codex/managed_config.toml").then(
+      () => true,
+      (error: unknown) => {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+          return false;
+        }
+        throw error;
+      },
+    );
+    if (managedFile) {
+      throw new Error("managed Codex configuration prevents an isolated selection probe");
+    }
+  }
+  if (process.platform === "darwin") {
+    // read-type reveals only presence/type, never the configuration's contents.
+    const result = await runUtf8CommandWithTimeout(
+      ["/usr/bin/defaults", "read-type", "com.openai.codex", "config_toml_base64"],
+      {
+        baseEnv: { ...process.env, LC_ALL: "C" },
+        input: "",
+        timeoutMs: Math.min(1_000, timeoutMs),
+        maxOutputBytes: 4_096,
+        killProcessTree: true,
+        killSignal: "SIGKILL",
+        killGraceMs: 0,
+      },
+    );
+    if (
+      result.termination !== "exit" ||
+      result.code !== 1 ||
+      (!result.stderr.includes("does not exist") &&
+        !result.stderr.includes("Could not find key 'config_toml_base64'"))
+    ) {
+      throw new Error("managed Codex preferences cannot be excluded from the selection probe");
+    }
+  }
+}
+
 /** Sends one initialize request and returns the Codex version from its reply. */
 export async function probeCodexAppServerHandshake(
   command: string,
   timeoutMs: number = HANDSHAKE_TIMEOUT_MS,
 ): Promise<string | undefined> {
+  const deadline = performance.now() + timeoutMs;
+  await assertProbeCanOverrideStorage(timeoutMs);
   const codexHome = await mkdtemp(
     path.join(resolvePreferredOpenClawTmpDir(), "openclaw-codex-probe-"),
   );
   try {
-    return await exchangeInitialize(command, codexHome, timeoutMs);
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 0) {
+      throw new Error("selection probe timed out before initialize");
+    }
+    return await exchangeInitialize(command, codexHome, remainingMs);
   } finally {
     await rm(codexHome, { recursive: true, force: true });
   }
@@ -50,7 +98,9 @@ async function exchangeInitialize(
     transport: "stdio",
     command,
     commandSource: "resolved-managed",
-    args: ["app-server", "--listen", "stdio://"],
+    // CLI flags override system/user defaults; the check above excludes legacy
+    // managed layers, which Codex intentionally places above these flags.
+    args: ["-c", `sqlite_home=${JSON.stringify(codexHome)}`, "app-server", "--listen", "stdio://"],
     headers: {},
     // Codex may otherwise prefer an inherited database root over CODEX_HOME.
     env: { CODEX_HOME: codexHome, CODEX_SQLITE_HOME: codexHome },
