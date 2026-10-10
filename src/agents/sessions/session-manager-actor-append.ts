@@ -82,7 +82,12 @@ export async function appendSessionManagerActor(input: {
   } catch (cause) {
     if (!captured) {
       if (hasSqliteWorkerOutcomeUnknown(cause)) {
-        recordModelFallbackStop(cause);
+        const error =
+          cause instanceof Error
+            ? cause
+            : new Error("Session actor append outcome is unknown", { cause });
+        recordModelFallbackStop(error);
+        throw error;
       }
       throw cause;
     }

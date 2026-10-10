@@ -19,6 +19,7 @@ import {
 } from "../../config/sessions/transcript-write-context.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { runInDetachedAsyncContext } from "../../shared/detached-async-context.js";
+import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import type { AgentMessage } from "../runtime/index.js";
 import { copyCodeModeSourceAppendOptions } from "../transcript-code-mode-source.js";
 import { getSessionCompactionPersistenceAsync } from "./session-compaction-persistence.js";
@@ -68,10 +69,10 @@ export class SessionManagerPersistence extends SessionManagerNativePersistence {
     const { options } = writeAdmission;
     const database = "actor" in writeAdmission ? undefined : writeAdmission.database;
     const { env: _env, ...writeTarget } = withOwnedSessionTranscriptWriterFence(target);
-    const captured: SessionMetadataWorkerOperations["session.metadata.append"]["input"]["scope"] = {
+    const captured = {
       ...writeTarget,
-      storePath: database?.path ?? options.path,
-    };
+      storePath: database?.path ?? resolveOpenClawAgentSqlitePath(options),
+    } satisfies SessionMetadataWorkerOperations["session.metadata.append"]["input"]["scope"];
     if (database && "db" in database && database.db.isTransaction) {
       throw new Error("Asynchronous session writes must own their transaction");
     }
