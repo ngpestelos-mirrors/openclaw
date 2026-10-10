@@ -17,6 +17,7 @@ import {
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { SettingsManager } from "../../sessions/settings-manager.js";
+import { log } from "../logger.js";
 import { createToolResultPromptProjectionState } from "../session-prompt-state.js";
 import { submitEmbeddedAttemptPrompt } from "./attempt-prompt-submit.js";
 import {
@@ -308,10 +309,14 @@ describe("ChatGPT V2 at the embedded normal request boundary", () => {
 
   it("falls back once on an invalid checkpoint without persisting or dispatching foreground work", async () => {
     const f = await fixture();
+    const warn = vi.spyOn(log, "warn");
     respond = () => [terminal];
     await f.submit();
     expect(requests).toHaveLength(1);
     expect(f.onFallback).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("exactly one nonempty compaction item"),
+    );
     expect(f.execute).not.toHaveBeenCalled();
     expect(
       f.sessionManager
