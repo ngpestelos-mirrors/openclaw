@@ -21,6 +21,7 @@ import {
 import { registerSharedClientCompactionRetentionTests } from "./shared-client-compaction-retention.test-support.js";
 import { registerSharedClientConnectionArtifactTests } from "./shared-client-connection-artifact.test-support.js";
 import { registerSharedClientInferenceTests } from "./shared-client-inference.test-support.js";
+import { registerSharedClientInstalledFallbackTests } from "./shared-client-installed-fallback.test-support.js";
 import { retireSharedCodexAppServerClientsBeforeDesktopGeneration } from "./shared-client-lifecycle.js";
 import { registerSharedClientLifetimeTests } from "./shared-client-lifetime.test-support.js";
 import { registerSharedClientWebSocketStartupTests } from "./shared-client-websocket-startup.test-support.js";
@@ -798,6 +799,12 @@ describe("shared Codex app-server client", () => {
 
     await clearSharedCodexAppServerClientAndWait({ exitTimeoutMs: 25, forceKillDelayMs: 5 });
     expect(desktop.process.stdin.destroyed).toBe(true);
+  });
+
+  registerSharedClientInstalledFallbackTests({
+    resolveManagedStart: mocks.resolveManagedCodexAppServerStartOptions,
+    sendInitializeResult,
+    warn: mocks.embeddedAgentLog.warn,
   });
 
   it("shares a managed fallback with a waiter that arrives during fallback initialize", async () => {

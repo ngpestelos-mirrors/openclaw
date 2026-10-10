@@ -8,14 +8,16 @@ import type { ModelProviderConfig } from "openclaw/plugin-sdk/provider-model-sha
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   OPENAI_API_BASE_URL,
-  OPENAI_CODEX_MODELS_ENDPOINT as OPENAI_CODEX_MODELS_URL,
   OPENAI_CODEX_RESPONSES_BASE_URL,
+  resolveOpenAICodexModelsEndpoint,
 } from "./base-url.js";
 import { OPENAI_DEFAULT_MODEL } from "./default-models.js";
 import { buildOpenAIProvider } from "./openai-provider.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { resolveThinkingProfile } from "./provider-policy-api.js";
 import { registerOpenAIServiceTierCatalogTests } from "./test-support/model-service-tiers.test-support.js";
+
+const OPENAI_CODEX_MODELS_URL = await resolveOpenAICodexModelsEndpoint();
 
 const mocks = vi.hoisted(() => ({
   resolveApiKeyForProvider: vi.fn(),

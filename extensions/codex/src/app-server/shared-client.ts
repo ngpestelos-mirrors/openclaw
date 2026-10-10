@@ -57,9 +57,15 @@ import { ownCodexInferenceClient } from "./inference-routing.js";
 import { isCodexAppServerProxyLaunch } from "./launch-args.js";
 import {
   isManagedCodexDesktopCommand,
+  assertInstalledCodexAppServerVersion,
+  rejectInstalledCodexAppServer,
   resolveManagedCodexAppServerStartOptions,
   resolveManagedCodexNativeCommand,
 } from "./managed-binary.js";
+import {
+  isCodexComputerUseCandidateArtifactsUnavailableError,
+  resolveManagedFallbackStartOptions,
+} from "./managed-fallback.js";
 import { acquireCodexNativeConfigFence } from "./native-config-fence.js";
 import { nativeHookRelayUnregisterQueue } from "./native-hook-relay-state.js";
 import { createCodexResponsesOAuth, isCodexResponsesOAuth } from "./responses-oauth.js";
@@ -895,6 +901,19 @@ async function startInitializedCodexAppServerClientOnce(
     );
   };
   const startOptionsCandidates = resolveManagedFallbackStartOptions(params.startOptions);
+  // A selected installed Codex that cannot start or reports another version
+  // yields to the bundled package here, before any thread or turn exists.
+  const yieldInstalledCodex = (index: number, command: string, error: unknown) => {
+    if (index + 1 >= startOptionsCandidates.length || abandonSignal.aborted) {
+      return false;
+    }
+    try {
+      params.assertCurrent?.();
+    } catch {
+      return false;
+    }
+    return rejectInstalledCodexAppServer(command, error);
+  };
   for (const [index, startOptions] of startOptionsCandidates.entries()) {
     params.assertCurrent?.();
     observeAcquire(params, { boundary: "prestart-artifact-drain" });
@@ -1005,6 +1024,9 @@ async function startInitializedCodexAppServerClientOnce(
           ),
         );
       }
+      if (yieldInstalledCodex(index, startOptions.command, error)) {
+        continue;
+      }
       throw error;
     }
     client.addCloseHandler((closedClient) => {
@@ -1033,11 +1055,13 @@ async function startInitializedCodexAppServerClientOnce(
           () => client.initialize(),
           () => buildCodexAppServerInitializeTimeoutError(client),
         );
+        assertInstalledCodexAppServerVersion(startOptions.command, client.getServerVersion());
       } catch (error) {
         if (
-          startOptions.commandSource === "resolved-managed" &&
-          index < startOptionsCandidates.length - 1 &&
-          isUnsupportedCodexAppServerVersionError(error)
+          (startOptions.commandSource === "resolved-managed" &&
+            index < startOptionsCandidates.length - 1 &&
+            isUnsupportedCodexAppServerVersionError(error)) ||
+          yieldInstalledCodex(index, startOptions.command, error)
         ) {
           continue;
         }
@@ -1159,36 +1183,6 @@ async function startInitializedCodexAppServerClientOnce(
     }
   }
   throw new Error("Managed Codex app-server fallback candidates were exhausted.");
-}
-
-function isCodexComputerUseCandidateArtifactsUnavailableError(error: unknown): boolean {
-  return (
-    error !== null &&
-    typeof error === "object" &&
-    "code" in error &&
-    error.code === "CODEX_COMPUTER_USE_CANDIDATE_ARTIFACTS_UNAVAILABLE"
-  );
-}
-
-function resolveManagedFallbackStartOptions(
-  startOptions: CodexAppServerStartOptions,
-): CodexAppServerStartOptions[] {
-  const commands = [startOptions.command, ...(startOptions.managedFallbackCommandPaths ?? [])];
-  const candidates: CodexAppServerStartOptions[] = [];
-  for (const [index, command] of commands.entries()) {
-    const managedFallbackCommandPaths = commands.slice(index + 1);
-    const candidate = {
-      ...startOptions,
-      command,
-    };
-    if (managedFallbackCommandPaths.length === 0) {
-      delete candidate.managedFallbackCommandPaths;
-    } else {
-      candidate.managedFallbackCommandPaths = managedFallbackCommandPaths;
-    }
-    candidates.push(candidate);
-  }
-  return candidates;
 }
 
 function detachCurrentSharedClient(

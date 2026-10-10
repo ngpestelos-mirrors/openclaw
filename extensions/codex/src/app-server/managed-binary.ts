@@ -1,15 +1,27 @@
 /**
- * Resolves the managed Codex app-server binary shipped with or installed beside
- * the Codex plugin before stdio startup.
+ * Resolves the managed Codex app-server binary before stdio startup: a newer
+ * user-installed Codex from PATH when it passes the version policy and an
+ * app-server handshake, otherwise the package shipped beside the Codex plugin.
  */
 import { constants as fsConstants, existsSync, realpathSync } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
+import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { coerceErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { resolveGlobalSingleton } from "openclaw/plugin-sdk/global-singleton";
+import { resolveNodeHostExecutable } from "openclaw/plugin-sdk/node-host";
+import { runUtf8CommandWithTimeout } from "openclaw/plugin-sdk/process-runtime";
+import { parse as parseSemver } from "semver";
 import type { CodexAppServerStartOptions, CodexManagedCommandOrder } from "./config.js";
 import { resolveMacOSDesktopCodexAppServerCommandCandidates } from "./desktop-app-paths.js";
-import { MANAGED_CODEX_APP_SERVER_PACKAGE } from "./version.js";
+import { CODEX_APP_SERVER_VERSION, MANAGED_CODEX_APP_SERVER_PACKAGE } from "./version.js";
+
+export const CODEX_VERSION_TIMEOUT_MS = 5_000;
+const CODEX_VERSION_MAX_OUTPUT_BYTES = 64 * 1024;
+// Includes first-launch OS scans of a freshly installed binary on slow hosts.
+const INSTALLED_CODEX_HANDSHAKE_TIMEOUT_MS = 15_000;
 
 // Mirrors the official launcher; native startup remains owned by its npm entrypoint.
 const NATIVE_TARGET_TRIPLES = new Map([
@@ -32,6 +44,38 @@ type ResolveManagedCodexAppServerOptions = {
   platform?: NodeJS.Platform;
   pluginRoot?: string;
   pathExists?: (filePath: string, platform: NodeJS.Platform) => Promise<boolean>;
+  /** False pins the shipped package, for callers that verify or mirror it. */
+  preferInstalled?: boolean;
+};
+
+/** A user-installed Codex that passed the version policy and an app-server handshake. */
+export type InstalledCodexAppServer = {
+  command: string;
+  nativeCommand: string;
+  version: string;
+};
+
+type InstalledCodexAppServerState = {
+  selection?: Promise<InstalledCodexAppServer | undefined>;
+  selected?: InstalledCodexAppServer;
+};
+
+// One decision per process, so model discovery and every managed start agree on
+// the binary. A Gateway restart drains the slot and the next start re-resolves.
+const installedCodex = resolveGlobalSingleton<InstalledCodexAppServerState>(
+  Symbol.for("openclaw.codexInstalledAppServer"),
+  () => ({}),
+  (state) => {
+    delete state.selection;
+    delete state.selected;
+  },
+);
+
+type InstalledCodexAppServerProbes = {
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  runVersion?: (nativeCommand: string) => Promise<string>;
+  probeHandshake?: (command: string) => Promise<string | undefined>;
 };
 
 type ResolveManagedCodexNativeCommandOptions = {
@@ -44,6 +88,228 @@ type ResolveManagedCodexNativeCommandOptions = {
 /** Records the process-stable plugin root prepared by OpenClaw's plugin loader. */
 export function setManagedCodexPluginRoot(pluginRoot: string | undefined): void {
   registeredCodexPlugin.root = pluginRoot;
+}
+
+/** Selects the installed Codex once per process; later callers reuse the decision. */
+export function resolveInstalledCodexAppServer(): Promise<InstalledCodexAppServer | undefined> {
+  if (!installedCodex.selection) {
+    const selection = selectInstalledCodexAppServer().then((selected) => {
+      if (installedCodex.selection === selection && selected) {
+        installedCodex.selected = selected;
+      }
+      return selected;
+    });
+    installedCodex.selection = selection;
+  }
+  return installedCodex.selection;
+}
+
+/**
+ * Drops the selected installed Codex after it failed to start, so this process
+ * uses the bundled package until the Gateway restarts. Returns false for any
+ * other command, which keeps the first failure as the only logged one.
+ */
+export function rejectInstalledCodexAppServer(command: string, error: unknown): boolean {
+  const selected = installedCodex.selected;
+  if (selected?.command !== command) {
+    return false;
+  }
+  installedCodex.selection = Promise.resolve(undefined);
+  delete installedCodex.selected;
+  embeddedAgentLog.warn(
+    `Codex app-server: installed ${command} ${selected.version} failed to start (${coerceErrorMessage(error)}); using bundled ${CODEX_APP_SERVER_VERSION} until the Gateway restarts`,
+  );
+  return true;
+}
+
+/** Rejects an initialize answer from the selected installed Codex that names another version. */
+export function assertInstalledCodexAppServerVersion(
+  command: string,
+  serverVersion: string | undefined,
+): void {
+  const selected = installedCodex.selected;
+  if (selected?.command === command && serverVersion !== selected.version) {
+    throw new Error(`app-server reported ${serverVersion ?? "no version"}`);
+  }
+}
+
+/** Uncached selection with one log line naming the chosen binary and why. */
+export async function selectInstalledCodexAppServer(
+  probes: InstalledCodexAppServerProbes = {},
+): Promise<InstalledCodexAppServer | undefined> {
+  const decision = await decideInstalledCodexAppServer(probes);
+  embeddedAgentLog.info(
+    "selected" in decision
+      ? `Codex app-server: using installed ${decision.found} ${decision.selected.version} (newer than bundled ${CODEX_APP_SERVER_VERSION})`
+      : `Codex app-server: using bundled ${CODEX_APP_SERVER_VERSION} (${decision.reason})`,
+  );
+  return "selected" in decision ? decision.selected : undefined;
+}
+
+async function decideInstalledCodexAppServer(
+  probes: InstalledCodexAppServerProbes,
+): Promise<{ found: string; selected: InstalledCodexAppServer } | { reason: string }> {
+  const env = probes.env ?? process.env;
+  const platform = probes.platform ?? process.platform;
+  const found = resolveNodeHostExecutable("codex", { env, strategy: "direct" })?.executable;
+  if (!found) {
+    return { reason: "no codex on PATH" };
+  }
+  const launcher = await resolveInstalledCodexLauncher(found, platform);
+  if (!launcher) {
+    return {
+      reason: `installed ${found} is not a native Codex executable or the official ${MANAGED_CODEX_APP_SERVER_PACKAGE} launcher`,
+    };
+  }
+  let output: string;
+  try {
+    output = await (probes.runVersion ?? runCodexVersionCommand)(launcher.nativeCommand);
+  } catch (error) {
+    return { reason: `installed ${found} --version failed: ${coerceErrorMessage(error)}` };
+  }
+  const version = parseCodexVersion(output);
+  const parsed = version ? parseSemver(version) : null;
+  if (!version || !parsed) {
+    return { reason: `installed ${found} did not report a parseable version` };
+  }
+  const bundled = parseSemver(CODEX_APP_SERVER_VERSION)!;
+  if (parsed.compare(bundled) <= 0) {
+    return { reason: `installed ${found} ${version} is not newer` };
+  }
+  if (parsed.prerelease.length > 0) {
+    return { reason: `installed ${found} ${version} is a prerelease` };
+  }
+  // App-server has no negotiated protocol version; a major bump is Codex's
+  // signal that OpenClaw's generated client may no longer match.
+  if (parsed.major !== bundled.major) {
+    return { reason: `installed ${found} ${version} is a different major version` };
+  }
+  let handshakeVersion: string | undefined;
+  try {
+    handshakeVersion = await (probes.probeHandshake ?? probeCodexAppServerHandshake)(
+      launcher.command,
+    );
+  } catch (error) {
+    return {
+      reason: `installed ${found} ${version} failed the app-server handshake: ${coerceErrorMessage(error)}`,
+    };
+  }
+  if (handshakeVersion !== version) {
+    return {
+      reason: `installed ${found} ${version} reported ${handshakeVersion ?? "no version"} from app-server`,
+    };
+  }
+  return { found, selected: { ...launcher, version } };
+}
+
+/** Accepts native executables and the official npm launcher, never other script wrappers. */
+async function resolveInstalledCodexLauncher(
+  found: string,
+  platform: NodeJS.Platform,
+): Promise<{ command: string; nativeCommand: string } | undefined> {
+  let command: string;
+  try {
+    command = await realpath(found);
+    if (platform === "win32" && /\.(?:cmd|bat|ps1)$/iu.test(command)) {
+      // npm's Windows shims sit beside the global node_modules directory.
+      command = await realpath(
+        path.join(path.dirname(command), "node_modules", "@openai", "codex", "bin", "codex.js"),
+      );
+    }
+  } catch {
+    return undefined;
+  }
+  const packagedNative = resolvePackagedCodexNativeCommand(command);
+  if (packagedNative) {
+    return { command, nativeCommand: packagedNative };
+  }
+  if (/\.(?:[cm]?js|cmd|bat|ps1)$/iu.test(command) || (await startsWithShebang(command))) {
+    return undefined;
+  }
+  return { command, nativeCommand: command };
+}
+
+async function startsWithShebang(filePath: string): Promise<boolean> {
+  const handle = await open(filePath, "r").catch(() => undefined);
+  if (!handle) {
+    return true;
+  }
+  try {
+    const buffer = Buffer.alloc(2);
+    const { bytesRead } = await handle.read(buffer, 0, 2, 0);
+    return bytesRead === 2 && buffer.toString("latin1") === "#!";
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Extracts the semver from `codex --version` output such as `codex-cli 0.160.0`. */
+export function parseCodexVersion(output: string): string | undefined {
+  return /(?:^|\s)(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:\s|$)/u.exec(
+    output,
+  )?.[1];
+}
+
+/** Runs `<native> --version` with bounded time and output; returns stdout and stderr. */
+export async function runCodexVersionCommand(
+  nativeCommand: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  const result = await runUtf8CommandWithTimeout([nativeCommand, "--version"], {
+    baseEnv: env,
+    input: "",
+    timeoutMs: CODEX_VERSION_TIMEOUT_MS,
+    maxOutputBytes: CODEX_VERSION_MAX_OUTPUT_BYTES,
+    outputCapture: "head",
+    terminateOnOutputLimit: true,
+    killProcessTree: true,
+    killSignal: "SIGKILL",
+    killGraceMs: 0,
+  });
+  if (result.termination !== "exit" || result.code !== 0 || result.outputLimitExceeded) {
+    throw new Error(
+      result.outputLimitExceeded
+        ? "Version output exceeded its capture limit"
+        : result.termination === "timeout"
+          ? `Version check timed out after ${CODEX_VERSION_TIMEOUT_MS} ms`
+          : `Version check failed (${result.signal ?? result.code ?? result.termination})`,
+    );
+  }
+  return `${result.stdout}\n${result.stderr}`;
+}
+
+/** Runs OpenClaw's real initialize against a throwaway CODEX_HOME; no auth or turn. */
+async function probeCodexAppServerHandshake(command: string): Promise<string | undefined> {
+  // Lazy: the client transport statically depends on this module.
+  const { CodexAppServerClient } = await import("./client.js");
+  const codexHome = await mkdtemp(path.join(os.tmpdir(), "openclaw-codex-probe-"));
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`timed out after ${INSTALLED_CODEX_HANDSHAKE_TIMEOUT_MS} ms`)),
+      INSTALLED_CODEX_HANDSHAKE_TIMEOUT_MS,
+    );
+  });
+  const starting = CodexAppServerClient.start({
+    transport: "stdio",
+    command,
+    commandSource: "resolved-managed",
+    args: ["app-server", "--listen", "stdio://"],
+    headers: {},
+    env: { CODEX_HOME: codexHome },
+  });
+  try {
+    const client = await Promise.race([starting, deadline]);
+    await Promise.race([client.initialize(), deadline]);
+    return client.getServerVersion();
+  } finally {
+    clearTimeout(timer);
+    await starting.then(
+      (client) => client.closeAndWait(),
+      () => undefined,
+    );
+    await rm(codexHome, { recursive: true, force: true });
+  }
 }
 
 export async function resolveManagedCodexAppServerStartOptions(
@@ -61,10 +327,13 @@ export async function resolveManagedCodexAppServerStartOptions(
     );
   }
   const platform = options.platform ?? process.platform;
+  const installed =
+    options.preferInstalled === false ? undefined : await resolveInstalledCodexAppServer();
   const candidateCommandPaths = resolveManagedCodexAppServerCommandCandidates(
     pluginRoot,
     platform,
     startOptions.managedCommandOrder ?? "package-first",
+    installed?.command,
   );
   const pathExists = options.pathExists ?? commandPathExists;
   const commandPaths: string[] = [];
@@ -98,6 +367,10 @@ export function resolveManagedCodexNativeCommand(
   options: ResolveManagedCodexNativeCommandOptions = {},
 ): string | undefined {
   const platform = options.platform ?? process.platform;
+  const installedNative = installedCodex.selected;
+  if (installedNative?.command === command) {
+    return installedNative.nativeCommand;
+  }
   if (isManagedCodexDesktopCommand(command, platform)) {
     return command;
   }
@@ -199,15 +472,20 @@ function resolveManagedCodexAppServerCommandCandidates(
   pluginRoot: string,
   platform: NodeJS.Platform,
   managedCommandOrder: CodexManagedCommandOrder,
+  installedCommand: string | undefined,
 ): string[] {
   const packageCommand = resolveManagedCodexPackageEntrypoint(pluginRoot);
-  const packageCommandPaths = packageCommand ? [packageCommand] : [];
+  // A newer installed Codex replaces the pinned package as the primary choice;
+  // the package stays next as the fallback for a failed first start.
+  const packageCommandPaths = [installedCommand, packageCommand].filter(
+    (command): command is string => command !== undefined,
+  );
   if (managedCommandOrder === "package-only") {
     return packageCommandPaths;
   }
   const desktopCommandPaths = resolveMacOSDesktopCodexAppServerCommandCandidates(platform);
-  // Ordinary turns must honor the pinned package version. Computer Use opts
-  // into the desktop app owner because its macOS TCC permissions live there.
+  // Ordinary turns prefer the package selection. Computer Use opts into the
+  // desktop app owner because its macOS TCC permissions live there.
   return managedCommandOrder === "desktop-first"
     ? [...desktopCommandPaths, ...packageCommandPaths]
     : [...packageCommandPaths, ...desktopCommandPaths];
