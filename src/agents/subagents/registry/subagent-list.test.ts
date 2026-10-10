@@ -127,7 +127,11 @@ describe("buildSubagentList", () => {
           ),
         ).rejects.toThrow();
       } finally {
-        await Promise.all(actors.map((actor) => actor?.close()));
+        await Promise.all(
+          actors.map(async (actor) => {
+            await actor?.close();
+          }),
+        );
       }
     });
   });

@@ -137,8 +137,8 @@ export function createSubagentSessionStore(
       }
       return entries.get(sessionKey);
     },
-    getById: (sessionId) => {
-      const id = normalizeOptionalString(sessionId);
+    getById: (requestedSessionId) => {
+      const id = normalizeOptionalString(requestedSessionId);
       if (!id) {
         return undefined;
       }
@@ -152,7 +152,7 @@ export function createSubagentSessionStore(
         const candidates = byIdSource.actor.sessions
           .deadlines()
           .filter(({ sessionKey }) => !isInternalSessionEffectsKey(sessionKey))
-          .sort((left, right) =>
+          .toSorted((left, right) =>
             left.sessionKey < right.sessionKey ? -1 : left.sessionKey > right.sessionKey ? 1 : 0,
           );
         const selected =

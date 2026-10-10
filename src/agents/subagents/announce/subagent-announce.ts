@@ -51,8 +51,10 @@ import {
   loadRequesterSessionEntry,
   loadSessionEntryByKey,
 } from "./subagent-announce-delivery.js";
-import { withSubagentRequesterSource } from "./subagent-announce-delivery.runtime.js";
-import { hasUsableSessionEntry } from "./subagent-announce-delivery.runtime.js";
+import {
+  hasUsableSessionEntry,
+  withSubagentRequesterSource,
+} from "./subagent-announce-delivery.runtime.js";
 import { runDescendantWake } from "./subagent-announce-descendant-wake.js";
 import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatch.js";
 import {

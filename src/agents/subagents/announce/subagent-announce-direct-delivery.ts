@@ -57,12 +57,12 @@ import {
   SourceOwnerChangedError,
   summarizeDeliveryError,
 } from "./subagent-announce-delivery-retry.js";
-import { withSubagentRequesterSource } from "./subagent-announce-delivery.runtime.js";
 import {
   getSubagentAnnounceRuntimeConfig,
   loadRequesterSessionEntry,
   resolveExternalBestEffortDeliveryTarget,
   resolveQueueSettings,
+  withSubagentRequesterSource,
 } from "./subagent-announce-delivery.runtime.js";
 import { createDirectAnnounceResponseClassifier } from "./subagent-announce-direct-response.js";
 import {
@@ -128,17 +128,16 @@ export async function sendSubagentAnnounceDirectly(
     async (
       isRequesterCurrent,
     ): Promise<Awaited<ReturnType<typeof sendSubagentAnnounceDirectly>>> => {
-      if (isRequesterCurrent) {
-        const original = params;
-        params = {
-          ...params,
-          isSourceSessionEffectsAllowed: () =>
-            isRequesterCurrent() && original.isSourceSessionEffectsAllowed?.() !== false,
-          isSourceSessionAdmissionAllowed: () =>
-            isRequesterCurrent() && original.isSourceSessionAdmissionAllowed?.() !== false,
-        };
-      }
-      return sendSubagentAnnounceDirectlyBound(params);
+      const guardedParams = isRequesterCurrent
+        ? {
+            ...params,
+            isSourceSessionEffectsAllowed: () =>
+              isRequesterCurrent() && params.isSourceSessionEffectsAllowed?.() !== false,
+            isSourceSessionAdmissionAllowed: () =>
+              isRequesterCurrent() && params.isSourceSessionAdmissionAllowed?.() !== false,
+          }
+        : params;
+      return sendSubagentAnnounceDirectlyBound(guardedParams);
     },
   );
 }

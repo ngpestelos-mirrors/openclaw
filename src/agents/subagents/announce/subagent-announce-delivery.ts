@@ -40,11 +40,11 @@ import {
   runAnnounceDeliveryWithRetry,
   summarizeDeliveryError,
 } from "./subagent-announce-delivery-retry.js";
-import { withSubagentRequesterSource } from "./subagent-announce-delivery.runtime.js";
 import {
   getSubagentAnnounceRuntimeConfig,
   loadRequesterSessionEntry,
   loadSessionEntryByKey,
+  withSubagentRequesterSource,
 } from "./subagent-announce-delivery.runtime.js";
 import {
   sendSubagentAnnounceDirectly,
@@ -152,17 +152,16 @@ export async function deliverSubagentAnnouncement(
     async (
       isRequesterCurrent,
     ): Promise<Awaited<ReturnType<typeof deliverSubagentAnnouncement>>> => {
-      if (isRequesterCurrent) {
-        const original = params;
-        params = {
-          ...params,
-          isSourceSessionEffectsAllowed: () =>
-            isRequesterCurrent() && original.isSourceSessionEffectsAllowed?.() !== false,
-          isSourceSessionAdmissionAllowed: () =>
-            isRequesterCurrent() && original.isSourceSessionAdmissionAllowed?.() !== false,
-        };
-      }
-      return deliverSubagentAnnouncementBound(params);
+      const guardedParams = isRequesterCurrent
+        ? {
+            ...params,
+            isSourceSessionEffectsAllowed: () =>
+              isRequesterCurrent() && params.isSourceSessionEffectsAllowed?.() !== false,
+            isSourceSessionAdmissionAllowed: () =>
+              isRequesterCurrent() && params.isSourceSessionAdmissionAllowed?.() !== false,
+          }
+        : params;
+      return deliverSubagentAnnouncementBound(guardedParams);
     },
   );
 }

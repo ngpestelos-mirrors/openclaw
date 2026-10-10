@@ -9,7 +9,7 @@ import { captureOpenClawAgentDatabaseExecution } from "../../../state/openclaw-a
 
 /** Explicit binding selects existing child/requester actors; ordinary calls keep their native owner. */
 export async function withSubagentSessionSource<T>(
-  target: {
+  input: {
     agentId: string;
     sessionKey: string;
     storePath?: string;
@@ -17,7 +17,7 @@ export async function withSubagentSessionSource<T>(
   },
   consume: (source: ReturnType<typeof captureIncognitoSessionSource>) => Promise<T>,
 ): Promise<T> {
-  target = { ...target };
+  const target = { ...input };
   const source = isIncognitoSessionKey(target.sessionKey)
     ? captureIncognitoSessionSource()
     : undefined;

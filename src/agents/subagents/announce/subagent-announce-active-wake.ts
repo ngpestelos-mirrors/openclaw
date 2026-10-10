@@ -10,11 +10,11 @@ import {
 } from "../../embedded-agent-runner/runs.js";
 import type { CurrentInboundPromptContext } from "../../internal-runtime-context.js";
 import { waitForAnnounceRetryDelay } from "./subagent-announce-delivery-retry.js";
-import { withSubagentRequesterSource } from "./subagent-announce-delivery.runtime.js";
 import {
   getSubagentRequesterSessionActivity as resolveRequesterSessionActivity,
   loadRequesterSessionEntry,
   resolveQueueSettings,
+  withSubagentRequesterSource,
 } from "./subagent-announce-delivery.runtime.js";
 
 export const SOURCE_OWNER_CHANGED = Symbol("source_owner_changed");
@@ -149,17 +149,16 @@ export async function maybeSteerSubagentAnnounce(params: {
     params.requesterSessionKey,
     params.requesterAgentId,
     async (isRequesterCurrent): Promise<Awaited<ReturnType<typeof maybeSteerSubagentAnnounce>>> => {
-      if (isRequesterCurrent) {
-        const original = params;
-        params = {
-          ...params,
-          isSourceSessionEffectsAllowed: () =>
-            isRequesterCurrent() && original.isSourceSessionEffectsAllowed?.() !== false,
-          isSourceSessionAdmissionAllowed: () =>
-            isRequesterCurrent() && original.isSourceSessionAdmissionAllowed?.() !== false,
-        };
-      }
-      return maybeSteerSubagentAnnounceBound(params);
+      const guardedParams = isRequesterCurrent
+        ? {
+            ...params,
+            isSourceSessionEffectsAllowed: () =>
+              isRequesterCurrent() && params.isSourceSessionEffectsAllowed?.() !== false,
+            isSourceSessionAdmissionAllowed: () =>
+              isRequesterCurrent() && params.isSourceSessionAdmissionAllowed?.() !== false,
+          }
+        : params;
+      return maybeSteerSubagentAnnounceBound(guardedParams);
     },
   );
 }

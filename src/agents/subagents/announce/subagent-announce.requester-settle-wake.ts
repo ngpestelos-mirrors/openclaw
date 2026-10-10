@@ -49,8 +49,8 @@ import {
 import {
   withSubagentRequesterSource,
   captureRequesterSessionEntryCurrent,
+  hasUsableSessionEntry,
 } from "./subagent-announce-delivery.runtime.js";
-import { hasUsableSessionEntry } from "./subagent-announce-delivery.runtime.js";
 import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatch.js";
 import { resolveAnnounceOrigin } from "./subagent-announce-origin.js";
 import {
@@ -92,14 +92,13 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     params.requesterSessionKey,
     params.settledEntry.requesterAgentId,
     async (isRequesterCurrent): Promise<boolean> => {
-      if (isRequesterCurrent) {
-        const original = params;
-        params = {
-          ...params,
-          isSourceCurrent: () => isRequesterCurrent() && original.isSourceCurrent(),
-        };
-      }
-      return maybeWakeRequesterAfterAllChildrenSettledBound(params);
+      const guardedParams = isRequesterCurrent
+        ? {
+            ...params,
+            isSourceCurrent: () => isRequesterCurrent() && params.isSourceCurrent(),
+          }
+        : params;
+      return maybeWakeRequesterAfterAllChildrenSettledBound(guardedParams);
     },
   );
 }

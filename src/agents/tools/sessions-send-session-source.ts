@@ -35,7 +35,7 @@ export function createSessionsSendSessionReaders(cfg: OpenClawConfig) {
     });
   return {
     readTarget,
-    async readRequester(sessionKey: string, agentId: string) {
+    readRequester: async (sessionKey: string, agentId: string) => {
       const source = captureIncognitoSessionSource({ agentId, sessionKey });
       if (!source) {
         return readTarget(sessionKey, agentId);
