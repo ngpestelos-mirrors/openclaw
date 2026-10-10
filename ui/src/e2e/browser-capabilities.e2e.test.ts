@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Page } from "playwright";
 import { afterAll, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.ts";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { takeControlUiScreenshotFrame } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import {
@@ -122,6 +123,43 @@ enabled.define(() => {
         expect(await heading.isVisible()).toBe(true);
         expect(await gateway.getRequests()).toEqual([]);
       },
+    );
+  });
+
+  it("keeps a slow unsupported-screen download alive beyond the mount deadline", async () => {
+    const requested = createDeferred();
+    const release = createDeferred();
+    await enabled.withPage(
+      { serviceWorkers: "block" },
+      async ({ page }) => {
+        await setBrowserFeatures(page, false);
+        await page.clock.install();
+        let recoveryRequests = 0;
+        let documentRequests = 0;
+        page.on("request", (request) => {
+          if (new URL(request.url()).searchParams.has("openclaw_mount_recovery")) {
+            recoveryRequests += 1;
+          }
+          if (request.resourceType() === "document") {
+            documentRequests += 1;
+          }
+        });
+        await page.route("**/assets/unsupported-browser-*.js", async (route) => {
+          requested.resolve();
+          await release.promise;
+          await route.continue();
+        });
+        await page.goto(`${enabled.server.baseUrl}chat`, { waitUntil: "domcontentloaded" });
+        await requested.promise;
+        await page.clock.runFor(30_000);
+
+        expect(recoveryRequests).toBe(0);
+        expect(documentRequests).toBe(1);
+        release.resolve();
+        await page.getByRole("heading", { name: "Update your browser to use OpenClaw" }).waitFor();
+        expect(documentRequests).toBe(1);
+      },
+      async () => release.resolve(),
     );
   });
 
