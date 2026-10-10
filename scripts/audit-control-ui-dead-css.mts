@@ -128,6 +128,10 @@ export function collectControlUiClassReferences(sourceFile: ts.SourceFile): Sour
     const value = unwrapExpression(expression);
     if (ts.isObjectLiteralExpression(value)) {
       for (const property of value.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          collectClassKeys(property.expression);
+          continue;
+        }
         const name = classMapPropertyName(property);
         if (name) {
           addLiteralClassTokens(name, literalClasses);

@@ -65,4 +65,18 @@ describe("Control UI JSX class references", () => {
       expect.arrayContaining(["status--", "color-", "small-item__", "large-item__"]),
     );
   });
+
+  it("retains class keys from literal and nested object spreads", () => {
+    const source = `const View = () => <div class={{
+      ...{ active: true, ...{ nested: true } },
+      ...(condition ? { yes: true } : { no: true }),
+      ...(condition && { shown: true })
+    }} />;`;
+    const { literalClasses } = collectControlUiClassReferences(
+      parser.parseSourceFile("fixture.tsx", source),
+    );
+    expect([...literalClasses]).toEqual(
+      expect.arrayContaining(["active", "nested", "yes", "no", "shown"]),
+    );
+  });
 });
