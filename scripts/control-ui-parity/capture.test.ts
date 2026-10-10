@@ -30,7 +30,11 @@ const suite = createControlUiE2eSuite({
   startServerBeforeBrowser: true,
   browserLaunchOptions: {
     // Apply static animation changes before the compositor samples the frame.
-    args: ["--disable-threaded-animation", "--run-all-compositor-stages-before-draw"],
+    args: [
+      "--disable-gpu",
+      "--disable-threaded-animation",
+      "--run-all-compositor-stages-before-draw",
+    ],
   },
 });
 const captureOrigin = "http://parity.localhost:18789";
@@ -204,33 +208,35 @@ suite.define(() => {
                   console.log(
                     "PARITY_DIAGNOSTIC",
                     id,
-                    await page.evaluate(() => {
-                      const roots: Array<Document | ShadowRoot> = [document];
-                      for (const root of roots) {
-                        for (const element of root.querySelectorAll("*")) {
-                          if (element.shadowRoot) roots.push(element.shadowRoot);
+                    JSON.stringify(
+                      await page.evaluate(() => {
+                        const roots: Array<Document | ShadowRoot> = [document];
+                        for (const root of roots) {
+                          for (const element of root.querySelectorAll("*")) {
+                            if (element.shadowRoot) roots.push(element.shadowRoot);
+                          }
                         }
-                      }
-                      return {
-                        now: performance.now(),
-                        elements: roots
-                          .flatMap((root) =>
-                            Array.from(
-                              root.querySelectorAll(
-                                "canvas, [data-message-text^='Message 39:'], .apps-card",
+                        return {
+                          now: performance.now(),
+                          elements: roots
+                            .flatMap((root) =>
+                              Array.from(
+                                root.querySelectorAll(
+                                  "canvas, [data-message-text^='Message 39:'], .apps-card",
+                                ),
                               ),
-                            ),
-                          )
-                          .map((element) => ({
-                            tag: element.tagName,
-                            class: element.className,
-                            bounds: element.getBoundingClientRect().toJSON(),
-                            transform: getComputedStyle(element).transform,
-                            canvas:
-                              element instanceof HTMLCanvasElement ? element.toDataURL() : null,
-                          })),
-                      };
-                    }),
+                            )
+                            .map((element) => ({
+                              tag: element.tagName,
+                              class: element.className,
+                              bounds: element.getBoundingClientRect().toJSON(),
+                              transform: getComputedStyle(element).transform,
+                              canvas:
+                                element instanceof HTMLCanvasElement ? element.toDataURL() : null,
+                            })),
+                        };
+                      }),
+                    ),
                   );
                 }
                 const file = `${id}.png`;
