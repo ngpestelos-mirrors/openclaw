@@ -293,6 +293,11 @@ export function createChatSendWorkAdmission(params: {
     params.logGateway.warn(`Failed to finish pending chat input: ${formatForLog(error)}`);
   };
   const finishRelease = () => {
+    if (!inputActor) {
+      actorLifetimeActive = false;
+      releaseAdmission();
+      return;
+    }
     const close = async () => {
       try {
         await (await inputActor)?.actor.release();

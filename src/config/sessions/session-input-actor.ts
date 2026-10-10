@@ -40,21 +40,21 @@ export async function acquireSessionInputActor(
       native ?? { database: bound!.actor.identity, sessionKey },
       lifetime,
     );
-    const readSource =
-      target.readSource ??
-      (bound
-        ? {
-            agentId,
-            path: database.path,
-            databaseIdentity: bound.actor.identity.incarnation,
-          }
-        : {
-            agentId,
-            path: database.path,
-            databaseIdentity: readOpenClawAgentDatabaseIdentity(
-              getOpenClawAgentDatabaseIfOpen(database)!,
-            ).identity,
-          });
+    let readSource = target.readSource;
+    if (!readSource) {
+      const owner = bound ? undefined : getOpenClawAgentDatabaseIfOpen(database);
+      if (!bound && !owner) {
+        await actor.release();
+        throw new Error("Input actor lost its native source before publication");
+      }
+      readSource = {
+        agentId,
+        path: database.path,
+        databaseIdentity: bound
+          ? bound.actor.identity.incarnation
+          : readOpenClawAgentDatabaseIdentity(owner!).identity,
+      };
+    }
     return { actor, target: { ...target, readSource } };
   }
   if (isIncognitoSessionKey(sessionKey)) {
