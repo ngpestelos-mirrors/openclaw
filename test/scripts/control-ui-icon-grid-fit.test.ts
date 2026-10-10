@@ -441,7 +441,7 @@ describe("JSX icon-grid fixtures", () => {
   it("applies class-array overrides before splitting enabled class names", () => {
     const dom = new JSDOM();
     try {
-      for (const [classes, expected] of [
+      const cases: [string, string | null][] = [
         ['["icon", { icon: false }]', null],
         ['[{ icon: false }, ["icon"]]', "icon"],
         ['["icon label", { icon: false }]', "icon label"],
@@ -452,7 +452,8 @@ describe("JSX icon-grid fixtures", () => {
         ["true", null],
         ["[]", null],
         ['""', ""],
-      ]) {
+      ];
+      for (const [classes, expected] of cases) {
         const fixtures = collectJsx(
           `<button class={${classes}}><svg /></button>`,
           dom.window.document,
