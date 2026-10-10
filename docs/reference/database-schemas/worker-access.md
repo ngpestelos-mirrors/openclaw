@@ -1731,6 +1731,29 @@ and documented deprecated durable SDK adapters retained under their own contract
 No schema, retention, permission, content limit, or update migration changes are
 introduced, and no incognito T1 retirement is claimed.
 
+### Incognito subagent requester and completion lifetimes (P06, inactive)
+
+Explicit actor bindings now serve subagent requester reads, capability and depth
+resolution, announcement metadata, registry reconciliation, and controlled child
+information. Child enrichment retains each run's recorded agent owner and returns
+results by run ID; durable siblings keep their grouped reads. Cross-agent private
+reads select only existing actors from the captured physical root. Selected
+absence stays absent, while a retained dead actor refuses reuse.
+
+Announcement, settle-wake, and completion custody keep the original actor alive
+through their consumers. Current-source guards remain synchronous and consume
+published session identity and lifecycle facts. Parent skill preparation finishes
+before child FIFO admission; transaction and commit guards compare the exact
+parent session, lifecycle, and skill-selection fields without waiting back on the
+parent actor. Terminal lazy policy reads and exec-approval follow-ups likewise
+retain the selected actor and refuse policy revocation or session rebound.
+
+Production incognito acquisition remains host-owned until P12. Ordinary unbound
+calls retain their native selectors and allocate no actor. This inactive
+composition adds no freshness probes, worker service, schema, retention,
+permission, content limit, or update migration, and claims no incognito T1
+retirement. Native selector deletion remains part of the P12 cutover.
+
 ### Existing worker flows
 
 Remote model catalog refreshes capture the shared store before downloading and

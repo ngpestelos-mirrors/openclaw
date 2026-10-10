@@ -46,6 +46,10 @@ import {
   deliverSubagentAnnouncement,
   loadRequesterSessionEntry,
 } from "./subagent-announce-delivery.js";
+import {
+  withSubagentRequesterSource,
+  captureRequesterSessionEntryCurrent,
+} from "./subagent-announce-delivery.runtime.js";
 import { hasUsableSessionEntry } from "./subagent-announce-delivery.runtime.js";
 import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatch.js";
 import { resolveAnnounceOrigin } from "./subagent-announce-origin.js";
@@ -84,6 +88,25 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     isSourceCurrent: () => boolean;
   },
 ): Promise<boolean> {
+  return withSubagentRequesterSource(
+    params.requesterSessionKey,
+    params.settledEntry.requesterAgentId,
+    async (isRequesterCurrent): Promise<boolean> => {
+      if (isRequesterCurrent) {
+        const original = params;
+        params = {
+          ...params,
+          isSourceCurrent: () => isRequesterCurrent() && original.isSourceCurrent(),
+        };
+      }
+      return maybeWakeRequesterAfterAllChildrenSettledBound(params);
+    },
+  );
+}
+
+async function maybeWakeRequesterAfterAllChildrenSettledBound(
+  params: Parameters<typeof maybeWakeRequesterAfterAllChildrenSettled>[0],
+): ReturnType<typeof maybeWakeRequesterAfterAllChildrenSettled> {
   if (params.signal?.aborted || !params.isSourceCurrent()) {
     return false;
   }
@@ -414,7 +437,11 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       return false;
     }
 
-    const requester = loadRequesterSessionEntry(requesterSessionKey, requesterAgentId);
+    const readRequesterCurrent = captureRequesterSessionEntryCurrent(
+      requesterSessionKey,
+      requesterAgentId,
+    );
+    const requester = await loadRequesterSessionEntry(requesterSessionKey, requesterAgentId);
     const requesterEntry = requester.entry;
     if (!hasUsableSessionEntry(requesterEntry)) {
       await failBatch(selectedState, "requester session unavailable");
@@ -540,7 +567,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       storePaths: () => settledBatch.map((entry) => entry.requesterStorePath),
       isRecoveryCurrent: () =>
         recoveryRows.every((entry) => matchesSubagentRequesterSession(entry, requesterIdentity)),
-      readCurrent: () => loadRequesterSessionEntry(requesterSessionKey, requesterAgentId).entry,
+      readCurrent: readRequesterCurrent,
       isStoreCurrent,
     });
     const isRequesterCurrent = () => {

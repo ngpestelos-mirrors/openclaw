@@ -535,7 +535,7 @@ describe("subagent registry persistence", () => {
             suspension = tryBeginGatewaySuspendAdmission(() => {});
             expect(suspension?.drain()).toBe(true);
           }
-          resumeSubagentRun(runId);
+          expect(resumeSubagentRun(runId)).toBeUndefined();
           parent.release();
           retainedRoots = getActiveGatewayRootWorkCount();
         });
@@ -739,11 +739,18 @@ describe("subagent registry persistence", () => {
         restoreCleanup = () => cleanup.mockRestore();
         markGatewayRestartDraining();
       }
+      if (change === "worker read failure") {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      }
       release.resolve();
-      if (admittedDrain) {
+      if (admittedDrain || change === "worker read failure") {
         await expect(settling).rejects.toMatchObject({
           errors: expect.arrayContaining([
-            expect.objectContaining({ message: "Synthetic admitted cleanup capture refusal" }),
+            expect.objectContaining({
+              message: admittedDrain
+                ? "Synthetic admitted cleanup capture refusal"
+                : "Synthetic resume session read failure",
+            }),
           ]),
         });
         settling = undefined;
@@ -757,6 +764,10 @@ describe("subagent registry persistence", () => {
         expect(readPersistedRun(runId)?.execution.outcome).toMatchObject({ status: "ok" });
       } else if (change === "worker read failure") {
         expect(readFailures).toBe(1);
+        expect(callGateway).not.toHaveBeenCalled();
+        expect(readPersistedRun(runId)).toEqual(expected);
+        resumeSubagentRun(runId);
+        await fixture.settle();
         expect(callGateway).toHaveBeenCalledWith(
           expect.objectContaining({
             method: "agent.wait",
@@ -787,7 +798,7 @@ describe("subagent registry persistence", () => {
       } finally {
         restoreLifecycle?.();
         restoreCleanup?.();
-        if (admittedDrain) {
+        if (admittedDrain || change === "worker read failure") {
           resetGatewayWorkAdmission();
           vi.useRealTimers();
         }

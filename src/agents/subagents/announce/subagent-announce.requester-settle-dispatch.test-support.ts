@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import { resetCommandQueueStateForTest } from "../../../process/command-queue.test-support.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
+import * as deliveryRuntime from "./subagent-announce-delivery.runtime.js";
 import * as announceOutput from "./subagent-announce-output.js";
 import { setSubagentAnnounceDeliveryDepsForTest } from "./subagent-announce-overrides.test-support.js";
 import {
@@ -17,6 +18,9 @@ const readChildCompletionFindings = announceOutput.readChildCompletionFindings;
 
 export function useRequesterSettleDispatchFixture() {
   beforeEach(() => {
+    vi.spyOn(deliveryRuntime, "captureRequesterSessionEntryCurrent").mockReturnValue(() => ({
+      sessionId: "requester-session",
+    }));
     vi.spyOn(announceOutput, "readChildCompletionFindings").mockImplementation((children) =>
       readChildCompletionFindings(children, (runId) =>
         registryRead.listSubagentRunsForRequester().find((entry) => entry.runId === runId),
@@ -34,6 +38,9 @@ export function useRequesterSettleDispatchFixture() {
     vi.mocked(announceOutput.readChildCompletionFindings).mockRestore();
     resetCommandQueueStateForTest();
     setSubagentAnnounceDeliveryDepsForTest();
+    if (vi.isMockFunction(deliveryRuntime.captureRequesterSessionEntryCurrent)) {
+      deliveryRuntime.captureRequesterSessionEntryCurrent.mockRestore();
+    }
     vi.useRealTimers();
   });
 }

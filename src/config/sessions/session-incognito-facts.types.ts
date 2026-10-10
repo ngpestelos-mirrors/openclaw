@@ -32,6 +32,8 @@ export type IncognitoSessionFacts = {
   policy?: Pick<
     SessionEntry,
     | "sessionId"
+    | "lifecycleRevision"
+    | "skillLibrarySelections"
     | "sandbox"
     | "sandboxMode"
     | "createdActor"

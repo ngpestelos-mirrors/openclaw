@@ -10,6 +10,7 @@ import {
 } from "../../embedded-agent-runner/runs.js";
 import type { CurrentInboundPromptContext } from "../../internal-runtime-context.js";
 import { waitForAnnounceRetryDelay } from "./subagent-announce-delivery-retry.js";
+import { withSubagentRequesterSource } from "./subagent-announce-delivery.runtime.js";
 import {
   getSubagentRequesterSessionActivity as resolveRequesterSessionActivity,
   loadRequesterSessionEntry,
@@ -144,10 +145,35 @@ export async function maybeSteerSubagentAnnounce(params: {
   | { status: "steered"; deliveredAt?: number; enqueuedAt?: number }
   | { status: "none" | "dropped" | "source_owner_changed" }
 > {
+  return withSubagentRequesterSource(
+    params.requesterSessionKey,
+    params.requesterAgentId,
+    async (isRequesterCurrent): Promise<Awaited<ReturnType<typeof maybeSteerSubagentAnnounce>>> => {
+      if (isRequesterCurrent) {
+        const original = params;
+        params = {
+          ...params,
+          isSourceSessionEffectsAllowed: () =>
+            isRequesterCurrent() && original.isSourceSessionEffectsAllowed?.() !== false,
+          isSourceSessionAdmissionAllowed: () =>
+            isRequesterCurrent() && original.isSourceSessionAdmissionAllowed?.() !== false,
+        };
+      }
+      return maybeSteerSubagentAnnounceBound(params);
+    },
+  );
+}
+
+async function maybeSteerSubagentAnnounceBound(
+  params: Parameters<typeof maybeSteerSubagentAnnounce>[0],
+): ReturnType<typeof maybeSteerSubagentAnnounce> {
   if (params.signal?.aborted) {
     return { status: "none" };
   }
-  const requester = loadRequesterSessionEntry(params.requesterSessionKey, params.requesterAgentId);
+  const requester = await loadRequesterSessionEntry(
+    params.requesterSessionKey,
+    params.requesterAgentId,
+  );
   const { cfg, entry, canonicalKey } = requester;
   const { sessionId, isActive } = resolveRequesterSessionActivity(
     params.requesterSessionKey,
@@ -213,7 +239,7 @@ export async function maybeSteerSubagentAnnounce(params: {
   }
   const currentActivity = resolveRequesterSessionActivity(
     params.requesterSessionKey,
-    loadRequesterSessionEntry(params.requesterSessionKey, params.requesterAgentId),
+    await loadRequesterSessionEntry(params.requesterSessionKey, params.requesterAgentId),
   );
   return { status: currentActivity.isActive ? "dropped" : "none" };
 }

@@ -16,6 +16,7 @@ import {
   patchSessionEntryCore,
   replaceSessionEntry,
 } from "../../../config/sessions/session-accessor.js";
+import { withIncognitoSessionBinding } from "../../../config/sessions/session-incognito-binding.js";
 import type { GatewayRecoveryRuntime } from "../../../gateway/server-instance-runtime.types.js";
 import { runStartupSessionMaintenanceForTest } from "../../../gateway/server-startup-session-migration.test-support.js";
 import {
@@ -42,7 +43,9 @@ import {
   resolveIncognitoOpenClawAgentSqlitePath,
   resolveOpenClawAgentSqlitePath,
 } from "../../../state/openclaw-agent-db.paths.js";
+import { captureOpenClawAgentDatabaseExecution } from "../../../state/openclaw-agent-execution.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
+import { observeMainThreadSql } from "../../../test-utils/main-thread-sql-spies.test-support.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
 import { buildAgentRunTerminalOutcome } from "../../agent-run-terminal-outcome.js";
@@ -78,6 +81,50 @@ vi.mock("../../../gateway/session-utils.fs.js", () => ({
 }));
 
 const TWO_HOURS_MS = 2 * 60 * 60 * 1_000;
+
+it("settles a restarted actor-selected absent child without reading or recreating native storage", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const childSessionKey = "agent:main:subagent:incognito-absent-restart";
+    const entry = makeRunRecord({
+      runId: "absent-actor-restart",
+      childSessionKey,
+      execution: { status: "interrupted", startedAt: 1 },
+    });
+    const warn = vi.fn();
+    await withIncognitoSessionBinding(
+      { kind: "absent", agentId: "main", env: state.env, authority: { assertCurrent() {} } },
+      async () => {
+        const sql = observeMainThreadSql();
+        try {
+          const result = await recoverInterruptedSubagentRow({
+            entry,
+            runId: entry.runId,
+            gatewayRuntime: undefined,
+            isCurrent: () => true,
+            warn,
+          });
+          expect(result).toMatchObject({ status: "terminal", suppressSessionEffects: true });
+          if (result.status !== "terminal") {
+            throw new Error("Expected absent actor recovery to settle the interrupted run");
+          }
+          expect(await result.recoveryCurrent?.prepare()).toBe(true);
+          expect(await result.sessionEffects?.isCurrent()).toBe(true);
+          sql.expectIdle();
+          expect(warn).not.toHaveBeenCalled();
+          expect(captureOpenClawAgentDatabaseExecution.listIncognito(state.env)).toEqual([]);
+          expect(
+            getOpenIncognitoAgentDatabase(
+              "main",
+              resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main", env: state.env }),
+            ),
+          ).toBeUndefined();
+        } finally {
+          sql.restore();
+        }
+      },
+    );
+  });
+});
 
 it.each(["durable", "incognito"] as const)(
   "classifies missing %s storage for recovery without creating its database",

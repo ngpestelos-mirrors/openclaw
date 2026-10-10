@@ -29,6 +29,8 @@ export function projectIncognitoSessionRuntimeFacts(
     policy: entry
       ? {
           sessionId: entry.sessionId,
+          lifecycleRevision: entry.lifecycleRevision,
+          skillLibrarySelections: entry.skillLibrarySelections,
           sandbox: entry.sandbox,
           sandboxMode: entry.sandboxMode,
           createdActor: entry.createdActor,

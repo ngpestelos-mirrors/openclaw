@@ -40,6 +40,7 @@ import {
   runAnnounceDeliveryWithRetry,
   summarizeDeliveryError,
 } from "./subagent-announce-delivery-retry.js";
+import { withSubagentRequesterSource } from "./subagent-announce-delivery.runtime.js";
 import {
   getSubagentAnnounceRuntimeConfig,
   loadRequesterSessionEntry,
@@ -113,8 +114,8 @@ function createCompletionUserTurnTranscriptRecorderFactory(params: {
         idempotencyKey: `${params.directIdempotencyKey}:active-wake`,
         provenance,
       },
-      target: () => {
-        const loaded = loadRequesterSessionEntry(
+      target: async () => {
+        const loaded = await loadRequesterSessionEntry(
           params.targetRequesterSessionKey,
           params.requesterAgentId,
         );
@@ -145,6 +146,30 @@ export async function deliverSubagentAnnouncement(
     preparedRequester?: { binding: SessionDeliveryRequesterBinding; entry: SessionEntry };
   },
 ): Promise<SubagentAnnounceDeliveryResult> {
+  return withSubagentRequesterSource(
+    params.targetRequesterSessionKey,
+    params.requesterAgentId,
+    async (
+      isRequesterCurrent,
+    ): Promise<Awaited<ReturnType<typeof deliverSubagentAnnouncement>>> => {
+      if (isRequesterCurrent) {
+        const original = params;
+        params = {
+          ...params,
+          isSourceSessionEffectsAllowed: () =>
+            isRequesterCurrent() && original.isSourceSessionEffectsAllowed?.() !== false,
+          isSourceSessionAdmissionAllowed: () =>
+            isRequesterCurrent() && original.isSourceSessionAdmissionAllowed?.() !== false,
+        };
+      }
+      return deliverSubagentAnnouncementBound(params);
+    },
+  );
+}
+
+async function deliverSubagentAnnouncementBound(
+  params: Parameters<typeof deliverSubagentAnnouncement>[0],
+): ReturnType<typeof deliverSubagentAnnouncement> {
   const sourceOwnerChanged = () =>
     params.isSourceSessionEffectsAllowed?.() === false ||
     params.isSourceSessionAdmissionAllowed?.() === false;
@@ -172,7 +197,8 @@ export async function deliverSubagentAnnouncement(
         resolveCompletionDeliveryOrigins(params);
       const requesterEntry =
         params.preparedRequester?.entry ??
-        loadRequesterSessionEntry(params.targetRequesterSessionKey, params.requesterAgentId).entry;
+        (await loadRequesterSessionEntry(params.targetRequesterSessionKey, params.requesterAgentId))
+          .entry;
       // No external route exists for an internal-only handoff. Let the normal
       // agent final enter the owning transcript instead of requiring a message tool target.
       const sourceReplyDeliveryMode =
