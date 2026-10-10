@@ -1,6 +1,10 @@
 import type { Page } from "playwright";
 import { expect } from "vitest";
 import { APP_ROUTE_IDS, pathForRoute, type RouteId } from "../../ui/src/app-route-paths.ts";
+import {
+  scrollChatThreadToTop,
+  waitForChatScrollIdle,
+} from "../../ui/src/e2e/chat-flow.test-support.ts";
 import { CONFIG_PAGE_IDS } from "../../ui/src/pages/config/config-sections.ts";
 import type {
   ControlUiMockGatewayScenario,
@@ -197,9 +201,10 @@ export const scenes: Scene[] = [
     label: "Chat: start of long transcript, wrapping and code",
     prepare: async (page) => {
       await page.getByText(/Message 39: A deliberately long sentence/u).waitFor();
-      await page
-        .locator(".chat-thread")
-        .evaluate((thread) => thread.scrollTo({ top: 0, behavior: "instant" }));
+      await waitForChatScrollIdle(page);
+      await scrollChatThreadToTop(page);
+      await waitForChatScrollIdle(page);
+      await page.mouse.move(0, 0);
       await page.getByText(/Message 0: A deliberately long sentence/u).waitFor();
     },
     scenario: {
