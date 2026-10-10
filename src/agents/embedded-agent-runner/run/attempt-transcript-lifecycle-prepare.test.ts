@@ -695,7 +695,17 @@ describe("admitted lazy session writer", () => {
             sessionId: target.sessionId,
             activeWriterRunId: runParams.runId,
           });
-          expect(loadTranscriptEventsSync(target)).toEqual([]);
+          const events = loadTranscriptEventsSync(target);
+          if (kind === "message") {
+            expect(events).toEqual([]);
+          } else {
+            expect(events).toMatchObject([
+              { type: "session" },
+              kind === "model"
+                ? { type: "model_change", provider: "test-provider", modelId: "test-model" }
+                : { type: "thinking_level_change", thinkingLevel: "high" },
+            ]);
+          }
         } finally {
           unsubscribe();
         }

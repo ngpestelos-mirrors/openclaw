@@ -298,6 +298,20 @@ export class SessionManagerPersistence extends SessionManagerCore {
               this.persistenceHeaderPending = false;
               loadedVersion = header.value.after;
             }
+            // Identity observers may cancel the run; retain its claim and header first.
+            const identity = committed.initialEntry?.identity;
+            if (identity) {
+              const databaseIdentity = actor.target.database;
+              publishCommittedSessionIdentity(
+                captured.agentId,
+                databaseIdentity.kind === "file"
+                  ? databaseIdentity.physicalIdentity
+                  : databaseIdentity.incarnation,
+                identity.previous,
+                identity.current,
+              );
+              assertCurrent();
+            }
           },
         });
       let outcome;
