@@ -218,7 +218,7 @@ export function maintainSessionTranscriptIndexStatus(db: DatabaseSync): {
           db,
           kysely
             .selectFrom(table)
-            .select("rowid")
+            .select("rowid as rowId")
             .where("session_id", "=", sessionId)
             .limit(budget + 1),
         ).rows;
@@ -232,7 +232,7 @@ export function maintainSessionTranscriptIndexStatus(db: DatabaseSync): {
               kysely.deleteFrom(table).where(
                 "rowid",
                 "in",
-                selected.map((row) => row.rowid),
+                selected.map((row) => row.rowId),
               ),
             ).numAffectedRows ?? 0n;
           remainingRows[index]! -= Number(removed);
