@@ -737,9 +737,13 @@ export async function handleControlUiHttpRequest(
       return true;
     }
     const config = opts?.config;
-    const resolvedIdentity = config
-      ? await resolveAssistantIdentity({ cfg: config, agentId: opts?.agentId })
-      : undefined;
+    const [resolvedIdentity, pluginCatalog, devGitBranch] = await Promise.all([
+      config ? resolveAssistantIdentity({ cfg: config, agentId: opts?.agentId }) : undefined,
+      import("./control-ui-plugin-assets.js").then(({ listControlUiPluginCatalog }) =>
+        listControlUiPluginCatalog(),
+      ),
+      resolveDevInstallGitBranch(),
+    ]);
     const identity = resolvedIdentity ?? DEFAULT_ASSISTANT_IDENTITY;
     const assistantAgentId = resolvedIdentity?.agentId;
     const avatarProjection =
@@ -751,7 +755,6 @@ export async function handleControlUiHttpRequest(
           })
         : { avatar: identity.avatar, resolution: null };
     const avatarMeta = controlUiAvatarResolutionMeta(avatarProjection.resolution);
-    const devGitBranch = (await resolveDevInstallGitBranch()) ?? undefined;
     requestAuth.assertCurrent();
     sendJson(res, 200, {
       basePath,
@@ -766,11 +769,12 @@ export async function handleControlUiHttpRequest(
         config?.gateway?.controlUi?.root === undefined
           ? (resolveRuntimeServiceBuildId() ?? undefined)
           : undefined,
-      devGitBranch,
+      devGitBranch: devGitBranch ?? undefined,
       ...resolveControlUiBootstrapPresentation(config),
       terminalEnabled,
       cliAgentsEnabled: config?.gateway?.cliAgents?.enabled !== false,
       pluginAssetsRequireAuth: opts?.auth !== undefined && opts.auth.mode !== "none",
+      pluginControlUiModules: pluginCatalog.plugins,
       pluginFrameGrants: pluginFrameGrants.map(({ pluginId, path: grantPath, match }) => ({
         pluginId,
         path: grantPath,
