@@ -120,7 +120,6 @@ vi.mock("./desktop-generation.js", () => ({
 vi.mock("openclaw/plugin-sdk/agent-harness-registration", async (importOriginal) => ({
   ...(await importOriginal<typeof import("openclaw/plugin-sdk/agent-harness-registration")>()),
   resolveDefaultAgentDir: mocks.resolveDefaultAgentDir,
-  embeddedAgentLog: mocks.embeddedAgentLog,
 }));
 
 import {

@@ -90,6 +90,7 @@ import {
   type SharedCodexAppServerClientStartup,
   type SharedCodexAppServerClientState,
 } from "./shared-client-lifecycle.js";
+import { shouldTrackDesktopGeneration } from "./shared-client-start-policy.js";
 import {
   resolveCodexAppServerSpawnIdentity,
   type CodexAppServerClientProcessIdentity,
@@ -459,27 +460,6 @@ async function resolveCodexAppServerClientStartContext(
     ...(options?.pluginConfig !== undefined ? { pluginConfig: options.pluginConfig } : {}),
     ...(desktopGeneration ? { desktopGeneration } : {}),
   };
-}
-
-function shouldTrackDesktopGeneration(
-  startOptions: CodexAppServerStartOptions,
-  pluginConfig: unknown,
-): boolean {
-  if (startOptions.transport !== "stdio") {
-    return false;
-  }
-  // A managed package process can publish desktop-owned Computer Use artifacts,
-  // so both share one generation. Custom operator commands remain independent.
-  if (
-    resolveCodexComputerUseConfig({ pluginConfig }).enabled &&
-    (startOptions.commandSource === "managed" || startOptions.commandSource === "resolved-managed")
-  ) {
-    return true;
-  }
-  return (
-    startOptions.commandSource === "managed" &&
-    (startOptions.managedCommandOrder ?? "package-first") === "desktop-first"
-  );
 }
 
 /** Gets or starts a shared Codex app-server client without retaining a lease. */
