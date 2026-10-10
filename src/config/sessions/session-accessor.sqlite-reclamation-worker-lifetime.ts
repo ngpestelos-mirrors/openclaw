@@ -77,10 +77,6 @@ import {
 } from "./session-accessor.sqlite-worker-transport.js";
 
 type DatabaseOptions = SqliteArchiveReclamationPlan["databaseOptions"];
-type SqliteMutationWorkerRequest =
-  | SqliteReclamationWorkerRequest
-  | SqliteReclamationPrepareRequest
-  | SqliteCanonicalValidationWorkerRequest;
 type MutationRunParams<Result> = {
   claim: SqliteReclamationClaim;
   validationOwner?: SqliteMutationWorkerValidationOwner;
@@ -380,7 +376,10 @@ export class SqliteReclamationWorker {
       request: (
         operationId: number,
         coordination: SqliteMutationWorkerCoordination,
-      ) => SqliteMutationWorkerRequest;
+      ) =>
+        | SqliteReclamationWorkerRequest
+        | SqliteReclamationPrepareRequest
+        | SqliteCanonicalValidationWorkerRequest;
       transferList: ArrayBuffer[];
     },
   ): Promise<Result> {
@@ -389,7 +388,6 @@ export class SqliteReclamationWorker {
     params.assertCurrent();
     const transport = (this.transport ??= await this.start());
     params.assertCurrent();
-    const worker = transport.channel;
     if (params.diagnostics) {
       params.diagnostics.workerThreadId = this.workerThreadId;
     }
@@ -425,7 +423,7 @@ export class SqliteReclamationWorker {
           validationOwner: params.validationOwner,
           readOpeningValidation: params.readOpeningValidation,
           dispatch: () =>
-            worker.postMessage(params.request(operationId, coordination), [
+            transport.channel.postMessage(params.request(operationId, coordination), [
               ...params.transferList,
               ...(coordination.databaseAdmission ? [coordination.databaseAdmission] : []),
             ]),
@@ -633,11 +631,14 @@ export class SqliteReclamationWorker {
             async (coordination) => {
               try {
                 this.closeRequested = true;
-                worker.postMessage({
-                  type: "close",
-                  operationId,
-                  coordination,
-                } satisfies SqliteReclamationWorkerCloseRequest);
+                worker.postMessage(
+                  {
+                    type: "close",
+                    operationId,
+                    coordination,
+                  } satisfies SqliteReclamationWorkerCloseRequest,
+                  [],
+                );
               } catch (error) {
                 await terminateSqliteMutationWorker(transport);
                 throw error;
@@ -652,7 +653,7 @@ export class SqliteReclamationWorker {
           if (transport.kind === "pooled") {
             // The task cannot yield its slot until the parent's native close has settled.
             try {
-              worker.postMessage({ type: "release", operationId });
+              worker.postMessage({ type: "release", operationId }, []);
             } catch (error) {
               await terminateSqliteMutationWorker(transport);
               throw error;
