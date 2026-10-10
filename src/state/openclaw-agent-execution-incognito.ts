@@ -547,6 +547,18 @@ function createIncognitoAgentExecutionOwner(
                   if (!entry) throw new Error("Committed incognito projection lost its session");
                   const { reconcileSessionTranscriptIndexes } =
                     await import("../config/sessions/session-transcript-reconcile.js");
+                  // Phase commits invalidate legacy claims; reconciliation acquires its own
+                  // current claim from the same memory owner before opening a compute scope.
+                  await execution.sessions.read(
+                    { assertCurrent: assertActorCurrent },
+                    {
+                      sessionKey,
+                      expected: {
+                        sessionId: entry.sessionId,
+                        lifecycleRevision: entry.lifecycleRevision,
+                      },
+                    },
+                  );
                   await reconcileSessionTranscriptIndexes(
                     { ...options, preferredSessionId: entry.sessionId },
                     {

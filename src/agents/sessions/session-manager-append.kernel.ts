@@ -160,7 +160,7 @@ export function applySessionDirectMessageInTransaction(
     throw new Error("Invalid serialized session transcript message");
   }
   let projectionNeedsReconcile = false;
-  const snapshot = appendTranscriptMessageSnapshotSync<SessionMessageEntry["message"] | undefined>(
+  const snapshot = appendTranscriptMessageSnapshotSync<typeof message | undefined>(
     input.scope,
     {
       message,

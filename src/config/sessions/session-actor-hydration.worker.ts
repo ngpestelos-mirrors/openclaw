@@ -100,7 +100,7 @@ export function hydrateSessionActorState(
             .where("session_members.session_key", "=", eb.ref("session_nodes.session_key"))
             .orderBy("identity_id"),
         ).as("actor_members"),
-        (tables?.has("session_pending_inputs")
+        tables?.has("session_pending_inputs")
           ? jsonArrayFrom(
               db
                 .selectFrom("session_pending_inputs")
@@ -130,10 +130,9 @@ export function hydrateSessionActorState(
                 )
                 .orderBy("accepted_at")
                 .orderBy("input_id"),
-            )
-          : eb.val("[]")
-        ).as("actor_pending"),
-        (tables?.has("session_input_completions")
+            ).as("actor_pending")
+          : eb.val("[]").as("actor_pending"),
+        tables?.has("session_input_completions")
           ? jsonArrayFrom(
               db
                 .selectFrom("session_input_completions")
@@ -157,9 +156,8 @@ export function hydrateSessionActorState(
                   "=",
                   eb.ref("session_nodes.current_session_id"),
                 ),
-            )
-          : eb.val("[]")
-        ).as("actor_completions"),
+            ).as("actor_completions")
+          : eb.val("[]").as("actor_completions"),
         jsonObjectFrom(
           db
             .selectFrom("session_windows")
