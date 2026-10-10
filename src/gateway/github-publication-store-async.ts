@@ -8,6 +8,7 @@ import type {
 } from "../state/github-publication-read.types.js";
 import { createGitHubPublicationWorkerScope } from "../state/github-publication-worker.js";
 import type {
+  GitHubPublicationDeferral,
   PersonalPublicationMutation,
   PublicationMutationReceipt,
   PublicationReadOperations,
@@ -18,7 +19,6 @@ import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-rea
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { PersonalGitHubPublicationRow } from "./github-personal-publication-store.js";
 import { readPersonalGitHubPublication } from "./github-personal-publication-store.js";
-import type { GitHubPublicationDeferral } from "./github-publication-defer.kernel.js";
 import {
   githubPublicationEffectFacts,
   type GitHubPublicationEffectTransition,

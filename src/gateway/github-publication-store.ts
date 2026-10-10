@@ -1,5 +1,4 @@
 import type { SessionGitHubPublicationResult } from "../../packages/gateway-protocol/src/schema/session-github-publication.js";
-import type { PreparedGitHubPublicationIdentity } from "../agents/github-tool-identity.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -9,17 +8,23 @@ import {
 import type {
   GitHubPublicationReceiptTarget,
   GitHubPublicationRow,
+  SharedGitHubPublicationFilter,
 } from "../state/github-publication-read.types.js";
 import { githubPublicationReceipts } from "../state/github-publication-receipts.js";
 import {
   decodeGitHubPublicationRequester,
   matchesGitHubPublicationRequester,
-  type GitHubPublicationRequesterSnapshot,
 } from "../state/github-publication-requester.js";
 import {
   insertGitHubPublicationSessionLifecycle,
   readGitHubPublicationSessionLifecycle,
 } from "../state/github-publication-session-lifecycles.js";
+import type {
+  SharedGitHubPublicationAcceptedSnapshot,
+  SharedGitHubPublicationInsert,
+  SharedGitHubPublicationPublishingFacts,
+  SharedGitHubPublicationWorkspaceSnapshot,
+} from "../state/github-publication-worker.types.js";
 import { ensureGitHubPublicationSchema } from "../state/openclaw-state-db-schema-additive.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import type { DB as StateDatabase } from "../state/openclaw-state-db.generated.js";
@@ -33,7 +38,7 @@ import {
   checkSharedWorktreeReceipt,
   matchesGitHubPublicationIdentityRow,
 } from "./github-publication-receipt.js";
-import type { WorkerSessionTurnClaim } from "./worker-environments/placement-store.js";
+import type { WorkerSessionTurnClaim } from "./worker-environments/placement-record.js";
 
 type GitHubPublicationDatabase = Pick<
   StateDatabase,
@@ -119,14 +124,6 @@ export function listGitHubPublicationsForClaimInDatabase(
   }
   return executeSqliteQuerySync(db, query).rows;
 }
-
-export type SharedGitHubPublicationFilter = {
-  pending?: boolean;
-  status?: "requested" | "publishing" | "published" | "failed";
-  claimNull?: boolean;
-  sessionId?: string;
-  unreported?: boolean;
-};
 
 export function listSharedGitHubPublicationsInDatabase(
   db: OpenClawStateDatabase["db"],
@@ -268,26 +265,7 @@ export function claimGitHubPublicationExecutionInDatabase(
 /** Insert/replay shared intent inside the caller's admission transaction. */
 export function insertGitHubPublicationRequest(
   db: Parameters<typeof getNodeSqliteKysely>[0],
-  input: {
-    request: {
-      sessionKey: string;
-      agentId: string;
-      idempotencyKey: string;
-      title?: string;
-      body?: string;
-    };
-    requestId: string;
-    requestDigest: string;
-    sessionId: string;
-    lifecycleRevision: string | null;
-    requester: GitHubPublicationRequesterSnapshot;
-    assertCurrent: () => void;
-    now: number;
-    worktree: { id: string; repoFingerprint: string; branch: string };
-    identity: Pick<PreparedGitHubPublicationIdentity, "source" | "profileId" | "account">;
-    claim?: WorkerSessionTurnClaim;
-    snapshot?: { sourceHeadCommit: string; sourceIndexTree: string; workspaceTree: string };
-  },
+  input: SharedGitHubPublicationInsert & { assertCurrent: () => void },
 ): GitHubPublicationRow {
   input.assertCurrent();
   const { request, identity, worktree, claim, snapshot } = input;
@@ -434,12 +412,9 @@ function createSharedExecutionTransitions(
   ) => GitHubPublicationRow,
 ) {
   return {
-    bindWorkspaceSnapshot: (input: {
-      row: GitHubPublicationRow;
-      sourceHeadCommit: string;
-      sourceIndexTree: string;
-      workspaceTree: string;
-    }): GitHubPublicationRow => {
+    bindWorkspaceSnapshot: (
+      input: SharedGitHubPublicationWorkspaceSnapshot,
+    ): GitHubPublicationRow => {
       return write(
         input.row,
         {
@@ -450,15 +425,9 @@ function createSharedExecutionTransitions(
         "bind-workspace",
       );
     },
-    updatePublishingFacts: (input: {
-      row: GitHubPublicationRow;
-      repository: string;
-      branch: string;
-      baseBranch: string;
-      sourceHeadCommit: string;
-      workspaceTree: string;
-      headCommit: string;
-    }): GitHubPublicationRow => {
+    updatePublishingFacts: (
+      input: SharedGitHubPublicationPublishingFacts,
+    ): GitHubPublicationRow => {
       return write(
         input.row,
         {
@@ -594,14 +563,6 @@ export function markGitHubPublicationReported(
     { operationLabel: `github-${kind}-publication.report` },
   );
 }
-
-export type SharedGitHubPublicationAcceptedSnapshot = {
-  row: GitHubPublicationRow;
-  claim: WorkerSessionTurnClaim;
-  sourceHeadCommit: string;
-  sourceIndexTree: string;
-  workspaceTree: string;
-};
 
 export function bindAcceptedGitHubPublicationClaimSnapshotInDatabase(
   database: OpenClawStateDatabase,
