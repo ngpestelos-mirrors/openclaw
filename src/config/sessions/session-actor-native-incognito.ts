@@ -265,55 +265,59 @@ export async function captureNativeIncognitoSessionActor(params: {
       }),
       transport: {
         run: (operation, authorize) =>
-          runOpenClawAgentWriteAdmission(options, () => {
-            lifetime.assertCurrent();
-            return operation({
-              captureGeneration: () => ({ assertCurrent: assertOwner }),
-              execute(command) {
-                const settled = Promise.withResolvers<
-                  { kind: "completed" } | { kind: "unknown"; error: unknown }
-                >();
-                let settlement: SqliteWorkerNativeSettlement | undefined;
-                const selected: Request = {
-                  assertCurrent: lifetime.assertCurrent,
-                  authorize,
-                  native: {
-                    admission: {
-                      get committed() {
-                        return selected.committed;
+          runOpenClawAgentWriteAdmission(
+            options,
+            () => {
+              lifetime.assertCurrent();
+              return operation({
+                captureGeneration: () => ({ assertCurrent: assertOwner }),
+                execute(command) {
+                  const settled = Promise.withResolvers<
+                    { kind: "completed" } | { kind: "unknown"; error: unknown }
+                  >();
+                  let settlement: SqliteWorkerNativeSettlement | undefined;
+                  const selected: Request = {
+                    assertCurrent: lifetime.assertCurrent,
+                    authorize,
+                    native: {
+                      admission: {
+                        get committed() {
+                          return selected.committed;
+                        },
+                        get settlement() {
+                          return settlement;
+                        },
                       },
-                      get settlement() {
-                        return settlement;
-                      },
+                      retained: { settled: settled.promise },
                     },
-                    retained: { settled: settled.promise },
-                  },
-                };
-                try {
-                  assertTransactionUsable(database.db);
-                  if (database.db.isTransaction) {
-                    throw new Error("Native session actor has an unsettled transaction");
-                  }
-                  const result = selectedBackend.execute(selected, command);
-                  const unknown = "kind" in result && result.kind === "unknown";
-                  settlement = {
-                    kind: unknown ? "unknown" : "completed",
-                    committed: selected.committed,
                   };
-                  if (unknown) {
-                    settled.resolve({ kind: "unknown", error: result.error });
-                  } else {
-                    settled.resolve({ kind: "completed" });
+                  try {
+                    assertTransactionUsable(database.db);
+                    if (database.db.isTransaction) {
+                      throw new Error("Native session actor has an unsettled transaction");
+                    }
+                    const result = selectedBackend.execute(selected, command);
+                    const unknown = "kind" in result && result.kind === "unknown";
+                    settlement = {
+                      kind: unknown ? "unknown" : "completed",
+                      committed: selected.committed,
+                    };
+                    if (unknown) {
+                      settled.resolve({ kind: "unknown", error: result.error });
+                    } else {
+                      settled.resolve({ kind: "completed" });
+                    }
+                    return Promise.resolve(result);
+                  } catch (error) {
+                    settlement = { kind: "unknown", committed: selected.committed };
+                    settled.resolve({ kind: "unknown", error });
+                    return Promise.reject(error);
                   }
-                  return Promise.resolve(result);
-                } catch (error) {
-                  settlement = { kind: "unknown", committed: selected.committed };
-                  settled.resolve({ kind: "unknown", error });
-                  return Promise.reject(error);
-                }
-              },
-            });
-          }),
+                },
+              });
+            },
+            true,
+          ),
         async release() {
           release();
         },
