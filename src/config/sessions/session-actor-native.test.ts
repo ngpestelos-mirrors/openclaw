@@ -134,6 +134,7 @@ it.each(["direct", "destructured"] as const)(
         await expect(
           recorder.stageApproved?.({ runId: "native-run", assertCurrent() {} }),
         ).resolves.toBe(true);
+        expect(approvals).toBe(1);
         const pending = expectDefined(
           readSessionPendingInputByKey(owner, recorderTarget, "native-input:user"),
           "custody before ACK",
@@ -152,6 +153,7 @@ it.each(["direct", "destructured"] as const)(
           ? recorder.persistApproved()
           : persistApproved());
         expect(persisted).toMatchObject({ appended: true, message: { content: "approved input" } });
+        expect(approvals).toBe(1);
         expect(recorder.isPendingInputConsumed?.()).toBe(true);
         expect(
           readSessionPendingInputByKey(owner, recorderTarget, "native-input:user"),
@@ -160,11 +162,17 @@ it.each(["direct", "destructured"] as const)(
         expect(accept).toHaveBeenCalledOnce();
         await recorder.persistFallback();
         expect(adopt).toHaveBeenCalledOnce();
+        expect(input.actor.snapshot(authority)?.transcript.idempotency).toEqual([
+          expect.objectContaining({ key: "native-input:user", eventId: persisted?.messageId }),
+        ]);
 
         const retry = createRecorder();
         await expect(
           retry.stageApproved?.({ runId: "native-run", assertCurrent() {} }),
         ).resolves.toBe(true);
+        // Consumption retires the raw receipt; completion-tracked retries must
+        // revalidate their approved bytes against the committed transcript.
+        expect(approvals).toBe(2);
         expect(retry.getPendingInputMessage?.()).toMatchObject({ content: "approved input" });
         bindUserTurnInputActor(retry, { phase: "adoptRun", acquire: async () => input });
         await expect(retry.persistApproved()).resolves.toMatchObject({
@@ -174,7 +182,7 @@ it.each(["direct", "destructured"] as const)(
         });
         retry.finishPendingInput?.("interrupted");
         await retry.waitForPendingInputSettlement?.();
-        expect(approvals).toBe(1);
+        expect(approvals).toBe(2);
         expect(
           readTranscriptEventRows(owner, recorderTarget.sessionId)
             .map((row) => JSON.parse(row.eventJson))

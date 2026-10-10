@@ -266,11 +266,14 @@ changes. Existing published updaters need no migration for these process-local
 receipts, and no synchronous SDK method is removed or given an asynchronous
 completion contract.
 
-### Session phase actor (B1, inactive)
+<a id="session-phase-actor-b1-inactive" />
 
-The shared session actor contract adds an inactive foundation for durable and
-incognito sessions. Production callers retain their existing routes. The actor
-lives inside the canonical agent execution worker and shares its physical writer
+### Session phase actor
+
+The shared session actor serves input acceptance, run adoption, and recovery
+checkpoints for durable and incognito sessions. Other turn phases retain their
+existing routes until their cutover. The actor lives inside the canonical agent
+execution worker and shares its physical writer
 queue; it does not introduce another database, worker service, or writer owner.
 Durable actors bind the physical database identity and session key. Incognito
 actors bind the existing memory database's handle and incarnation.
@@ -314,6 +317,23 @@ transcript receipts cannot certify complete pending-input and model-context
 facts. Native, SDK, recovery, and maintenance writers keep their existing
 publication and final-authority guards during this incremental cutover.
 
+Chat input recorders retain the admitted actor through accepted-work settlement.
+Pending-input acceptance and transcript-only acceptance use `acceptInput` before
+the started acknowledgement; adopting staged input combines its transcript and
+recovery claim in `adoptRun`. Ordinary recovery checks consume the MAIN replica,
+while each effect still checks its live source, run, lifecycle, and permission
+authority. Pre- and post-hook checkpoints remain separate when the hook is an
+external effect. Actor-bound acceptance does not hold a legacy writer reservation
+around its commands. Unbound native and SDK callers retain their compatibility
+adapters, whose committed writes invalidate actor facts.
+
+Canonical retry payloads stay with the existing bounded reader. A fresh input
+can prove absence from complete MAIN pending, completion, and idempotency facts;
+a positive match cannot substitute metadata for stored bytes. Consumption can
+retire the raw pending row, so a completion-tracked retry still verifies its
+approved payload against the committed transcript. A final turn commit carries
+its exact candidate into the live custody check before SQLite commits.
+
 Confirmed rollback leaves committed state intact. A lost reply reconciles
 against native commit evidence; an unknown outcome fences further commands and
 disclosure until a read rehydrates the original owner. Neither path replays the
@@ -329,8 +349,7 @@ its memory database.
 
 Actor command diagnostics record phase and settlement without payloads. Census
 consumers count commands, database worker requests, transfer frames, native SQL
-statements, and committed transactions separately. This inactive stage claims
-no production SQL reduction or T1 retirement. Schemas, stored bytes, durability,
+statements, and committed transactions separately. Schemas, stored bytes, durability,
 retention, permissions, released SDK completion contracts, and update behavior
 are unchanged; existing published updaters need no actor migration.
 

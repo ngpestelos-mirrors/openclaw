@@ -279,6 +279,7 @@ export function createSessionActorWorker(
             context.admit("commit", {
               kind: "session-actor-admission",
               snapshot: projectSessionActorHotState(working),
+              publication: turn,
               final: true,
             });
             return accepted;
