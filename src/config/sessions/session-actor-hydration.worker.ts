@@ -1,9 +1,14 @@
 import type { SessionTreeEntry } from "@openclaw/agent-core";
 import { jsonArrayFrom, jsonObjectFrom } from "kysely/helpers/sqlite";
 import { iterateSessionContextEntries } from "../../../packages/agent-core/src/harness/session/session.js";
-import { executeSqliteQuerySync, sqliteStringSet } from "../../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  getNodeSqliteKysely,
+  sqliteStringSet,
+} from "../../infra/kysely-sync.js";
 import { getAdmittedSqliteSchemaFacts } from "../../infra/sqlite-schema-facts.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
+import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import { parseReadableSessionEntryData } from "./session-accessor.sqlite-entry-read.js";
 import {
   readParticipantRecord,
@@ -55,6 +60,7 @@ export function hydrateSessionActorState(
   writeToken: string,
 ): SessionActorStoredState {
   const keys = collectSessionEntryLookupKeys(target.sessionKey);
+  const db = getNodeSqliteKysely<OpenClawAgentKyselyDatabase>(database.db);
   const tables = getAdmittedSqliteSchemaFacts(database.db)?.tables;
   const rows = executeSqliteQuerySync(
     database.db,
@@ -64,15 +70,15 @@ export function hydrateSessionActorState(
       .select((eb) => [
         (tables?.has("board_tabs")
           ? eb.exists(
-              eb
+              db
                 .selectFrom("board_tabs")
                 .select("session_key")
-                .whereRef("board_tabs.session_key", "=", "session_nodes.session_key"),
+                .where("board_tabs.session_key", "=", eb.ref("session_nodes.session_key")),
             )
           : eb.lit(0)
         ).as("actor_has_board"),
         jsonArrayFrom(
-          eb
+          db
             .selectFrom("session_participants")
             .select([
               "actor_id",
@@ -82,21 +88,21 @@ export function hydrateSessionActorState(
               "last_prompted_at",
               "session_key",
             ])
-            .whereRef("session_participants.session_key", "=", "session_nodes.session_key")
+            .where("session_participants.session_key", "=", eb.ref("session_nodes.session_key"))
             .orderBy("first_prompted_at")
             .orderBy("actor_id")
             .orderBy("identity_namespace"),
         ).as("actor_participants"),
         jsonArrayFrom(
-          eb
+          db
             .selectFrom("session_members")
             .select(["added_at", "added_by", "identity_id", "session_key"])
-            .whereRef("session_members.session_key", "=", "session_nodes.session_key")
+            .where("session_members.session_key", "=", eb.ref("session_nodes.session_key"))
             .orderBy("identity_id"),
         ).as("actor_members"),
         (tables?.has("session_pending_inputs")
           ? jsonArrayFrom(
-              eb
+              db
                 .selectFrom("session_pending_inputs")
                 .select([
                   "accepted_at",
@@ -112,20 +118,24 @@ export function hydrateSessionActorState(
                   "session_key",
                   "state",
                 ])
-                .whereRef("session_pending_inputs.session_key", "=", "session_nodes.session_key")
-                .whereRef(
+                .where(
+                  "session_pending_inputs.session_key",
+                  "=",
+                  eb.ref("session_nodes.session_key"),
+                )
+                .where(
                   "session_pending_inputs.session_id",
                   "=",
-                  "session_nodes.current_session_id",
+                  eb.ref("session_nodes.current_session_id"),
                 )
                 .orderBy("accepted_at")
                 .orderBy("input_id"),
             )
-          : eb.lit("[]")
+          : eb.val("[]")
         ).as("actor_pending"),
         (tables?.has("session_input_completions")
           ? jsonArrayFrom(
-              eb
+              db
                 .selectFrom("session_input_completions")
                 .select([
                   "completed_at",
@@ -137,17 +147,21 @@ export function hydrateSessionActorState(
                   "session_key",
                   "succeeded",
                 ])
-                .whereRef("session_input_completions.session_key", "=", "session_nodes.session_key")
-                .whereRef(
+                .where(
+                  "session_input_completions.session_key",
+                  "=",
+                  eb.ref("session_nodes.session_key"),
+                )
+                .where(
                   "session_input_completions.session_id",
                   "=",
-                  "session_nodes.current_session_id",
+                  eb.ref("session_nodes.current_session_id"),
                 ),
             )
-          : eb.lit("[]")
+          : eb.val("[]")
         ).as("actor_completions"),
         jsonObjectFrom(
-          eb
+          db
             .selectFrom("session_windows")
             .select([
               "account_id",
@@ -177,30 +191,30 @@ export function hydrateSessionActorState(
               "transcript_updated_at",
               "updated_at",
             ])
-            .whereRef("session_windows.session_id", "=", "session_nodes.current_session_id"),
+            .where("session_windows.session_id", "=", eb.ref("session_nodes.current_session_id")),
         ).as("actor_window"),
         jsonObjectFrom(
-          eb
+          db
             .selectFrom("transcript_rewrite_watermarks")
             .select(["generation", "session_id", "updated_at"])
-            .whereRef(
+            .where(
               "transcript_rewrite_watermarks.session_id",
               "=",
-              "session_nodes.current_session_id",
+              eb.ref("session_nodes.current_session_id"),
             ),
         ).as("actor_rewrite"),
         jsonObjectFrom(
-          eb
+          db
             .selectFrom("session_transcript_cold_archives")
             .select(sessionColdArchiveMetadataColumns)
-            .whereRef(
+            .where(
               "session_transcript_cold_archives.session_id",
               "=",
-              "session_nodes.current_session_id",
+              eb.ref("session_nodes.current_session_id"),
             ),
         ).as("actor_cold"),
         jsonObjectFrom(
-          eb
+          db
             .selectFrom("session_transcript_index_state")
             .select([
               "active_event_count",
@@ -211,14 +225,14 @@ export function hydrateSessionActorState(
               "session_id",
               "updated_at",
             ])
-            .whereRef(
+            .where(
               "session_transcript_index_state.session_id",
               "=",
-              "session_nodes.current_session_id",
+              eb.ref("session_nodes.current_session_id"),
             ),
         ).as("actor_projection"),
         jsonArrayFrom(
-          eb
+          db
             .selectFrom("transcript_event_identities")
             .select([
               "created_at",
@@ -229,15 +243,15 @@ export function hydrateSessionActorState(
               "seq",
               "session_id",
             ])
-            .whereRef(
+            .where(
               "transcript_event_identities.session_id",
               "=",
-              "session_nodes.current_session_id",
+              eb.ref("session_nodes.current_session_id"),
             )
             .orderBy("seq"),
         ).as("actor_identities"),
         jsonArrayFrom(
-          eb
+          db
             .selectFrom("session_transcript_active_events")
             .select([
               "active_position",
@@ -246,18 +260,18 @@ export function hydrateSessionActorState(
               "message_position",
               "session_id",
             ])
-            .whereRef(
+            .where(
               "session_transcript_active_events.session_id",
               "=",
-              "session_nodes.current_session_id",
+              eb.ref("session_nodes.current_session_id"),
             )
             .orderBy("active_position"),
         ).as("actor_active"),
         jsonArrayFrom(
-          eb
+          db
             .selectFrom("transcript_events")
             .select(["seq", transcriptEventModelNavigationSql().as("navigation_json")])
-            .whereRef("transcript_events.session_id", "=", "session_nodes.current_session_id")
+            .where("transcript_events.session_id", "=", eb.ref("session_nodes.current_session_id"))
             .orderBy("seq"),
         ).as("actor_navigation"),
       ])

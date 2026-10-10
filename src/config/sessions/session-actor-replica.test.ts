@@ -51,6 +51,8 @@ async function withReplica(
     database: ReturnType<typeof openOpenClawAgentDatabase>;
     scope: { agentId: string; sessionKey: string; storePath: string; env: NodeJS.ProcessEnv };
     load: (epoch?: string, sequence?: number) => SessionActorHotState;
+    reacquire: () => ReturnType<typeof createSessionActorReplica>;
+    retireGeneration: () => void;
   }) => void | Promise<void>,
 ) {
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
@@ -75,10 +77,14 @@ async function withReplica(
         nativeLocation: database.path,
       },
     };
-    const replica = createSessionActorReplica({
-      target,
-      lifetime: { assertCurrent() {}, assertReadable() {} },
-    });
+    let generation = 0;
+    const reacquire = () =>
+      createSessionActorReplica({
+        target,
+        lifetime: { assertCurrent() {}, assertReadable() {} },
+        currentGeneration: () => `${identity.incarnation}:${generation}`,
+      });
+    const replica = reacquire();
     const load = (epoch = "first", sequence = 0): SessionActorHotState => {
       const writeToken = readSqliteDatabaseWriteTokenForPath(database.path);
       if (!writeToken) {
@@ -87,7 +93,16 @@ async function withReplica(
       return hydrateSessionActorState(database, target, { epoch, sequence }, writeToken).hot;
     };
     try {
-      await run({ replica, database, scope, load });
+      await run({
+        replica,
+        database,
+        scope,
+        load,
+        reacquire,
+        retireGeneration() {
+          generation += 1;
+        },
+      });
     } finally {
       replica.close();
     }
@@ -132,6 +147,49 @@ function committed(
   };
   return { kind: "committed", value: undefined, receipt };
 }
+
+it("shares committed facts across released handles and retires them for writes and worker loss", async () => {
+  await withReplica((fixture) => {
+    const first = hydrate(fixture);
+    const replacement = fixture.reacquire();
+    fixture.replica.close();
+    try {
+      expect(fixture.replica.read()).toBeUndefined();
+      expect(replacement.read()).toEqual(first);
+      const context = command(first, "replacement-command");
+      const pending = replacement.beginCommand(context);
+      const sibling = fixture.reacquire();
+      try {
+        expect(sibling.read()).toBeUndefined();
+        expect(pending.settle(committed(context, fixture.load("first", 1)))).toBe(true);
+        expect(sibling.read()?.version).toEqual({ epoch: "first", sequence: 1 });
+        replacement.close();
+        expect(sibling.read()?.version.sequence).toBe(1);
+        assignSessionOwner(fixture.scope, {
+          owner: { type: "agent", id: "new-owner" },
+          assignedAt: 2,
+        });
+        expect(sibling.read()).toBeUndefined();
+        hydrate({ ...fixture, replica: sibling }, "after-write");
+        expect(sibling.read()?.entry?.owner?.actor.id).toBe("new-owner");
+        fixture.retireGeneration();
+        const restarted = fixture.reacquire();
+        try {
+          expect(restarted.read()).toBeUndefined();
+          expect(sibling.read()).toBeUndefined();
+          hydrate({ ...fixture, replica: restarted }, "restarted");
+          expect(restarted.read()?.version.epoch).toBe("restarted");
+        } finally {
+          restarted.close();
+        }
+      } finally {
+        sibling.close();
+      }
+    } finally {
+      replacement.close();
+    }
+  });
+});
 
 it("invalidates partial native publications before disclosure and count-only participant writes through the shared receipt", async () => {
   await withReplica((fixture) => {
