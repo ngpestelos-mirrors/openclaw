@@ -581,9 +581,7 @@ export async function archiveLegacyMeetingTranscriptSnapshots(params: {
 
 export class LegacyMeetingTranscriptArchiveMovedError extends Error {
   constructor(cause: unknown) {
-    super(
-      `legacy transcript source moved but canonical export restoration failed: ${String(cause)}`,
-    );
+    super(`legacy transcript source moved but current export restoration failed: ${String(cause)}`);
     this.name = "LegacyMeetingTranscriptArchiveMovedError";
   }
 }
@@ -621,7 +619,7 @@ export async function restoreCanonicalMeetingTranscriptExports(params: {
       sourceRelative.startsWith("..") ||
       path.isAbsolute(sourceRelative)
     ) {
-      throw new Error(`canonical transcript export path escaped its root: ${relativeDir}`);
+      throw new Error(`current transcript export path escaped its root: ${relativeDir}`);
     }
     if (migratedRelativeDirs.has(relativeDir)) {
       continue;
@@ -631,13 +629,13 @@ export async function restoreCanonicalMeetingTranscriptExports(params: {
     try {
       const sourceStat = await fs.lstat(source);
       if (sourceStat.isSymbolicLink() || !sourceStat.isDirectory()) {
-        throw new Error(`canonical transcript export source is not a directory: ${source}`);
+        throw new Error(`current transcript export source is not a directory: ${source}`);
       }
       await assertNoSymlinkParents({
         rootDir: params.archiveRoot,
         targetPath: source,
         allowMissing: false,
-        messagePrefix: "Canonical transcript export source",
+        messagePrefix: "Current transcript export source",
       });
     } catch (error) {
       if (!(isRecord(error) && error.code === "ENOENT")) {
@@ -646,7 +644,7 @@ export async function restoreCanonicalMeetingTranscriptExports(params: {
       const destinationStat = await fs.lstat(destination);
       if (destinationStat.isSymbolicLink() || !destinationStat.isDirectory()) {
         throw new Error(
-          `canonical transcript export destination is not a directory: ${destination}`,
+          `current transcript export destination is not a directory: ${destination}`,
           { cause: error },
         );
       }
@@ -654,22 +652,20 @@ export async function restoreCanonicalMeetingTranscriptExports(params: {
         rootDir: params.sourceRoot,
         targetPath: destination,
         allowMissing: false,
-        messagePrefix: "Canonical transcript export destination",
+        messagePrefix: "Current transcript export destination",
       });
       continue;
     }
     try {
       const destinationStat = await fs.lstat(destination);
       if (destinationStat.isSymbolicLink() || !destinationStat.isDirectory()) {
-        throw new Error(
-          `canonical transcript export destination is not a directory: ${destination}`,
-        );
+        throw new Error(`current transcript export destination is not a directory: ${destination}`);
       }
       await assertNoSymlinkParents({
         rootDir: params.sourceRoot,
         targetPath: destination,
         allowMissing: false,
-        messagePrefix: "Canonical transcript export destination",
+        messagePrefix: "Current transcript export destination",
       });
       const readMetadata = async (directory: string) =>
         parseSession(
@@ -684,7 +680,7 @@ export async function restoreCanonicalMeetingTranscriptExports(params: {
         sourceMetadata.sessionId !== destinationMetadata.sessionId ||
         sourceMetadata.startedAt !== destinationMetadata.startedAt
       ) {
-        throw new Error(`canonical transcript export destination changed identity: ${destination}`);
+        throw new Error(`current transcript export destination changed identity: ${destination}`);
       }
       continue;
     } catch (error) {
@@ -696,7 +692,7 @@ export async function restoreCanonicalMeetingTranscriptExports(params: {
       rootDir: params.sourceRoot,
       targetPath: destination,
       allowMissing: true,
-      messagePrefix: "Canonical transcript export destination",
+      messagePrefix: "Current transcript export destination",
     });
     await fs.mkdir(path.dirname(destination), { recursive: true });
     await fs.rename(source, destination);

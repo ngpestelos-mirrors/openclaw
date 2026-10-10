@@ -633,7 +633,7 @@ describe("Reef doctor contract", () => {
     const runtimeState = await migrationById(
       "reef-runtime-files-to-plugin-state",
     ).migrateLegacyState(params);
-    await expect(generateAndStoreKeys(createRuntime(env))).rejects.toThrow("has no canonical keys");
+    await expect(generateAndStoreKeys(createRuntime(env))).rejects.toThrow("has no stored keys");
 
     expect(registration.warnings).toEqual([]);
     expect(registration.changes).toHaveLength(4);

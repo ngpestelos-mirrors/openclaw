@@ -116,7 +116,7 @@ export async function generateAndStoreKeys(runtime: PluginRuntime): Promise<Reef
   );
   if (binding) {
     throw new Error(
-      `Reef identity @${binding.handle} on ${binding.relayUrl} has no canonical keys; restore the original keys before registration`,
+      `Reef identity @${binding.handle} on ${binding.relayUrl} has no stored keys; restore the original keys before registration`,
     );
   }
   const identity = generateIdentity();

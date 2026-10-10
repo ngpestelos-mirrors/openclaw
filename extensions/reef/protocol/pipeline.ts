@@ -124,7 +124,7 @@ export async function composeOutbound(options: ComposeOutboundOptions): Promise<
       decision: "deny",
       findings: checks.findings,
     });
-    throw new PipelineError("deterministic", "deterministic checks denied message");
+    throw new PipelineError("deterministic", "rule-based checks denied message");
   }
   const verdict = await classifyWithReview(
     options,
@@ -207,7 +207,7 @@ export async function composeInbound(options: ComposeInboundOptions): Promise<In
       finalized = true;
       throw new PipelineError(
         "deterministic",
-        "deterministic checks denied message",
+        "rule-based checks denied message",
         undefined,
         receipt,
       );

@@ -849,7 +849,7 @@ describe("bot-native-command-menu sync lifecycle", () => {
     ]);
     expect(ledgerRows.get(botId)).toEqual({ version: 1, languageCodes: ["ko"] });
     expect(runtimeError).toHaveBeenCalledWith(
-      `Telegram command menu locale ledger for bot ${botId} was repaired; the unshipped ledger contained non-canonical data (discarded unsupported language codes: en-GB, zz; discarded 2 malformed ledger field(s) or entry(ies)).`,
+      `Telegram command menu locale ledger for bot ${botId} was repaired; the unshipped ledger contained invalid data (discarded unsupported language codes: en-GB, zz; discarded 2 malformed ledger field(s) or entry(ies)).`,
     );
     const apiCalls = [...deleteMyCommands.mock.calls, ...setMyCommands.mock.calls];
     expect(
@@ -896,7 +896,7 @@ describe("bot-native-command-menu sync lifecycle", () => {
     expect(ledgerRows.has(botId)).toBe(false);
     expect(ledgerDeleteCalls).toEqual([botId]);
     expect(runtimeError).toHaveBeenCalledWith(
-      `Telegram command menu locale ledger for bot ${botId} was reset; the unshipped ledger contained non-canonical data (discarded unsupported language codes: en-GB, zz; discarded 2 malformed ledger field(s) or entry(ies)).`,
+      `Telegram command menu locale ledger for bot ${botId} was reset; the unshipped ledger contained invalid data (discarded unsupported language codes: en-GB, zz; discarded 2 malformed ledger field(s) or entry(ies)).`,
     );
 
     await waitForTelegramMenuTurn();
@@ -987,7 +987,7 @@ describe("bot-native-command-menu sync lifecycle", () => {
     });
     expect(ledgerRows.get(botId)).toEqual({ version: 1, languageCodes: ["ko"] });
     expect(runtimeError).toHaveBeenCalledWith(
-      `Telegram command menu locale ledger for bot ${botId} was repaired; the unshipped ledger contained non-canonical data (discarded unsupported language codes: zz).`,
+      `Telegram command menu locale ledger for bot ${botId} was repaired; the unshipped ledger contained invalid data (discarded unsupported language codes: zz).`,
     );
 
     await waitForTelegramMenuTurn();
