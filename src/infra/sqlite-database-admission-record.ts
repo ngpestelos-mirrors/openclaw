@@ -30,6 +30,18 @@ export type Admission = {
   facts: Map<string, AdmissionFact>;
 };
 export type SqliteDatabaseAdmissions = Admission[];
+export type SqliteDatabaseAdmissionKey<T> = {
+  name: string;
+  read(this: void, value: unknown): T | undefined;
+  schemaDependent?: boolean;
+};
+export type SqliteDatabaseAdmissionCursor = Map<string, string>;
+export type SqliteDatabaseAdmissionExchange = (
+  admissions: SqliteDatabaseAdmissions,
+  location?: string,
+  create?: boolean,
+) => SqliteDatabaseAdmissions;
+
 function readAdmissionFact(value: unknown): AdmissionFact | undefined {
   if (
     !isRecord(value) ||

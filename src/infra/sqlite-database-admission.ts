@@ -20,6 +20,9 @@ import {
   isSqliteDatabaseAdmissionFactCurrent as valid,
   type Admission,
   type SqliteDatabaseAdmissions,
+  type SqliteDatabaseAdmissionKey,
+  type SqliteDatabaseAdmissionCursor,
+  type SqliteDatabaseAdmissionExchange as Exchange,
   type StagedAdmissionFact,
 } from "./sqlite-database-admission-record.js";
 import {
@@ -30,21 +33,12 @@ import { hasSqlitePostCommitScope, stageSqliteTransactionState } from "./sqlite-
 import { isSoleDatabaseFileDescriptor } from "./sqlite-worker-identity.js";
 
 export { readSqliteDatabaseAdmissions } from "./sqlite-database-admission-record.js";
-export type { SqliteDatabaseAdmissions } from "./sqlite-database-admission-record.js";
+export type {
+  SqliteDatabaseAdmissions,
+  SqliteDatabaseAdmissionKey,
+  SqliteDatabaseAdmissionCursor,
+} from "./sqlite-database-admission-record.js";
 export { beginSqliteDatabaseAdmissionOperation } from "./sqlite-native-admission.js";
-
-export type SqliteDatabaseAdmissionKey<T> = {
-  name: string;
-  read(this: void, value: unknown): T | undefined;
-  schemaDependent?: boolean;
-};
-
-export type SqliteDatabaseAdmissionCursor = Map<string, string>;
-type Exchange = (
-  admissions: SqliteDatabaseAdmissions,
-  location?: string,
-  create?: boolean,
-) => SqliteDatabaseAdmissions;
 
 const state = resolveGlobalSingleton(Symbol.for("openclaw.sqliteDatabaseAdmissions"), () => ({
   admissions: new Map<string, Admission>(),

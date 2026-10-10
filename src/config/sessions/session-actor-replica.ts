@@ -47,9 +47,12 @@ const pool = resolveGlobalSingleton(Symbol.for("openclaw.sessionActorReplicas"),
           storePaths: new Set([database.nativeLocation]),
           databaseIdentities: new Set([database.physicalIdentity]),
         })
-      )
+      ) {
         continue;
-      if (change.factsInvalidated) cell.reservation += 1;
+      }
+      if (change.factsInvalidated) {
+        cell.reservation += 1;
+      }
       // A command's partial publication precedes its full receipt. Its native
       // token rejects superseded postimages without cancelling that receipt.
       discard(cell);
@@ -77,7 +80,9 @@ function targetKey(target: SessionActorTarget): string {
 }
 
 function discard(cell: ReplicaCell): void {
-  if (cell.snapshot) pool.snapshots -= 1;
+  if (cell.snapshot) {
+    pool.snapshots -= 1;
+  }
   pool.bytes -= cell.bytes;
   cell.snapshot = undefined;
   cell.generation = undefined;
@@ -96,8 +101,12 @@ function touch(cell: ReplicaCell): void {
   pool.cells.delete(key);
   pool.cells.set(key, cell);
   for (const candidate of pool.cells.values()) {
-    if (pool.snapshots <= MAX_SNAPSHOTS && (pool.bytes <= MAX_BYTES || pool.snapshots === 1)) break;
-    if (!candidate.snapshot) continue;
+    if (pool.snapshots <= MAX_SNAPSHOTS && (pool.bytes <= MAX_BYTES || pool.snapshots === 1)) {
+      break;
+    }
+    if (!candidate.snapshot) {
+      continue;
+    }
     discard(candidate);
     forgetUnused(candidate);
   }
@@ -145,14 +154,17 @@ export function createSessionActorReplica(
   };
   const currentToken = (): string | undefined => {
     const database = target.database;
-    if (database.kind !== "file") return params.currentWriteToken?.();
+    if (database.kind !== "file") {
+      return params.currentWriteToken?.();
+    }
     try {
       const identity = readDatabasePathIdentitySync(database.nativeLocation);
       if (
         identity.key !== `file:${database.physicalIdentity}` ||
         (database.birthtime !== undefined && identity.birthtime !== database.birthtime)
-      )
+      ) {
         return undefined;
+      }
       return readSqliteDatabaseWriteTokenForPath(database.nativeLocation);
     } catch {
       return undefined;
@@ -191,14 +203,18 @@ export function createSessionActorReplica(
   };
   const begin = () => {
     params.lifetime.assertCurrent();
-    if (closed) throw new Error("Session actor replica is closed");
+    if (closed) {
+      throw new Error("Session actor replica is closed");
+    }
     owned.pending += 1;
     invalidate();
     const selected = owned.reservation;
     const expectedGeneration = generation();
     let settled = false;
     return (operation: (expectedGeneration: string | undefined) => boolean): boolean => {
-      if (settled) return false;
+      if (settled) {
+        return false;
+      }
       settled = true;
       try {
         return selected === owned.reservation && operation(expectedGeneration);
@@ -213,7 +229,9 @@ export function createSessionActorReplica(
     /** Each borrower validates its current physical generation before disclosure. */
     read(): SessionActorHotState | undefined {
       params.lifetime.assertReadable();
-      if (closed || !owned.snapshot) return undefined;
+      if (closed || !owned.snapshot) {
+        return undefined;
+      }
       if (!accepts(owned.snapshot, owned.generation)) {
         invalidate();
         return undefined;
@@ -272,7 +290,9 @@ export function createSessionActorReplica(
     },
     invalidate,
     close(): void {
-      if (closed) return;
+      if (closed) {
+        return;
+      }
       closed = true;
       owned.handles -= 1;
       forgetUnused(owned);

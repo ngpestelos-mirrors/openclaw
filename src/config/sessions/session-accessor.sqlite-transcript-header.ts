@@ -16,7 +16,9 @@ export function ensureTranscriptHeader(
   },
 ): void {
   const actor = readSessionActorTransactionState(database, scope);
-  if (actor && actor.hot.transcript.version.rawSeq !== null) return;
+  if (actor && actor.hot.transcript.version.rawSeq !== null) {
+    return;
+  }
   const db = getSessionKysely(database.db);
   const existing = actor
     ? undefined

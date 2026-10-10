@@ -680,7 +680,9 @@ export function writeSessionEntry(
       system_prompt_report_json: JSON.stringify(canonicalEntry.systemPromptReport) ?? null,
     };
     const persistedEntry = parseReadableSessionEntryData(database, row, "full");
-    if (!persistedEntry) throw new Error("Session actor entry write lost its persisted identity");
+    if (!persistedEntry) {
+      throw new Error("Session actor entry write lost its persisted identity");
+    }
     const committedEntry = withProjectedParticipants(persistedEntry, actor.hot.participants);
     actor.entryRows.set(sessionKey, {
       entry: structuredClone(committedEntry),

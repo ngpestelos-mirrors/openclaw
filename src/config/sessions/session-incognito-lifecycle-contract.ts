@@ -12,7 +12,7 @@ import type {
   SqliteSessionReclamationResult,
 } from "./session-accessor.sqlite-lifecycle-types.js";
 import type { ParentForkSourceTranscript } from "./session-accessor.sqlite-parent-fork.js";
-import type { SessionActorSettlement } from "./session-actor-contract.js";
+import type { SessionActorSettlement } from "./session-actor-state.types.js";
 import type {
   SessionMessageCutIntent,
   SessionMessageCutResult,

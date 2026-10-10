@@ -1,0 +1,245 @@
+import { isDeepStrictEqual } from "node:util";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type {
+  SessionActor,
+  SessionActorAppendCommitted,
+  SessionActorFactory,
+  SessionActorOperations,
+} from "../config/sessions/session-actor-contract.js";
+import { assertCanonicalSessionKeyWrite } from "../config/sessions/session-canonical-key.js";
+import type { IncognitoSessionActor } from "../config/sessions/session-incognito-actor.js";
+import type { IncognitoSessionAuthority } from "../config/sessions/session-incognito-contract.js";
+import type { SqliteWorkerStore } from "../infra/sqlite-worker-contract.js";
+import {
+  createSqliteWorkerOperationAdmission,
+  type SqliteWorkerAdmissionFactory,
+  type SqliteWorkerOperationAdmission,
+} from "../infra/sqlite-worker-operation-admission.js";
+import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
+import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
+import type { AgentDatabaseIncognitoIdentity } from "./openclaw-agent-execution-identity.types.js";
+
+/** The execution owner lends its queue, authority, and custody; this adapter owns no database. */
+export function createIncognitoSessionActorFactory(params: {
+  options: OpenClawAgentDatabaseOptions & { path: string };
+  identity: AgentDatabaseIncognitoIdentity;
+  assertOutsideGrant(): void;
+  assertBorrowed(): void;
+  assertReferenceCurrent(): void;
+  assertRetainedCurrent(): void;
+  withGrant<T>(operation: () => T): T;
+  retain<T>(operation: () => Promise<T>): Promise<T>;
+  run<T>(
+    authority: IncognitoSessionAuthority,
+    operation: (scope: Pick<SqliteWorkerStore<SessionActorOperations>, "execute">) => Promise<T>,
+    admission: SqliteWorkerAdmissionFactory,
+  ): Promise<T>;
+  writeToken: { value: string | undefined };
+  sessionFacts: { invalidate(sessionKey: string): void };
+  sessionActors: Set<SessionActor>;
+  acquiredActors: Set<SessionActor>;
+  getExecution(): IncognitoSessionActor;
+}): SessionActorFactory {
+  const {
+    options,
+    identity,
+    assertOutsideGrant,
+    assertBorrowed,
+    assertReferenceCurrent,
+    assertRetainedCurrent,
+    withGrant,
+    retain,
+    run,
+    writeToken,
+    sessionFacts,
+    sessionActors,
+    acquiredActors,
+    getExecution,
+  } = params;
+  return {
+    async acquire(requestedTarget, requestedLifetime) {
+      assertOutsideGrant();
+      assertBorrowed();
+      requestedLifetime.assertCurrent();
+      const target = structuredClone(requestedTarget);
+      if (!isDeepStrictEqual(target.database, identity)) {
+        throw new Error("Incognito session actor target differs from its memory owner");
+      }
+      const { sessionKey } = target;
+      assertCanonicalSessionKeyWrite(sessionKey, options.agentId);
+      if (!isIncognitoSessionKey(sessionKey)) {
+        throw new Error("Incognito actor requires an incognito session key");
+      }
+      const [{ createSessionActor }, { createSessionActorReplica }] = await Promise.all([
+        import("../config/sessions/session-actor.js"),
+        import("../config/sessions/session-actor-replica.js"),
+      ]);
+      assertBorrowed();
+      requestedLifetime.assertCurrent();
+      const assertActorCurrent = () => {
+        assertBorrowed();
+        requestedLifetime.assertCurrent();
+      };
+      const assertActorReadable = () => {
+        assertReferenceCurrent();
+        requestedLifetime.assertReadable();
+      };
+      const lifetime = {
+        assertCurrent: assertActorCurrent,
+        assertReadable: assertActorCurrent,
+      };
+      const actor = createSessionActor({
+        target,
+        lifetime: { assertCurrent: assertActorCurrent, assertReadable: assertActorReadable },
+        replica: createSessionActorReplica({
+          target: { sessionKey, database: identity },
+          lifetime,
+          currentWriteToken: () => writeToken.value,
+        }),
+        transport: {
+          retain,
+          run: (operation, authorize) =>
+            run(
+              { assertCurrent: assertActorCurrent },
+              (scope) =>
+                operation({
+                  captureGeneration: () => ({ assertCurrent: assertRetainedCurrent }),
+                  async execute(command) {
+                    try {
+                      const result = await scope.execute(command);
+                      if (isRecord(result) && "writeToken" in result) {
+                        writeToken.value =
+                          typeof result.writeToken === "string" ? result.writeToken : undefined;
+                      } else if (
+                        isRecord(result) &&
+                        result.kind === "committed" &&
+                        isRecord(result.receipt) &&
+                        isRecord(result.receipt.postimage)
+                      ) {
+                        sessionFacts.invalidate(sessionKey);
+                        writeToken.value =
+                          typeof result.receipt.postimage.writeToken === "string"
+                            ? result.receipt.postimage.writeToken
+                            : undefined;
+                      } else {
+                        writeToken.value = undefined;
+                        if (isRecord(result) && result.kind === "unknown") {
+                          sessionFacts.invalidate(sessionKey);
+                        }
+                      }
+                      return result;
+                    } catch (error) {
+                      writeToken.value = undefined;
+                      if (command.type !== "session.actor.read") {
+                        sessionFacts.invalidate(sessionKey);
+                      }
+                      throw error;
+                    }
+                  },
+                }),
+              (retained) => {
+                const native: SqliteWorkerOperationAdmission = createSqliteWorkerOperationAdmission(
+                  (request, grant) =>
+                    withGrant(() => {
+                      assertActorCurrent();
+                      if (
+                        !isRecord(request.facts) ||
+                        !isDeepStrictEqual(request.facts.identity, identity)
+                      ) {
+                        throw new Error("Incognito actor command changed its admitted owner");
+                      }
+                      const facts =
+                        request.stage === "prepare" ? request.facts : request.facts.publication;
+                      authorize({ ...request, facts }, { admission: native, retained }, grant);
+                      if (
+                        request.stage === "commit" &&
+                        isRecord(facts) &&
+                        facts.kind === "session-actor-admission" &&
+                        facts.final === true
+                      ) {
+                        // Legacy live claims remain usable by this command's final grant;
+                        // fence their projection before the native commit can be observed.
+                        sessionFacts.invalidate(sessionKey);
+                      }
+                    }),
+                );
+                return { nativeLocations: [], admission: native };
+              },
+            ),
+          async afterCommitted(outcome) {
+            const execution = getExecution();
+            if (!outcome.receipt.transcript.projectionNeedsReconcile) {
+              return;
+            }
+            const entry = outcome.receipt.postimage.entry;
+            if (!entry) {
+              throw new Error("Committed incognito projection lost its session");
+            }
+            const { reconcileSessionTranscriptIndexes } =
+              await import("../config/sessions/session-transcript-reconcile.js");
+            // Phase commits invalidate legacy claims; reconciliation acquires its own
+            // current claim from the same memory owner before opening a compute scope.
+            await execution.sessions.read(
+              { assertCurrent: assertActorCurrent },
+              {
+                sessionKey,
+                expected: {
+                  sessionId: entry.sessionId,
+                  lifecycleRevision: entry.lifecycleRevision,
+                },
+              },
+            );
+            await reconcileSessionTranscriptIndexes(
+              { ...options, preferredSessionId: entry.sessionId },
+              {
+                actor: execution,
+                authority: { assertCurrent: assertActorCurrent },
+                target: {
+                  sessionKey,
+                  sessionId: entry.sessionId,
+                  lifecycleRevision: entry.lifecycleRevision,
+                },
+              },
+            );
+            const markReady = (append: SessionActorAppendCommitted) => {
+              append.value.projectionNeedsReconcile = false;
+              if (append.header) {
+                append.header.projectionNeedsReconcile = false;
+              }
+            };
+            const value = outcome.value;
+            if (value && "kind" in value) {
+              if (value.kind === "session-turn") {
+                value.projectionNeedsReconcile = false;
+              } else {
+                markReady(value);
+              }
+            } else if (value && "inputId" in value) {
+              if (value.append) {
+                markReady(value.append);
+              }
+              if (value.turn) {
+                value.turn.projectionNeedsReconcile = false;
+              }
+            } else if (value && "projectionNeedsReconcile" in value) {
+              value.projectionNeedsReconcile = false;
+            }
+            return { value };
+          },
+          async release() {},
+        },
+      });
+      const shared: SessionActor = {
+        ...actor,
+        async release() {
+          await actor.release();
+          acquiredActors.delete(shared);
+          sessionActors.delete(shared);
+        },
+      };
+      acquiredActors.add(shared);
+      sessionActors.add(shared);
+      return shared;
+    },
+  };
+}

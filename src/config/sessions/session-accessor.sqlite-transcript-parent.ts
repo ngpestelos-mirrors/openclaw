@@ -257,7 +257,9 @@ function transcriptEntryIsAncestor(
   if (actor) {
     let current = actor.transcript.identities.get(leafId);
     for (let depth = 0; current && depth < PREPARED_ASSISTANT_MAX_ANCESTORS; depth++) {
-      if (current.parent_id === candidateId) return true;
+      if (current.parent_id === candidateId) {
+        return true;
+      }
       current =
         current.parent_id === null ? undefined : actor.transcript.identities.get(current.parent_id);
     }
@@ -380,7 +382,9 @@ function readActiveTranscriptAppendParentId(
   sessionId: string,
 ): string | null {
   const actor = readSessionActorTransactionState(database, { sessionId });
-  if (actor) return scanSessionTranscriptTree(actor.transcript.navigation).appendParentId;
+  if (actor) {
+    return scanSessionTranscriptTree(actor.transcript.navigation).appendParentId;
+  }
   const db = getSessionKysely(database.db);
   const latest = executeSqliteQueryTakeFirstSync(
     database.db,
@@ -465,7 +469,9 @@ function readTranscriptNavigationEvents(
   sessionId: string,
 ): unknown[] {
   const actor = readSessionActorTransactionState(database, { sessionId });
-  if (actor) return structuredClone(actor.transcript.navigation);
+  if (actor) {
+    return structuredClone(actor.transcript.navigation);
+  }
   const db = getSessionKysely(database.db);
   return Array.from(
     iterateSqliteQuerySync(

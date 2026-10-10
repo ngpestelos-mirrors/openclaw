@@ -3,10 +3,7 @@ import type {
   SqliteWalPeriodicRequest,
   SqliteWalPeriodicResult,
 } from "../infra/sqlite-wal-write-admission.js";
-import type {
-  SqliteWorkerEphemeralTarget,
-  SqliteWorkerStore,
-} from "../infra/sqlite-worker-contract.js";
+import type { SqliteWorkerStore } from "../infra/sqlite-worker-contract.js";
 import type { DatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import type { AgentCreationClaimWitness } from "./agent-creation-claim.js";
@@ -17,21 +14,17 @@ import type {
   OpenClawAgentDatabaseAdmissionExecution,
 } from "./openclaw-agent-execution-admission-contract.js";
 import type { AgentDatabaseDomainOperations } from "./openclaw-agent-execution-domain.js";
+import type {
+  AgentDatabaseExecutionFileIdentity,
+  AgentDatabaseIncognitoIdentity,
+} from "./openclaw-agent-execution-identity.types.js";
 import type { RegisteredAgentWorkerOperations } from "./openclaw-agent-execution-operations.js";
 
-/** Recorded by the native owner; a descriptor never grants access to that owner. */
-export type AgentDatabaseFileExecutionIdentity = {
-  kind: "file";
-  physicalIdentity: string;
-  birthtime?: string;
-  incarnation: string;
-  nativeLocation: string;
-};
-
-export type AgentDatabaseExecutionFileIdentity = Pick<
+export type {
   AgentDatabaseFileExecutionIdentity,
-  "kind" | "physicalIdentity" | "birthtime" | "nativeLocation"
->;
+  AgentDatabaseExecutionFileIdentity,
+  AgentDatabaseIncognitoIdentity,
+} from "./openclaw-agent-execution-identity.types.js";
 
 export type AgentDatabaseNativeStore = SqliteWorkerStore<AgentDatabaseOperations>;
 export type AgentDatabaseExecutionScope = Pick<AgentDatabaseNativeStore, "execute">;
@@ -107,9 +100,6 @@ export type AgentDatabaseFileExecutionOpen = {
   creatingIdentity?: DatabasePathIdentity;
   creationClaim?: AgentCreationClaimWitness;
 };
-
-/** Process-private locators; neither a handle nor its incarnation grants authority. */
-export type AgentDatabaseIncognitoIdentity = Readonly<SqliteWorkerEphemeralTarget>;
 
 export type AgentDatabaseIncognitoOpen = {
   kind: "ephemeral";

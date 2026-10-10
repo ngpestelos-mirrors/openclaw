@@ -240,7 +240,9 @@ export function applySessionActorPhase(
             : {}),
           ...(pendingFinalDelivery ? { pendingFinalDelivery } : {}),
         };
-        if (!isDeepStrictEqual(entry, next)) writeEntry(next);
+        if (!isDeepStrictEqual(entry, next)) {
+          writeEntry(next);
+        }
       }
       const completion = command.input.completion;
       if (completion) {
@@ -274,7 +276,9 @@ export function applySessionActorPhase(
       reducers.push({ index, kind: reducer.kind, changed: !isDeepStrictEqual(entry, next) });
       entry = next;
     }
-    if (reducers.some(({ changed }) => changed)) writeEntry(entry);
+    if (reducers.some(({ changed }) => changed)) {
+      writeEntry(entry);
+    }
   }
   const committedTurn =
     result && "kind" in result && result.kind === "session-turn"
