@@ -1,10 +1,14 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
-import type { QaGatewayChild } from "../../gateway-child.js";
+import type { startQaGatewayRpcClient } from "../../gateway-rpc-client.js";
+
+type QaChannelStatusGateway = {
+  call: Awaited<ReturnType<typeof startQaGatewayRpcClient>>["request"];
+};
 
 export async function readLiveQaChannelAccounts(
-  gateway: Pick<QaGatewayChild, "call">,
+  gateway: QaChannelStatusGateway,
   channel: string,
   options?: { timeoutMs?: number; deadlineMs?: number },
 ): Promise<ChannelAccountSnapshot[]> {
@@ -23,7 +27,7 @@ export async function readLiveQaChannelAccounts(
 }
 
 export async function waitForLiveQaChannelAccount(params: {
-  gateway: Pick<QaGatewayChild, "call">;
+  gateway: QaChannelStatusGateway;
   channel: string;
   accountId: string;
   timeoutMs: number;

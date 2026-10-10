@@ -91,9 +91,3 @@ export async function sendQaChannelMediaBatch(
   );
   return await sendQaChannelText({ ...params, attachments });
 }
-
-export async function sendQaChannelMedia(
-  params: QaChannelTextSendParams & QaChannelMediaAccessParams & { mediaUrl: string },
-) {
-  return await sendQaChannelMediaBatch({ ...params, mediaUrls: [params.mediaUrl] });
-}

@@ -265,12 +265,20 @@ export const qaChannelMessageActions: ChannelMessageActionAdapter = {
         return jsonResult({ message });
       }
       case "reactions":
-      case "read": {
+      case "read":
+      case "delete": {
         const messageId = readStringParam(params, "messageId");
         if (!messageId) {
           throw new Error(`qa-channel ${action} requires messageId`);
         }
-        const message = await readBoundMessage();
+        let message = await readBoundMessage();
+        if (action === "delete") {
+          ({ message } = await deleteQaBusMessage({
+            baseUrl,
+            accountId: account.accountId,
+            messageId,
+          }));
+        }
         return jsonResult({ message });
       }
       case "edit": {
@@ -285,19 +293,6 @@ export const qaChannelMessageActions: ChannelMessageActionAdapter = {
           accountId: account.accountId,
           messageId,
           text,
-        });
-        return jsonResult({ message });
-      }
-      case "delete": {
-        const messageId = readStringParam(params, "messageId");
-        if (!messageId) {
-          throw new Error("qa-channel delete requires messageId");
-        }
-        await readBoundMessage();
-        const { message } = await deleteQaBusMessage({
-          baseUrl,
-          accountId: account.accountId,
-          messageId,
         });
         return jsonResult({ message });
       }

@@ -61,43 +61,33 @@ async function resolveQaInboundMediaFacts(
       if (!attachment?.mimeType) {
         throw new Error("attachment MIME type is missing");
       }
+      let saved: Awaited<ReturnType<typeof saveMediaBuffer>>;
+      let useMediaStoreUrl = false;
       if (typeof attachment.contentBase64 === "string" && attachment.contentBase64.trim()) {
         const buffer = decodeAttachmentBase64(attachment.contentBase64);
         if (!buffer) {
           throw new Error("invalid base64");
         }
-        const saved = await saveMediaBuffer(
+        saved = await saveMediaBuffer(
           buffer,
           attachment.mimeType,
           "inbound",
           maxBytes,
           attachment.fileName,
         );
-        mediaList.push(
-          attachment.mediaFactCarrier === "media-store-url"
-            ? {
-                url: `media://inbound/${saved.id}`,
-                contentType: saved.contentType,
-              }
-            : {
-                path: saved.path,
-                contentType: saved.contentType,
-              },
-        );
-        continue;
-      }
-      if (typeof attachment.url === "string" && attachment.url.trim()) {
+        useMediaStoreUrl = attachment.mediaFactCarrier === "media-store-url";
+      } else if (typeof attachment.url === "string" && attachment.url.trim()) {
         if (!isHttpMediaUrl(attachment.url)) {
           throw new Error("attachment URL has a non-http scheme");
         }
-        const saved = await saveMediaSource(attachment.url, undefined, "inbound", maxBytes);
-        mediaList.push({
-          path: saved.path,
-          contentType: saved.contentType,
-        });
-        continue;
+        saved = await saveMediaSource(attachment.url, undefined, "inbound", maxBytes);
+      } else {
+        throw new Error("attachment has no content");
       }
-      throw new Error("attachment has no content");
+      mediaList.push({
+        ...(useMediaStoreUrl ? { url: `media://inbound/${saved.id}` } : { path: saved.path }),
+        contentType: saved.contentType,
+      });
     } catch (error) {
       unavailableCount++;
       console.warn(`[qa-channel] inbound attachment unavailable: ${formatQaErrorForLog(error)}`);

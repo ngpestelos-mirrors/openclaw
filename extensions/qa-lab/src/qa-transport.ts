@@ -14,6 +14,7 @@ import type {
 } from "openclaw/plugin-sdk/qa-channel-protocol";
 import type { QaRunnerCliRegistration } from "openclaw/plugin-sdk/qa-runner-runtime";
 import { QaSuiteInfraError } from "./errors.js";
+import { readLiveQaChannelAccounts } from "./live-transports/shared/live-channel-status.js";
 import { extractQaFailureReplyText } from "./reply-failure.js";
 
 type QaTransportAdapterDefinition = Awaited<
@@ -35,24 +36,9 @@ export async function waitForQaTransportAccountReady(
   while (Date.now() < deadline) {
     const remainingMs = Math.max(1, deadline - Date.now());
     try {
-      const payload = (await params.gateway.call(
-        "channels.status",
-        { probe: false, timeoutMs: Math.min(2_000, remainingMs) },
-        { timeoutMs: Math.min(5_000, remainingMs) },
-      )) as {
-        channelAccounts?: Record<
-          string,
-          Array<{
-            accountId?: string;
-            connected?: boolean;
-            lastError?: string | null;
-            lifecycle?: string;
-            restartPending?: boolean;
-            running?: boolean;
-          }>
-        >;
-      };
-      const accounts = payload.channelAccounts?.[params.channel] ?? [];
+      const accounts = await readLiveQaChannelAccounts(params.gateway, params.channel, {
+        timeoutMs: remainingMs,
+      });
       const account = accounts.find((entry) => entry.accountId === params.accountId);
       lastProbeError = undefined;
       lastAccountStatus = account
@@ -183,19 +169,18 @@ export function findFailureOutboundMessage(
   options?: QaTransportFailureAssertionOptions,
 ) {
   const cursorSpace = options?.cursorSpace ?? "outbound";
-  const observedMessages =
-    cursorSpace === "all"
-      ? state.getSnapshot().messages.slice(options?.sinceIndex ?? 0)
-      : state
-          .getSnapshot()
-          .messages.filter((message) => message.direction === "outbound")
-          .slice(options?.sinceIndex ?? 0);
-  return observedMessages.find(
-    (message) =>
-      message.direction === "outbound" &&
-      (!options?.accountId || message.accountId === options.accountId) &&
-      Boolean(extractQaFailureReplyText(message)),
-  );
+  let observedMessages = state.getSnapshot().messages;
+  if (cursorSpace !== "all") {
+    observedMessages = observedMessages.filter((message) => message.direction === "outbound");
+  }
+  return observedMessages
+    .slice(options?.sinceIndex ?? 0)
+    .find(
+      (message) =>
+        message.direction === "outbound" &&
+        (!options?.accountId || message.accountId === options.accountId) &&
+        Boolean(extractQaFailureReplyText(message)),
+    );
 }
 
 function assertNoFailureReplies(
