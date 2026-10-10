@@ -34,6 +34,13 @@ export function captureCommand(command: OpenClawStateReadCommand): OpenClawState
     command.type === "agentDeletion.sessionStoreBlocker" ||
     command.type === "githubPublication.knownPullRequestUrls" ||
     command.type === "githubRepository.knownPullRequestUrls" ||
+    command.type === "githubPublications.sharedRead" ||
+    command.type === "githubPublications.sharedList" ||
+    command.type === "githubPublications.claimRequests" ||
+    command.type === "githubPublications.personalRead" ||
+    command.type === "githubPublications.unreported" ||
+    command.type === "githubPublications.repositoryList" ||
+    command.type === "githubPublications.branch" ||
     command.type === "workers.placementProjection"
   ) {
     return structuredClone(command);
@@ -237,6 +244,13 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
     command.type === "workers.placementProjection" ||
     command.type === "workers.placementPendingResults" ||
     command.type === "agentDeletion.sessionStoreBlocker" ||
+    command.type === "githubPublications.sharedRead" ||
+    command.type === "githubPublications.sharedList" ||
+    command.type === "githubPublications.claimRequests" ||
+    command.type === "githubPublications.personalRead" ||
+    command.type === "githubPublications.unreported" ||
+    command.type === "githubPublications.repositoryList" ||
+    command.type === "githubPublications.branch" ||
     isWorkspaceJournalReadCommand(command)
   ) {
     return Buffer.byteLength(JSON.stringify(command), "utf8");
@@ -510,7 +524,8 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
     command.type === "userProfiles.reconcile" ||
     command.type === "userProfiles.avatar.inspect" ||
     command.type === "userProfiles.channelIdentity.list" ||
-    command.type === "userProfiles.authority.resolve"
+    command.type === "userProfiles.authority.resolve" ||
+    command.type === "userProfiles.roleAuthority.resolve"
   ) {
     return bytes + Buffer.byteLength(command.profileId, "utf8");
   }
