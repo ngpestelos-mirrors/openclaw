@@ -449,6 +449,12 @@ export function readSqliteDatabaseWriteTokenForPath(location: string): string | 
 }
 
 /** The managed writer's next settlement advances its physical revision exactly once. */
+export function readSqliteDatabasePendingWriteRevision(database: DatabaseSync): number | undefined {
+  const revision = readSqliteDatabaseWriteRevision(database);
+  return revision === undefined ? undefined : revision + (state.dataWriters.has(database) ? 1 : 0);
+}
+
+/** Predict a committed token while its native mutation still holds the writer fence. */
 export function readSqliteDatabasePendingWriteToken(database: DatabaseSync): string | undefined {
   if (
     !database.isOpen ||

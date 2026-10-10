@@ -1,6 +1,9 @@
 import { isDeepStrictEqual } from "node:util";
 import { MAX_PAYLOAD_BYTES } from "../../gateway/server-constants.js";
-import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+} from "../../infra/kysely-sync.js";
 import { getAdmittedSqliteSchemaFacts } from "../../infra/sqlite-schema-facts.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { AgentWorkerOperationContext } from "../../state/openclaw-agent-operation-context.js";
@@ -18,6 +21,7 @@ import {
 } from "./session-accessor.sqlite-pending-inputs.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import { readTranscriptMessageByScopedIdempotencyKey } from "./session-accessor.sqlite-transcript-store.js";
+import { readSessionActorTransactionState } from "./session-actor-transaction.js";
 import { readSessionPendingInputAuthorityFacts } from "./session-pending-input-authority.kernel.js";
 import { SessionPendingInputCustodyError } from "./session-pending-input-custody-error.js";
 import type {
@@ -83,6 +87,7 @@ export function mutatePendingInput(
   publish: (database: OpenClawAgentDatabase["db"], receipt: PendingInputMutationReceipt) => void,
 ): PendingInputMutationReceipt {
   return writeTransaction(`session.pending-input.${input.kind}`, "Pending input", (current) => {
+    const actor = readSessionActorTransactionState(current, input);
     const row = readSessionPendingInputByKey(current, input, input.idempotencyKey);
     const receipt: PendingInputMutationReceipt = {
       kind: "pending-input-settlement",
@@ -149,22 +154,31 @@ export function mutatePendingInput(
             .set({ state: "queued", lifecycle_generation: input.lifecycleGeneration })
             .where("input_id", "=", row.input_id),
         );
+        actor?.pendingInputs.set(input.idempotencyKey, {
+          ...row,
+          state: "queued",
+          lifecycle_generation: input.lifecycleGeneration,
+        });
       } else {
-        executeSqliteQuerySync(
-          current.db,
-          getSessionKysely(current.db).insertInto("session_pending_inputs").values({
-            input_id: input.inputId,
-            session_key: input.sessionKey,
-            session_id: input.sessionId,
-            idempotency_key: input.idempotencyKey,
-            run_id: input.runId,
-            request_hash: input.requestHash,
-            message_json: input.messageJson,
-            lifecycle_generation: input.lifecycleGeneration,
-            state: "queued",
-            accepted_at: Date.now(),
-          }),
-        );
+        const insert = getSessionKysely(current.db).insertInto("session_pending_inputs").values({
+          input_id: input.inputId,
+          session_key: input.sessionKey,
+          session_id: input.sessionId,
+          idempotency_key: input.idempotencyKey,
+          run_id: input.runId,
+          request_hash: input.requestHash,
+          message_json: input.messageJson,
+          lifecycle_generation: input.lifecycleGeneration,
+          state: "queued",
+          accepted_at: Date.now(),
+        });
+        if (actor) {
+          const inserted = executeSqliteQueryTakeFirstSync(current.db, insert.returningAll());
+          if (!inserted) throw new Error("Pending input insert omitted its committed row");
+          actor.pendingInputs.set(input.idempotencyKey, inserted);
+        } else {
+          executeSqliteQuerySync(current.db, insert);
+        }
       }
     } else if (input.kind === "complete") {
       if (!schema?.tables.has("session_input_completions")) {
@@ -192,6 +206,9 @@ export function mutatePendingInput(
       );
       if (input.disposition === "cancelled" && result.numAffectedRows === 1n) {
         receipt.withdrawnInputId = input.inputId;
+      }
+      if (result.numAffectedRows === 1n) {
+        actor?.pendingInputs.set(input.idempotencyKey, { ...row, state: input.disposition });
       }
     }
     publish(current.db, receipt);
