@@ -40,6 +40,7 @@ import {
 } from "./session-incognito-compute-contract.js";
 import { createIncognitoComputeWorker } from "./session-incognito-compute.worker.js";
 import type {
+  IncognitoSessionFacts,
   IncognitoSessionOperations,
   IncognitoSessionSnapshot,
 } from "./session-incognito-contract.js";
@@ -89,6 +90,14 @@ import { listSessionMembersInDatabase } from "./session-sharing-store.kernel.js"
 import type { SessionSourceValidation } from "./session-source-authority.js";
 import { prepareSessionTurnPredicates } from "./session-turn-predicate.js";
 import { applySessionTurn, prepareSessionTurn } from "./session-turn.worker.js";
+
+function withFacts<Value>(
+  value: Value,
+  facts: IncognitoSessionFacts[],
+): Value extends unknown ? { value: Value; facts: IncognitoSessionFacts[] } : never;
+function withFacts(value: unknown, facts: IncognitoSessionFacts[]) {
+  return { value, facts };
+}
 
 /** Connection-bound kernels: no namespace lookup, second connection, or shared-state write. */
 export function createIncognitoSessionWorker(
@@ -415,7 +424,10 @@ export function createIncognitoSessionWorker(
             ? entryCreation.execute(command)
             : entryPatch.execute(command);
           keys.forEach(assertKey);
-          return { value, facts: keys.flatMap((key) => read(key).facts) };
+          return withFacts(
+            value,
+            keys.flatMap((key) => read(key).facts),
+          );
         };
         return command.type.endsWith(".commit")
           ? execute()
@@ -461,13 +473,16 @@ export function createIncognitoSessionWorker(
             receipt = committed;
           },
         );
-        return { value, facts: read(sessionKey).facts };
+        return withFacts(value, read(sessionKey).facts);
       }
       if (isIncognitoManagerCommand(command)) {
         assertKey(command.input.sessionKey);
         const execute = () => {
           const { value, keys } = manager.execute(command);
-          return { value, facts: keys.flatMap((key) => read(key).facts) };
+          return withFacts(
+            value,
+            keys.flatMap((key) => read(key).facts),
+          );
         };
         return isIncognitoManagerWrite(command.type)
           ? execute()
@@ -495,7 +510,7 @@ export function createIncognitoSessionWorker(
             receipt = committed;
           },
         );
-        return { value, facts: read(sessionKey).facts };
+        return withFacts(value, read(sessionKey).facts);
       }
       if (isIncognitoComputeCommand(command)) {
         if (!isIncognitoStoreComputeCommand(command)) {
@@ -503,7 +518,10 @@ export function createIncognitoSessionWorker(
         }
         const execute = () => {
           const { value, keys } = compute.execute(command);
-          return { value, facts: keys.flatMap((key) => read(key).facts) };
+          return withFacts(
+            value,
+            keys.flatMap((key) => read(key).facts),
+          );
         };
         if (isIncognitoComputeWrite(command.type)) {
           return execute();
@@ -541,7 +559,10 @@ export function createIncognitoSessionWorker(
         const execute = () => {
           const { value, keys } = lifecycle.execute(command);
           keys.forEach(assertKey);
-          return { value, facts: keys.flatMap((key) => read(key).facts) };
+          return withFacts(
+            value,
+            keys.flatMap((key) => read(key).facts),
+          );
         };
         return isIncognitoLifecycleWrite(command.type) ? execute() : readOnly(execute);
       }
@@ -606,7 +627,7 @@ export function createIncognitoSessionWorker(
                 },
                 identity.incarnation,
               );
-        return { value, facts: read(sessionKey).facts };
+        return withFacts(value, read(sessionKey).facts);
       }
       if (command.type !== "session.entry.create" && command.type !== "session.entry.read") {
         const keys = incognitoSideDataKeys(command);

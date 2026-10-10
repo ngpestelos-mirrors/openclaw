@@ -107,7 +107,11 @@ async function withActor(
     const fault: Parameters<typeof run>[0]["fault"] = { reply: "normal" };
     let epoch = 0;
     const lifetime = { assertCurrent() {}, assertReadable() {} };
-    const replica = createSessionActorReplica({ target, lifetime });
+    const replica = createSessionActorReplica({
+      target,
+      lifetime,
+      currentGeneration: () => `fixture:${epoch}`,
+    });
     let admit: (stage: "transaction" | "commit", publication?: unknown) => void = () => {
       throw new Error("No active transport admission");
     };

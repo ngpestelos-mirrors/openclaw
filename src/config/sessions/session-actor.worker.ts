@@ -95,10 +95,14 @@ export function createSessionActorWorker(
         ? current.physicalIdentity === requested.physicalIdentity &&
           current.birthtime === requested.birthtime &&
           current.nativeLocation === requested.nativeLocation
-        : current.kind === "ephemeral" &&
-          requested.kind === "ephemeral" &&
-          current.handle === requested.handle &&
-          current.incarnation === requested.incarnation;
+        : current.kind === "native-incognito" && requested.kind === "native-incognito"
+          ? current.incarnation === requested.incarnation &&
+            current.agentId === requested.agentId &&
+            current.nativeLocation === requested.nativeLocation
+          : current.kind === "ephemeral" &&
+            requested.kind === "ephemeral" &&
+            current.handle === requested.handle &&
+            current.incarnation === requested.incarnation;
     if (closed || !matches) {
       throw new Error("Session actor lost its physical database owner");
     }
@@ -146,7 +150,10 @@ export function createSessionActorWorker(
       const target = command.input.target;
       let database: OpenClawAgentDatabase | undefined;
       let committed:
-        | SessionActorOutcome<ReturnType<typeof applySessionActorPhase>["value"]>
+        | Extract<
+            SessionActorOutcome<ReturnType<typeof applySessionActorPhase>["value"]>,
+            { kind: "committed" }
+          >
         | undefined;
       let staleReason: "stale-version" | "stale-state" | undefined;
       try {
@@ -269,7 +276,11 @@ export function createSessionActorWorker(
             ) {
               throw new Error("Session actor requires managed transaction settlement");
             }
-            deferSqliteWorkerCommitReceipt(opened.db, accepted);
+            if (context.captureCommitReceipt) {
+              context.captureCommitReceipt(opened.db, accepted);
+            } else {
+              deferSqliteWorkerCommitReceipt(opened.db, accepted);
+            }
             context.admit("commit", {
               kind: "session-actor-admission",
               snapshot: projectSessionActorHotState(working),
