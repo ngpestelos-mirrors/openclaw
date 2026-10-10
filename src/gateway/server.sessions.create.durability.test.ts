@@ -54,15 +54,18 @@ vi.mock("../state/openclaw-agent-execution.js", async (importOriginal) => {
             (worker) =>
               operation({
                 execute: async (command, commandOptions) => {
-                  const committing = command.type === "session.turn.commit";
+                  const committing =
+                    (command.type === "session.actor.acceptInput" ||
+                      command.type === "session.actor.adoptRun") &&
+                    command.input.turn !== undefined;
                   if (committing) {
                     turnBoundary.committing = true;
                   }
                   try {
-                    const result = await worker.execute(command, commandOptions);
-                    if (command.type === "session.turn.prepare") {
+                    if (committing) {
                       turnBoundary.afterPrepare?.();
                     }
+                    const result = await worker.execute(command, commandOptions);
                     if (committing) {
                       turnBoundary.afterCommit?.();
                     }
