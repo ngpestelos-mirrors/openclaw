@@ -1,5 +1,6 @@
 import { html, nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
+import { html as staticHtml, literal } from "lit/static-html.js";
 import { t } from "../i18n/index.ts";
 import { OpenClawLightDomElement } from "../lit/openclaw-element.ts";
 import { configValuesEqual, isSupportedConfigValueValid } from "./config-form.constraints.ts";
@@ -211,40 +212,25 @@ export class ConfigFormCollectionDraft extends OpenClawLightDomElement {
       valueType === "string" || valueType === "number" || valueType === "integer";
     const errorId = `${this.id}-error`;
     const valueLabel = `${t("configForm.add")}: ${props.label}`;
-    const valueControl = usesTextInput
-      ? html`
-          <input
-            data-collection-draft-value
-            type=${valueType === "string" ? "text" : "number"}
-            class="settings-input"
-            aria-label=${valueLabel}
-            aria-describedby=${errorId}
-            aria-invalid=${this.invalidTarget === "value" ? "true" : "false"}
-            .value=${this.draftValue}
-            ?disabled=${this.draftIsNull}
-            @input=${(event: Event) => {
-              this.draftValue = (event.currentTarget as HTMLInputElement).value;
-              this.clearError();
-            }}
-          />
-        `
-      : html`
-          <textarea
-            data-collection-draft-value
-            class="settings-input"
-            aria-label=${valueLabel}
-            aria-describedby=${errorId}
-            aria-invalid=${this.invalidTarget === "value" ? "true" : "false"}
-            placeholder=${t("configForm.jsonValue")}
-            rows="2"
-            .value=${this.draftValue}
-            ?disabled=${this.draftIsNull}
-            @input=${(event: Event) => {
-              this.draftValue = (event.currentTarget as HTMLTextAreaElement).value;
-              this.clearError();
-            }}
-          ></textarea>
-        `;
+    const valueTag = usesTextInput ? literal`input` : literal`textarea`;
+    const valueControl = staticHtml`
+      <${valueTag}
+        data-collection-draft-value
+        type=${usesTextInput ? (valueType === "string" ? "text" : "number") : nothing}
+        class="settings-input"
+        aria-label=${valueLabel}
+        aria-describedby=${errorId}
+        aria-invalid=${this.invalidTarget === "value" ? "true" : "false"}
+        placeholder=${usesTextInput ? nothing : t("configForm.jsonValue")}
+        rows=${usesTextInput ? nothing : "2"}
+        .value=${this.draftValue}
+        ?disabled=${this.draftIsNull}
+        @input=${(event: Event) => {
+          this.draftValue = (event.currentTarget as HTMLInputElement | HTMLTextAreaElement).value;
+          this.clearError();
+        }}
+      ></${valueTag}>
+    `;
 
     return html`
       <div class="settings-row settings-row--stacked cfg-collection-draft">

@@ -91,23 +91,8 @@ export function renderSessionLeadingState(
       }),
     };
   }
-  if (session.isChild && !trailingState) {
-    if (session.channelAvatarUrl) {
-      ensureChannelAvatarElement();
-      return {
-        running,
-        leadingIndicator: renderSessionGlyph({
-          content: html`<openclaw-channel-avatar
-            .routeUrl=${session.channelAvatarUrl}
-            .authTokens=${avatarAuth?.authTokens ?? []}
-            .authReady=${avatarAuth?.authReady ?? false}
-          ></openclaw-channel-avatar>`,
-          ...runState,
-          circular: true,
-          badge: session.unread && !running ? renderSessionUnreadBadge() : nothing,
-        }),
-      };
-    }
+  const child = session.isChild && !trailingState;
+  if (child && !session.channelAvatarUrl) {
     return {
       running,
       leadingIndicator: running
@@ -116,16 +101,17 @@ export function renderSessionLeadingState(
     };
   }
 
-  const ownerChip = ownerActor?.id?.trim()
-    ? renderSessionOwnerChip(
-        ownerActor,
-        "row",
-        attribution,
-        ownerViewing,
-        participants,
-        participantCount,
-      )
-    : undefined;
+  const ownerChip =
+    !child && ownerActor?.id?.trim()
+      ? renderSessionOwnerChip(
+          ownerActor,
+          "row",
+          attribution,
+          ownerViewing,
+          participants,
+          participantCount,
+        )
+      : undefined;
   if (session.channelAvatarUrl) {
     ensureChannelAvatarElement();
     return {

@@ -1,5 +1,6 @@
 import { html, nothing } from "lit";
 import { ifDefined } from "lit/directives/if-defined.js";
+import { keyed } from "lit/directives/keyed.js";
 import { live } from "lit/directives/live.js";
 import type { McpAppSettings } from "../../../src/shared/mcp-app-extensions.js";
 import { t } from "../i18n/index.ts";
@@ -55,36 +56,31 @@ export function renderMcpAppSettings(view: McpAppSettingsView) {
               >
                 ${schema.enum.map((option) => html`<option .value=${option} .selected=${option === value}>${option}</option>`)}
               </select>`
-            : schema.type === "string"
-              ? html`<input
-                  type="text"
+            : keyed(
+                schema.type === "string",
+                html`<input
+                  type=${schema.type === "string" ? "text" : "number"}
                   .value=${live(String(value ?? ""))}
                   ?required=${required}
                   ?disabled=${view.busy}
-                  minlength=${ifDefined(schema.minLength)}
-                  maxlength=${ifDefined(schema.maxLength)}
-                  pattern=${ifDefined(schema.pattern)}
-                  @input=${(event: Event) => {
-                    if (event.currentTarget instanceof HTMLInputElement) {
-                      view.onChange(key, event.currentTarget.value);
-                    }
-                  }}
-                />`
-              : html`<input
-                  type="number"
-                  .value=${live(String(value ?? ""))}
-                  ?required=${required}
-                  ?disabled=${view.busy}
-                  min=${ifDefined(schema.minimum)}
-                  max=${ifDefined(schema.maximum)}
-                  step=${schema.multipleOf ?? (schema.type === "integer" ? 1 : "any")}
+                  minlength=${ifDefined(schema.type === "string" ? schema.minLength : undefined)}
+                  maxlength=${ifDefined(schema.type === "string" ? schema.maxLength : undefined)}
+                  pattern=${ifDefined(schema.type === "string" ? schema.pattern : undefined)}
+                  min=${ifDefined(schema.type !== "string" ? schema.minimum : undefined)}
+                  max=${ifDefined(schema.type !== "string" ? schema.maximum : undefined)}
+                  step=${ifDefined(schema.type === "string" ? undefined : (schema.multipleOf ?? (schema.type === "integer" ? 1 : "any")))}
                   @input=${(event: Event) => {
                     const input = event.currentTarget;
-                    if (input instanceof HTMLInputElement && Number.isFinite(input.valueAsNumber)) {
-                      view.onChange(key, input.valueAsNumber);
+                    if (input instanceof HTMLInputElement) {
+                      if (schema.type === "string") {
+                        view.onChange(key, input.value);
+                      } else if (Number.isFinite(input.valueAsNumber)) {
+                        view.onChange(key, input.valueAsNumber);
+                      }
                     }
                   }}
-                />`
+                />`,
+              )
       }
     </label>`;
   };

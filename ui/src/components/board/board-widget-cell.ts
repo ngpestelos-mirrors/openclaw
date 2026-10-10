@@ -42,7 +42,6 @@ import {
   BOARD_SIZE_PRESETS,
   closeBoardWidgetMenu,
   renderBoardDisabledPlugin,
-  renderBoardWidgetActionError,
   renderBoardWidgetError,
   renderBoardWidgetMenu,
   renderBoardWidgetRejected,
@@ -246,7 +245,7 @@ class OpenClawBoardWidgetCell extends OpenClawLightDomElement {
             disabled: this.busy || this.actionPending || !this.canGrant,
             onGrant: (decision) => this.runGrantDecision(widget, callbacks, decision),
             ...(this.actionError
-              ? { error: renderBoardWidgetActionError(this.actionError, true) }
+              ? { error: renderBoardWidgetError(this.actionError, { action: true, inline: true }) }
               : {}),
           })
         : widget.grantState === "rejected"
@@ -333,7 +332,7 @@ class OpenClawBoardWidgetCell extends OpenClawLightDomElement {
           (entry) => entry.pluginId === pluginId || entry.pluginId === "host",
         );
         if (error) {
-          return renderBoardWidgetError(error.message, () => void runtime.refresh());
+          return renderBoardWidgetError(error.message, { onRetry: () => void runtime.refresh() });
         }
       }
       return renderBoardDisabledPlugin({
@@ -506,7 +505,7 @@ class OpenClawBoardWidgetCell extends OpenClawLightDomElement {
           ${
             this.actionError && widget.grantState !== "pending"
               ? html`<div class="board-widget__error-overlay">
-                  ${renderBoardWidgetActionError(this.actionError)}
+                  ${renderBoardWidgetError(this.actionError, { action: true })}
                 </div>`
               : nothing
           }
