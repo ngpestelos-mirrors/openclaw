@@ -92,7 +92,7 @@ class ChatSkillLearnedNotice extends OpenClawLightDomElement {
         aria-label=${t("chat.skillLearned.label")}
       >
         <div class="chat-skill-notice__line">
-          <span class="chat-skill-notice__icon" aria-hidden="true">${toolIcons.wrench}</span>
+          <span class="chat-skill-notice__icon" aria-hidden="true">${toolIcons.lightbulb}</span>
           <span class="chat-skill-notice__label">${t("chat.skillLearned.label")}</span>
           ${notice.skills.map((skill) => {
             const verb = t(`chat.skillLearned.${skill.action}`);
