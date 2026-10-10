@@ -2,7 +2,10 @@ import { SemVer } from "semver";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { CodexAppServerClient } from "./client.js";
 import type { CodexAppServerStartOptions } from "./config.js";
-import { INSTALLED_CODEX_START_TIMEOUT_MS } from "./managed-binary.js";
+import {
+  INSTALLED_CODEX_START_TIMEOUT_MS,
+  rejectInstalledCodexAppServer,
+} from "./managed-binary.js";
 import {
   clearSharedCodexAppServerClientAndWait,
   createIsolatedCodexAppServerClient,
@@ -102,6 +105,7 @@ export function registerSharedClientManagedFallbackTests(params: {
       { failure: "codex app-server initialize timed out", installed: "deadline hang" },
       // and a shared startup, which has no deadline of its own, stops waiting after a cap.
       { failure: "codex app-server initialize timed out", installed: "hang" },
+      { failure: "another start failed", installed: "rejected hang" },
     ] as const)("falls back to the bundled package on $installed failure", async (scenario) => {
       const isolated = scenario.installed === "deadline hang";
       const installed = createClientHarness();
@@ -113,12 +117,15 @@ export function registerSharedClientManagedFallbackTests(params: {
         startSpy.mockResolvedValueOnce(installed.client);
       }
       startSpy.mockResolvedValueOnce(bundled.client);
-      const sharedHang = scenario.installed === "hang";
+      const sharedHang = scenario.installed === "hang" || scenario.installed === "rejected hang";
       if (sharedHang) {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       }
 
       const requested = selectInstalledCodex();
+      if (scenario.installed === "rejected hang") {
+        rejectInstalledCodexAppServer(installedCommand, new Error(scenario.failure));
+      }
       const acquireOptions = { startOptions: requested, timeoutMs: sharedHang ? 10_000 : 1_000 };
       const acquire = isolated
         ? createIsolatedCodexAppServerClient(acquireOptions)
@@ -186,5 +193,30 @@ export function registerSharedClientManagedFallbackTests(params: {
       expect(installedState.selected?.command).toBe(installedCommand);
       await clearSharedCodexAppServerClientAndWait({ exitTimeoutMs: 25, forceKillDelayMs: 5 });
     });
+
+    it.each(["config", "env"] as const)(
+      "does not reject a working %s override when managed startup rejected the same path",
+      async (commandSource) => {
+        selectInstalledCodex();
+        rejectInstalledCodexAppServer(installedCommand, new Error("managed startup failed"));
+        params.resolveManagedStart.mockImplementation(async (start) => start);
+        const custom = createClientHarness();
+        const startSpy = vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(custom.client);
+        const acquire = getSharedCodexAppServerClient({
+          startOptions: {
+            transport: "stdio",
+            command: installedCommand,
+            commandSource,
+            args: ["app-server", "--listen", "stdio://"],
+            headers: {},
+          },
+          timeoutMs: 1_000,
+        });
+        await params.sendInitializeResult(custom, `codex-cli/${installedVersion}`);
+        expect(await acquire).toBe(custom.client);
+        expect(startSpy).toHaveBeenCalledOnce();
+        await clearSharedCodexAppServerClientAndWait({ exitTimeoutMs: 25, forceKillDelayMs: 5 });
+      },
+    );
   });
 }

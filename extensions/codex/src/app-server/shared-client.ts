@@ -890,7 +890,11 @@ async function startInitializedCodexAppServerClientOnce(
   // A selected installed Codex that cannot start or reports another version
   // yields to the bundled package here, before any thread or turn exists.
   const yieldInstalledCodex = (index: number, command: string, error: unknown) => {
-    if (index + 1 >= startOptionsCandidates.length || abandonSignal.aborted) {
+    if (
+      params.startOptions.commandSource !== "resolved-managed" ||
+      index + 1 >= startOptionsCandidates.length ||
+      abandonSignal.aborted
+    ) {
       return false;
     }
     try {
@@ -1041,12 +1045,15 @@ async function startInitializedCodexAppServerClientOnce(
           () => client.initialize(),
           () => buildCodexAppServerInitializeTimeoutError(client),
           // A hanging installed Codex leaves time to start the bundled fallback.
-          index + 1 < startOptionsCandidates.length &&
-            readInstalledCodexAppServerStatus(startOptions.command) === "selected"
+          startOptions.commandSource === "resolved-managed" &&
+            index + 1 < startOptionsCandidates.length &&
+            readInstalledCodexAppServerStatus(startOptions.command) !== undefined
             ? INSTALLED_CODEX_START_TIMEOUT_MS
             : undefined,
         );
-        assertInstalledCodexAppServerVersion(startOptions.command, client.getServerVersion());
+        if (startOptions.commandSource === "resolved-managed") {
+          assertInstalledCodexAppServerVersion(startOptions.command, client.getServerVersion());
+        }
       } catch (error) {
         // The installed check runs first so an unsupported version also drops it.
         if (
