@@ -95,6 +95,13 @@ function routeScene(route: RouteId): Scene {
           ? `openclaw-${host}-page .content-header`
           : `openclaw-${host}-page`,
     ...(route === "workboard" || route === "plugin" ? { scenario: parityWorkboardScenario } : {}),
+    ...(route === "cron"
+      ? {
+          prepare: async (page: Page) => {
+            await page.locator(".cron-suggestion").first().waitFor();
+          },
+        }
+      : {}),
   };
 }
 const chat = routeScene("chat");
@@ -188,6 +195,7 @@ export const scenes: Scene[] = [
     ...chat,
     id: "chat-long-content",
     label: "Chat: long transcript, wrapping and code",
+    scrollTo: '[data-message-text^="Message 39:"]',
     prepare: async (page) => {
       await page.getByText(/Message 39: A deliberately long sentence/u).waitFor();
     },

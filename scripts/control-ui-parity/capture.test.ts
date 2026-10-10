@@ -28,6 +28,10 @@ if (!selectedScenes.length || !selectedProfiles.length) {
 const suite = createControlUiE2eSuite({
   name: "Control UI visual parity",
   startServerBeforeBrowser: true,
+  browserLaunchOptions: {
+    // Apply static animation changes before the compositor samples the frame.
+    args: ["--disable-threaded-animation", "--run-all-compositor-stages-before-draw"],
+  },
 });
 const captureOrigin = "http://parity.localhost:18789";
 let directory: string;
@@ -161,10 +165,12 @@ suite.define(() => {
                   await page.addStyleTag({ content: stylesheet });
                 }
                 await scene.prepare?.(page, gateway);
-                await page.evaluate(() => {
-                  // Finish entry effects such as the typed New Session placeholder.
-                  window.dispatchEvent(new CustomEvent("parity-frame-time", { detail: 3_000 }));
-                });
+                if (scene.route === "new-session") {
+                  await page.evaluate(() => {
+                    // Finish the typed New Session placeholder at a fixed animation sample.
+                    window.dispatchEvent(new CustomEvent("parity-frame-time", { detail: 3_000 }));
+                  });
+                }
                 if (!scene.loading) {
                   await expect
                     .poll(() =>
