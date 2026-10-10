@@ -128,6 +128,7 @@ export function reduceSessionBookkeeping(
     case "fallback-notice":
       return { fallbackNotice: structuredClone(reducer.notice) };
     case "live-model":
+      // SAFETY: This internal reducer's closed expected record contains only SessionEntry keys.
       for (const key of Object.keys(reducer.expected) as Array<keyof typeof reducer.expected>) {
         if (entry[key] !== reducer.expected[key]) return null;
       }
