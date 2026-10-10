@@ -1,5 +1,6 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/agents/interrupted-input-context.integration.test.ts",
   // Physical admission and descriptor custody belong to the application host, not an unhosted test Worker.
   "src/state/openclaw-agent-db.checkonce.test.ts",
   "src/state/openclaw-state-db-checkonce.test.ts",
@@ -18,6 +19,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/gateway/mention-inbox.worker.test.ts",
   "src/gateway/mention-inbox.test.ts",
   "src/tts/tts-preferences.worker.test.ts",
+  "src/agents/openclaw-tools.session-status.gateway-model.test.ts",
   "src/state/openclaw-state-db-cron-delivery-migration.test.ts",
   "src/state/openclaw-quarantine-store.test.ts",
   "src/state/openclaw-agent-db-readonly-scope.test.ts",
@@ -627,6 +629,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/sessions/session-manager-mutation-boundaries.test.ts",
   "src/agents/sessions/session-manager-transaction-rollback.test.ts",
   "src/agents/sessions/session-manager-model-context-limits.test.ts",
+  "src/agents/sessions/session-manager-model-context-prefix.test.ts",
   "src/agents/sessions/session-manager-model-context.test.ts",
   "src/agents/sessions/session-manager.persistence-compat.test.ts",
   "src/agents/sessions/session-manager-static-notes.test.ts",
