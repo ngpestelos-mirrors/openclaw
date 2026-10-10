@@ -650,6 +650,7 @@ export async function startControlUiE2eServer(
     { controlUiLocaleModulesPlugin },
     {
       commonJsOptimizeDeps,
+      controlUiSolidPlugin,
       controlUiBrowserOnlySharedModuleAliases,
       resolveExternalPackageAliasesForVite,
       resolveSourcePackageAliasesForVite,
@@ -676,7 +677,11 @@ export async function startControlUiE2eServer(
       include: ["ipaddr.js", "lit/directives/repeat.js", ...commonJsOptimizeDeps],
     },
     publicDir: path.join(uiRoot, "public"),
-    plugins: [controlUiLocaleModulesPlugin(), controlUiBrowserOnlySharedModuleAliases()],
+    plugins: [
+      controlUiSolidPlugin(),
+      controlUiLocaleModulesPlugin(),
+      controlUiBrowserOnlySharedModuleAliases(),
+    ],
     resolve: {
       alias: [
         { find: "json5", replacement: json5EsmPath },
