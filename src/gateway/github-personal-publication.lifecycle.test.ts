@@ -14,11 +14,18 @@ import {
   patchSessionEntryCore,
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.js";
+import {
+  readExactSessionEntryRow,
+  writeSessionEntry,
+} from "../config/sessions/session-accessor.sqlite-entry-store.js";
+import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
+import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import * as operationAdmission from "../infra/sqlite-worker-operation-admission.js";
 import { sqliteWorkerOwnerProbe as probe } from "../infra/sqlite-worker-owner-probe.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { githubPublicationReceipts } from "../state/github-publication-receipts.js";
 import { readGitHubPublicationSessionLifecycle } from "../state/github-publication-session-lifecycles.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import * as stateWorker from "../state/openclaw-state-worker-store.js";
 import { getSessionRepositoryWorkspaceStore } from "../state/session-repository-workspaces.js";
 import { readUserGitHubConnection } from "../state/user-github-connections.js";
@@ -195,6 +202,11 @@ describe("personal publication session lifecycle", () => {
       lifecycleRevision: "receipt-successor-generation",
       updatedAt: Date.now(),
     };
+    // Admit the competing agent writer before receipt cleanup locks the shared-state database.
+    const database = openOpenClawAgentDatabase({
+      agentId: "main",
+      path: resolveSqliteTargetFromSessionStorePath(session.storePath, { agentId: "main" }).path,
+    });
     let injected = false;
     let receiptAdmitted = false;
     let nativeAbsent = false;
@@ -217,10 +229,9 @@ describe("personal publication session lifecycle", () => {
         nativeAbsent = isRecord(facts) && facts.entry === undefined;
         admit(nativeRequest, () => {
           inWriterContext(() => {
-            expect(session.read()).toBeUndefined();
-            replaceSessionEntrySync(
-              { agentId: "main", storePath: session.storePath, sessionKey: SESSION_KEY },
-              successor,
+            expect(readExactSessionEntryRow(database, SESSION_KEY)).toBeUndefined();
+            runSqliteImmediateTransactionSync(database.db, () =>
+              writeSessionEntry(database, SESSION_KEY, successor),
             );
           });
           injected = true;

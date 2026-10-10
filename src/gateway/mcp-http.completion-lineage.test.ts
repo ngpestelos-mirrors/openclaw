@@ -14,16 +14,14 @@ import {
 import { prepareGatewayToolCallerAssertion } from "../agents/tools/gateway-caller-context.js";
 import { callGatewayTool } from "../agents/tools/gateway.js";
 import type { SessionEntry } from "../config/sessions.js";
-import {
-  replaceSessionEntry,
-  replaceSessionEntrySync,
-} from "../config/sessions/session-accessor.js";
+import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import {
   deleteSessionEntryRows,
   writeSessionEntry,
 } from "../config/sessions/session-accessor.sqlite-entry-store.js";
 import { clearSessionStoreCacheForTest } from "../config/sessions/store-writer-state.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import * as workerAdmission from "../infra/sqlite-worker-operation-admission.js";
 import { sqliteWorkerOwnerProbe as probe } from "../infra/sqlite-worker-owner-probe.test-support.js";
 import {
@@ -33,7 +31,10 @@ import {
 import { createMockPluginRegistry } from "../plugins/hooks.test-fixtures.js";
 import { registerSessionStateWatch } from "../sessions/session-state-events.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { runOpenClawAgentWriteTransaction } from "../state/openclaw-agent-db.js";
+import {
+  openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction,
+} from "../state/openclaw-agent-db.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
@@ -365,6 +366,8 @@ describe("MCP loopback completion lineage at the final tool-effect fence", () =>
       if (stage === "prepare") {
         expect(await registerSessionStateWatch(watch)).toBe(true);
       }
+      // Admit the competing agent writer before the watch owns the shared-state transaction.
+      const database = openOpenClawAgentDatabase({ agentId: "main" });
       const grant = await mintCompletionGrant(`lineage-watch-${stage}`);
       // A competing writer must not inherit the guarded reader's artifact-preserving context.
       const inWriterContext = AsyncLocalStorage.snapshot();
@@ -386,9 +389,11 @@ describe("MCP loopback completion lineage at the final tool-effect fence", () =>
             const replacementOwner = "agent:main:direct:another-requester";
             try {
               inWriterContext(() =>
-                replaceSessionEntrySync(
-                  { agentId: "main", sessionKey: childKey },
-                  { ...childEntry, spawnedBy: replacementOwner },
+                runSqliteImmediateTransactionSync(database.db, () =>
+                  writeSessionEntry(database, childKey, {
+                    ...childEntry,
+                    spawnedBy: replacementOwner,
+                  }),
                 ),
               );
               committed = true;
