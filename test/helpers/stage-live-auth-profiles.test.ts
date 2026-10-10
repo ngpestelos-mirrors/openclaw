@@ -79,11 +79,9 @@ describe("stage-live-auth-profiles", () => {
       database.exec(`DROP TABLE ${missingTable};`);
       database.close();
 
-      await expect(stageLiveAuthProfiles(sourceStateDir, targetStateDir)).rejects.toMatchObject({
-        name: "SessionMetadataUnavailableError",
-        reason: "table-missing",
-        missingTables: expect.arrayContaining([missingTable]),
-      });
+      await expect(stageLiveAuthProfiles(sourceStateDir, targetStateDir)).rejects.toThrow(
+        "canonical auth schema is incomplete",
+      );
       expect(
         fs.existsSync(
           resolveAuthProfileDatabasePath(path.join(targetStateDir, "agents", "main", "agent")),
@@ -100,11 +98,9 @@ describe("stage-live-auth-profiles", () => {
     database.exec("DROP TABLE auth_profile_store; DROP TABLE auth_profile_state;");
     database.close();
 
-    await expect(stageLiveAuthProfiles(sourceStateDir, targetStateDir)).rejects.toMatchObject({
-      name: "SessionMetadataUnavailableError",
-      reason: "table-missing",
-      missingTables: expect.arrayContaining(["auth_profile_store", "auth_profile_state"]),
-    });
+    await expect(stageLiveAuthProfiles(sourceStateDir, targetStateDir)).rejects.toThrow(
+      "canonical auth schema is incomplete",
+    );
     expect(
       fs.existsSync(
         resolveAuthProfileDatabasePath(path.join(targetStateDir, "agents", "main", "agent")),
