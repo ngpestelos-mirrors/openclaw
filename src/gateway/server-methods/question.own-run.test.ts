@@ -37,7 +37,7 @@ import { GatewayClientRegistry } from "../server/client-registry.js";
 import type { GatewayWsClient } from "../server/ws-types.js";
 import { canReceiveSessionEvent } from "../session-sharing.js";
 import * as questionRegistration from "./question.durable-registration.js";
-import { registerQuestionCollisionTests } from "./question.registration-collision.test-harness.js";
+import * as questionFixture from "./question.registration-collision.test-harness.js";
 import {
   adminRequestClient,
   broadcast,
@@ -49,7 +49,7 @@ import {
 } from "./question.test-support.js";
 import type { GatewayClient } from "./types.js";
 
-registerQuestionCollisionTests(createOwnRunFixture);
+questionFixture.registerQuestionCollisionTests(createOwnRunFixture);
 
 const answers = { answers: { destination: ["Library"] } };
 const sessionScope = { agentId: "main", sessionKey: requestParams.sessionKey };
@@ -87,7 +87,11 @@ function questionPeer(
   return { client, socket };
 }
 
-async function createOwnRunFixture(durable = false) {
+async function createOwnRunFixture(
+  durable = false,
+  legacyGeneration = false,
+  creatorProfileId?: string,
+) {
   if (durable) {
     // The real SQLite worker owns wall-clock deadlines outside Vitest's process clock.
     vi.useRealTimers();
@@ -110,12 +114,12 @@ async function createOwnRunFixture(durable = false) {
   };
   const entry: SessionEntry = {
     sessionId: "guest-question-session",
-    lifecycleRevision: "guest-question-generation",
+    ...(legacyGeneration ? {} : { lifecycleRevision: "guest-question-generation" }),
     updatedAt: 1,
     visibility: "shared",
-    createdActor: { type: "human", source: "profile", id: profile.id },
+    createdActor: { type: "human", source: "profile", id: creatorProfileId ?? profile.id },
   };
-  await upsertSessionEntryCore(sessionScope, entry);
+  await questionFixture.writeQuestionFixtureEntry(sessionScope, entry, legacyGeneration);
   const browser = questionPeer(profile, "original-browser");
   if (durable) {
     browser.client.internal = { authenticatedOperator: true };

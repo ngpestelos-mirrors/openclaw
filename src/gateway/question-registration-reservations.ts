@@ -3,8 +3,8 @@ import {
   resolveExpiresAtMsFromDurationMs,
   resolveTimerTimeoutMs,
 } from "@openclaw/normalization-core/number-coercion";
+import type { QuestionRecord } from "../../packages/gateway-protocol/src/index.js";
 import { QuestionManagerError, QuestionManagerErrorCodes } from "./question-manager.errors.js";
-import type { QuestionManagerRequest } from "./question-manager.types.js";
 
 /** Process-only claim on the manager's global ID namespace during worker registration. */
 export type QuestionRegistrationReservation = {
@@ -58,7 +58,14 @@ export class QuestionRegistrationReservations {
 }
 
 /** Materialize the manager timing once; stored custody never renews its deadline. */
-export function resolveQuestionRequestTiming(params: QuestionManagerRequest, nowMs: number) {
+export function resolveQuestionRequestTiming(
+  params: {
+    id?: string;
+    timeoutMs: number;
+    storedRecord?: Pick<QuestionRecord, "id" | "createdAtMs" | "expiresAtMs">;
+  },
+  nowMs: number,
+) {
   const createdAtMs = params.storedRecord?.createdAtMs ?? nowMs;
   const timeoutMs = resolveTimerTimeoutMs(params.timeoutMs, 1);
   const expiresAtMs =

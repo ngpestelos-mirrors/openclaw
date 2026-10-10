@@ -49,7 +49,7 @@ export type AdmittedRunContext = Readonly<{
 export type AdmittedRunOperatorAuthority = Readonly<{
   profileId: string;
   /** Host-captured original authenticated input, consumed only by restart-claim admission. */
-  recoverySnapshot?: import("../gateway/operator-run-recovery-source.js").OperatorRunRecoverySnapshot;
+  recoverySnapshot?: import("../gateway/operator-run-recovery-source.schema.js").OperatorRunRecoverySnapshot;
   /** Durable private channel grant reference; the channel owner revalidates it on recovery. */
   channelRecoveryReference?: import("../state/user-profiles.types.js").UserChannelAuthorizationReference;
   scopes: readonly string[];

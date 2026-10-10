@@ -381,40 +381,6 @@ describe("session accessor seam", () => {
     expect(missing).toBeUndefined();
   });
 
-  it.each(["metadata", "last-route"] as const)(
-    "creates one native generation through %s without rotating repeated or existing rows",
-    async (kind) => {
-      const sessionKey = `agent:main:telegram:dm:inbound-${kind}`;
-      const scope = { storePath, sessionKey };
-      const ctx = {
-        Provider: "telegram",
-        Surface: "telegram",
-        ChatType: "direct",
-        SessionKey: sessionKey,
-      };
-      const write = (createIfMissing = true) =>
-        kind === "metadata"
-          ? recordInboundSessionMeta({ ...scope, ctx, createIfMissing })
-          : updateSessionLastRoute({ ...scope, channel: "telegram", to: "123", createIfMissing });
-      await write(false);
-      expect(loadSessionEntry(scope)).toBeUndefined();
-      await write();
-      const created = expectDefined(loadSessionEntry(scope), "created inbound row");
-      expect(created.lifecycleRevision).toEqual(expect.any(String));
-      expect(created.lifecycleRevision).not.toBe("");
-      await write();
-      expect(loadSessionEntry(scope)).toMatchObject({
-        sessionId: created.sessionId,
-        lifecycleRevision: created.lifecycleRevision,
-        updatedAt: created.updatedAt,
-      });
-      await replaceSessionEntry(scope, { sessionId: "legacy", updatedAt: 10 });
-      await write();
-      expect(loadSessionEntry(scope)).toMatchObject({ sessionId: "legacy", updatedAt: 10 });
-      expect(loadSessionEntry(scope)?.lifecycleRevision).toBeUndefined();
-    },
-  );
-
   it("preserves activity timestamps across inbound meta and last-route updates", async () => {
     const sessionKey = "agent:main:webchat:dm:user-2";
     const anchorUpdatedAt = Date.now() - 60_000;

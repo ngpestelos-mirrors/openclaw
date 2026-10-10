@@ -16,7 +16,7 @@ import { createDeferred } from "./promise.js";
 /** Real provider transport and CLI process; no question/admission owners are mocked. */
 export async function createDurableQuestionGateway(
   signal: AbortSignal,
-  options?: { config?: Record<string, unknown> },
+  options?: { config?: Record<string, unknown>; continuationToolEffect?: boolean },
 ) {
   const asked = createDeferred();
   const continued = createDeferred<string>();
@@ -24,6 +24,7 @@ export async function createDurableQuestionGateway(
   const busyRelease = createDeferred();
   let busyIssued = false;
   let continuationCount = 0;
+  let continuationToolIssued = false;
   const failed = createDeferred<never>();
   void failed.promise.catch(() => {});
   let issued = false;
@@ -223,6 +224,64 @@ export async function createDurableQuestionGateway(
             }
             continuationCount++;
             continued.resolve(text);
+            if (options?.continuationToolEffect && !continuationToolIssued) {
+              continuationToolIssued = true;
+              const item = {
+                type: "function_call",
+                id: "fc_continuation_effect",
+                call_id: "call_continuation_effect",
+                name: "exec",
+                arguments: JSON.stringify({
+                  command:
+                    "echo completed > durable-question-continuation-effect && printf 'DURABLE_CONTINUATION_EXEC_OK'",
+                  workdir: instance.state.workspaceDir,
+                }),
+              };
+              writeOpenAiResponsesSse(response, [
+                {
+                  type: "response.output_item.added",
+                  output_index: 0,
+                  item: { ...item, arguments: "" },
+                },
+                {
+                  type: "response.function_call_arguments.delta",
+                  output_index: 0,
+                  item_id: item.id,
+                  delta: item.arguments,
+                },
+                { type: "response.output_item.done", output_index: 0, item },
+                {
+                  type: "response.completed",
+                  response: {
+                    id: "resp_continuation_effect",
+                    status: "completed",
+                    output: [item],
+                    usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+                  },
+                },
+              ]);
+              return;
+            }
+          }
+          if (isContinuation && options?.continuationToolEffect) {
+            const results = Array.isArray(body.input)
+              ? body.input.filter(
+                  (item) =>
+                    isRecord(item) &&
+                    item.type === "function_call_output" &&
+                    item.call_id === "call_continuation_effect",
+                )
+              : [];
+            if (
+              results.length !== 1 ||
+              !isRecord(results[0]) ||
+              typeof results[0].output !== "string" ||
+              results[0].output.trim() !== "DURABLE_CONTINUATION_EXEC_OK"
+            ) {
+              throw new Error(
+                "Native continuation exec did not return its successful write receipt",
+              );
+            }
           }
           writeOpenAiResponsesText(response, {
             text: reply,

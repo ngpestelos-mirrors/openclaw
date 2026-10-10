@@ -12,13 +12,16 @@ import type { DurableQuestion } from "../../config/sessions/session-questions.ty
 import type { GatewayScheduler } from "../../infra/gateway-scheduler.js";
 import { handleQuestionChannelResolved } from "../../infra/question-channel-runtime.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contract.js";
+import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { installDurableQuestion } from "../durable-question-runtime.js";
+import { resolveGatewayOperatorRoleActor } from "../operator-role-policy.js";
 import type { QuestionManager } from "../question-manager.js";
 import type { QuestionRegistrationReservation } from "../question-registration-reservations.js";
 import {
   publishDurableQuestionResolution,
   withQuestionSessionAccess,
 } from "../question-session-access.js";
+import { authorizeOwnSessionMutation } from "../session-sharing-policy.js";
 import { QuestionRequestValidationError } from "./question.errors.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
@@ -64,6 +67,35 @@ export async function registerDurableQuestion(params: {
     sessionKey,
     agentId,
     (access, prepared) => {
+      const selected = prepared?.target;
+      const actor = narrow ? resolveGatewayOperatorRoleActor(client) : undefined;
+      const canExplainLegacyConversation =
+        !narrow ||
+        Boolean(
+          selected &&
+          actor?.kind === "operator" &&
+          !authorizeOwnSessionMutation({
+            client,
+            target: selected,
+            expectedProfileId: actor.profileId,
+          }),
+        );
+      if (
+        prepared &&
+        selected?.entry.sessionId &&
+        !selected.entry.lifecycleRevision &&
+        !selected.entry.incognito &&
+        !isIncognitoSessionKey(selected.canonicalKey) &&
+        prepared.read.result.databaseIdentity &&
+        canExplainLegacyConversation &&
+        !prepared.authorizeMutation(client)
+      ) {
+        prepared.assertCurrent();
+        access?.release();
+        throw new QuestionRequestValidationError(
+          "This conversation has no lifecycle generation, so it cannot acquire durable question custody. Start a new conversation with /new, or explicitly reset this conversation with /reset, then ask again.",
+        );
+      }
       if (
         !access?.durableBinding ||
         !prepared?.target ||

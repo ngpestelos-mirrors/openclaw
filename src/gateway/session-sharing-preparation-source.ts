@@ -9,7 +9,6 @@ import {
   retainPreparedSessionSharingFacts,
 } from "../config/sessions/session-accessor.sqlite-entry-cache.js";
 import { readSessionEntriesFromStoreInWorker } from "../config/sessions/session-entry-read-runtime.js";
-import type { SessionStoreWorkerReadScope } from "../config/sessions/session-entry-read-runtime.types.js";
 import {
   isSessionStoreReadCandidateCurrent,
   type SessionStoreReadCandidate,
@@ -18,6 +17,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
 import { SessionMutationFactsUnavailableError } from "./session-sharing-incognito.js";
 import type { PreparedSessionMutationFacts } from "./session-sharing-policy.js";
+import type { PreparedSessionFactsSource } from "./session-sharing-source.types.js";
 
 function routeFacts(cfg: OpenClawConfig) {
   return {
@@ -47,12 +47,7 @@ export type PreparedSessionSourceFacts = PreparedSessionMutationFacts & {
   sourceAgentId?: string;
 };
 
-export type PreparedSessionFactsSource = NonNullable<
-  SessionStoreWorkerReadScope["preparedSource"]
-> & {
-  storePath: string;
-  canonicalKey: string;
-};
+export type { PreparedSessionFactsSource } from "./session-sharing-source.types.js";
 
 /** Physical selection phase of the retained sharing owner; it never substitutes current routing. */
 export async function prepareCapturedSessionSharingSource(params: {

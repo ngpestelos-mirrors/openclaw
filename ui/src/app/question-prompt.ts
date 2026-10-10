@@ -21,6 +21,10 @@ import {
   type QuestionClient,
   type QuestionClientResolutionOwner,
 } from "./question-prompt-client.ts";
+import {
+  attachQuestionContinuationReceipts,
+  refreshQuestionContinuationReceipt,
+} from "./question-prompt-continuation.ts";
 import { parseQuestion } from "./question-prompt-parse.ts";
 import {
   clearSecretQuestionDrafts,
@@ -358,14 +362,21 @@ export function handleQuestionPromptEvent(
   }
   recordQuestionResolution(state, resolved);
   const client = state.client;
-  if (client) {
+  const prompt = state.prompts.get(resolved.id);
+  if (client && prompt) {
     const generation = state.clientGeneration;
-    // A continuation receipt can change after the answer event was published.
-    // Consume one current owner read; reconnect hydration owns later recovery.
-    void refreshPendingQuestions(
-      state,
+    const revision = prompt.revision;
+    // Receipt invalidation must not reinstall stale question records or start
+    // recovery for an unmatched outcome; reconnect hydration owns those reads.
+    void refreshQuestionContinuationReceipt(
       client,
-      () => state.client === client && state.clientGeneration === generation,
+      prompt,
+      () =>
+        state.client === client &&
+        state.clientGeneration === generation &&
+        state.prompts.get(resolved.id) === prompt &&
+        prompt.revision === revision,
+      state.onChange,
     ).catch(() => {});
   }
   return true;
@@ -425,23 +436,7 @@ async function refreshPendingQuestions(
       storeQuestionRecord(state, record.id, record, previous);
     }
   }
-  if (isRecord(listResult) && Array.isArray(listResult.continuations)) {
-    for (const receipt of listResult.continuations) {
-      if (
-        !isRecord(receipt) ||
-        (receipt.status !== "blocked" && receipt.status !== "interrupted")
-      ) {
-        continue;
-      }
-      const prompt =
-        typeof receipt.questionId === "string" ? state.prompts.get(receipt.questionId) : undefined;
-      if (prompt) {
-        prompt.continuationMessage = [receipt.reason, receipt.nextAction]
-          .filter((value): value is string => typeof value === "string")
-          .join(" ");
-      }
-    }
-  }
+  attachQuestionContinuationReceipts(listResult, (id) => state.prompts.get(id));
   scheduleExpiry(state);
   state.onChange();
   const missing: Array<{

@@ -30,7 +30,7 @@ import {
 import type { GatewayClient } from "./server-methods/types.js";
 import { isSessionCreatorProfile, prepareSessionCreatorProfile } from "./session-creator.js";
 import { captureIncognitoSessionMutationFacts } from "./session-sharing-incognito.js";
-import type { PreparedSessionFactsSource } from "./session-sharing-preparation-source.js";
+import type { PreparedSessionFactsSource } from "./session-sharing-source.types.js";
 import { resolveSessionStoreIdentity } from "./session-store-key.js";
 import type { GatewaySessionStoreDiscoveryCache } from "./session-utils-store-candidates.js";
 import {

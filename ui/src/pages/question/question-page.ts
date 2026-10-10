@@ -38,8 +38,6 @@ export class QuestionPage extends OpenClawLightDomElement {
   @state() private loading = true;
   @state() private requestError: QuestionPageRequestError = null;
 
-  @state() private continuationMessage: string | undefined;
-
   private readonly questionState = createQuestionPromptState(() => this.requestUpdate());
   private client: GatewayBrowserClient | null = null;
   private boundQuestionId: string | undefined;
@@ -151,9 +149,12 @@ export class QuestionPage extends OpenClawLightDomElement {
   private async loadQuestion(client: GatewayBrowserClient): Promise<void> {
     const id = this.questionId;
     const generation = ++this.operationGeneration;
+    const initialPrompt = listQuestionPrompts(this.questionState).find(
+      (prompt) => prompt.id === id,
+    );
+    const initialRevision = initialPrompt?.revision;
     this.loading = true;
     this.requestError = null;
-    this.continuationMessage = undefined;
     try {
       const result = await requestQuestionGateway(client, "question.get", {
         id,
@@ -166,13 +167,24 @@ export class QuestionPage extends OpenClawLightDomElement {
       ) {
         return;
       }
+      const currentPrompt = listQuestionPrompts(this.questionState).find(
+        (prompt) => prompt.id === id,
+      );
+      // Live events own newer answers and receipts while this initial snapshot is in flight.
+      if (
+        currentPrompt &&
+        (currentPrompt !== initialPrompt || currentPrompt.revision !== initialRevision)
+      ) {
+        return;
+      }
       if (!isRecord(result) || !isRecord(result.question) || result.question.id !== id) {
         this.requestError = "unavailable";
         return;
       }
+      let continuationMessage: string | undefined;
       const receipt = result.continuation;
       if (isRecord(receipt) && (receipt.status === "blocked" || receipt.status === "interrupted")) {
-        this.continuationMessage = [receipt.reason, receipt.nextAction]
+        continuationMessage = [receipt.reason, receipt.nextAction]
           .filter((value): value is string => typeof value === "string")
           .join(" ");
       }
@@ -189,6 +201,12 @@ export class QuestionPage extends OpenClawLightDomElement {
       ) {
         this.requestError = "unavailable";
         return;
+      }
+      const prompt = listQuestionPrompts(this.questionState).find(
+        (candidate) => candidate.id === id,
+      );
+      if (prompt) {
+        prompt.continuationMessage = continuationMessage;
       }
       if (record.status === "answered") {
         const accepted = handleQuestionPromptEvent(this.questionState, {
@@ -221,7 +239,6 @@ export class QuestionPage extends OpenClawLightDomElement {
         <div class="approval-page__state" data-question-status=${prompt.status} role="status">
           <h1 id="question-page-title" tabindex="-1">${this.questionStatusLabel(prompt)}</h1>
           ${renderChatQuestionSummary(prompt)}
-          ${this.continuationMessage ? html`<p role="status">${this.continuationMessage}</p>` : nothing}
         </div>
       `;
     }

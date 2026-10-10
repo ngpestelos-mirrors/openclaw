@@ -2,7 +2,7 @@ import type {
   QuestionRecord,
   QuestionResolvedEvent,
 } from "../../../packages/gateway-protocol/src/index.js";
-import type { RestartRecoveryOperatorSource } from "../../gateway/operator-run-recovery-source.js";
+import type { RestartRecoveryOperatorSource } from "../../gateway/operator-run-recovery-source.schema.js";
 import type { DurableQuestionSessionBinding } from "../../gateway/question-session-access.types.js";
 import type { UserChannelAuthorizationReference } from "../../state/user-profiles.types.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
