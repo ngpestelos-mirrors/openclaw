@@ -34,6 +34,7 @@ import { createAssistantErrorTranscript } from "../../assistant-error-transcript
 import { isRecordedModelFallbackStop } from "../../model-fallback-stop.js";
 import { attachInternalToolResultAcknowledgement } from "../../runtime/internal-hooks.js";
 import { installSessionToolResultGuard } from "../../session-tool-result-guard.js";
+import { SessionMetadataCommittedError } from "../../sessions/session-manager-metadata-error.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../test-helpers/agent-message-fixtures.js";
 import { rewriteTranscriptEntriesInSessionManager } from "../transcript-rewrite.js";
@@ -685,7 +686,13 @@ describe("admitted lazy session writer", () => {
           controller.abort(callerError);
         });
         try {
-          await expect(appendInitial(kind, manager)).rejects.toThrow(callerError);
+          const failure = await appendInitial(kind, manager).catch((error: unknown) => error);
+          if (kind === "message") {
+            expect(failure).toBe(callerError);
+          } else {
+            expect(failure).toBeInstanceOf(SessionMetadataCommittedError);
+            expect(isRecordedModelFallbackStop(failure)).toBe(true);
+          }
           expect(observedFence).toEqual({
             expectedLifecycleRevision: undefined,
             expectedWriterRunId: runParams.runId,
