@@ -442,7 +442,7 @@ export function createDesktopSessionRegistry(
   }
 
   function retain(entry: DesktopSessionEntry, consumers: Set<symbol>) {
-    const activity = Symbol();
+    const activity = Symbol("desktop-consumer");
     consumers.add(activity);
     clearTimeout(entry.lingerTimer);
     entry.lingerTimer = undefined;
