@@ -424,6 +424,7 @@ function createIncognitoAgentExecutionOwner(
           async acquire(requestedTarget, requestedLifetime) {
             assertOutsideGrant();
             assertBorrowed();
+            requestedLifetime.assertAdmission?.();
             requestedLifetime.assertCurrent();
             const target = structuredClone(requestedTarget);
             if (!isDeepStrictEqual(target.database, identity)) {
@@ -439,6 +440,7 @@ function createIncognitoAgentExecutionOwner(
               import("../config/sessions/session-actor-replica.js"),
             ]);
             assertBorrowed();
+            requestedLifetime.assertAdmission?.();
             requestedLifetime.assertCurrent();
             const assertActorCurrent = () => {
               assertBorrowed();
@@ -454,7 +456,11 @@ function createIncognitoAgentExecutionOwner(
             };
             const actor = createSessionActor({
               target,
-              lifetime: { assertCurrent: assertActorCurrent, assertReadable: assertActorReadable },
+              lifetime: {
+                assertAdmission: () => requestedLifetime.assertAdmission?.(),
+                assertCurrent: assertActorCurrent,
+                assertReadable: assertActorReadable,
+              },
               replica: createSessionActorReplica({
                 target: { sessionKey, database: identity },
                 lifetime,

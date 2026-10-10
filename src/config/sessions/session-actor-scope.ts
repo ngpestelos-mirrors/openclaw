@@ -37,6 +37,7 @@ export async function withSessionActor<T>(
   lifetime: SessionActorLifetime,
   consume: (actor: SessionActor) => Promise<T>,
 ): Promise<T | undefined> {
+  lifetime.assertAdmission?.();
   lifetime.assertCurrent();
   const source = captureIncognitoSessionSource(input);
   if (source && "kind" in source) return undefined;
@@ -61,7 +62,13 @@ export async function withSessionActor<T>(
       }
       const actor = await execution.sessionActors.acquire(
         { database: source.actor.identity, sessionKey: input.sessionKey },
-        lifetime,
+        {
+          ...lifetime,
+          assertAdmission() {
+            lifetime.assertAdmission?.();
+            source.admissionSignal?.throwIfAborted();
+          },
+        },
       );
       try {
         return await consume(actor);

@@ -213,6 +213,7 @@ export async function captureNativeIncognitoSessionActor(params: {
     }
   };
   const lifetime = {
+    assertAdmission: () => params.lifetime.assertAdmission?.(),
     assertCurrent() {
       params.lifetime.assertCurrent();
       assertOwner();
@@ -222,6 +223,7 @@ export async function captureNativeIncognitoSessionActor(params: {
       assertOwner();
     },
   };
+  lifetime.assertAdmission();
   lifetime.assertCurrent();
   if (
     !captureNativeIncognitoSessionActorTarget({ database: options, sessionKey: target.sessionKey })
@@ -232,6 +234,7 @@ export async function captureNativeIncognitoSessionActor(params: {
   try {
     // Prepare asynchronous kernel dependencies before entering the native writer FIFO.
     await Promise.all([prepareSessionTurnPredicates(), prepareVoiceTranscriptCommit()]);
+    lifetime.assertAdmission();
     lifetime.assertCurrent();
     let backend = nativeBackends.get(database.db);
     if (!backend) {
