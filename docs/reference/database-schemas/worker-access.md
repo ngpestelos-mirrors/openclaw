@@ -187,6 +187,9 @@ joins the physical writer FIFO before consuming facts. Pending writes therefore
 settle before subsequent reads. A cold simple read uses one bounded statement in
 autocommit; transcript, lifecycle-header, parent-discovery, and other composite
 cohorts retain their consistent read snapshots.
+Selected listings retain their internal-row filtering and pending-row validation.
+Case-folded lookups validate their sibling candidates in the fused worker query;
+a receipt for one key does not certify those sibling guards.
 
 Each database retains at most 128 keys and 8 MiB of serialized fact data, including
 saved prompt snapshots; the process retains at most 32 such databases. Least
