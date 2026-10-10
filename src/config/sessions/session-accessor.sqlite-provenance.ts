@@ -4,6 +4,7 @@ import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../../infr
 import { readSqliteNativeMutationRevision } from "../../infra/sqlite-schema-facts.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { hasStoredTranscriptEvents } from "./session-accessor.sqlite-transcript-presence.js";
 import { readSessionActorTransactionState } from "./session-actor-transaction.js";
 import type { SessionEntry } from "./types.js";
 
@@ -122,16 +123,7 @@ export function prepareSessionEntryWindowRow<T extends SessionProvenanceRow>(par
   if (
     existingRoot?.session_entry_provenance === 0 &&
     (params.previousEntry?.sessionId === params.entry.sessionId ||
-      Boolean(
-        executeSqliteQueryTakeFirstSync(
-          params.database.db,
-          db
-            .selectFrom("transcript_events")
-            .select("seq")
-            .where("session_id", "=", params.entry.sessionId)
-            .limit(1),
-        ),
-      ))
+      hasStoredTranscriptEvents(params.database, params.entry.sessionId))
   ) {
     row = {
       ...row,
