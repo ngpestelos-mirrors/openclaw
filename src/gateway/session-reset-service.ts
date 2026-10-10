@@ -615,7 +615,6 @@ async function performPreparedGatewaySessionReset({
       assertReadCurrent?.();
       return current;
     });
-  assertReadAuthorized();
   const expectedSessionMatches = (entry: SessionEntry | undefined): boolean =>
     params.expectedSessionId === undefined || entry?.sessionId === params.expectedSessionId;
   const sessionChangedError = () =>

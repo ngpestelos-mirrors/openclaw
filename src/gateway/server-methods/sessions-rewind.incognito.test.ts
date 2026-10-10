@@ -61,7 +61,10 @@ it.each(mutationMethods)("keeps bound %s history in its actor", async (method) =
         } else {
           expect(current?.previousSessionId).toBe(scope.sessionId);
           expect(current?.sessionId).not.toBe(scope.sessionId);
-          const branches = await listSessionBranches(scope);
+          const branches = await listSessionBranches({
+            ...scope,
+            sessionId: expectDefined(current, "current session").sessionId,
+          });
           expect(branches).toMatchObject({
             status: "ok",
             branches: expect.arrayContaining([

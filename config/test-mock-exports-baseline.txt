@@ -7204,7 +7204,6 @@
 ["src/gateway/mcp-app-host-files.test.ts","./session-utils.js","2eacfd20245abde419bfdda5cef9b0208f435d5cb7e8b17ef99cc4a95170bccc",1]
 ["src/gateway/mcp-app-reconstruction.test.ts","../agents/agent-bundle-mcp-manager-api.js","430daa6d9ce511f36ebe9e03cf8293abe4a000cb6f2e706f45f64a4d2cdb0780",1]
 ["src/gateway/mcp-app-reconstruction.test.ts","../agents/agent-bundle-mcp-manager-cleanup.js","8ba839dc316c5cbae80f248d538096634627e0eff3d29bf0e8001029275d5550",1]
-["src/gateway/mcp-app-reconstruction.test.ts","../agents/agent-scope.js","85f107c3adf90e53ccc27fcffa6e4af64e9990018b6a1c818c652bb404d3e087",1]
 ["src/gateway/mcp-app-reconstruction.test.ts","../agents/mcp-ui-resource.js","2cb5098eedd899a82785aff466a8c0d509a8a230ab5100e736efab61b40c6b30",1]
 ["src/gateway/mcp-app-reconstruction.test.ts","./session-transcript-readers.js","97341a7acc92cc0912adf6a26d179b14b3a2be1512577f21c9a61bac36b37e7d",1]
 ["src/gateway/mcp-app-reconstruction.test.ts","./session-utils.js","04423d237019f6918603cb371ea5db226e2bad971c7887388745cdbe25978d10",1]
