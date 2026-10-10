@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { GATEWAY_SERVER_CAPS } from "../../packages/gateway-protocol/src/server-capabilities.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -23,7 +23,10 @@ import {
 import { acquireGatewayLock, type GatewayLockHandle } from "../infra/gateway-lock.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { readConfigMachineState } from "../state/config-machine-state.js";
-import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
 import { acquireTestPortBlock, type TestPortClaim } from "../test-utils/port-claims.js";
 import { localStateOwnerFixtureEntrypoint } from "./cli-entrypoint.test-support.js";
 import { runCliProcessChild } from "./cli-process-child.test-helpers.js";
@@ -53,6 +56,7 @@ describe("config CLI database effects", () => {
     );
     return {
       PATH: process.env.PATH,
+      SystemRoot: process.env.SystemRoot,
       HOME: home,
       USERPROFILE: home,
       OPENCLAW_HOME: home,
@@ -72,6 +76,8 @@ describe("config CLI database effects", () => {
     vi.stubEnv("OPENCLAW_STATE_DIR", env.OPENCLAW_STATE_DIR);
     vi.stubEnv("OPENCLAW_CONFIG_PATH", env.OPENCLAW_CONFIG_PATH);
     owner = await acquireGatewayLock({ env, port: claim.port, allowInTests: true, timeoutMs: 0 });
+    expect(owner).not.toBeNull();
+    openOpenClawStateDatabase({ env });
     const context = createSessionMutationTestContext({});
     const client = createSessionMutationTestClient();
     client.connect.scopes = ["operator.admin"];
@@ -117,6 +123,10 @@ describe("config CLI database effects", () => {
       });
     });
     await once(server, "listening");
+  });
+  beforeEach(() => {
+    vi.stubEnv("OPENCLAW_STATE_DIR", env.OPENCLAW_STATE_DIR);
+    vi.stubEnv("OPENCLAW_CONFIG_PATH", env.OPENCLAW_CONFIG_PATH);
   });
   afterAll(async () => {
     await closeMinimalGatewayServer(server);
