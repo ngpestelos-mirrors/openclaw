@@ -154,8 +154,16 @@ export const userGitHubConnectionOperations = {
   "userGitHubConnections.mutate": (
     input: { owner: string; mutation: UserGitHubConnectionMutation },
     context,
-  ) =>
-    mutate(context, (db, capture) => {
+  ) => {
+    // A matching request is still reread under the write transaction.
+    if (
+      input.mutation.kind === "cancel" &&
+      readUserGitHubConnectionInDatabase(context.open().db, input.owner)?.pending?.requestId !==
+        input.mutation.requestId
+    ) {
+      return undefined;
+    }
+    return mutate(context, (db, capture) => {
       const { owner, mutation } = input;
       if (mutation.kind === "disconnect") {
         return disconnectUserGitHubConnectionInDatabase(db, owner, capture);
@@ -165,7 +173,8 @@ export const userGitHubConnectionOperations = {
       return next
         ? writeUserGitHubConnectionInDatabase(db, owner, next, current, capture)
         : undefined;
-    }),
+    });
+  },
   "userGitHubConnections.refresh": (input: UserGitHubRefreshMutation, context) =>
     mutate(context, (db, capture) => {
       const resolved = readCanonicalUserGitHubConnectionInDatabase(db, input.owner);
