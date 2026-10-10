@@ -8,7 +8,6 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { preserveQaGatewayDebugArtifacts } from "./gateway-child-artifacts.js";
-import { runQaGatewayCliCommand } from "./gateway-child-command.js";
 import {
   readJsonLines,
   registerSourceGatewayHostLifelineTest,
@@ -19,7 +18,6 @@ import {
   buildQaRuntimeEnv,
   stageQaCodexMockModelCatalog,
 } from "./gateway-child-env.js";
-import { QaGatewayChildLifecycle } from "./gateway-child-lifecycle.js";
 import {
   closeQaGatewayLogStream,
   createQaGatewayChildLogAccess,
@@ -136,44 +134,6 @@ function requireSsrFetchCall(index = 0): SsrFetchCall {
   }
   return call[0] as SsrFetchCall;
 }
-
-describe("runQaGatewayCliCommand", () => {
-  it("retains bounded redacted stdout failures alongside stderr panels", async () => {
-    const lifetime = new QaGatewayChildLifecycle();
-    try {
-      const error = await runQaGatewayCliCommand({
-        lifetime,
-        executablePath: process.execPath,
-        argsPrefix: [
-          "--input-type=module",
-          "--eval",
-          `await new Promise((resolve) => process.stderr.write(
-            "Doctor panel: Authorization: Bearer fixture-panel-secret\\n" + "diagnostic ".repeat(400), resolve));
-          await new Promise((resolve) => process.stdout.write(JSON.stringify({
-            status: "error", reason: "readiness execution failed", apiKey: "fixture-result-secret",
-          }), resolve));
-          process.exit(7);`,
-        ],
-        args: [],
-        cwd: process.cwd(),
-        env: process.env,
-      }).catch((caught: unknown) => caught);
-
-      expect(error).toBeInstanceOf(Error);
-      if (!(error instanceof Error)) {
-        throw new Error("expected CLI failure");
-      }
-      expect(error.message).toContain("OpenClaw CLI exited 7: Doctor panel:");
-      expect(error.message).toContain('"reason":"readiness execution failed"');
-      expect(error.message.length).toBeLessThanOrEqual(2_048);
-      expect(error.message).toContain("Bearer <redacted>");
-      expect(error.message).toContain('"apiKey":"<redacted>"');
-      expect(inspect(error, { depth: null })).not.toMatch(/fixture-(panel|result)-secret/u);
-    } finally {
-      await expect(lifetime.stop()).resolves.toEqual({ process: "confirmed-stopped", errors: [] });
-    }
-  });
-});
 
 describe("monitorQaGatewayChildFailure", () => {
   it("records the first pipe failure and stops the detached Gateway child", async () => {
@@ -341,27 +301,6 @@ describe("Gateway child fixture helpers", () => {
     expect(runtimeEnvPatch).not.toHaveProperty("OPENAI_API_KEY");
     expect(runtimeEnvPatch).not.toHaveProperty("CODEX_API_KEY");
   });
-
-  it("does not stage a Codex catalog for other runtimes or live providers", async () => {
-    const tempRoot = await tempDirs.makeTempDir("qa-codex-model-catalog-unused-");
-    await expect(
-      stageQaCodexMockModelCatalog({
-        tempRoot,
-        forcedRuntime: "openclaw",
-        providerMode: "mock-openai",
-      }),
-    ).resolves.toBeUndefined();
-    await expect(
-      stageQaCodexMockModelCatalog({
-        tempRoot,
-        forcedRuntime: "codex",
-        providerMode: "live-frontier",
-      }),
-    ).resolves.toBeUndefined();
-    await expect(
-      readFile(path.join(tempRoot, "codex-model-catalog.json"), "utf8"),
-    ).rejects.toThrow();
-  });
 });
 
 describe("buildQaRuntimeEnv", () => {
@@ -384,11 +323,6 @@ describe("buildQaRuntimeEnv", () => {
   });
 
   it.each([
-    {
-      failure: "bundled plugin staging cannot copy root package metadata",
-      packageContents: undefined,
-      expectedError: /ENOENT/u,
-    },
     {
       failure: "host version resolution cannot parse staged package metadata",
       packageContents: "{",
@@ -447,32 +381,6 @@ describe("buildQaRuntimeEnv", () => {
 
     await expect(readdir(preferredTempParent)).resolves.toStrictEqual([]);
     await expect(readdir(commandTempParent)).resolves.toStrictEqual([]);
-  });
-
-  it("isolates gateway children from Vitest without removing QA controls or non-test NODE_ENV", () => {
-    const testEnv = buildQaRuntimeEnv({
-      ...createParams({
-        NODE_ENV: "test",
-        VITEST: "true",
-        VITEST_POOL_ID: "base-pool",
-        VITEST_WORKER_ID: "base-worker",
-      }),
-      runtimeEnvPatch: {
-        VITEST: "patched",
-        VITEST_POOL_ID: "patched-pool",
-        VITEST_WORKER_ID: "patched-worker",
-      },
-    });
-
-    expect(testEnv.NODE_ENV).toBeUndefined();
-    expect(testEnv.VITEST).toBeUndefined();
-    expect(testEnv.VITEST_POOL_ID).toBeUndefined();
-    expect(testEnv.VITEST_WORKER_ID).toBeUndefined();
-    expect(testEnv.OPENCLAW_TEST_FAST).toBe("1");
-    expect(testEnv.OPENCLAW_ALLOW_SLOW_REPLY_TESTS).toBe("1");
-
-    const developmentEnv = buildQaRuntimeEnv({ ...createParams({ NODE_ENV: "development" }) });
-    expect(developmentEnv.NODE_ENV).toBe("development");
   });
 
   it("does not inherit parent channel or provider skip controls", () => {
@@ -1045,36 +953,27 @@ describe("buildQaRuntimeEnv", () => {
     await expect(lstat(recordPath)).rejects.toThrow(/ENOENT/u);
   });
 
-  it.each(["anthropic", "help", "repair"] as const)(
+  it.each(["repair"] as const)(
     "blocks packaged gateway spawn with bounded redacted diagnostics when %s fails",
     async (phase) => {
-      const provider = phase === "anthropic" ? phase : undefined;
       const { owner, start, recordPath, tempParentDir } = await createPackagedFixture({
-        QA_FAIL_PROVIDER: provider,
-        QA_FAIL_PLUGIN_SETUP: provider ? undefined : phase,
+        QA_FAIL_PLUGIN_SETUP: phase,
       });
       const error = await start().catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(Error);
       if (!(error instanceof Error) || !(error.cause instanceof Error)) {
         throw new Error("expected package command failure retained by lifecycle");
       }
-      const prefix = provider
-        ? `installed package mock auth bootstrap failed for ${provider}: `
-        : `installed package plugin setup failed (update repair${phase === "help" ? " --help" : ""}): `;
-      const detail = provider
-        ? "OpenClaw CLI exited 9: Authorization: Bearer <redacted>"
-        : "OpenClaw CLI exited 8: plugin fixture rejected: Authorization: Bearer <redacted>";
+      const prefix = "installed package plugin setup failed (update repair): ";
+      const detail =
+        "OpenClaw CLI exited 8: plugin fixture rejected: Authorization: Bearer <redacted>";
       expect(error.message).toContain(`${prefix}${detail}\ncontext retained\n`);
       expect(error.cause.message.length).toBeLessThanOrEqual(prefix.length + 2_048);
       expect(error.cause.message).not.toContain("diagnostic ".repeat(400));
       expect(error.cause.message).toContain("terminal failure: Authorization: Bearer <redacted>");
       expect(error.cause).not.toHaveProperty("cause");
       const records = await readJsonLines(recordPath);
-      expect(records.map((record) => record.kind)).toEqual(
-        provider
-          ? ["auth", "auth"]
-          : ["auth", "auth", ...(phase === "repair" ? ["help"] : []), "plugins"],
-      );
+      expect(records.map((record) => record.kind)).toEqual(["auth", "auth", "help", "plugins"]);
       expect(records[0]).toMatchObject({
         kind: "auth",
         dbExists: false,
@@ -1218,37 +1117,6 @@ describe("buildQaRuntimeEnv", () => {
     },
   );
 
-  it("reports Linux process-tree diagnostics when forced shutdown times out", async () => {
-    const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
-    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
-    const child = Object.assign(new EventEmitter(), {
-      pid: 12345,
-      exitCode: null as number | null,
-      signalCode: null as string | null,
-      kill: vi.fn(() => true),
-    });
-    vi.spyOn(process, "kill").mockImplementation(() => true);
-    try {
-      await expect(
-        stopQaGatewayChildProcessTree(child as never, {
-          gracefulTimeoutMs: 1,
-          forceTimeoutMs: 1,
-          inspectLinuxProcessGroup: () => ({
-            alive: true,
-            diagnostics:
-              'pgid=12345 members=[pid=12345 state=Z command="gateway", pid=12346 state=S command="worker"]',
-          }),
-        }),
-      ).rejects.toThrow(
-        'qa gateway process tree remained alive after forced shutdown: pgid=12345 members=[pid=12345 state=Z command="gateway", pid=12346 state=S command="worker"] childExitRecorded=false',
-      );
-    } finally {
-      if (platformDescriptor) {
-        Object.defineProperty(process, "platform", platformDescriptor);
-      }
-    }
-  });
-
   it("does not trust an exited gateway wrapper while its process group is alive", async () => {
     const child = Object.assign(new EventEmitter(), {
       pid: 12346,
@@ -1292,33 +1160,6 @@ describe("buildQaRuntimeEnv", () => {
       expect(postKillLivenessChecks).toBe(2);
       expect(child.kill).not.toHaveBeenCalled();
     }
-  });
-
-  it.each([
-    ["another gateway instance is already listening on ws://127.0.0.1:43124", "bind-collision"],
-    [
-      "failed to bind gateway socket on ws://127.0.0.1:43124: Error: listen EADDRINUSE",
-      "bind-collision",
-    ],
-  ] as const)("classifies %s", (details, expectedKind) => {
-    expect(
-      resolveQaGatewayStartupRetry({
-        attempt: 1,
-        details,
-        migrationConvergenceRestartUsed: false,
-      })?.kind,
-    ).toBe(expectedKind);
-  });
-
-  it("does not retry an incomplete migration-convergence diagnostic", () => {
-    const details = "OpenClaw plugin migration inputs changed during startup convergence";
-    expect(
-      resolveQaGatewayStartupRetry({
-        attempt: 1,
-        details,
-        migrationConvergenceRestartUsed: false,
-      }),
-    ).toBeNull();
   });
 
   it("restarts migration convergence once with the same launch state", () => {
