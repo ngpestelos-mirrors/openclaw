@@ -391,7 +391,9 @@ it.each([
         : f.target;
       const before = f.read(target);
       const sessionId = mode.initial ? "first-input" : f.scope.sessionId;
-      const expectedState = before.entry ? buildRestartRecoveryExpectedState(before.entry) : {};
+      const expectedState = buildRestartRecoveryExpectedState(
+        before.entry ?? { sessionId, updatedAt: 1 },
+      );
       const lifecycle = { restartRecoveryDeliveryRunId: "input-run", startedAt: 2 };
       const turn = {
         agentId: "main",
@@ -500,6 +502,60 @@ it.each([
     expect(f.receipt()).toBeUndefined();
     expect(f.nativeEntry()).toEqual(before.entry);
     expect(readTranscriptEventRows(f.database, f.scope.sessionId)).toEqual(events);
+  });
+});
+
+it("stages queued custody without rewriting the active session lifecycle", async () => {
+  await withActor(async (f) => {
+    const before = f.read();
+    const pending = {
+      kind: "stage" as const,
+      sessionKey: f.target.sessionKey,
+      sessionId: f.scope.sessionId,
+      idempotencyKey: "queued-input",
+      inputId: "queued-input",
+      runId: "queued-run",
+      requestHash: "queued-request",
+      lifecycleGeneration: "queued-generation",
+      trackCompletion: true,
+      messageJson: JSON.stringify({
+        role: "user",
+        content: "queued",
+        idempotencyKey: "queued-input",
+      }),
+    };
+    const expected = readPendingInput(f.database, pending);
+    if (expected.kind !== "stage") {
+      throw new Error("Expected queued input snapshot");
+    }
+    const writes = trackSqliteStatementExecutions(f.database.db, ["entry"], (sql) =>
+      /^\s*(?:insert|update|delete)\b.*\bsession_nodes\b/isu.test(sql) ? "entry" : null,
+    );
+    try {
+      expect(
+        f.mutate({
+          type: "session.actor.acceptInput",
+          input: {
+            target: f.target,
+            expected: before.version,
+            commandId: "stage-only",
+            phaseId: "input",
+            expectedState: buildRestartRecoveryExpectedState(before.entry!),
+            lifecycle: {},
+            pending: { ...pending, expected },
+          },
+        }),
+      ).toMatchObject({
+        kind: "committed",
+        receipt: {
+          postimage: { entry: before.entry, pendingInputs: [{ input_id: "queued-input" }] },
+        },
+      });
+      expect(writes.counts.entry).toBe(0);
+    } finally {
+      writes.restore();
+    }
+    expect(f.nativeEntry()).toEqual(before.entry);
   });
 });
 
