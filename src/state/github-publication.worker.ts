@@ -30,6 +30,7 @@ import type {
   PublicationMutationReceipt,
   PublicationMutationResult,
 } from "./github-publication-worker.types.js";
+import type { PublicationWorkerOperations } from "./github-publication.worker-contract.js";
 import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabase,
@@ -345,10 +346,7 @@ function sharedMutation(database: OpenClawStateDatabase, input: SharedPublicatio
 export const publicationOperations = {
   ...publicationRequestOperations,
   "githubPublications.shared": (
-    input: SharedPublicationMutation & {
-      operationId: string;
-      source?: GitHubPublicationSourcePredicate;
-    },
+    input: PublicationWorkerOperations["githubPublications.shared"]["input"],
     { open },
   ) => {
     const database = open();
@@ -367,10 +365,7 @@ export const publicationOperations = {
     );
   },
   "githubPublications.personal": (
-    input: PersonalPublicationMutation & {
-      operationId: string;
-      source?: GitHubPublicationSourcePredicate;
-    },
+    input: PublicationWorkerOperations["githubPublications.personal"]["input"],
     { open },
   ) => {
     const database = open();
@@ -389,10 +384,7 @@ export const publicationOperations = {
     );
   },
   "githubPublications.repository": (
-    input: RepositoryPublicationMutation & {
-      operationId: string;
-      source?: GitHubPublicationSourcePredicate;
-    },
+    input: PublicationWorkerOperations["githubPublications.repository"]["input"],
     { open },
   ) => {
     const database = open();

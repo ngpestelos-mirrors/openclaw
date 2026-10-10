@@ -1,7 +1,4 @@
-import {
-  insertPersonalGitHubPublicationInDatabase,
-  type PersonalGitHubPublicationRow,
-} from "../gateway/github-personal-publication-store.js";
+import { insertPersonalGitHubPublicationInDatabase } from "../gateway/github-personal-publication-store.js";
 import { captureGitHubPublicationChanges } from "../gateway/github-publication-events.js";
 import {
   assertSharedGitHubPublicationClaimInDatabase,
@@ -19,19 +16,12 @@ import {
 import type { GitHubPublicationSourceFacts } from "./github-publication-source.types.js";
 import { assertGitHubPublicationWorkerSourceCurrent } from "./github-publication-source.worker.js";
 import type {
+  GitHubPublicationInsert,
   PublicationMutationReceipt,
   PublicationMutationResult,
 } from "./github-publication-worker.types.js";
+import type { PublicationWorkerOperations } from "./github-publication.worker-contract.js";
 import type { WorkerOperationHandlers } from "./worker-operation-registry.js";
-
-export type SharedGitHubPublicationInsert = Omit<
-  Parameters<typeof insertGitHubPublicationRequest>[1],
-  "assertCurrent"
->;
-export type GitHubPublicationInsert =
-  | { kind: "shared"; input: SharedGitHubPublicationInsert }
-  | { kind: "personal"; row: PersonalGitHubPublicationRow; lifecycleRevision: string | null }
-  | { kind: "repository"; row: RepositoryGitHubPublicationRow };
 
 function assertRepositoryClaim(
   row: RepositoryGitHubPublicationRow,
@@ -131,11 +121,7 @@ function assertRequestedSource(
 
 export const publicationRequestOperations = {
   "githubPublications.insert": (
-    input: GitHubPublicationInsert & {
-      operation: "insert";
-      operationId: string;
-      source: GitHubPublicationSourcePredicate;
-    },
+    input: PublicationWorkerOperations["githubPublications.insert"]["input"],
     { open },
   ): PublicationMutationReceipt => {
     const database = open();

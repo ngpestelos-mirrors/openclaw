@@ -4,11 +4,11 @@ import type {
   GitHubPublicationRow,
   RepositoryGitHubPublicationRow,
 } from "../state/github-publication-read.types.js";
+import { createGitHubPublicationWorkerScope } from "../state/github-publication-worker.js";
 import type {
   GitHubPublicationInsert,
   SharedGitHubPublicationInsert,
-} from "../state/github-publication-request.worker.js";
-import { createGitHubPublicationWorkerScope } from "../state/github-publication-worker.js";
+} from "../state/github-publication-worker.types.js";
 import type { PersonalGitHubPublicationRow } from "./github-personal-publication-store.js";
 import {
   bindGitHubPublicationSource,
