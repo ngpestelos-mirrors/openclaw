@@ -37,7 +37,7 @@ export async function acquireSessionInputActor(
   const native = captureNativeIncognitoSessionActorTarget({ database, sessionKey });
   if (bound || native) {
     const actor = await createSessionActorFactory(database).acquire(
-      native ?? { database: bound!.actor.identity, sessionKey },
+      bound ? { database: bound.actor.identity, sessionKey } : native!,
       lifetime,
     );
     let readSource = target.readSource;
