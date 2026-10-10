@@ -79,7 +79,6 @@ export type ControlUiMockRequestHandler = (request: {
 
 export type ControlUiMockGateway = {
   readonly online: boolean;
-  initialRosterDelivered: boolean;
   closeLatest: (code?: number, reason?: string) => void;
   deliverLatest: (frame: unknown) => void;
   deferNext: (method: string, match?: Record<string, unknown>) => number;
