@@ -64,7 +64,7 @@ export const PLUGIN_COMPAT_RECORDS = [
       "getPluginRuntimeGatewayRequestScope().context",
     ],
     diagnostics: [
-      "TypeScript @deprecated annotations and migration documentation; no runtime warnings",
+      "TypeScript @deprecated annotations and migration documentation; placement methods have no runtime warnings, while GitHub orphan deferral shares the github-publication family warning",
     ],
     tests: [
       "src/plugin-sdk/gateway-placement-compat.test.ts",

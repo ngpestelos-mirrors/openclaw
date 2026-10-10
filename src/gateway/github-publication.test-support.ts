@@ -22,6 +22,7 @@ import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
 } from "../state/openclaw-agent-db.js";
+import { ensureGitHubPublicationSchema } from "../state/openclaw-state-db-schema-additive.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -165,6 +166,22 @@ export const systemPublicationRequester: GitHubPublicationRequester = Object.fre
   assertInvocationCurrent: () => {},
 });
 
+export async function createSystemGitHubPublicationRequesterFixture() {
+  const { createSyntheticPluginRuntimeClient } = await import("./server-plugin-runtime-client.js");
+  const captured = await prepareGitHubPublicationRequesterV2(
+    {
+      client: createSyntheticPluginRuntimeClient({
+        operatorRoleActor: { kind: "system" },
+        scopes: ["operator.admin"],
+      }),
+      context: { getRuntimeConfig: currentGitHubPublicationConfig },
+    },
+    { sessionKey: SESSION_KEY, agentId: "main" },
+  );
+  onTestFinished(captured.release);
+  return captured;
+}
+
 export async function createGitHubPublicationRequesterFixture(params: {
   profileId: string;
   scopes: readonly string[];
@@ -291,6 +308,7 @@ export function seedLocalPublication(
     requester?: GitHubPublicationRequesterSnapshot | null;
   },
 ): void {
+  ensureGitHubPublicationSchema(database.db);
   database.db
     .prepare(
       `INSERT INTO github_publication_requests (

@@ -35,18 +35,17 @@ import {
 import { updateUserGitHubConnection } from "../state/user-github-connections.test-support.js";
 import { linkCanonicalUserProfileEmail } from "../state/user-profile-writes.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
-import {
-  readPersonalGitHubPublication,
-  requirePersonalGitHubPublicationConfirmation,
-} from "./github-personal-publication-store.js";
+import { readPersonalGitHubPublication } from "./github-personal-publication-store.js";
 import {
   callPersonalPublicationRpc,
   createForeignPublicationSession,
   createPersonalPublicationFixture,
   readPersonalPublicationFixtureStatus,
   personalPublicationAccount as account,
+  preparePersonalPublicationFixtureV2,
   expectPersonalPublicationReplay,
 } from "./github-personal-publication.test-support.js";
+import { requirePersonalGitHubPublicationConfirmationAsync } from "./github-publication-store-async.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import { preparePersonalGitHubSessionAction } from "./server-methods/github-personal-authorization.js";
 import type { GatewayClient, GatewayRequestContext } from "./server-methods/types.js";
@@ -392,6 +391,8 @@ describe("personal publication authority and recovery", () => {
   });
 
   it("creates its private table only on admission, publishes the exact account and snapshot, and replays only for its owner", async () => {
+    await persistPublicationTestSession();
+    action = await preparePersonalPublicationFixtureV2({ client, context });
     setRuntimeConfigSnapshot({
       ...getRuntimeConfigSnapshot(),
       gateway: {
@@ -439,7 +440,10 @@ describe("personal publication authority and recovery", () => {
     coordinator = createTestGitHubPublicationCoordinator({
       placements: createWorkerSessionPlacementStore({ database: openOpenClawStateDatabase() }),
     });
-    await expect(coordinator.requestPersonalForSession(request(), action)).resolves.toEqual(result);
+    const resumed = await preparePersonalPublicationFixtureV2({ client, context });
+    await expect(coordinator.requestPersonalForSessionV2(request(), resumed)).resolves.toEqual(
+      result,
+    );
     expect(commands).toHaveLength(count);
     expect(openOpenClawStateDatabase().db.prepare("PRAGMA integrity_check").get()).toEqual({
       integrity_check: "ok",
@@ -447,10 +451,15 @@ describe("personal publication authority and recovery", () => {
   });
 
   it("replays only the original personal selection and content without new publication work", async () => {
-    await expectPersonalPublicationReplay({ generation, coordinator, action }, (requestId) => ({
-      receipt: readPersonalGitHubPublication(owner, { requestId }),
-      commandCount: commands.length,
-    }));
+    await persistPublicationTestSession();
+    const prepared = await preparePersonalPublicationFixtureV2({ client, context });
+    await expectPersonalPublicationReplay(
+      { generation, coordinator, action: prepared },
+      (requestId) => ({
+        receipt: readPersonalGitHubPublication(owner, { requestId }),
+        commandCount: commands.length,
+      }),
+    );
   });
 
   it("keeps credential locations out of publication errors when refresh materialization fails", async () => {
@@ -598,6 +607,9 @@ describe("personal publication authority and recovery", () => {
   );
 
   it("records an observed push after disconnect without authorizing a PR or claiming the effect was undone", async () => {
+    await persistPublicationTestSession();
+    const prepared = await preparePersonalPublicationFixtureV2({ client, context });
+    action = prepared;
     const fallback = mocks.runCommand.getMockImplementation()!;
     mocks.runCommand.mockImplementation(async (argv: string[], options?: { input?: string }) => {
       const result = await fallback(argv, options);
@@ -606,7 +618,7 @@ describe("personal publication authority and recovery", () => {
       }
       return result;
     });
-    await expect(coordinator.requestPersonalForSession(request(), action)).rejects.toThrow(
+    await expect(coordinator.requestPersonalForSessionV2(request(), prepared)).rejects.toThrow(
       "identity changed",
     );
     const row = openOpenClawStateDatabase().db.prepare(`SELECT request_id FROM ${table}`).get() as {
@@ -619,7 +631,7 @@ describe("personal publication authority and recovery", () => {
       effect: { kind: "push", status: "observed", headCommit: NEW_HEAD },
     });
     await expect(
-      coordinator.confirmPersonal(
+      coordinator.confirmPersonalV2(
         {
           sessionKey: SESSION_KEY,
           requestId: row.request_id,
@@ -628,7 +640,7 @@ describe("personal publication authority and recovery", () => {
           requestDigest: readPersonalGitHubPublication(owner, { requestId: row.request_id })!
             .request_digest,
         },
-        action,
+        prepared,
       ),
     ).rejects.toThrow("identity changed");
     expect(commands.some((argv) => argv.includes("POST"))).toBe(false);
@@ -684,7 +696,7 @@ describe("personal publication authority and recovery", () => {
     await closeStateDatabaseForTest();
     placements = createWorkerSessionPlacementStore({ database: openOpenClawStateDatabase() });
     coordinator = createTestGitHubPublicationCoordinator({ placements });
-    requirePersonalGitHubPublicationConfirmation(placements.workspaceResultInstanceId());
+    await requirePersonalGitHubPublicationConfirmationAsync(placements.workspaceResultInstanceId());
     await coordinator.resumeSessionRequests();
     expect(commands).toHaveLength(count);
     client = { ...client, connId: "cold-browser" };

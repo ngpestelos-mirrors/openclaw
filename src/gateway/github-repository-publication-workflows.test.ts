@@ -93,9 +93,12 @@ describe("repository checkpoint workflow authority", () => {
     await f.repository.capture("ordinary code\n", "ordinary", {
       ".github/workflows/README.md": "workflow documentation\n",
     });
-    expect(await f.coordinator.requestForSession(f.request("ordinary", f.guest))).toMatchObject({
-      status: "published",
-    });
+    expect(
+      await f.coordinator.requestForSessionV2({
+        ...f.request("ordinary", f.guest),
+        requester: f.guest,
+      }),
+    ).toMatchObject({ status: "published" });
     expect(f.repository.runtime.effects).toEqual(["push", "pull_request"]);
     const trees = mocks.runCommand.mock.calls.filter(([args]) =>
       args.some((arg: string) => arg.includes("/git/trees/")),

@@ -221,14 +221,75 @@ worker loss without a receipt remains unknown and must be reconciled by operatio
 identity without replay. Request and lifecycle rows belong in the same destination
 kernel and transaction. Later external effects still require current authority.
 
-This is an internal foundation, with no guard-removal or bundled-caller cutover.
-GitHub publication, cross-store session titles, and worktree finalization retain
-their current paths until their typed domain operations adopt this contract.
+This is an internal foundation. GitHub publication's typed operations adopt it
+as described below; cross-store session titles and worktree finalization retain
+their current paths until their own typed domain operations adopt this contract.
 Incognito actor composition and opaque synchronous SDK callbacks remain outside
 its eligibility. Other processes must write through the Gateway or while it is
 stopped; SQLite writer exclusion also protects the reservation interval, without
 introducing foreign-commit observation. There is no schema, stored-byte, retention,
 public SDK, or update-format change.
+
+### GitHub publication and personal connection authority
+
+Shared, personal, and repository publication use typed operations on the existing
+shared-state worker. The Gateway prepares policy and filesystem evidence, then
+the worker owns request insertion, claims, checkpoint binding, execution-fact
+updates, interruption, completion, deferral, and reporting. Claim and orphan
+selectors are evaluated inside the worker transaction, so a host-side selection
+cannot become stale before recovery mutates it. Request insertion and the captured
+session lifecycle commit atomically; idempotent replay does not rebind an existing
+receipt to a new lifecycle.
+
+`GitHubPublicationRequesterV2` requires a live signal and `prepareSource` in
+addition to the requester snapshot and assertions. Personal publication carries
+the same capability through `PersonalGitHubSessionActionV2`. The source owner
+captures exact durable session, profile, connection-generation, worktree, and
+repository facts needed by the selected operation. Host policy callbacks run
+before reservation. The worker compares those facts under the durable source
+fence and keeps that exclusion through destination settlement. Source and
+destination lifecycle owners retain accepted work; ordinary reply loss does not
+release their custody or authorize replay. These typed requesters and source
+capabilities are the reusable boundary for subsequent publication guard migration.
+
+New external effects require live action authority. Recording an effect already
+observed, or settling an interrupted execution, instead requires custody of that
+exact execution. Cancellation cannot authorize another GitHub action, but it must
+not discard evidence of a push or pull request that already happened. Committed
+worker receipts install facts before normal completion and preserve the native
+notification decisions, including no-op transitions.
+
+Personal GitHub OAuth start, device polling, confirmation, expiration, refresh,
+and disconnect use typed connection commands. Each command rereads the current
+generation and operation identity inside its transaction. Profile merge uses the
+same connection kernel through the profile writer. Credentials never enter
+public notifications or commit-fact envelopes. The connection owner publishes
+nonsecret generation and selection postimages, including deletion tombstones,
+before profile-retirement observers run. Captured source capabilities subscribe
+before their initial snapshot and stay revoked after a matching committed change,
+even if the old connection is restored. Profile-retirement notifications carry
+only the affected profile IDs. OAuth and refresh semantics and the existing stored
+representation remain unchanged.
+
+Released coordinator methods with opaque requester assertions remain explicit
+native compatibility adapters. Their route is selected before any callback runs;
+worker failure never selects it as a fallback. Synchronous compatibility writes
+still commit before returning. The shared SDK helper warns once per plugin and
+`github-publication` family on actual legacy use, and all bundled callers use the
+V2 or awaited methods. See the
+[SDK migration guide](/plugins/sdk-migration/how-to-migrate#await-github-publication-operations)
+for the exact method mapping and removal window.
+
+Retained final-authority guards still synchronously read current session,
+placement, personal connection, and publication execution facts immediately
+before privileged effects. In particular, `readUserGitHubConnection` and
+`resolvePersonalGitHubOwner` remain native final checks; preparation uses their
+worker-owned readers. These guards are not worker-migration completion claims:
+retire them when the next Plugin SDK major removes raw synchronous writers and
+their owners publish complete revocation facts. No runtime freshness probes are
+added. Other processes must route writes through the serving Gateway or run while
+it is stopped. This cutover changes no schema, stored bytes, retention, durability,
+or update format.
 
 ### Session authority projections
 

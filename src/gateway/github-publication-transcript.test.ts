@@ -166,7 +166,7 @@ describe("GitHub publication transcript reporting", () => {
         expect(encoded?.count).toBe(encoding === "compressed" ? 3 + beforeTail.length : 0);
         await reportGitHubPublicationTranscript(
           () => import("./session-utils.js"),
-          { markReported: vi.fn() },
+          { markReportedAsync: vi.fn() },
           { ...identity, result },
         );
         const reports = (await loadTranscriptEvents(identity)).filter(

@@ -1,5 +1,9 @@
 import type { GatewayRequestHandlerOptions as CoreHandler } from "openclaw/plugin-sdk/core";
-import type { GatewayRequestHandlerOptions as RuntimeHandler } from "openclaw/plugin-sdk/gateway-runtime";
+import type {
+  GatewayRequestHandlerOptions as RuntimeHandler,
+  prepareGitHubPublicationRequesterV2,
+  preparePersonalGitHubSessionActionV2,
+} from "openclaw/plugin-sdk/gateway-runtime";
 import type { getPluginRuntimeGatewayRequestScope } from "openclaw/plugin-sdk/plugin-runtime";
 import { expectTypeOf, it } from "vitest";
 
@@ -118,5 +122,61 @@ it("retains synchronous placement and publication contracts from the released Ga
   >().toEqualTypeOf<Promise<ReadonlySet<string>>>();
   expectTypeOf<ReturnType<Publications["deferOrphanedRequestsAsync"]>>().toEqualTypeOf<
     Promise<void>
+  >();
+  // v2026.9.8 exposed these opaque callbacks through all three Gateway context entry points.
+  type ReleasedRequester = Readonly<{
+    snapshot: Readonly<{
+      version: 1;
+      actor: Readonly<{ kind: "system" } | { kind: "operator"; profileId: string }>;
+      scopes: readonly string[];
+      grant: Readonly<{
+        pluginId: string;
+        grantId: string;
+        aliasBindingIds: readonly string[];
+      }> | null;
+    }>;
+    assertCurrent: () => void;
+    assertInvocationCurrent: () => void;
+  }>;
+  type ReleasedPersonalAction = {
+    owner: string;
+    assertCurrent: () => void;
+    sessionId: string;
+    sessionKey: string;
+    agentId: string;
+    lifecycleRevision: string | null;
+  };
+  expectTypeOf<
+    Parameters<Publications["requestForClaim"]>[0]["requester"]
+  >().toEqualTypeOf<ReleasedRequester>();
+  expectTypeOf<
+    Parameters<Publications["requestForSession"]>[0]["requester"]
+  >().toEqualTypeOf<ReleasedRequester>();
+  expectTypeOf<
+    Parameters<Publications["requestPersonalForSession"]>[1]
+  >().toEqualTypeOf<ReleasedPersonalAction>();
+  expectTypeOf<
+    Parameters<Publications["confirmPersonal"]>[1]
+  >().toEqualTypeOf<ReleasedPersonalAction>();
+  expectTypeOf<ReturnType<Publications["deferClaimPreparation"]>>().toEqualTypeOf<void>();
+  expectTypeOf<ReturnType<Publications["markReported"]>>().toEqualTypeOf<void>();
+  expectTypeOf<ReturnType<Publications["listUnreportedResults"]>>().toExtend<
+    Array<{ result: { requestId: string }; sessionId: string; sessionKey: string; agentId: string }>
+  >();
+  type WorkerRequester = Parameters<Publications["requestForSessionV2"]>[0]["requester"];
+  expectTypeOf<WorkerRequester["version"]>().toEqualTypeOf<2>();
+  expectTypeOf<WorkerRequester["signal"]>().toEqualTypeOf<AbortSignal>();
+  expectTypeOf<
+    Awaited<ReturnType<typeof prepareGitHubPublicationRequesterV2>>["requester"]
+  >().toEqualTypeOf<WorkerRequester>();
+  expectTypeOf<
+    Awaited<ReturnType<typeof preparePersonalGitHubSessionActionV2>>["action"]
+  >().toEqualTypeOf<Parameters<Publications["requestPersonalForSessionV2"]>[1]>();
+  expectTypeOf<ReturnType<WorkerRequester["prepareSource"]>>().toExtend<
+    Promise<{ readonly version: 1; release(): Promise<void> }>
+  >();
+  expectTypeOf<ReturnType<Publications["markReportedAsync"]>>().toEqualTypeOf<Promise<void>>();
+  expectTypeOf<ReturnType<Publications["listUnreportedResultsAsync"]>>().toEqualTypeOf<
+    Promise<ReturnType<Publications["listUnreportedResults"]>>
   >();
 });

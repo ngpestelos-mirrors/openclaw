@@ -7,6 +7,7 @@ import {
   getNodeSqliteKysely,
   iterateSqliteQuerySync,
 } from "../infra/kysely-sync.js";
+import { warnPluginSdkDeprecation } from "../plugins/sdk-deprecation.js";
 import type {
   GitHubPublicationExecutionRow,
   GitHubPublicationReceiptTarget,
@@ -271,10 +272,16 @@ export function assertSharedGitHubPublicationClaimInDatabase(
   }
 }
 
+/** @deprecated Use claimGitHubPublicationExecutionAsync; removed in the next Plugin SDK major. */
 export function claimGitHubPublicationExecution(
   requestId: string,
   gatewayInstanceId: string,
 ): GitHubPublicationRow {
+  warnPluginSdkDeprecation({
+    family: "github-publication",
+    method: "claimGitHubPublicationExecution",
+    replacement: "claimGitHubPublicationExecutionAsync",
+  });
   return runOpenClawStateWriteTransaction(
     (database) => claimGitHubPublicationExecutionInDatabase(database, requestId, gatewayInstanceId),
     undefined,
@@ -477,8 +484,14 @@ export function writeGitHubPublicationExecutionInDatabase(
   return updated;
 }
 
+/** @deprecated Use createGitHubPublicationExecutionStoreAsync; removed in the next Plugin SDK major. */
 export function createGitHubPublicationExecutionStore(instanceId: string) {
   return createSharedExecutionTransitions((row, values, transition) => {
+    warnPluginSdkDeprecation({
+      family: "github-publication",
+      method: "createGitHubPublicationExecutionStore",
+      replacement: "createGitHubPublicationExecutionStoreAsync",
+    });
     return runOpenClawStateWriteTransaction(
       (database) =>
         writeGitHubPublicationExecutionInDatabase(database, instanceId, row, values, transition),
@@ -571,7 +584,13 @@ function createSharedExecutionTransitions(
   };
 }
 
+/** @deprecated Use deferGitHubPublicationRequestsAsync; removed in the next Plugin SDK major. */
 export function deferGitHubPublicationRequests(requestIds: string[]): void {
+  warnPluginSdkDeprecation({
+    family: "github-publication",
+    method: "deferGitHubPublicationRequests",
+    replacement: "deferGitHubPublicationRequestsAsync",
+  });
   if (!requestIds.length) return;
   runOpenClawStateWriteTransaction(
     (database) => deferGitHubPublicationRequestsInDatabase(database, requestIds),
@@ -623,7 +642,7 @@ export function isGitHubPublicationExecutionOwner(
   requestId: string,
   gatewayInstanceId: string,
 ): boolean {
-  ensureGitHubPublicationStore();
+  if (!hasGitHubPublicationStore()) return false;
   const db = openOpenClawStateDatabase().db;
   const row = executeSqliteQuerySync(
     db,
@@ -635,10 +654,16 @@ export function isGitHubPublicationExecutionOwner(
   return row?.status === "publishing" && row.gateway_instance_id === gatewayInstanceId;
 }
 
+/** @deprecated Use markGitHubPublicationReportedAsync; removed in the next Plugin SDK major. */
 export function markGitHubPublicationReported(
   kind: "personal" | "repository",
   requestId: string,
 ): void {
+  warnPluginSdkDeprecation({
+    family: "github-publication",
+    method: "markGitHubPublicationReported",
+    replacement: "markGitHubPublicationReportedAsync",
+  });
   const table =
     kind === "personal"
       ? "github_personal_publication_requests"
