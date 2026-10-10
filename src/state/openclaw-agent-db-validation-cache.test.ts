@@ -176,9 +176,12 @@ describe("canonical proof on physical database validation", () => {
             ),
           ).toBe(true);
 
-          // Connection-local TEMP tables do not revoke physical MAIN admission.
+          // TEMP changes preserve MAIN admission; durable DDL still revokes it.
           reader.database.db.exec("CREATE TEMP TABLE local_fixture(value TEXT)");
           expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(true);
+          database.db.exec("CREATE TABLE main.local_fixture(value TEXT)");
+          expect(adoptOpenClawAgentDatabaseSchema(database)).toBe(false);
+          refreshOpenClawAgentDatabaseSchema(database, () => {});
           expect(hasOpenClawAgentReadOnlySchema(reader.database)).toBe(true);
           expect(adoptOpenClawAgentDatabaseSchema(database, true, true)).toBe(true);
 
@@ -423,7 +426,7 @@ describe("canonical proof on physical database validation", () => {
             if (transition === "schema-revocation" || transition === "optional-schema-revocation") {
               invalidateOpenClawAgentDatabaseSchema(reopened);
             } else if (transition === "local-ddl" || transition === "optional-local-ddl") {
-              reopened.db.exec("CREATE TABLE revoked_promotion(value TEXT)");
+              reopened.db.exec("CREATE TABLE main.revoked_promotion(value TEXT)");
             }
             if (transition === "replacement") {
               expect(promoted.identity).not.toBe(received.identity);

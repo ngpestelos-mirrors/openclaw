@@ -1,7 +1,9 @@
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
-import { readSqliteDatabaseSiblingWriteRevision } from "../../infra/sqlite-database-admission.js";
 import { withSqlitePostCommitPublications } from "../../infra/sqlite-post-commit.js";
-import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import {
+  runSqliteDeferredTransactionSync,
+  runSqliteReadSnapshotSync,
+} from "../../infra/sqlite-transaction.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
@@ -11,7 +13,10 @@ import {
   listSqliteSessionEntriesFromDatabase,
   readSelectedSessionEntriesInDatabase,
 } from "./session-accessor.sqlite-entry-list.read.js";
-import { readSessionEntryCacheValidityToken } from "./session-accessor.sqlite-entry-revision.js";
+import {
+  cacheValidityTokensEqual,
+  readSessionEntryCacheValidityToken,
+} from "./session-accessor.sqlite-entry-revision.js";
 import { resolveSqliteScope } from "./session-accessor.sqlite-scope.js";
 import { readWithCanonicalSessionReaderContinuation } from "./session-canonical-key.js";
 import { captureSessionEntryReadSource } from "./session-entry-read-source.js";
@@ -33,11 +38,8 @@ export function readSessionEntryList(
   let unchanged: true | undefined;
 
   const result = withOpenClawAgentDatabaseReadOnly(
-    (database) => {
-      const initialWriteRevision = database.db.isTransaction
-        ? undefined
-        : readSqliteDatabaseSiblingWriteRevision(database.db);
-      return readWithCanonicalSessionReaderContinuation(database, request.continuation, () => {
+    (database) =>
+      readWithCanonicalSessionReaderContinuation(database, request.continuation, () => {
         source = captureSessionEntryReadSource(database, request.expectedIdentity);
         if (scope.cleanupSession === undefined) {
           const read = () =>
@@ -52,28 +54,29 @@ export function readSessionEntryList(
             scope.sessionKeys !== undefined ||
             scope.cronRetention ||
             scope.expiredCronRuns ||
-            scope.readConsistency === "latest"
+            scope.readConsistency === "latest" ||
+            database.db.isTransaction
           ) {
             return read();
           }
-          // A receipt captured before canonical admission must still describe this snapshot.
           const current = readSessionEntryCacheValidityToken(database.db);
-          revision =
-            initialWriteRevision !== undefined &&
-            initialWriteRevision === current.siblingWriteRevision
-              ? JSON.stringify([
+          const token =
+            current.siblingWriteRevision === undefined
+              ? undefined
+              : JSON.stringify([
                   readOpenClawAgentDatabaseIdentity(database).incarnation,
                   current.siblingWriteRevision,
                   current.sessionNodesGeneration,
-                ])
-              : undefined;
-          if (revision !== undefined && request.ifRevision === revision) {
+                ]);
+          if (token !== undefined && request.ifRevision === token) {
+            revision = token;
             unchanged = true;
             return [];
           }
-          const entries = read();
-          if (initialWriteRevision !== readSqliteDatabaseSiblingWriteRevision(database.db)) {
-            revision = undefined;
+          const entries = runSqliteReadSnapshotSync(database.db, read);
+          // Publish a committed revision only when the read crossed no writer receipt.
+          if (cacheValidityTokensEqual(current, readSessionEntryCacheValidityToken(database.db))) {
+            revision = token;
           }
           return entries;
         }
@@ -103,8 +106,7 @@ export function readSessionEntryList(
             });
           }),
         );
-      });
-    },
+      }),
     { ...request.database, env: scope.env },
   );
   if (!result.found && request.expectedIdentity?.key.startsWith("file:")) {

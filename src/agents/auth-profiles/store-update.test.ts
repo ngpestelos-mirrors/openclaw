@@ -627,7 +627,7 @@ it.each(["shared", "agent"] as const)(
         nativeWrite.mockRestore();
         replies.mockRestore();
         const frameBytes = frames.mock.calls
-          .filter(([value]) => Array.isArray(value))
+          .filter(([value]) => Array.isArray(value) && isRecord(value[0]) && "kind" in value[0])
           .map(([value]) => serialize(value).byteLength);
         frames.mockRestore();
         expect(replyBytes.length).toBeGreaterThan(0);
