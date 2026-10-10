@@ -1,8 +1,10 @@
-import type { AssistantMessage, Context, Model } from "@openclaw/llm-core";
+import { zstdDecompressSync } from "node:zlib";
+import type { AssistantMessage, Context, Model, StreamFn } from "@openclaw/llm-core";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { convertToLlm } from "../../../agent-core/src/harness/messages.js";
 import { configureAiTransportHost, getAiTransportHost } from "../host.js";
+import { streamSimpleOpenAICodexResponses } from "../providers/openai-chatgpt-responses.js";
 import { createOpenAIResponsesTransportStreamFn } from "./openai-responses-client.js";
 import { requestPreparedOpenAIResponsesCompaction } from "./openai-responses-compact-request.js";
 import { captureOpenAIResponsesCompaction } from "./openai-responses-compaction-replay.js";
@@ -20,7 +22,14 @@ const model = {
   contextWindow: 200_000,
   maxTokens: 8192,
 } satisfies Model;
-const options = { apiKey: "synthetic-test", sessionId: "v2-session", authProfileId: "v2-account" };
+const options = {
+  apiKey: `eyJhbGciOiJub25lIn0.${Buffer.from(
+    JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test-account" } }),
+  ).toString("base64url")}.signature`,
+  sessionId: "v2-session",
+  authProfileId: "v2-account",
+  transport: "sse" as const,
+};
 const context = {
   systemPrompt: "Stable instructions",
   tools: [
@@ -58,38 +67,51 @@ const completed = (status = "completed") => ({
 let events: unknown[];
 let requests: Array<{ url: string; body: Record<string, unknown>; headers: Headers }>;
 let afterFetch: (() => void) | undefined;
+let transport: StreamFn;
 beforeEach(() => {
   events = [checkpoint(), completed()];
   requests = [];
   afterFetch = undefined;
-  configureAiTransportHost({
-    buildModelFetch: () => async (input, init) => {
-      requests.push({
-        url: input instanceof Request ? input.url : input.toString(),
-        body: await new Response(init?.body).json(),
-        headers: new Headers(init?.headers),
-      });
-      afterFetch?.();
-      return new Response(
-        events.map((event) => "data: " + JSON.stringify(event) + "\n\n").join(""),
-        {
-          headers: { "content-type": "text/event-stream" },
-        },
-      );
-    },
-  });
+  const captureFetch: typeof fetch = async (input, init) => {
+    const headers = new Headers(init?.headers);
+    const raw = Buffer.from(await new Response(init?.body).arrayBuffer());
+    requests.push({
+      url: input instanceof Request ? input.url : input.toString(),
+      body: JSON.parse(
+        (headers.get("content-encoding") === "zstd" ? zstdDecompressSync(raw) : raw).toString(),
+      ),
+      headers,
+    });
+    afterFetch?.();
+    return new Response(events.map((event) => "data: " + JSON.stringify(event) + "\n\n").join(""), {
+      headers: { "content-type": "text/event-stream" },
+    });
+  };
+  configureAiTransportHost({ buildModelFetch: () => captureFetch });
+  vi.stubGlobal("fetch", captureFetch);
 });
-afterEach(() => configureAiTransportHost(initialHost));
+afterEach(() => {
+  configureAiTransportHost(initialHost);
+  vi.unstubAllGlobals();
+});
 const compact = (input: Context = context, extra = {}) =>
-  requestPreparedOpenAIResponsesCompaction(
-    createOpenAIResponsesTransportStreamFn(),
-    model,
-    input,
-    { ...options, ...extra },
-    "v2",
-  );
+  requestPreparedOpenAIResponsesCompaction(transport, model, input, { ...options, ...extra }, "v2");
 
-describe("ChatGPT V2 compaction at the fetch boundary", () => {
+describe.each([
+  ["managed", () => createOpenAIResponsesTransportStreamFn()],
+  [
+    "native ChatGPT",
+    (): StreamFn => (activeModel, requestContext, requestOptions) =>
+      streamSimpleOpenAICodexResponses(
+        { ...activeModel, api: "openai-chatgpt-responses" },
+        requestContext,
+        requestOptions,
+      ),
+  ],
+] as const)("%s V2 compaction at the fetch boundary", (_transportName, createTransport) => {
+  beforeEach(() => {
+    transport = createTransport();
+  });
   it("uses the normal final request including tools, developer context, hooks and cache identity", async () => {
     const hooked = {
       ...options,
@@ -102,8 +124,8 @@ describe("ChatGPT V2 compaction at the fetch boundary", () => {
       },
     };
     events = [completed()];
-    const normalStream = await createOpenAIResponsesTransportStreamFn()(model, context, hooked);
-    await normalStream.result();
+    const normalStream = await transport(model, context, hooked);
+    expect((await normalStream.result()).stopReason).toBe("stop");
     events = [checkpoint(), completed()];
     const result = await compact(context, hooked);
     const [normal, v2] = requests;

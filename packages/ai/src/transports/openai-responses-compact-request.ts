@@ -38,6 +38,14 @@ export function claimResponsesCompactRequest(options: object | undefined) {
   return undefined;
 }
 
+/** Preserve the operation when a provider translates simple stream options. */
+export function copyResponsesCompactRequest(source: object | undefined, target: object): void {
+  const request = source ? Reflect.get(source, COMPACT_REQUEST) : undefined;
+  if (request) {
+    Reflect.set(target, COMPACT_REQUEST, request);
+  }
+}
+
 /** Run provider compaction through the session's prepared stream stack. */
 export async function requestPreparedOpenAIResponsesCompaction(
   streamFn: StreamFn,
