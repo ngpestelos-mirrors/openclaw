@@ -355,7 +355,7 @@ function bindPersonalGitHubSessionAction(
 
 /** Retain the authenticated policy owner for worker commits as well as immediate effects. */
 export async function preparePersonalGitHubSessionActionV2(
-  options: Parameters<typeof prepareGitHubPublicationRequesterV2>[0],
+  options: Request & Parameters<typeof prepareGitHubPublicationRequesterV2>[0],
   target: SessionMutationTarget,
 ): Promise<{ action: PersonalGitHubSessionActionV2; release: () => void }> {
   const personal = await preparePersonalGitHubActionV2(options, "operator.write");
