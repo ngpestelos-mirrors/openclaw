@@ -32,7 +32,6 @@ import {
   resolveWorkingProgress,
   shouldRenderQueuedSendInThread,
 } from "./chat-progress.ts";
-import type { ChatReasoning } from "./chat-reasoning.ts";
 import {
   hasSessionsYieldCall,
   pendingSessionsYield,
@@ -77,7 +76,7 @@ import {
 } from "./chat-thread-run-identity.ts";
 import { coalesceToolActivityMessages } from "./chat-tool-activity-coalesce.ts";
 import { safeNormalizeMessage } from "./chat-turn-boundary.ts";
-import type { CompactionStatus } from "./tool-stream-contract.ts";
+import type { ChatReasoning, CompactionStatus } from "./tool-stream-contract.ts";
 
 export type BuildChatItemsProps = ChatInputPlacementProps & {
   paneId: string;

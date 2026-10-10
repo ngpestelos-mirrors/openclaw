@@ -4,16 +4,7 @@ import {
 } from "@openclaw/gateway-client/browser";
 import { normalizeNullableString } from "@openclaw/normalization-core/string-coerce";
 import { extractThinkingCached } from "../../lib/chat/message-extract.ts";
-import type { AgentEventPayload } from "./tool-stream-contract.ts";
-
-export type ChatReasoning = {
-  runId: string;
-  itemId: string;
-  text: string;
-  startedAt: number;
-  /** Durable IDs survive display reindexing; source ownership can differ from the client run. */
-  receipt?: { runId: string; messageId: string; persisted?: true };
-};
+import type { AgentEventPayload, ChatReasoning } from "./tool-stream-contract.ts";
 
 export type ChatReasoningHost = { chatReasoning?: ChatReasoning | null };
 

@@ -132,7 +132,7 @@ export type ChatThreadProps = ChatSendStatusActions &
     latestBrowserTabs?: ReadonlyMap<string, BrowserTabSelection>;
     guardianNotices?: ChatGuardianNotice[];
     streamSegments: ChatStreamSegment[];
-    reasoning?: import("../chat-reasoning.ts").ChatReasoning | null;
+    reasoning?: import("../tool-stream-contract.ts").ChatReasoning | null;
     stream: string | null;
     streamStartedAt: number | null;
     /** Browser-local active run identity, retained across transient disconnects. */
