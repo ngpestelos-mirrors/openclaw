@@ -8,6 +8,7 @@ import { withIncognitoSessionActor } from "../config/sessions/session-incognito-
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import * as gatewayCreation from "../gateway/session-create-service.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { openIncognitoTestActor } from "../state/openclaw-agent-execution-incognito.test-support.js";
 import { createPluginRecord } from "./loader-records.js";
 import { createRuntimeTestRegistry } from "./registry-runtime.test-helpers.js";
@@ -122,13 +123,10 @@ it("classifies sandbox authority from its captured actor despite a different con
   });
   const config: OpenClawConfig = {
     session: {
-      store: path.join(
-        dirs.make("plugin-sandbox-other-root-"),
-        "agents",
-        "main",
-        "sessions",
-        "sessions.json",
-      ),
+      store: resolveIncognitoOpenClawAgentSqlitePath({
+        agentId: "main",
+        env: { OPENCLAW_STATE_DIR: dirs.make("plugin-sandbox-other-root-") },
+      }),
     },
     agents: {
       defaults: { sandbox: { mode: "off", scope: "session", workspaceAccess: "rw" } },
@@ -230,6 +228,9 @@ it.each(["finalize", "rollback", "changed" as const])(
           initialEntry,
           recoverMatchingInitialEntry: true,
           afterCreate: async ({ initialization }) => {
+            if (!initialization) {
+              throw new Error("session creation did not supply its initializer");
+            }
             initialization.assertCurrent();
             if (outcome === "rollback") {
               throw new Error("initializer rejected");

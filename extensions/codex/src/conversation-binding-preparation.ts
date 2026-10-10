@@ -110,12 +110,7 @@ export async function resolveConversationAppServerRuntime(params: {
   workspaceDir: string;
   modelProvider?: string;
   model?: string;
-}): Promise<{
-  runtime: ReturnType<typeof resolveCodexAppServerRuntimeOptions>;
-  workspaceDir: string;
-  assertCurrent: () => void;
-  incognito: boolean | undefined;
-}> {
+}) {
   const source = params.source;
   const agentId =
     source?.agentId ??
@@ -426,10 +421,7 @@ async function writeThreadBindingFromResponse(
   }
 }
 
-async function bindThread(
-  params: CodexThreadBindingParams,
-  threadId?: string,
-): Promise<() => void> {
+async function bindThread(params: CodexThreadBindingParams, threadId?: string) {
   const current = params.bindingStore.read(params.identity);
   assertCodexBindingMayBeReplaced(current, "binding a conversation-bound Codex thread");
   const resolved = await resolveThreadBindingRuntime(params);

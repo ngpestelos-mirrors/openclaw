@@ -939,7 +939,7 @@ describe("codex conversation binding", () => {
       throw new Error("Native requests must not run after sandbox revocation");
     });
     sharedClientMocks.getSharedCodexAppServerClient.mockImplementation(async () => {
-      await patchSessionEntry({ ...source, update: () => ({ sandboxMode: "all" }) });
+      await patchSessionEntry({ ...source, update: () => ({ sandboxMode: undefined }) });
       return { request };
     });
 

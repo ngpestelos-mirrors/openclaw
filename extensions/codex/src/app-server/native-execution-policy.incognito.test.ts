@@ -147,7 +147,7 @@ it("guards an explicit private sandbox policy while preserving the catalog key's
         native.assertCurrent();
         request.assertCurrent();
 
-        await patchSessionEntry({ ...target, update: () => ({ sandboxMode: "non-main" }) });
+        await patchSessionEntry({ ...target, update: () => ({ sandboxMode: undefined }) });
         expect(native.assertCurrent).toThrow("execution policy changed");
         expect(request.assertCurrent).toThrow("execution policy changed");
         const blockedNative = await prepareCodexNativeExecutionBlock(params);

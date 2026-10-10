@@ -4,6 +4,7 @@ import {
   getSessionEntry,
   resolveStorePath,
   upsertSessionEntry,
+  type SessionEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";
 import { useSessionStoreTempDirs } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -126,11 +127,11 @@ describe("codex conversation controls", () => {
       const storePath = resolveStorePath(undefined, { agentId: session.agentId });
       const authority = { assertCurrent() {} };
       const actor = mode === "bound" ? await openIncognitoTestActor(env, authority) : undefined;
-      const entry = {
+      const entry: SessionEntry = {
         sessionId: session.sessionId,
         updatedAt: 1,
         incognito: true,
-        permissionMode: "full" as const,
+        permissionMode: "full",
       };
       try {
         if (actor) {

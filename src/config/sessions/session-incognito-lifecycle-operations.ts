@@ -17,7 +17,7 @@ import type {
   IncognitoLifecycleEntry,
   IncognitoLifecycleOperations,
 } from "./session-incognito-lifecycle-contract.js";
-import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
+import { captureSessionTranscriptTargetBinding } from "./transcript-target-binding.js";
 
 type IncognitoLifecycleTarget = {
   actor: Pick<
@@ -256,7 +256,11 @@ export function deleteCapturedIncognitoSession(
       ...params,
       target: structuredClone(params.target),
       expectedEntry: params.expectedEntry && structuredClone(params.expectedEntry),
-      env: captureSessionTranscriptStorageEnvironment(params.env ?? process.env),
+      env: captureSessionTranscriptTargetBinding({
+        storePath: binding.actor.path,
+        agentId: binding.actor.agentId,
+        env: params.env,
+      }).env,
     };
     const authority = {
       assertCurrent() {
@@ -288,7 +292,7 @@ export function deleteCapturedIncognitoSession(
       return deleteIncognitoSessionLifecycle({
         actor: binding.actor,
         authority,
-        env: captured.env ?? process.env,
+        env: captured.env,
         ownerStorePath: captured.storePath,
         target: { sessionKey: captured.target.canonicalKey, entry },
         reason: "deleted",
