@@ -445,54 +445,74 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
     ).resolves.toMatchObject({ command: packaged });
   });
 
-  it("keeps reporting the bundled pin when desktop-first starts run the desktop app", async () => {
-    await installNpmCodex(`echo "codex-cli ${NEWER}"`);
-    const probes = { env: { PATH: bin }, probeHandshake: async () => NEWER };
-    const desktopInstalled = async (command: string) => command.includes("Codex.app");
+  it("starts and reports the desktop app for desktop-first without probing PATH", async () => {
+    const pluginRoot = path.join(root, "plugin");
+    const packaged = await writePackageLauncher(pluginRoot);
+    const desktopInstalled = async (command: string) =>
+      command.includes("Codex.app") || command === packaged;
 
+    await expect(
+      resolveManagedCodexAppServerStartOptions(startOptions("managed", "desktop-first"), {
+        platform: "darwin",
+        pluginRoot,
+        pathExists: desktopInstalled,
+      }),
+    ).resolves.toMatchObject({
+      command: expect.stringContaining("Codex.app"),
+      managedFallbackCommandPaths: expect.arrayContaining([packaged]),
+    });
     await expect(
       resolveManagedCodexClientVersion("desktop-first", {
         platform: "darwin",
         pathExists: desktopInstalled,
-        probes,
       }),
     ).resolves.toBe(CODEX_APP_SERVER_VERSION);
+    // Neither the start nor discovery began a PATH selection.
+    expect(installedState.selection).toBeUndefined();
+
     // Without the desktop app, desktop-first starts reach the installed Codex.
+    await installNpmCodex(`echo "codex-cli ${NEWER}"`);
     await expect(
       resolveManagedCodexClientVersion("desktop-first", {
         platform: "darwin",
         pathExists: async () => false,
-        probes,
+        probes: { env: { PATH: bin }, probeHandshake: async () => NEWER },
       }),
     ).resolves.toBe(NEWER);
   });
 
-  it("drops an installed Codex that disappeared after selection", async () => {
-    const pluginRoot = path.join(root, "plugin");
-    const packaged = await writePackageLauncher(pluginRoot);
-    const selected = {
-      command: "/opt/codex/bin/codex",
-      nativeCommand: "/opt/codex/bin/codex",
-      version: NEWER,
-    };
-    installedState.selection = Promise.resolve(selected);
-    installedState.selected = selected;
-    const warn = vi.spyOn(embeddedAgentLog, "warn").mockImplementation(() => undefined);
+  it.each(["launcher", "native executable"])(
+    "drops an installed Codex whose %s disappeared after selection",
+    async (missing) => {
+      const pluginRoot = path.join(root, "plugin");
+      const packaged = await writePackageLauncher(pluginRoot);
+      const selected = {
+        command: "/opt/codex/lib/node_modules/@openai/codex/bin/codex.js",
+        nativeCommand: "/opt/codex/lib/node_modules/@openai/codex-linux-x64/vendor/codex",
+        version: NEWER,
+      };
+      installedState.selection = Promise.resolve(selected);
+      installedState.selected = selected;
+      const warn = vi.spyOn(embeddedAgentLog, "warn").mockImplementation(() => undefined);
+      const gone = missing === "launcher" ? selected.command : selected.nativeCommand;
 
-    await expect(
-      resolveManagedCodexAppServerStartOptions(startOptions("managed"), {
-        platform: "linux",
-        pluginRoot,
-        pathExists: async (command) => command !== selected.command,
-      }),
-    ).resolves.toMatchObject({ command: packaged });
-    await expect(resolveManagedCodexClientVersion("package-first")).resolves.toBe(
-      CODEX_APP_SERVER_VERSION,
-    );
-    expect(warn).toHaveBeenCalledExactlyOnceWith(
-      expect.stringContaining(`installed ${selected.command} ${NEWER} failed to start (executable`),
-    );
-  });
+      await expect(
+        resolveManagedCodexAppServerStartOptions(startOptions("managed"), {
+          platform: "linux",
+          pluginRoot,
+          pathExists: async (command) => command !== gone,
+        }),
+      ).resolves.toMatchObject({ command: packaged });
+      await expect(resolveManagedCodexClientVersion("package-first")).resolves.toBe(
+        CODEX_APP_SERVER_VERSION,
+      );
+      expect(warn).toHaveBeenCalledExactlyOnceWith(
+        expect.stringContaining(
+          `installed ${selected.command} ${NEWER} failed to start (executable`,
+        ),
+      );
+    },
+  );
 
   it("lets every start that captured a rejected installed Codex fall back, logging once", () => {
     const selected = {

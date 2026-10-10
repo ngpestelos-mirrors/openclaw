@@ -98,8 +98,7 @@ export function setManagedCodexPluginRoot(pluginRoot: string | undefined): void 
 
 /**
  * Version that managed starts with this command order report to ChatGPT model
- * discovery. Desktop-first starts run an installed macOS desktop app, whose
- * version is never probed, so they keep reporting the bundled pin as before.
+ * discovery: the selected installed Codex, otherwise the bundled pin.
  */
 export async function resolveManagedCodexClientVersion(
   order: CodexManagedCommandOrder,
@@ -107,18 +106,29 @@ export async function resolveManagedCodexClientVersion(
     probes?: InstalledCodexAppServerProbes;
   } = {},
 ): Promise<string> {
+  return (await resolveInstalledCodexForOrder(order, options))?.version ?? CODEX_APP_SERVER_VERSION;
+}
+
+/**
+ * Desktop-first starts that find a macOS desktop app run it with the bundled
+ * package as fallback; they never wait on, start, or report a PATH Codex.
+ */
+async function resolveInstalledCodexForOrder(
+  order: CodexManagedCommandOrder,
+  options: Pick<ResolveManagedCodexAppServerOptions, "platform" | "pathExists"> & {
+    probes?: InstalledCodexAppServerProbes;
+  },
+): Promise<InstalledCodexAppServer | undefined> {
   const platform = options.platform ?? process.platform;
   const pathExists = options.pathExists ?? commandPathExists;
   if (order === "desktop-first") {
     for (const command of resolveMacOSDesktopCodexAppServerCommandCandidates(platform)) {
       if (await pathExists(command, platform)) {
-        return CODEX_APP_SERVER_VERSION;
+        return undefined;
       }
     }
   }
-  return (
-    (await resolveInstalledCodexAppServer(options.probes))?.version ?? CODEX_APP_SERVER_VERSION
-  );
+  return resolveInstalledCodexAppServer(options.probes);
 }
 
 /**
@@ -339,20 +349,27 @@ export async function resolveManagedCodexAppServerStartOptions(
     );
   }
   const platform = options.platform ?? process.platform;
+  const pathExists = options.pathExists ?? commandPathExists;
+  const managedCommandOrder = startOptions.managedCommandOrder ?? "package-first";
   const installed =
-    options.preferInstalled === false ? undefined : await resolveInstalledCodexAppServer();
+    options.preferInstalled === false
+      ? undefined
+      : await resolveInstalledCodexForOrder(managedCommandOrder, { platform, pathExists });
   const candidateCommandPaths = resolveManagedCodexAppServerCommandCandidates(
     pluginRoot,
     platform,
-    startOptions.managedCommandOrder ?? "package-first",
+    managedCommandOrder,
     installed?.command,
   );
-  const pathExists = options.pathExists ?? commandPathExists;
   const commandPaths: string[] = [];
   for (const commandPath of candidateCommandPaths) {
-    if (await pathExists(commandPath, platform)) {
+    const isInstalled = commandPath === installed?.command;
+    if (
+      (await pathExists(commandPath, platform)) &&
+      (!isInstalled || (await pathExists(installed.nativeCommand, platform)))
+    ) {
       commandPaths.push(commandPath);
-    } else if (commandPath === installed?.command) {
+    } else if (isInstalled) {
       // Removed after selection: discovery must stop reporting its version too.
       rejectInstalledCodexAppServer(commandPath, new Error("executable is no longer available"));
     }
