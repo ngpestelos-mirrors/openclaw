@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import path from "node:path";
 import {
   AgentHarnessPreflightError,
@@ -17,10 +16,6 @@ import {
   resolveCodexAppServerPreparedAuthProfileSnapshot,
   reconcileCodexComputerUseStartArtifacts,
 } from "./auth-bridge.js";
-import {
-  resolveCodexAppServerFallbackApiKeyCacheKey,
-  resolveCodexAppServerPreparedApiKeyCacheKey,
-} from "./auth-cache-key.js";
 import {
   CodexAppServerAuthProfileUnavailableError,
   formatCodexAuthProfileUnavailableMessage,
@@ -43,7 +38,6 @@ import {
 import { CodexAppServerClient, isUnsupportedCodexAppServerVersionError } from "./client.js";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import {
-  codexAppServerStartOptionsKey,
   resolveCodexComputerUseConfig,
   resolveCodexAppServerRuntimeOptions,
   resolveCodexAppServerStartOptionsForAgent,
@@ -58,8 +52,8 @@ import { isCodexAppServerProxyLaunch } from "./launch-args.js";
 import {
   isManagedCodexDesktopCommand,
   assertInstalledCodexAppServerVersion,
-  INSTALLED_CODEX_INITIALIZE_TIMEOUT_MS,
-  isSelectedInstalledCodexAppServer,
+  INSTALLED_CODEX_START_TIMEOUT_MS,
+  readInstalledCodexAppServerStatus,
   rejectInstalledCodexAppServer,
   resolveManagedCodexAppServerStartOptions,
   resolveManagedCodexNativeCommand,
@@ -72,6 +66,7 @@ import { acquireCodexNativeConfigFence } from "./native-config-fence.js";
 import { nativeHookRelayUnregisterQueue } from "./native-hook-relay-state.js";
 import { createCodexResponsesOAuth, isCodexResponsesOAuth } from "./responses-oauth.js";
 import { codexPrewriteRejectionCause } from "./rpc-error.js";
+import { createSharedCodexAppServerClientKeyResolver } from "./shared-client-key.js";
 import {
   notifyDesktopGenerationDrainChecks,
   retainSharedClientEntry,
@@ -85,6 +80,7 @@ import {
   observeSharedClientAcquire,
   recordSharedClientAcquireBoundary,
   ownCodexStartup,
+  rekeySharedClientEntry,
   retireSharedCodexAppServerClientIfCurrent,
   retirePendingSharedClientEntryIfUnclaimed,
   waitForUnclaimedSharedClientStartup,
@@ -620,35 +616,21 @@ async function acquireSharedCodexAppServerClient(
     desktopGeneration,
   } = startContext;
   const remainingTimeoutMs = resolveRemainingAcquireTimeout(timeoutMs, startedAt);
-  const authIdentityCacheKey =
-    preparedAuth?.kind === "api-key"
-      ? resolveCodexAppServerPreparedApiKeyCacheKey(preparedAuth.apiKey)
-      : (preparedAuth?.snapshot.secretFreeCacheKey ??
-        (authRequirement === "api-key" && !authProfileId
-          ? resolveCodexAppServerFallbackApiKeyCacheKey({ startOptions })
-          : undefined));
-  const baseKey = `${codexAppServerStartOptionsKey(startOptions, {
-    authProfileId,
-    authBindingFingerprint: options?.authBindingFingerprint,
-    agentDir: usesNativeAuth ? undefined : agentDir,
-    fallbackApiKeyCacheKey: authIdentityCacheKey,
-  })}\0auth-requirement:${authRequirement ?? "native"}${
-    desktopGeneration ? `\0desktop-generation:${desktopGeneration.epoch}` : ""
-  }`;
-  // Capture turns cannot inherit a normal client whose loaded bytes predate the
-  // filesystem snapshot. Keep their physical process generation separate.
   const runtimeArtifactMode =
     options?.runtimeArtifactMode ?? (options?.expectedRuntimeArtifact ? "capture" : undefined);
-  const expectedRuntimeArtifactKey = options?.expectedRuntimeArtifact
-    ? createHash("sha256")
-        .update(options.expectedRuntimeArtifact.id)
-        .update("\0")
-        .update(options.expectedRuntimeArtifact.fingerprint)
-        .digest("hex")
-    : "mint";
-  const key = runtimeArtifactMode
-    ? `${baseKey}\0runtime-artifact:capture-v1:${expectedRuntimeArtifactKey}`
-    : baseKey;
+  const keyFor = createSharedCodexAppServerClientKeyResolver({
+    startOptions,
+    agentDir,
+    authProfileId,
+    authBindingFingerprint: options?.authBindingFingerprint,
+    preparedAuth,
+    authRequirement,
+    usesNativeAuth,
+    desktopGeneration,
+    runtimeArtifactMode,
+    expectedRuntimeArtifact: options?.expectedRuntimeArtifact,
+  });
+  const key = keyFor(startOptions);
   let entry = getOrCreateSharedClientEntry(state, key);
   const existingClient = entry.client;
   const existingGeneration = existingClient
@@ -722,6 +704,16 @@ async function acquireSharedCodexAppServerClient(
     );
     if (entry.closeError) {
       throw entry.closeError;
+    }
+    // Once the installed Codex is rejected, fresh acquisitions resolve straight
+    // to the fallback this startup used; let them share its client.
+    const started = state.startMetadata.get(client)?.startOptions;
+    if (
+      started &&
+      started.command !== startOptions.command &&
+      readInstalledCodexAppServerStatus(startOptions.command) === "rejected"
+    ) {
+      rekeySharedClientEntry(entry, keyFor(started));
     }
     // Later leases of the same keyed client may carry fresher config; the
     // runtime install itself stays one-per-physical-client.
@@ -1064,8 +1056,8 @@ async function startInitializedCodexAppServerClientOnce(
           () => buildCodexAppServerInitializeTimeoutError(client),
           // A hanging installed Codex leaves time to start the bundled fallback.
           index + 1 < startOptionsCandidates.length &&
-            isSelectedInstalledCodexAppServer(startOptions.command)
-            ? INSTALLED_CODEX_INITIALIZE_TIMEOUT_MS
+            readInstalledCodexAppServerStatus(startOptions.command) === "selected"
+            ? INSTALLED_CODEX_START_TIMEOUT_MS
             : undefined,
         );
         assertInstalledCodexAppServerVersion(startOptions.command, client.getServerVersion());

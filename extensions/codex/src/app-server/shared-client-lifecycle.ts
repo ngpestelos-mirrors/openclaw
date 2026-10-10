@@ -67,7 +67,8 @@ export function recordSharedClientAcquireBoundary(
 }
 
 export type SharedCodexAppServerClientEntry = {
-  readonly key: string;
+  /** Moves only through rekeySharedClientEntry. */
+  key: string;
   client?: CodexAppServerClient;
   startup?: SharedCodexAppServerClientStartup;
   startupTransport?: Promise<CodexAppServerClient>;
@@ -105,6 +106,20 @@ export function getOrCreateSharedClientEntry(
     state.clients.set(key, entry);
   }
   return entry;
+}
+
+/**
+ * Moves a current entry to the key that fresh acquisitions now resolve to, so
+ * they share its client; keeps any entry already registered there.
+ */
+export function rekeySharedClientEntry(entry: SharedCodexAppServerClientEntry, key: string): void {
+  const state = getSharedCodexAppServerClientState();
+  if (state.clients.get(entry.key) !== entry || state.clients.has(key)) {
+    return;
+  }
+  state.clients.delete(entry.key);
+  entry.key = key;
+  state.clients.set(key, entry);
 }
 
 export function closeSharedClientEntryIfUnclaimed(entry: SharedCodexAppServerClientEntry): boolean {

@@ -15,7 +15,7 @@ import {
   readCodexVersionFromUserAgent,
 } from "./client-initialize.js";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
-import { INSTALLED_CODEX_INITIALIZE_TIMEOUT_MS as HANDSHAKE_TIMEOUT_MS } from "./managed-binary.js";
+import { INSTALLED_CODEX_PROBE_TIMEOUT_MS as HANDSHAKE_TIMEOUT_MS } from "./managed-binary.js";
 import {
   resolveCodexAppServerSpawnEnv,
   resolveCodexAppServerSpawnInvocation,

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import { resolveCodexAppServerRuntimeOptions } from "./config-runtime.js";
 import {
+  assertInstalledCodexAppServerVersion,
   rejectInstalledCodexAppServer,
   resolveManagedCodexAppServerStartOptions,
   resolveManagedCodexClientVersion,
@@ -528,5 +529,10 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
     expect(rejectInstalledCodexAppServer(selected.command, new Error("spawn EACCES"))).toBe(true);
     expect(rejectInstalledCodexAppServer("/usr/bin/other-codex", new Error("boom"))).toBe(false);
     expect(warn).toHaveBeenCalledOnce();
+    // A concurrent start of the same launcher that initializes cleanly still yields.
+    expect(() => assertInstalledCodexAppServerVersion(selected.command, NEWER)).toThrow(
+      "another start already rejected this installed Codex",
+    );
+    expect(() => assertInstalledCodexAppServerVersion("/usr/bin/other-codex", NEWER)).not.toThrow();
   });
 });

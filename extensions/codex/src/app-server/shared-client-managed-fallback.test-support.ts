@@ -2,6 +2,7 @@ import { SemVer } from "semver";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { CodexAppServerClient } from "./client.js";
 import type { CodexAppServerStartOptions } from "./config.js";
+import { INSTALLED_CODEX_START_TIMEOUT_MS } from "./managed-binary.js";
 import {
   clearSharedCodexAppServerClientAndWait,
   createIsolatedCodexAppServerClient,
@@ -86,6 +87,7 @@ export function registerSharedClientManagedFallbackTests(params: {
     }
 
     afterEach(() => {
+      vi.useRealTimers();
       installedState.selection = Promise.resolve(undefined);
       delete installedState.selected;
     });
@@ -96,9 +98,12 @@ export function registerSharedClientManagedFallbackTests(params: {
       { failure: `app-server reported ${CODEX_APP_SERVER_VERSION}`, installed: "version" },
       // The generic version fallback must not skip dropping the installed selection.
       { failure: "Codex app-server 0.149.0 or newer is required", installed: "unsupported" },
-      // Never answers initialize; a deadline-bound start keeps half for the bundled binary.
+      // Never answers initialize: a deadline-bound start keeps half for the bundled binary,
+      { failure: "codex app-server initialize timed out", installed: "deadline hang" },
+      // and a shared startup, which has no deadline of its own, stops waiting after a cap.
       { failure: "codex app-server initialize timed out", installed: "hang" },
     ] as const)("falls back to the bundled package on $installed failure", async (scenario) => {
+      const isolated = scenario.installed === "deadline hang";
       const installed = createClientHarness();
       const bundled = createClientHarness();
       const startSpy = vi.spyOn(CodexAppServerClient, "start");
@@ -108,12 +113,16 @@ export function registerSharedClientManagedFallbackTests(params: {
         startSpy.mockResolvedValueOnce(installed.client);
       }
       startSpy.mockResolvedValueOnce(bundled.client);
+      const sharedHang = scenario.installed === "hang";
+      if (sharedHang) {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      }
 
-      const acquireOptions = { startOptions: selectInstalledCodex(), timeoutMs: 1_000 };
-      const acquire =
-        scenario.installed === "hang"
-          ? createIsolatedCodexAppServerClient(acquireOptions)
-          : getSharedCodexAppServerClient(acquireOptions);
+      const requested = selectInstalledCodex();
+      const acquireOptions = { startOptions: requested, timeoutMs: sharedHang ? 10_000 : 1_000 };
+      const acquire = isolated
+        ? createIsolatedCodexAppServerClient(acquireOptions)
+        : getSharedCodexAppServerClient(acquireOptions);
       if (scenario.installed === "initialize") {
         const initialize = JSON.parse(await installed.waitForWrite(0)) as { id: number };
         installed.send({ id: initialize.id, error: { code: -32603, message: scenario.failure } });
@@ -121,6 +130,10 @@ export function registerSharedClientManagedFallbackTests(params: {
         await params.sendInitializeResult(installed, `codex-cli/${CODEX_APP_SERVER_VERSION}`);
       } else if (scenario.installed === "unsupported") {
         await params.sendInitializeResult(installed, "codex-cli/0.148.0");
+      } else if (sharedHang) {
+        await installed.waitForWrite(0);
+        await vi.advanceTimersByTimeAsync(INSTALLED_CODEX_START_TIMEOUT_MS);
+        vi.useRealTimers();
       }
       await params.sendInitializeResult(bundled, `codex-cli/${CODEX_APP_SERVER_VERSION}`);
       const failure = scenario.failure;
@@ -138,6 +151,20 @@ export function registerSharedClientManagedFallbackTests(params: {
       // Later managed starts and model discovery in this process use the bundled package.
       await expect(installedState.selection).resolves.toBeUndefined();
       expect(installedState.selected).toBeUndefined();
+      if (!isolated) {
+        // Fresh acquisitions now resolve to the bundled package and share this client.
+        params.resolveManagedStart.mockImplementation(
+          async (startOptions: CodexAppServerStartOptions) => ({
+            ...startOptions,
+            command: "/cache/openclaw/codex",
+            commandSource: "resolved-managed",
+          }),
+        );
+        await expect(
+          getSharedCodexAppServerClient({ startOptions: requested, timeoutMs: 1_000 }),
+        ).resolves.toBe(bundled.client);
+        expect(startSpy).toHaveBeenCalledTimes(2);
+      }
       await bundled.client.closeAndWait({ exitTimeoutMs: 25, forceKillDelayMs: 5 });
       await clearSharedCodexAppServerClientAndWait({ exitTimeoutMs: 25, forceKillDelayMs: 5 });
     });
