@@ -5,6 +5,7 @@ import {
 import { executeExistingOpenClawStateRead } from "./openclaw-state-db-readonly.js";
 import {
   openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
 import {
@@ -14,16 +15,18 @@ import {
 import { runOpenClawStateWorkerOperation } from "./openclaw-state-worker-store.js";
 import { publishUserGitHubConnectionCommit } from "./user-github-connection-events.js";
 import {
-  isUserGitHubConnectionCommit,
+  cancelUserGitHubAuthorizationInDatabase,
+  disconnectUserGitHubConnectionInDatabase,
   parseUserGitHubConnection,
   readUserGitHubConnectionInDatabase,
   resolvePersonalGitHubOwner as resolveOwner,
-  type UserGitHubConnection,
 } from "./user-github-connections.kernel.js";
-import type {
-  UserGitHubConnectionEntry,
-  UserGitHubConnectionMutation,
-  UserGitHubRefreshMutation,
+import {
+  isUserGitHubConnectionCommit,
+  type UserGitHubConnection,
+  type UserGitHubConnectionEntry,
+  type UserGitHubConnectionMutation,
+  type UserGitHubRefreshMutation,
 } from "./user-github-connections.types.js";
 import type { UserGitHubConnectionWorkerOperations } from "./user-github-connections.worker.js";
 
@@ -32,7 +35,7 @@ export type {
   UserGitHubConnection,
   UserGitHubConnected,
   UserGitHubDevice,
-} from "./user-github-connections.kernel.js";
+} from "./user-github-connections.types.js";
 
 /** Native final-effect guard; preparation uses the read worker. */
 export function resolvePersonalGitHubOwner(
@@ -48,6 +51,42 @@ export function readUserGitHubConnection(
   database?: OpenClawStateDatabaseOptions,
 ): UserGitHubConnection | undefined {
   return readUserGitHubConnectionInDatabase(openOpenClawStateDatabase(database).db, owner);
+}
+
+/** Native adapter for the released synchronous personal OAuth service contract. */
+export function cancelUserGitHubAuthorizationSync(
+  owner: string,
+  requestId: string,
+  assertCurrent: () => void,
+): boolean {
+  assertCurrent();
+  if (readUserGitHubConnection(owner)?.pending?.requestId !== requestId) {
+    return false;
+  }
+  return runOpenClawStateWriteTransaction(
+    ({ db }) => {
+      assertCurrent();
+      if (!cancelUserGitHubAuthorizationInDatabase(db, owner, requestId)) {
+        throw new Error("My GitHub authorization changed.");
+      }
+      return true;
+    },
+    undefined,
+    { operationLabel: "users.github.cancel" },
+  );
+}
+
+/** Native adapter for the released synchronous personal OAuth service contract. */
+export function disconnectUserGitHubConnectionSync(owner: string, assertCurrent: () => void): void {
+  assertCurrent();
+  runOpenClawStateWriteTransaction(
+    ({ db }) => {
+      assertCurrent();
+      disconnectUserGitHubConnectionInDatabase(db, owner);
+    },
+    undefined,
+    { operationLabel: "users.github.disconnect" },
+  );
 }
 
 export async function readUserGitHubConnectionAsync(

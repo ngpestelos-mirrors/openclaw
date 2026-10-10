@@ -9,11 +9,11 @@ import {
   type PublicationSessionIdentity,
 } from "./github-publication-availability.js";
 import { GitHubPublicationSessionChangedError } from "./github-publication-failure.js";
+import { projectGitHubPublicationResult } from "./github-publication-receipt.js";
 import {
   failRepositoryGitHubPublicationPreparationAsync,
   type GitHubPublicationTransitionAuthority,
 } from "./github-publication-store-async.js";
-import { projectGitHubPublicationResult } from "./github-publication-store.js";
 import {
   readGitHubRepositoryPublicationMetadata,
   type GitHubRepositoryPublicationSnapshot,

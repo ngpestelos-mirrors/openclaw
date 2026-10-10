@@ -5,8 +5,8 @@ import {
 import {
   readUserGitHubConnectionInDatabase,
   writeUserGitHubConnectionInDatabase,
-  type UserGitHubConnection,
 } from "./user-github-connections.kernel.js";
+import type { UserGitHubConnection } from "./user-github-connections.types.js";
 
 /** Native fixture mutation for final-guard and recovery boundary tests. */
 export function updateUserGitHubConnection(

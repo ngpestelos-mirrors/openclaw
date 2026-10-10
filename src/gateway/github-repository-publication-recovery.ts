@@ -12,6 +12,7 @@ import { createGitHubPublicationExecutionIdentity } from "./github-publication-e
 import { GitHubPublicationRequesterUnavailableError } from "./github-publication-failure.js";
 import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-index.js";
 import { reconcileGitHubPublicationPullRequest } from "./github-publication-pull-requests.js";
+import { projectGitHubPublicationResult } from "./github-publication-receipt.js";
 import { restoreGitHubPublicationRequester } from "./github-publication-requester.js";
 import { prepareGitHubPublicationSource } from "./github-publication-source.js";
 import {
@@ -22,7 +23,6 @@ import {
   type GitHubPublicationTransitionAuthority,
   type RepositoryGitHubPublicationExecutionAsync,
 } from "./github-publication-store-async.js";
-import { projectGitHubPublicationResult } from "./github-publication-store.js";
 import {
   deferRepositoryGitHubPublicationClaims,
   listRepositoryGitHubPublications,

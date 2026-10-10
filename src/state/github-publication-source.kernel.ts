@@ -18,10 +18,8 @@ import type {
 import type { DB as AgentDB } from "./openclaw-agent-db.generated.js";
 import type { DB } from "./openclaw-state-db.generated.js";
 import { readSessionRepositoryWorkspaceInDatabase } from "./session-repository-workspaces.kernel.js";
-import {
-  projectUserGitHubConnectionAuthority,
-  readUserGitHubConnectionInDatabase,
-} from "./user-github-connections.kernel.js";
+import { readUserGitHubConnectionInDatabase } from "./user-github-connections.kernel.js";
+import { projectUserGitHubConnectionAuthority } from "./user-github-connections.types.js";
 import { selectStoredGitHubIdentities } from "./user-profile-github-identity.js";
 import {
   readUserProfileEmailBindings,
