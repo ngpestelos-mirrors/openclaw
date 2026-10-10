@@ -225,6 +225,7 @@ export function prepareQuestionAuthorization(
   return {
     target:
       observation?.sessionAccess?.durableCustody ||
+      observation?.authorizeClient ||
       narrow ||
       (!isGatewayAdmin(options.client) &&
         hasOperatorBoundary(options.client, options.context.getRuntimeConfig()))
@@ -257,6 +258,14 @@ export function prepareQuestionAuthorization(
         } catch {
           return questionNotFound(id);
         }
+      }
+      if (observation.authorizeClient) {
+        authority.assertCurrent();
+        return observation.authorizeClient(options.client, prepared?.target) &&
+          (prepared?.canAccess(options.client, false) ||
+            (!prepared?.target && isGatewayAdmin(options.client)))
+          ? null
+          : questionNotFound(id);
       }
       if (narrow) {
         authority.assertCurrent();
@@ -456,7 +465,10 @@ export function questionBroadcastOptions(params: {
       if (!isCurrent()) {
         return false;
       }
-      if (usesOwnRunQuestionAccess(client)) {
+      if (observation?.authorizeClient && !observation.authorizeClient(client, prepared?.target)) {
+        return false;
+      }
+      if (usesOwnRunQuestionAccess(client) && !observation?.authorizeClient) {
         return canAccessSessionQuestion(observation, prepared, client);
       }
       if (prepared) {

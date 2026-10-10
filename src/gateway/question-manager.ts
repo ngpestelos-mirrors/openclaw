@@ -111,6 +111,7 @@ export class QuestionManager {
       waiters: new Set(),
       onResolved: params.onResolved,
       sessionAccess: params.sessionAccess,
+      authorizeClient: params.authorizeClient,
       isRequesterActive: params.durableCustody ? undefined : params.isRequesterActive,
       requesterRun: params.durableCustody ? undefined : params.requesterRun,
       admissionContinuation: params.durableCustody
@@ -165,6 +166,7 @@ export class QuestionManager {
       ordinary: entry.ordinary,
       durableDefinition: entry.durableCustody?.definition,
       sessionAccess: entry.sessionAccess,
+      authorizeClient: entry.authorizeClient,
       isCurrent: () => this.entries.get(entry.record.id) === entry,
       refreshRequester: () => this.refreshRequester(entry),
     };

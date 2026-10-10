@@ -9,7 +9,10 @@ import type { DurableQuestion } from "../config/sessions/session-questions.types
 import type { GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import type { GatewayRootWorkAdmissionContinuationScope } from "../process/gateway-work-admission.js";
 import type { QuestionRegistrationReservation } from "./question-registration-reservations.js";
-import type { QuestionSessionAccess } from "./question-session-access.types.js";
+import type {
+  QuestionClientAuthorization,
+  QuestionSessionAccess,
+} from "./question-session-access.types.js";
 
 export type DurableQuestionCustody = {
   definition?: DurableQuestion;
@@ -39,6 +42,8 @@ export type QuestionManagerRequest = {
     | ((event: QuestionResolvedEvent, observation: QuestionObservation) => void)
     | ((event: QuestionResolvedEvent, observation: QuestionObservation) => Promise<void>);
   sessionAccess?: QuestionSessionAccess;
+  /** Host-owned human decision boundary; never accepted from wire data. */
+  authorizeClient?: QuestionClientAuthorization;
   isRequesterActive?: () => boolean;
   requesterRun?: OperationalRunInstanceRef;
   /** Trusted handler binds the run; the manager owns expiry and terminal release. */
@@ -56,6 +61,8 @@ export type QuestionEntry = {
   waiters: Set<Waiter>;
   onResolved?: QuestionManagerRequest["onResolved"];
   sessionAccess?: QuestionSessionAccess;
+  /** Host-owned human decision boundary; never accepted from wire data. */
+  authorizeClient?: QuestionClientAuthorization;
   isRequesterActive?: () => boolean;
   requesterRun?: OperationalRunInstanceRef;
   admissionContinuation: GatewayRootWorkAdmissionContinuationScope | null;
@@ -73,6 +80,7 @@ export type QuestionObservation = {
   readonly ordinary: boolean;
   readonly durableDefinition?: DurableQuestion;
   readonly sessionAccess?: QuestionSessionAccess;
+  readonly authorizeClient?: QuestionClientAuthorization;
   isCurrent: () => boolean;
   refreshRequester: () => void;
 };
