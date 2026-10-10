@@ -500,10 +500,11 @@ function createPublicationBackend(
       });
       return finish(outcome);
     },
-    close() {
-      if (closeConnection) return closeConnection();
-      db.exec("DROP TABLE temp.memory_publication_input");
-    },
+    close:
+      closeConnection ??
+      (() => {
+        db.exec("DROP TABLE temp.memory_publication_input");
+      }),
   } satisfies SqliteWorkerBackend<MemoryPublicationOperations>;
 }
 

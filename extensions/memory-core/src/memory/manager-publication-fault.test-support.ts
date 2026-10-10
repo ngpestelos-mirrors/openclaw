@@ -59,10 +59,10 @@ export function bindSqliteWorkerBackend(
     `);
     return {
       ...backend,
-      close() {
+      async close() {
         const failures: unknown[] = [];
         try {
-          backend.close();
+          await backend.close();
         } catch (error) {
           failures.push(error);
         }
@@ -120,15 +120,14 @@ export function bindSqliteWorkerBackend(
       }
       return result;
     },
-    close() {
+    async close() {
       db.exec = originalExec;
       db.close = originalClose;
       if (db.isOpen) {
-        const closed = backend.close();
+        await backend.close();
         if (input.failBindingClose) {
           throw new Error("injected binding cleanup failure");
         }
-        return closed;
       }
     },
   };
