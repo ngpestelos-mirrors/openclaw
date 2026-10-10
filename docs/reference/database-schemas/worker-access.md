@@ -266,10 +266,11 @@ changes. Existing published updaters need no migration for these process-local
 receipts, and no synchronous SDK method is removed or given an asynchronous
 completion contract.
 
-### Session phase actor (B1, inactive)
+<a id="session-phase-actor-b1-inactive" />
 
-The shared session actor contract adds an inactive foundation for durable and
-incognito sessions. Production callers retain their existing routes. The actor
+### Session phase actor
+
+The shared session actor contract serves durable and incognito sessions. The actor
 lives inside the canonical agent execution worker and shares its physical writer
 queue; it does not introduce another database, worker service, or writer owner.
 Durable actors bind the physical database identity and session key. Incognito
@@ -282,6 +283,21 @@ committed receipts on MAIN. It never opens a replacement memory database or
 falls back to a file. After activation, acquisition selects the captured
 incognito execution owner. Closing either owner invalidates captured targets;
 acquisition cannot revive its old run authority.
+
+Agent attempts retain this actor for SessionManager transcript and tool-result
+appends. Each append captures its exact committed snapshot before fallible
+publication; tool-result acknowledgement follows that durable receipt. Initial
+entry, header, and first event commit together. Cancellation after commit reports
+the committed-error contract, and an unknown outcome fences fallback instead of
+repeating the append. Attempt teardown releases the actor only after accepted
+and nested writes actually drain, including when the consumer's bounded wait ends.
+Released synchronous SDK methods and explicit compaction maintenance keep their
+named compatibility adapters and publish through the existing receipt owners.
+
+These callers consume resident anchor, watermark, and model-context membership
+facts from the actor's replica. Message payload hydration, admitted-user role
+validation, and cold or off-path history retain bounded reads; transcript metadata
+does not stand in for message contents.
 
 A cold actor hydrates its entry, participants, membership, pending-input custody,
 and transcript metadata in one autocommit statement. The versioned hot state
@@ -329,9 +345,9 @@ its memory database.
 
 Actor command diagnostics record phase and settlement without payloads. Census
 consumers count commands, database worker requests, transfer frames, native SQL
-statements, and committed transactions separately. This inactive stage claims
-no production SQL reduction or T1 retirement. Schemas, stored bytes, durability,
-retention, permissions, released SDK completion contracts, and update behavior
+statements, and committed transactions separately. Unmigrated phase callers keep
+their existing owners. Schemas, stored bytes, durability, retention, permissions,
+released SDK completion contracts, and update behavior
 are unchanged; existing published updaters need no actor migration.
 
 ### Conversation and plugin-state receipt coverage
