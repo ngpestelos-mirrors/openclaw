@@ -44,7 +44,7 @@ it.each(["runtime", "legacy"] as const)(
             name: "approval.get",
             scope: "operator.approvals",
             owner: { kind: "core", area: "approvals" },
-            handler: async (options) => {
+            handler: async (options: GatewayRequestHandlerOptions) => {
               using authority = createApprovalRequestAuthority(options);
               const sql = observeHostDataSql();
               try {
@@ -72,13 +72,17 @@ it.each(["runtime", "legacy"] as const)(
         },
         () =>
           entrypoint === "runtime"
-            ? createPluginRuntime().gateway.request("approval.get", {})
+            ? createPluginRuntime().gateway.request(
+                "approval.get",
+                {},
+                { scopes: ["operator.admin"] },
+              )
             : dispatchGatewayMethodInProcess(
                 "approval.get",
                 {},
                 {
                   forceSyntheticClient: true,
-                  syntheticScopes: ["operator.approvals"],
+                  syntheticScopes: ["operator.admin"],
                   sessionMutationCommitGuard: () => {},
                 },
               ),
