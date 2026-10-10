@@ -83,6 +83,33 @@ describe("agent roster offline ownership", () => {
     await expect(fs.stat(workspace)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("refuses plugin registry refresh with a live owner and persists it offline", async () => {
+    const args = [...entrypoint, "plugins", "registry", "--refresh", "--json"];
+    const live = await runCliProcessChild({ nodeArgs: args, env });
+    expect(live.code, live.stderr).toBe(1);
+    expect(live.stderr).toContain("exclusive offline state ownership");
+    expect(live.stderr).toContain("stop the Gateway");
+    expect(await fs.readFile(env.OPENCLAW_CONFIG_PATH!, "utf8")).toBe(config);
+
+    await owner?.release();
+    owner = null;
+    try {
+      const offline = await runCliProcessChild({ nodeArgs: args, env });
+      expect(offline.code, offline.stderr).toBe(0);
+      expect(JSON.parse(offline.stdout)).toMatchObject({ refreshed: true, state: "fresh" });
+      const next = await runCliProcessChild({
+        nodeArgs: [...entrypoint, "plugins", "registry", "--json"],
+        env,
+      });
+      expect(next.code, next.stderr).toBe(0);
+      expect(JSON.parse(next.stdout)).toMatchObject({ state: "fresh", differences: [] });
+      expect(await fs.readFile(env.OPENCLAW_CONFIG_PATH!, "utf8")).toBe(config);
+    } finally {
+      owner = await acquireGatewayLock({ env, port: claim.port, allowInTests: true, timeoutMs: 0 });
+      expect(owner).not.toBeNull();
+    }
+  });
+
   it("creates the roster and workspace after the Gateway releases ownership", async () => {
     await owner?.release();
     owner = null;

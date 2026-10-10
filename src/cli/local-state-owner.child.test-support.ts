@@ -151,6 +151,9 @@ try {
             } else if (process.argv[2] === "migrate") {
               const { registerMigrateCommand } = await import("./program/register.migrate.js");
               registerMigrateCommand(program);
+            } else if (process.argv[2] === "plugins") {
+              const { registerPluginsCli } = await import("./plugins-cli.js");
+              registerPluginsCli(program);
             } else if (process.argv[2] === "exec-policy") {
               const { registerExecPolicyCli } = await import("./exec-policy-cli.js");
               registerExecPolicyCli(program);
