@@ -23,7 +23,7 @@ function resolveNonNegativeTokenCount(value: number | undefined): number | undef
   return resolved === undefined ? undefined : Math.floor(resolved);
 }
 
-export async function persistSessionUsageUpdate(params: {
+type SessionUsageUpdateParams = {
   agentId?: string;
   storePath?: string;
   sessionKey?: string;
@@ -57,25 +57,10 @@ export async function persistSessionUsageUpdate(params: {
   preserveFreshTotalTokensOnStaleUsage?: boolean;
   preserveRuntimeModel?: boolean;
   preserveUserFacingSessionModelState?: boolean;
-}): Promise<
-  | {
-      storePath: string;
-      sessionKey: string;
-      entry: Pick<
-        InternalSessionEntry,
-        "sessionId" | "lifecycleRevision" | "liveModelSwitchPending"
-      >;
-    }
-  | undefined
-> {
-  const { agentId, storePath, sessionKey, sessionStore, authorize } = params;
-  if (!storePath || !sessionKey) {
-    return undefined;
-  }
-  const expectedSession = params.expectedSession
-    ? { ...params.expectedSession, lifecycleRevision: params.expectedSession.lifecycleRevision }
-    : undefined;
+};
 
+/** Prepare host-owned pricing without choosing a persistence envelope. */
+export function prepareSessionUsageUpdate(params: SessionUsageUpdateParams) {
   const cfg = params.cfg ?? getRuntimeConfig();
   const modelSelection = params.runtimeModelSelection ?? {
     provider: params.providerUsed,
@@ -137,6 +122,32 @@ export async function persistSessionUsageUpdate(params: {
             model: params.modelUsed ?? entry?.model,
           }),
         );
+  return { update, estimateCost };
+}
+
+export async function persistSessionUsageUpdate(params: SessionUsageUpdateParams): Promise<
+  | {
+      storePath: string;
+      sessionKey: string;
+      entry: Pick<
+        InternalSessionEntry,
+        "sessionId" | "lifecycleRevision" | "liveModelSwitchPending"
+      >;
+    }
+  | undefined
+> {
+  const { agentId, storePath, sessionKey, sessionStore, authorize } = params;
+  if (!storePath || !sessionKey) {
+    return undefined;
+  }
+  const expectedSession = params.expectedSession
+    ? { ...params.expectedSession, lifecycleRevision: params.expectedSession.lifecycleRevision }
+    : undefined;
+  const prepared = prepareSessionUsageUpdate(params);
+  if (!prepared) {
+    return undefined;
+  }
+  const { update, estimateCost } = prepared;
   let committedEntry:
     | Pick<InternalSessionEntry, "sessionId" | "lifecycleRevision" | "liveModelSwitchPending">
     | undefined;
@@ -165,8 +176,8 @@ export async function persistSessionUsageUpdate(params: {
   };
   try {
     if (
-      !hasBilling ||
-      preserveUserFacingRunState ||
+      !update.hasBilling ||
+      update.preserveUserFacingRunState ||
       (params.providerUsed !== undefined && params.modelUsed !== undefined)
     ) {
       options.workerGuard.assertCurrent?.();
