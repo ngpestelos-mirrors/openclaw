@@ -4,7 +4,7 @@ import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { VERSION } from "../version.js";
 import { getConfigValueAtPath, unsetConfigValueAtPath } from "./config-paths.js";
 import { mutateConfigState } from "./config-state-mutation.js";
-import type { ConfigIoContext } from "./io.context.js";
+import type { NormalizedConfigIoDeps } from "./io.read.types.js";
 import { materializeModelPolicyAllowlist } from "./model-policy-allowlist-migration.js";
 import { resolveStateDir } from "./paths.js";
 import { cloneConfigWithResolutionFacts } from "./resolution-facts.js";
@@ -84,7 +84,10 @@ export function stampConfigWriteMetadata(
 
 /** Persist machine-owned metadata only after the matching config file commit succeeds. */
 export async function recordConfigWriteMetadata(
-  { deps, configPath }: Pick<ConfigIoContext, "deps" | "configPath">,
+  {
+    deps,
+    configPath,
+  }: { deps: Pick<NormalizedConfigIoDeps, "env" | "homedir">; configPath: string },
   assertCurrent?: () => void,
   now: string = new Date().toISOString(),
 ): Promise<void> {
