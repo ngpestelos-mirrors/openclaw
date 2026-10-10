@@ -137,33 +137,7 @@ async function syncPluginsForUpdateChannelWithLease(
     logger.warn?.(warning);
   }
 
-  if (params.channel === "dev") {
-    for (const [pluginId, record] of Object.entries(installs)) {
-      const bundledInfo = bundled.get(pluginId);
-      if (!bundledInfo || retainedLinks.has(pluginId) || params.skipIds?.has(pluginId)) {
-        continue;
-      }
-
-      loadHelpers.addPath(bundledInfo.localPath);
-
-      const alreadyBundled =
-        record.source === "path" && userPathsEqual(record.sourcePath, bundledInfo.localPath, env);
-      if (alreadyBundled) {
-        continue;
-      }
-
-      next = recordPluginInstall(next, {
-        pluginId,
-        source: "path",
-        sourcePath: bundledInfo.localPath,
-        installPath: bundledInfo.localPath,
-        spec: record.spec ?? bundledInfo.npmSpec,
-        version: record.version,
-      });
-      summary.switchedToBundled.push(pluginId);
-      changed = true;
-    }
-  } else {
+  if (params.channel !== "dev") {
     const bridges = params.externalizedBundledPluginBridges ?? [];
     for (const bridge of bridges) {
       const targetPluginId = getExternalizedBundledPluginTargetId(bridge);
@@ -422,41 +396,45 @@ async function syncPluginsForUpdateChannelWithLease(
       }
       changed = true;
     }
+  }
 
-    for (const [pluginId, record] of Object.entries(installs)) {
-      const bundledInfo = bundled.get(pluginId);
-      if (!bundledInfo || retainedLinks.has(pluginId) || params.skipIds?.has(pluginId)) {
-        continue;
-      }
-
+  for (const [pluginId, record] of Object.entries(installs)) {
+    const bundledInfo = bundled.get(pluginId);
+    if (!bundledInfo || retainedLinks.has(pluginId) || params.skipIds?.has(pluginId)) {
+      continue;
+    }
+    const alreadyBundled =
+      record.source === "path" && userPathsEqual(record.sourcePath, bundledInfo.localPath, env);
+    if (params.channel !== "dev") {
       if (record.source === "npm") {
         loadHelpers.removePath(bundledInfo.localPath);
         continue;
       }
-
-      if (record.source !== "path") {
+      if (!alreadyBundled) {
         continue;
       }
-      if (!userPathsEqual(record.sourcePath, bundledInfo.localPath, env)) {
-        continue;
-      }
-      // Keep explicit bundled installs on release channels. Replacing them with
-      // npm installs can reintroduce duplicate-id shadowing and packaging drift.
-      loadHelpers.addPath(bundledInfo.localPath);
-      if (userPathsEqual(record.installPath, bundledInfo.localPath, env)) {
-        continue;
-      }
-
-      next = recordPluginInstall(next, {
-        pluginId,
-        source: "path",
-        sourcePath: bundledInfo.localPath,
-        installPath: bundledInfo.localPath,
-        spec: record.spec ?? bundledInfo.npmSpec,
-        version: record.version,
-      });
-      changed = true;
     }
+    // Dev selects bundled sources; release channels only reconcile existing bundled installs.
+    loadHelpers.addPath(bundledInfo.localPath);
+    if (
+      params.channel === "dev"
+        ? alreadyBundled
+        : userPathsEqual(record.installPath, bundledInfo.localPath, env)
+    ) {
+      continue;
+    }
+    next = recordPluginInstall(next, {
+      pluginId,
+      source: "path",
+      sourcePath: bundledInfo.localPath,
+      installPath: bundledInfo.localPath,
+      spec: record.spec ?? bundledInfo.npmSpec,
+      version: record.version,
+    });
+    if (params.channel === "dev") {
+      summary.switchedToBundled.push(pluginId);
+    }
+    changed = true;
   }
 
   if (loadHelpers.changed) {
