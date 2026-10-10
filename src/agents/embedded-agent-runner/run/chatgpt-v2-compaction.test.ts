@@ -1,8 +1,10 @@
+import { createApiRegistry } from "@openclaw/ai";
 import { createOpenAIResponsesTransportStreamFn } from "@openclaw/ai/transports";
-import type { Model } from "@openclaw/llm-core";
+import type { Model, StreamFn } from "@openclaw/llm-core";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureAiTransportHost, getAiTransportHost } from "../../../../packages/ai/src/host.js";
+import { ensureCustomApiRegistered } from "../../custom-api-registry.js";
 import {
   createAssistant,
   createTestSession,
@@ -120,7 +122,11 @@ beforeEach(() => {
 });
 afterEach(() => configureAiTransportHost(initialHost));
 
-async function fixture(sessionManager = SessionManager.inMemory(), withHistory = true) {
+async function fixture(
+  sessionManager = SessionManager.inMemory(),
+  withHistory = true,
+  { asyncProvider = false } = {},
+) {
   if (withHistory) {
     sessionManager.appendMessage({ role: "user", content: "remember copper", timestamp: 1 });
     sessionManager.appendMessage(
@@ -152,15 +158,29 @@ async function fixture(sessionManager = SessionManager.inMemory(), withHistory =
   });
   session[agentSessionDeferThresholdCompaction] = true;
   const transport = createOpenAIResponsesTransportStreamFn();
-  session.agent.streamFn = (activeModel, context, options) => {
-    const transportOptions = {
+  const providerStream: StreamFn = (activeModel, context, options) =>
+    transport(activeModel, context, {
       ...options,
       apiKey: options?.apiKey ?? "test-api-key",
       authProfileId: "fixture-profile",
       onPayload: (payload: unknown) => ({ ...(payload as object), hook_marker: "normal-hook" }),
-    };
-    return transport(activeModel, context, transportOptions);
-  };
+    });
+  if (asyncProvider) {
+    // Plugin providers resolve credentials before dispatch; the registry adapter
+    // returns its stream first, as the native ChatGPT route does in production.
+    const registry = createApiRegistry();
+    ensureCustomApiRegistered(registry, model.api, async (activeModel, context, options) => {
+      await new Promise((resolve) => setImmediate(resolve));
+      return providerStream(activeModel, context, options);
+    });
+    const registered = registry.getApiProvider(model.api);
+    if (!registered) {
+      throw new Error("Expected the registered provider stream");
+    }
+    session.agent.streamFn = registered.stream as StreamFn;
+  } else {
+    session.agent.streamFn = providerStream;
+  }
   const events: AgentSessionEvent[] = [];
   session.subscribe((event) => {
     events.push(event);
@@ -274,6 +294,16 @@ describe("ChatGPT V2 at the embedded normal request boundary", () => {
     ).toBe(true);
     expect(realUserText(resumed)).toEqual([...realUserText(firstNormal), "after restart"]);
     expect(reopened.execute).not.toHaveBeenCalled();
+  });
+
+  it("compacts through a provider stream that dispatches after returning", async () => {
+    const f = await fixture(SessionManager.inMemory(), true, { asyncProvider: true });
+    await f.submit();
+    expect(f.onFallback).not.toHaveBeenCalled();
+    expect(requests.map((body) => body.input.at(-1)?.type)).toEqual([
+      "compaction_trigger",
+      "compaction",
+    ]);
   });
 
   it("falls back once on an invalid checkpoint without persisting or dispatching foreground work", async () => {

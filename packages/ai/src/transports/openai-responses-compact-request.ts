@@ -19,6 +19,7 @@ export type OpenAIResponsesCompactEndpointResult = {
 type ResponsesCompactRequestController = {
   claimed: boolean;
   mode: "endpoint" | "v2";
+  onClaimed(): void;
   resolve(result: OpenAIResponsesCompactEndpointResult): void;
   reject(error: unknown): void;
 };
@@ -31,6 +32,7 @@ export function claimResponsesCompactRequest(options: object | undefined) {
     : undefined;
   if (controller?.claimed === false) {
     controller.claimed = true;
+    controller.onClaimed();
     return controller;
   }
   return undefined;
@@ -51,15 +53,31 @@ export async function requestPreparedOpenAIResponsesCompaction(
     resolveResult = resolve;
     rejectResult = reject;
   });
-  const controller = { claimed: false, mode, resolve: resolveResult, reject: rejectResult };
+  let markClaimed!: () => void;
+  const claimed = new Promise<void>((resolve) => {
+    markClaimed = resolve;
+  });
+  const controller = {
+    claimed: false,
+    mode,
+    onClaimed: markClaimed,
+    resolve: resolveResult,
+    reject: rejectResult,
+  };
   Reflect.set(preparedOptions, COMPACT_REQUEST, controller);
   const stream = await Promise.resolve(
     streamFn(model, context, preparedOptions as Parameters<StreamFn>[2]),
   );
-  if (!controller.claimed) {
-    throw new Error("Prepared stream did not reach an OpenAI Responses transport");
-  }
   try {
+    // Session wrappers (auth, lifecycle runtime) may dispatch after returning their
+    // stream, so the transport can claim the request only once the stream starts.
+    const settled = stream.result().then(
+      () => "settled" as const,
+      () => "settled" as const,
+    );
+    if ((await Promise.race([claimed.then(() => "claimed" as const), settled])) !== "claimed") {
+      throw new Error("Prepared stream did not reach an OpenAI Responses transport");
+    }
     return await result;
   } finally {
     await stream.result().catch(() => undefined);

@@ -105,7 +105,8 @@ export function createChatGPTV2CompactionBoundary(params: {
     if (outgoing.route === "fits") {
       return undefined;
     }
-    const fallback = () => {
+    const fallback = (reason: string) => {
+      log.warn(`ChatGPT V2 compaction unavailable; falling back to client compaction: ${reason}`);
       const request: MidTurnPrecheckRequest = {
         ...outgoing,
         // V2 exhausted this boundary. Route to the existing durable client compactor.
@@ -114,12 +115,14 @@ export function createChatGPTV2CompactionBoundary(params: {
       params.onFallback(request);
       throw new MidTurnPrecheckSignal(request);
     };
-    if (
-      failed ||
-      params.session.agent.state.pendingToolCalls.size > 0 ||
-      outgoing.estimatedPromptTokens > (model.contextWindow ?? params.contextTokenBudget)
-    ) {
-      return fallback();
+    if (failed) {
+      return fallback("an earlier V2 attempt in this run failed");
+    }
+    if (params.session.agent.state.pendingToolCalls.size > 0) {
+      return fallback("tool calls are still pending");
+    }
+    if (outgoing.estimatedPromptTokens > (model.contextWindow ?? params.contextTokenBudget)) {
+      return fallback("the outgoing request exceeds the model context window");
     }
     const manager = params.session.sessionManager;
     const coveredLeaf = manager.getLeafId();
@@ -300,10 +303,7 @@ export function createChatGPTV2CompactionBoundary(params: {
         throw error;
       }
       failed = true;
-      log.warn(
-        `ChatGPT V2 compaction failed; falling back to client compaction: ${formatErrorMessage(error)}`,
-      );
-      return fallback();
+      return fallback(`request failed: ${formatErrorMessage(error)}`);
     }
   };
 }
