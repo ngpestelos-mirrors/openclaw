@@ -6,7 +6,9 @@ import {
 import { prepareUserProfileRoleAuthority } from "../../state/user-channel-identity-operations.js";
 import { resolvePersonalGitHubOwner } from "../../state/user-github-connections.js";
 import type { PersonalGitHubAction, PersonalGitHubActionV2 } from "../github-personal-oauth.js";
+import type { PersonalGitHubSessionActionV2 } from "../github-personal-publication.js";
 import { GitHubPublicationSessionChangedError } from "../github-publication-failure.js";
+import { prepareGitHubPublicationRequesterV2 } from "../github-publication-requester.js";
 import { hasCurrentGatewayOperatorAccess } from "../operator-access-policy.js";
 import {
   resolveOperatorRolePolicy,
@@ -19,6 +21,7 @@ import {
   resolveSessionMutationAuthorization,
 } from "../session-sharing.js";
 import type { GatewaySessionStoreDiscoveryCache } from "../session-utils-store-candidates.js";
+import { loadGatewaySessionEntryReadOnlyInWorker } from "../session-utils-store-worker.js";
 import { loadGatewaySessionEntryReadOnly } from "../session-utils.js";
 import { isGatewayClientProfilePending } from "./gateway-client-identity.js";
 import {
@@ -296,6 +299,18 @@ export function preparePersonalGitHubSessionAction(
   const action = preparePersonalGitHubAction(options, "operator.write");
   const targetDiscoveryCache: GatewaySessionStoreDiscoveryCache = new Map();
   const initial = loadGatewaySessionEntryReadOnly(sessionKey, { agentId, targetDiscoveryCache });
+  return bindPersonalGitHubSessionAction(options, action, initial, targetDiscoveryCache);
+}
+
+function bindPersonalGitHubSessionAction(
+  options: Request,
+  action: PersonalGitHubAction,
+  initial: Pick<
+    ReturnType<typeof loadGatewaySessionEntryReadOnly>,
+    "entry" | "canonicalKey" | "agentId"
+  >,
+  targetDiscoveryCache: GatewaySessionStoreDiscoveryCache,
+) {
   if (!initial.entry?.sessionId) {
     throw new Error("GitHub publication session was not found.");
   }
@@ -336,4 +351,41 @@ export function preparePersonalGitHubSessionAction(
     sessionKey: initial.canonicalKey,
     agentId: initial.agentId,
   };
+}
+
+/** Retain the authenticated policy owner for worker commits as well as immediate effects. */
+export async function preparePersonalGitHubSessionActionV2(
+  options: Request & Parameters<typeof prepareGitHubPublicationRequesterV2>[0],
+  target: SessionMutationTarget,
+): Promise<{ action: PersonalGitHubSessionActionV2; release: () => void }> {
+  const personal = await preparePersonalGitHubActionV2(options, "operator.write");
+  const initial = await loadGatewaySessionEntryReadOnlyInWorker({
+    cfg: options.context.getRuntimeConfig(),
+    key: target.sessionKey,
+    agentId: target.agentId,
+    assertActive: personal.assertCurrent,
+  });
+  const action = bindPersonalGitHubSessionAction(options, personal, initial, new Map());
+  const admitted = await prepareGitHubPublicationRequesterV2(options, action);
+  try {
+    action.assertCurrent();
+    return {
+      action: {
+        ...action,
+        version: 2,
+        signal: admitted.requester.signal,
+        prepareSource: (selector) => {
+          action.assertCurrent();
+          return admitted.requester.prepareSource({
+            ...selector,
+            personalOwnerProfileId: action.owner,
+          });
+        },
+      },
+      release: admitted.release,
+    };
+  } catch (error) {
+    admitted.release();
+    throw error;
+  }
 }
