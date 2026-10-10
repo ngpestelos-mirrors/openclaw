@@ -5,6 +5,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/state/user-profile-catalog-identity.read.test.ts",
   "src/talk/client-voice-session-store.test.ts",
   "src/trajectory/runtime-retention.sqlite.test.ts",
+  "src/trajectory/runtime-store.sqlite.test.ts",
   "src/state/openclaw-agent-db.checkonce.test.ts",
   "src/state/openclaw-state-db-checkonce.test.ts",
   "src/state/openclaw-state-db-schema-version.test.ts",
