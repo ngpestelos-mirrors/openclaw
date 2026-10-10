@@ -1,7 +1,8 @@
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestConfigSnapshot } from "../commands/test-runtime-config-helpers.js";
 import type { ConfigValidationIssue, OpenClawConfig } from "../config/types.openclaw.js";
+import * as lifecycle from "../plugins/plugin-lifecycle-lease.js";
 import { createPluginManifestRecordFixture } from "../plugins/plugin-metadata.test-support.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import type { PluginStatusReport } from "../plugins/status.js";
@@ -467,30 +468,49 @@ describe("plugins cli list", () => {
     });
   });
 
-  it("serializes registry rebuilds with other plugin lifecycle mutations", async () => {
+  it("captures current policy after queued registry rebuilds acquire the lifecycle lease", async () => {
     const firstEntered = createDeferredCore();
     const releaseFirst = createDeferredCore();
-    const entries: number[] = [];
+    const secondRequested = createDeferredCore();
+    let config: OpenClawConfig = {};
+    pluginCliConfigMock.mockImplementation(() => config);
+    let entries = 0;
     refreshPluginRegistryMock.mockImplementation(async () => {
-      const entry = entries.length + 1;
-      entries.push(entry);
-      if (entry === 1) {
+      if (++entries === 1) {
         firstEntered.resolve();
         await releaseFirst.promise;
       }
       return { plugins: [] };
     });
-
-    const first = runPluginsCommand(["plugins", "registry", "--refresh", "--json"]);
-    await firstEntered.promise;
-    const second = runPluginsCommand(["plugins", "registry", "--refresh", "--json"]);
-    await new Promise((resolve) => {
-      setTimeout(resolve, 50);
-    });
-    expect(entries).toEqual([1]);
-
-    releaseFirst.resolve();
-    await Promise.all([first, second]);
-    expect(entries).toEqual([1, 2]);
+    const withLease = lifecycle.withPluginLifecycleLease;
+    let requests = 0;
+    const observeLease: typeof withLease = (options, run) => {
+      if (++requests === 2) {
+        secondRequested.resolve();
+      }
+      return withLease(options, run);
+    };
+    const spy = vi.spyOn(lifecycle, "withPluginLifecycleLease").mockImplementation(observeLease);
+    try {
+      const first = runPluginsCommand(["plugins", "registry", "--refresh", "--json"]);
+      await firstEntered.promise;
+      const second = runPluginsCommand(["plugins", "registry", "--refresh", "--json"]);
+      await secondRequested.promise;
+      expect(entries).toBe(1);
+      config = { plugins: { enabled: false } };
+      releaseFirst.resolve();
+      await Promise.all([first, second]);
+      expect(refreshPluginRegistryMock).toHaveBeenNthCalledWith(1, {
+        config: {},
+        reason: "manual",
+      });
+      expect(refreshPluginRegistryMock).toHaveBeenNthCalledWith(2, {
+        config: { plugins: { enabled: false } },
+        reason: "manual",
+      });
+    } finally {
+      releaseFirst.resolve();
+      spy.mockRestore();
+    }
   });
 });

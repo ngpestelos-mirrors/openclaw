@@ -197,7 +197,10 @@ export function registerPluginsCli(program: Command) {
     .description("Inspect or rebuild the persisted plugin registry")
     .option("--json", "Print JSON")
     .option("--refresh", "Rebuild the persisted registry from current plugin manifests", false)
-    .action(pluginAction((runtime) => runtime.runPluginsRegistryCommand));
+    .action(async (opts: PluginRegistryOptions) => {
+      const { runPluginsRegistryCommand } = await import("./plugins-registry-command.js");
+      await runPluginsRegistryCommand(opts);
+    });
 
   plugins
     .command("doctor")
