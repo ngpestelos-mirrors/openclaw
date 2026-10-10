@@ -238,7 +238,7 @@ export async function acquirePreparedModelRuntimeLeaseFromOwners(
           configuredOwner.pluginGeneration !== options.pluginGeneration)
       ) {
         const borrowed = getPreparedModelRuntimeBorrowedSnapshot(options.pluginGeneration);
-        if (
+        const admittedRuntimeMatches =
           !configuredOwner.needsRefresh &&
           borrowed &&
           borrowed.metadataSnapshot === options.pluginGeneration.pluginMetadataSnapshot &&
@@ -251,11 +251,13 @@ export async function acquirePreparedModelRuntimeLeaseFromOwners(
           !input.readOnly &&
           !input.loadRuntimePlugins &&
           !input.skipCredentials &&
-          !input.env &&
+          !input.env;
+        // A turn may finish under its still-open parent lease after reload. Its historic
+        // generation must never publish over the configured owner for newly admitted work.
+        if (
+          admittedRuntimeMatches &&
           preparedPluginGenerationSupportsSelections(options.pluginGeneration, input)
         ) {
-          // A turn may finish under its still-open parent lease after reload. Its historic
-          // generation must never publish over the configured owner for newly admitted work.
           assertAdmission();
           return {
             snapshot: borrowed,
@@ -263,9 +265,14 @@ export async function acquirePreparedModelRuntimeLeaseFromOwners(
             [Symbol.asyncDispose]: retainPreparedPluginGeneration(options.pluginGeneration),
           };
         }
-        throw new PreparedModelRuntimePublicationSupersededError(
-          `prepared model runtime plugin generation was superseded for ${input.agentDir}`,
-        );
+        // Uncovered selections (for example a provider owner activated per run) derive their
+        // run-keyed owner from the admitted generation below, as they would without the newer
+        // publication. Only the configured key itself must never receive historic work.
+        if (!admittedRuntimeMatches || key === ownerKey(configuredOwner.input)) {
+          throw new PreparedModelRuntimePublicationSupersededError(
+            `prepared model runtime plugin generation was superseded for ${input.agentDir}`,
+          );
+        }
       }
     }
     if (
