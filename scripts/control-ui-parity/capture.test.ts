@@ -31,7 +31,7 @@ const suite = createControlUiE2eSuite({
   browserLaunchOptions: {
     // Apply static animation changes before the compositor samples the frame.
     args: [
-      "--disable-gpu",
+      "--enable-features=CDPScreenshotNewSurface",
       "--disable-threaded-animation",
       "--run-all-compositor-stages-before-draw",
     ],
@@ -126,7 +126,25 @@ suite.define(() => {
                   const response = await route.fetch({
                     url: new URL(`${url.pathname}${url.search}`, suite.server.baseUrl).href,
                   });
-                  await route.fulfill({ response });
+                  if (response.headers()["content-type"]?.includes("image/svg+xml")) {
+                    const body = await page.evaluate(
+                      (source) => {
+                        const document = new DOMParser().parseFromString(source, "image/svg+xml");
+                        // SVG image timelines are isolated from the page's Web Animations API.
+                        // Removing only SMIL instructions samples the asset's base presentation.
+                        for (const animation of document.querySelectorAll(
+                          "animate, animateMotion, animateTransform, set",
+                        )) {
+                          animation.remove();
+                        }
+                        return new XMLSerializer().serializeToString(document);
+                      },
+                      await response.text(),
+                    );
+                    await route.fulfill({ response, body });
+                  } else {
+                    await route.fulfill({ response });
+                  }
                 });
                 await page.clock.setFixedTime(fixedTime);
                 await page.addInitScript(() => {
