@@ -200,7 +200,7 @@ export function createSessionActor(params: {
         ) {
           throw new Error("Session actor admission belongs to another target");
         }
-        // The paired actor kernel supplies the full snapshot on its private admission port.
+        // SAFETY: The paired actor kernel supplies this full snapshot on its private admission port.
         const snapshot = structuredClone(facts.snapshot) as SessionActorHotState;
         authority.authorize(request.stage, structuredClone(snapshot), facts.publication);
         observe?.(native, request.stage, structuredClone(snapshot), facts.final === true);
@@ -328,7 +328,7 @@ export function createSessionActor(params: {
                   selected.commitSnapshot.version.sequence === captured.expected.sequence + 1 &&
                   isDeepStrictEqual(receipt.postimage, selected.commitSnapshot)
                 ) {
-                  // The paired private native receipt owns both the result type and commit outcome.
+                  // SAFETY: The paired native receipt owns the result type; the checks above match its command and postimage.
                   committed = structuredClone(evidence) as Extract<Outcome, { kind: "committed" }>;
                   if (!reply.ok) {
                     preserveFailure(reply.error);
