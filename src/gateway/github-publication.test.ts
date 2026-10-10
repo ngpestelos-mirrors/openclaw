@@ -52,8 +52,11 @@ describe("Gateway GitHub publication", () => {
   it.each(["receipt", "execution owner"])(
     "does not create publication state when reading an absent %s",
     (kind) => {
+      const database = openOpenClawStateDatabase();
+      // Older admitted stores can lack this additive, first-publication table.
+      database.db.exec("DROP TABLE github_publication_requests");
       const coordinator = createGitHubPublicationCoordinator({
-        placements: createWorkerSessionPlacementStore({ database: openOpenClawStateDatabase() }),
+        placements: createWorkerSessionPlacementStore({ database }),
       });
       expect(hasGitHubPublicationStore()).toBe(false);
       if (kind === "receipt") expect(coordinator.read("absent")).toBeUndefined();

@@ -176,9 +176,9 @@ Publication authority facts retain request digests and execution/source identiti
 without copying title, body, or next-action text. These receipts certify typed row
 changes, not complete cross-domain authority. Protecting session/placement sets,
 worktree provisioned-chunk presence, and pending/template records retain their
-own owners, existing acknowledgments, and validators. Personal
-GitHub credential selection and profile-merge publication remain a separate,
-incomplete receipt domain. Arbitrary raw SQL, trigger/cascade side effects, and
+own owners, existing acknowledgments, and validators. Personal GitHub credential
+selection and profile-merge publication use the separate connection receipt owner
+described below. Arbitrary raw SQL, trigger/cascade side effects, and
 unmanaged transactions still need complete write-set settlement. Existing sandbox
 dispatch, worktree cleanup, and publication source/effect guards remain in place;
 no receipt grants permission or excludes another source mutation through a
