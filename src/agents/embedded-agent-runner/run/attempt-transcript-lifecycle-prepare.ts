@@ -5,7 +5,8 @@ import {
   resolveSqliteReadScope,
   toDatabaseOptions,
 } from "../../../config/sessions/session-accessor.sqlite-scope.js";
-import { createDurableSessionActorFactory } from "../../../config/sessions/session-actor-durable.js";
+import { createSessionActorFactory } from "../../../config/sessions/session-actor-durable.js";
+import { captureNativeIncognitoSessionActorTarget } from "../../../config/sessions/session-actor-native-incognito.js";
 import { prepareCronRootSessionGeneration } from "../../../config/sessions/session-delivery-generation.js";
 import { assertSessionEntryCohortScope } from "../../../config/sessions/session-entry-cohort-scope.js";
 import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
@@ -174,7 +175,19 @@ export async function prepareEmbeddedAttemptTranscriptLifecycle(input: {
         ),
         database,
       };
-    } else if (!isIncognitoOpenClawAgentSqlitePath(database.path, database)) {
+    } else if (isIncognitoOpenClawAgentSqlitePath(database.path, database)) {
+      const target = captureNativeIncognitoSessionActorTarget({
+        database,
+        sessionKey: sessionTarget.sessionKey,
+      });
+      if (!target) {
+        throw new Error("Attempt lost its captured native incognito owner");
+      }
+      ownedTranscriptWriteContext.sessionActor = {
+        actor: await createSessionActorFactory(database).acquire(target, lifetime),
+        database,
+      };
+    } else {
       let identity = readDatabasePathIdentitySync(database.path);
       if (identity.key.startsWith("path:")) {
         await prepareSessionEntryReplacementDatabase(database, assertCurrent);
@@ -182,7 +195,7 @@ export async function prepareEmbeddedAttemptTranscriptLifecycle(input: {
         identity = readDatabasePathIdentitySync(database.path);
       }
       ownedTranscriptWriteContext.sessionActor = {
-        actor: await createDurableSessionActorFactory(database).acquire(
+        actor: await createSessionActorFactory(database).acquire(
           {
             database: {
               kind: "file",
@@ -197,7 +210,6 @@ export async function prepareEmbeddedAttemptTranscriptLifecycle(input: {
         database,
       };
     }
-    // The pre-activation incognito native owner remains its SDK compatibility adapter.
     externalAbortController.arm();
     await externalAbortController.throwIfFiredAfterPrepCleanup();
     preparedTarget?.assertCurrent();
