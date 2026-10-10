@@ -196,6 +196,43 @@ suite.define(() => {
                     ...(scene.scrollTo ? { scrollTo: page.locator(scene.scrollTo) } : {}),
                   },
                 );
+                if (
+                  ["route-custodian", "route-updates", "chat-long-content", "route-apps"].includes(
+                    scene.id,
+                  )
+                ) {
+                  console.log(
+                    "PARITY_DIAGNOSTIC",
+                    id,
+                    await page.evaluate(() => {
+                      const roots: Array<Document | ShadowRoot> = [document];
+                      for (const root of roots) {
+                        for (const element of root.querySelectorAll("*")) {
+                          if (element.shadowRoot) roots.push(element.shadowRoot);
+                        }
+                      }
+                      return {
+                        now: performance.now(),
+                        elements: roots
+                          .flatMap((root) =>
+                            Array.from(
+                              root.querySelectorAll(
+                                "canvas, [data-message-text^='Message 39:'], .apps-card",
+                              ),
+                            ),
+                          )
+                          .map((element) => ({
+                            tag: element.tagName,
+                            class: element.className,
+                            bounds: element.getBoundingClientRect().toJSON(),
+                            transform: getComputedStyle(element).transform,
+                            canvas:
+                              element instanceof HTMLCanvasElement ? element.toDataURL() : null,
+                          })),
+                      };
+                    }),
+                  );
+                }
                 const file = `${id}.png`;
                 await writeFile(path.join(directory, file), frame.png);
                 capture.shots.push({
