@@ -75,18 +75,24 @@ function readReleaseInventory(db: DatabaseSync, record: ImmutableInstallRecord):
     db,
     queries(db)
       .selectFrom("immutable_release_generations")
-      .select([
-        sql<string>`CASE WHEN length(CAST(sha AS BLOB)) = 40 THEN sha END`.as("sha"),
-        sql<string>`CASE WHEN length(CAST(path AS BLOB)) <= 4096 THEN path END`.as("path"),
-        sql<string>`CASE WHEN length(CAST(identity AS BLOB)) <= 256 THEN identity END`.as(
-          "identity",
+      .select((eb) =>
+        (
+          [
+            ["sha", "=", 40],
+            ["path", "<=", 4096],
+            ["identity", "<=", 256],
+            ["build_digest", "=", 64],
+          ] as const
+        ).map(([column, comparison, maxBytes]) =>
+          eb
+            .case()
+            .when(eb.fn<number>("length", [eb.cast(column, "blob")]), comparison, maxBytes)
+            .then(eb.ref(column))
+            .end()
+            .as(column),
         ),
-        sql<string>`CASE WHEN length(CAST(build_digest AS BLOB)) = 64 THEN build_digest END`.as(
-          "build_digest",
-        ),
-        "published_revision",
-        "verified_revision",
-      ])
+      )
+      .select(["published_revision", "verified_revision"])
       .orderBy("published_revision")
       .orderBy("sha")
       .limit(MAX_RELEASE_ROWS + 1),
