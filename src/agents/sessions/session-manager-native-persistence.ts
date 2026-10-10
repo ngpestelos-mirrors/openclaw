@@ -31,8 +31,12 @@ import type { SessionEntry } from "./session-manager-types.js";
 
 /** Released synchronous SDK methods keep their native transaction and publication contract. */
 export class SessionManagerNativePersistence extends SessionManagerCore {
-  protected initialTranscriptWriter: InitialSessionTranscriptWriter | undefined;
+  #initialWriter: InitialSessionTranscriptWriter | undefined;
   #navigationEpoch = 0;
+
+  protected get initialTranscriptWriter(): InitialSessionTranscriptWriter | undefined {
+    return this.#initialWriter;
+  }
 
   protected recordTranscriptNavigationChange(): void {
     this.#navigationEpoch++;
@@ -54,7 +58,7 @@ export class SessionManagerNativePersistence extends SessionManagerCore {
   protected retainTranscriptWriter(): void {
     const sessionTarget = this.persistenceTarget;
     if (sessionTarget && getOwnedSessionTranscriptWriterFence({ sessionTarget })) {
-      this.initialTranscriptWriter ??= getOwnedSessionTranscriptInitialWriter({ sessionTarget });
+      this.#initialWriter ??= getOwnedSessionTranscriptInitialWriter({ sessionTarget });
     }
   }
 
@@ -65,8 +69,8 @@ export class SessionManagerNativePersistence extends SessionManagerCore {
     }
     const scope = this.persistenceTarget;
     const inheritedWriter = getOwnedSessionTranscriptInitialWriter({ sessionTarget: scope });
-    this.initialTranscriptWriter ??= inheritedWriter;
-    const initialWriter = this.initialTranscriptWriter;
+    this.#initialWriter ??= inheritedWriter;
+    const initialWriter = this.#initialWriter;
     if (!initialWriter) {
       return;
     }
@@ -112,7 +116,7 @@ export class SessionManagerNativePersistence extends SessionManagerCore {
     }
     this.assertTranscriptWriteActive();
     const scope = this.persistenceTarget;
-    const initialWriter = this.initialTranscriptWriter;
+    const initialWriter = this.#initialWriter;
     const persistCompaction = getSessionCompactionPersistence(this);
     const sessionId = this.sessionId;
     const isCurrentView = () =>
