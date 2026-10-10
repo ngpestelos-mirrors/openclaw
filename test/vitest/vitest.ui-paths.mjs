@@ -8,15 +8,29 @@ const inventories = new Map();
 
 function sourceInventory(cwd) {
   if (!inventories.has(cwd)) {
-    // Configurations and CI plans share one tracked index snapshot per process.
-    // Reading the index avoids probing every owner or walking test directories.
-    const result = spawnSync("git", ["ls-files", "-z"], {
-      cwd,
-      encoding: "utf8",
-      maxBuffer: 16 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    inventories.set(cwd, result.status === 0 ? new Set(result.stdout.split("\0")) : null);
+    // Share working-tree facts without probing each inventoried owner. Include
+    // untracked destinations and remove indexed paths deleted by unstaged renames.
+    const result = spawnSync(
+      "git",
+      ["ls-files", "--cached", "--others", "--deleted", "--exclude-standard", "-t", "-z"],
+      {
+        cwd,
+        encoding: "utf8",
+        maxBuffer: 16 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
+    let files = null;
+    if (result.status === 0) {
+      const entries = result.stdout.split("\0").filter(Boolean);
+      files = new Set(entries.map((entry) => entry.slice(2)));
+      for (const entry of entries) {
+        if (entry.startsWith("R ")) {
+          files.delete(entry.slice(2));
+        }
+      }
+    }
+    inventories.set(cwd, files);
   }
   return inventories.get(cwd);
 }

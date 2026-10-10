@@ -1,12 +1,13 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   resolveUiE2ePrTestSelection,
   hasSharedUiE2eInput,
 } from "../../scripts/lib/ci-node-test-plan.mts";
 import { listTrackedTestFiles } from "../../scripts/lib/list-test-files.mts";
-import { normalizeWebkitTestSource } from "../../ui/test/webkit-expected-failures.ts";
 import uiNodeConfig from "../../ui/vitest.node.config.ts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { createNestedGitEnv } from "../helpers/temp-repo.js";
@@ -39,12 +40,41 @@ function fixture(files: Record<string, string>) {
 }
 
 describe("TSX discovery", () => {
-  it("keeps WebKit failure attribution stable across TSX renames", () => {
-    expect(normalizeWebkitTestSource("/ui/src/view.test.tsx")).toBe("/ui/src/view.test.ts");
-    expect(normalizeWebkitTestSource("at C:\\ui\\src\\view.test.tsx:42:3")).toBe(
-      "at C:/ui/src/view.test.ts:42:3",
+  it("retains isolated execution ownership for an unstaged TSX rename", () => {
+    const original = "ui/src/app/bootstrap.test.ts";
+    const renamed = `${original}x`;
+    const cwd = fixture({
+      [original]: "export {};\n",
+      "test/vitest/vitest.ui-paths.mjs": readFileSync(
+        new URL("../vitest/vitest.ui-paths.mjs", import.meta.url),
+        "utf8",
+      ),
+      "test/vitest/vitest.ui-isolated-paths.mjs": readFileSync(
+        new URL("../vitest/vitest.ui-isolated-paths.mjs", import.meta.url),
+        "utf8",
+      ),
+    });
+    const options = { cwd, env: createNestedGitEnv(), encoding: "utf8" } as const;
+    execFileSync("git", ["init", "-q"], options);
+    execFileSync("git", ["add", "--", original], options);
+    renameSync(path.join(cwd, original), path.join(cwd, renamed));
+    const moduleUrl = pathToFileURL(
+      path.join(cwd, "test/vitest/vitest.ui-isolated-paths.mjs"),
+    ).href;
+    const isolated: string[] = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          `const { uiIsolatedTestFiles } = await import(${JSON.stringify(moduleUrl)});\n` +
+            "console.log(JSON.stringify(uiIsolatedTestFiles));",
+        ],
+        options,
+      ),
     );
-    expect(normalizeWebkitTestSource("/ui/src/view.test.tsxyz")).toBe("/ui/src/view.test.tsxyz");
+    expect(isolated).toContain(renamed);
+    expect(isolated).not.toContain(original);
   });
 
   it("preserves Git pathspec discovery for PR proof planning", () => {
@@ -265,4 +295,3 @@ describe("TSX discovery", () => {
     expect(hasSharedUiE2eInput(["ui/src/app/router-outlet.test.tsx"])).toBe(false);
   });
 });
-import { execFileSync } from "node:child_process";

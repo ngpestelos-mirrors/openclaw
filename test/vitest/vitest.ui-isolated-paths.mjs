@@ -1,3 +1,5 @@
+import { resolveUiTypeScriptPath } from "./vitest.ui-paths.mjs";
+
 // The shared UI runner reuses its module graph across fresh jsdom registries.
 // Tests in this list depend on module singletons or custom-element registration
 // matching the current registry, so they need a fresh graph in the isolated lane.
@@ -50,4 +52,3 @@ const uiIsolatedTestFileSet = new Set(uiIsolatedTestFiles);
 export function isUiIsolatedTestFile(value) {
   return uiIsolatedTestFileSet.has(value.replaceAll("\\", "/"));
 }
-import { resolveUiTypeScriptPath } from "./vitest.ui-paths.mjs";
