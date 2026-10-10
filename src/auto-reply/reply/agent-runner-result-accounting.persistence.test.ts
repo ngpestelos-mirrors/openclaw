@@ -67,18 +67,25 @@ it.each(["before-accounting", "during-payload-preparation"] as const)(
   "consolidates only the model switch present %s",
   async (when) => {
     const fixture = await createFixture();
+    fixture.context.execution.result.payloads = [
+      { text: "done", mediaUrl: "https://example.invalid/final.png" },
+    ];
+    let payloadPrepared = false;
+    fixture.context.replyMediaContext.normalizePayload = async (payload) => {
+      payloadPrepared = true;
+      if (when === "during-payload-preparation") {
+        await fixture.replace({ ...fixture.read()!, liveModelSwitchPending: true });
+      }
+      return payload;
+    };
     if (when === "before-accounting") {
       await fixture.replace({
         ...fixture.context.activeSessionEntry!,
         liveModelSwitchPending: true,
       });
-    } else {
-      fixture.context.replyMediaContext.normalizePayload = async (payload) => {
-        await fixture.replace({ ...fixture.read()!, liveModelSwitchPending: true });
-        return payload;
-      };
     }
     await finalizeReplyAgentRun(fixture.context);
+    expect(payloadPrepared).toBe(true);
     expect(fixture.read()?.liveModelSwitchPending).toBe(
       when === "during-payload-preparation" ? true : undefined,
     );
@@ -92,13 +99,18 @@ it.each([
   "preserves a newer $name switch selected during payload preparation",
   async ({ authProfileOverride, authProfileOverrideSource }) => {
     const fixture = await createFixture();
+    fixture.context.execution.result.payloads = [
+      { text: "done", mediaUrl: "https://example.invalid/final.png" },
+    ];
     await fixture.replace({
       ...fixture.context.activeSessionEntry!,
       authProfileOverride: "openai:old",
       authProfileOverrideSource: "auto",
       liveModelSwitchPending: true,
     });
+    let payloadPrepared = false;
     fixture.context.replyMediaContext.normalizePayload = async (payload) => {
+      payloadPrepared = true;
       await fixture.replace({
         ...fixture.read()!,
         authProfileOverride,
@@ -110,6 +122,7 @@ it.each([
 
     await finalizeReplyAgentRun(fixture.context);
 
+    expect(payloadPrepared).toBe(true);
     expect(fixture.read()).toMatchObject({
       modelProvider: diagnostic.provider,
       model: diagnostic.model,
@@ -133,20 +146,21 @@ it("publishes a prepared final only after its worker completion commits without 
         /\b(?:BEGIN|COMMIT|ROLLBACK|INSERT|UPDATE|DELETE)\b/i.test(query),
       ),
     ).toEqual([]);
+    const final = Array.isArray(result) ? result[0] : result;
+    const completion = final && getReplyPayloadMetadata(final)?.pendingFinalDeliveryCompletion;
+    expect(completion).toMatchObject({
+      sessionId: fixture.sessionId,
+      sessionKey: fixture.context.sessionKey,
+      storePath,
+    });
+    expect(fixture.read()?.pendingFinalDelivery).toMatchObject({
+      intentId: completion?.intentId,
+      deliveries: [{ id: completion?.deliveryId, state: "prepared" }],
+      text: "durable final",
+    });
   } finally {
     sql.restore();
   }
-  const completion = getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion;
-  expect(completion).toMatchObject({
-    sessionId: fixture.sessionId,
-    sessionKey: fixture.context.sessionKey,
-    storePath,
-  });
-  expect(fixture.read()?.pendingFinalDelivery).toMatchObject({
-    intentId: completion?.intentId,
-    deliveries: [{ id: completion?.deliveryId, state: "prepared" }],
-    text: "durable final",
-  });
 });
 
 function observeCompletionCommands(
@@ -266,22 +280,22 @@ it.each(["usage-only", "with-final-custody"] as const)(
     };
     fixture.context.execution.result.meta.agentMeta = meta;
     const before = fixture.read();
-    const observer = observeCompletionCommands({
-      beforeCommit() {
-        throw new Error("synthetic completion refusal");
-      },
+    const beforeCommit = vi.fn(() => {
+      throw new Error("synthetic completion refusal");
     });
+    const observer = observeCompletionCommands({ beforeCommit });
     try {
       if (kind === "usage-only") {
         await expect(fixture.account("ordinary", meta)).resolves.toBeUndefined();
       } else {
         await expect(finalizeReplyAgentRun(fixture.context)).rejects.toThrow(
-          "synthetic completion refusal",
+          "SQLite transaction admission was refused",
         );
       }
       expect(
         observer.commands.filter((command) => command === "session.actor.completeTurn"),
       ).toHaveLength(1);
+      expect(beforeCommit).toHaveBeenCalledOnce();
       expect(fixture.read()).toEqual(before);
     } finally {
       observer.restore();
@@ -292,15 +306,18 @@ it.each(["usage-only", "with-final-custody"] as const)(
 it("rechecks the live reply operation at the final commit boundary", async () => {
   const fixture = await createFixture();
   const before = fixture.read();
-  const observer = observeCompletionCommands({
-    beforeCommit() {
-      fixture.context.replyOperation.complete();
-    },
+  const beforeCommit = vi.fn(() => {
+    fixture.context.replyOperation.complete();
   });
+  const observer = observeCompletionCommands({ beforeCommit });
   try {
     await expect(finalizeReplyAgentRun(fixture.context)).rejects.toThrow(
-      "Terminal accounting lost its reply operation",
+      "SQLite transaction admission was refused",
     );
+    expect(
+      observer.commands.filter((command) => command === "session.actor.completeTurn"),
+    ).toHaveLength(1);
+    expect(beforeCommit).toHaveBeenCalledOnce();
     expect(fixture.read()).toEqual(before);
   } finally {
     observer.restore();

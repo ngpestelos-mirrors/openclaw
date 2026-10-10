@@ -19,8 +19,6 @@ import type {
 import type {
   SessionAccessScope,
   SessionEntrySummary,
-  SessionTranscriptInstance,
-  SessionTranscriptInstanceListOptions,
   SessionEntryTargetPatchScope,
   SessionTranscriptReadScope,
 } from "./session-accessor.sqlite-contract.js";
@@ -40,7 +38,6 @@ import {
   readSessionEntrySelectionSnapshot,
 } from "./session-accessor.sqlite-entry-store.js";
 import { resolveSessionEntry } from "./session-accessor.sqlite-exact-read.js";
-import { listTranscriptInstancesFromDatabase } from "./session-accessor.sqlite-history.js";
 import { prepareSessionIdentityPublication } from "./session-accessor.sqlite-identity.js";
 import { kickSessionEntryMaintenanceAfterWrite } from "./session-accessor.sqlite-maintenance-kick.js";
 import { createFallbackSessionEntry } from "./session-accessor.sqlite-normalize.js";
@@ -56,8 +53,6 @@ import type { SessionEntryListScope, SessionEntryReadScope } from "./session-acc
 import {
   assertCanonicalSessionKeyWrite,
   assertCanonicalSqliteSessionKeysCurrent,
-  readWithCanonicalSessionReaderContinuation,
-  type CanonicalSessionReaderContinuation,
 } from "./session-canonical-key.js";
 import { readSessionEntryPatchPredicate } from "./session-entry-patch-guard.js";
 import {
@@ -164,37 +159,6 @@ export function withSessionEntryReadOnlyScope<T>(
   } finally {
     reader.close();
   }
-}
-
-/** Lists transcript-bearing SQLite sessions, including retained rows from session-id rotation. */
-export function listSessionTranscriptInstances(
-  scope: Omit<SessionEntryListScope, "sessionKeys"> = {},
-  options: SessionTranscriptInstanceListOptions = {},
-  continuation?: CanonicalSessionReaderContinuation,
-): SessionTranscriptInstance[] {
-  const resolved = resolveSqliteScope({ ...scope, sessionKey: "" });
-  const result = withOpenClawAgentDatabaseReadOnly(
-    (database) =>
-      readWithCanonicalSessionReaderContinuation(database, continuation, () => {
-        const currentEntries =
-          options.sessionId !== undefined || options.sessionIds !== undefined
-            ? undefined
-            : new Map(
-                listSqliteSessionEntriesFromDatabase(database, resolved, {
-                  ...scope,
-                  clone: false,
-                }).map(({ sessionKey, entry }) => [sessionKey, entry]),
-              );
-        return listTranscriptInstancesFromDatabase({
-          currentEntries,
-          database,
-          options,
-          entryProjection: scope.projection,
-        });
-      }),
-    toDatabaseOptions(resolved),
-  );
-  return result.found ? result.value : [];
 }
 
 /** Reads a session activity timestamp from the additive SQLite session store. */
