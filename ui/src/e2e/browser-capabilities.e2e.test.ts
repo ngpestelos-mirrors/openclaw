@@ -81,13 +81,27 @@ enabled.define(() => {
         expect(await gateway.getRequests()).toEqual([]);
         const open = page.getByRole("button", { name: "Open in browser", exact: true });
         expect(await open.isVisible()).toBe(native);
-        const frame = await takeControlUiScreenshotFrame(page, page.locator("main"), [heading], {
-          animations: "disabled",
-        });
-        await writeFile(
-          path.join(enabled.artifactDir, native ? "native-fallback.png" : "mobile-fallback.png"),
-          frame.png,
-        );
+        const viewports = native
+          ? [{ name: "macos", width: 1180, height: 844 }]
+          : [
+              { name: "desktop", width: 1180, height: 844 },
+              { name: "mobile", width: 390, height: 844 },
+            ];
+        for (const viewport of viewports) {
+          for (const colorScheme of ["light", "dark"] as const) {
+            await page.emulateMedia({ colorScheme });
+            const frame = await takeControlUiScreenshotFrame(
+              page,
+              page.locator("main"),
+              [heading],
+              { animations: "disabled", viewport },
+            );
+            await writeFile(
+              path.join(enabled.artifactDir, `unsupported-${viewport.name}-${colorScheme}.png`),
+              frame.png,
+            );
+          }
+        }
         if (native) {
           await page.evaluate(() => {
             Object.defineProperty(URL, "parse", { configurable: true, value: undefined });
@@ -127,7 +141,7 @@ enabled.define(() => {
 const dormant = createControlUiE2eSuite({ name: "Control UI browser capability gate dormant" });
 dormant.define(() => {
   it("keeps today's application available on older browsers until cutover", async () => {
-    await dormant.withPage({ serviceWorkers: "block" }, async ({ page }) => {
+    await dormant.withPage({ serviceWorkers: "block", colorScheme: "light" }, async ({ page }) => {
       await setBrowserFeatures(page, false);
       await installMockGateway(page);
       await page.goto(`${dormant.server.baseUrl}chat`);
