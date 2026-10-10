@@ -213,7 +213,7 @@ export function htmlToMarkdown(html: string): { text: string; title?: string } {
     if (kind !== "title") {
       closeThroughContext(stack, "anchor", state, kind !== "anchor");
     }
-    const context: RenderContext =
+    const context: Exclude<RenderContext, { kind: "root" }> =
       kind === "anchor"
         ? { kind, href: readAnchorHref(token.raw), hasText: false, parts: [] }
         : kind === "heading"
