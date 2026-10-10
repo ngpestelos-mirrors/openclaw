@@ -44,7 +44,9 @@ export function decodeMetadataAppendEvent(
     return event;
   }
   const header = findSessionTranscriptHeader([event]);
-  if (header) return header;
+  if (header) {
+    return header;
+  }
   const leaf = parseOpaqueLeafEntry(event);
   if (leaf && isRecord(event) && typeof event.timestamp === "string") {
     return { ...leaf, type: "leaf", timestamp: event.timestamp };
@@ -57,9 +59,13 @@ export function prepareSessionMetadataAppend(
   input: SessionMetadataOperations["session.metadata.append"]["input"],
 ): PreparedSessionManagerAppend {
   const event = decodeMetadataAppendEvent(input);
-  if (event.type !== "message") return { event };
+  if (event.type !== "message") {
+    return { event };
+  }
   const { message } = input;
-  if (!message) throw new Error("Session message append requires prepared storage bytes");
+  if (!message) {
+    throw new Error("Session message append requires prepared storage bytes");
+  }
   const { message: _message, ...envelope } = event;
   const eventJson = `${JSON.stringify(envelope).slice(0, -1)},"message":${message.messageJson}}`;
   return {
@@ -90,7 +96,9 @@ export function applySessionMetadataAppendInTransaction(
   const { message } = input;
   if (event.type === "message" && message) {
     const prepared = preparation.message;
-    if (!prepared) throw new Error("Session message append lost its prepared storage bytes");
+    if (!prepared) {
+      throw new Error("Session message append lost its prepared storage bytes");
+    }
     const options = { ...input.options };
     if (message.validateTurn) {
       if (
@@ -190,12 +198,18 @@ export function sessionMetadataAppendNeedsReload(
   value: SessionMetadataOperations["session.metadata.append"]["output"],
 ): boolean {
   const event = decodeMetadataAppendEvent(input);
-  if (event.type === "session" || !input.view || !value.snapshot.ok) return false;
+  if (event.type === "session" || !input.view || !value.snapshot.ok) {
+    return false;
+  }
   const committed = value.snapshot.value;
   const result = committed.result;
-  if (!result) return false;
+  if (!result) {
+    return false;
+  }
   const adoptedMessage = "messageId" in result && result.messageId !== event.id;
-  if (!result.appended && !adoptedMessage) return false;
+  if (!result.appended && !adoptedMessage) {
+    return false;
+  }
   const version = input.view.loadedVersion;
   const parent = "effectiveParentId" in result ? result.effectiveParentId : undefined;
   return (

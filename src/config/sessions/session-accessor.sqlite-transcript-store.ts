@@ -184,7 +184,9 @@ export function appendTranscriptEventInTransaction(
         .where("session_id", "=", scope.sessionId),
     );
     cursor.updateWindow(createdAt);
-    if (actor?.window) actor.window.updated_at = createdAt;
+    if (actor?.window) {
+      actor.window.updated_at = createdAt;
+    }
   } else {
     ensureTranscriptSessionRoot(database, scope, createdAt, {
       allowStoredAlias: options.allowStoredAlias === true,
@@ -249,11 +251,12 @@ export function appendTranscriptEventInTransaction(
           .where("event_id", "=", idempotencyKeyOwner.eventId),
       );
       const previous = actor?.transcript.identities.get(idempotencyKeyOwner.eventId);
-      if (previous)
+      if (previous) {
         actor?.transcript.identities.set(previous.event_id, {
           ...previous,
           message_idempotency_key: null,
         });
+      }
     }
     identity.messageIdempotencyKey =
       idempotencyKeyOwner && options.idempotencyKeyMode !== "relocate-owner"

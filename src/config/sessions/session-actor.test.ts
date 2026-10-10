@@ -33,7 +33,9 @@ it("acquires the exact cold durable execution owner and installs a real worker c
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
     const fixture = createSessionCompoundWorkerFixture();
     const identity = readOpenClawAgentDatabaseIdentity(fixture.database);
-    if (typeof identity.identity !== "string") throw new Error("Fixture requires durable storage");
+    if (typeof identity.identity !== "string") {
+      throw new Error("Fixture requires durable storage");
+    }
     const factory = createDurableSessionActorFactory({
       agentId: "main",
       path: fixture.database.path,
@@ -92,7 +94,9 @@ async function withActor(
     const fixture = createSessionCompoundWorkerFixture();
     const database = fixture.database;
     const identity = readOpenClawAgentDatabaseIdentity(database);
-    if (typeof identity.identity !== "string") throw new Error("Fixture requires durable storage");
+    if (typeof identity.identity !== "string") {
+      throw new Error("Fixture requires durable storage");
+    }
     const target = {
       sessionKey: fixture.scope.sessionKey,
       database: {
@@ -139,7 +143,9 @@ async function withActor(
           return operation({
             captureGeneration: () => ({
               assertCurrent() {
-                if (held !== epoch) throw new Error("Worker generation retired");
+                if (held !== epoch) {
+                  throw new Error("Worker generation retired");
+                }
               },
             }),
             async execute<Key extends keyof SessionActorOperations>(command: {
@@ -191,10 +197,15 @@ async function withActor(
                       : { kind: "completed" },
                   );
                 };
-                if (fault.drain) void fault.drain.then(finish);
-                else finish();
+                if (fault.drain) {
+                  void fault.drain.then(finish);
+                } else {
+                  finish();
+                }
                 fault.onExecuted?.();
-                if (fault.reply !== "normal") throw new Error("Ordinary reply lost");
+                if (fault.reply !== "normal") {
+                  throw new Error("Ordinary reply lost");
+                }
                 // The paired kernel dispatch preserves the operation's result contract.
                 return value as SessionActorOperations[Key]["output"];
               } finally {
@@ -287,7 +298,9 @@ it("installs the full append receipt and releases FIFO before retained follow-up
       authority,
     );
     expect(result.kind).toBe("committed");
-    if (result.kind !== "committed") throw new Error("Expected committed append");
+    if (result.kind !== "committed") {
+      throw new Error("Expected committed append");
+    }
     expect(result.receipt.commandId).toBe("model-event");
     const installed = actor.snapshot(authority);
     expect(installed).toEqual(result.receipt.postimage);
@@ -393,7 +406,9 @@ it("retains rollback state and fences unknown commits until an explicit read", a
       {
         assertCurrent() {},
         authorize(stage) {
-          if (stage === "commit") throw new Error("Authority revoked");
+          if (stage === "commit") {
+            throw new Error("Authority revoked");
+          }
         },
       },
     );

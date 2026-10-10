@@ -142,8 +142,9 @@ function readActiveTranscriptEntryFacts(
       state.needsRebuild ||
       state.hasUnclassifiedEvents ||
       state.indexedSeq !== actor.hot.transcript.version.rawSeq
-    )
+    ) {
       return undefined;
+    }
     const identity = actor.transcript.identities.get(params.entryId);
     const active = identity && actor.transcript.active.get(identity.seq);
     return identity && active

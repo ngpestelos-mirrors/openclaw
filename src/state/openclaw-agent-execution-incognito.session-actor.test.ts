@@ -157,10 +157,14 @@ it("rechecks the factory caller lifetime before commit and disclosure", async ()
     { database: execution.identity, sessionKey },
     {
       assertCurrent() {
-        if (!current) throw new Error("caller current revoked");
+        if (!current) {
+          throw new Error("caller current revoked");
+        }
       },
       assertReadable() {
-        if (!readable) throw new Error("caller disclosure revoked");
+        if (!readable) {
+          throw new Error("caller disclosure revoked");
+        }
       },
     },
   );
@@ -176,7 +180,9 @@ it("rechecks the factory caller lifetime before commit and disclosure", async ()
       {
         assertCurrent() {},
         authorize(stage) {
-          if (stage === "commit") current = false;
+          if (stage === "commit") {
+            current = false;
+          }
         },
       },
     );
@@ -242,7 +248,9 @@ it.each(["metadata", "event"] as const)(
           authority,
         );
         expect(result.kind).toBe("committed");
-        if (result.kind !== "committed") throw new Error("Expected committed metadata append");
+        if (result.kind !== "committed") {
+          throw new Error("Expected committed metadata append");
+        }
         expect(result.failure).toBeUndefined();
         expect(result.value).toMatchObject(
           form === "metadata"
@@ -260,9 +268,11 @@ it.each(["metadata", "event"] as const)(
         }
       }
       const ready = await actor.read(authority);
+      expect(ready.transcript.anchorsState).toBe("resident");
+      // Model-selection metadata changes the branch but contributes no model messages.
       expect(ready.transcript.modelContext).toEqual({
         kind: "resident",
-        entries: [{ rawSeq: ready.transcript.watermark.maxSeq, eventId: "replacement-model" }],
+        entries: [],
       });
     } finally {
       await actor.release();

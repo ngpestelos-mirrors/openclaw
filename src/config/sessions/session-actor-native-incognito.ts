@@ -57,7 +57,9 @@ export function captureNativeIncognitoSessionActorTarget(params: {
     return undefined;
   }
   const database = getOpenClawAgentDatabaseIfOpen(params.database);
-  if (!database) return undefined;
+  if (!database) {
+    return undefined;
+  }
   const identity = readOpenClawAgentDatabaseIdentity(database);
   if (typeof identity.identity !== "symbol") {
     throw new Error("Native incognito session requires its memory database");
@@ -82,7 +84,9 @@ export function captureNativeIncognitoSessionActorSources(params: {
 }): SessionSourcePredicate[] {
   const database = getOpenClawAgentDatabaseIfOpen(params.database);
   const expected = params.target.database;
-  if (!database) throw new Error("Native incognito source owner is unavailable");
+  if (!database) {
+    throw new Error("Native incognito source owner is unavailable");
+  }
   const identity = readOpenClawAgentDatabaseIdentity(database);
   if (
     typeof identity.identity !== "symbol" ||
@@ -112,7 +116,9 @@ export function captureNativeIncognitoSessionActorSources(params: {
 function createNativeBackend(database: OpenClawAgentDatabase, options: Options) {
   let request: Request | undefined;
   const current = () => {
-    if (!request) throw new Error("Native session actor has no executing request");
+    if (!request) {
+      throw new Error("Native session actor has no executing request");
+    }
     request.assertCurrent();
     return request;
   };
@@ -133,7 +139,9 @@ function createNativeBackend(database: OpenClawAgentDatabase, options: Options) 
       current();
       return runOpenClawAgentWriteTransaction(
         (opened) => {
-          if (opened !== database) throw new Error("Native session actor changed its writer");
+          if (opened !== database) {
+            throw new Error("Native session actor changed its writer");
+          }
           return write(opened);
         },
         options,
@@ -199,7 +207,9 @@ export async function captureNativeIncognitoSessionActor(params: {
     env: Object.freeze({ ...(params.database.env ?? process.env) }),
   };
   const database = getOpenClawAgentDatabaseIfOpen(options);
-  if (!database) throw new Error("Native incognito session owner is unavailable");
+  if (!database) {
+    throw new Error("Native incognito session owner is unavailable");
+  }
   const target = structuredClone(params.target);
   const assertOwner = () => {
     if (
@@ -246,7 +256,9 @@ export async function captureNativeIncognitoSessionActor(params: {
         target,
         lifetime,
         currentWriteToken() {
-          if (!database.db.isOpen) return undefined;
+          if (!database.db.isOpen) {
+            return undefined;
+          }
           const revision = readSqliteDatabaseWriteRevision(database.db);
           return revision === undefined ? undefined : `${target.database.incarnation}:${revision}`;
         },
@@ -288,8 +300,11 @@ export async function captureNativeIncognitoSessionActor(params: {
                     kind: unknown ? "unknown" : "completed",
                     committed: selected.committed,
                   };
-                  if (unknown) settled.resolve({ kind: "unknown", error: result.error });
-                  else settled.resolve({ kind: "completed" });
+                  if (unknown) {
+                    settled.resolve({ kind: "unknown", error: result.error });
+                  } else {
+                    settled.resolve({ kind: "completed" });
+                  }
                   return Promise.resolve(result);
                 } catch (error) {
                   settlement = { kind: "unknown", committed: selected.committed };

@@ -42,8 +42,9 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
     const options = { agentId: "main", path: database.path };
     const scope = { ...f.scope, path: database.path };
     const identity = readOpenClawAgentDatabaseIdentity(database);
-    if (typeof identity.identity !== "string")
+    if (typeof identity.identity !== "string") {
       throw new Error("Fixture requires a physical database");
+    }
     const target: SessionActorTarget = {
       sessionKey: f.scope.sessionKey,
       database: {
@@ -78,7 +79,9 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
       idempotencyKey: "accepted-user",
       trackCompletion: true,
     });
-    if (expected.kind !== "stage") throw new Error("Expected pending-input stage facts");
+    if (expected.kind !== "stage") {
+      throw new Error("Expected pending-input stage facts");
+    }
     const pending = {
       kind: "stage" as const,
       sessionKey: scope.sessionKey,
@@ -101,7 +104,9 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
     expect(cachedEntries().entries.get(scope.sessionKey)?.label).toBe("initial");
     const reads: string[] = [];
     const counter = trackSqliteStatementExecutions(database.db, ["reads"], (query) => {
-      if (!/^select\b/i.test(query)) return null;
+      if (!/^select\b/i.test(query)) {
+        return null;
+      }
       reads.push(query);
       return "reads";
     });
@@ -209,7 +214,9 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
               },
               {
                 admit: (stage) => {
-                  if (stage === "commit") throw new Error("authority revoked");
+                  if (stage === "commit") {
+                    throw new Error("authority revoked");
+                  }
                 },
                 writeTransaction: (_label, _owner, run) => run(db),
               },
@@ -246,8 +253,9 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
       sessionId: f.scope.sessionId,
     };
     const identity = readOpenClawAgentDatabaseIdentity(database);
-    if (typeof identity.identity !== "string")
+    if (typeof identity.identity !== "string") {
       throw new Error("Fixture requires a physical database");
+    }
     const target: SessionActorTarget = {
       sessionKey: scope.sessionKey,
       database: {
@@ -305,7 +313,9 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
           facts.check === "fresh"
         ) {
           freshChecks += 1;
-          if (rejectFresh) throw new Error("fresh authority revoked");
+          if (rejectFresh) {
+            throw new Error("fresh authority revoked");
+          }
         }
       },
     };
@@ -359,7 +369,9 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
     })();
     expect(retainedReads.counts.entry).toBe(0);
     expect(committed.kind).toBe("metadata");
-    if (committed.kind !== "metadata") throw new Error("Expected prepared metadata append");
+    if (committed.kind !== "metadata") {
+      throw new Error("Expected prepared metadata append");
+    }
     expect(committed.initialEntry).toMatchObject({
       owned: true,
       fence: { expectedWriterRunId: "first-run" },

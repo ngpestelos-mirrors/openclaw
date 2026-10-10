@@ -109,9 +109,13 @@ export function hasUnquotedSqlKeyword(sql: string, keywords: RegExp): boolean {
   for (const match of sql.matchAll(keywords)) {
     starts.add(match.index);
   }
-  if (starts.size === 0) return false;
+  if (starts.size === 0) {
+    return false;
+  }
   for (const index of unquotedSqlIndexes(sql, 0)) {
-    if (starts.has(index)) return true;
+    if (starts.has(index)) {
+      return true;
+    }
   }
   return false;
 }

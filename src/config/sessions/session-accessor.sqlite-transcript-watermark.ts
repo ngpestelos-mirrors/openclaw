@@ -55,7 +55,9 @@ export function readSessionTranscriptWatermarkInDatabase(
   sessionId: string,
 ): SessionTranscriptWatermark {
   const actor = readSessionActorTransactionState(database, { sessionId });
-  if (actor) return { ...actor.hot.transcript.watermark };
+  if (actor) {
+    return { ...actor.hot.transcript.watermark };
+  }
   const row = retainedWatermarkQuery(database.db)(sessionId);
   return { generation: row?.generation ?? null, maxSeq: row?.max_seq ?? null };
 }

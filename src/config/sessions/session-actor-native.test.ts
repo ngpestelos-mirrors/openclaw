@@ -139,7 +139,9 @@ it("completes usage through the existing unbound native incognito owner", async 
       );
       expect(callbackCount).toBe(1);
       expect(outcome.kind).toBe("committed");
-      if (outcome.kind !== "committed") throw new Error("Native completion did not commit");
+      if (outcome.kind !== "committed") {
+        throw new Error("Native completion did not commit");
+      }
       expect(outcome.failure).toBeUndefined();
       expect(outcome.receipt).toMatchObject({
         commandId: "native-complete",
@@ -189,7 +191,9 @@ it("preserves the native committed receipt and replica when a commit observer fa
       );
       expect(committed).toHaveBeenCalledOnce();
       expect(outcome.kind).toBe("committed");
-      if (outcome.kind !== "committed") throw new Error("Native usage did not commit");
+      if (outcome.kind !== "committed") {
+        throw new Error("Native usage did not commit");
+      }
       expect(outcome.failure).toEqual({ name: "Error", message: "native publication failed" });
       expect(outcome.receipt.beforeVersion).toEqual(before.version);
       expect(actor.snapshot(authority)).toEqual(outcome.receipt.postimage);

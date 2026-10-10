@@ -121,7 +121,9 @@ export function createSessionActorFactory(
             owner.identity.handle === expected.handle &&
             owner.identity.incarnation === expected.incarnation,
         );
-      if (!existing) throw new Error("Incognito session actor lost its captured worker owner");
+      if (!existing) {
+        throw new Error("Incognito session actor lost its captured worker owner");
+      }
       const execution = await captureOpenClawAgentDatabaseExecution({
         kind: "ephemeral",
         agentId: captured.agentId,
@@ -134,7 +136,9 @@ export function createSessionActorFactory(
           },
         },
       });
-      if (!execution) throw new Error("Incognito session actor owner is unavailable");
+      if (!execution) {
+        throw new Error("Incognito session actor owner is unavailable");
+      }
       try {
         const actor = await execution.sessionActors.acquire(target, lifetime);
         return {
