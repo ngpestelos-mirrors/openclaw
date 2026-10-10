@@ -12,6 +12,7 @@ import { resolveSidebarSessionParentKey } from "../../components/app-sidebar-ses
 import type { SidebarSessionMutationScope } from "../../components/app-sidebar-session-types.ts";
 import { sessionMenuReasons } from "../../components/session-menu-access.ts";
 import type { SessionMenuData } from "../../components/session-menu-actions.ts";
+import { hasSessionArchiveDescendants } from "../../components/session-menu-descendants.ts";
 import type { SessionActionHost } from "../../components/session-organizer-operations.runtime.ts";
 import { isCloudWorkerPlacementState } from "../../components/session-row-badges.ts";
 import { t } from "../../i18n/index.ts";
@@ -31,6 +32,7 @@ import {
   canArchiveSessionRow,
   isPinnableUiSessionRow,
   parseAgentSessionKey,
+  isSubagentSessionKey,
   resolveUiConfiguredMainKey,
   resolveUiConversationIdentity,
 } from "../../lib/sessions/session-key.ts";
@@ -109,7 +111,13 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
       parseAgentSessionKey(row.key)?.agentId ?? row.agentId,
     ).sessionKey;
     const label = this.resolveHeaderSessionTitle(row);
-    const isChild = Boolean(resolveSidebarSessionParentKey(row, new Set([mainSessionKey])));
+    const isChild =
+      !isSubagentSessionKey(row.key) &&
+      Boolean(resolveSidebarSessionParentKey(row, new Set([mainSessionKey])));
+    const hasChildren = hasSessionArchiveDescendants(
+      row,
+      this.state?.sessionsResult?.sessions ?? [],
+    );
     const archiving = this.context.sessions.archiveVisibility(row.key) === "pending";
     const pinned = this.context.navigation.snapshot.sidebarEntries.includes(
       serializeSidebarEntry({ type: "session", key: row.key }),
@@ -119,6 +127,7 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
         label,
         row.sessionId,
         isChild,
+        hasChildren,
         pinned,
         pinnable,
         row.snoozedUntil,
@@ -134,6 +143,7 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
         label,
         sessionId: row.sessionId ?? null,
         isChild,
+        hasChildren,
         pinned,
         pinnable,
         snoozedUntil: row.snoozedUntil ?? null,
@@ -254,9 +264,14 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
       unread: candidate.unread === true,
       archived: candidate.archived === true,
       category: candidate.category,
+      sidebarRoot: candidate.sidebarRoot,
+      isChild:
+        !isSubagentSessionKey(candidate.key) &&
+        Boolean(resolveSidebarSessionParentKey(candidate, new Set())),
       active: true,
       hasActiveRun: candidate.hasActiveRun ?? candidate.status === "running",
       gatewayHasActiveRun: candidate.hasActiveRun,
+      hasActiveSubagentRun: candidate.hasActiveSubagentRun,
     });
     const session = toActionSession(row);
     // Refresh metadata only on the selected instance; replacements must keep
@@ -346,6 +361,12 @@ export abstract class ChatPaneSessionMenu extends ChatPaneContext {
           break;
         case "fork":
           await operations.forkSession(host, session, scope);
+          break;
+        case "move-to-top-level":
+          await operations.promoteSession(host, session, scope);
+          break;
+        case "archive-tree":
+          await operations.archiveSessionTreeWithUndo(host, session, scope);
           break;
         case "move-to-group":
           await assignCategory(action.category);

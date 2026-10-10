@@ -39,6 +39,9 @@ export function sessionMenuReasons(params: {
       session,
     });
   const renameReason = patchReason({ label: null }, true);
+  const promotionReason = !session.sessionId?.trim()
+    ? "Session lifecycle action requires a durable session identity."
+    : patchReason({ sidebarRoot: true }, true);
   const iconReason = patchReason({ icon: null });
   const colorReason = patchReason({ color: null });
   const batchSession = batchRows ? sessionAccessRowForBatch(batchRows) : session;
@@ -94,7 +97,8 @@ export function sessionMenuReasons(params: {
     ...(unreadReason ? { "toggle-unread": unreadReason } : {}),
     ...(involvementReason ? { "toggle-involving-me": involvementReason } : {}),
     ...(categoryReason ? { "move-to-group": categoryReason } : {}),
-    ...(archiveReason ? { "toggle-archived": archiveReason } : {}),
+    ...(archiveReason ? { "toggle-archived": archiveReason, "archive-tree": archiveReason } : {}),
+    ...(promotionReason ? { "move-to-top-level": promotionReason } : {}),
     ...(groupReason || categoryReason ? { "new-group": groupReason ?? categoryReason } : {}),
     ...(forkReason ? { fork: forkReason } : {}),
     ...(cloudWorkerStopReason ? { "stop-cloud-worker": cloudWorkerStopReason } : {}),

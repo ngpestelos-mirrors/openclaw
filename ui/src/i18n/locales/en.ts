@@ -7,6 +7,9 @@ export const en: TranslationMap & {
   mcpApp: TranslationMap;
   linkReader: TranslationMap;
   agentTools: TranslationMap;
+  githubPublication: TranslationMap & Record<"newAction" | "capacity", string>;
+  githubConnections: TranslationMap &
+    Record<"title" | "mine" | "system" | "forMe" | "forSystem", string>;
   board: TranslationMap & { widget: TranslationMap };
   browser: TranslationMap & { errors: TranslationMap; annotatePrompt: TranslationMap };
   shortcutsOverlay: TranslationMap & { title: string };
@@ -844,11 +847,9 @@ export const en: TranslationMap & {
     snoozeNextWeek: "Next week",
     snoozed: "Snoozed",
     snoozeWakes: "Wakes {time}",
-    sessionSnoozed: "Snoozed until {time}",
     snoozeTomorrowTime: "tomorrow {time}",
     sessionArchived: "Session archived",
     archiving: "Archiving…",
-    sessionsArchived: "Archived {count} sessions",
     deleteAllArchived: "Delete all archived…",
     deleteAllArchivedConfirm:
       "Delete {count} archived sessions and their transcripts? Any attached workers will be stopped safely first.",
@@ -960,7 +961,6 @@ export const en: TranslationMap & {
     cloudWorkerDescendantConflict: "Cloud worker child: 1 workspace conflict",
     cloudWorkerDescendantConflicts: "Cloud worker children: {count} workspace conflicts",
     renameSession: "Rename session",
-    renameSessionPrompt: "Rename session",
     renameSessionMenu: "Rename…",
     setIconMenu: "Set icon",
     setColorMenu: "Color",
@@ -1032,25 +1032,13 @@ export const en: TranslationMap & {
     movingSession: "Moving to {target}…",
     movingSessionGeneric: "Moving session…",
     stopCloudWorker: "Stop cloud worker…",
-    stopCloudWorkerConfirm: 'Stop the cloud worker for "{session}"?',
-    stopCloudWorkerConfirmAction: "Stop worker",
     initialTurnPausedByWorkerStop:
       "Worker stop requested. Review the initial message before retrying.",
-    stopCloudWorkerStale:
-      'Gateway connection replaced before the cloud worker for "{session}" was stopped. Try again.',
     deleteSessionMenu: "Delete…",
     deleteSessionCount: "Delete {count}…",
-    deleteSessionConfirm:
-      'Delete "{session}" and its transcript? Any attached worker will be stopped safely first.',
     deleteSessionStale: 'Gateway connection replaced before "{session}" was deleted. Try again.',
-    deleteSessionsConfirm:
-      "Delete {count} sessions and their transcripts? Any attached workers will be stopped safely first.",
     deleteSessionsStale:
       "Gateway connection replaced before {count} sessions were deleted. Try again.",
-    deleteSelectedConfirmOne:
-      "Delete 1 session?\n\nStop any attached worker safely, then delete the session entry and archive its transcript.",
-    deleteSelectedConfirm:
-      "Delete {count} sessions?\n\nStop any attached workers safely, then delete the session entries and archive their transcripts.",
     groupBy: "Group by",
     groupByNone: "None",
     groupByCategory: "Custom groups",
@@ -1075,8 +1063,6 @@ export const en: TranslationMap & {
     newGroupCreate: "Create group",
     newGroupFailed: "Could not create the group.",
     newGroupStale: "Gateway connection replaced before the group was saved. Try again.",
-    newGroupMoveSkipped:
-      "Group created, but the move was skipped because the list changed. Move from the row menu.",
     moveToGroup: "Move session to a group",
     moveToGroupMenu: "Move to group",
     moveToGroupMenuCount: "Move {count} to group",
@@ -1085,18 +1071,7 @@ export const en: TranslationMap & {
     groupMenu: "Group options for {group}",
     newSessionInGroup: "New session in {group}",
     groupDefaultsMenu: "New session defaults",
-    groupDefaultsTitle: 'New session defaults for "{group}"',
-    groupDefaultsDescription: "Choose where new sessions in this group start.",
-    groupDefaultsCwd: "Working directory",
-    groupDefaultsCwdPlaceholder: "Use the agent workspace",
-    groupDefaultsCwdHint: "Leave empty to use the selected agent's workspace.",
-    groupDefaultsMode: "Environment",
-    groupDefaultsLocal: "Current checkout",
-    groupDefaultsWorktree: "New worktree",
-    groupDefaultsWorktreeHint: "Runs each session in an isolated Git worktree.",
     groupDefaultsFailed: "Could not save the group defaults.",
-    groupDefaultsRequiresAdmin:
-      "This folder is outside agent workspaces. Saving defaults for it requires operator.admin. Open Inbox, select Limited access, request admin, then approve in Devices.",
     groupDefaultsStale: "Gateway connection replaced before the defaults were saved. Try again.",
     renameGroupMenu: "Rename group",
     renameGroupTitle: 'Rename group "{group}"',
@@ -1398,6 +1373,8 @@ export const en: TranslationMap & {
       lobsterdexCardShinySeen: "✦ Shiny spotted {date}",
       lobsterdexCardCopyLink: "Copy link",
       lobsterdexOpen: "Open Lobsterdex",
+      lobsterdexThemeHidden:
+        "This theme hides Lobsterdex. Your collection and preferences are preserved.",
     },
     security: {
       intro: "Review gateway access, tool policy, device authentication, and approvals.",
@@ -1624,6 +1601,7 @@ export const en: TranslationMap & {
     forward: "Forward",
     settings: "Settings",
     askOpenClaw: "Ask OpenClaw",
+    askBrand: "Ask {brand}",
     settingsGroupDevice: "This Mac",
     settingsGroupThisComputer: "This computer",
     settingsGroupThisIPhone: "This iPhone",
@@ -1719,6 +1697,8 @@ export const en: TranslationMap & {
     newTab: "New tab",
     closeTab: "Close tab",
     untitledTab: "New tab",
+    tweetPost: "Post on X",
+    openPost: "Open post",
     back: "Back",
     forward: "Forward",
     reload: "Reload",
@@ -2281,85 +2261,16 @@ export const en: TranslationMap & {
     notFoundDescription: "No online presence or visible session association matches this identity.",
   },
   githubPublication: {
-    personal: "My GitHub",
-    system: "System",
-    agent: "Agent override",
-    publishAs: "Publish as @{account}",
-    account: "Publication account",
     newAction: "Choose a new publication",
-    failedAttempt: "Publication attempt failed",
     capacity:
       'Too many publications are awaiting review. Finish an existing publication, then select "{newAction}" to make room. Existing retries remain available.',
-    confirm: "Confirm original publication",
-    check: "Check publication",
-    refresh: "Refresh publication",
-    statusFailed: "Publication failed",
-    statusConfirm: "Confirmation needed",
-    statusRequested: "Publication queued",
-    statusPublishing: "Publication in progress",
-    statusUnavailable: "Publication status unavailable",
-    statusUnknown: "Outcome unknown",
-    unknown:
-      "The outcome is unknown. Retry keeps the original account and request; it does not switch accounts.",
-    target: "Pull request: {repository} \u2192 {base}",
-    pushTarget: "Push: {repository} \u00b7 {branch}",
-    snapshot: "Original accepted snapshot",
-    head: "HEAD",
-    index: "Index tree",
-    workspace: "Workspace tree",
-    dispatched: "GitHub {kind} was dispatched; its remote outcome may still be unknown.",
-    observed: "GitHub {kind} was observed. Disconnecting does not undo this effect.",
-    effectLink: "View GitHub effect",
-    effectPush: "push",
-    effectPullRequest: "pull request",
-    personalWorkspace:
-      "Wait for work to finish and reclaim the workspace to publish with My GitHub.",
-    unidentified: "Sign in with a personal profile to use My GitHub.",
-    connectHelp: "Connect GitHub in Settings \u2192 Profile \u2192 GitHub connections.",
   },
   githubConnections: {
     title: "GitHub connections",
-    description:
-      "Check the accounts used for agent commands, dashboard data, and publishing. These connections are separate from your GitHub sign-in and co-author credit.",
     mine: "My GitHub",
     system: "System GitHub",
-    personalDescription: "Your account for explicitly selected Publish PR actions.",
-    systemDescription:
-      "Default account for agent commands, authenticated dashboards, and publishing.",
-    unboundDescription:
-      "Sign in with a personal Gateway profile to connect My GitHub. Administrators can still manage System GitHub.",
-    signInRequired: "Personal sign-in required",
-    connected: "Connected",
-    disconnected: "Not connected",
-    notLoaded: "Status not loaded",
-    checking: "Checking connection…",
-    statusUnavailable: "Connection status unavailable",
-    manage: "Manage connections",
-    reconnectRequired: "Reconnect required",
-    connectMine: "Connect My GitHub",
-    changeMine: "Change My GitHub",
-    changeSystem: "Change System GitHub",
-    disconnectMine: "Disconnect My GitHub",
-    disconnectDescription:
-      "Stops unfinished personal publication. Published work stays intact; revoke the app grant separately in GitHub settings.",
-    adminManaged: "Admin managed",
-    purpose: "Connect GitHub",
     forMe: "For me",
     forSystem: "For the system",
-    purposeHint: "Only the selected connection changes.",
-    continue: "Continue with GitHub",
-    usage: "Where these accounts are used",
-    usageDescription:
-      "My GitHub is used only when you explicitly select it for Gateway-brokered Publish PR on an idle, reconciled local workspace. Publication still needs write access to the session. Agent git/gh, model actions, previews, and workers keep the shared account. Finish and reclaim remote work before personal publication. Connecting My GitHub changes no defaults.",
-    details: "Connection details",
-    agentTitle: "GitHub account",
-    agentFor: "GitHub for {agent}",
-    agentDescription:
-      "Used for this agent's commands and authenticated dashboard data. Verified confirms the account; repository access is checked when data is requested.",
-    viewAgent: "View agent account",
-    agentOverride: "Agent override",
-    advancedOverride: "Advanced: agent GitHub override",
-    manageCommon: "Manage connections in Profile",
   },
   profilePage: {
     personalInstructions: {
@@ -2901,7 +2812,6 @@ export const en: TranslationMap & {
       empty: "No subagents in this conversation.",
       noRunning: "No running subagents",
       refresh: "Refresh subagents",
-      loadMore: "Show more subagents",
       stop: "Stop {name}",
       stopping: "Stopping…",
       elapsed: "Elapsed time",

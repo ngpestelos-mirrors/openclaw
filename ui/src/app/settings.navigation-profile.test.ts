@@ -328,3 +328,49 @@ it.each([{ localPins: ["route:cron"] }, { localPins: [] }])(
     });
   },
 );
+
+it.each(["reload", "profile-switch"])(
+  "applies a changed confirmed pin list before consuming local retention after %s",
+  async (transition) => {
+    const backend = createProfilePrefsServer(
+      {
+        a: { [pinsKey]: ["route:usage"], [navigationKey]: "mine" },
+        b: { [pinsKey]: ["route:systems"], [navigationKey]: "mine" },
+      },
+      scope,
+    );
+    const a = backend.connect("a");
+    const refresh = () =>
+      refreshProfileAppearancePrefs({
+        client: a.writer.state.client!,
+        profileId: "a",
+        scope,
+        configObject: {},
+        canWrite: false,
+        onApplied: vi.fn(),
+      });
+    await refresh();
+    const previous = loadSettings(scope);
+    const local = patchSettings({ sidebarEntries: [], navigationScope: "all" });
+    pushServerUiPrefs(a.writer, changedServerUiPrefs(previous, local)!, {
+      profileId: "a",
+      canWrite: false,
+    });
+    if (transition === "reload") {
+      resetServerUiPrefsSync();
+    } else {
+      await backend.connect("b").refresh();
+    }
+    backend.profiles.a![pinsKey] = ["route:cron"];
+    backend.profiles.a![navigationKey] = "all";
+    invalidateUserPreferences(a.writer.state.client!);
+    await refresh();
+    expect(loadSettings(scope)).toMatchObject({
+      sidebarEntries: ["route:cron"],
+      navigationScope: "all",
+    });
+    await refresh();
+    expect(loadSettings(scope).sidebarEntries).toEqual(["route:cron"]);
+    expect(a.request.mock.calls.some(([method]) => method === "users.prefs.set")).toBe(false);
+  },
+);

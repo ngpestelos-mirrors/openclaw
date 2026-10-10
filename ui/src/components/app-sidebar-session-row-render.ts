@@ -89,6 +89,7 @@ export interface SessionListHost {
     SessionOrganizerController,
     | "draggingSidebarSection"
     | "draggingSessionKey"
+    | "isDraggingChildSession"
     | "finishSessionDrag"
     | "finishSidebarSectionDrag"
     | "handleSessionListDragLeave"
@@ -433,7 +434,7 @@ export function renderRecentSession(params: {
     method: "sessions.groups.put",
     requiredScope: "operator.write",
   });
-  const rowDraggable = !session.isChild && groupWriteAccess.allowed;
+  const rowDraggable = groupWriteAccess.allowed;
   const marqueeLabelTemplate = renderHoverMarquee(
     html`${team ? nothing : indicators.originIndicators}${label}`,
     "sidebar-recent-session__name",

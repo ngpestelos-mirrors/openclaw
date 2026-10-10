@@ -241,7 +241,14 @@ export function renderSidebarPages(host: AppSidebarRenderHost) {
 }
 
 export function renderSidebarScope(host: AppSidebarRenderHost) {
-  if (host.sessionsStatusFilter === "active" && host.navigationCatalog.scopesEquivalent) {
+  const allFilter = host.sessionOwnerFilter;
+  if (
+    host.sessionsStatusFilter === "active" &&
+    host.navigationCatalog.scopesEquivalent &&
+    !allFilter.involvingMe &&
+    (!allFilter.ownerId ||
+      allFilter.ownerId === host.sessionDataContext?.gateway.snapshot.selfUser?.id)
+  ) {
     return nothing;
   }
   return html`<div

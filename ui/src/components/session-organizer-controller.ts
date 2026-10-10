@@ -109,6 +109,18 @@ export class SessionOrganizerController {
     );
   }
 
+  archiveSessionTreeWithUndo(session: SidebarRecentSession): Promise<void> {
+    return this.runOperation((operations, scope) =>
+      operations.archiveSessionTreeWithUndo(this.host, session, scope),
+    );
+  }
+
+  promoteSession(session: SidebarRecentSession): Promise<void> {
+    return this.runOperation((operations, scope) =>
+      operations.promoteSession(this.host, session, scope),
+    );
+  }
+
   async runBatchSessionAction(
     action: SessionMenuAction,
     rows: SidebarRecentSession[],
@@ -208,6 +220,13 @@ export class SessionOrganizerController {
     this.sidebarZoneDropTarget = null;
     this.sessionListRemovalDrop = false;
     this.host.requestUpdate();
+  }
+
+  get isDraggingChildSession(): boolean {
+    return Boolean(
+      this.draggingSessionKey &&
+      this.host.findSidebarMenuSessionByKey(this.draggingSessionKey)?.isChild,
+    );
   }
 
   startSessionDrag(session: SidebarRecentSession): void {
@@ -315,7 +334,7 @@ export class SessionOrganizerController {
     }
     const position = this.sidebarZoneDropTarget?.position;
     const sessionKey = readSessionDragData(event.dataTransfer);
-    const session = sessionKey ? this.host.findSidebarSessionByKey(sessionKey) : undefined;
+    const session = sessionKey ? this.host.findSidebarMenuSessionByKey(sessionKey) : undefined;
     if (session && !session.pinnable) {
       this.finishSidebarEntryDrag();
       return;
@@ -333,9 +352,9 @@ export class SessionOrganizerController {
 
   handleSessionListDragOver(event: DragEvent) {
     const routeDrag = sidebarRouteDragActive(event.dataTransfer);
-    const sessionKey = readSessionDragData(event.dataTransfer);
-    const session = sessionKey ? this.host.findSidebarSessionByKey(sessionKey) : undefined;
-    if (!routeDrag && !(session && this.isPersonalSessionPin(session.key))) {
+    const sessionKey = this.draggingSessionKey ?? readSessionDragData(event.dataTransfer);
+    const session = sessionKey ? this.host.findSidebarMenuSessionByKey(sessionKey) : undefined;
+    if (!routeDrag && !session?.isChild && !(session && this.isPersonalSessionPin(session.key))) {
       return;
     }
     event.preventDefault();
@@ -364,8 +383,12 @@ export class SessionOrganizerController {
       return;
     }
     const sessionKey = readSessionDragData(event.dataTransfer);
-    const session = sessionKey ? this.host.findSidebarSessionByKey(sessionKey) : undefined;
-    if (session && this.isPersonalSessionPin(session.key)) {
+    const session = sessionKey ? this.host.findSidebarMenuSessionByKey(sessionKey) : undefined;
+    if (session?.isChild) {
+      event.preventDefault();
+      event.stopPropagation();
+      void this.promoteSession(session);
+    } else if (session && this.isPersonalSessionPin(session.key)) {
       event.preventDefault();
       this.setPersonalSessionPin(session.key, false);
     }
@@ -595,7 +618,7 @@ export class SessionOrganizerController {
     // Browsers protect transferred data during dragover. Use the key recorded
     // at dragstart for hover eligibility; sectionDrop reads the payload itself.
     const session = this.draggingSessionKey
-      ? this.host.findSidebarSessionByKey(this.draggingSessionKey)
+      ? this.host.findSidebarMenuSessionByKey(this.draggingSessionKey)
       : undefined;
     if (!this.sectionAcceptsSession(sectionId, category, session)) {
       event.stopPropagation();
@@ -632,7 +655,7 @@ export class SessionOrganizerController {
       return;
     }
     // Rows can be dragged from a browsed agent section, so search all caches.
-    const session = sessionKey ? this.host.findSidebarSessionByKey(sessionKey) : undefined;
+    const session = sessionKey ? this.host.findSidebarMenuSessionByKey(sessionKey) : undefined;
     if (!sourceSectionId && !this.sectionAcceptsSession(sectionId, category, session)) {
       event.stopPropagation();
       return;
@@ -651,7 +674,7 @@ export class SessionOrganizerController {
       }
     } else if (session) {
       const nextCategory = category ?? null;
-      if (session.category !== nextCategory) {
+      if (session.category !== nextCategory || session.isChild) {
         void this.assignSessionCategory(session, nextCategory);
       }
     }

@@ -30,13 +30,23 @@ export class SidebarNavigationCatalog implements ReactiveController {
   private generation = 0;
 
   constructor(
-    private readonly host: ReactiveControllerHost & { navigationView: string },
+    private readonly host: ReactiveControllerHost & {
+      navigationView: string;
+      readonly isConnected: boolean;
+    },
     private readonly getContext: () => ApplicationContext | undefined,
   ) {
     host.addController(this);
   }
 
+  hostConnected(): void {
+    this.host.requestUpdate();
+  }
+
   hostUpdate(): void {
+    if (!this.host.isConnected) {
+      return;
+    }
     const context = this.getContext();
     const source = context?.gateway.snapshot.phase === "connected" ? context.sessions : undefined;
     const client = context?.gateway.snapshot.client;

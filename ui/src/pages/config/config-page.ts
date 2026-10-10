@@ -19,11 +19,7 @@ import { hasNativeBrowserBridge } from "../../app/native-browser-host.ts";
 import { hasOperatorAdminAccess } from "../../app/operator-access.ts";
 import { isBrowserPanelAvailable } from "../../app/panel-availability.ts";
 import { canSyncAppearancePreference } from "../../app/server-prefs-profile-runtime.ts";
-import {
-  resetServerUiPref,
-  resolveServerUiPrefState,
-  selectThemeSettings,
-} from "../../app/server-prefs-reconcile.ts";
+import * as serverUiPrefs from "../../app/server-prefs-reconcile.ts";
 import { isAppearancePref, type ResettableServerUiPrefKey } from "../../app/server-prefs-state.ts";
 import {
   loadSettings,
@@ -697,7 +693,7 @@ export class ConfigPage extends OpenClawLightDomElement {
 
   private applySettings(patch: Partial<UiSettings>, selectedTheme?: ThemeName) {
     this.settings = selectedTheme
-      ? selectThemeSettings(selectedTheme, patch)
+      ? serverUiPrefs.selectThemeSettings(selectedTheme, patch)
       : patchSettings(patch);
     applyTextScale(this.settings.textScale);
     // theme.refresh() also republishes non-theme appearance prefs (text
@@ -716,7 +712,7 @@ export class ConfigPage extends OpenClawLightDomElement {
 
   private currentSyncedPref<K extends ResettableServerUiPrefKey>(key: K) {
     const appearance = isAppearancePref(key);
-    return resolveServerUiPrefState(
+    return serverUiPrefs.resolveServerUiPrefState(
       this.context.runtimeConfig.state.configSnapshot?.config,
       key,
       this.context.gateway.connection.gatewayUrl,
@@ -738,7 +734,7 @@ export class ConfigPage extends OpenClawLightDomElement {
   }
 
   private resetSyncedPref(key: ResettableServerUiPrefKey) {
-    this.settings = resetServerUiPref(
+    this.settings = serverUiPrefs.resetServerUiPref(
       key,
       this.currentSyncedPref(key),
       this.context.gateway.connection.gatewayUrl,

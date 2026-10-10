@@ -3,14 +3,18 @@ import { html } from "lit";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { serializeSidebarEntry } from "../../app-navigation.ts";
 import type { ApplicationContext } from "../../app/context.ts";
+import { resolveSidebarSessionParentKey } from "../../components/app-sidebar-session-parent.ts";
 import { resolveCloudWorkerStopAction } from "../../components/cloud-worker-stop.ts";
 import { sessionMenuReasons } from "../../components/session-menu-access.ts";
+import { hasSessionArchiveDescendants } from "../../components/session-menu-descendants.ts";
 import type { SessionMenuAction, SessionMenuWork } from "../../components/session-menu.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
 import {
   canArchiveSessionRow,
   canDeleteSessionRows,
   isPinnableUiSessionRow,
+  isSubagentSessionKey,
+  buildAgentMainSessionKey,
   resolveUiConfiguredMainKey,
 } from "../../lib/sessions/session-key.ts";
 import { canCopySessionMarkdown } from "../../lib/sessions/session-menu-navigation.ts";
@@ -49,6 +53,18 @@ export function renderSessionManagementMenu(params: {
       .session=${{
         label: normalizeOptionalString(row.label) ?? row.key,
         sessionId: normalizeOptionalString(row.sessionId) ?? null,
+        isChild:
+          !isSubagentSessionKey(row.key) &&
+          Boolean(
+            resolveSidebarSessionParentKey(
+              row,
+              new Set([buildAgentMainSessionKey({ agentId: row.agentId ?? "main", mainKey })]),
+            ),
+          ),
+        hasChildren: hasSessionArchiveDescendants(
+          row,
+          context.sessions.state.result?.sessions ?? [],
+        ),
         pinned: context.navigation.snapshot.sidebarEntries.includes(
           serializeSidebarEntry({ type: "session", key: row.key }),
         ),

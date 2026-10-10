@@ -15,6 +15,7 @@ import type {
 import { createSessionRowProvenance } from "../../lib/sessions/session-row-provenance.ts";
 import { createNavigationPreferencesFixture } from "../../test-helpers/application-context.ts";
 import { sessionMutationGatewayHello } from "../../test-helpers/gateway-methods.ts";
+import type { SessionsPageArchive } from "./archive-actions.ts";
 import { buildSessionsListQuery } from "./list-query.ts";
 import type { SessionsRouteData } from "./route.ts";
 import "./sessions-page.ts";
@@ -57,7 +58,7 @@ export type TestSessionsPage = HTMLElement & {
     scope?: unknown,
     expectedSessionId?: string,
   ) => Promise<unknown>;
-  archiveSessionWithUndo: (row: GatewaySessionRow) => Promise<void>;
+  archiveActions: Pick<SessionsPageArchive, "archive" | "archiveTree">;
   forkSession: (key: string, fromLastCompleted?: boolean) => Promise<void>;
   runPluginAction: (id: string, session: GatewaySessionRow) => Promise<void>;
 };

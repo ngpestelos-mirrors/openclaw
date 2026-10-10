@@ -438,6 +438,18 @@ export function applyServerUiPrefs(
       }
     }
   }
+  if (hooks.navigationConfirmed) {
+    // Local retention covers the old/unknown baseline, not a newer confirmed navigation value.
+    for (const key of ["sidebarEntries", "navigationScope"] as const) {
+      if (
+        isServerUiPrefReady(key, readiness) &&
+        Object.hasOwn(lastSeen, key) &&
+        !prefValuesEqual(prefs[key], lastSeen[key])
+      ) {
+        retainedLocalKeys.delete(key);
+      }
+    }
+  }
   retainPendingAppearanceSnapshot(prefs, lastSeen, readiness.appearanceReady);
   const navigationIdentityChanged = sync.lastReconciledScope !== scope;
   const navigationPatch = reconcileNavigationSnapshot(

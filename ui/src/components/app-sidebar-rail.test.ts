@@ -14,7 +14,7 @@ import { createDataTransferStub } from "../test-helpers/drag-data.ts";
 import { AppSidebarSessionNavigationElement } from "./app-sidebar-session-navigation.ts";
 import "./app-sidebar.ts";
 
-async function fixture() {
+async function fixture(onlySelf = false) {
   const gateway = createGatewayHarness({} as GatewayBrowserClient);
   gateway.publish({ selfUser: { id: "self", name: "Self" } });
   const sessions = createSessionsHarness("main", [
@@ -28,7 +28,14 @@ async function fixture() {
     { type: "human", id: "other", label: "Other" },
   ];
   for (const row of result.sessions) {
-    row.owner = { actor: { type: "human", id: row.key.endsWith(":mine") ? "self" : "other" } };
+    row.owner = {
+      actor: { type: "human", id: onlySelf || row.key.endsWith(":mine") ? "self" : "other" },
+    };
+  }
+  if (onlySelf) {
+    result.totalCount = result.sessions.length;
+    result.hasMore = false;
+    result.ownerSessionCounts = [{ profileId: "self", open: result.sessions.length, running: 0 }];
   }
   const { sidebar } = await mountSidebar(gateway.gateway, sessions.sessions);
   if (!(sidebar instanceof AppSidebarSessionNavigationElement)) {
@@ -285,6 +292,41 @@ describe("personal navigation rail", () => {
     await pending.promise.catch(() => undefined);
     expect(showToast).not.toHaveBeenCalled();
   });
+
+  it("does not recreate catalog observations in an update queued before removal", async () => {
+    const { sidebar, sessions } = await fixture();
+    const parent = sidebar.parentElement!;
+    const observe = vi.spyOn(sessions.sessions, "observeList");
+    const catalogQueries = () =>
+      observe.mock.calls.filter(
+        ([query]) => query.includeOwnerSessionCounts || query.source === "dashboard",
+      );
+    sidebar.navigationView = "pages";
+    sidebar.remove();
+    await sidebar.updateComplete;
+    expect(catalogQueries()).toHaveLength(0);
+    parent.append(sidebar);
+    await sidebar.updateComplete;
+    expect(catalogQueries()).toHaveLength(2);
+    expect(sidebar.querySelector(".sidebar-pages")).not.toBeNull();
+  });
+
+  it.each(["mine", "all"] as const)(
+    "keeps scope controls for a saved involving-me All filter while in %s",
+    async (scope) => {
+      const { sidebar } = await fixture(true);
+      expect(sidebar.navigationCatalog.scopesEquivalent).toBe(true);
+      sidebar.setSessionOwnerFilter(null, true);
+      sidebar.setNavigationScope(scope);
+      await sidebar.updateComplete;
+      expect(sidebar.sessionOwnerFilter.involvingMe).toBe(true);
+      expect(sidebar.querySelector('[aria-label="Mine"]')).not.toBeNull();
+      expect(sidebar.querySelector('[aria-label="All"]')).not.toBeNull();
+      sidebar.setSessionOwnerFilter(null, false);
+      await sidebar.updateComplete;
+      expect(sidebar.querySelector('[aria-label="Mine"]')).toBeNull();
+    },
+  );
 
   it("stores only stable person references", () => {
     expect(
