@@ -41,9 +41,7 @@ export function applySessionActorPhase(
   const database = context.open();
   const sessionKey = state.hot.target.sessionKey;
   const incarnation =
-    state.hot.target.database.kind === "ephemeral"
-      ? state.hot.target.database.incarnation
-      : undefined;
+    state.hot.target.database.kind !== "file" ? state.hot.target.database.incarnation : undefined;
   const requireEntry = () => {
     const entry = state.hot.entry;
     if (!entry) {
@@ -179,6 +177,9 @@ export function applySessionActorPhase(
         result = applySessionActorAppend(input.append, state, context);
         break;
       }
+      if ((requireEntry().lifecycleRevision ?? null) !== input.lifecycleRevision) {
+        throw new Error("Session actor transcript lifecycle changed before append");
+      }
       const validation = readSessionSourceValidation(database, input.ownerSources, incarnation);
       if (validation.refusedSource) {
         throw new Error("Session actor transcript source changed before append");
@@ -195,7 +196,7 @@ export function applySessionActorPhase(
           eventJson: input.eventJson,
           fence: {
             ...scope,
-            expectedLifecycleRevision: input.lifecycleRevision,
+            expectedLifecycleRevision: input.lifecycleRevision ?? undefined,
             expectedWriterRunId: input.writerRunId,
           },
         },
