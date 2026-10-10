@@ -50,13 +50,24 @@ describe("plugin update metadata refusal and retained package settlement", () =>
       await withOpenClawTestState({ label: "plugin-update-metadata-refusal" }, async (state) => {
         const refuse = mode === "refusal";
         const interrupted = mode.startsWith("interrupted");
-        const interrupts: Array<() => void> = [];
+        const interrupts = new Set<() => void>();
+        let interruptedGates = 0;
+        const interruptActive = () => {
+          interruptedGates = interrupts.size;
+          for (const interrupt of interrupts) {
+            interrupt();
+          }
+        };
         vi.spyOn(signalExit, "registerSignalExitGate").mockImplementation(
           (_finished, interrupt) => {
             if (interrupt) {
-              interrupts.push(interrupt);
+              interrupts.add(interrupt);
             }
-            return () => undefined;
+            return () => {
+              if (interrupt) {
+                interrupts.delete(interrupt);
+              }
+            };
           },
         );
         const pluginId = "metadata-refusal";
@@ -122,9 +133,7 @@ describe("plugin update metadata refusal and retained package settlement", () =>
             tentativeRow = readPersistedInstalledPluginIndexRowSync({ env: state.env });
             failNextRead = refuse;
             if (mode === "interrupted-after-index") {
-              for (const interrupt of interrupts) {
-                interrupt();
-              }
+              interruptActive();
             }
           }
         });
@@ -172,9 +181,7 @@ describe("plugin update metadata refusal and retained package settlement", () =>
                 reason: "retained-package",
               });
               if (mode === "interrupted") {
-                for (const interrupt of interrupts) {
-                  interrupt();
-                }
+                interruptActive();
               }
               return {
                 config: {
@@ -190,7 +197,7 @@ describe("plugin update metadata refusal and retained package settlement", () =>
         const command = runPluginUpdateCommand({ ids: [pluginId], opts: {} });
         if (interrupted) {
           await expect(command).rejects.toThrow();
-          expect(interrupts.length).toBeGreaterThan(0);
+          expect(interruptedGates).toBeGreaterThan(0);
           expect(readPersistedInstalledPluginIndexInstallRecords({ env: state.env })).toEqual(
             records,
           );
