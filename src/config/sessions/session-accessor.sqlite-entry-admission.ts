@@ -34,6 +34,7 @@ import {
   resolveSqliteSessionKey,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
+import type { SessionEntryTargetPatchScope } from "./session-accessor.types.js";
 import type { SessionActor, SessionActorLifetime } from "./session-actor-contract.js";
 import type { SessionCollaborationScope } from "./session-collaboration-scope.js";
 import {
@@ -63,6 +64,7 @@ type WorkerSessionAdmissionClaim = {
   kind: "worker";
   identity: string;
   incarnation: string;
+  readonly target: SessionEntryTargetPatchScope;
   reader?: SessionEntryCohortReader;
   acquireSessionActor(lifetime: SessionActorLifetime): Promise<SessionActor>;
   afterTransition?(
@@ -76,6 +78,7 @@ type WorkerSessionAdmissionClaim = {
 
 type NativeIncognitoSessionAdmissionClaim = Omit<OpenClawAgentDatabaseClaim, "release"> & {
   kind: "native-incognito";
+  readonly target: SessionEntryTargetPatchScope;
   reader?: undefined;
   afterTransition?: undefined;
   acquireSessionActor(lifetime: SessionActorLifetime): Promise<SessionActor>;
@@ -189,6 +192,17 @@ export async function loadSessionEntryForAdmission(
         kind: "worker",
         identity: borrowed.identity.handle,
         incarnation: borrowed.identity.incarnation,
+        target: {
+          agentId: resolved.agentId,
+          env,
+          storePath: actor.path,
+          readSource: {
+            agentId: actor.agentId,
+            path: actor.path,
+            databaseIdentity: actor.identity.incarnation,
+          },
+          target: { canonicalKey: resolved.sessionKey, storeKeys: [resolved.sessionKey] },
+        },
         acquireSessionActor(lifetime) {
           assertClaimCurrent();
           return borrowed.sessionActors.acquire(
@@ -234,6 +248,17 @@ export async function loadSessionEntryForAdmission(
     const databaseClaim: NativeIncognitoSessionAdmissionClaim = {
       ...nativeClaim,
       kind: "native-incognito",
+      target: {
+        agentId: resolved.agentId,
+        env,
+        storePath: database.path,
+        readSource: {
+          agentId: database.agentId,
+          path: database.path,
+          databaseIdentity: nativeClaim.identity,
+        },
+        target: { canonicalKey: resolved.sessionKey, storeKeys: [resolved.sessionKey] },
+      },
       async acquireSessionActor(lifetime) {
         nativeClaim.assertCurrent();
         lifetime.assertCurrent();
@@ -369,6 +394,10 @@ export async function loadSessionEntryForAdmission(
                 admittedEntry: SessionAdmissionEntryIdentity | undefined,
               ): WorkerSessionAdmissionClaim => {
                 const generation = borrowed.captureGenerationClaim();
+                const identity = borrowed.fileIdentity;
+                if (!identity) {
+                  throw new Error("Session admission requires its captured physical identity");
+                }
                 const admitted = admittedEntry && {
                   sessionId: admittedEntry.sessionId,
                   lifecycleRevision: admittedEntry.lifecycleRevision,
@@ -377,14 +406,22 @@ export async function loadSessionEntryForAdmission(
                   kind: "worker",
                   identity: generation.identity,
                   incarnation: generation.incarnation,
+                  target: {
+                    agentId: target.logicalAgentId,
+                    env,
+                    storePath: options.path,
+                    readSource: {
+                      agentId: borrowed.agentId,
+                      path: options.path,
+                      databaseIdentity: identity.physicalIdentity,
+                      databaseBirthtime: identity.birthtime,
+                    },
+                    target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
+                  },
                   async acquireSessionActor(lifetime) {
                     borrowed.assertCurrent();
                     generation.assertCurrent();
                     lifetime.assertCurrent();
-                    const identity = borrowed.fileIdentity;
-                    if (!identity) {
-                      throw new Error("Session actor requires its admitted physical identity");
-                    }
                     const { captureDurableSessionActor } =
                       await import("./session-actor-durable.js");
                     borrowed.assertCurrent();

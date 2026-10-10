@@ -25,6 +25,7 @@ import * as registry from "./reply-run-registry.js";
 import {
   acquireReplyOperationSessionActor,
   getReplyOperationSessionActor,
+  getReplyOperationSessionTarget,
 } from "./reply-run-registry.state.js";
 import { testing } from "./reply-run-registry.test-support.js";
 import { admitReplyTurn } from "./reply-turn-admission.js";
@@ -82,6 +83,17 @@ it("retains the native incognito owner until accepted actor work drains", async 
         throw new Error("Native incognito admission must retain its database claim");
       }
       const { operation, databaseClaim } = result;
+      expect(getReplyOperationSessionTarget(operation)).toMatchObject({
+        agentId: "main",
+        storePath,
+        readSource: {
+          agentId: "main",
+          path: storePath,
+          databaseIdentity: databaseClaim.identity,
+        },
+        target: { canonicalKey: key, storeKeys: [key] },
+      });
+      expect(typeof databaseClaim.identity).toBe("symbol");
       const [actor, sibling] = await Promise.all([
         acquireReplyOperationSessionActor(operation),
         acquireReplyOperationSessionActor(operation),
@@ -114,6 +126,7 @@ it("retains the native incognito owner until accepted actor work drains", async 
       expect(getReplyOperationSessionActor(operation)).toBeUndefined();
       expect(() => actor.snapshot(authority)).toThrow();
       expect(() => acquireReplyOperationSessionActor(operation)).toThrow();
+      expect(() => getReplyOperationSessionTarget(operation)).toThrow();
       expect(registry.isReplyRunSuccessorAdmissionBlocked(key)).toBe(true);
       expect(databaseClaim.isCurrent()).toBe(true);
 

@@ -6,6 +6,7 @@ import type {
   SessionAdmissionDatabaseClaim,
   SessionAdmissionTransition,
 } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
+import type { SessionEntryTargetPatchScope } from "../../config/sessions/session-accessor.types.js";
 import type { SessionActor } from "../../config/sessions/session-actor-contract.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
@@ -57,6 +58,8 @@ export type ReplyOperationAdmission = {
   databaseClaim?: SessionAdmissionDatabaseClaim;
   reader?: SessionEntryCohortReader;
   resolveReader?: () => SessionEntryCohortReader | undefined;
+  sessionTarget?: SessionEntryTargetPatchScope;
+  resolveSessionTarget?: () => SessionEntryTargetPatchScope | undefined;
   sessionActor?: SessionActor;
   acquireSessionActor?: () => Promise<SessionActor>;
   afterTransition?: (transition: SessionAdmissionTransition) => Promise<void>;
@@ -99,6 +102,13 @@ export function getReplyOperationSessionReader(operation: ReplyOperation | undef
 /** Borrow this operation's retained actor; callers never release it independently. */
 export function getReplyOperationSessionActor(operation: ReplyOperation | undefined) {
   return operation ? lifecycleAdmissionByOperation.get(operation)?.sessionActor : undefined;
+}
+
+/** Resolve the live operation's captured physical target, without selecting another owner. */
+export function getReplyOperationSessionTarget(operation: ReplyOperation | undefined) {
+  return operation
+    ? lifecycleAdmissionByOperation.get(operation)?.resolveSessionTarget?.()
+    : undefined;
 }
 
 export function acquireReplyOperationSessionActor(

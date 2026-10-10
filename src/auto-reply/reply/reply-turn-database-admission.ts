@@ -64,9 +64,15 @@ export function bindReplyOperationDatabaseAdmission(
     databaseIdentity: databaseClaim?.identity,
     databaseClaim,
     reader: bindReader(databaseClaim && "kind" in databaseClaim ? databaseClaim.reader : undefined),
+    sessionTarget: databaseClaim && "kind" in databaseClaim ? databaseClaim.target : undefined,
     resolveReader() {
       assertReaderOperation();
       return operationAdmission.reader;
+    },
+    resolveSessionTarget() {
+      assertReaderOperation();
+      operationAdmission.databaseClaim?.assertCurrent();
+      return operationAdmission.sessionTarget;
     },
     acquireSessionActor() {
       assertReaderOperation();
@@ -129,6 +135,7 @@ export function bindReplyOperationDatabaseAdmission(
         }
         operationAdmission.databaseClaim = next;
         operationAdmission.reader = bindReader(next.reader);
+        operationAdmission.sessionTarget = next.target;
         // Revoke the old view synchronously, then join its accepted work before returning.
         try {
           await releaseSessionActor();
