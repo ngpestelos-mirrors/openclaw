@@ -197,6 +197,9 @@ class OpenClawRouterOutlet extends OpenClawLightDomElement implements ControlUiR
   async settlePresentation(): Promise<boolean> {
     while (this.isConnected) {
       await this.updateComplete;
+      if (!this.isConnected) {
+        return false;
+      }
       if (!this.retainedUnmountGate.retiring && !this.transientUnmountGate.retiring) {
         await this.retainedPresentation.value?.updateComplete;
         if (this.isUpdatePending) {
