@@ -15,6 +15,7 @@ const codexClient = vi.hoisted(() => ({
   resolveCodexClientVersion: vi.fn(async (): Promise<string | undefined> => undefined),
 }));
 vi.mock("openclaw/plugin-sdk/provider-auth-runtime", () => mocks);
+// mock-isolation: the real facade loads the Codex plugin, which probes the host PATH for codex.
 vi.mock("openclaw/plugin-sdk/codex-client-version-runtime", () => codexClient);
 const codexPackage = JSON.parse(
   fs.readFileSync(new URL("../codex/package.json", import.meta.url), "utf8"),

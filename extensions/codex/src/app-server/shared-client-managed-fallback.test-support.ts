@@ -11,12 +11,43 @@ import { CODEX_APP_SERVER_VERSION } from "./version.js";
 
 type ClientHarness = ReturnType<typeof createClientHarness>;
 
-/** Registers first-start fallback from a selected installed Codex to the bundled package. */
-export function registerSharedClientInstalledFallbackTests(params: {
+/** Registers version-driven fallback between managed start candidates. */
+export function registerSharedClientManagedFallbackTests(params: {
+  configureManagedDesktopFallback: () => CodexAppServerStartOptions;
   resolveManagedStart: Mock;
   sendInitializeResult: (harness: ClientHarness, userAgent: string) => Promise<void>;
   warn: Mock;
 }): void {
+  it("keeps a supported desktop prerelease instead of falling back by version", async () => {
+    const desktop = createClientHarness();
+    const desktopVersion = `${new SemVer(CODEX_APP_SERVER_VERSION).inc("minor").version}-alpha.4`;
+    const startSpy = vi.spyOn(CodexAppServerClient, "start").mockResolvedValueOnce(desktop.client);
+    const startOptions = params.configureManagedDesktopFallback();
+
+    const acquire = getSharedCodexAppServerClient({ startOptions, timeoutMs: 1_000 });
+    await params.sendInitializeResult(desktop, `openclaw/${desktopVersion} (macOS; test)`);
+    const client = await acquire;
+
+    expect(client).toBe(desktop.client);
+    expect(startSpy).toHaveBeenCalledTimes(1);
+    expect(startSpy.mock.calls[0]?.[0]).toMatchObject({
+      command: "/Applications/Codex.app/Contents/Resources/codex",
+      commandSource: "resolved-managed",
+      managedFallbackCommandPaths: ["/cache/openclaw/codex"],
+    });
+    expect(desktop.process.stdin.destroyed).toBe(false);
+    expect(params.warn).toHaveBeenCalledExactlyOnceWith(
+      "codex app-server is newer than OpenClaw's managed runtime; continuing with normal startup validation",
+      {
+        detectedVersion: desktopVersion,
+        validatedVersion: CODEX_APP_SERVER_VERSION,
+      },
+    );
+
+    await clearSharedCodexAppServerClientAndWait({ exitTimeoutMs: 25, forceKillDelayMs: 5 });
+    expect(desktop.process.stdin.destroyed).toBe(true);
+  });
+
   describe("selected installed Codex", () => {
     const installedCommand = "/usr/local/lib/node_modules/@openai/codex/bin/codex.js";
     const installedVersion = new SemVer(CODEX_APP_SERVER_VERSION).inc("minor").version;

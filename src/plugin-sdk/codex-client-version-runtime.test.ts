@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { withHandedOffCodexClientVersion } from "./codex-client-version-handoff.internal.js";
 import { resolveCodexClientVersion } from "./codex-client-version-runtime.js";
+import type * as FacadeRuntime from "./facade-runtime.js";
 
 const tryLoadActivatedBundledPluginPublicSurfaceModule = vi.hoisted(() => vi.fn());
-vi.mock("./facade-runtime.js", () => ({ tryLoadActivatedBundledPluginPublicSurfaceModule }));
+vi.mock("./facade-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof FacadeRuntime>()),
+  tryLoadActivatedBundledPluginPublicSurfaceModule,
+}));
 
 // What the Codex plugin would select if this process probed PATH itself.
 const ownSelection = vi.fn(async () => "0.170.0");

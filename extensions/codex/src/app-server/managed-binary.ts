@@ -87,10 +87,15 @@ export function setManagedCodexPluginRoot(pluginRoot: string | undefined): void 
   registeredCodexPlugin.root = pluginRoot;
 }
 
-/** Selects the installed Codex once per process; later callers reuse the decision. */
-export function resolveInstalledCodexAppServer(): Promise<InstalledCodexAppServer | undefined> {
+/**
+ * Selects the installed Codex once per process; later callers reuse the
+ * decision, so probes only apply to the call that makes it.
+ */
+export function resolveInstalledCodexAppServer(
+  probes: InstalledCodexAppServerProbes = {},
+): Promise<InstalledCodexAppServer | undefined> {
   if (!installedCodex.selection) {
-    const selection = selectInstalledCodexAppServer().then((selected) => {
+    const selection = selectInstalledCodexAppServer(probes).then((selected) => {
       if (installedCodex.selection === selection && selected) {
         installedCodex.selected = selected;
       }
@@ -131,7 +136,7 @@ export function assertInstalledCodexAppServerVersion(
 }
 
 /** Uncached selection with one log line naming the chosen binary and why. */
-export async function selectInstalledCodexAppServer(
+async function selectInstalledCodexAppServer(
   probes: InstalledCodexAppServerProbes = {},
 ): Promise<InstalledCodexAppServer | undefined> {
   const decision = await decideInstalledCodexAppServer(probes);

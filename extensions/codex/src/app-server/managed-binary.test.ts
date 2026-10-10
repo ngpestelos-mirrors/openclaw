@@ -8,9 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import { resolveCodexAppServerRuntimeOptions } from "./config-runtime.js";
 import {
+  resolveInstalledCodexAppServer,
   resolveManagedCodexAppServerStartOptions,
   resolveManagedCodexNativeCommand,
-  selectInstalledCodexAppServer,
   setManagedCodexPluginRoot,
 } from "./managed-binary.js";
 import { CODEX_APP_SERVER_VERSION } from "./version.js";
@@ -281,6 +281,8 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
     bin = path.join(root, "prefix", "bin");
     await mkdir(bin, { recursive: true });
     vi.spyOn(embeddedAgentLog, "info").mockImplementation(() => undefined);
+    // Each case makes this process's first decision.
+    delete installedState.selection;
   });
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -310,7 +312,7 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
   }
 
   function select(probeHandshake = async () => NEWER) {
-    return selectInstalledCodexAppServer({ env: { PATH: bin }, probeHandshake });
+    return resolveInstalledCodexAppServer({ env: { PATH: bin }, probeHandshake });
   }
 
   function expectChoice(message: string) {
@@ -391,7 +393,7 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
     const runVersion = vi.fn(async () => `codex-cli ${NEWER}\n`);
 
     await expect(
-      selectInstalledCodexAppServer({
+      resolveInstalledCodexAppServer({
         env: { PATH: bin },
         runVersion,
         probeHandshake: async () => NEWER,
