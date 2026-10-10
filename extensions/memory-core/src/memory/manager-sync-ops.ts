@@ -529,7 +529,10 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
     try {
       await cleanupAgedMemoryReindexTempFiles(dbPath);
       const originalRevision = readMemoryDatabaseRevision(originalDb);
-      const shadow = MemoryIndexDatabase.openShadow(tempDbPath, this.settings.store.vector.enabled);
+      const shadow = await MemoryIndexDatabase.openShadow(
+        tempDbPath,
+        this.settings.store.vector.enabled,
+      );
       shadowCleanup = shadow;
       shadow.vector.enabled = this.vector.enabled;
       shadow.vector.extensionPath = this.vector.extensionPath;
@@ -582,7 +585,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
             nextMeta.vectorDims = this.vector.dims;
           }
 
-          await this.withDatabaseWrite(() => this.writeMeta(nextMeta));
+          await this.writeMeta(nextMeta);
           return {
             nextMeta,
             vectorIndexComplete,

@@ -18,6 +18,7 @@ import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   closeOpenClawStateDatabaseAsync,
+  openOpenClawAgentDatabase,
 } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { seedMemoryForgetTombstones } from "../test-helpers.js";
@@ -44,7 +45,7 @@ type ReindexHarness = {
   syncArchiveFiles: (params: SyncArchiveParams) => Promise<unknown>;
   db: DatabaseSync;
   cache: { enabled: boolean; maxEntries?: number };
-  writeMeta: (meta: MemoryIndexMeta) => void;
+  writeMeta: (meta: MemoryIndexMeta) => Promise<void>;
   providerKey: string | null;
   provider: EmbeddingProvider | null;
   dirty: boolean;
@@ -279,8 +280,8 @@ describe("memory manager reindex recovery", () => {
       path.join(memoryDir, "large.md"),
       `${"first ".repeat(3500)}\n${"second ".repeat(3500)}`,
     );
-    harness.db
-      .prepare(`INSERT INTO memory_embedding_cache
+    openOpenClawAgentDatabase({ agentId: "main" })
+      .db.prepare(`INSERT INTO memory_embedding_cache
       (provider, model, provider_key, hash, embedding, dims, updated_at)
       VALUES ('unrelated', 'unrelated', 'unrelated', 'keep', ?, 2, 1)`)
       .run(encodeMemoryEmbedding([1, 0]));
@@ -347,12 +348,12 @@ describe("memory manager reindex recovery", () => {
         publishedDb.prepare("SELECT hash, dims FROM memory_embedding_cache ORDER BY hash").all();
       const fullCacheRows = () =>
         publishedDb.prepare("SELECT * FROM memory_embedding_cache ORDER BY hash").all();
-      const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStore;
-      vi.spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStore").mockImplementation(
+      const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStoreV2;
+      vi.spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStoreV2").mockImplementation(
         async (...args) => {
           const [options, source, workerInput] = args;
           if (
-            source !== publishedDb ||
+            options.path !== publishedDb.location() ||
             workerInput.moduleUrl.href !==
               resolveRuntimeWorkerUrl(memoryCpuProcessEntrypoints.publication).href
           ) {
@@ -663,10 +664,10 @@ describe("memory manager reindex recovery", () => {
 
   it("bounds the shadow cache before any entries reach the primary", async () => {
     const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
-    const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStore;
-    const interceptedSources: Array<Parameters<typeof open>[1]> = [];
+    const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStoreV2;
+    const interceptedPaths: Array<string | undefined> = [];
     // Install before manager startup can retain its canonical publication client.
-    vi.spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStore").mockImplementation(
+    vi.spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStoreV2").mockImplementation(
       async (...args) => {
         const [options, source, worker] = args;
         if (
@@ -682,7 +683,7 @@ describe("memory manager reindex recovery", () => {
           moduleUrl: resolveRuntimeWorkerUrl(memoryPublicationFaultEntrypoint),
           input: { kind: "cache-capacity", publication: worker.input, maximum: 2 },
         });
-        interceptedSources.push(source);
+        interceptedPaths.push(options.path);
         return client;
       },
     );
@@ -696,10 +697,8 @@ describe("memory manager reindex recovery", () => {
     // primary-file high-water growth followed by post-publication deletion.
     await memoryManager.sync({ reason: "cli", force: true });
 
-    expect(interceptedSources.length).toBeGreaterThan(0);
-    for (const source of interceptedSources) {
-      expect(source === harness.db).toBe(true);
-    }
+    expect(interceptedPaths.length).toBeGreaterThan(0);
+    expect(interceptedPaths.every((path) => path === harness.db.location())).toBe(true);
     expect(
       harness.db.prepare("SELECT COUNT(*) AS count FROM memory_embedding_cache").get(),
     ).toEqual({ count: 2 });
@@ -726,8 +725,8 @@ describe("memory manager reindex recovery", () => {
       expect(
         harness.db.prepare("SELECT COUNT(*) AS c FROM memory_embedding_cache WHERE 0").get(),
       ).toEqual({ c: 0 });
-      expect(harness.db.prepare("DELETE FROM memory_embedding_cache WHERE 0").run().changes).toBe(
-        0,
+      expect(() => harness.db.prepare("DELETE FROM memory_embedding_cache WHERE 0").run()).toThrow(
+        /readonly/i,
       );
       expect([reads().length, deletes().length]).toEqual([1, 1]);
       observed.clear();
@@ -769,7 +768,7 @@ describe("memory manager reindex recovery", () => {
     await fs.writeFile(path.join(memoryDir, "alpha.md"), "published alpha");
     await memoryManager.sync({ reason: "cli", force: true });
     const harness = memoryManager as unknown as ReindexHarness;
-    const insert = harness.db.prepare(`
+    const insert = openOpenClawAgentDatabase({ agentId: "main" }).db.prepare(`
       INSERT INTO memory_embedding_cache
         (provider, model, provider_key, hash, embedding, dims, updated_at)
       VALUES ('previous-provider', 'previous-model', 'previous-key', ?, ?, 3, 1)
@@ -858,7 +857,11 @@ describe("memory manager reindex recovery", () => {
     }
     const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
     const reset = () =>
-      resetMemoryDatabase({ targetDb: harness.db, dbPath: databasePath, workspaceDir });
+      resetMemoryDatabase({
+        targetDb: openOpenClawAgentDatabase({ agentId: "main" }).db,
+        dbPath: databasePath,
+        workspaceDir,
+      });
     let releaseEmbedding = () => {};
     let markEmbeddingStarted = () => {};
     const embeddingGate = new Promise<void>((resolve) => {
@@ -971,7 +974,7 @@ describe("memory manager reindex recovery", () => {
           Date.now(),
         );
     }
-    harness.writeMeta({
+    await harness.writeMeta({
       model: "fts-only",
       provider: "none",
       providerKey: harness.providerKey ?? undefined,
