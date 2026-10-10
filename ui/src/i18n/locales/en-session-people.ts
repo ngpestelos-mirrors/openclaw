@@ -1,4 +1,3 @@
-import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -10,7 +9,7 @@ const enSessionPeople = {
   },
 } satisfies TranslationMap;
 
-export const registerSessionPeopleEnglish = defineEnglishCatalog(
+export const registerSessionPeopleEnglish = Object.assign(
   () => {
     Object.assign(en.sessionsView, enSessionPeople.sessionsView);
   },

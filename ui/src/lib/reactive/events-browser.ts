@@ -9,10 +9,7 @@ import {
   subscribeTranscriptScroll,
   type TranscriptScrollObservation,
 } from "../../pages/chat/components/chat-transcript-scroll-events.ts";
-import {
-  readNativeOverlayOcclusion,
-  subscribeNativeOverlayOcclusion,
-} from "../native-overlay-occlusion.ts";
+import { subscribeNativeOverlayOcclusion } from "../native-overlay-occlusion.ts";
 import { projectEvents, projectSource } from "./projection.ts";
 
 /** History owns popstate; programmatic navigation publication belongs to the router. */
@@ -64,7 +61,15 @@ export type NativeOverlayOcclusionSource = { getBounds: () => DOMRectReadOnly | 
 
 export function projectNativeOverlayOcclusion(source: NativeOverlayOcclusionSource) {
   return projectSource(source, {
-    read: (current) => readNativeOverlayOcclusion(current.getBounds),
+    read: (current) => {
+      // This owner publishes an initial value through subscribe, without a getter.
+      let occluded = false;
+      const release = subscribeNativeOverlayOcclusion((value) => {
+        occluded = value;
+      }, current.getBounds);
+      release();
+      return occluded;
+    },
     subscribe: (current, notify) => subscribeNativeOverlayOcclusion(notify, current.getBounds),
     equality: Object.is,
   });

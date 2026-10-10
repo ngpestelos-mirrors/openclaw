@@ -56,11 +56,13 @@ loads or applies CSS itself.
 
 Solid consumers import `t` from `lib/reactive/i18n.ts` and keep the call shape
 `t("key", params)`. It reads a locale/catalog revision through `projectI18n()`.
-The existing Lit translator does not import the signal runtime. Locale loading,
-fallback, persistence, and stale-load rejection
-stay in the i18n manager. English registrars preserve their synchronous writes
-and `.catalog` metadata and publish their first registration; repeats of the
-same static catalog do not trigger render loops.
+The existing Lit translator and English registrars are unchanged. Locale loading,
+fallback, persistence, and stale-load rejection stay in the i18n manager. Solid
+consumers call `registerEnglishCatalog(registerPageEnglish)` before reading that
+page's lazy keys, and use `registerLocaleCatalog(manager, locale, catalog)` for
+catalog replacement. These delegate to the existing owners and notify only the
+Solid projections; repeated English registration does not trigger render loops.
+Calling a legacy registrar directly does not notify Solid readers.
 
 `ApplicationContext` and its supporting types live in `app/context-types.ts`.
 `app/context.ts` retains the Lit token during migration. Solid callers use

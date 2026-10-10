@@ -1,4 +1,3 @@
-import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -24,7 +23,7 @@ const enPersonalInstructions = {
   },
 } satisfies TranslationMap;
 
-export const registerPersonalInstructionsEnglish = defineEnglishCatalog(
+export const registerPersonalInstructionsEnglish = Object.assign(
   () => {
     // Keep search labels eager; editor-only copy loads with the Profile component.
     Object.assign(

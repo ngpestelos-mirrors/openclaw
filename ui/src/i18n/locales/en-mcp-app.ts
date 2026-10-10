@@ -1,4 +1,3 @@
-import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -63,7 +62,7 @@ const enMcpApp = {
   },
 } satisfies TranslationMap;
 
-export const registerMcpAppEnglish = defineEnglishCatalog(
+export const registerMcpAppEnglish = Object.assign(
   () => Object.assign(en.mcpApp, enMcpApp.mcpApp),
   { catalog: enMcpApp },
 );

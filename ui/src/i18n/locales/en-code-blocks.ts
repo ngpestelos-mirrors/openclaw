@@ -1,4 +1,3 @@
-import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -22,7 +21,7 @@ const enCodeBlocks = {
   },
 } satisfies TranslationMap;
 
-export const registerCodeBlocksEnglish = defineEnglishCatalog(
+export const registerCodeBlocksEnglish = Object.assign(
   () => Object.assign(en.chat.codeBlock, enCodeBlocks.chat.codeBlock),
   { catalog: enCodeBlocks },
 );

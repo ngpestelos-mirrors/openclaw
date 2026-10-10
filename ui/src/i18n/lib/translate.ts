@@ -1,7 +1,6 @@
 import { getOrCreatePromise } from "../../../../src/shared/lazy-promise.ts";
 import { getSafeLocalStorage } from "../../local-storage.ts";
 import { en } from "../locales/en.ts";
-import { subscribeEnglishCatalogChanges } from "./english-catalog.ts";
 import {
   DEFAULT_LOCALE,
   SUPPORTED_LOCALES,
@@ -46,7 +45,6 @@ class I18nManager {
   private locale: Locale = DEFAULT_LOCALE;
   private translations: Partial<Record<Locale, TranslationMap>> = { [DEFAULT_LOCALE]: en };
   private subscribers: Set<Subscriber> = new Set();
-  private stopEnglishCatalog: (() => void) | undefined;
   // Locale chunks are served by the gateway, so a selection made while disconnected can fail.
   // Preserve the target for the next connected transition; otherwise the chrome silently stays
   // in the old language forever.
@@ -199,21 +197,11 @@ class I18nManager {
 
   public registerTranslation(locale: Locale, map: TranslationMap) {
     this.translations[locale] = map;
-    if (locale === this.locale || locale === DEFAULT_LOCALE) {
-      this.notify();
-    }
   }
 
   public subscribe(sub: Subscriber) {
     this.subscribers.add(sub);
-    this.stopEnglishCatalog ??= subscribeEnglishCatalogChanges(() => this.notify());
-    return () => {
-      this.subscribers.delete(sub);
-      if (this.subscribers.size === 0) {
-        this.stopEnglishCatalog?.();
-        this.stopEnglishCatalog = undefined;
-      }
-    };
+    return () => this.subscribers.delete(sub);
   }
 
   private notify() {

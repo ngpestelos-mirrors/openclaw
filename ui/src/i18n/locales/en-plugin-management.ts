@@ -1,4 +1,3 @@
-import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -418,7 +417,7 @@ const enPluginManagement = {
   },
 } satisfies TranslationMap;
 
-export const registerPluginManagementEnglish = defineEnglishCatalog(
+export const registerPluginManagementEnglish = Object.assign(
   () => {
     Object.assign(en.custodian, enPluginManagement.custodian);
     en.pluginsPage = enPluginManagement.pluginsPage;

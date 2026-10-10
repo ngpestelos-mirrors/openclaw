@@ -1,4 +1,3 @@
-import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -81,7 +80,7 @@ const enMemoryImport = {
   },
 } satisfies TranslationMap;
 
-export const registerMemoryImportEnglish = defineEnglishCatalog(
+export const registerMemoryImportEnglish = Object.assign(
   () => {
     en.memoryImport = enMemoryImport.memoryImport;
   },

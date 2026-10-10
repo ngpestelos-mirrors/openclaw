@@ -1,4 +1,3 @@
-import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -39,7 +38,7 @@ const enChatCi = {
   },
 } satisfies TranslationMap;
 
-export const registerChatCiEnglish = defineEnglishCatalog(
+export const registerChatCiEnglish = Object.assign(
   () => Object.assign(en.chat.pullRequests, enChatCi.chat.pullRequests),
   { catalog: enChatCi },
 );

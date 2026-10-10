@@ -1,4 +1,3 @@
-import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -156,7 +155,7 @@ const enCommandPalette = {
   },
 } satisfies TranslationMap;
 
-export const registerCommandPaletteEnglish = defineEnglishCatalog(
+export const registerCommandPaletteEnglish = Object.assign(
   () => {
     Object.assign(en.shortcutsOverlay, enCommandPalette.shortcutsOverlay);
     Object.assign(en.chat.welcome, enCommandPalette.chat.welcome);

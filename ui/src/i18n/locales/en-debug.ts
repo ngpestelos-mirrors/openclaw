@@ -1,4 +1,3 @@
-import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -86,7 +85,7 @@ const enDebug = {
   },
 } satisfies TranslationMap;
 
-export const registerDebugEnglish = defineEnglishCatalog(
+export const registerDebugEnglish = Object.assign(
   () => {
     const { lanes, overlay, ...sections } = enDebug.debug;
     // Preserve the eager namespaces and their existing readers.

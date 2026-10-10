@@ -1,4 +1,3 @@
-import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -82,7 +81,7 @@ const enGitHub = {
   },
 } satisfies TranslationMap;
 
-export const registerGitHubEnglish = defineEnglishCatalog(
+export const registerGitHubEnglish = Object.assign(
   () => Object.assign(en.agentTools, enGitHub.agentTools),
   { catalog: enGitHub },
 );

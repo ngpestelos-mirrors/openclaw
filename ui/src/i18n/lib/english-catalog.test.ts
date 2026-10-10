@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { createEffect, createRoot, flush } from "@solidjs/signals";
 import { expect, it, vi } from "vitest";
-import { t } from "../../lib/reactive/i18n.ts";
+import { registerEnglishCatalog, t } from "../../lib/reactive/i18n.ts";
 import { registerBoardWebsiteEnglish } from "../locales/en-board-website.ts";
 import { en } from "../locales/en.ts";
 import { loadLazyLocaleTranslation } from "./registry.ts";
@@ -32,7 +32,7 @@ it("invalidates public t for lazy fallback registration without replacing active
     flush();
     expect(labels).toEqual([["Webseite öffnen", "board.widget.websiteEmbedHint"]]);
 
-    registerBoardWebsiteEnglish();
+    registerEnglishCatalog(registerBoardWebsiteEnglish);
     flush();
     expect(labels.at(-1)).toEqual([
       "Webseite öffnen",
@@ -40,7 +40,7 @@ it("invalidates public t for lazy fallback registration without replacing active
     ]);
     expect(en.board.widget).toBe(widget);
     const count = labels.length;
-    registerBoardWebsiteEnglish();
+    registerEnglishCatalog(registerBoardWebsiteEnglish);
     flush();
     expect(labels).toHaveLength(count);
   } finally {

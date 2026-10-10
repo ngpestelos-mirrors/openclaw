@@ -9,10 +9,7 @@ import {
   subscribePluginHelp,
   type PluginHelpContext,
 } from "../../pages/custodian/plugin-help-state.ts";
-import {
-  acquirePaletteIdentityPreferences,
-  peekPaletteIdentityPreferences,
-} from "../../pages/new-session/palette-identity-preferences.ts";
+import { acquirePaletteIdentityPreferences } from "../../pages/new-session/palette-identity-preferences.ts";
 import { peekChatMetadata, subscribeChatMetadata } from "../chat/chat-metadata-store.ts";
 import { readMcpAppContexts, subscribeMcpAppContexts } from "../mcp-app-context.ts";
 import type { ModelCatalogClient, ModelCatalogReadScope } from "../model-catalog-cache.ts";
@@ -106,17 +103,20 @@ export type PaletteIdentitySource = {
 export function projectPaletteIdentityPreferences(source: PaletteIdentitySource) {
   type Preferences = ReturnType<typeof acquirePaletteIdentityPreferences>;
   type Snapshot = Pick<Preferences, "mode" | "palettePreference">;
-  const initial: Snapshot = { mode: "loading", palettePreference: null };
   return projectSource(source, {
-    // No owner is acquired until a consumer observes this projection.
+    // A temporary non-current binding samples the existing owner without starting reads.
     read: (current): Snapshot => {
-      const preferences = peekPaletteIdentityPreferences(current.owner);
-      return preferences
-        ? {
-            mode: preferences.mode,
-            palettePreference: preferences.palettePreference,
-          }
-        : initial;
+      const preferences = acquirePaletteIdentityPreferences(current.owner);
+      const release = preferences.subscribe(
+        () => {},
+        () => false,
+      );
+      const snapshot = {
+        mode: preferences.mode,
+        palettePreference: preferences.palettePreference,
+      };
+      release();
+      return snapshot;
     },
     subscribe: (current, notify) => {
       const preferences = acquirePaletteIdentityPreferences(current.owner);

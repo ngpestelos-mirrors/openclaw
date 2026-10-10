@@ -1,4 +1,3 @@
-import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -69,7 +68,7 @@ const enProfile = {
   },
 } satisfies TranslationMap;
 
-export const registerProfileEnglish = defineEnglishCatalog(
+export const registerProfileEnglish = Object.assign(
   () => {
     // Shared menu/search labels stay eager; editor copy loads with its consumers.
     en.profilePage.access = enProfile.profilePage.access;

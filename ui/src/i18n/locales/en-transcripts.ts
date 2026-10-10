@@ -1,4 +1,3 @@
-import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -152,7 +151,7 @@ const enTranscripts = {
   },
 } satisfies TranslationMap;
 
-export const registerTranscriptsEnglish = defineEnglishCatalog(
+export const registerTranscriptsEnglish = Object.assign(
   () => {
     en.transcripts = enTranscripts.transcripts;
     // SAFETY: The eager catalog owns meetingCapture as an object containing shared search labels.

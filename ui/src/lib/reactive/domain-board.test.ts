@@ -1,9 +1,54 @@
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { GatewayEventFrame } from "../../api/gateway.ts";
+import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { EventStream, ValueSignal } from "../board/provider-signals.ts";
-import { projectBoardEvents, projectBoardSession, projectBoardValue } from "./domain-board.ts";
+import { acquireBoardProviderForSession } from "../board/provider.ts";
+import {
+  projectBoardEvents,
+  projectBoardProvider,
+  projectBoardSession,
+  projectBoardValue,
+} from "./domain-board.ts";
 
 describe("board projections", () => {
+  it("projects an acquired provider without taking custody of its caller-owned lease", async () => {
+    const sessionKey = "agent:main:caller-owned-projection";
+    let revision = 0;
+    const request = vi.fn(async (method: string) => {
+      if (method !== "board.update") {
+        throw new Error(`Unexpected method: ${method}`);
+      }
+      return { sessionKey, revision: ++revision, tabs: [], widgets: [] };
+    });
+    const stopTransport = vi.fn();
+    const client = {
+      request: createTestGatewayClient(request).request,
+      addEventListener: vi.fn(() => stopTransport),
+    };
+    const lease = acquireBoardProviderForSession({ sessionKey }, client, false);
+    onTestFinished(() => lease.release());
+    const projection = projectBoardProvider(lease.provider);
+    onTestFinished(() => projection.dispose());
+    const changed = vi.fn();
+    expect(projection.read().snapshot.revision).toBe(0);
+    expect(projection.read().hasLoadedSnapshot).toBe(false);
+    projection.subscribe(changed);
+    await lease.provider.applyOps([]);
+    expect(projection.read().snapshot.revision).toBe(1);
+    expect(projection.read().hasLoadedSnapshot).toBe(true);
+    expect(changed).toHaveBeenCalledOnce();
+
+    projection.dispose();
+    expect(stopTransport).not.toHaveBeenCalled();
+    await lease.provider.applyOps([]);
+    expect(lease.provider.snapshot$.value.revision).toBe(2);
+    expect(projection.read().snapshot.revision).toBe(1);
+    expect(changed).toHaveBeenCalledOnce();
+    lease.release();
+    expect(stopTransport).toHaveBeenCalledOnce();
+    await expect(lease.provider.applyOps([])).rejects.toThrow();
+  });
+
   it("keeps repeated mutable value publications and repeated events distinct", () => {
     const value = { count: 1 };
     const signal = new ValueSignal(value);

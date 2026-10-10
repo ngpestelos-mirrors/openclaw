@@ -1,4 +1,3 @@
-import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -70,7 +69,7 @@ const enPluginConsent = {
   },
 } satisfies TranslationMap;
 
-export const registerPluginConsentEnglish = defineEnglishCatalog(
+export const registerPluginConsentEnglish = Object.assign(
   () => {
     en.pluginConsent = enPluginConsent.pluginConsent;
   },

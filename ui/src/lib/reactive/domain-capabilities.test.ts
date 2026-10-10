@@ -18,11 +18,49 @@ import {
   projectChannels,
   projectRosterActivity,
   projectRuntimeConfig,
+  projectSessionCreated,
   projectSessionList,
   projectSessions,
 } from "./domain-capabilities.ts";
 
 describe("domain capability projections", () => {
+  it("delivers created sessions from only the current capability until disposal", async () => {
+    const createOwner = (key: string) => {
+      const source = createApplicationGateway();
+      const client = createTestGatewayClient(async (method) => {
+        if (method === "sessions.create") {
+          return { key };
+        }
+        if (method === "sessions.list") {
+          return sessionsResult([], 1);
+        }
+        throw new Error(`Unexpected method: ${method}`);
+      });
+      source.publish({ ...source.gateway.snapshot, client, phase: "connected" });
+      return createTestSessionCapability(source.gateway);
+    };
+    const first = createOwner("agent:main:first-created");
+    const second = createOwner("agent:main:second-created");
+    const projection = projectSessionCreated(first);
+    onTestFinished(() => projection.dispose());
+    const delivered: string[] = [];
+    projection.subscribe((key) => {
+      delivered.push(key);
+    });
+    await expect(first.create({ agentId: "main" })).resolves.toBe("agent:main:first-created");
+    expect(delivered).toEqual(["agent:main:first-created"]);
+
+    projection.replaceSource(second);
+    await expect(first.create({ agentId: "main" })).resolves.toBe("agent:main:first-created");
+    expect(delivered).toEqual(["agent:main:first-created"]);
+    await expect(second.create({ agentId: "main" })).resolves.toBe("agent:main:second-created");
+    expect(delivered).toEqual(["agent:main:first-created", "agent:main:second-created"]);
+
+    projection.dispose();
+    await expect(second.create({ agentId: "main" })).resolves.toBe("agent:main:second-created");
+    expect(delivered).toEqual(["agent:main:first-created", "agent:main:second-created"]);
+  });
+
   it("publishes mutable agent state and scopes file and identity reads to the selected agent", async () => {
     const source = createApplicationGateway();
     const client = createTestGatewayClient(async (method, params) => {
