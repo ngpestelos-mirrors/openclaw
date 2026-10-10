@@ -23,10 +23,9 @@ export function createSolidControlUiBuildPlugin(rootDir: string): Plugin {
       build.onLoad({ filter: /\.tsx$/ }, async ({ path: sourcePath }) => {
         if (!compiler) {
           try {
+            const require = createRequire(path.join(rootDir, "package.json"));
             // SAFETY: The author-installed compiler exposes this public transform API.
-            compiler = createRequire(path.join(rootDir, "package.json"))(
-              "@solidjs/compiler",
-            ) as SolidCompiler;
+            compiler = require("@solidjs/compiler") as SolidCompiler;
           } catch (cause) {
             throw new Error(
               "Install @solidjs/compiler in this plugin's devDependencies to build Solid TSX Control UI sources.",
