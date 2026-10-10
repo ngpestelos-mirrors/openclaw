@@ -27,6 +27,7 @@ import { createSessionCapability } from "../lib/sessions/index.ts";
 import { parseAgentSessionKey } from "../lib/sessions/session-key.ts";
 import { loadChatObserverDisplayPreference } from "../pages/chat/chat-observer-display.ts";
 import { sendSessionObserverVisibility } from "../pages/chat/chat-observer.ts";
+import { prewarmSidebarSnapshot } from "../pages/chat/sidebar-snapshot-prewarm.ts";
 import {
   isDefaultChatLanding,
   startModelSetupFirstRunRedirectAfterLocation,
@@ -206,6 +207,7 @@ export function bootstrapApplication(): ApplicationRuntime {
   if (bootRecord) {
     prewarmBootChat(bootRecord, settings.sessionKey);
   }
+  const stopSidebarPrewarm = bootRecord ? prewarmSidebarSnapshot(gateway, bootRecord) : undefined;
   const stopWarmBootConnection = startsApplicationRouter
     ? subscribeWarmBootConnection(gateway, bootRecord, () => {
         warmBoot = false;
@@ -668,6 +670,7 @@ export function bootstrapApplication(): ApplicationRuntime {
       startupLifecycle.stop();
       stopWarmBootConnection?.();
       bootRecordPersistence?.dispose();
+      stopSidebarPrewarm?.();
       stopPostConnect();
       stopForegroundBootstrap();
       connectionBootstrap.reset();
