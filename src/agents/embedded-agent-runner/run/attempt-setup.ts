@@ -33,6 +33,7 @@ import { resolveImageSanitizationLimits } from "../../image-sanitization.js";
 import type { SandboxContext } from "../../sandbox/types.js";
 import type { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
 import { sanitizeToolUseResultPairingForModel } from "../../session-transcript-repair.js";
+import { agentSessionDeferThresholdCompaction } from "../../sessions/agent-session-types.js";
 import type { AgentSession } from "../../sessions/index.js";
 import { invalidateComputerFrameIfMissing } from "../../tools/computer-tool.js";
 import { resolveAttemptWorkspaceSandbox } from "../../workspace-sandbox.js";
@@ -203,6 +204,7 @@ export function installEmbeddedAttemptContextGuards(input: {
       ? {
           midTurnPrecheck: {
             enabled: true,
+            deferToRequestBoundary: () => activeSession[agentSessionDeferThresholdCompaction],
             getReplay: () => ({
               model: attempt.model,
               sessionId: attempt.sessionId,

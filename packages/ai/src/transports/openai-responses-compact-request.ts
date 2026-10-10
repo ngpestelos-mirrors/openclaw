@@ -1,4 +1,4 @@
-import type { Context, Model, StreamFn } from "@openclaw/llm-core";
+import type { Context, Model, StreamFn, Usage } from "@openclaw/llm-core";
 import type { OpenAIResponsesCompactionOutput } from "./openai-responses-compaction-window.js";
 import type {
   OpenAIResponsesOptions,
@@ -10,12 +10,15 @@ export type OpenAIResponsesCompactEndpointResult = {
   item: { type: "compaction"; id?: string; encrypted_content: string };
   historyMode: "compacted-prefix" | "retained-users";
   usage: Record<string, unknown> & { input_tokens: number; output_tokens: number };
+  /** Normal Responses accounting, including cache splits and service-tier pricing. */
+  modelUsage?: Usage;
   model: Model;
   replayMetadata: OpenAIResponsesReasoningReplayMetadata;
 };
 
 type ResponsesCompactRequestController = {
   claimed: boolean;
+  mode: "endpoint" | "v2";
   resolve(result: OpenAIResponsesCompactEndpointResult): void;
   reject(error: unknown): void;
 };
@@ -33,12 +36,13 @@ export function claimResponsesCompactRequest(options: object | undefined) {
   return undefined;
 }
 
-/** Run a compact-endpoint request through the session's prepared stream stack. */
+/** Run provider compaction through the session's prepared stream stack. */
 export async function requestPreparedOpenAIResponsesCompaction(
   streamFn: StreamFn,
   model: Model,
   context: Context,
   options: OpenAIResponsesOptions,
+  mode: "endpoint" | "v2" = "endpoint",
 ): Promise<OpenAIResponsesCompactEndpointResult> {
   const preparedOptions = { ...options };
   let resolveResult!: (result: OpenAIResponsesCompactEndpointResult) => void;
@@ -47,7 +51,7 @@ export async function requestPreparedOpenAIResponsesCompaction(
     resolveResult = resolve;
     rejectResult = reject;
   });
-  const controller = { claimed: false, resolve: resolveResult, reject: rejectResult };
+  const controller = { claimed: false, mode, resolve: resolveResult, reject: rejectResult };
   Reflect.set(preparedOptions, COMPACT_REQUEST, controller);
   const stream = await Promise.resolve(
     streamFn(model, context, preparedOptions as Parameters<StreamFn>[2]),

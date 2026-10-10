@@ -139,6 +139,7 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
     Pick<EmbeddedRunAttemptParams, "model" | "runtimePlan" | "authProfileId">;
   activeContextEngine?: Pick<ContextEngine, "info">;
   compactionReplayEnabled: boolean;
+  providerCompactionAtRequestBoundary?: boolean;
   contextEngineAssemblySucceeded: boolean;
   contextEnginePromptAuthority: NonNullable<AssembleResult["promptAuthority"]>;
   contextTokenBudget: number;
@@ -242,7 +243,11 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
     }),
   );
   const checkpointPressure = preemptiveCompaction.compactionReplay;
-  if (checkpointPressure && checkpointPressure.route !== "fits") {
+  if (
+    checkpointPressure &&
+    checkpointPressure.route !== "fits" &&
+    !input.providerCompactionAtRequestBoundary
+  ) {
     // Only the actual canonical window can require recovery; the raw-history
     // maximum above remains diagnostic even when it exceeds this window.
     return {

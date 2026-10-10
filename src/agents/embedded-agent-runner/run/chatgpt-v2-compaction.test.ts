@@ -1,0 +1,402 @@
+import { createOpenAIResponsesTransportStreamFn } from "@openclaw/ai/transports";
+import type { Model } from "@openclaw/llm-core";
+import { Type } from "typebox";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureAiTransportHost, getAiTransportHost } from "../../../../packages/ai/src/host.js";
+import {
+  createAssistant,
+  createTestSession,
+  registerAgentSessionLoopTestLifecycle,
+} from "../../sessions/agent-session-loop-correctness.test-support.js";
+import {
+  agentSessionDeferThresholdCompaction,
+  type AgentSessionEvent,
+} from "../../sessions/agent-session-types.js";
+import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
+import { SessionManager } from "../../sessions/session-manager.js";
+import { SettingsManager } from "../../sessions/settings-manager.js";
+import { createToolResultPromptProjectionState } from "../session-prompt-state.js";
+import { submitEmbeddedAttemptPrompt } from "./attempt-prompt-submit.js";
+import {
+  createChatGPTV2CompactionBoundary,
+  isChatGPTV2CompactionEligible,
+} from "./chatgpt-v2-compaction.js";
+import { MidTurnPrecheckSignal } from "./midturn-precheck.js";
+import { buildRuntimeContextCustomMessage } from "./runtime-context-prompt.js";
+
+registerAgentSessionLoopTestLifecycle();
+const initialHost = getAiTransportHost();
+const model = {
+  id: "test-v2",
+  name: "Test ChatGPT",
+  api: "openai-chatgpt-responses",
+  provider: "openai",
+  baseUrl: "https://chatgpt.com/backend-api/codex",
+  reasoning: true,
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 32_000,
+  maxTokens: 512,
+} satisfies Model;
+const terminal = {
+  type: "response.completed",
+  response: {
+    id: "resp_fixture",
+    status: "completed",
+    output: [],
+    usage: {
+      input_tokens: 30,
+      output_tokens: 5,
+      total_tokens: 35,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens_details: { reasoning_tokens: 0 },
+    },
+  },
+};
+const compactEvents = (index: number) => [
+  {
+    type: "response.output_item.done",
+    output_index: 0,
+    item: { type: "compaction", encrypted_content: "opaque" + index },
+  },
+  terminal,
+];
+const toolEvents = () => {
+  const item = {
+    type: "function_call",
+    id: "fc_fixture",
+    call_id: "call_fixture",
+    name: "lookup",
+    arguments: "{}",
+    status: "completed",
+  };
+  return [
+    { type: "response.output_item.added", output_index: 0, item },
+    { type: "response.output_item.done", output_index: 0, item },
+    terminal,
+  ];
+};
+const textEvents = () => {
+  const item = {
+    type: "message",
+    id: "msg_fixture",
+    role: "assistant",
+    status: "completed",
+    content: [{ type: "output_text", text: "done", annotations: [] }],
+  };
+  return [
+    { type: "response.output_item.added", output_index: 0, item },
+    { type: "response.output_item.done", output_index: 0, item },
+    terminal,
+  ];
+};
+type Body = {
+  input: Array<Record<string, unknown>>;
+  tools?: unknown;
+  instructions?: string;
+  hook_marker?: string;
+};
+let requests: Body[];
+let respond: (body: Body) => unknown[];
+beforeEach(() => {
+  requests = [];
+  let compactions = 0;
+  respond = (body) =>
+    body.input.at(-1)?.type === "compaction_trigger" ? compactEvents(++compactions) : textEvents();
+  configureAiTransportHost({
+    buildModelFetch: () => async (_input, init) => {
+      const body = (await new Response(init?.body).json()) as Body;
+      requests.push(body);
+      return new Response(
+        respond(body)
+          .map((event) => "data: " + JSON.stringify(event) + "\n\n")
+          .join(""),
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      );
+    },
+  });
+});
+afterEach(() => configureAiTransportHost(initialHost));
+
+async function fixture(sessionManager = SessionManager.inMemory(), withHistory = true) {
+  if (withHistory) {
+    sessionManager.appendMessage({ role: "user", content: "remember copper", timestamp: 1 });
+    sessionManager.appendMessage(
+      createAssistant(model, [{ type: "text", text: "Old detail. ".repeat(3_500) }], "stop", 7_000),
+    );
+  }
+  const execute = vi.fn(async () => ({
+    content: [{ type: "text" as const, text: "settled result. ".repeat(2_500) }],
+    details: {},
+  }));
+  const { session } = await createTestSession({
+    model,
+    sessionManager,
+    systemPrompt: "stable system",
+    settingsManager: SettingsManager.inMemory({
+      compaction: { enabled: true, reserveTokens: 2_000 },
+      retry: { enabled: false },
+    }),
+    contextOverflowRecoveryOwner: "caller",
+    customTools: [
+      {
+        name: "lookup",
+        label: "lookup",
+        description: "read a record",
+        parameters: Type.Object({}),
+        execute,
+      },
+    ],
+  });
+  session[agentSessionDeferThresholdCompaction] = true;
+  const transport = createOpenAIResponsesTransportStreamFn();
+  session.agent.streamFn = (activeModel, context, options) => {
+    const transportOptions = {
+      ...options,
+      apiKey: options?.apiKey ?? "test-api-key",
+      authProfileId: "fixture-profile",
+      onPayload: (payload: unknown) => ({ ...(payload as object), hook_marker: "normal-hook" }),
+    };
+    return transport(activeModel, context, transportOptions);
+  };
+  const events: AgentSessionEvent[] = [];
+  session.subscribe((event) => {
+    events.push(event);
+  });
+  const onFallback = vi.fn();
+  const withTranscriptWrite = <T>(write: () => Promise<T>) =>
+    withSessionManagerWrite(sessionManager, write);
+  const boundaryParams = {
+    session,
+    contextTokenBudget: 8_000,
+    reserveTokens: 2_000,
+    timeoutMs: 30_000,
+    authProfileId: "fixture-profile",
+    assertActive: () => {},
+    withTranscriptWrite,
+    onFallback,
+  };
+  const boundary = createChatGPTV2CompactionBoundary(boundaryParams);
+  const submit = (prompt = "current request") =>
+    submitEmbeddedAttemptPrompt({
+      attempt: { sessionId: session.sessionId },
+      activeSession: session,
+      contextTokenBudget: 8_000,
+      compactBeforeRequest: boundary,
+      images: [],
+      modelPrompt: prompt,
+      transcriptPrompt: prompt,
+      onFinalPromptText: () => {},
+      onSteeringAcknowledged: () => {},
+      persistToolResultProjections: async () => {},
+      withTranscriptWrite,
+      runtimeOnly: false,
+      systemPrompt: "stable system",
+      toolResultAggregateMaxChars: 80_000,
+      toolResultMaxChars: 80_000,
+      toolResultPromptProjectionState: createToolResultPromptProjectionState(),
+      trajectoryRecorder: null,
+      transcriptLeafId: sessionManager.getLeafId(),
+      appendOnlyRuntimeContext: true,
+      runtimeContextMessage:
+        buildRuntimeContextCustomMessage("per-turn developer context") ?? undefined,
+      promptActiveSession: (text, options) => session.prompt(text, options),
+    });
+  return { session, sessionManager, execute, events, onFallback, boundary, boundaryParams, submit };
+}
+
+const realUserText = (body: Body) =>
+  body.input
+    .filter((item) => item.role === "user")
+    .flatMap((item) => (item.content as Array<{ text?: string }>).map((part) => part.text));
+
+describe("ChatGPT V2 at the embedded normal request boundary", () => {
+  it("compacts preflight and settled tool turns through the live stack without reexecuting tools", async () => {
+    const f = await fixture();
+    let normal = 0;
+    let compacted = 0;
+    respond = (body) =>
+      body.input.at(-1)?.type === "compaction_trigger"
+        ? compactEvents(++compacted)
+        : ++normal === 1
+          ? toolEvents()
+          : textEvents();
+    await f.submit();
+    expect(f.onFallback).not.toHaveBeenCalled();
+    expect(f.execute).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(4);
+    const [firstCompact, firstNormal, secondCompact, secondNormal] = requests;
+    if (!firstCompact || !firstNormal || !secondCompact || !secondNormal) {
+      throw new Error("Expected compaction and continuation at both boundaries");
+    }
+    expect(firstCompact.hook_marker).toBe("normal-hook");
+    expect(firstCompact.tools).toEqual(firstNormal.tools);
+    expect(firstCompact.instructions).toBe(firstNormal.instructions);
+    expect(JSON.stringify(firstCompact)).toContain("per-turn developer context");
+    expect(JSON.stringify(firstCompact)).toContain("current request");
+    expect(firstNormal.input.at(-1)).toEqual({ type: "compaction", encrypted_content: "opaque1" });
+    expect(secondCompact.input.some((item) => item.type === "function_call_output")).toBe(true);
+    expect(secondNormal.input.some((item) => item.type === "function_call_output")).toBe(false);
+    expect(realUserText(secondNormal)).toEqual(realUserText(firstNormal));
+    expect(secondNormal.input.at(-1)).toEqual({ type: "compaction", encrypted_content: "opaque2" });
+    const persisted = f.sessionManager.buildSessionContext().messages;
+    expect(persisted.filter((message) => message.role === "user")).toHaveLength(2);
+    expect(
+      persisted.filter((message) => message.role === "assistant" && message.providerReplay),
+    ).toHaveLength(2);
+    expect(
+      persisted.findLast((message) => message.role === "assistant" && message.providerReplay),
+    ).toMatchObject({ providerReplay: { compactedWindow: { outputTokens: 5 } } });
+    expect(
+      f.events.filter(
+        (event) => event.type === "compaction_end" && event.outcome.status === "completed",
+      ),
+    ).toHaveLength(2);
+
+    // Rehydrate the persisted entries, not the live Agent or boundary closure.
+    const reopened = await fixture(
+      SessionManager.fromEntries([f.sessionManager.getHeader(), ...f.sessionManager.getEntries()]),
+      false,
+    );
+    requests = [];
+    await reopened.submit("after restart");
+    expect(requests).toHaveLength(1);
+    const resumed = requests[0];
+    if (!resumed) {
+      throw new Error("Missing resumed request");
+    }
+    expect(
+      resumed.input.some(
+        (item) => item.type === "compaction" && item.encrypted_content === "opaque2",
+      ),
+    ).toBe(true);
+    expect(realUserText(resumed)).toEqual([...realUserText(firstNormal), "after restart"]);
+    expect(reopened.execute).not.toHaveBeenCalled();
+  });
+
+  it("falls back once on an invalid checkpoint without persisting or dispatching foreground work", async () => {
+    const f = await fixture();
+    respond = () => [terminal];
+    await f.submit();
+    expect(requests).toHaveLength(1);
+    expect(f.onFallback).toHaveBeenCalledOnce();
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(
+      f.sessionManager
+        .buildSessionContext()
+        .messages.some((message) => message.role === "assistant" && message.providerReplay),
+    ).toBe(false);
+  });
+
+  it("rejects retained input requiring redaction before making a provider request", async () => {
+    const f = await fixture();
+    const boundary = createChatGPTV2CompactionBoundary({
+      ...f.boundaryParams,
+      config: { logging: { redactPatterns: ["PRIVATE_VALUE"] } },
+    });
+    await expect(
+      boundary(
+        f.session.agent.streamFn,
+        model,
+        {
+          messages: [
+            { role: "user", content: "PRIVATE_VALUE " + "large ".repeat(5_000), timestamp: 1 },
+          ],
+        },
+        {},
+      ),
+    ).rejects.toBeInstanceOf(MidTurnPrecheckSignal);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("never falls back after a committed checkpoint or caller abort", async () => {
+    const f = await fixture();
+    const failure = new Error("write handle release failed");
+    const boundary = createChatGPTV2CompactionBoundary({
+      ...f.boundaryParams,
+      withTranscriptWrite: async (write) => {
+        await f.boundaryParams.withTranscriptWrite(write);
+        throw failure;
+      },
+    });
+    await expect(
+      boundary(
+        f.session.agent.streamFn,
+        model,
+        {
+          messages: f.session.messages.filter(
+            (message) =>
+              message.role === "user" ||
+              message.role === "assistant" ||
+              message.role === "toolResult",
+          ),
+        },
+        { sessionId: f.session.sessionId },
+      ),
+    ).rejects.toBe(failure);
+    expect(f.onFallback).not.toHaveBeenCalled();
+    expect(
+      f.sessionManager
+        .buildSessionContext()
+        .messages.some((message) => message.role === "assistant" && message.providerReplay),
+    ).toBe(true);
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled"));
+    await expect(
+      f.boundary(f.session.agent.streamFn, model, { messages: [] }, { signal: controller.signal }),
+    ).rejects.toThrow("cancelled");
+    expect(f.onFallback).not.toHaveBeenCalled();
+  });
+
+  it("does not cover transcript entries admitted while V2 is pending", async () => {
+    const f = await fixture();
+    respond = () => {
+      f.sessionManager.appendMessage({
+        role: "user",
+        content: "newly admitted input",
+        timestamp: 3,
+      });
+      return compactEvents(1);
+    };
+    await f.submit();
+    expect(f.onFallback).toHaveBeenCalledOnce();
+    expect(
+      f.sessionManager
+        .buildSessionContext()
+        .messages.some((message) => message.role === "assistant" && message.providerReplay),
+    ).toBe(false);
+    expect(
+      f.sessionManager
+        .buildSessionContext()
+        .messages.some(
+          (message) => message.role === "user" && message.content === "newly admitted input",
+        ),
+    ).toBe(true);
+  });
+
+  it("keeps explicit opt-outs, proxy routes and custom compaction owners out of V2", () => {
+    const eligible = {
+      model,
+      extraParams: {},
+      compactionEnabled: true,
+      compactionReplayEnabled: true,
+    };
+    expect(isChatGPTV2CompactionEligible(eligible)).toBe(true);
+    for (const override of [
+      { compactionEnabled: false },
+      { compactionReplayEnabled: false },
+      { extraParams: { responsesCompactEndpoint: false } },
+      { extraParams: { responsesServerCompaction: false } },
+      { contextEngineOwnsCompaction: true },
+      { config: { agents: { defaults: { compaction: { model: "other/model" } } } } },
+      { config: { agents: { defaults: { compaction: { provider: "custom" } } } } },
+      { operation: "settled-tool-finalization" },
+      { model: { ...model, baseUrl: "https://proxy.invalid" } },
+      { model: { ...model, api: "openai-responses" } },
+    ]) {
+      expect(isChatGPTV2CompactionEligible({ ...eligible, ...override })).toBe(false);
+    }
+  });
+});

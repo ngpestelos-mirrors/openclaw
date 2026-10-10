@@ -30,6 +30,7 @@ import {
   stripSessionsYieldArtifacts,
 } from "./attempt-sessions-yield.js";
 import { waitForEmbeddedAbortSettle } from "./attempt-subscription-cleanup.js";
+import type { createChatGPTV2CompactionBoundary } from "./chatgpt-v2-compaction.js";
 import { wrapStreamFnWithMessageTransform } from "./message-transform-stream-wrapper.js";
 import { isMidTurnPrecheckSignal, type MidTurnPrecheckRequest } from "./midturn-precheck.js";
 import type { RuntimeContextCustomMessage } from "./runtime-context-prompt.js";
@@ -76,6 +77,7 @@ export async function submitEmbeddedAttemptPrompt(input: {
   appendContext?: string;
   contextTokenBudget: number;
   compactionRequestBudget?: CompactionRequestBudget;
+  compactBeforeRequest?: ReturnType<typeof createChatGPTV2CompactionBoundary>;
   images: ImageContent[];
   leasedSteering?: SteeringLease;
   modelPrompt: string;
@@ -131,7 +133,7 @@ export async function submitEmbeddedAttemptPrompt(input: {
   const installProviderPromptHistoryTransform = (): (() => void) => {
     const baseStreamFn = activeSession.agent.streamFn;
     const basePrepareNextTurn = activeSession.agent.prepareNextTurnWithContext;
-    const lateUpdates: RuntimeContextCustomMessage[] = [];
+    const lateUpdates: AgentMessage[] = [];
     const prepareNextTurn: NonNullable<Agent["prepareNextTurnWithContext"]> = async (
       turn,
       signal,
@@ -216,6 +218,24 @@ export async function submitEmbeddedAttemptPrompt(input: {
         }
         const { tools, systemPrompt } = readRestoredContext();
         requestContext = { ...requestContext, tools, systemPrompt };
+      }
+      if (foregroundRequest && input.compactBeforeRequest) {
+        const checkpoint = await input.compactBeforeRequest(
+          baseStreamFn,
+          model,
+          requestContext,
+          options,
+        );
+        assertRequestCurrent();
+        if (checkpoint) {
+          // The provider checkpoint owns this entire outgoing prefix. Keep its
+          // carrier in the loop as well as the durable session before the answer.
+          lateUpdates.push(checkpoint);
+          requestContext = {
+            ...requestContext,
+            messages: [...requestContext.messages, checkpoint],
+          };
+        }
       }
       if (foregroundRequest && !primaryRequestObserved) {
         primaryRequestObserved = true;

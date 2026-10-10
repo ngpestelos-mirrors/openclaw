@@ -38,6 +38,7 @@ type GuardableAgentRecord = {
 };
 
 type MidTurnPrecheckOptions = {
+  deferToRequestBoundary?: () => boolean;
   getReplay?: () => CompactionReplayPressureContext;
   enabled?: boolean;
   contextTokenBudget: number;
@@ -362,7 +363,7 @@ export function installToolResultContextGuard(params: {
     const contextMessages = projectMessages(sourceMessages, (message) =>
       truncateToolResultToChars(message, maxSingleToolResultChars, estimateCache),
     );
-    if (params.midTurnPrecheck?.enabled) {
+    if (params.midTurnPrecheck?.enabled && !params.midTurnPrecheck.deferToRequestBoundary?.()) {
       const prePromptMessageCount = Math.max(
         0,
         Math.min(

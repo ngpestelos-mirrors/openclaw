@@ -78,6 +78,7 @@ export function captureOpenAIResponsesCompaction(
   model: Model,
   captureMetadata?: OpenAIResponsesReasoningReplayMetadata,
   compactedOutput?: OpenAIResponsesCompactionOutput,
+  outputTokens?: number,
 ): void {
   const metadata = captureMetadata ?? buildOpenAIResponsesReasoningReplayMetadata(model);
   if (!item.encrypted_content) {
@@ -112,7 +113,13 @@ export function captureOpenAIResponsesCompaction(
     ...(metadata.sessionHash ? { sessionHash: metadata.sessionHash } : {}),
     ...(metadata.authProfileHash ? { authProfileHash: metadata.authProfileHash } : {}),
     ...(compactedOutput
-      ? { compactedWindow: { state: "ready" as const, output: JSON.stringify(compactedOutput) } }
+      ? {
+          compactedWindow: {
+            state: "ready" as const,
+            output: JSON.stringify(compactedOutput),
+            ...(outputTokens !== undefined ? { outputTokens } : {}),
+          },
+        }
       : {}),
   } satisfies OpenAIResponsesCompactionReplayState;
   if (compactedOutput && !readOpenAIResponsesCompactionWindow(replay, model)) {
@@ -207,6 +214,7 @@ export function resolveNewestOpenAIResponsesCompactionReplay(
       item: ResponseCompactionItemParam;
       mode: "complete-window";
       output: OpenAIResponsesCompactionOutput;
+      outputTokens?: number;
       replayIndex: number;
     }
   | { owner: AssistantMessage; mode: "refresh-required" }
@@ -254,6 +262,10 @@ export function resolveNewestOpenAIResponsesCompactionReplay(
         owner: message,
         mode: "complete-window",
         output,
+        ...(replay.compactedWindow?.state === "ready" &&
+        replay.compactedWindow.outputTokens !== undefined
+          ? { outputTokens: replay.compactedWindow.outputTokens }
+          : {}),
         item,
         replayIndex:
           replay.type === OPENAI_RESPONSES_RETAINED_COMPACTION_REPLAY_TYPE
