@@ -146,7 +146,7 @@ async function prepareCodexAppServerClient(options?: CodexAppServerClientOptions
   observeAcquire(options, { boundary: "context" });
   const context = await withCodexAppServerAcquireDeadline(
     options?.timeoutMs ?? 0,
-    ownCodexStartup(lifetime, resolveCodexAppServerClientStartContext(options)),
+    ownCodexStartup(lifetime, resolveCodexAppServerClientStartContext(options, startedAt)),
     abandonSignal,
   );
   return { context, lifetime, abandonSignal, startedAt, assertCurrent };
@@ -311,7 +311,10 @@ export type CodexAppServerClientFactory = (
   options?: CodexAppServerClientOptions,
 ) => Promise<CodexAppServerClient>;
 
-async function resolveCodexAppServerClientStartContext(options?: CodexAppServerClientOptions) {
+async function resolveCodexAppServerClientStartContext(
+  options: CodexAppServerClientOptions | undefined,
+  startedAt: number,
+) {
   const requestedStartOptions =
     options?.startOptions ??
     resolveCodexAppServerRuntimeOptions({ pluginConfig: options?.pluginConfig }).start;
@@ -425,7 +428,10 @@ async function resolveCodexAppServerClientStartContext(options?: CodexAppServerC
     startOptions: requestedStartOptions,
     agentDir,
   });
-  const managedStartOptions = await resolveManagedCodexAppServerStartOptions(agentStartOptions);
+  const remainingMs = resolveRemainingAcquireTimeout(options?.timeoutMs ?? 0, startedAt);
+  const managedStartOptions = await resolveManagedCodexAppServerStartOptions(agentStartOptions, {
+    selectionTimeoutMs: remainingMs > 0 ? remainingMs / 2 : undefined,
+  });
   // Preserve ordinary profile environment policy; only explicitly prepared
   // handoffs clear all inherited auth variables before spawning.
   const startOptions = await bridgeCodexAppServerStartOptions({

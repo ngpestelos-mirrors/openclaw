@@ -37,10 +37,11 @@ on `PATH` and uses it only when all of these hold:
 - It is a native executable or the official `@openai/codex` npm launcher.
   Other wrapper scripts, such as pnpm global shims, are skipped.
 - `codex --version` answers with a stable version newer than the shipped one.
-  The version check and selection handshake share a four-second budget, leaving
-  time for bundled startup within model discovery's default deadline. Equal,
-  older, unparseable, and prerelease versions are
-  skipped.
+  The version check and selection handshake share a four-second budget. A
+  managed request with a shorter remaining deadline spends at most half of it
+  on selection, reserving the rest for bundled startup. When that budget runs
+  out, this process keeps the bundled pin and ignores any late probe success.
+  Equal, older, unparseable, and prerelease versions are skipped.
 - It has the same major version as the shipped binary. The app-server protocol
   has no negotiated version, so a new major is treated as incompatible. A newer
   release with the same major can still change a request that OpenClaw uses

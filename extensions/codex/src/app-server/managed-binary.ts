@@ -52,6 +52,8 @@ type ResolveManagedCodexAppServerOptions = {
   pathExists?: (filePath: string, platform: NodeJS.Platform) => Promise<boolean>;
   /** False pins the shipped package, for callers that verify or mirror it. */
   preferInstalled?: boolean;
+  /** Remaining allowance for installed selection, before bundled startup. */
+  selectionTimeoutMs?: number;
 };
 
 /** A user-installed Codex that passed the version policy and an app-server handshake. */
@@ -63,6 +65,7 @@ export type InstalledCodexAppServer = {
 
 type InstalledCodexAppServerState = {
   selection?: Promise<InstalledCodexAppServer | undefined>;
+  pending?: boolean;
   selected?: InstalledCodexAppServer;
   /** Launcher dropped after a failed start; concurrent starts of it still fall back. */
   rejected?: string;
@@ -76,6 +79,7 @@ const installedCodex = resolveGlobalSingleton<InstalledCodexAppServerState>(
   (state) => {
     delete state.selection;
     delete state.selected;
+    delete state.pending;
     delete state.rejected;
   },
 );
@@ -105,7 +109,10 @@ export function setManagedCodexPluginRoot(pluginRoot: string | undefined): void 
  */
 export async function resolveManagedCodexClientVersion(
   order: CodexManagedCommandOrder,
-  options: Pick<ResolveManagedCodexAppServerOptions, "platform" | "pathExists"> & {
+  options: Pick<
+    ResolveManagedCodexAppServerOptions,
+    "platform" | "pathExists" | "selectionTimeoutMs"
+  > & {
     probes?: InstalledCodexAppServerProbes;
   } = {},
 ): Promise<string> {
@@ -118,7 +125,10 @@ export async function resolveManagedCodexClientVersion(
  */
 async function resolveInstalledCodexForOrder(
   order: CodexManagedCommandOrder,
-  options: Pick<ResolveManagedCodexAppServerOptions, "platform" | "pathExists"> & {
+  options: Pick<
+    ResolveManagedCodexAppServerOptions,
+    "platform" | "pathExists" | "selectionTimeoutMs"
+  > & {
     probes?: InstalledCodexAppServerProbes;
   },
 ): Promise<InstalledCodexAppServer | undefined> {
@@ -131,26 +141,62 @@ async function resolveInstalledCodexForOrder(
       }
     }
   }
-  return resolveInstalledCodexAppServer(options.probes);
+  return resolveInstalledCodexAppServer(options.probes, options.selectionTimeoutMs);
 }
 
 /**
  * Selects the installed Codex once per process; later callers reuse the
  * decision, so probes only apply to the call that makes it.
  */
-function resolveInstalledCodexAppServer(
+async function resolveInstalledCodexAppServer(
   probes: InstalledCodexAppServerProbes = {},
+  timeoutMs = INSTALLED_CODEX_PROBE_TIMEOUT_MS,
 ): Promise<InstalledCodexAppServer | undefined> {
   if (!installedCodex.selection) {
-    const selection = selectInstalledCodexAppServer(probes).then((selected) => {
-      if (installedCodex.selection === selection && selected) {
-        installedCodex.selected = selected;
+    installedCodex.pending = true;
+    const selection = decideInstalledCodexAppServer(probes).then((decision) => {
+      if (installedCodex.selection !== selection) {
+        return undefined;
       }
-      return selected;
+      delete installedCodex.pending;
+      embeddedAgentLog.info(
+        "selected" in decision
+          ? `Codex app-server: using installed ${decision.found} ${decision.selected.version} (newer than bundled ${CODEX_APP_SERVER_VERSION})`
+          : `Codex app-server: using bundled ${CODEX_APP_SERVER_VERSION} (${decision.reason})`,
+      );
+      if ("selected" in decision) {
+        installedCodex.selected = decision.selected;
+        return decision.selected;
+      }
+      return undefined;
     });
     installedCodex.selection = selection;
   }
-  return installedCodex.selection;
+  const selection = installedCodex.selection;
+  if (!installedCodex.pending) {
+    return selection;
+  }
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<undefined>((resolve) => {
+    timer = setTimeout(
+      () => {
+        if (installedCodex.selection === selection) {
+          installedCodex.selection = Promise.resolve(undefined);
+          delete installedCodex.pending;
+          embeddedAgentLog.info(
+            `Codex app-server: using bundled ${CODEX_APP_SERVER_VERSION} (installed Codex selection exceeded its startup budget)`,
+          );
+        }
+        resolve(undefined);
+      },
+      Math.min(timeoutMs, INSTALLED_CODEX_PROBE_TIMEOUT_MS),
+    );
+  });
+  try {
+    return await Promise.race([selection, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -198,19 +244,6 @@ export function readInstalledCodexAppServerStatus(
     return "selected";
   }
   return installedCodex.rejected === command ? "rejected" : undefined;
-}
-
-/** Uncached selection with one log line naming the chosen binary and why. */
-async function selectInstalledCodexAppServer(
-  probes: InstalledCodexAppServerProbes = {},
-): Promise<InstalledCodexAppServer | undefined> {
-  const decision = await decideInstalledCodexAppServer(probes);
-  embeddedAgentLog.info(
-    "selected" in decision
-      ? `Codex app-server: using installed ${decision.found} ${decision.selected.version} (newer than bundled ${CODEX_APP_SERVER_VERSION})`
-      : `Codex app-server: using bundled ${CODEX_APP_SERVER_VERSION} (${decision.reason})`,
-  );
-  return "selected" in decision ? decision.selected : undefined;
 }
 
 async function decideInstalledCodexAppServer(
@@ -383,7 +416,11 @@ export async function resolveManagedCodexAppServerStartOptions(
   const installed =
     options.preferInstalled === false
       ? undefined
-      : await resolveInstalledCodexForOrder(managedCommandOrder, { platform, pathExists });
+      : await resolveInstalledCodexForOrder(managedCommandOrder, {
+          platform,
+          pathExists,
+          selectionTimeoutMs: options.selectionTimeoutMs,
+        });
   const candidateCommandPaths = resolveManagedCodexAppServerCommandCandidates(
     pluginRoot,
     platform,

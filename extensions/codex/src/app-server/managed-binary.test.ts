@@ -3,6 +3,7 @@ import { access, chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 
 import os from "node:os";
 import path from "node:path";
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { SemVer } from "semver";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
@@ -322,9 +323,11 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
       probeHandshake?: (command: string) => Promise<string | undefined>;
       runVersion?: (nativeCommand: string) => Promise<string>;
     } = {},
+    selectionTimeoutMs?: number,
   ) {
     const clientVersion = await resolveManagedCodexClientVersion("package-first", {
       probes: { env: { PATH: bin }, probeHandshake: async () => NEWER, ...probes },
+      selectionTimeoutMs,
     });
     return { clientVersion, selected: installedState.selected };
   }
@@ -407,6 +410,34 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
       expect(probeHandshake).not.toHaveBeenCalled();
       expectChoice("selection timed out before the app-server handshake");
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns the bundled pin within a caller's shorter selection budget and ignores late success", async () => {
+    await installNpmCodex(`echo "codex-cli ${NEWER}"`);
+    const entered = createDeferred<void>();
+    const completed = createDeferred<string>();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const selected = select(
+        {
+          runVersion: async () => `codex-cli ${NEWER}`,
+          probeHandshake: async () => {
+            entered.resolve();
+            return completed.promise;
+          },
+        },
+        100,
+      );
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(selected).resolves.toEqual(BUNDLED);
+      completed.resolve(NEWER);
+      await expect(select()).resolves.toEqual(BUNDLED);
+      expectChoice("installed Codex selection exceeded its startup budget");
+    } finally {
+      completed.resolve(NEWER);
       vi.useRealTimers();
     }
   });
