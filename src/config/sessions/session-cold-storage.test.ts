@@ -721,6 +721,7 @@ describe("cold transcript storage workers", () => {
         expect(changes).toHaveBeenCalledExactlyOnceWith({
           storePath: fixture.scope.storePath,
           sessionKey: fixture.scope.sessionKey,
+          scope: "transcript",
         });
         expect(changes.mock.results[0]?.value).toBe(false);
       } finally {
