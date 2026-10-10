@@ -652,8 +652,7 @@ function hasRecentVerification(verifiedAt: number | undefined, now: number): boo
 /** Only explicit reads reuse recent physical verification; mutations always check freshly. */
 export function assertStateDatabaseReadAllowed(databasePath: string): void {
   if (owners.size === 0) {
-    assertStateDatabaseAccessAllowed(databasePath, undefined, true);
-    return;
+    return assertStateDatabaseAccessAllowed(databasePath, undefined, true);
   }
   const key = path.resolve(databasePath);
   const now = performance.now();

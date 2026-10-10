@@ -450,11 +450,9 @@ function assertOpenClawStateDatabaseOpenAllowed(
   ownership?: "cached-read" | "read-only",
 ): void {
   const resolvedPath = resolveDatabasePath({ path: pathname });
-  if (ownership === "cached-read") {
-    assertStateDatabaseReadAllowed(pathname);
-  } else {
-    assertStateDatabaseAccessAllowed(pathname, undefined, ownership === "read-only");
-  }
+  const assertAllowed =
+    ownership === "cached-read" ? assertStateDatabaseReadAllowed : assertStateDatabaseAccessAllowed;
+  assertAllowed(pathname, undefined, ownership === "read-only");
   const { identity } = asyncResources.capture(resolvedPath);
   const terminalFailure = terminalOpenLatch.get(resolvedPath);
   if (terminalFailure) {
@@ -490,8 +488,7 @@ function assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
     if (!(error instanceof OpenClawQuarantineReadCleanupError)) {
       throw error;
     }
-    onNativeCleanupFailure?.(error);
-    return;
+    return onNativeCleanupFailure?.(error);
   }
   if (quarantineFailure?.cause instanceof OpenClawQuarantineReadCleanupError) {
     onNativeCleanupFailure?.(quarantineFailure.cause);
