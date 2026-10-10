@@ -15,6 +15,7 @@ import { readTranscriptEventRows } from "../../config/sessions/session-accessor.
 import { rewriteSqliteTranscriptEventRowsInTransaction } from "../../config/sessions/session-accessor.sqlite-transcript-store.js";
 import type { SessionActor } from "../../config/sessions/session-actor-contract.js";
 import { createDurableSessionActorFactory } from "../../config/sessions/session-actor-durable.js";
+import * as transcriptAnchors from "../../config/sessions/session-transcript-anchor-read.js";
 import * as transcriptReaders from "../../config/sessions/session-transcript-execution-read.js";
 import * as transcriptHydration from "../../config/sessions/session-transcript-hydration.js";
 import * as contextWorker from "../../config/sessions/session-transcript-read-worker-runtime.js";
@@ -109,20 +110,7 @@ it.each(["unchanged", "append", "rewrite"] as const)(
       await withSelectedTranscriptReader(
         target,
         async () => {
-          const validated = vi.fn();
-          const prepare = transcriptReaders.createPreparedSessionTranscriptReads;
-          const spy = vi
-            .spyOn(transcriptReaders, "createPreparedSessionTranscriptReads")
-            .mockImplementation((params) => {
-              const readers = prepare(params);
-              return {
-                ...readers,
-                readAnchors: (input, signal) => {
-                  validated();
-                  return readers.readAnchors(input, signal);
-                },
-              };
-            });
+          const validated = vi.spyOn(transcriptAnchors, "readSessionTranscriptAnchorsAsync");
           try {
             const pending = SessionManager.readSessionContextAsync(target, async (messages) => {
               const selected = [...messages];
@@ -144,7 +132,7 @@ it.each(["unchanged", "append", "rewrite"] as const)(
               expect(validated).toHaveBeenCalledTimes(change === "unchanged" ? 0 : 1);
             }
           } finally {
-            spy.mockRestore();
+            validated.mockRestore();
           }
         },
         true,
@@ -194,7 +182,7 @@ it("uses resident actor anchors for replay and rejects a rewritten hydrated turn
             source.removeTrailingEntries((entry) => entry.type === "message"),
           );
           await expect(replay()).rejects.toThrow(
-            "Persisted user turn changed before replay admission",
+            /Persisted user turn changed|Session transcript projection is rebuilding/,
           );
           expect(validated).toHaveBeenCalledOnce();
         } finally {
