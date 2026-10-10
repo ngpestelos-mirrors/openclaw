@@ -205,6 +205,8 @@ export function resolveOpenAIResponsesServerCompactionPlan(
 export function resolveOpenAIResponsesCompactEndpointPlan(
   model: OpenAIResponsesPayloadModel,
   extraParams?: Record<string, unknown>,
+  /** @deprecated The policy no longer depends on purpose. */
+  _purpose?: "manual" | "budget",
 ): { enabled: boolean } {
   const configured = extraParams?.responsesCompactEndpoint;
   const provider = typeof model.provider === "string" ? normalizeProviderId(model.provider) : "";

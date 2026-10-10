@@ -9,6 +9,9 @@ export type CompactionReplayRejection = {
   id?: string;
 };
 
+/** @deprecated Use CompactionReplayRejection. */
+export type OpenAIResponsesCompactionRejection = CompactionReplayRejection;
+
 export type CodeModeToolSurfaceObservation = {
   beforeToolIdentities: readonly string[];
   afterToolIdentities: readonly string[];
