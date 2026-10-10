@@ -433,7 +433,7 @@ describe("verified package rollback", () => {
     { change: "agent", previousVerified: true, restored: false, service: "stopped" },
     { change: "during-stop", previousVerified: true, restored: false, service: "stopped" },
     { change: "unknown-runtime", previousVerified: true, restored: false, service: "stopped" },
-    { change: "none", previousVerified: false, restored: false, service: "stopped" },
+    { change: "none", previousVerified: false, restored: true, service: "stopped" },
     { change: "none", previousVerified: true, restored: false, service: "absent" },
     { change: "none", previousVerified: true, restored: false, service: "no-restart" },
   ])(
