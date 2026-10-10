@@ -81,11 +81,11 @@ const CODEX_HOST_INSPECTION_SUBCOMMANDS = new Set([
 ]);
 
 export async function handleCodexSubcommand(
-  ctx: CodexCommandContext,
+  inputCtx: CodexCommandContext,
   options: { pluginConfig?: unknown; deps: CodexCommandDepsOverride },
 ): Promise<PluginCommandResult> {
   const deps = resolveCodexCommandDeps(options.deps);
-  const args = splitArgs(ctx.args);
+  const args = splitArgs(inputCtx.args);
   if (args.length === 0) {
     return buildCodexSubcommandPickerReply();
   }
@@ -94,24 +94,24 @@ export async function handleCodexSubcommand(
   if (normalized === "help") {
     return { text: buildHelp() };
   }
-  if (CODEX_HOST_INSPECTION_SUBCOMMANDS.has(normalized) && !canMutateCodexHost(ctx)) {
+  if (CODEX_HOST_INSPECTION_SUBCOMMANDS.has(normalized) && !canMutateCodexHost(inputCtx)) {
     return { text: CODEX_HOST_INSPECTION_AUTH_ERROR };
   }
   if (
     CODEX_NATIVE_CONTROL_SUBCOMMANDS.has(normalized) &&
     !returnsBeforeNativeCodexExecution(normalized, rest) &&
     !isReadOnlyCodexGoalCommand(normalized, rest) &&
-    !canMutateCodexHost(ctx)
+    !canMutateCodexHost(inputCtx)
   ) {
     return { text: CODEX_NATIVE_EXECUTION_AUTH_ERROR };
   }
-  const nativePolicy = await resolveCodexNativeCommandSandboxBlock(ctx, normalized, rest);
+  const nativePolicy = await resolveCodexNativeCommandSandboxBlock(inputCtx, normalized, rest);
   if (nativePolicy.block) {
     return { text: nativePolicy.block };
   }
-  const previousPolicyCheck = ctx.assertNativePolicyCurrent;
-  ctx = {
-    ...ctx,
+  const previousPolicyCheck = inputCtx.assertNativePolicyCurrent;
+  const ctx = {
+    ...inputCtx,
     assertNativePolicyCurrent: () => {
       previousPolicyCheck?.();
       nativePolicy.assertCurrent();

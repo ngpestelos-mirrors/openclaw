@@ -35,7 +35,7 @@ type ConversationCondition = {
 };
 
 /** Capture a generation and routing choice; acquire worker source custody only for each write. */
-export async function captureSessionEntryCurrentCheckInternal(params: {
+export async function captureSessionEntryCurrentCheckInternal(inputParams: {
   agentId: string;
   sessionKey: string;
   storePath?: string;
@@ -57,7 +57,7 @@ export async function captureSessionEntryCurrentCheckInternal(params: {
   isCurrent: () => boolean;
   assertCurrent: () => void;
 }> {
-  params = { ...params };
+  const params = { ...inputParams };
   const incognito = captureIncognitoSessionSource(params);
   const storePath = incognito
     ? "kind" in incognito
@@ -128,13 +128,10 @@ export async function captureSessionEntryCurrentCheckInternal(params: {
     }
     const selected = read.value;
     const selectedValues = fields.map((field) => structuredClone(selected?.[field]));
-    const matches = (
-      current: Partial<SessionEntryCurrentFacts> | undefined,
-      expected: Partial<SessionEntry> | undefined = selected,
-    ) =>
-      (current === undefined) === (expected === undefined) &&
-      fields.every((field) => isDeepStrictEqual(current?.[field], expected?.[field]));
-    if (expected && !matches(selected, expected)) {
+    if (
+      expected &&
+      (!selected || fields.some((field) => !isDeepStrictEqual(selected[field], expected[field])))
+    ) {
       refuse();
     }
     const readScope = owner.scope ?? scope;

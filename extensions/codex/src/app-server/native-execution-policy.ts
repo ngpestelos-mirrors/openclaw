@@ -32,7 +32,7 @@ export type CodexNativeExecutionPolicy = {
 
 export type PreparedCodexNativeExecutionPolicy = {
   policy: CodexNativeExecutionPolicy;
-  assertCurrent(): void;
+  assertCurrent: () => void;
 };
 
 type RunPolicyOptions = {
