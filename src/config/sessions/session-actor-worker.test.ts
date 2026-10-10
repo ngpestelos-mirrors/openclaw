@@ -1,9 +1,13 @@
-import { MessageChannel, receiveMessageOnPort } from "node:worker_threads";
+import { MessageChannel, MessagePort, receiveMessageOnPort } from "node:worker_threads";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { runSqliteImmediateTransactionSync } from "../../infra/sqlite-transaction.js";
 import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js";
-import { withSqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
+import {
+  createSqliteWorkerOperationAdmission,
+  withSqliteWorkerOperationAdmission,
+} from "../../infra/sqlite-worker-operation-admission.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -76,6 +80,28 @@ function createFixture() {
   };
   let actor = createSessionActorWorker(context, () => target.database);
   const { port1, port2 } = new MessageChannel();
+  const admission = createSqliteWorkerOperationAdmission((_request, grant) => {
+    grant();
+  });
+  const receipts: unknown[] = [];
+  const postMessage = port1.postMessage.bind(port1);
+  const wire = vi.spyOn(port1, "postMessage").mockImplementation((message, transferList) => {
+    postMessage(message, transferList);
+    const received: unknown = receiveMessageOnPort(port2)?.message;
+    if (!isRecord(received)) {
+      throw new Error("Synchronous actor fixture lost its native frame");
+    }
+    if (received.kind === "native-commit" || received.kind === "native-settlement") {
+      receipts.push(received);
+      return;
+    }
+    // Preserve real admission exchanges while their native caller blocks on this isolate.
+    admission.port.postMessage(
+      received,
+      received.port instanceof MessagePort ? [received.port] : [],
+    );
+    admission.service();
+  });
   const execute = (command: Command) =>
     withSqliteWorkerOperationAdmission({ port: port1 }, () => actor.execute(command));
   return {
@@ -100,7 +126,7 @@ function createFixture() {
       return value;
     },
     receipt(): unknown {
-      return receiveMessageOnPort(port2)?.message;
+      return receipts.shift();
     },
     prepare: (command: Command) => actor.prepare(command),
     nativeEntry: () => readExactSessionEntryRow(database, target.sessionKey)?.entry,
@@ -115,6 +141,8 @@ function createFixture() {
     closeActor: () => actor.close(),
     close() {
       actor.close();
+      wire.mockRestore();
+      admission.finish();
       port1.close();
       port2.close();
     },

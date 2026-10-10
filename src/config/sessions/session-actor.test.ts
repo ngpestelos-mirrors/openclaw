@@ -1,4 +1,4 @@
-import { MessageChannel } from "node:worker_threads";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import {
   createSqliteWorkerOperationAdmission,
@@ -148,9 +148,24 @@ async function withActor(
               const admission = createSqliteWorkerOperationAdmission((_request, grant) => {
                 grant();
               });
-              const dropped = fault.reply === "unknown" ? new MessageChannel() : undefined;
+              const dropped = fault.reply === "unknown";
+              const postMessage = admission.port.postMessage.bind(admission.port);
+              const wire = vi
+                .spyOn(admission.port, "postMessage")
+                .mockImplementation((message, transferList) => {
+                  if (
+                    dropped &&
+                    isRecord(message) &&
+                    (message.kind === "native-commit" || message.kind === "native-settlement")
+                  ) {
+                    return;
+                  }
+                  postMessage(message, transferList);
+                  // Native admission blocks synchronously; its host runs on this fixture's isolate.
+                  admission.service();
+                });
               const native: SqliteWorkerOperationContext = {
-                port: dropped?.port1 ?? admission.port,
+                port: admission.port,
               };
               admit = (stage, publication) =>
                 authorize(
@@ -180,9 +195,8 @@ async function withActor(
                 return value as SessionActorOperations[Key]["output"];
               } finally {
                 void completion.promise.then(() => {
+                  wire.mockRestore();
                   admission.finish();
-                  dropped?.port1.close();
-                  dropped?.port2.close();
                 });
               }
             },
