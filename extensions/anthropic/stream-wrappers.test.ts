@@ -3,6 +3,7 @@ import { calculateUsageCost } from "@openclaw/llm-core";
 // Anthropic tests cover stream wrappers plugin behavior.
 import { expectDefined } from "@openclaw/normalization-core";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
+import { type Model, streamSimple } from "openclaw/plugin-sdk/llm";
 import { useProviderCatalogMetadata } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { resolveProviderEndpoint } from "openclaw/plugin-sdk/provider-model-shared";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -245,6 +246,91 @@ describe("anthropic stream wrappers", () => {
     });
   });
 
+  it.each([undefined, true, false])(
+    "honors server compaction at the final request with a configured threshold (enabled=%s)",
+    async (anthropicServerCompaction) => {
+      const previousHost = getAiTransportHost();
+      const requests: Array<{ headers: Headers; payload: Record<string, unknown> }> = [];
+      configureAiTransportHost({
+        ...previousHost,
+        buildModelFetch: () => async (_input, init) => {
+          if (typeof init?.body !== "string") {
+            throw new Error("expected a JSON Anthropic request body");
+          }
+          requests.push({
+            headers: new Headers(init.headers),
+            payload: JSON.parse(init.body) as Record<string, unknown>,
+          });
+          const events = [
+            {
+              type: "message_start",
+              message: {
+                id: "msg_compaction",
+                model: "claude-sonnet-4-6",
+                usage: { input_tokens: 1, output_tokens: 0 },
+              },
+            },
+            {
+              type: "message_delta",
+              delta: { stop_reason: "end_turn" },
+              usage: { output_tokens: 0 },
+            },
+            { type: "message_stop" },
+          ];
+          return new Response(
+            events
+              .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+              .join(""),
+            { headers: { "content-type": "text/event-stream" } },
+          );
+        },
+      });
+      const model = {
+        id: "claude-sonnet-4-6",
+        name: "Claude Sonnet 4.6",
+        api: "anthropic-messages",
+        provider: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_000_000,
+        maxTokens: 4096,
+      } satisfies Model<"anthropic-messages">;
+      const wrapped = expectDefined(
+        wrapAnthropicProviderStream({
+          streamFn: streamSimple,
+          modelId: model.id,
+          extraParams: { anthropicServerCompaction, anthropicCompactThreshold: 150_000 },
+        } as never),
+        "Anthropic provider stream",
+      );
+      try {
+        const stream = await wrapped(
+          model,
+          { messages: [{ role: "user", content: "Remember this.", timestamp: 1 }] },
+          { apiKey: "sk-ant-api-synthetic" },
+        );
+        expect((await stream.result()).stopReason).toBe("stop");
+      } finally {
+        configureAiTransportHost(previousHost);
+      }
+
+      expect(requests).toHaveLength(1);
+      if (anthropicServerCompaction === false) {
+        expect(requests[0]?.payload).not.toHaveProperty("context_management");
+        expect(requests[0]?.headers.get("anthropic-beta") ?? "").not.toContain(
+          "compact-2026-01-12",
+        );
+      } else {
+        expect(requests[0]?.payload.context_management).toMatchObject({
+          edits: [{ type: "compact_20260112", trigger: { type: "input_tokens", value: 150_000 } }],
+        });
+        expect(requests[0]?.headers.get("anthropic-beta")).toContain("compact-2026-01-12");
+      }
+    },
+  );
+
   it("preserves existing context management under the compaction wrapper", () => {
     const existing = { edits: [{ type: "clear_tool_uses_20250919" }] };
     const captured = runCompactionProviderWrapper({ payload: { context_management: existing } });
@@ -253,10 +339,6 @@ describe("anthropic stream wrappers", () => {
   });
 
   it.each([
-    {
-      name: "the feature is disabled",
-      extraParams: { anthropicServerCompaction: false },
-    },
     {
       name: "the model is not documented for compaction",
       modelId: "claude-opus-4-5",

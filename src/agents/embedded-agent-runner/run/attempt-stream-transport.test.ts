@@ -5,7 +5,6 @@ import { configureAiTransportHost, getAiTransportHost } from "@openclaw/ai";
 import { isAnthropicOAuthApiKey } from "@openclaw/ai/internal/anthropic";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { wrapAnthropicProviderStream } from "../../../../extensions/anthropic/stream-wrappers.js";
 import {
   anthropicModel,
   context as anthropicContext,
@@ -260,50 +259,31 @@ describe("prepareEmbeddedAttemptTransport", () => {
   });
 
   it.each([undefined, true])(
-    "disables Anthropic server compaction only for memory flushes (configured=%s)",
+    "disables server compaction overrides only for memory flushes (configured=%s)",
     async (compaction) => {
-      const previousHost = getAiTransportHost();
-      const requests: Array<{ headers: Headers; payload: Record<string, unknown> }> = [];
-      configureAiTransportHost({
-        ...previousHost,
-        buildModelFetch: () => async (_input, init) => {
-          if (typeof init?.body !== "string") {
-            throw new Error("expected a JSON Anthropic request body");
-          }
-          requests.push({
-            headers: new Headers(init.headers),
-            payload: JSON.parse(init.body) as Record<string, unknown>,
-          });
-          return createAnthropicResponse(anthropicEvents);
-        },
+      const wrapProviderStreamFn = vi.fn(({ context }: WrapProviderStreamFnParams) => {
+        return context.streamFn;
       });
-      extraParamsTesting.setProviderRuntimeDepsForTest({
-        wrapProviderStreamFn: ({ context }) => wrapAnthropicProviderStream(context),
-      });
-      try {
-        for (const trigger of [undefined, "memory"] as const) {
-          const { input, session } = createTransportFixture({
-            compaction,
-            pruning: false,
-            apiKey: "sk-ant-api-synthetic",
-          });
-          input.attempt.model = { ...anthropicModel, contextWindow: 1_000_000 };
-          input.attempt.trigger = trigger;
-          await prepareEmbeddedAttemptTransport(input);
-          const stream = await session.agent.streamFn(input.attempt.model, anthropicContext, {});
-          expect((await stream.result()).stopReason).toBe("stop");
-        }
-      } finally {
-        configureAiTransportHost(previousHost);
+      extraParamsTesting.setProviderRuntimeDepsForTest({ wrapProviderStreamFn });
+
+      for (const trigger of [undefined, "memory"] as const) {
+        const { input } = createTransportFixture({
+          compaction,
+          pruning: false,
+          apiKey: "sk-ant-api-synthetic",
+        });
+        input.attempt.trigger = trigger;
+        await prepareEmbeddedAttemptTransport(input);
       }
 
-      expect(requests).toHaveLength(2);
-      expect(requests[0]?.payload.context_management).toMatchObject({
-        edits: [{ type: "compact_20260112", trigger: { type: "input_tokens", value: 700_000 } }],
+      expect(wrapProviderStreamFn).toHaveBeenCalledTimes(2);
+      const normalExtraParams = wrapProviderStreamFn.mock.calls[0]?.[0].context.extraParams;
+      expect(normalExtraParams).toHaveProperty("anthropicServerCompaction", compaction);
+      expect(normalExtraParams).not.toHaveProperty("responsesServerCompaction");
+      expect(wrapProviderStreamFn.mock.calls[1]?.[0].context.extraParams).toMatchObject({
+        anthropicServerCompaction: false,
+        responsesServerCompaction: false,
       });
-      expect(requests[0]?.headers.get("anthropic-beta")).toContain("compact-2026-01-12");
-      expect(requests[1]?.payload).not.toHaveProperty("context_management");
-      expect(requests[1]?.headers.get("anthropic-beta") ?? "").not.toContain("compact-2026-01-12");
     },
   );
 
