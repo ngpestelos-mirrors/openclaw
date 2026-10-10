@@ -194,10 +194,13 @@ export const scenes: Scene[] = [
   {
     ...chat,
     id: "chat-long-content",
-    label: "Chat: long transcript, wrapping and code",
-    scrollTo: '[data-message-text^="Message 39:"]',
+    label: "Chat: start of long transcript, wrapping and code",
     prepare: async (page) => {
       await page.getByText(/Message 39: A deliberately long sentence/u).waitFor();
+      await page
+        .locator(".chat-thread")
+        .evaluate((thread) => thread.scrollTo({ top: 0, behavior: "instant" }));
+      await page.getByText(/Message 0: A deliberately long sentence/u).waitFor();
     },
     scenario: {
       historyMessages: Array.from({ length: 40 }, (_, i) => ({
