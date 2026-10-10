@@ -43,7 +43,7 @@ import {
   recordOpenClawAgentDatabaseOpenFailure,
 } from "./openclaw-agent-db.js";
 import { removeAgentIntegrityMetadataForTest } from "./openclaw-agent-db.test-support.js";
-import type { AgentDatabaseRequestExecutionSource } from "./openclaw-agent-execution-contract.js";
+import type { AgentDatabaseRequestExecutionSource } from "./openclaw-agent-execution-admission-contract.js";
 import { createAgentDatabaseNativeGeneration } from "./openclaw-agent-execution-native.js";
 import { captureOpenClawAgentDatabaseExecution } from "./openclaw-agent-execution.js";
 import * as verificationImplementation from "./openclaw-database-verify.impl.js";
@@ -567,6 +567,7 @@ it.each([
         proof === "closed-host-blocked" ||
         proof === "closed-host-blocked-last" ||
         proof === "two-leases" ||
+        proof === "two-leases-unknown-owner" ||
         proof === "two-leases-missing-metadata" ||
         proof === "version-mismatch"
         ? [0, 0]

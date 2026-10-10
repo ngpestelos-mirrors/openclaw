@@ -173,8 +173,9 @@ const factsByDatabase = new WeakMap<
 export function readVoiceSessionFacts(
   agentId: string,
   voiceSessionId: string,
+  options?: Pick<OpenClawAgentDatabaseOptions, "env" | "path">,
 ): VoiceSessionFacts | undefined {
-  const database = openOpenClawAgentDatabase({ agentId });
+  const database = openOpenClawAgentDatabase({ ...options, agentId });
   return runSqliteReadOperationSync(database.db, () => {
     const revision = getSqliteReadOperationRevision(database.db);
     let cache = factsByDatabase.get(database.db);
@@ -211,8 +212,11 @@ export function readVoiceSessionFacts(
   });
 }
 
-export function readOwnedVoiceSessionFacts(params: ClientVoiceRunBinding): VoiceSessionFacts {
-  const record = readVoiceSessionFacts(params.agentId, params.voiceSessionId);
+export function readOwnedVoiceSessionFacts(
+  params: ClientVoiceRunBinding,
+  options?: Pick<OpenClawAgentDatabaseOptions, "env" | "path">,
+): VoiceSessionFacts {
+  const record = readVoiceSessionFacts(params.agentId, params.voiceSessionId, options);
   if (!record) {
     throw new Error("voice session not found");
   }

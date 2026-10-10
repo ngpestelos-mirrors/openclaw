@@ -208,7 +208,7 @@ it.each([
     sql: "UPDATE schema_meta SET role = 'state' WHERE meta_key = 'primary'",
   },
   {
-    sql: "DROP TRIGGER session_nodes_canonical_pending_after_update",
+    sql: "CREATE TRIGGER unexpected_node_validation AFTER UPDATE ON session_nodes BEGIN SELECT 1; END",
   },
 ])(
   "reuses admitted format while observing fresh rows after a foreign commit: $sql",
