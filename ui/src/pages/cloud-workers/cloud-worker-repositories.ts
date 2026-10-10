@@ -14,7 +14,6 @@ import { canCallGatewayMethod } from "../../lib/gateway-methods.ts";
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomContentsElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
-import { renderCloudWorkerAction } from "./cloud-worker-action.ts";
 import { CloudWorkerConfigSave } from "./cloud-worker-config-save.ts";
 import { readCloudWorkerProfiles } from "./cloud-worker-config.ts";
 import {
@@ -26,6 +25,7 @@ import {
   type CloudWorkerRepository,
   type CloudWorkerRepositoryPatch,
 } from "./cloud-worker-repositories-config.ts";
+import { renderCloudWorkerAction } from "./cloud-worker-rows.ts";
 
 registerSettingsEnglish();
 

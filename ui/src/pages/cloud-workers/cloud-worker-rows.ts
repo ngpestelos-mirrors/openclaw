@@ -4,7 +4,27 @@ import { renderSettingsRow, renderSettingsStatus } from "../../components/settin
 import { t } from "../../i18n/index.ts";
 import { formatDurationHuman } from "../../lib/format-duration.ts";
 import { formatRelativeTimestamp } from "../../lib/format.ts";
-import { renderCloudWorkerAction } from "./cloud-worker-action.ts";
+
+export function renderCloudWorkerAction(
+  label: string,
+  target: string | undefined,
+  onClick: (() => void) | undefined,
+  disabled: boolean,
+  options: { danger?: boolean; title?: string } = {},
+) {
+  return onClick
+    ? html`<button
+        class=${options.danger ? "btn btn--sm danger" : "btn btn--sm"}
+        type="button"
+        aria-label=${`${label}: ${target}`}
+        title=${options.title ?? nothing}
+        ?disabled=${disabled}
+        @click=${onClick}
+      >
+        ${label}
+      </button>`
+    : nothing;
+}
 
 export type SnapshotImage = {
   profileKey: string;

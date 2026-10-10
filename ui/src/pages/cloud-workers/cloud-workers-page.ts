@@ -28,7 +28,6 @@ import { canCallGatewayMethod } from "../../lib/gateway-methods.ts";
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
-import { renderCloudWorkerAction } from "./cloud-worker-action.ts";
 import { CloudWorkerConfigSave } from "./cloud-worker-config-save.ts";
 import {
   buildCloudWorkerDeletePatch,
@@ -39,6 +38,7 @@ import {
   type CloudWorkerProfileDraft,
   type ConfiguredCloudWorkerProfile,
 } from "./cloud-worker-config.ts";
+import { renderCloudWorkerAction } from "./cloud-worker-rows.ts";
 import "./cloud-worker-repositories.ts";
 import "./cloud-worker-pool.ts";
 import "./cloud-worker-snapshots.ts";

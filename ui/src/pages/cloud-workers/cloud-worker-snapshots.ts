@@ -31,7 +31,7 @@ import {
   type SnapshotImage,
   type SnapshotProfile,
   type SnapshotsResult,
-} from "./cloud-worker-snapshot-rows.ts";
+} from "./cloud-worker-rows.ts";
 import "./cloud-worker-snapshot-policy.ts";
 
 registerSettingsEnglish();
