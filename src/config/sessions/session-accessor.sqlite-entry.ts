@@ -1,5 +1,4 @@
 import { normalizeInternalTurnContext } from "../../auto-reply/internal-turn-source.js";
-import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { OpenClawAgentDatabaseReadOnlyScope } from "../../state/openclaw-agent-db-readonly-scope.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
@@ -35,7 +34,6 @@ import {
   readSessionKeyBySessionIdInDatabase,
 } from "./session-accessor.sqlite-entry-read.js";
 import {
-  readSessionEntryRow,
   readLifecycleTargetSnapshot,
   readSessionEntrySelectionSnapshot,
 } from "./session-accessor.sqlite-entry-store.js";
@@ -60,6 +58,7 @@ import {
   type CanonicalSessionReaderContinuation,
 } from "./session-canonical-key.js";
 import { readSessionEntryPatchPredicate } from "./session-entry-patch-guard.js";
+import { notifySessionEntryPatchCommitted } from "./session-entry-patch-observer.js";
 import {
   mergeSessionEntryPatch,
   projectSessionEntryPatch,
@@ -104,6 +103,7 @@ export {
   loadExactSessionEntryReadOnly,
   loadSessionEntryByIdReadOnly,
   loadSessionEntryReadOnlyInScope,
+  readSessionUpdatedAtCore,
 } from "./session-accessor.sqlite-exact-read.js";
 
 /** Loads one session entry from the additive SQLite session store. */
@@ -195,14 +195,6 @@ export function listSessionTranscriptInstances(
     toDatabaseOptions(resolved),
   );
   return result.found ? result.value : [];
-}
-
-/** Reads a session activity timestamp from the additive SQLite session store. */
-export function readSessionUpdatedAtCore(scope: SessionAccessScope): number | undefined {
-  const resolved = resolveSqliteScope(scope);
-  const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
-  const row = readSessionEntryRow(database, resolved.sessionKey, "list")?.row;
-  return row ? sqliteNumber(row.updated_at) : undefined;
 }
 
 /** Applies a partial entry update to the additive SQLite session store. */
@@ -609,14 +601,12 @@ async function patchSqliteSessionEntrySnapshot(
           );
           try {
             if (next && result) {
-              const entry = structuredClone(result);
-              if (input.outcomes?.length) {
-                options.onCommitted?.(entry, transcriptPredicate, input.outcomes);
-              } else if (transcriptPredicate) {
-                options.onCommitted?.(entry, transcriptPredicate);
-              } else {
-                options.onCommitted?.(entry);
-              }
+              notifySessionEntryPatchCommitted(
+                options.onCommitted,
+                result,
+                transcriptPredicate,
+                input.outcomes,
+              );
               if (committedSource) {
                 options.onCommittedSource?.(committedSource, structuredClone(result));
               }

@@ -1,5 +1,6 @@
 import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contract.js";
 import type { SqliteLifecycleTargetSnapshot } from "./session-accessor.sqlite-entry-equality.js";
+import { notifySessionEntryPatchCommitted } from "./session-entry-patch-observer.js";
 import type {
   SessionEntryPatchCommit,
   SessionEntryPatchCommitObserver,
@@ -92,14 +93,12 @@ export function patchIncognitoSessionEntry(params: {
           (result) => {
             if (result.applied && result.entry) {
               try {
-                const entry = structuredClone(result.entry);
-                if (result.outcomes?.length) {
-                  params.onCommitted?.(entry, result.transcriptPredicate, result.outcomes);
-                } else if (result.transcriptPredicate) {
-                  params.onCommitted?.(entry, result.transcriptPredicate);
-                } else {
-                  params.onCommitted?.(entry);
-                }
+                notifySessionEntryPatchCommitted(
+                  params.onCommitted,
+                  result.entry,
+                  result.transcriptPredicate,
+                  result.outcomes,
+                );
                 params.onCommittedSource?.(
                   {
                     agentId: actor.agentId,

@@ -1,11 +1,12 @@
-import type { Selectable } from "kysely";
+import { expressionBuilder, type Selectable } from "kysely";
+import { jsonObjectFrom } from "kysely/helpers/sqlite";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { readSqliteNativeMutationRevision } from "../../infra/sqlite-schema-facts.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { SessionEntry } from "./types.js";
 
-export const sessionEntryWindowColumns = [
+const sessionEntryWindowColumns = [
   "session_id",
   "session_key",
   "reason",
@@ -33,6 +34,18 @@ export const sessionEntryWindowColumns = [
   "transcript_observed_at",
   "transcript_updated_at",
 ] as const;
+
+export function sessionEntryWindowFactsExpression() {
+  const eb = expressionBuilder<OpenClawAgentKyselyDatabase, "session_nodes">();
+  return jsonObjectFrom(
+    eb
+      .selectFrom("session_windows")
+      .select(sessionEntryWindowColumns)
+      .whereRef("session_windows.session_id", "=", "session_nodes.current_session_id"),
+  )
+    .$castTo<string | null>()
+    .as("window_json");
+}
 
 export type SessionEntryWindowRow = Pick<
   Selectable<OpenClawAgentKyselyDatabase["session_windows"]>,

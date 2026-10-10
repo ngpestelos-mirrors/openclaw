@@ -1,7 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { toUSVString } from "node:util";
 import { expressionBuilder, sql, type Selectable, type SqlBool } from "kysely";
-import { jsonObjectFrom } from "kysely/helpers/sqlite";
 import {
   createSqliteQueryCache,
   getNodeSqliteKysely,
@@ -31,7 +30,7 @@ import {
   projectSqliteSessionParticipants,
   projectSqliteSessionParticipantsBatch,
 } from "./session-accessor.sqlite-participant-projection.js";
-import { sessionEntryWindowColumns } from "./session-accessor.sqlite-provenance.js";
+import { sessionEntryWindowFactsExpression } from "./session-accessor.sqlite-provenance.js";
 import {
   parseSessionEntryJson as parseSessionEntryRow,
   selectSessionEntryRows,
@@ -510,16 +509,7 @@ function readSelectedSessionEntryRows(
           )
       : selectReadableSessionEntryRows(database, projection);
   const windowQuery = options?.includeWindowFacts
-    ? baseQuery.select((eb) =>
-        jsonObjectFrom(
-          eb
-            .selectFrom("session_windows")
-            .select(sessionEntryWindowColumns)
-            .whereRef("session_windows.session_id", "=", "session_nodes.current_session_id"),
-        )
-          .$castTo<string | null>()
-          .as("window_json"),
-      )
+    ? baseQuery.select(sessionEntryWindowFactsExpression())
     : baseQuery;
   const eb = expressionBuilder<OpenClawAgentKyselyDatabase, "session_nodes">();
   // Old stores have no board tables until first use; branch before compiling SQL.

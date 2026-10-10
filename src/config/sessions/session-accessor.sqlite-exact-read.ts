@@ -2,6 +2,7 @@ import { expectDefined } from "@openclaw/normalization-core/expect";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { executeSqliteQueryTakeFirstSync, sqliteStringSet } from "../../infra/kysely-sync.js";
 import { sqlitePrimaryResultCode } from "../../infra/sqlite-error-diagnostics.js";
+import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
 import { assertTransactionUsable } from "../../infra/sqlite-transaction.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import {
@@ -58,6 +59,14 @@ type ResolvedSqliteSessionEntry = {
   legacyKeys: string[];
   normalizedKey: string;
 };
+
+/** Reads a session activity timestamp from the additive SQLite session store. */
+export function readSessionUpdatedAtCore(scope: SessionAccessScope): number | undefined {
+  const resolved = resolveSqliteScope(scope);
+  const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+  const row = readSessionEntryRow(database, resolved.sessionKey, "list")?.row;
+  return row ? sqliteNumber(row.updated_at) : undefined;
+}
 
 /** Private prepared reads must reject a different physical owner at the captured path. */
 export function loadSessionEntryReadOnlyInScope(

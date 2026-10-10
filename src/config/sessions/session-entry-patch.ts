@@ -30,6 +30,7 @@ import {
   type SessionEntryWorkerPreparation,
 } from "./session-accessor.sqlite-replacement-worker.js";
 import type { SessionEntryCommitContext } from "./session-accessor.types.js";
+import { notifySessionEntryPatchCommitted } from "./session-entry-patch-observer.js";
 import type {
   SessionEntryPatchCommit,
   SessionEntryPatchCommitted,
@@ -160,14 +161,12 @@ export async function patchSessionEntryInWorker(params: {
     async onCommitted(committed, published, identity, _context, fileIdentity) {
       try {
         if (committed.applied && committed.entry) {
-          const entry = structuredClone(committed.entry);
-          if (committed.outcomes?.length) {
-            params.onCommitted?.(entry, committed.transcriptPredicate, committed.outcomes);
-          } else if (committed.transcriptPredicate) {
-            params.onCommitted?.(entry, committed.transcriptPredicate);
-          } else {
-            params.onCommitted?.(entry);
-          }
+          notifySessionEntryPatchCommitted(
+            params.onCommitted,
+            committed.entry,
+            committed.transcriptPredicate,
+            committed.outcomes,
+          );
           params.onCommittedSource?.(
             {
               agentId: params.database.agentId,
