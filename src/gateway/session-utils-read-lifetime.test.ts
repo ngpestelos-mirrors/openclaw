@@ -95,7 +95,6 @@ it("keeps actor workspace predicates current without pinning unrelated planning 
     const initial = {
       sessionId: "workspace-session",
       updatedAt: 1,
-      projectId: "first-project",
       sessionDiffBaseline: {
         version: 1 as const,
         sessionId: "workspace-session",
@@ -126,14 +125,14 @@ it("keeps actor workspace predicates current without pinning unrelated planning 
             requireWriteSuccess: true,
           });
           expect(() => source()).not.toThrow();
-          await patchSessionEntryCore(scope, () => ({ projectId: "second-project" }), {
+          await patchSessionEntryCore(scope, () => ({ projectId: "attached-project" }), {
             requireWriteSuccess: true,
           });
           expect(() => source()).toThrow("Workspace authority changed");
           return captured?.readCurrent()?.projectId;
         }),
       );
-      expect(result).toBe("second-project");
+      expect(result).toBe("attached-project");
       expect(sql.queries).toEqual([]);
     } finally {
       sql.restore();

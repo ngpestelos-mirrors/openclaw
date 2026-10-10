@@ -3,6 +3,7 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { patchSessionEntryCore } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { withIncognitoSessionActor } from "../config/sessions/session-incognito-binding.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -77,13 +78,24 @@ it("refuses a title after the same session ID acquires another lifecycle during 
       userMessage: "Plan my workspace",
     }),
   );
-  const refused = expect(pending).rejects.toThrow(/generation|current/i);
-  await awaitGateBeforeSettlement(entered.promise, pending, "title inference was skipped");
-  await actor.sessions.create(authority, {
-    sessionKey,
-    entry: { ...entry, lifecycleRevision: "next" },
-  });
-  resume.resolve("Stale title");
-  await refused;
-  expect((await actor.sessions.read(authority, { sessionKey })).entry?.displayName).toBeUndefined();
+  const settled = pending.then(
+    () => undefined,
+    () => undefined,
+  );
+  try {
+    await awaitGateBeforeSettlement(entered.promise, pending, "title inference was skipped");
+    await withIncognitoSessionActor(actor, () =>
+      patchSessionEntryCore({ agentId: actor.agentId, storePath: actor.path, sessionKey }, () => ({
+        lifecycleRevision: "next",
+      })),
+    );
+    resume.resolve("Stale title");
+    await expect(pending).rejects.toThrow(/generation|current/i);
+    expect(
+      (await actor.sessions.read(authority, { sessionKey })).entry?.displayName,
+    ).toBeUndefined();
+  } finally {
+    resume.resolve("Stale title");
+    await settled;
+  }
 });
