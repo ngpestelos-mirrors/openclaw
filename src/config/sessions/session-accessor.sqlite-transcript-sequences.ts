@@ -61,12 +61,15 @@ export function rememberCommittedTranscriptMessageSequencesInTransaction(
   }
   const actor = readSessionActorTransactionState(database, { sessionId });
   if (actor) {
-    if (actor.transcript.projection?.needsRebuild !== false) return;
+    if (actor.transcript.projection?.needsRebuild !== false) {
+      return;
+    }
     for (const message of appendedMessages) {
       const identity = actor.transcript.identities.get(message.messageId);
       const position = identity && actor.transcript.active.get(identity.seq)?.message_position;
-      if (position !== null && position !== undefined)
+      if (position !== null && position !== undefined) {
         committedTranscriptMessageSequences.set(message, position + 1);
+      }
     }
     return;
   }

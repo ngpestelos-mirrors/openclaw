@@ -87,7 +87,9 @@ export function createTranscriptIdentityReader(
       if (readSessionActorTransactionState(database, { sessionId }) !== actor) {
         throw new Error("Transcript identity reader escaped its actor transaction");
       }
-      if (actor.transcript.coldArchive) throw new SessionTranscriptColdError(sessionId);
+      if (actor.transcript.coldArchive) {
+        throw new SessionTranscriptColdError(sessionId);
+      }
       const row = actor.transcript.identities.get(eventId);
       return row ? { eventId: row.event_id, parentId: row.parent_id, seq: row.seq } : undefined;
     };

@@ -7,17 +7,17 @@ export function reduceSessionActorEntry(
   entry: SessionEntry,
   reducers: readonly SessionActorReducer[],
 ): SessionEntry {
-  let next = structuredClone(entry);
+  const next = structuredClone(entry);
   for (const reducer of reducers) {
     switch (reducer.kind) {
       case "activity":
         next.updatedAt = Math.max(next.updatedAt, reducer.updatedAt);
         break;
       case "usage":
-        next = {
-          ...next,
-          ...projectSessionEntryUsageUpdate(next, reducer.update, reducer.updatedAt),
-        };
+        Object.assign(
+          next,
+          projectSessionEntryUsageUpdate(next, reducer.update, reducer.updatedAt),
+        );
         break;
       case "group-intro":
         next.groupActivationNeedsSystemIntro = reducer.needsSystemIntro;
@@ -33,7 +33,7 @@ export function reduceSessionActorEntry(
         ) {
           throw new Error("Session actor model changed before consolidation");
         }
-        next = { ...next, ...reducer.next };
+        Object.assign(next, reducer.next);
         break;
       }
     }

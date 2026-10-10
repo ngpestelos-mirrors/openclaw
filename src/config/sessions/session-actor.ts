@@ -442,7 +442,7 @@ export function createSessionActor(params: {
       closing = true;
       release = (async () => {
         while (accepted.size) {
-          await Promise.allSettled([...accepted]);
+          await Promise.allSettled(accepted);
         }
         params.replica.close();
         await params.transport.release();
@@ -523,7 +523,7 @@ export function createSessionActor(params: {
         }
         try {
           while (held.pending.size) {
-            await Promise.allSettled([...held.pending]);
+            await Promise.allSettled(held.pending);
           }
           if (held.uncertain) {
             throw new SqliteWorkerError(
@@ -532,13 +532,13 @@ export function createSessionActor(params: {
             );
           }
           while (held.reducers.length) {
-            const snapshot = await read(authority, held, false);
+            const phaseSnapshot = await read(authority, held, false);
             const settled = await command(
               "patch",
               {
                 commandId: randomUUID(),
                 phaseId,
-                expected: snapshot.version,
+                expected: phaseSnapshot.version,
                 reducers: [],
               },
               authority,

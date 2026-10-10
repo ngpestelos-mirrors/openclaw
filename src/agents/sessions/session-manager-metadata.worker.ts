@@ -202,8 +202,9 @@ export function bindSqliteWorkerBackend(
         event.parentId,
         command.input.view?.admission?.entryId,
       );
-      if (mutationAt === undefined)
+      if (mutationAt === undefined) {
         throw new SqliteTranscriptMutationConflictError(scope.sessionId);
+      }
       prepared.expectedMutationAt = mutationAt;
     }
     const messageControl =

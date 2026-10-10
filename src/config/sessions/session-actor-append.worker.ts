@@ -37,8 +37,9 @@ export function applySessionActorAppend(
   context: AgentWorkerOperationContext,
 ): SessionActorAppendCommitted {
   const database = context.open();
-  if (!database.db.isTransaction)
+  if (!database.db.isTransaction) {
     throw new Error("Session actor append requires its owning transaction");
+  }
   const bindScope = (scope: SessionActorAppend["input"]["scope"]) => {
     const resolved = resolveSqliteTranscriptScope({ ...scope, env: context.options.env });
     const requestedPath = resolveOpenClawAgentSqlitePath(toDatabaseOptions(resolved));
@@ -57,15 +58,20 @@ export function applySessionActorAppend(
     return { ...scope, storePath: database.path, env: context.options.env };
   };
   const admit: MetadataWorkerAdmission = (stage, restriction) => {
-    if (!restriction) return context.admit(stage);
+    if (!restriction) {
+      return context.admit(stage);
+    }
     let granted = false;
     restriction({ stage, facts: undefined }, (request) => {
-      if (granted || request.stage !== stage)
+      if (granted || request.stage !== stage) {
         throw new Error("Session metadata changed its native admission stage");
+      }
       context.admit(stage, request.facts);
       granted = true;
     });
-    if (!granted) throw new Error("Session metadata omitted its admission evidence");
+    if (!granted) {
+      throw new Error("Session metadata omitted its admission evidence");
+    }
   };
   const messageContext = {
     database: database.db,
@@ -93,7 +99,9 @@ export function applySessionActorAppend(
       input.entry,
       input.initialWriterRunId,
     );
-    if (!initialEntry.owned) throw new Error("Session actor initializer lost its session identity");
+    if (!initialEntry.owned) {
+      throw new Error("Session actor initializer lost its session identity");
+    }
     if (absent && !heldTranscript) {
       // Acquire only previously unheld transcript facts after the initializer claims its target.
       // A retained tombstone window already carries the complete hydrated preimage.
@@ -110,8 +118,9 @@ export function applySessionActorAppend(
   }
   const scopeForAppend = (scope: SessionActorAppend["input"]["scope"]) => {
     const bound = bindScope(scope);
-    if (state.hot.entry?.sessionId !== bound.sessionId)
+    if (state.hot.entry?.sessionId !== bound.sessionId) {
       throw new Error("Session actor append lost its session identity");
+    }
     return { ...bound, ...initialEntry?.fence };
   };
   const metadata = (input: SessionMetadataOperations["session.metadata.append"]["input"]) => {
@@ -160,10 +169,13 @@ export function applySessionActorAppend(
   };
   let header: SessionActorAppendCommitted["header"];
   if (append.header) {
-    if (decodeMetadataAppendEvent(append.header).type !== "session")
+    if (decodeMetadataAppendEvent(append.header).type !== "session") {
       throw new Error("Session actor header must be a session event");
+    }
     header = metadata(append.header);
-    if (!header.snapshot.ok) throw new Error("Session actor header was refused");
+    if (!header.snapshot.ok) {
+      throw new Error("Session actor header was refused");
+    }
   }
   if (append.kind === "metadata") {
     return { kind: "metadata", value: metadata(append.input), initialEntry, header };
