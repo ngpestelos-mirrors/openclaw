@@ -548,14 +548,15 @@ async function stagePreparedPendingInput(
         });
       },
       (facts, assertSourceCurrent) => {
+        // COMMIT already accepted this custody. Preserve it before fallible publication.
+        registerSessionPendingInputOwner(owner!);
+        retained = true;
+        options.onCommitted?.(Object.assign(ownerReceipt(owner!), completionMethods));
         assertPrepared(
           facts,
           () => {
             options.assertCurrent();
             assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
-            registerSessionPendingInputOwner(owner!);
-            retained = true;
-            options.onCommitted?.(Object.assign(ownerReceipt(owner!), completionMethods));
           },
           assertSourceCurrent,
         );

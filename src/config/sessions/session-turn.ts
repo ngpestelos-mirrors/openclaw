@@ -31,6 +31,7 @@ import {
   publishIncognitoSessionEntry,
 } from "./session-incognito-binding.js";
 import { getSessionInputActor, throwSessionInputActorFailure } from "./session-input-actor.js";
+import { prepareSessionInputFromReplica } from "./session-input-preparation.js";
 import type { SessionPendingInputAuthorityFacts } from "./session-pending-input-authority.js";
 import {
   acceptSessionSourceValidation,
@@ -370,7 +371,7 @@ export async function appendSessionTurnInWorker(
               source.checks.some((check) => check.predicate.source.path !== database.path)
             ) {
               assertCurrent();
-              if (incognito) {
+              if (incognito || actor) {
                 throw new Error(
                   "Incognito turns require source authority prepared for the same actor",
                 );
@@ -521,6 +522,9 @@ export async function appendSessionTurnInWorker(
         };
         return operation.run(
           async () => {
+            const hot = actor.snapshot(authority) ?? (await actor.read(authority));
+            const prepared = prepareSessionInputFromReplica(plan, hot, scope);
+            if (prepared) return prepared;
             if (actor.target.database.kind === "native-incognito") {
               const opened = getOpenClawAgentDatabaseIfOpen(database);
               if (!opened) throw new Error("Input actor lost its native database");

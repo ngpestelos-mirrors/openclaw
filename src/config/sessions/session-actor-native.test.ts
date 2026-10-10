@@ -1,7 +1,9 @@
 import "../../test-utils/prepare-compiled-subprocesses.js";
 import { existsSync } from "node:fs";
 import { expectDefined } from "@openclaw/normalization-core";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import { bindUserTurnInputActor } from "../../sessions/user-turn-transcript-admission.js";
+import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -15,13 +17,21 @@ import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agen
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
+import { readSessionPendingInputByKey } from "./session-accessor.sqlite-pending-inputs.js";
+import { readTranscriptEventRows } from "./session-accessor.sqlite-read.js";
 import type { SessionActorAuthority, SessionActorReducer } from "./session-actor-contract.js";
 import { createSessionActorFactory } from "./session-actor-durable.js";
 import {
   captureNativeIncognitoSessionActorSources,
   captureNativeIncognitoSessionActorTarget,
 } from "./session-actor-native-incognito.js";
+import { acquireSessionInputActor } from "./session-input-actor.js";
 import { buildRestartRecoveryExpectedState } from "./session-transcript-turn-state.js";
+import { withSessionTranscriptSourcePublication } from "./transcript-write-context.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const authority: SessionActorAuthority = { assertCurrent() {}, authorize() {} };
 const lifetime = { assertCurrent() {}, assertReadable() {} };
@@ -41,7 +51,7 @@ const usage: SessionActorReducer = {
   },
 };
 
-async function nativeSession(env: NodeJS.ProcessEnv) {
+function nativeDatabase(env: NodeJS.ProcessEnv) {
   const database = {
     agentId: "main",
     path: resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main", env }),
@@ -64,10 +74,295 @@ async function nativeSession(env: NodeJS.ProcessEnv) {
     captureNativeIncognitoSessionActorTarget({ database, sessionKey: scope.sessionKey }),
     "native actor target",
   );
+  return { database, owner, scope, target };
+}
+
+async function nativeSession(env: NodeJS.ProcessEnv) {
+  const { database, owner, scope, target } = nativeDatabase(env);
   const factory = createSessionActorFactory(database);
   const actor = await factory.acquire(target, lifetime);
   return { actor, database, factory, owner, scope, target };
 }
+
+async function nativeInputSession(env: NodeJS.ProcessEnv) {
+  const fixture = nativeDatabase(env);
+  const input = await acquireSessionInputActor(
+    {
+      ...fixture.scope,
+      target: { canonicalKey: fixture.scope.sessionKey, storeKeys: [fixture.scope.sessionKey] },
+    },
+    lifetime,
+  );
+  const entry = expectDefined((await input.actor.read(authority)).entry, "input session entry");
+  return {
+    ...fixture,
+    input,
+    recorderTarget: {
+      ...fixture.scope,
+      sessionId: entry.sessionId,
+      expectedSessionId: entry.sessionId,
+      sessionEntry: entry,
+    },
+  };
+}
+
+it.each(["direct", "destructured"] as const)(
+  "retains native input custody before ACK and adopts it once through %s recorder methods",
+  async (invocation) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+      const { input, database, owner, scope, recorderTarget } = await nativeInputSession(env);
+      let approvals = 0;
+      const createRecorder = () => {
+        const recorder = createUserTurnTranscriptRecorder({
+          input: { text: "original input", timestamp: 1, idempotencyKey: "native-input:user" },
+          target: recorderTarget,
+          trackInputCompletion: true,
+          beforeMessageWrite: ({ message }) => {
+            approvals += 1;
+            return { ...message, content: "approved input" };
+          },
+          updateMode: "none",
+          onPersistenceError() {},
+        });
+        bindUserTurnInputActor(recorder, { phase: "acceptInput", acquire: async () => input });
+        return recorder;
+      };
+      const recorder = createRecorder();
+      const accept = vi.spyOn(input.actor, "acceptInput");
+      const adopt = vi.spyOn(input.actor, "adoptRun");
+      try {
+        await expect(
+          recorder.stageApproved?.({ runId: "native-run", assertCurrent() {} }),
+        ).resolves.toBe(true);
+        const pending = expectDefined(
+          readSessionPendingInputByKey(owner, recorderTarget, "native-input:user"),
+          "custody before ACK",
+        );
+        expect(JSON.parse(pending.message_json)).toMatchObject({ content: "approved input" });
+        expect(readTranscriptEventRows(owner, recorderTarget.sessionId)).toEqual([]);
+        expect(recorder.getPendingInputMessage?.()).toMatchObject({ content: "approved input" });
+        expect(input.actor.snapshot(authority)?.pendingInputs).toMatchObject([
+          { input_id: pending.input_id, consumed_event_id: null },
+        ]);
+        expect(accept).toHaveBeenCalledOnce();
+
+        bindUserTurnInputActor(recorder, { phase: "adoptRun", acquire: async () => input });
+        const { persistApproved } = recorder;
+        const persisted = await (invocation === "direct"
+          ? recorder.persistApproved()
+          : persistApproved());
+        expect(persisted).toMatchObject({ appended: true, message: { content: "approved input" } });
+        expect(recorder.isPendingInputConsumed?.()).toBe(true);
+        expect(
+          readSessionPendingInputByKey(owner, recorderTarget, "native-input:user")
+            ?.consumed_event_id,
+        ).toBe(persisted?.messageId);
+        expect(adopt).toHaveBeenCalledOnce();
+        expect(accept).toHaveBeenCalledOnce();
+        await recorder.persistFallback();
+        expect(adopt).toHaveBeenCalledOnce();
+
+        const retry = createRecorder();
+        await expect(
+          retry.stageApproved?.({ runId: "native-run", assertCurrent() {} }),
+        ).resolves.toBe(false);
+        expect(retry.getPendingInputMessage?.()).toMatchObject({ content: "approved input" });
+        const replay = createRecorder();
+        bindUserTurnInputActor(replay, { phase: "adoptRun", acquire: async () => input });
+        await expect(replay.persistApproved()).resolves.toMatchObject({
+          appended: false,
+          messageId: persisted?.messageId,
+          message: { content: "approved input", timestamp: 1 },
+        });
+        expect(approvals).toBe(1);
+        expect(
+          readTranscriptEventRows(owner, recorderTarget.sessionId)
+            .map((row) => JSON.parse(row.eventJson))
+            .filter((event) => event.type === "message"),
+        ).toHaveLength(1);
+        expect(getOpenClawAgentDatabaseIfOpen(database)).toBe(owner);
+        expect(input.target.readSource?.databaseIdentity).toBe(
+          readOpenClawAgentDatabaseIdentity(owner).identity,
+        );
+        expect(captureOpenClawAgentDatabaseExecution.listIncognito(env)).toEqual([]);
+        expect(existsSync(scope.storePath)).toBe(false);
+        expect(existsSync(resolveOpenClawAgentSqlitePath({ agentId: scope.agentId, env }))).toBe(
+          false,
+        );
+      } finally {
+        recorder.finishPendingInput?.("interrupted");
+        await recorder.waitForPendingInputSettlement?.();
+        await input.actor.release();
+      }
+    });
+  },
+);
+
+it("retains staged custody when authority ends during committed publication", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+    const { input, owner, recorderTarget } = await nativeInputSession(env);
+    let live = true;
+    const recorder = createUserTurnTranscriptRecorder({
+      input: {
+        text: "accepted before revocation",
+        timestamp: 1,
+        idempotencyKey: "staged-revoked:user",
+      },
+      target: recorderTarget,
+      updateMode: "none",
+      onPersistenceError() {},
+    });
+    bindUserTurnInputActor(recorder, { phase: "acceptInput", acquire: async () => input });
+    const accept = input.actor.acceptInput;
+    vi.spyOn(input.actor, "acceptInput").mockImplementation((command, current, observer) =>
+      accept(command, current, {
+        committed(outcome) {
+          live = false;
+          observer?.committed(outcome);
+        },
+      }),
+    );
+    try {
+      await expect(
+        recorder.stageApproved?.({
+          runId: "native-run",
+          assertCurrent() {
+            if (!live) throw new Error("staged authority ended");
+          },
+        }),
+      ).rejects.toThrow("staged authority ended");
+      expect(recorder.getPendingInputMessage?.()).toMatchObject({
+        content: "accepted before revocation",
+      });
+      expect(
+        readSessionPendingInputByKey(owner, recorderTarget, "staged-revoked:user"),
+      ).toMatchObject({
+        state: "queued",
+      });
+      recorder.finishPendingInput?.("interrupted");
+      await recorder.waitForPendingInputSettlement?.();
+      expect(
+        readSessionPendingInputByKey(owner, recorderTarget, "staged-revoked:user"),
+      ).toMatchObject({
+        state: "interrupted",
+      });
+    } finally {
+      recorder.finishPendingInput?.("interrupted");
+      await recorder.waitForPendingInputSettlement?.();
+      await input.actor.release();
+    }
+  });
+});
+
+it("retains recorder custody when the native actor's committed publication fails", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+    const { input, owner, scope, recorderTarget } = await nativeInputSession(env);
+    const failure = new Error("native input publication failed");
+    const recorder = createUserTurnTranscriptRecorder({
+      input: { text: "accepted input", timestamp: 1, idempotencyKey: "native-publication:user" },
+      target: recorderTarget,
+      updateMode: "none",
+      onPersistenceError() {},
+    });
+    bindUserTurnInputActor(recorder, { phase: "acceptInput", acquire: async () => input });
+    try {
+      await expect(
+        recorder.stageApproved?.({ runId: "native-run", assertCurrent() {} }),
+      ).resolves.toBe(true);
+      bindUserTurnInputActor(recorder, { phase: "adoptRun", acquire: async () => input });
+      const publish = vi.fn(() => {
+        expect(recorder.hasPersisted()).toBe(true);
+        expect(recorder.getAdmissionReceipt()).toMatchObject({ sessionId: "native-session" });
+        throw failure;
+      });
+      await expect(
+        withSessionTranscriptSourcePublication(recorderTarget, publish, () =>
+          recorder.persistApproved(),
+        ),
+      ).rejects.toThrow(failure.message);
+      expect(publish).toHaveBeenCalledOnce();
+      expect(recorder.isPendingInputConsumed?.()).toBe(true);
+      expect(recorder.getPersistedMessage()).toMatchObject({ content: "accepted input" });
+      const admission = expectDefined(recorder.getAdmissionReceipt(), "committed admission");
+      const { persistFallback } = recorder;
+      await expect(persistFallback()).resolves.toMatchObject({
+        appended: true,
+        messageId: admission.entryId,
+        message: { content: "accepted input" },
+      });
+      expect(
+        readSessionPendingInputByKey(owner, recorderTarget, "native-publication:user")
+          ?.consumed_event_id,
+      ).toBe(admission.entryId);
+      expect(
+        readTranscriptEventRows(owner, recorderTarget.sessionId)
+          .map((row) => JSON.parse(row.eventJson))
+          .filter((event) => event.type === "message"),
+      ).toHaveLength(1);
+      expect(publish).toHaveBeenCalledOnce();
+      expect(existsSync(scope.storePath)).toBe(false);
+    } finally {
+      recorder.finishPendingInput?.("interrupted");
+      await recorder.waitForPendingInputSettlement?.();
+      await input.actor.release();
+    }
+  });
+});
+
+it("rolls back recorder adoption when accepted input authority is revoked at COMMIT", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+    const { input, owner, recorderTarget } = await nativeInputSession(env);
+    let live = true;
+    let commitReached = false;
+    const assertCurrent = () => {
+      if (!live) throw new Error("accepted input authority revoked");
+    };
+    const recorder = createUserTurnTranscriptRecorder({
+      input: { text: "must remain pending", timestamp: 1, idempotencyKey: "native-revoked:user" },
+      target: recorderTarget,
+      updateMode: "none",
+      onPersistenceError() {},
+    });
+    bindUserTurnInputActor(recorder, { phase: "acceptInput", acquire: async () => input });
+    try {
+      await expect(recorder.stageApproved?.({ runId: "native-run", assertCurrent })).resolves.toBe(
+        true,
+      );
+      bindUserTurnInputActor(recorder, { phase: "adoptRun", acquire: async () => input });
+      const adopt = input.actor.adoptRun;
+      vi.spyOn(input.actor, "adoptRun").mockImplementation((command, current, observer) =>
+        adopt(
+          command,
+          {
+            ...current,
+            authorize(stage, snapshot, publication) {
+              if (stage === "commit") {
+                commitReached = true;
+                expect(owner.db.isTransaction).toBe(true);
+                live = false;
+              }
+              current.authorize(stage, snapshot, publication);
+            },
+          },
+          observer,
+        ),
+      );
+      await expect(recorder.persistApproved()).rejects.toThrow("accepted input authority revoked");
+      expect(commitReached).toBe(true);
+      expect(recorder.hasPersisted()).toBe(false);
+      expect(recorder.isPendingInputConsumed?.()).toBe(false);
+      expect(recorder.getAdmissionReceipt()).toBeUndefined();
+      expect(readTranscriptEventRows(owner, recorderTarget.sessionId)).toEqual([]);
+      expect(
+        readSessionPendingInputByKey(owner, recorderTarget, "native-revoked:user"),
+      ).toMatchObject({ state: "queued", consumed_event_id: null });
+    } finally {
+      recorder.finishPendingInput?.("interrupted");
+      await recorder.waitForPendingInputSettlement?.();
+      await input.actor.release();
+    }
+  });
+});
 
 it("completes usage through the existing unbound native incognito owner", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {

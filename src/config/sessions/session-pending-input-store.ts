@@ -85,12 +85,28 @@ export async function preparePendingInputStore(
     resolveOpenClawAgentSqlitePath(toDatabaseOptions(logical));
   const candidates = incognito ? [] : captureSessionStoreReadCandidates(storePath);
   const identities = captureSessionStoreCandidateIdentities(candidates);
-  const resolved = actor ? resolveSqliteScope(captured) : await prepareSqliteScope(captured);
+  const inputSource = inputActor?.target.readSource;
+  const resolved = inputSource
+    ? resolveSqliteScope(captured, undefined, {
+        agentId: inputSource.agentId,
+        path: inputSource.path,
+        shared: inputSource.agentId !== logical.agentId,
+      })
+    : actor
+      ? resolveSqliteScope(captured)
+      : await prepareSqliteScope(captured);
   assertCurrent();
   const options = {
     ...toDatabaseOptions(resolved),
     path: resolveOpenClawAgentSqlitePath(toDatabaseOptions(resolved)),
   };
+  if (
+    inputActor &&
+    (inputActor.target.readSource?.path !== options.path ||
+      inputActor.target.readSource.agentId !== options.agentId)
+  ) {
+    throw new Error("Input actor changed the pending input's physical target");
+  }
   const identity = incognito
     ? undefined
     : identities.get(assertSessionStoreReadCandidate(options.path, candidates));
@@ -231,7 +247,13 @@ export async function preparePendingInputStore(
               !hot.completionKeys.includes(input.idempotencyKey) &&
               !hot.transcript.idempotency.some((row) => row.key === input.idempotencyKey)
             ) {
-              return { kind: "stage" as const, current: true };
+              return {
+                kind: "stage" as const,
+                current: true,
+                existing: undefined,
+                previous: undefined,
+                committed: undefined,
+              };
             }
           }
           if (actor && binding) {
