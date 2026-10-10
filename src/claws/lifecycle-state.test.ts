@@ -689,7 +689,7 @@ describe("Claw status and remove", () => {
 
   it("finishes local cleanup without repeating a confirmed remote cron removal", async () => {
     const current = await addFixture({ withCron: true });
-    markClawCronRefRemoved("worker", "daily-report", { env: current.env });
+    await markClawCronRefRemoved("worker", "daily-report", { env: current.env });
     const plan = await buildClawRemovePlan("worker", {
       env: current.env,
       config: current.getConfig(),

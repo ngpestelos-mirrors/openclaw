@@ -19,6 +19,7 @@ import type {
 import type {
   ClawProvenanceAuthority,
   ClawProvenanceMutationOperations,
+  ClawProvenanceReadOperations,
 } from "./provenance-write.worker-contract.js";
 import type { ClawSettlementOptions } from "./update-rollback.js";
 
@@ -185,5 +186,18 @@ export async function executeClawProvenanceWrite<
       }
       return { admission, nativeLocations: [context.admission.databasePath] };
     },
+  });
+}
+
+export function readClawProvenance<Key extends keyof ClawProvenanceReadOperations>(
+  command: { type: Key; input: ClawProvenanceReadOperations[Key]["input"] },
+  options: OpenClawStateDatabaseOptions,
+): Promise<ClawProvenanceReadOperations[Key]["output"] | undefined> {
+  const context = captureOpenClawStateWorkerContext({
+    path: options.database?.path ?? options.path,
+    env: options.env,
+  });
+  return runOpenClawStateWorkerOperation(context, (scope) => scope.execute(command), {
+    existingOnly: true,
   });
 }

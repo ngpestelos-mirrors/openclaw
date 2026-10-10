@@ -13,7 +13,7 @@ import {
   PLUGIN_ARTIFACT_ADAPTER_IDENTITY,
 } from "../plugins/install-artifact-inspection.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
-import { readClawCronRefs, type PersistedClawCronRef } from "./cron.js";
+import { readClawCronRefsAsync, type PersistedClawCronRef } from "./cron.js";
 import { digestClawValue } from "./digest.js";
 import {
   ClawRemoveError,
@@ -337,7 +337,7 @@ export async function readClawStatus(
         ? readClawMcpServerRefs(install.agentId, options)
         : await reconcileClawMcpServerRefs(install.agentId, configuredMcpServers, options)
       ).map((ref) => inspectMcpServer(ref, configuredMcpServers)),
-      cronJobs: readClawCronRefs(install.agentId, options),
+      cronJobs: await readClawCronRefsAsync(install.agentId, options),
     });
   }
   const packages = records.flatMap((record) => record.packages);

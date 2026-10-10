@@ -11,6 +11,7 @@ import { readSubagentRunsInWorker } from "../agents/subagents/registry/subagent-
 import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/workspace-state-store.kernel.js";
 import { isChannelIngressReadCommand } from "../channels/message/ingress-queue-read-contract.js";
 import { readChannelIngressInDatabase } from "../channels/message/ingress-queue-read.worker.js";
+import { readAttachedCronJobsInDatabase } from "../claws/lifecycle-cron-read.kernel.js";
 import {
   readClawInstallRecordFromDatabase,
   readClawInstallRecordsInDatabase,
@@ -221,6 +222,12 @@ serveOwnedWorkerTasks(
         const result = withOpenClawStateReadOnlyLocation(
           ({ db }): OpenClawStateReadResult => {
             sourceAdmitted = true;
+            if (command.type === "claws.attachedCronJobs") {
+              return {
+                type: command.type,
+                jobs: readAttachedCronJobsInDatabase(db, command.agentId),
+              };
+            }
             if (command.type === "claws.packageOwnership") {
               const install =
                 command.agentId === undefined

@@ -31,6 +31,7 @@ import type {
   ChannelIngressReadCommand,
   ChannelIngressReadReply,
 } from "../channels/message/ingress-queue-read-contract.js";
+import type { AttachedCronJob } from "../claws/lifecycle-cron-read.kernel.js";
 import type { PersistedClawPackageRef } from "../claws/package-extension-provenance.js";
 import type { ClawOrphanWorkspace, PersistedClawInstall } from "../claws/provenance-types.js";
 import type { ConfigSnapshotAuditRecord } from "../config/config-journal-snapshot.kernel.js";
@@ -188,6 +189,7 @@ export type OpenClawStateReadCommand =
   | { type: "capture.readOnlyBlob"; blobId: string }
   | { type: "deliveryQueue.outbound"; id?: string; mode: "pending" | "unfinished" }
   | { type: "config.snapshot.read" }
+  | { type: "claws.attachedCronJobs"; agentId: string }
   | { type: "claws.packageOwnership"; agentId?: string; includeInstalls: boolean }
   | { type: "doctor.gatewayOwnerLease.read" }
   | AcpSessionReadCommand
@@ -324,6 +326,7 @@ export type OpenClawStateReadResult =
   | { type: "meetingTranscripts.export"; result: TranscriptExportResult }
   | RegisteredStateReadResult
   | { type: "backup.runs"; runs: BackupRunRecord[] }
+  | { type: "claws.attachedCronJobs"; jobs: AttachedCronJob[] }
   | {
       type: "claws.packageOwnership";
       install: PersistedClawInstall | undefined;

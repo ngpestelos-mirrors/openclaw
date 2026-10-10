@@ -1,12 +1,11 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { cronJobReadView } from "../cron/job-read-view.js";
 import { normalizeCronJobCreate } from "../cron/normalize.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../state/openclaw-state-db.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { applyClawCronUpdate } from "./cron-update.js";
 import {
   CLAW_CRON_REF_SCHEMA_VERSION,
@@ -18,8 +17,12 @@ import {
 import { createClawUpdatePlanFixture as plan } from "./resource-update.test-helpers.js";
 import type { ClawCronJob, ClawManifest } from "./types.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(closeOpenClawStateDatabaseForTest);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 const oldDaily: ClawCronJob = {
   id: "daily",
@@ -87,7 +90,7 @@ describe("applyClawCronUpdate", () => {
       const env = { OPENCLAW_STATE_DIR: join(tempDirs.make("openclaw-cron-readiness-"), "state") };
       const previous = ref(oldDaily, "scheduler-daily");
       if (action === "change") {
-        upsertClawCronRef(previous, { env });
+        await upsertClawCronRef(previous, { env });
       }
       readClawCronRefs("worker", { env });
       const database = openOpenClawStateDatabase({ env });
@@ -158,7 +161,7 @@ describe("applyClawCronUpdate", () => {
       OPENCLAW_STATE_DIR: join(tempDirs.make("openclaw-cron-readiness-undo-"), "state"),
     };
     const previous = ref(legacy, "scheduler-legacy");
-    upsertClawCronRef(previous, { env });
+    await upsertClawCronRef(previous, { env });
     const waitUntilAgentAvailable = vi
       .fn(async () => undefined)
       .mockRejectedValueOnce(new Error("agent not ready"));
@@ -267,7 +270,7 @@ describe("applyClawCronUpdate", () => {
             ),
           remove,
         },
-        readRefs: () => refs,
+        readRefs: async () => refs,
         upsertRef,
         deleteRef,
         nowMs: 20,
@@ -288,47 +291,83 @@ describe("applyClawCronUpdate", () => {
     expect(waitUntilAgentAvailable).toHaveBeenCalledOnce();
   });
 
-  it("removes without waiting and checks availability before compensating add", async () => {
-    const previous = ref(legacy, "scheduler-legacy");
-    const waitUntilAgentAvailable = vi.fn(async () => undefined);
-    const add = vi.fn(async () => {
-      expect(waitUntilAgentAvailable).toHaveBeenCalledWith("worker");
-      return { id: "scheduler-restored" };
-    });
-    const upsertRef = vi.fn();
-    const execution = await applyClawCronUpdate(
-      plan([
-        {
-          kind: "cronJob",
-          id: "legacy",
-          action: "remove",
-          target: "scheduler-legacy",
-          blocked: false,
-          reason: "removed",
-        },
-      ]),
-      manifest(),
-      {
+  it.each(["active", "cancelled", "owner-lost"] as const)(
+    "restores removed cron ownership under the live settlement owner (%s)",
+    async (state) => {
+      const env = { OPENCLAW_STATE_DIR: join(tempDirs.make("openclaw-cron-settlement-"), "state") };
+      const previous = ref(legacy, "scheduler-legacy");
+      await upsertClawCronRef(previous, { env });
+      const request = new AbortController();
+      const settlement = new AsyncLocalStorage<boolean>();
+      let owned = true;
+      const assertSettlementCurrent = () => {
+        if (!owned) {
+          throw new Error("Claw owner replaced");
+        }
+      };
+      const assertCurrent = () => {
+        assertSettlementCurrent();
+        request.signal.throwIfAborted();
+      };
+      const assertGatewayCurrent = () =>
+        settlement.getStore() ? assertSettlementCurrent() : assertCurrent();
+      const waitUntilAgentAvailable = vi.fn(async () => assertGatewayCurrent());
+      const add = vi.fn(async () => {
+        assertGatewayCurrent();
+        expect(waitUntilAgentAvailable).toHaveBeenCalledWith("worker");
+        return { id: "scheduler-restored" };
+      });
+      const options = {
+        env,
+        nowMs: 20,
+        signal: request.signal,
+        assertCurrent,
+        assertSettlementCurrent,
+        runSettlement: <T>(run: () => Promise<T>) => settlement.run(true, run),
         cronGateway: {
           add,
-          get: async () => cronReadView("worker", previous),
-          remove: vi.fn(),
+          get: async () => {
+            assertGatewayCurrent();
+            return cronReadView("worker", previous);
+          },
+          remove: vi.fn(async () => assertGatewayCurrent()),
           waitUntilAgentAvailable,
         },
-        readRefs: () => [previous],
-        upsertRef,
-        deleteRef: vi.fn(),
-      },
-    );
-    expect(execution.appliedIds).toEqual(["legacy"]);
-    expect(waitUntilAgentAvailable).not.toHaveBeenCalled();
-    await execution.rollback();
-    expect(add).toHaveBeenCalledOnce();
-    expect(upsertRef).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: "complete", schedulerJobId: "scheduler-restored" }),
-      expect.any(Object),
-    );
-  });
+      };
+      const execution = await applyClawCronUpdate(
+        plan([
+          {
+            kind: "cronJob",
+            id: "legacy",
+            action: "remove",
+            target: "scheduler-legacy",
+            blocked: false,
+            reason: "removed",
+          },
+        ]),
+        manifest(),
+        options,
+      );
+      expect(execution.appliedIds).toEqual(["legacy"]);
+      expect(waitUntilAgentAvailable).not.toHaveBeenCalled();
+      expect(readClawCronRefs("worker", { env })).toEqual([]);
+      if (state !== "active") {
+        request.abort(new Error("Claw request cancelled"));
+      }
+      if (state === "owner-lost") {
+        owned = false;
+        await expect(execution.rollback()).rejects.toThrow("Claw owner replaced");
+        expect(add).not.toHaveBeenCalled();
+        expect(readClawCronRefs("worker", { env })).toEqual([]);
+        return;
+      }
+      await execution.rollback();
+      expect(add).toHaveBeenCalledOnce();
+      expect(readClawCronRefs("worker", { env })).toEqual([
+        { ...previous, schedulerJobId: "scheduler-restored", updatedAtMs: 20 },
+      ]);
+    },
+  );
 
   it("removes a non-converged replacement and fails closed", async () => {
     const remove = vi.fn(async () => ({ ok: true }));
@@ -351,7 +390,7 @@ describe("applyClawCronUpdate", () => {
             get: async () => cronReadView("worker", ref(oldDaily, "scheduler-daily")),
             remove,
           },
-          readRefs: () => [ref(oldDaily, "scheduler-daily")],
+          readRefs: async () => [ref(oldDaily, "scheduler-daily")],
           upsertRef: vi.fn(),
         },
       ),
@@ -381,7 +420,7 @@ describe("applyClawCronUpdate", () => {
             get: vi.fn(),
             remove: vi.fn(),
           },
-          readRefs: () => [],
+          readRefs: async () => [],
           upsertRef: vi.fn(),
         },
       ),
@@ -412,7 +451,7 @@ describe("applyClawCronUpdate", () => {
             }),
             remove,
           },
-          readRefs: () => [ref(legacy, "scheduler-legacy")],
+          readRefs: async () => [ref(legacy, "scheduler-legacy")],
         },
       ),
     ).rejects.toThrow("changed after planning");

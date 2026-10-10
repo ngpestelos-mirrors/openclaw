@@ -4,10 +4,8 @@ import { validateCronAddParams } from "../../packages/gateway-protocol/src/index
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { cronJobReadView } from "../cron/job-read-view.js";
 import { normalizeCronJobCreate } from "../cron/normalize.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../state/openclaw-state-db.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import {
   clawCronGatewayInput,
   clawCronGatewayJobMatchesRef,
@@ -21,8 +19,12 @@ import { buildClawAddPlan } from "./lifecycle.js";
 import { parseClawManifest } from "./schema.js";
 import type { ClawSourceIdentity } from "./types.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(() => closeOpenClawStateDatabaseForTest());
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 async function fixture() {
   const root = tempDirs.make("openclaw-claw-cron-");
@@ -345,17 +347,17 @@ describe("installClawCronJobs", () => {
       createdAtMs: 999,
       updatedAtMs: 100,
     };
-    upsertClawCronRef(replacement, options);
+    await upsertClawCronRef(replacement, options);
     const otherAgent = {
       ...original!,
       agentId: "other-agent",
       declarationKey: "claw:other-agent:daily-report",
       schedulerJobId: "scheduler-other",
     };
-    upsertClawCronRef(otherAgent, options);
+    await upsertClawCronRef(otherAgent, options);
     expect(readClawCronRefs("worker-two", options)).toEqual([{ ...replacement, createdAtMs: 42 }]);
 
-    const removed = markClawCronRefRemoved("worker-two", "daily-report", {
+    const removed = await markClawCronRefRemoved("worker-two", "daily-report", {
       ...options,
       nowMs: 200,
     });
@@ -363,9 +365,9 @@ describe("installClawCronJobs", () => {
     expect(removed).not.toHaveProperty("schedulerJobId");
     expect(removed).not.toHaveProperty("error");
     expect(readClawCronRefs("worker-two", options)).toEqual([removed]);
-    expect(markClawCronRefRemoved("worker-two", "missing", options)).toBeUndefined();
-    deleteClawCronRef("worker-two", "daily-report", options);
-    deleteClawCronRef("worker-two", "daily-report", options);
+    expect(await markClawCronRefRemoved("worker-two", "missing", options)).toBeUndefined();
+    await deleteClawCronRef("worker-two", "daily-report", options);
+    await deleteClawCronRef("worker-two", "daily-report", options);
     expect(readClawCronRefs("worker-two", options)).toEqual([]);
     expect(readClawCronRefs("other-agent", options)).toEqual([otherAgent]);
   });
@@ -375,7 +377,7 @@ describe("installClawCronJobs", () => {
     const options = { env: current.env };
     const gateway = { add: vi.fn().mockResolvedValue({ id: "scheduler-valid" }) };
     const [original] = await installClawCronJobs(current.plan, { ...options, gateway });
-    upsertClawCronRef(
+    await upsertClawCronRef(
       {
         ...original!,
         manifestId: "zz-malformed",
@@ -391,10 +393,8 @@ describe("installClawCronJobs", () => {
     );
 
     expect(() => readClawCronRefs("worker-two", options)).toThrow(SyntaxError);
-    expect(() => markClawCronRefRemoved("worker-two", "daily-report", options)).toThrow(
-      SyntaxError,
-    );
-    expect(() => markClawCronRefRemoved("worker-two", "missing", options)).toThrow(SyntaxError);
+    await expect(markClawCronRefRemoved("worker-two", "daily-report", options)).rejects.toThrow();
+    await expect(markClawCronRefRemoved("worker-two", "missing", options)).rejects.toThrow();
     await expect(installClawCronJobs(current.plan, { ...options, gateway })).resolves.toEqual([
       original,
     ]);

@@ -1,20 +1,21 @@
 import { coerceErrorMessage } from "@openclaw/normalization-core";
-import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
+import { hasSqliteWorkerOutcomeUnknown } from "../infra/sqlite-worker-contract.js";
 import {
   CLAW_CRON_REF_SCHEMA_VERSION,
   clawCronGatewayJobMatchesRef,
   clawCronGatewayInput,
   clawCronSchedulerJobFromResult,
   deleteClawCronRef,
-  readClawCronRefs,
+  readClawCronRefsAsync,
   upsertClawCronRef,
   type ClawCronGateway,
   type PersistedClawCronRef,
 } from "./cron.js";
 import { digestClawValue as digest } from "./digest.js";
+import type { ClawProvenanceWriteOptions } from "./provenance-write.js";
 import type { ClawCronJob, ClawManifest } from "./types.js";
 import type { ClawUpdatePlan } from "./update-plan.js";
-import { rollbackClawUpdate } from "./update-rollback.js";
+import { rollbackClawUpdate, runClawSettlement } from "./update-rollback.js";
 
 export type ClawCronUpdateExecution = {
   appliedIds: string[];
@@ -52,10 +53,10 @@ function targetRef(params: {
 export async function applyClawCronUpdate(
   updatePlan: ClawUpdatePlan,
   targetManifest: ClawManifest,
-  options: OpenClawStateDatabaseOptions & {
+  options: ClawProvenanceWriteOptions & {
     cronGateway?: ClawCronGateway;
     nowMs?: number;
-    readRefs?: typeof readClawCronRefs;
+    readRefs?: typeof readClawCronRefsAsync;
     upsertRef?: typeof upsertClawCronRef;
     deleteRef?: typeof deleteClawCronRef;
   },
@@ -73,11 +74,11 @@ export async function applyClawCronUpdate(
     throw new ClawCronUpdateError("Claw cron updates require the gateway cron.get API.");
   }
   const gateway = options.cronGateway;
-  const readRefs = options.readRefs ?? readClawCronRefs;
+  const readRefs = options.readRefs ?? readClawCronRefsAsync;
   const upsertRef = options.upsertRef ?? upsertClawCronRef;
   const deleteRef = options.deleteRef ?? deleteClawCronRef;
   const currentRefs = new Map(
-    readRefs(updatePlan.agentId, options).map((ref) => [ref.manifestId, ref]),
+    (await readRefs(updatePlan.agentId, options)).map((ref) => [ref.manifestId, ref]),
   );
   const targetJobs = new Map(targetManifest.cronJobs.map((job) => [job.id, job]));
   const undo: Array<() => Promise<void>> = [];
@@ -91,12 +92,16 @@ export async function applyClawCronUpdate(
       agentAvailable = true;
     }
   };
-  const add = async (ref: PersistedClawCronRef): Promise<string> => {
+  const add = async (ref: PersistedClawCronRef, authority = options): Promise<string> => {
     await waitForAgent();
     let raw: unknown;
     try {
+      authority.assertCurrent?.();
       raw = await gateway.add(clawCronGatewayInput(updatePlan.agentId, ref));
     } catch (error) {
+      if (hasSqliteWorkerOutcomeUnknown(error)) {
+        throw error;
+      }
       throw new ClawCronUpdateError(coerceErrorMessage(error), true);
     }
     const result = clawCronSchedulerJobFromResult(raw);
@@ -105,7 +110,13 @@ export async function applyClawCronUpdate(
     }
     return result.id;
   };
-  const rollback = () => rollbackClawUpdate(undo, ClawCronUpdateError);
+  const rollbackOptions = {
+    ...options,
+    signal: undefined,
+    assertCurrent: options.assertSettlementCurrent ?? options.assertCurrent,
+  };
+  const rollback = () =>
+    runClawSettlement(options, () => rollbackClawUpdate(undo, ClawCronUpdateError));
 
   try {
     for (const action of actions) {
@@ -129,17 +140,24 @@ export async function applyClawCronUpdate(
             `Cron declaration ${JSON.stringify(action.id)} is no longer safely removable.`,
           );
         }
-        upsertRef({ ...previous, status: "pending", updatedAtMs: nowMs }, options);
+        await upsertRef({ ...previous, status: "pending", updatedAtMs: nowMs }, options);
         try {
+          options.assertCurrent?.();
           await gateway.remove(previous.schedulerJobId);
         } catch (error) {
+          if (hasSqliteWorkerOutcomeUnknown(error)) {
+            throw error;
+          }
           throw new ClawCronUpdateError(coerceErrorMessage(error), true);
         }
         undo.push(async () => {
-          const restoredId = await add(previous);
-          upsertRef({ ...previous, schedulerJobId: restoredId, updatedAtMs: nowMs }, options);
+          const restoredId = await add(previous, rollbackOptions);
+          await upsertRef(
+            { ...previous, schedulerJobId: restoredId, updatedAtMs: nowMs },
+            rollbackOptions,
+          );
         });
-        deleteRef(updatePlan.agentId, action.id, options);
+        await deleteRef(updatePlan.agentId, action.id, options);
         appliedIds.push(action.id);
         continue;
       }
@@ -153,16 +171,20 @@ export async function applyClawCronUpdate(
       // A readiness failure must leave this declaration's ownership untouched.
       await waitForAgent();
       const pending = targetRef({ agentId: updatePlan.agentId, job, previous, nowMs });
-      upsertRef(pending, options);
+      await upsertRef(pending, options);
       const schedulerJobId = await add(pending);
       if (action.action === "change") {
         if (!previous?.schedulerJobId || schedulerJobId !== previous.schedulerJobId) {
           try {
+            options.assertCurrent?.();
             await gateway.remove(schedulerJobId);
             if (previous) {
-              upsertRef(previous, options);
+              await upsertRef(previous, options);
             }
           } catch (error) {
+            if (hasSqliteWorkerOutcomeUnknown(error)) {
+              throw error;
+            }
             throw new ClawCronUpdateError(
               `cron.add did not converge and cleanup failed: ${coerceErrorMessage(error)}`,
               true,
@@ -173,22 +195,32 @@ export async function applyClawCronUpdate(
           );
         }
         undo.push(async () => {
-          const restoredId = await add(previous);
-          upsertRef({ ...previous, schedulerJobId: restoredId, updatedAtMs: nowMs }, options);
+          const restoredId = await add(previous, rollbackOptions);
+          await upsertRef(
+            { ...previous, schedulerJobId: restoredId, updatedAtMs: nowMs },
+            rollbackOptions,
+          );
         });
       } else {
         undo.push(async () => {
+          rollbackOptions.assertCurrent?.();
           await gateway.remove(schedulerJobId);
-          deleteRef(updatePlan.agentId, action.id, options);
+          await deleteRef(updatePlan.agentId, action.id, rollbackOptions);
         });
       }
-      upsertRef({ ...pending, schedulerJobId, status: "complete" }, options);
+      await upsertRef({ ...pending, schedulerJobId, status: "complete" }, options);
       appliedIds.push(action.id);
     }
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     try {
       await rollback();
     } catch (rollbackError) {
+      if (hasSqliteWorkerOutcomeUnknown(rollbackError)) {
+        throw rollbackError;
+      }
       throw new ClawCronUpdateError(
         `${coerceErrorMessage(error)}; rollback failed: ${coerceErrorMessage(rollbackError)}`,
         true,

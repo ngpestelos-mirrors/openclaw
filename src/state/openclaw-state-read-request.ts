@@ -251,7 +251,7 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
   if (command.type === "cron.activeReceiptOwners") {
     return bytes + Buffer.byteLength(command.agentId, "utf8");
   }
-  if (command.type === "claws.packageOwnership") {
+  if (command.type === "claws.packageOwnership" || command.type === "claws.attachedCronJobs") {
     return bytes + Buffer.byteLength(command.agentId ?? "", "utf8");
   }
   if (command.type === "workerPlacements.changeSnapshot") {

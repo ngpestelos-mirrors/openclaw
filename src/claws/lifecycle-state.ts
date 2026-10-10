@@ -554,9 +554,9 @@ export async function applyClawRemovePlan(
               }
             }
             deletion.assertCurrentFinal();
-            markClawCronRefRemoved(agentId, cron.manifestId, options);
+            await markClawCronRefRemoved(agentId, cron.manifestId, { ...options, deletion });
           }
-          deleteClawCronRef(agentId, cron.manifestId, options);
+          await deleteClawCronRef(agentId, cron.manifestId, { ...options, deletion });
           cronJobs.push({
             manifestId: cron.manifestId,
             schedulerJobId: cron.schedulerJobId,
