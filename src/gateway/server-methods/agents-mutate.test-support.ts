@@ -44,6 +44,7 @@ export function deletionJournal(
     sessionsDir: "/journal/sessions",
     createdAt: 1,
     cleanupCompleted: false,
+    phase: "retiring",
     deleteFiles: true,
     databasePaths: [],
     cleanupPaths: [],

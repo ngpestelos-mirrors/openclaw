@@ -65,6 +65,7 @@ export class TerminalSessionManager {
   private readonly emit: TerminalEventSink;
   private readonly getBufferedAmount: (connId: string) => number | undefined;
   private readonly spawn: typeof spawnTerminalPty;
+  private readonly withOpenAdmission: TerminalSessionManagerOptions["withOpenAdmission"];
   private readonly maxSessions: number;
   private detachGraceMs: number;
   private readonly maxDetachedSessions: number;
@@ -82,6 +83,7 @@ export class TerminalSessionManager {
     this.emit = options.emit;
     this.getBufferedAmount = options.getBufferedAmount ?? (() => undefined);
     this.spawn = options.spawn ?? spawnTerminalPty;
+    this.withOpenAdmission = options.withOpenAdmission;
     this.maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS;
     this.detachGraceMs = options.detachGraceMs ?? 0;
     this.maxDetachedSessions = options.maxDetachedSessions ?? DEFAULT_MAX_DETACHED_SESSIONS;
@@ -93,6 +95,12 @@ export class TerminalSessionManager {
   }
 
   async open(request: TerminalOpenRequest): Promise<TerminalOpenOutcome> {
+    return this.withOpenAdmission
+      ? await this.withOpenAdmission(request, (admitted) => this.openAdmitted(admitted))
+      : await this.openAdmitted(request);
+  }
+
+  private async openAdmitted(request: TerminalOpenRequest): Promise<TerminalOpenOutcome> {
     if (request.signal?.aborted) {
       return { ok: false, code: "closed", message: this.openAbortMessage(request.signal) };
     }

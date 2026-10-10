@@ -18,6 +18,14 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { StoreWriterQueue } from "../shared/store-writer-queue.js";
 import {
+  agentWorkAdmissionIdentity,
+  assertAgentWorkAdmissionAvailable,
+  createAgentWorkAdmissionQueries,
+  interruptSessionWorkAdmissionOwners,
+  type AgentWorkAdmissionIdentity,
+  type SessionWorkAdmissionClosure,
+} from "./session-agent-work-admission.js";
+import {
   createLifecycleDiagnosticOperation,
   type SessionLifecycleMutationOperation,
 } from "./session-lifecycle-diagnostics.js";
@@ -50,6 +58,7 @@ export {
 
 export const SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS = 15_000;
 type SessionWorkAdmission = HandoffSessionWorkAdmission & {
+  agent?: AgentWorkAdmissionIdentity;
   lifecycleGeneration: string;
   phase: "pending" | "acquired";
   owner?: symbol;
@@ -60,8 +69,6 @@ type SessionWorkAdmission = HandoffSessionWorkAdmission & {
 type SessionLifecycleMutationOwner = {
   identities: readonly string[];
 };
-
-type SessionWorkAdmissionClosure = SessionLifecycleMutationOwner & { reason: Error };
 
 type SessionLifecycleAdmissionState = {
   lifecycleQueues: Map<string, StoreWriterQueue>;
@@ -128,6 +135,22 @@ export {
   getSessionWorkAdmissionOwnerRelease,
   getCompetingSessionWorkAdmissionRelease,
   getTerminalSessionWorkAdmissionRelease,
+};
+
+const {
+  closeAgentWorkAdmissions,
+  collectActiveAgentSessionWorkAdmissions,
+  startAgentWorkAdmissionInterruption,
+  assertSessionWorkAdmissionOpen,
+} = createAgentWorkAdmissionQueries(
+  ACTIVE_SESSION_WORK_ADMISSIONS,
+  SESSION_WORK_ADMISSION_CLOSURES,
+  () => CURRENT_SESSION_WORK_ADMISSIONS.getStore(),
+);
+export {
+  closeAgentWorkAdmissions,
+  collectActiveAgentSessionWorkAdmissions,
+  startAgentWorkAdmissionInterruption,
 };
 
 // Older runtime chunks can create the shared state without this newer index.
@@ -489,6 +512,9 @@ export function collectActiveSessionLifecycleMutationIdentities(scope: string): 
 }
 
 export async function beginSessionWorkAdmission(params: {
+  agentId?: string;
+  statePath?: string;
+  env?: NodeJS.ProcessEnv;
   scope: string;
   identities: Iterable<string | undefined>;
   /** Complete store keys read or written by final validation; omission keeps a store-wide barrier. */
@@ -510,6 +536,9 @@ export async function beginSessionWorkAdmission(params: {
     throw new GatewayDrainingError();
   }
   const rawIdentities = Array.from(params.identities);
+  const agent = params.agentId
+    ? agentWorkAdmissionIdentity({ ...params, agentId: params.agentId })
+    : undefined;
   // An adopted unbound owner must not inherit the adopting request's Gateway.
   const resolveGatewayContext = Object.hasOwn(params, "resolveGatewayContext")
     ? params.resolveGatewayContext
@@ -537,6 +566,7 @@ export async function beginSessionWorkAdmission(params: {
   let writerBarrierStarted = false;
   const { promise: releasedPromise, resolve: resolveReleased } = createDeferredCore();
   const admission: SessionWorkAdmission = {
+    agent,
     lifecycleGeneration: getAgentRunLifecycleGeneration(),
     phase: "pending",
     isSettling: params.isSettling,
@@ -598,13 +628,19 @@ export async function beginSessionWorkAdmission(params: {
     },
   };
   let removeAbortListener = () => {};
-  try {
-    const closedOwner = [...SESSION_WORK_ADMISSION_CLOSURES].find((owner) =>
-      owner.identities.some((identity) => admission.identities.has(identity)),
-    );
-    if (closedOwner) {
-      admission.interrupt?.(closedOwner.reason);
+  const assertIngressOpen = () => {
+    assertSessionWorkAdmissionOpen(admission);
+    signal.throwIfAborted();
+  };
+  const assertAgentIngressOpen = async () => {
+    assertIngressOpen();
+    if (agent) {
+      await assertAgentWorkAdmissionAvailable({ ...agent, env: params.env }, signal);
     }
+    assertIngressOpen();
+  };
+  try {
+    await assertAgentIngressOpen();
     if (predecessors.size > 0) {
       await racePromiseWithAbortSignal(
         Promise.all(Array.from(predecessors, (predecessor) => predecessor.released)),
@@ -632,10 +668,10 @@ export async function beginSessionWorkAdmission(params: {
         const current = new Set(CURRENT_SESSION_WORK_ADMISSIONS.getStore());
         current.add(admission);
         await CURRENT_SESSION_WORK_ADMISSIONS.run(current, params.assertAllowed, signal);
+        assertIngressOpen();
         if (isGatewaySubordinateWorkAdmissionClosed()) {
           throw new GatewayDrainingError();
         }
-        signal.throwIfAborted();
         admission.phase = "acquired";
         await runExclusiveSessionStoreWrite(
           params.scope,
@@ -643,7 +679,9 @@ export async function beginSessionWorkAdmission(params: {
             writerBarrierStarted = true;
             signal.throwIfAborted();
             const revalidate = params.revalidateAllowed ?? (() => params.assertAllowed(signal));
+            await assertAgentIngressOpen();
             await lease.run(async () => await revalidate());
+            assertIngressOpen();
           },
           { reentrant: true, identities: params.storeWriterIdentities, signal },
         );
@@ -693,7 +731,6 @@ function startNormalizedSessionWorkAdmissionInterruption(params: {
   identities: readonly string[];
   pendingOnly?: boolean;
 }): { released: Promise<void>; interruptedRunIds: ReadonlySet<string> } {
-  const interruptedRunIds = new Set<string>();
   const currentAdmissions = CURRENT_SESSION_WORK_ADMISSIONS.getStore();
   // In-band lifecycle commands suspend their own admitted turn while the
   // mutation runs. Interrupt competing work, not the initiating stack.
@@ -702,19 +739,7 @@ function startNormalizedSessionWorkAdmissionInterruption(params: {
     (admission) =>
       (!params.pendingOnly || admission.phase === "pending") && !currentAdmissions?.has(admission),
   );
-  for (const admission of admissions) {
-    admission.interrupted ??= params.reason ?? new Error("Session work admission interrupted");
-    const receipt = admission.interrupt?.(admission.interrupted);
-    if (receipt) {
-      interruptedRunIds.add(receipt.runId);
-    }
-  }
-  return {
-    interruptedRunIds,
-    released: Promise.all(Array.from(admissions, (admission) => admission.released)).then(
-      () => undefined,
-    ),
-  };
+  return interruptSessionWorkAdmissionOwners(admissions, params.reason);
 }
 
 export function startSessionWorkAdmissionInterruption(params: {

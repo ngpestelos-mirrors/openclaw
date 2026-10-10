@@ -165,6 +165,7 @@ export async function prepareCronRunContext(params: {
   const prepareSession = () =>
     withCronSessionPreparation(
       {
+        agentId,
         storePath: resolveSessionStorePathCore(runtimeCfg.session?.store, { agentId }),
         sessionKey: agentSessionKey,
         signal: input.abortSignal ?? input.signal,
@@ -216,6 +217,7 @@ export async function prepareCronRunContext(params: {
       ? `${agentSessionKey}:run:${runSessionId}`
       : agentSessionKey;
     const sessionWorkAdmission = await beginCronSessionWorkAdmission({
+      agentId,
       cronSession,
       agentSessionKey,
       runSessionKey,

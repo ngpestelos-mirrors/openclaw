@@ -1083,12 +1083,13 @@ export type ActiveEmbeddedRunOwner = {
   runId: string;
   sessionId: string;
   sessionKey?: string;
+  agentId?: string;
   startedAtMs?: number;
   abort: () => boolean;
 };
 
 function projectActiveEmbeddedRunOwner(
-  registration: { sessionId: string; sessionKey?: string },
+  registration: { sessionId: string; sessionKey?: string; agentId?: string },
   handle: EmbeddedAgentQueueHandle,
 ): ActiveEmbeddedRunOwner | undefined {
   const runId = handle.runId;
@@ -1099,6 +1100,7 @@ function projectActiveEmbeddedRunOwner(
     runId,
     sessionId: registration.sessionId,
     ...(registration.sessionKey ? { sessionKey: registration.sessionKey } : {}),
+    ...(registration.agentId ? { agentId: registration.agentId } : {}),
     ...(handle.startedAtMs === undefined ? {} : { startedAtMs: handle.startedAtMs }),
     // A recovered run ID is correlation only. Recheck the captured owner before
     // Stop so a stale UI action cannot abort replacement work in the session.

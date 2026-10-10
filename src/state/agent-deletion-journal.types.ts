@@ -3,6 +3,7 @@ import type { OpenClawRegisteredAgentDatabase } from "./openclaw-agent-db-contra
 export type RetainedAgentDeletion = { agentId: string; agentDir: string; databasePaths: string[] };
 export type HeldAgentDatabase = { agentId: string; path: string };
 export type AgentDeletionJournalPurpose = "runtime" | "maintenance";
+export type AgentDeletionJournalPhase = "draining" | "retiring";
 
 type KnownAgentDeletionFacts = {
   entries: RetainedAgentDeletion[];
@@ -51,6 +52,7 @@ export type AgentDeletionJournalCleanupPath = {
 export type AgentDeletionJournalEntry = {
   agentId: string;
   operationId: string;
+  phase: AgentDeletionJournalPhase;
   agentDir: string;
   workspaceDir: string;
   sessionsDir: string;
@@ -63,8 +65,9 @@ export type AgentDeletionJournalEntry = {
 
 export type AgentDeletionJournalInput = Omit<
   AgentDeletionJournalEntry,
-  "createdAt" | "cleanupCompleted" | "databasePaths" | "cleanupPaths"
+  "createdAt" | "cleanupCompleted" | "databasePaths" | "cleanupPaths" | "phase"
 > & {
+  phase?: AgentDeletionJournalPhase;
   databasePaths?: string[];
   cleanupPaths?: AgentDeletionJournalCleanupPath[];
 };

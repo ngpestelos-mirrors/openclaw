@@ -1,5 +1,9 @@
 import { isDeepStrictEqual } from "node:util";
-import { resolveAgentDir, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import {
+  resolveAgentDir,
+  resolveAgentWorkspaceDir,
+  resolveSessionAgentIds,
+} from "../../agents/agent-scope.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../../agents/defaults.js";
 import { resolveEmbeddedCliBackendDispatchEligibility } from "../../agents/embedded-agent-runner/cli-backend-dispatch-eligibility.js";
 import { resolveAgentIdentity } from "../../agents/identity.js";
@@ -594,6 +598,8 @@ async function runWithSessionWorkAdmission<T>(
   });
   const lifecycleAbortController = new AbortController();
   const admission = await beginSessionWorkAdmission({
+    agentId: resolveSessionAgentIds({ config: getRuntimeConfig(), sessionKey: params.sessionKey })
+      .sessionAgentId,
     scope: params.storePath,
     identities: [params.sessionKey, initialEntry?.sessionId],
     signal: params.signal,

@@ -207,6 +207,7 @@ export function createAgentAdmissionController(params: {
         onInterrupt: interrupt,
       }) ??
       (await beginSessionWorkAdmission({
+        agentId: params.getResolvedSessionAgentId() ?? params.getAgentId(),
         scope,
         isSettling: () => admittedRunAbort?.entry?.terminalOutcomeObserved === true,
         identities: [params.getResolvedSessionKey(), params.getResolvedSessionId()],

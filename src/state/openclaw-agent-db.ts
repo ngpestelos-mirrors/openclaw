@@ -660,11 +660,11 @@ export function getOpenClawAgentDatabaseIfOpen(
   assertAgentDatabaseAdmitted(agentId, { env: options.env });
   const pathname = resolveOpenClawAgentSqlitePath({ ...options, agentId });
   // Incognito skips durable database leases, but still follows the agent deletion fence.
-  if (
-    isIncognitoOpenClawAgentSqlitePath(pathname, options) &&
-    readAgentDeletionJournal(agentId, { env: options.env }, "runtime")
-  ) {
-    throw new Error(`OpenClaw agent database is unavailable while agent ${agentId} is deleted.`);
+  if (isIncognitoOpenClawAgentSqlitePath(pathname, options)) {
+    const journal = readAgentDeletionJournal(agentId, { env: options.env }, "runtime");
+    if (journal && (journal.phase !== "draining" || journal.cleanupCompleted)) {
+      throw new Error(`OpenClaw agent database is unavailable while agent ${agentId} is deleted.`);
+    }
   }
   const database = cache.databases.get(pathname);
   if (!database?.db.isOpen) {

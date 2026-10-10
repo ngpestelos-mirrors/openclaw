@@ -76,8 +76,9 @@ import type { DomainScope } from "../state/openclaw-state-worker-store.types.js"
 import { isReservedSystemAgentId } from "../system-agent/agent-id.js";
 import {
   beginRemoteAgentDeletionJournal,
+  fenceAgentDeletionJournalPaths,
   rollbackRemoteAgentDeletionJournal,
-} from "./agent-deletion-journal-remote.js";
+} from "./agent-deletion-journal-mutations.js";
 import { resolveAgentConfig } from "./agent-scope-config.js";
 export {
   AgentDeletionAuthorityRollbackError,
@@ -96,6 +97,7 @@ export type AgentLifecycleBinding = Readonly<{
 type AgentDeletionBeginOptions = {
   expectedClawInstall?: PersistedClawInstall | null;
   preserveDeleteFiles?: boolean;
+  recoveryOperationId?: string;
 };
 
 export type AgentDeletionOperation = AgentDeletionWorkerAuthority & {
@@ -106,6 +108,7 @@ export type AgentDeletionOperation = AgentDeletionWorkerAuthority & {
   runDatabaseCleanup: ReturnType<typeof createAgentDeletionDatabaseCleanup>;
   fenceDatabasePaths(paths: readonly string[]): Promise<void>;
   fenceCleanupPaths(paths: readonly AgentDeletionJournalCleanupPath[]): Promise<void>;
+  retire(): Promise<void>;
   finish(options?: { unregisterDatabases?: boolean }): Promise<void>;
   releaseClawRows(input: {
     files: Array<{ path: string; action: string }>;
@@ -309,6 +312,7 @@ export function withAgentDeletion<T>(
                           lease: identity,
                           expectedClawInstall: predicate.expectedClawInstall,
                           preserveDeleteFiles,
+                          recoveryOperationId: beginOptions.recoveryOperationId,
                           nonce: mutation.attachment.nonce,
                         },
                       }),
@@ -415,6 +419,17 @@ export function withAgentDeletion<T>(
               previousEntry,
               assertCurrentAsync,
               assertCurrentFinal,
+              retire: async () => {
+                await authority.runWithWorker(
+                  (scope, guard) =>
+                    scope.execute({ type: "agentDeletion.retire", input: { guard } }),
+                  {
+                    onCommitted: () => {
+                      journal.phase = "retiring";
+                    },
+                  },
+                );
+              },
               runDatabaseCleanup: createAgentDeletionDatabaseCleanup({
                 statePath,
                 workerAuthority: authority,
@@ -469,36 +484,16 @@ export function withAgentDeletion<T>(
                   }
                 },
               }),
-              fenceDatabasePaths: async (paths) => {
-                const normalized = [...new Set(paths.map((pathname) => path.resolve(pathname)))];
-                await authority.runWithWorker(
-                  (scope, guard) =>
-                    scope.execute({
-                      type: "agentDeletion.fencePaths",
-                      input: { guard, paths: { kind: "database", paths: normalized } },
-                    }),
-                  {
-                    onCommitted: () => {
-                      journal.databasePaths = normalized;
-                    },
-                  },
-                );
-              },
-              fenceCleanupPaths: async (paths) => {
-                const captured = structuredClone([...paths]);
-                await authority.runWithWorker(
-                  (scope, guard) =>
-                    scope.execute({
-                      type: "agentDeletion.fencePaths",
-                      input: { guard, paths: { kind: "cleanup", paths: captured } },
-                    }),
-                  {
-                    onCommitted: () => {
-                      journal.cleanupPaths = captured;
-                    },
-                  },
-                );
-              },
+              fenceDatabasePaths: (paths) =>
+                fenceAgentDeletionJournalPaths(authority, journal, {
+                  kind: "database",
+                  paths: [...new Set(paths.map((pathname) => path.resolve(pathname)))],
+                }),
+              fenceCleanupPaths: (paths) =>
+                fenceAgentDeletionJournalPaths(authority, journal, {
+                  kind: "cleanup",
+                  paths: structuredClone([...paths]),
+                }),
               finish: async (finishOptions) => {
                 await authority.runWithWorker(
                   (scope, guard) =>

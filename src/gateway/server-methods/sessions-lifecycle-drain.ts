@@ -60,6 +60,7 @@ type LifecyclePlacementService = NonNullable<
 
 type SessionLifecycleParams = {
   action: "archive" | "delete";
+  timeoutMs?: number | null;
   authorize?: () => void;
   beforeCancel?: () => void;
   context: GatewayRequestContext;
@@ -110,7 +111,8 @@ function hasAuthoritativeSessionWork(
 export async function prepareSessionLifecycleDrain(
   params: SessionLifecycleParams,
 ): Promise<SessionLifecycleDrain> {
-  const timeoutMs = SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS;
+  const timeoutMs =
+    params.timeoutMs === undefined ? SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS : params.timeoutMs;
   const queueTarget: SessionLifecycleQueueTarget = {
     keys: params.sessionKeys,
     agentId: params.agentId,
@@ -300,12 +302,14 @@ export async function prepareSessionLifecycleDrain(
     const placementWork = placement?.turnClaim
       ? placementService?.waitForTurnClaimRelease
         ? placementService
-            .waitForTurnClaimRelease(params.sessionId!, { timeoutMs })
+            .waitForTurnClaimRelease(params.sessionId!, { timeoutMs: timeoutMs ?? undefined })
             .then(() => true)
         : Promise.resolve(false)
       : Promise.resolve(true);
     const waitForDrain = (work: Promise<void> | undefined, label: string) =>
-      work ? withTimeout(work, timeoutMs, label).then(() => true) : Promise.resolve(true);
+      work
+        ? (timeoutMs === null ? work : withTimeout(work, timeoutMs, label)).then(() => true)
+        : Promise.resolve(true);
     const workerWork = waitForDrain(workerDrained, "worker inference lifecycle drain");
     const terminalWork = waitForDrain(terminalDrain?.drained, "agent terminal lifecycle drain");
     const drains = await Promise.all([
@@ -322,9 +326,9 @@ export async function prepareSessionLifecycleDrain(
     // Failed placements keep cleanup custody without delaying archive visibility.
     // Other placements and destructive deletion still require safe reclaim.
     await (reclaimed ?? prepared.workerStop.stop());
-    // Provider settlement keeps its placement custody and deadline. Only after reclaim
-    // finishes does the ordinary admission bound apply, including for local sessions.
-    await withTimeout(admittedWork, timeoutMs, "session work admission lifecycle drain");
+    // Provider settlement keeps its placement custody. Admission settlement follows
+    // reclaim, including for local sessions.
+    await waitForDrain(admittedWork, "session work admission lifecycle drain");
     const placementTarget = { context: params.context, sessionId: params.sessionId };
     const assertPlacementCurrent =
       params.action === "archive"

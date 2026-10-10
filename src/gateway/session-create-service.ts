@@ -59,6 +59,7 @@ import {
 import { isModelSelectionLocked } from "../sessions/model-overrides.js";
 import { recordSessionCreated } from "../sessions/session-created.js";
 import {
+  beginSessionWorkAdmission,
   isSessionWorkAdmissionActive,
   runExclusiveSessionLifecycleMutation,
 } from "../sessions/session-lifecycle-admission.js";
@@ -124,6 +125,42 @@ import { projectSessionsPatchEntry } from "./sessions-patch.js";
 export async function createGatewaySession(
   params: CreateGatewaySessionParams,
 ): Promise<CreateGatewaySessionResult> {
+  const selectedAgent = sessionAgent.resolveSessionCreateAgentId(params.cfg, {
+    key: normalizeOptionalString(params.key),
+    agentId: params.agentId,
+    parentSessionKey: normalizeOptionalString(params.parentSessionKey),
+  });
+  if (!selectedAgent.ok) {
+    return selectedAgent;
+  }
+  const interrupted = new AbortController();
+  const assertCurrent = () => {
+    interrupted.signal.throwIfAborted();
+    params.commitGuard?.();
+  };
+  const admission = await beginSessionWorkAdmission({
+    agentId: selectedAgent.agentId,
+    scope: `agent:${selectedAgent.agentId}`,
+    identities: [params.key ?? selectedAgent.agentId],
+    assertAllowed: assertCurrent,
+    onInterrupt: (reason) => interrupted.abort(reason),
+  });
+  try {
+    return await admission.run(() =>
+      createAdmittedGatewaySession(
+        { ...params, commitGuard: assertCurrent },
+        selectedAgent.agentId,
+      ),
+    );
+  } finally {
+    admission.release();
+  }
+}
+
+async function createAdmittedGatewaySession(
+  params: CreateGatewaySessionParams,
+  agentId: string,
+): Promise<CreateGatewaySessionResult> {
   const { personalAccountDefaults, onPhase } = params;
   let operatorAuthority: AdmittedRunOperatorAuthority | undefined;
   let assertPreparedTargetCurrent: (() => void) | undefined;
@@ -150,15 +187,6 @@ export async function createGatewaySession(
   const projectId = normalizeOptionalString(params.projectId);
   const pendingProjectGitUrl = normalizeOptionalString(params.pendingProjectGitUrl);
   const requestedToolOverrides = params.toolOverrides !== undefined;
-  const selectedAgent = sessionAgent.resolveSessionCreateAgentId(params.cfg, {
-    key: requestedKey,
-    agentId: params.agentId,
-    parentSessionKey,
-  });
-  if (!selectedAgent.ok) {
-    return selectedAgent;
-  }
-  const agentId = selectedAgent.agentId;
   const catalogModel = normalizeOptionalString(params.catalogTarget?.model);
   const catalogAgentRuntime = normalizeOptionalAgentRuntimeId(params.catalogTarget?.agentRuntime);
   const catalogPluginOwnerId = normalizeOptionalString(params.catalogTarget?.pluginOwnerId);
