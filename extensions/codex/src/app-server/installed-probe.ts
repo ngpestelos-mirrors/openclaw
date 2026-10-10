@@ -6,10 +6,11 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { signalProcessTree } from "openclaw/plugin-sdk/process-runtime";
+import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import {
   buildCodexAppServerInitializeParams,
   readCodexVersionFromUserAgent,
@@ -26,16 +27,25 @@ const HANDSHAKE_EXIT_TIMEOUT_MS = 2_000;
 const INITIALIZE_REQUEST_ID = 1;
 
 /** Sends one initialize request and returns the Codex version from its reply. */
-export async function probeCodexAppServerHandshake(command: string): Promise<string | undefined> {
-  const codexHome = await mkdtemp(path.join(os.tmpdir(), "openclaw-codex-probe-"));
+export async function probeCodexAppServerHandshake(
+  command: string,
+  timeoutMs: number = HANDSHAKE_TIMEOUT_MS,
+): Promise<string | undefined> {
+  const codexHome = await mkdtemp(
+    path.join(resolvePreferredOpenClawTmpDir(), "openclaw-codex-probe-"),
+  );
   try {
-    return await exchangeInitialize(command, codexHome);
+    return await exchangeInitialize(command, codexHome, timeoutMs);
   } finally {
     await rm(codexHome, { recursive: true, force: true });
   }
 }
 
-async function exchangeInitialize(command: string, codexHome: string): Promise<string | undefined> {
+async function exchangeInitialize(
+  command: string,
+  codexHome: string,
+  timeoutMs: number,
+): Promise<string | undefined> {
   const options: CodexAppServerStartOptions = {
     transport: "stdio",
     command,
@@ -61,7 +71,7 @@ async function exchangeInitialize(command: string, codexHome: string): Promise<s
     () => undefined,
   );
   try {
-    return await readInitializeReply(child);
+    return await readInitializeReply(child, timeoutMs);
   } finally {
     if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
       signalProcessTree(child.pid, "SIGKILL", { detached });
@@ -75,15 +85,13 @@ async function exchangeInitialize(command: string, codexHome: string): Promise<s
 
 async function readInitializeReply(
   child: ChildProcessWithoutNullStreams,
+  timeoutMs: number,
 ): Promise<string | undefined> {
-  const { promise, resolve, reject } = Promise.withResolvers<string | undefined>();
+  const { promise, resolve, reject } = createDeferred<string | undefined>();
   let pending = "";
   let received = 0;
   let stderrTail = "";
-  const timer = setTimeout(
-    () => reject(new Error(`timed out after ${HANDSHAKE_TIMEOUT_MS} ms`)),
-    HANDSHAKE_TIMEOUT_MS,
-  );
+  const timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs} ms`)), timeoutMs);
   child.once("error", reject);
   child.once("exit", (code, signal) => {
     const stderr = stderrTail.trim();

@@ -1,50 +1,57 @@
-import { afterEach, expect, it } from "vitest";
-import {
-  rejectInstalledCodexAppServer,
-  type InstalledCodexAppServer,
-} from "../../extensions/codex/src/app-server/managed-binary.js";
-import { CODEX_APP_SERVER_VERSION } from "../../extensions/codex/src/app-server/version.js";
+import { afterEach, expect, it, vi } from "vitest";
+import * as catalogWorker from "../../src/agents/prepared-model-catalog-worker.js";
 import { PROVIDER_ID } from "../../src/agents/prepared-model-catalog-worker.test-support.js";
 import { createStaticCatalogSnapshotFixture } from "../../src/agents/test-helpers/prepared-model-catalog-static-fixture.js";
 import { usePreparedCatalogWorkerFixtures } from "../../src/agents/test-helpers/prepared-model-catalog-worker-fixture.js";
+import * as codexClientVersion from "../../src/plugin-sdk/codex-client-version-runtime.js";
 
 const { makeTempDir, retireAfterTest } = usePreparedCatalogWorkerFixtures();
 const createStaticSnapshot = createStaticCatalogSnapshotFixture({ makeTempDir, retireAfterTest });
-// This thread's per-process Codex selection; the shared test setup seeds it empty.
-const gatewayInstalledCodex = (globalThis as Record<PropertyKey, unknown>)[
-  Symbol.for("openclaw.codexInstalledAppServer")
-] as {
-  selection?: Promise<InstalledCodexAppServer | undefined>;
-  selected?: InstalledCodexAppServer;
-};
 
-afterEach(() => {
-  gatewayInstalledCodex.selection = Promise.resolve(undefined);
-  delete gatewayInstalledCodex.selected;
-});
+afterEach(() => vi.restoreAllMocks());
 
-it("hands catalog workers the bundled pin once the Gateway rejects the installed Codex", async () => {
-  const installed: InstalledCodexAppServer = {
-    command: "/opt/npm-global/lib/node_modules/@openai/codex/bin/codex.js",
-    nativeCommand: "/opt/npm-global/lib/node_modules/@openai/codex/vendor/codex",
-    version: "0.162.1",
-  };
-  gatewayInstalledCodex.selection = Promise.resolve(installed);
-  gatewayInstalledCodex.selected = installed;
-  const fixture = await createStaticSnapshot(
-    0,
-    {},
-    { codexNativeOwner: true, reportCodexClientVersion: true },
-  );
+it("hands catalog workers the parent's changed Codex version", async () => {
+  const resolveVersion = vi
+    .spyOn(codexClientVersion, "resolveCodexClientVersion")
+    .mockResolvedValue("0.162.1");
+  const fixture = await createStaticSnapshot(0, {}, { reportCodexClientVersion: true });
   const reportedByWorker = async () =>
     (await fixture.snapshot.loadFullModelCatalog!({ refresh: true, wait: true })).entries
       .filter((entry) => entry.provider === PROVIDER_ID && entry.id.startsWith("codex-client-"))
       .map((entry) => entry.id);
 
-  expect(await reportedByWorker()).toEqual([`codex-client-${installed.version}`]);
+  expect(await reportedByWorker()).toEqual(["codex-client-0.162.1"]);
 
-  // First use: the installed binary fails to start, so Gateway turns run the bundled package.
-  expect(rejectInstalledCodexAppServer(installed.command, new Error("spawn EACCES"))).toBe(true);
+  // The parent changed to its bundled fallback; workers consume that decision.
+  resolveVersion.mockResolvedValue("0.160.0");
+  expect(await reportedByWorker()).toEqual(["codex-client-0.160.0"]);
+});
 
-  expect(await reportedByWorker()).toEqual([`codex-client-${CODEX_APP_SERVER_VERSION}`]);
+it("does not select Codex for unrelated catalogs or auth-only refreshes", async () => {
+  let checkScope: (() => Promise<void>) | undefined;
+  const createWorker = catalogWorker.createPreparedModelCatalogWorker;
+  const tracking = vi
+    .spyOn(catalogWorker, "createPreparedModelCatalogWorker")
+    .mockImplementation((params) => {
+      const worker = createWorker(params);
+      checkScope = async () => {
+        const catalog = await worker.loadCatalog([PROVIDER_ID], undefined, true);
+        expect(catalog.modelCatalog.entries).toContainEqual(
+          expect.objectContaining({ provider: PROVIDER_ID, id: "sqlite-model" }),
+        );
+        await worker.loadAuth({ providerIds: [PROVIDER_ID], profileIds: [] });
+      };
+      return worker;
+    });
+  const resolveVersion = vi.spyOn(codexClientVersion, "resolveCodexClientVersion");
+  try {
+    await createStaticSnapshot(0);
+    expect(checkScope).toBeDefined();
+    resolveVersion.mockClear();
+    await checkScope!();
+    expect(resolveVersion).not.toHaveBeenCalled();
+  } finally {
+    resolveVersion.mockRestore();
+    tracking.mockRestore();
+  }
 });

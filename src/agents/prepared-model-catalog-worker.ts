@@ -444,11 +444,14 @@ export function createPreparedModelCatalogWorker(
               signal: controller.signal,
             }),
             // Codex turns run in this process, so its binary decision is what discovery reports.
-            resolveCodexClientVersion({
-              config: input.config,
-              env: input.env,
-              agentDir: input.agentDir,
-            }),
+            command.kind === "catalog" &&
+            (!command.providerIds || command.providerIds.includes("openai"))
+              ? resolveCodexClientVersion({
+                  config: input.config,
+                  env: input.env,
+                  agentDir: input.agentDir,
+                })
+              : undefined,
           ]),
       );
       captures.set(controller, capture);

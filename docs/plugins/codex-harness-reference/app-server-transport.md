@@ -36,8 +36,10 @@ on `PATH` and uses it only when all of these hold:
 
 - It is a native executable or the official `@openai/codex` npm launcher.
   Other wrapper scripts, such as pnpm global shims, are skipped.
-- `codex --version` answers within 5 seconds with a stable version newer than
-  the shipped one. Equal, older, unparseable, and prerelease versions are
+- `codex --version` answers with a stable version newer than the shipped one.
+  The version check and selection handshake share a four-second budget, leaving
+  time for bundled startup within model discovery's default deadline. Equal,
+  older, unparseable, and prerelease versions are
   skipped.
 - It has the same major version as the shipped binary. The app-server protocol
   has no negotiated version, so a new major is treated as incompatible. A newer
@@ -46,8 +48,8 @@ on `PATH` and uses it only when all of these hold:
   misbehaves, set `appServer.command` to a specific binary or remove the newer
   `codex` from the Gateway's `PATH`.
 - A real app-server `initialize` handshake against a throwaway `CODEX_HOME`
-  succeeds within 15 seconds and reports the same version. No auth or turn is
-  involved.
+  succeeds within the remaining selection budget and reports the same version.
+  No auth or turn is involved.
 
 Otherwise OpenClaw uses the shipped binary. The Gateway logs one line with the
 chosen binary, its version, and the reason, for example

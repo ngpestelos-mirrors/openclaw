@@ -9,6 +9,7 @@ import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import { resolveCodexAppServerRuntimeOptions } from "./config-runtime.js";
 import {
   assertInstalledCodexAppServerVersion,
+  INSTALLED_CODEX_PROBE_TIMEOUT_MS,
   rejectInstalledCodexAppServer,
   resolveManagedCodexAppServerStartOptions,
   resolveManagedCodexClientVersion,
@@ -387,6 +388,27 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
 
     await expect(select({ probeHandshake: probe })).resolves.toEqual(BUNDLED);
     expectChoice(reason);
+  });
+
+  it("reserves bundled startup time across the complete cold selection", async () => {
+    await installNpmCodex(`echo "codex-cli ${NEWER}"`);
+    const probeHandshake = vi.fn(async () => NEWER);
+    vi.useFakeTimers({ toFake: ["performance"] });
+    try {
+      await expect(
+        select({
+          runVersion: async () => {
+            vi.advanceTimersByTime(INSTALLED_CODEX_PROBE_TIMEOUT_MS + 1);
+            return `codex-cli ${NEWER}`;
+          },
+          probeHandshake,
+        }),
+      ).resolves.toEqual(BUNDLED);
+      expect(probeHandshake).not.toHaveBeenCalled();
+      expectChoice("selection timed out before the app-server handshake");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects script wrappers that are not the official npm launcher", async () => {

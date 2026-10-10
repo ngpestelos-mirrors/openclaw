@@ -89,6 +89,7 @@ describe("OpenAI discovered subscription models", () => {
     expect(codexClient.resolveCodexClientVersion).toHaveBeenCalledWith({
       config: { auth: { profiles: {} } },
       env: undefined,
+      agentDir: "/tmp/openai-agent",
     });
   });
   it.each(["gpt-5.4", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])(

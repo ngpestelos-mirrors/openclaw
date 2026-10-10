@@ -7,7 +7,7 @@ import { constants as fsConstants, existsSync, realpathSync } from "node:fs";
 import { access, open, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-registration";
 import { coerceErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { resolveGlobalSingleton } from "openclaw/plugin-sdk/global-singleton";
 import { resolveNodeHostExecutable } from "openclaw/plugin-sdk/node-host";
@@ -19,9 +19,9 @@ import { CODEX_APP_SERVER_VERSION, MANAGED_CODEX_APP_SERVER_PACKAGE } from "./ve
 
 export const CODEX_VERSION_TIMEOUT_MS = 5_000;
 const CODEX_VERSION_MAX_OUTPUT_BYTES = 64 * 1024;
-// Selection probe allowance, including first-launch OS scans of a freshly
-// installed binary on slow hosts.
-export const INSTALLED_CODEX_PROBE_TIMEOUT_MS = 15_000;
+// The complete cold selection must leave room for bundled startup within the
+// default ten-second catalog deadline, including both version and initialize.
+export const INSTALLED_CODEX_PROBE_TIMEOUT_MS = 4_000;
 /**
  * Initialize allowance for a managed start of the already-probed installed
  * Codex while the bundled fallback remains; short enough that the fallback
@@ -218,6 +218,7 @@ async function decideInstalledCodexAppServer(
 ): Promise<{ found: string; selected: InstalledCodexAppServer } | { reason: string }> {
   const env = probes.env ?? process.env;
   const platform = probes.platform ?? process.platform;
+  const selectionDeadline = performance.now() + INSTALLED_CODEX_PROBE_TIMEOUT_MS;
   const found = resolveNodeHostExecutable("codex", { env, strategy: "direct" })?.executable;
   if (!found) {
     return { reason: "no codex on PATH" };
@@ -229,8 +230,14 @@ async function decideInstalledCodexAppServer(
     };
   }
   let output: string;
+  const versionTimeoutMs = Math.max(0, selectionDeadline - performance.now());
+  if (versionTimeoutMs <= 0) {
+    return { reason: `installed ${found} selection timed out before the version check` };
+  }
   try {
-    output = await (probes.runVersion ?? runCodexVersionCommand)(launcher.nativeCommand);
+    output = probes.runVersion
+      ? await probes.runVersion(launcher.nativeCommand)
+      : await runCodexVersionCommand(launcher.nativeCommand, process.env, versionTimeoutMs);
   } catch (error) {
     return { reason: `installed ${found} --version failed: ${coerceErrorMessage(error)}` };
   }
@@ -251,13 +258,20 @@ async function decideInstalledCodexAppServer(
   if (parsed.major !== bundled.major) {
     return { reason: `installed ${found} ${version} is a different major version` };
   }
+  const handshakeTimeoutMs = Math.max(0, selectionDeadline - performance.now());
+  if (handshakeTimeoutMs <= 0) {
+    return { reason: `installed ${found} selection timed out before the app-server handshake` };
+  }
   let handshakeVersion: string | undefined;
   try {
     handshakeVersion = await (
       probes.probeHandshake ??
       // Lazy: the probe spawns through transport-stdio, which imports this module.
       (async (command) =>
-        (await import("./installed-probe.js")).probeCodexAppServerHandshake(command))
+        (await import("./installed-probe.js")).probeCodexAppServerHandshake(
+          command,
+          handshakeTimeoutMs,
+        ))
     )(launcher.command);
   } catch (error) {
     return {
@@ -324,11 +338,12 @@ export function parseCodexVersion(output: string): string | undefined {
 export async function runCodexVersionCommand(
   nativeCommand: string,
   env: NodeJS.ProcessEnv = process.env,
+  timeoutMs: number = CODEX_VERSION_TIMEOUT_MS,
 ): Promise<string> {
   const result = await runUtf8CommandWithTimeout([nativeCommand, "--version"], {
     baseEnv: env,
     input: "",
-    timeoutMs: CODEX_VERSION_TIMEOUT_MS,
+    timeoutMs,
     maxOutputBytes: CODEX_VERSION_MAX_OUTPUT_BYTES,
     outputCapture: "head",
     terminateOnOutputLimit: true,
@@ -341,7 +356,7 @@ export async function runCodexVersionCommand(
       result.outputLimitExceeded
         ? "Version output exceeded its capture limit"
         : result.termination === "timeout"
-          ? `Version check timed out after ${CODEX_VERSION_TIMEOUT_MS} ms`
+          ? `Version check timed out after ${timeoutMs} ms`
           : `Version check failed (${result.signal ?? result.code ?? result.termination})`,
     );
   }

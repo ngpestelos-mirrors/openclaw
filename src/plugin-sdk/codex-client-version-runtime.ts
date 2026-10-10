@@ -4,7 +4,6 @@
  */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readHandedOffCodexClientVersion } from "./codex-client-version-handoff.internal.js";
-import { tryLoadActivatedBundledPluginPublicSurfaceModule } from "./facade-runtime.js";
 
 type CodexClientVersionParams = {
   config?: OpenClawConfig;
@@ -31,6 +30,10 @@ export async function resolveCodexClientVersion(
     return handedOff.version;
   }
   try {
+    // Registry-backed plugin loading stays lazy so importing this facade does
+    // not pull runtime preparation into plugin registration.
+    const { tryLoadActivatedBundledPluginPublicSurfaceModule } =
+      await import("./facade-runtime.js");
     const surface =
       await tryLoadActivatedBundledPluginPublicSurfaceModule<CodexClientVersionSurface>({
         dirName: "codex",
