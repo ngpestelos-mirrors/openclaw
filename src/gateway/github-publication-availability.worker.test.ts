@@ -271,7 +271,7 @@ it("qualifies bound private worktrees without host session SQL and refuses a cha
   };
   await actor.sessions.create(authority, {
     sessionKey: selected.sessionKey,
-    entry: { ...mocks.session().entry, updatedAt: 1 },
+    entry: { ...mocks.session().entry, updatedAt: Date.now() },
   });
   await deleteRegistryWorktree(process.env, worktree.id);
   await insertRegistryWorktree(process.env, { ...worktree, ownerId: selected.sessionKey });

@@ -93,7 +93,7 @@ describe("shared worktree receipt observation", () => {
     const privateKey = "agent:main:dashboard:incognito-publication-execute";
     await actor.sessions.create(authority, {
       sessionKey: privateKey,
-      entry: { ...mocks.loadSession(SESSION_KEY).entry, updatedAt: 1 },
+      entry: { ...mocks.loadSession(SESSION_KEY).entry, updatedAt: Date.now() },
     });
     await deleteRegistryWorktree(process.env, "worktree-1");
     await insertRegistryWorktree(process.env, {
@@ -129,7 +129,7 @@ describe("shared worktree receipt observation", () => {
     const native = { ...session, sessionKey: "agent:main:dashboard:incognito-native-publication" };
     replaceSessionEntrySync(
       { agentId: "main", sessionKey: native.sessionKey },
-      { ...mocks.loadSession(SESSION_KEY).entry, updatedAt: 1, incognito: true },
+      { ...mocks.loadSession(SESSION_KEY).entry, updatedAt: Date.now(), incognito: true },
     );
     const row = insertSharedWorktreeReceipt("native-private-receipt", { session: native });
     publishWorktree(row);
@@ -160,7 +160,7 @@ describe("shared worktree receipt observation", () => {
     };
     const entry = {
       ...mocks.loadSession(SESSION_KEY).entry,
-      updatedAt: 1,
+      updatedAt: Date.now(),
       incognito: true as const,
     };
     await actor.sessions.create(authority, { sessionKey: privateSession.sessionKey, entry });

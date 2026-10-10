@@ -2,6 +2,7 @@ import "../../test-utils/prepare-compiled-subprocesses.js";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { withTranscriptWriteSequence } from "../../config/sessions/session-accessor.sqlite-transcript-write.js";
+import { isIndexedSessionEntry } from "../../config/sessions/session-entry-codec.js";
 import { withIncognitoSessionActor } from "../../config/sessions/session-incognito-binding.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
 import type { IncognitoAgentDatabaseExecution } from "../../state/openclaw-agent-execution-incognito.js";
@@ -77,9 +78,11 @@ it("commits an actor batch through the service and recovers its receipt without 
     expect(recovered).toMatchObject({ ok: true, result: { entryIds: expect.any(Array) } });
     expect(await committer.commit(request)).toEqual(recovered);
     const events = await withTranscriptWriteSequence(sessionTarget, (write) => write.readEvents());
-    const messages = events.filter((event) => event.type === "message");
+    const messages = events
+      .filter(isIndexedSessionEntry)
+      .filter((event) => event.type === "message");
     expect(messages).toHaveLength(3);
-    expect(messages.map((event) => event.type === "message" && event.message.role)).toEqual([
+    expect(messages.map((event) => event.message.role)).toEqual([
       "user",
       "assistant",
       "toolResult",
@@ -123,6 +126,8 @@ it("refuses an actor batch when placement authority ends after ledger reservatio
       }),
     ).rejects.toThrow("placement owner ended");
     const events = await withTranscriptWriteSequence(sessionTarget, (write) => write.readEvents());
-    expect(events.filter((event) => event.type === "message")).toEqual([]);
+    expect(
+      events.filter(isIndexedSessionEntry).filter((event) => event.type === "message"),
+    ).toEqual([]);
   });
 });

@@ -55,7 +55,7 @@ describe("GitHub publication transcript reporting", () => {
       };
       await actor.sessions.create(authority, {
         sessionKey: session.sessionKey,
-        entry: { sessionId: session.sessionId, updatedAt: 1 },
+        entry: { sessionId: session.sessionId, updatedAt: Date.now() },
       });
       const result = {
         requestId: "private-result",

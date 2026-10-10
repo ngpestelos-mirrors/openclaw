@@ -10,6 +10,7 @@ import { openIncognitoTestActor } from "../state/openclaw-agent-execution-incogn
 import { maybeGenerateSessionTitle } from "./dashboard-session-title.js";
 
 const generate = vi.hoisted(() => vi.fn());
+// mock-isolation: keep provider execution outside the controlled title-inference lifetime.
 vi.mock("../auto-reply/reply/conversation-label-generator.js", () => ({
   generateConversationLabelWithFallback: generate,
 }));
