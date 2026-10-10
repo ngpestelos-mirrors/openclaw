@@ -3,7 +3,6 @@ import { requestSessionEntriesCurrentAdmission } from "../config/sessions/sessio
 import { runSqliteOwnedStateOperationSync } from "../infra/sqlite-schema-facts.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
-import { deferSqliteWorkerCommitReceipt } from "../infra/sqlite-worker-operation-admission.js";
 import { captureOpenClawStateDatabaseReadAdmission } from "../state/openclaw-state-db-cache.js";
 import type {
   OpenClawStateDatabase,
@@ -15,6 +14,7 @@ import type {
   PluginStateOperationInput,
 } from "./plugin-state-operation-contract.js";
 import { executePluginStateOperation } from "./plugin-state-operation.kernel.js";
+import { withPluginStateWorkerReceipt } from "./plugin-state-publication.js";
 import {
   compareAndApplyPluginStateEntry,
   observePluginStateEntry,
@@ -144,15 +144,17 @@ export function executePluginStateCommand(
           runOpenClawStateWriteTransaction(
             (store) => {
               admit("transaction");
-              const result = executePluginStateOperation(store, command.input, handler);
+              const result = withPluginStateWorkerReceipt(
+                store.db,
+                () => executePluginStateOperation(store, command.input, handler),
+                (completed): PluginStateOperationCommit => ({
+                  pluginStateOperation: {
+                    receiptId: command.input.receiptId,
+                    validUntil: completed.validUntil,
+                  },
+                }),
+              );
               admit("commit");
-              const receipt: PluginStateOperationCommit = {
-                pluginStateOperation: {
-                  receiptId: command.input.receiptId,
-                  validUntil: result.validUntil,
-                },
-              };
-              deferSqliteWorkerCommitReceipt(store.db, receipt);
               return result;
             },
             { ...options, database },
@@ -262,7 +264,9 @@ export function executePluginStateCommand(
       runOpenClawStateWriteTransaction(
         (store) => {
           admit("transaction");
-          deletePluginStateEntry(store.db, command.input);
+          withPluginStateWorkerReceipt(store.db, () =>
+            deletePluginStateEntry(store.db, command.input),
+          );
           admit("commit");
         },
         { ...options, database },
@@ -272,7 +276,7 @@ export function executePluginStateCommand(
       runOpenClawStateWriteTransaction(
         (store) => {
           admit("transaction");
-          const result = (() => {
+          const result = withPluginStateWorkerReceipt(store.db, () => {
             switch (command.type) {
               case "pluginState.appendJournal":
                 return registerPluginStateSequencedJournalEntryInDatabase(store, command.input);
@@ -325,7 +329,7 @@ export function executePluginStateCommand(
               default:
                 throw new Error("Plugin-state read command entered its write path");
             }
-          })();
+          });
           admit("commit");
           return result;
         },

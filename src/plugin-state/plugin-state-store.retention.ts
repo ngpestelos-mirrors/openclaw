@@ -5,6 +5,7 @@ import {
   prepareSqliteQuerySync,
 } from "../infra/kysely-sync.js";
 import { coerceRequiredSqliteNumber, normalizeSqliteNumber } from "../infra/sqlite-number.js";
+import { pluginStatePublication } from "./plugin-state-publication.js";
 import {
   bindPluginStateEntry,
   countLivePluginStateNamespaceEntries,
@@ -168,8 +169,9 @@ export function enforcePostRegisterLimits(params: {
       .where("plugin_id", "=", params.pluginId)
       .where("namespace", "=", params.namespace)
       .where("entry_key", "in", keys)
-      .returning("entry_key"),
+      .returning(["plugin_id", "namespace", "entry_key"]),
   );
+  pluginStatePublication.stageDeletions(params.store.db, result.rows);
   const deleted = result.rows.length;
   if (params.retention) {
     params.retention.namespaceCount -= deleted;

@@ -13,6 +13,7 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import { PluginStateOperationInvalidatedError } from "./plugin-state-operation-error.js";
 import type { FixtureOperations } from "./plugin-state-operation.test-support.js";
+import { pluginStatePublication } from "./plugin-state-publication.js";
 import {
   createPluginStateKeyedStore,
   createPluginStateSyncKeyedStore,
@@ -76,6 +77,14 @@ describe("plugin state worker operations", () => {
     expect(await second.lookup("key")).toBeUndefined();
     const dispatch = vi.spyOn(workerClient, "executePluginStateOperationInWorker");
     const hostSql = observeHostDataSql();
+    const committedRows = new Map<string, unknown>();
+    const unsubscribe = pluginStatePublication.subscribeFacts((change) => {
+      if (change.kind === "committed") {
+        for (const [key, fact] of change.receipt.facts) {
+          committedRows.set(key, fact);
+        }
+      }
+    });
     try {
       const result = await operation.execute(
         { type: "move", input: { value: "moved" } },
@@ -88,10 +97,17 @@ describe("plugin state worker operations", () => {
       expect(result.value.threadId).toBeGreaterThan(0);
       expect(dispatch).toHaveBeenCalledTimes(1);
       result.assertCurrent();
+      expect(committedRows.get(JSON.stringify(["operation-test", "move-first", "key"]))).toEqual({
+        kind: "absent",
+      });
+      expect(
+        committedRows.get(JSON.stringify(["operation-test", "move-second", "key"])),
+      ).toMatchObject({ kind: "postimage", value: { value_json: '"moved"' } });
       for (const call of hostSql.calls) {
         expect(call).not.toHaveBeenCalled();
       }
     } finally {
+      unsubscribe();
       hostSql.restore();
     }
   });

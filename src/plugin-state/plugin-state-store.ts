@@ -306,6 +306,7 @@ function createAsyncKeyedStore<T>(
         ...scope,
         key: normalizedKey,
         assertCurrent: opts?.assertCurrent,
+        signal: opts?.signal,
       });
     },
     entries: async () => {
