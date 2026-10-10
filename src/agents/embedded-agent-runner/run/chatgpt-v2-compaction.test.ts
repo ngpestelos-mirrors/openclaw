@@ -161,12 +161,12 @@ async function fixture(
   session[agentSessionDeferThresholdCompaction] = true;
   const transport = createOpenAIResponsesTransportStreamFn();
   const providerStream: StreamFn = (activeModel, context, options) => {
-    const transportOptions: OpenAIResponsesOptions = {
+    const transportOptions = {
       ...options,
       apiKey: options?.apiKey ?? "test-api-key",
       authProfileId: "fixture-profile",
       onPayload: (payload: unknown) => ({ ...(payload as object), hook_marker: "normal-hook" }),
-    };
+    } satisfies OpenAIResponsesOptions;
     return transport(activeModel, context, transportOptions);
   };
   if (asyncProvider) {
