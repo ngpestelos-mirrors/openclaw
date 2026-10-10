@@ -324,7 +324,7 @@ describe("installed replay repair ownership", () => {
     }
   });
 
-  describe.each(["request-rejection", "stream-rejection"] as const)(
+  describe.each(["request-rejection", "stream-rejection", "promised-stream-rejection"] as const)(
     "thinking recovery after %s",
     (failureMode) => {
       it.each(["event", "concurrent-results", "return-before-next"] as const)(
@@ -355,7 +355,7 @@ describe("installed replay repair ownership", () => {
                   ]),
                 });
               }
-              return stream;
+              return failureMode === "promised-stream-rejection" ? Promise.resolve(stream) : stream;
             },
             { thinkingRecovery: true },
           );
