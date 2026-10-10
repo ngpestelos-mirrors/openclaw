@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { statSync } from "node:fs";
 import path from "node:path";
 import { redactSensitiveUrlLikeString } from "@openclaw/net-policy/redact-sensitive-url";
@@ -11,7 +12,10 @@ import type { OpenClawConfig } from "../config/types.js";
 import { resolveIdentityPathViaExistingAncestorSync } from "../infra/boundary-path.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { GatewayLockIdentity } from "../infra/gateway-lock.js";
+import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import type { OpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-maintenance-context.js";
 import { registerSignalExitGate } from "./signal-exit-barrier.js";
 
 type LocalMutationScope = {
@@ -20,6 +24,24 @@ type LocalMutationScope = {
   signal: AbortSignal;
   assertCurrent: () => void;
 };
+
+type LocalOwnerScope = { assertCurrent: () => void; ownerLockPath: string; configPath: string };
+const localOwnerAssertions = resolveGlobalSingleton(
+  Symbol.for("openclaw.localStateOwnerAssertions"),
+  () => new AsyncLocalStorage<LocalOwnerScope>(),
+);
+const offlineOwnerResources = resolveGlobalSingleton(
+  Symbol.for("openclaw.localStateOwnerResources"),
+  () =>
+    new Map<
+      string,
+      {
+        ownerId: string | undefined;
+        resources: OpenClawDatabaseMaintenanceScope;
+        uncertainCleanup: boolean;
+      }
+    >(),
+);
 
 class LocalStateOwnerError extends Error {
   constructor(
@@ -46,6 +68,8 @@ export async function runWithLocalStateOwner<T>(params: {
   assertTargetCurrent?: () => void;
   runLocal: (scope: LocalMutationScope) => Promise<T>;
 }): Promise<T> {
+  const parent = localOwnerAssertions.getStore();
+  parent?.assertCurrent();
   const sourceEnv = params.env ?? process.env;
   const selectedEnv = { ...sourceEnv };
   const selectedStateDir = resolveStateDir(selectedEnv);
@@ -66,7 +90,7 @@ export async function runWithLocalStateOwner<T>(params: {
       readLockPayloadSync,
       resolveGatewayLockPaths,
     },
-    { captureGatewayStateOwner },
+    { captureGatewayStateOwner, tryBorrowGatewayStateOwner },
     { createOpenClawDatabaseMaintenanceScope },
   ] = await Promise.all([
     import("../infra/gateway-lock.js"),
@@ -74,11 +98,21 @@ export async function runWithLocalStateOwner<T>(params: {
     import("../state/openclaw-state-db-async-lifecycle.js"),
   ]);
   const paths = resolveGatewayLockPaths(env);
+  if (
+    parent &&
+    (parent.ownerLockPath !== paths.ownerLockPath || parent.configPath !== paths.configPath)
+  ) {
+    throw new LocalStateOwnerError(
+      "OWNER_UNAVAILABLE",
+      "Nested operation changed the selected state root or config path; rerun the command.",
+    );
+  }
   const databasePath = path.join(paths.stateDir, "state", "openclaw.sqlite");
   const controller = new AbortController();
   const finished = createDeferredCore();
   const releaseExitGate = registerSignalExitGate(finished.promise, () => controller.abort());
   const assertTargetCurrent = () => {
+    parent?.assertCurrent();
     controller.signal.throwIfAborted();
     const ambientPaths = resolveGatewayLockPaths(sourceEnv);
     const currentRoot = rootIdentity
@@ -128,15 +162,19 @@ export async function runWithLocalStateOwner<T>(params: {
     assertCurrent();
     const { getRuntimeConfig } = await import("../config/config.js");
     assertCurrent();
-    return await params.runLocal({
-      env,
-      get config() {
-        assertCurrent();
-        return getRuntimeConfig();
-      },
-      signal: controller.signal,
-      assertCurrent,
-    });
+    return await localOwnerAssertions.run(
+      { assertCurrent, ownerLockPath: paths.ownerLockPath, configPath: paths.configPath },
+      () =>
+        params.runLocal({
+          env,
+          get config() {
+            assertCurrent();
+            return getRuntimeConfig();
+          },
+          signal: controller.signal,
+          assertCurrent,
+        }),
+    );
   };
   const route = async (owner: GatewayLockIdentity): Promise<T> => {
     if (typeof params.onForeignOwner === "function") {
@@ -213,6 +251,17 @@ export async function runWithLocalStateOwner<T>(params: {
     assertTargetCurrent();
     const hosted = captureGatewayStateOwner(databasePath);
     if (hosted) {
+      const offline = offlineOwnerResources.get(paths.ownerLockPath);
+      if (offline && offline.ownerId === hosted.ownerId) {
+        return await offline.resources.run(async () => {
+          try {
+            return await runLocal(hosted.assertCurrent);
+          } catch (error) {
+            offline.uncertainCleanup ||= hasCommandProcessCleanupError(error);
+            throw error;
+          }
+        });
+      }
       return await runLocal(hosted.assertCurrent);
     }
     const owner = await discover();
@@ -239,12 +288,29 @@ export async function runWithLocalStateOwner<T>(params: {
       assertOwnerCurrent: () => lock.assertCurrent(),
       assertDatabaseAccess: lock.assertDatabaseAccess,
     });
+    const offline = {
+      ownerId: captureGatewayStateOwner(databasePath)?.ownerId,
+      resources,
+      uncertainCleanup: false,
+    };
+    offlineOwnerResources.set(paths.ownerLockPath, offline);
     try {
       return await resources.run(() => runLocal(lock.assertCurrent));
+    } catch (error) {
+      offline.uncertainCleanup ||= hasCommandProcessCleanupError(error);
+      throw error;
     } finally {
       // Failed cleanup keeps physical custody; release cannot race accepted worker/native work.
       await resources.close();
+      // Unknown child settlement keeps physical custody after the process owner stops lending.
+      const retained = offline.uncertainCleanup
+        ? tryBorrowGatewayStateOwner(databasePath)
+        : undefined;
       await lock.release();
+      retained?.assertCurrent();
+      if (offlineOwnerResources.get(paths.ownerLockPath) === offline) {
+        offlineOwnerResources.delete(paths.ownerLockPath);
+      }
     }
   } finally {
     finished.resolve();
