@@ -192,60 +192,79 @@ it("rechecks the factory caller lifetime before commit and disclosure", async ()
   }
 });
 
-it("reconciles a committed branch before return without rewriting its durable receipt", async () => {
-  const sessionKey = "agent:main:dashboard:incognito-actor-projection";
-  const sessionId = "actor-projection";
-  await execution.sessions.create(authority, {
-    sessionKey,
-    entry: { sessionId, incognito: true, updatedAt: 100 },
-  });
-  const actor = await execution.sessionActors.acquire(
-    { database: execution.identity, sessionKey },
-    execution,
-  );
-  try {
-    for (const id of ["first-model", "replacement-model"]) {
-      const result = await actor.appendTranscriptEvent(
-        {
-          commandId: id,
-          phaseId: "model",
-          expected: (await actor.read(authority)).version,
-          append: {
-            kind: "metadata",
-            input: {
-              scope: { agentId: "main", sessionKey, sessionId, storePath: execution.path },
-              event: JSON.stringify({
-                type: "model_change",
-                id,
-                parentId: null,
-                timestamp: "2026-01-01T00:00:00.000Z",
-                provider: "synthetic",
-                modelId: "test-model",
-              }),
-              options: {},
-            },
-          },
-        },
-        authority,
-      );
-      expect(result.kind).toBe("committed");
-      if (result.kind !== "committed") throw new Error("Expected committed metadata append");
-      expect(result.failure).toBeUndefined();
-      expect(result.value).toMatchObject({
-        kind: "metadata",
-        value: { projectionNeedsReconcile: false },
-      });
-      if (id === "replacement-model") {
-        expect(result.receipt.transcript.projectionNeedsReconcile).toBe(true);
-        expect(result.receipt.transcript.append?.value.projectionNeedsReconcile).toBe(true);
-      }
-    }
-    const ready = await actor.read(authority);
-    expect(ready.transcript.modelContext).toEqual({
-      kind: "resident",
-      entries: [{ rawSeq: ready.transcript.watermark.maxSeq, eventId: "replacement-model" }],
+it.each(["metadata", "event"] as const)(
+  "reconciles a committed %s branch before return without rewriting its durable receipt",
+  async (form) => {
+    const sessionKey = `agent:main:dashboard:incognito-actor-projection-${form}`;
+    const sessionId = `actor-projection-${form}`;
+    await execution.sessions.create(authority, {
+      sessionKey,
+      entry: { sessionId, incognito: true, updatedAt: 100 },
     });
-  } finally {
-    await actor.release();
-  }
-});
+    const actor = await execution.sessionActors.acquire(
+      { database: execution.identity, sessionKey },
+      execution,
+    );
+    try {
+      for (const id of ["first-model", "replacement-model"]) {
+        const before = await actor.read(authority);
+        const eventJson = JSON.stringify({
+          type: "model_change",
+          id,
+          parentId: null,
+          timestamp: "2026-01-01T00:00:00.000Z",
+          provider: "synthetic",
+          modelId: "test-model",
+        });
+        const result = await actor.appendTranscriptEvent(
+          {
+            commandId: id,
+            phaseId: "model",
+            expected: before.version,
+            ...(form === "metadata"
+              ? {
+                  append: {
+                    kind: "metadata" as const,
+                    input: {
+                      scope: { agentId: "main", sessionKey, sessionId, storePath: execution.path },
+                      event: eventJson,
+                      options: {},
+                    },
+                  },
+                }
+              : {
+                  sessionId,
+                  lifecycleRevision: before.entry?.lifecycleRevision ?? null,
+                  eventJson,
+                }),
+          },
+          authority,
+        );
+        expect(result.kind).toBe("committed");
+        if (result.kind !== "committed") throw new Error("Expected committed metadata append");
+        expect(result.failure).toBeUndefined();
+        expect(result.value).toMatchObject(
+          form === "metadata"
+            ? {
+                kind: "metadata",
+                value: { projectionNeedsReconcile: false },
+              }
+            : { projectionNeedsReconcile: false },
+        );
+        if (id === "replacement-model") {
+          expect(result.receipt.transcript.projectionNeedsReconcile).toBe(true);
+          if (form === "metadata") {
+            expect(result.receipt.transcript.append?.value.projectionNeedsReconcile).toBe(true);
+          }
+        }
+      }
+      const ready = await actor.read(authority);
+      expect(ready.transcript.modelContext).toEqual({
+        kind: "resident",
+        entries: [{ rawSeq: ready.transcript.watermark.maxSeq, eventId: "replacement-model" }],
+      });
+    } finally {
+      await actor.release();
+    }
+  },
+);
