@@ -1863,10 +1863,19 @@ describe("FRV watch", () => {
     await expect(poll()).resolves.toMatchObject({ complete: true });
   });
 
-  it.each(["execution plan", "candidate tip", "rate-limited candidate tip"])(
+  it.each([
+    "execution plan",
+    "invalid plan schema",
+    "invalid plan digest",
+    "wrong plan parent",
+    "wrong plan workflow",
+    "candidate tip",
+    "rate-limited candidate tip",
+  ])(
     "completes a terminal tree when optional %s observation is unavailable",
     async (unavailable) => {
       const statePath = path.join(tempDirs.make("frv-unknown-candidate-"), "state.json");
+      const parentRunId = unavailable === "wrong plan parent" ? "78" : "77";
       const immutable = executionPlanArtifact();
       const source = sourceFact();
       Object.assign(immutable, {
@@ -1877,13 +1886,23 @@ describe("FRV watch", () => {
         }),
       });
       immutable.sha256 = releaseExecutionPlanSha256(immutable);
+      if (unavailable === "invalid plan schema") {
+        immutable.schemaVersion = 999;
+      } else if (unavailable === "invalid plan digest") {
+        immutable.sha256 = "0".repeat(64);
+      }
       const events: { message: string; candidate?: { state: string } }[] = [];
       let unavailableNow = unavailable !== "rate-limited candidate tip";
       const client = {
         ...unsealedWatcherReads,
         repository: REPOSITORY,
         getRun: async (runId: string) =>
-          runId === "77" ? rootRun(1, "success") : runFor(child("normalCi", "101"), 1, "success"),
+          runId === parentRunId
+            ? {
+                ...rootRun(1, "success"),
+                head_sha: unavailable === "wrong plan workflow" ? "d".repeat(40) : SHA,
+              }
+            : runFor(child("normalCi", "101"), 1, "success"),
         getParentJobs: async () => [
           { ...job("Seal release execution plan"), run_attempt: 1 },
           { ...job("Run normal full CI"), id: 5, run_attempt: 1 },
@@ -1916,11 +1935,15 @@ describe("FRV watch", () => {
         },
       };
       if (!unavailableNow) {
-        await watchRelease("77", client, { statePath, once: true, emit: () => undefined });
+        await watchRelease(parentRunId, client, { statePath, once: true, emit: () => undefined });
         unavailableNow = true;
       }
       await expect(
-        watchRelease("77", client, { statePath, once: true, emit: (event) => events.push(event) }),
+        watchRelease(parentRunId, client, {
+          statePath,
+          once: true,
+          emit: (event) => events.push(event),
+        }),
       ).resolves.toMatchObject({ complete: true });
       expect(events).toContainEqual(
         expect.objectContaining({ candidate: expect.objectContaining({ state: "unknown" }) }),

@@ -2769,21 +2769,19 @@ async function pollRelease(state, client, pending, observation, readOptions) {
           )),
     )
   ) {
-    const evidence = await read(
+    observation.plan = await read(
       "execution plan",
-      () => client.getReleaseEvidenceClient().loadExecutionPlanEvidence(parentRunId),
+      async () => {
+        const evidence = await client
+          .getReleaseEvidenceClient()
+          .loadExecutionPlanEvidence(parentRunId);
+        return validateReleaseExecutionPlanArtifact(evidence.plan, {
+          parentRunId,
+          workflowSha: parent.head_sha,
+        });
+      },
       false,
     );
-    if (evidence) {
-      observation.plan = validateReleaseExecutionPlanArtifact(evidence.plan);
-    }
-  }
-  if (
-    observation.plan &&
-    (observation.plan.parentRunId !== parentRunId ||
-      observation.plan.workflowSha !== parent.head_sha)
-  ) {
-    throw new Error("watch parent identity differs from the immutable execution plan");
   }
   // Candidate metadata is advisory: absent artifacts or refs stay unknown, never hold
   // an independently verified terminal tree open or grant qualification authority.
