@@ -1881,8 +1881,9 @@ refusal never selects default execution policy. Commands and marker-only history
 retain their physical store; by-ID history uses transcript windows rather than
 current-entry discovery. A conversation binding records its private lifecycle so
 cleanup still releases its subscription after the actor closes. The asynchronous
-sandbox preparer retains its selected entry while the released synchronous sandbox
-method keeps its existing contract.
+sandbox preparer carries the selected runtime status through provisioning and
+rechecks the same sandbox, creator, execution, and model fields at its effects.
+The released synchronous sandbox method keeps its existing contract.
 
 This preparation is inactive: unbound incognito remains host-owned and allocates
 no actor. Tests supply canonical actors explicitly. The existing Gateway creator

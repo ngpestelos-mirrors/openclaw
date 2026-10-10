@@ -5,6 +5,7 @@ import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { withIncognitoSessionActor } from "../config/sessions/session-incognito-binding.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import * as gatewayCreation from "../gateway/session-create-service.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { openIncognitoTestActor } from "../state/openclaw-agent-execution-incognito.test-support.js";
@@ -101,6 +102,53 @@ it("keeps explicit actor ownership and by-ID checks out of host SQL", async () =
       ).resolves.toMatchObject({ displayName: "owned update" });
     });
     expect(subagentRun).not.toHaveBeenCalled();
+    expect(sql.queries).toEqual([]);
+  } finally {
+    sql.restore();
+  }
+});
+
+it("classifies sandbox authority from its captured actor despite a different configured store", async () => {
+  const { owner } = registry();
+  const sessionKey = "agent:main:dashboard:incognito-workspace-policy";
+  await actor.sessions.create(authority, {
+    sessionKey,
+    entry: {
+      sessionId: "workspace-policy",
+      updatedAt: 1,
+      incognito: true,
+      sandbox: "required",
+    },
+  });
+  const config: OpenClawConfig = {
+    session: {
+      store: path.join(
+        dirs.make("plugin-sandbox-other-root-"),
+        "agents",
+        "main",
+        "sessions",
+        "sessions.json",
+      ),
+    },
+    agents: {
+      defaults: { sandbox: { mode: "off", scope: "session", workspaceAccess: "rw" } },
+      entries: { main: {} },
+    },
+  };
+  const params = { config, agentId: "main", sessionKey, storePath: actor.path };
+  const sql = observeHostDataSql();
+  try {
+    await withIncognitoSessionActor(actor, async () => {
+      const expected = {
+        sandboxed: true,
+        workspaceAccess: "ro",
+        confinementError: "target sandbox is not exclusive to this worker session.",
+      };
+      expect(owner.runtime.sandbox.resolveWorkspaceAuthority(params)).toEqual(expected);
+      await expect(
+        owner.runtime.sandbox.prepareWorkspaceAuthority({ ...params, workspaceDir: "/workspace" }),
+      ).resolves.toEqual(expected);
+    });
     expect(sql.queries).toEqual([]);
   } finally {
     sql.restore();
