@@ -1,3 +1,4 @@
+import { resolve as resolvePath } from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
@@ -16,7 +17,10 @@ import {
   validateSessionsFilesListParams,
   validateSessionsFilesSetParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import { loadAgentIdentityFromWorkspaceAsync } from "../../agents/identity-file.js";
 import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
+import { DEFAULT_IDENTITY_FILENAME } from "../../agents/workspace-bootstrap-policy.js";
 import { getRuntimeConfig } from "../../config/io.js";
 import type { SessionEntryReadScope } from "../../config/sessions/session-accessor.types.js";
 import { captureSessionEntryMetadataRead } from "../../config/sessions/session-entry-source-authority.js";
@@ -648,8 +652,9 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateSessionsFilesSetParams, "sessions.files.set", respond)) {
       return;
     }
+    const cfg = context.getRuntimeConfig();
     const agentId = requireSessionFilesAgentId({
-      cfg: context.getRuntimeConfig(),
+      cfg,
       sessionKey: params.sessionKey,
       agentId: params.agentId,
       respond,
@@ -710,6 +715,18 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
             }),
           );
           return;
+        }
+        const workspaceDir = repository ? undefined : resolveAgentWorkspaceDir(loaded.cfg, agentId);
+        if (
+          workspaceDir &&
+          update.file.workspacePath &&
+          resolvePath(update.root, update.file.workspacePath) ===
+            resolvePath(workspaceDir, DEFAULT_IDENTITY_FILENAME)
+        ) {
+          // A pre-write worker reply must settle before the event admits a new identity read.
+          await loadAgentIdentityFromWorkspaceAsync(workspaceDir);
+          authorize();
+          context.broadcast("agent.identity.changed", { agentId });
         }
         respond(true, {
           sessionKey: params.sessionKey,
