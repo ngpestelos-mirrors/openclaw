@@ -1,3 +1,4 @@
+import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -97,7 +98,7 @@ const enSidebarAttention = {
   },
 } satisfies TranslationMap;
 
-export const registerSidebarAttentionEnglish = Object.assign(
+export const registerSidebarAttentionEnglish = defineEnglishCatalog(
   () => {
     Object.assign(en.connection, enSidebarAttention.connection);
     en.attention = enSidebarAttention.attention;

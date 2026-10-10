@@ -1,3 +1,4 @@
+import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -1808,7 +1809,7 @@ const enSettings = {
   },
 } satisfies TranslationMap;
 
-export const registerSettingsEnglish = Object.assign(
+export const registerSettingsEnglish = defineEnglishCatalog(
   () => {
     Object.assign(en.agentTools, enSettings.agentTools);
     Object.assign(en.talkPage, enSettings.talkPage);

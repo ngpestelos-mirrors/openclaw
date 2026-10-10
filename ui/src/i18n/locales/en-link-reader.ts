@@ -1,3 +1,4 @@
+import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -69,7 +70,7 @@ const enLinkReader = {
   },
 } satisfies TranslationMap;
 
-export const registerLinkReaderEnglish = Object.assign(
+export const registerLinkReaderEnglish = defineEnglishCatalog(
   () => Object.assign(en.linkReader, enLinkReader.linkReader),
   { catalog: enLinkReader },
 );

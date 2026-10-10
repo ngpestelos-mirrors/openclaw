@@ -1,3 +1,4 @@
+import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -83,7 +84,7 @@ const enChatMessageMetadata = {
   },
 } satisfies TranslationMap;
 
-export const registerChatMessageMetadataEnglish = Object.assign(
+export const registerChatMessageMetadataEnglish = defineEnglishCatalog(
   () => Object.assign(en.chat.messages, enChatMessageMetadata.chat.messages),
   { catalog: enChatMessageMetadata },
 );

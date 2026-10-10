@@ -14,6 +14,15 @@ type PreferenceEvent = "loaded" | "changed";
 // accepted worktree-name consumption belong to DraftPreferenceState.
 const owners = new WeakMap<Client, WeakMap<object, Map<string, PaletteIdentityPreferences>>>();
 
+export function peekPaletteIdentityPreferences(
+  owner: Owner,
+): PaletteIdentityPreferences | undefined {
+  return owners
+    .get(owner.client)
+    ?.get(owner.hello)
+    ?.get(JSON.stringify([owner.gatewayUrl, owner.profileId]));
+}
+
 export function acquirePaletteIdentityPreferences(owner: Owner): PaletteIdentityPreferences {
   let handshakes = owners.get(owner.client);
   if (!handshakes) {

@@ -1,3 +1,4 @@
+import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -77,7 +78,7 @@ const enModelAccounts = {
   },
 } satisfies TranslationMap;
 
-export const registerModelAccountsEnglish = Object.assign(
+export const registerModelAccountsEnglish = defineEnglishCatalog(
   () => {
     // Account surfaces load this copy lazily; shared profile navigation stays eager.
     en.profilePage = Object.assign({}, en.profilePage, enModelAccounts.profilePage);

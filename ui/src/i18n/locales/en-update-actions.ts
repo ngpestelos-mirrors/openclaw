@@ -1,3 +1,4 @@
+import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -61,7 +62,7 @@ const enUpdateActions = {
   },
 } satisfies TranslationMap;
 
-export const registerUpdateActionsEnglish = Object.assign(
+export const registerUpdateActionsEnglish = defineEnglishCatalog(
   () => {
     const sections = ["run", "confirm", "dialog", "triage", "report"] as const;
     // SAFETY: The canonical English catalog defines these sections as objects.

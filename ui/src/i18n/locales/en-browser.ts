@@ -1,3 +1,4 @@
+import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -62,7 +63,7 @@ const enBrowser = {
   },
 } satisfies TranslationMap;
 
-export const registerBrowserEnglish = Object.assign(
+export const registerBrowserEnglish = defineEnglishCatalog(
   () => {
     const { errors, annotatePrompt, ...labels } = enBrowser.browser;
     // Extend the shared objects so existing Browser copy and readers survive.

@@ -1,3 +1,4 @@
+import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -57,7 +58,7 @@ const enMcp = {
   },
 } satisfies TranslationMap;
 
-export const registerMcpEnglish = Object.assign(
+export const registerMcpEnglish = defineEnglishCatalog(
   () => {
     Object.assign(en.mcpServers, enMcp.mcpServers);
     Object.assign(en.mcpPage, enMcp.mcpPage);

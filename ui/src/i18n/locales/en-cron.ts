@@ -1,3 +1,4 @@
+import { defineEnglishCatalog } from "../lib/english-catalog.ts";
 import type { TranslationMap } from "../lib/types.ts";
 import { en } from "./en.ts";
 
@@ -75,7 +76,7 @@ const enCron = {
   },
 } satisfies TranslationMap;
 
-export const registerCronEnglish = Object.assign(
+export const registerCronEnglish = defineEnglishCatalog(
   () => {
     // SAFETY: The canonical English catalog owns cron as an object; extend its lazy page copy.
     Object.assign(en.cron as TranslationMap, enCron.cron);

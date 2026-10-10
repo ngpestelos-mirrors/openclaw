@@ -73,6 +73,17 @@ export function acquireNativeOverlayOcclusion(): () => void {
   };
 }
 
+export function readNativeOverlayOcclusion(getBounds: () => DOMRectReadOnly | null): boolean {
+  if (!hasNativeBrowserBridge()) {
+    return false;
+  }
+  if (activeOverlays > 0) {
+    return true;
+  }
+  const bounds = getBounds();
+  return Boolean(bounds && bounds.width > 0 && bounds.height > 0 && overlapsSurface(bounds));
+}
+
 export function subscribeNativeOverlayOcclusion(
   listener: (occluded: boolean) => void,
   getBounds: () => DOMRectReadOnly | null,
@@ -83,10 +94,7 @@ export function subscribeNativeOverlayOcclusion(
   }
   let previous: boolean | undefined;
   const update = () => {
-    const bounds = getBounds();
-    const occluded =
-      activeOverlays > 0 ||
-      Boolean(bounds && bounds.width > 0 && bounds.height > 0 && overlapsSurface(bounds));
+    const occluded = readNativeOverlayOcclusion(getBounds);
     if (occluded !== previous) {
       previous = occluded;
       listener(occluded);
