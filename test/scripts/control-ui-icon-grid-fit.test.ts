@@ -355,11 +355,11 @@ describe("JSX icon-grid fixtures", () => {
           dom.window.document,
         );
         let controls = 0;
-        for (const fixture of fixtures) {
+        for (const entry of fixtures) {
           const template = dom.window.document.createElement("template");
-          template.innerHTML = fixture.html;
+          template.innerHTML = entry.html;
           controls += template.content.querySelectorAll("[data-icon-grid-control]").length;
-          expect(fixture.html, body).not.toContain("data-icon-grid-source");
+          expect(entry.html, body).not.toContain("data-icon-grid-source");
         }
         expect(controls, body).toBe(count);
         expect(scanIconGridFit(css, fixtures, base).findings, body).toHaveLength(count * 2);

@@ -78,6 +78,8 @@ function literalBranch(expression: ts.Expression): ts.Expression | undefined {
           return left ? expression.left : expression.right;
         case ts.SyntaxKind.QuestionQuestionToken:
           return left === null ? expression.right : expression.left;
+        default:
+          return undefined;
       }
     }
   }
@@ -93,16 +95,16 @@ function resolvedLiteralBranch(expression: ts.Expression): ts.Expression {
 }
 
 function jsxClass(expression: ts.Expression): string | null | undefined {
-  const value = unwrapExpression(expression);
+  const initial = unwrapExpression(expression);
   if (
-    value.kind === ts.SyntaxKind.NullKeyword ||
-    value.kind === ts.SyntaxKind.FalseKeyword ||
-    value.kind === ts.SyntaxKind.TrueKeyword
+    initial.kind === ts.SyntaxKind.NullKeyword ||
+    initial.kind === ts.SyntaxKind.FalseKeyword ||
+    initial.kind === ts.SyntaxKind.TrueKeyword
   ) {
     return null;
   }
-  if (ts.isStringLiteralLikeNode(value) || ts.isNumericLiteral(value)) {
-    return value.text;
+  if (ts.isStringLiteralLikeNode(initial) || ts.isNumericLiteral(initial)) {
+    return initial.text;
   }
   const classes = new Map<string, boolean>();
   function collect(node: ts.Expression): boolean {
@@ -364,14 +366,15 @@ function jsxFixtures(root: ts.JsxChild, components: ReadonlyMap<string, string>)
       return;
     }
     let childChoices = choices;
+    let childCallback = callback;
     if (!ts.isJsxFragment(node)) {
       const opening = ts.isJsxElement(node) ? node.openingElement : node;
       const tag = opening.tagName.getText();
       if (!/^[a-z][a-z0-9-]*$/u.test(tag) && !components.has(tag)) {
         return;
       }
-      callback = components.has(tag);
-      if (callback && opening.attributes.properties.some(ts.isJsxSpreadAttribute)) {
+      childCallback = components.has(tag);
+      if (childCallback && opening.attributes.properties.some(ts.isJsxSpreadAttribute)) {
         return;
       }
       const count = components.has(tag) ? componentCount(node, components.get(tag)!) : undefined;
@@ -416,7 +419,7 @@ function jsxFixtures(root: ts.JsxChild, components: ReadonlyMap<string, string>)
     }
     if (ts.isJsxElement(node) || ts.isJsxFragment(node)) {
       for (const child of node.children) {
-        visit(child, childChoices, callback);
+        visit(child, childChoices, childCallback);
       }
     }
   };
@@ -511,25 +514,32 @@ export function collectIconFixtures(
   const shadowed = (name: ts.BindingName): void => {
     if (ts.isIdentifier(name)) {
       for (const component of components.keys()) {
-        if (component.split(".")[0] === name.text) components.delete(component);
+        if (component.split(".")[0] === name.text) {
+          components.delete(component);
+        }
       }
     } else {
       for (const element of name.elements) {
         // Native AST array elisions are binding elements without a name.
-        if (ts.isBindingElement(element) && element.name) shadowed(element.name);
+        if (ts.isBindingElement(element) && element.name) {
+          shadowed(element.name);
+        }
       }
     }
   };
   const inspectRoot = (node: ts.Node) => {
-    if (ts.isParameterDeclaration(node) || ts.isVariableDeclaration(node)) shadowed(node.name);
+    if (ts.isParameterDeclaration(node) || ts.isVariableDeclaration(node)) {
+      shadowed(node.name);
+    }
     if (
       (ts.isFunctionDeclaration(node) ||
         ts.isFunctionExpression(node) ||
         ts.isClassDeclaration(node) ||
         ts.isClassExpression(node)) &&
       node.name
-    )
+    ) {
       shadowed(node.name);
+    }
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
       const baseType = node.heritageClauses?.find(
         (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
