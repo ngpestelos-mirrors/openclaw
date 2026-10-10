@@ -26,7 +26,10 @@ import {
   assertNoRunningWorkerSessionToolOperations,
   clearWorkerTurnToolState,
 } from "./placement-session-tool-operations.kernel.js";
-import { publishPlacementTurnClaimState } from "./placement-turn-authority.js";
+import {
+  publishPlacementTurnClaimState,
+  publishPlacementWorkspaceJournalState,
+} from "./placement-turn-authority.js";
 import {
   deferTurnClaimRelease,
   deferWorkerTurnClaimClosed,
@@ -501,9 +504,12 @@ export function createPlacementTurnClaimOps(runtime: PlacementStoreRuntime) {
           if (marked.numAffectedRows !== 1n) {
             throw new Error(`Worker workspace journal changed for session ${sessionId}`);
           }
+          publishPlacementWorkspaceJournalState(db, sessionId, true);
         }
+        const updated = getRequired(db, sessionId);
+        publishPlacementTurnClaimState(db, updated, current.state);
         sessionChanges.emit({ agentId: current.agentId, sessionKey: current.sessionKey }, db);
-        return getRequired(db, sessionId);
+        return updated;
       });
     },
   };
