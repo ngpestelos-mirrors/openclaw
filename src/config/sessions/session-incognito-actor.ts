@@ -9,6 +9,7 @@ import type { RetainedWorkerTransactionAdmission } from "../../infra/sqlite-work
 import { SqliteWorkerError } from "../../infra/sqlite-worker-store.js";
 import type { AgentDatabaseIncognitoIdentity } from "../../state/openclaw-agent-execution-contract.js";
 import type { TrajectoryRuntimeRetentionLease } from "../../trajectory/runtime-retention.contract.js";
+import type { SessionActorLifetime } from "./session-actor-contract.js";
 import {
   authorizeSessionFacts,
   incognitoEntryPublication,
@@ -71,14 +72,11 @@ import type {
 export type { IncognitoSessionClaim } from "./session-incognito-authority.js";
 
 /** Borrowed session operations; execution lifetime and ACP orchestration stay with their owner. */
-export type IncognitoSessionActor = {
+export type IncognitoSessionActor = SessionActorLifetime & {
   readonly agentId: string;
   readonly path: string;
   readonly identity: AgentDatabaseIncognitoIdentity;
   readonly sessions: ReturnType<ReturnType<typeof createIncognitoSessionFacts>["bind"]>;
-  assertCurrent(): void;
-  /** Refuse new disclosure even while accepted work retains the actor for settlement. */
-  assertReadable(): void;
 };
 
 /** Actor-local projection owned by its lifetime, never a roster or full-entry cache. */
