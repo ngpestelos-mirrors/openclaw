@@ -6,15 +6,15 @@ import {
   upsertSessionEntry,
   type SessionEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";
-import { useSessionStoreTempDirs } from "openclaw/plugin-sdk/sqlite-runtime-testing";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { captureOpenClawAgentDatabaseExecution } from "openclaw/plugin-sdk/sqlite-runtime";
 import {
+  observeHostDataSql,
+  openIncognitoTestActor,
+  useSessionStoreTempDirs,
   withIncognitoSessionActor,
   withIncognitoSessionBinding,
-} from "../../../src/config/sessions/session-incognito-binding.js";
-import { openIncognitoTestActor } from "../../../src/state/openclaw-agent-execution-incognito.test-support.js";
-import { captureOpenClawAgentDatabaseExecution } from "../../../src/state/openclaw-agent-execution.js";
-import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+} from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildCodexSupervisionTestConnectionFingerprint,
   readCodexAppServerBinding,

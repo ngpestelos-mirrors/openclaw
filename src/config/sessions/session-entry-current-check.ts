@@ -35,7 +35,7 @@ type ConversationCondition = {
 };
 
 /** Capture a generation and routing choice; acquire worker source custody only for each write. */
-export async function captureSessionEntryCurrentCheck(params: {
+export async function captureSessionEntryCurrentCheckInternal(params: {
   agentId: string;
   sessionKey: string;
   storePath?: string;

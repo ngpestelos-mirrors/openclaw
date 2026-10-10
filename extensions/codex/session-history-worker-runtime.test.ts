@@ -1,5 +1,4 @@
 import "openclaw/plugin-sdk/compiled-subprocess-testing";
-import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import {
   createCodexSessionContextReader,
   SessionTranscriptReadFenceError,
@@ -7,6 +6,7 @@ import {
   type CodexSessionContextSnapshot,
 } from "openclaw/plugin-sdk/codex-session-transcript-runtime";
 import * as transcriptRuntime from "openclaw/plugin-sdk/codex-session-transcript-runtime";
+import { appendSessionTranscriptMessagesByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import {
   observeHostDataSql,
   openIncognitoTestActor,
@@ -144,15 +144,13 @@ describe("Codex actor history adapter", () => {
         entry: { sessionId: target.sessionId, updatedAt: 1, incognito: true },
       });
       await withIncognitoSessionActor(actor, async () => {
-        const manager = await SessionManager.openAsync(sessionTarget);
-        await manager.appendMessageAsync({
-          role: "user",
-          content: "Earlier synthetic context.",
-          timestamp: 1,
+        await appendSessionTranscriptMessagesByIdentity({
+          ...sessionTarget,
+          messages: [
+            { role: "user" as const, content: "Earlier synthetic context.", timestamp: 1 },
+            ...target.settledMessages,
+          ].map((message) => ({ message })),
         });
-        for (const message of target.settledMessages) {
-          await manager.appendMessageAsync(message);
-        }
         const sql = observeHostDataSql();
         try {
           const result = await projectCodexSettledHistoryInWorker({
