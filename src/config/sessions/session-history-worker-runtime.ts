@@ -429,7 +429,7 @@ export async function readSessionHistoryPageInWorker(
         signal?.throwIfAborted();
         stateContext.maintenanceScope?.assertAdmission();
         stateContext.admission.assertCurrent();
-        sourceReads?.assertSourceCurrent();
+        sourceReads?.assertCurrent();
         if (primaryPath && !primaryPath.isCurrent()) {
           throw new Error("Session store changed while preparing its metadata. Retry the request.");
         }
@@ -612,10 +612,6 @@ export async function readSessionHistoryPageInWorker(
           throw error;
         }
       }
-      await sourceReads?.revalidate(() => {
-        owner.assertCurrent();
-        assertStateCurrent();
-      });
       return {
         result,
         assertCurrent: () => {
