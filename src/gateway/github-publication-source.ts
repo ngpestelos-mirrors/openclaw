@@ -148,7 +148,7 @@ export async function prepareGitHubPublicationSource(params: {
         (change.kind === "unknown" && change.identity === context.admission.identity.key) ||
         (change.kind === "committed" &&
           change.receipt.source.identity === context.admission.identity.key &&
-          [...change.receipt.facts.values()].some((fact) => fact.kind === "absent"))
+          [...change.receipt.facts.values()].some((fact) => fact.kind !== "postimage"))
       )
         revoke();
     }),

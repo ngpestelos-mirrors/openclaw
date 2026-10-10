@@ -10,6 +10,7 @@ import {
 import { insertRepositoryGitHubPublicationInDatabase } from "../gateway/github-repository-publication-store.js";
 import { deferSqliteWorkerCommitReceipt } from "../infra/sqlite-worker-operation-admission.js";
 import type { RepositoryGitHubPublicationRow } from "./github-publication-read.types.js";
+import { captureGitHubPublicationWorkerReceipt } from "./github-publication-receipts.js";
 import type { GitHubPublicationSourcePredicate } from "./github-publication-source-contract.js";
 import {
   assertGitHubPublicationWorktreeSource,
@@ -141,7 +142,7 @@ export const publicationRequestOperations = {
     const assertCurrent = () => assertGitHubPublicationWorkerSourceCurrent(database.db);
     assertCurrent();
     assertRequestedSource(input, input.source);
-    const { value, changes } = captureGitHubPublicationChanges((): PublicationMutationResult => {
+    const write = (): PublicationMutationResult => {
       const identity = { operationId: input.operationId, operation: input.operation };
       switch (input.kind) {
         case "shared": {
@@ -195,9 +196,12 @@ export const publicationRequestOperations = {
             rows: [insertRepositoryGitHubPublicationInDatabase(database, input.row, assertCurrent)],
           };
       }
+    };
+    const receipt = captureGitHubPublicationWorkerReceipt(database.db, () => {
+      const { value, changes } = captureGitHubPublicationChanges(write);
+      return { ...value, changes };
     });
     assertCurrent();
-    const receipt = { ...value, changes };
     deferSqliteWorkerCommitReceipt(database.db, receipt);
     return receipt;
   },

@@ -14,6 +14,7 @@ import {
   deferSqliteWorkerCommitReceipt,
   requestSqliteWorkerOperationAdmission,
 } from "../infra/sqlite-worker-operation-admission.js";
+import { captureGitHubPublicationWorkerReceipt } from "./github-publication-receipts.js";
 import { publicationRequestOperations } from "./github-publication-request.worker.js";
 import { readGitHubPublicationSessionLifecycle } from "./github-publication-session-lifecycles.js";
 import type { GitHubPublicationSourcePredicate } from "./github-publication-source-contract.js";
@@ -77,11 +78,15 @@ function mutate(
   write: () => PublicationMutationResult,
   source?: GitHubPublicationSourcePredicate,
 ) {
+  const capture = () =>
+    captureGitHubPublicationWorkerReceipt(database.db, () => {
+      const { value, changes } = captureGitHubPublicationChanges(write);
+      return { ...value, changes };
+    });
   if (source) {
     assertGitHubPublicationWorkerSourceCurrent(database.db);
-    const { value, changes } = captureGitHubPublicationChanges(write);
-    assertMutationSource(database, value, source);
-    const receipt = { ...value, changes };
+    const receipt = capture();
+    assertMutationSource(database, receipt, source);
     assertGitHubPublicationWorkerSourceCurrent(database.db);
     deferSqliteWorkerCommitReceipt(database.db, receipt);
     return receipt;
@@ -89,8 +94,7 @@ function mutate(
   return runOpenClawStateWriteTransaction(
     ({ db }) => {
       requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: { operation } });
-      const { value, changes } = captureGitHubPublicationChanges(write);
-      const receipt = { ...value, changes };
+      const receipt = capture();
       requestSqliteWorkerOperationAdmission({ stage: "commit", facts: receipt });
       deferSqliteWorkerCommitReceipt(db, receipt);
       return receipt;

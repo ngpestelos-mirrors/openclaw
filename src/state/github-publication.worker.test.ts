@@ -1,6 +1,6 @@
 import path from "node:path";
 import { Worker } from "node:worker_threads";
-import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, onTestFinished, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.sqlite-entry.js";
@@ -10,13 +10,22 @@ import {
   prepareGitHubPublicationSource,
 } from "../gateway/github-publication-source.js";
 import { markGitHubPublicationReportedAsync } from "../gateway/github-publication-store-async.js";
-import { insertRepositoryGitHubPublicationInDatabase } from "../gateway/github-repository-publication-store.js";
+import {
+  claimRepositoryGitHubPublicationInDatabase,
+  insertRepositoryGitHubPublicationInDatabase,
+} from "../gateway/github-repository-publication-store.js";
 import { repositoryGitHubPublicationDigest } from "../gateway/github-repository-publication.kernel.js";
 import type { SqliteWorkerReply } from "../infra/sqlite-worker-contract.js";
+import * as workerAdmission from "../infra/sqlite-worker-operation-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { preparePersonalGitHubSessionReceiptDeletion } from "./github-personal-publication-lifecycle.js";
 import type { RepositoryGitHubPublicationRow as RepositoryPublicationRow } from "./github-publication-read.types.js";
+import { githubPublicationReceipts } from "./github-publication-receipts.js";
 import { createGitHubPublicationWorkerScope } from "./github-publication-worker.js";
-import type { RepositoryPublicationMutation } from "./github-publication-worker.types.js";
+import type {
+  PublicationMutationReceipt,
+  RepositoryPublicationMutation,
+} from "./github-publication-worker.types.js";
 import { closeOpenClawAgentDatabasesAsync } from "./openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "./openclaw-state-db-cache.js";
@@ -61,8 +70,8 @@ afterEach(async () => {
   scopes.clear();
 });
 
-function createScope() {
-  const scope = createGitHubPublicationWorkerScope(context);
+function createScope(owner = context) {
+  const scope = createGitHubPublicationWorkerScope(owner);
   scopes.add(scope);
   return scope;
 }
@@ -119,6 +128,43 @@ function holdNextReply() {
   };
   heldReplies.add(release);
   return { ready: ready.promise, release };
+}
+
+function holdNextReceipt() {
+  const ready = createDeferredCore();
+  let deliver: (() => void) | undefined;
+  const observe = workerAdmission.observeSqliteWorkerCommittedFacts;
+  vi.spyOn(workerAdmission, "observeSqliteWorkerCommittedFacts").mockImplementationOnce(
+    (admission, observer) => {
+      observe(admission, (receipt) => {
+        deliver = () => observer(receipt);
+        ready.resolve();
+      });
+    },
+  );
+  const release = () => {
+    const send = deliver;
+    deliver = undefined;
+    heldReplies.delete(release);
+    send?.();
+  };
+  heldReplies.add(release);
+  return { ready: ready.promise, release };
+}
+
+function observeAuthority() {
+  const facts = new Map<string, unknown>();
+  const unknown: Array<string | symbol> = [];
+  onTestFinished(
+    githubPublicationReceipts.subscribeFacts((change) => {
+      if (change.kind === "committed") {
+        for (const [key, fact] of change.receipt.facts) facts.set(key, fact);
+      } else if (change.kind === "unknown") {
+        unknown.push(change.identity);
+      }
+    }),
+  );
+  return { facts, unknown };
 }
 
 function repositoryRow(requestId: string): RepositoryPublicationRow {
@@ -223,9 +269,14 @@ async function sourceFixture(
 }
 
 it("inserts a repository request through its retained session source", async () => {
+  const { facts } = observeAuthority();
   const { row, source } = await sourceFixture("source-insert");
   try {
     await expect(insertRepositoryGitHubPublicationAsync(row, source)).resolves.toEqual(row);
+    expect(facts.get(JSON.stringify(["repository", row.request_id]))).toMatchObject({
+      kind: "postimage",
+      value: { request_id: row.request_id, status: "requested" },
+    });
     expect(await read(row)).toMatchObject({ ok: true, rows: [row] });
   } finally {
     await source.release();
@@ -344,7 +395,12 @@ it("publishes a committed receipt before a delayed ordinary worker reply", async
   const scope = createScope();
   const row = seed("delayed-reply");
   const reply = holdNextReply();
-  const published = vi.fn();
+  const { facts } = observeAuthority();
+  const authorityAtNotification: unknown[] = [];
+  const key = JSON.stringify(["repository", row.request_id]);
+  const published = vi.fn((_receipt: PublicationMutationReceipt) =>
+    authorityAtNotification.push(facts.get(key)),
+  );
   const claim = scope.mutate(
     command({ operation: "claim", row, instanceId: "gateway", executionId: "execution" }),
     context.admission.assertCurrent,
@@ -355,6 +411,12 @@ it("publishes a committed receipt before a delayed ordinary worker reply", async
     signal,
   );
   expect(published).toHaveBeenCalledTimes(1);
+  expect(authorityAtNotification).toMatchObject([
+    {
+      kind: "postimage",
+      value: { request_id: row.request_id, status: "publishing", execution_id: "execution" },
+    },
+  ]);
   expect(published.mock.calls[0]?.[0]).toMatchObject({
     kind: "repository",
     rows: [{ request_id: row.request_id, status: "publishing", execution_id: "execution" }],
@@ -390,6 +452,107 @@ it("publishes a committed receipt before a delayed ordinary worker reply", async
     ok: true,
     rows: [{ reported_at_ms: expect.any(Number) }],
   });
+});
+
+it.for(["superseded", "closed"] as const)(
+  "fences a late authority receipt after its owner is %s",
+  async (outcome, { signal }) => {
+    let closed = false;
+    const scope = createScope({
+      ...context,
+      assertPublicationCurrent: () => {
+        if (closed) throw new Error("Synthetic publication owner closed");
+        (context.assertPublicationCurrent ?? context.admission.assertCurrent)();
+      },
+    });
+    const row = seed(`late-${outcome}`);
+    const { facts, unknown } = observeAuthority();
+    const key = JSON.stringify(["repository", row.request_id]);
+    const receipt = holdNextReceipt();
+    const reply = holdNextReply();
+    const published = vi.fn();
+    const claim = scope.mutate(
+      command({ operation: "claim", row, instanceId: "gateway", executionId: "original" }),
+      context.admission.assertCurrent,
+      published,
+    );
+    await withinTest(
+      awaitGateBeforeSettlement(
+        Promise.all([receipt.ready, reply.ready]),
+        claim,
+        "claim receipt was not held",
+      ),
+      signal,
+    );
+    if (outcome === "superseded") {
+      runOpenClawStateWriteTransaction((database) =>
+        claimRepositoryGitHubPublicationInDatabase(database, row, "gateway", "replacement", {
+          assertCurrent: context.admission.assertCurrent,
+          assertCustody: context.admission.assertCurrent,
+        }),
+      );
+      expect(facts.get(key)).toMatchObject({
+        kind: "postimage",
+        value: { execution_id: "replacement" },
+      });
+      receipt.release();
+      expect(facts.get(key)).toEqual({ kind: "unknown" });
+      expect(published).toHaveBeenCalledTimes(1);
+    } else {
+      closed = true;
+      expect(receipt.release).toThrow("publication owner closed");
+      expect(facts.has(key)).toBe(false);
+      expect(unknown).toContain(context.admission.identity.key);
+      expect(published).not.toHaveBeenCalled();
+    }
+    reply.release();
+    await expect(claim).resolves.toMatchObject({ rows: [{ execution_id: "original" }] });
+    expect(await read(row)).toMatchObject({
+      ok: true,
+      rows: [{ execution_id: outcome === "superseded" ? "replacement" : "original" }],
+    });
+  },
+);
+
+it("revokes prepared sources when canonical deletion commits before its ordinary reply", async ({
+  signal,
+}) => {
+  const { row, source } = await sourceFixture("source-receipt-deletion");
+  try {
+    runOpenClawStateWriteTransaction((database) =>
+      insertRepositoryGitHubPublicationInDatabase(database, row, context.admission.assertCurrent),
+    );
+    const remove = await preparePersonalGitHubSessionReceiptDeletion({
+      agentId: row.agent_id,
+      generations: [
+        {
+          sessionKey: row.session_key,
+          sessionId: row.session_id,
+          lifecycleRevision: null,
+        },
+      ],
+    });
+    expect(() => bindGitHubPublicationSource(source)).not.toThrow();
+    const reply = holdNextReply();
+    const deletion = remove();
+    try {
+      await withinTest(
+        awaitGateBeforeSettlement(reply.ready, deletion, "deletion reply was not held"),
+        signal,
+      );
+      expect(() => bindGitHubPublicationSource(source)).toThrow("source authority changed");
+    } finally {
+      reply.release();
+      await deletion;
+    }
+    expect(await read(row)).toMatchObject({ ok: true, rows: [] });
+    runOpenClawStateWriteTransaction((database) =>
+      insertRepositoryGitHubPublicationInDatabase(database, row, context.admission.assertCurrent),
+    );
+    expect(() => bindGitHubPublicationSource(source)).toThrow("source authority changed");
+  } finally {
+    await source.release();
+  }
 });
 
 it("records observed effects under execution custody while refusing new effects without source authority", async () => {

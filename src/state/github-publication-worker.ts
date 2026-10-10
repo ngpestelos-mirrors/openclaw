@@ -7,10 +7,10 @@ import {
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
 import {
   createSqliteWorkerOperationAdmission,
-  observeSqliteWorkerCommittedFacts,
   type SqliteWorkerOperationAdmission,
 } from "../infra/sqlite-worker-operation-admission.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
+import { withGitHubPublicationWorkerReceipt } from "./github-publication-receipts.js";
 import type { PublicationMutationReceipt } from "./github-publication-worker.types.js";
 import type { PublicationWorkerOperations } from "./github-publication.worker-contract.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
@@ -144,9 +144,12 @@ export function createGitHubPublicationWorkerScope(context: OpenClawStateWorkerC
                 assertCurrent: assertSource,
                 createAdmission(operation) {
                   settled = operation.settled;
-                  const retained = binding.createAdmission(operation);
+                  const retained = withGitHubPublicationWorkerReceipt(
+                    binding.createAdmission,
+                    binding.context,
+                    accept,
+                  )(operation);
                   admission = retained.admission;
-                  observeSqliteWorkerCommittedFacts(admission, ({ facts }) => accept(facts));
                   return retained;
                 },
               },
@@ -203,7 +206,7 @@ export function createGitHubPublicationWorkerScope(context: OpenClawStateWorkerC
             createAdmission: (operation) => {
               settled = operation.settled;
               let stage: "transaction" | "commit" | "complete" = "transaction";
-              admission = createSqliteWorkerOperationAdmission((request, grant) => {
+              const mutationAdmission = createSqliteWorkerOperationAdmission((request, grant) => {
                 check();
                 if (request.stage !== stage) {
                   throw new Error("GitHub publication admission is out of order.");
@@ -233,19 +236,27 @@ export function createGitHubPublicationWorkerScope(context: OpenClawStateWorkerC
                   stage = "commit";
                 }
               });
-              observeSqliteWorkerCommittedFacts(admission, ({ facts }) => {
-                if (!prepared || !isDeepStrictEqual(facts, prepared)) {
-                  throw new Error("GitHub publication commit receipt changed.");
-                }
-                // Installation precedes observers and is independent of ordinary reply delivery.
-                try {
-                  assertSource();
-                } catch {
-                  return;
-                }
-                publish(prepared);
-              });
-              return { admission, nativeLocations: [context.admission.databasePath] };
+              admission = mutationAdmission;
+              const retained = withGitHubPublicationWorkerReceipt(
+                () => ({
+                  admission: mutationAdmission,
+                  nativeLocations: [context.admission.databasePath],
+                }),
+                context,
+                (facts) => {
+                  if (!prepared || !isDeepStrictEqual(facts, prepared)) {
+                    throw new Error("GitHub publication commit receipt changed.");
+                  }
+                  // Installation precedes observers and is independent of ordinary reply delivery.
+                  try {
+                    assertSource();
+                  } catch {
+                    return;
+                  }
+                  publish(prepared);
+                },
+              )(operation);
+              return retained;
             },
           },
         ),

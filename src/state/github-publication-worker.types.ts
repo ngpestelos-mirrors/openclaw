@@ -9,6 +9,7 @@ import type {
 } from "../gateway/github-publication-store.js";
 import type { RepositoryGitHubPublicationFilter } from "../gateway/github-repository-publication.kernel.js";
 import type { GitHubPublicationRow } from "./github-publication-read.types.js";
+import type { GitHubPublicationAuthorityReceipt } from "./github-publication-receipts.js";
 import type { DB } from "./openclaw-state-db.generated.js";
 
 export type PersonalPublicationSelector =
@@ -119,5 +120,6 @@ export type PublicationMutationResult = {
 );
 
 export type PublicationMutationReceipt = PublicationMutationResult & {
+  authority: GitHubPublicationAuthorityReceipt;
   changes: GitHubPublicationChange[];
 };
