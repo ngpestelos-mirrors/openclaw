@@ -124,6 +124,17 @@ async function closeInActorContext(
   }
 }
 
+function assertSynchronousResult(value: unknown, phase: string, beforeReject?: () => void): void {
+  if (isPromise(value) || (isRecord(value) && typeof value.then === "function")) {
+    beforeReject?.();
+    if (isPromise(value)) {
+      // Retirement owns the failure; consume rejection while native exit is joined.
+      void value.catch(() => {});
+    }
+    throw new Error(`SQLite worker ${phase} must remain synchronous`);
+  }
+}
+
 async function receive(request: SqliteWorkerRequest): Promise<void> {
   let reply: SqliteWorkerReply;
   let executed = pendingResult !== undefined;
@@ -166,15 +177,7 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
             const settlement: unknown = runInActorContext(request.actor, () => ({
               settlement: backend.assertSettled?.(),
             })).settlement;
-            if (
-              isPromise(settlement) ||
-              (isRecord(settlement) && typeof settlement.then === "function")
-            ) {
-              if (isPromise(settlement)) {
-                void settlement.catch(() => {});
-              }
-              throw new Error("SQLite worker settlement checks must remain synchronous");
-            }
+            assertSynchronousResult(settlement, "settlement checks");
             return backend.assertSettled !== undefined;
           };
           const settleCommand = (failure?: { error: unknown }) => {
@@ -201,15 +204,7 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
                 const cleanup: unknown = runInActorContext(request.actor, () => ({
                   cleanup: backend[SQLITE_WORKER_OPERATION_CLEANUP]?.(typedCommand),
                 })).cleanup;
-                if (
-                  isPromise(cleanup) ||
-                  (isRecord(cleanup) && typeof cleanup.then === "function")
-                ) {
-                  if (isPromise(cleanup)) {
-                    void cleanup.catch(() => {});
-                  }
-                  throw new Error("SQLite worker operation cleanup must remain synchronous");
-                }
+                assertSynchronousResult(cleanup, "operation cleanup");
                 assertSettled();
               }
             } catch (error) {
@@ -269,17 +264,12 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
           }
           executed = true;
           completeResult = true;
-          if (isPromise(value) || (isRecord(value) && typeof value.then === "function")) {
+          assertSynchronousResult(value, "operations", () => {
             retire = true;
             if (operationAdmission) {
               settleSqliteWorkerOperationContext(operationAdmission.context, "unknown");
             }
-            if (isPromise(value)) {
-              // Retirement owns the failure; consume rejection while native exit is joined.
-              void value.catch(() => {});
-            }
-            throw new Error("SQLite worker operations must remain synchronous");
-          }
+          });
           settleCommand();
         },
       );

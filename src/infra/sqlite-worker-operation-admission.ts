@@ -179,31 +179,27 @@ function createOperationAdmission(
       cleanupFailures.push(error);
     }
   };
-  const invalidReceipt = () => {
-    recordFailure(
-      new SqliteWorkerError("SQLite worker commit receipt is invalid", "outcome-unknown"),
-      "protocol",
-    );
+  const invalidProtocol = (
+    kind: "commit receipt" | "native settlement" | "admission request",
+    code: "outcome-unknown" | "unavailable" = "outcome-unknown",
+  ) => {
+    recordFailure(new SqliteWorkerError(`SQLite worker ${kind} is invalid`, code), "protocol");
   };
   const installCommitted = (receipt: NativeCommitReceipt): boolean => {
     if (nativeReceipt) {
-      if (receipt.operationId !== nativeReceipt.operationId) {
-        invalidReceipt();
+      if (
+        receipt.operationId !== nativeReceipt.operationId ||
+        (receipt.sequence === nativeReceipt.sequence && !isDeepStrictEqual(nativeReceipt, receipt))
+      ) {
+        invalidProtocol("commit receipt");
         return false;
       }
-      if (receipt.sequence < nativeReceipt.sequence) {
-        return true;
-      }
-      if (receipt.sequence === nativeReceipt.sequence) {
-        if (!isDeepStrictEqual(nativeReceipt, receipt)) {
-          invalidReceipt();
-          return false;
-        }
+      if (receipt.sequence <= nativeReceipt.sequence) {
         return true;
       }
     }
     if (settlement) {
-      invalidReceipt();
+      invalidProtocol("commit receipt");
       return false;
     }
     nativeReceipt = receipt;
@@ -326,7 +322,7 @@ function createOperationAdmission(
     if (isRecord(message) && message.kind === "native-commit") {
       const receipt = readNativeCommitReceipt(message.committed);
       if (!receipt) {
-        invalidReceipt();
+        invalidProtocol("commit receipt");
         return;
       }
       installCommitted(receipt);
@@ -346,10 +342,7 @@ function createOperationAdmission(
         (settlement &&
           (settlement.kind !== value.kind || !isDeepStrictEqual(nativeReceipt, receipt)))
       ) {
-        recordFailure(
-          new SqliteWorkerError("SQLite worker native settlement is invalid", "outcome-unknown"),
-          "protocol",
-        );
+        invalidProtocol("native settlement");
         return;
       }
       if (receipt && !installCommitted(receipt)) {
@@ -370,10 +363,7 @@ function createOperationAdmission(
         message.stage !== "transaction" &&
         message.stage !== "commit")
     ) {
-      recordFailure(
-        new SqliteWorkerError("SQLite worker admission request is invalid", "unavailable"),
-        "protocol",
-      );
+      invalidProtocol("admission request", "unavailable");
       return;
     }
     const decision = new Int32Array(message.decision);
