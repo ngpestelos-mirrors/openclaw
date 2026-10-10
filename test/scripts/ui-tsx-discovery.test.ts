@@ -1,7 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { TestProjectInlineConfiguration } from "vitest/config";
 import {
   resolveUiE2ePrTestSelection,
   hasSharedUiE2eInput,
@@ -102,6 +101,10 @@ describe("TSX discovery", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+    type UiProject = Extract<
+      NonNullable<NonNullable<typeof uiConfig.test>["projects"]>[number],
+      { test?: unknown }
+    >;
     for (const [file, expected] of [
       ["src/component.test.tsx", "unit"],
       ["src/component.node.test.tsx", "unit-node"],
@@ -109,7 +112,7 @@ describe("TSX discovery", () => {
       ["../extensions/example/browser/view.test.tsx", "unit"],
     ] as const) {
       const projects = (uiConfig.test?.projects ?? []).filter(
-        (project): project is TestProjectInlineConfiguration =>
+        (project): project is UiProject =>
           typeof project === "object" && project !== null && "test" in project,
       );
       expect(
