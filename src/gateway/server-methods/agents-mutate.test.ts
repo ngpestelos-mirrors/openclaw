@@ -603,6 +603,20 @@ async function call(method: keyof typeof agentsHandlers, params: Record<string, 
   return respond;
 }
 
+function expectPendingDeletion(
+  respond: ReturnType<typeof vi.fn>,
+  expected: Record<string, unknown>,
+) {
+  expect(respond).toHaveBeenCalledWith(
+    false,
+    expect.objectContaining(expected),
+    expect.objectContaining({
+      code: "UNAVAILABLE",
+      message: expect.stringContaining("deletion cleanup is still pending"),
+    }),
+  );
+}
+
 type MockIdentity = {
   name?: string;
   theme?: string;
@@ -1211,7 +1225,7 @@ describe("agents.delete", () => {
     const firstDelete = makeCall("agents.delete", { agentId: "test-agent" });
     await firstDelete.promise;
 
-    expectRespondOk(firstDelete.respond, {
+    expectPendingDeletion(firstDelete.respond, {
       failed: [{ path: journal.workspaceDir, reason: "workspace trash failed" }],
     });
     expect(mocks.purgeAgentSessionStoreEntries.mock.invocationCallOrder[0]).toBeLessThan(
@@ -1417,7 +1431,7 @@ describe("agents.delete", () => {
 
     const respond = await call("agents.delete", { agentId: "test-agent" });
 
-    expectRespondOk(respond, {
+    expectPendingDeletion(respond, {
       failed: [{ path: agentTarget, reason: "agent trash failed" }],
     });
     expectNotTrashed(agentLink);
@@ -1587,7 +1601,7 @@ describe("agents.delete", () => {
     const firstDelete = makeCall("agents.delete", { agentId: "test-agent" });
     await firstDelete.promise;
 
-    expectRespondOk(firstDelete.respond, {
+    expectPendingDeletion(firstDelete.respond, {
       failed: [{ path: originalTarget, reason: "workspace trash failed" }],
     });
     expect(mocks.beginAgentDeletionFinish).not.toHaveBeenCalled();
@@ -1868,7 +1882,7 @@ describe("agents.delete", () => {
     mocks.purgeAgentSessionStoreEntries.mockResolvedValueOnce(true);
     const respond = await call("agents.delete", { agentId: "test-agent" });
 
-    expectRespondOk(respond, { ok: true, purgeFailed: true });
+    expectPendingDeletion(respond, { ok: true, purgeFailed: true });
     expect(mocks.purgeAgentSessionStoreEntries).toHaveBeenCalledWith(
       expect.anything(),
       "test-agent",

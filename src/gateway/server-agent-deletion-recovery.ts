@@ -18,12 +18,9 @@ export async function resumeAgentDeletions(
       return;
     }
     try {
-      const result = await deleteGatewayAgent(
-        journal.agentId,
-        journal.deleteFiles,
-        context,
-        { recoveryOperationId: journal.operationId },
-      );
+      const result = await deleteGatewayAgent(journal.agentId, journal.deleteFiles, context, {
+        recoveryOperationId: journal.operationId,
+      });
       if (result.purgeFailed || result.failed?.length) {
         context.logGateway.warn(`Agent ${journal.agentId} deletion cleanup remains pending.`);
       }

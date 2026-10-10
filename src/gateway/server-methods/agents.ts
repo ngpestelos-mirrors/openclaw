@@ -21,7 +21,10 @@ import { resolveAgentIdentity } from "../../agents/identity.js";
 import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import { DEFAULT_IDENTITY_FILENAME, ensureAgentWorkspace } from "../../agents/workspace.js";
 import { applyAgentConfig } from "../../commands/agents.config.js";
-import { attachRuntimeConfigWriteApplication, createRuntimeConfigWriteApplication } from "../../config/runtime-write-application.js";
+import {
+  attachRuntimeConfigWriteApplication,
+  createRuntimeConfigWriteApplication,
+} from "../../config/runtime-write-application.js";
 import { captureGatewayRootWorkAdmissionContinuationScope } from "../../process/gateway-work-admission.js";
 import { normalizeAgentIdStrict } from "../../routing/session-key.js";
 import { readAgentDeletionJournalAsync } from "../../state/agent-deletion-journal.js";
@@ -341,6 +344,21 @@ export const agentsHandlers: GatewayRequestHandlers = {
       });
       // Reload may need the mutation/deletion leases; wait only after they settle.
       if (!(await application.confirm())) {
+        return;
+      }
+      if (result.purgeFailed || result.failed?.length) {
+        const failures = result.failed?.map(({ path, reason }) => `${path}: ${reason}`) ?? [];
+        if (result.purgeFailed) {
+          failures.unshift("session-store cleanup failed");
+        }
+        respond(
+          false,
+          result,
+          errorShape(
+            ErrorCodes.UNAVAILABLE,
+            `Agent "${agentId}" was removed from configuration, but deletion cleanup is still pending: ${failures.join("; ")}. Resolve the cleanup failure, then retry agents.delete.`,
+          ),
+        );
         return;
       }
       respond(true, result, undefined);
