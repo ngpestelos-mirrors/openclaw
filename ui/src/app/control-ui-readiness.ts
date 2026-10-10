@@ -1,6 +1,44 @@
-import type { RouteId } from "../app-routes.ts";
-import type { ApplicationRuntime } from "./bootstrap.ts";
-import type { ApplicationNavigationOptions } from "./context.ts";
+import type { RouteLocation, RouterState } from "@openclaw/uirouter";
+import type { AgentsListResult, SessionsListResult } from "../api/types.ts";
+import type { RouteId } from "../app-route-paths.ts";
+import type { AgentSelectionCapability } from "./agent-selection.ts";
+import type { ApplicationGateway } from "./gateway.ts";
+
+type ReadinessNavigationOptions = Partial<Pick<RouteLocation, "pathname" | "search" | "hash">>;
+
+// Keep automation's type graph independent of bootstrap and rendered route modules.
+type ReadinessRuntime = {
+  readonly context: {
+    readonly basePath: string;
+    readonly gateway: Pick<ApplicationGateway, "connectionRevision" | "snapshot" | "subscribe">;
+    readonly sessions: {
+      readonly canonicalListRevision: number;
+      readonly state: {
+        result: SessionsListResult | null;
+        loading: boolean;
+        resultCached?: boolean;
+      };
+      subscribe: (listener: () => void) => () => void;
+    };
+    readonly agents: {
+      readonly state: {
+        agentsError: string | null;
+        agentsList: AgentsListResult | null;
+        agentsLoading: boolean;
+        connected: boolean;
+      };
+    };
+    readonly agentSelection: Pick<AgentSelectionCapability, "state">;
+    readonly navigate: (routeId: RouteId, options?: ReadinessNavigationOptions) => void;
+  };
+  readonly router: {
+    getState: () => Pick<
+      RouterState<RouteId>,
+      "status" | "matches" | "pendingMatches" | "resolvedLocation"
+    >;
+    subscribe: (listener: () => void) => () => void;
+  };
+};
 
 export type ControlUiCommittedPresentation = {
   kind: "loading" | "login" | "standalone" | "shell";
@@ -26,7 +64,7 @@ export class ControlUiReadiness {
   private committedGeneration = -1;
   private rootCommitted = false;
   private presentation: ControlUiCommittedPresentation | null = null;
-  private runtime: ApplicationRuntime | undefined;
+  private runtime: ReadinessRuntime | undefined;
   private settlePresentation: (() => Promise<ControlUiCommittedPresentation>) | undefined;
   private cleanups: Array<() => void> = [];
   private settlement: object | undefined;
@@ -40,7 +78,7 @@ export class ControlUiReadiness {
   readonly hook = {
     snapshot: () => this.snapshot,
     diagnostics: () => this.diagnostics(),
-    navigate: (routeId: RouteId, options?: ApplicationNavigationOptions) => {
+    navigate: (routeId: RouteId, options?: ReadinessNavigationOptions) => {
       if (!this.runtime) {
         throw new Error("Control UI is disconnected");
       }
@@ -49,7 +87,7 @@ export class ControlUiReadiness {
   };
 
   connect(
-    runtime: ApplicationRuntime,
+    runtime: ReadinessRuntime,
     settlePresentation: () => Promise<ControlUiCommittedPresentation>,
   ): void {
     this.disconnect();
