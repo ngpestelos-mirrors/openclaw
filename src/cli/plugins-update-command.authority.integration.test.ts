@@ -44,11 +44,12 @@ function identity(target: string) {
 }
 
 describe("plugin update metadata refusal and retained package settlement", () => {
-  it.each(["success", "refusal", "interrupted"] as const)(
+  it.each(["success", "refusal", "interrupted", "interrupted-after-index"] as const)(
     "preserves package/index agreement after marker handling (%s)",
     async (mode) => {
       await withOpenClawTestState({ label: "plugin-update-metadata-refusal" }, async (state) => {
         const refuse = mode === "refusal";
+        const interrupted = mode.startsWith("interrupted");
         const interrupts: Array<() => void> = [];
         vi.spyOn(signalExit, "registerSignalExitGate").mockImplementation(
           (_finished, interrupt) => {
@@ -120,6 +121,11 @@ describe("plugin update metadata refusal and retained package settlement", () =>
           if (target === markerPath) {
             tentativeRow = readPersistedInstalledPluginIndexRowSync({ env: state.env });
             failNextRead = refuse;
+            if (mode === "interrupted-after-index") {
+              for (const interrupt of interrupts) {
+                interrupt();
+              }
+            }
           }
         });
         vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
@@ -182,7 +188,7 @@ describe("plugin update metadata refusal and retained package settlement", () =>
           ),
         );
         const command = runPluginUpdateCommand({ ids: [pluginId], opts: {} });
-        if (mode === "interrupted") {
+        if (interrupted) {
           await expect(command).rejects.toThrow();
           expect(interrupts.length).toBeGreaterThan(0);
           expect(readPersistedInstalledPluginIndexInstallRecords({ env: state.env })).toEqual(
@@ -202,7 +208,7 @@ describe("plugin update metadata refusal and retained package settlement", () =>
           await expect(command).resolves.toBeUndefined();
           expect(failedReads).toBe(0);
         }
-        if (mode !== "interrupted") {
+        if (!interrupted) {
           expect(readPersistedInstalledPluginIndexInstallRecords({ env: state.env })).toEqual(
             nextRecords,
           );
