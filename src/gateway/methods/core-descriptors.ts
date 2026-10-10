@@ -39,6 +39,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["tts.setProvider", "tts", "operator.write", "<=2026.7"],
   ["tts.setPersona", "tts", "operator.write", "<=2026.7"],
   ["config.get", "config", "operator.read", "<=2026.7"],
+  ["config.state.mutate", "config-state", "operator.admin", "2026.10"],
   ["config.set", "config", "operator.admin", "<=2026.7"],
   ["config.apply", "config", "operator.admin", "<=2026.7", CONTROL_PLANE_WRITE],
   ["config.patch", "config", "operator.admin", "<=2026.7", CONTROL_PLANE_WRITE],
