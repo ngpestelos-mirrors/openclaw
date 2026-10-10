@@ -58,9 +58,14 @@ export function updateChatReasoning(
     reconcilePersistedReasoning(host, host.chatMessages ?? []);
     return true;
   }
+  if (typeof payload.data.text !== "string") {
+    return false;
+  }
   const text = normalizeNullableString(payload.data.text);
   if (!text) {
-    return false;
+    // Workers can replace a streamed draft with an empty final snapshot.
+    host.chatReasoning = null;
+    return Boolean(current);
   }
   host.chatReasoning = sameItem
     ? { ...current, text }

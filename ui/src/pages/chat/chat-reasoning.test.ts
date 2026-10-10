@@ -385,6 +385,25 @@ it("does not attach known-committed pre-tool reasoning to a later final answer",
   expect(state.chatMessages.map(extractThinkingCached).filter(Boolean)).toEqual([]);
 });
 
+it("removes a worker's explicitly cleared reasoning before the final answer", () => {
+  const state = stateWithRun();
+  const container = document.createElement("div");
+  thinking(state, "A discarded draft.");
+  show(container, state);
+  expect(container.querySelector(".chat-thinking")).not.toBeNull();
+  thinking(state, "", 2);
+  show(container, state);
+  expect(container.querySelector(".chat-thinking")).toBeNull();
+  handleChatGatewayEvent(state, {
+    state: "final",
+    sessionKey: "main",
+    runId,
+    seq: 3,
+    message: { role: "assistant", content: [{ type: "text", text: "The final answer." }] },
+  });
+  expect(state.chatMessages.map(extractThinkingCached).filter(Boolean)).toEqual([]);
+});
+
 it("uses the producer run in the receipt when Gateway remaps the live client run", () => {
   const state = stateWithRun();
   thinking(state, "A remapped source occurrence.");
