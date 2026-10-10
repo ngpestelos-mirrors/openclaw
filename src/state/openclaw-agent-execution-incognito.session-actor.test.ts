@@ -260,9 +260,11 @@ it.each(["metadata", "event"] as const)(
         }
       }
       const ready = await actor.read(authority);
+      expect(ready.transcript.anchorsState).toBe("resident");
+      // Model-selection metadata changes the branch but contributes no model messages.
       expect(ready.transcript.modelContext).toEqual({
         kind: "resident",
-        entries: [{ rawSeq: ready.transcript.watermark.maxSeq, eventId: "replacement-model" }],
+        entries: [],
       });
     } finally {
       await actor.release();
