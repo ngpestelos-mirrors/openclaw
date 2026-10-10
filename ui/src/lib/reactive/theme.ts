@@ -16,11 +16,11 @@ export function projectTheme(theme: ApplicationTheme) {
   return {
     preferences,
     appliedPalette,
-    replaceSource(source: ApplicationTheme) {
+    replaceSource(this: void, source: ApplicationTheme) {
       preferences.replaceSource(source);
       appliedPalette.replaceSource(source);
     },
-    dispose() {
+    dispose(this: void) {
       preferences.dispose();
       appliedPalette.dispose();
     },

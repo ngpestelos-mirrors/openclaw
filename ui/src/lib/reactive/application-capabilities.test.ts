@@ -128,12 +128,12 @@ describe("application capability projections", () => {
         );
         return {
           source,
-          update: () => {
+          update: async () => {
             if (source.entries.length) {
               harness.update({ client: connected, phase: "connected" });
               return;
             }
-            return new Promise<void>((resolve) => {
+            await new Promise<void>((resolve) => {
               const stop = source.subscribe(() => {
                 if (source.entries.length) {
                   stop();
@@ -161,7 +161,7 @@ describe("application capability projections", () => {
       maxTouchPoints: 0,
       serviceWorker: { getRegistration: async () => undefined },
     });
-    vi.stubGlobal("PushManager", class {});
+    vi.stubGlobal("PushManager", vi.fn());
     vi.stubGlobal("Notification", { permission: "granted" });
     await verifyApplicationProjection({
       create: () => {

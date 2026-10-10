@@ -18,7 +18,9 @@ import {
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
-  for (const cleanup of cleanups.splice(0).toReversed()) cleanup();
+  for (const cleanup of cleanups.splice(0).toReversed()) {
+    cleanup();
+  }
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   localStorage.clear();

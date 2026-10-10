@@ -21,8 +21,10 @@ describe("board projections", () => {
       return { sessionKey, revision: ++revision, tabs: [], widgets: [] };
     });
     const stopTransport = vi.fn();
+    const requestClient = createTestGatewayClient(request);
     const client = {
-      request: createTestGatewayClient(request).request,
+      request: <T = unknown>(...args: Parameters<typeof requestClient.request>) =>
+        requestClient.request<T>(...args),
       addEventListener: vi.fn(() => stopTransport),
     };
     const lease = acquireBoardProviderForSession({ sessionKey }, client, false);

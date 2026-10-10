@@ -21,7 +21,9 @@ import {
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
-  for (const cleanup of cleanups.splice(0).toReversed()) cleanup();
+  for (const cleanup of cleanups.splice(0).toReversed()) {
+    cleanup();
+  }
   vi.restoreAllMocks();
 });
 
@@ -39,7 +41,9 @@ function observable() {
       };
     },
     publish() {
-      for (const listener of listeners) listener();
+      for (const listener of listeners) {
+        listener();
+      }
     },
     listeners,
   };
@@ -244,7 +248,9 @@ describe("registry projections", () => {
     let release: () => void = () => {};
     const loaded = new Promise<void>((resolve) => {
       release = projection.subscribe(() => {
-        if (projection.read().mode === "remote") resolve();
+        if (projection.read().mode === "remote") {
+          resolve();
+        }
       });
       cleanups.push(release);
     });
@@ -266,7 +272,9 @@ describe("registry projections", () => {
     const reloaded = new Promise<void>((resolve) => {
       cleanups.push(
         projection.subscribe(() => {
-          if (projection.read().mode === "remote") resolve();
+          if (projection.read().mode === "remote") {
+            resolve();
+          }
         }),
       );
     });
@@ -276,7 +284,9 @@ describe("registry projections", () => {
     const replaced = new Promise<void>((resolve) => {
       cleanups.push(
         projection.subscribe(() => {
-          if (projection.read().mode === "remote") resolve();
+          if (projection.read().mode === "remote") {
+            resolve();
+          }
         }),
       );
       projection.replaceSource({ owner: replacement, isCurrent: () => true });

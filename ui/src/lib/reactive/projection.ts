@@ -20,9 +20,9 @@ export type SourceProjection<S, T> = {
   readonly equality: SourceContract<S, T>["equality"];
   readonly read: () => T;
   readonly revision: () => number;
-  subscribe(listener: () => void): Dispose;
-  replaceSource(source: S): void;
-  dispose(): void;
+  subscribe(this: void, listener: () => void): Dispose;
+  replaceSource(this: void, source: S): void;
+  dispose(this: void): void;
 };
 
 /** A read-through view of an owner. This never becomes an authoritative store. */
@@ -52,7 +52,8 @@ export function projectSource<S, T>(
   const publish = () => {
     setRevision((previous) => previous + 1);
     const current = generation;
-    for (const listener of [...listeners]) {
+    const snapshot = Array.from(listeners);
+    for (const listener of snapshot) {
       if (disposed || generation !== current) {
         break;
       }
@@ -177,23 +178,26 @@ export function projectSource<S, T>(
 
 type EventListener<E> = ((event: E) => void) | ((event: E) => Promise<void>);
 
-export type EventProjection<S, E> = {
-  subscribe(listener: EventListener<E>): Dispose;
-  replaceSource(source: S): void;
-  dispose(): void;
+type ProjectionEvents<S, Listener> = {
+  subscribe(this: void, listener: Listener): Dispose;
+  replaceSource(this: void, source: S): void;
+  dispose(this: void): void;
 };
 
-/** Events are synchronous, ordered, and never coalesced or replayed as state. */
-export function projectEvents<S, E>(
+export type EventProjection<S, E> = ProjectionEvents<S, (event: E) => void>;
+export type AsyncEventProjection<S, E> = ProjectionEvents<S, EventListener<E>>;
+
+function createEventProjection<S, E, Listener extends (event: E) => unknown, Result>(
   initialSource: S,
-  contract: { subscribe(source: S, listener: (event: E) => void | Promise<void>): Dispose },
-): EventProjection<S, E> {
+  contract: { subscribe(source: S, listener: (event: E) => Result): Dispose },
+  dispatch: (listeners: Iterable<Listener>, event: E) => Result,
+): ProjectionEvents<S, Listener> {
   let source = initialSource;
   let disposed = false;
   let generation = 0;
   let connected = false;
   let disconnect: Dispose | undefined;
-  const listeners = new Set<EventListener<E>>();
+  const listeners = new Set<{ listener: Listener }>();
   const release = () => {
     generation += 1;
     connected = false;
@@ -208,39 +212,19 @@ export function projectEvents<S, E>(
     connected = true;
     const current = ++generation;
     try {
-      const cleanup = contract.subscribe(source, (event): void | Promise<void> => {
-        const pending: Promise<void>[] = [];
-        const failures: unknown[] = [];
-        for (const listener of [...listeners]) {
-          if (disposed || generation !== current) {
-            break;
-          }
-          if (listeners.has(listener)) {
-            try {
-              const result = listener(event);
-              if (result && typeof result.then === "function") {
-                pending.push(result);
-              }
-            } catch (error) {
-              failures.push(error);
+      const cleanup = contract.subscribe(source, (event) => {
+        const snapshot = Array.from(listeners);
+        function* activeListeners() {
+          for (const entry of snapshot) {
+            if (disposed || generation !== current) {
+              break;
+            }
+            if (listeners.has(entry)) {
+              yield entry.listener;
             }
           }
         }
-        if (pending.length > 0) {
-          return Promise.allSettled([
-            ...pending,
-            ...failures.map((error) => Promise.reject(error)),
-          ]).then((results) => {
-            const failed = results.find((result) => result.status === "rejected");
-            if (failed) {
-              throw failed.reason;
-            }
-          });
-        }
-        if (failures.length > 0) {
-          throw failures[0];
-        }
-        return undefined;
+        return dispatch(activeListeners(), event);
       });
       if (disposed || generation !== current) {
         cleanup();
@@ -268,7 +252,8 @@ export function projectEvents<S, E>(
       if (disposed) {
         return () => {};
       }
-      const entry = (event: E) => listener(event);
+      // Keep duplicate callback subscriptions independent.
+      const entry = { listener };
       listeners.add(entry);
       try {
         connect();
@@ -293,4 +278,68 @@ export function projectEvents<S, E>(
     },
     dispose,
   };
+}
+
+/** Synchronous channels never turn delivery failures into unobserved promises. */
+export function projectEvents<S, E>(
+  source: S,
+  contract: { subscribe(source: S, listener: (event: E) => void): Dispose },
+): EventProjection<S, E> {
+  return createEventProjection<S, E, (event: E) => void, void>(
+    source,
+    contract,
+    (listeners, event) => {
+      const failures: unknown[] = [];
+      for (const listener of listeners) {
+        try {
+          listener(event);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length > 0) {
+        throw failures[0];
+      }
+    },
+  );
+}
+
+/** Awaiting channels include every consumer in publication completion. */
+export function projectAsyncEvents<S, E>(
+  source: S,
+  contract: { subscribe(source: S, listener: (event: E) => void | Promise<void>): Dispose },
+): AsyncEventProjection<S, E> {
+  return createEventProjection<S, E, EventListener<E>, void | Promise<void>>(
+    source,
+    contract,
+    (listeners, event): void | Promise<void> => {
+      const pending: Promise<void>[] = [];
+      const failures: unknown[] = [];
+      for (const listener of listeners) {
+        try {
+          const result = listener(event);
+          if (result && typeof result.then === "function") {
+            pending.push(result);
+          }
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (pending.length > 0) {
+        return Promise.allSettled(pending).then((results) => {
+          const failed = results.find((result) => result.status === "rejected");
+          if (failed) {
+            throw failed.reason;
+          }
+          if (failures.length > 0) {
+            throw failures[0];
+          }
+        });
+      }
+      if (failures.length > 0) {
+        throw failures[0];
+      }
+      return undefined;
+    },
+  );
 }

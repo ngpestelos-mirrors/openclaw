@@ -19,7 +19,7 @@ const cleanups: Array<() => void> = [];
 afterEach(() => {
   cleanups
     .splice(0)
-    .reverse()
+    .toReversed()
     .forEach((cleanup) => cleanup());
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -91,9 +91,9 @@ describe("native application projections", () => {
         return {
           source,
           update: () =>
-            new Promise<void>((resolve, reject) =>
-              source.set("app.showDockIcon", false, (error) => (error ? reject(error) : resolve())),
-            ),
+            new Promise<void>((resolve, reject) => {
+              source.set("app.showDockIcon", false, (error) => (error ? reject(error) : resolve()));
+            }),
           dispose: () => source.dispose(),
         };
       },

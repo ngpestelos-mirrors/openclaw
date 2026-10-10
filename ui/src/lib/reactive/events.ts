@@ -10,7 +10,7 @@ import { subscribeDurableComposerDraftChanges } from "../chat/composer-draft-cha
 import { subscribeChatOutboxAttentionChanges } from "../chat/outbox-owner-registry.ts";
 import { subscribeStoredChatOutboxChanges } from "../chat/outbox-store.ts";
 import type { SessionPatchOptions, SessionPatchResult } from "../sessions/patch.ts";
-import { projectEvents } from "./projection.ts";
+import { projectAsyncEvents, projectEvents } from "./projection.ts";
 
 type ListenerEvent<Subscribe> = Subscribe extends (listener: infer Listener) => unknown
   ? Listener extends (event: infer Event) => unknown
@@ -61,7 +61,7 @@ export function projectChatOutboxAttentionChanges() {
 }
 
 export function projectSnapshotInvalidation() {
-  return projectEvents<
+  return projectAsyncEvents<
     typeof subscribeSnapshotInvalidation,
     ListenerEvent<typeof subscribeSnapshotInvalidation>
   >(subscribeSnapshotInvalidation, { subscribe: (subscribe, listener) => subscribe(listener) });

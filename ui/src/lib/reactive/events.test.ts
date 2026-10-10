@@ -25,7 +25,9 @@ import {
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
-  for (const cleanup of cleanups.splice(0).toReversed()) cleanup();
+  for (const cleanup of cleanups.splice(0).toReversed()) {
+    cleanup();
+  }
   localStorage.clear();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -127,7 +129,7 @@ describe("event projections", () => {
   it("keeps snapshot invalidation publication pending until its consumers settle", async () => {
     const projection = projectSnapshotInvalidation();
     cleanups.push(projection.dispose);
-    const completion = createDeferred<void>();
+    const completion = createDeferred();
     const receive = vi.fn(() => completion.promise);
     const release = projection.subscribe(receive);
     const settled = vi.fn();
@@ -205,7 +207,9 @@ describe("event projections", () => {
     });
     const receipt = options[1]?.predecessorReceipt;
     expect(receipt).toBeDefined();
-    if (!receipt) throw new Error("Expected pending-tail receipt");
+    if (!receipt) {
+      throw new Error("Expected pending-tail receipt");
+    }
     const projection = projectChatPickerPatchConfirmations(receipt);
     cleanups.push(projection.dispose);
     const receive = vi.fn();

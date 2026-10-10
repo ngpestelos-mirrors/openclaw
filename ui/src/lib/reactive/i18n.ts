@@ -19,7 +19,8 @@ export function registerEnglishCatalog<T>(register: () => T): T {
   const result = register();
   if (!registeredEnglish.has(register)) {
     registeredEnglish.add(register);
-    for (const notify of [...englishListeners]) {
+    const snapshot = Array.from(englishListeners);
+    for (const notify of snapshot) {
       notify();
     }
   }
@@ -34,7 +35,8 @@ export function registerLocaleCatalog(
 ): void {
   source.registerTranslation(locale, map);
   if (locale === source.getLocale() || locale === DEFAULT_LOCALE) {
-    for (const notify of [...(catalogListeners.get(source) ?? [])]) {
+    const snapshot = Array.from(catalogListeners.get(source) ?? []);
+    for (const notify of snapshot) {
       notify();
     }
   }

@@ -2,11 +2,11 @@
 import { createEffect, createRoot, flush, isPending, latest, untrack } from "@solidjs/signals";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventStream, ValueSignal } from "../board/provider-signals.ts";
-import { projectEvents, projectSource } from "./projection.ts";
+import { projectAsyncEvents, projectEvents, projectSource } from "./projection.ts";
 
 const disposals: Array<() => void> = [];
 afterEach(() => {
-  for (const dispose of disposals.splice(0).reverse()) {
+  for (const dispose of disposals.splice(0).toReversed()) {
     dispose();
   }
   flush();
@@ -233,7 +233,7 @@ describe("event projections", () => {
     "preserves awaited event completion after a %s rejection",
     async (kind) => {
       let deliver: ((event: string) => void | Promise<void>) | undefined;
-      const projection = projectEvents(
+      const projection = projectAsyncEvents(
         {},
         {
           subscribe: (_source, listener: (event: string) => void | Promise<void>) => {

@@ -30,8 +30,8 @@ or dispose the authoritative owner.
 
 `projectEvents()` preserves synchronous event delivery, duplicates, order, and
 the upstream subscription lifetime. It has no latest-value signal or replay.
-When the upstream channel awaits its observers, returned promises are aggregated
-so publisher completion still includes the consumers' work. Channels whose own
+`projectAsyncEvents()` aggregates returned promises for channels that await
+observers, so publisher completion still includes the consumers' work. Channels whose own
 contract replays an admitted value, such as native drafts, retain that behavior.
 
 ## Adapter families
