@@ -128,6 +128,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/auto-reply/reply/directive-handling.model.test.ts",
   "src/auto-reply/reply/get-reply-native-slash-fast-path.test.ts",
   "src/auto-reply/reply/agent-runner-result-accounting.persistence.test.ts",
+  "src/auto-reply/reply/session-usage.test.ts",
   "src/auto-reply/reply/agent-runner.media-ownership.test.ts",
   "src/auto-reply/reply/agent-runner-result-accounting.fallback.test.ts",
   "src/auto-reply/reply/dispatch-from-config.pending-final.test.ts",
