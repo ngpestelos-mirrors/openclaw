@@ -73,4 +73,21 @@ describe("skill review notice", () => {
     expect(element.textContent).toContain("deploy-staging");
     expect(undoButton(element)).toBeUndefined();
   });
+
+  it("opens a skill under the notice's agent, not the agent selected elsewhere", async () => {
+    // The fixture's sidebar selection is "research"; the notice belongs to "main".
+    const context = createContext(vi.fn(), { methods: ["skills.workshop.undo"] });
+    const element = await mount(context);
+
+    element.querySelector<HTMLButtonElement>("button[aria-label*='deploy-staging']")?.click();
+
+    const select = vi.mocked(context.agentSelection.set);
+    const navigate = vi.mocked(context.navigate);
+    expect(select).toHaveBeenCalledWith("main");
+    expect(navigate).toHaveBeenCalledWith("skill-workshop", { search: "?skill=deploy-staging" });
+    // Selecting first means the Workshop resolves the notice's agent when it loads.
+    expect(select.mock.invocationCallOrder[0] ?? Infinity).toBeLessThan(
+      navigate.mock.invocationCallOrder[0] ?? -Infinity,
+    );
+  });
 });

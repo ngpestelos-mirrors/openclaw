@@ -59,7 +59,7 @@ export function createContext(
       subscribe,
     },
     agents: { state: { agentsList: null }, subscribe },
-    agentSelection: { state: { selectedId: "research" }, subscribe },
+    agentSelection: { state: { selectedId: "research" }, set: vi.fn(), subscribe },
     agentIdentity: {
       get: () => ({ agentId: "research", name: "Research" }),
       subscribe,

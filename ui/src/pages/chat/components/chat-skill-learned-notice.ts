@@ -9,6 +9,7 @@ import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import { formatUiError } from "../../../lib/format-error.ts";
 import { canCallGatewayMethod } from "../../../lib/gateway-methods.ts";
+import { normalizeAgentId } from "../../../lib/sessions/session-key.ts";
 import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
 import "../../../styles/chat/skill-learned-notice.css";
 
@@ -46,7 +47,9 @@ class ChatSkillLearnedNotice extends OpenClawLightDomElement {
     this.requestUpdate();
   };
 
-  private openSkill(name: string) {
+  // The Workshop shows the selected agent's skills; the notice names whose skills changed.
+  private openSkill(agentId: string, name: string) {
+    this.context?.agentSelection.set(normalizeAgentId(agentId));
     this.context?.navigate("skill-workshop", { search: `?skill=${encodeURIComponent(name)}` });
   }
 
@@ -105,7 +108,7 @@ class ChatSkillLearnedNotice extends OpenClawLightDomElement {
                 class="chat-skill-notice__name"
                 title=${skill.summary ? `${skill.summary}\n${open}` : open}
                 aria-label=${`${verb} ${skill.name}${skill.summary ? `: ${skill.summary}` : ""}. ${open}`}
-                @click=${() => this.openSkill(skill.name)}
+                @click=${() => this.openSkill(notice.agentId, skill.name)}
               >
                 ${skill.name}
               </button>
