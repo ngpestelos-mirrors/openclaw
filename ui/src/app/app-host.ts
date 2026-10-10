@@ -54,7 +54,11 @@ import { renderApplicationShell, type ShellViewHost } from "./app-shell-view.ts"
 import type { ApplicationRuntime } from "./bootstrap.ts";
 import type { ApplicationContext } from "./context.ts";
 import { syncControlUiSystemChrome } from "./control-ui-presentation.ts";
-import type { ControlUiReadiness, ControlUiCommittedPresentation } from "./control-ui-readiness.ts";
+import type {
+  ControlUiReadiness,
+  ControlUiCommittedPresentation,
+  ControlUiReadinessOutlet,
+} from "./control-ui-readiness.ts";
 import { createGatewayControlUiReloadOptions } from "./gateway-control-ui-reload.ts";
 import {
   APP_SIDEBAR_ELEMENT,
@@ -622,8 +626,10 @@ class OpenClawShell
       }
       await sidebar.updateComplete;
     }
-    const outlet = this.querySelector<LitElement>("openclaw-router-outlet");
-    await outlet?.updateComplete;
+    const outlet = this.querySelector<ControlUiReadinessOutlet>("openclaw-router-outlet");
+    if (!outlet || !(await outlet.settlePresentation())) {
+      return { kind: "loading", navigationVisible };
+    }
     await this.querySelector<LitElement>("openclaw-route-presentation")?.updateComplete;
     await this.querySelector<LitElement>("openclaw-chat-page")?.updateComplete;
     return { kind: "shell", navigationVisible, sessionKey: this.activeSessionKey };

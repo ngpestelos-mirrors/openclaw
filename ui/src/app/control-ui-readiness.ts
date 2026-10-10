@@ -52,6 +52,12 @@ export interface ControlUiReadinessShell extends HTMLElement {
   settleReadiness(): Promise<ControlUiCommittedPresentation>;
 }
 
+/** The outlet owns retirement and whether its current destination has committed. */
+export interface ControlUiReadinessOutlet extends HTMLElement {
+  readonly presentationSettled: boolean;
+  settlePresentation(): Promise<boolean>;
+}
+
 /**
  * The browser automation contract is window.openclawControlUi. snapshot contains
  * admitted application facts; diagnostics returns data, never runtime handles.

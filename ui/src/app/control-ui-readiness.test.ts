@@ -1,7 +1,16 @@
+import { createRouter, definePage } from "@openclaw/uirouter";
+import { html, nothing, type LitElement } from "lit";
+import { ref } from "lit/directives/ref.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../../src/shared/deferred.ts";
+import { settleLitElement } from "../test-helpers/lit-settle.ts";
 import type { ApplicationRuntime } from "./bootstrap.ts";
-import { ControlUiReadiness, type ControlUiCommittedPresentation } from "./control-ui-readiness.ts";
+import {
+  ControlUiReadiness,
+  type ControlUiCommittedPresentation,
+  type ControlUiReadinessOutlet,
+} from "./control-ui-readiness.ts";
+import "./router-outlet.ts";
 
 const owners: ControlUiReadiness[] = [];
 afterEach(() => {
@@ -38,6 +47,83 @@ function fixture() {
   } as unknown as ApplicationRuntime;
   return { owner, root, runtime };
 }
+
+it("publishes the new generation only after the retiring MCP route releases its replacement", async () => {
+  const { owner, runtime, root } = fixture();
+  const teardown = createDeferredCore();
+  const router = createRouter<"about" | "debug">({
+    routes: [
+      definePage({
+        id: "about",
+        path: "/about",
+        component: () => ({
+          render: (data: { ready: boolean } | undefined) =>
+            data
+              ? html`<mcp-app-view
+                  ${ref((element) => {
+                    if (element) {
+                      Object.assign(element, {
+                        teardown: () => teardown.promise,
+                        restartAfterTeardown: () => {},
+                      });
+                    }
+                  })}
+                ></mcp-app-view>`
+              : nothing,
+        }),
+        loader: () => ({ ready: true }),
+      }),
+      definePage({
+        id: "debug",
+        path: "/debug",
+        component: () => ({ render: () => html`<div data-destination>Debug</div>` }),
+        loader: () => ({ ready: true }),
+      }),
+    ],
+  });
+  const outlet = document.createElement("openclaw-router-outlet") as LitElement &
+    ControlUiReadinessOutlet & { router: typeof router };
+  outlet.router = router;
+  document.body.append(outlet);
+  let observer: MutationObserver | undefined;
+  try {
+    await router.navigate("about", {});
+    await outlet.settlePresentation();
+    owner.connect({ ...runtime, router }, async () => ({
+      kind: (await outlet.settlePresentation()) ? "shell" : "loading",
+      navigationVisible: false,
+    }));
+    owner.commitRoot();
+    await router.navigate("debug", {});
+    await settleLitElement(outlet);
+    expect(outlet.querySelector("mcp-app-view")).not.toBeNull();
+    expect(outlet.querySelector("[data-destination]")).toBeNull();
+    expect(outlet.presentationSettled).toBe(false);
+    expect(owner.hook.snapshot().routeReady).toBe(false);
+    expect(root.hasAttribute("data-openclaw-ready")).toBe(false);
+    const published = new Promise<string>((resolve) => {
+      observer = new MutationObserver(() => {
+        const generation = root.getAttribute("data-openclaw-ready");
+        if (generation !== null) {
+          observer?.disconnect();
+          resolve(generation);
+        }
+      });
+      observer.observe(root, { attributes: true, attributeFilter: ["data-openclaw-ready"] });
+    });
+    teardown.resolve();
+    expect(await published).toBe(String(owner.hook.snapshot().generation));
+    expect(outlet.querySelector("mcp-app-view")).toBeNull();
+    expect(outlet.querySelector("[data-destination]")?.textContent).toBe("Debug");
+    expect(outlet.presentationSettled).toBe(true);
+    expect(owner.hook.snapshot().routeReady).toBe(true);
+  } finally {
+    observer?.disconnect();
+    teardown.resolve();
+    outlet.remove();
+    router.stop();
+  }
+});
 
 it("does not publish a route commit while its adapter still shows loading", async () => {
   const { owner, runtime, root } = fixture();
