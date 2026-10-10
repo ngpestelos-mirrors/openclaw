@@ -174,7 +174,9 @@ async function fixture(
     // returns its stream first, as the native ChatGPT route does in production.
     const registry = createApiRegistry();
     ensureCustomApiRegistered(registry, model.api, async (activeModel, context, options) => {
-      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
       return providerStream(activeModel, context, options);
     });
     const registered = registry.getApiProvider(model.api);
