@@ -68,6 +68,7 @@ function invalidateSchemaFacts(
   database: DatabaseSync,
   publish: boolean,
   change: "main" | "temp" | "local" | "rollback" = "main",
+  notify = change !== "temp",
 ): void {
   const owner = owners.get(database);
   if (owner) {
@@ -83,7 +84,7 @@ function invalidateSchemaFacts(
     if (changesMain && database.isTransaction && !owner.transactionalSchema) {
       owner.transactionBaseFacts = owner.facts;
     }
-    if (change !== "temp") {
+    if (notify) {
       for (const listener of owner.mutationListeners ?? []) {
         listener(undefined);
       }
@@ -194,7 +195,7 @@ function trackSchemaChanges(
     }
     const { control, dataChange } = mutation;
     // The parser proves these batches contain only outer rollback plus ordinary reads.
-    const schemaChange = mutation.schemaChange && control?.outerRollback !== true;
+    const schemaChange = control?.outerRollback === true ? false : mutation.schemaChange;
     const mainSchemaChange = mutation.mainSchemaChange && control?.outerRollback !== true;
     observeTransactionState(database, owner);
     const snapshot = phase === "bind" ? undefined : getSqlitePinnedReadSnapshot(database);
@@ -249,6 +250,10 @@ function trackSchemaChanges(
       Boolean(control) && !canPreserveTransactionSnapshot(control, wasTransaction);
     const rollback = control?.kind === "ROLLBACK";
     const rollsBackSchema = rollback && owner.transactionalSchema && !control.outerRollback;
+    // Row-only rollback expires reads without revoking schema-based authority.
+    const notifySchema =
+      (schemaChange && !mutation.temporaryTableSchemaChange) ||
+      (rollback && owner.transactionalSchema);
     const schemaInvalidation =
       mainSchemaChange || rollsBackSchema
         ? "main"
@@ -263,7 +268,7 @@ function trackSchemaChanges(
       discardSqliteDatabaseTransactionAdmissions(database);
     }
     if (schemaChange || rollback) {
-      invalidateSchemaFacts(database, false, schemaInvalidation);
+      invalidateSchemaFacts(database, false, schemaInvalidation, notifySchema);
     }
     if (dataChange || mutation.temporaryTableSchemaChange || control?.kind === "ROLLBACK") {
       owner.mutationRevision += 1;
@@ -351,7 +356,7 @@ function trackSchemaChanges(
           if (rollback) {
             discardSqliteDatabaseTransactionAdmissions(database);
           }
-          invalidateSchemaFacts(database, false, schemaInvalidation);
+          invalidateSchemaFacts(database, false, schemaInvalidation, notifySchema);
         }
         const rolledBack =
           succeeded &&
