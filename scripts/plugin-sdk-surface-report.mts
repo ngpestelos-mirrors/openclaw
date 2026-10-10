@@ -213,7 +213,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: approved async upstream-link writes with released sync compatibility.
       // -8: retired Skill Workshop proposal hook types.
       // +3: approved async session entry reads and typed incognito refusal on the existing subpath.
-      3644,
+      // +7: approved GitHub publication V2 types and host preparers with released writer compatibility.
+      3651,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -227,7 +228,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: resolve the controller from the current invocation registry.
       // +2: approved async upstream-link writes with released sync compatibility.
       // +3: approved async session entry reads and typed incognito refusal on the existing subpath.
-      2114,
+      // +2: approved GitHub publication requester and personal-action host preparers.
+      2116,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

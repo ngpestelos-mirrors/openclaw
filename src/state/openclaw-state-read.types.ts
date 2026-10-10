@@ -494,7 +494,7 @@ export type OpenClawStateReadResult =
     }
   | {
       type: "userGitHubConnections.read";
-      connection: import("./user-github-connections.kernel.js").UserGitHubConnection | undefined;
+      connection: import("./user-github-connections.types.js").UserGitHubConnection | undefined;
     }
   | {
       type: "userGitHubConnections.list";
