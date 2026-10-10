@@ -9,11 +9,6 @@ import { extractSqliteTableSchema } from "./sqlite-schema-sql.js";
 import { createUpdateErrorFact } from "./update-failure-facts.js";
 import { completeUpdateFailureSummary } from "./update-failure-result.js";
 import { encodeRun, isRetainedStep, type UpdateRunLedgerOptions } from "./update-run-codec.js";
-import {
-  isRequiredUpdateRunStep,
-  recordUpdateRunBookkeeping,
-  retryUpdateRunWrite,
-} from "./update-run-contention.js";
 import type { UpdateRunPhasePatch } from "./update-run-mutation.types.js";
 import { decodeRun, readUpdateRunRecord } from "./update-run-read.kernel.js";
 import {
@@ -153,38 +148,35 @@ export function mutateRun(
   update: (record: UpdateRunRecord) => void,
   options: UpdateRunLedgerOptions,
   captureBefore?: Parameters<typeof mutateRunInTransaction>[4],
-  bookkeeping = false,
 ): UpdateRunRecord {
   // An existing run can belong to a restored older runtime. History updates
   // must never reopen through bootstrap/migration merely to report its outcome.
-  return retryUpdateRunWrite(
-    (busyTimeoutMs) => {
-      const writeOptions = { ...options, busyTimeoutMs };
-      return runExistingOpenClawStateWriteTransaction(
-        ({ db }) => mutateRunInTransaction(db, runId, update, options, captureBefore),
-        writeOptions,
-        {
-          schemaSql: updateRunLedgerSchema,
-          operationLabel: "update.run",
-          busyTimeoutMs,
-          beginLockFailureReporting: "suppress",
-        },
-      );
-    },
+  return runExistingOpenClawStateWriteTransaction(
+    ({ db }) => mutateRunInTransaction(db, runId, update, options, captureBefore),
     options,
-    bookkeeping,
+    {
+      schemaSql: updateRunLedgerSchema,
+      operationLabel: "update.run",
+      busyTimeoutMs: options.busyTimeoutMs,
+    },
   );
 }
 
-export function recordUpdateRunStep(
-  runId: string,
-  step: UpdateRunStep & { reason?: string },
-  options: UpdateRunLedgerOptions = {},
-): UpdateRunRecord | undefined {
-  const bookkeeping = !isRequiredUpdateRunStep(step);
-  const write = () =>
-    mutateRun(runId, (record) => applyUpdateRunStep(record, step), options, undefined, bookkeeping);
-  return bookkeeping ? recordUpdateRunBookkeeping(write) : write();
+export const UPDATE_RUN_BOOKKEEPING_TIMEOUT_MS = 1_000;
+
+/** Recovery reads these receipts as well as phases and terminal outcomes. */
+export function isRequiredUpdateRunStep(step: UpdateRunStep & { reason?: string }): boolean {
+  const key = updateRunStepKey(step.step);
+  return (
+    isRetainedStep({ ...step, step: key }) ||
+    step.status === "failed" ||
+    step.reason !== undefined ||
+    key === "openclaw doctor" ||
+    key === "package rollback" ||
+    key === "config rollback" ||
+    key.startsWith("git-rollback-") ||
+    key === "git-runtime-rollback"
+  );
 }
 
 type RecoveryDiagnostics = Pick<UpdateRunRecord["verification"], "recovery" | "rollbackOutcome">;
@@ -269,13 +261,7 @@ export function recordUpdateRunDiagnostics(
     ) {
       return undefined;
     }
-    return mutateRun(
-      runId,
-      (record) => applyUpdateRunDiagnostics(record, diagnostics),
-      options,
-      undefined,
-      true,
-    );
+    return mutateRun(runId, (record) => applyUpdateRunDiagnostics(record, diagnostics), options);
   } catch (error) {
     if (hasCommandProcessCleanupError(error)) {
       throw error;

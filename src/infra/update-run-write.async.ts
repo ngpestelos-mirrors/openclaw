@@ -87,8 +87,7 @@ async function recordUpdateRunMutationAsync(
   }
   if (reply.kind === "bookkeeping-skipped") {
     console.warn(
-      "[update] Update history database is locked by another writer; " +
-        "a bookkeeping receipt could not be recorded. The update will continue.",
+      "[update] History database is locked; bookkeeping was not recorded. The update will continue.",
     );
     return undefined;
   }

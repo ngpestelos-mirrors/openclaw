@@ -10,6 +10,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
+import { isSqliteLockError } from "./sqlite-error-diagnostics.js";
 import { assertSqliteSchemaContains } from "./sqlite-schema-contract.js";
 import { extractSqliteTableSchema } from "./sqlite-schema-sql.js";
 import {
@@ -19,7 +20,6 @@ import {
 } from "./update-run-activity.js";
 import { runUpdateRunAdmission } from "./update-run-admission.js";
 import { encodeRun, type UpdateRunLedgerOptions as LedgerOptions } from "./update-run-codec.js";
-import { recordUpdateRunBookkeeping } from "./update-run-contention.js";
 import {
   inspectUpdateRunDriver,
   readUpdateRunDriver,
@@ -45,9 +45,12 @@ import { inspectRecoveryRows } from "./update-run-recovery-store.js";
 import { recordUpdateRunVerificationRecord } from "./update-run-verification.js";
 import {
   applyUpdateRunPhase,
+  applyUpdateRunStep,
+  isRequiredUpdateRunStep,
   mutateRun,
   mutateRunInTransaction,
   persistRun,
+  UPDATE_RUN_BOOKKEEPING_TIMEOUT_MS,
   updateRunLedgerSchema as schema,
   upsertStep,
 } from "./update-run-write.js";
@@ -67,11 +70,7 @@ export {
   reconcileAbandonedUpdateRunsAsync,
 } from "./update-run-reconciliation.js";
 
-export {
-  finishUpdateRun,
-  recordUpdateRunDiagnostics,
-  recordUpdateRunStep,
-} from "./update-run-write.js";
+export { finishUpdateRun, recordUpdateRunDiagnostics } from "./update-run-write.js";
 
 type LedgerDatabase = Pick<DB, "update_runs">;
 export function createUpdateRun(
@@ -252,21 +251,17 @@ export function heartbeatUpdateRun(
   if (!driver) {
     return;
   }
-  recordUpdateRunBookkeeping(() =>
-    mutateRun(
-      runId,
-      (record) => {
-        if (
-          record.status === "running" &&
-          recordedUpdateRunDrivers(record).some((current) => sameUpdateRunDriver(current, driver))
-        ) {
-          record.updatedAtMs = Math.max(Date.now(), record.updatedAtMs + 1);
-        }
-      },
-      options,
-      undefined,
-      true,
-    ),
+  mutateRun(
+    runId,
+    (record) => {
+      if (
+        record.status === "running" &&
+        recordedUpdateRunDrivers(record).some((current) => sameUpdateRunDriver(current, driver))
+      ) {
+        record.updatedAtMs = Math.max(Date.now(), record.updatedAtMs + 1);
+      }
+    },
+    options,
   );
 }
 
@@ -308,6 +303,34 @@ export function recordUpdateRunPhase(
   );
 }
 
+export function recordUpdateRunStep(
+  runId: string,
+  step: UpdateRunStep & { reason?: string },
+  options: LedgerOptions = {},
+): UpdateRunRecord | undefined {
+  const required = isRequiredUpdateRunStep(step);
+  const current = required
+    ? options
+    : {
+        ...options,
+        busyTimeoutMs: Math.min(
+          options.busyTimeoutMs ?? UPDATE_RUN_BOOKKEEPING_TIMEOUT_MS,
+          UPDATE_RUN_BOOKKEEPING_TIMEOUT_MS,
+        ),
+      };
+  try {
+    return mutateRun(runId, (record) => applyUpdateRunStep(record, step), current);
+  } catch (error) {
+    if (required || !isSqliteLockError(error)) {
+      throw error;
+    }
+    console.warn(
+      "[update] History database is locked; bookkeeping was not recorded. The update will continue.",
+    );
+    return undefined;
+  }
+}
+
 export function recordUpdateRunRepairContinuation(
   runId: string,
   inheritedRunId: string | undefined,
@@ -347,17 +370,13 @@ export function recordUpdateRunDiagnostic(
   detail: string,
   options: LedgerOptions = {},
   step = "finalize:exit",
-): UpdateRunRecord | undefined {
-  return recordUpdateRunBookkeeping(() =>
-    mutateRun(
-      runId,
-      (record) => {
-        upsertStep(record, { step, status: "completed", endedAtMs: Date.now(), detail });
-      },
-      options,
-      undefined,
-      true,
-    ),
+): UpdateRunRecord {
+  return mutateRun(
+    runId,
+    (record) => {
+      upsertStep(record, { step, status: "completed", endedAtMs: Date.now(), detail });
+    },
+    options,
   );
 }
 
