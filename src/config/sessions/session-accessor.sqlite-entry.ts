@@ -62,7 +62,7 @@ import {
 import { readSessionEntryPatchPredicate } from "./session-entry-patch-guard.js";
 import {
   mergeSessionEntryPatch,
-  reduceSessionEntryPatch,
+  projectSessionEntryPatch,
   type SessionEntryPatchOperation,
 } from "./session-entry-patch-operation.js";
 import { captureSessionEntryPatchSource } from "./session-entry-patch-source.js";
@@ -402,23 +402,34 @@ async function patchSqliteSessionEntrySnapshot(
     }
     let contextEntry = existing;
     let contextEntryBorrowed = true;
-    const patch =
+    const next =
       typeof params.update !== "function"
-        ? reduceSessionEntryPatch(params.update, writeBase, existing)
-        : await params.update(structuredClone(writeBase), {
-            get existingEntry() {
-              if (contextEntryBorrowed) {
-                contextEntry = contextEntry ? structuredClone(contextEntry) : undefined;
+        ? projectSessionEntryPatch({
+            ...options,
+            existing,
+            writeBase,
+            sessionKey,
+            operation: params.update,
+          })
+        : mergeSessionEntryPatch({
+            ...options,
+            existing,
+            writeBase,
+            sessionKey,
+            patch: await params.update(structuredClone(writeBase), {
+              get existingEntry() {
+                if (contextEntryBorrowed) {
+                  contextEntry = contextEntry ? structuredClone(contextEntry) : undefined;
+                  contextEntryBorrowed = false;
+                }
+                return contextEntry;
+              },
+              set existingEntry(entry) {
+                contextEntry = entry;
                 contextEntryBorrowed = false;
-              }
-              return contextEntry;
-            },
-            set existingEntry(entry) {
-              contextEntry = entry;
-              contextEntryBorrowed = false;
-            },
+              },
+            }),
           });
-    const next = mergeSessionEntryPatch({ ...options, existing, writeBase, patch, sessionKey });
     return {
       selection: params.selection,
       prepared,

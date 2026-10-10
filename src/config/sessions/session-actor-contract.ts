@@ -2,13 +2,14 @@ import type {
   AgentDatabaseExecutionFileIdentity,
   AgentDatabaseIncognitoIdentity,
 } from "../../state/openclaw-agent-execution-contract.js";
+import type { RestartRecoveryTerminalDeliveryClaim } from "./restart-recovery-receipt-state.js";
 import type { HarnessCompletionRecovery } from "./restart-recovery-types.js";
 import type { SessionParticipantRecord } from "./session-accessor.sqlite-participant-projection.js";
 import type {
   SessionPendingInputRow,
   SessionPendingInputWorkerReceipt,
 } from "./session-accessor.sqlite-pending-inputs.js";
-import type { SessionEntryUsageUpdate } from "./session-entry-usage.js";
+import type { SessionEntryBookkeepingReducer } from "./session-entry-patch-operation.js";
 import type {
   InitialSessionEntryCommit,
   SessionMetadataOperations,
@@ -85,16 +86,7 @@ export type SessionActorHotState = {
 };
 
 /** Serializable, pure bookkeeping. These reducers cannot change session identity or authority. */
-export type SessionActorReducer =
-  | { kind: "activity"; updatedAt: number }
-  | { kind: "usage"; update: SessionEntryUsageUpdate; updatedAt: number }
-  | { kind: "group-intro"; needsSystemIntro: boolean }
-  | { kind: "fallback-notice"; notice: SessionEntry["fallbackNotice"] }
-  | {
-      kind: "live-model";
-      expected: Pick<SessionEntry, "modelProvider" | "model" | "agentHarnessId">;
-      next: Pick<SessionEntry, "modelProvider" | "model" | "agentHarnessId">;
-    };
+export type SessionActorReducer = SessionEntryBookkeepingReducer;
 
 export type SessionActorCommandContext = {
   commandId: string;
@@ -147,6 +139,12 @@ export type SessionActorPendingFinalDelivery = NonNullable<SessionEntry["pending
   deliveries: NonNullable<NonNullable<SessionEntry["pendingFinalDelivery"]>["deliveries"]>;
 };
 
+/** Already validated by the host; live authority is checked again at commit. */
+export type SessionActorDeliveryEvidence = {
+  claim: HarnessCompletionRecovery;
+  result?: { channel: string; target?: { id: string }; platformMessageId?: string };
+};
+
 export type SessionActorPhaseInputs = {
   acceptInput: {
     pending: Extract<PendingInputMutation, { kind: "stage" }>;
@@ -178,20 +176,48 @@ export type SessionActorPhaseInputs = {
         append?: never;
       }
     | { append: SessionActorAppend; eventJson?: never };
-  completeTurn: {
-    turn: SessionTurnPlan;
+  completeTurn: (
+    | { turn: SessionTurnPlan; bookkeeping?: never }
+    | {
+        turn?: never;
+        /** The assistant transcript is already durable; this command must not append it again. */
+        bookkeeping: {
+          sessionId: string;
+          lifecycleRevision: string | null;
+          writerRunId: string | undefined;
+          expectedState: SessionTranscriptTurnExpectedState;
+          lifecycle?: SessionTranscriptTurnLifecyclePatch;
+        };
+      }
+  ) & {
     completion?: Extract<PendingInputMutation, { kind: "complete" }>;
     /** Exact delivery intent and payload IDs join terminal accounting in this commit. */
     pendingFinalDelivery?: SessionActorPendingFinalDelivery;
   };
-  deliveryPending: {
-    sessionId: string;
-    expectedState: SessionTranscriptTurnExpectedState;
-    lifecycle: SessionTranscriptTurnLifecyclePatch & {
-      restartRecoveryDeliveryReceiptState: "terminal-pending";
-    };
-  };
-  deliverySettled: { settlement: PendingFinalDeliverySettlementInput };
+  deliveryPending:
+    | {
+        sessionId: string;
+        expectedState: SessionTranscriptTurnExpectedState;
+        lifecycle: SessionTranscriptTurnLifecyclePatch & {
+          restartRecoveryDeliveryReceiptState: "terminal-pending";
+        };
+        claim?: never;
+      }
+    | { claim: RestartRecoveryTerminalDeliveryClaim; updatedAt: number };
+  deliverySettled:
+    | {
+        settlement: PendingFinalDeliverySettlementInput;
+        evidence?: SessionActorDeliveryEvidence;
+        restart?: never;
+      }
+    | {
+        settlement?: never;
+        restart: {
+          claim: RestartRecoveryTerminalDeliveryClaim;
+          outcome: "confirmed" | "not-sent";
+          updatedAt: number;
+        };
+      };
   patch: { reducers: readonly SessionActorReducer[] };
 };
 
@@ -208,9 +234,20 @@ export type SessionActorPhaseResults = {
   adoptRun: undefined;
   appendToolResult: SessionTurnCommitted | SessionActorAppendCommitted;
   appendTranscriptEvent: { anchor?: TranscriptEntryAnchor } | SessionActorAppendCommitted;
-  completeTurn: SessionTurnCommitted;
-  deliveryPending: undefined;
-  deliverySettled: { state: PendingFinalDeliverySettlementInput["state"] | "stale" };
+  completeTurn: SessionTurnCommitted | { kind: "bookkeeping" };
+  deliveryPending:
+    | undefined
+    | {
+        disposition:
+          | "started"
+          | "already-delivered"
+          | "delivery-ambiguous"
+          | "stale"
+          | "not-applicable";
+      };
+  deliverySettled:
+    | { state: PendingFinalDeliverySettlementInput["state"] | "stale"; wakeRecovery: boolean }
+    | { disposition: "recorded" | "cleared" | "stale" };
   patch: undefined;
 };
 
@@ -218,6 +255,8 @@ export type SessionActorReducerOutcome = {
   index: number;
   kind: SessionActorReducer["kind"];
   changed: boolean;
+  /** Only pure best-effort usage preparation/reduction can be skipped. Writes remain atomic. */
+  failure?: { name: string; message: string };
 };
 
 export type SessionActorReceipt = {
@@ -253,7 +292,11 @@ export type SessionActorOutcome<Value> =
       /** Publication/cleanup failure cannot erase a captured durable receipt. */
       failure?: { name: string; message: string };
     }
-  | { kind: "rolled-back"; error: { name: string; message: string } }
+  | {
+      kind: "rolled-back";
+      error: { name: string; message: string };
+      reason?: "stale-version" | "stale-state";
+    }
   | {
       kind: "unknown";
       target: SessionActorTarget;

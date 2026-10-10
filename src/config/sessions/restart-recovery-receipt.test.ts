@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as agentExecution from "../../state/openclaw-agent-execution.js";
 import {
   beginRestartRecoveryTerminalDelivery,
   cancelRestartRecoveryTerminalDelivery,
@@ -6,6 +7,7 @@ import {
   resolveRestartRecoverySteeringBlockReason,
 } from "./restart-recovery-receipt.js";
 import { loadSessionEntry, replaceSessionEntry } from "./session-accessor.js";
+import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { useTempSessionsFixture } from "./test-helpers.js";
 import type { SessionEntry } from "./types.js";
 
@@ -82,6 +84,69 @@ describe("restart recovery terminal delivery receipt", () => {
     await expect(cancelRestartRecoveryTerminalDelivery(scope())).resolves.toBe("stale");
     expect(read()?.restartRecoveryDeliveryReceiptState).toBeUndefined();
   });
+
+  it.each(["metadata", "source"] as const)(
+    "reprepares a proven actor conflict without replacing a newer %s",
+    async (change) => {
+      await seed(claim);
+      const initial = read()!;
+      const capture = agentExecution.captureOpenClawAgentDatabaseExecution;
+      const commands: string[] = [];
+      let changed = false;
+      const observer = vi
+        .spyOn(agentExecution, "captureOpenClawAgentDatabaseExecution")
+        .mockImplementation((...args) => {
+          const owner = capture(...args);
+          return {
+            ...owner,
+            get fileIdentity() {
+              return owner.fileIdentity;
+            },
+            runExisting: (source, run, options) =>
+              owner.runExisting(
+                source,
+                (worker) =>
+                  run({
+                    execute(command, commandOptions) {
+                      commands.push(command.type);
+                      if (command.type === "session.actor.deliveryPending" && !changed) {
+                        changed = true;
+                        replaceSessionEntrySync(scope(), {
+                          ...initial,
+                          ...(change === "metadata"
+                            ? { label: "new metadata" }
+                            : { restartRecoveryDeliverySourceRunId: "new-source" }),
+                        });
+                      }
+                      return worker.execute(command, commandOptions);
+                    },
+                  }),
+                options,
+              ),
+          };
+        });
+      try {
+        await expect(beginRestartRecoveryTerminalDelivery(scope())).resolves.toBe(
+          change === "metadata" ? "started" : "stale",
+        );
+        expect(commands.filter((command) => command !== "session.actor.read")).toEqual([
+          "session.actor.deliveryPending",
+          "session.actor.deliveryPending",
+        ]);
+        if (change === "metadata") {
+          expect(read()).toMatchObject({
+            label: "new metadata",
+            restartRecoveryDeliveryReceiptState: "terminal-pending",
+          });
+        } else {
+          expect(read()).toMatchObject({ restartRecoveryDeliverySourceRunId: "new-source" });
+          expect(read()?.restartRecoveryDeliveryReceiptState).toBeUndefined();
+        }
+      } finally {
+        observer.mockRestore();
+      }
+    },
+  );
 
   it.each(["source", "tool"] as const)(
     "preserves pending custody when settlement names another %s",

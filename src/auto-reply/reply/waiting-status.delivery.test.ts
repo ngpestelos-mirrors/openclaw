@@ -18,7 +18,7 @@ vi.mock("../../agents/subagents/registry/subagent-registry.js", async (importOri
   settleRequesterAfterSessionSpawns: settleRequester,
 }));
 vi.mock("../../agents/live-model-switch.js", () => ({
-  consolidateLiveModelSwitchAfterRun: vi.fn(async () => {}),
+  prepareLiveModelSwitchAfterRun: vi.fn(() => undefined),
 }));
 
 const settleRequester = vi.hoisted(() =>

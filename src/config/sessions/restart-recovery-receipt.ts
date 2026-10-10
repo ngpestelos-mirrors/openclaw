@@ -1,18 +1,12 @@
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import {
-  hasActiveRestartRecoveryDeliveryClaim,
-  hasExactRestartRecoveryDeliveryClaim,
-  projectRestartRecoveryDeliverySettlement,
-  resolveRestartRecoveryTerminalDeliveryDisposition,
-} from "./restart-recovery-receipt-state.js";
+import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
+import { resolveRestartRecoveryTerminalDeliveryDisposition } from "./restart-recovery-receipt-state.js";
 import { normalizeRestartRecoveryTerminalRunIds } from "./restart-recovery-state.js";
-import { updateSessionEntry } from "./session-accessor.js";
-import { readSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
-import {
-  captureIncognitoSessionSource,
-  withIncognitoSessionBinding,
-} from "./session-incognito-binding.js";
+import type { SessionActorAuthority, SessionActorOutcome } from "./session-actor-contract.js";
+import { runSessionActorCommand, withSessionActor } from "./session-actor-scope.js";
+import { captureIncognitoSessionSource } from "./session-incognito-binding.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 import type { SessionEntry } from "./types.js";
 
@@ -82,10 +76,6 @@ function captureCurrent(input: RestartRecoveryTerminalDeliveryScope) {
   return {
     scope,
     absent: source && "kind" in source,
-    read() {
-      const read = () => readSessionEntryReadOnlyInWorker({ ...scope, readConsistency: "latest" });
-      return source && !("kind" in source) ? withIncognitoSessionBinding(source, read) : read();
-    },
   };
 }
 
@@ -98,48 +88,65 @@ export async function beginRestartRecoveryTerminalDelivery(
   if (current.absent) {
     return "stale";
   }
-  let started = false;
-  const updated = await updateSessionEntry(
-    current.scope,
-    (entry) => {
-      if (resolveRestartRecoveryTerminalDeliveryDisposition(entry, scope) !== "startable") {
-        return null;
-      }
-      started = true;
-      return {
-        restartRecoveryDeliveryReceiptState: "terminal-pending",
-        restartRecoveryDeliveryToolCallId: scope.toolCallId,
-        updatedAt: Date.now(),
-      };
-    },
-    { skipMaintenance: true, takeCacheOwnership: true },
+  return (
+    (await withSessionActor(scope, receiptLifetime, async (actor) => {
+      const outcome = await runSessionActorCommand(actor, receiptAuthority, (snapshot) =>
+        actor.deliveryPending(
+          {
+            commandId: randomUUID(),
+            phaseId: randomUUID(),
+            expected: snapshot.version,
+            claim: scope,
+            updatedAt: Date.now(),
+          },
+          receiptAuthority,
+        ),
+      );
+      const value = terminalValue(outcome);
+      if (!value) return "stale";
+      return value.disposition;
+    })) ?? "stale"
   );
-  if (
-    started &&
-    updated !== null &&
-    hasExactRestartRecoveryDeliveryClaim(updated, scope) &&
-    updated.restartRecoveryDeliveryReceiptState === "terminal-pending"
-  ) {
-    return "started";
-  }
-  const disposition = resolveRestartRecoveryTerminalDeliveryDisposition(
-    await current.read(),
-    scope,
-  );
-  if (disposition === "startable") {
-    throw new Error("failed to persist terminal delivery intent");
-  }
-  return disposition;
 }
 
-function updatePendingTerminalDelivery(
+const receiptLifetime = { assertCurrent() {}, assertReadable() {} };
+const receiptAuthority: SessionActorAuthority = { assertCurrent() {}, authorize() {} };
+
+function terminalValue<Value>(outcome: SessionActorOutcome<Value>): Value | undefined {
+  if (outcome.kind === "committed") {
+    if (outcome.failure) throw new Error(outcome.failure.message);
+    return outcome.value;
+  }
+  if (outcome.kind === "rolled-back" && outcome.reason === "stale-state") return undefined;
+  throw new SqliteWorkerError(
+    outcome.error.message,
+    outcome.kind === "unknown" ? "outcome-unknown" : "unavailable",
+  );
+}
+
+async function updatePendingTerminalDelivery(
   scope: RestartRecoveryTerminalDeliveryScope & { env?: NodeJS.ProcessEnv },
   outcome: "confirmed" | "not-sent",
 ) {
-  return updateSessionEntry(
-    scope,
-    (entry) => projectRestartRecoveryDeliverySettlement(entry, scope, outcome, Date.now()),
-    { skipMaintenance: true, takeCacheOwnership: true },
+  return (
+    (await withSessionActor(scope, receiptLifetime, async (actor) => {
+      const settled = await runSessionActorCommand(actor, receiptAuthority, (snapshot) =>
+        actor.deliverySettled(
+          {
+            commandId: randomUUID(),
+            phaseId: randomUUID(),
+            expected: snapshot.version,
+            restart: { claim: scope, outcome, updatedAt: Date.now() },
+          },
+          receiptAuthority,
+        ),
+      );
+      const value = terminalValue(settled);
+      if (!value) return "stale";
+      if (!("disposition" in value))
+        throw new Error("Restart delivery returned another settlement");
+      return value.disposition;
+    })) ?? "stale"
   );
 }
 
@@ -148,29 +155,11 @@ export async function completeRestartRecoveryTerminalDelivery(
   input: RestartRecoveryTerminalDeliveryScope,
 ): Promise<"recorded" | "stale"> {
   const source = captureCurrent(input);
-  const scope = source.scope;
   if (source.absent) {
     return "stale";
   }
-  const updated = await updatePendingTerminalDelivery(source.scope, "confirmed");
-  if (
-    updated !== null &&
-    hasExactRestartRecoveryDeliveryClaim(updated, scope) &&
-    updated.restartRecoveryDeliveryReceiptState === "delivered-terminal"
-  ) {
-    return "recorded";
-  }
-  const current = await source.read();
-  if (!current || !hasActiveRestartRecoveryDeliveryClaim(current, scope)) {
-    return "stale";
-  }
-  if (
-    hasExactRestartRecoveryDeliveryClaim(current, scope) &&
-    current.restartRecoveryDeliveryReceiptState === "delivered-terminal"
-  ) {
-    return "recorded";
-  }
-  throw new Error("failed to persist terminal delivery completion");
+  const disposition = await updatePendingTerminalDelivery(source.scope, "confirmed");
+  return disposition === "recorded" ? disposition : "stale";
 }
 
 /** Clears the pre-send intent only when the provider proves no delivery occurred. */
@@ -178,31 +167,9 @@ export async function cancelRestartRecoveryTerminalDelivery(
   input: RestartRecoveryTerminalDeliveryScope,
 ): Promise<"cleared" | "stale"> {
   const source = captureCurrent(input);
-  const scope = source.scope;
   if (source.absent) {
     return "stale";
   }
-  const updated = await updatePendingTerminalDelivery(source.scope, "not-sent");
-  if (
-    updated !== null &&
-    hasActiveRestartRecoveryDeliveryClaim(updated, scope) &&
-    !updated.restartRecoveryDeliveryReceiptState &&
-    !updated.restartRecoveryDeliveryToolCallId
-  ) {
-    return "cleared";
-  }
-  const current = await source.read();
-  if (!current || !hasActiveRestartRecoveryDeliveryClaim(current, scope)) {
-    return "stale";
-  }
-  if (!current.restartRecoveryDeliveryReceiptState && !current.restartRecoveryDeliveryToolCallId) {
-    return "cleared";
-  }
-  if (
-    hasExactRestartRecoveryDeliveryClaim(current, scope) &&
-    current.restartRecoveryDeliveryReceiptState === "delivered-terminal"
-  ) {
-    return "stale";
-  }
-  throw new Error("failed to clear terminal delivery intent");
+  const disposition = await updatePendingTerminalDelivery(source.scope, "not-sent");
+  return disposition === "cleared" ? disposition : "stale";
 }

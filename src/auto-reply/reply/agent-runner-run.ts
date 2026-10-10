@@ -6,8 +6,12 @@ import { readChannelContextGatewayContextResolver } from "../../channels/message
 import { settleProgressVisibilityCallbackResult } from "../../channels/progress-visibility.js";
 import { resolveRestartRecoverySteeringBlockReason } from "../../config/sessions/restart-recovery-receipt.js";
 import { hasRestartRecoverySourceClaim } from "../../config/sessions/restart-recovery-state.js";
-import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { SessionEntryTargetPatchScope } from "../../config/sessions/session-accessor.types.js";
+import type { SessionActorAuthority } from "../../config/sessions/session-actor-contract.js";
+import {
+  runSessionActorCommand,
+  withSessionActor,
+} from "../../config/sessions/session-actor-scope.js";
 import { readSessionEntryInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { logVerbose } from "../../globals.js";
@@ -16,6 +20,7 @@ import {
   getAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
+import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
 import { diagnosticLogger } from "../../logging/diagnostic-runtime.js";
 import { hasOutboundReplyContent } from "../../plugin-sdk/reply-payload.js";
 import {
@@ -305,14 +310,52 @@ export async function runReplyAgent(
     }
     // Keep the in-memory snapshot aligned with the pending-reset write boundary.
     const updatedAt = activeSessionEntry.updatedAt === 0 ? 0 : Date.now();
-    activeSessionEntry.updatedAt = updatedAt;
-    activeSessionStore[sessionKey] = activeSessionEntry;
     if (storePath) {
-      await updateSessionEntry(
+      const expected = activeSessionEntry;
+      const authority: SessionActorAuthority = {
+        assertCurrent() {
+          followupRun.operatorAuthority?.assertCurrent();
+        },
+        authorize(_stage, facts) {
+          const current = facts.entry;
+          if (
+            !current ||
+            current.sessionId !== expected.sessionId ||
+            current.lifecycleRevision !== expected.lifecycleRevision
+          ) {
+            throw new Error("Queued activity session changed");
+          }
+        },
+      };
+      // This queue/steering branch has no later durable command before returning.
+      await withSessionActor(
         { agentId: followupRun.run.agentId, storePath, sessionKey },
-        () => ({ updatedAt }),
-        { skipMaintenance: true, takeCacheOwnership: true },
+        { assertCurrent: authority.assertCurrent, assertReadable: authority.assertCurrent },
+        async (actor) => {
+          const outcome = await runSessionActorCommand(actor, authority, (snapshot) =>
+            actor.patch(
+              {
+                commandId: randomUUID(),
+                phaseId: `activity:${sessionKey}`,
+                expected: snapshot.version,
+                reducers: [{ kind: "activity", updatedAt }],
+              },
+              authority,
+            ),
+          );
+          if (outcome.kind !== "committed")
+            throw new SqliteWorkerError(
+              outcome.error.message,
+              outcome.kind === "unknown" ? "outcome-unknown" : "unavailable",
+            );
+          activeSessionEntry = outcome.receipt.postimage.entry;
+          if (activeSessionEntry) activeSessionStore[sessionKey] = activeSessionEntry;
+          if (outcome.failure) throw new Error(outcome.failure.message);
+        },
       );
+    } else {
+      activeSessionEntry.updatedAt = updatedAt;
+      activeSessionStore[sessionKey] = activeSessionEntry;
     }
   };
 

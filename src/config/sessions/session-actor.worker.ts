@@ -28,7 +28,10 @@ import {
   hydrateSessionActorState,
   projectSessionActorHotState,
 } from "./session-actor-hydration.worker.js";
-import { applySessionActorPhase } from "./session-actor-phase.worker.js";
+import {
+  applySessionActorPhase,
+  SessionActorStaleStateError,
+} from "./session-actor-phase.worker.js";
 import {
   cloneSessionActorStoredState,
   withSessionActorTransactionState,
@@ -145,6 +148,7 @@ export function createSessionActorWorker(
       let committed:
         | SessionActorOutcome<ReturnType<typeof applySessionActorPhase>["value"]>
         | undefined;
+      let staleReason: "stale-version" | "stale-state" | undefined;
       try {
         database = context.open();
         requireTarget(target);
@@ -156,6 +160,7 @@ export function createSessionActorWorker(
           return structuredClone(before.hot);
         }
         if (!isDeepStrictEqual(before.hot.version, command.input.expected)) {
+          staleReason = "stale-version";
           throw new Error("Session actor version changed before command admission");
         }
         const working = cloneSessionActorStoredState(before);
@@ -180,6 +185,7 @@ export function createSessionActorWorker(
           // Native/SDK writers can bypass the host queue; compare their in-process revision
           // after acquiring SQLite's writer lock, before using any retained preimage.
           if (token(opened, target) !== before.hot.writeToken) {
+            staleReason = "stale-version";
             throw new Error("Session actor preimage changed before transaction entry");
           }
           return withSessionActorTransactionState(opened, working, () => {
@@ -303,7 +309,15 @@ export function createSessionActorWorker(
           drop(target.sessionKey);
         }
         observed.settled("rolled-back");
-        return { kind: "rolled-back", error: errorFacts(error) };
+        return {
+          kind: "rolled-back",
+          error: errorFacts(error),
+          ...(error instanceof SessionActorStaleStateError
+            ? { reason: "stale-state" as const }
+            : staleReason
+              ? { reason: staleReason }
+              : {}),
+        };
       }
     },
     close() {

@@ -30,6 +30,7 @@ import {
   projectSqliteSessionParticipants,
   projectSqliteSessionParticipantsBatch,
 } from "./session-accessor.sqlite-participant-projection.js";
+import { sessionEntryWindowFactsExpression } from "./session-accessor.sqlite-provenance.js";
 import {
   parseSessionEntryJson as parseSessionEntryRow,
   selectSessionEntryRows,
@@ -146,6 +147,7 @@ export type ResolvedSessionEntryRow = {
     Partial<Pick<SessionEntryRow, "legacy_acp_migration_json">> & {
       board_present?: SqlBool;
       member_ids_json?: string;
+      window_json?: string | null;
     };
 };
 
@@ -319,9 +321,13 @@ export function readSessionEntryIdentity(
  * prove this logical row is unchanged can re-read and compare the raw rows instead of decoding
  * the entry JSON again.
  */
-export function readSessionEntryRowScan(database: OpenClawAgentDatabaseReader, sessionKey: string) {
+export function readSessionEntryRowScan(
+  database: OpenClawAgentDatabaseReader,
+  sessionKey: string,
+  includeWindowFacts?: true,
+) {
   // Mutation snapshots must retain every raw column, including the saved prompts.
-  return scanSessionEntryRows(database, sessionKey, "full");
+  return scanSessionEntryRows(database, sessionKey, "full", true, includeWindowFacts);
 }
 
 function selectReadableSessionEntryRows(
@@ -358,6 +364,7 @@ function scanSessionEntryRows(
   sessionKey: string,
   projection: SessionEntryProjection,
   includeParticipants = true,
+  includeWindowFacts?: true,
 ):
   | {
       lookupKeys: string[];
@@ -388,7 +395,15 @@ function scanSessionEntryRows(
     if (firstLookupKey === undefined) {
       return undefined;
     }
-    const rows = readSelectedSessionEntryRows(database, lookupKeys, projection);
+    const rows = readSelectedSessionEntryRows(
+      database,
+      lookupKeys,
+      projection,
+      undefined,
+      includeWindowFacts
+        ? { includeWindowFacts, includeBoardPresence: true, includeMembership: true }
+        : undefined,
+    );
     let selected: ResolvedSessionEntryRow | undefined;
     for (const row of rows) {
       const entry = includeParticipants
@@ -451,6 +466,7 @@ export function readExactSessionEntryRow(
   sessionKey: string,
   projection: SessionEntryProjection = "full",
   validation?: "canonical",
+  includeWindowFacts?: true,
 ): ResolvedSessionEntryRow | undefined {
   const actor = readSessionActorTransactionState(database, { sessionKey });
   if (actor) {
@@ -464,8 +480,13 @@ export function readExactSessionEntryRow(
   }
   return runSqliteReadOperationSync(database.db, () => {
     const queries = getExactSessionEntryQueries(database.db);
-    const row =
-      validation === "canonical"
+    const row = includeWindowFacts
+      ? readSelectedSessionEntryRows(database, sessionKey, projection, validation, {
+          includeWindowFacts,
+          includeBoardPresence: true,
+          includeMembership: true,
+        })[0]
+      : validation === "canonical"
         ? queries.canonical(sessionKey, projection)
         : queries.row(sessionKey, projection);
     if (!row) {
@@ -482,7 +503,11 @@ function readSelectedSessionEntryRows(
   selection: string | readonly string[],
   projection: SessionEntryProjection | "delivery",
   validation?: "canonical",
-  options?: { includeBoardPresence?: boolean; includeMembership?: boolean },
+  options?: {
+    includeBoardPresence?: boolean;
+    includeMembership?: boolean;
+    includeWindowFacts?: true;
+  },
 ): ReadableSessionEntryRow[] {
   const key =
     typeof selection === "string" ? selection : selection.length === 1 ? selection[0] : undefined;
@@ -490,7 +515,8 @@ function readSelectedSessionEntryRows(
     key !== undefined &&
     projection !== "delivery" &&
     !options?.includeBoardPresence &&
-    !options?.includeMembership
+    !options?.includeMembership &&
+    !options?.includeWindowFacts
   ) {
     const queries = getExactSessionEntryQueries(database.db);
     const row =
@@ -510,10 +536,13 @@ function readSelectedSessionEntryRows(
             ),
           )
       : selectReadableSessionEntryRows(database, projection);
+  const windowQuery = options?.includeWindowFacts
+    ? baseQuery.select(sessionEntryWindowFactsExpression())
+    : baseQuery;
   const eb = expressionBuilder<OpenClawAgentKyselyDatabase, "session_nodes">();
   // Old stores have no board tables until first use; branch before compiling SQL.
   const boardQuery = options?.includeBoardPresence
-    ? baseQuery.select(
+    ? windowQuery.select(
         (tableExists(database.db, "board_widgets")
           ? eb.exists(
               eb
@@ -524,7 +553,7 @@ function readSelectedSessionEntryRows(
           : eb.lit(0)
         ).as("board_present"),
       )
-    : baseQuery;
+    : windowQuery;
   const query = options?.includeMembership
     ? boardQuery.select((outer) =>
         outer
@@ -555,6 +584,7 @@ export function prepareExactSessionEntryRowReads(
   options?: {
     includeBoardPresence?: boolean;
     includeMembership?: boolean;
+    includeWindowFacts?: true;
     /** Commit receipts retain canonical metadata but withhold failed display projections. */
     onParticipantProjectionError?: (sessionKey: string) => void;
     projectParticipants?: false;
@@ -571,7 +601,13 @@ export function prepareExactSessionEntryRowReads(
     )
   ) {
     return (sessionKey) => {
-      const selected = readExactSessionEntryRow(database, sessionKey, projection, validation);
+      const selected = readExactSessionEntryRow(
+        database,
+        sessionKey,
+        projection,
+        validation,
+        options?.includeWindowFacts,
+      );
       if (selected) {
         if (options?.includeBoardPresence) selected.row.board_present = actor.hasBoard ? 1 : 0;
         if (options?.includeMembership)
@@ -593,6 +629,7 @@ export function prepareExactSessionEntryRowReads(
       if (
         options?.includeBoardPresence ||
         options?.includeMembership ||
+        options?.includeWindowFacts ||
         options?.onParticipantProjectionError ||
         options?.projectParticipants === false
       ) {
@@ -661,13 +698,26 @@ export function readSessionEntryTargetRow(
     allowCanonicalMove?: boolean;
     guardRetainedWindows?: boolean;
     projection?: SessionEntryProjection;
+    includeWindowFacts?: true;
   } = {},
 ): { entry: SessionEntry | null; row: ResolvedSessionEntryRow["row"] } | undefined {
   return runSqliteReadOperationSync(database.db, () => {
     assertCanonicalSqliteSessionKeysCurrent(database);
     const queries = getExactSessionEntryQueries(database.db);
     const rows = target.storeKeys.flatMap((key) => {
-      const row = queries.row(key.trim(), options.projection);
+      const row = options.includeWindowFacts
+        ? readSelectedSessionEntryRows(
+            database,
+            key.trim(),
+            options.projection ?? "full",
+            undefined,
+            {
+              includeWindowFacts: true,
+              includeMembership: true,
+              includeBoardPresence: true,
+            },
+          )[0]
+        : queries.row(key.trim(), options.projection);
       if (!row) {
         return [];
       }

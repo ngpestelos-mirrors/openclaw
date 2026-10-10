@@ -5,6 +5,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   sqliteStringSet,
 } from "../../infra/kysely-sync.js";
+import { readSqliteNativeMutationRevision } from "../../infra/sqlite-schema-facts.js";
 import { getChildLogger } from "../../logging/logger.js";
 import { isIncognitoSessionKey } from "../../shared/incognito-session-key.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
@@ -40,7 +41,11 @@ import {
 } from "./session-accessor.sqlite-node-artifacts.js";
 import { hasSqliteSessionOwnerColumns } from "./session-accessor.sqlite-owner-projection.js";
 import { withProjectedParticipants } from "./session-accessor.sqlite-participant-projection.js";
-import { prepareSessionEntryWindowRow } from "./session-accessor.sqlite-provenance.js";
+import {
+  prepareSessionEntryWindowRow,
+  type SessionEntryWindowFacts,
+  type SessionEntryWindowRow,
+} from "./session-accessor.sqlite-provenance.js";
 import { collectSessionStateIdsForEntry } from "./session-accessor.sqlite-references.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import {
@@ -108,21 +113,64 @@ export function readSessionEntrySelectionSnapshot(
   database: OpenClawAgentDatabase,
   sessionKey: string,
   exact: boolean,
+  includeWindowFacts?: true,
 ): SqliteLifecycleTargetSnapshot {
-  const scanned = exact ? undefined : readSessionEntryRowScan(database, sessionKey);
-  const selected = exact ? readExactSessionEntryRow(database, sessionKey) : scanned?.selected;
+  const scanned = exact
+    ? undefined
+    : readSessionEntryRowScan(database, sessionKey, includeWindowFacts);
+  const selected = exact
+    ? readExactSessionEntryRow(database, sessionKey, "full", undefined, includeWindowFacts)
+    : scanned?.selected;
   return selected
     ? [
-        {
-          entry: selected.entry,
-          sessionKey: selected.row.session_key,
-          persistedRows: {
-            lookupKeys: scanned?.lookupKeys ?? [sessionKey.trim()],
-            rows: (scanned?.rows ?? [selected.row]).map(retainSessionEntryRowFacts),
-          },
-        },
+        captureSessionEntrySnapshot(
+          database,
+          selected,
+          scanned?.lookupKeys ?? [sessionKey.trim()],
+          scanned?.rows ?? [selected.row],
+        ),
       ]
     : [];
+}
+
+function captureSessionEntrySnapshot(
+  database: Pick<OpenClawAgentDatabase, "db">,
+  selected: ResolvedSessionEntryRow,
+  lookupKeys: readonly string[],
+  rows: readonly ResolvedSessionEntryRow["row"][],
+): SqliteLifecycleTargetSnapshot[number] {
+  let window: SessionEntryWindowFacts | undefined;
+  if (selected.row.window_json !== undefined) {
+    const revision = readSqliteNativeMutationRevision(database.db);
+    if (revision !== undefined) {
+      window = {
+        database: database.db,
+        revision,
+        sessionId: selected.row.current_session_id,
+        // The SQLite JSON subquery serializes this owner's typed scalar projection.
+        row: selected.row.window_json
+          ? (JSON.parse(selected.row.window_json) as SessionEntryWindowRow)
+          : null,
+      };
+    }
+  }
+  return {
+    entry: selected.entry,
+    sessionKey: selected.row.session_key,
+    ...(window ? { window } : {}),
+    ...(selected.row.member_ids_json !== undefined && selected.row.board_present !== undefined
+      ? {
+          sideTables: {
+            memberIdsJson: selected.row.member_ids_json,
+            hasBoard: selected.row.board_present === 1,
+          },
+        }
+      : {}),
+    persistedRows: {
+      lookupKeys,
+      rows: rows.map(retainSessionEntryRowFacts),
+    },
+  };
 }
 
 // The node's snapshot revision fences cold changes without retaining their bytes twice.
@@ -130,6 +178,9 @@ function retainSessionEntryRowFacts(row: ResolvedSessionEntryRow["row"]) {
   delete row.session_diff_baseline_json;
   delete row.skills_snapshot_json;
   delete row.system_prompt_report_json;
+  delete row.window_json;
+  delete row.member_ids_json;
+  delete row.board_present;
   return row;
 }
 
@@ -157,25 +208,23 @@ export function readUnchangedLifecycleTargetSnapshot(
 export function resolveLifecyclePrimaryEntry(
   database: Pick<OpenClawAgentDatabase, "agentId" | "db">,
   target: { canonicalKey: string; storeKeys: string[] },
-  options: { allowCanonicalMove?: boolean } = {},
+  options: { allowCanonicalMove?: boolean; includeWindowFacts?: true } = {},
 ): SqliteLifecycleTargetSnapshot[number] | undefined {
   const row = readSessionEntryTargetRow(database, target, options);
   return row?.entry
-    ? {
-        entry: row.entry,
-        sessionKey: row.row.session_key,
-        persistedRows: {
-          lookupKeys: target.storeKeys.map((key) => key.trim()),
-          rows: [retainSessionEntryRowFacts(row.row)],
-        },
-      }
+    ? captureSessionEntrySnapshot(
+        database,
+        { entry: row.entry, row: row.row },
+        target.storeKeys.map((key) => key.trim()),
+        [row.row],
+      )
     : undefined;
 }
 
 export function readLifecycleTargetSnapshot(
   database: Pick<OpenClawAgentDatabase, "agentId" | "db">,
   target: { canonicalKey: string; storeKeys: string[] },
-  options: { allowCanonicalMove?: boolean } = {},
+  options: { allowCanonicalMove?: boolean; includeWindowFacts?: true } = {},
 ): SqliteLifecycleTargetSnapshot {
   const normalized = normalizeLifecycleTarget(target);
   const row = resolveLifecyclePrimaryEntry(database, normalized, options);
@@ -411,6 +460,11 @@ export function writeSessionEntry(
     providerReviewMutation?: boolean;
     /** Canonical row revalidated in this write transaction; null proves absence. */
     canonicalPreviousEntry?: SessionEntry | null;
+    /** Raw canonical columns from the same transaction, for exact no-op comparison. */
+    canonicalPreviousRow?: ResolvedSessionEntryRow["row"];
+    canonicalPreviousWindow?: SessionEntryWindowFacts;
+    /** A synchronous guard changed storage after the comparison snapshot was acquired. */
+    forceSnapshotWrite?: boolean;
     consumePendingReset?: boolean;
     preserveNodeSuggestions?: boolean;
     previousEntry?: SessionEntry | null;
@@ -437,12 +491,20 @@ export function writeSessionEntry(
   // Doctor validated the raw rejected row before entering the transaction and passes its
   // hydrated snapshot explicitly; re-reading it through the runtime parser must stay fail-closed.
   // The commit owner can supply its revalidated canonical row instead of decoding it again.
+  const canonicalRead =
+    options.canonicalPreviousEntry !== undefined ||
+    (options.allowStoredAliases && options.previousEntry !== undefined)
+      ? undefined
+      : readExactSessionEntryRow(database, sessionKey);
   const canonicalPreviousEntry =
     options.canonicalPreviousEntry !== undefined
       ? (options.canonicalPreviousEntry ?? undefined)
       : options.allowStoredAliases && options.previousEntry !== undefined
         ? (options.previousEntry ?? undefined)
-        : readExactSessionEntryRow(database, sessionKey)?.entry;
+        : canonicalRead?.entry;
+  const canonicalPreviousRow =
+    options.canonicalPreviousRow ?? actor?.entryRows.get(sessionKey)?.row ?? canonicalRead?.row;
+  const mutationRevision = readSqliteNativeMutationRevision(database.db);
   if (!options.providerReviewMutation && !options.allowStoredAliases) {
     // Bookkeeping can carry a stale snapshot; only the review owner may clear its pause.
     normalizedEntry = {
@@ -538,15 +600,23 @@ export function writeSessionEntry(
   const canonicalEntry = stripRuntimeOnlySessionSkillsFields(
     projectCanonicalSessionEntryShape({ ...normalizedEntry }),
   );
-  const persisted = splitSessionEntrySnapshots(canonicalEntry, {
-    previousEntry: canonicalPreviousEntry,
-  });
+  const persisted = splitSessionEntrySnapshots(
+    canonicalEntry,
+    options.forceSnapshotWrite ? "complete" : { previousEntry: canonicalPreviousEntry },
+  );
   const sessionNode = bindSessionNode({
     entry: canonicalEntry,
     entryJson: persisted.entryJson,
     sessionKey,
     updatedAt,
   });
+  const previousColumns = new Map(Object.entries(canonicalPreviousRow ?? {}));
+  const nodeChanged =
+    options.allowStoredAliases === true ||
+    canonicalPreviousRow === undefined ||
+    mutationRevision === undefined ||
+    readSqliteNativeMutationRevision(database.db) !== mutationRevision ||
+    Object.entries(sessionNode).some(([key, value]) => previousColumns.get(key) !== value);
   if (!options.allowStoredAliases) {
     // SQLite binds TEXT as UTF-8. Validate that exact projection before any write,
     // including serialization hooks and replacement of unpaired UTF-16 surrogates.
@@ -593,24 +663,37 @@ export function writeSessionEntry(
     primary_conversation_id:
       conversation?.role === "primary" ? conversation.identity.conversationRef : null,
   };
-  const sessionRow = prepareSessionEntryWindowRow({
+  const retainWindowOwner = canonicalPreviousEntry?.sessionId === normalizedEntry.sessionId;
+  const window = prepareSessionEntryWindowRow({
     boundSessionRow,
     database,
     entry: normalizedEntry,
     previousEntry,
+    retainOwner: retainWindowOwner,
+    prepared: options.canonicalPreviousWindow,
   });
   const queries = getSessionEntryWriteQueries(database.db);
-  const writeGeneration = trackSessionEntryCacheWrite(database, () => {
-    queries.node(sessionNode);
-    if (persisted.snapshotsChanged) {
-      writeSessionEntrySnapshots(database, sessionKey, persisted.snapshots);
-    }
-  });
-  advanceSessionEntryMaintenanceAgeFact(database.db, {
-    sessionKey,
-    entry: normalizedEntry,
-    previousEntry: canonicalPreviousEntry,
-  });
+  // Native guards or serialization hooks may have changed the row after acquisition.
+  const writeNode =
+    nodeChanged || readSqliteNativeMutationRevision(database.db) !== mutationRevision;
+  const writeGeneration =
+    writeNode || persisted.snapshotsChanged
+      ? trackSessionEntryCacheWrite(database, () => {
+          if (writeNode) {
+            queries.node(sessionNode);
+          }
+          if (persisted.snapshotsChanged) {
+            writeSessionEntrySnapshots(database, sessionKey, persisted.snapshots);
+          }
+        })
+      : undefined;
+  if (writeNode) {
+    advanceSessionEntryMaintenanceAgeFact(database.db, {
+      sessionKey,
+      entry: normalizedEntry,
+      previousEntry: canonicalPreviousEntry,
+    });
+  }
   if (
     canonicalPreviousEntry &&
     (canonicalPreviousEntry.sessionId !== normalizedEntry.sessionId ||
@@ -618,19 +701,24 @@ export function writeSessionEntry(
   ) {
     retainLegacyAcpMigrationSourcesForEntry(database.db, sessionKey, normalizedEntry);
   }
-  const writeWindow =
-    canonicalPreviousEntry?.sessionId === normalizedEntry.sessionId
-      ? queries.retainWindow
-      : queries.claimWindow;
-  writeWindow(sessionRow);
+  if (window.changed) {
+    const writeWindow = retainWindowOwner ? queries.retainWindow : queries.claimWindow;
+    writeWindow(window.row);
+  }
   if (conversation) {
     linkSessionConversation({
       database,
       ...(previousEntry?.sessionId ? { previousSessionId: previousEntry.sessionId } : {}),
-      sessionId: sessionRow.session_id,
+      sessionId: window.row.session_id,
       conversation,
       updatedAt,
     });
+  }
+  if (
+    mutationRevision !== undefined &&
+    readSqliteNativeMutationRevision(database.db) === mutationRevision
+  ) {
+    return normalizedEntry;
   }
   publishSessionEntryCacheInvalidation(
     database,
@@ -690,12 +778,12 @@ export function writeSessionEntry(
     if (actor.window) {
       actor.window = {
         ...actor.window,
-        ...sessionRow,
+        ...window.row,
         created_at: actor.window.created_at,
         session_key:
           canonicalPreviousEntry?.sessionId === normalizedEntry.sessionId
             ? actor.window.session_key
-            : sessionRow.session_key,
+            : window.row.session_key,
       };
     }
   }
