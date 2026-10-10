@@ -15,8 +15,10 @@ import {
 // Explicit nameable return type: inference reaches vite-internal names (TS4058/TS4082).
 export function createUiVitestConfig(env?: Record<string, string | undefined>): ViteUserConfig {
   const includePatterns = [
-    ...controlUiTestGlobs.map((pattern) =>
-      pattern.replace("*.test.{ts,tsx}", nonBrowserTestBasenamePattern),
+    ...new Set(
+      controlUiTestGlobs.map((pattern) =>
+        pattern.replace(/\*\.test\.tsx?$/u, nonBrowserTestBasenamePattern),
+      ),
     ),
     ...uiNodeDrivenBrowserTestFiles,
   ];

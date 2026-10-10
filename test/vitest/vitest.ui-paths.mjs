@@ -54,14 +54,14 @@ export function isUiBrowserTestFile(relative) {
 }
 
 export const pluginControlUiPathGlob = "extensions/*/browser/**";
-export const controlUiTestGlobs = [
-  "ui/src/**/*.test.{ts,tsx}",
-  "extensions/*/browser/**/*.test.{ts,tsx}",
-];
-export const controlUiE2eTestGlobs = [
-  "ui/src/**/*.e2e.test.{ts,tsx}",
-  "extensions/*/browser/**/*.e2e.test.{ts,tsx}",
-];
+const controlUiRoots = ["ui/src", "extensions/*/browser"];
+// Git's :(glob) pathspecs consume these too and do not expand braces.
+export const controlUiTestGlobs = controlUiRoots.flatMap((root) =>
+  ["ts", "tsx"].map((extension) => `${root}/**/*.test.${extension}`),
+);
+export const controlUiE2eTestGlobs = controlUiRoots.flatMap((root) =>
+  ["ts", "tsx"].map((extension) => `${root}/**/*.e2e.test.${extension}`),
+);
 
 /** Browser plugin source and tests share the Control UI owner, regardless of plugin id.
  * @param {string} file

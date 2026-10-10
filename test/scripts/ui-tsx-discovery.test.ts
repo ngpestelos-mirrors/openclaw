@@ -9,6 +9,7 @@ import {
 import { listTrackedTestFiles } from "../../scripts/lib/list-test-files.mts";
 import uiNodeConfig from "../../ui/vitest.node.config.ts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { createNestedGitEnv } from "../helpers/temp-repo.js";
 import {
   filterFilesByPatterns,
   intersectIncludePatterns,
@@ -18,6 +19,7 @@ import {
 import { matchesVitestGlob } from "../vitest/vitest.pattern-file.ts";
 import {
   controlUiTestGlobs,
+  controlUiE2eTestGlobs,
   isUiBrowserTestFile,
   isUiTestTarget,
   resolveUiTypeScriptPath,
@@ -37,6 +39,35 @@ function fixture(files: Record<string, string>) {
 }
 
 describe("TSX discovery", () => {
+  it("preserves Git pathspec discovery for PR proof planning", () => {
+    const files = [
+      "ui/src/view.test.ts",
+      "ui/src/view.test.tsx",
+      "ui/src/view.e2e.test.ts",
+      "ui/src/view.e2e.test.tsx",
+      "extensions/example/browser/view.test.ts",
+      "extensions/example/browser/view.test.tsx",
+    ];
+    const cwd = fixture(Object.fromEntries(files.map((file) => [file, "export {};\n"])));
+    const options = { cwd, env: createNestedGitEnv(), encoding: "utf8" } as const;
+    execFileSync("git", ["init", "-q"], options);
+    execFileSync("git", ["add", "--", ...files], options);
+    for (const [patterns, expected] of [
+      [controlUiTestGlobs, files],
+      [controlUiE2eTestGlobs, files.filter((file) => file.includes(".e2e."))],
+    ] as const) {
+      const selected = execFileSync(
+        "git",
+        ["ls-files", "--", ...patterns.map((pattern) => `:(glob)${pattern}`)],
+        options,
+      )
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+      expect(selected.toSorted()).toEqual(expected.toSorted());
+    }
+  });
+
   it("retains bootstrap and E2E helper ownership in the UI compiler shards", () => {
     for (const shard of ["app", "components", "pages", "e2e", "other", "chat"]) {
       const config: { include: string[]; exclude?: string[] } = JSON.parse(
@@ -222,3 +253,4 @@ describe("TSX discovery", () => {
     expect(hasSharedUiE2eInput(["ui/src/app/router-outlet.test.tsx"])).toBe(false);
   });
 });
+import { execFileSync } from "node:child_process";
