@@ -56,13 +56,15 @@ it("publishes the new generation only after the retiring MCP route releases its 
   const destination = document.createElement("div");
   destination.dataset.destination = "";
   destination.textContent = "Debug";
-  const router = createRouter<"about" | "debug">({
+  type RouteData = { ready: boolean };
+  type RouteModule = { render: (data: RouteData | undefined) => Node | null };
+  const router = createRouter<"about" | "debug", Record<string, never>, RouteModule, RouteData>({
     routes: [
       definePage({
         id: "about",
         path: "/about",
         component: () => ({
-          render: (data: { ready: boolean } | undefined) => (data ? previousView : null),
+          render: (data) => (data ? previousView : null),
         }),
         loader: () => ({ ready: true }),
       }),
