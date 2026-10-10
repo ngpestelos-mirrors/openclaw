@@ -1,6 +1,6 @@
-import path from "node:path";
+import { deserialize } from "node:v8";
 import { Worker } from "node:worker_threads";
-import { afterAll, afterEach, beforeAll, expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.sqlite-entry.js";
@@ -15,7 +15,7 @@ import {
   insertRepositoryGitHubPublicationInDatabase,
 } from "../gateway/github-repository-publication-store.js";
 import { repositoryGitHubPublicationDigest } from "../gateway/github-repository-publication.kernel.js";
-import type { SqliteWorkerReply } from "../infra/sqlite-worker-contract.js";
+import type { SqliteWorkerReply, SqliteWorkerRequest } from "../infra/sqlite-worker-contract.js";
 import * as workerAdmission from "../infra/sqlite-worker-operation-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { preparePersonalGitHubSessionReceiptDeletion } from "./github-personal-publication-lifecycle.js";
@@ -43,6 +43,7 @@ import { updateUserGitHubConnection } from "./user-github-connections.test-suppo
 import { ensureProfileForEmail } from "./user-profiles.js";
 
 let context: OpenClawStateWorkerContext;
+let root: string;
 const scopes = new Set<ReturnType<typeof createGitHubPublicationWorkerScope>>();
 const heldReplies = new Set<() => void>();
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
@@ -54,15 +55,15 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   }),
 );
 beforeAll(() => {
-  const root = tempDirs.make("openclaw-publication-worker-");
+  root = tempDirs.make("openclaw-publication-worker-");
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
   const options = {
-    path: path.join(root, "openclaw.sqlite"),
     env: { ...process.env, OPENCLAW_STATE_DIR: root },
   };
   openOpenClawStateDatabase(options);
   context = captureOpenClawStateWorkerContext(options);
 });
+beforeEach(() => vi.stubEnv("OPENCLAW_STATE_DIR", root));
 afterEach(async () => {
   for (const release of heldReplies) release();
   vi.restoreAllMocks();
@@ -100,9 +101,31 @@ function read(row: RepositoryPublicationRow) {
     { context, current: true },
   );
 }
-function holdNextReply() {
+function holdNextReply(commandType = "githubPublications.repository") {
   const ready = createDeferredCore();
   let deliver: (() => void) | undefined;
+  let target: { worker: Worker; id: number } | undefined;
+  // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply preserves the posting Worker.
+  const postMessage = Worker.prototype.postMessage;
+  const posts = vi.spyOn(Worker.prototype, "postMessage").mockImplementation(function (
+    this: Worker,
+    request: SqliteWorkerRequest,
+    ...args
+  ) {
+    if (request.type === "execute") {
+      const command: unknown = deserialize(request.input);
+      if (
+        command &&
+        typeof command === "object" &&
+        "type" in command &&
+        command.type === commandType
+      ) {
+        target = { worker: this, id: request.id };
+        posts.mockRestore();
+      }
+    }
+    return Reflect.apply(postMessage, this, [request, ...args]);
+  });
   // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply preserves the emitting Worker.
   const emit = Worker.prototype.emit;
   const messages = vi.spyOn(Worker.prototype, "emit").mockImplementation(function (
@@ -110,7 +133,7 @@ function holdNextReply() {
     event: string | symbol,
     reply: SqliteWorkerReply,
   ) {
-    if (event === "message" && reply.ok) {
+    if (event === "message" && this === target?.worker && reply.id === target.id && reply.ok) {
       messages.mockRestore();
       deliver = () => {
         Reflect.apply(emit, this, [event, reply]);
@@ -243,7 +266,7 @@ async function sourceFixture(
   );
   row.workspace_id = result.workspaceId;
   row.request_digest = repositoryGitHubPublicationDigest(row);
-  await upsertSessionEntryCore(
+  const entry = await upsertSessionEntryCore(
     { agentId: row.agent_id, sessionKey: row.session_key },
     {
       sessionId: row.session_id,
@@ -251,13 +274,16 @@ async function sourceFixture(
       repositoryWorkspaceId: row.workspace_id,
     },
   );
+  if (!entry) throw new Error("Publication source session was not created");
+  row.session_lifecycle_revision = entry.lifecycleRevision ?? null;
+  row.request_digest = repositoryGitHubPublicationDigest(row);
   const source = await prepareGitHubPublicationSource({
     sourcePath: resolveOpenClawAgentSqlitePath({ agentId: row.agent_id }),
     selector: {
       agentId: row.agent_id,
       sessionKey: row.session_key,
       sessionId: row.session_id,
-      lifecycleRevision: null,
+      lifecycleRevision: row.session_lifecycle_revision,
       repositoryWorkspaceId: row.workspace_id,
       repositoryBranch: row.branch,
       personalOwnerProfileId,
@@ -298,7 +324,7 @@ it("revokes personal source authority at commit before reply delivery without re
       }),
     ).toThrow("rollback connection");
     expect(() => bindGitHubPublicationSource(source)).not.toThrow();
-    const reply = holdNextReply();
+    const reply = holdNextReply("userGitHubConnections.mutate");
     const disconnected = mutateUserGitHubConnection(owner, { kind: "disconnect" }, () => {});
     try {
       await withinTest(
@@ -437,8 +463,8 @@ it("publishes a committed receipt before a delayed ordinary worker reply", async
       result: {
         requestId: row.request_id,
         status: "failed",
-        code: "unavailable",
-        message: "Synthetic publication failure",
+        code: "session_changed",
+        message: "Session changed before publication",
         nextAction: "Retry publication",
       },
     }),
@@ -486,10 +512,21 @@ it.for(["superseded", "closed"] as const)(
     );
     if (outcome === "superseded") {
       runOpenClawStateWriteTransaction((database) =>
-        claimRepositoryGitHubPublicationInDatabase(database, row, "gateway", "replacement", {
-          assertCurrent: context.admission.assertCurrent,
-          assertCustody: context.admission.assertCurrent,
-        }),
+        claimRepositoryGitHubPublicationInDatabase(
+          database,
+          {
+            ...row,
+            status: "publishing",
+            execution_id: "original",
+            gateway_instance_id: "gateway",
+          },
+          "gateway",
+          "replacement",
+          {
+            assertCurrent: context.admission.assertCurrent,
+            assertCustody: context.admission.assertCurrent,
+          },
+        ),
       );
       expect(facts.get(key)).toMatchObject({
         kind: "postimage",
@@ -528,12 +565,12 @@ it("revokes prepared sources when canonical deletion commits before its ordinary
         {
           sessionKey: row.session_key,
           sessionId: row.session_id,
-          lifecycleRevision: null,
+          lifecycleRevision: row.session_lifecycle_revision,
         },
       ],
     });
     expect(() => bindGitHubPublicationSource(source)).not.toThrow();
-    const reply = holdNextReply();
+    const reply = holdNextReply("githubPublication.deleteSessionReceipts");
     const deletion = remove();
     try {
       await withinTest(

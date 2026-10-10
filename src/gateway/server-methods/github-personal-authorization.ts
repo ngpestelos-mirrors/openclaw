@@ -3,7 +3,7 @@ import {
   operatorScopeSatisfied,
   roleScopesAllow,
 } from "../../shared/operator-scope-compat.js";
-import { prepareUserProfileRoleAuthority } from "../../state/user-channel-identity-operations.js";
+import { prepareUserProfileRolePolicyAuthority } from "../../state/user-channel-identity-operations.js";
 import { resolvePersonalGitHubOwner } from "../../state/user-github-connections.js";
 import type { PersonalGitHubAction, PersonalGitHubActionV2 } from "../github-personal-oauth.js";
 import type { PersonalGitHubSessionActionV2 } from "../github-personal-publication.js";
@@ -126,7 +126,7 @@ export async function prepareGitHubPublicationOptionsRead(
   assertConnection();
   currentGitHubClient(options, "operator.sessions.read");
   const profile = profileReference
-    ? await prepareUserProfileRoleAuthority(profileReference)
+    ? await prepareUserProfileRolePolicyAuthority(profileReference)
     : undefined;
   assertConnection();
   if (profileReference && !profile) {
@@ -233,7 +233,7 @@ export async function preparePersonalGitHubActionV2(
   };
   assertConnection();
   const profile = profileReference
-    ? await prepareUserProfileRoleAuthority(profileReference)
+    ? await prepareUserProfileRolePolicyAuthority(profileReference)
     : undefined;
   assertConnection();
   if (!profile) {

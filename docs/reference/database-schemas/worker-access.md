@@ -271,6 +271,13 @@ even if the old connection is restored. Profile-retirement notifications carry
 only the affected profile IDs. OAuth and refresh semantics and the existing stored
 representation remain unchanged.
 
+Cancellation without a matching pending request returns after a read in the same
+worker FIFO, without a write transaction or publication. Matching requests are
+still reread inside the mutation transaction. GitHub role checks prepare only the
+canonical profile ID, role, and verified GitHub login through the existing profile
+authority fence; display and alias consumers retain the full profile projection.
+These changes do not alter the schema, stored representation, or update behavior.
+
 Released coordinator methods with opaque requester assertions remain explicit
 native compatibility adapters. Their route is selected before any callback runs;
 worker failure never selects it as a fallback. Synchronous compatibility writes
