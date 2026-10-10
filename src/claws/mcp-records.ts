@@ -75,3 +75,14 @@ export function rowToRef(row: McpRefRow): PersistedClawMcpServerRef {
     updatedAtMs: sqliteNumber(row.updated_at_ms),
   };
 }
+
+export class ClawMcpInstallError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly mcpServers: PersistedClawMcpServerRef[],
+  ) {
+    super(message);
+    this.name = "ClawMcpInstallError";
+  }
+}

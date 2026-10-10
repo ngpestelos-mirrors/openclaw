@@ -10,6 +10,7 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
 import { digestClawValue } from "./digest.js";
+import { releaseAdoptedClawInstallRecordInDatabase } from "./provenance-adopted-release.kernel.js";
 import { readClawInstallRecordFromDatabase } from "./provenance-read.kernel.js";
 import { prepareClawInstallRecord } from "./provenance-record.js";
 import {
@@ -131,41 +132,7 @@ export function releaseAdoptedClawInstallRecord(
   options: OpenClawStateDatabaseOptions = {},
 ): void {
   runOpenClawStateWriteTransaction((database) => {
-    assertAgentDeletionAllowsMutation(database, agentId);
-    const { db } = database;
-    const record = readClawInstallRecordFromDatabase(db, agentId);
-    if (!record) {
-      throw new Error(`No Claw install record exists for agent ${JSON.stringify(agentId)}.`);
-    }
-    if (
-      record.agentOrigin !== "adopted" ||
-      record.planIntegrity !== expectedPlanIntegrity ||
-      record.status !== "complete"
-    ) {
-      throw new Error(`Adopted Claw ownership changed for agent ${JSON.stringify(agentId)}.`);
-    }
-    const secondaryReferences = readClawSecondaryReferenceTables(db, agentId);
-    if (secondaryReferences.length > 0) {
-      throw new Error(
-        `Adopted Claw ownership for agent ${JSON.stringify(agentId)} now includes secondary resources in ${secondaryReferences.join(", ")}; reconcile them before releasing ownership.`,
-      );
-    }
-    const state = getNodeSqliteKysely<ClawAdoptedDatabase>(db);
-    executeSqliteQuerySync(
-      db,
-      state.deleteFrom("claw_workspace_files").where("agent_id", "=", agentId),
-    );
-    const removed = executeSqliteQuerySync(
-      db,
-      state
-        .deleteFrom("claw_installs")
-        .where("agent_id", "=", agentId)
-        .where("schema_version", "=", record.schemaVersion)
-        .where("plan_integrity", "=", expectedPlanIntegrity),
-    );
-    if (removed.numAffectedRows !== 1n) {
-      throw new Error(`Adopted Claw ownership changed for agent ${JSON.stringify(agentId)}.`);
-    }
+    releaseAdoptedClawInstallRecordInDatabase(database, agentId, expectedPlanIntegrity);
   }, options);
   deleteCachedClawInstallSchemaVersion(agentId, options);
 }
