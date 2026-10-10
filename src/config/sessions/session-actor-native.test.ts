@@ -269,6 +269,56 @@ it("retains staged custody when authority ends during committed publication", as
   });
 });
 
+it("refuses staging when custody authority ends at the final actor commit", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+    const { input, owner, recorderTarget } = await nativeInputSession(env);
+    let live = true;
+    let commits = 0;
+    const recorder = createUserTurnTranscriptRecorder({
+      input: { text: "must not be accepted", timestamp: 1, idempotencyKey: "stage-final:user" },
+      target: recorderTarget,
+      updateMode: "none",
+      onPersistenceError() {},
+    });
+    bindUserTurnInputActor(recorder, { phase: "acceptInput", acquire: async () => input });
+    const accept = input.actor.acceptInput;
+    vi.spyOn(input.actor, "acceptInput").mockImplementation((command, current, observer) =>
+      accept(
+        command,
+        {
+          ...current,
+          authorize(stage, snapshot, publication) {
+            if (stage === "commit" && owner.db.isTransaction && ++commits === 2) live = false;
+            current.authorize(stage, snapshot, publication);
+          },
+        },
+        observer,
+      ),
+    );
+    try {
+      await expect(
+        recorder.stageApproved?.({
+          runId: "native-run",
+          assertCurrent() {
+            if (!live) throw new Error("final custody authority ended");
+          },
+        }),
+      ).rejects.toThrow("final custody authority ended");
+      expect(commits).toBe(2);
+      expect(
+        readSessionPendingInputByKey(owner, recorderTarget, "stage-final:user"),
+      ).toBeUndefined();
+      expect(recorder.getPendingInputMessage?.()).toBeUndefined();
+      expect(readTranscriptEventRows(owner, recorderTarget.sessionId)).toEqual([]);
+    } finally {
+      live = true;
+      recorder.finishPendingInput?.("interrupted");
+      await recorder.waitForPendingInputSettlement?.();
+      await input.actor.release();
+    }
+  });
+});
+
 it("retains recorder custody when the native actor's committed publication fails", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
     const { input, owner, scope, recorderTarget } = await nativeInputSession(env);

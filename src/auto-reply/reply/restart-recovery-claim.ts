@@ -300,7 +300,7 @@ export function createReplyRestartRecoveryClaimController(params: {
         },
       );
       if (outcome.kind === "committed") {
-        if (outcome.failure) {
+        if (outcome.failure && outcome.failure.origin !== "response") {
           throw Object.assign(new Error(outcome.failure.message), { name: outcome.failure.name });
         }
         if (!committed) {

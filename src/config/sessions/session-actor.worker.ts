@@ -166,6 +166,7 @@ export function createSessionActorWorker(
           throw new Error("Session actor version changed before command admission");
         }
         const working = cloneSessionActorStoredState(before);
+        let commitPublication: unknown;
         const borrowed: AgentWorkerOperationContext = {
           ...context,
           open: () => opened,
@@ -176,6 +177,7 @@ export function createSessionActorWorker(
             return operation(opened);
           },
           admit(stage, publication) {
+            if (stage === "commit") commitPublication = publication;
             context.admit(stage, {
               kind: "session-actor-admission",
               snapshot: projectSessionActorHotState(working),
@@ -279,7 +281,7 @@ export function createSessionActorWorker(
             context.admit("commit", {
               kind: "session-actor-admission",
               snapshot: projectSessionActorHotState(working),
-              publication: turn,
+              publication: turn ?? commitPublication,
               final: true,
             });
             return accepted;

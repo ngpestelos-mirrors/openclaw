@@ -355,7 +355,7 @@ export async function preparePendingInputStore(
             );
             if (outcome.kind !== "committed")
               throwSessionInputActorFailure(outcome, authorityFailure);
-            if (outcome.failure)
+            if (outcome.failure && outcome.failure.origin !== "response")
               throw Object.assign(new Error(outcome.failure.message), {
                 name: outcome.failure.name,
               });

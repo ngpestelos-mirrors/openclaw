@@ -225,7 +225,12 @@ export type SessionActorOutcome<Value> =
       value: Value;
       receipt: SessionActorReceipt;
       /** Publication/cleanup failure cannot erase a captured durable receipt. */
-      failure?: { name: string; message: string };
+      failure?: {
+        name: string;
+        message: string;
+        /** Only the command response was lost; native settlement and publication succeeded. */
+        origin?: "response";
+      };
     }
   | { kind: "rolled-back"; error: { name: string; message: string } }
   | {

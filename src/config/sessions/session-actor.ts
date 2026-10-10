@@ -275,11 +275,11 @@ export function createSessionActor(params: {
         commandId: captured.commandId,
         error: errorFacts(error),
       });
-      const preserveFailure = (error: unknown): Outcome => {
+      const preserveFailure = (error: unknown, origin?: "response"): Outcome => {
         if (!committed) {
           return unknown(error);
         }
-        const failure = errorFacts(error);
+        const failure = { ...errorFacts(error), ...(origin ? { origin } : {}) };
         committed = {
           ...committed,
           failure: committed.failure
@@ -331,7 +331,7 @@ export function createSessionActor(params: {
                   // SAFETY: The paired native receipt owns the result type; the checks above match its command and postimage.
                   committed = structuredClone(evidence) as Extract<Outcome, { kind: "committed" }>;
                   if (!reply.ok) {
-                    preserveFailure(reply.error);
+                    preserveFailure(reply.error, "response");
                   } else if (reply.value.kind === "committed" && reply.value.failure) {
                     committed = { ...committed, failure: structuredClone(reply.value.failure) };
                   }

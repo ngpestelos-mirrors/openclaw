@@ -21,9 +21,14 @@ export async function acquireSessionInputActor(
   target: SessionEntryTargetPatchScope,
   lifetime: SessionActorLifetime,
 ): Promise<{ actor: SessionActor; target: SessionEntryTargetPatchScope }> {
-  const sessionKey = target.target.canonicalKey;
   const agentId = target.readSource?.agentId ?? target.agentId;
   if (!agentId) throw new Error("Input actor requires its captured agent owner");
+  // Sentinel aliases retain their selected physical key (global/unknown).
+  const sessionKey = resolveSqliteSessionKey(
+    target.target.storeKeys[0] ?? target.target.canonicalKey,
+    agentId,
+  );
+  target = { ...target, target: { ...target.target, canonicalKey: sessionKey } };
   const database = {
     agentId,
     path: target.readSource?.path ?? target.storePath,
