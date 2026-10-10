@@ -166,7 +166,13 @@ export async function agentsAddCommand(
             beforePersistentApply: assertCurrent,
           });
           if (result.status === "error") {
-            throwExpectedCliError(result.message);
+            throwExpectedCliError(
+              result.reason === "reserved-id"
+                ? `"${result.agentId}" is reserved. Choose another name, or run ${formatCliCommand("openclaw agents list")} to inspect configured agents.`
+                : result.reason === "already-exists"
+                  ? `Agent "${result.agentId}" already exists.`
+                  : result.message,
+            );
           }
           return result;
         }),

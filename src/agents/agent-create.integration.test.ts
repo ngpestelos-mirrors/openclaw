@@ -799,7 +799,7 @@ it.each(["commit", "rollback", "close-failure"] as const)(
           throw new Error("Auth staging did not capture its creation context");
         }
         await expect(retainedCreation(writeOutsideCreation)).rejects.toThrow(
-          "Agent creation claim is no longer active",
+          "Database maintenance resource scope is closed",
         );
         expect(isWorkDatabaseOpen()).toBe(false);
         expect(readProfiles()["openai:after"]).toBeUndefined();

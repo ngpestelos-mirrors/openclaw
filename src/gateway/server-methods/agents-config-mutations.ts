@@ -1,3 +1,4 @@
+import { createAgent } from "../../agents/agent-create.js";
 import { hasAgentRosterProperty, tryResolveSoleAgentId } from "../../agents/agent-roster.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
@@ -7,7 +8,7 @@ import {
   listAgentEntries,
   pruneAgentConfig,
 } from "../../commands/agents.config.js";
-import { mutateConfigFileWithRetry } from "../../config/config.js";
+import { mutateConfigFileWithRetry, transformConfigFileWithRetry } from "../../config/config.js";
 import type { ConfigWriteOptions } from "../../config/io.js";
 import { copyRuntimeConfigWriteApplication } from "../../config/runtime-write-application.js";
 import { resolveSessionTranscriptsDirForAgent } from "../../config/sessions.js";
@@ -24,6 +25,21 @@ type AgentDeleteMutationResult = {
 export class AgentConfigPreconditionError extends Error {}
 
 export class AgentModelSelectionError extends Error {}
+
+/** Carry the Gateway's publication receipt through the canonical creation transaction. */
+export async function createAgentConfigEntry(
+  params: Omit<Parameters<typeof createAgent>[0], "transformConfig">,
+  writeOptions: ConfigWriteOptions,
+) {
+  return await createAgent({
+    ...params,
+    transformConfig: (mutation) =>
+      transformConfigFileWithRetry({
+        ...mutation,
+        writeOptions: copyRuntimeConfigWriteApplication(writeOptions, mutation.writeOptions ?? {}),
+      }),
+  });
+}
 
 type AgentConfigUpdate = Omit<Parameters<typeof applyAgentConfig>[1], "agentDir"> & {
   agentRuntime?: string;
