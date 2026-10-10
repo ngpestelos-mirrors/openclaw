@@ -55,8 +55,11 @@ export function mergeUserProfiles(
     );
   }
   mergeUserModelAccounts(db, sourceProfileId, targetProfileId);
-  mergeUserGitHubConnection(db, sourceProfileId, targetProfileId, (ids) =>
-    mutation?.retireGitHubProfiles?.(ids),
+  mergeUserGitHubConnection(
+    db,
+    sourceProfileId,
+    targetProfileId,
+    mutation?.publishGitHubConnections,
   );
   for (const mergedProfileId of sourceProfileIds) {
     mergeUserPreferences(db, mergedProfileId, targetProfileId);

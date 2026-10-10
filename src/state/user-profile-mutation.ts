@@ -4,6 +4,8 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
+import { isUserGitHubConnectionCommit } from "./user-github-connections.kernel.js";
+import type { UserGitHubConnectionCommit } from "./user-github-connections.types.js";
 import { isProfileDisplayRow } from "./user-profile-display-validation.js";
 import type { ProfileDisplayRow, UserProfileEmailBinding } from "./user-profiles.types.js";
 
@@ -24,7 +26,7 @@ export type UserProfileMutationPublication = {
   before: Array<[string, ProfileDisplayRow | undefined]>;
   after: Array<[string, ProfileDisplayRow | undefined]>;
   emailBindings: UserProfileEmailBindingChange[];
-  retiredGitHubProfileIds?: string[];
+  githubConnections?: UserGitHubConnectionCommit;
 };
 export type UserProfileMutationContext = {
   runTransaction<T>(db: DatabaseSync, operation: () => T): T;
@@ -32,7 +34,7 @@ export type UserProfileMutationContext = {
   authority(...profileIds: string[]): void;
   identity(...profileIds: string[]): void;
   publish(...profileIds: string[]): void;
-  retireGitHubProfiles?(profileIds: string[]): void;
+  publishGitHubConnections?(receipt: UserGitHubConnectionCommit): void;
 };
 export type UserProfileMutationOptions = OpenClawStateDatabaseOptions & {
   mutation?: UserProfileMutationContext;
@@ -88,9 +90,8 @@ export function isUserProfileMutationPublication(
     ) &&
     isDisplayEntries(value.before) &&
     isDisplayEntries(value.after) &&
-    (value.retiredGitHubProfileIds === undefined ||
-      (Array.isArray(value.retiredGitHubProfileIds) &&
-        value.retiredGitHubProfileIds.every((id) => typeof id === "string"))) &&
+    (value.githubConnections === undefined ||
+      isUserGitHubConnectionCommit(value.githubConnections)) &&
     Array.isArray(value.emailBindings) &&
     value.emailBindings.every(
       (change) =>

@@ -29,12 +29,14 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { dumpGitBackupDatabase } from "../../snapshot/git-backup-codec.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import * as stateLease from "../../state/openclaw-state-lease.js";
+import { observeUserGitHubConnectionAuthority } from "../../state/user-github-connection-events.js";
 import {
   observeUserGitHubProfileRetirement,
   readUserGitHubConnection,
   resolvePersonalGitHubOwner,
 } from "../../state/user-github-connections.js";
 import { updateUserGitHubConnection } from "../../state/user-github-connections.test-support.js";
+import type { UserGitHubConnectionCommit } from "../../state/user-github-connections.types.js";
 import { getUserProfileListItem } from "../../state/user-profile-list-item.test-support.js";
 import { linkCanonicalUserProfileEmail } from "../../state/user-profile-writes.js";
 import { linkEmail, setUserProfileRole } from "../../state/user-profile-writes.worker.js";
@@ -785,7 +787,15 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
       await start();
       const retired: string[] = [];
       const observedOwners: Array<string | undefined> = [];
+      const authorityOwners: Array<string | undefined> = [];
+      const authoritySeenAtRetirement: number[] = [];
+      const publications: UserGitHubConnectionCommit[] = [];
+      const unobserveAuthority = observeUserGitHubConnectionAuthority((publication) => {
+        authorityOwners.push(resolvePersonalGitHubOwner(owner()));
+        publications.push(publication);
+      });
       const unobserve = observeUserGitHubProfileRetirement((ids) => {
+        authoritySeenAtRetirement.push(publications.length);
         observedOwners.push(resolvePersonalGitHubOwner(owner()));
         retired.push(...ids);
       });
@@ -793,6 +803,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
         await linkCanonicalUserProfileEmail("alice@example.test", owner(bob));
       } finally {
         unobserve();
+        unobserveAuthority();
       }
       expect(retired).toEqual(
         target === "absent" || source.selection.kind !== "connected"
@@ -800,11 +811,46 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
           : [source.selection.profileId],
       );
       expect(observedOwners).toEqual(target === "absent" ? [] : [owner(bob)]);
+      expect(authorityOwners).toEqual([owner(bob)]);
+      expect(authoritySeenAtRetirement).toEqual(target === "absent" ? [] : [1]);
       const merged = readUserGitHubConnection(owner(bob));
       expect(merged?.selection).toEqual((previousTarget ?? source).selection);
       expect(merged?.pending).toBeUndefined();
       expect(merged?.generation).not.toBe(source.generation);
       expect(merged?.generation).not.toBe(previousTarget?.generation);
+      const selected = (previousTarget ?? source).selection;
+      expect(publications).toEqual([
+        {
+          kind: "user-github-connection",
+          databasePath: openOpenClawStateDatabase().path,
+          changes: [
+            { owner: owner(), connection: null },
+            {
+              owner: owner(bob),
+              connection: {
+                generation: merged?.generation,
+                selection:
+                  selected.kind === "disconnected"
+                    ? { kind: "disconnected" }
+                    : {
+                        kind: "connected",
+                        profileId: selected.profileId,
+                        accountId: selected.accountId,
+                        login: selected.login,
+                        scopes: selected.scopes,
+                        accessExpiresAtMs: selected.accessExpiresAtMs,
+                        refreshExpiresAtMs: selected.refreshExpiresAtMs,
+                        refreshFailure: undefined,
+                        refreshing: false,
+                      },
+              },
+            },
+          ],
+          retiredProfileIds: retired,
+        },
+      ]);
+      expect(JSON.stringify(publications)).not.toContain(tokens.accessToken);
+      expect(JSON.stringify(publications)).not.toContain(tokens.refreshToken);
     },
   );
 

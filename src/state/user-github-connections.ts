@@ -1,4 +1,3 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   createSqliteWorkerOperationAdmission,
   observeSqliteWorkerCommittedFacts,
@@ -13,8 +12,9 @@ import {
   captureOpenClawStateWorkerContext,
 } from "./openclaw-state-worker-context.js";
 import { runOpenClawStateWorkerOperation } from "./openclaw-state-worker-store.js";
-import { publishUserGitHubProfileRetirement } from "./user-github-connection-events.js";
+import { publishUserGitHubConnectionCommit } from "./user-github-connection-events.js";
 import {
+  isUserGitHubConnectionCommit,
   parseUserGitHubConnection,
   readUserGitHubConnectionInDatabase,
   resolvePersonalGitHubOwner as resolveOwner,
@@ -101,18 +101,16 @@ async function write<Key extends keyof UserGitHubConnectionWorkerOperations>(
         const admission = createSqliteWorkerOperationAdmission((_request, grant) => {
           context.admission.assertCurrent();
           assertCurrent();
+          if (_request.stage === "commit" && !isUserGitHubConnectionCommit(_request.facts)) {
+            throw new Error("Personal GitHub connection returned invalid commit facts");
+          }
           grant();
         });
         observeSqliteWorkerCommittedFacts(admission, ({ facts }) => {
-          if (
-            !isRecord(facts) ||
-            facts.kind !== "user-github-connection" ||
-            !Array.isArray(facts.retiredProfileIds) ||
-            !facts.retiredProfileIds.every((id): id is string => typeof id === "string")
-          ) {
+          if (!isUserGitHubConnectionCommit(facts)) {
             throw new Error("Personal GitHub connection returned an invalid commit receipt");
           }
-          publishUserGitHubProfileRetirement(facts.retiredProfileIds);
+          publishUserGitHubConnectionCommit(context.admission.databasePath, facts);
         });
         return { admission, nativeLocations: [context.admission.databasePath] };
       },

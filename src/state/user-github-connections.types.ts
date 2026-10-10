@@ -1,5 +1,9 @@
 import type { GitHubOAuthTokenPair } from "../agents/github-oauth-client.js";
-import type { UserGitHubConnection, UserGitHubDevice } from "./user-github-connections.kernel.js";
+import type {
+  UserGitHubConnection,
+  UserGitHubConnectionAuthority,
+  UserGitHubDevice,
+} from "./user-github-connections.kernel.js";
 
 export type UserGitHubConnectionMutation =
   | { kind: "start"; requestId: string; createdAtMs: number; expiresAtMs: number }
@@ -39,6 +43,7 @@ export type UserGitHubRefreshMutation = {
 
 export type UserGitHubConnectionCommit = {
   kind: "user-github-connection";
+  changes: Array<{ owner: string; connection: UserGitHubConnectionAuthority | null }>;
   retiredProfileIds: string[];
 };
 

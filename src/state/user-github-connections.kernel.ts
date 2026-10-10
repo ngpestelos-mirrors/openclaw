@@ -3,7 +3,6 @@ import type { DatabaseSync } from "node:sqlite";
 import { safeParseJson } from "@openclaw/normalization-core/json-coercion";
 import { z } from "zod";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
-import { deferSqlitePostCommitPublication } from "../infra/sqlite-post-commit.js";
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
 import {
   PersonalGitHubStateError,
@@ -21,7 +20,8 @@ import {
 } from "../shared/github-oauth-values.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import type { DB } from "./openclaw-state-db.generated.js";
-import { publishUserGitHubProfileRetirement } from "./user-github-connection-events.js";
+import { stageUserGitHubConnectionCommit } from "./user-github-connection-events.js";
+import type { UserGitHubConnectionCommit } from "./user-github-connections.types.js";
 import { selectResolvedUserProfileMetadataById } from "./user-profiles-internal.js";
 import type { UserProfilesDatabase } from "./user-profiles.types.js";
 
@@ -99,15 +99,64 @@ export type UserGitHubConnection = z.infer<typeof connectionSchema>;
 export type UserGitHubConnected = z.infer<typeof connected>;
 export type UserGitHubDevice = z.infer<typeof device>;
 
-function retireAfterCommit(
+const connectionAuthoritySchema = z.strictObject({
+  generation: z.string().uuid(),
+  selection: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("disconnected") }),
+    connected.omit({ refreshToken: true, refresh: true }).extend({ refreshing: z.boolean() }),
+  ]),
+});
+const connectionCommitSchema = z.strictObject({
+  kind: z.literal("user-github-connection"),
+  changes: z.array(
+    z.strictObject({ owner: z.string(), connection: connectionAuthoritySchema.nullable() }),
+  ),
+  retiredProfileIds: z.array(z.string()),
+});
+export type UserGitHubConnectionAuthority = z.infer<typeof connectionAuthoritySchema>;
+
+/** The connection owner defines the same credential-free projection for snapshots and commits. */
+export function projectUserGitHubConnectionAuthority(
+  connection: UserGitHubConnection | undefined,
+): UserGitHubConnectionAuthority | null {
+  if (!connection) return null;
+  const selected = connection.selection;
+  return {
+    generation: connection.generation,
+    selection:
+      selected.kind === "disconnected"
+        ? { kind: "disconnected" }
+        : {
+            kind: selected.kind,
+            profileId: selected.profileId,
+            accountId: selected.accountId,
+            login: selected.login,
+            accessExpiresAtMs: selected.accessExpiresAtMs,
+            refreshExpiresAtMs: selected.refreshExpiresAtMs,
+            refreshFailure: selected.refreshFailure,
+            scopes: [...selected.scopes],
+            refreshing: Boolean(selected.refresh),
+          },
+  };
+}
+
+export function isUserGitHubConnectionCommit(value: unknown): value is UserGitHubConnectionCommit {
+  return connectionCommitSchema.safeParse(value).success;
+}
+
+function publishAfterCommit(
   db: DatabaseSync,
-  ids: string[],
-  retire?: (ids: string[]) => void,
+  changes: UserGitHubConnectionCommit["changes"],
+  retiredProfileIds: string[],
+  capture?: (receipt: UserGitHubConnectionCommit) => void,
 ): void {
-  if (ids.length > 0) {
-    retire?.(ids);
-    deferSqlitePostCommitPublication(db, () => publishUserGitHubProfileRetirement(ids));
-  }
+  const receipt: UserGitHubConnectionCommit = {
+    kind: "user-github-connection",
+    changes,
+    retiredProfileIds,
+  };
+  if (capture) capture(receipt);
+  else stageUserGitHubConnectionCommit(db, receipt);
 }
 
 export function parseUserGitHubConnection(raw: string): UserGitHubConnection {
@@ -177,15 +226,16 @@ export function writeUserGitHubConnectionInDatabase(
   owner: string,
   next: UserGitHubConnection,
   current: UserGitHubConnection | undefined,
-  retire?: (ids: string[]) => void,
+  capture?: (receipt: UserGitHubConnectionCommit) => void,
 ): UserGitHubConnection {
   const parsed = parseUserGitHubConnection(JSON.stringify(next));
   writePersonalGitHubSecret(db, owner, JSON.stringify(parsed));
   const retained = new Set(connectionProfiles(parsed));
-  retireAfterCommit(
+  publishAfterCommit(
     db,
+    [{ owner, connection: projectUserGitHubConnectionAuthority(parsed) }],
     connectionProfiles(current).filter((id) => !retained.has(id)),
-    retire,
+    capture,
   );
   return parsed;
 }
@@ -197,7 +247,7 @@ export function disconnectedUserGitHubConnection(): UserGitHubConnection {
 export function disconnectUserGitHubConnectionInDatabase(
   db: DatabaseSync,
   owner: string,
-  retire: (ids: string[]) => void,
+  capture: (receipt: UserGitHubConnectionCommit) => void,
 ): UserGitHubConnection {
   requireOwner(db, owner);
   return writeUserGitHubConnectionInDatabase(
@@ -205,7 +255,7 @@ export function disconnectUserGitHubConnectionInDatabase(
     owner,
     disconnectedUserGitHubConnection(),
     readConnectionForReplacement(db, owner),
-    retire,
+    capture,
   );
 }
 
@@ -236,7 +286,7 @@ export function mergeUserGitHubConnection(
   db: DatabaseSync,
   source: string,
   target: string,
-  retire?: (ids: string[]) => void,
+  capture?: (receipt: UserGitHubConnectionCommit) => void,
 ): void {
   requireOwner(db, source);
   requireOwner(db, target);
@@ -252,12 +302,16 @@ export function mergeUserGitHubConnection(
     writePersonalGitHubSecret(db, source, null);
   }
   const retained = new Set(connectionProfiles(next));
-  retireAfterCommit(
+  publishAfterCommit(
     db,
+    [
+      { owner: source, connection: null },
+      { owner: target, connection: projectUserGitHubConnectionAuthority(next) },
+    ],
     [...connectionProfiles(sourceRecord), ...connectionProfiles(targetRecord)].filter(
       (id) => !retained.has(id),
     ),
-    retire,
+    capture,
   );
 }
 
