@@ -131,11 +131,29 @@ export function createIncognitoSessionWorker(
                 execNode: entry.execNode,
                 repositoryWorkspaceId: entry.repositoryWorkspaceId,
                 worktreeId: entry.worktree?.id,
+                worktree: entry.worktree,
+                projectId: entry.projectId,
+                pluginOwnerId: entry.pluginOwnerId,
                 sessionRoot: entry.sessionRoot,
                 spawnedCwd: entry.spawnedCwd,
                 spawnedWorkspaceDir: entry.spawnedWorkspaceDir,
                 pendingWorktree: entry.pendingWorktree,
                 pendingProjectGitUrl: entry.pendingProjectGitUrl,
+              }
+            : undefined,
+          modelSelection: entry
+            ? {
+                modelOverride: entry.modelOverride,
+                modelOverrideSource: entry.modelOverrideSource,
+                providerOverride: entry.providerOverride,
+                modelOverrideRouteResolution: entry.modelOverrideRouteResolution,
+                modelOverrideFallbackOriginProvider: entry.modelOverrideFallbackOriginProvider,
+                modelOverrideFallbackOriginModel: entry.modelOverrideFallbackOriginModel,
+                agentRuntimeOverride: entry.agentRuntimeOverride,
+                agentHarnessId: entry.agentHarnessId,
+                authProfileOverride: entry.authProfileOverride,
+                sandboxMode: entry.sandboxMode,
+                nativeRuntimeConsent: entry.nativeRuntimeConsent,
               }
             : undefined,
           steering: entry

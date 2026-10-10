@@ -1,3 +1,4 @@
+import { captureIncognitoSessionSource } from "../../config/sessions/session-incognito-binding.js";
 import { operatorScopeSatisfied } from "../../shared/operator-scope-compat.js";
 import { resolveGatewayOperatorRoleActor } from "../operator-role-policy.js";
 import {
@@ -33,13 +34,46 @@ export function retainSessionScopedRead(
   if (!narrow && !initialVisibility) {
     return undefined;
   }
-  const read = retainGatewaySessionEntryReadOnly(
-    sessionKey,
-    agentId,
-    readOptions.allowMetadataChanges
-      ? (previous, current) => !hasSessionReadAccessChanged(previous, current)
-      : undefined,
-  );
+  const binding = captureIncognitoSessionSource({ sessionKey, agentId });
+  const read = binding
+    ? (() => {
+        let released = false;
+        const claim =
+          "kind" in binding ? undefined : binding.actor.sessions.captureCurrent(sessionKey);
+        const entry =
+          "kind" in binding ? undefined : binding.actor.sessions.readSharing(sessionKey)?.entry;
+        return {
+          entry,
+          canonicalKey: sessionKey,
+          legacyKey: undefined,
+          isCurrentAtResponse() {
+            if (released) {
+              return false;
+            }
+            binding.admissionSignal?.throwIfAborted();
+            if ("kind" in binding) {
+              binding.assertCurrent();
+              return true;
+            }
+            binding.actor.assertReadable();
+            claim?.assertCurrent();
+            const current = binding.actor.sessions.readSharing(sessionKey)?.entry;
+            return entry && current
+              ? !hasSessionReadAccessChanged(entry, current)
+              : entry === current;
+          },
+          release() {
+            released = true;
+          },
+        };
+      })()
+    : retainGatewaySessionEntryReadOnly(
+        sessionKey,
+        agentId,
+        readOptions.allowMetadataChanges
+          ? (previous, current) => !hasSessionReadAccessChanged(previous, current)
+          : undefined,
+      );
   const assertCurrent = () => {
     authority.assertCurrent();
     const currentActor = resolveGatewayOperatorRoleActor(options.client);
