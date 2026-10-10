@@ -25,6 +25,7 @@ export type AgentDeletionWorkerAuthority = AgentDeletionCleanupWorkerAuthority &
       additionalLeaseIdentities: readonly OpenClawStateLeaseIdentity[],
     ) => Promise<T>,
     options?: {
+      settlement?: boolean;
       assertCurrent?: () => void;
       onCommitted?: (facts: unknown) => void;
       onAdmission?: (request: SqliteWorkerAdmissionRequest, stateIdentityKey: string) => void;

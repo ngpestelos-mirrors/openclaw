@@ -60,9 +60,9 @@ async function withAgentDeletion<T>(
   try {
     return await withAgentDeletionRuntime(
       agentId,
-      async (begin) => {
+      async (begin, lease) => {
         vi.useRealTimers();
-        return await run(begin);
+        return await run(begin, lease);
       },
       options,
     );

@@ -493,6 +493,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/claws/provenance-deletion.test.ts",
   "src/claws/provenance-write.test.ts",
   "src/claws/provenance.test.ts",
+  "src/claws/read-only-state-compat.test.ts",
   "src/claws/package-update.test.ts",
   "src/claws/packages.runtime.test.ts",
   "src/claws/update-apply.test.ts",

@@ -1,5 +1,11 @@
 import { coerceErrorMessage } from "@openclaw/normalization-core";
 
+export type ClawSettlementOptions = {
+  assertCurrent?: () => void;
+  assertSettlementCurrent?: () => void;
+  runSettlement?: <T>(run: () => Promise<T>) => Promise<T>;
+};
+
 type ClawRollbackStep =
   | (() => Promise<void>)
   | readonly [label: string, rollback: () => Promise<void>];

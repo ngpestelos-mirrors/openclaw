@@ -99,9 +99,9 @@ describe("Claw installation identity during deletion", () => {
           expect(() => persistClawMigrationOwnership(next, [], options)).toThrow(
             "pending deletion",
           );
-          expect(() =>
+          await expect(
             releaseAdoptedClawInstallRecord("worker", original.planIntegrity, options),
-          ).toThrow("pending deletion");
+          ).rejects.toThrow("pending deletion");
           expect(() => updateClawInstallRecordStatus("worker", "partial", options)).toThrow(
             "pending deletion",
           );

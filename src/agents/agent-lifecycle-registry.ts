@@ -123,8 +123,12 @@ export function withAgentDeletion<T>(
       entry: AgentDeletionInput,
       options?: AgentDeletionBeginOptions,
     ) => Promise<AgentDeletionOperation>,
+    lease: OpenClawStateWorkerLeaseContext,
   ) => Promise<T>,
-  options: OpenClawStateDatabaseOptions & { journalTransport?: AgentDeletionJournalTransport } = {},
+  options: OpenClawStateDatabaseOptions & {
+    journalTransport?: AgentDeletionJournalTransport;
+    assertCurrent?: () => void;
+  } = {},
 ): Promise<T> {
   const id = normalizeAgentId(agentId);
   const journalTransport = options.journalTransport;
@@ -165,6 +169,10 @@ export function withAgentDeletion<T>(
           }
           lifetime.assertCurrent();
         };
+        const assertEffectCurrent = () => {
+          options.assertCurrent?.();
+          assertCurrentHost();
+        };
         const execute = <Result>(
           apply: (
             scope: DomainScope,
@@ -172,6 +180,7 @@ export function withAgentDeletion<T>(
             additionalIdentities: readonly OpenClawStateLeaseIdentity[],
           ) => Promise<Result>,
           publication?: {
+            settlement?: boolean;
             mutation?: CronReceiptAuthorityMutation;
             assertCurrent?: () => void;
             onCommitted?: (facts: unknown) => void;
@@ -180,6 +189,9 @@ export function withAgentDeletion<T>(
           },
         ): Promise<Result> => {
           assertCurrentHost();
+          if (!publication?.settlement) {
+            options.assertCurrent?.();
+          }
           const invoke = (
             admission: Pick<typeof lifetime, "assertCurrent" | "createAdmission">,
             identities: readonly OpenClawStateLeaseIdentity[],
@@ -243,6 +255,9 @@ export function withAgentDeletion<T>(
           const authority = {
             assertCurrent: () => {
               assertCurrentHost();
+              if (!publication?.settlement) {
+                options.assertCurrent?.();
+              }
               publication?.mutation?.assertCurrent();
               publication?.assertCurrent?.();
             },
@@ -328,7 +343,7 @@ export function withAgentDeletion<T>(
             }
             assertCurrentHost();
             const authority: AgentDeletionWorkerAuthority = {
-              assertCurrentHost,
+              assertCurrentHost: assertEffectCurrent,
               withStateLease: (leaseOptions, apply) =>
                 withOpenClawStateLeaseAsync(leaseOptions, context, (additionalLease) =>
                   withOpenClawStateLeaseWorkerAdmission(
@@ -336,7 +351,7 @@ export function withAgentDeletion<T>(
                     statePath,
                     (admission) => {
                       const assertLeaseCurrentHost = () => {
-                        assertCurrentHost();
+                        assertEffectCurrent();
                         admission.assertCurrent();
                       };
                       return apply(additionalLease, assertLeaseCurrentHost, () =>
@@ -350,7 +365,7 @@ export function withAgentDeletion<T>(
                         ),
                       );
                     },
-                    { assertCurrent: assertCurrentHost },
+                    { assertCurrent: assertEffectCurrent },
                   ),
                 ),
               runWithLeaseAdmission: (operation) =>
@@ -358,7 +373,7 @@ export function withAgentDeletion<T>(
                   lease,
                   statePath,
                   (scope) => operation(scope, { lease: scope.identity, predicate }),
-                  { assertCurrent: assertCurrentHost },
+                  { assertCurrent: assertEffectCurrent },
                 ),
               runWithWorker: (operation, publication) =>
                 execute(
@@ -374,7 +389,7 @@ export function withAgentDeletion<T>(
               assertCurrentHost();
             };
             const assertCurrentFinal = () => {
-              assertCurrentHost();
+              assertEffectCurrent();
               const found = withExistingOpenClawStateDatabaseCurrentReadOnly(
                 ({ db }) => {
                   assertAgentDeletionFinalInDatabase(db, { lease: lifetime.identity, predicate });
@@ -537,13 +552,18 @@ export function withAgentDeletion<T>(
                 if (closed || !predicate.expectedClawInstall) {
                   return;
                 }
-                const handedOff = await authority.runWithWorker(
-                  (scope, guard) =>
+                const handedOff = await execute(
+                  (scope, identity) =>
                     scope.execute({
                       type: "agentDeletion.handoffClawRetry",
-                      input: { guard, retryOperationId: crypto.randomUUID(), nowMs: Date.now() },
+                      input: {
+                        guard: { lease: identity, predicate },
+                        retryOperationId: crypto.randomUUID(),
+                        nowMs: Date.now(),
+                      },
                     }),
                   {
+                    settlement: true,
                     onCommitted: () => {
                       closed = true;
                     },
@@ -573,6 +593,7 @@ export function withAgentDeletion<T>(
                           },
                         }),
                       {
+                        settlement: true,
                         mutation,
                         onCommitted: () => {
                           closed = true;
@@ -584,7 +605,7 @@ export function withAgentDeletion<T>(
               },
             };
             return operation;
-          });
+          }, lease);
         } finally {
           closed = true;
         }

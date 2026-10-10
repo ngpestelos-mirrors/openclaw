@@ -8,8 +8,11 @@ import { withDoctorSqliteMaintenanceLock } from "../commands/doctor-sqlite-maint
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
+  openExistingOpenClawStateDatabaseReadOnly,
   repairOpenClawStateDatabaseSchema,
 } from "../state/openclaw-state-db.js";
+import { readClawCronRefs } from "./cron.kernel.js";
+import { readClawMcpServerRefs, readClawMcpServerRefsByName } from "./mcp.kernel.js";
 import { readClawResumeStateReadOnly } from "./package-resume.js";
 import { parseClawManifest } from "./schema.js";
 import type { ClawSourceIdentity } from "./types.js";
@@ -79,6 +82,48 @@ async function createFixture(label: string): Promise<{
 }
 
 describe("read-only Claw state admission", () => {
+  it.each(["missing", "malformed"] as const)(
+    "preserves legacy bytes and distinguishes %s Claw inventory tables",
+    async (shape) => {
+      const root = tempDirs.make("openclaw-claw-legacy-inventory-");
+      const pathname = join(root, "legacy.sqlite");
+      const fixture = new DatabaseSync(pathname);
+      try {
+        fixture.exec(
+          "PRAGMA user_version = 1; CREATE TABLE legacy_marker (value TEXT); INSERT INTO legacy_marker VALUES ('retained');",
+        );
+        if (shape === "malformed") {
+          fixture.exec(
+            "CREATE TABLE claw_cron_refs (wrong_column TEXT); CREATE TABLE claw_mcp_server_refs (wrong_column TEXT);",
+          );
+        }
+      } finally {
+        fixture.close();
+      }
+      const before = await readFile(pathname);
+      const beforeFiles = await readdir(root);
+      const database = await openExistingOpenClawStateDatabaseReadOnly({ path: pathname });
+      if (!database) {
+        throw new Error("Legacy fixture was not admitted");
+      }
+      try {
+        const options = { path: pathname, database, readOnly: true };
+        for (const read of [readClawCronRefs, readClawMcpServerRefs, readClawMcpServerRefsByName]) {
+          if (shape === "missing") {
+            expect(read("legacy", options)).toEqual([]);
+            expect(() => read("legacy", { ...options, readOnly: false })).toThrow("no such table");
+          } else {
+            expect(() => read("legacy", options)).toThrow("no such column");
+          }
+        }
+      } finally {
+        database.walMaintenance.close();
+      }
+      expect(await readFile(pathname)).toEqual(before);
+      expect(await readdir(root)).toEqual(beforeFiles);
+    },
+  );
+
   it("requires backed-up Doctor schema repair before plan and resume reads", async () => {
     const fixture = await createFixture("openclaw-claw-base-shape-");
     const before = await readFile(fixture.databasePath);

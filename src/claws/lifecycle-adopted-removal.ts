@@ -116,7 +116,7 @@ export async function applyClawAdoptedRemovePlan(
   }
   return await withAgentDeletion(
     agentId,
-    async () => {
+    async (_begin, lease) => {
       const lockedStatus = await readClawStatus(agentId, options);
       const record = lockedStatus.records[0];
       if (
@@ -140,7 +140,10 @@ export async function applyClawAdoptedRemovePlan(
           "Claw-owned state changed while waiting to release adopted ownership; review a fresh remove --dry-run plan.",
         );
       }
-      releaseAdoptedClawInstallRecord(agentId, record.install.planIntegrity, options);
+      await releaseAdoptedClawInstallRecord(agentId, record.install.planIntegrity, {
+        ...options,
+        lease,
+      });
       return {
         schemaVersion: CLAW_REMOVE_RESULT_SCHEMA_VERSION,
         stability: CLAW_OUTPUT_STABILITY,

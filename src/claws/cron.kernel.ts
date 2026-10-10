@@ -1,5 +1,7 @@
-import type { SQLInputValue } from "node:sqlite";
+import type { DatabaseSync, SQLInputValue } from "node:sqlite";
+import { hasErrnoCode } from "../infra/errno.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import { getAdmittedSqliteSchemaFacts } from "../infra/sqlite-schema-facts.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -15,7 +17,6 @@ import {
   type PersistedClawCronRef,
 } from "./cron-records.js";
 import type { ClawAddPlan, ClawCronJob } from "./types.js";
-
 export function persistPendingRef(
   plan: ClawAddPlan,
   job: ClawCronJob,
@@ -100,31 +101,46 @@ export function updateRef(
   return updated;
 }
 
-export function readClawCronRefs(
+export function readClawCronRefsInDatabase(
+  db: DatabaseSync,
   agentId: string,
-  options: OpenClawStateDatabaseOptions = {},
+  readOnly = false,
 ): PersistedClawCronRef[] {
-  const database = openOpenClawStateDatabase(options);
-  if (
-    options.readOnly &&
-    !database.db /* sqlite-allow-raw: read-only Claw cron table-existence probe. */
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'claw_cron_refs'")
-      .get()
-  ) {
+  if (readOnly && getAdmittedSqliteSchemaFacts(db)?.tables.has("claw_cron_refs") === false) {
     return [];
   }
-  const query = getNodeSqliteKysely<CronRefDatabase>(database.db)
-    .selectFrom("claw_cron_refs")
-    .selectAll()
-    .where("agent_id", "=", agentId)
-    .orderBy("manifest_id")
-    .compile();
-  const rows =
-    database.db /* sqlite-allow-raw: execute compiled Kysely with the existing native read error boundary. */
-      .prepare(query.sql)
-      // SAFETY: The compiled predicate binds a string; the canonical schema supplies the row shape.
-      .all(...(query.parameters as SQLInputValue[])) as CronRefRow[];
-  return rows.map(rowToRef);
+  try {
+    const query = getNodeSqliteKysely<CronRefDatabase>(db)
+      .selectFrom("claw_cron_refs")
+      .selectAll()
+      .where("agent_id", "=", agentId)
+      .orderBy("manifest_id")
+      .compile();
+    const rows =
+      db /* sqlite-allow-raw: execute compiled Kysely with the existing native read error boundary. */
+        .prepare(query.sql)
+        // SAFETY: The compiled predicate binds a string; the canonical schema supplies the row shape.
+        .all(...(query.parameters as SQLInputValue[])) as CronRefRow[];
+    return rows.map(rowToRef);
+  } catch (error) {
+    // Legacy read-only inventories may predate this table; every other native error still fails.
+    if (
+      readOnly &&
+      error instanceof Error &&
+      hasErrnoCode(error, "ERR_SQLITE_ERROR") &&
+      /^no such table: claw_cron_refs$/iu.test(error.message)
+    ) {
+      return [];
+    }
+    throw error;
+  }
+}
+export function readClawCronRefs(agentId: string, options: OpenClawStateDatabaseOptions = {}) {
+  return readClawCronRefsInDatabase(
+    openOpenClawStateDatabase(options).db,
+    agentId,
+    options.readOnly,
+  );
 }
 
 export function deleteClawCronRef(

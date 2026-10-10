@@ -1,9 +1,11 @@
+import type { DatabaseSync } from "node:sqlite";
+import { hasErrnoCode } from "../infra/errno.js";
 import {
   compileSqliteQueryBindings,
   executeSqliteQuerySync,
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
-import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
+import { getAdmittedSqliteSchemaFacts } from "../infra/sqlite-schema-facts.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -21,7 +23,6 @@ import {
   type PersistedClawMcpServerRef,
 } from "./mcp-records.js";
 import type { ClawAddPlan, ClawMcpServer } from "./types.js";
-
 export function persistPendingRef(
   plan: ClawAddPlan,
   name: string,
@@ -104,44 +105,66 @@ export function updateRef(
   return updated;
 }
 
-function readMcpRefsByIdentity(
+export function readMcpRefsByIdentity(
+  db: DatabaseSync,
   column: "agent_id" | "name",
   value: string,
-  options: OpenClawStateDatabaseOptions,
+  readOnly = false,
 ): PersistedClawMcpServerRef[] {
-  const { db } = openOpenClawStateDatabase(options);
-  if (options.readOnly && !tableExists(db, "claw_mcp_server_refs")) {
+  if (readOnly && getAdmittedSqliteSchemaFacts(db)?.tables.has("claw_mcp_server_refs") === false) {
     return [];
   }
-  const { compiled, bind } = compileSqliteQueryBindings<string>((parameter) =>
-    selectMcpRefs(db)
-      .where(
-        column,
-        "=",
-        parameter((identity) => identity),
-      )
-      .orderBy(column === "agent_id" ? "name" : "agent_id"),
-  );
-  const rows =
-    db /* sqlite-allow-raw: preserve native full-agent inventory errors without a write transaction. */
-      .prepare(compiled.sql)
-      // SAFETY: The canonical table and explicit projection provide this generated row shape.
-      .all(...bind(value)) as McpRefRow[];
-  return rows.map(rowToRef);
+  try {
+    const { compiled, bind } = compileSqliteQueryBindings<string>((parameter) =>
+      selectMcpRefs(db)
+        .where(
+          column,
+          "=",
+          parameter((identity) => identity),
+        )
+        .orderBy(column === "agent_id" ? "name" : "agent_id"),
+    );
+    const rows =
+      db /* sqlite-allow-raw: preserve native full-agent inventory errors without a write transaction. */
+        .prepare(compiled.sql)
+        // SAFETY: The canonical table and explicit projection provide this generated row shape.
+        .all(...bind(value)) as McpRefRow[];
+    return rows.map(rowToRef);
+  } catch (error) {
+    // Legacy read-only inventories may predate this table; every other native error still fails.
+    if (
+      readOnly &&
+      error instanceof Error &&
+      hasErrnoCode(error, "ERR_SQLITE_ERROR") &&
+      /^no such table: claw_mcp_server_refs$/iu.test(error.message)
+    ) {
+      return [];
+    }
+    throw error;
+  }
 }
-
 export function readClawMcpServerRefs(
   agentId: string,
   options: OpenClawStateDatabaseOptions = {},
 ): PersistedClawMcpServerRef[] {
-  return readMcpRefsByIdentity("agent_id", agentId, options);
+  return readMcpRefsByIdentity(
+    openOpenClawStateDatabase(options).db,
+    "agent_id",
+    agentId,
+    options.readOnly,
+  );
 }
 
 export function readClawMcpServerRefsByName(
   name: string,
   options: OpenClawStateDatabaseOptions = {},
 ): PersistedClawMcpServerRef[] {
-  return readMcpRefsByIdentity("name", name, options);
+  return readMcpRefsByIdentity(
+    openOpenClawStateDatabase(options).db,
+    "name",
+    name,
+    options.readOnly,
+  );
 }
 
 export function deleteClawMcpServerRef(

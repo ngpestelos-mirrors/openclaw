@@ -10,7 +10,6 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
 import { digestClawValue } from "./digest.js";
-import { releaseAdoptedClawInstallRecordInDatabase } from "./provenance-adopted-release.kernel.js";
 import { readClawInstallRecordFromDatabase } from "./provenance-read.kernel.js";
 import { prepareClawInstallRecord } from "./provenance-record.js";
 import {
@@ -19,6 +18,7 @@ import {
 } from "./provenance-runtime-read.js";
 import { readClawSecondaryReferenceTables } from "./provenance-secondary-references.js";
 import type { PersistedClawInstall } from "./provenance-types.js";
+import { executeClawProvenanceWrite, type ClawProvenanceWriteOptions } from "./provenance-write.js";
 import type { ClawAddPlan } from "./types.js";
 import type { PersistedClawWorkspaceFile } from "./workspace.js";
 
@@ -125,14 +125,15 @@ export function persistClawMigrationOwnership(
   return record;
 }
 
-/** Releases adopted ownership metadata without changing the pre-existing agent or files. */
-export function releaseAdoptedClawInstallRecord(
+/** Releases adopted ownership through the writer's CAS transaction. */
+export async function releaseAdoptedClawInstallRecord(
   agentId: string,
   expectedPlanIntegrity: string,
-  options: OpenClawStateDatabaseOptions = {},
-): void {
-  runOpenClawStateWriteTransaction((database) => {
-    releaseAdoptedClawInstallRecordInDatabase(database, agentId, expectedPlanIntegrity);
-  }, options);
-  deleteCachedClawInstallSchemaVersion(agentId, options);
+  options: ClawProvenanceWriteOptions = {},
+): Promise<void> {
+  await executeClawProvenanceWrite(
+    { type: "clawProvenance.releaseAdopted", input: { agentId, expectedPlanIntegrity } },
+    options,
+    () => deleteCachedClawInstallSchemaVersion(agentId, options),
+  );
 }
