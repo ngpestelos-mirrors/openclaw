@@ -80,14 +80,25 @@ function show(
   });
 }
 
-function persistReasoning(state: TestState, text: string, active: boolean) {
+function persistReasoning(
+  state: TestState,
+  text: string,
+  active: boolean,
+  positions = { appended: 2, displayed: 2 },
+) {
   handleAgentEvent(state, {
     runId,
     seq: 2,
     stream: "thinking",
     ts: 4,
     sessionKey: "main",
-    data: { phase: "persisted", itemId: "thinking-1", messageSeq: 2, messageRunId: runId },
+    data: {
+      phase: "persisted",
+      itemId: "thinking-1",
+      messageId: "answer",
+      messageSeq: positions.appended,
+      messageRunId: runId,
+    },
   });
   const message = {
     role: "assistant",
@@ -97,11 +108,11 @@ function persistReasoning(state: TestState, text: string, active: boolean) {
     ],
     timestamp: 4,
     stopReason: "stop",
-    __openclaw: { id: "answer", seq: 2, runId, runTerminal: true },
+    __openclaw: { id: "answer", seq: positions.displayed, runId, runTerminal: true },
   };
   applySessionMessagePayload(
     state,
-    { message, runId, messageId: "answer", messageSeq: 2 },
+    { message, runId, messageId: "answer", messageSeq: positions.displayed },
     active,
     { kind: "live", activeRunId: state.chatRunId },
   );
@@ -122,9 +133,14 @@ it("shows thinking while generating and retains it through thinking-only history
   expect(state.chatRunId).toBe(runId);
 });
 
-it.each(["before", "after"] as const)(
-  "hands reasoning to its durable row exactly once when persistence arrives %s final",
-  async (order) => {
+it.each([
+  { order: "before", appended: 2, displayed: 2 },
+  { order: "after", appended: 2, displayed: 2 },
+  // Reset projection can renumber positions while the durable message ID stays fixed.
+  { order: "before", appended: 18, displayed: 7 },
+])(
+  "hands reasoning to history once $order final (append $appended, display $displayed)",
+  async ({ order, appended, displayed }) => {
     const state = stateWithRun();
     const container = document.createElement("div");
     const text = "Checking the evidence carefully.";
@@ -132,7 +148,7 @@ it.each(["before", "after"] as const)(
     show(container, state);
     expect(container.querySelectorAll(".chat-thinking")).toHaveLength(1);
     if (order === "before") {
-      persistReasoning(state, text, true);
+      persistReasoning(state, text, true, { appended, displayed });
       show(container, state);
       expect(container.querySelectorAll(".chat-thinking")).toHaveLength(1);
       expect(state.chatReasoning?.receipt?.persisted).toBe(true);
@@ -152,7 +168,7 @@ it.each(["before", "after"] as const)(
       // An intervening older snapshot must retain the reducer-owned live final.
       await loadChatHistory(state);
       expect(state.chatMessages.map(extractThinkingCached)).toContain(text);
-      persistReasoning(state, text, false);
+      persistReasoning(state, text, false, { appended, displayed });
       show(container, state);
       expect(container.querySelectorAll(".chat-thinking")).toHaveLength(1);
       expect(container.textContent?.match(/The answer is 42\./g)).toHaveLength(1);
@@ -317,7 +333,7 @@ it("does not let an earlier receipt consume equal reasoning from the next assist
     stream: "thinking",
     ts: 4,
     sessionKey: "main",
-    data: { phase: "persisted", itemId: "earlier", messageSeq: 2, messageRunId: runId },
+    data: { phase: "persisted", itemId: "earlier", messageId: "earlier", messageRunId: runId },
   });
   applySessionMessagePayload(
     state,
@@ -340,7 +356,7 @@ it("does not let an earlier receipt consume equal reasoning from the next assist
     { kind: "live", activeRunId: runId },
   );
   expect(state.chatReasoning).toMatchObject({ itemId: "later", text });
-  expect(state.chatReasoning?.receipt?.sequence).toBeUndefined();
+  expect(state.chatReasoning?.receipt?.messageId).toBeUndefined();
 });
 
 it("does not attach known-committed pre-tool reasoning to a later final answer", () => {
@@ -352,7 +368,12 @@ it("does not attach known-committed pre-tool reasoning to a later final answer",
     stream: "thinking",
     ts: 4,
     sessionKey: "main",
-    data: { phase: "persisted", itemId: "thinking-1", messageSeq: 2, messageRunId: runId },
+    data: {
+      phase: "persisted",
+      itemId: "thinking-1",
+      messageId: "tool-answer",
+      messageRunId: runId,
+    },
   });
   handleChatGatewayEvent(state, {
     state: "final",
@@ -373,7 +394,12 @@ it("uses the producer run in the receipt when Gateway remaps the live client run
     stream: "thinking",
     ts: 4,
     sessionKey: "main",
-    data: { phase: "persisted", itemId: "thinking-1", messageSeq: 2, messageRunId: "source-run" },
+    data: {
+      phase: "persisted",
+      itemId: "thinking-1",
+      messageId: "source-answer",
+      messageRunId: "source-run",
+    },
   });
   applySessionMessagePayload(
     state,
@@ -397,7 +423,7 @@ it("uses the producer run in the receipt when Gateway remaps the live client run
   );
   expect(state.chatReasoning?.receipt).toEqual({
     runId: "source-run",
-    sequence: 2,
+    messageId: "source-answer",
     persisted: true,
   });
   const container = document.createElement("div");

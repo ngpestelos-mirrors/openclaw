@@ -18,11 +18,7 @@ export type ChatRunBufferState = {
       start?: number;
       end?: number | null;
       scope?: number;
-      publishThinkingReceipt?: (
-        messageSeq: number,
-        sessionKey?: string,
-        sessionId?: string,
-      ) => void;
+      publishThinkingReceipt?: (messageId: string, sessionKey?: string, sessionId?: string) => void;
     }
   >;
   assistantScope?: AssistantTextSnapshot["scope"];

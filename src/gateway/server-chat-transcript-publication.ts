@@ -99,7 +99,7 @@ export function createChatTranscriptPublication(params: {
       const { sessionKey, sessionId } = context;
       // Capture first admission, never borrow a current claim when a delayed commit arrives.
       item.publishThinkingReceipt ??= (
-        messageSeq: number,
+        messageId: string,
         targetSessionKey?: string,
         targetSessionId?: string,
       ) => {
@@ -115,7 +115,7 @@ export function createChatTranscriptPublication(params: {
           runId,
           lifecycleGeneration,
           stream: "thinking",
-          data: { phase: "persisted", itemId, messageSeq, messageRunId: runId },
+          data: { phase: "persisted", itemId, messageId, messageRunId: runId },
         };
         if (contextClaimId) {
           emitAgentEventForOwner(receipt, contextClaimId);
@@ -139,7 +139,7 @@ export function createChatTranscriptPublication(params: {
       const itemIds = [...(event.assistantItemIds ?? []), ...(mirrorKey ? [mirrorKey] : [])];
       const content = asNullableRecord(event.message)?.content;
       if (
-        event.messageSeq !== undefined &&
+        event.messageId !== undefined &&
         Array.isArray(content) &&
         content.some((block) => asNullableRecord(block)?.type === "thinking")
       ) {
@@ -150,7 +150,7 @@ export function createChatTranscriptPublication(params: {
             chatRunState.runs.get(sourceRunId)?.assistantItems?.get(itemId)
               ?.publishThinkingReceipt ??
             chatRunState.runs.get(clientRunId)?.assistantItems?.get(itemId)?.publishThinkingReceipt;
-          publish?.(event.messageSeq, event.sessionKey, event.sessionId);
+          publish?.(event.messageId, event.sessionKey, event.sessionId);
         }
       }
       if (

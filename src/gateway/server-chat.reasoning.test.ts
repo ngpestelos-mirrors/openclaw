@@ -77,6 +77,7 @@ it.each([
         sessionKey,
         sessionId,
         ...target,
+        messageId: `${itemId}-message`,
         messageSeq,
         assistantItemIds: [itemId],
         message: {
@@ -96,7 +97,7 @@ it.each([
       commit("first", 2);
       await unlisten.drain();
       expect(receipts()).toEqual([
-        { phase: "persisted", itemId: "first", messageSeq: 2, messageRunId: runId },
+        { phase: "persisted", itemId: "first", messageId: "first-message", messageRunId: runId },
       ]);
       commit("first", 2, { sessionKey: "agent:main:unrelated" });
       commit("first", 2, { sessionId: "replaced-session" });
@@ -119,8 +120,8 @@ it.each([
       commit("second", 5);
       await unlisten.drain();
       expect(receipts()).toEqual([
-        { phase: "persisted", itemId: "first", messageSeq: 2, messageRunId: runId },
-        { phase: "persisted", itemId: "second", messageSeq: 5, messageRunId: runId },
+        { phase: "persisted", itemId: "first", messageId: "first-message", messageRunId: runId },
+        { phase: "persisted", itemId: "second", messageId: "second-message", messageRunId: runId },
       ]);
       gateway.chatRunState.clearRun(runId);
       commit("second", 5);
@@ -135,12 +136,13 @@ it.each([
   },
 );
 
-it("hands paced native reasoning to its exact durable occurrence before identical later thinking", async () => {
+it("hands paced native reasoning to stable durable identity despite rewritten positions", async () => {
   vi.useFakeTimers();
   const runId = "native-reasoning";
   const clientRunId = "client-reasoning";
   const sessionKey = "agent:main:reasoning";
   const sessionId = "reasoning-session";
+  const messageId = "reasoning-row";
   registerAgentRunContext(runId, { sessionKey, sessionId, agentId: "main" });
   const gateway = createAgentEventTestHarness();
   gateway.register(runId, sessionKey, clientRunId);
@@ -177,13 +179,14 @@ it("hands paced native reasoning to its exact durable occurrence before identica
     emit({ type: "message_end", message: first });
     await subscription.waitForPendingEvents();
     const committed = { ...first, __openclaw: { runId } };
-    source.committedMessageSeq = 2;
+    source.committedMessageSeq = 18;
     bindAgentAssistantSource(committed, source);
     gateway.handler.retireTranscript({
       sessionKey,
       sessionId,
       message: committed,
-      messageSeq: 2,
+      messageId,
+      messageSeq: 18,
     });
     await unlisten.drain();
     expect(thoughts().map((event) => ({ runId: event.runId, data: event.data }))).toEqual([
@@ -197,23 +200,23 @@ it("hands paced native reasoning to its exact durable occurrence before identica
         data: {
           phase: "persisted",
           itemId: source.itemId,
-          messageSeq: 2,
+          messageId,
           messageRunId: runId,
         },
       },
     ]);
-    // Live ownership is remapped, while the durable row keeps its producer run.
+    // Live ownership is remapped; durable identity survives rewritten display positions.
     const durable = projectSessionMessagePayload({
       sessionKey,
       message: committed,
-      messageSeq: 2,
-      messageId: "reasoning-row",
+      messageSeq: 7,
+      messageId,
       runId,
       projectCurrentUserProfile: (message) => message,
     }).payload;
     expect(durable).toMatchObject({
       runId,
-      message: { __openclaw: { runId, seq: 2 } },
+      message: { __openclaw: { id: messageId, runId, seq: 7 } },
     });
     vi.advanceTimersByTime(100);
     expect(thoughts()).toHaveLength(3);

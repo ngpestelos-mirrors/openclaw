@@ -2,7 +2,6 @@ import {
   readSessionMessageIdentity,
   type SessionProjectionState,
 } from "@openclaw/gateway-client/browser";
-import { asPositiveSafeInteger } from "@openclaw/normalization-core/number-coercion";
 import { normalizeNullableString } from "@openclaw/normalization-core/string-coerce";
 import { extractThinkingCached } from "../../lib/chat/message-extract.ts";
 import type { AgentEventPayload } from "./tool-stream-contract.ts";
@@ -12,8 +11,8 @@ export type ChatReasoning = {
   itemId: string;
   text: string;
   startedAt: number;
-  /** Source ownership differs from the client run that owns this preview. */
-  receipt?: { runId: string; sequence: number; persisted?: true };
+  /** Durable IDs survive display reindexing; source ownership can differ from the client run. */
+  receipt?: { runId: string; messageId: string; persisted?: true };
 };
 
 export type ChatReasoningHost = { chatReasoning?: ChatReasoning | null };
@@ -31,7 +30,7 @@ function reconcilePersistedReasoning(host: ChatReasoningHost, messages: readonly
         identity?.role === "assistant" &&
         !identity.isImported &&
         identity.runId === receipt.runId &&
-        identity.sequence === receipt.sequence
+        identity.id === receipt.messageId
       );
     })
   ) {
@@ -50,12 +49,12 @@ export function updateChatReasoning(
   const current = host.chatReasoning;
   const sameItem = current?.runId === payload.runId && current.itemId === itemId;
   if (payload.data.phase === "persisted") {
-    const messageSeq = asPositiveSafeInteger(payload.data.messageSeq);
+    const messageId = normalizeNullableString(payload.data.messageId);
     const messageRunId = normalizeNullableString(payload.data.messageRunId);
-    if (!sameItem || messageSeq === undefined || !messageRunId) {
+    if (!sameItem || !messageId || !messageRunId) {
       return false;
     }
-    host.chatReasoning = { ...current, receipt: { runId: messageRunId, sequence: messageSeq } };
+    host.chatReasoning = { ...current, receipt: { runId: messageRunId, messageId } };
     reconcilePersistedReasoning(host, host.chatMessages ?? []);
     return true;
   }
