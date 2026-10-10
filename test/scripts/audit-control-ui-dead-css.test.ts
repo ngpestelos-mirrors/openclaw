@@ -30,3 +30,39 @@ describe("Control UI dead-CSS dynamic stem detection", () => {
     }
   });
 });
+
+describe("Control UI JSX class references", () => {
+  it("collects string, nested array, object, shorthand, and conditional class names", () => {
+    const source = `const View = () => <div class={[
+      "base secondary", { active: state, "is-busy is-ready": busy }, [{ compact }],
+      condition && { shown: true }, condition ? { yes: true } : { no: true }
+    ]} />;`;
+    const { literalClasses } = collectControlUiClassReferences(
+      parser.parseSourceFile("fixture.tsx", source),
+    );
+    expect([...literalClasses]).toEqual(
+      expect.arrayContaining([
+        "base",
+        "secondary",
+        "active",
+        "is-busy",
+        "is-ready",
+        "compact",
+        "shown",
+        "yes",
+        "no",
+      ]),
+    );
+  });
+
+  it("retains dynamic class families in JSX attributes and computed object keys", () => {
+    const source =
+      'const View = () => <div class={[`status--${status}`, { [`color-${color}`]: true }, `${compact ? "small-item" : "large-item"}__${part}`]} />;';
+    const { stems } = collectControlUiClassReferences(
+      parser.parseSourceFile("fixture.tsx", source),
+    );
+    expect([...stems]).toEqual(
+      expect.arrayContaining(["status--", "color-", "small-item__", "large-item__"]),
+    );
+  });
+});
