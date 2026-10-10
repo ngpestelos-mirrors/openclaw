@@ -411,8 +411,8 @@ async function isNodeEventConnectionCurrent(opts?: {
   }
 }
 
-function pairingChangedResult(event: string): NodeEventHandleResult {
-  return { ok: true, event, handled: false, reason: "pairing_changed" };
+function nodeEventResult(event: string, reason: string, handled = false): NodeEventHandleResult {
+  return { ok: true, event, handled, reason };
 }
 
 async function cleanupNodeEventMedia(
@@ -485,13 +485,13 @@ export const handleNodeEvent = async (
   },
 ): Promise<NodeEventHandleResult | undefined> => {
   if (!(await isNodeEventConnectionCurrent(opts))) {
-    return pairingChangedResult(evt.event);
+    return nodeEventResult(evt.event, "pairing_changed");
   }
   switch (evt.event) {
     case "node.desktop.availability": {
       const availability = parsePayloadObject(evt.payloadJSON);
       if (!Value.Check(DesktopAvailabilitySchema, availability)) {
-        return { ok: true, event: evt.event, handled: false, reason: "invalid_payload" };
+        return nodeEventResult(evt.event, "invalid_payload");
       }
       const updated = ctx.updateNodeDesktopAvailability?.({
         nodeId,
@@ -499,14 +499,9 @@ export const handleNodeEvent = async (
         availability,
       });
       if (updated === null || updated === undefined) {
-        return { ok: true, event: evt.event, handled: false, reason: "stale_connection" };
+        return nodeEventResult(evt.event, "stale_connection");
       }
-      return {
-        ok: true,
-        event: evt.event,
-        handled: true,
-        reason: updated ? "updated" : "unchanged",
-      };
+      return nodeEventResult(evt.event, updated ? "updated" : "unchanged", true);
     }
     case "voice.transcript": {
       const obj = parsePayloadObject(evt.payloadJSON);
@@ -643,7 +638,7 @@ export const handleNodeEvent = async (
           model: modelRef.model,
         });
         if (!(await isNodeEventConnectionCurrent(opts))) {
-          return pairingChangedResult(evt.event);
+          return nodeEventResult(evt.event, "pairing_changed");
         }
         try {
           const parsed = await parseMessageWithAttachments(message, normalizedAttachments, {
@@ -657,7 +652,7 @@ export const handleNodeEvent = async (
           });
           if (!(await isNodeEventConnectionCurrent(opts))) {
             await cleanupNodeEventMedia(parsed.offloadedRefs ?? [], ctx);
-            return pairingChangedResult(evt.event);
+            return nodeEventResult(evt.event, "pairing_changed");
           }
           message = parsed.message.trim();
           images = parsed.images;
@@ -695,7 +690,7 @@ export const handleNodeEvent = async (
       const sessionId = entry?.sessionId ?? randomUUID();
       if (!(await isNodeEventConnectionCurrent(opts))) {
         await cleanupNodeEventMedia(offloadedRefs ?? [], ctx);
-        return pairingChangedResult(evt.event);
+        return nodeEventResult(evt.event, "pairing_changed");
       }
       await touchSessionStore({
         storePath,
@@ -706,7 +701,7 @@ export const handleNodeEvent = async (
       });
       if (!(await isNodeEventConnectionCurrent(opts))) {
         await cleanupNodeEventMedia(offloadedRefs ?? [], ctx);
-        return pairingChangedResult(evt.event);
+        return nodeEventResult(evt.event, "pairing_changed");
       }
 
       if (deliverRequested && (!channel || !to)) {
@@ -733,7 +728,7 @@ export const handleNodeEvent = async (
 
       if (!(await isNodeEventConnectionCurrent(opts))) {
         await cleanupNodeEventMedia(offloadedRefs ?? [], ctx);
-        return pairingChangedResult(evt.event);
+        return nodeEventResult(evt.event, "pairing_changed");
       }
       const persistedTranscriptMedia = await persistInboundImagesForTranscript({
         images,
@@ -743,7 +738,7 @@ export const handleNodeEvent = async (
       });
       if (!(await isNodeEventConnectionCurrent(opts))) {
         await cleanupNodeEventMedia(persistedTranscriptMedia.entries, ctx);
-        return pairingChangedResult(evt.event);
+        return nodeEventResult(evt.event, "pairing_changed");
       }
       if (persistedTranscriptMedia.omission === "inline-image-save-failed") {
         transcriptMessage = [transcriptMessage, INLINE_IMAGE_DURABLE_OMISSION_MARKER]
@@ -910,12 +905,7 @@ export const handleNodeEvent = async (
         event: evt.event,
       });
       if (!auth) {
-        return {
-          ok: true,
-          event: evt.event,
-          handled: false,
-          reason: "unmatched_exec_event",
-        };
+        return nodeEventResult(evt.event, "unmatched_exec_event");
       }
       if (cfg.tools?.exec?.notifyOnExit === false || obj.suppressNotifyOnExit === true) {
         return undefined;
@@ -976,29 +966,31 @@ export const handleNodeEvent = async (
         return undefined;
       }
       const result = await registerNodeApnsEvent(ctx, nodeId, obj, opts);
-      return result === "pairing-changed" ? pairingChangedResult(evt.event) : undefined;
+      return result === "pairing-changed"
+        ? nodeEventResult(evt.event, "pairing_changed")
+        : undefined;
     }
     case NODE_HOST_STATS_EVENT: {
       const obj = parsePayloadObject(evt.payloadJSON);
       if (!obj || !validateNodeHostStatsPayload(obj)) {
-        return { ok: true, event: evt.event, handled: false, reason: "invalid_payload" };
+        return nodeEventResult(evt.event, "invalid_payload");
       }
       const hostStats = ctx.updateNodeHostStats?.({ nodeId, connId: opts?.connId, stats: obj });
       if (!hostStats) {
-        return { ok: true, event: evt.event, handled: false, reason: "stale_connection" };
+        return nodeEventResult(evt.event, "stale_connection");
       }
       ctx.broadcast("node.hostStats", { nodeId, hostStats }, { dropIfSlow: true });
-      return { ok: true, event: evt.event, handled: true, reason: "updated" };
+      return nodeEventResult(evt.event, "updated", true);
     }
     case NODE_PRESENCE_ACTIVITY_EVENT: {
       const obj = parsePayloadObject(evt.payloadJSON);
       if (!obj || !validateNodePresenceActivityPayload(obj)) {
-        return { ok: true, event: evt.event, handled: false, reason: "invalid_payload" };
+        return nodeEventResult(evt.event, "invalid_payload");
       }
       if ("action" in obj) {
         const cleared = ctx.clearNodePresenceActivity?.({ nodeId, connId: opts?.connId });
         if (cleared === null || cleared === undefined) {
-          return { ok: true, event: evt.event, handled: false, reason: "stale_connection" };
+          return nodeEventResult(evt.event, "stale_connection");
         }
         if (cleared) {
           ctx.broadcast(
@@ -1007,15 +999,10 @@ export const handleNodeEvent = async (
             { dropIfSlow: true },
           );
         }
-        return {
-          ok: true,
-          event: evt.event,
-          handled: true,
-          reason: cleared ? "cleared" : "already_clear",
-        };
+        return nodeEventResult(evt.event, cleared ? "cleared" : "already_clear", true);
       }
       if (obj.source !== "app" && opts?.presenceAllowed !== true) {
-        return { ok: true, event: evt.event, handled: false, reason: "permission_required" };
+        return nodeEventResult(evt.event, "permission_required");
       }
       const updated = ctx.updateNodePresenceActivity?.({
         nodeId,
@@ -1023,29 +1010,29 @@ export const handleNodeEvent = async (
         ...obj,
       });
       if (!updated) {
-        return { ok: true, event: evt.event, handled: false, reason: "stale_connection" };
+        return nodeEventResult(evt.event, "stale_connection");
       }
       ctx.broadcast("node.presence", { nodeId, ...updated }, { dropIfSlow: true });
-      return { ok: true, event: evt.event, handled: true, reason: "updated" };
+      return nodeEventResult(evt.event, "updated", true);
     }
     case NODE_PRESENCE_ALIVE_EVENT: {
       const obj = parsePayloadObject(evt.payloadJSON);
       if (!obj) {
-        return { ok: true, event: evt.event, handled: false, reason: "invalid_payload" };
+        return nodeEventResult(evt.event, "invalid_payload");
       }
       const deviceId = normalizeOptionalString(opts?.deviceId);
       if (!deviceId) {
-        return { ok: true, event: evt.event, handled: false, reason: "missing_device_identity" };
+        return nodeEventResult(evt.event, "missing_device_identity");
       }
       const pairingGeneration = opts?.pairingGeneration;
       if (!pairingGeneration || pairingGeneration.nodeId !== deviceId) {
-        return pairingChangedResult(evt.event);
+        return nodeEventResult(evt.event, "pairing_changed");
       }
       const now = Date.now();
       const presenceOwnerKey = `${deviceId}\0${pairingGeneration.key}`;
       const lastPersistedAt = recentNodePresencePersistAt.get(presenceOwnerKey) ?? 0;
       if (now - lastPersistedAt < NODE_PRESENCE_PERSIST_MIN_INTERVAL_MS) {
-        return { ok: true, event: evt.event, handled: true, reason: "throttled" };
+        return nodeEventResult(evt.event, "throttled", true);
       }
 
       const lastSeenReason = normalizeNodePresenceAliveReason(obj.trigger);
@@ -1061,7 +1048,7 @@ export const handleNodeEvent = async (
           pairingGeneration,
         );
         if (!deviceUpdated) {
-          return pairingChangedResult(evt.event);
+          return nodeEventResult(evt.event, "pairing_changed");
         }
         recentNodePresencePersistAt.set(presenceOwnerKey, now);
         pruneBoundedTimestampMap(recentNodePresencePersistAt, {
@@ -1069,14 +1056,14 @@ export const handleNodeEvent = async (
           ttlMs: NODE_PRESENCE_PERSIST_MIN_INTERVAL_MS * 10,
           maxEntries: MAX_RECENT_NODE_PRESENCE_KEYS,
         });
-        return { ok: true, event: evt.event, handled: true, reason: "persisted" };
+        return nodeEventResult(evt.event, "persisted", true);
       } catch (err) {
         ctx.logGateway.warn(`node presence alive failed node=${nodeId}: ${formatForLog(err)}`);
-        return { ok: true, event: evt.event, handled: false, reason: "persist_failed" };
+        return nodeEventResult(evt.event, "persist_failed");
       }
     }
     default:
-      return { ok: true, event: evt.event, handled: false, reason: "unsupported_event" };
+      return nodeEventResult(evt.event, "unsupported_event");
   }
 };
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

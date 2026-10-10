@@ -65,17 +65,20 @@ export type PendingEntry<TPayload> = {
     assertCurrent: () => void;
     autoReview?: { committedResolutionKey?: string };
   };
-  terminalPublication?: Pick<
-    OperatorApprovalRecord,
-    | "kind"
-    | "runtimeEpoch"
-    | "status"
-    | "decision"
-    | "terminalReason"
-    | "resolvedAtMs"
-    | "updatedAtMs"
-  >;
+  terminalPublication?: ReturnType<typeof projectTerminalPublication>;
 };
+
+function projectTerminalPublication(record: OperatorApprovalRecord) {
+  return {
+    kind: record.kind,
+    runtimeEpoch: record.runtimeEpoch,
+    status: record.status,
+    decision: record.decision,
+    terminalReason: record.terminalReason,
+    resolvedAtMs: record.resolvedAtMs,
+    updatedAtMs: record.updatedAtMs,
+  };
+}
 
 /** Owns local observations and genuine decision effects, never durable decision policy. */
 export abstract class ExecApprovalLifecycle<TPayload> {
@@ -104,15 +107,7 @@ export abstract class ExecApprovalLifecycle<TPayload> {
       const { record } = event;
       const entry = this.pending.get(record.id);
       if (this.options.onLifecycle !== undefined && event.phase === "terminal" && entry) {
-        entry.terminalPublication = {
-          kind: record.kind,
-          runtimeEpoch: record.runtimeEpoch,
-          status: record.status,
-          decision: record.decision,
-          terminalReason: record.terminalReason,
-          resolvedAtMs: record.resolvedAtMs,
-          updatedAtMs: record.updatedAtMs,
-        };
+        entry.terminalPublication = projectTerminalPublication(record);
       }
       this.options.onLifecycle?.(event);
     } catch {
@@ -173,20 +168,19 @@ export abstract class ExecApprovalLifecycle<TPayload> {
     const liveRecord = entry?.record;
     const uncertainty = entry?.uncertainVerdict;
     let observedSource: ExecApprovalResolutionSource = "operator";
-    if (localResolutionSource === undefined && uncertainty) {
+    if (
+      localResolutionSource === undefined &&
+      uncertainty?.autoReview &&
+      record.status === "allowed" &&
+      record.decision === "allow-once"
+    ) {
       if (
-        uncertainty.autoReview &&
-        record.status === "allowed" &&
-        record.decision === "allow-once"
+        uncertainty.autoReview.committedResolutionKey === getOperatorApprovalResolutionKey(record)
       ) {
-        if (
-          uncertainty.autoReview.committedResolutionKey === getOperatorApprovalResolutionKey(record)
-        ) {
-          observedSource = "auto-review";
-        } else if (record.resolver?.kind === "runtime") {
-          // Runtime IDs are shared by operator and auto-review callers, including null IDs.
-          return false;
-        }
+        observedSource = "auto-review";
+      } else if (record.resolver?.kind === "runtime") {
+        // Runtime IDs are shared by operator and auto-review callers, including null IDs.
+        return false;
       }
     }
     const settlement = prepareExecApprovalSettlement({

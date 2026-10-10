@@ -77,26 +77,22 @@ export function runWithChatAbortExecution(
     cleanupSettled: false,
   };
   entry.executionSettlement = settlement;
+  const finishExecution = (status: "fulfilled" | "rejected", cleanupSettled: boolean) => {
+    settlement.status = status;
+    settlement.cleanupSettled = cleanupSettled;
+    if (
+      cleanupSettled &&
+      entry.executionSettlement === settlement &&
+      entry.registrationCleanupRequested
+    ) {
+      cleanup();
+    }
+  };
   void completion.then(
-    () => {
-      settlement.status = "fulfilled";
-      settlement.cleanupSettled = true;
-      if (entry.executionSettlement === settlement && entry.registrationCleanupRequested) {
-        cleanup();
-      }
-    },
-    (error: unknown) => {
-      // Preserve the rejection; only the resource owner's completed fault can retire custody.
-      settlement.status = "rejected";
-      settlement.cleanupSettled = error instanceof PluginRuntimeCloseCompletedError;
-      if (
-        settlement.cleanupSettled &&
-        entry.executionSettlement === settlement &&
-        entry.registrationCleanupRequested
-      ) {
-        cleanup();
-      }
-    },
+    () => finishExecution("fulfilled", true),
+    // Preserve the rejection; only the resource owner's completed fault can retire custody.
+    (error: unknown) =>
+      finishExecution("rejected", error instanceof PluginRuntimeCloseCompletedError),
   );
   try {
     // Invocation stays immediate, with custody installed before synchronous cleanup.
