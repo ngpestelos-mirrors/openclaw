@@ -144,6 +144,7 @@ export function createSessionActorWorker(
       }
     },
     execute(command: Command): SessionActorOperations[keyof SessionActorOperations]["output"] {
+      // SAFETY: Every command in the closed operations union uses this prefix and a phase or read suffix.
       const phase = command.type.slice("session.actor.".length) as SessionActorPhase | "read";
       const observed = observeSessionActorCommand(phase);
       const target = command.input.target;
@@ -233,6 +234,7 @@ export function createSessionActorWorker(
                 kind: "session-actor-committed" as const,
                 commandId: command.input.commandId,
                 phaseId: command.input.phaseId,
+                // SAFETY: The read command returned before entering this write transaction.
                 phase: phase as SessionActorPhase,
                 beforeVersion: before.hot.version,
                 afterVersion: working.hot.version,
