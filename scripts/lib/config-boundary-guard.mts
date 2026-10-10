@@ -49,6 +49,8 @@ const SEMANTIC_CONFIG_MUTATION_HELPER_FILES = new Set([
   "extensions/browser/src/browser/config-mutations.ts",
   "src/auto-reply/reply/config-mutations.ts",
   "src/gateway/server-methods/agents-config-mutations.ts",
+  // Claw commands own guarded config retries and the Gateway application receipt.
+  "src/gateway/server-methods/claws-command-runtime.ts",
   "src/gateway/server-methods/config-write-flow.ts",
   "src/gateway/server-methods/skills-config-mutations.ts",
 ]);
