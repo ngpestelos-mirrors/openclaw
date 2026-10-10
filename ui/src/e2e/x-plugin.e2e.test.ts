@@ -98,6 +98,9 @@ suite.define(() => {
             "x.guests.set",
           ],
           methodResponses: {
+            "plugins.list": { plugins: [], diagnostics: [], mutationAllowed: true },
+            "plugins.catalog.browse": { items: [] },
+            "plugins.catalog.categories": { categories: [] },
             "plugins.controlUi.list": catalog,
             "plugins.controlUi.report": { ok: true },
             "x.allowlist.list": snapshot(),
@@ -121,6 +124,10 @@ suite.define(() => {
         const handle = surface.getByRole("textbox", { name: "Add by X handle" });
         const guestMode = surface.getByRole("switch", { name: "Guest mode" });
         await surface.getByText("@example_maint", { exact: true }).waitFor();
+        const retainedRow = await surface
+          .getByRole("row")
+          .filter({ hasText: "@example_maint" })
+          .elementHandle();
         expect(await account.inputValue()).toBe("primary");
         expect(await surface.getByText("Read-only", { exact: true }).count()).toBe(1);
         expect((await gateway.waitForRequest("plugins.controlUi.report")).params).toMatchObject({
@@ -164,6 +171,7 @@ suite.define(() => {
           username: "@example_new",
         });
         await surface.getByText("@example_new", { exact: true }).waitFor();
+        expect(await retainedRow?.evaluate((element) => element.isConnected)).toBe(true);
         await expect.poll(() => handle.inputValue()).toBe("");
         await surface.getByText("Account added. Its mentions can now receive replies.").waitFor();
 

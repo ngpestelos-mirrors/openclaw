@@ -1,6 +1,6 @@
 import { render } from "@solidjs/web";
 import { defineControlUiPlugin, type ControlUiView } from "openclaw/plugin-sdk/control-ui";
-import { createStore } from "solid-js";
+import { createStore, For } from "solid-js";
 import type { XAllowlistSnapshot } from "./admin.js";
 import "./control-ui.css";
 
@@ -137,15 +137,17 @@ const mountXReplies: ControlUiView = (container, initialContext) => {
                   }}
                 >
                   {view.snapshot ? (
-                    view.snapshot.accounts.map((account) => (
-                      <option
-                        value={account.accountId}
-                        selected={account.accountId === view.accountId}
-                      >
-                        {account.username ? `@${account.username}` : account.accountId} (
-                        {account.accountId})
-                      </option>
-                    ))
+                    <For each={view.snapshot.accounts} keyed={(row) => row.accountId}>
+                      {(account) => (
+                        <option
+                          value={account().accountId}
+                          selected={account().accountId === view.accountId}
+                        >
+                          {account().username ? `@${account().username}` : account().accountId} (
+                          {account().accountId})
+                        </option>
+                      )}
+                    </For>
                   ) : (
                     <option value={view.accountId ?? ""}>
                       {view.accountId ?? "Select an account"}
@@ -244,7 +246,7 @@ const mountXReplies: ControlUiView = (container, initialContext) => {
                         starting helpers. Upgrade OpenClaw to enable hidden helpers safely.
                         Maintainers keep their normal access.
                       </>
-                    )}
+                    )}{" "}
                     <a
                       href="https://docs.openclaw.ai/channels/x#guest-mode"
                       target="_blank"
@@ -298,44 +300,46 @@ const mountXReplies: ControlUiView = (container, initialContext) => {
                         </tr>
                       </thead>
                       <tbody>
-                        {view.snapshot.entries.map((entry) => (
-                          <tr>
-                            <td>
-                              <strong>
-                                {entry.username ? `@${entry.username}` : entry.userId}
-                              </strong>
-                              {entry.name ? <span>{entry.name}</span> : null}
-                              {entry.username ? <small>{entry.userId}</small> : null}
-                            </td>
-                            <td>
-                              {entry.configured
-                                ? entry.editable
-                                  ? "Config + stored"
-                                  : "Config"
-                                : "Stored"}
-                            </td>
-                            <td>{entry.addedBy ?? "—"}</td>
-                            <td>
-                              {entry.editable ? (
-                                <button
-                                  class="btn"
-                                  type="button"
-                                  aria-label={`Remove stored entry for ${entry.username ? `@${entry.username}` : entry.userId}`}
-                                  disabled={view.busy}
-                                  onClick={() =>
-                                    void request("x.allowlist.remove", {
-                                      userId: entry.userId,
-                                    })
-                                  }
-                                >
-                                  Remove
-                                </button>
-                              ) : (
-                                <span class="x-replies__hint">Read-only</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
+                        <For each={view.snapshot.entries} keyed={(row) => row.userId}>
+                          {(entry) => (
+                            <tr>
+                              <td>
+                                <strong>
+                                  {entry().username ? `@${entry().username}` : entry().userId}
+                                </strong>
+                                {entry().name ? <span>{entry().name}</span> : null}
+                                {entry().username ? <small>{entry().userId}</small> : null}
+                              </td>
+                              <td>
+                                {entry().configured
+                                  ? entry().editable
+                                    ? "Config + stored"
+                                    : "Config"
+                                  : "Stored"}
+                              </td>
+                              <td>{entry().addedBy ?? "—"}</td>
+                              <td>
+                                {entry().editable ? (
+                                  <button
+                                    class="btn"
+                                    type="button"
+                                    aria-label={`Remove stored entry for ${entry().username ? `@${entry().username}` : entry().userId}`}
+                                    disabled={view.busy}
+                                    onClick={() =>
+                                      void request("x.allowlist.remove", {
+                                        userId: entry().userId,
+                                      })
+                                    }
+                                  >
+                                    Remove
+                                  </button>
+                                ) : (
+                                  <span class="x-replies__hint">Read-only</span>
+                                )}
+                              </td>
+                            </tr>
+                          )}
+                        </For>
                       </tbody>
                     </table>
                   ) : (
@@ -405,29 +409,31 @@ const mountXReplies: ControlUiView = (container, initialContext) => {
                             </tr>
                           </thead>
                           <tbody>
-                            {view.github.entries.map((entry) => (
-                              <tr>
-                                <td>
-                                  <strong>@{entry.xHandle}</strong>
-                                  <small>{entry.xUserId}</small>
-                                </td>
-                                <td>
-                                  <a
-                                    href={`https://github.com/${encodeURIComponent(entry.githubLogin)}`}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    @{entry.githubLogin}
-                                  </a>
-                                </td>
-                                <td>{entry.permission}</td>
-                                <td>
-                                  <time datetime={new Date(entry.syncedAt).toISOString()}>
-                                    {dateTime.format(entry.syncedAt)}
-                                  </time>
-                                </td>
-                              </tr>
-                            ))}
+                            <For each={view.github.entries} keyed={(row) => row.xUserId}>
+                              {(entry) => (
+                                <tr>
+                                  <td>
+                                    <strong>@{entry().xHandle}</strong>
+                                    <small>{entry().xUserId}</small>
+                                  </td>
+                                  <td>
+                                    <a
+                                      href={`https://github.com/${encodeURIComponent(entry().githubLogin)}`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      @{entry().githubLogin}
+                                    </a>
+                                  </td>
+                                  <td>{entry().permission}</td>
+                                  <td>
+                                    <time datetime={new Date(entry().syncedAt).toISOString()}>
+                                      {dateTime.format(entry().syncedAt)}
+                                    </time>
+                                  </td>
+                                </tr>
+                              )}
+                            </For>
                           </tbody>
                         </table>
                       ) : (
