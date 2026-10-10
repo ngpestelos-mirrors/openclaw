@@ -120,13 +120,12 @@ suite.define(() => {
                   });
                   await route.fulfill({ response });
                 });
+                await page.clock.install({ time: fixedTime });
+                await page.clock.pauseAt(fixedTime + 5_000);
                 await page.clock.setFixedTime(fixedTime);
                 await page.addInitScript(() => {
-                  let seed = 1;
-                  Math.random = () => {
-                    seed = (seed * 16807) % 2147483647;
-                    return seed / 2147483647;
-                  };
+                  // A fixed draw keeps module-level decorative salts independent of load order.
+                  Math.random = () => 0.42;
                 });
                 const gateway = await installMockGateway(page, {
                   ...baseScenario,
@@ -154,6 +153,7 @@ suite.define(() => {
                   await page.addStyleTag({ content: stylesheet });
                 }
                 await scene.prepare?.(page, gateway);
+                await page.clock.runFor(2_000);
                 if (!scene.loading) {
                   await expect
                     .poll(() =>
