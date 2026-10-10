@@ -662,7 +662,7 @@ extensions/policy/src/policy-state-tools.ts	1
 extensions/qa-channel/src/bus-client.ts	3
 extensions/qa-channel/src/channel-actions.ts	2
 extensions/qa-channel/src/channel-base.ts	6
-extensions/qa-channel/src/channel.ts	3
+extensions/qa-channel/src/channel.ts	5
 extensions/qa-channel/src/gateway.ts	2
 extensions/qa-channel/src/inbound.ts	1
 extensions/qa-channel/src/setup.ts	2
@@ -740,6 +740,7 @@ extensions/qa-lab/src/providers/mock-openai/mock-openai-events.ts	1
 extensions/qa-lab/src/providers/mock-openai/mock-openai-input.ts	6
 extensions/qa-lab/src/providers/mock-openai/mock-openai-responses-websocket.ts	1
 extensions/qa-lab/src/providers/mock-openai/server.ts	4
+extensions/qa-lab/src/qa-transport.ts	1
 extensions/qa-lab/src/run-config.ts	1
 extensions/qa-lab/src/runtime-parity.ts	1
 extensions/qa-lab/src/runtime-tool-fixture.ts	1

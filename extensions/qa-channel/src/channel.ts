@@ -20,7 +20,12 @@ import {
 import { qaChannelMessageActions } from "./channel-actions.js";
 import { createQaChannelPluginBase, QA_CHANNEL_ID, qaChannelRuntimeMeta } from "./channel-base.js";
 import { startQaGatewayAccount } from "./gateway.js";
-import { collectQaMediaUrls, sendQaChannelMediaBatch, sendQaChannelText } from "./outbound.js";
+import {
+  collectQaMediaUrls,
+  sendQaChannelMedia,
+  sendQaChannelMediaBatch,
+  sendQaChannelText,
+} from "./outbound.js";
 import { qaChannelStatus } from "./status.js";
 import type { CoreConfig, ResolvedQaChannelAccount } from "./types.js";
 
@@ -53,23 +58,24 @@ function createQaChannelMessageReceipt(
   });
 }
 
-async function sendQaChannelMessage(
-  ctx: Omit<QaChannelPayloadSendContext, "payload">,
-  text: string,
-  mediaUrls?: readonly string[],
-  isError?: boolean,
-) {
+async function sendQaChannelMessagePayload(ctx: QaChannelPayloadSendContext) {
+  const text = ctx.payload.text ?? ctx.text;
+  const mediaUrls = collectQaMediaUrls(
+    ctx.mediaUrl,
+    ctx.payload.mediaUrl,
+    ...(ctx.payload.mediaUrls ?? []),
+  );
   const params = {
     cfg: ctx.cfg as CoreConfig,
     accountId: ctx.accountId,
     to: ctx.to,
     text,
-    isError,
+    isError: ctx.payload.isError,
     threadId: ctx.threadId,
     replyToId: ctx.replyToId,
   };
   const result =
-    mediaUrls === undefined
+    mediaUrls.length === 0
       ? await sendQaChannelText(params)
       : await sendQaChannelMediaBatch({
           ...params,
@@ -83,24 +89,9 @@ async function sendQaChannelMessage(
     receipt: createQaChannelMessageReceipt(
       ctx,
       result.messageId,
-      mediaUrls === undefined ? "text" : "media",
+      mediaUrls.length > 0 ? "media" : "text",
     ),
   };
-}
-
-async function sendQaChannelMessagePayload(ctx: QaChannelPayloadSendContext) {
-  const text = ctx.payload.text ?? ctx.text;
-  const mediaUrls = collectQaMediaUrls(
-    ctx.mediaUrl,
-    ctx.payload.mediaUrl,
-    ...(ctx.payload.mediaUrls ?? []),
-  );
-  return sendQaChannelMessage(
-    ctx,
-    text,
-    mediaUrls.length > 0 ? mediaUrls : undefined,
-    ctx.payload.isError,
-  );
 }
 
 const qaChannelMessageAdapter = defineChannelMessageAdapter({
@@ -118,8 +109,38 @@ const qaChannelMessageAdapter = defineChannelMessageAdapter({
   send: {
     // Detached completions must deliver the visible caption and media atomically.
     payload: sendQaChannelMessagePayload,
-    text: (ctx) => sendQaChannelMessage(ctx, ctx.text),
-    media: (ctx) => sendQaChannelMessage(ctx, ctx.text, [ctx.mediaUrl]),
+    text: async (ctx) => {
+      const result = await sendQaChannelText({
+        cfg: ctx.cfg as CoreConfig,
+        accountId: ctx.accountId,
+        to: ctx.to,
+        text: ctx.text,
+        threadId: ctx.threadId,
+        replyToId: ctx.replyToId,
+      });
+      return {
+        messageId: result.messageId,
+        receipt: createQaChannelMessageReceipt(ctx, result.messageId, "text"),
+      };
+    },
+    media: async (ctx) => {
+      const result = await sendQaChannelMedia({
+        cfg: ctx.cfg as CoreConfig,
+        accountId: ctx.accountId,
+        to: ctx.to,
+        text: ctx.text,
+        mediaUrl: ctx.mediaUrl,
+        mediaAccess: ctx.mediaAccess,
+        mediaLocalRoots: ctx.mediaLocalRoots,
+        mediaReadFile: ctx.mediaReadFile,
+        threadId: ctx.threadId,
+        replyToId: ctx.replyToId,
+      });
+      return {
+        messageId: result.messageId,
+        receipt: createQaChannelMessageReceipt(ctx, result.messageId, "media"),
+      };
+    },
   },
 });
 
@@ -295,10 +316,10 @@ export const qaChannelPlugin: ChannelPlugin<ResolvedQaChannelAccount> = createCh
         if (!ctx.mediaUrl) {
           throw new Error("QA channel media send requires mediaUrl");
         }
-        return await sendQaChannelMediaBatch({
+        return await sendQaChannelMedia({
           ...ctx,
           cfg: ctx.cfg as CoreConfig,
-          mediaUrls: [ctx.mediaUrl],
+          mediaUrl: ctx.mediaUrl,
         });
       },
     },

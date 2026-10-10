@@ -134,20 +134,28 @@ export function attachQaMockResponsesWebSocketServer(params: {
 
           if (request.generate === false) {
             const id = `resp_qa_ws_warmup_${++warmupOrdinal}`;
-            const response = {
-              id,
-              object: "response",
-              created_at: Math.floor(Date.now() / 1_000),
-              model: typeof body.model === "string" ? body.model : "",
-              status: "in_progress",
-              output: [],
-            };
-            sendEvent({ type: "response.created", response });
+            const createdAt = Math.floor(Date.now() / 1_000);
+            const model = typeof body.model === "string" ? body.model : "";
+            sendEvent({
+              type: "response.created",
+              response: {
+                id,
+                object: "response",
+                created_at: createdAt,
+                model,
+                status: "in_progress",
+                output: [],
+              },
+            });
             sendEvent({
               type: "response.completed",
               response: {
-                ...response,
+                id,
+                object: "response",
+                created_at: createdAt,
+                model,
                 status: "completed",
+                output: [],
                 usage: {
                   input_tokens: 0,
                   input_tokens_details: { cached_tokens: 0 },
