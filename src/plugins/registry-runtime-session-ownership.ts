@@ -9,9 +9,11 @@ import {
   sqliteSessionFileMarkerMatchesTarget,
 } from "../config/sessions/legacy-sqlite-marker.js";
 import { resolveSessionEntryAccessTarget } from "../config/sessions/session-accessor.entry.js";
+import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { assertSessionEntryPatchAuthority } from "../plugin-sdk/session-store-runtime-internal.js";
 import {
   classifySessionKeyShape,
   isUnscopedSessionKeySentinel,
@@ -26,6 +28,12 @@ import {
 import type { PluginRegistryState } from "./registry-state.js";
 import type { PluginRegistry } from "./registry-types.js";
 import type { PluginRuntime } from "./runtime/types.js";
+
+type PluginSessionRuntime = PluginRuntime["agent"]["session"];
+type SessionOwnershipFields = Pick<
+  SessionEntry,
+  "modelSelectionLocked" | "pluginOwnerId" | "agentHarnessId"
+>;
 
 const PLUGIN_GATEWAY_SESSION_MUTATION_METHODS = new Set([
   "agent",
@@ -122,7 +130,7 @@ export function createPluginSessionOwnership(
   };
   const resolveLockedSessionHarnessRegistration = (
     sessionKey: string,
-    entry: SessionEntry,
+    entry: SessionOwnershipFields,
     action: string,
   ) => {
     if (entry.modelSelectionLocked !== true) {
@@ -153,7 +161,7 @@ export function createPluginSessionOwnership(
   };
   const assertLockedSessionEntryOwned = (
     sessionKey: string,
-    entry: SessionEntry,
+    entry: SessionOwnershipFields,
     action: string,
   ): void => {
     const resolved = resolveLockedSessionHarnessRegistration(sessionKey, entry, action);
@@ -510,7 +518,7 @@ export function createPluginSessionOwnership(
   const assertStoreEntryOwned = (params: {
     action: string;
     before?: SessionEntry;
-    entry: SessionEntry;
+    entry: SessionOwnershipFields;
     sessionKey: string;
   }): void => {
     if (params.entry.modelSelectionLocked === true) {
@@ -526,10 +534,170 @@ export function createPluginSessionOwnership(
     }
   };
   return {
-    assertOwnedHarness,
-    assertReservedSessionKeyOwned,
+    createSessionEntry: async (
+      session: PluginSessionRuntime,
+      params: Parameters<PluginSessionRuntime["createSessionEntry"]>[0],
+    ) => {
+      const runtimeOwnerCount = [
+        "agentHarnessId" in params.initialEntry,
+        "cliBackendId" in params.initialEntry,
+        "acpSessionBinding" in params.initialEntry,
+      ].filter(Boolean).length;
+      if (runtimeOwnerCount !== 1) {
+        throw new Error(
+          `Plugin "${pluginId}" session creation requires exactly one runtime owner.`,
+        );
+      }
+      if ("agentHarnessId" in params.initialEntry) {
+        // Session ownership follows the registered harness capability,
+        // independently of whether the caller chooses its reserved namespace.
+        assertOwnedHarness(params.initialEntry.agentHarnessId, "create its sessions");
+        assertReservedSessionKeyOwned(params.key, "create");
+        return await session.createSessionEntry(params);
+      }
+      const initialEntry = params.initialEntry;
+      if (!("acpSessionBinding" in initialEntry)) {
+        const backend = resolveRegistry().cliBackends.find(
+          (entry) => entry.backend.id === initialEntry.cliBackendId,
+        );
+        if (!backend || backend.pluginId !== pluginId) {
+          throw new Error(
+            `Plugin "${pluginId}" must own CLI backend "${initialEntry.cliBackendId}" to create its sessions.`,
+          );
+        }
+      }
+      // Plugin-owned sessions stay inside a namespace that no other plugin can claim.
+      if (!params.key.startsWith(`plugin:${pluginId}:`)) {
+        throw new Error(`Plugin "${pluginId}" session keys must start with "plugin:${pluginId}:".`);
+      }
+      return await session.createSessionEntry({
+        ...params,
+        initialEntry: { ...initialEntry, pluginOwnerId: pluginId },
+      });
+    },
+    prepareSessionEntryPatch: async (
+      session: PluginSessionRuntime,
+      params: Parameters<PluginSessionRuntime["prepareSessionEntryPatch"]>[0],
+      assertRuntimeCurrent: () => void,
+    ) => {
+      assertSessionEntryPatchAuthority(params.authority);
+      return await session.prepareSessionEntryPatch({
+        ...params,
+        authority: {
+          kind: "source",
+          source: composeSessionSourceAssertion(
+            [params.authority?.kind === "source" ? params.authority.source : undefined],
+            (assertSources) => {
+              assertRuntimeCurrent();
+              if (params.authority?.kind === "host") params.authority.assertCurrent();
+              assertSources();
+            },
+          ),
+        },
+        prepare: async (entry, context) => {
+          assertStoreEntryOwned({
+            action: "patch",
+            before: context.existingEntry,
+            entry,
+            sessionKey: params.sessionKey,
+          });
+          const patch = await params.prepare(entry, context);
+          assertRuntimeCurrent();
+          if (patch) {
+            assertStoreEntryOwned({
+              action: "patch",
+              before: context.existingEntry,
+              entry: params.replaceEntry ? patch : { ...entry, ...patch },
+              sessionKey: params.sessionKey,
+            });
+          }
+          return patch;
+        },
+      });
+    },
+    patchSessionEntry: async (
+      session: PluginSessionRuntime,
+      params: Parameters<PluginSessionRuntime["patchSessionEntry"]>[0],
+      assertRuntimeCurrent: () => void,
+    ) => {
+      assertStoredSessionEntryOwned({
+        action: "patch",
+        sessionKey: params.sessionKey,
+        ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
+        ...(params.env !== undefined ? { env: params.env } : {}),
+        ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
+      });
+      return await session.patchSessionEntry({
+        ...params,
+        update: async (entry, context) => {
+          const patch = await params.update(entry, context);
+          assertRuntimeCurrent();
+          if (!patch) {
+            return patch;
+          }
+          const next = params.replaceEntry ? patch : { ...entry, ...patch };
+          assertStoreEntryOwned({
+            action: "patch",
+            before: context.existingEntry ?? entry,
+            entry: next,
+            sessionKey: params.sessionKey,
+          });
+          return patch;
+        },
+      });
+    },
+    upsertSessionEntry: async (
+      session: PluginSessionRuntime,
+      params: Parameters<PluginSessionRuntime["upsertSessionEntry"]>[0],
+      assertRuntimeCurrent: () => void,
+    ) => {
+      await session.prepareSessionEntryPatch({
+        ...params,
+        fallbackEntry: params.entry,
+        replaceEntry: true,
+        authority: { kind: "host", assertCurrent: assertRuntimeCurrent },
+        prepare: (entry, context) => {
+          assertStoreEntryOwned({
+            action: "upsert",
+            before: context.existingEntry,
+            entry,
+            sessionKey: params.sessionKey,
+          });
+          assertStoreEntryOwned({
+            action: "upsert",
+            before: context.existingEntry,
+            entry: params.entry,
+            sessionKey: params.sessionKey,
+          });
+          return params.entry;
+        },
+      });
+    },
+    prepareSessionStoreUpdate: (
+      params: Parameters<PluginSessionRuntime["updateSessionStoreEntry"]>[0],
+      assertRuntimeCurrent: () => void,
+    ): Parameters<PluginSessionRuntime["updateSessionStoreEntry"]>[0]["update"] => {
+      assertStoredSessionEntryOwned({
+        action: "update",
+        sessionKey: params.sessionKey,
+        storePath: params.storePath,
+      });
+      return async (entry) => {
+        const patch = await params.update(entry);
+        assertRuntimeCurrent();
+        if (!patch) {
+          return patch;
+        }
+        assertStoreEntryOwned({
+          action: "update",
+          before: entry,
+          entry: { ...entry, ...patch },
+          sessionKey: params.sessionKey,
+        });
+        return patch;
+      };
+    },
     assertStoredSessionEntryOwned,
-    assertStoreEntryOwned,
     resolveStoredSessionExecutionOwner,
     prepareRunSessionExecution,
     assertGatewaySessionRequestOwned,
