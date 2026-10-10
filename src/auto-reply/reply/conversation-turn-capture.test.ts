@@ -670,6 +670,14 @@ describe("conversation turn capture", () => {
 
   it("completes the durable reply when optional audit persistence throws", async () => {
     const setup = await setupReefConversation();
+    const database = openOpenClawAgentDatabase(
+      toDatabaseOptions(resolveSqliteReadScope(setup.scope)),
+    );
+    database.db.exec(`
+      CREATE TRIGGER refuse_reply_audit BEFORE INSERT ON transcript_events
+      WHEN json_extract(NEW.event_json, '$.customType') = 'openclaw.conversation-turn-reply'
+      BEGIN SELECT RAISE(ABORT, 'audit store unavailable'); END;
+    `);
     const operationId = "turn-audit-failure";
     const outboundMessageId = "reef-outbound-audit-failure";
     await persistSentOperation({
@@ -687,10 +695,6 @@ describe("conversation turn capture", () => {
     });
     pending.setOutboundMessageId(outboundMessageId);
     pending.markReady();
-    vi.spyOn(sessionAccessor, "appendTranscriptEventSync").mockImplementationOnce(() => {
-      throw new Error("audit store unavailable");
-    });
-
     await expect(
       capturePendingConversationTurnReply({
         cfg: setup.cfg,
@@ -713,9 +717,9 @@ describe("conversation turn capture", () => {
         } as FinalizedRuntimeMsgContext,
       }),
     ).resolves.toBe(true);
-    await expect(pending.wait()).resolves.toEqual(
-      expect.objectContaining({ text: "reply survives audit failure" }),
-    );
+    const reply = await pending.wait();
+    expect(reply).toMatchObject({ text: "reply survives audit failure" });
+    expect(reply).not.toHaveProperty("transcriptArtifactId");
     expect(await getConversationDeliveryOperation(setup.scope, operationId)).toMatchObject({
       status: "replied",
       reply: { text: "reply survives audit failure" },

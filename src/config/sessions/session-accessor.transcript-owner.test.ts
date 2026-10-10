@@ -17,13 +17,13 @@ import {
   loadSessionEntry,
   loadTranscriptEvents,
   replaceSessionEntry,
-  replaceTranscriptEventsSync,
 } from "./session-accessor.js";
 import {
   replaceSessionEntrySync,
   upsertSessionEntryCore,
 } from "./session-accessor.sqlite-entry.js";
-import { appendTranscriptEventSync } from "./session-accessor.sqlite-transcript-write.js";
+import { replaceTranscriptEventsSync } from "./session-accessor.sqlite-transcript-write.test-support.js";
+import { appendTranscriptEventSync } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import { persistSessionTranscriptTurn } from "./session-accessor.transcript-turn.js";
 import {
   SessionTranscriptWriterClaimReboundError,

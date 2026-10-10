@@ -95,6 +95,12 @@ source-fence cutover. Those routes, released compatibility methods, worker kerne
 and offline tools are explicitly retained; they are not evidence of worker-only
 runtime access. No schema, stored bytes, retention, or update behavior changes.
 
+The released synchronous `listSessionEntries` default still joins writable database
+admission. Bundled runtime readers use `readOnly: true` or the awaited
+`api.runtime.agent.session.createSessionEntryListReader`; the remaining bundled
+default calls belong to Doctor. Test-only full-transcript replacement and raw
+event append wrappers live in test support, outside the core accessor exports.
+
 ## Committed facts and completeness
 
 Synchronous compatibility writers and workers share the existing postcommit

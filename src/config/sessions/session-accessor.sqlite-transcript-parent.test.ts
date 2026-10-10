@@ -9,7 +9,6 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import {
-  replaceTranscriptEventsSync,
   resolveSessionTranscriptDatabasePath,
   upsertSessionEntryCore,
   validatePreparedAssistantAppendSync,
@@ -17,6 +16,7 @@ import {
 } from "./session-accessor.js";
 import { resolveTranscriptMessageAppendParent } from "./session-accessor.sqlite-transcript-parent.js";
 import { appendTranscriptMessageSnapshotSync } from "./session-accessor.sqlite-transcript-write.js";
+import { replaceTranscriptEventsSync } from "./session-accessor.sqlite-transcript-write.test-support.js";
 
 const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-ancestry-");
 

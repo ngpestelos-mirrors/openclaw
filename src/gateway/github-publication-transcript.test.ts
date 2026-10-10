@@ -5,9 +5,9 @@ import type { SessionGitHubPublicationResult } from "../../packages/gateway-prot
 import { useSqliteWorkerFault } from "../../test/helpers/sqlite-worker-fault.js";
 import {
   loadTranscriptEvents,
-  replaceTranscriptEvents,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
+import { replaceTranscriptEvents } from "../config/sessions/session-accessor.sqlite-transcript-write.test-support.js";
 import { CURRENT_SESSION_VERSION } from "../config/sessions/version.js";
 import {
   closeOpenClawAgentDatabasesForTest,

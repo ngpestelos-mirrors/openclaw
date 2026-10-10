@@ -20,7 +20,6 @@ vi.mock("../config/sessions/session-accessor.js", () => ({
   applySessionEntryLifecycleMutation: remove,
   loadExactSessionEntry: loadEntry,
   forkSessionFromParentTranscript: vi.fn(),
-  replaceTranscriptEvents: vi.fn(),
   upsertSessionEntryCore: vi.fn(),
 }));
 
