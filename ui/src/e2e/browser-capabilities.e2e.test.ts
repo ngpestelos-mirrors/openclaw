@@ -34,14 +34,14 @@ async function setBrowserFeatures(
   fieldSizing = supported,
 ): Promise<void> {
   await page.addInitScript(
-    ({ supported: available, fieldSizing }) => {
+    ({ supported: available, fieldSizing: availableFieldSizing }) => {
       const supports = CSS.supports.bind(CSS);
       CSS.supports = (feature: string, value?: string) => {
         if (feature === "anchor-name: --a") {
           return available;
         }
         if (feature === "field-sizing: content") {
-          return fieldSizing;
+          return availableFieldSizing;
         }
         return value === undefined ? supports(feature) : supports(feature, value);
       };
