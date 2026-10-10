@@ -92,6 +92,7 @@ function invalidateSchemaFacts(
     bindScope(database, owner);
     invalidate(owner);
     owner.transactionalSchema ||= changesMain && database.isTransaction;
+    owner.transactionalTempSchema ||= change === "temp" && database.isTransaction;
     owner.pendingSchema ||= changesMain && owner.nativeDepth > 0;
     if (publish && changesMain && !database.isTransaction && owner.nativeDepth === 0) {
       publishSchemaChange(database, owner);
@@ -114,7 +115,7 @@ export function registerSqliteSchemaMutationListener(
   return () => listeners.delete(listener);
 }
 
-/** Only the fixed tracking shapes are non-revoking; ordinary TEMP DDL stays observed. */
+/** Fixed tracking shapes retain local facts; other TEMP DDL still expires its connection's facts. */
 export function installSqliteTempTrackingSchema(
   database: DatabaseSync,
   schema: SqliteTempTrackingSchema,
@@ -139,6 +140,7 @@ function trackSchemaChanges(
       discardSqliteDatabaseTransactionAdmissions(database);
       invalidate(owner);
       owner.transactionalSchema = false;
+      owner.transactionalTempSchema = false;
       owner.transactionalFacts = false;
       if (snapshot && owner.admitted && !owner.authorizerActive) {
         // A still-active native read cursor keeps its old catalog locally until the pin ends.
@@ -153,7 +155,7 @@ function trackSchemaChanges(
     }
     if (
       (boundary || !database.isTransaction) &&
-      (owner.transactionalSchema || owner.transactionalFacts)
+      (owner.transactionalSchema || owner.transactionalTempSchema || owner.transactionalFacts)
     ) {
       if (owner.transactionalSchema) {
         // A local first-use writer must publish to already-admitted sibling connections.
@@ -162,6 +164,7 @@ function trackSchemaChanges(
       invalidate(owner);
       // A batch may commit one transaction and leave another containing DDL open.
       owner.transactionalSchema &&= database.isTransaction;
+      owner.transactionalTempSchema &&= database.isTransaction;
       owner.transactionalFacts = false;
     }
   };
@@ -250,7 +253,9 @@ function trackSchemaChanges(
       mainSchemaChange || rollsBackSchema
         ? "main"
         : rollback
-          ? "rollback"
+          ? owner.transactionalTempSchema && !owner.transactionalSchema
+            ? "temp"
+            : "rollback"
           : mutation.temporaryTableSchemaChange
             ? "temp"
             : "local";
@@ -260,7 +265,7 @@ function trackSchemaChanges(
     if (schemaChange || rollback) {
       invalidateSchemaFacts(database, false, schemaInvalidation);
     }
-    if (dataChange || control?.kind === "ROLLBACK") {
+    if (dataChange || mutation.temporaryTableSchemaChange || control?.kind === "ROLLBACK") {
       owner.mutationRevision += 1;
     }
     if (
@@ -597,6 +602,7 @@ export function trackSqliteSchema(
       settling: false,
       capturing: false,
       transactionalSchema: false,
+      transactionalTempSchema: false,
       transactionalFacts: false,
       authorizerActive: false,
       unmanagedSnapshots: new Set(),
@@ -685,12 +691,16 @@ function observeSchemaLifetime(
     invalidate(owner);
     owner.scopeRevision = scope.revision;
   }
-  if ((owner.transactionalSchema || owner.transactionalFacts) && !database.isTransaction) {
+  if (
+    (owner.transactionalSchema || owner.transactionalTempSchema || owner.transactionalFacts) &&
+    !database.isTransaction
+  ) {
     if (owner.transactionalSchema) {
       publishSchemaChange(database, owner);
     }
     invalidate(owner);
     owner.transactionalSchema = false;
+    owner.transactionalTempSchema = false;
     owner.transactionalFacts = false;
   }
   return scopeChanged;

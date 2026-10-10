@@ -96,6 +96,7 @@ export type SqliteSchemaOwner = SqliteSchemaScopeOwner & {
   capturing: boolean;
   readRevision?: SqliteReadScopeRevision;
   transactionalSchema: boolean;
+  transactionalTempSchema: boolean;
   transactionBaseFacts?: SqliteSchemaFacts;
   transactionalFacts: boolean;
   snapshot?: object;
