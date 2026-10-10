@@ -191,6 +191,10 @@ export function getOpenClawAgentDatabaseValidation(
 ): OpenClawAgentDatabaseValidation | undefined {
   const pathname = path.resolve(database.path);
   let entry = validatedPaths.get(pathname);
+  // Shared physical facts cannot undo a refusal by this path's admission owner.
+  if (entry?.revoked) {
+    return undefined;
+  }
   if (
     !entry?.integrityVerified ||
     !entry.validation ||

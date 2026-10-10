@@ -60,7 +60,12 @@ export function invalidateSqliteSchemaFacts(database: DatabaseSync): void {
   invalidateSchemaFacts(database, true);
 }
 
-function invalidateSchemaFacts(database: DatabaseSync, publish: boolean, changesMain = true): void {
+function invalidateSchemaFacts(
+  database: DatabaseSync,
+  publish: boolean,
+  changesMain = true,
+  notify = true,
+): void {
   const owner = owners.get(database);
   if (owner) {
     if (database.isTransaction) {
@@ -73,8 +78,8 @@ function invalidateSchemaFacts(database: DatabaseSync, publish: boolean, changes
     if (changesMain && database.isTransaction && !owner.transactionalSchema) {
       owner.transactionBaseFacts = owner.facts;
     }
-    for (const listener of owner.mutationListeners ?? []) {
-      listener(undefined);
+    if (notify) {
+      owner.mutationListeners?.forEach((listener) => listener(undefined));
     }
     // Capture physical identity before DDL, while the caller owns cleanup on admission failure.
     bindScope(database, owner);
@@ -229,11 +234,13 @@ function trackSchemaChanges(
       Boolean(control) && !canPreserveTransactionSnapshot(control, wasTransaction);
     const rollback = control?.kind === "ROLLBACK";
     const rollsBackSchema = rollback && owner.transactionalSchema && !control.outerRollback;
+    // Row-only rollback expires cached reads without revoking live schema-based authority.
+    const notifySchema = schemaChange || (rollback && owner.transactionalSchema);
     if (rollback) {
       discardSqliteDatabaseTransactionAdmissions(database);
     }
     if (schemaChange || rollback) {
-      invalidateSchemaFacts(database, false, mainSchemaChange || rollsBackSchema);
+      invalidateSchemaFacts(database, false, mainSchemaChange || rollsBackSchema, notifySchema);
     }
     if (dataChange || control?.kind === "ROLLBACK") {
       owner.mutationRevision += 1;
@@ -313,7 +320,7 @@ function trackSchemaChanges(
           if (rollback) {
             discardSqliteDatabaseTransactionAdmissions(database);
           }
-          invalidateSchemaFacts(database, false, mainSchemaChange || rollsBackSchema);
+          invalidateSchemaFacts(database, false, mainSchemaChange || rollsBackSchema, notifySchema);
         }
         const rolledBack =
           succeeded &&

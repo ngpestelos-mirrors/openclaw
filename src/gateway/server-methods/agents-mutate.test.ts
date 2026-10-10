@@ -25,6 +25,7 @@ import {
   registerAgentCreationCommitTests,
   resolveMockWorkspaceDir,
   type MockAgentEntry,
+  type MockConfig,
 } from "./agents-mutate.test-support.js";
 const mocks = vi.hoisted(() => ({
   sharedAuthStoreOwnership: { location: "legacy-main" } as {
@@ -34,7 +35,10 @@ const mocks = vi.hoisted(() => ({
   listAgentEntries: vi.fn((_cfg?: unknown) => [] as Array<Record<string, unknown>>),
   findAgentEntryIndex: vi.fn((_list?: unknown, _agentId?: string) => -1),
   applyAgentConfig: vi.fn((_cfg: unknown, _opts: unknown) => ({})),
-  pruneAgentConfig: vi.fn(() => ({ config: {}, removedBindings: 0 })),
+  pruneAgentConfig: vi.fn((_cfg: MockConfig, _agentId: string) => ({
+    config: {},
+    removedBindings: 0,
+  })),
   writeConfigFile: vi.fn(async (_nextConfig?: unknown, _writeOptions?: unknown) => {}),
   omitConfigMutationResult: false,
   ensureAgentWorkspace: vi.fn(
