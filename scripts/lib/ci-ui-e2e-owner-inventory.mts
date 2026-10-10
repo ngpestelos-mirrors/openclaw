@@ -1,3 +1,8 @@
+import {
+  resolveUiTypeScriptPath,
+  uiTypeScriptPathGlob,
+} from "../../test/vitest/vitest.ui-paths.mjs";
+
 // Styles are imported by these page owners; the runtime import graph omits CSS.
 const pageStyles = {
   about: [
@@ -2160,7 +2165,8 @@ const ownerWatches: readonly UiE2eOwnerWatch[] = [
 ];
 
 export const UI_E2E_OWNER_WATCHES: readonly UiE2eOwnerWatch[] = ownerWatches.map((watch) => ({
-  ...watch,
+  testFile: watch.testFile,
+  ownerRoots: watch.ownerRoots,
   watchGlobs: watch.watchGlobs.map(uiTypeScriptPathGlob),
 }));
 
@@ -2176,7 +2182,3 @@ export const UI_E2E_SMOKE_TEST_FILES: readonly string[] = [
   // Always run a settings edit through rendered CSS, persistence, and reset.
   "ui/src/e2e/appearance-accent-selection.e2e.test.ts",
 ].map((file) => resolveUiTypeScriptPath(file));
-import {
-  resolveUiTypeScriptPath,
-  uiTypeScriptPathGlob,
-} from "../../test/vitest/vitest.ui-paths.mjs";

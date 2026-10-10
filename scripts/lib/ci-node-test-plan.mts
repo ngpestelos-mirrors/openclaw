@@ -1466,9 +1466,9 @@ export function resolveUiE2ePrTestSelection(
   const paths = [...changedPaths];
   const graphOptions = { tooling: true, resolveAliases: true, runtimeOnly: true };
   const ownerWatches = UI_E2E_OWNER_WATCHES.map((watch) => ({
-    ...watch,
     testFile: resolveUiTypeScriptPath(watch.testFile, cwd),
     ownerRoots: watch.ownerRoots.map((root) => resolveUiTypeScriptPath(root, cwd)),
+    watchGlobs: watch.watchGlobs,
   }));
   const roots = [...new Set(ownerWatches.flatMap(({ ownerRoots }) => ownerRoots))];
   const policyTargets = new Set(
