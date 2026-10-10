@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { setRuntimeConfigSnapshot } from "../../../config/config.js";
 import {
   loadExactSessionEntry,
   replaceSessionEntry,
@@ -27,6 +28,8 @@ import {
 export function registerAbsentChildRestoreOwnershipTest() {
   it("settles a restarted actor-selected absent child without reading or recreating native storage", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      // Recovery runs after config admission; keep cold config bootstrap outside the SQL boundary.
+      setRuntimeConfigSnapshot({});
       const childSessionKey = "agent:main:subagent:incognito-absent-restart";
       const entry = makeRunRecord({
         runId: "absent-actor-restart",
