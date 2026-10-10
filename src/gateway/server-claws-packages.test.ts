@@ -22,7 +22,6 @@ import {
   readClawInstallRecord,
   readClawPackageRefs,
   updateClawInstallRecordStatus,
-  updateClawPackageRefStatus,
 } from "../claws/provenance.js";
 import {
   PluginRuntimeApplicationError,
@@ -64,7 +63,7 @@ async function fixture(uninstallWarnings: string[] = []) {
   const state = await createOpenClawTestState({ prefix: "claw-package-owner-" });
   cleanups.push(() => state.cleanup());
   const { plan } = await buildClawRemovalFixture(state.root);
-  const install = persistClawInstallRecord(plan);
+  const install = await persistClawInstallRecord(plan);
   const pkg = {
     kind: "plugin" as const,
     source: "clawhub" as const,
@@ -72,7 +71,7 @@ async function fixture(uninstallWarnings: string[] = []) {
     version: "1.0.0",
     integrity: "sha256:audit",
   };
-  const packageRef = persistClawPackageRef(plan, pkg);
+  const packageRef = await persistClawPackageRef(plan, pkg);
   const claim = () =>
     beginAgentDeletionJournal({
       operationId: randomUUID(),
@@ -311,7 +310,11 @@ describe("Gateway Claw package cleanup owner", () => {
         : constants.SQLITE_OK,
     );
     try {
-      expect(() => updateClawPackageRefStatus(f.packageRef, "pending")).toThrow(/not authorized/i);
+      expect(() =>
+        db
+          .prepare("UPDATE claw_package_refs SET package_status = ? WHERE agent_id = ?")
+          .run("pending", "worker"),
+      ).toThrow(/not authorized/i);
       const result = await f.invoke();
       const { expectedWarnings } = warnings;
       expect(result).toEqual({
@@ -408,7 +411,10 @@ describe("Gateway Claw package cleanup owner", () => {
     const holder = withPluginLifecycleLease({}, async () => {
       entered.resolve();
       await release.promise;
-      persistClawPackageRef({ ...f.plan, agent: { ...f.plan.agent, finalId: "other" } }, f.pkg);
+      await persistClawPackageRef(
+        { ...f.plan, agent: { ...f.plan.agent, finalId: "other" } },
+        f.pkg,
+      );
     });
     await entered.promise;
     const pending = f.invoke();

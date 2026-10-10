@@ -4,16 +4,20 @@ import {
   PluginInstallRuntimeBatch,
   type PluginInstallBatchReload,
 } from "../plugins/install-runtime-batch.js";
-import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
+import { withPluginLifecycleSettlementLease } from "../plugins/plugin-lifecycle-lease.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
+import { runClawSettlement, type ClawSettlementOptions } from "./update-rollback.js";
 
-export type ClawPluginRuntimeOptions = OpenClawStateDatabaseOptions & {
-  reloadPlugins?: PluginInstallBatchReload;
-  /** The enclosing requirement phase owns nested package installs and compensation. */
-  runtimeBatch?: PluginInstallRuntimeBatch;
-  runtime?: RuntimeEnv;
-};
+export type ClawPluginRuntimeOptions = OpenClawStateDatabaseOptions &
+  ClawSettlementOptions & {
+    reloadPlugins?: PluginInstallBatchReload;
+    /** The enclosing requirement phase owns nested package installs and compensation. */
+    runtimeBatch?: PluginInstallRuntimeBatch;
+    runtime?: RuntimeEnv;
+    waitMs?: number;
+    signal?: AbortSignal;
+  };
 
 export async function runClawPluginBatch<T>(
   options: ClawPluginRuntimeOptions,
@@ -22,7 +26,7 @@ export async function runClawPluginBatch<T>(
   runtimeFailure: (failure: unknown, operation: Result<T, unknown>) => Error,
 ): Promise<T> {
   if (!options.reloadPlugins || options.runtimeBatch) {
-    return await withPluginLifecycleLease(options, () => run(options.runtimeBatch));
+    return await withPluginLifecycleSettlementLease(options, () => run(options.runtimeBatch));
   }
   if (pluginCount > MAX_PLUGIN_RELOAD_TARGETS) {
     throw new Error(
@@ -31,7 +35,7 @@ export async function runClawPluginBatch<T>(
   }
   const batch = new PluginInstallRuntimeBatch(options, options.reloadPlugins);
   let completed: Result<T, unknown> | undefined;
-  const operation = await withPluginLifecycleLease(options, async (lease) => {
+  const operation = await withPluginLifecycleSettlementLease(options, async (lease) => {
     let result: Result<T, unknown>;
     try {
       result = ok(await run(batch));
@@ -53,7 +57,9 @@ export async function runClawPluginBatch<T>(
   });
   try {
     const runtime = options.runtime ?? defaultRuntime;
-    const application = await batch.finish((message) => runtime.log(message));
+    const application = await runClawSettlement(options, () =>
+      batch.finish((message) => runtime.log(message)),
+    );
     if (application) {
       runtime.log(`Plugin requirements applied in Gateway generation ${application.generation}.`);
     }

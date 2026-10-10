@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,10 @@ import type { withClawPackageLifecycleLease } from "../state/claw-package-lifecy
 import { installClawPackages, preflightClawPackage } from "./packages.js";
 import { packageInstallPlan as plan } from "./packages.test-support.js";
 import type { PersistedClawPackageRef } from "./provenance.js";
+
+type PackageInstallerDeps = NonNullable<
+  NonNullable<Parameters<typeof installClawPackages>[1]>["deps"]
+>;
 
 vi.mock("@openclaw/fs-safe/temp", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@openclaw/fs-safe/temp")>();
@@ -25,7 +30,7 @@ const pluginPackage = {
 } as const;
 
 const completePackageRef = vi.fn(
-  (ref: PersistedClawPackageRef, status: PersistedClawPackageRef["status"]) => ({
+  async (ref: PersistedClawPackageRef, status: PersistedClawPackageRef["status"]) => ({
     ...ref,
     status,
   }),
@@ -739,81 +744,126 @@ describe("installClawPackages", () => {
     });
   });
 
-  it("removes a newly installed plugin when a later package fails", async () => {
-    const rollbackIntegrity =
-      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const installPlugin = vi
-      .fn()
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error("second install failed"));
-    const uninstallPlugin = vi.fn().mockResolvedValue(undefined);
-    const refs = [
-      pluginPackageRef("@owner/first", { status: "pending" }),
-      pluginPackageRef("@owner/second", { status: "pending" }),
-    ];
-    const persistPackageRef = vi.fn().mockReturnValueOnce(refs[0]).mockReturnValueOnce(refs[1]);
-    const readPackageRefs = vi
-      .fn()
-      .mockReturnValueOnce([])
-      .mockReturnValueOnce([pluginPackageRef("@owner/first")]);
-
-    await expect(
-      installClawPackages(
-        plan([
-          {
-            kind: "plugin",
-            source: "clawhub",
-            ref: "@owner/first",
-            version: "1.0.0",
-            integrity: rollbackIntegrity,
-          },
-          {
-            kind: "plugin",
-            source: "clawhub",
-            ref: "@owner/second",
-            version: "1.0.0",
-            integrity: rollbackIntegrity,
-          },
-        ]),
-        {
-          deps: {
-            installPlugin,
-            uninstallPlugin,
-            probePlugin,
-            preflightPlugin: vi.fn().mockResolvedValue({ ok: true, action: "install" }),
-            persistPackageRef,
-            completePackageRef,
-            readPackageRefs,
-            withPackageLease,
-            resolvePlugin: vi.fn().mockResolvedValue({
-              status: "found",
-              pluginId: "first",
-              installedVersion: "1.0.0",
-              record: {
-                source: "clawhub",
-                integrity: rollbackIntegrity,
-                installedAt: new Date(1_500).toISOString(),
-              },
-            }),
-          },
+  it.each([false, true])(
+    "removes a newly installed plugin when a later package fails (request canceled=%s)",
+    async (cancelRequest) => {
+      const controller = new AbortController();
+      const settlement = new AsyncLocalStorage<boolean>();
+      const settlementOptions = {
+        signal: controller.signal,
+        assertCurrent: () => controller.signal.throwIfAborted(),
+        assertSettlementCurrent: () => undefined,
+        runSettlement: <T>(run: () => Promise<T>) => settlement.run(true, run),
+      };
+      const completePackageRef = vi.fn<NonNullable<PackageInstallerDeps["completePackageRef"]>>(
+        async (ref, status, options) => {
+          options?.signal?.throwIfAborted();
+          options?.assertCurrent?.();
+          if (controller.signal.aborted) {
+            expect(settlement.getStore()).toBe(true);
+          }
+          return { ...ref, status };
         },
-      ),
-    ).rejects.toMatchObject({ code: "package_install_failed", message: "second install failed" });
+      );
+      const rollbackIntegrity =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const installPlugin = vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockImplementationOnce(async () => {
+          if (cancelRequest) {
+            controller.abort(new Error("request canceled"));
+          }
+          throw new Error("second install failed");
+        });
+      const uninstallPlugin = vi.fn<NonNullable<PackageInstallerDeps["uninstallPlugin"]>>(
+        async (params) => {
+          params.signal?.throwIfAborted();
+          params.beforePersistentApply?.();
+          if (controller.signal.aborted) {
+            expect(settlement.getStore()).toBe(true);
+          }
+        },
+      );
+      const refs = [
+        pluginPackageRef("@owner/first", { status: "pending" }),
+        pluginPackageRef("@owner/second", { status: "pending" }),
+      ];
+      const persistPackageRef = vi.fn().mockReturnValueOnce(refs[0]).mockReturnValueOnce(refs[1]);
+      const readPackageRefs = vi
+        .fn()
+        .mockReturnValueOnce([])
+        .mockReturnValueOnce([pluginPackageRef("@owner/first")]);
 
-    expect(uninstallPlugin).toHaveBeenCalledWith(
-      expect.objectContaining({
-        pluginId: "first",
-        caller: "cli",
-        invalidateRuntimeCache: false,
-        clawManaged: true,
-      }),
-    );
-    expect(completePackageRef).toHaveBeenCalledWith(
-      expect.objectContaining({ ref: "@owner/first" }),
-      "rolled_back",
-      expect.anything(),
-    );
-  });
+      await expect(
+        installClawPackages(
+          plan([
+            {
+              kind: "plugin",
+              source: "clawhub",
+              ref: "@owner/first",
+              version: "1.0.0",
+              integrity: rollbackIntegrity,
+            },
+            {
+              kind: "plugin",
+              source: "clawhub",
+              ref: "@owner/second",
+              version: "1.0.0",
+              integrity: rollbackIntegrity,
+            },
+          ]),
+          {
+            ...settlementOptions,
+            deps: {
+              installPlugin,
+              uninstallPlugin,
+              probePlugin,
+              preflightPlugin: vi.fn().mockResolvedValue({ ok: true, action: "install" }),
+              persistPackageRef,
+              completePackageRef,
+              readPackageRefs,
+              withPackageLease: async (artifact, operation, options) => {
+                options?.signal?.throwIfAborted();
+                return await withPackageLease(artifact, operation, options);
+              },
+              resolvePlugin: vi.fn().mockResolvedValue({
+                status: "found",
+                pluginId: "first",
+                installedVersion: "1.0.0",
+                record: {
+                  source: "clawhub",
+                  integrity: rollbackIntegrity,
+                  installedAt: new Date(1_500).toISOString(),
+                },
+              }),
+            },
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: "package_install_failed",
+        message: "second install failed",
+        installedPackages: [
+          expect.objectContaining({ ref: "@owner/first", status: "rolled_back" }),
+          expect.objectContaining({ ref: "@owner/second", status: "failed" }),
+        ],
+      });
+
+      expect(uninstallPlugin).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pluginId: "first",
+          caller: "cli",
+          invalidateRuntimeCache: false,
+          clawManaged: true,
+        }),
+      );
+      expect(completePackageRef).toHaveBeenCalledWith(
+        expect.objectContaining({ ref: "@owner/first" }),
+        "rolled_back",
+        expect.anything(),
+      );
+    },
+  );
 
   it("keeps a newly installed plugin when a direct owner claims it before rollback", async () => {
     const installPlugin = vi

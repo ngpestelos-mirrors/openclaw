@@ -10,7 +10,7 @@ import {
   normalizeClawPackageCleanup,
 } from "./package-remove-plan.js";
 import { applyClawPackageRemovals, type ClawPackageRemovalDecision } from "./package-remove.js";
-import { readClawInstallRecord } from "./provenance.js";
+import { readClawInstallRecordAsync } from "./provenance.js";
 
 export async function applyClawPackageRemovalPhase(
   decisions: ClawPackageRemovalDecision[],
@@ -41,13 +41,16 @@ export async function applyClawPackageRemovalPhase(
   if (!options.packageGateway) {
     throw new Error("Plugin cleanup requires the serving Gateway package owner.");
   }
+  const install = await readClawInstallRecordAsync(options.agentId, options);
+  if (options.assertCurrentAsync) {
+    await options.assertCurrentAsync();
+  }
+  options.assertCurrent();
   // Hand off before taking either cross-process package mutation lease.
   const removed = await options.packageGateway({
     agentId: options.agentId,
     operationId: options.operationId,
-    expectedInstallDigest: digestClawRemovalInstall(
-      readClawInstallRecord(options.agentId, options),
-    ),
+    expectedInstallDigest: digestClawRemovalInstall(install),
     expectedPackagePlanDigest: digestClawPackageRemovalPlan(ordered, cleanup),
     cleanup,
   });

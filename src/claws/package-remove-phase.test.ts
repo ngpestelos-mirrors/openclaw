@@ -9,14 +9,14 @@ import {
 } from "./package-remove.js";
 import type { PersistedClawPackageRef } from "./provenance.js";
 
-const mocks = vi.hoisted(() => ({ local: vi.fn() }));
+const mocks = vi.hoisted(() => ({ local: vi.fn(), readInstall: vi.fn(async () => undefined) }));
 vi.mock("./package-remove.js", async (original) => ({
   ...(await original<typeof import("./package-remove.js")>()),
   applyClawPackageRemovals: (...args: unknown[]) => mocks.local(...args),
 }));
 vi.mock("./provenance.js", async (original) => ({
   ...(await original<typeof import("./provenance.js")>()),
-  readClawInstallRecord: () => undefined,
+  readClawInstallRecordAsync: mocks.readInstall,
 }));
 
 function reference(relationship: "managed" | "referenced"): PersistedClawPackageRef {
@@ -121,6 +121,28 @@ describe("Claw package phase handoff", () => {
       expect(mocks.local).not.toHaveBeenCalled();
     },
   );
+
+  it("rechecks the removal owner after preparing the handoff record", async () => {
+    const planned = await decisions("managed", { mode: "retain" });
+    let retired = false;
+    mocks.readInstall.mockImplementationOnce(async () => {
+      retired = true;
+      return undefined;
+    });
+    const packageGateway = vi.fn();
+    await expect(
+      applyClawPackageRemovalPhase(planned, {
+        ...options,
+        assertCurrent: () => {
+          if (retired) {
+            throw new Error("removal owner retired");
+          }
+        },
+        packageGateway,
+      }),
+    ).rejects.toThrow("removal owner retired");
+    expect(packageGateway).not.toHaveBeenCalled();
+  });
 
   it("preserves managed-before-referenced ordering for a mixed phase", async () => {
     mocks.local.mockClear();

@@ -13,10 +13,8 @@ import {
   listOpenClawRegisteredAgentDatabases,
   registerOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db-registry.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../state/openclaw-state-db.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -39,7 +37,7 @@ beforeEach(async () => {
   await state.writeConfig({});
 });
 afterEach(async () => {
-  closeOpenClawStateDatabaseForTest();
+  await closeStateDatabaseForTest();
   await state.cleanup();
 });
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -190,7 +188,7 @@ describe("Claw status and remove", () => {
 
   it("reports installed agent, managed files, and package references", async () => {
     const current = await addFixture({ withFile: true });
-    persistClawPackageRef(
+    await persistClawPackageRef(
       current.plan,
       {
         kind: "plugin",
@@ -235,7 +233,7 @@ describe("Claw status and remove", () => {
       unavailable: ["agents"],
       adapterIdentity: "openclaw/previous",
     };
-    persistClawPackageRef(
+    await persistClawPackageRef(
       current.plan,
       {
         kind: "plugin",
@@ -285,7 +283,7 @@ describe("Claw status and remove", () => {
       unavailable: ["agents"],
       adapterIdentity: "openclaw/current",
     };
-    persistClawPackageRef(
+    await persistClawPackageRef(
       current.plan,
       {
         kind: "plugin",
@@ -328,7 +326,7 @@ describe("Claw status and remove", () => {
 
   it("counts every non-complete root install as partial", async () => {
     const current = await fixture();
-    persistClawInstallRecord(current.plan, { env: current.env, status: "config_committed" });
+    await persistClawInstallRecord(current.plan, { env: current.env, status: "config_committed" });
 
     await expect(
       readClawStatus("worker", { env: current.env, config: { agents: { entries: {} } } }),
@@ -337,7 +335,7 @@ describe("Claw status and remove", () => {
 
   it("reports orphaned subordinate ownership without a root install row", async () => {
     const current = await fixture();
-    persistClawPackageRef(
+    await persistClawPackageRef(
       current.plan,
       {
         kind: "plugin",
@@ -486,7 +484,7 @@ describe("Claw status and remove", () => {
       "openclaw-agent.sqlite",
     );
     registerOpenClawAgentDatabase({ agentId: "worker", path: databasePath, env: current.env });
-    persistClawPackageRef(
+    await persistClawPackageRef(
       current.plan,
       {
         kind: "skill",
@@ -864,7 +862,7 @@ describe("Claw status and remove", () => {
 
   it("releases global plugin references without uninstalling the plugin", async () => {
     const current = await addFixture();
-    persistClawPackageRef(
+    await persistClawPackageRef(
       current.plan,
       {
         kind: "plugin",
@@ -947,8 +945,8 @@ describe("Claw status and remove", () => {
   it("requires an agent id when a package identity has multiple installs", async () => {
     const first = await fixture({ id: "worker-a", name: "@acme/shared" });
     const second = await fixture({ id: "worker-b", name: "@acme/shared" });
-    persistClawInstallRecord(first.plan, { env: first.env });
-    persistClawInstallRecord(second.plan, { env: first.env });
+    await persistClawInstallRecord(first.plan, { env: first.env });
+    await persistClawInstallRecord(second.plan, { env: first.env });
     const plan = await buildClawRemovePlan("@acme/shared", { env: first.env, config: {} });
     expect(plan.blockers).toContainEqual(expect.objectContaining({ code: "claw_ambiguous" }));
   });
@@ -956,8 +954,8 @@ describe("Claw status and remove", () => {
   it("keeps Claw-introduced plugin origin on every surviving Claw reference", async () => {
     const first = await fixture({ id: "worker-a", name: "@acme/first" });
     const second = await fixture({ id: "worker-b", name: "@acme/second" });
-    persistClawInstallRecord(first.plan, { env: first.env, nowMs: 1 });
-    persistClawInstallRecord(second.plan, { env: first.env, nowMs: 2 });
+    await persistClawInstallRecord(first.plan, { env: first.env, nowMs: 1 });
+    await persistClawInstallRecord(second.plan, { env: first.env, nowMs: 2 });
     const plugin = {
       kind: "plugin",
       source: "clawhub",
@@ -965,14 +963,14 @@ describe("Claw status and remove", () => {
       version: "1.0.0",
       integrity: packageIntegrity,
     } as const;
-    persistClawPackageRef(first.plan, plugin, {
+    await persistClawPackageRef(first.plan, plugin, {
       env: first.env,
       nowMs: 1,
       relationship: "referenced",
       origin: "claw-introduced",
       independentOwner: false,
     });
-    persistClawPackageRef(second.plan, plugin, {
+    await persistClawPackageRef(second.plan, plugin, {
       env: first.env,
       nowMs: 2,
       relationship: "referenced",

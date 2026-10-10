@@ -74,7 +74,9 @@ export class PluginInstallRuntimeBatch {
   private phase: "collecting" | "preparing" | "prepared" | "applying" | "closed" = "collecting";
 
   constructor(
-    private readonly options: Pick<OpenClawStateDatabaseOptions, "env" | "path" | "database">,
+    private readonly options: Pick<OpenClawStateDatabaseOptions, "env" | "path" | "database"> & {
+      waitMs?: number;
+    },
     private readonly reload: PluginInstallBatchReload,
   ) {}
 

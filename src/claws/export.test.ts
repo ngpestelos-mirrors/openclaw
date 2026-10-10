@@ -6,7 +6,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { McpServerConfig } from "../config/types.mcp.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { PLUGIN_ARTIFACT_ADAPTER_IDENTITY } from "../plugins/install-artifact-inspection.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { applyClawAddPlan } from "./add.js";
 import { exportClawAgent } from "./export.js";
 import { buildClawAddPlan } from "./lifecycle.js";
@@ -48,10 +48,14 @@ vi.mock("./source-limits.js", async (importOriginal) => {
   };
 });
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 afterEach(() => {
-  closeOpenClawStateDatabaseForTest();
   lifecycleStateTestControl.afterRead = undefined;
   vi.unstubAllEnvs();
 });
@@ -191,7 +195,7 @@ async function installedFixture(
     );
   }
   if (options.withPackage) {
-    persistClawPackageRef(
+    await persistClawPackageRef(
       plan,
       {
         kind: "skill",
@@ -239,7 +243,7 @@ describe("exportClawAgent", () => {
       profile: "minimal",
       deny: ["exec"],
     };
-    updateClawInstallRecord(
+    await updateClawInstallRecord(
       {
         ...fixture.plan,
         agent: {
@@ -270,7 +274,7 @@ describe("exportClawAgent", () => {
   it("rejects export of an unbounded legacy full profile", async () => {
     const fixture = await installedFixture();
     fixture.config.agents!.entries!.worker!.tools = { profile: "full" };
-    updateClawInstallRecord(
+    await updateClawInstallRecord(
       {
         ...fixture.plan,
         agent: {
@@ -457,7 +461,7 @@ describe("exportClawAgent", () => {
       unavailable: [],
       adapterIdentity: PLUGIN_ARTIFACT_ADAPTER_IDENTITY,
     };
-    persistClawPackageRef(
+    await persistClawPackageRef(
       fixture.plan,
       {
         kind: "plugin",
@@ -811,7 +815,7 @@ describe("exportClawAgent", () => {
 
   it("rejects a partial install rather than exporting an incomplete snapshot", async () => {
     const fixture = await installedFixture();
-    updateClawInstallRecordStatus("worker", "partial", { env: fixture.env });
+    await updateClawInstallRecordStatus("worker", "partial", { env: fixture.env });
 
     await expect(
       exportClawAgent("worker", join(fixture.root, "exported-partial"), {

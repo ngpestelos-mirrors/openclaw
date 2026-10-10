@@ -1,10 +1,7 @@
-import {
-  runOpenClawStateWriteTransaction,
-  type OpenClawStateDatabaseOptions,
-} from "../state/openclaw-state-db.js";
+import { assertClawPackageLifecycleWriteArtifact } from "../state/claw-package-lifecycle-lease.js";
 import { digestClawValue } from "./digest.js";
 import type { PersistedClawPackageRef } from "./package-extension-provenance.js";
-import { replaceClawPackageRefExpectedInDatabase } from "./package-update-provenance.kernel.js";
+import { executeClawProvenanceWrite, type ClawProvenanceWriteOptions } from "./provenance-write.js";
 
 export function digestClawPackageRef(ref: PersistedClawPackageRef): string {
   const persisted = {
@@ -27,16 +24,23 @@ export function digestClawPackageRef(ref: PersistedClawPackageRef): string {
   return digestClawValue(persisted);
 }
 
-export function replaceClawPackageRefExpected(
+export async function replaceClawPackageRefExpected(
   expected: PersistedClawPackageRef | undefined,
   replacement: PersistedClawPackageRef | undefined,
-  options: OpenClawStateDatabaseOptions = {},
-): void {
-  const identity = expected ?? replacement;
-  if (!identity) {
+  options: ClawProvenanceWriteOptions = {},
+): Promise<void> {
+  if (!expected && !replacement) {
     throw new Error("Package reference replacement requires an identity.");
   }
-  runOpenClawStateWriteTransaction(({ db }) => {
-    replaceClawPackageRefExpectedInDatabase(db, expected, replacement);
-  }, options);
+  if (options.lease) {
+    for (const ref of [expected, replacement]) {
+      if (ref) {
+        assertClawPackageLifecycleWriteArtifact(options.lease, ref);
+      }
+    }
+  }
+  await executeClawProvenanceWrite(
+    { type: "clawProvenance.replacePackageRef", input: { expected, replacement } },
+    options,
+  );
 }

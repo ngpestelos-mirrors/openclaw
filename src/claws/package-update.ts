@@ -1,5 +1,7 @@
 import { coerceErrorMessage } from "@openclaw/normalization-core";
+import { hasSqliteWorkerOutcomeUnknown } from "../infra/sqlite-worker-contract.js";
 import { preflightPluginInstall } from "../plugins/plugin-install-preflight.js";
+import type { OpenClawStateWorkerLeaseContext } from "../state/openclaw-state-lease-context.js";
 import { clawPackageKey } from "./application-provenance.js";
 import { digestClawValue as digest } from "./digest.js";
 import {
@@ -10,12 +12,12 @@ import { installClawPackages } from "./packages.js";
 import type { ClawPluginRuntimeOptions } from "./plugin-runtime.js";
 import {
   CLAW_PACKAGE_REF_SCHEMA_VERSION,
-  readClawPackageRefs,
+  readClawPackageRefsAsync,
   type PersistedClawPackageRef,
 } from "./provenance.js";
 import type { ClawAddPlan, ClawPackage } from "./types.js";
 import type { ClawUpdatePlan } from "./update-plan.js";
-import { collectClawRollbackFailures } from "./update-rollback.js";
+import { collectClawRollbackFailures, runClawSettlement } from "./update-rollback.js";
 
 type PackageInstallerDeps = NonNullable<
   NonNullable<Parameters<typeof installClawPackages>[1]>["deps"]
@@ -42,12 +44,20 @@ export async function applyClawPackageUpdate(
   targetAddPlan: ClawAddPlan,
   options: ClawPluginRuntimeOptions & {
     installPackages?: typeof installClawPackages;
-    readRefs?: typeof readClawPackageRefs;
+    readRefs?: typeof readClawPackageRefsAsync;
     replaceExpected?: typeof replaceClawPackageRefExpected;
     packageDeps?: PackageInstallerDeps;
     nowMs?: number;
+    assertCurrent?: () => void;
+    assertSettlementCurrent?: () => void;
+    signal?: AbortSignal;
   },
 ): Promise<ClawPackageUpdateExecution> {
+  const assertCurrent = () => {
+    options.signal?.throwIfAborted();
+    options.assertCurrent?.();
+  };
+  assertCurrent();
   const actions = updatePlan.actions.filter(
     (action) => action.kind === "package" && action.action !== "unchanged",
   );
@@ -55,28 +65,40 @@ export async function applyClawPackageUpdate(
     return { appliedIds: [], rollback: async () => undefined };
   }
   const installPackages = options.installPackages ?? installClawPackages;
-  const readRefs = options.readRefs ?? readClawPackageRefs;
+  const readRefs = options.readRefs ?? readClawPackageRefsAsync;
   const replaceExpected = options.replaceExpected ?? replaceClawPackageRefExpected;
   const currentRefs = new Map(
-    readRefs({ ...options, agentId: updatePlan.agentId }).map((ref) => [clawPackageKey(ref), ref]),
+    (await readRefs({ ...options, agentId: updatePlan.agentId })).map((ref) => [
+      clawPackageKey(ref),
+      ref,
+    ]),
   );
-  const allRefs = readRefs(options);
+  const allRefs = await readRefs(options);
   const undo: Array<() => Promise<void>> = [];
   const externalMutations: string[] = [];
   const appliedIds: string[] = [];
-
-  const rollback = async () => {
-    const failures = await collectClawRollbackFailures(undo.toReversed());
-    if (externalMutations.length > 0) {
-      failures.push(`package artifacts may have been retained: ${externalMutations.join(", ")}`);
-    }
-    if (failures.length > 0) {
-      throw new ClawPackageUpdateError(failures.join("; "), externalMutations.length > 0);
-    }
+  // Accepted ownership changes settle under the original owner after request cancellation.
+  const rollbackOptions = {
+    ...options,
+    signal: undefined,
+    assertCurrent: options.assertSettlementCurrent ?? options.assertCurrent,
   };
+
+  const rollback = () =>
+    runClawSettlement(options, async () => {
+      rollbackOptions.assertCurrent?.();
+      const failures = await collectClawRollbackFailures(undo.toReversed());
+      if (externalMutations.length > 0) {
+        failures.push(`package artifacts may have been retained: ${externalMutations.join(", ")}`);
+      }
+      if (failures.length > 0) {
+        throw new ClawPackageUpdateError(failures.join("; "), externalMutations.length > 0);
+      }
+    });
 
   try {
     for (const action of actions) {
+      assertCurrent();
       const previous = currentRefs.get(action.id);
       if (
         previous &&
@@ -95,8 +117,8 @@ export async function applyClawPackageUpdate(
             false,
           );
         }
-        replaceExpected(previous, undefined, options);
-        undo.push(async () => replaceExpected(undefined, previous, options));
+        await replaceExpected(previous, undefined, options);
+        undo.push(async () => replaceExpected(undefined, previous, rollbackOptions));
         appliedIds.push(action.id);
         continue;
       }
@@ -178,13 +200,17 @@ export async function applyClawPackageUpdate(
         installedAtMs: preservesExistingEdge && previous ? previous.installedAtMs : nowMs,
         updatedAtMs: nowMs,
       };
-      replaceExpected(previous, claimed, options);
-      undo.push(async () => replaceExpected(claimed, previous, options));
-      const recordClaim = (next: PersistedClawPackageRef) => {
-        replaceExpected(claimed, next, options);
+      await replaceExpected(previous, claimed, options);
+      undo.push(async () => replaceExpected(claimed, previous, rollbackOptions));
+      const recordClaim = async (
+        next: PersistedClawPackageRef,
+        lease?: OpenClawStateWorkerLeaseContext,
+      ) => {
+        await replaceExpected(claimed, next, { ...options, lease });
         claimed = next;
         return next;
       };
+      assertCurrent();
       const refs = await installPackages(
         { ...targetAddPlan, actions: [targetAction] },
         {
@@ -196,7 +222,7 @@ export async function applyClawPackageUpdate(
               const preflight = await (
                 options.packageDeps?.preflightPlugin ?? preflightPluginInstall
               )(params);
-              const conflictingOwner = hasConflictingPin(readRefs(options));
+              const conflictingOwner = hasConflictingPin(await readRefs(options));
               return !preflight.ok &&
                 preflight.code === "plugin_version_conflict" &&
                 !conflictingOwner &&
@@ -208,22 +234,25 @@ export async function applyClawPackageUpdate(
                 : preflight;
             },
             persistPackageRef: (_plan, _pkg, persistOptions) =>
-              recordClaim({
-                ...claimed,
-                status: persistOptions?.status ?? "complete",
-                relationship: preservesExistingEdge
-                  ? claimed.relationship
-                  : (persistOptions?.relationship ?? claimed.relationship),
-                origin: preservesExistingEdge
-                  ? claimed.origin
-                  : (persistOptions?.origin ?? claimed.origin),
-                independentOwner: preservesExistingEdge
-                  ? claimed.independentOwner
-                  : (persistOptions?.independentOwner ?? claimed.independentOwner),
-                updatedAtMs: nowMs,
-              }),
-            completePackageRef: (ref, status) =>
-              recordClaim({ ...ref, status, updatedAtMs: nowMs }),
+              recordClaim(
+                {
+                  ...claimed,
+                  status: persistOptions?.status ?? "complete",
+                  relationship: preservesExistingEdge
+                    ? claimed.relationship
+                    : (persistOptions?.relationship ?? claimed.relationship),
+                  origin: preservesExistingEdge
+                    ? claimed.origin
+                    : (persistOptions?.origin ?? claimed.origin),
+                  independentOwner: preservesExistingEdge
+                    ? claimed.independentOwner
+                    : (persistOptions?.independentOwner ?? claimed.independentOwner),
+                  updatedAtMs: nowMs,
+                },
+                persistOptions?.lease,
+              ),
+            completePackageRef: (ref, status, completeOptions) =>
+              recordClaim({ ...ref, status, updatedAtMs: nowMs }, completeOptions?.lease),
           },
           onExternalMutation: () => {
             externalMutations.push(`${target.kind}:${target.ref}@${target.version}`);
@@ -240,11 +269,14 @@ export async function applyClawPackageUpdate(
         );
       }
       if (digest(installed) !== digest(claimed)) {
-        recordClaim(installed);
+        await recordClaim(installed);
       }
       appliedIds.push(action.id);
     }
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     if (externalMutations.length > 0) {
       throw new ClawPackageUpdateError(
         `${coerceErrorMessage(error)}; package artifact outcome requires reconciliation`,

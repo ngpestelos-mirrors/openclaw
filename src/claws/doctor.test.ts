@@ -311,7 +311,7 @@ describe("collectClawStateHealthFindings", () => {
 
   it("reports incomplete package lifecycle state", async () => {
     const current = await installFixture();
-    persistClawPackageRef(
+    await persistClawPackageRef(
       current.plan,
       {
         kind: "plugin",
@@ -493,7 +493,7 @@ describe("collectClawStateHealthFindings", () => {
 
   it("reports ownership references without a root install", async () => {
     const current = await fixture();
-    persistClawPackageRef(
+    await persistClawPackageRef(
       current.plan,
       {
         kind: "skill",

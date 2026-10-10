@@ -41,8 +41,8 @@ import {
 } from "./package-remove.js";
 import { readClawPackageOwnership } from "./provenance-async.js";
 import {
-  readClawInstallRecords,
-  readClawPackageRefs,
+  readClawInstallRecordsAsync,
+  readClawPackageRefsAsync,
   type PersistedClawInstall,
   type PersistedClawPackageRef,
 } from "./provenance.js";
@@ -247,9 +247,9 @@ export async function readClawStatus(
   const configuredMcpServers = normalizeConfiguredMcpServers(
     options.sourceMcpServers ?? sourceConfig.mcp?.servers,
   );
-  const allInstalls = readClawInstallRecords(options);
+  const allInstalls = await readClawInstallRecordsAsync(options);
   const installAgentIds = new Set(allInstalls.map((install) => install.agentId));
-  const allPackageRefs = readClawPackageRefs(options);
+  const allPackageRefs = await readClawPackageRefsAsync(options);
   const allWorkspaceFiles = await readAllClawWorkspaceFilesAsync(options);
   const orphanAgentIds = new Set<string>();
   for (const packageRef of allPackageRefs) {

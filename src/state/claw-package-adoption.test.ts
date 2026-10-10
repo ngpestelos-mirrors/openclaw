@@ -83,13 +83,13 @@ describe("Claw package independent adoption", () => {
     ).toBe(0);
   });
 
-  it("marks every shared plugin reference independently owned", () => {
+  it("marks every shared plugin reference independently owned", async () => {
     const env = { OPENCLAW_STATE_DIR: tempDirs.make("claw-adoption-") };
     for (const agentId of ["first", "second"]) {
       const current = plan(agentId, `/tmp/${agentId}`);
-      persistClawInstallRecord(current, { env });
+      await persistClawInstallRecord(current, { env });
       for (const version of ["1.0.0", "2.0.0"]) {
-        persistClawPackageRef(
+        await persistClawPackageRef(
           current,
           {
             kind: "plugin",
@@ -130,12 +130,12 @@ describe("Claw package independent adoption", () => {
     expect(refs.every((ref) => ref.origin === "claw-introduced")).toBe(true);
   });
 
-  it("scopes skill adoption to the owning agent workspace", () => {
+  it("scopes skill adoption to the owning agent workspace", async () => {
     const env = { OPENCLAW_STATE_DIR: tempDirs.make("claw-adoption-") };
     for (const agentId of ["first", "second"]) {
       const current = plan(agentId, `/tmp/${agentId}`);
-      persistClawInstallRecord(current, { env });
-      persistClawPackageRef(
+      await persistClawInstallRecord(current, { env });
+      await persistClawPackageRef(
         current,
         {
           kind: "skill",
@@ -176,8 +176,8 @@ describe("Claw package independent adoption", () => {
   it("retains global plugins and releases their Claw references", async () => {
     const env = { OPENCLAW_STATE_DIR: tempDirs.make("claw-adoption-race-") };
     const current = plan("worker", "/tmp/worker");
-    const install = persistClawInstallRecord(current, { env });
-    const ref = persistClawPackageRef(
+    const install = await persistClawInstallRecord(current, { env });
+    const ref = await persistClawPackageRef(
       current,
       {
         kind: "plugin",

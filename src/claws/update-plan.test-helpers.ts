@@ -84,12 +84,15 @@ export async function createUpdatePlanFixture(
     commitConfig: async (transform) => {
       config = transform(config);
     },
-    installPackages: async (plan, options) =>
-      plan.actions
-        .filter((action) => action.kind === "package")
-        .map((action) =>
-          persistClawPackageRef(plan, action.details as ResolvedClawPackage, options),
-        ),
+    installPackages: async (plan, options) => {
+      const refs = [];
+      for (const action of plan.actions.filter((candidate) => candidate.kind === "package")) {
+        refs.push(
+          await persistClawPackageRef(plan, action.details as ResolvedClawPackage, options),
+        );
+      }
+      return refs;
+    },
     installMcpServers: async (plan, options) =>
       await installClawMcpServers(plan, {
         ...options,

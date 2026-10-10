@@ -522,7 +522,7 @@ describe("buildClawUpdatePlan", () => {
         search: { command: "node", args: ["operator-search.mjs"] },
       },
     };
-    persistClawPackageRef(
+    await persistClawPackageRef(
       {
         ...current.addPlan,
         agent: { ...current.addPlan.agent, finalId: "other-agent" },

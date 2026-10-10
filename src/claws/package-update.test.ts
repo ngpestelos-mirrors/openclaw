@@ -3,16 +3,26 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { ensureInstallTargetAvailable } from "../infra/install-target.js";
+import { SqliteWorkerError } from "../infra/sqlite-worker-contract.js";
 import { commitPluginInstallRecordsWithConfig } from "../plugins/install-record-commit.js";
 import type { installManagedPlugin } from "../plugins/management-mutations.js";
 import { preflightPluginInstall } from "../plugins/plugin-install-preflight.js";
 import { hasPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { withEnvAsync } from "../test-utils/env.js";
-import { digestClawPackageRef } from "./package-update-provenance.js";
+import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
+import {
+  digestClawPackageRef,
+  replaceClawPackageRefExpected,
+} from "./package-update-provenance.js";
 import { applyClawPackageUpdate } from "./package-update.js";
 import { installClawPackages } from "./packages.js";
-import { CLAW_PACKAGE_REF_SCHEMA_VERSION, type PersistedClawPackageRef } from "./provenance.js";
+import {
+  CLAW_PACKAGE_REF_SCHEMA_VERSION,
+  readClawPackageRefsAsync,
+  type PersistedClawPackageRef,
+} from "./provenance.js";
 import { createClawUpdatePlanFixture as plan } from "./resource-update.test-helpers.js";
 import {
   CLAW_OUTPUT_STABILITY,
@@ -169,7 +179,7 @@ describe("applyClawPackageUpdate", () => {
           throw new Error("expected package provenance adapter");
         }
         return [
-          persisted(current, current.actions[0]!.details as ResolvedClawPackage, {
+          await persisted(current, current.actions[0]!.details as ResolvedClawPackage, {
             status: "complete",
             relationship: "referenced",
             origin: "pre-existing",
@@ -194,7 +204,7 @@ describe("applyClawPackageUpdate", () => {
       targetPlan,
       {
         installPackages,
-        readRefs: () => [previous],
+        readRefs: async () => [previous],
         replaceExpected,
         nowMs: 20,
       },
@@ -231,7 +241,7 @@ describe("applyClawPackageUpdate", () => {
       );
       let rollingBack = false;
       const replaceExpected = vi.fn(
-        (expected?: PersistedClawPackageRef, next?: PersistedClawPackageRef) => {
+        async (expected?: PersistedClawPackageRef, next?: PersistedClawPackageRef) => {
           if (rollingBack && rollbackErrors) {
             throw new Error((next ?? expected)?.ref);
           }
@@ -269,7 +279,7 @@ describe("applyClawPackageUpdate", () => {
         addPlan,
         {
           installPackages,
-          readRefs: () => [oldSkill, legacy],
+          readRefs: async () => [oldSkill, legacy],
           replaceExpected,
         },
       );
@@ -315,13 +325,160 @@ describe("applyClawPackageUpdate", () => {
         },
       ]),
       { ...addPlan, actions: [] },
-      { readRefs: () => [legacy], replaceExpected },
+      { readRefs: async () => [legacy], replaceExpected },
     );
 
     await expect(execution.rollback()).resolves.toBeUndefined();
     expect(replaceExpected).toHaveBeenNthCalledWith(1, legacy, undefined, expect.any(Object));
     expect(replaceExpected).toHaveBeenNthCalledWith(2, undefined, legacy, expect.any(Object));
   });
+
+  it("releases and restores exact package ownership through workers without caller-thread SQL", async () => {
+    const root = dirs.make("claw-package-update-worker-");
+    const options = { env: { OPENCLAW_STATE_DIR: root } };
+    const legacy = ref("plugin", "legacy", "1.0.0");
+    await replaceClawPackageRefExpected(undefined, legacy, options);
+    const sql = observeMainThreadSql();
+    sql.calibrate();
+    try {
+      const execution = await applyClawPackageUpdate(
+        plan([
+          {
+            kind: "package",
+            id: "plugin:legacy",
+            action: "release",
+            target: "clawhub:legacy@1.0.0",
+            blocked: false,
+            reason: "removed",
+            currentDigest: digestClawPackageRef(legacy),
+          },
+        ]),
+        { ...addPlan, actions: [] },
+        options,
+      );
+      expect(await readClawPackageRefsAsync(options)).toEqual([]);
+      await execution.rollback();
+      expect(await readClawPackageRefsAsync(options)).toEqual([legacy]);
+      sql.expectIdle();
+    } finally {
+      sql.restore();
+      await closeStateDatabaseForTest();
+    }
+  });
+
+  it.each(["release", "replace", "successor", "retired owner"] as const)(
+    "settles accepted %s after request cancellation without overwriting another owner",
+    async (scenario) => {
+      const root = dirs.make("claw-package-cancel-rollback-");
+      const stateOptions = { env: { OPENCLAW_STATE_DIR: root } };
+      const previous = ref("plugin", "audit", "0.9.0");
+      const successor = { ...previous, version: "3.0.0", updatedAtMs: 30 };
+      const controller = new AbortController();
+      const canceled = new Error("request canceled");
+      let ownerCurrent = true;
+      const assertSettlementCurrent = () => {
+        if (!ownerCurrent) {
+          throw new Error("state owner retired");
+        }
+      };
+      const installPackages = vi.fn();
+      await replaceClawPackageRefExpected(undefined, previous, stateOptions);
+      try {
+        const operation = applyClawPackageUpdate(
+          plan([
+            {
+              kind: "package",
+              id: "plugin:audit",
+              action: scenario === "release" ? "release" : "change",
+              target: "clawhub:audit@1.0.0",
+              blocked: false,
+              reason: "changed",
+            },
+          ]),
+          addPlan,
+          {
+            ...stateOptions,
+            signal: controller.signal,
+            assertCurrent: () => {
+              controller.signal.throwIfAborted();
+              assertSettlementCurrent();
+            },
+            assertSettlementCurrent,
+            installPackages,
+            replaceExpected: async (expected, replacement, options) => {
+              await replaceClawPackageRefExpected(expected, replacement, options);
+              if (!controller.signal.aborted) {
+                if (scenario === "successor") {
+                  await replaceClawPackageRefExpected(replacement, successor, stateOptions);
+                }
+                ownerCurrent = scenario !== "retired owner";
+                controller.abort(canceled);
+              }
+            },
+          },
+        );
+        if (scenario === "release") {
+          const execution = await operation;
+          expect(await readClawPackageRefsAsync(stateOptions)).toEqual([]);
+          await expect(execution.rollback()).resolves.toBeUndefined();
+        } else {
+          await expect(operation).rejects.toThrow(
+            scenario === "successor"
+              ? "changed after planning"
+              : scenario === "retired owner"
+                ? "state owner retired"
+                : "request canceled",
+          );
+        }
+        expect(installPackages).not.toHaveBeenCalled();
+        const stored = await readClawPackageRefsAsync(stateOptions);
+        if (scenario === "successor") {
+          expect(stored).toEqual([successor]);
+        } else if (scenario === "retired owner") {
+          expect(stored).toMatchObject([{ version: "1.0.0", status: "pending" }]);
+        } else {
+          expect(stored).toEqual([previous]);
+        }
+      } finally {
+        await closeStateDatabaseForTest();
+      }
+    },
+  );
+
+  it.each(["apply", "rollback"] as const)(
+    "stops after an unknown worker outcome during %s",
+    async (phase) => {
+      const refs = [ref("plugin", "first", "1.0.0"), ref("plugin", "second", "1.0.0")];
+      const unknown = new SqliteWorkerError("Package write outcome is unknown", "outcome-unknown");
+      const replaceExpected = vi.fn(async () => undefined);
+      if (phase === "apply") {
+        replaceExpected.mockResolvedValueOnce(undefined).mockRejectedValueOnce(unknown);
+      }
+      const operation = applyClawPackageUpdate(
+        plan(
+          refs.map((item) => ({
+            kind: "package",
+            id: `plugin:${item.ref}`,
+            action: "release",
+            target: `clawhub:${item.ref}@1.0.0`,
+            blocked: false,
+            reason: "removed",
+          })),
+        ),
+        { ...addPlan, actions: [] },
+        { readRefs: async () => refs, replaceExpected },
+      );
+      if (phase === "apply") {
+        await expect(operation).rejects.toBe(unknown);
+        expect(replaceExpected).toHaveBeenCalledTimes(2);
+      } else {
+        const execution = await operation;
+        replaceExpected.mockRejectedValueOnce(unknown);
+        await expect(execution.rollback()).rejects.toBe(unknown);
+        expect(replaceExpected).toHaveBeenCalledTimes(3);
+      }
+    },
+  );
 
   it("releases managed package provenance without uninstalling the artifact", async () => {
     const oldSkill = ref("skill", "triage", "1.0.0");
@@ -340,7 +497,7 @@ describe("applyClawPackageUpdate", () => {
       ]),
       { ...addPlan, actions: [] },
       {
-        readRefs: () => [oldSkill],
+        readRefs: async () => [oldSkill],
         replaceExpected,
       },
     );
@@ -368,7 +525,7 @@ describe("applyClawPackageUpdate", () => {
         addPlan,
         {
           installPackages,
-          readRefs: (options) => (options?.agentId ? [] : [otherOwner]),
+          readRefs: async (options) => (options?.agentId ? [] : [otherOwner]),
         },
       ),
     ).rejects.toMatchObject({ partial: false });
@@ -394,7 +551,7 @@ describe("applyClawPackageUpdate", () => {
           },
         ]),
         { ...addPlan, actions: [] },
-        { readRefs: () => [observed], replaceExpected },
+        { readRefs: async () => [observed], replaceExpected },
       ),
     ).rejects.toMatchObject({ partial: false });
     expect(replaceExpected).not.toHaveBeenCalled();
@@ -488,8 +645,8 @@ describe("applyClawPackageUpdate", () => {
           {
             env,
             reloadPlugins,
-            readRefs: () => [previous],
-            replaceExpected: () => {
+            readRefs: async () => [previous],
+            replaceExpected: async () => {
               if (lateFailure && committed) {
                 throw failure;
               }
@@ -504,7 +661,7 @@ describe("applyClawPackageUpdate", () => {
             packageDeps: {
               installPlugin,
               uninstallPlugin,
-              readPackageRefs: () => [{ ...previous, version: "1.0.0" }],
+              readPackageRefs: async () => [{ ...previous, version: "1.0.0" }],
               resolvePlugin: async () => ({
                 status: "found",
                 pluginId: "audit",
@@ -594,7 +751,7 @@ describe("applyClawPackageUpdate", () => {
       },
     );
     let reads = 0;
-    const readRefs = vi.fn((options?: { agentId?: string }) => {
+    const readRefs = vi.fn(async (options?: { agentId?: string }) => {
       reads += 1;
       if (options?.agentId) {
         return [previous];
@@ -628,7 +785,7 @@ describe("applyClawPackageUpdate", () => {
   it("does not invoke an installer when package ownership changes after planning", async () => {
     const oldSkill = ref("skill", "triage", "1.0.0");
     const installPackages = vi.fn();
-    const replaceExpected = vi.fn(() => {
+    const replaceExpected = vi.fn(async () => {
       throw new Error('Package reference "skill:triage" changed after planning.');
     });
 
@@ -645,7 +802,7 @@ describe("applyClawPackageUpdate", () => {
           },
         ]),
         addPlan,
-        { installPackages, readRefs: () => [oldSkill], replaceExpected },
+        { installPackages, readRefs: async () => [oldSkill], replaceExpected },
       ),
     ).rejects.toMatchObject({ partial: false });
     expect(installPackages).not.toHaveBeenCalled();

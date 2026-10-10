@@ -99,7 +99,7 @@ describe("Claw root install provenance", () => {
       extension: extensionFixture,
     };
 
-    persistClawPackageRef(plan, pkg, {
+    await persistClawPackageRef(plan, pkg, {
       env: stateEnv(root),
       nowMs: 42,
       status: "pending",
@@ -107,7 +107,7 @@ describe("Claw root install provenance", () => {
       origin: "claw-introduced",
       independentOwner: false,
     });
-    const replayed = persistClawPackageRef(plan, pkg, {
+    const replayed = await persistClawPackageRef(plan, pkg, {
       env: stateEnv(root),
       nowMs: 84,
       status: "complete",
@@ -275,7 +275,7 @@ describe("Claw root install provenance", () => {
       integrity: "sha256:audit-2.3.4",
     };
 
-    const record = persistClawPackageRef(plan, pkg, { env: stateEnv(root), nowMs: 43 });
+    const record = await persistClawPackageRef(plan, pkg, { env: stateEnv(root), nowMs: 43 });
 
     expect(record).toMatchObject({
       schemaVersion: "openclaw.clawPackageRef.v1",
@@ -304,11 +304,11 @@ describe("Claw root install provenance", () => {
       version: "2.3.4",
       integrity: "sha256:audit-2.3.4",
     };
-    const planned = persistClawPackageRef(plan, pkg, { ...options, nowMs: 43 });
-    const current = updateClawPackageRefStatus(planned, "pending", options);
+    const planned = await persistClawPackageRef(plan, pkg, { ...options, nowMs: 43 });
+    const current = await updateClawPackageRefStatus(planned, "pending", options);
     const claim = { ...planned, version: "3.0.0", status: "pending" as const };
 
-    expect(() => replaceClawPackageRefExpected(planned, claim, options)).toThrow(
+    await expect(replaceClawPackageRefExpected(planned, claim, options)).rejects.toThrow(
       "changed after planning",
     );
     expect(readClawPackageRefs(options)).toEqual([current]);
@@ -317,7 +317,7 @@ describe("Claw root install provenance", () => {
   it("replaces and restores package references with complete timestamps", async () => {
     const { root, plan } = await makePlan();
     const options = { env: stateEnv(root) };
-    const planned = persistClawPackageRef(
+    const planned = await persistClawPackageRef(
       plan,
       {
         kind: "plugin",
@@ -336,10 +336,10 @@ describe("Claw root install provenance", () => {
       updatedAtMs: 44,
     };
 
-    replaceClawPackageRefExpected(planned, replacement, options);
+    await replaceClawPackageRefExpected(planned, replacement, options);
     expect(readClawPackageRefs(options)).toEqual([replacement]);
 
-    const restored = persistClawPackageRef(
+    const restored = await persistClawPackageRef(
       plan,
       {
         kind: "plugin",

@@ -164,7 +164,7 @@ describe("Claw removal operation ownership", () => {
     "keeps partial state after package %s failure without local fallback",
     async (failure) => {
       const current = await fixture(true);
-      persistClawPackageRef(current.plan, {
+      await persistClawPackageRef(current.plan, {
         kind: "plugin",
         source: "clawhub",
         ref: "audit",

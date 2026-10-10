@@ -7,7 +7,7 @@ import type { ClawAddPlan } from "../claws/types.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { installedPluginRoot } from "../plugin-sdk/test-helpers/bundled-plugin-paths.js";
 import { recordInstalledPluginIndexInstallOwner } from "../plugins/installed-plugin-index-install-owner.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { captureEnv } from "../test-utils/env.js";
 import {
   applyPluginUninstallDirectoryRemovalMock,
@@ -37,7 +37,13 @@ import {
 let alphaInstallPath: string;
 let readInstallRecords: (typeof import("../plugins/installed-plugin-index-record-reader.js"))["loadInstalledPluginIndexInstallRecordsSync"];
 const originalEnv = captureEnv(["OPENCLAW_NIX_MODE"]);
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    originalEnv.restore();
+    cleanup();
+  }),
+);
 
 function expectRuntimeLogIncludes(fragment: string) {
   expect(pluginsCliRuntimeLogs.join("\n")).toContain(fragment);
@@ -105,11 +111,6 @@ describe("plugins cli uninstall", () => {
     configWriteMock.mockImplementation(async (config) => {
       pluginCliConfigMock.mockReturnValue(config as OpenClawConfig);
     });
-  });
-
-  afterEach(() => {
-    closeOpenClawStateDatabaseForTest();
-    originalEnv.restore();
   });
 
   it("shows uninstall dry-run preview without mutating config or acquiring write mode", async () => {
@@ -271,7 +272,7 @@ describe("plugins cli uninstall", () => {
   it("warns for a versionless scoped ClawHub spec and proceeds", async () => {
     const previousEnv = captureEnv(["OPENCLAW_STATE_DIR"]);
     process.env.OPENCLAW_STATE_DIR = tempDirs.make("openclaw-claw-plugin-ref-");
-    closeOpenClawStateDatabaseForTest();
+    await closeStateDatabaseForTest();
     try {
       const installRecord = {
         source: "clawhub" as const,
@@ -292,7 +293,7 @@ describe("plugins cli uninstall", () => {
         diagnostics: [],
       });
 
-      persistClawPackageRef(
+      await persistClawPackageRef(
         {
           agent: { finalId: "audit-agent" },
           claw: { name: "@owner/audit-claw" },
@@ -316,8 +317,8 @@ describe("plugins cli uninstall", () => {
         { plugins: { entries: { alpha: { enabled: false } } } },
       );
     } finally {
+      await closeStateDatabaseForTest();
       previousEnv.restore();
-      closeOpenClawStateDatabaseForTest();
     }
   });
 

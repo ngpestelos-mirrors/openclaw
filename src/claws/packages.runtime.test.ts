@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +10,7 @@ import { preflightPluginInstall } from "../plugins/plugin-install-preflight.js";
 import { hasPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import type { ClawCommandServices } from "./command-runtime.js";
 import { installClawPackages } from "./packages.js";
 import { packageInstallPlan } from "./packages.test-support.js";
 
@@ -45,7 +47,7 @@ function packageDeps(
         integrity,
       },
     }),
-    persistPackageRef: (plan, pkg, persistOptions) => ({
+    persistPackageRef: async (plan, pkg, persistOptions) => ({
       schemaVersion: "openclaw.clawPackageRef.v1",
       agentId: plan.agent.finalId,
       clawName: plan.claw.name,
@@ -61,7 +63,7 @@ function packageDeps(
       installedAtMs: 1,
       updatedAtMs: 1,
     }),
-    completePackageRef: (ref, status) => ({ ...ref, status }),
+    completePackageRef: async (ref, status) => ({ ...ref, status }),
   } satisfies InstallOptions["deps"];
 }
 
@@ -107,9 +109,12 @@ describe("Claw committed plugin requirement handoff", () => {
       });
     });
   });
-  it.each([false, true])(
+  it.each(["none", "metadata", "cancellation"] as const)(
     "applies retained writes once after lease release (late failure=%s)",
-    async (lateFailure) => {
+    async (failure) => {
+      const lateFailure = failure !== "none";
+      const controller = new AbortController();
+      const settlement = new AsyncLocalStorage<boolean>();
       const root = dirs.make("openclaw-claw-runtime-");
       const env = {
         OPENCLAW_STATE_DIR: root,
@@ -123,6 +128,9 @@ describe("Claw committed plugin requirement handoff", () => {
         const cleanup = vi.fn();
         const log = vi.fn();
         const reloadPlugins = vi.fn<PluginInstallBatchReload>(async (targets) => {
+          if (!settlement.getStore()) {
+            controller.signal.throwIfAborted();
+          }
           expect(hasPluginLifecycleLease()).toBe(false);
           expect(heldPackages).toBe(0);
           expect(cleanup).not.toHaveBeenCalled();
@@ -136,8 +144,13 @@ describe("Claw committed plugin requirement handoff", () => {
             warnings: ["Previous plugin cleanup did not finish."],
           };
         });
-        const options: InstallOptions = {
+        const options: InstallOptions &
+          Pick<ClawCommandServices, "assertSettlementCurrent" | "runSettlement"> = {
           env,
+          signal: controller.signal,
+          assertCurrent: () => controller.signal.throwIfAborted(),
+          assertSettlementCurrent: () => undefined,
+          runSettlement: (run) => settlement.run(true, run),
           runtime: {
             log,
             error: () => {},
@@ -191,11 +204,17 @@ describe("Claw committed plugin requirement handoff", () => {
               params.deferRuntime?.deferCleanup(
                 async (assertOwned, warn) => {
                   assertOwned();
+                  if (controller.signal.aborted) {
+                    expect(settlement.getStore()).toBe(true);
+                  }
                   cleanup(pluginId);
                   warn(`Source cleanup warning for ${pluginId}`);
                 },
                 path.join(root, "retired", pluginId),
               );
+              if (failure === "cancellation") {
+                controller.abort(new Error("request canceled after plugin commit"));
+              }
               if (lateFailure) {
                 throw new Error("postcommit metadata failure");
               }
@@ -216,7 +235,10 @@ describe("Claw committed plugin requirement handoff", () => {
         if (lateFailure) {
           await expect(pending).rejects.toMatchObject({
             code: "package_install_failed",
-            message: "postcommit metadata failure",
+            message:
+              failure === "cancellation"
+                ? expect.stringContaining("postcommit metadata failure")
+                : "postcommit metadata failure",
           });
         } else {
           completed = await pending;
@@ -237,7 +259,7 @@ describe("Claw committed plugin requirement handoff", () => {
             deps: {
               ...options.deps,
               installPlugin,
-              readPackageRefs: () => installedRefs,
+              readPackageRefs: async () => installedRefs,
             },
           };
           reloadPlugins.mockRejectedValueOnce(new Error("runtime reply lost"));

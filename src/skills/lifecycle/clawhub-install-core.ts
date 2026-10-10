@@ -63,6 +63,7 @@ export type ClawHubInstallParams = ClawHubSkillRef & {
   onInstallPolicyWarning?: InstallSafetyOverrides["onInstallPolicyWarning"];
   /** True when a Claw lifecycle caller already owns package coordination. */
   clawManaged?: boolean;
+  beforePersistentApply?: () => void;
   expectedClawHubState?: ClawHubSkillFileState | null;
 };
 
@@ -402,6 +403,7 @@ export async function performClawHubSkillInstall(
             mode: installParams.force ? "update" : "install",
             logger: installParams.logger,
             expectedClawHubState: installParams.expectedClawHubState,
+            beforePersistentApply: installParams.beforePersistentApply,
             policy: {
               config: installParams.config,
               onInstallPolicyWarning: installParams.onInstallPolicyWarning,
@@ -484,6 +486,7 @@ export async function performClawHubSkillInstall(
         ...(skillFile ? { skillFile } : {}),
         fileTreeSha256,
       };
+      params.beforePersistentApply?.();
       await (files?.recordClawHubSkillInstall ?? recordClawHubSkillInstall)({
         workspaceDir: params.workspaceDir,
         skillDir: install.targetDir,
