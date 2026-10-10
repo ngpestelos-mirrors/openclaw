@@ -5,7 +5,7 @@ import { homedir as defaultHomedir } from "node:os";
 import path from "node:path";
 import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
-import { type ConfigSnapshotAuditRecord } from "./config-journal-snapshot.kernel.js";
+import type { ConfigSnapshotAuditRecord } from "./config-journal-snapshot.kernel.js";
 import { mutateConfigState } from "./config-state-mutation.js";
 import { resolveStateDir } from "./paths.js";
 

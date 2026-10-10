@@ -113,6 +113,7 @@ export async function applyConfigStateMutation(
             },
           });
       }
+      throw new Error("Unsupported config state mutation");
     },
     {
       assertCurrent,

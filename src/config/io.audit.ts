@@ -13,12 +13,13 @@ import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worke
 import { resolveConfigAuditStoreEnv } from "./config-journal-snapshot.js";
 import { mutateConfigState } from "./config-state-mutation.js";
 import { CONFIG_AUDIT_SCOPE, CONFIG_AUDIT_MAX_ENTRIES } from "./io.audit-policy.js";
-export { CONFIG_AUDIT_SCOPE, CONFIG_AUDIT_MAX_ENTRIES } from "./io.audit-policy.js";
 import type { ConfigHealthFingerprint } from "./io.health-state.types.js";
 import type { ConfigWriteAuditOrigin } from "./io.types.js";
 import { resolveStateDir } from "./paths.js";
 import { redactSensitiveArgv } from "./redact-argv.js";
 import { isSensitiveConfigPath } from "./sensitive-paths.js";
+
+export { CONFIG_AUDIT_SCOPE, CONFIG_AUDIT_MAX_ENTRIES } from "./io.audit-policy.js";
 
 const CONFIG_AUDIT_ARGV_CAP = 8;
 const CONFIG_AUDIT_PATH_CAP = 64;

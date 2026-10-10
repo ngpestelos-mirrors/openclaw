@@ -6,6 +6,7 @@ import { WebSocketServer } from "ws";
 import { GATEWAY_SERVER_CAPS } from "../../packages/gateway-protocol/src/server-capabilities.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { readLatestConfigSnapshotAuditRecordAsync } from "../config/config-journal-snapshot.js";
+import { configStateMutationSchema } from "../config/config-state-mutation.js";
 import { readRecentConfigAuditRecords } from "../config/io.audit.js";
 import { hashConfigRaw } from "../config/io.read-helpers.js";
 import {
@@ -88,7 +89,9 @@ describe("config CLI database effects", () => {
       ws.on("message", (data) => {
         void (async () => {
           const frame = parseMinimalGatewayRequestFrame(data);
-          if (!frame.id) return;
+          if (!frame.id) {
+            return;
+          }
           if (frame.method === "connect") {
             authenticated = frame.params?.auth?.token === token;
             expect(authenticated).toBe(true);
@@ -112,11 +115,13 @@ describe("config CLI database effects", () => {
             isWebchatConnect: () => false,
             hasCurrentClientAuthority: () => authenticated,
             respond: (ok, payload, error) => {
-              if (ok) mutations.push(String((frame.params?.mutation as { kind: string }).kind));
+              if (ok) {
+                mutations.push(configStateMutationSchema.parse(frame.params?.mutation).kind);
+              }
               ws.send(JSON.stringify({ type: "res", id: frame.id, ok, payload, error }));
             },
           });
-        })().catch((error) => {
+        })().catch((error: unknown) => {
           failures.push(error);
           ws.close(1011, "fixture failure");
         });
