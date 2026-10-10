@@ -6,8 +6,13 @@ import {
   normalizeTrimmedStringList,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { getMattermostRuntime } from "../runtime.js";
-import { requireMattermostConnection, resolveMattermostAccount } from "./accounts.js";
-import { createMattermostClient, fetchMattermostMe, type MattermostUser } from "./client.js";
+import { resolveMattermostAccount } from "./accounts.js";
+import {
+  createMattermostClient,
+  fetchMattermostMe,
+  normalizeMattermostBaseUrl,
+  type MattermostUser,
+} from "./client.js";
 import {
   computeInteractionCallbackUrl,
   resolveInteractionCallbackPath,
@@ -90,7 +95,19 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
     channel: "mattermost",
     accountId: account.accountId,
   });
-  const { botToken, baseUrl } = requireMattermostConnection(account, opts);
+  const botToken =
+    normalizeOptionalString(opts.botToken) ?? normalizeOptionalString(account.botToken);
+  if (!botToken) {
+    throw new Error(
+      `Mattermost bot token missing for account "${account.accountId}" (set channels.mattermost.accounts.${account.accountId}.botToken or MATTERMOST_BOT_TOKEN for default).`,
+    );
+  }
+  const baseUrl = normalizeMattermostBaseUrl(opts.baseUrl ?? account.baseUrl);
+  if (!baseUrl) {
+    throw new Error(
+      `Mattermost baseUrl missing for account "${account.accountId}" (set channels.mattermost.accounts.${account.accountId}.baseUrl or MATTERMOST_URL for default).`,
+    );
+  }
   const client = createMattermostClient({
     baseUrl,
     botToken,

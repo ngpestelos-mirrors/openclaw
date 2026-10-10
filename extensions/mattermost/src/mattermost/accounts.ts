@@ -142,26 +142,6 @@ export function resolveMattermostAccount(params: {
   return resolveMattermostAccountWithMode({ ...params, mode: "strict" });
 }
 
-export function requireMattermostConnection(
-  account: ResolvedMattermostAccount,
-  overrides: { botToken?: string; baseUrl?: string },
-) {
-  const botToken =
-    normalizeOptionalString(overrides.botToken) ?? normalizeOptionalString(account.botToken);
-  if (!botToken) {
-    throw new Error(
-      `Mattermost bot token missing for account "${account.accountId}" (set channels.mattermost.accounts.${account.accountId}.botToken or MATTERMOST_BOT_TOKEN for default).`,
-    );
-  }
-  const baseUrl = normalizeMattermostBaseUrl(overrides.baseUrl ?? account.baseUrl);
-  if (!baseUrl) {
-    throw new Error(
-      `Mattermost baseUrl missing for account "${account.accountId}" (set channels.mattermost.accounts.${account.accountId}.baseUrl or MATTERMOST_URL for default).`,
-    );
-  }
-  return { botToken, baseUrl };
-}
-
 export function inspectMattermostAccount(params: {
   cfg: OpenClawConfig;
   accountId?: string | null;

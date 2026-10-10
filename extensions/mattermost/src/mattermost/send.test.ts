@@ -167,8 +167,7 @@ vi.mock("openclaw/plugin-sdk/string-coerce-runtime", () => ({
   }),
 }));
 
-vi.mock("./accounts.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./accounts.js")>()),
+vi.mock("./accounts.js", () => ({
   resolveMattermostAccount: mockState.resolveMattermostAccount,
 }));
 
