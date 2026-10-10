@@ -2,12 +2,24 @@ import type {
   AgentDatabaseExecutionFileIdentity,
   AgentDatabaseIncognitoIdentity,
 } from "../../state/openclaw-agent-execution-contract.js";
+import type { HarnessCompletionRecovery } from "./restart-recovery-types.js";
 import type { SessionParticipantRecord } from "./session-accessor.sqlite-participant-projection.js";
-import type { SessionPendingInputRow } from "./session-accessor.sqlite-pending-inputs.js";
+import type {
+  SessionPendingInputRow,
+  SessionPendingInputWorkerReceipt,
+} from "./session-accessor.sqlite-pending-inputs.js";
 import type { SessionEntryUsageUpdate } from "./session-entry-usage.js";
+import type {
+  InitialSessionEntryCommit,
+  SessionMetadataOperations,
+} from "./session-manager-write-contract.js";
 import type { SessionMember } from "./session-membership-facts.types.js";
 import type { PendingFinalDeliverySettlementInput } from "./session-pending-final-settlement.js";
-import type { PendingInputMutation } from "./session-pending-input-operations.types.js";
+import type {
+  PendingInputMutation,
+  PendingInputMutationReceipt,
+  PendingInputSnapshot,
+} from "./session-pending-input-operations.types.js";
 import type { SessionSourcePredicate } from "./session-source-authority.js";
 import type {
   SessionTranscriptContextVersion,
@@ -39,7 +51,12 @@ export type SessionActorLifetime = {
 /** Host-owned live authority, rechecked at both synchronous admission boundaries. */
 export type SessionActorAuthority = {
   assertCurrent(): void;
-  authorize(stage: "transaction" | "commit", facts: SessionActorHotState): void;
+  authorize(
+    stage: "transaction" | "commit",
+    facts: SessionActorHotState,
+    /** Existing kernel source/custody evidence remains subject to its owner's checks. */
+    publication?: unknown,
+  ): void;
 };
 
 /** Complete hot facts. Cold/off-path payloads stay with the bounded history reader. */
@@ -84,6 +101,50 @@ export type SessionActorCommandContext = {
   reducers?: readonly SessionActorReducer[];
 };
 
+/** Reuse SessionManager's prepared bytes, envelope, view limits, and admission predicates. */
+export type SessionActorAppend = (
+  | {
+      kind: "metadata";
+      input: SessionMetadataOperations["session.metadata.append"]["input"];
+    }
+  | {
+      kind: "message";
+      input: SessionMetadataOperations["session.transcript.appendMessage"]["input"];
+    }
+) & {
+  /** First-writer ownership is verified live; a run ID alone never grants it. */
+  initialization?: SessionMetadataOperations["session.metadata.initialize"]["input"];
+  /** Optional prepared session header, committed atomically before this append. */
+  header?: SessionMetadataOperations["session.metadata.append"]["input"];
+};
+
+/** The original snapshot preserves canonical adopted IDs, parents, bytes, and versions. */
+export type SessionActorAppendCommitted = (
+  | {
+      kind: "metadata";
+      value: SessionMetadataOperations["session.metadata.append"]["output"];
+    }
+  | {
+      kind: "message";
+      value: SessionMetadataOperations["session.transcript.appendMessage"]["output"];
+    }
+) & {
+  initialEntry?: InitialSessionEntryCommit;
+  header?: SessionMetadataOperations["session.metadata.append"]["output"];
+};
+
+export type SessionActorInputRecovery = {
+  /** Compare source fields and membership against this transaction's current state. */
+  sources: SessionSourcePredicate[];
+  expectedRunId: string;
+  harnessCompletion?: HarnessCompletionRecovery;
+};
+
+export type SessionActorPendingFinalDelivery = NonNullable<SessionEntry["pendingFinalDelivery"]> & {
+  intentId: string;
+  deliveries: NonNullable<NonNullable<SessionEntry["pendingFinalDelivery"]>["deliveries"]>;
+};
+
 export type SessionActorPhaseInputs = {
   acceptInput: {
     pending: Extract<PendingInputMutation, { kind: "stage" }>;
@@ -91,23 +152,35 @@ export type SessionActorPhaseInputs = {
     lifecycle: SessionTranscriptTurnLifecyclePatch;
     /** Admission and adoption may share a durable point only before any intervening effect. */
     turn?: SessionTurnPlan;
+    /** A retry adopts the canonical pending/transcript identity instead of appending twice. */
+    append?: SessionActorAppend;
+    recovery?: SessionActorInputRecovery;
   };
   adoptRun: {
     sessionId: string;
     expectedState: SessionTranscriptTurnExpectedState;
     lifecycle: SessionTranscriptTurnLifecyclePatch;
+    /** Explicit writer adoption; omission preserves the existing lifecycle-only command. */
+    runId?: string;
   };
-  appendToolResult: { turn: SessionTurnPlan };
-  appendTranscriptEvent: {
-    sessionId: string;
-    lifecycleRevision: string | null;
-    writerRunId?: string;
-    ownerSources?: SessionSourcePredicate[];
-    eventJson: string;
-  };
+  appendToolResult:
+    | { turn: SessionTurnPlan; append?: never }
+    | { append: SessionActorAppend; turn?: never };
+  appendTranscriptEvent:
+    | {
+        sessionId: string;
+        lifecycleRevision: string | null;
+        writerRunId?: string;
+        ownerSources?: SessionSourcePredicate[];
+        eventJson: string;
+        append?: never;
+      }
+    | { append: SessionActorAppend; eventJson?: never };
   completeTurn: {
     turn: SessionTurnPlan;
     completion?: Extract<PendingInputMutation, { kind: "complete" }>;
+    /** Exact delivery intent and payload IDs join terminal accounting in this commit. */
+    pendingFinalDelivery?: SessionActorPendingFinalDelivery;
   };
   deliveryPending: {
     sessionId: string;
@@ -123,14 +196,26 @@ export type SessionActorPhaseInputs = {
 export type SessionActorPhase = keyof SessionActorPhaseInputs;
 
 export type SessionActorPhaseResults = {
-  acceptInput: { inputId: string; turn?: SessionTurnCommitted };
+  acceptInput: {
+    inputId: string;
+    turn?: SessionTurnCommitted;
+    append?: SessionActorAppendCommitted;
+    adoption?: Pick<PendingInputSnapshot, "existing" | "previous" | "committed">;
+    pendingInputReceipt?: PendingInputMutationReceipt;
+  };
   adoptRun: undefined;
-  appendToolResult: SessionTurnCommitted;
-  appendTranscriptEvent: { anchor?: TranscriptEntryAnchor };
+  appendToolResult: SessionTurnCommitted | SessionActorAppendCommitted;
+  appendTranscriptEvent: { anchor?: TranscriptEntryAnchor } | SessionActorAppendCommitted;
   completeTurn: SessionTurnCommitted;
   deliveryPending: undefined;
   deliverySettled: { state: PendingFinalDeliverySettlementInput["state"] | "stale" };
   patch: undefined;
+};
+
+export type SessionActorReducerOutcome = {
+  index: number;
+  kind: SessionActorReducer["kind"];
+  changed: boolean;
 };
 
 export type SessionActorReceipt = {
@@ -139,6 +224,19 @@ export type SessionActorReceipt = {
   phaseId: string;
   phase: SessionActorPhase;
   beforeVersion: SessionActorVersion;
+  afterVersion: SessionActorVersion;
+  transcript: {
+    before: SessionTranscriptContextVersion;
+    after: SessionTranscriptContextVersion;
+    /** Includes idempotency adoption, not only newly inserted messages. */
+    appendedMessages: SessionTurnCommitted["result"]["appendedMessages"];
+    append?: SessionActorAppendCommitted;
+    projectionNeedsReconcile: boolean;
+  };
+  pendingInputReceipt?: SessionPendingInputWorkerReceipt;
+  pendingInputMutationReceipt?: PendingInputMutationReceipt;
+  pendingFinalDelivery?: SessionEntry["pendingFinalDelivery"];
+  reducers: SessionActorReducerOutcome[];
   /** Complete detached postimage, installed on MAIN before acknowledgement. */
   postimage: SessionActorHotState;
 };
@@ -146,7 +244,13 @@ export type SessionActorReceipt = {
 export type SessionActorSettlement = "committed" | "rolled-back" | "unknown";
 
 export type SessionActorOutcome<Value> =
-  | { kind: "committed"; value: Value; receipt: SessionActorReceipt }
+  | {
+      kind: "committed";
+      value: Value;
+      receipt: SessionActorReceipt;
+      /** Publication/cleanup failure cannot erase a captured durable receipt. */
+      failure?: { name: string; message: string };
+    }
   | { kind: "rolled-back"; error: { name: string; message: string } }
   | {
       kind: "unknown";
@@ -154,6 +258,11 @@ export type SessionActorOutcome<Value> =
       commandId: string;
       error: { name: string; message: string };
     };
+
+export type SessionActorCommitObserver<Value> = {
+  /** Called once with captured native evidence before fallible publication or cleanup. */
+  committed(outcome: Extract<SessionActorOutcome<Value>, { kind: "committed" }>): void;
+};
 
 export type SessionActorOperations = {
   [Phase in SessionActorPhase as `session.actor.${Phase}`]: {
@@ -174,6 +283,7 @@ type SessionActorCommands = {
   [Phase in SessionActorPhase]: (
     input: SessionActorCommandContext & SessionActorPhaseInputs[Phase],
     authority: SessionActorAuthority,
+    observer?: SessionActorCommitObserver<SessionActorPhaseResults[Phase]>,
   ) => Promise<SessionActorOutcome<SessionActorPhaseResults[Phase]>>;
 };
 
@@ -185,7 +295,11 @@ type SessionActorCommands = {
 export type SessionActor = SessionActorLifetime &
   SessionActorCommands & {
     readonly target: SessionActorTarget;
+    /** Detached installed MAIN state; undefined means fenced/missing. Never performs IO. */
+    snapshot(authority: SessionActorAuthority): SessionActorHotState | undefined;
     read(authority: SessionActorAuthority): Promise<SessionActorHotState>;
+    /** Drain retained attempts and accepted descendants; a teardown timeout is not settlement. */
+    release(): Promise<void>;
     /**
      * Retain lifetime, not FIFO. Reducers ride the next command in this phase;
      * any remainder commits before the phase settles, including exceptional exits.
@@ -199,3 +313,8 @@ export type SessionActor = SessionActorLifetime &
       }) => Promise<T>,
     ): Promise<T>;
   };
+
+/** Bound to the existing execution owner; acquisition never creates a parallel writer. */
+export type SessionActorFactory = {
+  acquire(target: SessionActorTarget, lifetime: SessionActorLifetime): Promise<SessionActor>;
+};
