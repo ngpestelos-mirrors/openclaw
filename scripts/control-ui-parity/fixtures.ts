@@ -270,6 +270,12 @@ export const parityBaseScenario: ControlUiMockGatewayScenario = {
       memoryTotalBytes: 16 * 1024 ** 3,
       memoryFreeBytes: 8 * 1024 ** 3,
     },
+    "last-heartbeat": {
+      __mockError: {
+        code: "UNAVAILABLE",
+        message: "Round-trip measurement is unavailable in this deterministic fixture.",
+      },
+    },
     "system-presence": [],
     "channels.status": {
       ts: fixedTime,

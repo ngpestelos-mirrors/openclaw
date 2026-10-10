@@ -226,7 +226,7 @@ export const scenes: Scene[] = [
     label: "Session rename modal form",
     prepare: async (page) => {
       await page.locator(".chat-header-session-menu__trigger").click();
-      await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Rename…", exact: true }).click();
       await page.locator("openclaw-modal-dialog input").waitFor();
     },
   },
@@ -304,5 +304,10 @@ export const scenes: Scene[] = [
     path: "/ask/parity",
     ready: "openclaw-chat-question-panel",
     scenario: standaloneQuestionScenario,
+    prepare: async (page) => {
+      await expect
+        .poll(() => page.getByRole("button", { name: "Submit", exact: true }).isEnabled())
+        .toBe(false);
+    },
   },
 ];
