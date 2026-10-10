@@ -1,10 +1,18 @@
+import type { AgentDeletionWorkerAuthority } from "../state/agent-deletion-worker.types.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
-import type { OpenClawStateLeaseContext } from "../state/openclaw-state-lease-context.js";
+import type {
+  OpenClawStateAsyncLeaseContext,
+  OpenClawStateLeaseContext,
+} from "../state/openclaw-state-lease-context.js";
 import { withOpenClawStateLease } from "../state/openclaw-state-lease.js";
 
-const MCP_LIFECYCLE_LEASE_SCOPE = "core:claw-mcp-lifecycle";
-const MCP_LIFECYCLE_LEASE_MS = 5 * 60_000;
-const MCP_LIFECYCLE_WAIT_MS = 10 * 60_000;
+const MCP_LIFECYCLE_LEASE_OPTIONS = {
+  scope: "core:claw-mcp-lifecycle",
+  leaseMs: 5 * 60_000,
+  waitMs: 10 * 60_000,
+  leaseLabel: "Claw MCP lifecycle lease",
+  operationLabel: "claws.mcp.lifecycle.lease",
+};
 
 type McpLifecycleLeaseOptions = Pick<OpenClawStateDatabaseOptions, "env" | "path" | "database"> & {
   signal?: AbortSignal;
@@ -18,7 +26,7 @@ export async function withMcpLifecycleLease<T>(
 ): Promise<T> {
   return await withOpenClawStateLease(
     {
-      scope: MCP_LIFECYCLE_LEASE_SCOPE,
+      ...MCP_LIFECYCLE_LEASE_OPTIONS,
       key: name.trim(),
       database: {
         scope: "shared",
@@ -28,11 +36,7 @@ export async function withMcpLifecycleLease<T>(
           ...(options.database ? { database: options.database } : {}),
         },
       },
-      leaseMs: MCP_LIFECYCLE_LEASE_MS,
-      waitMs: MCP_LIFECYCLE_WAIT_MS,
       ...(options.signal ? { signal: options.signal } : {}),
-      leaseLabel: "Claw MCP lifecycle lease",
-      operationLabel: "claws.mcp.lifecycle.lease",
     },
     async (lease) => {
       lease.assertOwned();
@@ -44,3 +48,15 @@ export async function withMcpLifecycleLease<T>(
 }
 
 export const withClawMcpLifecycleLease = withMcpLifecycleLease;
+
+export function withClawMcpDeletionLease<T>(
+  name: string,
+  deletion: AgentDeletionWorkerAuthority,
+  operation: (
+    lease: OpenClawStateAsyncLeaseContext,
+    assertCurrentHost: () => void,
+    assertCurrentFinal: () => void,
+  ) => Promise<T>,
+): Promise<T> {
+  return deletion.withStateLease({ ...MCP_LIFECYCLE_LEASE_OPTIONS, key: name.trim() }, operation);
+}

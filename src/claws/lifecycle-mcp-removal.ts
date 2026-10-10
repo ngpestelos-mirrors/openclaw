@@ -1,7 +1,7 @@
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import type { AgentDeletionOperation } from "../agents/agent-lifecycle-registry.js";
 import { unsetConfiguredMcpServer } from "../agents/mcp-config-mutation.js";
-import { withClawMcpLifecycleLease } from "../agents/mcp-lifecycle-lease.js";
+import { withClawMcpDeletionLease } from "../agents/mcp-lifecycle-lease.js";
 import { normalizeConfiguredMcpServers } from "../config/mcp-config-normalize.js";
 import { listConfiguredMcpServers } from "../config/mcp-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -52,17 +52,17 @@ export async function removeClawMcpServers(params: {
   for (const server of params.servers) {
     let removalError: string | undefined;
     await params.deletion.assertCurrentAsync();
-    await withClawMcpLifecycleLease(
+    await withClawMcpDeletionLease(
       server.name,
-      params.options,
-      async (assertMcpCurrent, lease) => {
+      params.deletion,
+      async (lease, assertMcpCurrentHost, assertMcpCurrentFinal) => {
         const assertCurrent = () => {
           params.deletion.assertCurrentFinal();
-          assertMcpCurrent();
+          assertMcpCurrentFinal();
         };
         const assertCurrentAsync = async () => {
           await params.deletion.assertCurrentAsync();
-          assertMcpCurrent();
+          assertMcpCurrentHost();
         };
         await assertCurrentAsync();
         assertCurrent();
