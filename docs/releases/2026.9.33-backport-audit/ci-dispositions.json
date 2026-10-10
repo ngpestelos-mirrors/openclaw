@@ -1,0 +1,98 @@
+{
+  "baseline": "bcfc88812a35243893585dbeca87ca41b48272ca",
+  "tooling": "6d3f75a1baa71ea5f51db7150ba1eb2d6f067be1",
+  "qualificationRun": false,
+  "groups": [
+    {
+      "id": "docker-promotion-policy",
+      "decision": "already-covered",
+      "sourceBound": "6d3f75a1baa71ea5f51db7150ba1eb2d6f067be1",
+      "ownerPaths": [
+        "scripts/docker-channel-promote.mjs",
+        "scripts/check-workflows.mts"
+      ],
+      "companionPaths": [
+        "test/scripts/docker-channel-promote.test.ts",
+        "test/scripts/docker-release-policy.test.ts"
+      ],
+      "coverage": "Full baseline-to-pinned-main unit diff reviewed. Production delta is comments/control-flow cleanup; main removes retained baseline authority/alias/suffix/platform/policy test cases. Existing two-suite baseline proof: 50/50 pass. No production/workflow backport selected and no Docker write performed.",
+      "remainingGates": [
+        "Exact prepared artifact Docker build/readback and alias publication remain unrun and unauthorized."
+      ]
+    },
+    {
+      "id": "self-upgrade-aggregate-deduplication",
+      "decision": "already-covered",
+      "orderedSourceSHAs": [
+        "aa6008ad198ef99c43f9d89dbd01694708712974"
+      ],
+      "ownerPaths": [
+        "scripts/plan-release-workflow-matrix.mjs"
+      ],
+      "companionPaths": [
+        "scripts/lib/docker-e2e-scenarios.mts",
+        ".github/workflows/package-acceptance.yml"
+      ],
+      "coverage": "Baseline planner already omits duplicate package-update-self-upgrade aggregate. Actual package-acceptance selectors retain upgrade survivor, first-hop compatibility, published survivor, root-managed VPS and restart-auth. Scenario inventories and workflow consumption inspected; no fewer-job-name inference.",
+      "remainingGates": [
+        "Exact-candidate package/product scenario executions are unrun; retained admission and warning/fallback gates are not waived."
+      ]
+    },
+    {
+      "id": "docker-survivor-auto-auth-budget",
+      "decision": "already-covered",
+      "orderedSourceSHAs": [
+        "4d8c9bddda7f992e293005b78f6bc1f8adea81ed"
+      ],
+      "ownerPaths": [
+        "scripts/lib/docker-e2e-scenarios.mts"
+      ],
+      "coverage": "Shipped baseline already has measured 1500s inner command, 2280s Docker run timeout and 2580s lane budget. Source owner diff and baseline body reviewed. Raw workflow/test cherry-pick conflict does not remove baseline production equivalence.",
+      "remainingGates": [
+        "Hosted artifact-only survivor execution is unrun; no deadline or coverage reduction is selected."
+      ]
+    },
+    {
+      "id": "source-independent-admission-doctor-startup",
+      "decision": "present-equivalent",
+      "ownerPaths": [
+        "scripts/e2e/lib/upgrade-survivor/project-worktree-startup.mjs",
+        ".github/workflows/package-acceptance.yml"
+      ],
+      "coverage": "Worktree startup owner is byte-identical baseline-to-pinned-main. Existing maintenance-lock/migrate/drain/close producer and explicit schema/warning checks inspected; close/drain errors remain surfaced. Frozen admission tooling identity checks remain in package acceptance.",
+      "remainingGates": [
+        "Published-driver × exact-candidate stateful upgrade matrix is not rerun by preparation."
+      ]
+    },
+    {
+      "id": "installed-package-tree-budget",
+      "decision": "current-tooling-only",
+      "orderedSourceSHAs": [
+        "8f98c12c581fa16e8c2af1ff5fbe92e1af350878"
+      ],
+      "ownerPaths": [
+        "scripts/check-openclaw-installed-package-budget.mts",
+        ".github/workflows/package-acceptance.yml",
+        "scripts/lib/ci-proof-test-inventory.mts"
+      ],
+      "coverage": "Full 158-line producer, six-line workflow consumer and protected-test inventory companion reviewed. Trusted pinned-main tooling owns the gate; no candidate product change selected. Installed-tree admission budgets remain 47,500 entries / 900 MiB against unpatchable shipped-driver caps 50,000 / 1 GiB.",
+      "remainingGates": [
+        "Measure the exact installed prepared package under trusted package acceptance before candidate freeze."
+      ]
+    },
+    {
+      "id": "other-mainline-ci-optimizations",
+      "decision": "blocked-carry-forward",
+      "orderedSourceSHAs": [
+        "aa4bbb40d504e0dfeed2a82962010e67288518ea",
+        "0c8e56cf9859f1be33edacf199f353d4db417b5b",
+        "fd357f48322259ec40131f8bdb48652d58b6ff62",
+        "2d991c67599c2adc4dc5deaee940d27e3c15cf07"
+      ],
+      "coverage": "Not imported into this preparation-only product branch. Full producer/consumer selection and retained qualification child coverage are not all proven for September. Each exact inventory row keeps its review/probe/closure gap; no publication blocker is hidden by optimization selection.",
+      "remainingGates": [
+        "Resolve relevant current-tooling optimizer closure and retained scenario inventory before freezing an exact release candidate."
+      ]
+    }
+  ]
+}
