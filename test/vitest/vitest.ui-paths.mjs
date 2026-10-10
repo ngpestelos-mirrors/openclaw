@@ -1,16 +1,37 @@
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
+const inventories = new Map();
+
+function sourceInventory(cwd) {
+  if (!inventories.has(cwd)) {
+    // Configurations and CI plans share one tracked index snapshot per process.
+    // Reading the index avoids probing every owner or walking test directories.
+    const result = spawnSync("git", ["ls-files", "-z"], {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    inventories.set(cwd, result.status === 0 ? new Set(result.stdout.split("\0")) : null);
+  }
+  return inventories.get(cwd);
+}
 
 /** Resolve an inventoried owner after a TS/TSX rename, retaining absent paths. */
 export function resolveUiTypeScriptPath(file, cwd = repoRoot) {
-  if (!/\.tsx?$/u.test(file) || existsSync(resolve(cwd, file))) {
+  if (!/\.tsx?$/u.test(file)) {
     return file;
   }
+  const inventory = sourceInventory(cwd);
+  const exists = (candidate) =>
+    inventory ? inventory.has(candidate) : existsSync(resolve(cwd, candidate));
+  if (exists(file)) return file;
   const alternate = file.endsWith(".tsx") ? file.slice(0, -1) : `${file}x`;
-  return existsSync(resolve(cwd, alternate)) ? alternate : file;
+  return exists(alternate) ? alternate : file;
 }
 
 /** Watch both extensions, including deleted paths that cannot be resolved on disk. */

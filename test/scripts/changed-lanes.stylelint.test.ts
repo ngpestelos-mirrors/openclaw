@@ -16,7 +16,9 @@ describe("changed Stylelint targets", () => {
     [
       { state: "present", deleteTypeScript: false },
       { state: "deleted", deleteTypeScript: true },
-    ].flatMap((testCase) => ["ts", "tsx"].map((extension) => ({ ...testCase, extension }))),
+    ].flatMap(({ state, deleteTypeScript }) =>
+      ["ts", "tsx"].map((extension) => ({ state, deleteTypeScript, extension })),
+    ),
   )("includes existing styles when the UI test is $state", ({ deleteTypeScript, extension }) => {
     const typescriptPath = `ui/src/e2e/composer-fixture.e2e.test.${extension}`;
     const expectedTargets = [...(deleteTypeScript ? [] : [typescriptPath]), ...cssPaths];
