@@ -38,6 +38,8 @@ export class QuestionPage extends OpenClawLightDomElement {
   @state() private loading = true;
   @state() private requestError: QuestionPageRequestError = null;
 
+  @state() private continuationMessage: string | undefined;
+
   private readonly questionState = createQuestionPromptState(() => this.requestUpdate());
   private client: GatewayBrowserClient | null = null;
   private boundQuestionId: string | undefined;
@@ -151,8 +153,12 @@ export class QuestionPage extends OpenClawLightDomElement {
     const generation = ++this.operationGeneration;
     this.loading = true;
     this.requestError = null;
+    this.continuationMessage = undefined;
     try {
-      const result = await requestQuestionGateway(client, "question.get", { id });
+      const result = await requestQuestionGateway(client, "question.get", {
+        id,
+        includeContinuation: true,
+      });
       if (
         this.client !== client ||
         this.operationGeneration !== generation ||
@@ -163,6 +169,12 @@ export class QuestionPage extends OpenClawLightDomElement {
       if (!isRecord(result) || !isRecord(result.question) || result.question.id !== id) {
         this.requestError = "unavailable";
         return;
+      }
+      const receipt = result.continuation;
+      if (isRecord(receipt) && (receipt.status === "blocked" || receipt.status === "interrupted")) {
+        this.continuationMessage = [receipt.reason, receipt.nextAction]
+          .filter((value): value is string => typeof value === "string")
+          .join(" ");
       }
       const record = result.question;
       if (
@@ -209,6 +221,7 @@ export class QuestionPage extends OpenClawLightDomElement {
         <div class="approval-page__state" data-question-status=${prompt.status} role="status">
           <h1 id="question-page-title" tabindex="-1">${this.questionStatusLabel(prompt)}</h1>
           ${renderChatQuestionSummary(prompt)}
+          ${this.continuationMessage ? html`<p role="status">${this.continuationMessage}</p>` : nothing}
         </div>
       `;
     }

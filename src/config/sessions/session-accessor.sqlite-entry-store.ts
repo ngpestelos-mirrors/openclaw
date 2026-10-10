@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { isMainThread } from "node:worker_threads";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import {
   executeSqliteQuerySync,
@@ -63,6 +64,7 @@ import {
   writeSessionEntrySnapshots,
 } from "./session-entry-snapshots.js";
 import { resolveSessionPublicShare } from "./session-public-share.js";
+import { retireSessionQuestionsInDatabase } from "./session-questions-retirement.worker.js";
 import {
   projectCanonicalSessionEntryShape,
   stripRuntimeOnlySessionSkillsFields,
@@ -205,6 +207,7 @@ export function deleteSessionEntryRows(
   // Doctor supplies the exact row it validated; the runtime parser deliberately rejects that shape.
   const previousEntry =
     options.validatedEntry ?? readExactSessionEntryRow(database, sessionKey)?.entry;
+  assertQuestionLifecycleWorker(previousEntry);
   if (previousEntry) {
     commitSqliteSessionDeletion(sessionKey, previousEntry);
   }
@@ -272,6 +275,17 @@ export function deleteSessionEntryRows(
     executeSqliteQuerySync(
       database.db,
       db.deleteFrom("session_nodes").where("session_key", "=", sessionKey),
+    );
+  }
+  if (previousEntry && !isMainThread) {
+    retireSessionQuestionsInDatabase(
+      database,
+      {
+        sessionKey,
+        sessionId: previousEntry.sessionId,
+        lifecycleRevision: previousEntry.lifecycleRevision,
+      },
+      `retired:${previousEntry.sessionId}`,
     );
   }
   publishSessionEntryCacheInvalidation(database, { sessionKey, facts: { kind: "removed" } });
@@ -350,14 +364,20 @@ export function deleteLegacySessionEntryRows(
   if (legacyKeys.length === 0) {
     return;
   }
+  const removals = legacyKeys
+    .filter((key) => key !== sessionKey)
+    .map((legacyKey) => ({
+      legacyKey,
+      previousEntry:
+        options.validatedEntries?.get(legacyKey) ??
+        readExactSessionEntryRow(database, legacyKey)?.entry,
+    }));
+  // Preflight the complete batch before hooks, rehoming, or the first deletion.
+  for (const { previousEntry } of removals) {
+    assertQuestionAliasRelocation(previousEntry);
+  }
   const db = getSessionKysely(database.db);
-  for (const legacyKey of legacyKeys) {
-    if (legacyKey === sessionKey) {
-      continue;
-    }
-    const previousEntry =
-      options.validatedEntries?.get(legacyKey) ??
-      readExactSessionEntryRow(database, legacyKey)?.entry;
+  for (const { legacyKey, previousEntry } of removals) {
     if (previousEntry) {
       commitSqliteSessionDeletion(legacyKey, previousEntry);
     }
@@ -369,6 +389,17 @@ export function deleteLegacySessionEntryRows(
       database.db,
       db.deleteFrom("session_nodes").where("session_key", "=", legacyKey),
     );
+    if (!isMainThread && previousEntry) {
+      retireSessionQuestionsInDatabase(
+        database,
+        {
+          sessionKey: legacyKey,
+          sessionId: previousEntry.sessionId,
+          lifecycleRevision: previousEntry.lifecycleRevision,
+        },
+        `retired:${previousEntry.sessionId}`,
+      );
+    }
     publishSessionEntryCacheInvalidation(database, { sessionKey: legacyKey });
   }
   publishSessionEntryCacheInvalidation(database, { sessionKey });
@@ -406,6 +437,8 @@ export function writeSessionEntry(
     profileInvolvement?: SessionEntry["profileInvolvement"];
     /** Only the provider review owner may replace a generation-bound pause. */
     providerReviewMutation?: boolean;
+    /** Only durable question custody may replace the restart replay exclusion marker. */
+    questionOwnerMutation?: boolean;
     /** Canonical row revalidated in this write transaction; null proves absence. */
     canonicalPreviousEntry?: SessionEntry | null;
     consumePendingReset?: boolean;
@@ -436,6 +469,23 @@ export function writeSessionEntry(
       : options.allowStoredAliases && options.previousEntry !== undefined
         ? (options.previousEntry ?? undefined)
         : readExactSessionEntryRow(database, sessionKey)?.entry;
+  if (
+    canonicalPreviousEntry &&
+    (canonicalPreviousEntry.sessionId !== normalizedEntry.sessionId ||
+      canonicalPreviousEntry.lifecycleRevision !== normalizedEntry.lifecycleRevision)
+  ) {
+    assertQuestionLifecycleWorker(canonicalPreviousEntry);
+  }
+  if (!options.questionOwnerMutation && !options.allowStoredAliases) {
+    normalizedEntry = {
+      ...normalizedEntry,
+      durableQuestionOwners:
+        canonicalPreviousEntry?.sessionId === normalizedEntry.sessionId &&
+        canonicalPreviousEntry.lifecycleRevision === normalizedEntry.lifecycleRevision
+          ? canonicalPreviousEntry.durableQuestionOwners
+          : undefined,
+    };
+  }
   if (!options.providerReviewMutation && !options.allowStoredAliases) {
     // Bookkeeping can carry a stale snapshot; only the review owner may clear its pause.
     normalizedEntry = {
@@ -446,6 +496,16 @@ export function writeSessionEntry(
           ? canonicalPreviousEntry.providerReview
           : undefined,
     };
+  }
+  if (normalizedEntry.durableQuestionOwners) {
+    normalizedEntry.durableQuestionOwners = normalizedEntry.durableQuestionOwners.filter(
+      (owner) =>
+        owner.sessionId === normalizedEntry.sessionId &&
+        owner.lifecycleRevision === normalizedEntry.lifecycleRevision,
+    );
+    if (normalizedEntry.durableQuestionOwners.length === 0) {
+      delete normalizedEntry.durableQuestionOwners;
+    }
   }
   if (normalizedEntry.providerReview?.sessionId !== normalizedEntry.sessionId) {
     delete normalizedEntry.providerReview;
@@ -610,6 +670,17 @@ export function writeSessionEntry(
       canonicalPreviousEntry.lifecycleRevision !== normalizedEntry.lifecycleRevision)
   ) {
     retainLegacyAcpMigrationSourcesForEntry(database.db, sessionKey, normalizedEntry);
+    if (!isMainThread) {
+      retireSessionQuestionsInDatabase(
+        database,
+        {
+          sessionKey,
+          sessionId: canonicalPreviousEntry.sessionId,
+          lifecycleRevision: canonicalPreviousEntry.lifecycleRevision,
+        },
+        `retired:${canonicalPreviousEntry.sessionId}`,
+      );
+    }
   }
   const writeWindow =
     canonicalPreviousEntry?.sessionId === normalizedEntry.sessionId
@@ -663,4 +734,21 @@ export function writeSessionEntry(
     writeGeneration,
   );
   return normalizedEntry;
+}
+
+/** Alias relocation has no accepted owner for transferring durable native recovery fences. */
+export function assertQuestionAliasRelocation(previous: SessionEntry | undefined): void {
+  assertQuestionLifecycleWorker(previous);
+  if (previous?.durableQuestionOwners?.length) {
+    throw new Error("Alias relocation cannot transfer durable question recovery ownership.");
+  }
+}
+
+/** Synchronous legacy and Doctor writes cannot retire worker-owned question custody. */
+export function assertQuestionLifecycleWorker(previous: SessionEntry | undefined): void {
+  if (isMainThread && previous?.durableQuestionOwners?.length) {
+    throw new Error(
+      "Durable question lifecycle changes require the owning session worker; use the asynchronous lifecycle writer.",
+    );
+  }
 }

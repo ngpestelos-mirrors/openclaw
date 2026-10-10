@@ -18,6 +18,7 @@ import { sqliteSessionEntriesEqual } from "./session-accessor.sqlite-entry-equal
 import { prepareExactSessionEntryRowReads } from "./session-accessor.sqlite-entry-read.js";
 import { readSessionNodesGeneration } from "./session-accessor.sqlite-entry-revision.js";
 import {
+  assertQuestionAliasRelocation,
   deleteLegacySessionEntryRows,
   readExactSessionEntryRow,
   writeSessionEntry,
@@ -216,6 +217,13 @@ export function commitSessionEntryReplacementsInDatabase(
       transactionEntries.set(sessionKey, transactionRow.entry);
     }
   }
+  for (const replacement of input.replacements) {
+    for (const key of replacement.previousSessionKeys ?? []) {
+      if (key !== replacement.sessionKey) {
+        assertQuestionAliasRelocation(transactionEntries.get(key));
+      }
+    }
+  }
   beforeReplacements();
   if (input.preparedTranscript) {
     const { sessionKey, sessionId, events } = input.preparedTranscript;
@@ -258,6 +266,7 @@ export function commitSessionEntryReplacementsInDatabase(
       replacement.sessionKey,
       {
         rehomeMembers: selectedBefore?.sessionId === replacement.entry.sessionId,
+        validatedEntries: transactionEntries,
       },
     );
     if (replacement.previousSessionKeys?.some((key) => key !== replacement.sessionKey)) {

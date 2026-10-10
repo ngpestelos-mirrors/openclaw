@@ -624,6 +624,8 @@ export type SessionProfileInvolvement = {
 };
 
 export type InternalSessionEntryCore = SessionEntryCore & {
+  /** Bounded durable-question ownership excludes either run from generic restart replay. */
+  durableQuestionOwners?: import("./session-question-recovery-owner.js").DurableQuestionRecoveryOwner[];
   /** Personal discovery state, never participation, attribution, or sharing authority. */
   profileInvolvement?: { key: string; profiles: Record<string, SessionProfileInvolvement> };
   /** Transcript-wide account provenance; native binding replacement must not replace it. */

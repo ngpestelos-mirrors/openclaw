@@ -96,7 +96,7 @@ export function wrapToolWithAbortSignal(
         : await raceWithAbortSignal(
             execution,
             combinedSignal,
-            tool.name === "sessions_yield" ? abortSignal : undefined,
+            tool.name === "sessions_yield" || tool.name === "ask_user" ? abortSignal : undefined,
           );
     },
   };
@@ -112,7 +112,8 @@ export function wrapToolWithAbortSignal(
       if (combinedSignal.aborted) {
         throwAbortError();
       }
-      const yieldRunSignal = tool.name === "sessions_yield" ? abortSignal : undefined;
+      const yieldRunSignal =
+        tool.name === "sessions_yield" || tool.name === "ask_user" ? abortSignal : undefined;
       const sourcePreparation = sourcePreparer({ ...params, signal: combinedSignal });
       let prepared;
       try {

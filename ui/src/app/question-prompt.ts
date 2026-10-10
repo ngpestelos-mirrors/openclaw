@@ -45,6 +45,7 @@ export type QuestionPrompt = Pick<
   status: QuestionPromptStatus;
   answers?: QuestionAnswers;
   submittedAnswers?: QuestionAnswers;
+  continuationMessage?: string;
   answeredElsewhere: boolean;
   localResolutionConfirmed: boolean;
   locallyExpired: boolean;
@@ -356,6 +357,17 @@ export function handleQuestionPromptEvent(
     return false;
   }
   recordQuestionResolution(state, resolved);
+  const client = state.client;
+  if (client) {
+    const generation = state.clientGeneration;
+    // A continuation receipt can change after the answer event was published.
+    // Consume one current owner read; reconnect hydration owns later recovery.
+    void refreshPendingQuestions(
+      state,
+      client,
+      () => state.client === client && state.clientGeneration === generation,
+    ).catch(() => {});
+  }
   return true;
 }
 
@@ -363,7 +375,7 @@ function parseQuestionListResult(value: unknown): QuestionRecord[] | null {
   if (!isRecord(value) || !Array.isArray(value.questions)) {
     return null;
   }
-  const questions = value.questions.map(parseQuestionRequestedEvent);
+  const questions = value.questions.map(parseQuestionRecord);
   return questions.every((question) => question !== null) ? questions : null;
 }
 
@@ -395,7 +407,9 @@ async function refreshPendingQuestions(
   isCurrentClient: () => boolean,
 ): Promise<boolean> {
   const startedAtRevision = state.revision;
-  const listResult = await requestQuestionGateway(client, "question.list", {});
+  const listResult = await requestQuestionGateway(client, "question.list", {
+    includeContinuation: true,
+  });
   const records = parseQuestionListResult(listResult);
   if (!records) {
     invalidateQuestionList(client);
@@ -409,6 +423,23 @@ async function refreshPendingQuestions(
     const previous = state.prompts.get(record.id);
     if (!previous || previous.revision <= startedAtRevision || previous.locallyExpired) {
       storeQuestionRecord(state, record.id, record, previous);
+    }
+  }
+  if (isRecord(listResult) && Array.isArray(listResult.continuations)) {
+    for (const receipt of listResult.continuations) {
+      if (
+        !isRecord(receipt) ||
+        (receipt.status !== "blocked" && receipt.status !== "interrupted")
+      ) {
+        continue;
+      }
+      const prompt =
+        typeof receipt.questionId === "string" ? state.prompts.get(receipt.questionId) : undefined;
+      if (prompt) {
+        prompt.continuationMessage = [receipt.reason, receipt.nextAction]
+          .filter((value): value is string => typeof value === "string")
+          .join(" ");
+      }
     }
   }
   scheduleExpiry(state);

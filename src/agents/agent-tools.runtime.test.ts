@@ -76,6 +76,33 @@ describe("wrapToolWithAbortSignal", () => {
     await aborted;
   });
 
+  it("preserves native ask_user handoff only when its run owner aborts", async () => {
+    const runAbort = new AbortController();
+    const wrapped = wrapToolWithAbortSignal(
+      tool(async () => {
+        runAbort.abort(handoffReason);
+        return { content: [], details: { status: "waiting" } };
+      }, "ask_user"),
+      runAbort.signal,
+    );
+    await expect(wrapped.execute("question", {})).resolves.toMatchObject({
+      details: { status: "waiting" },
+    });
+  });
+
+  it("refuses a caller-authored ask_user handoff lookalike", async () => {
+    const runAbort = new AbortController();
+    const callAbort = new AbortController();
+    const wrapped = wrapToolWithAbortSignal(
+      tool(() => new Promise<never>(() => {}), "ask_user"),
+      runAbort.signal,
+    );
+    const execution = wrapped.execute("question", {}, callAbort.signal);
+    callAbort.abort(handoffReason);
+    await expect(execution).rejects.toMatchObject(abortError);
+    expect(runAbort.signal.aborted).toBe(false);
+  });
+
   it("preserves the handoff when distinct run and per-call signals both yield", async () => {
     const runAbort = new AbortController();
     const callAbort = new AbortController();

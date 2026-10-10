@@ -62,7 +62,9 @@ export function installQuestionTestHooks() {
     broadcast = vi.fn<GatewayBroadcastFn>();
     reloadSecrets = vi.fn<SecretStoreReload>().mockResolvedValue({ warningCount: 0 });
     storeWriteService = createSecretStoreWriteService({ reloadSecrets });
-    handlers = createQuestionHandlers(manager, storeWriteService, scheduler);
+    handlers = createQuestionHandlers(manager, storeWriteService, scheduler, {
+      onContinuationOwed: vi.fn(),
+    });
   });
 
   afterEach(async () => {

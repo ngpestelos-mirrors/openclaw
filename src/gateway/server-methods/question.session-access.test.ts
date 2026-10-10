@@ -21,6 +21,8 @@ import {
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
+import { publishDurableQuestionResolution } from "../question-session-access.js";
+import { createDurableQuestionSessionAccess } from "../question-session-durable-access.js";
 import { createGatewayBroadcaster } from "../server-broadcast.js";
 import { GatewayClientRegistry } from "../server/client-registry.js";
 import type { GatewayWsClient } from "../server/ws-types.js";
@@ -36,6 +38,7 @@ import {
   requestParams,
   secretRequestParams,
 } from "./question.test-support.js";
+import type { GatewayRequestContext } from "./shared-types.js";
 import type { GatewayClient } from "./types.js";
 
 installQuestionTestHooks();
@@ -808,3 +811,90 @@ it.each(["source", "generation"] as const)(
     });
   },
 );
+
+it("publishes server-owned terminal receipts to current own-session recipients and denies revoked recipients", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const f = await fixture(state);
+    const owner = questionPeer(f.owner, "receipt-owner");
+    const revoked = questionPeer({ ...f.owner, invalidated: true }, "receipt-revoked");
+    const viewer = questionPeer(f.viewer, "receipt-viewer");
+    const broadcaster = createGatewayBroadcaster({
+      clients: new GatewayClientRegistry([owner.ws, revoked.ws, viewer.ws]),
+    });
+    broadcast.mockImplementation(broadcaster.broadcast);
+    expect((await f.request("server-receipt"))[0]).toBe(true);
+    const observation = manager.observe("server-receipt")!;
+    manager.resolve("server-receipt", { answers: { destination: ["Own answer"] } });
+    await manager.drain();
+    for (const peer of [owner, revoked, viewer]) peer.send.mockClear();
+    const publication = {
+      context: {
+        getRuntimeConfig: () => f.cfg,
+        broadcast: broadcaster.broadcast,
+      } as GatewayRequestContext,
+      event: {
+        id: "server-receipt",
+        status: "answered" as const,
+        answers: { destination: ["Own answer"] },
+      },
+      observation,
+      assertCurrent() {},
+    };
+    await publishDurableQuestionResolution(publication);
+    expect(owner.send).toHaveBeenCalledOnce();
+    expect(revoked.send).not.toHaveBeenCalled();
+    expect(viewer.send).not.toHaveBeenCalled();
+    owner.send.mockClear();
+    f.sourceController.abort(new Error("Original source revoked"));
+    await publishDurableQuestionResolution(publication);
+    expect(owner.send).not.toHaveBeenCalled();
+  });
+});
+
+it("keeps durable broad terminal publication bound to the original conversation after producer retirement", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const f = await fixture(state);
+    expect((await f.request("durable-broad-receipt"))[0]).toBe(true);
+    const original = manager.observe("durable-broad-receipt")!;
+    const binding = original.sessionAccess?.durableBinding;
+    if (!binding) throw new Error("Expected native captured conversation binding");
+    manager.reset();
+    manager.request({
+      ...original.record,
+      timeoutMs: 900_000,
+      sessionAccess: createDurableQuestionSessionAccess(binding),
+    });
+    manager.resolve("durable-broad-receipt", { answers: { destination: ["Private answer"] } });
+    const observation = manager.observe("durable-broad-receipt")!;
+    const broad = questionPeer(
+      { ...f.viewer, connect: { ...f.viewer.connect, scopes: ["operator.questions"] } },
+      "durable-broad",
+    );
+    const admin = questionPeer(adminRequestClient, "durable-admin");
+    const broadcaster = createGatewayBroadcaster({
+      clients: new GatewayClientRegistry([broad.ws, admin.ws]),
+    });
+    const publication = {
+      context: {
+        getRuntimeConfig: () => f.cfg,
+        broadcast: broadcaster.broadcast,
+      } as GatewayRequestContext,
+      event: {
+        id: "durable-broad-receipt",
+        status: "answered" as const,
+        answers: { destination: ["Private answer"] },
+      },
+      observation,
+      assertCurrent() {},
+    };
+    f.sourceController.abort(new Error("Retired asking producer"));
+    await publishDurableQuestionResolution(publication);
+    for (const recipient of [broad, admin]) {
+      expect(recipient.send).toHaveBeenCalledOnce();
+      recipient.send.mockClear();
+    }
+    await f.write({ lifecycleRevision: "successor" });
+    await publishDurableQuestionResolution(publication);
+    for (const recipient of [broad, admin]) expect(recipient.send).not.toHaveBeenCalled();
+  });
+});
