@@ -65,20 +65,17 @@ export type PendingEntry<TPayload> = {
     assertCurrent: () => void;
     autoReview?: { committedResolutionKey?: string };
   };
-  terminalPublication?: ReturnType<typeof projectTerminalPublication>;
+  terminalPublication?: Pick<
+    OperatorApprovalRecord,
+    | "kind"
+    | "runtimeEpoch"
+    | "status"
+    | "decision"
+    | "terminalReason"
+    | "resolvedAtMs"
+    | "updatedAtMs"
+  >;
 };
-
-function projectTerminalPublication(record: OperatorApprovalRecord) {
-  return {
-    kind: record.kind,
-    runtimeEpoch: record.runtimeEpoch,
-    status: record.status,
-    decision: record.decision,
-    terminalReason: record.terminalReason,
-    resolvedAtMs: record.resolvedAtMs,
-    updatedAtMs: record.updatedAtMs,
-  };
-}
 
 /** Owns local observations and genuine decision effects, never durable decision policy. */
 export abstract class ExecApprovalLifecycle<TPayload> {
@@ -107,7 +104,15 @@ export abstract class ExecApprovalLifecycle<TPayload> {
       const { record } = event;
       const entry = this.pending.get(record.id);
       if (this.options.onLifecycle !== undefined && event.phase === "terminal" && entry) {
-        entry.terminalPublication = projectTerminalPublication(record);
+        entry.terminalPublication = {
+          kind: record.kind,
+          runtimeEpoch: record.runtimeEpoch,
+          status: record.status,
+          decision: record.decision,
+          terminalReason: record.terminalReason,
+          resolvedAtMs: record.resolvedAtMs,
+          updatedAtMs: record.updatedAtMs,
+        };
       }
       this.options.onLifecycle?.(event);
     } catch {
