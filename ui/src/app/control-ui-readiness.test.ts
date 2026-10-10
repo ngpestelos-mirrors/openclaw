@@ -1,6 +1,4 @@
 import { createRouter, definePage } from "@openclaw/uirouter";
-import { html, nothing, type LitElement } from "lit";
-import { ref } from "lit/directives/ref.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../../src/shared/deferred.ts";
 import { settleLitElement } from "../test-helpers/lit-settle.ts";
@@ -51,38 +49,35 @@ function fixture() {
 it("publishes the new generation only after the retiring MCP route releases its replacement", async () => {
   const { owner, runtime, root } = fixture();
   const teardown = createDeferredCore();
+  const previousView = Object.assign(document.createElement("mcp-app-view"), {
+    teardown: () => teardown.promise,
+    restartAfterTeardown: () => {},
+  });
+  const destination = document.createElement("div");
+  destination.dataset.destination = "";
+  destination.textContent = "Debug";
   const router = createRouter<"about" | "debug">({
     routes: [
       definePage({
         id: "about",
         path: "/about",
         component: () => ({
-          render: (data: { ready: boolean } | undefined) =>
-            data
-              ? html`<mcp-app-view
-                  ${ref((element) => {
-                    if (element) {
-                      Object.assign(element, {
-                        teardown: () => teardown.promise,
-                        restartAfterTeardown: () => {},
-                      });
-                    }
-                  })}
-                ></mcp-app-view>`
-              : nothing,
+          render: (data: { ready: boolean } | undefined) => (data ? previousView : null),
         }),
         loader: () => ({ ready: true }),
       }),
       definePage({
         id: "debug",
         path: "/debug",
-        component: () => ({ render: () => html`<div data-destination>Debug</div>` }),
+        component: () => ({ render: () => destination }),
         loader: () => ({ ready: true }),
       }),
     ],
   });
-  const outlet = document.createElement("openclaw-router-outlet") as LitElement &
-    ControlUiReadinessOutlet & { router: typeof router };
+  const outlet = document.createElement("openclaw-router-outlet") as ControlUiReadinessOutlet & {
+    router: typeof router;
+    updateComplete: Promise<boolean>;
+  };
   outlet.router = router;
   document.body.append(outlet);
   let observer: MutationObserver | undefined;
