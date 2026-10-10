@@ -44,7 +44,7 @@
   margin-block-start: 12px;
 }
 
-.unsupported-browser button {
+.unsupported-browser button[data-new-tab-action] {
   padding: 10px 20px;
   border: 1px solid ButtonText;
   border-radius: 8px;
