@@ -200,11 +200,34 @@ try {
         withConsoleLogsRoutedToStderrForJson(
           process.argv,
           async () => {
+            if (process.argv[2] === "native-agent-create") {
+              const { createAgent } = await import("../agents/agent-create.js");
+              const result = await createAgent({ name: "native", workspace: process.argv[3] });
+              process.stdout.write(`${JSON.stringify(result)}\n`);
+              return;
+            }
+            if (process.argv[2] === "onboard-workspace") {
+              const { ensureWorkspaceAndSessions } = await import("../commands/onboard-helpers.js");
+              const { defaultRuntime } = await import("../runtime.js");
+              await ensureWorkspaceAndSessions(process.argv[3]!, defaultRuntime, {
+                agentId: "main",
+              });
+              return;
+            }
             const program = new Command().name("openclaw").exitOverride();
             registerWorktreesCli(program);
             if (process.argv[2] === "sandbox") {
               const { registerSandboxCli } = await import("./sandbox-cli.js");
               registerSandboxCli(program);
+            } else if (process.argv[2] === "agents") {
+              const { registerAgentsCommands } = await import("./program/register.agent.js");
+              registerAgentsCommands(program);
+            } else if (process.argv[2] === "setup") {
+              const { registerSetupCommand } = await import("./program/register.setup.js");
+              registerSetupCommand(program);
+            } else if (process.argv[2] === "config") {
+              const { registerConfigCli } = await import("./config-cli.js");
+              registerConfigCli(program);
             } else if (process.argv[2] === "migrate") {
               const { registerMigrateCommand } = await import("./program/register.migrate.js");
               registerMigrateCommand(program);

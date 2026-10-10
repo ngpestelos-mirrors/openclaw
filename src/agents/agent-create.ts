@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import fs from "node:fs/promises";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { runWithLocalStateOwner } from "../cli/local-state-owner.js";
 import { applyAgentBindings, parseBindingSpecs } from "../commands/agents.bindings.js";
 import {
   applyAgentConfig,
@@ -20,7 +21,7 @@ import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.j
 import { resolveConfiguredAgentDatabaseTargets } from "../config/sessions/targets.js";
 import type { OptionalBootstrapFileName } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { FsSafeError, root } from "../infra/fs-safe.js";
+import { FsSafeError } from "../infra/fs-safe.js";
 import { normalizeAgentId, normalizeAgentIdStrict } from "../routing/session-key.js";
 import { runWithAgentCreationClaim } from "../state/agent-creation-claim.js";
 import { assertAgentDeletionRecoveryHoldPredicate } from "../state/agent-deletion-journal-recovery.kernel.js";
@@ -36,6 +37,7 @@ import { withExistingOpenClawStateDatabaseCurrentReadOnly } from "../state/openc
 import { isReservedSystemAgentId } from "../system-agent/agent-id.js";
 import { resolveUserPath } from "../utils.js";
 import { DuplicateAgentError } from "./agent-create-error.js";
+import { writeAgentCreationIdentity } from "./agent-create-identity.js";
 import { normalizeAgentDirRegistryPath } from "./agent-dir-registry.js";
 import { claimCompletedAgentDeletion } from "./agent-lifecycle-registry.js";
 import { listAgentRoles, loadAgentRole } from "./agent-roles.js";
@@ -47,8 +49,6 @@ import {
   mergeIdentityMarkdownContent,
   sanitizeAgentIdentityLine,
 } from "./identity-file.js";
-import { createWorkspaceFileMutationGuard } from "./workspace-file-mutation-guard.js";
-import type { WorkspaceStateGuard } from "./workspace-state-store.worker-contract.js";
 import {
   DEFAULT_IDENTITY_FILENAME,
   ensureAgentWorkspace,
@@ -272,34 +272,24 @@ export async function checkAgentCreationGate(agentId: string): Promise<CreateErr
   );
 }
 
-async function writeIdentityFile(params: {
-  workspaceDir: string;
-  identity: NonNullable<ReturnType<typeof createAgentIdentityConfig>>;
-  guard?: WorkspaceStateGuard;
-}): Promise<void> {
-  const beforeFileMutation = createWorkspaceFileMutationGuard(params.guard);
-  const workspaceRoot = await root(params.workspaceDir);
-  let existing: string | undefined;
-  try {
-    const result = await workspaceRoot.read(DEFAULT_IDENTITY_FILENAME, {
-      hardlinks: "reject",
-    });
-    existing = result.buffer.toString("utf-8");
-  } catch (error) {
-    if (!(error instanceof FsSafeError && error.code === "not-found")) {
-      throw error;
-    }
-  }
-  const content = mergeIdentityMarkdownContent(existing, params.identity);
-  beforeFileMutation?.();
-  // Root.write rechecks after its own async preparation and before each mutation.
-  await workspaceRoot.write(DEFAULT_IDENTITY_FILENAME, content, {
-    encoding: "utf8",
-    assertBeforeMutation: beforeFileMutation,
+export async function createAgent(params: CreateAgentParams): Promise<CreateAgentResult> {
+  return await runWithLocalStateOwner({
+    method: "agents.create",
+    params: {},
+    target: params.entry?.id ?? params.name ?? "new agent",
+    onForeignOwner: "refuse",
+    runLocal: ({ assertCurrent }) =>
+      createAgentUnderOwner({
+        ...params,
+        beforePersistentApply: () => {
+          assertCurrent();
+          params.beforePersistentApply?.();
+        },
+      }),
   });
 }
 
-export async function createAgent(params: CreateAgentParams): Promise<CreateAgentResult> {
+async function createAgentUnderOwner(params: CreateAgentParams): Promise<CreateAgentResult> {
   const expectedConfigHash = params.stagedConfig
     ? (params.stagedConfig.writeSnapshot.snapshot.hash ?? null)
     : params.expectedConfigHash;
@@ -618,7 +608,7 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
           // A creation-time name is config, not proof that the fresh workspace hatched.
           // Keep IDENTITY.md templated until BOOTSTRAP completes its first-turn ceremony.
           if (!template && !workspace.bootstrapPending && !skipBootstrap) {
-            await writeIdentityFile({
+            await writeAgentCreationIdentity({
               workspaceDir: workspace.dir,
               identity,
               guard: { assertHost, recoveryHoldPredicate: recoveryHoldPredicate() },

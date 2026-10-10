@@ -8,7 +8,6 @@ import {
   validateAgentsUpdateParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { AgentsDeleteResult } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
-import { createAgent } from "../../agents/agent-create.js";
 import {
   AgentSharedStoreOwnerError,
   assertAgentSessionStoreDeletionSafe,
@@ -66,20 +65,14 @@ import { DEFAULT_IDENTITY_FILENAME, ensureAgentWorkspace } from "../../agents/wo
 import { applyAgentConfig } from "../../commands/agents.config.js";
 import {
   readConfigFileSnapshotForWrite,
-  transformConfigFileWithRetry,
   withConfigMutationExclusive,
 } from "../../config/config.js";
-import {
-  attachRuntimeConfigWriteApplication,
-  createRuntimeConfigWriteApplication,
-} from "../../config/runtime-write-application.js";
 import { purgeAgentSessionStoreEntries } from "../../config/sessions.js";
 import { resolveSessionTranscriptsDirForAgent } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isMissingPathError } from "../../infra/errors.js";
 import { withAgentExecApprovalsRemoved } from "../../infra/exec-approvals.js";
 import { isPathInside } from "../../infra/path-guards.js";
-import { captureGatewayRootWorkAdmissionContinuationScope } from "../../process/gateway-work-admission.js";
 import { normalizeAgentIdStrict } from "../../routing/session-key.js";
 import {
   readAgentDeletionJournalAsync,
@@ -92,6 +85,8 @@ import { captureGatewayClientUploadCommitGuard } from "../upload-policy.js";
 import {
   AgentConfigPreconditionError,
   AgentModelSelectionError,
+  createAgentConfigApplication,
+  createAgentConfigEntry,
   deleteAgentConfigEntry,
   isConfiguredAgent,
   isImplicitAgentModelUpdate,
@@ -113,36 +108,15 @@ import {
   writeWorkspaceFileOrRespond,
 } from "./agents-files.js";
 import { agentListHandler } from "./agents-list.js";
+import {
+  captureLocalStateMutationGuard,
+  localStateOwnerChangedError,
+} from "./local-state-owner.js";
 import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 function respondAgentNotFound(respond: RespondFn, agentId: string): void {
   respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, `agent "${agentId}" not found`));
-}
-
-function createAgentConfigApplication(respond: RespondFn) {
-  const application = createRuntimeConfigWriteApplication(
-    captureGatewayRootWorkAdmissionContinuationScope()?.run,
-  );
-  return {
-    attach: <T extends object>(options: T) =>
-      attachRuntimeConfigWriteApplication(options, application),
-    confirm: async () => {
-      const outcome = application.claimed ? await application.result : "unclaimed";
-      if (outcome === "applied") {
-        return true;
-      }
-      respond(
-        false,
-        undefined,
-        errorShape(
-          ErrorCodes.UNAVAILABLE,
-          `Agent configuration was saved but its application to the active Gateway was not confirmed (${outcome}); run config.get, then apply the saved config or restart the Gateway.`,
-        ),
-      );
-      return false;
-    },
-  };
 }
 
 type AgentDeleteRemovedPath = NonNullable<AgentsDeleteResult["removed"]>[number];
@@ -161,31 +135,40 @@ function agentOwnsSharedAuthStore(cfg: OpenClawConfig, agentId: string): boolean
 
 export const agentsHandlers: GatewayRequestHandlers = {
   "agents.list": agentListHandler,
-  "agents.create": async ({ params, respond, client, context }) => {
+  "agents.create": async (options) => {
+    const { params, respond, client, context } = options;
     if (!assertValidParams(params, validateAgentsCreateParams, "agents.create", respond)) {
       return;
     }
 
+    let assertOwnerCurrent: (() => void) | undefined;
+    try {
+      assertOwnerCurrent = params.expectedOwnerId
+        ? captureLocalStateMutationGuard(params.expectedOwnerId, options)
+        : undefined;
+    } catch (error) {
+      respond(false, undefined, localStateOwnerChangedError(error));
+      return;
+    }
     const application = createAgentConfigApplication(respond);
     try {
-      const result = await createAgent({
-        name: params.name,
-        workspace: params.workspace,
-        model: params.model,
-        emoji: params.emoji,
-        avatar: params.avatar,
-        transformConfig: (mutation) =>
-          transformConfigFileWithRetry({
-            ...mutation,
-            writeOptions: application.attach(mutation.writeOptions ?? {}),
+      const result = await createAgentConfigEntry(
+        {
+          name: params.name,
+          workspace: params.workspace,
+          model: params.model,
+          emoji: params.emoji,
+          avatar: params.avatar,
+          beforePersistentApply: assertOwnerCurrent,
+          assertIdentityInputAllowed: captureGatewayClientUploadCommitGuard({
+            method: "agents.create",
+            requestParams: params,
+            client,
+            context,
           }),
-        assertIdentityInputAllowed: captureGatewayClientUploadCommitGuard({
-          method: "agents.create",
-          requestParams: params,
-          client,
-          context,
-        }),
-      });
+        },
+        application.attach({}),
+      );
       if (result.status === "error") {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, result.message));
         return;
@@ -203,6 +186,7 @@ export const agentsHandlers: GatewayRequestHandlers = {
           agentId: result.agentId,
           name: result.name,
           workspace: result.workspace,
+          agentDir: result.agentDir,
           ...(result.model ? { model: result.model } : {}),
         },
         undefined,
