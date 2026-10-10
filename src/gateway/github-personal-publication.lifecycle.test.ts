@@ -5,6 +5,7 @@ import {
   installGitHubPublicationTestHarness,
   persistPublicationTestSession,
 } from "./github-publication.test-support.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
@@ -197,6 +198,8 @@ describe("personal publication session lifecycle", () => {
     let injected = false;
     let receiptAdmitted = false;
     let nativeAbsent = false;
+    // A competing writer must not inherit the guarded reader's artifact-preserving context.
+    const inWriterContext = AsyncLocalStorage.snapshot();
     const held = holdReceiptDeletion();
     const admission = probe.admission(operationAdmission, (nativeRequest, grant, admit) => {
       const facts = nativeRequest.facts;
@@ -213,11 +216,13 @@ describe("personal publication session lifecycle", () => {
       ) {
         nativeAbsent = isRecord(facts) && facts.entry === undefined;
         admit(nativeRequest, () => {
-          expect(session.read()).toBeUndefined();
-          replaceSessionEntrySync(
-            { agentId: "main", storePath: session.storePath, sessionKey: SESSION_KEY },
-            successor,
-          );
+          inWriterContext(() => {
+            expect(session.read()).toBeUndefined();
+            replaceSessionEntrySync(
+              { agentId: "main", storePath: session.storePath, sessionKey: SESSION_KEY },
+              successor,
+            );
+          });
           injected = true;
           return grant();
         });
@@ -239,7 +244,7 @@ describe("personal publication session lifecycle", () => {
       receiptAdmitted = true;
       held.release.resolve();
       const outcome = await deletion;
-      expect(injected).toBe(true);
+      expect(injected, String(outcome.error)).toBe(true);
       expect(session.read()).toEqual(successor);
       expect(await repositories.get(workspace.workspaceId)).toEqual(workspace);
       expect(readPersonalGitHubPublication(owner, { requestId: published.requestId })).toEqual(

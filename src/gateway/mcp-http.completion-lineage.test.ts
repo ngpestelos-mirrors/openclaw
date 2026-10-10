@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -365,8 +366,12 @@ describe("MCP loopback completion lineage at the final tool-effect fence", () =>
         expect(await registerSessionStateWatch(watch)).toBe(true);
       }
       const grant = await mintCompletionGrant(`lineage-watch-${stage}`);
+      // A competing writer must not inherit the guarded reader's artifact-preserving context.
+      const inWriterContext = AsyncLocalStorage.snapshot();
       let witnessed = false;
       let watched: boolean | undefined;
+      let writeFailure: unknown;
+      let committed = false;
       registerBeforeToolCallHook(async () => {
         const admission = probe.admission(workerAdmission, (request, allow, admit) => {
           if (
@@ -379,10 +384,18 @@ describe("MCP loopback completion lineage at the final tool-effect fence", () =>
           ) {
             witnessed = true;
             const replacementOwner = "agent:main:direct:another-requester";
-            replaceSessionEntrySync(
-              { agentId: "main", sessionKey: childKey },
-              { ...childEntry, spawnedBy: replacementOwner },
-            );
+            try {
+              inWriterContext(() =>
+                replaceSessionEntrySync(
+                  { agentId: "main", sessionKey: childKey },
+                  { ...childEntry, spawnedBy: replacementOwner },
+                ),
+              );
+              committed = true;
+            } catch (error) {
+              writeFailure = error;
+              throw error;
+            }
           }
           admit(request, allow);
         });
@@ -395,8 +408,9 @@ describe("MCP loopback completion lineage at the final tool-effect fence", () =>
         }
       });
       const response = await grant.request("tools/call");
-      expect(await response.json()).toMatchObject({ result: { isError: true } });
       expect(witnessed).toBe(true);
+      expect(committed, String(writeFailure)).toBe(true);
+      expect(await response.json()).toMatchObject({ result: { isError: true } });
       expect(watched).toBe(false);
       const cursor = openOpenClawStateDatabase()
         .db.prepare(

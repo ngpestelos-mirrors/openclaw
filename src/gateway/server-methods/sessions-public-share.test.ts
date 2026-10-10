@@ -256,9 +256,7 @@ describe("world-readable session publication management", () => {
                 ...scope,
                 ...(method === "session.visibility.set" ? { visibility: "shared" } : {}),
               }),
-        ).rejects.toThrow(
-          `session changed before sharing ${method === "session.members.listEvidence" ? "read" : "mutation"}`,
-        );
+        ).rejects.toThrow("Session access facts are unavailable");
         const entry = loadSessionEntry(scope);
         expect(entry?.sessionId).toBe("replacement-generation");
         expect(entry?.createdActor?.id).toBe("owner");
@@ -318,7 +316,7 @@ describe("world-readable session publication management", () => {
           },
         );
         await expect(call("session.members.listEvidence", scope)).rejects.toThrow(
-          "session changed before sharing read",
+          "Session access facts are unavailable",
         );
         expect(loadSessionEntry(scope)?.sessionId).toBe("replacement-generation");
       });

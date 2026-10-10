@@ -223,7 +223,7 @@ it.each(["caller", "revoked grant", "deleted row", "replaced generation"] as con
         revoked === "revoked grant"
           ? "session publication changed before sharing response"
           : revoked === "deleted row" || revoked === "replaced generation"
-            ? "session changed before sharing mutation"
+            ? "Session access facts are unavailable"
             : "session ownership changed before sharing mutation";
       await expect(f.call("session.publicShare.set", { enabled: true }, respond)).rejects.toThrow(
         refusal,

@@ -311,7 +311,10 @@ test.each(["owner grant", "retained placeholder", "folded sibling", "malformed r
         const current = peer
           .prepare("SELECT entry_json FROM session_nodes WHERE session_key = ?")
           .get(sessionKey);
-        expect(current?.entry_json).toBe(JSON.stringify(successor));
+        expect(JSON.parse(String(current?.entry_json))).toEqual({
+          ...successor,
+          delivery: { kind: "none" },
+        });
       }
       if (boundary === "retained placeholder") {
         expect(observed.error).toBeUndefined();

@@ -240,6 +240,7 @@ describe("upstream session message-cut methods", () => {
             agentId: "main",
             catalogId: "codex",
             hostId: "gateway:local",
+            marker: null,
             sessionKey,
             threadId: "replacement-thread",
             upstreamKind: "codex-app-server",
