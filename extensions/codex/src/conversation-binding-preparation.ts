@@ -146,7 +146,15 @@ export async function resolveConversationAppServerRuntime(params: {
           agentId,
           storePath,
           sessionKey,
-          fields: ["permissionMode", "sessionRoot", "execHost", "execNode", "incognito"],
+          fields: [
+            "permissionMode",
+            "sessionRoot",
+            "execHost",
+            "execNode",
+            "sandbox",
+            "sandboxMode",
+            "incognito",
+          ],
           ...(selectedById ? { expected: selectedById.entry } : {}),
         })
       : undefined;

@@ -13,6 +13,8 @@ export function projectSessionEntryCapabilityFacts(entry: SessionEntryCurrentFac
     initializationPending: entry.initializationPending,
     execHost: entry.execHost,
     execNode: entry.execNode,
+    sandbox: entry.sandbox,
+    sandboxMode: entry.sandboxMode,
     permissionMode: entry.permissionMode,
     sessionRoot: entry.sessionRoot,
     authProfileOverride: entry.authProfileOverride,

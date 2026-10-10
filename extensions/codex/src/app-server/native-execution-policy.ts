@@ -23,6 +23,7 @@ type ExecHostOverride = {
 /** Effective execution-host policy for the Codex app-server native tool surface. */
 export type CodexNativeExecutionPolicy = {
   nativeToolSurfaceAllowed: boolean;
+  sandboxed: boolean;
   requestedExecHost: ExecTarget;
   effectiveExecHost: ExecHost;
   node?: string;
@@ -90,13 +91,13 @@ export async function prepareCodexNativeExecutionPolicy(
     agentId: sourceAgentId,
     sessionKey: sourceSessionKey,
     storePath: captured.sessionTarget?.storePath ?? captured.storePath,
-    fields: ["sessionId", "lifecycleRevision", "execHost", "execNode"],
+    fields: ["sessionId", "lifecycleRevision", "execHost", "execNode", "sandbox", "sandboxMode"],
     errorMessage: "Codex session execution policy changed; prepare the operation again.",
   });
   return {
     policy: resolveCodexNativeExecutionPolicy({
       ...captured,
-      sessionEntry: selected.entry,
+      sessionEntry: selected.entry ?? null,
       readRuntimeSessionEntry: false,
     }),
     assertCurrent: selected.assertCurrent,
@@ -117,7 +118,8 @@ export function resolveCodexNodeExecToolOverrides(
 /** Resolves node/gateway/sandbox execution ownership from overrides, session, agent, and config. */
 export function resolveCodexNativeExecutionPolicy(params: {
   config?: OpenClawConfig;
-  sessionEntry?: SessionEntry;
+  /** Null carries acknowledged absence from an already selected physical source. */
+  sessionEntry?: SessionEntry | null;
   sessionKey?: string;
   sessionId?: string;
   agentId?: string;
@@ -130,28 +132,34 @@ export function resolveCodexNativeExecutionPolicy(params: {
   const config = params.config ?? {};
   const { agentId, sessionKey, sourceAgentId, sourceSessionKey, canReadSessionEntry } =
     resolveSessionSelection(params);
-  let sessionEntry = params.sessionEntry ?? undefined;
+  let sessionEntry = params.sessionEntry;
   if (sessionEntry === undefined && canReadSessionEntry && sourceSessionKey && sourceAgentId) {
-    sessionEntry = getSessionEntry({
-      sessionKey: sourceSessionKey,
-      agentId: sourceAgentId,
-      ...((params.sessionTarget?.storePath ?? params.storePath)
-        ? { storePath: params.sessionTarget?.storePath ?? params.storePath }
-        : {}),
-      hydrateSkillPromptRefs: false,
-    });
+    sessionEntry =
+      getSessionEntry({
+        sessionKey: sourceSessionKey,
+        agentId: sourceAgentId,
+        ...((params.sessionTarget?.storePath ?? params.storePath)
+          ? { storePath: params.sessionTarget?.storePath ?? params.storePath }
+          : {}),
+        hydrateSkillPromptRefs: false,
+      }) ?? null;
   }
   const sandboxAgentId = parseAgentSessionKey(sessionKey)?.agentId ?? agentId;
-  const sandboxAvailable =
-    params.sandboxAvailable ??
-    (sessionKey && sandboxAgentId
+  // Stored overrides follow the captured source; main/non-main classification keeps its run key.
+  const sandboxed =
+    params.sandboxAvailable === true ||
+    ((sessionEntry !== undefined || params.sandboxAvailable === undefined) &&
+    sessionKey &&
+    sandboxAgentId
       ? resolveSandboxRuntimeStatus({
           cfg: config,
           sessionKey,
           agentId: sandboxAgentId,
           classificationAgentId: sandboxAgentId,
+          ...(sessionEntry !== undefined ? { preparedSessionEntry: sessionEntry } : {}),
         }).sandboxed
       : false);
+  const sandboxAvailable = params.sandboxAvailable ?? sandboxed;
   const agentExec = agentId ? resolveAgentConfig(config, agentId)?.tools?.exec : undefined;
   const globalExec = config.tools?.exec;
   const requestedExecHost =
@@ -166,6 +174,7 @@ export function resolveCodexNativeExecutionPolicy(params: {
     params.execOverrides?.node ?? sessionEntry?.execNode ?? agentExec?.node ?? globalExec?.node;
   return {
     nativeToolSurfaceAllowed: effectiveExecHost !== "node",
+    sandboxed,
     requestedExecHost,
     effectiveExecHost,
     node,

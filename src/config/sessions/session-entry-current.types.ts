@@ -11,6 +11,8 @@ export type SessionEntryCurrentFacts = {
   initializationPending?: SessionEntry["initializationPending"];
   execHost?: SessionEntry["execHost"];
   execNode?: SessionEntry["execNode"];
+  sandbox?: SessionEntry["sandbox"];
+  sandboxMode?: SessionEntry["sandboxMode"];
   permissionMode?: SessionEntry["permissionMode"];
   sessionRoot?: SessionEntry["sessionRoot"];
   authProfileOverride?: SessionEntry["authProfileOverride"];

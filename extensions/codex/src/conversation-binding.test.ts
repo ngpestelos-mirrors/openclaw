@@ -7,7 +7,7 @@ import {
 import type { ExecApprovalsFile } from "openclaw/plugin-sdk/exec-approvals-runtime";
 import type { PluginConversationBinding } from "openclaw/plugin-sdk/plugin-entry";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
-import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import { patchSessionEntry, upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { appendSessionTranscriptMessageByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import {
   closeOpenClawAgentDatabasesAsync,
@@ -219,6 +219,7 @@ import { prepareCodexConversationBinding } from "./conversation-binding-preparat
 import {
   conversationMessage,
   conversationThreadStartResult,
+  createConversationClaimFixtures,
   mockCallArg,
 } from "./conversation-binding.test-helpers.js";
 import { readCodexConversationActiveTurn } from "./conversation-control.js";
@@ -242,50 +243,6 @@ async function writeTestConversationBinding(
 
 async function readTestConversationBinding(sessionFile: string) {
   return testCodexAppServerBindingStore.read(testConversationIdentity(sessionFile));
-}
-
-function conversationClaimContext(
-  data: NonNullable<PluginConversationBinding["data"]>,
-  sessionKey?: string,
-  conversation = { channel: "telegram", conversationId: "5185575566" },
-) {
-  const pluginBinding: PluginConversationBinding = {
-    bindingId: "binding-1",
-    pluginId: "codex",
-    pluginRoot: tempDir,
-    ...conversation,
-    accountId: "default",
-    boundAt: Date.now(),
-    data,
-  };
-  return {
-    channelId: conversation.channel,
-    ...(sessionKey === undefined ? {} : { sessionKey }),
-    pluginBinding,
-  };
-}
-
-function legacyConversationData(
-  sessionFile: string,
-  owner: { agentId?: string; agentDir?: string } = {},
-) {
-  return {
-    kind: "codex-app-server-session",
-    version: 1,
-    sessionFile,
-    workspaceDir: tempDir,
-    ...owner,
-  };
-}
-
-function boundConversationClaim(sessionFile: string, sessionKey?: string) {
-  return {
-    event: conversationMessage("continue", {
-      bodyForAgent: "continue",
-      ...(sessionKey ? { sessionKey } : {}),
-    }),
-    ctx: conversationClaimContext(legacyConversationData(sessionFile), sessionKey || undefined),
-  };
 }
 
 async function createSameThreadClientMigrationFixture(
@@ -432,6 +389,8 @@ function denyConversationBinding(data: NonNullable<PluginConversationBinding["da
 }
 
 let tempDir: string;
+const { conversationClaimContext, legacyConversationData, boundConversationClaim } =
+  createConversationClaimFixtures(() => tempDir);
 
 const NETWORK_PROXY_PLUGIN_CONFIG = {
   appServer: {
@@ -954,6 +913,43 @@ describe("codex conversation binding", () => {
       },
     });
     expect(sharedClientMocks.getSharedCodexAppServerClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects sandbox revocation while a conversation awaits client acquisition", async () => {
+    const source = {
+      agentId: "main",
+      sessionId: "sandbox-source",
+      sessionKey: "agent:main:sandbox-source",
+      threadId: "thread-source",
+      storePath: path.join(tempDir, "sandbox-source.sqlite"),
+    };
+    await upsertSessionEntry({
+      ...source,
+      entry: { sessionId: source.sessionId, updatedAt: 1, sandboxMode: "off" },
+    });
+    const { event, ctx } = boundConversationClaim(path.join(tempDir, "sandbox-source.jsonl"));
+    ctx.pluginBinding.data = {
+      kind: "codex-app-server-session",
+      version: 2,
+      bindingId: "binding-sandbox-source",
+      workspaceDir: tempDir,
+      source,
+    };
+    const request = vi.fn(async () => {
+      throw new Error("Native requests must not run after sandbox revocation");
+    });
+    sharedClientMocks.getSharedCodexAppServerClient.mockImplementation(async () => {
+      await patchSessionEntry({ ...source, update: () => ({ sandboxMode: "all" }) });
+      return { request };
+    });
+
+    const result = await handleCodexConversationInboundClaim(event, ctx, {
+      config: { agents: { defaults: { sandbox: { mode: "all" } } } },
+    });
+
+    expect(sharedClientMocks.getSharedCodexAppServerClient).toHaveBeenCalledOnce();
+    expect(result?.reply?.text).toContain("selected session changed");
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("starts a fresh proxy-backed thread when binding an explicit app-server thread id", async () => {

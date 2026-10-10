@@ -90,9 +90,8 @@ export function resolveCodexAppServerDirectSandboxBypassBlock(params: {
     return undefined;
   }
   const sandboxBlock = resolveCodexNativeSandboxBlock({
-    config: params.config,
+    ...params,
     sessionKey,
-    sandbox: params.sandbox,
     surface: `app-server method \`${params.method}\``,
   });
   return sandboxBlock &&
@@ -167,6 +166,11 @@ export function resolveCodexNativeSandboxBlock(params: {
   }
   if (isCodexRemoteExecPlacementSandbox(params.sandbox) || params.sandbox?.enabled === true) {
     return formatCodexNativeSandboxBlock({ surface: params.surface });
+  }
+  if (params.executionPolicy) {
+    return params.executionPolicy.sandboxed
+      ? formatCodexNativeSandboxBlock({ surface: params.surface })
+      : undefined;
   }
   const sandboxAgentId =
     parseAgentSessionKey(sessionKey)?.agentId ??

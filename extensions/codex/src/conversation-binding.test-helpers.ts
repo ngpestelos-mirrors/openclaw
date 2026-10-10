@@ -1,4 +1,7 @@
-import type { PluginHookInboundClaimEvent } from "openclaw/plugin-sdk/plugin-entry";
+import type {
+  PluginConversationBinding,
+  PluginHookInboundClaimEvent,
+} from "openclaw/plugin-sdk/plugin-entry";
 import type { Mock } from "vitest";
 
 export function conversationMessage(
@@ -6,6 +9,54 @@ export function conversationMessage(
   options: Partial<Omit<PluginHookInboundClaimEvent, "content" | "commandAuthorized">> = {},
 ) {
   return { content, channel: "telegram", isGroup: false, commandAuthorized: true, ...options };
+}
+
+export function createConversationClaimFixtures(getRoot: () => string) {
+  function conversationClaimContext(
+    data: NonNullable<PluginConversationBinding["data"]>,
+    sessionKey?: string,
+    conversation = { channel: "telegram", conversationId: "5185575566" },
+  ) {
+    const pluginBinding: PluginConversationBinding = {
+      bindingId: "binding-1",
+      pluginId: "codex",
+      pluginRoot: getRoot(),
+      ...conversation,
+      accountId: "default",
+      boundAt: Date.now(),
+      data,
+    };
+    return {
+      channelId: conversation.channel,
+      ...(sessionKey === undefined ? {} : { sessionKey }),
+      pluginBinding,
+    };
+  }
+
+  function legacyConversationData(
+    sessionFile: string,
+    owner: { agentId?: string; agentDir?: string } = {},
+  ) {
+    return {
+      kind: "codex-app-server-session",
+      version: 1,
+      sessionFile,
+      workspaceDir: getRoot(),
+      ...owner,
+    };
+  }
+
+  function boundConversationClaim(sessionFile: string, sessionKey?: string) {
+    return {
+      event: conversationMessage("continue", {
+        bodyForAgent: "continue",
+        ...(sessionKey ? { sessionKey } : {}),
+      }),
+      ctx: conversationClaimContext(legacyConversationData(sessionFile), sessionKey || undefined),
+    };
+  }
+
+  return { conversationClaimContext, legacyConversationData, boundConversationClaim };
 }
 
 export function conversationThreadStartResult(
