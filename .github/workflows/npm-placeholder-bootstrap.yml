@@ -41,7 +41,7 @@ jobs:
       target_sha: ${{ steps.target.outputs.sha }}
     steps:
       - name: Prepare Git owner
-        uses: openclaw/openclaw/.github/actions/git-owner@dd4528b6393e7d00063067a080ca7241b48ce475
+        uses: openclaw/openclaw/.github/actions/git-owner@067639ad2c1f2dab3d8bc5bed6a4d9e6732f8614
 
       - name: Checkout selected source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
