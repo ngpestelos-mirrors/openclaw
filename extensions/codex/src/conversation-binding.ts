@@ -31,6 +31,7 @@ import type { CodexTurnStartResponse } from "./app-server/protocol.js";
 import {
   assertCodexBindingMayBeReplaced,
   type CodexAppServerBindingStore,
+  type CodexAppServerThreadBinding,
 } from "./app-server/session-binding.js";
 import {
   getLeasedSharedCodexAppServerClient,
@@ -130,18 +131,6 @@ async function runBoundTurn(params: {
         agentDir: params.data.agentDir,
       });
       const incognito = sourceIncognito ?? params.incognito;
-      if (incognito && !binding.conversationIncognito) {
-        const recorded = await params.bindingStore.mutate(
-          identity,
-          { kind: "patch", threadId: binding.threadId, patch: { conversationIncognito: true } },
-          assertCurrent,
-        );
-        if (!recorded) {
-          throw new Error(
-            "Codex conversation binding changed while recording its source lifecycle.",
-          );
-        }
-      }
       const { sessionRoot, approvalPolicy, sandbox } = runtime;
       const permissionProfile = runtime.networkProxy?.profileName;
       const networkProxyConfigFingerprint = runtime.networkProxy?.configFingerprint;
@@ -314,6 +303,7 @@ async function runBoundTurn(params: {
             });
           }
           const patch = {
+            ...(incognito ? { conversationIncognito: true } : {}),
             clientId: client.getInstanceId(),
             cwd: response.thread.cwd ?? (networkProxyBindingChanged ? workspaceDir : binding.cwd),
             model: response.model ?? modelSelection?.model ?? binding.model,
@@ -323,7 +313,7 @@ async function runBoundTurn(params: {
                 response.modelProvider ?? modelSelection?.modelProvider ?? binding.modelProvider,
               ...agentLookup,
             }),
-          };
+          } satisfies Partial<CodexAppServerThreadBinding>;
           const committed = await params.bindingStore.mutate(
             identity,
             networkProxyBindingChanged
@@ -337,7 +327,6 @@ async function runBoundTurn(params: {
                     networkProxyProfileName: runtime.networkProxy?.profileName,
                     networkProxyConfigFingerprint: runtime.networkProxy?.configFingerprint,
                     conversationStartId: binding.conversationStartId,
-                    ...(incognito ? { conversationIncognito: true } : {}),
                     conversationSourceTransferComplete: binding.conversationSourceTransferComplete,
                     historyCoveredThrough: binding.historyCoveredThrough,
                   },
@@ -354,6 +343,17 @@ async function runBoundTurn(params: {
           }
           if (networkProxyBindingChanged) {
             useStickyNetworkProfile = runtime.networkProxy !== undefined;
+          }
+        } else if (incognito && !binding.conversationIncognito) {
+          const recorded = await params.bindingStore.mutate(
+            identity,
+            { kind: "patch", threadId, patch: { conversationIncognito: true } },
+            assertCurrent,
+          );
+          if (!recorded) {
+            throw new Error(
+              "Codex conversation binding changed while recording its source lifecycle.",
+            );
           }
         }
         const turnCollector = createCodexConversationTurnCollector(threadId);

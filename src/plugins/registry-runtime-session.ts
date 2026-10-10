@@ -164,6 +164,7 @@ export function createManagedPluginAgentRuntime(
   const scopedAgent = Object.create(
     Object.getPrototypeOf(agent),
     Object.getOwnPropertyDescriptors(agent),
+    // SAFETY: cloning the prototype and every own descriptor preserves the complete agent surface.
   ) as PluginRuntime["agent"];
   const overrides = {
     resolveThinkingDefault: (params: Parameters<typeof agent.resolveThinkingDefault>[0]) =>

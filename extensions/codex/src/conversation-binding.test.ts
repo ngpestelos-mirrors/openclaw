@@ -720,7 +720,7 @@ describe("codex conversation binding", () => {
     },
     {
       label: "a private actor source selected only by physical store and session ID",
-      sourceSessionKey: "agent:main:ordinary-actor-source",
+      sourceSessionKey: "agent:main:dashboard:incognito-actor-source",
       destinationSessionKey: "agent:main:telegram:ordinary-destination",
       ephemeral: true,
       byIdActor: true,
@@ -1968,7 +1968,9 @@ describe("codex conversation binding", () => {
     });
     const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
     const notificationHandlers = new Set<(notification: unknown) => void>();
-    const releaseSource = vi.fn(async () => undefined);
+    const releaseSource = vi.fn(async (_threadId: string, assertCurrent?: () => void) => {
+      assertCurrent?.();
+    });
     const client = {
       getInstanceId: () => "source-client",
       request: vi.fn(async (method: string, params: Record<string, unknown>) => {
@@ -2058,7 +2060,7 @@ describe("codex conversation binding", () => {
       { role: "user", content: [{ text: "Earlier question" }] },
       { role: "assistant", content: [{ text: "Earlier answer" }] },
     ]);
-    expect(releaseSource).toHaveBeenCalledExactlyOnceWith("thread-source");
+    expect(releaseSource).toHaveBeenCalledExactlyOnceWith("thread-source", expect.any(Function));
     expect(testCodexAppServerBindingStore.read(sourceIdentity)).toBeUndefined();
     await expect(consumeCodexAppServerLiveThread(client, "thread-bound")).resolves.toEqual(
       expect.objectContaining({ release: expect.any(Function) }),

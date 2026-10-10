@@ -22,6 +22,7 @@ export function applySideQuestionModelSelection(
           reasoning: true,
           input: ["text", "image"],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          // SAFETY: native side runs consume binding capabilities, not generic model token limits.
         } as NonNullable<AgentHarnessSideQuestionParamsV2["runtimeModel"]>,
       }
     : params;
