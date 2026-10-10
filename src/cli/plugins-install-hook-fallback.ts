@@ -243,26 +243,26 @@ export async function installPluginWithHookFallback(params: InstallParams): Prom
   const { request, snapshot, install: routedInstall, ...options } = params;
   const execute: typeof installManagedPlugin =
     routedInstall ??
-    (async (request) =>
+    (async (input) =>
       runWithLocalStateOwner({
         method: "plugins.install",
         params: {},
-        target: request.request.source,
+        target: input.request.source,
         onForeignOwner: "refuse",
         runLocal: ({ signal, assertCurrent, assertSettlementCurrent }) =>
           withPluginLifecycleSettlementLease(
             {
-              signal: AbortSignal.any([signal, ...(request.signal ? [request.signal] : [])]),
+              signal: AbortSignal.any([signal, ...(input.signal ? [input.signal] : [])]),
               assertCurrent,
               assertSettlementCurrent,
             },
             () =>
               installManagedPlugin({
-                ...request,
-                signal: AbortSignal.any([signal, ...(request.signal ? [request.signal] : [])]),
+                ...input,
+                signal: AbortSignal.any([signal, ...(input.signal ? [input.signal] : [])]),
                 beforePersistentApply: () => {
                   assertCurrent();
-                  request.beforePersistentApply?.();
+                  input.beforePersistentApply?.();
                 },
               }),
           ),
