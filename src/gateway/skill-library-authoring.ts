@@ -66,7 +66,7 @@ function canPrepareSkillAuthoring(options: SkillLibraryRequestOwner, isHumanTurn
   );
 }
 
-export async function prepareGatewaySkillLibrarySession(
+async function prepareGatewaySkillLibrarySession(
   options: SkillLibraryRequestOwner,
   isHumanTurn: boolean,
 ): Promise<PreparedSkillLibrarySession | undefined> {

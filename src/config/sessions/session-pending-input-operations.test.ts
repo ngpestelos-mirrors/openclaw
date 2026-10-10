@@ -127,10 +127,18 @@ it("shares transaction rows without retaining stale custody and returns the pers
       database.db,
       ["entry", "members", "pending", "completion"],
       (sql) => {
-        if (/\bfrom "session_nodes"/iu.test(sql)) return "entry";
-        if (/\bfrom "session_members"/iu.test(sql)) return "members";
-        if (/\bfrom "session_pending_inputs"/iu.test(sql)) return "pending";
-        if (/\bfrom "session_input_completions"/iu.test(sql)) return "completion";
+        if (/\bfrom "session_nodes"/iu.test(sql)) {
+          return "entry";
+        }
+        if (/\bfrom "session_members"/iu.test(sql)) {
+          return "members";
+        }
+        if (/\bfrom "session_pending_inputs"/iu.test(sql)) {
+          return "pending";
+        }
+        if (/\bfrom "session_input_completions"/iu.test(sql)) {
+          return "completion";
+        }
         return null;
       },
     );

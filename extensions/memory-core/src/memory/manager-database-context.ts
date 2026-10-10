@@ -330,7 +330,10 @@ export class MemoryIndexDatabase {
       }
       return {
         store: {
-          execute: (command, assertCurrent) =>
+          execute: <Key extends keyof MemoryPublicationOperations>(
+            command: { type: Key; input: MemoryPublicationOperations[Key]["input"] },
+            assertCurrent: () => void,
+          ) =>
             runSqliteWorkerStoreWrite(store, (scope) => scope.execute(command), assertCurrent, [
               filename,
             ]),
