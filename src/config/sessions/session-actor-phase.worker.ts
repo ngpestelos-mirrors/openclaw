@@ -189,7 +189,7 @@ export function applySessionActorPhase(
         sessionKey,
         sessionId: input.sessionId,
       };
-      applySessionTranscriptEvent(
+      const committed = applySessionTranscriptEvent(
         {
           scope,
           eventJson: input.eventJson,
@@ -202,7 +202,7 @@ export function applySessionActorPhase(
         context,
         (_database, candidate) => candidate,
       );
-      result = {};
+      result = { projectionNeedsReconcile: committed.projectionNeedsReconcile };
       break;
     }
     case "session.actor.completeTurn": {
