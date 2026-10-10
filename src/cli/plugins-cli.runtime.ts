@@ -38,11 +38,6 @@ import type { RunPluginInstallCommandParams } from "./plugins-install-preflight.
 
 type PluginInstallActionOptions = RunPluginInstallCommandParams["opts"];
 
-function reportMissingPlugin(id: string) {
-  defaultRuntime.error(formatMissingPluginMessage({ id, includeSearch: true }));
-  return defaultRuntime.exit(1);
-}
-
 function isConfigSelectedShadowDiagnostic(entry: { level?: string; message?: string }): boolean {
   return (
     (entry.level === "info" || entry.level === "warn") &&
