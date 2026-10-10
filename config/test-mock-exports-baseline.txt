@@ -6144,7 +6144,6 @@
 ["src/commands/migrate.test.ts","../cli/progress.js","e6c8f5f634b77a1bf87cee306cd251bb67da19444d2d57a6e9e1e0c4f19e831b",1]
 ["src/commands/migrate.test.ts","../cli/prompt.js","f02d59454dc70cd446d4b268913574580e58152ea857976ae0ea1d3e10b6dc6b",1]
 ["src/commands/migrate.test.ts","../config/config.js","f4448fa735e408442c07e554899b084f01ce1d51e6690718fc1983922cd5dbc0",1]
-["src/commands/migrate.test.ts","../config/paths.js","864b6e4cf255ffe1ff872894ec6436bf78f006ba2a16a8868e1db6d97a194894",1]
 ["src/commands/migrate.test.ts","../plugins/migration-provider-runtime.js","d152cc0182f4dd7f4edb90a77876bfb2b6070801d7f6cf916548cecd84d9dd97",1]
 ["src/commands/migrate.test.ts","./backup.js","022f79311a1f919a40f4704e52a6ddd0876c0948440ba689957012b9e746aeb5",1]
 ["src/commands/migrate.test.ts","./migrate/skill-selection-prompt.js","e091d474f3383243205bf43402a11cf86fef7905dce674ab0ca87ddcca29f16b",1]
