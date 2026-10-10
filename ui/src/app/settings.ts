@@ -25,6 +25,14 @@ import { normalizeChatSplitLayout } from "../pages/chat/split-layout-persistence
 import type { ChatSplitLayout } from "../pages/chat/split-layout-types.ts";
 import { resolveControlUiPaths } from "./browser.ts";
 import { parseImportedCustomTheme, type ImportedCustomTheme } from "./custom-theme.ts";
+import { resolveProfileAppearanceProfileId } from "./server-prefs-profile.ts";
+import type {
+  ScopedSessionSelection,
+  PersistedUiSettings,
+  PersistedSettingsSource,
+  ProfileNavigation,
+  SettingsStorageFallback,
+} from "./settings-storage-types.ts";
 import { normalizeTerminalFontFamily } from "./terminal-font.ts";
 import { parseThemeSelection, type ThemeMode, type ThemeName } from "./theme.ts";
 import { normalizeTypefaceOverride, type TypefaceId } from "./typography.ts";
@@ -47,20 +55,6 @@ export function settingsKeyForGateway(gatewayUrl: string): string {
 function currentGatewaySelectionKeyForPage(pageUrl: string): string {
   return `${CURRENT_GATEWAY_SELECTION_KEY_PREFIX}${gatewayOriginScope(pageUrl)}`;
 }
-
-type ScopedSessionSelection = {
-  sessionKey: string;
-  lastActiveSessionKey: string;
-  selectedAgentId?: string;
-};
-
-type PersistedUiSettings = Omit<
-  UiSettings,
-  "token" | "sessionKey" | "lastActiveSessionKey" | "selectedAgentId" | "navCollapsed"
-> & {
-  token?: never;
-  sessionsByGateway?: Record<string, ScopedSessionSelection>;
-};
 
 export const TEXT_SCALE_STOPS = [90, 100, 110, 125, 140] as const;
 export type TextScaleStop = (typeof TEXT_SCALE_STOPS)[number];
@@ -209,7 +203,8 @@ export type UiSettings = {
   sidebarAgentsMode?: "chip" | "roster";
   sidebarPreTeamScope?: string | null; // null remembers All agents; undefined means unset.
   sidebarCollapsedAgentIds?: string[];
-  sidebarEntries: string[]; // Ordered routes, plugin navigation, and pinned sessions below Home
+  sidebarEntries: string[]; // Ordered personal navigation references
+  navigationScope: "mine" | "all";
   sidebarLiveActivity?: boolean; // Latest activity under running sidebar sessions (default true)
   chatMessageMaxWidth?: string; // Browser-local centered chat transcript max width
   showAdvancedSettings?: boolean; // Expand advanced schema settings (default false)
@@ -289,27 +284,61 @@ export function resolvePageGatewaySettings(settings: UiSettings): UiSettings {
   };
 }
 
-type PersistedSettingsSource = {
-  gatewayUrl: string;
-  parsed: PersistedUiSettings;
-};
-
-function readSettingsForGateway(
+export function readSettingsForGateway(
   storage: Storage | null,
   targetUrl: string,
 ): PersistedSettingsSource | null {
-  const scoped = safeParseJson(storage?.getItem(settingsKeyForGateway(targetUrl)) ?? "") as
-    | PersistedUiSettings
-    | null
-    | undefined;
+  const key = settingsKeyForGateway(targetUrl);
+  const cached = settingsFallback?.key === key ? settingsFallback : null;
+  let scoped: PersistedUiSettings | null | undefined;
+  try {
+    if (!storage && cached) {
+      return { gatewayUrl: targetUrl, parsed: cached.record, available: false };
+    }
+    scoped = safeParseJson(storage?.getItem(key) ?? "") as PersistedUiSettings | null | undefined;
+  } catch (error) {
+    if (!cached) {
+      throw error;
+    }
+    return { gatewayUrl: targetUrl, parsed: cached.record, available: false };
+  }
   const storedUrl = normalizeOptionalString(scoped?.gatewayUrl);
-  if (scoped && (!storedUrl || gatewayOriginScope(storedUrl) === gatewayOriginScope(targetUrl))) {
-    return {
-      gatewayUrl: storedUrl ?? targetUrl,
-      parsed: scoped,
+  if (storedUrl && gatewayOriginScope(storedUrl) !== gatewayOriginScope(targetUrl)) {
+    scoped = null;
+  }
+  if (cached?.pendingNavigation) {
+    scoped = {
+      ...scoped,
+      ...cached.record,
+      navigationByProfile: { ...scoped?.navigationByProfile, ...cached.pendingNavigation },
     };
   }
-  return null;
+  if (!scoped) {
+    if (cached) {
+      settingsFallback = null;
+    }
+    return null;
+  }
+  const record = { ...scoped, gatewayUrl: normalizeOptionalString(scoped.gatewayUrl) ?? targetUrl };
+  if (cached || !settingsFallback?.pendingNavigation) {
+    settingsFallback = { key, record, pendingNavigation: cached?.pendingNavigation ?? null };
+  }
+  return {
+    gatewayUrl: record.gatewayUrl,
+    parsed: record,
+    available: Boolean(storage),
+  };
+}
+
+export function profileNavigation(
+  parsed: PersistedUiSettings | undefined,
+  profileId: string,
+): ProfileNavigation | null {
+  const entry = asOptionalRecord(parsed?.navigationByProfile?.[profileId]);
+  const sidebarEntries = normalizeSidebarEntries(entry?.sidebarEntries);
+  return sidebarEntries
+    ? { sidebarEntries, navigationScope: entry?.navigationScope === "all" ? "all" : "mine" }
+    : null;
 }
 
 function tokenSessionKeyForGateway(gatewayUrl: string): string {
@@ -398,10 +427,9 @@ export function persistSessionToken(gatewayUrl: string, token: string) {
   }
 }
 
-// Last write that never reached localStorage (private mode, quota, security
-// errors). Without it a setting picked on one page silently reverts when
-// another page re-reads storage in the same tab.
-let unpersistedSettings: UiPreferences | null = null;
+// Fresh storage always wins unless a write failed. Only locally dirty profile snapshots
+// are replayed over recovery reads, so saving one profile cannot revert a sibling's edits.
+let settingsFallback: SettingsStorageFallback | null = null;
 
 type LivePreferenceOwner = { gatewayUrl: () => string; refresh: () => void };
 let livePreferenceOwner: LivePreferenceOwner | null = null;
@@ -423,18 +451,15 @@ export function loadSettings(gatewayUrl = livePreferenceOwner?.gatewayUrl()): Ui
 }
 
 export function loadUiPreferences(
-  targetGatewayUrl = configuredUiDevGateway()?.gatewayUrl,
+  requestedGatewayUrl = configuredUiDevGateway()?.gatewayUrl,
 ): UiPreferences {
-  const cached = unpersistedSettings;
-  if (
-    cached &&
-    (!targetGatewayUrl ||
-      gatewayOriginScope(cached.gatewayUrl) === gatewayOriginScope(targetGatewayUrl))
-  ) {
-    return targetGatewayUrl ? { ...cached, gatewayUrl: targetGatewayUrl } : cached;
-  }
-  const { pageUrl: pageDerivedUrl, effectiveUrl: defaultUrl } = deriveDefaultGatewayUrl();
   const storage = getSafeLocalStorage();
+  const targetGatewayUrl =
+    requestedGatewayUrl ??
+    (settingsFallback && (settingsFallback.pendingNavigation || !storage)
+      ? settingsFallback.record.gatewayUrl
+      : undefined);
+  const { pageUrl: pageDerivedUrl, effectiveUrl: defaultUrl } = deriveDefaultGatewayUrl();
 
   const defaults: UiPreferences = {
     gatewayUrl: targetGatewayUrl ?? defaultUrl,
@@ -453,6 +478,7 @@ export function loadUiPreferences(
     navWidth: NAV_WIDTH_DEFAULT,
     sidebarAgentsMode: "chip",
     sidebarEntries: [...DEFAULT_SIDEBAR_ENTRIES],
+    navigationScope: "mine",
     sidebarLiveActivity: UI_APPEARANCE_DEFAULTS.sidebarLiveActivity,
     showAdvancedSettings: false,
     pinnedAgentIds: [],
@@ -460,9 +486,16 @@ export function loadUiPreferences(
   };
 
   try {
-    const selectedGatewayUrl =
-      targetGatewayUrl ??
-      normalizeOptionalString(storage?.getItem(currentGatewaySelectionKeyForPage(pageDerivedUrl)));
+    let selectedGatewayUrl = targetGatewayUrl;
+    if (!selectedGatewayUrl) {
+      try {
+        selectedGatewayUrl = normalizeOptionalString(
+          storage?.getItem(currentGatewaySelectionKeyForPage(pageDerivedUrl)),
+        );
+      } catch {
+        selectedGatewayUrl = settingsFallback?.record.gatewayUrl;
+      }
+    }
     const source =
       (selectedGatewayUrl ? readSettingsForGateway(storage, selectedGatewayUrl) : null) ??
       (targetGatewayUrl ? null : readSettingsForGateway(storage, defaultUrl));
@@ -478,7 +511,9 @@ export function loadUiPreferences(
     const { theme, mode } = parseThemeSelection(parsed.theme, parsed.themeMode);
     const textScale = normalizeTextScale(parsed.textScale);
     const parsedRecord = asOptionalRecord(parsed) ?? {};
-    const hasSidebarEntries = Object.hasOwn(parsedRecord, "sidebarEntries");
+    const profileId = resolveProfileAppearanceProfileId(gatewayUrl);
+    const personalNavigation = profileId ? profileNavigation(parsed, profileId) : null;
+    const hasSidebarEntries = Boolean(profileId) || Object.hasOwn(parsedRecord, "sidebarEntries");
     // One-time read of the retired route-only shape; all writes use sidebarEntries.
     const migratedSidebarEntries = hasSidebarEntries
       ? null
@@ -535,10 +570,16 @@ export function loadUiPreferences(
       sidebarAgentsMode: parsed.sidebarAgentsMode === "roster" ? "roster" : "chip",
       sidebarPreTeamScope: normalizeSidebarPreTeamScope(parsed.sidebarPreTeamScope),
       sidebarCollapsedAgentIds: normalizeUniqueTrimmedStringList(parsed.sidebarCollapsedAgentIds),
-      sidebarEntries:
-        normalizeSidebarEntries(parsedRecord.sidebarEntries) ??
-        migratedSidebarEntries ??
-        defaults.sidebarEntries,
+      sidebarEntries: profileId
+        ? (personalNavigation?.sidebarEntries ?? defaults.sidebarEntries)
+        : (normalizeSidebarEntries(parsedRecord.sidebarEntries) ??
+          migratedSidebarEntries ??
+          defaults.sidebarEntries),
+      navigationScope: profileId
+        ? (personalNavigation?.navigationScope ?? "mine")
+        : parsed.navigationScope === "all"
+          ? "all"
+          : "mine",
       sidebarLiveActivity: booleanSetting("sidebarLiveActivity"),
       chatMessageMaxWidth: normalizeChatMessageMaxWidth(parsed.chatMessageMaxWidth),
       showAdvancedSettings: booleanSetting("showAdvancedSettings"),
@@ -582,6 +623,8 @@ export function patchSettings(
   const next = { ...previous, ...patch };
   saveSettings(next, {
     selectGateway: options.selectGateway ?? patch.gatewayUrl !== undefined,
+    writeNavigation:
+      Object.hasOwn(patch, "sidebarEntries") || Object.hasOwn(patch, "navigationScope"),
   });
   settingsChangeListener?.(previous, next);
   return next;
@@ -600,13 +643,19 @@ export function loadLocalUserIdentity(): LocalUserIdentity {
   }
 }
 
-export function saveSettings(next: UiSettings, options: { selectGateway?: boolean } = {}) {
+export function saveSettings(
+  next: UiSettings,
+  options: { selectGateway?: boolean; writeNavigation?: boolean } = {},
+) {
   const storage = getSafeLocalStorage();
   const scope = gatewayOriginScope(next.gatewayUrl);
   const scopedKey = settingsKeyForGateway(next.gatewayUrl);
   let existingSessionsByGateway: Record<string, ScopedSessionSelection> = {};
+  let source: PersistedSettingsSource | null = null;
+  let available = Boolean(storage);
   try {
-    const source = readSettingsForGateway(storage, next.gatewayUrl);
+    source = readSettingsForGateway(storage, next.gatewayUrl);
+    available &&= source?.available !== false;
     if (source) {
       const parsed = source.parsed;
       if (parsed.sessionsByGateway && typeof parsed.sessionsByGateway === "object") {
@@ -614,8 +663,19 @@ export function saveSettings(next: UiSettings, options: { selectGateway?: boolea
       }
     }
   } catch {
-    // best-effort
+    available = false;
   }
+  const profileId = resolveProfileAppearanceProfileId(next.gatewayUrl);
+  const authoredNavigation = options.writeNavigation !== false;
+  const navigation = { sidebarEntries: next.sidebarEntries, navigationScope: next.navigationScope };
+  const pendingNavigation = {
+    ...(settingsFallback?.key === scopedKey ? settingsFallback.pendingNavigation : null),
+    ...(profileId &&
+    authoredNavigation &&
+    JSON.stringify(navigation) !== JSON.stringify(profileNavigation(source?.parsed, profileId))
+      ? { [profileId]: navigation }
+      : {}),
+  };
   const sessionsByGateway = Object.fromEntries(
     [
       ...Object.entries(existingSessionsByGateway).filter(([key]) => key !== scope),
@@ -674,7 +734,11 @@ export function saveSettings(next: UiSettings, options: { selectGateway?: boolea
     sidebarCollapsedAgentIds: next.sidebarCollapsedAgentIds?.length
       ? normalizeUniqueTrimmedStringList(next.sidebarCollapsedAgentIds)
       : undefined,
-    sidebarEntries: next.sidebarEntries,
+    sidebarEntries:
+      !profileId && authoredNavigation ? next.sidebarEntries : source?.parsed.sidebarEntries,
+    navigationScope:
+      !profileId && authoredNavigation ? next.navigationScope : source?.parsed.navigationScope,
+    navigationByProfile: { ...source?.parsed.navigationByProfile, ...pendingNavigation },
     sidebarLiveActivity: next.sidebarLiveActivity === false ? false : undefined,
     chatMessageMaxWidth: normalizeChatMessageMaxWidth(next.chatMessageMaxWidth),
     showAdvancedSettings: next.showAdvancedSettings === true ? true : undefined,
@@ -695,23 +759,22 @@ export function saveSettings(next: UiSettings, options: { selectGateway?: boolea
     openLinksExternally: next.openLinksExternally === true ? true : undefined,
   };
   const serialized = JSON.stringify(persisted);
-  const { token: _token, ...preferences } = next;
-  unpersistedSettings = preferences;
+  settingsFallback = { key: scopedKey, record: persisted, pendingNavigation };
   try {
     const { pageUrl } = deriveDefaultGatewayUrl();
     const selectionKey = currentGatewaySelectionKeyForPage(pageUrl);
-    storage?.setItem(scopedKey, serialized);
-    if (options.selectGateway || storage?.getItem(selectionKey) == null) {
-      storage?.setItem(selectionKey, next.gatewayUrl);
-    }
-    storage?.removeItem(LEGACY_SETTINGS_KEY);
-    if (storage) {
-      unpersistedSettings = null;
+    if (available && storage) {
+      storage.setItem(scopedKey, serialized);
+      if (options.selectGateway || storage.getItem(selectionKey) == null) {
+        storage.setItem(selectionKey, next.gatewayUrl);
+      }
+      storage.removeItem(LEGACY_SETTINGS_KEY);
+      settingsFallback.pendingNavigation = null;
     }
   } catch {
     // best-effort — quota exceeded or security restrictions should not
     // prevent in-memory settings and visual updates from being applied;
-    // unpersistedSettings keeps this tab consistent until storage recovers
+    // settingsFallback keeps this tab consistent until storage recovers
   }
   const owner = livePreferenceOwner;
   if (owner && gatewayOriginScope(owner.gatewayUrl()) === scope) {

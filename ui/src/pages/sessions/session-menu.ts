@@ -1,6 +1,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { html } from "lit";
 import type { GatewaySessionRow } from "../../api/types.ts";
+import { serializeSidebarEntry } from "../../app-navigation.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { resolveCloudWorkerStopAction } from "../../components/cloud-worker-stop.ts";
 import { sessionMenuReasons } from "../../components/session-menu-access.ts";
@@ -48,7 +49,9 @@ export function renderSessionManagementMenu(params: {
       .session=${{
         label: normalizeOptionalString(row.label) ?? row.key,
         sessionId: normalizeOptionalString(row.sessionId) ?? null,
-        pinned: row.pinned === true,
+        pinned: context.navigation.snapshot.sidebarEntries.includes(
+          serializeSidebarEntry({ type: "session", key: row.key }),
+        ),
         pinnable,
         snoozedUntil: row.snoozedUntil ?? null,
         unread: row.unread === true,

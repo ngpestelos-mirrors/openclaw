@@ -2668,8 +2668,7 @@ ui/src/app/native-notifications.ts	2
 ui/src/app/native-route-memory.ts	1
 ui/src/app/native-web-chrome.ts	2
 ui/src/app/overlays.ts	1
-ui/src/app/server-prefs-state.ts	10
-ui/src/app/server-prefs.ts	6
+ui/src/app/server-prefs-state.ts	1
 ui/src/app/settings.ts	2
 ui/src/app/stale-chunk-reload.ts	1
 ui/src/app/startup-settings.ts	1
@@ -2678,7 +2677,7 @@ ui/src/app/web-push.runtime.ts	1
 ui/src/components/agent-select.ts	2
 ui/src/components/app-sidebar-agent-menu.ts	2
 ui/src/components/app-sidebar-nav-menus.ts	2
-ui/src/components/app-sidebar-render.ts	4
+ui/src/components/app-sidebar-render.ts	3
 ui/src/components/app-sidebar-session-catalog-render.ts	4
 ui/src/components/app-sidebar-session-list-render.ts	1
 ui/src/components/app-sidebar-session-menu-renderers.ts	3

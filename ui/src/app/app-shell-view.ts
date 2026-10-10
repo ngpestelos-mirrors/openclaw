@@ -46,6 +46,7 @@ import { beginNativeWindowDragFromTopInset } from "./native-window-drag.ts";
 import {
   floatingSidebarAttentionVisible,
   navigationSurfaceIsHidden,
+  NAVIGATION_RAIL_WIDTH,
   renderFloatingUpdateCard,
 } from "./navigation-surface.ts";
 import { readGatewayOperatorAccess } from "./operator-access.ts";
@@ -196,11 +197,15 @@ export function renderApplicationShell(host: ShellViewHost) {
     !host.desktopNavigationExpanded &&
     !navDrawerOpen &&
     !settingsTakeover;
+  const railAvailable = !nativeEmbed && !settingsTakeover && !onboarding;
+  const railWidth = railAvailable ? NAVIGATION_RAIL_WIDTH : 0;
+  const expandedNavWidth = navigationSnapshot.navWidth + railWidth;
   const navigationSurfaceHidden = navigationSurfaceIsHidden({
     onboarding,
     navCollapsed,
     navDrawerOpen,
     mobileNavLayout,
+    railAvailable,
   });
   const floatingAttentionVisible =
     !nativeEmbed &&
@@ -252,7 +257,9 @@ export function renderApplicationShell(host: ShellViewHost) {
       canPairDevice: gatewayConnected && (operatorAccess.canAdmin || operatorAccess.canPair),
       preferencesBrowserOnly: gatewayConnected && context.runtimeConfig.canPatch === false,
       sidebarEntries: navigationSnapshot.sidebarEntries,
+      navigationScope: navigationSnapshot.navigationScope,
       navigationVisible: !navigationSurfaceHidden,
+      navigationCollapsed: navCollapsed,
       sidebarAgentsMode: uiSettings.sidebarAgentsMode ?? "chip",
       sidebarLiveActivity: uiSettings.sidebarLiveActivity !== false,
       pinnedAgentIds: navigationSnapshot.pinnedAgentIds,
@@ -265,6 +272,7 @@ export function renderApplicationShell(host: ShellViewHost) {
       onToggleSidebar: callbacks.toggleSidebar,
       onOpenNewSession: callbacks.requestOpenNewSession,
       onUpdateSidebarEntries: callbacks.updateSidebarEntries,
+      onUpdateNavigationScope: callbacks.updateNavigationScope,
       onPairMobile: callbacks.openDevicePairSetup,
       onNavigate: host.navigate,
       onPreloadRoute: callbacks.preloadRoute,
@@ -366,18 +374,18 @@ export function renderApplicationShell(host: ShellViewHost) {
   const workspace = html`
     ${renderShellLazyOverlays(host, desktopPanelAvailable, custodianPanelAvailable, nativeEmbed)}
     <div
-      class="shell ${chatLikeRoute ? "shell--chat" : ""} ${
+      class="shell ${railAvailable ? "shell--navigation-rail" : ""} ${chatLikeRoute ? "shell--chat" : ""} ${
         navCollapsed ? "shell--nav-collapsed" : ""
       } ${mobileNavLayout ? "shell--mobile-nav" : ""} ${
         mergedChatChrome ? "shell--merged-chat-chrome" : ""
       } ${navDrawerOpen ? "shell--nav-drawer-open" : ""} ${
         onboarding ? "shell--onboarding" : ""
       } ${nativeEmbed ? "shell--embed" : ""} ${embedSettings ? "shell--embed-settings" : ""} ${settingsTakeover ? "shell--settings" : ""} ${
-        collapsedControls && homePanelAvailable ? "shell--home-control" : ""
+        collapsedControls && homePanelAvailable && !railAvailable ? "shell--home-control" : ""
       } ${shellConnectionStatus ? "shell--connection-status" : ""} ${
         floatingSidebarAttentionVisible(floatingUpdateCard) ? "shell--floating-attention" : ""
       } ${host.navResizing ? "shell--nav-resizing" : ""}"
-      style=${`--shell-nav-expanded-width: ${navigationSnapshot.navWidth}px`}
+      style=${`--shell-nav-expanded-width: ${expandedNavWidth}px; --shell-nav-rail-width: ${railWidth}px`}
       @theme-change=${(event: CustomEvent<ThemeModeChangeDetail>) => host.handleThemeChange(event)}
     >
       <a class="shell-skip-link" href="#control-ui-main" ?inert=${navDrawerOpen}>
@@ -455,7 +463,7 @@ export function renderApplicationShell(host: ShellViewHost) {
                     ${icons.search}
                   </button>
                 </openclaw-tooltip>
-                ${homePanelAvailable ? renderCollapsedHomeToggle() : nothing}
+                ${homePanelAvailable && !railAvailable ? renderCollapsedHomeToggle() : nothing}
               </div>
             `
           : nothing
@@ -489,10 +497,10 @@ export function renderApplicationShell(host: ShellViewHost) {
               <resizable-divider
                 class="sidebar-resizer"
                 .label=${t("nav.resize")}
-                .splitRatio=${navigationSnapshot.navWidth / shellWidth}
-                .minRatio=${NAV_WIDTH_MIN / shellWidth}
-                .maxRatio=${NAV_WIDTH_MAX / shellWidth}
-                aria-valuetext=${`${navigationSnapshot.navWidth} pixels`}
+                .splitRatio=${expandedNavWidth / shellWidth}
+                .minRatio=${(NAV_WIDTH_MIN + railWidth) / shellWidth}
+                .maxRatio=${(NAV_WIDTH_MAX + railWidth) / shellWidth}
+                aria-valuetext=${`${expandedNavWidth} pixels`}
                 title=${t("nav.resize")}
                 @resize-start=${() => {
                   host.navResizing = true;

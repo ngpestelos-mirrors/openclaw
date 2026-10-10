@@ -39,7 +39,6 @@ export function sessionMenuReasons(params: {
       session,
     });
   const renameReason = patchReason({ label: null }, true);
-  const pinReason = patchReason({ pinned: true }, true);
   const iconReason = patchReason({ icon: null });
   const colorReason = patchReason({ color: null });
   const batchSession = batchRows ? sessionAccessRowForBatch(batchRows) : session;
@@ -87,7 +86,6 @@ export function sessionMenuReasons(params: {
       });
   const cloudWorkerStopReason = cloudWorkerStopAction ? reason(cloudWorkerStopAction) : undefined;
   return {
-    ...(pinReason ? { "toggle-pin": pinReason } : {}),
     ...(snoozeReason ? { snooze: snoozeReason, wake: snoozeReason } : {}),
     ...(renameReason ? { rename: renameReason } : {}),
     ...(iconReason ? { "set-icon": iconReason } : {}),

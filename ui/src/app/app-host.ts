@@ -327,7 +327,7 @@ class OpenClawShell
         () => this.context?.runtimeConfig,
         (runtimeConfig, notify) =>
           runtimeConfig.subscribe(() => {
-            this.shellGateway.reconcileServerUiPrefs(runtimeConfig);
+            void this.shellGateway.reconcileServerUiPrefs(runtimeConfig);
             notify();
           }),
         (runtimeConfig) => {
@@ -335,7 +335,7 @@ class OpenClawShell
           if (snapshot) {
             this.ensureRuntimeConfig(snapshot, runtimeConfig);
           }
-          this.shellGateway.reconcileServerUiPrefs(runtimeConfig);
+          void this.shellGateway.reconcileServerUiPrefs(runtimeConfig);
         },
       );
   }
@@ -358,12 +358,13 @@ class OpenClawShell
       if (prefs && runtimeConfig) {
         pushServerUiPrefs(runtimeConfig, prefs, {
           profile: this.context?.gateway.snapshot,
-          afterCommit: ({ needsRefresh, retainedLocal }) =>
-            this.shellGateway.reconcileCommittedServerUiPrefs(
+          afterCommit: ({ needsRefresh, retainedLocal }) => {
+            void this.shellGateway.reconcileCommittedServerUiPrefs(
               runtimeConfig,
               needsRefresh,
               retainedLocal,
-            ),
+            );
+          },
         });
       }
     });

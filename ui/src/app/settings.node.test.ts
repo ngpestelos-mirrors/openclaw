@@ -11,11 +11,8 @@ import {
 } from "../test-helpers/settings-node.ts";
 import { createApplicationTheme } from "./bootstrap-theme.ts";
 import { createGatewayStoreTestStore } from "./gateway-store.test-support.ts";
-import {
-  applyServerUiPrefs,
-  resetServerUiPrefsSync,
-  resolveServerUiPrefState,
-} from "./server-prefs.ts";
+import { applyServerUiPrefs, resolveServerUiPrefState } from "./server-prefs-reconcile.ts";
+import { resetServerUiPrefsSync } from "./server-prefs.ts";
 import {
   loadGatewaySessionSelection,
   loadLocalUserIdentity,

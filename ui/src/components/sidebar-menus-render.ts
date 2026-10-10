@@ -88,7 +88,9 @@ export function renderSidebarCustomizeMenuForController(controller: SidebarMenus
       // (other agents, still-loading caches) must survive a route reset.
       const sessions = host
         .reconciledSidebarZone()
-        .sidebarEntries.filter((entry) => entry.startsWith("session:"));
+        .sidebarEntries.filter(
+          (entry) => entry.startsWith("session:") || entry.startsWith("person:"),
+        );
       host.onUpdateSidebarEntries?.([...DEFAULT_SIDEBAR_ENTRIES, ...sessions]);
       controller.closePositionedMenu("customize", { restoreFocus: true });
     },
@@ -284,7 +286,7 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
           label: session.label,
           sessionId: session.sessionId ?? null,
           isChild: session.isChild,
-          pinned: session.pinned,
+          pinned: host.sessionOrganizer.isPersonalSessionPin(session.key),
           pinnable: session.pinnable,
           unread: allUnread,
           hiddenFromInvolvingMe: session.hiddenFromInvolvingMe,
@@ -360,12 +362,9 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
               }
               break;
             case "toggle-pin":
-              void host.sessionOrganizer.patchSession(
-                session,
-                { pinned: !session.pinned },
-                {
-                  sessionScope: true,
-                },
+              host.sessionOrganizer.setPersonalSessionPin(
+                session.key,
+                !host.sessionOrganizer.isPersonalSessionPin(session.key),
               );
               break;
             case "toggle-involving-me":

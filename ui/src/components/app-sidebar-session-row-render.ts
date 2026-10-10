@@ -105,6 +105,7 @@ export interface SessionListHost {
     | "startSidebarSectionDrag"
     | "archiveSessionWithUndo"
     | "patchSession"
+    | "isPersonalSessionPin"
     | "reorderSidebarSection"
   >;
   readonly sidebarMenus: Pick<
@@ -339,12 +340,8 @@ export function renderRecentSession(params: {
   icon?: TemplateResult;
 }) {
   const { host, session, display, listItem = true, icon } = params;
-  const pinAccess = host.readSessionMutationAccess({
-    method: "sessions.patch",
-    params: { key: session.key, pinned: !session.pinned },
-    sessionScope: true,
-    session,
-  });
+  const personallyPinned = host.sessionOrganizer.isPersonalSessionPin(session.key);
+  const pinAccess = { allowed: true, reason: "" };
   const archiveAccess = host.readSessionMutationAccess({
     method: "sessions.patch",
     params: { key: session.key, archived: !session.archived },
@@ -392,7 +389,7 @@ export function renderRecentSession(params: {
         host.sidebarMenus.openSessionMenu(session, x, y, trigger);
       },
     );
-  const pinLabel = t(session.pinned ? "sessionsView.unpinSession" : "sessionsView.pinSession");
+  const pinLabel = t(personallyPinned ? "sessionsView.unpinSession" : "sessionsView.pinSession");
   const archiveLabel = t(
     session.archived ? "sessionsView.restoreSession" : "sessionsView.archiveSession",
   );

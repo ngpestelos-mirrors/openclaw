@@ -1,20 +1,18 @@
-/* @vitest-environment jsdom */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+/* @vitest-environment jsdom */
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { GatewayRequestError } from "../api/gateway.ts";
 import { createStorageMock } from "../test-helpers/storage.ts";
-import { changedServerUiPrefs, selectThemeSettings } from "./server-prefs-intent.ts";
-import { extractServerUiPrefs } from "./server-prefs-state.ts";
-import { configWithPrefs, createServerPrefsWriter } from "./server-prefs.test-support.ts";
+import { changedServerUiPrefs } from "./server-prefs-intent.ts";
 import {
-  flushServerUiPrefs,
-  pushServerUiPrefs,
-  refreshProfileAppearancePrefs,
+  selectThemeSettings,
   resetServerUiPref,
-  resetServerUiPrefsSync,
+  refreshProfileAppearancePrefs,
   resolveServerUiPrefState,
-} from "./server-prefs.ts";
+  extractServerUiPrefs,
+} from "./server-prefs-reconcile.ts";
+import { configWithPrefs, createServerPrefsWriter } from "./server-prefs.test-support.ts";
+import { flushServerUiPrefs, pushServerUiPrefs, resetServerUiPrefsSync } from "./server-prefs.ts";
 import { loadSettings, patchSettings, settingsKeyForGateway } from "./settings.ts";
 
 const scope = "ws://tab-icon-prefs";
