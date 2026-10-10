@@ -278,6 +278,7 @@ export async function appendExpectedSessionTranscriptTurn(
         prepareSessionTurnRouting(mutation?.routingPredicate, resolved.env),
       );
       const failures: unknown[] = [];
+      let completion: Promise<void> | undefined;
       const publish = runOpenClawAgentWriteTransaction(
         (transactionDb) => {
           const currentIdentity = identity
@@ -309,6 +310,26 @@ export async function appendExpectedSessionTranscriptTurn(
           }
           const committed = commit(transactionDb, messages);
           result = committed.result;
+          if (
+            !stageSqliteTransactionState(transactionDb.db, {
+              stage: () => undefined,
+              commit: () => {
+                try {
+                  completion = completeSessionTranscriptCommit(
+                    result.appendedMessages,
+                    options.onMessageCommitted,
+                    result,
+                  );
+                  void completion?.catch(() => undefined);
+                } catch (error) {
+                  failures.push(error);
+                }
+              },
+              rollback: () => undefined,
+            })
+          ) {
+            throw new Error("Transcript completion requires managed commit settlement");
+          }
           if (options.onCommittedSource && !result.rejectedReason && result.sessionEntry) {
             const committedIdentity = readOpenClawAgentDatabaseIdentity(transactionDb);
             const source = {
@@ -348,13 +369,11 @@ export async function appendExpectedSessionTranscriptTurn(
       );
       try {
         publish?.();
-        const completion = completeSessionTranscriptCommit(
-          result.appendedMessages,
-          options.onMessageCommitted,
-        );
-        if (completion) {
-          await completion;
-        }
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await completion;
       } catch (error) {
         failures.push(error);
       }

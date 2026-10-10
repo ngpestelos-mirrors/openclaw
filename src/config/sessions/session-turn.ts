@@ -1,5 +1,8 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { createSqliteLifecycleAggregateError } from "../../infra/sqlite-lifecycle-errors.js";
+import {
+  createSqliteLifecycleAggregateError,
+  throwSqliteLifecycleErrors,
+} from "../../infra/sqlite-lifecycle-errors.js";
 import { retainSqliteWorkerErrorCode } from "../../infra/sqlite-worker-contract.js";
 import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { getCliHistoryWriter } from "./cli-history-boundary.js";
@@ -60,6 +63,7 @@ export async function appendSessionTurnInWorker(
   let custodyRequired = false;
   const freshCommitGuards = new Set<() => void>();
   const sources: (PreparedSessionSourceAuthority | undefined)[] = [];
+  const committedCompletions: Promise<void>[] = [];
   const assertCurrent = () => {
     execution?.assertCurrent();
     incognito?.authority.assertCurrent();
@@ -147,7 +151,7 @@ export async function appendSessionTurnInWorker(
   if (prepareColdTranscript) {
     plan.prepareColdTranscript = true;
   }
-  const outcome = await (async () => {
+  let outcome = await (async () => {
     if (
       incognito &&
       ownerSource &&
@@ -395,6 +399,26 @@ export async function appendSessionTurnInWorker(
       },
       onAcknowledged(candidate) {
         try {
+          installCommittedTranscriptMessageSequences(
+            candidate.result.appendedMessages,
+            candidate.sequences,
+          );
+          // Accept canonical custody before source/identity publication can fail.
+          try {
+            const completion = completeSessionTranscriptCommit(
+              candidate.result.appendedMessages,
+              options.onMessageCommitted,
+              candidate.result,
+            );
+            if (completion) {
+              void completion.catch(() => undefined);
+              committedCompletions.push(completion);
+            }
+          } catch (error) {
+            const completion = Promise.reject(error);
+            void completion.catch(() => undefined);
+            committedCompletions.push(completion);
+          }
           if (
             options.onCommittedSource &&
             !candidate.result.rejectedReason &&
@@ -420,10 +444,6 @@ export async function appendSessionTurnInWorker(
           if (candidate.custody) {
             custody?.publish(candidate.custody);
           }
-          installCommittedTranscriptMessageSequences(
-            candidate.result.appendedMessages,
-            candidate.sequences,
-          );
           if (candidate.projectionNeedsReconcile) {
             startSessionTranscriptIndexReconcile({
               ...database,
@@ -442,10 +462,6 @@ export async function appendSessionTurnInWorker(
             published.prepared,
           );
         }
-        await completeSessionTranscriptCommit(
-          candidate.result.appendedMessages,
-          options.onMessageCommitted,
-        );
         return candidate.result;
       },
     } satisfies Omit<
@@ -510,10 +526,6 @@ export async function appendSessionTurnInWorker(
                   }
                 },
               );
-              await completeSessionTranscriptCommit(
-                candidate.result.appendedMessages,
-                options.onMessageCommitted,
-              );
               return candidate.result;
             },
           ),
@@ -549,6 +561,20 @@ export async function appendSessionTurnInWorker(
     (value) => ({ ok: true as const, value }),
     (error: unknown) => ({ ok: false as const, error }),
   );
+  const completions = await Promise.allSettled(committedCompletions);
+  const completionErrors = completions.flatMap((completion) =>
+    completion.status === "rejected" ? [completion.reason] : [],
+  );
+  if (completionErrors.length) {
+    try {
+      throwSqliteLifecycleErrors(
+        [...(!outcome.ok ? [outcome.error] : []), ...completionErrors],
+        "Session turn committed completion failed",
+      );
+    } catch (error) {
+      outcome = { ok: false as const, error };
+    }
+  }
   try {
     try {
       await releaseSessionSourceAuthorities(sources.filter((source) => source !== undefined));

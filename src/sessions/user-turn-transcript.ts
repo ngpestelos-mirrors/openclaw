@@ -8,6 +8,7 @@ import {
   resolveSessionTranscriptRuntimeTarget,
   type TranscriptEntryAnchor,
   type SessionTranscriptTurnPersistOptions,
+  type TranscriptMessageAppendResult,
 } from "../config/sessions/session-accessor.js";
 import { readWithdrawnSessionPendingInputId } from "../config/sessions/session-accessor.pending-inputs.js";
 import { createDynamicSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
@@ -54,6 +55,43 @@ const originalInputCommitNotifiers = new WeakMap<
   (anchor: TranscriptEntryAnchor) => void
 >();
 
+type CommittedUserTurnTranscript = TranscriptMessageAppendResult<PersistedUserTurnMessage> &
+  Pick<UserTurnTranscriptPersistResult, "sessionEntry" | "sessionTurnMutationResult">;
+
+function admittedUserTurnResult(
+  committed: CommittedUserTurnTranscript,
+  logicalTurnId: string,
+  sessionKey: string,
+): UserTurnTranscriptPersistResult | undefined {
+  if (!committed.anchor) {
+    return undefined;
+  }
+  return {
+    ...committed,
+    admission: { ...committed.anchor, logicalTurnId, role: "user" },
+    sessionFile: sessionKey,
+  };
+}
+
+async function resolveCommittedUserTurnTranscript(
+  committed: CommittedUserTurnTranscript,
+  params: PersistUserTurnTranscriptParams,
+): Promise<UserTurnTranscriptPersistResult | undefined> {
+  if (!committed.anchor) {
+    const assertCurrent = captureOwnedTranscriptWriteAssertion(params);
+    await waitForSessionTranscriptProjection(params);
+    const anchor = await readActiveTranscriptEntryAnchorAsync({
+      ...params,
+      entryId: committed.messageId,
+    });
+    assertCurrent();
+    if (anchor) {
+      committed = { ...committed, anchor };
+    }
+  }
+  return admittedUserTurnResult(committed, params.logicalTurnId ?? randomUUID(), params.sessionKey);
+}
+
 export type {
   PersistedUserTurnMessage,
   UserTurnInput,
@@ -77,7 +115,12 @@ export {
 // Store-backed persistence resolves the current session transcript file lazily
 // so callers can pass a session entry/store without knowing the final path.
 async function persistUserTurnTranscript(
-  params: PersistUserTurnTranscriptParams,
+  params: PersistUserTurnTranscriptParams & {
+    onCommitted?: (
+      committed: CommittedUserTurnTranscript,
+      acceptCompletion: (complete: () => Promise<void>) => void,
+    ) => void;
+  },
 ): Promise<UserTurnTranscriptPersistResult | undefined> {
   const message = resolvePersistedUserTurnMessage(params);
   if (!message) {
@@ -108,8 +151,17 @@ async function persistUserTurnTranscript(
         : {}),
       ...(params.sessionTurnMutation ? { sessionTurnMutation: params.sessionTurnMutation } : {}),
       updateMode: params.updateMode ?? "inline",
-      onMessageCommitted: (result) => {
-        if (!result.appended || !isUserMessage(result.message)) {
+      onMessageCommitted: (result, acceptCompletion, committedTurn) => {
+        if (!isUserMessage(result.message)) {
+          return;
+        }
+        if (committedTurn) {
+          params.onCommitted?.(
+            { ...result, message: result.message, ...committedTurn },
+            acceptCompletion,
+          );
+        }
+        if (!result.appended) {
           return;
         }
         if (result.anchor) {
@@ -138,39 +190,25 @@ async function persistUserTurnTranscript(
   if (!result || !isUserMessage(result.message)) {
     return undefined;
   }
-  let appended = { ...result, message: result.message };
-  if (!appended.anchor) {
-    const assertCurrent = captureOwnedTranscriptWriteAssertion(params);
-    await waitForSessionTranscriptProjection(params);
-    const anchor = await readActiveTranscriptEntryAnchorAsync({
-      ...params,
-      entryId: appended.messageId,
-    });
-    assertCurrent();
-    appended = anchor ? { ...appended, anchor } : appended;
-  }
-  if (!appended.anchor) {
+  const appended = await resolveCommittedUserTurnTranscript(
+    {
+      ...result,
+      message: result.message,
+      sessionEntry: turn.sessionEntry,
+      sessionTurnMutationResult: turn.sessionTurnMutationResult,
+    },
+    params,
+  );
+  if (!appended) {
     return undefined;
   }
   if (committedWithoutAnchor && appended.appended) {
     // A deferred projection supplies its anchor later; only the captured fresh
     // append may complete here, never an idempotent history match.
-    params.onOriginalInputCommitted?.({ message: appended.message, anchor: appended.anchor });
+    params.onOriginalInputCommitted?.({ message: appended.message, anchor: appended.admission });
   }
 
-  return {
-    ...appended,
-    admission: {
-      ...appended.anchor,
-      logicalTurnId: params.logicalTurnId ?? randomUUID(),
-      role: "user",
-    },
-    sessionEntry: turn.sessionEntry,
-    ...(turn.sessionTurnMutationResult
-      ? { sessionTurnMutationResult: turn.sessionTurnMutationResult }
-      : {}),
-    sessionFile: params.sessionKey,
-  };
+  return appended;
 }
 
 async function resolveUserTurnTranscriptTarget(
@@ -187,6 +225,7 @@ export function createUserTurnTranscriptRecorder(
   let blocked = false;
   let runtimePersisted = false;
   let persistedResult: UserTurnTranscriptPersistResult | undefined;
+  let committedInput: CommittedUserTurnTranscript | undefined;
   let resolvedPersistenceTarget: UserTurnTranscriptTarget | undefined;
   let admissionReceipt: UserTurnTranscriptAdmissionReceipt | undefined;
   let admittedMessage: PersistedUserTurnMessage | undefined;
@@ -420,7 +459,24 @@ export function createUserTurnTranscriptRecorder(
       }
       selfPersistencePromise = undefined;
     }
+    if (!options.message && persistedResult) {
+      return persistedResult;
+    }
     const persistencePromise = (async () => {
+      if (!options.message && committedInput && resolvedPersistenceTarget) {
+        const result = await resolveCommittedUserTurnTranscript(committedInput, {
+          ...resolvedPersistenceTarget,
+          logicalTurnId,
+        });
+        if (result) {
+          persistedResult = result;
+          await recordAdmission(result.admission, result.message);
+          if (result.appended) {
+            notifyOriginalInputCommitted({ message: result.message, anchor: result.admission });
+          }
+        }
+        return result;
+      }
       const resolvedMessage = options.message ?? (await resolveMessageForPersistence());
       if (!resolvedMessage) {
         return undefined;
@@ -452,6 +508,20 @@ export function createUserTurnTranscriptRecorder(
                 ? recorder.assertOriginalInputCommit
                 : undefined,
             onOriginalInputCommitted: notifyOriginalInputCommitted,
+            onCommitted: (committed, acceptCompletion) => {
+              committedInput = committed;
+              admittedMessage = committed.message;
+              const result = admittedUserTurnResult(
+                committed,
+                logicalTurnId,
+                resolvedTarget.sessionKey,
+              );
+              if (result) {
+                persistedResult = result;
+                acceptCompletion(() => recordAdmission(result.admission, result.message));
+              }
+              notifyMessagePersisted(committed.message);
+            },
           });
         // Collection can resolve its media lazily during admission. Bind custody
         // here too so the canonical append always consumes the exact sources.
@@ -508,7 +578,7 @@ export function createUserTurnTranscriptRecorder(
     } catch (error) {
       // Approved custody retries only its idempotent write under the same live
       // owner. A cached rejection must not poison a later definitive fallback.
-      if (pendingInput && selfPersistencePromise === persistencePromise) {
+      if ((committedInput || pendingInput) && selfPersistencePromise === persistencePromise) {
         selfPersistencePromise = undefined;
       }
       handlePersistenceError(error);
@@ -676,7 +746,8 @@ export function createUserTurnTranscriptRecorder(
     markBlocked: () => {
       blocked = true;
     },
-    hasPersisted: () => persistedResult !== undefined || runtimePersisted,
+    hasPersisted: () =>
+      committedInput !== undefined || persistedResult !== undefined || runtimePersisted,
     isBlocked: () => blocked,
     // An admission write from runtime persistence must also settle before provider dispatch.
     hasRuntimePersistencePending: () =>
