@@ -19,10 +19,14 @@ export function applyQaSetup(params: {
   const accounts = { ...section.accounts };
   const target =
     params.accountId === DEFAULT_ACCOUNT_ID ? { ...section } : { ...accounts[params.accountId] };
-  for (const field of ["baseUrl", "botUserId", "botDisplayName"] as const) {
-    if (typeof params.input[field] === "string") {
-      target[field] = params.input[field];
-    }
+  if (typeof params.input.baseUrl === "string") {
+    target.baseUrl = params.input.baseUrl;
+  }
+  if (typeof params.input.botUserId === "string") {
+    target.botUserId = params.input.botUserId;
+  }
+  if (typeof params.input.botDisplayName === "string") {
+    target.botDisplayName = params.input.botDisplayName;
   }
   nextCfg.channels ??= {};
   if (params.accountId === DEFAULT_ACCOUNT_ID) {
