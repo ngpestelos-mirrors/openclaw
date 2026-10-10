@@ -716,6 +716,43 @@ describe("createReplyRestartRecoveryClaimController", () => {
     },
   );
 
+  it.each(["transaction", "commit"] as const)(
+    "preserves lifecycle refusal at the actor %s boundary without writing the hook checkpoint",
+    async (boundary) => {
+      await using fixture = await createAcknowledgedClaim();
+      await fixture.controller.admitUserTurn(fixture.recorder);
+      const before = fixture.read();
+      const { actor } = await fixture.controller.acquireSessionActor();
+      const adopt = actor.adoptRun.bind(actor);
+      let revoked = false;
+      const spy = vi.spyOn(actor, "adoptRun").mockImplementationOnce((input, authority, observer) =>
+        adopt(
+          input,
+          {
+            ...authority,
+            authorize(stage, facts, publication) {
+              if (stage === boundary && !revoked) {
+                revoked = true;
+                rotateAgentEventLifecycleGeneration();
+              }
+              authority.authorize(stage, facts, publication);
+            },
+          },
+          observer,
+        ),
+      );
+      try {
+        const failure = await fixture.controller.beginBeforeAgentReply().catch((error) => error);
+        expect(revoked).toBe(true);
+        expect(isAgentRunStaleLifecycleError(failure)).toBe(true);
+        expect(fixture.read()).toEqual(before);
+        expect(fixture.current()).toEqual(before);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
   it.each(["begin", "handled-reply", "unhandled"] as const)(
     "rejects a stale lifecycle before the %s hook checkpoint",
     async (checkpoint) => {

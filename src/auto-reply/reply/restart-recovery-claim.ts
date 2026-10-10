@@ -258,14 +258,23 @@ export function createReplyRestartRecoveryClaimController(params: {
       const before = await readActor();
       validate(before.entry);
       let admitted = false;
-      const authority: SessionActorAuthority = {
-        assertCurrent,
-        authorize(stage, facts) {
+      let authorityFailure: unknown;
+      const authorize = (stage?: "transaction" | "commit", entry?: SessionEntry) => {
+        try {
           assertCurrent();
           if (stage === "transaction" && !admitted) {
-            validate(facts.entry);
+            validate(entry);
             admitted = true;
           }
+        } catch (error) {
+          authorityFailure = error;
+          throw error;
+        }
+      };
+      const authority: SessionActorAuthority = {
+        assertCurrent: authorize,
+        authorize(stage, facts) {
+          authorize(stage, facts.entry);
         },
       };
       let committed: SessionEntry | undefined;
@@ -300,6 +309,9 @@ export function createReplyRestartRecoveryClaimController(params: {
       }
       if (outcome.kind === "unknown") {
         throw new SqliteWorkerError(outcome.error.message, "outcome-unknown");
+      }
+      if (authorityFailure) {
+        throw authorityFailure;
       }
       if (!admitted && attempt === 0) {
         const refreshed = await readActor();
@@ -381,7 +393,13 @@ export function createReplyRestartRecoveryClaimController(params: {
         }
         placementObservation?.assertCurrent();
       };
-      const current = (await readActor()).entry;
+      let current: SessionEntry | undefined;
+      try {
+        current = (await readActor()).entry;
+      } catch (error) {
+        assertAdmissionCurrent();
+        throw error;
+      }
       assertAdmissionCurrent();
       if (!current || current.sessionId !== sessionId) {
         throw new Error("session changed before durable user-turn admission");
@@ -681,14 +699,15 @@ export function createReplyRestartRecoveryClaimController(params: {
       return confirmedArmed;
     }
     try {
-      // Restart readiness can run after reply admission revokes public actor reads.
-      // Keep the original terminal reader until its owner publishes this receipt.
-      const persisted = await readSessionEntryInWorker(
-        { agentId: params.agentId, sessionKey: params.sessionKey, storePath: params.storePath },
-        assertReadCurrent,
-        undefined,
-        recordReadTarget,
-      );
+      // Restart abort revokes public actor reads; only its terminal reader remains.
+      const persisted = params.isRestartAbort()
+        ? await readSessionEntryInWorker(
+            { agentId: params.agentId, sessionKey: params.sessionKey, storePath: params.storePath },
+            assertReadCurrent,
+            undefined,
+            recordReadTarget,
+          )
+        : (await readActor()).entry;
       assertReadCurrent();
       if (!confirmedArmed) {
         const current = params.getEntry();
