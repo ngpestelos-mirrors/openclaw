@@ -21,17 +21,25 @@ import {
   withConfigMutationExclusive,
 } from "../../config/config.js";
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { CronService } from "../../cron/service.js";
 import { startCronReceiptAuthorityHost } from "../../cron/store/receipt-authority-owner.js";
+import { appendSessionTranscriptMessageByIdentity } from "../../plugin-sdk/session-transcript-runtime.js";
 import { createPluginRuntimeMock } from "../../plugin-sdk/test-helpers/plugin-runtime-mock.js";
 import {
   createPluginStateKeyedStore,
   createPluginStateSyncKeyedStore,
 } from "../../plugin-state/plugin-state-store.js";
+import { registerMemoryCapability } from "../../plugins/memory-state.js";
 import { getPluginRegistryState } from "../../plugins/runtime-state.js";
+import { disposePluginRegistryInstances } from "../../plugins/runtime.js";
 import { createPluginRecord } from "../../plugins/status.test-helpers.js";
 import { readAgentDeletionJournal } from "../../state/agent-deletion-journal.js";
-import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
+import * as agentDatabases from "../../state/openclaw-agent-db.js";
+import {
+  getOpenClawAgentDatabaseIfOpen,
+  runOpenClawAgentWriteTransaction,
+} from "../../state/openclaw-agent-db.js";
 import { beginAgentDeletionJournal } from "../../test-utils/agent-deletion-journal.js";
 import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
@@ -40,6 +48,7 @@ import { acquireTestPortBlock } from "../../test-utils/port-claims.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { resumeAgentDeletions } from "../server-agent-deletion-recovery.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
+import { createGatewayMemoryCloseRegistryFactory } from "../server-close.memory.test-support.js";
 import { startGatewayServer } from "../server.js";
 import { connectGatewayClient, disconnectGatewayClient } from "../test-helpers.e2e.js";
 
@@ -226,6 +235,135 @@ it.for(["active", "restart-draining", "legacy-retiring"] as const)(
                   client.request("agents.create", { name: agentId, workspace }),
                 ).resolves.toMatchObject({ ok: true, agentId });
                 expect(readAgentDeletionJournal(agentId)).toBeUndefined();
+
+                const recreatedSession = await client.request<{ key: string; sessionId: string }>(
+                  "sessions.create",
+                  { agentId, key: `agent:${agentId}:recreated` },
+                );
+                for (const message of [
+                  { role: "user", content: "Remember the synthetic blue preference." },
+                  { role: "assistant", content: "The completed turn recorded blue." },
+                ]) {
+                  await appendSessionTranscriptMessageByIdentity({
+                    agentId,
+                    sessionId: recreatedSession.sessionId,
+                    sessionKey: recreatedSession.key,
+                    storePath: path.join(state.sessionsDir(agentId), "sessions.json"),
+                    cwd: workspace,
+                    message,
+                  });
+                }
+                expect(isEmbeddedAgentRunInProgress(recreatedSession.sessionId)).toBe(false);
+                const memoryConfig: OpenClawConfig = {
+                  ...getRuntimeConfig(),
+                  memory: {
+                    search: {
+                      provider: "none",
+                      sources: ["sessions"],
+                      rememberAcrossConversations: true,
+                      store: { vector: { enabled: false } },
+                      sync: { watch: false },
+                    },
+                  },
+                };
+                const createMemory = await createGatewayMemoryCloseRegistryFactory(memoryConfig);
+                const memory = createMemory(async () => {});
+                const priorMemoryCapabilities = [...registry.memoryCapabilities];
+                const scanStarted = createDeferred();
+                const releaseScan = createDeferred();
+                const memoryCloseStarted = createDeferred();
+                const databaseRetirementStarted = createDeferred();
+                const realCloseDatabase = agentDatabases.closeOpenClawAgentDatabaseByPathAsync;
+                const closeDatabase = vi
+                  .spyOn(agentDatabases, "closeOpenClawAgentDatabaseByPathAsync")
+                  .mockImplementation(async (...args) => {
+                    if (args[0] === databasePath) {
+                      databaseRetirementStarted.resolve();
+                    }
+                    return await realCloseDatabase(...args);
+                  });
+                const realReaddir = fs.readdir;
+                let scanHeld = false;
+                const readdir = vi.spyOn(fs, "readdir").mockImplementation(async (...args) => {
+                  if (!scanHeld && path.resolve(String(args[0])) === state.sessionsDir(agentId)) {
+                    scanHeld = true;
+                    scanStarted.resolve();
+                    await releaseScan.promise;
+                  }
+                  return await realReaddir(...args);
+                });
+                registerMemoryCapability("memory-fixture", {
+                  runtime: {
+                    ...memory.runtime,
+                    async closeMemorySearchManager(params) {
+                      memoryCloseStarted.resolve();
+                      await memory.runtime.closeMemorySearchManager?.(params);
+                    },
+                  },
+                });
+                let deletingRecreated: Promise<unknown> | undefined;
+                try {
+                  const opened = await memory.runtime.getMemorySearchManager({
+                    cfg: memoryConfig,
+                    agentId,
+                  });
+                  expect(opened.manager, opened.error).not.toBeNull();
+                  await withinTest(scanStarted.promise, signal);
+                  const database = getOpenClawAgentDatabaseIfOpen({
+                    agentId,
+                    path: databasePath,
+                    env: state.env,
+                  });
+                  expect(database?.db.isOpen).toBe(true);
+                  deletingRecreated = client.request("agents.delete", {
+                    agentId,
+                    deleteFiles: true,
+                  });
+                  void deletingRecreated.catch(() => {});
+                  await withinTest(
+                    awaitGateBeforeSettlement(
+                      awaitGateBeforeSettlement(
+                        memoryCloseStarted.promise,
+                        databaseRetirementStarted.promise,
+                        "agent database retirement began before its memory manager drained",
+                      ),
+                      deletingRecreated,
+                      "agent deletion completed without draining its memory manager",
+                    ),
+                    signal,
+                  );
+                  // Accepted transcript discovery still owns its database until it settles.
+                  expect(readAgentDeletionJournal(agentId)?.phase).toBe("draining");
+                  expect(database?.db.isOpen).toBe(true);
+                  releaseScan.resolve();
+                  await expect(deletingRecreated).resolves.toMatchObject({
+                    ok: true,
+                    failed: [],
+                    removed: expect.arrayContaining([{ path: workspace, method: "trash" }]),
+                  });
+                  expect(await deletingRecreated).not.toHaveProperty("purgeFailed");
+                  expect(readAgentDeletionJournal(agentId)?.cleanupCompleted).toBe(true);
+                  for (const pathname of [
+                    workspace,
+                    state.agentDir(agentId),
+                    state.sessionsDir(agentId),
+                    databasePath,
+                  ]) {
+                    await expect(fs.stat(pathname)).rejects.toMatchObject({ code: "ENOENT" });
+                  }
+                  await expect(
+                    client.request("agents.create", { name: agentId, workspace }),
+                  ).resolves.toMatchObject({ ok: true, agentId });
+                  expect(readAgentDeletionJournal(agentId)).toBeUndefined();
+                } finally {
+                  releaseScan.resolve();
+                  await Promise.allSettled([deletingRecreated]);
+                  readdir.mockRestore();
+                  closeDatabase.mockRestore();
+                  registry.memoryCapabilities = priorMemoryCapabilities;
+                  await memory.runtime.closeAllMemorySearchManagers?.();
+                  await disposePluginRegistryInstances(memory.registry);
+                }
                 expect(hotReloadRecovery).not.toHaveBeenCalled();
               } finally {
                 registry.agentHarnesses.splice(registry.agentHarnesses.indexOf(registration), 1);

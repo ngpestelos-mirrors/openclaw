@@ -139,7 +139,9 @@ const mocks = vi.hoisted(() => ({
   })),
   rootWrite: vi.fn(async (_params?: unknown) => {}),
   migrateLegacyMainSessionKeys: vi.fn(),
-  purgeAgentSessionStoreEntries: vi.fn(async () => false),
+  purgeAgentSessionStoreEntries: vi.fn<
+    typeof import("../../config/sessions/cleanup-service.js").purgeAgentSessionStoreEntries
+  >(async () => false),
 }));
 
 vi.mock("../../config/config.js", async () => {
@@ -1866,14 +1868,24 @@ describe("agents.delete", () => {
   });
 
   it("reports failed session cleanup and retains its journal and files for retry", async () => {
-    mocks.purgeAgentSessionStoreEntries.mockResolvedValueOnce(true);
+    const failure = {
+      path: "/agents/test-agent/openclaw-agent.sqlite",
+      reason: "admit session-store cleanup: agent database is still open",
+    };
+    mocks.purgeAgentSessionStoreEntries.mockImplementationOnce(async (_cfg, _agentId, options) => {
+      options?.onFailure?.(failure);
+      return true;
+    });
     const respond = await call("agents.delete", { agentId: "test-agent" });
 
-    expectPendingDeletion(respond, { ok: true, purgeFailed: true });
+    expectPendingDeletion(respond, { ok: true, purgeFailed: true, failed: [failure] });
+    expect(mockCallArg(respond, 0, 2)).toMatchObject({
+      message: expect.stringContaining(`${failure.path}: ${failure.reason}`),
+    });
     expect(mocks.purgeAgentSessionStoreEntries).toHaveBeenCalledWith(
       expect.anything(),
       "test-agent",
-      { runDatabaseCleanup: mocks.runAgentDatabaseCleanup },
+      { runDatabaseCleanup: mocks.runAgentDatabaseCleanup, onFailure: expect.any(Function) },
     );
     expect(mocks.movePathToTrash).not.toHaveBeenCalled();
     expect(mocks.beginAgentDeletionFinish).not.toHaveBeenCalled();

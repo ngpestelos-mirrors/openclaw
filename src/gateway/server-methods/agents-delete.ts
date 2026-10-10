@@ -157,6 +157,13 @@ export async function deleteGatewayAgent(
       const journal = deletion.entry;
       if (journal.phase === "draining") {
         await drainAgentDeletionRuns(agentId, prepared.config, context, deletion.assertCurrentHost);
+      }
+      const { closeActiveMemorySearchManagerCore } =
+        await import("../../plugins/memory-runtime.js");
+      await deletion.assertCurrentAsync();
+      await closeActiveMemorySearchManagerCore({ cfg: prepared.config, agentId });
+      await deletion.assertCurrentAsync();
+      if (journal.phase === "draining") {
         await deletion.retire();
       }
       return await withConfigMutationExclusive(async (lockedConfig) => {
@@ -310,11 +317,7 @@ export async function deleteGatewayAgent(
           throw error;
         }
 
-        await retireAgentDeleteRuntime(
-          lockedConfig,
-          deletion,
-          databasePlan?.agentDirs ?? [journal.agentDir],
-        );
+        await retireAgentDeleteRuntime(deletion, databasePlan?.agentDirs ?? [journal.agentDir]);
 
         const deleteResult = committed?.result ?? {
           agentDir: journal.agentDir,
@@ -327,8 +330,10 @@ export async function deleteGatewayAgent(
         // A journaled path is trash-eligible only while registry ownership still points at the
         // deleted agent; recovery must not consume a path claimed by a surviving agent.
         const agentDirRegistryPath = normalizeAgentDirRegistryPath(deleteResult.agentDir);
+        const failed: AgentDeleteFailedPath[] = [];
         const purgeFailed = await purgeAgentSessionStoreEntries(lockedConfig, agentId, {
           runDatabaseCleanup: deletion.runDatabaseCleanup,
+          onFailure: (failure) => failed.push(failure),
         });
         await deletion.assertCurrentAsync();
         const { closeDeletedAgentDatabases } =
@@ -338,7 +343,6 @@ export async function deleteGatewayAgent(
         await deletion.assertCurrentAsync();
 
         const removed: AgentDeleteRemovedPath[] = [];
-        const failed: AgentDeleteFailedPath[] = [];
 
         if (deleteFiles && !purgeFailed) {
           const survivingDatabaseFilePaths = resolveSurvivingDatabaseFilePaths(
