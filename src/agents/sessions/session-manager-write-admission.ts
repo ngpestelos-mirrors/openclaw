@@ -221,13 +221,16 @@ export async function appendSessionTranscriptNote(
     ...(options?.config ? { config: captureRuntimeConfig(options.config) } : {}),
   };
   const sessionActor = getOwnedSessionTranscriptActor(captured);
-  if (sessionActor && isIncognitoSessionKey(captured.sessionKey)) {
+  if (sessionActor) {
     const assertOwned = captureOwnedTranscriptWriteAssertion(captured);
     const assertCurrent = () => {
       assertOwned();
       sessionActor.assertCurrent();
     };
     const databaseOptions = toDatabaseOptions(resolveSqliteReadScope(captured));
+    if (sessionActor.target.database.kind === "file") {
+      databaseOptions.path = sessionActor.target.database.nativeLocation;
+    }
     return trackAsyncWork(() =>
       runOpenClawAgentWriteAdmission(
         databaseOptions,

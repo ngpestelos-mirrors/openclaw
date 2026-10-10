@@ -7,6 +7,7 @@ import type {
   SessionActorPhaseResults,
 } from "../../config/sessions/session-actor-contract.js";
 import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
+import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/session-transcript-writer-claim-error.js";
 import {
   hasSqliteWorkerOutcomeUnknown,
   SqliteWorkerError,
@@ -96,6 +97,9 @@ export async function appendSessionManagerActor(input: {
     throw error;
   }
   if (outcome.kind === "rolled-back") {
+    if (outcome.error.name === "SessionTranscriptWriterClaimReboundError") {
+      throw new SessionTranscriptWriterClaimReboundError();
+    }
     if (outcome.error.name === "SqliteTranscriptMutationConflictError") {
       throw new SqliteTranscriptMutationConflictError(append.input.scope.sessionId);
     }

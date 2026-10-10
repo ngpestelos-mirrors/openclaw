@@ -254,7 +254,10 @@ export class SessionManagerPersistence extends SessionManagerCore {
               ...(wireMessage ? { message: wireMessage } : {}),
               options: {
                 ...(appendIntent ? { appendIntent } : {}),
-                ...(mutationAt !== undefined ? { expectedMutationAt: mutationAt } : {}),
+                // The atomic header checks the preimage; this event follows its new watermark.
+                ...(!this.persistenceHeaderPending && mutationAt !== undefined
+                  ? { expectedMutationAt: mutationAt }
+                  : {}),
               },
               view: {
                 loadedVersion,
@@ -291,6 +294,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
             }
             const header = committed.header?.snapshot;
             if (header?.ok && header.value.result?.appended) {
+              assertBinding();
               this.persistenceHeaderPending = false;
               loadedVersion = header.value.after;
             }
@@ -332,6 +336,20 @@ export class SessionManagerPersistence extends SessionManagerCore {
         }
         const committed = snapshot.value;
         const receipt = snapshot.value.result;
+        const effectiveParentId =
+          "effectiveParentId" in receipt && receipt.effectiveParentId !== undefined
+            ? receipt.effectiveParentId
+            : entry.parentId;
+        const adoptedMessage = "messageId" in receipt && receipt.messageId !== entry.id;
+        const reloadAfterAppend =
+          receipt.appended && transcriptAppendNeedsReload(committed.before, loadedVersion);
+        if (
+          !this.hasNewerPublishedTranscriptView(committed.after) &&
+          (adoptedMessage || reloadAfterAppend || effectiveParentId !== entry.parentId) &&
+          !value.reload
+        ) {
+          throw new Error("Session actor omitted the committed transcript reload");
+        }
         if (entry.type === "message") {
           if (!("messageId" in receipt) || !message) {
             throw new Error(`Session transcript parent entry was not persisted: ${entry.id}`);
@@ -353,16 +371,11 @@ export class SessionManagerPersistence extends SessionManagerCore {
             appended: receipt.appended,
             ...("anchor" in receipt && receipt.anchor ? { anchor: receipt.anchor } : {}),
             lifecycleRevision: committed.lifecycleRevision,
-            effectiveParentId:
-              "effectiveParentId" in receipt && receipt.effectiveParentId !== undefined
-                ? receipt.effectiveParentId
-                : entry.parentId,
+            effectiveParentId,
             ...("messageId" in receipt && receipt.messageId !== entry.id
               ? { adoptedMessageId: receipt.messageId }
               : {}),
-            ...(receipt.appended && transcriptAppendNeedsReload(committed.before, loadedVersion)
-              ? { reloadAfterAppend: true }
-              : {}),
+            ...(reloadAfterAppend ? { reloadAfterAppend: true } : {}),
           },
           reload: value.reload?.ok ? value.reload.value : undefined,
           committedVersion: committed.after,
@@ -373,14 +386,15 @@ export class SessionManagerPersistence extends SessionManagerCore {
               : undefined),
         };
       } catch (cause) {
-        throw (
+        const failure =
           outcome.failure ??
           new SessionManagerActorCommittedError(
             "session.metadata.append",
             { ok: true, value: outcome.committed.value },
             cause,
-          )
-        );
+          );
+        this.invalidateTranscriptView(failure);
+        throw failure;
       }
     }
     if (!database) {
