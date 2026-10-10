@@ -120,12 +120,20 @@ suite.define(() => {
                   });
                   await route.fulfill({ response });
                 });
-                await page.clock.install({ time: fixedTime });
-                await page.clock.pauseAt(fixedTime + 5_000);
                 await page.clock.setFixedTime(fixedTime);
                 await page.addInitScript(() => {
                   // A fixed draw keeps module-level decorative salts independent of load order.
                   Math.random = () => 0.42;
+                  // Keep native frame delivery for readiness, but sample JS animation time
+                  // independently of network and renderer speed (including canvas mascots).
+                  let frameTime = 0;
+                  Object.defineProperty(performance, "now", { value: () => frameTime });
+                  const requestFrame = window.requestAnimationFrame.bind(window);
+                  window.requestAnimationFrame = (callback) =>
+                    requestFrame(() => callback(frameTime));
+                  window.addEventListener("parity-frame-time", (event) => {
+                    frameTime = (event as CustomEvent<number>).detail;
+                  });
                 });
                 const gateway = await installMockGateway(page, {
                   ...baseScenario,
@@ -153,7 +161,10 @@ suite.define(() => {
                   await page.addStyleTag({ content: stylesheet });
                 }
                 await scene.prepare?.(page, gateway);
-                await page.clock.runFor(2_000);
+                await page.evaluate(() => {
+                  // Finish entry effects such as the typed New Session placeholder.
+                  window.dispatchEvent(new CustomEvent("parity-frame-time", { detail: 3_000 }));
+                });
                 if (!scene.loading) {
                   await expect
                     .poll(() =>
