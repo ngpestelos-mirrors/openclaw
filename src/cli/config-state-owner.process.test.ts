@@ -146,7 +146,7 @@ describe("config CLI database effects", () => {
   it("routes real CLI writes to the serving owner and its next read sees the receipts", async () => {
     expect(await readLatestConfigSnapshotAuditRecordAsync({ env })).toBeNull();
     const result = await runCliProcessChild({
-      args: [...entrypoint, "config", "set", "logging.level", "warn"],
+      nodeArgs: [...entrypoint, "config", "set", "logging.level", "warn"],
       env,
     });
     expect(result.code, result.stderr).toBe(0);
@@ -158,7 +158,7 @@ describe("config CLI database effects", () => {
     const home = roots.make("openclaw-config-offline-");
     const offline = await fixture(home, claim.port);
     const result = await runCliProcessChild({
-      args: [...entrypoint, "config", "set", "logging.level", "warn"],
+      nodeArgs: [...entrypoint, "config", "set", "logging.level", "warn"],
       env: offline,
     });
     expect(result.code, result.stderr).toBe(0);

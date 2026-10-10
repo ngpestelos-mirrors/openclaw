@@ -49,7 +49,7 @@ export const configStateMutationSchema = z.discriminatedUnion("kind", [
     updatedAtMs: z.number(),
   }),
 ]);
-export type ConfigStateMutation = z.infer<typeof configStateMutationSchema>;
+type ConfigStateMutation = z.infer<typeof configStateMutationSchema>;
 
 /** The same operation runs in the serving process or under exclusive offline custody. */
 export async function applyConfigStateMutation(
