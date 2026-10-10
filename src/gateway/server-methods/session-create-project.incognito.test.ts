@@ -57,7 +57,7 @@ async function createPendingSession(name: string) {
     sessionId: name,
     updatedAt: Date.now(),
     incognito: true,
-    pendingWorktree: { workspace, name, baseRef: "main" },
+    pendingWorktree: { workspace, name, baseRef: "main", titleSource: name },
   };
   ownedKeys.add(sessionKey);
   await actor.sessions.create(authority, { sessionKey, entry });
@@ -86,7 +86,9 @@ it("materializes and commits a bound first-turn worktree without host session SQ
   const sql = observeHostDataSql();
   try {
     await prepare(sessionKey, entry);
-    const saved = (await actor.sessions.read(authority, { sessionKey })).entry;
+    const saved: InternalSessionEntry | undefined = (
+      await actor.sessions.read(authority, { sessionKey })
+    ).entry;
     assert(saved?.worktree);
     const record = await new ManagedWorktreeService({ env: state.env }).findLiveByOwner(
       "session",
@@ -113,6 +115,8 @@ it.each(["lifecycle", "intent"] as const)(
   "refuses a changed %s after resolving the repository and before workspace allocation",
   async (change) => {
     const { sessionKey, entry } = await createPendingSession(`changed-${change}`);
+    const pendingWorktree = entry.pendingWorktree;
+    assert(pendingWorktree);
     const entered = createDeferred<void>();
     const resume = createDeferred<void>();
     // oxlint-disable-next-line typescript/unbound-method -- The real method is called with its original receiver below.
@@ -136,7 +140,7 @@ it.each(["lifecycle", "intent"] as const)(
         patchSessionEntryCore({ sessionKey, storePath: actor.path }, () =>
           change === "lifecycle"
             ? { lifecycleRevision: "replacement" }
-            : { pendingWorktree: { ...entry.pendingWorktree, name: "replacement" } },
+            : { pendingWorktree: { ...pendingWorktree, name: "replacement" } },
         ),
       );
     } finally {
@@ -146,7 +150,9 @@ it.each(["lifecycle", "intent"] as const)(
     expect(await settled).toMatchObject({
       error: expect.objectContaining({ message: expect.stringMatching(/changed|current/i) }),
     });
-    const saved = (await actor.sessions.read(authority, { sessionKey })).entry;
+    const saved: InternalSessionEntry | undefined = (
+      await actor.sessions.read(authority, { sessionKey })
+    ).entry;
     expect(saved?.worktree).toBeUndefined();
     expect(saved?.pendingWorktree?.name).toBe(
       change === "intent" ? "replacement" : `changed-${change}`,

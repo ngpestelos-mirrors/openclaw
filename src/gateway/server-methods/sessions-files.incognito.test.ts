@@ -305,7 +305,11 @@ it("preserves unbound native and durable files while explicit actor absence stay
     ]) {
       await replaceSessionEntry(
         { sessionKey, storePath, env: nativeEnv },
-        { ...entry, sessionId: sessionKey, incognito: sessionKey.includes("incognito") },
+        {
+          ...entry,
+          sessionId: sessionKey,
+          incognito: sessionKey.includes("incognito") ? true : undefined,
+        },
       );
       await withEnvAsync(nativeEnv, async () => {
         expect(captureOpenClawAgentDatabaseExecution.listIncognito(nativeEnv)).toEqual([]);

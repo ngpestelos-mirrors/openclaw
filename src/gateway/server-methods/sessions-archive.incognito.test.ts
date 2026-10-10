@@ -81,13 +81,18 @@ async function restore(key: string, entry: SessionEntry, placement: PlacementCon
 
 it("prepares archive and restores an admitted human turn without opening host SQLite", async () => {
   const key = "agent:main:dashboard:incognito-archive";
-  const entry = { sessionId: "archive", updatedAt: Date.now(), incognito: true, archivedAt: 1 };
+  const entry: SessionEntry = {
+    sessionId: "archive",
+    updatedAt: Date.now(),
+    incognito: true,
+    archivedAt: 1,
+  };
   await actor.sessions.create(authority, { sessionKey: key, entry });
   const sql = observeHostDataSql();
   try {
     await withIncognitoSessionActor(actor, async () => {
       const prepared = await archive(key, entry);
-      assert(prepared.ok, prepared.ok ? undefined : prepared.error.message);
+      assert(prepared.ok, "archive preparation failed");
       expect(prepared.value.entry).toMatchObject(entry);
       releaseSessionPatchArchive(prepared.value);
       expect(await restore(key, entry)).toMatchObject({ sessionId: entry.sessionId });
@@ -105,7 +110,12 @@ it.each(["archive", "restore"] as const)(
   "refuses %s after its same-ID row changes lifecycle during placement preparation",
   async (operation) => {
     const key = `agent:main:dashboard:incognito-${operation}-replacement`;
-    const entry = { sessionId: operation, updatedAt: Date.now(), incognito: true, archivedAt: 1 };
+    const entry: SessionEntry = {
+      sessionId: operation,
+      updatedAt: Date.now(),
+      incognito: true,
+      archivedAt: 1,
+    };
     await actor.sessions.create(authority, { sessionKey: key, entry });
     const entered = createDeferred<void>();
     const resume = createDeferred<void>();
@@ -138,7 +148,7 @@ it.each(["archive", "restore"] as const)(
       );
       await withIncognitoSessionActor(actor, () =>
         patchSessionEntryCore({ storePath: actor.path, sessionKey: key }, () => ({
-          lifecycleRevision: 1,
+          lifecycleRevision: "replacement",
         })),
       );
     } finally {
@@ -153,7 +163,7 @@ it.each(["archive", "restore"] as const)(
     expect((await actor.sessions.read(authority, { sessionKey: key })).entry).toMatchObject({
       sessionId: entry.sessionId,
       archivedAt: entry.archivedAt,
-      lifecycleRevision: 1,
+      lifecycleRevision: "replacement",
     });
   },
 );
