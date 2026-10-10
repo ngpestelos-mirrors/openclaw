@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { StatementSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
 import type { UsersGitHubAuthorizeStartResult } from "../../../packages/gateway-protocol/src/schema/users.js";
@@ -29,11 +30,13 @@ import { dumpGitBackupDatabase } from "../../snapshot/git-backup-codec.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import * as stateLease from "../../state/openclaw-state-lease.js";
 import {
+  observeUserGitHubProfileRetirement,
   readUserGitHubConnection,
   resolvePersonalGitHubOwner,
-  updateUserGitHubConnection,
 } from "../../state/user-github-connections.js";
+import { updateUserGitHubConnection } from "../../state/user-github-connections.test-support.js";
 import { getUserProfileListItem } from "../../state/user-profile-list-item.test-support.js";
+import { linkCanonicalUserProfileEmail } from "../../state/user-profile-writes.js";
 import { linkEmail, setUserProfileRole } from "../../state/user-profile-writes.worker.js";
 import { ensureGatewayOwnerProfile, ensureProfileForEmail } from "../../state/user-profiles.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
@@ -351,6 +354,20 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
       expect(gitProbes[0]?.[1]?.cwd).toBe(state.stateDir);
     },
   );
+
+  it("starts and cancels personal authorization without writing SQLite on the Gateway thread", async () => {
+    await start();
+    const writes = vi.spyOn(StatementSync.prototype, "run");
+    try {
+      const pending = await start();
+      expect(
+        await rpc(alice, "users.github.authorize.cancel", { requestId: pending.requestId }),
+      ).toHaveBeenCalledWith(true, { cancelled: true });
+      expect(writes).not.toHaveBeenCalled();
+    } finally {
+      writes.mockRestore();
+    }
+  });
 
   it("rejects a missing GitHub CLI before creating personal authorization state", async () => {
     network.assertCli.mockImplementationOnce(() => {
@@ -766,7 +783,23 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
       }
       const previousTarget = readUserGitHubConnection(owner(bob));
       await start();
-      linkEmail("alice@example.test", owner(bob));
+      const retired: string[] = [];
+      const observedOwners: Array<string | undefined> = [];
+      const unobserve = observeUserGitHubProfileRetirement((ids) => {
+        observedOwners.push(resolvePersonalGitHubOwner(owner()));
+        retired.push(...ids);
+      });
+      try {
+        await linkCanonicalUserProfileEmail("alice@example.test", owner(bob));
+      } finally {
+        unobserve();
+      }
+      expect(retired).toEqual(
+        target === "absent" || source.selection.kind !== "connected"
+          ? []
+          : [source.selection.profileId],
+      );
+      expect(observedOwners).toEqual(target === "absent" ? [] : [owner(bob)]);
       const merged = readUserGitHubConnection(owner(bob));
       expect(merged?.selection).toEqual((previousTarget ?? source).selection);
       expect(merged?.pending).toBeUndefined();
@@ -974,7 +1007,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
       expireAccessToken();
       const db = openOpenClawStateDatabase().db;
       db.exec(
-        "CREATE TEMP TRIGGER reject_rotation BEFORE UPDATE ON secret_store_entries WHEN NEW.value LIKE '%synthetic-rotated-refresh%' BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END",
+        "CREATE TRIGGER reject_rotation BEFORE UPDATE ON secret_store_entries WHEN NEW.value LIKE '%synthetic-rotated-refresh%' BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END",
       );
       await expect(lifecycle.personal.refresh(owner())).rejects.toThrow("synthetic write failure");
       db.exec("DROP TRIGGER reject_rotation");
