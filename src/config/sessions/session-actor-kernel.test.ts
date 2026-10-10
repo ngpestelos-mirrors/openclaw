@@ -341,13 +341,23 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
         initialWriterRunId: "first-run",
       },
     };
-    const committed = runOpenClawAgentWriteTransaction(
-      (db) =>
-        withSessionActorTransactionState(db, state, () =>
-          applySessionActorAppend(append, state, context),
-        ),
-      options,
+    const retainedReads = trackSqliteStatementExecutions(database.db, ["entry"], (query) =>
+      query.toLowerCase().includes('from "session_nodes"') ? "entry" : null,
     );
+    const committed = (() => {
+      try {
+        return runOpenClawAgentWriteTransaction(
+          (db) =>
+            withSessionActorTransactionState(db, state, () =>
+              applySessionActorAppend(append, state, context),
+            ),
+          options,
+        );
+      } finally {
+        retainedReads.restore();
+      }
+    })();
+    expect(retainedReads.counts.entry).toBe(0);
     expect(committed.kind).toBe("metadata");
     if (committed.kind !== "metadata") throw new Error("Expected prepared metadata append");
     expect(committed.initialEntry).toMatchObject({
