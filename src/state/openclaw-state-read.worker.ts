@@ -144,6 +144,7 @@ serveOwnedWorkerTasks(
                 error: encodeOpenClawStateWorkerError(error, { includeOrdinary: true }),
               };
             },
+            true,
           );
         }
         const { command } = input;

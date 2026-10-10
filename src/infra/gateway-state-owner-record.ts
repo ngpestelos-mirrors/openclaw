@@ -49,6 +49,7 @@ export function assertPersistedStateDatabaseAccessAllowed(params: {
   databasePath: string;
   ownerPath: string;
   assertMaintenance: () => void;
+  readOnly?: boolean;
 }): void {
   const { databasePath, ownerPath, assertMaintenance } = params;
   const unavailable = `OpenClaw state ownership at ${databasePath} could not be verified; retry after maintenance finishes.`;
@@ -82,7 +83,7 @@ export function assertPersistedStateDatabaseAccessAllowed(params: {
   }
   const role = owner.role ?? "gateway";
   if (role === "gateway" || role === "agent-embedded") {
-    if (owner.pid !== process.pid) {
+    if (owner.pid !== process.pid && !params.readOnly) {
       throw new Error(
         `OpenClaw state at ${databasePath} is owned by a live ${role} process; route writes through that owner or stop it before running offline commands.`,
       );

@@ -45,7 +45,7 @@ export function openTrackedStateDatabaseResult(
   pathname: string,
   options?: StateDatabaseOpenOptions,
 ): { status: "available"; database: DatabaseSync } | { status: "unavailable"; error: unknown } {
-  assertStateDatabaseAccessAllowed(pathname);
+  assertStateDatabaseAccessAllowed(pathname, undefined, options?.readOnly);
   try {
     if (options?.expectedIdentity !== undefined) {
       assertExistingDatabaseIdentity(pathname, options.expectedIdentity);
@@ -60,7 +60,7 @@ export function openTrackedStateDatabaseResult(
     const openingIdentity = readDatabasePathIdentitySync(pathname);
     const database = withSqliteNativeOpen(() => openNodeSqliteDatabase(location, nativeOptions));
     try {
-      assertStateDatabaseAccessAllowed(pathname);
+      assertStateDatabaseAccessAllowed(pathname, undefined, options?.readOnly);
       if (openingIdentity.key.startsWith("file:")) {
         assertExistingDatabaseIdentity(pathname, openingIdentity.key, openingIdentity.birthtime);
       }

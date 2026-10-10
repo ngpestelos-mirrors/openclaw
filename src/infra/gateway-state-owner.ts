@@ -652,7 +652,7 @@ function hasRecentVerification(verifiedAt: number | undefined, now: number): boo
 /** Only explicit reads reuse recent physical verification; mutations always check freshly. */
 export function assertStateDatabaseReadAllowed(databasePath: string): void {
   if (owners.size === 0) {
-    assertStateDatabaseAccessAllowed(databasePath);
+    assertStateDatabaseAccessAllowed(databasePath, undefined, true);
     return;
   }
   const key = path.resolve(databasePath);
@@ -682,7 +682,7 @@ export function assertStateDatabaseReadAllowed(databasePath: string): void {
     (role !== "gateway" && role !== "agent-embedded")
   ) {
     // Maintenance/schema authority and foreign owners keep their existing fresh checks.
-    assertStateDatabaseAccessAllowed(databasePath);
+    assertStateDatabaseAccessAllowed(databasePath, undefined, true);
     return;
   }
   if (
@@ -703,6 +703,7 @@ export function assertStateDatabaseAccessAllowed(
     maintenanceScope?: OpenClawDatabaseMaintenanceScope;
     schemaLease?: StateDatabaseSchemaLease;
   },
+  readOnly = false,
 ): void {
   const assertMaintenance = () => {
     const schemaLease = captured ? captured.schemaLease : getStateDatabaseSchemaLease(databasePath);
@@ -735,6 +736,7 @@ export function assertStateDatabaseAccessAllowed(
     databasePath,
     ownerPath: pathname,
     assertMaintenance,
+    readOnly,
   });
 }
 

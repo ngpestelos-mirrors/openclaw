@@ -445,11 +445,16 @@ export async function getOpenClawStateDatabaseTerminalFailureAsync(
 }
 
 /** Reject shared-state access after a process-local terminal failure. */
-function assertOpenClawStateDatabaseOpenAllowed(pathname: string, ownership?: "cached-read"): void {
+function assertOpenClawStateDatabaseOpenAllowed(
+  pathname: string,
+  ownership?: "cached-read" | "read-only",
+): void {
   const resolvedPath = resolveDatabasePath({ path: pathname });
-  const assertAllowed =
-    ownership === "cached-read" ? assertStateDatabaseReadAllowed : assertStateDatabaseAccessAllowed;
-  assertAllowed(pathname);
+  if (ownership === "cached-read") {
+    assertStateDatabaseReadAllowed(pathname);
+  } else {
+    assertStateDatabaseAccessAllowed(pathname, undefined, ownership === "read-only");
+  }
   const { identity } = asyncResources.capture(resolvedPath);
   const terminalFailure = terminalOpenLatch.get(resolvedPath);
   if (terminalFailure) {
@@ -475,8 +480,9 @@ function assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
   pathname: string,
   env: NodeJS.ProcessEnv,
   onNativeCleanupFailure?: (error: OpenClawQuarantineReadCleanupError) => void,
+  readOnly = false,
 ): void {
-  assertOpenClawStateDatabaseOpenAllowed(pathname);
+  assertOpenClawStateDatabaseOpenAllowed(pathname, readOnly ? "read-only" : undefined);
   let quarantineFailure: Error | undefined;
   try {
     quarantineFailure = readOpenClawDatabaseQuarantineFailure("state", pathname, { env });

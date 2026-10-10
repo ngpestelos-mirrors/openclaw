@@ -820,26 +820,10 @@ describe("external shared-state ownership", () => {
       originalExec.call(this, sql);
       if (!claimInjected && validating.has(this) && sql === "COMMIT") {
         claimInjected = true;
-        const claimant = new DatabaseSync(databasePath);
-        try {
-          claimant
-            .prepare(
-              `INSERT INTO config_machine_state (state_key, value_json, updated_at_ms)
-               VALUES (?, ?, ?)`,
-            )
-            .run(
-              STATE_SUPERVISION_KEY,
-              JSON.stringify({
-                version: 1,
-                mode: "external",
-                managerId: "race-manager",
-                claimedAt: 1,
-              }),
-              1,
-            );
-        } finally {
-          claimant.close();
-        }
+        claimOpenClawStateOwnership("race-manager", {
+          path: databasePath,
+          env: { ...env, OPENCLAW_SUPERVISOR_MODE: "external" },
+        });
       }
     });
 

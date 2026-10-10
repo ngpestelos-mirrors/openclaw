@@ -99,9 +99,15 @@ export { detectOpenClawStateDatabaseSchemaMigrations } from "./openclaw-state-db
 /** Reject a fresh shared-state open after known corruption until repair clears it. */
 function assertOpenClawStateDatabaseFreshOpenAllowed(
   options: OpenClawStateDatabaseOptions = {},
+  readOnly = false,
 ): void {
   const env = options.env ?? process.env;
-  stateDbCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(resolveDatabasePath(options), env);
+  stateDbCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
+    resolveDatabasePath(options),
+    env,
+    undefined,
+    readOnly,
+  );
 }
 
 const deferredStateDatabases = new WeakSet<DatabaseSync>();
@@ -235,7 +241,7 @@ export async function openExistingOpenClawStateDatabaseReadOnly(
   if (!existsSync(pathname)) {
     return undefined;
   }
-  assertOpenClawStateDatabaseFreshOpenAllowed(options);
+  assertOpenClawStateDatabaseFreshOpenAllowed(options, true);
   const prepared = await prepareSqliteReadOnlyLocation(pathname);
   const connection = openOpenClawStateReadConnection(pathname, prepared);
   const { db } = connection.database;
@@ -287,7 +293,7 @@ function openOpenClawStateDatabaseWithBusyTimeout(
   const env = options.env ?? process.env;
   const pathname = options.database?.path ?? resolveDatabasePath(options);
   if (isArtifactPreservingStateRead("agent", pathname)) {
-    assertOpenClawStateDatabaseFreshOpenAllowed(options);
+    assertOpenClawStateDatabaseFreshOpenAllowed(options, true);
     const db = openSqliteReadOnlyDatabase(pathname, { timeout: busyTimeoutMs });
     assertSupportedStateSchemaVersion(db, pathname);
     return readOnlyStateDatabase({ db, path: pathname }, () => {
