@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import fsPromises from "node:fs/promises";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +10,7 @@ import { requireNodeSqlite } from "./node-sqlite.js";
 import { startSqliteConcurrentWriter } from "./sqlite-concurrent-writer.test-support.js";
 import { readMainDatabasePosixLocks } from "./sqlite-posix-locks.test-support.js";
 import {
+  prepareSqliteReadOnlyCopyInProcess,
   prepareSqliteReadOnlyLocationInProcess,
   prepareSqliteReadOnlyLocationSyncInProcess,
   SqliteSourceChangedError,
@@ -64,6 +66,46 @@ function readLogicalFamily(pathname: string): Map<string, Buffer> {
 }
 
 describe("prepareSqliteReadOnlyLocation", () => {
+  it("creates an independent read-only snapshot when hard links are denied", async () => {
+    const databasePath = createTempDatabasePath(
+      "CREATE TABLE probe(value TEXT); INSERT INTO probe VALUES ('original');",
+    );
+    const stagingRoot = tempDirs.make("openclaw-sqlite-no-links-");
+    const sourceBefore = readFamily(databasePath);
+    const sourceIdentity = fs.statSync(databasePath, { bigint: true });
+    const denied = Object.assign(new Error("hard links denied by platform policy"), {
+      code: "EACCES",
+    });
+    vi.spyOn(fs, "linkSync").mockImplementation(() => {
+      throw denied;
+    });
+    vi.spyOn(fsPromises, "link").mockRejectedValue(denied);
+
+    await withEnvAsync({ FS_SAFE_NATIVE_MODE: "off" }, async () => {
+      const prepared = await prepareSqliteReadOnlyCopyInProcess(databasePath, stagingRoot);
+      try {
+        const snapshotIdentity = fs.statSync(prepared.location, { bigint: true });
+        expect(snapshotIdentity.ino).not.toBe(sourceIdentity.ino);
+        expect(snapshotIdentity.nlink).toBe(1n);
+        if (process.platform !== "win32") {
+          expect(snapshotIdentity.mode & 0o777n).toBe(0o600n);
+          expect(fs.statSync(path.dirname(prepared.location)).mode & 0o777).toBe(0o700);
+        }
+        const snapshot = new sqlite.DatabaseSync(prepared.location, { readOnly: true });
+        try {
+          expect(snapshot.prepare("SELECT value FROM probe").get()).toEqual({ value: "original" });
+          expect(() => snapshot.exec("INSERT INTO probe VALUES ('changed')")).toThrow(/readonly/i);
+        } finally {
+          snapshot.close();
+        }
+        expect(readFamily(databasePath)).toEqual(sourceBefore);
+      } finally {
+        expect(prepared.cleanup()).toBe(true);
+      }
+      expect(fs.readdirSync(stagingRoot)).toEqual([]);
+    });
+  });
+
   it("keeps each scoped artifact-preserving inspection byte-neutral across writer commits", async () => {
     const cacheRoot = path.join(tempDirs.make("openclaw-sqlite-snapshot-cache-"), "missing");
     const databasePath = createTempDatabasePath();

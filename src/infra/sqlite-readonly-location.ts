@@ -4,6 +4,7 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   copyFileDescriptorSync,
+  copyRootFileSync,
   sameFileContentsSync,
   sameFileIdentity,
 } from "@openclaw/fs-safe/advanced";
@@ -12,7 +13,6 @@ import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { backupNodeSqliteDatabase } from "./sqlite-backup.js";
 import { setSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
 import { withSqliteInspectionOperation } from "./sqlite-error-diagnostics.js";
-import { copySqliteFile } from "./sqlite-file-copy.js";
 import { createSqliteLifecycleAggregateError } from "./sqlite-lifecycle-errors.js";
 import { resolvePrivateSqliteSnapshotStagingRoot } from "./sqlite-private-directory.js";
 import {
@@ -418,7 +418,21 @@ async function copyPreparedLocation(
       const { sourcePath, targetPath, expectedSourceIdentity } = step.value;
       const source = openPinnedFile(sourcePath, expectedSourceIdentity);
       try {
-        await copySqliteFile(sourcePath, targetPath, source.identity);
+        // This child owns an unpublished private directory. Exclusive copying
+        // needs no hard-link publication, which Android's app policy denies.
+        const copied = copyRootFileSync({
+          source: { rootPath: path.dirname(sourcePath), absolutePath: sourcePath },
+          destination: { rootPath: path.dirname(targetPath), absolutePath: targetPath },
+          expectedSourceIdentity: source.identity,
+          sourceHardlinks: "allow",
+          clone: "auto",
+          mode: 0o600,
+        });
+        try {
+          fs.fsyncSync(copied.fd);
+        } finally {
+          copied.close();
+        }
       } finally {
         try {
           assertPinnedIdentityUnchanged(source);

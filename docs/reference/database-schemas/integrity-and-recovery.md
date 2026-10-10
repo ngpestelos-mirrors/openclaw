@@ -371,6 +371,11 @@ crash residue, and artifact-preserving inspection retain private copying and rec
 Existing WAL and rollback-journal files can coexist without write activity;
 inspection copies and verifies both before SQLite recovers the private family.
 It does not discard committed WAL pages, repair the source, or change plan identity.
+Raw snapshot copies create independent files exclusively inside the child's private
+staging directory, using native cloning when available and byte copying otherwise.
+They do not require hard links, including on Android/Termux. Source identity and
+family consistency checks, private permissions, file flushing, and read-only SQLite
+access remain enforced before inspection. No database migration is required.
 Snapshot debug telemetry reports operation and owner,
 main and WAL sizes, copied bytes, attempt, duration, and outcome.
 
