@@ -58,21 +58,6 @@ export function createAgentConfigApplication(respond: RespondFn) {
   };
 }
 
-/** Carry the Gateway's publication receipt through the canonical creation transaction. */
-export async function createAgentConfigEntry(
-  params: Omit<Parameters<typeof createAgent>[0], "transformConfig">,
-  writeOptions: ConfigWriteOptions,
-) {
-  return await createAgent({
-    ...params,
-    transformConfig: (mutation) =>
-      transformConfigFileWithRetry({
-        ...mutation,
-        writeOptions: copyRuntimeConfigWriteApplication(writeOptions, mutation.writeOptions ?? {}),
-      }),
-  });
-}
-
 type AgentConfigUpdate = Omit<Parameters<typeof applyAgentConfig>[1], "agentDir"> & {
   agentRuntime?: string;
 };
@@ -120,6 +105,20 @@ export function isImplicitAgentModelUpdate(
     isModelOnlyUpdate(params) &&
     params.agentRuntime !== undefined
   );
+}
+
+export function createAgentConfigEntry(
+  params: Omit<Parameters<typeof createAgent>[0], "transformConfig">,
+  writeOptions?: ConfigWriteOptions,
+) {
+  return createAgent({
+    ...params,
+    transformConfig: (mutation) =>
+      transformConfigFileWithRetry({
+        ...mutation,
+        writeOptions: copyRuntimeConfigWriteApplication(writeOptions, mutation.writeOptions ?? {}),
+      }),
+  });
 }
 
 export async function updateAgentConfigEntry(
