@@ -14,6 +14,7 @@ import {
   prepareSqliteQuerySync,
 } from "../../infra/kysely-sync.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
+import { readSessionActorTransactionState } from "./session-actor-transaction.js";
 import {
   createSessionTranscriptFtsInserter,
   deleteSessionTranscriptFtsRowsInTransaction,
@@ -141,6 +142,8 @@ function readSessionTranscriptProjectionState(
   db: DatabaseSync,
   sessionId: string,
 ): (SessionTranscriptProjectionState & { hasUnclassifiedEvents: boolean }) | undefined {
+  const actor = readSessionActorTransactionState({ db }, { sessionId });
+  if (actor) return actor.transcript.projection && { ...actor.transcript.projection };
   const row = executeSqliteQueryTakeFirstSync(
     db,
     selectSessionTranscriptProjectionState(db, sessionId),
@@ -260,6 +263,7 @@ export function createTranscriptIndexAppenderInTransaction(
   db: DatabaseSync,
   sessionId: string,
 ): (params: TranscriptIndexAppend) => boolean {
+  const actor = readSessionActorTransactionState({ db }, { sessionId });
   const initial = readSessionTranscriptProjectionState(db, sessionId);
   let watermark: SessionTranscriptProjectionState | undefined = initial;
   let hasUnclassifiedEvents = initial?.hasUnclassifiedEvents;
@@ -304,6 +308,13 @@ export function createTranscriptIndexAppenderInTransaction(
     if (append.activeRow) {
       insertActiveEvent ??= createActiveEventInserter(db, sessionId);
       insertActiveEvent(append.activeRow);
+      actor?.transcript.active.set(params.seq, {
+        session_id: sessionId,
+        active_position: append.activeRow.activePosition,
+        context_eligible: append.activeRow.contextEligible,
+        event_seq: append.activeRow.eventSeq,
+        message_position: append.activeRow.messagePosition,
+      });
     }
     const nextWatermark = {
       ...append.cursor,
@@ -316,6 +327,7 @@ export function createTranscriptIndexAppenderInTransaction(
       : createWatermarkWriter(db, sessionId);
     write(nextWatermark);
     watermark = nextWatermark;
+    if (actor) actor.transcript.projection = { ...nextWatermark, hasUnclassifiedEvents: false };
     return false;
   };
 }
@@ -335,6 +347,12 @@ export function markSessionTranscriptIndexDirtyInTransaction(
     needsRebuild: true,
   };
   createWatermarkWriter(db, sessionId)({ ...dirty, updatedAt: now });
+  const actor = readSessionActorTransactionState({ db }, { sessionId });
+  if (actor)
+    actor.transcript.projection = {
+      ...dirty,
+      hasUnclassifiedEvents: actor.transcript.projection?.hasUnclassifiedEvents ?? false,
+    };
   return dirty;
 }
 

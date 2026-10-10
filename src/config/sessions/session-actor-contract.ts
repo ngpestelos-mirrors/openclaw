@@ -73,6 +73,8 @@ export type SessionActorHotState = {
   transcript: {
     watermark: SessionTranscriptWatermark;
     version: SessionTranscriptContextVersion;
+    /** Empty anchors prove absence only when this exact projection is resident. */
+    anchorsState: "resident" | "unavailable";
     anchors: TranscriptEntryAnchor[];
     idempotency: Array<{ key: string; eventId: string; rawSeq: number }>;
     /** Exact ordered active context membership, including an explicitly empty context. */
@@ -295,7 +297,7 @@ type SessionActorCommands = {
 export type SessionActor = SessionActorLifetime &
   SessionActorCommands & {
     readonly target: SessionActorTarget;
-    /** Detached installed MAIN state; undefined means fenced/missing. Never performs IO. */
+    /** Detached installed MAIN state; undefined means fenced/missing. Never opens SQLite or dispatches a worker request. */
     snapshot(authority: SessionActorAuthority): SessionActorHotState | undefined;
     read(authority: SessionActorAuthority): Promise<SessionActorHotState>;
     /** Drain retained attempts and accepted descendants; a teardown timeout is not settlement. */

@@ -145,6 +145,12 @@ export function createIncognitoSessionFacts(
     });
   return {
     captureRead,
+    invalidate(sessionKey: string) {
+      if (!unavailable.has(sessionKey)) {
+        unavailable.add(sessionKey);
+        snapshotRevision += 1;
+      }
+    },
     clear() {
       entries.clear();
       pending.clear();

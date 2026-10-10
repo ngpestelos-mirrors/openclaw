@@ -21,6 +21,7 @@ import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { hasSessionPendingInputsSchema } from "../../state/openclaw-agent-pending-inputs-schema.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
+import { readSessionActorTransactionState } from "./session-actor-transaction.js";
 import type {
   SessionPendingInputAuthority,
   SessionPendingInputAuthorityFacts,
@@ -362,15 +363,18 @@ export function readSessionInputCompletion(
   database: PendingInputDatabase,
   scope: SessionInputCompletionScope,
 ) {
-  const row = executeSqliteQueryTakeFirstSync(
-    database.db,
-    getSessionKysely(database.db)
-      .selectFrom("session_input_completions")
-      .selectAll()
-      .where("session_key", "=", scope.sessionKey)
-      .where("session_id", "=", scope.sessionId)
-      .where("idempotency_key", "=", scope.idempotencyKey),
-  );
+  const actor = readSessionActorTransactionState(database, scope);
+  const row = actor
+    ? actor.completions.get(scope.idempotencyKey)
+    : executeSqliteQueryTakeFirstSync(
+        database.db,
+        getSessionKysely(database.db)
+          .selectFrom("session_input_completions")
+          .selectAll()
+          .where("session_key", "=", scope.sessionKey)
+          .where("session_id", "=", scope.sessionId)
+          .where("idempotency_key", "=", scope.idempotencyKey),
+      );
   if (!row) {
     return undefined;
   }
@@ -394,6 +398,7 @@ export function writeSessionInputCompletion(
     return retained.outcome;
   }
   const succeeded = classifyAgentRunTerminalOutcome(outcome) === "success";
+  const completedAt = Date.now();
   executeSqliteQuerySync(
     database.db,
     getSessionKysely(database.db)
@@ -406,7 +411,7 @@ export function writeSessionInputCompletion(
         request_hash: scope.requestHash,
         outcome_json: JSON.stringify(outcome),
         succeeded: succeeded ? 1 : 0,
-        completed_at: Date.now(),
+        completed_at: completedAt,
       })
       .onConflict((conflict) =>
         conflict
@@ -414,11 +419,24 @@ export function writeSessionInputCompletion(
           .doUpdateSet({
             outcome_json: JSON.stringify(outcome),
             succeeded: succeeded ? 1 : 0,
-            completed_at: Date.now(),
+            completed_at: completedAt,
           })
           .where("session_input_completions.succeeded", "=", 0),
       ),
   );
+  const actor = readSessionActorTransactionState(database, scope);
+  if (actor && (!retained || retained.succeeded === 0)) {
+    actor.completions.set(scope.idempotencyKey, {
+      session_key: scope.sessionKey,
+      session_id: scope.sessionId,
+      idempotency_key: scope.idempotencyKey,
+      run_id: retained?.run_id ?? scope.runId,
+      request_hash: retained?.request_hash ?? scope.requestHash,
+      outcome_json: JSON.stringify(outcome),
+      succeeded: succeeded ? 1 : 0,
+      completed_at: completedAt,
+    });
+  }
   if (isFinalInputCompletion(outcome)) {
     // Handled hooks can finish without appending a user message. The completion
     // receipt retires that exact custody atomically in the caller's transaction.
@@ -433,6 +451,15 @@ export function writeSessionInputCompletion(
         .where("request_hash", "=", scope.requestHash)
         .where("lifecycle_generation", "=", scope.lifecycleGeneration),
     );
+    const pending = actor?.pendingInputs.get(scope.idempotencyKey);
+    if (
+      pending &&
+      pending.run_id === scope.runId &&
+      pending.request_hash === scope.requestHash &&
+      pending.lifecycle_generation === scope.lifecycleGeneration
+    ) {
+      actor?.pendingInputs.delete(scope.idempotencyKey);
+    }
   }
   return outcome;
 }
@@ -505,6 +532,11 @@ export function readSessionPendingInputByKey(
   scope: Pick<ResolvedTranscriptScope, "sessionId" | "sessionKey">,
   idempotencyKey: string,
 ): SessionPendingInputRow | undefined {
+  const actor = readSessionActorTransactionState(database, scope);
+  if (actor) {
+    const row = actor.pendingInputs.get(idempotencyKey);
+    return row && { ...row };
+  }
   if (!hasSessionPendingInputsSchema(database.db)) {
     return undefined;
   }
@@ -608,20 +640,27 @@ export function resolveSessionPendingInputAppend(
         }
       : undefined;
   if (owner.sources) {
+    const actor = readSessionActorTransactionState(database, scope);
     const acceptedByKey = new Map(
-      executeSqliteQuerySync(
-        database.db,
-        getSessionKysely(database.db)
-          .selectFrom("session_pending_inputs")
-          .selectAll()
-          .where("session_id", "=", scope.sessionId)
-          .where("session_key", "=", scope.sessionKey)
-          .where(
-            "idempotency_key",
-            "in",
-            owner.sources.map((source) => source.idempotencyKey),
-          ),
-      ).rows.map((sourceRow) => [sourceRow.idempotency_key, sourceRow]),
+      (actor
+        ? owner.sources.flatMap((source) => {
+            const row = actor.pendingInputs.get(source.idempotencyKey);
+            return row ? [{ ...row }] : [];
+          })
+        : executeSqliteQuerySync(
+            database.db,
+            getSessionKysely(database.db)
+              .selectFrom("session_pending_inputs")
+              .selectAll()
+              .where("session_id", "=", scope.sessionId)
+              .where("session_key", "=", scope.sessionKey)
+              .where(
+                "idempotency_key",
+                "in",
+                owner.sources.map((source) => source.idempotencyKey),
+              ),
+          ).rows
+      ).map((sourceRow) => [sourceRow.idempotency_key, sourceRow]),
     );
     const sources = owner.sources.map((source) => {
       const accepted = acceptedByKey.get(source.idempotencyKey);
@@ -709,6 +748,17 @@ export function consumeSessionPendingInput(
     );
     if (deleted.numAffectedRows !== 1n) {
       return;
+    }
+  }
+  const actor = readSessionActorTransactionState(database);
+  if (actor) {
+    for (const [key, row] of actor.pendingInputs) {
+      if (!inputIds.has(row.input_id)) continue;
+      if (pending.sourceInputIds) {
+        actor.pendingInputs.set(key, { ...row, consumed_event_id: pending.inputId });
+      } else {
+        actor.pendingInputs.delete(key);
+      }
     }
   }
   // Outer commit publishes this fact before observers; rollback leaves finish responsible.
