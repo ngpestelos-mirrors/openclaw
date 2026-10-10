@@ -26,7 +26,7 @@ import { resolveBundledInstallPlanForNpmFailure } from "../plugins/install-sourc
 import { PLUGIN_INSTALL_ERROR_CODE } from "../plugins/install.js";
 import { ManagedPluginLifecycleError } from "../plugins/management-lifecycle-error.js";
 import { installManagedPlugin } from "../plugins/management-mutations.js";
-import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
+import { withPluginLifecycleSettlementLease } from "../plugins/plugin-lifecycle-lease.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { shortenHomePath } from "../utils.js";
 import { persistHookPackInstall } from "./hook-install-persistence.js";
@@ -113,11 +113,12 @@ async function installHookPack(
     params: {},
     target: source.source === "local" ? source.path : source.spec,
     onForeignOwner: "refuse",
-    runLocal: ({ signal, assertCurrent }) =>
-      withPluginLifecycleLease(
+    runLocal: ({ signal, assertCurrent, assertSettlementCurrent }) =>
+      withPluginLifecycleSettlementLease(
         {
           signal: AbortSignal.any([signal, ...(params.signal ? [params.signal] : [])]),
           assertCurrent,
+          assertSettlementCurrent,
         },
         async (lease) => {
           const request = resolvePluginInstallRequestContext({
@@ -146,6 +147,7 @@ async function installHookPack(
             return { ok: false, error: "Linked hook pack paths must be directories." };
           }
           const beforePersistentApply = () => {
+            assertCurrent();
             params.signal?.throwIfAborted();
             lease.assertOwned();
             snapshot.writeOptions.assertConfigPathForWrite?.();
@@ -247,15 +249,23 @@ export async function installPluginWithHookFallback(params: InstallParams): Prom
         params: {},
         target: request.request.source,
         onForeignOwner: "refuse",
-        runLocal: ({ signal, assertCurrent }) =>
-          installManagedPlugin({
-            ...request,
-            signal: AbortSignal.any([signal, ...(request.signal ? [request.signal] : [])]),
-            beforePersistentApply: () => {
-              assertCurrent();
-              request.beforePersistentApply?.();
+        runLocal: ({ signal, assertCurrent, assertSettlementCurrent }) =>
+          withPluginLifecycleSettlementLease(
+            {
+              signal: AbortSignal.any([signal, ...(request.signal ? [request.signal] : [])]),
+              assertCurrent,
+              assertSettlementCurrent,
             },
-          }),
+            () =>
+              installManagedPlugin({
+                ...request,
+                signal: AbortSignal.any([signal, ...(request.signal ? [request.signal] : [])]),
+                beforePersistentApply: () => {
+                  assertCurrent();
+                  request.beforePersistentApply?.();
+                },
+              }),
+          ),
       }));
   const compatible = request.source === "local" || request.source === "npm" ? request : undefined;
   const blocked = resolveFullyBlockedConfigMutationReason(snapshot);

@@ -41,7 +41,7 @@ import { createInstalledPluginOwnershipResolver } from "../plugins/installed-plu
 import { configReferencesNpmInstallPath } from "../plugins/installs.js";
 import { createPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
 import {
-  withPluginLifecycleLease,
+  withPluginLifecycleSettlementLease,
   type PluginLifecycleLeaseContext,
 } from "../plugins/plugin-lifecycle-lease.js";
 import {
@@ -191,12 +191,19 @@ export async function runPluginUpdateCommand(params: RunPluginUpdateCommandParam
     params: {},
     target: params.opts.all ? "all plugins and hook packs" : params.ids.join(", "),
     onForeignOwner: "refuse",
-    runLocal: ({ signal, assertCurrent }) =>
-      withPluginLifecycleLease({ signal, assertCurrent }, (lease) =>
-        runPluginUpdateCommandUnlocked(params, lease, (deferred) => {
-          changed = true;
-          activationDeferred ||= deferred;
-        }),
+    runLocal: ({ signal, assertCurrent, assertSettlementCurrent }) =>
+      withPluginLifecycleSettlementLease(
+        { signal, assertCurrent, assertSettlementCurrent },
+        (lease) =>
+          runPluginUpdateCommandUnlocked(
+            params,
+            lease,
+            (deferred) => {
+              changed = true;
+              activationDeferred ||= deferred;
+            },
+            assertCurrent,
+          ),
       ),
   });
   if (changed && !activationDeferred) {
@@ -212,8 +219,13 @@ async function runPluginUpdateCommandUnlocked(
   params: RunPluginUpdateCommandParams,
   lease?: PluginLifecycleLeaseContext,
   onMetadataChanged?: (activationDeferred: boolean) => void,
+  assertCurrent?: () => void,
 ): Promise<0 | 1> {
   const assertOwned = lease?.assertOwned.bind(lease);
+  const beforePersistentApply = () => {
+    assertCurrent?.();
+    assertOwned?.();
+  };
   if (!params.opts.dryRun) {
     assertConfigWriteAllowedInCurrentMode();
   }
@@ -226,7 +238,7 @@ async function runPluginUpdateCommandUnlocked(
         writeOptions: {
           ...writeOptions,
           assertConfigPathForWrite: () => {
-            assertOwned?.();
+            beforePersistentApply();
             writeOptions.assertConfigPathForWrite?.();
           },
         },
@@ -463,6 +475,7 @@ async function runPluginUpdateCommandUnlocked(
                   allowPrompt: !params.opts.dryRun,
                 }),
                 logger,
+                beforePersistentApply,
                 onIntegrityDrift: (drift) =>
                   confirmUpdateIntegrityDrift(`"${drift.pluginId}"`, drift),
               },
@@ -471,6 +484,7 @@ async function runPluginUpdateCommandUnlocked(
             ),
           )
         : { config: cfgWithPluginInstallRecords, changed: false, outcomes: [] };
+    beforePersistentApply();
     if (pluginSelection.pluginIds.length > 0 && pluginResult.changed && !params.opts.dryRun) {
       const nextInstallRecords = pluginResult.config.plugins?.installs ?? {};
       // The installer may restore or replace bytes at a previously observed path.
@@ -572,7 +586,7 @@ async function runPluginUpdateCommandUnlocked(
               installRecords: nextPluginInstallRecords,
               installOwners: migrationOwners,
               assertCurrent: () => {
-                assertOwned?.();
+                beforePersistentApply();
                 sourceSnapshot.writeOptions.assertConfigPathForWrite?.();
               },
             })

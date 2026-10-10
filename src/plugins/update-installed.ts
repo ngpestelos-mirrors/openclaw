@@ -104,8 +104,12 @@ export async function updateNpmInstalledPlugins(
 
 async function runInstalledPluginUpdate(
   params: UpdateInstalledPluginsParams,
-  assertCurrent?: () => void,
+  assertOwned?: () => void,
 ): Promise<PluginUpdateSummary> {
+  const assertCurrent = () => {
+    params.beforePersistentApply?.();
+    assertOwned?.();
+  };
   const logger = params.logger ?? {};
   const retainOnUnavailable = params.retainOnUnavailable === true;
   const consentCallbacks = capturePluginCapabilityConsentHandlerErrors(params.onCapabilityConsent);
@@ -152,6 +156,7 @@ async function runInstalledPluginUpdate(
   const completedCanonicalUpdates = new Set<string>();
 
   for (const pluginId of targets) {
+    assertCurrent();
     if (params.skipIds?.has(pluginId)) {
       recordSkippedOutcome(pluginId, `Skipping "${pluginId}" (already updated).`);
       continue;
@@ -510,6 +515,7 @@ async function runInstalledPluginUpdate(
           workTimeoutMs: params.workTimeoutMs,
           onInstallPolicyWarning: params.onInstallPolicyWarning,
           onBeforePluginArtifactCommit: capabilityConsent.onBeforePluginArtifactCommit,
+          beforePersistentApply: assertCurrent,
           expectedIntegrity,
           clawhubSpecs,
           officialNpmFallback,

@@ -90,6 +90,35 @@ export function runOutsidePluginLifecycleLease<T>(run: () => T): T {
   return activePluginLifecycleLease.exit(run);
 }
 
+/** Cancel queued admission while retaining physical custody for accepted compensation. */
+export async function withPluginLifecycleSettlementLease<T>(
+  options: PluginLifecycleLeaseOptions & { assertSettlementCurrent?: () => void },
+  run: (lease: PluginLifecycleLeaseContext) => Promise<T>,
+): Promise<T> {
+  options.signal?.throwIfAborted();
+  options.assertCurrent?.();
+  const acquisition = new AbortController();
+  const cancel = () => acquisition.abort(options.signal?.reason);
+  options.signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    return await withPluginLifecycleLease(
+      {
+        ...options,
+        signal: acquisition.signal,
+        assertCurrent: options.assertSettlementCurrent ?? options.assertCurrent,
+      },
+      (lease) => {
+        options.signal?.removeEventListener("abort", cancel);
+        options.signal?.throwIfAborted();
+        options.assertCurrent?.();
+        return run(lease);
+      },
+    );
+  } finally {
+    options.signal?.removeEventListener("abort", cancel);
+  }
+}
+
 function resolveLifecycleLeaseEnv(env: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
   const requested = env ?? process.env;
   if (!process.env.VITEST || requested.VITEST || requested.OPENCLAW_STATE_DIR) {

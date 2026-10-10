@@ -284,6 +284,7 @@ export async function runPluginUpdateAttempt(params: {
   workTimeoutMs?: number | null;
   onInstallPolicyWarning?: InstallSafetyOverrides["onInstallPolicyWarning"];
   onBeforePluginArtifactCommit?: PluginInstallArtifactConsentHandler;
+  beforePersistentApply?: () => void;
   expectedIntegrity?: string;
   clawhubSpecs?: PluginUpdateSpecPlan;
   officialNpmFallback?: { installSpec: string; recordSpec: string; expectedIntegrity?: string };
@@ -304,6 +305,7 @@ export async function runPluginUpdateAttempt(params: {
     ...dryRunOption,
     onInstallPolicyWarning: params.onInstallPolicyWarning,
     onBeforePluginArtifactCommit: params.onBeforePluginArtifactCommit,
+    beforePersistentApply: params.beforePersistentApply,
     expectedPluginId: params.pluginId,
     logger: params.logger,
   });

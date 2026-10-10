@@ -22,7 +22,7 @@ import type {
   OfficialExternalPluginCatalogFeed,
 } from "../plugins/official-external-plugin-catalog.types.js";
 import type { PluginPackageInstall } from "../plugins/package-manifest.types.js";
-import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
+import { withPluginLifecycleSettlementLease } from "../plugins/plugin-lifecycle-lease.js";
 import { tracePluginLifecyclePhaseAsync } from "../plugins/plugin-lifecycle-trace.js";
 import { defaultRuntime } from "../runtime.js";
 import { shortenHomeInString, shortenHomePath } from "../utils.js";
@@ -150,43 +150,48 @@ async function runPluginPolicyCommand(
     params: {},
     target: id,
     onForeignOwner: "refuse",
-    runLocal: ({ signal, assertCurrent }) =>
-      withPluginLifecycleLease({ signal, assertCurrent }, async () => {
-        try {
-          const result = await mutateManagedPluginEnabled({
-            pluginId: id,
-            enabled,
-            caller: "cli",
-            requestCapabilityConsent: acceptCapabilities,
-            ...resolvePluginCapabilityConsentCliOptions({ acceptCapabilities, action: "enable" }),
-          });
-          if (result.status === "missing") {
-            defaultRuntime.error(
-              formatMissingPluginMessage({ id: result.pluginId, includeSearch: true }),
+    runLocal: ({ signal, assertCurrent, assertSettlementCurrent }) =>
+      withPluginLifecycleSettlementLease(
+        { signal, assertCurrent, assertSettlementCurrent },
+        async () => {
+          try {
+            const result = await mutateManagedPluginEnabled({
+              pluginId: id,
+              enabled,
+              caller: "cli",
+              signal,
+              beforePersistentApply: assertCurrent,
+              requestCapabilityConsent: acceptCapabilities,
+              ...resolvePluginCapabilityConsentCliOptions({ acceptCapabilities, action: "enable" }),
+            });
+            if (result.status === "missing") {
+              defaultRuntime.error(
+                formatMissingPluginMessage({ id: result.pluginId, includeSearch: true }),
+              );
+              return 1;
+            }
+            if (result.status === "blocked") {
+              defaultRuntime.error(
+                `Plugin "${result.pluginId}" could not be enabled (${result.reason ?? "unknown reason"}).`,
+              );
+              return 1;
+            }
+            for (const warning of result.warnings) {
+              defaultRuntime.log(theme.warn(warning));
+            }
+            defaultRuntime.log(
+              `${enabled ? "Enabled" : "Disabled"} plugin "${result.pluginId}". Saved for the next Gateway start.`,
             );
+            return 0;
+          } catch (error) {
+            if (!(error instanceof ManagedPluginLifecycleError) || !error.capabilityConsent) {
+              throw error;
+            }
+            defaultRuntime.error(error.message);
             return 1;
           }
-          if (result.status === "blocked") {
-            defaultRuntime.error(
-              `Plugin "${result.pluginId}" could not be enabled (${result.reason ?? "unknown reason"}).`,
-            );
-            return 1;
-          }
-          for (const warning of result.warnings) {
-            defaultRuntime.log(theme.warn(warning));
-          }
-          defaultRuntime.log(
-            `${enabled ? "Enabled" : "Disabled"} plugin "${result.pluginId}". Saved for the next Gateway start.`,
-          );
-          return 0;
-        } catch (error) {
-          if (!(error instanceof ManagedPluginLifecycleError) || !error.capabilityConsent) {
-            throw error;
-          }
-          defaultRuntime.error(error.message);
-          return 1;
-        }
-      }),
+        },
+      ),
   });
   if (exitCode !== 0) {
     defaultRuntime.exit(exitCode);

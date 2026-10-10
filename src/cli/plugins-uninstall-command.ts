@@ -2,6 +2,7 @@
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import { assertConfigWriteAllowedInCurrentMode } from "../config/config.js";
 import type { PreparedPluginUninstall } from "../plugins/management-uninstall.js";
+import { withPluginLifecycleSettlementLease } from "../plugins/plugin-lifecycle-lease.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { shortenHomePath } from "../utils.js";
 import { runWithLocalStateOwner } from "./local-state-owner.js";
@@ -75,40 +76,42 @@ export async function runPluginUninstallCommand(
       params: {},
       target: targetPluginId,
       onForeignOwner: "refuse",
-      runLocal: ({ signal, assertCurrent }) =>
-        uninstallPluginWithPolicy({
-          pluginId: targetPluginId,
-          keepFiles,
-          caller: "cli",
-          clawManaged: opts.clawManaged,
-          signal,
-          beforePersistentApply: () => {
-            assertCurrent();
-            opts.beforePersistentApply?.();
-          },
-          invalidateRuntimeCache: opts.invalidateRuntimeCache,
-          onPreview: async (preview) => {
-            if (skipPreview && preview.pluginId !== targetPluginId) {
-              throw new Error(
-                `Plugin package owner changed for "${targetPluginId}"; retry uninstall.`,
+      runLocal: ({ signal, assertCurrent, assertSettlementCurrent }) =>
+        withPluginLifecycleSettlementLease({ signal, assertCurrent, assertSettlementCurrent }, () =>
+          uninstallPluginWithPolicy({
+            pluginId: targetPluginId,
+            keepFiles,
+            caller: "cli",
+            clawManaged: opts.clawManaged,
+            signal,
+            beforePersistentApply: () => {
+              assertCurrent();
+              opts.beforePersistentApply?.();
+            },
+            invalidateRuntimeCache: opts.invalidateRuntimeCache,
+            onPreview: async (preview) => {
+              if (skipPreview && preview.pluginId !== targetPluginId) {
+                throw new Error(
+                  `Plugin package owner changed for "${targetPluginId}"; retry uninstall.`,
+                );
+              }
+              if (!skipPreview) {
+                await printPreview(preview);
+              }
+            },
+            onWarning: (message) => runtime.log(theme.warn(message)),
+            onComplete: ({ pluginId, requestedPluginId, pluginIds, removed }) => {
+              const subject =
+                pluginIds.length > 1 || requestedPluginId !== pluginId
+                  ? `plugin package "${pluginId}" and entries ${pluginIds.join(", ")}`
+                  : `plugin "${pluginId}"`;
+              runtime.log(
+                `Uninstalled ${subject}. Removed: ${removed.length ? removed.join(", ") : "nothing"}.`,
               );
-            }
-            if (!skipPreview) {
-              await printPreview(preview);
-            }
-          },
-          onWarning: (message) => runtime.log(theme.warn(message)),
-          onComplete: ({ pluginId, requestedPluginId, pluginIds, removed }) => {
-            const subject =
-              pluginIds.length > 1 || requestedPluginId !== pluginId
-                ? `plugin package "${pluginId}" and entries ${pluginIds.join(", ")}`
-                : `plugin "${pluginId}"`;
-            runtime.log(
-              `Uninstalled ${subject}. Removed: ${removed.length ? removed.join(", ") : "nothing"}.`,
-            );
-            runtime.log("Saved for the next Gateway start.");
-          },
-        }),
+              runtime.log("Saved for the next Gateway start.");
+            },
+          }),
+        ),
     });
     if (!result.ok) {
       runtime.error(result.error);

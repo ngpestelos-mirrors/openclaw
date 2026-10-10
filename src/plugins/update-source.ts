@@ -123,6 +123,8 @@ export type UpdateInstalledPluginsParams = {
   onIntegrityDrift?: (params: PluginUpdateIntegrityDriftParams) => boolean | Promise<boolean>;
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   beforePersistentEffect?: () => void | Promise<void>;
+  /** Forward mutation authority; accepted transaction settlement retains its physical lease. */
+  beforePersistentApply?: () => void;
   packagePluginIds?: Readonly<Record<string, readonly string[]>>;
 };
 
