@@ -11,6 +11,7 @@ import type {
 } from "./context.ts";
 import { applyControlUiAccent, syncControlUiSystemChrome } from "./control-ui-presentation.ts";
 import { syncCustomThemeStyleTag } from "./custom-theme.ts";
+import { backgroundPreferenceStorageKey } from "./settings-background.ts";
 import {
   bindUiPreferences,
   loadUiPreferences,
@@ -217,11 +218,15 @@ export function createApplicationTheme(
     () => syncControlUiSystemChrome(),
   );
 
-  const refresh = () => {
+  const refresh = (options?: { notify?: boolean }) => {
     const next = loadUiPreferences(gateway.connection.gatewayUrl);
     const changed = livePreferencesKey(next) !== livePreferencesKey(settings);
     settings = next;
     if (!changed) {
+      // Readiness can change without changing the stored preference values.
+      if (options?.notify) {
+        publish();
+      }
       return;
     }
     void loadCatalog();
@@ -233,7 +238,11 @@ export function createApplicationTheme(
     refresh,
   });
   const onStorage = (event: StorageEvent) => {
-    if (event.key === null || event.key === settingsKeyForGateway(gateway.connection.gatewayUrl)) {
+    if (
+      event.key === null ||
+      event.key === settingsKeyForGateway(gateway.connection.gatewayUrl) ||
+      event.key === backgroundPreferenceStorageKey(gateway.connection.gatewayUrl)
+    ) {
       refresh();
     }
   };
