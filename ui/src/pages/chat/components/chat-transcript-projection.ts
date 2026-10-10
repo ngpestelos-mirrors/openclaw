@@ -164,7 +164,7 @@ export function projectChatTranscript(props: ChatThreadProps, transcript: ChatTr
     sessionKey: props.sessionKey,
     runWorking: Boolean(props.runWorking),
     searchActive: searchFiltering,
-    session: activeSession,
+    session: props.transcriptMetadata ?? activeSession,
   });
   const { collapsedItems, transcriptItems, continuations } = transcriptChain;
   const replyNavigationId = props.replyMessageAccess?.navigationId;
@@ -720,7 +720,6 @@ export function projectChatTranscript(props: ChatThreadProps, transcript: ChatTr
         props.announceTranscript !== false && !state.searchOpen && !props.loading,
         overlay,
         header,
-        Boolean(replyNavigationId),
       ),
   };
 }
