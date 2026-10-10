@@ -16,6 +16,7 @@ const { state, remove, loadEntry } = vi.hoisted(() => {
   };
 });
 
+// mock-isolation: Control the entry row and removal barrier without opening SQLite.
 vi.mock("../config/sessions/session-accessor.js", () => ({
   applySessionEntryLifecycleMutation: remove,
   loadExactSessionEntry: loadEntry,
