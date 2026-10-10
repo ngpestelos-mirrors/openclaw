@@ -762,7 +762,9 @@ it("publishes actual pending-final state and evidence only after live commit aut
     expect(f.mutate(command)).toMatchObject({ kind: "rolled-back" });
     expect(f.nativeEntry()).toEqual(initial.entry);
     delete f.hooks.admit;
-    expect(f.mutate(command)).toMatchObject({
+    expect(
+      f.mutate({ ...command, input: { ...command.input, expected: f.read().version } }),
+    ).toMatchObject({
       kind: "committed",
       value: { state: "delivered", wakeRecovery: true },
       receipt: {

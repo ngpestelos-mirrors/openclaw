@@ -11,6 +11,11 @@ import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { useTempSessionsFixture } from "./test-helpers.js";
 import type { SessionEntry } from "./types.js";
 
+// mock-isolation: Receipt command counts exclude fixture-seeding maintenance.
+vi.mock("./session-accessor.sqlite-maintenance-kick.js", () => ({
+  kickSessionEntryMaintenanceAfterWrite() {},
+}));
+
 describe("restart recovery terminal delivery receipt", () => {
   const fixture = useTempSessionsFixture("restart-receipt-");
   const scope = () => ({

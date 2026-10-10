@@ -8,7 +8,7 @@ import type {
 import { reduceSessionActorEntry } from "../../config/sessions/session-actor-reducers.js";
 import { withSessionActor } from "../../config/sessions/session-actor-scope.js";
 import { buildRestartRecoveryExpectedState } from "../../config/sessions/session-transcript-turn-state.js";
-import type { SessionEntry } from "../../config/sessions/types.js";
+import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import { logVerbose } from "../../globals.js";
 import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
 import { replyRunRegistry, type ReplyOperation } from "./reply-run-registry.js";
