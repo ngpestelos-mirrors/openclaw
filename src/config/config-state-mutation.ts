@@ -6,6 +6,8 @@ import { createSqliteWorkerWriteAdmission } from "../infra/sqlite-worker-store.j
 import { redactSecrets } from "../logging/redact.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
+import { CONFIG_SNAPSHOT_SCOPE, CONFIG_SNAPSHOT_KEY } from "./config-journal-snapshot.kernel.js";
+import { CONFIG_AUDIT_SCOPE, CONFIG_AUDIT_MAX_ENTRIES } from "./io.audit-policy.js";
 
 const snapshot = z.strictObject({
   configPath: z.string(),
@@ -68,9 +70,9 @@ export async function applyConfigStateMutation(
           await store.execute({
             type: "diagnostic.register",
             input: {
-              scope: "config-audit",
-              maxEntries: 50_000,
-              record: prepareSqliteAuditRecord("config-audit", {
+              scope: CONFIG_AUDIT_SCOPE,
+              maxEntries: CONFIG_AUDIT_MAX_ENTRIES,
+              record: prepareSqliteAuditRecord(CONFIG_AUDIT_SCOPE, {
                 key: `${record.ts}:${record.event}:${randomUUID()}`,
                 value: record,
                 createdAt: Date.parse(record.ts),
@@ -86,8 +88,8 @@ export async function applyConfigStateMutation(
               record:
                 mutation.snapshot === null
                   ? null
-                  : prepareSqliteAuditRecord("config-snapshot", {
-                      key: "latest",
+                  : prepareSqliteAuditRecord(CONFIG_SNAPSHOT_SCOPE, {
+                      key: CONFIG_SNAPSHOT_KEY,
                       value: mutation.snapshot,
                       createdAt: Date.now(),
                     }),

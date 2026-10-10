@@ -12,6 +12,8 @@ import { redactSecrets } from "../logging/redact.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { resolveConfigAuditStoreEnv } from "./config-journal-snapshot.js";
 import { mutateConfigState } from "./config-state-mutation.js";
+import { CONFIG_AUDIT_SCOPE, CONFIG_AUDIT_MAX_ENTRIES } from "./io.audit-policy.js";
+export { CONFIG_AUDIT_SCOPE, CONFIG_AUDIT_MAX_ENTRIES } from "./io.audit-policy.js";
 import type { ConfigHealthFingerprint } from "./io.health-state.types.js";
 import type { ConfigWriteAuditOrigin } from "./io.types.js";
 import { resolveStateDir } from "./paths.js";
@@ -130,8 +132,6 @@ function capArgv(argv: readonly string[] | undefined): string[] {
   return argv.slice(0, CONFIG_AUDIT_ARGV_CAP);
 }
 
-export const CONFIG_AUDIT_SCOPE = "config-audit";
-export const CONFIG_AUDIT_MAX_ENTRIES = 50_000;
 export const CONFIG_AUDIT_STORE_LABEL =
   "SQLite diagnostic_events/config-audit state (latest 50000 rows)";
 const LEGACY_CONFIG_AUDIT_LOG_FILENAME = ["config-audit", "jsonl"].join(".");
