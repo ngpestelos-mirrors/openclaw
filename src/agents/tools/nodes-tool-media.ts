@@ -256,6 +256,8 @@ export async function executeNodeMediaAction(input: {
         },
       });
     }
+    default:
+      throw new Error(`Unknown action: ${String(input.action satisfies never)}`);
   }
 }
 

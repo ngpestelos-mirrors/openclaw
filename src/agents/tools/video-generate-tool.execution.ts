@@ -12,7 +12,7 @@ import type {
   VideoGenerationResolution,
   VideoGenerationSourceAsset,
 } from "../../video-generation/types.js";
-import { type AgentGeneratedAttachment } from "../generated-attachments.js";
+import type { AgentGeneratedAttachment } from "../generated-attachments.js";
 import type { ToolFsPolicy } from "../tool-fs-policy.js";
 import { persistGeneratedMediaBatch } from "./generated-media-batch-persistence.js";
 import type { MediaGenerationTaskHandle } from "./media-generate-background-shared.js";
