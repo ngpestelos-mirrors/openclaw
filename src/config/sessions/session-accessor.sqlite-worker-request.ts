@@ -400,7 +400,7 @@ export function runSqliteMutationWorkerRequest<Result>(params: {
               // before returning this writer section; preliminary admissions release separately.
               await requested.released.promise;
               if (metadata?.failure) {
-                throw metadata.failure;
+                throw toStringifiedError(metadata.failure);
               }
               return completed && !workerError && !transportError && !params.getFailure?.()
                 ? result

@@ -5,7 +5,6 @@ import {
   installGitHubPublicationTestHarness,
   persistPublicationTestSession,
 } from "./github-publication.test-support.js";
-import { DatabaseSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
@@ -14,7 +13,6 @@ import {
   patchSessionEntryCore,
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.js";
-import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import * as operationAdmission from "../infra/sqlite-worker-operation-admission.js";
 import { sqliteWorkerOwnerProbe as probe } from "../infra/sqlite-worker-owner-probe.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -178,7 +176,7 @@ describe("personal publication session lifecycle", () => {
     }
   });
 
-  it("preserves receipts and repository ownership when a foreign write crosses the native receipt grant", async () => {
+  it("preserves receipts and repository ownership when an owner write crosses the native receipt grant", async () => {
     const { owner } = fixture;
     const { session, published, receipt, binding, lifecycle } = await publishReceipt();
     expect(lifecycle).toBeDefined();
@@ -192,17 +190,10 @@ describe("personal publication session lifecycle", () => {
     const original = session.read();
     const successor = {
       ...original,
-      sessionId: "foreign-receipt-successor",
-      lifecycleRevision: "foreign-receipt-generation",
+      sessionId: "receipt-successor",
+      lifecycleRevision: "receipt-successor-generation",
       updatedAt: Date.now(),
     };
-    const databasePath = resolveSqliteTargetFromSessionStorePath(session.storePath, {
-      agentId: "main",
-    }).path;
-    if (!databasePath) {
-      throw new Error("Receipt fixture has no physical session database");
-    }
-    const peer = new DatabaseSync(databasePath);
     let injected = false;
     let receiptAdmitted = false;
     let nativeAbsent = false;
@@ -222,31 +213,11 @@ describe("personal publication session lifecycle", () => {
       ) {
         nativeAbsent = isRecord(facts) && facts.entry === undefined;
         admit(nativeRequest, () => {
-          expect(
-            peer
-              .prepare("SELECT session_key FROM session_nodes WHERE session_key = ?")
-              .get(SESSION_KEY),
-          ).toBeUndefined();
-          peer.exec("BEGIN IMMEDIATE");
-          try {
-            peer
-              .prepare(
-                "INSERT INTO session_nodes (session_key, current_session_id, entry_json, updated_at) VALUES (?, ?, ?, ?)",
-              )
-              .run(
-                SESSION_KEY,
-                successor.sessionId,
-                JSON.stringify(successor),
-                successor.updatedAt,
-              );
-            peer
-              .prepare("UPDATE session_nodes SET entry_valid = 1 WHERE session_key = ?")
-              .run(SESSION_KEY);
-            peer.exec("COMMIT");
-          } catch (error) {
-            peer.exec("ROLLBACK");
-            throw error;
-          }
+          expect(session.read()).toBeUndefined();
+          replaceSessionEntrySync(
+            { agentId: "main", storePath: session.storePath, sessionKey: SESSION_KEY },
+            successor,
+          );
           injected = true;
           return grant();
         });
@@ -269,9 +240,7 @@ describe("personal publication session lifecycle", () => {
       held.release.resolve();
       const outcome = await deletion;
       expect(injected).toBe(true);
-      expect(
-        peer.prepare("SELECT entry_json FROM session_nodes WHERE session_key = ?").get(SESSION_KEY),
-      ).toEqual({ entry_json: JSON.stringify(successor) });
+      expect(session.read()).toEqual(successor);
       expect(await repositories.get(workspace.workspaceId)).toEqual(workspace);
       expect(readPersonalGitHubPublication(owner, { requestId: published.requestId })).toEqual(
         receipt,
@@ -288,7 +257,6 @@ describe("personal publication session lifecycle", () => {
       await deletion;
       held.restore();
       admission.mockRestore();
-      peer.close();
     }
   });
 

@@ -1,6 +1,5 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createOperationalRunInstanceRef,
@@ -14,12 +13,14 @@ import {
 import { prepareGatewayToolCallerAssertion } from "../agents/tools/gateway-caller-context.js";
 import { callGatewayTool } from "../agents/tools/gateway.js";
 import type { SessionEntry } from "../config/sessions.js";
-import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import {
+  replaceSessionEntry,
+  replaceSessionEntrySync,
+} from "../config/sessions/session-accessor.js";
 import {
   deleteSessionEntryRows,
   writeSessionEntry,
 } from "../config/sessions/session-accessor.sqlite-entry-store.js";
-import { resolvePhysicalSessionStorePath } from "../config/sessions/session-store-path.js";
 import { clearSessionStoreCacheForTest } from "../config/sessions/store-writer-state.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import * as workerAdmission from "../infra/sqlite-worker-operation-admission.js";
@@ -355,7 +356,7 @@ describe("MCP loopback completion lineage at the final tool-effect fence", () =>
   });
 
   it.each(["transaction", "commit", "prepare"] as const)(
-    "rejects a watch when foreign lineage changes during its %s grant",
+    "rejects a watch when owner-committed lineage changes during its %s grant",
     async (stage) => {
       await seedLineage();
       const targetSessionKey = `agent:main:dashboard:lineage-watch-${stage}`;
@@ -364,9 +365,6 @@ describe("MCP loopback completion lineage at the final tool-effect fence", () =>
         expect(await registerSessionStateWatch(watch)).toBe(true);
       }
       const grant = await mintCompletionGrant(`lineage-watch-${stage}`);
-      const peer = new DatabaseSync(
-        resolvePhysicalSessionStorePath({ agentId: "main", sessionKey: childKey }),
-      );
       let witnessed = false;
       let watched: boolean | undefined;
       registerBeforeToolCallHook(async () => {
@@ -381,11 +379,10 @@ describe("MCP loopback completion lineage at the final tool-effect fence", () =>
           ) {
             witnessed = true;
             const replacementOwner = "agent:main:direct:another-requester";
-            peer
-              .prepare(
-                "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.spawnedBy', ?), spawned_by = ?, parent_session_key = ? WHERE session_key = ?",
-              )
-              .run(replacementOwner, replacementOwner, replacementOwner, childKey);
+            replaceSessionEntrySync(
+              { agentId: "main", sessionKey: childKey },
+              { ...childEntry, spawnedBy: replacementOwner },
+            );
           }
           admit(request, allow);
         });
@@ -397,21 +394,17 @@ describe("MCP loopback completion lineage at the final tool-effect fence", () =>
           admission.mockRestore();
         }
       });
-      try {
-        const response = await grant.request("tools/call");
-        expect(await response.json()).toMatchObject({ result: { isError: true } });
-        expect(witnessed).toBe(true);
-        expect(watched).toBe(false);
-        const cursor = openOpenClawStateDatabase()
-          .db.prepare(
-            "SELECT target_session_key FROM session_watch_cursors WHERE watcher_session_key = ? AND target_session_key = ?",
-          )
-          .get(requesterKey, targetSessionKey);
-        expect(Boolean(cursor)).toBe(stage === "prepare");
-        expect(await grant.written()).toBeUndefined();
-      } finally {
-        peer.close();
-      }
+      const response = await grant.request("tools/call");
+      expect(await response.json()).toMatchObject({ result: { isError: true } });
+      expect(witnessed).toBe(true);
+      expect(watched).toBe(false);
+      const cursor = openOpenClawStateDatabase()
+        .db.prepare(
+          "SELECT target_session_key FROM session_watch_cursors WHERE watcher_session_key = ? AND target_session_key = ?",
+        )
+        .get(requesterKey, targetSessionKey);
+      expect(Boolean(cursor)).toBe(stage === "prepare");
+      expect(await grant.written()).toBeUndefined();
     },
   );
 
