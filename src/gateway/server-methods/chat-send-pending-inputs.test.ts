@@ -26,6 +26,8 @@ import {
   resolveSqliteScope,
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
+import { readPendingInput } from "../../config/sessions/session-pending-input-operations.kernel.js";
+import type { PendingInputSnapshot } from "../../config/sessions/session-pending-input-operations.types.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { initializeGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
@@ -34,7 +36,10 @@ import {
   createUserTurnTranscriptRecorder,
   type UserTurnTranscriptRecorder,
 } from "../../sessions/user-turn-transcript.js";
-import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import {
+  getOpenClawAgentDatabaseIfOpen,
+  openOpenClawAgentDatabase,
+} from "../../state/openclaw-agent-db.js";
 import { setDisplayName } from "../../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
@@ -319,14 +324,19 @@ describe("ordinary chat input admission", () => {
   });
 
   it.each([
-    { id: "openclaw-control-ui", mode: "webchat", displayName: "Web" },
-    { id: "cli", mode: "cli", displayName: "CLI" },
-    { id: "openclaw-macos", mode: "ui", displayName: "macOS" },
-    { id: "gateway-client", mode: "backend", displayName: "Automation" },
-  ] satisfies Array<Pick<GatewayClientInfo, "id" | "mode" | "displayName">>)(
-    "stages the approved $id follow-up and its source before ACK without changing the active transcript",
-    async (clientInfo) => {
-      const fixture = await createBrowserFollowupFixture();
+    { id: "openclaw-control-ui", mode: "webchat", displayName: "Web", storage: "durable" },
+    { id: "cli", mode: "cli", displayName: "CLI", storage: "durable" },
+    { id: "openclaw-macos", mode: "ui", displayName: "macOS", storage: "durable" },
+    { id: "gateway-client", mode: "backend", displayName: "Automation", storage: "durable" },
+    { id: "openclaw-control-ui", mode: "webchat", displayName: "Web", storage: "native-incognito" },
+  ] satisfies Array<
+    Pick<GatewayClientInfo, "id" | "mode" | "displayName"> & {
+      storage: "durable" | "native-incognito";
+    }
+  >)(
+    "stages the approved $id $storage follow-up and its source before ACK without changing the active transcript",
+    async ({ storage, ...clientInfo }) => {
+      const fixture = await createBrowserFollowupFixture({ storage });
       fixture.client.connect.client = { ...fixture.client.connect.client, ...clientInfo };
       fixture.params.queueMode = "followup";
       const profile = ensureProfileForEmail("alice@example.test");
@@ -343,6 +353,7 @@ describe("ordinary chat input admission", () => {
       let transcriptAtAck: ReturnType<typeof loadTranscriptEventsSync> | undefined;
       let pendingAtAck: ReturnType<typeof readPending> | undefined;
       let pendingAtNotification: ReturnType<typeof readPending> | undefined;
+      let nativePendingAtAck: PendingInputSnapshot | undefined;
       fixture.context.getSessionEventSubscriberConnIds = () => new Set(["observer"]);
       vi.spyOn(fixture.context, "broadcastToConnIds").mockImplementation((event, payload) => {
         if (event === "sessions.changed" && isRecord(payload) && payload.reason === "send") {
@@ -353,6 +364,22 @@ describe("ordinary chat input admission", () => {
         if (ok) {
           transcriptAtAck = loadTranscriptEventsSync(scope);
           pendingAtAck = readPending();
+          if (storage === "native-incognito") {
+            const database = getOpenClawAgentDatabaseIfOpen({
+              agentId: scope.agentId,
+              path: scope.storePath,
+            });
+            if (!database) {
+              throw new Error("Native incognito input must remain in its existing owner");
+            }
+            nativePendingAtAck = readPendingInput(database, {
+              kind: "stage",
+              sessionKey: scope.sessionKey,
+              sessionId: scope.sessionId,
+              idempotencyKey: `${params.idempotencyKey}:user`,
+              trackCompletion: true,
+            });
+          }
         }
       });
       try {
@@ -369,6 +396,22 @@ describe("ordinary chat input admission", () => {
         );
         expect(respond.mock.calls[0]?.[1]).not.toHaveProperty("messageSeq");
         expect(transcriptAtAck).toEqual(activeTranscript);
+        if (storage === "native-incognito") {
+          expect(nativePendingAtAck).toMatchObject({
+            current: true,
+            existing: { state: "queued", run_id: params.idempotencyKey },
+          });
+          const accepted = nativePendingAtAck?.existing;
+          if (!accepted) {
+            throw new Error("Native incognito ACK omitted its pending input custody");
+          }
+          expect(JSON.parse(accepted.message_json)).toMatchObject({
+            role: "user",
+            content: approvedContent,
+            idempotencyKey: `${params.idempotencyKey}:user`,
+            __openclaw: { senderIdentity: { type: "profile", id: profile.id } },
+          });
+        }
         expect(await pendingAtAck).toMatchObject({
           status: "fulfilled",
           value: {
