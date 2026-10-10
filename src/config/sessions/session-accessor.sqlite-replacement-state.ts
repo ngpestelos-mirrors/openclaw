@@ -50,6 +50,7 @@ export type SessionEntryReplacementPostimages = {
   database: OpenClawAgentDatabase["db"];
   revision: number;
   entries: ReadonlyMap<string, SessionEntry>;
+  sideTables?: ReadonlyMap<string, { memberIdsJson: string; hasBoard: boolean }>;
 };
 
 /** Receipts carry only publication facts, never saved prompts or maintenance payloads. */
@@ -61,10 +62,10 @@ export function prepareSessionEntryReplacementPublication(
   const retained =
     postimages?.database === database.db &&
     postimages.revision === readSqliteNativeMutationRevision(database.db)
-      ? postimages.entries
+      ? postimages
       : undefined;
   const reusePostimages =
-    retained !== undefined && [...result.current.keys()].every((key) => retained.has(key));
+    retained !== undefined && [...result.current.keys()].every((key) => retained.entries.has(key));
   const archived = new Set(
     result.maintenancePlans.flatMap((plan) =>
       plan.archivedEntries.map(({ sessionKey }) => sessionKey),
@@ -76,24 +77,30 @@ export function prepareSessionEntryReplacementPublication(
   const unavailableParticipantKeys = new Set<string>();
   let readCommitted: ReturnType<typeof prepareExactSessionEntryRowReads> | undefined;
   for (const key of result.current.keys()) {
-    readCommitted ??= prepareExactSessionEntryRowReads(
-      database,
-      [...result.current.keys()],
-      "list",
-      undefined,
-      {
-        includeBoardPresence: true,
-        includeMembership: true,
-        ...(reusePostimages ? { projectParticipants: false as const } : {}),
-        onParticipantProjectionError: (sessionKey) => unavailableParticipantKeys.add(sessionKey),
-      },
-    );
-    // Read the final persisted bytes and side tables after assignment, alias moves and maintenance.
-    const committed = readCommitted(key);
-    if (!committed) {
-      throw new Error(`Session publication lost its committed metadata: ${key}`);
+    const retainedSideTables = reusePostimages ? retained?.sideTables?.get(key) : undefined;
+    let committed: ResolvedSessionEntryRow | undefined;
+    if (!retainedSideTables) {
+      readCommitted ??= prepareExactSessionEntryRowReads(
+        database,
+        [...result.current.keys()],
+        "list",
+        undefined,
+        {
+          includeBoardPresence: true,
+          includeMembership: true,
+          ...(reusePostimages ? { projectParticipants: false as const } : {}),
+          onParticipantProjectionError: (sessionKey) => unavailableParticipantKeys.add(sessionKey),
+        },
+      );
+      // Assignment, aliases and changed generations still acquire final side-table facts.
+      committed = readCommitted(key);
+      if (!committed) {
+        throw new Error(`Session publication lost its committed metadata: ${key}`);
+      }
     }
-    const memberIds: unknown = JSON.parse(committed.row.member_ids_json ?? "null");
+    const memberIds: unknown = JSON.parse(
+      retainedSideTables?.memberIdsJson ?? committed?.row.member_ids_json ?? "null",
+    );
     if (
       !Array.isArray(memberIds) ||
       !memberIds.every((id): id is string => typeof id === "string")
@@ -101,7 +108,10 @@ export function prepareSessionEntryReplacementPublication(
       throw new Error(`Session publication lost its committed membership: ${key}`);
     }
     // Side-table writes after the patch revoke the complete retained projection above.
-    const entry = (reusePostimages ? retained?.get(key) : undefined) ?? committed.entry;
+    const entry = (reusePostimages ? retained?.entries.get(key) : undefined) ?? committed?.entry;
+    if (!entry) {
+      throw new Error(`Session publication lost its committed metadata: ${key}`);
+    }
     current.set(key, freezeJsonSnapshot(entry));
     if (unavailableParticipantKeys.has(key)) {
       continue;
@@ -123,7 +133,7 @@ export function prepareSessionEntryReplacementPublication(
           },
           entry.sessionId,
         ],
-        hasBoard: committed.row.board_present === 1,
+        hasBoard: retainedSideTables?.hasBoard ?? committed?.row.board_present === 1,
         activitySummaryWatermark: readSessionActivitySummary(entry)
           ? readSessionTranscriptWatermarkInDatabase(database, entry.sessionId)
           : undefined,
@@ -239,6 +249,7 @@ export function commitSessionEntryReplacementsInDatabase(
       transactionRows.set(sessionKey, transactionRow);
     }
   }
+  const validatedRevision = readSqliteNativeMutationRevision(database.db);
   beforeReplacements();
   if (input.preparedTranscript) {
     const { sessionKey, sessionId, events } = input.preparedTranscript;
@@ -265,6 +276,9 @@ export function commitSessionEntryReplacementsInDatabase(
     for (const { entry, sessionKey } of sourceEntries) {
       previous.set(sessionKey, entry);
     }
+    const canReuseRow =
+      validatedRevision !== undefined &&
+      validatedRevision === readSqliteNativeMutationRevision(database.db);
     const written = writeSessionEntry(
       database,
       replacement.sessionKey,
@@ -273,7 +287,10 @@ export function commitSessionEntryReplacementsInDatabase(
         ...(input.consumePendingReset ? { consumePendingReset: true } : {}),
         previousEntry: selectedBefore ?? null,
         canonicalPreviousEntry: transactionRows.get(replacement.sessionKey)?.entry ?? null,
-        canonicalPreviousRow: transactionRows.get(replacement.sessionKey)?.row,
+        canonicalPreviousRow: canReuseRow
+          ? transactionRows.get(replacement.sessionKey)?.row
+          : undefined,
+        forceSnapshotWrite: !canReuseRow,
       },
     );
     deleteLegacySessionEntryRows(

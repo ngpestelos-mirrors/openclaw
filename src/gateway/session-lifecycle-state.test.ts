@@ -3,6 +3,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions.js";
+import { projectSessionLifecycleEvent } from "../config/sessions/session-lifecycle-event.js";
 import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 
 const persistenceMocks = vi.hoisted(() => ({
@@ -25,6 +26,25 @@ vi.mock("../plugins/loader-runtime-load.js", () => {
 vi.mock("../config/sessions/session-accessor.js", () => ({
   patchSessionEntryTarget: persistenceMocks.updateSessionEntry,
   appendSessionTranscriptReport: vi.fn(async () => ({ ok: true, value: undefined })),
+}));
+
+// mock-isolation: Lifecycle unit cases use their controlled store instead of database admission.
+vi.mock("../config/sessions/session-accessor.sqlite-entry.js", () => ({
+  applySessionEntryTargetOperation: (
+    ...[target, operation, options]: Parameters<
+      typeof import("../config/sessions/session-accessor.sqlite-entry.js").applySessionEntryTargetOperation
+    >
+  ) =>
+    persistenceMocks.updateSessionEntry(
+      target,
+      (entry: SessionEntry) => {
+        if (operation.kind !== "lifecycle-event") {
+          throw new Error("Expected the lifecycle reducer");
+        }
+        return projectSessionLifecycleEvent(entry, operation.lifecycle);
+      },
+      options,
+    ),
 }));
 
 // mock-isolation: Controlled entries isolate lifecycle projection from database admission.

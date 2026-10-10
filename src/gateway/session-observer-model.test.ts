@@ -94,22 +94,27 @@ function state(overrides: Partial<SessionObserverState> = {}): SessionObserverSt
 }
 
 describe("defaultPersistDigest tri-state contract", () => {
-  it("refuses a digest when authority is revoked while its writer admission waits", async ({
-    signal,
-  }) => {
+  it("refuses a digest when authority is revoked after planning", async ({ signal }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const sessionKey = "agent:main:persist-digest-revoked";
       await upsertSessionEntryCore({ sessionKey, agentId }, { sessionId: "sess-1", updatedAt: 1 });
-      const queued = createDeferred();
+      const planned = createDeferred();
       const release = createDeferred();
-      const patch = sessionEntryAccess.applySessionEntryOperation;
+      const patch = sessionEntryAccess.patchSessionEntryCore;
       const patchSpy = vi
-        .spyOn(sessionEntryAccess, "applySessionEntryOperation")
-        .mockImplementation(async (scope, operation, options) => {
-          queued.resolve();
-          await release.promise;
-          return patch(scope, operation, options);
-        });
+        .spyOn(sessionEntryAccess, "patchSessionEntryCore")
+        .mockImplementation((scope, update, options) =>
+          patch(
+            scope,
+            async (entry, context) => {
+              const result = await update(entry, context);
+              planned.resolve();
+              await release.promise;
+              return result;
+            },
+            options,
+          ),
+        );
       const changes = observeRowChanges();
       let current = true;
       const writing = defaultPersistDigest({
@@ -125,7 +130,7 @@ describe("defaultPersistDigest tri-state contract", () => {
       );
       try {
         await withinTest(
-          awaitGateBeforeSettlement(queued.promise, outcome, "Digest settled before admission"),
+          awaitGateBeforeSettlement(planned.promise, outcome, "Digest settled before planning"),
           signal,
         );
         current = false;
@@ -142,23 +147,19 @@ describe("defaultPersistDigest tri-state contract", () => {
     });
   });
 
-  it.each([true, false])(
-    "returns null when the session row is gone (current: %s)",
-    async (current) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async () => {
-        const sessionKey = "agent:main:persist-digest-missing";
-        const changes = observeRowChanges();
-        const accepted = await defaultPersistDigest({
-          sessionKey,
-          agentId,
-          digest: makeDigest(sessionKey, 1),
-          stillCurrent: () => current,
-        });
-        expect(accepted).toBeNull();
-        expect(changes).not.toContainEqual(expect.objectContaining({ sessionKey, agentId }));
+  it("returns null when the session row is gone", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const sessionKey = "agent:main:persist-digest-missing";
+      const changes = observeRowChanges();
+      const accepted = await defaultPersistDigest({
+        sessionKey,
+        agentId,
+        digest: makeDigest(sessionKey, 1),
       });
-    },
-  );
+      expect(accepted).toBeNull();
+      expect(changes).not.toContainEqual(expect.objectContaining({ sessionKey, agentId }));
+    });
+  });
 
   it("returns true and publishes the changed row when the digest is applied", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {

@@ -320,9 +320,13 @@ export function readSessionEntryIdentity(
  * prove this logical row is unchanged can re-read and compare the raw rows instead of decoding
  * the entry JSON again.
  */
-export function readSessionEntryRowScan(database: OpenClawAgentDatabaseReader, sessionKey: string) {
+export function readSessionEntryRowScan(
+  database: OpenClawAgentDatabaseReader,
+  sessionKey: string,
+  includeWindowFacts?: true,
+) {
   // Mutation snapshots must retain every raw column, including the saved prompts.
-  return scanSessionEntryRows(database, sessionKey, "full");
+  return scanSessionEntryRows(database, sessionKey, "full", true, includeWindowFacts);
 }
 
 function selectReadableSessionEntryRows(
@@ -359,6 +363,7 @@ function scanSessionEntryRows(
   sessionKey: string,
   projection: SessionEntryProjection,
   includeParticipants = true,
+  includeWindowFacts?: true,
 ):
   | {
       lookupKeys: string[];
@@ -373,7 +378,15 @@ function scanSessionEntryRows(
     if (firstLookupKey === undefined) {
       return undefined;
     }
-    const rows = readSelectedSessionEntryRows(database, lookupKeys, projection);
+    const rows = readSelectedSessionEntryRows(
+      database,
+      lookupKeys,
+      projection,
+      undefined,
+      includeWindowFacts
+        ? { includeWindowFacts, includeBoardPresence: true, includeMembership: true }
+        : undefined,
+    );
     let selected: ResolvedSessionEntryRow | undefined;
     for (const row of rows) {
       const entry = includeParticipants
@@ -436,11 +449,17 @@ export function readExactSessionEntryRow(
   sessionKey: string,
   projection: SessionEntryProjection = "full",
   validation?: "canonical",
+  includeWindowFacts?: true,
 ): ResolvedSessionEntryRow | undefined {
   return runSqliteReadOperationSync(database.db, () => {
     const queries = getExactSessionEntryQueries(database.db);
-    const row =
-      validation === "canonical"
+    const row = includeWindowFacts
+      ? readSelectedSessionEntryRows(database, sessionKey, projection, validation, {
+          includeWindowFacts,
+          includeBoardPresence: true,
+          includeMembership: true,
+        })[0]
+      : validation === "canonical"
         ? queries.canonical(sessionKey, projection)
         : queries.row(sessionKey, projection);
     if (!row) {
@@ -633,13 +652,26 @@ export function readSessionEntryTargetRow(
     allowCanonicalMove?: boolean;
     guardRetainedWindows?: boolean;
     projection?: SessionEntryProjection;
+    includeWindowFacts?: true;
   } = {},
 ): { entry: SessionEntry | null; row: ResolvedSessionEntryRow["row"] } | undefined {
   return runSqliteReadOperationSync(database.db, () => {
     assertCanonicalSqliteSessionKeysCurrent(database);
     const queries = getExactSessionEntryQueries(database.db);
     const rows = target.storeKeys.flatMap((key) => {
-      const row = queries.row(key.trim(), options.projection);
+      const row = options.includeWindowFacts
+        ? readSelectedSessionEntryRows(
+            database,
+            key.trim(),
+            options.projection ?? "full",
+            undefined,
+            {
+              includeWindowFacts: true,
+              includeMembership: true,
+              includeBoardPresence: true,
+            },
+          )[0]
+        : queries.row(key.trim(), options.projection);
       if (!row) {
         return [];
       }

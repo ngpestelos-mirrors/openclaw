@@ -126,7 +126,7 @@ Schemas, retained bytes, durability, and update behavior are unchanged.
 
 Pure entry bookkeeping uses typed reducers against the writer transaction's current
 row. A compound command applies each reducer to the previous reducer's postimage
-and persists the final result once. Observer digests and activity summaries retain
+and persists the final result once. Lifecycle events and activity summaries retain
 their revision, lifecycle, transcript, and live host checks without a separate
 preparation request. Opaque updater callbacks keep their preparation and compare-and-swap
 boundary; they are never included in a compound reducer.

@@ -9,6 +9,10 @@ import {
   type SessionEntryUsageUpdate,
 } from "./session-entry-usage.js";
 import {
+  projectSessionLifecycleEvent,
+  type SessionLifecycleEventPatchInput,
+} from "./session-lifecycle-event.js";
+import {
   projectPendingFinalDeliverySettlement,
   type PendingFinalDeliverySettlementInput,
 } from "./session-pending-final-settlement.js";
@@ -29,12 +33,7 @@ type ExpectedSession = Pick<SessionEntry, "sessionId"> &
 /** Closed internal operations; arbitrary updater callbacks retain prepare/CAS. */
 type SessionEntryPatchStep = (
   | { kind: "fields"; patch: Partial<SessionEntry> }
-  | {
-      kind: "observer-digest";
-      sessionId?: string;
-      digest: NonNullable<SessionEntry["observerDigest"]>;
-      skip?: boolean;
-    }
+  | { kind: "lifecycle-event"; lifecycle: SessionLifecycleEventPatchInput }
   | {
       kind: "activity-summary";
       sessionKey: string;
@@ -116,7 +115,7 @@ export function projectSessionEntryPatch(
   return { next, outcomes };
 }
 
-export function reduceSessionEntryPatch(
+function reduceSessionEntryPatch(
   operation: SessionEntryPatchStep,
   entry: SessionEntry,
   existingEntry: SessionEntry | undefined,
@@ -134,30 +133,8 @@ export function reduceSessionEntryPatch(
     return null;
   }
   switch (operation.kind) {
-    case "observer-digest": {
-      const digest = operation.digest;
-      if (
-        operation.skip ||
-        (operation.sessionId !== undefined && entry.sessionId !== operation.sessionId) ||
-        (digest.sessionId !== undefined && entry.sessionId !== digest.sessionId) ||
-        ((operation.sessionId !== undefined ||
-          digest.sessionId !== undefined ||
-          digest.lifecycleRevision !== undefined) &&
-          entry.lifecycleRevision !== digest.lifecycleRevision)
-      ) {
-        return null;
-      }
-      let previous = entry.observerDigest;
-      if (
-        previous &&
-        ((previous.sessionId !== undefined && previous.sessionId !== entry.sessionId) ||
-          ((previous.sessionId !== undefined || previous.lifecycleRevision !== undefined) &&
-            previous.lifecycleRevision !== entry.lifecycleRevision))
-      ) {
-        previous = undefined;
-      }
-      return (previous?.revision ?? 0) >= digest.revision ? null : { observerDigest: digest };
-    }
+    case "lifecycle-event":
+      return projectSessionLifecycleEvent(entry, operation.lifecycle);
     case "activity-summary":
       return entry.initializationPending ||
         isSubagentSessionListEntry(operation.sessionKey, entry) ||

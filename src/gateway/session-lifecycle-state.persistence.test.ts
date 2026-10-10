@@ -2,7 +2,11 @@ import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterAll, afterEach, expect, it, vi, type MockInstance } from "vitest";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
-import { createDeferred } from "../../test/helpers/promise.js";
+import {
+  awaitGateBeforeSettlement,
+  createDeferred,
+  withinTest,
+} from "../../test/helpers/promise.js";
 import { transitionMainSessionRecovery } from "../agents/main-session-recovery/main-session-recovery-state.js";
 import {
   createAgentRunDirectAbortError,
@@ -16,6 +20,7 @@ import {
   patchSessionEntryCore,
   replaceSessionEntry,
 } from "../config/sessions/session-accessor.js";
+import * as sessionEntryAccess from "../config/sessions/session-accessor.sqlite-entry.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import {
   emitAgentEvent,
@@ -155,6 +160,102 @@ it.each([
       });
       expect(observed).toMatchObject({ kind: "observed", view: { status: recovery } });
     } finally {
+      routing.loadSessionEntry.mockReset();
+      await closeOpenClawAgentDatabasesAsync(path.dirname(target.storePath));
+      closeOpenClawAgentDatabasesForTest(path.dirname(target.storePath));
+    }
+  },
+);
+
+it.for(["authority", "writer"] as const)(
+  "rejects a successful terminal after its %s changes in the writer queue",
+  async (change, { signal }) => {
+    const target = {
+      storePath: path.join(tempDirs.make(), "sessions.json"),
+      sessionKey: "agent:main:queued-terminal",
+    };
+    const runId = "queued-terminal-run";
+    const sessionId = "queued-terminal-session";
+    const lifecycleRevision = "lifecycle-1";
+    const writerStarted = createDeferred();
+    const releaseWriter = createDeferred();
+    const submitted = createDeferred();
+    const apply = sessionEntryAccess.applySessionEntryTargetOperation;
+    const applying = vi
+      .spyOn(sessionEntryAccess, "applySessionEntryTargetOperation")
+      .mockImplementation((...args) => {
+        const writing = apply(...args);
+        submitted.resolve();
+        return writing;
+      });
+    routing.loadSessionEntry.mockImplementation(() => ({
+      ...target,
+      canonicalKey: target.sessionKey,
+      entry: loadSessionEntry(target),
+    }));
+    let current = true;
+    let heldWriter: ReturnType<typeof patchSessionEntryCore> | undefined;
+    let outcome: Promise<unknown> | undefined;
+    try {
+      await replaceSessionEntry(target, {
+        sessionId,
+        lifecycleRevision,
+        activeWriterRunId: runId,
+        lifecycleRunId: runId,
+        startedAt: 1_000,
+        updatedAt: 1_000,
+      });
+      heldWriter = patchSessionEntryCore(target, async () => {
+        writerStarted.resolve();
+        await releaseWriter.promise;
+        return change === "writer" ? { activeWriterRunId: "replacement-run" } : null;
+      });
+      await withinTest(writerStarted.promise, signal);
+      outcome = lifecycleState
+        .persistGatewaySessionLifecycleEvent({
+          sessionKey: target.sessionKey,
+          expectedWriter: { runId, sessionId, lifecycleRevision },
+          assertCommitAllowed: () => {
+            if (!current) {
+              throw new Error("terminal authority retired");
+            }
+          },
+          event: {
+            runId,
+            sessionId,
+            lifecycleGeneration: getAgentEventLifecycleGeneration(),
+            ts: 2_000,
+            data: { phase: "end", startedAt: 1_000, endedAt: 2_000 },
+          },
+        })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      await withinTest(
+        awaitGateBeforeSettlement(submitted.promise, outcome, "Terminal did not queue its write"),
+        signal,
+      );
+      current = change !== "authority";
+      releaseWriter.resolve();
+      const heldEntry = await withinTest(heldWriter, signal);
+      const result = await withinTest(outcome, signal);
+      if (change === "authority") {
+        expect(result).toMatchObject({ message: "terminal authority retired" });
+      } else {
+        expect(result).toBeUndefined();
+      }
+      expect(loadSessionEntry(target)).toMatchObject({
+        activeWriterRunId: change === "writer" ? "replacement-run" : runId,
+        lifecycleRunId: runId,
+        updatedAt: heldEntry?.updatedAt ?? 1_000,
+      });
+      expect(loadSessionEntry(target)?.status).toBeUndefined();
+    } finally {
+      releaseWriter.resolve();
+      await heldWriter;
+      await outcome;
+      applying.mockRestore();
       routing.loadSessionEntry.mockReset();
       await closeOpenClawAgentDatabasesAsync(path.dirname(target.storePath));
       closeOpenClawAgentDatabasesForTest(path.dirname(target.storePath));

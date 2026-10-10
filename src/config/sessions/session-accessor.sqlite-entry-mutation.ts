@@ -85,6 +85,7 @@ export function writeSessionEntryPatchInDatabase(
   > & { fresh: SqliteLifecycleTargetSnapshot; reusePostimage?: true },
 ): SessionEntryPatchMutation {
   const { fresh } = params;
+  const acquiredRevision = readSqliteNativeMutationRevision(database.db);
   params.options.assertCommitAllowed?.();
   const conversation = params.options.workerGuard?.conversation;
   if (conversation) {
@@ -101,6 +102,11 @@ export function writeSessionEntryPatchInDatabase(
   if (!params.next) {
     return { applied: false, entry: structuredClone(params.writeBase) };
   }
+  const canReuseSnapshot =
+    acquiredRevision !== undefined &&
+    acquiredRevision === readSqliteNativeMutationRevision(database.db) &&
+    (!fresh[0]?.window ||
+      (fresh[0].window.database === database.db && fresh[0].window.revision === acquiredRevision));
   // Commit reads own these entries; update callbacks only receive detached copies.
   const previous = new Map(fresh.map((row) => [row.sessionKey, row.entry]));
   const selectedPreviousEntry = fresh[0]?.entry ?? params.writeBase;
@@ -109,14 +115,16 @@ export function writeSessionEntryPatchInDatabase(
     ...(params.options.consumePendingReset ? { consumePendingReset: true } : {}),
     ...(params.options.providerReviewMutation ? { providerReviewMutation: true } : {}),
     previousEntry: selectedPreviousEntry,
+    forceSnapshotWrite: !canReuseSnapshot,
     // The validated snapshot already owns this canonical row's decode.
     ...(fresh[0]?.sessionKey === params.sessionKey
       ? {
           canonicalPreviousEntry: fresh[0].entry,
-          canonicalPreviousRow: fresh[0].persistedRows?.rows.find(
-            (row) => row.session_key === params.sessionKey,
-          ),
-          canonicalPreviousWindow: params.reusePostimage ? fresh[0].window : undefined,
+          canonicalPreviousRow: canReuseSnapshot
+            ? fresh[0].persistedRows?.rows.find((row) => row.session_key === params.sessionKey)
+            : undefined,
+          canonicalPreviousWindow:
+            params.reusePostimage && canReuseSnapshot ? fresh[0].window : undefined,
         }
       : {}),
   });
@@ -127,7 +135,7 @@ export function writeSessionEntryPatchInDatabase(
   // Identity publication borrows session and lifecycle facts owned by this canonical write.
   const current = new Map([[params.sessionKey, persisted]]);
   let postimages: SessionEntryReplacementPostimages | undefined;
-  if (params.reusePostimage && committedRevision !== undefined) {
+  if (params.reusePostimage && canReuseSnapshot && committedRevision !== undefined) {
     const {
       sessionDiffBaseline: _baseline,
       skillsSnapshot: _skills,
@@ -135,9 +143,12 @@ export function writeSessionEntryPatchInDatabase(
       ...metadata
     } = projectCanonicalSessionEntryShape(persisted);
     const canonicalPrevious = previous.get(params.sessionKey);
+    const sideTables =
+      canonicalPrevious?.sessionId === persisted.sessionId ? fresh[0]?.sideTables : undefined;
     postimages = {
       database: database.db,
       revision: committedRevision,
+      ...(sideTables ? { sideTables: new Map([[params.sessionKey, sideTables]]) } : {}),
       entries: new Map([
         [
           params.sessionKey,

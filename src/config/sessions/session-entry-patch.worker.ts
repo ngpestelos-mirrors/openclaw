@@ -74,7 +74,7 @@ export function readSessionEntryPatchSnapshot(
   includeWindowFacts?: true,
 ) {
   return selection.kind === "target"
-    ? readLifecycleTargetSnapshot(database, selection.target)
+    ? readLifecycleTargetSnapshot(database, selection.target, { includeWindowFacts })
     : readSessionEntrySelectionSnapshot(
         database,
         selection.sessionKey,
