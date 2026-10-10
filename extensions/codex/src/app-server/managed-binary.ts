@@ -19,6 +19,12 @@ import { CODEX_APP_SERVER_VERSION, MANAGED_CODEX_APP_SERVER_PACKAGE } from "./ve
 
 export const CODEX_VERSION_TIMEOUT_MS = 5_000;
 const CODEX_VERSION_MAX_OUTPUT_BYTES = 64 * 1024;
+/**
+ * Initialize allowance for an installed Codex: its selection probe and its
+ * managed starts that still have the bundled fallback. Includes first-launch
+ * OS scans of a freshly installed binary on slow hosts.
+ */
+export const INSTALLED_CODEX_INITIALIZE_TIMEOUT_MS = 15_000;
 
 // Mirrors the official launcher; native startup remains owned by its npm entrypoint.
 const NATIVE_TARGET_TRIPLES = new Map([
@@ -163,6 +169,11 @@ export function assertInstalledCodexAppServerVersion(
   if (selected?.command === command && serverVersion !== selected.version) {
     throw new Error(`app-server reported ${serverVersion ?? "no version"}`);
   }
+}
+
+/** True while `command` is this process's selected installed Codex. */
+export function isSelectedInstalledCodexAppServer(command: string): boolean {
+  return installedCodex.selected?.command === command;
 }
 
 /** Uncached selection with one log line naming the chosen binary and why. */

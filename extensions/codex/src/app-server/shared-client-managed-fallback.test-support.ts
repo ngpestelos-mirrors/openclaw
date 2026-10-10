@@ -4,6 +4,7 @@ import { CodexAppServerClient } from "./client.js";
 import type { CodexAppServerStartOptions } from "./config.js";
 import {
   clearSharedCodexAppServerClientAndWait,
+  createIsolatedCodexAppServerClient,
   getSharedCodexAppServerClient,
 } from "./shared-client.js";
 import { createClientHarness } from "./test-support.js";
@@ -95,6 +96,8 @@ export function registerSharedClientManagedFallbackTests(params: {
       { failure: `app-server reported ${CODEX_APP_SERVER_VERSION}`, installed: "version" },
       // The generic version fallback must not skip dropping the installed selection.
       { failure: "Codex app-server 0.149.0 or newer is required", installed: "unsupported" },
+      // Never answers initialize; a deadline-bound start keeps half for the bundled binary.
+      { failure: "codex app-server initialize timed out", installed: "hang" },
     ] as const)("falls back to the bundled package on $installed failure", async (scenario) => {
       const installed = createClientHarness();
       const bundled = createClientHarness();
@@ -106,10 +109,11 @@ export function registerSharedClientManagedFallbackTests(params: {
       }
       startSpy.mockResolvedValueOnce(bundled.client);
 
-      const acquire = getSharedCodexAppServerClient({
-        startOptions: selectInstalledCodex(),
-        timeoutMs: 1_000,
-      });
+      const acquireOptions = { startOptions: selectInstalledCodex(), timeoutMs: 1_000 };
+      const acquire =
+        scenario.installed === "hang"
+          ? createIsolatedCodexAppServerClient(acquireOptions)
+          : getSharedCodexAppServerClient(acquireOptions);
       if (scenario.installed === "initialize") {
         const initialize = JSON.parse(await installed.waitForWrite(0)) as { id: number };
         installed.send({ id: initialize.id, error: { code: -32603, message: scenario.failure } });
@@ -134,6 +138,7 @@ export function registerSharedClientManagedFallbackTests(params: {
       // Later managed starts and model discovery in this process use the bundled package.
       await expect(installedState.selection).resolves.toBeUndefined();
       expect(installedState.selected).toBeUndefined();
+      await bundled.client.closeAndWait({ exitTimeoutMs: 25, forceKillDelayMs: 5 });
       await clearSharedCodexAppServerClientAndWait({ exitTimeoutMs: 25, forceKillDelayMs: 5 });
     });
 

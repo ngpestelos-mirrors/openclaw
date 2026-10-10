@@ -40,7 +40,11 @@ on `PATH` and uses it only when all of these hold:
   the shipped one. Equal, older, unparseable, and prerelease versions are
   skipped.
 - It has the same major version as the shipped binary. The app-server protocol
-  has no negotiated version, so a new major is treated as incompatible.
+  has no negotiated version, so a new major is treated as incompatible. A newer
+  release with the same major can still change a request that OpenClaw uses
+  after `initialize`; these checks do not detect that. If a newer Codex
+  misbehaves, set `appServer.command` to a specific binary or remove the newer
+  `codex` from the Gateway's `PATH`.
 - A real app-server `initialize` handshake against a throwaway `CODEX_HOME`
   succeeds within 15 seconds and reports the same version. No auth or turn is
   involved.

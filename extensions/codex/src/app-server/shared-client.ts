@@ -58,6 +58,8 @@ import { isCodexAppServerProxyLaunch } from "./launch-args.js";
 import {
   isManagedCodexDesktopCommand,
   assertInstalledCodexAppServerVersion,
+  INSTALLED_CODEX_INITIALIZE_TIMEOUT_MS,
+  isSelectedInstalledCodexAppServer,
   rejectInstalledCodexAppServer,
   resolveManagedCodexAppServerStartOptions,
   resolveManagedCodexNativeCommand,
@@ -888,12 +890,18 @@ async function startInitializedCodexAppServerClientOnce(
   const waitForStartup = <T>(
     operation: () => Promise<T>,
     timeoutErrorFactory?: () => CodexAppServerStartupError,
+    candidateLimitMs?: number,
   ) => {
     if (abandonSignal.aborted) {
       throw new CodexAppServerStartupError("aborted", "codex app-server initialize aborted");
     }
+    const remainingMs = resolveRemainingAcquireTimeout(timeoutMs, acquireStartedAt);
     return withCodexAppServerAcquireDeadline(
-      resolveRemainingAcquireTimeout(timeoutMs, acquireStartedAt),
+      candidateLimitMs === undefined
+        ? remainingMs
+        : remainingMs > 0
+          ? Math.min(remainingMs / 2, candidateLimitMs)
+          : candidateLimitMs,
       ownCodexStartup(params.lifetime, operation()),
       abandonSignal,
       CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MESSAGE,
@@ -1054,6 +1062,11 @@ async function startInitializedCodexAppServerClientOnce(
         await waitForStartup(
           () => client.initialize(),
           () => buildCodexAppServerInitializeTimeoutError(client),
+          // A hanging installed Codex leaves time to start the bundled fallback.
+          index + 1 < startOptionsCandidates.length &&
+            isSelectedInstalledCodexAppServer(startOptions.command)
+            ? INSTALLED_CODEX_INITIALIZE_TIMEOUT_MS
+            : undefined,
         );
         assertInstalledCodexAppServerVersion(startOptions.command, client.getServerVersion());
       } catch (error) {

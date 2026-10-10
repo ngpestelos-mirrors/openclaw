@@ -15,13 +15,12 @@ import {
   readCodexVersionFromUserAgent,
 } from "./client-initialize.js";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
+import { INSTALLED_CODEX_INITIALIZE_TIMEOUT_MS as HANDSHAKE_TIMEOUT_MS } from "./managed-binary.js";
 import {
   resolveCodexAppServerSpawnEnv,
   resolveCodexAppServerSpawnInvocation,
 } from "./transport-stdio.js";
 
-// Includes first-launch OS scans of a freshly installed binary on slow hosts.
-const HANDSHAKE_TIMEOUT_MS = 15_000;
 const HANDSHAKE_MAX_OUTPUT_CHARS = 1024 * 1024;
 const HANDSHAKE_EXIT_TIMEOUT_MS = 2_000;
 const INITIALIZE_REQUEST_ID = 1;

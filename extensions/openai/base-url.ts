@@ -10,6 +10,7 @@ const OPENAI_CODEX_CLIENT_VERSION = "0.160.0";
 export type OpenAICodexModelsEndpointContext = {
   config?: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
+  agentDir?: string;
 };
 
 /**
@@ -23,8 +24,11 @@ export async function resolveOpenAICodexModelsEndpoint(
   const { resolveCodexClientVersion } =
     await import("openclaw/plugin-sdk/codex-client-version-runtime");
   const clientVersion =
-    (await resolveCodexClientVersion({ config: context.config, env: context.env })) ??
-    OPENAI_CODEX_CLIENT_VERSION;
+    (await resolveCodexClientVersion({
+      config: context.config,
+      env: context.env,
+      agentDir: context.agentDir,
+    })) ?? OPENAI_CODEX_CLIENT_VERSION;
   return `${OPENAI_CODEX_RESPONSES_BASE_URL}/models?client_version=${encodeURIComponent(clientVersion)}`;
 }
 

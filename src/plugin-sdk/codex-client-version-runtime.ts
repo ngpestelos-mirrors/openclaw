@@ -6,11 +6,15 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readHandedOffCodexClientVersion } from "./codex-client-version-handoff.internal.js";
 import { tryLoadActivatedBundledPluginPublicSurfaceModule } from "./facade-runtime.js";
 
+type CodexClientVersionParams = {
+  config?: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
+  /** Agent whose Codex home decides desktop-first startup; absent means the default. */
+  agentDir?: string;
+};
+
 type CodexClientVersionSurface = {
-  resolveCodexClientVersion: (params: {
-    config?: OpenClawConfig;
-    env?: NodeJS.ProcessEnv;
-  }) => Promise<string>;
+  resolveCodexClientVersion: (params: CodexClientVersionParams) => Promise<string>;
 };
 
 /**
@@ -19,10 +23,9 @@ type CodexClientVersionSurface = {
  * off. Returns undefined when the Codex plugin is inactive or unavailable;
  * callers then report their bundled pin.
  */
-export async function resolveCodexClientVersion(params: {
-  config?: OpenClawConfig;
-  env?: NodeJS.ProcessEnv;
-}): Promise<string | undefined> {
+export async function resolveCodexClientVersion(
+  params: CodexClientVersionParams,
+): Promise<string | undefined> {
   const handedOff = readHandedOffCodexClientVersion();
   if (handedOff) {
     return handedOff.version;

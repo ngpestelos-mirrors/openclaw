@@ -1,5 +1,8 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { resolveCodexAppServerRuntimeOptions } from "./src/app-server/config.js";
+import {
+  resolveCodexAppServerRuntimeOptions,
+  resolveCodexAppServerStartOptionsForAgent,
+} from "./src/app-server/config.js";
 import { resolveManagedCodexClientVersion } from "./src/app-server/managed-binary.js";
 import { CODEX_APP_SERVER_VERSION } from "./src/app-server/version.js";
 
@@ -11,6 +14,7 @@ import { CODEX_APP_SERVER_VERSION } from "./src/app-server/version.js";
 export async function resolveCodexClientVersion(params: {
   config?: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
+  agentDir?: string;
 }): Promise<string> {
   const { start } = resolveCodexAppServerRuntimeOptions({
     pluginConfig: params.config?.plugins?.entries?.codex?.config,
@@ -19,5 +23,13 @@ export async function resolveCodexClientVersion(params: {
   if (start.transport !== "stdio" || start.commandSource !== "managed") {
     return CODEX_APP_SERVER_VERSION;
   }
-  return resolveManagedCodexClientVersion(start.managedCommandOrder ?? "package-first");
+  // Same agent-home Computer Use check that managed turns run before spawning.
+  const agentStart = params.agentDir
+    ? resolveCodexAppServerStartOptionsForAgent({
+        startOptions: start,
+        agentDir: params.agentDir,
+        env: params.env,
+      })
+    : start;
+  return resolveManagedCodexClientVersion(agentStart.managedCommandOrder ?? "package-first");
 }

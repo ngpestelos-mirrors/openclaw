@@ -1,11 +1,19 @@
 // Codex Client Version Contract tests: ChatGPT model discovery reports the
 // version of the Codex binary that runs turns (#113615).
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { SemVer } from "semver";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveCodexClientVersion } from "../../extensions/codex/client-version-api.js";
 import { CODEX_APP_SERVER_VERSION } from "../../extensions/codex/src/app-server/version.js";
 import { resolveOpenAICodexModelsEndpoint } from "../../extensions/openai/base-url.js";
+
+// mock-isolation: stands in an installed macOS desktop app on any host.
+vi.mock("../../extensions/codex/src/app-server/desktop-app-paths.js", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  resolveMacOSDesktopCodexAppServerCommandCandidates: () => [process.execPath],
+}));
 
 const CODEX_PACKAGE_JSON_URL = new URL("../../extensions/codex/package.json", import.meta.url);
 const OPENAI_PROVIDER_URL = new URL("../../extensions/openai/base-url.ts", import.meta.url);
@@ -76,5 +84,32 @@ describe("Codex client version contract", () => {
         env: {},
       }),
     ).resolves.toBe(CODEX_APP_SERVER_VERSION);
+  });
+
+  it("keeps the bundled pin for an agent whose Codex home starts the desktop app", async () => {
+    const version = new SemVer(CODEX_APP_SERVER_VERSION).inc("minor").version;
+    const selected = {
+      command: "/opt/codex/bin/codex",
+      nativeCommand: "/opt/codex/bin/codex",
+      version,
+    };
+    installedState.selection = Promise.resolve(selected);
+    installedState.selected = selected;
+    const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-codex-client-agent-"));
+    try {
+      fs.mkdirSync(path.join(agentDir, "codex-home"));
+      fs.writeFileSync(
+        path.join(agentDir, "codex-home", "config.toml"),
+        '[plugins."computer-use@openai-bundled"]\nenabled = true\n',
+      );
+
+      await expect(resolveCodexClientVersion({ env: {}, agentDir })).resolves.toBe(
+        CODEX_APP_SERVER_VERSION,
+      );
+      fs.rmSync(path.join(agentDir, "codex-home", "config.toml"));
+      await expect(resolveCodexClientVersion({ env: {}, agentDir })).resolves.toBe(version);
+    } finally {
+      fs.rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 });

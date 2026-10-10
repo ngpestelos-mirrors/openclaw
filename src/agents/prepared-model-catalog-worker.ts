@@ -453,7 +453,12 @@ export function createPreparedModelCatalogWorker(
       // Codex turns run in this process, so its binary decision is what discovery reports.
       const codexClientVersion = await withPluginRuntimeGenerationScope(
         { metadataSnapshot, pluginRegistry: params.pluginRegistry },
-        () => resolveCodexClientVersion({ config: input.config, env: input.env }),
+        () =>
+          resolveCodexClientVersion({
+            config: input.config,
+            env: input.env,
+            agentDir: input.agentDir,
+          }),
       );
       controller.signal.throwIfAborted();
       const value = {
