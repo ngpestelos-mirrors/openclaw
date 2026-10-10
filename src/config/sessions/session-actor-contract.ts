@@ -112,21 +112,32 @@ export type SessionActorPendingFinalDelivery = NonNullable<SessionEntry["pending
 
 export type SessionActorPhaseInputs = {
   acceptInput: {
-    pending: Extract<PendingInputMutation, { kind: "stage" }>;
     expectedState: SessionTranscriptTurnExpectedState;
     lifecycle: SessionTranscriptTurnLifecyclePatch;
-    /** Admission and adoption may share a durable point only before any intervening effect. */
-    turn?: SessionTurnPlan;
-    /** A retry adopts the canonical pending/transcript identity instead of appending twice. */
-    append?: SessionActorAppend;
     recovery?: SessionActorInputRecovery;
-  };
+  } & (
+    | {
+        pending: Extract<PendingInputMutation, { kind: "stage" }>;
+        /** Admission and adoption may share a durable point only before an intervening effect. */
+        turn?: SessionTurnPlan;
+        /** A retry adopts canonical pending/transcript identity instead of appending twice. */
+        append?: SessionActorAppend;
+      }
+    | {
+        /** Transcript custody before ACK does not require a queued-input row. */
+        pending?: never;
+        turn: SessionTurnPlan;
+        append?: never;
+      }
+  );
   adoptRun: {
     sessionId: string;
     expectedState: SessionTranscriptTurnExpectedState;
     lifecycle: SessionTranscriptTurnLifecyclePatch;
     /** Explicit writer adoption; omission preserves the existing lifecycle-only command. */
     runId?: string;
+    /** Consume accepted input and adopt its lifecycle at the same durable point. */
+    turn?: SessionTurnPlan;
   };
   appendToolResult:
     | { turn: SessionTurnPlan; append?: never }
@@ -162,13 +173,13 @@ export type SessionActorPhase = keyof SessionActorPhaseInputs;
 
 export type SessionActorPhaseResults = {
   acceptInput: {
-    inputId: string;
+    inputId?: string;
     turn?: SessionTurnCommitted;
     append?: SessionActorAppendCommitted;
     adoption?: Pick<PendingInputSnapshot, "existing" | "previous" | "committed">;
     pendingInputReceipt?: PendingInputMutationReceipt;
   };
-  adoptRun: undefined;
+  adoptRun: SessionTurnCommitted | undefined;
   appendToolResult: SessionTurnCommitted | SessionActorAppendCommitted;
   appendTranscriptEvent:
     | { anchor?: TranscriptEntryAnchor; projectionNeedsReconcile?: boolean }

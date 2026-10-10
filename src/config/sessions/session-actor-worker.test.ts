@@ -379,6 +379,88 @@ it("adopts a run only under the exact lifecycle and current transaction and comm
 });
 
 it.each([
+  { phase: "acceptInput", initial: true },
+  { phase: "acceptInput", initial: false },
+  { phase: "adoptRun", initial: false },
+] as const)(
+  "commits $phase transcript custody and lifecycle together (initial=$initial)",
+  async (mode) => {
+    await withActor(async (f) => {
+      const target = mode.initial
+        ? { ...f.target, sessionKey: "agent:main:first-input" }
+        : f.target;
+      const before = f.read(target);
+      const sessionId = mode.initial ? "first-input" : f.scope.sessionId;
+      const expectedState = before.entry ? buildRestartRecoveryExpectedState(before.entry) : {};
+      const lifecycle = { restartRecoveryDeliveryRunId: "input-run", startedAt: 2 };
+      const turn = {
+        agentId: "main",
+        sessionKey: target.sessionKey,
+        options: {
+          expectedSessionId: sessionId,
+          ...(mode.initial ? { initialSessionEntry: { sessionId, updatedAt: 1 } } : {}),
+          sessionFile: "synthetic.jsonl",
+          messages: [
+            {
+              eventId: "accepted-message",
+              message: { role: "user", content: "accepted bytes", idempotencyKey: "accepted-once" },
+            },
+          ],
+        },
+      };
+      const input = {
+        target,
+        expected: before.version,
+        commandId: "accept-transcript",
+        phaseId: "input",
+        expectedState,
+        lifecycle,
+        turn,
+      };
+      const command: Mutation =
+        mode.phase === "acceptInput"
+          ? { type: "session.actor.acceptInput", input }
+          : { type: "session.actor.adoptRun", input: { ...input, sessionId } };
+      await f.prepare(command);
+      const transactions = f.hooks.transactions;
+      const committed = f.mutate(command);
+      expect(committed).toMatchObject({
+        kind: "committed",
+        receipt: {
+          transcript: {
+            appendedMessages: [
+              {
+                appended: true,
+                messageId: "accepted-message",
+                message: { content: "accepted bytes" },
+              },
+            ],
+          },
+          postimage: {
+            entry: { sessionId, ...lifecycle },
+            pendingInputs: [],
+          },
+        },
+      });
+      expect(f.hooks.transactions - transactions).toBe(1);
+      if (committed.kind !== "committed") {
+        throw new Error("Expected input custody commit");
+      }
+      const turnResult =
+        mode.phase === "acceptInput"
+          ? committed.value && "turn" in committed.value && committed.value.turn
+          : committed.value;
+      expect(turnResult).toMatchObject({
+        kind: "session-turn",
+        result: { sessionEntry: committed.receipt.postimage.entry },
+      });
+      expect(readTranscriptEventRows(f.database, sessionId)).toHaveLength(1);
+      expect(f.read(target).entry).toEqual(committed.receipt.postimage.entry);
+    });
+  },
+);
+
+it.each([
   { stored: "current-generation", requested: null },
   { stored: undefined, requested: "old-generation" },
 ])("refuses raw appends across nullable lifecycle revisions: %j", async ({ stored, requested }) => {
