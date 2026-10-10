@@ -1,4 +1,6 @@
 import { toUSVString } from "node:util";
+import { expectDefined } from "@openclaw/normalization-core/expect";
+import { readStringValue } from "@openclaw/normalization-core/string-coerce";
 import { expressionBuilder } from "kysely";
 import { executeSqliteQuerySync, sqliteStringSet } from "../../infra/kysely-sync.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
@@ -23,13 +25,6 @@ import { collectSessionEntryLookupKeys } from "./store-entry.js";
 function readInteger(value: unknown): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value)) {
     throw new RangeError("Session fact integer cannot be represented safely");
-  }
-  return value;
-}
-
-function readString(value: unknown): string {
-  if (typeof value !== "string") {
-    throw new Error("Invalid stored session fact string");
   }
   return value;
 }
@@ -118,8 +113,11 @@ export function readExactSessionEntryFactsInDatabase(
     const { row, entry } = selected;
     const records = readRows(row.participant_records_json).map((participant) =>
       readParticipantRecord({
-        identity_namespace: readString(participant[0]),
-        actor_id: readString(participant[1]),
+        identity_namespace: expectDefined(
+          readStringValue(participant[0]),
+          "session participant identity namespace",
+        ),
+        actor_id: expectDefined(readStringValue(participant[1]), "session participant actor ID"),
         contribution_count: readInteger(participant[2]),
         first_prompted_at: participant[3] === null ? null : readInteger(participant[3]),
         last_prompted_at: participant[4] === null ? null : readInteger(participant[4]),
@@ -127,8 +125,8 @@ export function readExactSessionEntryFactsInDatabase(
     );
     entries.push({ sessionKey, entry: withProjectedParticipants(entry, records) });
     members[sessionKey] = readRows(row.members_json).map((member) => ({
-      identityId: readString(member[0]),
-      addedBy: readString(member[1]),
+      identityId: expectDefined(readStringValue(member[0]), "session member identity ID"),
+      addedBy: expectDefined(readStringValue(member[1]), "session member added-by identity"),
       addedAt: readInteger(member[2]),
     }));
     if (records.length) {
