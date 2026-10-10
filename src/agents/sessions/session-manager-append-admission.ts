@@ -1,7 +1,3 @@
-import {
-  resolveSqliteReadScope,
-  toDatabaseOptions,
-} from "../../config/sessions/session-accessor.sqlite-scope.js";
 import type { SessionActor } from "../../config/sessions/session-actor-contract.js";
 import { sameSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import {
@@ -11,7 +7,6 @@ import {
 } from "../../config/sessions/transcript-write-context.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db.js";
-import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
 import type { SessionManagerCore } from "./session-manager-core.js";
 import {
@@ -37,11 +32,12 @@ export async function withSessionManagerAppend<T>(
   nativeMaintenance = false,
 ): Promise<T> {
   const target = manager.getSessionTarget();
-  const actor = !nativeMaintenance && target ? getOwnedSessionTranscriptActor(target) : undefined;
-  if (!actor || !target) {
+  const binding = !nativeMaintenance && target ? getOwnedSessionTranscriptActor(target) : undefined;
+  if (!binding || !target) {
     // Released unbound SDK managers and the dedicated compaction transaction keep their owner.
     return withSessionManagerWrite(manager, append);
   }
+  const { actor } = binding;
   const identity = { ...target };
   const assertManager = captureSessionManagerWriteAssertion(manager);
   const assertOwned = captureOwnedTranscriptWriteAssertion(identity);
@@ -54,11 +50,7 @@ export async function withSessionManagerAppend<T>(
     }
   };
   assertCurrent();
-  const options = toDatabaseOptions(resolveSqliteReadScope(identity));
-  options.path =
-    actor.target.database.kind === "file"
-      ? actor.target.database.nativeLocation
-      : resolveOpenClawAgentSqlitePath(options);
+  const options = binding.database;
   return trackAsyncWork(() =>
     runOpenClawAgentWriteAdmission(
       options,

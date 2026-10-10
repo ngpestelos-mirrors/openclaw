@@ -30,6 +30,7 @@ import {
   type PreparedAgentRunAdmission,
 } from "../../admitted-run-context.js";
 import { createAssistantErrorTranscript } from "../../assistant-error-transcript.js";
+import { isRecordedModelFallbackStop } from "../../model-fallback-stop.js";
 import { installSessionToolResultGuard } from "../../session-tool-result-guard.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../test-helpers/agent-message-fixtures.js";
@@ -185,6 +186,87 @@ async function withInitialWriter(
 }
 
 describe("admitted lazy session writer", () => {
+  it.each([false, true])(
+    "commits actor appends in order and refuses a replaced writer (existing=%s)",
+    async (existing) => {
+      await withInitialWriter(
+        async ({ manager, runParams, target, transcript }) => {
+          expect(transcript.ownedTranscriptWriteContext.sessionActor).toBeDefined();
+          const first = manager.appendMessageAsync(userMessage);
+          const second = manager.appendMessageAsync({
+            role: "toolResult",
+            toolCallId: "actor-result",
+            toolName: "lookup",
+            content: [{ type: "text", text: "Durable synthetic result" }],
+            isError: false,
+            timestamp: 2,
+          });
+          const [firstId, secondId] = await Promise.all([first, second]);
+          const persisted = loadTranscriptEventsSync(target);
+          expect(persisted.slice(-2)).toMatchObject([
+            { id: firstId, message: userMessage },
+            { id: secondId, parentId: firstId, message: { role: "toolResult" } },
+          ]);
+          expect(manager.getPersistedEntries()).toEqual(persisted);
+          await claimAgentSessionWriter({ ...runParams, runId: "replacement-actor-writer" });
+          await expect(manager.appendMessageAsync(userMessage)).rejects.toThrow(
+            SessionTranscriptWriterClaimReboundError,
+          );
+          expect(loadTranscriptEventsSync(target)).toEqual(persisted);
+        },
+        { existing },
+      );
+    },
+  );
+
+  it("keeps an atomic first append committed when publication revokes its run", async () => {
+    await withInitialWriter(async ({ controller, manager, promptState, target }) => {
+      const failure = new Error("revoke after actor commit");
+      const unsubscribe = onSessionIdentityMutation((event) => {
+        if (event.kind === "create" && event.current.sessionId === target.sessionId) {
+          controller.abort(failure);
+        }
+      });
+      try {
+        await expect(manager.appendMessageAsync(userMessage)).rejects.toThrow();
+        expect(promptState.sessionWriterFence).toBeDefined();
+        expect(loadTranscriptEventsSync(target)).toMatchObject([
+          { type: "session" },
+          { type: "message", message: userMessage },
+        ]);
+      } finally {
+        unsubscribe();
+      }
+    });
+  });
+
+  it("does not replay an actor append whose outcome is unknown", async () => {
+    await withInitialWriter(async ({ manager, target, transcript }) => {
+      await manager.appendMessageAsync(userMessage);
+      const before = loadTranscriptEventsSync(target);
+      const actor = transcript.ownedTranscriptWriteContext.sessionActor!.actor;
+      const append = vi
+        .spyOn(actor, "appendTranscriptEvent")
+        .mockImplementation(async (command) => ({
+          kind: "unknown",
+          target: actor.target,
+          commandId: command.commandId,
+          error: { name: "Error", message: "Synthetic lost worker outcome" },
+        }));
+      try {
+        const failure = await manager
+          .appendMessageAsync(userMessage)
+          .catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(Error);
+        expect(isRecordedModelFallbackStop(failure)).toBe(true);
+        expect(append).toHaveBeenCalledOnce();
+        expect(loadTranscriptEventsSync(target)).toEqual(before);
+      } finally {
+        append.mockRestore();
+      }
+    });
+  });
+
   it("refuses a prepared target whose owner closes during lifecycle preparation", async () => {
     await withInitialWriter(
       async ({ admission, preparedSessionTarget, runParams }) => {

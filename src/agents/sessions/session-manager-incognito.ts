@@ -32,7 +32,11 @@ import {
   captureSessionTranscriptTargetBinding,
   type CapturedSessionTranscriptTargetBinding,
 } from "../../config/sessions/transcript-target-binding.js";
-import { captureOwnedTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
+import {
+  captureOwnedTranscriptWriteAssertion,
+  getOwnedSessionTranscriptActor,
+  getOwnedSessionTranscriptWriterFence,
+} from "../../config/sessions/transcript-write-context.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import { getOpenIncognitoAgentDatabase } from "../../state/openclaw-agent-db-lifecycle.js";
@@ -44,6 +48,39 @@ import {
   captureSessionManagerIncognitoAdmissionAssertion,
   captureSessionManagerIncognitoBinding,
 } from "./session-manager-incognito-scope.js";
+
+/** Exact owner postimages can validate metadata, never replace bounded payload reads. */
+export function readSessionManagerActorTranscript(
+  target: SessionTranscriptRuntimeTarget,
+  version: SessionTranscriptContextVersion | undefined,
+) {
+  // Anchors do not carry roles; an admitted user boundary keeps its full validator.
+  if (!version || resolveSessionTranscriptReadFence(target)) {
+    return undefined;
+  }
+  const binding = getOwnedSessionTranscriptActor(target);
+  if (!binding) {
+    return undefined;
+  }
+  const assertCurrent = captureOwnedTranscriptWriteAssertion(target);
+  const state = binding.actor.snapshot({ assertCurrent, authorize: assertCurrent });
+  const fence = getOwnedSessionTranscriptWriterFence({ sessionTarget: target });
+  if (
+    !state ||
+    state.target.sessionKey !== target.sessionKey ||
+    state.entry?.sessionId !== target.sessionId ||
+    (fence &&
+      (state.entry.lifecycleRevision !== fence.expectedLifecycleRevision ||
+        state.entry.activeWriterRunId !== fence.expectedWriterRunId)) ||
+    state.transcript.anchorsState !== "resident" ||
+    state.transcript.version.generation !== version.generation ||
+    state.transcript.version.rawSeq !== version.rawSeq ||
+    state.transcript.version.updatedAt !== version.updatedAt
+  ) {
+    return undefined;
+  }
+  return state.transcript;
+}
 
 /** SessionManager planning uses the same actor as its subsequent metadata command. */
 export function prepareSessionManagerHydration(
@@ -279,12 +316,14 @@ export async function readSessionManagerContextAsync<T>(
       assertCurrent();
       const result = await consumeSnapshot(snapshot);
       assertCurrent();
-      if (actor) {
-        await actor.validate(snapshot.version);
-      } else if (admission) {
-        validateSessionTranscriptContextAdmission(captured, admission);
-      } else {
-        validateSessionTranscriptContextVersion(captured, snapshot.version);
+      if (!readSessionManagerActorTranscript(captured, snapshot.version)) {
+        if (actor) {
+          await actor.validate(snapshot.version);
+        } else if (admission) {
+          validateSessionTranscriptContextAdmission(captured, admission);
+        } else {
+          validateSessionTranscriptContextVersion(captured, snapshot.version);
+        }
       }
       assertCurrent();
       return result;
@@ -325,6 +364,9 @@ export async function readSessionManagerContextAsync<T>(
           });
           assertDurable();
           generation.assertCurrent();
+          if (readSessionManagerActorTranscript(captured, snapshot.version)) {
+            return result;
+          }
           let accepted: { value: T } | undefined;
           await readSessionTranscriptAnchorsAsync(
             readTarget,

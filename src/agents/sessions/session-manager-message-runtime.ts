@@ -33,6 +33,7 @@ import { isSqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
 import type { Message } from "../../llm/types.js";
 import { readLoggingConfig } from "../../logging/config.js";
 import { getSecretRedactionRegistryRevision } from "../../logging/secret-redaction-registry.js";
+import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { openOpenClawAgentSqliteWorkerStore } from "../../state/openclaw-agent-worker-store.js";
@@ -94,9 +95,15 @@ export async function appendSessionTranscriptMessage(
     }
   };
   assertPrepared();
-  const actor = getOwnedSessionTranscriptActor(input.target);
-  if (actor) {
-    return appendOwnedActorTranscriptMessage(input, prepared, assertPrepared, actor);
+  const actorBinding = getOwnedSessionTranscriptActor(input.target);
+  if (actorBinding) {
+    return appendOwnedActorTranscriptMessage(
+      input,
+      prepared,
+      assertPrepared,
+      actorBinding.actor,
+      actorBinding.database,
+    );
   }
   if (!input.candidate) {
     throw new Error("Unbound transcript append requires a captured store candidate");
@@ -120,10 +127,9 @@ async function appendOwnedActorTranscriptMessage(
   prepared: PreparedTranscriptMessage,
   assertPrepared: () => void,
   actor: SessionActor,
+  options: Readonly<OpenClawAgentDatabaseOptions & { agentId: string; path: string }>,
 ): Promise<SessionTranscriptAppendResult<TranscriptAppendMessage>> {
-  const database = actor.target.database;
-  const databasePath = database.kind === "file" ? database.nativeLocation : input.target.storePath;
-  const options = { agentId: input.target.agentId, path: databasePath, env: input.target.env };
+  const databasePath = options.path;
   const assertCurrent = () => {
     assertPrepared();
     if (input.candidate) {

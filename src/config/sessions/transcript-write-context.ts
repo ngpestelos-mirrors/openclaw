@@ -7,6 +7,7 @@ import type {
   ThinkingLevelChangeEntry,
 } from "../../agents/sessions/session-manager-types.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
+import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
 import { getCliHistoryWriter, runWithCliHistoryWriter } from "./cli-history-boundary.js";
 import type {
   SessionTranscriptContextVersion,
@@ -89,7 +90,11 @@ export type OwnedSessionTranscriptWriteContext = {
   sessionTarget?: SessionTranscriptWriteTarget;
   initialWriter?: InitialSessionTranscriptWriter;
   sessionReader?: SessionEntryCohortReader;
-  sessionActor?: SessionActor;
+  sessionActor?: {
+    actor: SessionActor;
+    /** Retain the physical database owner, independently of the logical session agent. */
+    database: Readonly<OpenClawAgentDatabaseOptions & { agentId: string; path: string }>;
+  };
   /** Revalidate the captured owner, including an absent writer, inside each commit. */
   assertCommitAllowed?: SessionSourceAssertion;
   withTranscriptWrite: <T>(run: () => Promise<T> | T) => Promise<T>;
@@ -183,7 +188,7 @@ export function getOwnedSessionTranscriptReader(scope: SessionTranscriptWriteTar
 /** Borrow only the actor retained for this exact admitted transcript. */
 export function getOwnedSessionTranscriptActor(
   scope: SessionTranscriptWriteTarget,
-): SessionActor | undefined {
+): OwnedSessionTranscriptWriteContext["sessionActor"] {
   const context = ownedTranscriptWriteContext.getStore();
   const actor = context?.sessionActor;
   if (!actor) {
@@ -197,7 +202,7 @@ export function getOwnedSessionTranscriptActor(
     throw new SessionTranscriptWriterClaimReboundError();
   }
   context.assertCommitAllowed?.();
-  actor.assertCurrent();
+  actor.actor.assertCurrent();
   return actor;
 }
 
