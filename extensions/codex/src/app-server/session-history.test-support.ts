@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { CURRENT_SESSION_VERSION } from "openclaw/plugin-sdk/agent-sessions";
 import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
@@ -90,7 +91,7 @@ export function setupSessionHistoryFixtures() {
 
 export function settledFixture() {
   const upstreamPrompt = "Native context\nSend the synthetic update.";
-  const settledMessages = [
+  const settledMessages: AgentMessage[] = [
     attachUpstreamUserText(
       attachCodexMirrorIdentity(
         { role: "user", content: "Send the synthetic update.", timestamp: 206 },
