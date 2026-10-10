@@ -11,6 +11,7 @@ import type { WorkerProviderLifecycleOptions } from "./provider-lifecycle.types.
 import {
   normalizeWorkerMachineOptions,
   normalizeWorkerOperatingSystems,
+  readWorkerProfileSelection,
   requireWorkerProfile,
 } from "./service-validation.js";
 import type { WorkerEnvironmentRecord } from "./store.js";
@@ -74,37 +75,35 @@ export function createWorkerMachineCatalog(
     return catalog;
   };
 
-  const listMachineOptions = async (profileId: string) => {
-    const catalog = machineCatalogFor(profileId);
-    if (!catalog) {
-      return undefined;
-    }
-    const provider = options.resolveProvider(catalog.providerId);
-    const machines = normalizeWorkerMachineOptions(
-      await provider?.listMachineOptions?.(catalog.settings),
-    );
-    if (!isDeepStrictEqual(catalog.machines, machines)) {
-      catalog.machines = machines;
-      machineCatalogChanged(profileId, catalog);
-    }
-    return machines;
-  };
-
-  const listOperatingSystems = async (profileId: string) => {
-    const catalog = machineCatalogFor(profileId);
-    if (!catalog) {
-      return undefined;
-    }
-    const provider = options.resolveProvider(catalog.providerId);
-    const systems = normalizeWorkerOperatingSystems(
-      await provider?.listOperatingSystems?.(catalog.settings),
-    );
-    if (!isDeepStrictEqual(catalog.systems, systems)) {
-      catalog.systems = systems;
-      machineCatalogChanged(profileId, catalog);
-    }
-    return systems;
-  };
+  const listCatalog =
+    <K extends "machines" | "systems">(
+      key: K,
+      method: "listMachineOptions" | "listOperatingSystems",
+      normalize: (value: unknown) => MachineCatalog[K],
+    ) =>
+    async (profileId: string) => {
+      const catalog = machineCatalogFor(profileId);
+      if (!catalog) {
+        return undefined;
+      }
+      const provider = options.resolveProvider(catalog.providerId);
+      const value = normalize(await provider?.[method]?.(catalog.settings));
+      if (!isDeepStrictEqual(catalog[key], value)) {
+        catalog[key] = value;
+        machineCatalogChanged(profileId, catalog);
+      }
+      return value;
+    };
+  const listMachineOptions = listCatalog(
+    "machines",
+    "listMachineOptions",
+    normalizeWorkerMachineOptions,
+  );
+  const listOperatingSystems = listCatalog(
+    "systems",
+    "listOperatingSystems",
+    normalizeWorkerOperatingSystems,
+  );
 
   const loadMachineShape = async (profileId: string): Promise<void> => {
     const catalog = machineCatalogFor(profileId);
@@ -137,9 +136,7 @@ export function createWorkerMachineCatalog(
       return undefined;
     }
     const snapshot = record.profileSnapshot;
-    const machineClass =
-      typeof snapshot.machineClass === "string" ? snapshot.machineClass : undefined;
-    const requestedOs = typeof snapshot.os === "string" ? snapshot.os : undefined;
+    const { machineClass, os: requestedOs } = readWorkerProfileSelection(snapshot);
     const cached = machineCatalogs.get(record.profileId);
     // A renamed/reconfigured profile must not relabel an already allocated worker.
     const catalog =

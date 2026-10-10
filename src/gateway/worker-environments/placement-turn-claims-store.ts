@@ -31,6 +31,10 @@ import { AcceptedWorkspacePublicationIndeterminateError } from "./workspace-acce
 const log = createSubsystemLogger("gateway/placement");
 
 type Claims = ReturnType<typeof createPlacementTurnClaimOps>;
+type PlacementInput<Type extends keyof PlacementTurnClaimWorkerOperations> = Omit<
+  PlacementTurnClaimWorkerOperations[Type]["input"],
+  "nowMs"
+>;
 
 function isReceipt(value: unknown): value is PlacementTurnClaimReceipt {
   return (
@@ -361,56 +365,43 @@ export function createPlacementTurnClaimWorkerOps(runtime: {
       }
     }
   }
+  const placementOperation =
+    <Input>(
+      operation: string,
+      command: (input: Input) => SqliteWorkerCommand<PlacementTurnClaimWorkerOperations>,
+    ) =>
+    async (input: Input, assertCurrent?: () => void) =>
+      requirePlacement(await execute(command(input), assertCurrent), operation);
+
   return {
-    async transition(
-      input: Omit<
-        PlacementTurnClaimWorkerOperations["placementTurns.transition"]["input"],
-        "nowMs"
-      >,
-      assertCurrent?: () => void,
-    ) {
-      const receipt = await execute(
-        { type: "placementTurns.transition", input: { ...input, nowMs: runtime.now?.() } },
-        assertCurrent,
-      );
-      return requirePlacement(receipt, "Placement transition");
-    },
-    async startDrain(
-      input: Omit<
-        PlacementTurnClaimWorkerOperations["placementTurns.startDrain"]["input"],
-        "nowMs"
-      >,
-      assertCurrent?: () => void,
-    ) {
-      const receipt = await execute(
-        { type: "placementTurns.startDrain", input: { ...input, nowMs: runtime.now?.() } },
-        assertCurrent,
-      );
-      return requirePlacement(receipt, "Placement drain");
-    },
-    async startReconcile(
-      input: Omit<
-        PlacementTurnClaimWorkerOperations["placementTurns.startReconcile"]["input"],
-        "nowMs"
-      >,
-      assertCurrent?: () => void,
-    ) {
-      const receipt = await execute(
-        { type: "placementTurns.startReconcile", input: { ...input, nowMs: runtime.now?.() } },
-        assertCurrent,
-      );
-      return requirePlacement(receipt, "Placement reconciliation");
-    },
-    async fail(
-      input: Omit<PlacementTurnClaimWorkerOperations["placementTurns.fail"]["input"], "nowMs">,
-      assertCurrent?: () => void,
-    ) {
-      const receipt = await execute(
-        { type: "placementTurns.fail", input: { ...input, nowMs: runtime.now?.() } },
-        assertCurrent,
-      );
-      return requirePlacement(receipt, "Placement failure");
-    },
+    transition: placementOperation(
+      "Placement transition",
+      (input: PlacementInput<"placementTurns.transition">) => ({
+        type: "placementTurns.transition",
+        input: { ...input, nowMs: runtime.now?.() },
+      }),
+    ),
+    startDrain: placementOperation(
+      "Placement drain",
+      (input: PlacementInput<"placementTurns.startDrain">) => ({
+        type: "placementTurns.startDrain",
+        input: { ...input, nowMs: runtime.now?.() },
+      }),
+    ),
+    startReconcile: placementOperation(
+      "Placement reconciliation",
+      (input: PlacementInput<"placementTurns.startReconcile">) => ({
+        type: "placementTurns.startReconcile",
+        input: { ...input, nowMs: runtime.now?.() },
+      }),
+    ),
+    fail: placementOperation(
+      "Placement failure",
+      (input: PlacementInput<"placementTurns.fail">) => ({
+        type: "placementTurns.fail",
+        input: { ...input, nowMs: runtime.now?.() },
+      }),
+    ),
     async failWorkspaceResultAndReleaseTurn(
       pending: WorkerWorkspacePendingResult,
       error: unknown,
@@ -504,13 +495,13 @@ export function createPlacementTurnClaimWorkerOps(runtime: {
     ) {
       await execute({ type: "placementTurns.abandonResult", input: { pending } }, assertCurrent);
     },
-    async startWorkspaceResultDrain(claim: WorkerSessionTurnClaim, assertCurrent?: () => void) {
-      const receipt = await execute(
-        { type: "placementTurns.drainResult", input: { claim, nowMs: runtime.now?.() } },
-        assertCurrent,
-      );
-      return requirePlacement(receipt, "Workspace result drain");
-    },
+    startWorkspaceResultDrain: placementOperation(
+      "Workspace result drain",
+      (claim: WorkerSessionTurnClaim) => ({
+        type: "placementTurns.drainResult",
+        input: { claim, nowMs: runtime.now?.() },
+      }),
+    ),
     async completeWorkspaceResultAndReleaseTurn(
       claim: WorkerSessionTurnClaim,
       assertCurrent?: () => void,
@@ -637,13 +628,13 @@ export function createPlacementTurnClaimWorkerOps(runtime: {
       }
       return receipt.claim;
     },
-    async releaseTurn(claim: Parameters<Claims["releaseTurn"]>[0], assertCurrent?: () => void) {
-      const receipt = await execute(
-        { type: "placementTurns.release", input: { claim, nowMs: runtime.now?.() } },
-        assertCurrent,
-      );
-      return requirePlacement(receipt, "Placement turn release");
-    },
+    releaseTurn: placementOperation(
+      "Placement turn release",
+      (claim: Parameters<Claims["releaseTurn"]>[0]) => ({
+        type: "placementTurns.release",
+        input: { claim, nowMs: runtime.now?.() },
+      }),
+    ),
     async releaseTurnIfOwned(claim: Parameters<Claims["releaseTurn"]>[0]) {
       await execute({
         type: "placementTurns.releaseIfOwned",

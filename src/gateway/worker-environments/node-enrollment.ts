@@ -330,28 +330,24 @@ export function createWorkerNodeEnrollmentManager(options: WorkerNodeEnrollmentM
         signal: enrollmentSignal,
         waitForDeviceId: async () => {
           const deadline = now() + NODE_ENROLLMENT_TIMEOUT_MS;
-          while (now() < deadline) {
+          const requireWaitingOwner = (deviceId?: string) => {
             enrollmentSignal.throwIfAborted();
             const live = options.store.get(owner.environmentId);
             if (
               !isProvisioningOwner(live, owner) ||
               live.nodeSetupId !== owner.nodeSetupId ||
+              (deviceId !== undefined && live.nodeDeviceId !== deviceId) ||
               active.get(owner.environmentId) !== binding
             ) {
               throw new Error("Worker node enrollment is no longer current");
             }
+            return live;
+          };
+          while (now() < deadline) {
+            const live = requireWaitingOwner();
             if (live.nodeDeviceId) {
               const availability = await options.resolveAvailability(live.nodeDeviceId);
-              enrollmentSignal.throwIfAborted();
-              const latest = options.store.get(owner.environmentId);
-              if (
-                !isProvisioningOwner(latest, owner) ||
-                latest.nodeSetupId !== owner.nodeSetupId ||
-                latest.nodeDeviceId !== live.nodeDeviceId ||
-                active.get(owner.environmentId) !== binding
-              ) {
-                throw new Error("Worker node enrollment is no longer current");
-              }
+              requireWaitingOwner(live.nodeDeviceId);
               if (availability.available) {
                 return live.nodeDeviceId;
               }

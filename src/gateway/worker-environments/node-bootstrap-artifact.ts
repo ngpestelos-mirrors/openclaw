@@ -14,25 +14,24 @@ export function createNodeBootstrapArtifactProvider(options: NodeBootstrapArtifa
   let temporaryRoot: string | undefined;
   let closed = false;
   const consumers = new Map<AbortSignal, Promise<void>>();
+  const assertOpen = () => {
+    if (closed) {
+      throw new Error("Node bootstrap artifact provider is closed");
+    }
+  };
   return {
     async prepare(signal?: AbortSignal): Promise<NodeBootstrapArtifact> {
       signal?.throwIfAborted();
-      if (closed) {
-        throw new Error("Node bootstrap artifact provider is closed");
-      }
+      assertOpen();
       // Assign the shared promise before synchronous scratch-root failures can clear it.
       prepared ??= Promise.resolve().then(async () => {
         try {
           temporaryRoot = await fs.mkdtemp(
             path.join(resolvePreferredOpenClawTmpDir(), "openclaw-node-runtime-"),
           );
-          if (closed) {
-            throw new Error("Node bootstrap artifact provider is closed");
-          }
+          assertOpen();
           const artifact = await prepareNodeBootstrapArtifactInWorker(options, temporaryRoot);
-          if (closed) {
-            throw new Error("Node bootstrap artifact provider is closed");
-          }
+          assertOpen();
           return artifact;
         } catch (error) {
           if (temporaryRoot) {
@@ -46,9 +45,7 @@ export function createNodeBootstrapArtifactProvider(options: NodeBootstrapArtifa
       // Cancellation releases this consumer; process shutdown still drains the shared producer.
       const artifact = await racePromiseWithAbortSignal(prepared, signal);
       signal?.throwIfAborted();
-      if (closed) {
-        throw new Error("Node bootstrap artifact provider is closed");
-      }
+      assertOpen();
       // A registry reload retires the producer, but an admitted enrollment still owns
       // its artifact until that enrollment's authority closes.
       if (signal && !consumers.has(signal)) {

@@ -23,7 +23,7 @@ import type {
   WorkerSessionPlacementStore,
   WorkerSessionTurnClaim,
 } from "./placement-store.js";
-import { matchesWorkerPlacementTarget } from "./placement-target.js";
+import { isWorkerEnvironmentAttachedTo, matchesWorkerPlacementTarget } from "./placement-target.js";
 import { ActiveTurnClaimError } from "./placement-turn-claims.js";
 import { findPendingWorkerWorkspaceResult } from "./placement-workspace-result.js";
 import { WorkerRuntimeRefreshPendingError } from "./provider-runtime-refresh.js";
@@ -151,11 +151,8 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
         prepared.assertCurrent();
         const currentEnvironment = options.environments.get(placement.environmentId);
         if (
-          currentEnvironment?.state !== "attached" ||
+          !isWorkerEnvironmentAttachedTo(currentEnvironment, placement) ||
           currentEnvironment.environmentId !== placement.environmentId ||
-          currentEnvironment.ownerEpoch !== placement.activeOwnerEpoch ||
-          currentEnvironment.attachedSessionIds.length !== 1 ||
-          currentEnvironment.attachedSessionIds[0] !== placement.sessionId ||
           (sandbox.backendId === "node" &&
             currentEnvironment.nodeDeviceId !== sandbox.placementNodeId)
         ) {

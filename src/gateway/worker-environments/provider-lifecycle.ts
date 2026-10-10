@@ -26,6 +26,7 @@ import { prepareWorkerProviderProject } from "./provider-project-preparation.js"
 import { createWorkerProvisionCancellation } from "./provider-provisioning-cancellation.js";
 import { createWorkerRuntimeRefresher } from "./provider-runtime-refresh.js";
 import {
+  readWorkerProfileSelection,
   requireProviderOperationTimeoutMs,
   requireWorkerLease,
   requireWorkerProfile,
@@ -193,13 +194,10 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
             )
           : undefined;
       const preparation = readWorkerProjectPreparation(record.profileSnapshot.project);
-      const machineClass =
-        preparation?.target.machineClass ??
-        (typeof record.profileSnapshot.machineClass === "string"
-          ? record.profileSnapshot.machineClass
-          : undefined);
-      const os =
-        typeof record.profileSnapshot.os === "string" ? record.profileSnapshot.os : undefined;
+      const { machineClass: requestedMachineClass, os } = readWorkerProfileSelection(
+        record.profileSnapshot,
+      );
+      const machineClass = preparation?.target.machineClass ?? requestedMachineClass;
       if (
         preparation &&
         !isDeepStrictEqual(

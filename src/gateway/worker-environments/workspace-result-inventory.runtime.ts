@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { runGitBuffered } from "../../agents/worktrees/git.js";
 import { WORKSPACE_PREVIEW_MAX_BYTES } from "../workspace-file-limits.js";
 import { parseChangedWorkspaceResult } from "./workspace-manifest-comparison.js";
 import {
@@ -8,7 +7,7 @@ import {
   type WorkerWorkspaceManifestEntry,
 } from "./workspace-manifest.js";
 import { reconciliationEntries } from "./workspace-reconcile-derived-paths.js";
-import { WORKSPACE_RESULT_GIT_TIMEOUT_MS as PATCH_TIMEOUT_MS } from "./workspace-result-git.js";
+import { readWorkspaceResultGit } from "./workspace-result-git.js";
 import {
   requireWorkerResultStorageRef,
   resolveStagedWorkspaceReadEntry,
@@ -29,17 +28,13 @@ async function readGitBlob(params: {
   objectId: string;
   maxBytes: number;
 }): Promise<Buffer> {
-  const result = await runGitBuffered(params.root, ["cat-file", "blob", params.objectId], {
-    timeoutMs: PATCH_TIMEOUT_MS,
+  const content = await readWorkspaceResultGit(params.root, ["cat-file", "blob", params.objectId], {
     maxOutputBytes: params.maxBytes + 1,
   });
-  if (result.termination !== "exit" || result.code !== 0) {
-    throw new Error(result.stderr.toString("utf8").trim() || "git cat-file failed");
-  }
-  if (result.stdout.byteLength > params.maxBytes) {
+  if (content.byteLength > params.maxBytes) {
     throw new Error("Cloud workspace staged result exceeds its byte limit");
   }
-  return result.stdout;
+  return content;
 }
 
 export async function loadStagedWorkerWorkspace(
@@ -47,18 +42,14 @@ export async function loadStagedWorkerWorkspace(
   stagedResultRef: string,
 ): Promise<StagedWorkerWorkspaceInventory> {
   const ref = requireWorkerResultStorageRef(stagedResultRef);
-  const rawCommit = await runGitBuffered(root, ["cat-file", "commit", ref], {
-    timeoutMs: PATCH_TIMEOUT_MS,
+  const rawCommit = await readWorkspaceResultGit(root, ["cat-file", "commit", ref], {
     maxOutputBytes: STAGED_RESULT_METADATA_LIMIT,
   });
-  if (rawCommit.termination !== "exit" || rawCommit.code !== 0) {
-    throw new Error(rawCommit.stderr.toString("utf8").trim() || "git cat-file failed");
-  }
-  const commitHeaderEnd = rawCommit.stdout.indexOf("\n\n");
+  const commitHeaderEnd = rawCommit.indexOf("\n\n");
   if (commitHeaderEnd < 0) {
     throw new Error("Cloud workspace staged result metadata is invalid");
   }
-  const message = rawCommit.stdout.subarray(commitHeaderEnd + 2);
+  const message = rawCommit.subarray(commitHeaderEnd + 2);
   const metadataEnd = message.indexOf("\n\n");
   if (metadataEnd < 0) {
     throw new Error("Cloud workspace staged result metadata is invalid");
@@ -101,15 +92,11 @@ export async function loadStagedWorkerWorkspace(
   const changedResult = parseChangedWorkspaceResult(base, current, version !== 1);
   const changedEntries = changedResult.entries;
   const treeEntries = version === 1 ? reconciliationEntries(current.entries) : changedEntries;
-  const tree = await runGitBuffered(root, ["ls-tree", "-r", "-z", "--full-tree", ref], {
-    timeoutMs: PATCH_TIMEOUT_MS,
+  const tree = await readWorkspaceResultGit(root, ["ls-tree", "-r", "-z", "--full-tree", ref], {
     maxOutputBytes: 2 * MAX_RECONCILIATION_FILE_BYTES,
   });
-  if (tree.termination !== "exit" || tree.code !== 0) {
-    throw new Error(tree.stderr.toString("utf8").trim() || "git ls-tree failed");
-  }
   const objectsByPath = new Map<string, { mode: string; objectId: string }>();
-  for (const record of tree.stdout.toString("utf8").split("\0").filter(Boolean)) {
+  for (const record of tree.toString("utf8").split("\0").filter(Boolean)) {
     const parsed = /^(100644|100755|120000) blob ([a-f0-9]{40}|[a-f0-9]{64})\t([\s\S]+)$/u.exec(
       record,
     );
@@ -191,22 +178,18 @@ export async function readStagedWorkerWorkspaceEntries(params: {
   }
 
   // Only verified OIDs enter the line protocol; filenames remain in the manifest.
-  const result = await runGitBuffered(params.root, ["cat-file", "--batch"], {
+  const result = await readWorkspaceResultGit(params.root, ["cat-file", "--batch"], {
     input: Buffer.from(params.entries.map(({ object }) => `${object.objectId}\n`).join("")),
-    timeoutMs: PATCH_TIMEOUT_MS,
     maxOutputBytes: bytes + params.entries.length * 128 + 1,
   });
-  if (result.termination !== "exit" || result.code !== 0) {
-    throw new Error(result.stderr.toString("utf8").trim() || "git cat-file failed");
-  }
   const contents: Buffer[] = [];
   let offset = 0;
   for (const { object, entry } of params.entries) {
-    const headerEnd = result.stdout.indexOf(0x0a, offset);
+    const headerEnd = result.indexOf(0x0a, offset);
     const header =
       headerEnd >= offset && headerEnd - offset <= 128
         ? /^([a-f0-9]{40}|[a-f0-9]{64}) blob (0|[1-9][0-9]*)$/u.exec(
-            result.stdout.subarray(offset, headerEnd).toString("utf8"),
+            result.subarray(offset, headerEnd).toString("utf8"),
           )
         : null;
     const size = Number(header?.[2]);
@@ -217,19 +200,19 @@ export async function readStagedWorkerWorkspaceEntries(params: {
       !Number.isSafeInteger(size) ||
       size > MAX_RECONCILIATION_FILE_BYTES ||
       (entry.type === "file" && size !== entry.size) ||
-      contentEnd >= result.stdout.byteLength ||
-      result.stdout[contentEnd] !== 0x0a
+      contentEnd >= result.byteLength ||
+      result[contentEnd] !== 0x0a
     ) {
       throw new Error(`Cloud workspace staged result payload is invalid: ${entry.path}`);
     }
-    const content = result.stdout.subarray(contentStart, contentEnd);
+    const content = result.subarray(contentStart, contentEnd);
     assertStagedEntryContent(entry, content);
     if (entry.type === "file") {
       contents.push(content);
     }
     offset = contentEnd + 1;
   }
-  if (offset !== result.stdout.byteLength) {
+  if (offset !== result.byteLength) {
     throw new Error("Cloud workspace staged result contains unexpected payload bytes");
   }
   // Links are validated above; their filesystem representation uses the manifest target.

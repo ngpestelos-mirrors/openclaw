@@ -170,6 +170,14 @@ export async function createWorkerEnvironmentStore(
         revocationPublished = true;
         owner.publishCredentialRevoked(revocationId);
       };
+      const publishCommit = (facts: WorkerEnvironmentFacts, revision: number, changed: boolean) => {
+        owner.install(facts, revision, false);
+        owner.release(token);
+        publishRevocation();
+        if (changed) {
+          sessionChanges.emit({ all: true, scope: "worker-environments" });
+        }
+      };
       const check = () =>
         owner.withAdmission(token, () => {
           assertActive();
@@ -184,12 +192,7 @@ export async function createWorkerEnvironmentStore(
             if (commitSequence === undefined) {
               throw new Error("Worker environment mutation has no commit admission");
             }
-            owner.install(receipt.facts, commitSequence, false);
-            owner.release(token);
-            publishRevocation();
-            if (receipt.changed) {
-              sessionChanges.emit({ all: true, scope: "worker-environments" });
-            }
+            publishCommit(receipt.facts, commitSequence, receipt.changed);
             return receipt.result;
           },
           {
@@ -230,12 +233,7 @@ export async function createWorkerEnvironmentStore(
           isInventoryFacts(committed.facts) &&
           commitSequence !== undefined
         ) {
-          owner.install(committed.facts, commitSequence, false);
-          owner.release(token);
-          publishRevocation();
-          if (committed.changed === true) {
-            sessionChanges.emit({ all: true, scope: "worker-environments" });
-          }
+          publishCommit(committed.facts, commitSequence, committed.changed === true);
         } else if (
           commitSequence !== undefined &&
           !(settlement?.kind === "completed" && !committedReceipt)
