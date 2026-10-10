@@ -42,7 +42,8 @@ it("retains released synchronous SessionManager persistence results", () => {
     lifecycleRevision?: string;
     appended: boolean;
   }>();
-  expectTypeOf<ReturnType<SessionManager["appendLeafControl"]>>().toEqualTypeOf<{
+  type LeafControl = ReturnType<SessionManager["appendLeafControl"]>;
+  expectTypeOf<{ [Key in keyof LeafControl]: LeafControl[Key] }>().toEqualTypeOf<{
     type: "leaf";
     id: string;
     parentId: string | null;

@@ -33,7 +33,3 @@ export type ReadSessionUpdatedAt = (params: {
 export type RecordSessionMetaFromInbound = (
   params: RecordInboundSessionMetaParams,
 ) => Promise<SessionEntry | null>;
-
-export type UpdateLastRoute = (
-  params: UpdateSessionLastRouteParams,
-) => Promise<SessionEntry | null>;

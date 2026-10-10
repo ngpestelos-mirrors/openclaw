@@ -589,7 +589,9 @@ export function createPluginSessionOwnership(
             [params.authority?.kind === "source" ? params.authority.source : undefined],
             (assertSources) => {
               assertRuntimeCurrent();
-              if (params.authority?.kind === "host") params.authority.assertCurrent();
+              if (params.authority?.kind === "host") {
+                params.authority.assertCurrent();
+              }
               assertSources();
             },
           ),

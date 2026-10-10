@@ -2,15 +2,15 @@ import "../config/sessions/session-entry-patch-delivery.test-support.js";
 import { expect, it, vi } from "vitest";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { createSessionCompoundWorkerFixture } from "../config/sessions/session-compound-worker.test-support.js";
-import { getSessionEntryPatchDelivery } from "../config/sessions/session-entry-patch-delivery.test-support.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   applySessionEntryPatch,
   prepareSessionEntryPatch,
   updateLastRouteWithAuthority,
-  type SessionEntrySourceAuthority,
 } from "./session-store-runtime.js";
 
+const { getSessionEntryPatchDelivery } =
+  await import("../config/sessions/session-entry-patch-delivery.test-support.js");
 const delivery = getSessionEntryPatchDelivery();
 
 it("rejects an unprepared JavaScript source capability before invoking it or opening storage", async () => {
@@ -19,14 +19,16 @@ it("rejects an unprepared JavaScript source capability before invoking it or ope
   const params = {
     sessionKey: "agent:main:invalid-source",
     storePath: "invalid-source-must-not-open.sqlite",
-    authority: { kind: "source" as const, source: source as SessionEntrySourceAuthority },
+    authority: { kind: "source" as const, source },
   };
   const error = "Session entry source authority requires a prepared source capability";
-  await expect(prepareSessionEntryPatch({ ...params, prepare })).rejects.toThrow(error);
-  await expect(applySessionEntryPatch({ ...params, patch: { label: "refused" } })).rejects.toThrow(
-    error,
-  );
-  expect(() => updateLastRouteWithAuthority(params)).toThrow(error);
+  await expect(
+    Reflect.apply(prepareSessionEntryPatch, undefined, [{ ...params, prepare }]),
+  ).rejects.toThrow(error);
+  await expect(
+    Reflect.apply(applySessionEntryPatch, undefined, [{ ...params, patch: { label: "refused" } }]),
+  ).rejects.toThrow(error);
+  expect(() => Reflect.apply(updateLastRouteWithAuthority, undefined, [params])).toThrow(error);
   expect(source).not.toHaveBeenCalled();
   expect(prepare).not.toHaveBeenCalled();
   expect(delivery.commands).toEqual([]);
@@ -144,7 +146,9 @@ it("rechecks host authority at worker admission after preparation", async () => 
         authority: {
           kind: "host",
           assertCurrent() {
-            if (!current) throw new Error("Session operation revoked");
+            if (!current) {
+              throw new Error("Session operation revoked");
+            }
           },
         },
       }),

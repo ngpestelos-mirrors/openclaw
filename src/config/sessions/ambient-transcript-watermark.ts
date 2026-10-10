@@ -1,6 +1,6 @@
 import { applySessionEntryOperation } from "./session-accessor.sqlite-entry.js";
-export { readAmbientTranscriptWatermarkFromEntry } from "./ambient-transcript-watermark-projection.js";
 import type { SessionEntry } from "./types.js";
+export { readAmbientTranscriptWatermarkFromEntry } from "./ambient-transcript-watermark-projection.js";
 
 export type AmbientTranscriptWatermarkScope = {
   channel: string;

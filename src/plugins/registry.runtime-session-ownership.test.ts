@@ -3,6 +3,7 @@ import { formatSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import { createPluginRecord } from "./loader-records.js";
 import { revokePluginRecord } from "./registry-lifecycle.js";
 import { createRuntimeTestRegistry } from "./registry-runtime.test-helpers.js";
@@ -35,6 +36,9 @@ describe("plugin registry runtime session ownership", () => {
       const entered = createDeferredCore();
       const resume = createDeferredCore();
       const original = { sessionId: "managed", updatedAt: 1, label: "original" };
+      const delivery = normalizeSessionDeliveryState({
+        context: { channel: "slack", to: "C123" },
+      });
       let stored: SessionEntry = original;
       runtime.agent.session.getSessionEntry = () => stored;
       runtime.agent.session.upsertSessionEntry = async ({ entry }) => {
@@ -46,23 +50,32 @@ describe("plugin registry runtime session ownership", () => {
         const patch = await params.prepare(stored, { existingEntry: stored });
         entered.resolve();
         await resume.promise;
-        if (params.authority?.kind === "host") params.authority.assertCurrent();
-        if (params.authority?.kind === "source") params.authority.source();
-        if (patch) stored = { ...stored, ...patch };
+        if (params.authority?.kind === "host") {
+          params.authority.assertCurrent();
+        }
+        if (params.authority?.kind === "source") {
+          params.authority.source();
+        }
+        if (patch) {
+          stored = { ...stored, ...patch };
+        }
         return stored;
       };
       runtime.channel.session.updateLastRoute = async () => {
         entered.resolve();
         await resume.promise;
-        stored = { ...stored, lastChannel: "slack" };
+        stored = { ...stored, delivery };
         return stored;
       };
       runtime.channel.session.updateLastRouteWithAuthority = async ({ authority }) => {
         entered.resolve();
         await resume.promise;
-        if (authority.kind === "host") authority.assertCurrent();
-        else authority.source();
-        stored = { ...stored, lastChannel: "slack" };
+        if (authority.kind === "host") {
+          authority.assertCurrent();
+        } else {
+          authority.source();
+        }
+        stored = { ...stored, delivery };
         return stored;
       };
       const registry = createRuntimeTestRegistry(runtime);
@@ -360,7 +373,9 @@ describe("plugin registry runtime session ownership", () => {
     session.prepareSessionEntryPatch = vi.fn(async (params) => {
       const existingEntry = entries[params.sessionKey];
       const entry = existingEntry ?? params.fallbackEntry;
-      if (!entry) return null;
+      if (!entry) {
+        return null;
+      }
       const patch = await params.prepare(structuredClone(entry), {
         existingEntry: existingEntry ? structuredClone(existingEntry) : undefined,
       });

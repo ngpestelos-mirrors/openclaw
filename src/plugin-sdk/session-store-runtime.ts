@@ -273,13 +273,17 @@ export async function prepareSessionEntryPatch(
   const entry = await patchAccessorSessionEntry(
     toSessionAccessScope(params),
     async (existing, context) => {
-      if (params.authority?.kind === "host") params.authority.assertCurrent();
+      if (params.authority?.kind === "host") {
+        params.authority.assertCurrent();
+      }
       const patch = await params.prepare(projectPluginSessionEntry(existing), {
         existingEntry: context.existingEntry
           ? projectPluginSessionEntry(context.existingEntry)
           : undefined,
       });
-      if (params.authority?.kind === "host") params.authority.assertCurrent();
+      if (params.authority?.kind === "host") {
+        params.authority.assertCurrent();
+      }
       return patch
         ? preserveGenerationPrivateFields(existing, projectPluginSessionEntryPatch(patch))
         : null;
