@@ -114,6 +114,7 @@ export default definePluginEntry({
           gateway,
           operations: createOperations({
             runtime: api.runtime,
+            logger: api.logger,
             gateway,
             agentId: config.agentId,
             now: scheduler.now,

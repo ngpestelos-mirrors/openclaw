@@ -47,7 +47,9 @@ function fixture(agentId?: string, now = () => 0) {
       sessions: [older, newer],
     });
   };
+  const logger = { error: vi.fn() };
   const dispatch = createOperations({
+    logger,
     agentId,
     now,
     gateway: { name: "Synthetic Gateway", version: "1.0.0" },
@@ -57,12 +59,26 @@ function fixture(agentId?: string, now = () => 0) {
           agents: { entries: { main: { name: "Main agent" }, research: { name: "Research" } } },
         }),
       },
-      gateway: { request, readSessionFacts, withSessionFacts: selectSessionFacts },
+      gateway: {
+        request: async (method, params, options) => {
+          if (method === "sessions.create" && params?.idempotencyKey) {
+            throw Object.assign(
+              new Error(
+                "idempotent session creation requires an authenticated principal or device identity",
+              ),
+              { code: "INVALID_REQUEST" },
+            );
+          }
+          return request(method, params, options);
+        },
+        readSessionFacts,
+        withSessionFacts: selectSessionFacts,
+      },
     },
   });
   const operations = (op: string, params: unknown, assertAuthority = async () => {}) =>
     dispatch(op, params, assertAuthority);
-  return { operations, request, readSessionFacts, withSessionFacts };
+  return { operations, request, readSessionFacts, withSessionFacts, logger };
 }
 
 function message(id: string, role: string, text: string) {
@@ -225,7 +241,7 @@ describe("MCP relay data operations", () => {
     ).toEqual({ conversationId: newer.key, runId: "created-run", status: "running" });
     expect(request).toHaveBeenCalledExactlyOnceWith(
       "sessions.create",
-      { agentId: "main", message: "new question", idempotencyKey: expect.any(String) },
+      { agentId: "main", message: "new question" },
       { timeoutMs: 15_000 },
     );
 
@@ -251,14 +267,6 @@ describe("MCP relay data operations", () => {
       status: "ok",
       terminalReply: { disposition: "visible", text: "snapshot text" },
     });
-    request.mockResolvedValueOnce({
-      messages: [
-        {
-          ...message("fresh", "assistant", "fresh answer"),
-          __openclaw: { id: "fresh", runId: "accepted-run" },
-        },
-      ],
-    });
     expect(
       await operations("message.send", {
         message: "continue",
@@ -269,8 +277,9 @@ describe("MCP relay data operations", () => {
       conversationId: newer.key,
       runId: "accepted-run",
       status: "completed",
-      reply: "fresh answer",
+      reply: "snapshot text",
     });
+    expect(request).toHaveBeenCalledTimes(2);
     expect(request).toHaveBeenNthCalledWith(
       1,
       "chat.send",
@@ -291,52 +300,64 @@ describe("MCP relay data operations", () => {
     );
   });
 
-  it("binds reply lookup to the session's host receipt and excludes stale assistant text", async () => {
-    const { operations, request } = fixture();
-    request.mockResolvedValueOnce({
-      messages: [message("old", "assistant", "stale answer")],
-      inputReceipts: [{ runId: "run", state: "consumed", consumedByEventId: "user" }],
-    });
-    request.mockResolvedValueOnce({ status: "ok" });
-    request.mockResolvedValueOnce({
-      messages: [
-        message("old", "assistant", "stale answer"),
-        {
-          ...message("fresh", "assistant", "correct answer"),
-          __openclaw: { id: "fresh", runId: "run" },
-        },
-        {
-          ...message("other", "assistant", "other run's answer"),
-          __openclaw: { id: "other", runId: "other-run" },
-        },
-      ],
-    });
-    expect(
-      await operations("reply.get", { conversationId: newer.key, runId: "run", waitMs: 100 }),
-    ).toEqual({
-      conversationId: newer.key,
-      runId: "run",
-      status: "completed",
-      reply: "correct answer",
-    });
-    expect(request).toHaveBeenNthCalledWith(
-      1,
-      "chat.history",
-      expect.objectContaining({ sessionKey: newer.key, inputRunIds: ["run"] }),
-      expect.any(Object),
-    );
+  it.each([
+    {
+      name: "visible reply",
+      terminalReply: { disposition: "visible", text: "owner reply" },
+      content: { reply: "owner reply" },
+    },
+    {
+      name: "truncated reply",
+      terminalReply: { disposition: "visible", text: "x".repeat(20_000) },
+      content: { reply: `${"x".repeat(15_999)}…` },
+    },
+    { name: "silent reply", terminalReply: { disposition: "silent" }, content: {} },
+    { name: "empty reply", terminalReply: { disposition: "empty" }, content: {} },
+    {
+      name: "expired reply",
+      terminalReply: undefined,
+      content: {
+        error: "The reply is no longer available from the run. Use read_conversation to see it.",
+      },
+    },
+  ])(
+    "returns the run owner's $name without transcript reads",
+    async ({ terminalReply, content }) => {
+      const { operations, request } = fixture();
+      request.mockResolvedValueOnce({ status: "ok", terminalReply });
+      expect(
+        await operations("reply.get", { conversationId: newer.key, runId: "run", waitMs: 0 }),
+      ).toEqual({ conversationId: newer.key, runId: "run", status: "completed", ...content });
+      expect(request).toHaveBeenCalledExactlyOnceWith(
+        "agent.wait",
+        { runId: "run", timeoutMs: 0 },
+        { timeoutMs: 5_000 },
+      );
+    },
+  );
+
+  it.each(["message.send", "reply.get"])("refuses a missing conversation for %s", async (op) => {
+    const { operations, request, readSessionFacts } = fixture();
+    readSessionFacts.mockResolvedValue({ sessions: [] });
+    await expect(
+      operations(op, {
+        conversationId: "missing",
+        ...(op === "message.send" ? { message: "hello" } : { runId: "run" }),
+        waitMs: 0,
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(request).not.toHaveBeenCalled();
   });
 
-  it("rejects a run that belongs to another session before waiting", async () => {
-    const { operations, request } = fixture();
-    request.mockResolvedValueOnce({
-      messages: [message("old", "assistant", "unrelated")],
-      inputReceipts: [],
+  it("withholds a reply if the conversation is deleted while waiting", async () => {
+    const { operations, request, readSessionFacts } = fixture();
+    request.mockImplementationOnce(async () => {
+      readSessionFacts.mockResolvedValue({ sessions: [] });
+      return { status: "ok", terminalReply: { disposition: "visible", text: "deleted reply" } };
     });
     await expect(
-      operations("reply.get", { conversationId: newer.key, runId: "other-run", waitMs: 100 }),
+      operations("reply.get", { conversationId: newer.key, runId: "run", waitMs: 100 }),
     ).rejects.toMatchObject({ code: "not_found" });
-    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -444,101 +465,17 @@ describe("MCP relay data operations", () => {
     );
     expect(request).toHaveBeenCalledTimes(1);
   });
-  it.each(["next user", "independent run"])(
-    "follows a consumed-input anchor beyond the tail and stops before %s",
-    async (boundary) => {
-      const { operations, request } = fixture();
-      const receipt = { runId: "submitted", state: "consumed", consumedByEventId: "consumed-user" };
-      const tail = {
-        messages: [message("recent-unrelated", "assistant", "recent stale text")],
-        inputReceipts: [receipt],
-      };
-      request.mockResolvedValueOnce(tail);
-      request.mockResolvedValueOnce({ status: "ok" });
-      request.mockResolvedValueOnce(tail);
-      request.mockResolvedValueOnce({
-        messages: [
-          message("prior", "assistant", "prior stale answer"),
-          {
-            ...message("consumed-user", "user", "our input"),
-            __openclaw: {
-              id: "consumed-user",
-              runId: "submitted",
-              steerTargetRunId: "backing-run",
-            },
-          },
-          {
-            ...message("part", "assistant", "first part"),
-            __openclaw: { id: "part", runId: "backing-run" },
-          },
-        ],
-        newerCursor: "newer-page",
-      });
-      request.mockResolvedValueOnce({
-        messages: [
-          {
-            ...message("final", "assistant", "our final answer"),
-            __openclaw: { id: "final", runId: "backing-run" },
-          },
-          boundary === "next user"
-            ? message("next-user", "user", "other input")
-            : {
-                ...message("independent", "assistant", "independent answer"),
-                __openclaw: { id: "independent", runId: "different-run" },
-              },
-          message("latest", "assistant", "must not leak into this reply"),
-        ],
-      });
-      expect(
-        await operations("reply.get", {
-          conversationId: newer.key,
-          runId: "submitted",
-          waitMs: 100,
-        }),
-      ).toEqual({
-        conversationId: newer.key,
-        runId: "submitted",
-        status: "completed",
-        reply: "our final answer",
-      });
-      expect(request).toHaveBeenNthCalledWith(
-        4,
-        "chat.history",
-        expect.objectContaining({
-          messageId: "consumed-user",
-          sessionId: newer.sessionId,
-          limit: 100,
-        }),
-        expect.any(Object),
-      );
-      expect(request).toHaveBeenNthCalledWith(
-        5,
-        "chat.history",
-        expect.objectContaining({ cursor: "newer-page", limit: 100 }),
-        expect.any(Object),
-      );
-    },
-  );
-
-  it("accepts a current lifecycle revision when the creation acknowledgment omitted it", async () => {
-    const { operations, request, readSessionFacts } = fixture();
-    readSessionFacts.mockResolvedValue({
-      sessions: [{ ...newer, lifecycleRevision: "current-revision" }],
-    });
+  it("returns the initial reply of a new conversation", async () => {
+    const { operations, request } = fixture();
     request.mockResolvedValueOnce({
       key: newer.key,
       sessionId: newer.sessionId,
       runId: "created-run",
       runStarted: true,
     });
-    request.mockResolvedValueOnce({ status: "ok" });
     request.mockResolvedValueOnce({
-      messages: [
-        {
-          ...message("answer", "assistant", "created answer"),
-          __openclaw: { id: "answer", runId: "created-run" },
-        },
-      ],
+      status: "ok",
+      terminalReply: { disposition: "visible", text: "created answer" },
     });
     expect(await operations("message.send", { message: "start", waitMs: 100 })).toEqual({
       conversationId: newer.key,
@@ -546,107 +483,9 @@ describe("MCP relay data operations", () => {
       status: "completed",
       reply: "created answer",
     });
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
-  it("does not fabricate a completed reply when its consumed input is no longer readable", async () => {
-    const { operations, request } = fixture();
-    const tail = {
-      messages: [message("unrelated", "assistant", "wrong reply")],
-      inputReceipts: [{ runId: "run", state: "consumed", consumedByEventId: "missing-anchor" }],
-    };
-    request
-      .mockResolvedValueOnce(tail)
-      .mockResolvedValueOnce({ status: "ok" })
-      .mockResolvedValueOnce(tail)
-      .mockResolvedValueOnce({ messages: [] });
-    expect(
-      await operations("reply.get", { conversationId: newer.key, runId: "run", waitMs: 100 }),
-    ).toMatchObject({ status: "completed", error: expect.stringContaining("input is no longer") });
-  });
-  it("polls a completed run without waiting when reply.get waitMs is zero", async () => {
-    const { operations, request } = fixture();
-    request.mockResolvedValueOnce({ runId: "run", status: "started" });
-    expect(
-      await operations("message.send", { conversationId: newer.key, message: "start", waitMs: 0 }),
-    ).toMatchObject({ status: "running" });
-    expect(request).toHaveBeenCalledTimes(1);
-    request.mockResolvedValueOnce({ status: "ok" });
-    request.mockResolvedValueOnce({
-      messages: [
-        {
-          ...message("answer", "assistant", "completed answer"),
-          __openclaw: { id: "answer", runId: "run" },
-        },
-      ],
-    });
-    expect(
-      await operations("reply.get", { conversationId: newer.key, runId: "run", waitMs: 0 }),
-    ).toEqual({
-      conversationId: newer.key,
-      runId: "run",
-      status: "completed",
-      reply: "completed answer",
-    });
-    expect(request).toHaveBeenNthCalledWith(
-      2,
-      "agent.wait",
-      { runId: "run", timeoutMs: 0 },
-      { timeoutMs: 5_000 },
-    );
-  });
-
-  it.each(["reset", "revision", "deletion"])(
-    "withholds reply content if a %s occurs during terminal history reads",
-    async (change) => {
-      const { operations, request, readSessionFacts } = fixture();
-      readSessionFacts
-        .mockResolvedValueOnce({ sessions: [newer] })
-        .mockResolvedValueOnce({ sessions: [newer] })
-        .mockResolvedValueOnce({
-          sessions:
-            change === "deletion"
-              ? []
-              : [
-                  {
-                    ...newer,
-                    ...(change === "reset"
-                      ? { sessionId: "replacement" }
-                      : { lifecycleRevision: "replacement-revision" }),
-                  },
-                ],
-        });
-      request
-        .mockResolvedValueOnce({ runId: "run", status: "started" })
-        .mockResolvedValueOnce({ status: "ok" })
-        .mockResolvedValueOnce({
-          messages: [
-            {
-              ...message("stale-answer", "assistant", "must not publish"),
-              __openclaw: { id: "stale-answer", runId: "run" },
-            },
-          ],
-        });
-      await expect(
-        operations("message.send", { conversationId: newer.key, message: "start", waitMs: 100 }),
-      ).rejects.toMatchObject({ code: "not_found" });
-    },
-  );
-  it("bounds history RPCs to the remaining relay request budget", async () => {
-    let now = 0;
-    const { operations, request, readSessionFacts } = fixture(undefined, () => now);
-    request
-      .mockResolvedValueOnce({ runId: "run", status: "started" })
-      .mockResolvedValueOnce({ status: "ok" })
-      .mockResolvedValueOnce({ messages: [] });
-    readSessionFacts
-      .mockResolvedValueOnce({ sessions: [newer] })
-      .mockImplementationOnce(async () => {
-        now = 15_050;
-        return { sessions: [newer] };
-      });
-    await operations("message.send", { conversationId: newer.key, message: "hello", waitMs: 100 });
-    expect(request).toHaveBeenLastCalledWith("chat.history", expect.any(Object), { timeoutMs: 50 });
-  });
   it.each([20_000, 65_000])(
     "keeps an accepted run when preparation consumes %ims of its request budget",
     async (elapsed) => {
@@ -711,5 +550,53 @@ describe("MCP relay data operations", () => {
     await expect(
       operations("message.send", { conversationId: newer.key, message: "hello", waitMs: 100 }),
     ).rejects.toBe(failure);
+  });
+
+  it.each(["message.send", "conversation.read"])(
+    "logs a %s Gateway failure once without request content",
+    async (op) => {
+      const { operations, request, logger } = fixture();
+      const privateText = 'maintain the DISTINCTIVE "private request text"\nfor launch';
+      const failure = Object.assign(
+        new Error(
+          `request rejected: ${privateText}; encoded: ${JSON.stringify(privateText).slice(1, -1)}\ntry again`,
+        ),
+        {
+          code: "INVALID_REQUEST",
+          details: {
+            transcript: "PRIVATE transcript",
+            token: "PRIVATE token",
+            pairingCode: "ABCDE-FGHIJ",
+          },
+        },
+      );
+      request.mockRejectedValueOnce(failure);
+      await expect(
+        operations(
+          op,
+          op === "message.send"
+            ? { agentId: "main", message: privateText, waitMs: 0 }
+            : { conversationId: newer.key, before: privateText, limit: 1 },
+        ),
+      ).rejects.toBeDefined();
+      expect(logger.error).toHaveBeenCalledExactlyOnceWith(
+        `mcp-relay: op=${op} method=${op === "message.send" ? "sessions.create" : "chat.history"} INVALID_REQUEST: request rejected: [redacted]; encoded: [redacted] try again`,
+      );
+      expect(JSON.stringify(logger.error.mock.calls)).not.toMatch(
+        /DISTINCTIVE|PRIVATE|ABCDE-FGHIJ/,
+      );
+    },
+  );
+
+  it("logs unexpected non-RPC failures without dumping error details", async () => {
+    const { operations, readSessionFacts, logger } = fixture();
+    const failure = new Error("session facts unavailable");
+    readSessionFacts.mockRejectedValueOnce(failure);
+    await expect(
+      operations("reply.get", { conversationId: newer.key, runId: "run", waitMs: 0 }),
+    ).rejects.toBe(failure);
+    expect(logger.error).toHaveBeenCalledExactlyOnceWith(
+      "mcp-relay: op=reply.get method=none unknown: session facts unavailable",
+    );
   });
 });

@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { listAgentIds, tryResolveDefaultAgentId } from "openclaw/plugin-sdk/agent-scope-runtime";
+import { redactSensitiveText } from "openclaw/plugin-sdk/logging-core";
+import type { PluginLogger } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import { readStringValue } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { escapeRegExp } from "openclaw/plugin-sdk/text-utility-runtime";
 import { createDeadlineGatewayRequest, type GatewayRequest } from "./gateway-request.js";
 import { capResult, isRecord, RelayError, truncateText } from "./protocol.js";
 
@@ -14,7 +17,6 @@ type OperationsRuntime = {
 type SessionFact = Awaited<
   ReturnType<OperationsRuntime["gateway"]["readSessionFacts"]>
 >["sessions"][number];
-type SessionIdentity = Pick<SessionFact, "key" | "sessionId" | "agentId" | "lifecycleRevision">;
 type HistoryMessage = { id: string; role: "user" | "assistant"; text: string; timestamp: string };
 
 function invalid(message: string): never {
@@ -126,7 +128,6 @@ function conversationMessage(value: unknown): HistoryMessage | undefined {
 function historyPage(value: unknown): {
   messages: unknown[];
   olderCursor?: string;
-  newerCursor?: string;
   hasMore?: boolean;
 } {
   if (
@@ -148,38 +149,23 @@ function historyPage(value: unknown): {
   return {
     messages: value.messages,
     ...(typeof value.olderCursor === "string" ? { olderCursor: value.olderCursor } : {}),
-    ...(typeof value.newerCursor === "string" ? { newerCursor: value.newerCursor } : {}),
     ...(typeof value.hasMore === "boolean" ? { hasMore: value.hasMore } : {}),
   };
 }
 
 export function createOperations({
   runtime,
+  logger,
   gateway,
   agentId: configuredAgentId,
   now = Date.now,
 }: {
   runtime: OperationsRuntime;
+  logger: Pick<PluginLogger, "error">;
   gateway: { name: string; version: string };
   agentId?: string;
   now?: () => number;
 }) {
-  const admittedRuns = new Map<
-    string,
-    { key: string; sessionId: string; lifecycleRevision?: string }
-  >();
-
-  function rememberRun(runId: string, session: SessionIdentity) {
-    admittedRuns.set(runId, {
-      key: session.key,
-      sessionId: session.sessionId,
-      lifecycleRevision: session.lifecycleRevision,
-    });
-    if (admittedRuns.size > 256) {
-      const oldest = admittedRuns.keys().next().value;
-      if (oldest !== undefined) admittedRuns.delete(oldest);
-    }
-  }
   async function findSession(conversationId: string): Promise<SessionFact> {
     const facts = await runtime.gateway.readSessionFacts({ sessionKeys: [conversationId] });
     const session = facts.sessions.find((entry) => entry.key === conversationId);
@@ -193,7 +179,7 @@ export function createOperations({
   }
 
   async function readHistory(
-    session: SessionIdentity,
+    session: SessionFact,
     params: Record<string, unknown>,
     request: GatewayRequest,
   ) {
@@ -227,65 +213,15 @@ export function createOperations({
     }
   }
 
-  async function runHistory(session: SessionIdentity, runId: string, request: GatewayRequest) {
-    const response = await request(
-      "chat.history",
-      {
-        sessionKey: session.key,
-        agentId: session.agentId,
-        inputRunIds: [runId],
-        limit: 100,
-        maxChars: 16_000,
-        maxBytes: 400_000,
-      },
-      { timeoutMs: 15_000 },
-    );
-    const page = historyPage(response);
-    const receipts =
-      isRecord(response) && Array.isArray(response.inputReceipts) ? response.inputReceipts : [];
-    const receipt = receipts.find(
-      (item: unknown) =>
-        isRecord(item) &&
-        item.runId === runId &&
-        (item.state === "pending" || item.state === "consumed"),
-    );
-    const matchingMessages = page.messages.filter(
-      (item) => isRecord(item) && isRecord(item.__openclaw) && item.__openclaw.runId === runId,
-    );
-    return { receipt, messages: matchingMessages, page };
-  }
-
   async function observeRun(
-    session: SessionIdentity,
+    conversationId: string,
     runId: string,
     waitMs: number,
     assertAuthority: () => Promise<void>,
     request: GatewayRequest,
     justSubmitted = false,
   ) {
-    const recorded = admittedRuns.get(runId);
-    if (
-      recorded &&
-      (recorded.key !== session.key ||
-        recorded.sessionId !== session.sessionId ||
-        (recorded.lifecycleRevision !== undefined &&
-          recorded.lifecycleRevision !== session.lifecycleRevision))
-    ) {
-      throw new RelayError(
-        "not_found",
-        "Run not found in this conversation. Send a new message or select its original conversation.",
-      );
-    }
-    if (!recorded) {
-      const history = await runHistory(session, runId, request);
-      if (!history.receipt && !history.messages.length) {
-        throw new RelayError(
-          "not_found",
-          "Run not found in this conversation. Send a new message or select its original conversation.",
-        );
-      }
-    }
-    const base = { conversationId: session.key, runId };
+    const base = { conversationId, runId };
     try {
       if (waitMs === 0 && justSubmitted) return { ...base, status: "running" };
       await assertAuthority();
@@ -295,17 +231,7 @@ export function createOperations({
         { timeoutMs: waitMs + 5_000 },
       );
       await assertAuthority();
-      const current = await findSession(session.key);
-      if (
-        current.sessionId !== session.sessionId ||
-        (session.lifecycleRevision !== undefined &&
-          current.lifecycleRevision !== session.lifecycleRevision)
-      ) {
-        throw new RelayError(
-          "not_found",
-          "This conversation was reset while the run was in progress. Send a new message.",
-        );
-      }
+      await findSession(conversationId);
       if (!isRecord(result))
         throw new RelayError(
           "unavailable",
@@ -336,123 +262,24 @@ export function createOperations({
           "unavailable",
           "Run status is unavailable. Open the conversation in OpenClaw.",
         );
-      const history = await runHistory(current, runId, request);
-      const receipt = isRecord(history.receipt) ? history.receipt : undefined;
-      const anchorId =
-        receipt?.state === "consumed" && typeof receipt.consumedByEventId === "string"
-          ? receipt.consumedByEventId
-          : undefined;
-      let content: { reply?: string; error?: string };
-      if (anchorId) {
-        content = await readReplyAfterInput(
-          current,
-          runId,
-          anchorId,
-          history.page,
-          assertAuthority,
-          request,
-        );
-      } else {
-        const reply = history.messages
-          .flatMap((value) => {
-            const message = conversationMessage(value);
-            return message?.role === "assistant" ? [message.text] : [];
-          })
-          .at(-1);
-        const terminal = isRecord(result.terminalReply) ? result.terminalReply : undefined;
-        content = reply
-          ? { reply }
-          : terminal?.disposition === "visible"
-            ? {
-                error:
-                  "The run completed, but its reply is outside the available history. Open the conversation in OpenClaw.",
-              }
-            : {};
-      }
-      const afterHistory = await findSession(current.key);
-      if (
-        afterHistory.sessionId !== current.sessionId ||
-        afterHistory.lifecycleRevision !== current.lifecycleRevision
-      ) {
-        throw new RelayError(
-          "not_found",
-          "This conversation changed while its reply was being read. Reopen it in OpenClaw.",
-        );
-      }
-      return capResult({ ...base, status: "completed", ...content });
+      const terminal = isRecord(result.terminalReply) ? result.terminalReply : undefined;
+      return {
+        ...base,
+        status: "completed",
+        ...(!terminal
+          ? {
+              error:
+                "The reply is no longer available from the run. Use read_conversation to see it.",
+            }
+          : terminal.disposition === "visible" && typeof terminal.text === "string"
+            ? { reply: truncateText(terminal.text) }
+            : {}),
+      };
     } catch (error) {
       if (error instanceof RelayError && error.code === "timeout")
         return { ...base, status: "running" };
       throw error;
     }
-  }
-
-  async function readReplyAfterInput(
-    session: SessionIdentity,
-    runId: string,
-    anchorId: string,
-    tail: ReturnType<typeof historyPage>,
-    assertAuthority: () => Promise<void>,
-    request: GatewayRequest,
-  ): Promise<{ reply?: string; error?: string }> {
-    let page = tail;
-    let anchorIndex = page.messages.findIndex((message) => messageId(message) === anchorId);
-    if (anchorIndex < 0) {
-      await assertAuthority();
-      page = await readHistory(
-        session,
-        {
-          messageId: anchorId,
-          sessionId: session.sessionId,
-          limit: 100,
-        },
-        request,
-      );
-      anchorIndex = page.messages.findIndex((message) => messageId(message) === anchorId);
-    }
-    const anchor = page.messages[anchorIndex];
-    if (anchorIndex < 0 || !isRecord(anchor) || anchor.role !== "user") {
-      return {
-        error:
-          "The run completed, but its input is no longer in the available history. Open the conversation in OpenClaw.",
-      };
-    }
-    const metadata = isRecord(anchor.__openclaw) ? anchor.__openclaw : undefined;
-    const backingRunId =
-      typeof metadata?.steerTargetRunId === "string"
-        ? metadata.steerTargetRunId
-        : typeof metadata?.runId === "string"
-          ? metadata.runId
-          : runId;
-    let reply: string | undefined;
-    let offset = anchorIndex + 1;
-    const visited = new Set<string>();
-    for (let pages = 0; pages < 4; pages++) {
-      for (const value of page.messages.slice(offset)) {
-        if (!isRecord(value)) continue;
-        const meta = isRecord(value.__openclaw) ? value.__openclaw : undefined;
-        if (
-          value.role === "user" ||
-          (typeof meta?.runId === "string" && meta.runId !== backingRunId)
-        ) {
-          return reply ? { reply } : {};
-        }
-        if (value.role === "assistant") {
-          const message = conversationMessage(value);
-          if (message) reply = message.text;
-        }
-      }
-      if (!page.newerCursor) return reply ? { reply } : {};
-      if (pages === 3 || visited.has(page.newerCursor)) break;
-      visited.add(page.newerCursor);
-      await assertAuthority();
-      page = await readHistory(session, { cursor: page.newerCursor, limit: 100 }, request);
-      offset = 0;
-    }
-    return {
-      error:
-        "The run completed, but its reply exceeds the bounded history window. Open the conversation in OpenClaw.",
-    };
   }
 
   async function execute(
@@ -559,10 +386,11 @@ export function createOperations({
         const conversationId = stringParam(input, "conversationId", 512);
         const requestedAgentId = stringParam(input, "agentId", 128);
         const waitMs = integerParam(input, "waitMs", 0, 50_000);
-        let session: SessionIdentity;
+        let resolvedConversationId: string;
         let accepted: unknown;
         if (conversationId) {
-          session = await findSession(conversationId);
+          const session = await findSession(conversationId);
+          resolvedConversationId = session.key;
           if (requestedAgentId && requestedAgentId !== session.agentId)
             invalid("agentId does not own this conversation. Select the conversation's agent.");
           await assertAuthority();
@@ -589,11 +417,7 @@ export function createOperations({
               "The selected agent does not exist. Get the Gateway status and choose an available agent.",
             );
           await assertAuthority();
-          accepted = await request(
-            "sessions.create",
-            { agentId, message, idempotencyKey: randomUUID() },
-            { timeoutMs: 15_000 },
-          );
+          accepted = await request("sessions.create", { agentId, message }, { timeoutMs: 15_000 });
           await assertAuthority();
           if (!isRecord(accepted) || typeof accepted.key !== "string")
             throw new RelayError(
@@ -615,20 +439,7 @@ export function createOperations({
               `Conversation ${accepted.key} was created, but the message did not start. Open it in OpenClaw and retry there.`,
             );
           }
-          if (typeof accepted.sessionId !== "string" || !accepted.sessionId)
-            throw new RelayError(
-              "unavailable",
-              "The new conversation has no session identity. Open it in OpenClaw before sending again.",
-            );
-          const entry = isRecord(accepted.entry) ? accepted.entry : undefined;
-          session = {
-            key: accepted.key,
-            sessionId: accepted.sessionId,
-            agentId,
-            ...(typeof entry?.lifecycleRevision === "string"
-              ? { lifecycleRevision: entry.lifecycleRevision }
-              : {}),
-          };
+          resolvedConversationId = accepted.key;
         }
         await assertAuthority();
         if (!isRecord(accepted) || typeof accepted.runId !== "string" || !accepted.runId)
@@ -636,16 +447,22 @@ export function createOperations({
             "unavailable",
             "The Gateway did not return a run ID. Check the conversation in OpenClaw before sending again.",
           );
-        rememberRun(accepted.runId, session);
-        return await observeRun(session, accepted.runId, waitMs, assertAuthority, request, true);
+        return await observeRun(
+          resolvedConversationId,
+          accepted.runId,
+          waitMs,
+          assertAuthority,
+          request,
+          true,
+        );
       }
       case "reply.get": {
         const input = paramsObject(params, ["conversationId", "runId", "waitMs"]);
         const conversationId = stringParam(input, "conversationId", 512, true)!;
         const runId = stringParam(input, "runId", 512, true)!;
         const waitMs = integerParam(input, "waitMs", 0, 50_000);
-        const session = await findSession(conversationId);
-        return await observeRun(session, runId, waitMs, assertAuthority, request);
+        await findSession(conversationId);
+        return await observeRun(conversationId, runId, waitMs, assertAuthority, request);
       }
       default:
         invalid("This operation is not supported.");
@@ -665,9 +482,51 @@ export function createOperations({
         ? params.waitMs
         : 0;
     const deadline = now() + waitMs + 15_000;
-    const request = createDeadlineGatewayRequest(runtime.gateway.request, deadline, now);
-    const result = await execute(op, params, assertAuthority, request);
-    await assertAuthority();
-    return capResult(result);
+    let gatewayMethod = "none";
+    let logged = false;
+    const logFailure = (error: unknown) => {
+      if (logged) return;
+      logged = true;
+      const code = isRecord(error) && typeof error.code === "string" ? error.code : "unknown";
+      const message = error instanceof Error ? error.message : "Unexpected failure";
+      let diagnostic = `${code}: ${message}`;
+      // Error messages may echo input; never log request values or error details/stacks.
+      const values = (isRecord(params) ? Object.values(params) : [])
+        .flatMap((value) =>
+          typeof value === "string" && value ? [value, JSON.stringify(value).slice(1, -1)] : [],
+        )
+        .sort((left, right) => right.length - left.length);
+      if (values.length) {
+        diagnostic = diagnostic.replace(
+          new RegExp(values.map(escapeRegExp).join("|"), "g"),
+          "[redacted]",
+        );
+      }
+      diagnostic = redactSensitiveText(diagnostic, { mode: "tools" })
+        .replace(/[\r\n\u2028\u2029]/g, " ")
+        .slice(0, 1000);
+      logger.error(`mcp-relay: op=${op} method=${gatewayMethod} ${diagnostic}`);
+    };
+    const request = createDeadlineGatewayRequest(
+      async (method, requestParams, options) => {
+        gatewayMethod = method;
+        try {
+          return await runtime.gateway.request(method, requestParams, options);
+        } catch (error) {
+          logFailure(error);
+          throw error;
+        }
+      },
+      deadline,
+      now,
+    );
+    try {
+      const result = await execute(op, params, assertAuthority, request);
+      await assertAuthority();
+      return capResult(result);
+    } catch (error) {
+      if (!(error instanceof RelayError) || error.code === "internal") logFailure(error);
+      throw error;
+    }
   };
 }

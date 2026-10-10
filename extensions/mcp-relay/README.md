@@ -29,10 +29,10 @@ Gateway; they never create their own identity or relay connection.
 | Agent roster and default           | `listAgentIds`, `tryResolveDefaultAgentId`, canonical `config.agents.entries` names                | `src/plugin-sdk/agent-scope-runtime.ts`; `docs/plugins/sdk-migration/how-to-migrate.md`, roster helpers                                                        |
 | Gateway version                    | `api.runtime.version`                                                                              | `docs/plugins/sdk-runtime.md`                                                                                                                                  |
 | Conversation list                  | `api.runtime.gateway.withSessionFacts`                                                             | `docs/plugins/sdk-runtime/gateway-and-nodes.md`, immutable session facts; titles/previews are host-redacted                                                    |
-| Session identity/existence         | `api.runtime.gateway.readSessionFacts`                                                             | Same reference; exact session key and incarnation rechecked after history reads                                                                                |
+| Session identity/existence         | `api.runtime.gateway.readSessionFacts`                                                             | Same reference; conversation existence for send/reply, incarnation rechecked for conversation reads                                                            |
 | Paginated transcript               | `api.runtime.gateway.request("chat.history", ...)`                                                 | `docs/plugins/sdk-runtime/gateway-and-nodes.md`; `docs/gateway/protocol/rpc-session-control.md`; latest-tail anchor obtains the host-owned opaque older cursor |
 | New or existing conversation input | `api.runtime.gateway.request("sessions.create", ...)` and `request("chat.send", ...)`              | `docs/plugins/sdk-runtime/gateway-and-nodes.md`; `docs/gateway/protocol/rpc-session-control.md`; ordinary operator input without a source-label override       |
-| Bounded reply polling              | `api.runtime.gateway.request("agent.wait", ...)`, then `request("chat.history", ...)`              | `docs/gateway/protocol/rpc-talk-config-and-agents.md`; `docs/gateway/protocol/rpc-session-control.md`; terminal run status plus transcript text                |
+| Bounded reply polling              | `api.runtime.gateway.request("agent.wait", ...)`                                                   | `docs/concepts/agent-loop.md`; `docs/plugins/sdk-runtime/background-work.md`; terminal run status and the owner's `terminalReply`                              |
 | Run blocked on approval            | Remains `running`; no approval signal is inferred                                                  | `src/agents/run-wait.types.ts` has no run-correlated `waiting_for_approval` result                                                                             |
 | Pending approvals count            | Omitted (optional in protocol)                                                                     | Approval endpoints require separate reviewer authority; none is acquired                                                                                       |
 
@@ -72,9 +72,24 @@ No Doctor contract is needed for a new plugin with no legacy files or config.
 All five data operations use existing plugin contracts. The Gateway request
 capability provides ordinary operator read/write authority; this plugin does
 not acquire admin authority for relay requests. New sessions use
-`sessions.create`; message submission uses `chat.send`. `reply.get` combines
-`agent.wait` with transcript history. Waits are bounded by the requested
-`waitMs`, from zero to 50,000 milliseconds.
+`sessions.create` without an idempotency key: the in-process client has no
+authenticated principal or device identity, which idempotent session creation
+requires. Existing-conversation input uses `chat.send` with its required fresh
+idempotency key. Neither mutation is retried by this plugin.
+
+Send/reply results use only `agent.wait` and its `terminalReply`. Visible replies
+are truncated to the usual text limit; silent or empty terminal success completes
+without reply text. A completed run whose snapshot is no longer available tells
+the client to use `read_conversation`. There is no transcript reconstruction or
+run-to-conversation admission cache: grants already cover all conversations.
+Conversation existence and current grant/connection authority are still checked.
+Waits are bounded by the requested `waitMs`, from zero to 50,000 milliseconds.
+`conversation.read` continues to use paginated `chat.history`.
+
+Gateway request failures and unexpected operation failures log one diagnostic
+line through `api.logger`, including operation, Gateway method, and error
+code/message. Request values are redacted; error details, stacks, and transcript
+payloads are not logged.
 
 The current SDK does not provide a source-labeled operator-input contract or
 a run-correlated approval-state signal. This implementation therefore leaves

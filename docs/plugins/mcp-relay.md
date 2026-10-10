@@ -83,6 +83,12 @@ still active, the client receives `running` and can request the reply again with
 the returned conversation and run IDs. Messages use ordinary operator input;
 the transcript does not add a distinct `mcp-relay` source label.
 
+Replies come from the run's terminal reply snapshot. A successful run with no
+visible reply completes without reply text. If that snapshot is no longer
+available, the result is `completed` with an error directing the client to use
+`read_conversation` to see the conversation history. The plugin does not
+reconstruct replies from transcript pages.
+
 This version cannot distinguish a run waiting for approval from another active
 run. It continues to report `running`; it never reports `waiting_for_approval`.
 If progress stalls, open the conversation in OpenClaw and check for an approval
