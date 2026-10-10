@@ -124,6 +124,7 @@ describe("memory manager reindex recovery", () => {
     await closeAllMemorySearchManagers();
     // The agent close releases its leases through shared state and reopens it, so the
     // shared handle is released second; otherwise Windows fails the removal with EBUSY.
+    await closeOpenClawAgentDatabasesAsync();
     closeOpenClawAgentDatabasesForTest();
     await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
@@ -544,6 +545,10 @@ describe("memory manager reindex recovery", () => {
     const memoryManager = await openManager(createCfg({ sources: ["memory"], cacheEnabled: true }));
     await memoryManager.sync({ reason: "baseline", force: true });
     const harness = memoryManager as unknown as ReindexHarness; // SAFETY: this fixture owns the manager and provider.
+    const databasePath = harness.db.location();
+    if (!databasePath) {
+      throw new Error("Expected the fixture's file-backed memory index");
+    }
     if (!harness.provider) {
       throw new Error("fixture provider missing");
     }
@@ -574,7 +579,9 @@ describe("memory manager reindex recovery", () => {
       expect(closed).toBe(false);
       reservation.release();
       await Promise.all([sync, close, reservation.done]);
-      expect(harness.db.prepare("SELECT text FROM memory_index_chunks").all()).toEqual([
+      expect(harness.db.isOpen).toBe(false);
+      using reader = new DatabaseSync(databasePath, { readOnly: true });
+      expect(reader.prepare("SELECT text FROM memory_index_chunks").all()).toEqual([
         { text: "Accepted sync survives close." },
       ]);
     } finally {

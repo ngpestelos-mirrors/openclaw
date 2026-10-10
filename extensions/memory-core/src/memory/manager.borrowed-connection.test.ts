@@ -177,7 +177,7 @@ describe("memory manager agent database lifecycle", () => {
     try {
       await Promise.race([queued.promise, creating]);
       released.resolve();
-      await expect(creating).rejects.toThrow(/connection is unavailable|closed or changed/);
+      await expect(creating).rejects.toThrow(/^Agent database execution admission is closed$/);
       expect(
         prepare.mock.contexts.filter(
           (database) =>

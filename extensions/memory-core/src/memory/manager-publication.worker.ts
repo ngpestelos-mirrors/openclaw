@@ -163,11 +163,11 @@ function readConnectionPragmas(db: DatabaseSync): MemoryShadowConnection["pragma
   };
 }
 
-function createPublicationBackend(
+function createPublicationBackend<CloseConnection extends (() => Promise<void>) | undefined>(
   input: MemoryShadowConnection,
   databasePath: string,
   db: DatabaseSync,
-  closeConnection: (() => Promise<void>) | undefined,
+  closeConnection: CloseConnection,
   admit: (stage: "transaction" | "commit") => void,
 ) {
   const assertPath = () => assertMemoryShadowIdentity(databasePath, input.fileIdentity);

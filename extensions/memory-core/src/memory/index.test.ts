@@ -558,7 +558,7 @@ describe("memory index", () => {
     await fs.rm(path.join(fixture.paths.memory, "2026-01-12.md"));
 
     const nextManager = await getFreshManager(cfg);
-    (Reflect.get(nextManager, "db") as DatabaseSync).exec(
+    memoryIndexFixtureWriter(nextManager).exec(
       `DELETE FROM memory_index_meta WHERE key = 'memory_index_meta_v1'`,
     );
     expect(nextManager.status().custom?.indexIdentity).toEqual({

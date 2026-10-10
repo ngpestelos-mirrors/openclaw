@@ -696,8 +696,7 @@ describe("memory manager FTS-only reindex", () => {
     expect(manager.status().fts?.available).toBe(true);
     expect(Reflect.get(manager, "sessionsFullRetryDirty")).toBe(false);
 
-    const db = Reflect.get(manager, "db") as DatabaseSync;
-    expect(db).toBe(seedDb);
+    const db = seedDb;
     const countRows = (table: string, sourcePath: string) =>
       db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE path = ?`).get(sourcePath);
     expect(
