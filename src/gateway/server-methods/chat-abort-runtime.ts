@@ -320,8 +320,10 @@ function prepareChatSessionAbort(
   const embeddedController = sessionEmbeddedRun
     ? params.context.chatAbortControllers.get(sessionEmbeddedRun.runId)
     : undefined;
+  const canCaptureAdmittedRuns =
+    params.stopEmbeddedRun && !params.runId && params.sessionKey !== "global";
   const admittedRuns =
-    !params.runId && params.sessionKey !== "global" && persistedSessionId && session?.storePath
+    canCaptureAdmittedRuns && persistedSessionId && session?.storePath
       ? captureSessionWorkRunInterruptions({
           scope: session.storePath,
           identities: [...sessionKeys, persistedSessionId],
