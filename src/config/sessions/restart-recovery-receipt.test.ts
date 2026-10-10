@@ -40,7 +40,10 @@ describe("restart recovery terminal delivery receipt", () => {
       );
       if (outcome === "success") {
         await expect(completeRestartRecoveryTerminalDelivery(scope())).resolves.toBe("recorded");
+        await expect(completeRestartRecoveryTerminalDelivery(scope())).resolves.toBe("recorded");
+        await expect(cancelRestartRecoveryTerminalDelivery(scope())).resolves.toBe("stale");
         expect(read()?.restartRecoveryDeliveryReceiptState).toBe("delivered-terminal");
+        expect(read()?.restartRecoveryDeliveryToolCallId).toBe("message-call-1");
       } else {
         await expect(cancelRestartRecoveryTerminalDelivery(scope())).resolves.toBe("cleared");
         expect(read()?.restartRecoveryDeliveryReceiptState).toBeUndefined();
@@ -79,6 +82,36 @@ describe("restart recovery terminal delivery receipt", () => {
     await expect(cancelRestartRecoveryTerminalDelivery(scope())).resolves.toBe("stale");
     expect(read()?.restartRecoveryDeliveryReceiptState).toBeUndefined();
   });
+
+  it.each(["source", "tool"] as const)(
+    "preserves pending custody when settlement names another %s",
+    async (mismatch) => {
+      await seed(claim);
+      await expect(beginRestartRecoveryTerminalDelivery(scope())).resolves.toBe("started");
+      const pending = read();
+      const other = {
+        ...scope(),
+        ...(mismatch === "source"
+          ? { sourceTurnId: "source-2" }
+          : { toolCallId: "message-call-2" }),
+      };
+      await expect(beginRestartRecoveryTerminalDelivery(other)).resolves.toBe(
+        mismatch === "source" ? "stale" : "delivery-ambiguous",
+      );
+      if (mismatch === "source") {
+        await expect(completeRestartRecoveryTerminalDelivery(other)).resolves.toBe("stale");
+        await expect(cancelRestartRecoveryTerminalDelivery(other)).resolves.toBe("stale");
+      } else {
+        await expect(completeRestartRecoveryTerminalDelivery(other)).rejects.toThrow(
+          "failed to persist terminal delivery completion",
+        );
+        await expect(cancelRestartRecoveryTerminalDelivery(other)).rejects.toThrow(
+          "failed to clear terminal delivery intent",
+        );
+      }
+      expect(read()).toEqual(pending);
+    },
+  );
 });
 
 describe("restart recovery steering block reasons", () => {
