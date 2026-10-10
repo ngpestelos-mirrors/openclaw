@@ -8,7 +8,7 @@ import type { CapturedSessionEntryReadSource } from "./session-entry-read-source
 import {
   releaseSessionSourceAuthorities,
   type PreparedSessionSourceAuthority,
-  type SessionSourceAssertion,
+  type PreparedSessionSourceAssertion,
   type SessionSourceConversationPredicate,
 } from "./session-source-authority.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "./session-sqlite-target-paths.js";
@@ -39,9 +39,14 @@ export function captureSessionEntrySourceAssertion(params: {
     acceptMatches: (alternatives: readonly number[]) => number[];
   }>;
   refuse: () => never;
-}): SessionSourceAssertion {
+}): PreparedSessionSourceAssertion {
   if (isIncognitoSessionKey(params.scope.sessionKey)) {
-    return Object.assign(() => params.assertCurrent(), { nativeSource: true });
+    return Object.assign(() => params.assertCurrent(), {
+      nativeSource: true,
+      async prepareSessionSource() {
+        return { nativeSource: true, checks: [], assertCurrent: params.assertCurrent };
+      },
+    });
   }
   const locator = captureSessionStoreReadCandidate(
     resolveUnsuffixedSqliteTargetFromSessionStorePath(params.scope.storePath).path,

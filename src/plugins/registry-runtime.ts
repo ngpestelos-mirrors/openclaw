@@ -4,7 +4,9 @@ import { createHostChannelIngressRuntime } from "../channels/message-access/runt
 import { createChannelIngressDrain } from "../channels/message/ingress-drain.js";
 import { createChannelIngressQueue } from "../channels/message/ingress-queue.js";
 import { getRuntimeConfig } from "../config/config.js";
+import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import type { SessionEntry } from "../config/sessions/types.js";
+import { assertSessionEntryPatchAuthority } from "../plugin-sdk/session-store-runtime-internal.js";
 import {
   createPluginBlobStore,
   type OpenBlobStoreOptions,
@@ -408,6 +410,37 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
             ...channel,
             inbound,
             turn: inbound,
+            session: {
+              ...channel.session,
+              updateLastRoute: (params) =>
+                invokeSelectedRuntime(() =>
+                  params.assertCommitAllowed
+                    ? channel.session.updateLastRoute(params)
+                    : channel.session.updateLastRouteWithAuthority({
+                        ...params,
+                        authority: { kind: "host", assertCurrent: assertRuntimeCurrent },
+                      }),
+                ),
+              updateLastRouteWithAuthority: (params) => {
+                assertSessionEntryPatchAuthority(params.authority);
+                return invokeSelectedRuntime(() =>
+                  channel.session.updateLastRouteWithAuthority({
+                    ...params,
+                    authority: {
+                      kind: "source",
+                      source: composeSessionSourceAssertion(
+                        [params.authority.kind === "source" ? params.authority.source : undefined],
+                        (assertSources) => {
+                          assertRuntimeCurrent();
+                          if (params.authority.kind === "host") params.authority.assertCurrent();
+                          assertSources();
+                        },
+                      ),
+                    },
+                  }),
+                );
+              },
+            },
             outbound: {
               ...channel.outbound,
               loadAdapter: (...args) =>
@@ -744,6 +777,47 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                 });
               });
             },
+            prepareSessionEntryPatch: async (params) => {
+              assertSessionEntryPatchAuthority(params.authority);
+              const { assertStoreEntryOwned } = await loadSessionOwnership();
+              return await runWithPluginScope(() =>
+                session.prepareSessionEntryPatch({
+                  ...params,
+                  authority: {
+                    kind: "source",
+                    source: composeSessionSourceAssertion(
+                      [params.authority?.kind === "source" ? params.authority.source : undefined],
+                      (assertSources) => {
+                        assertRuntimeCurrent();
+                        if (params.authority?.kind === "host") params.authority.assertCurrent();
+                        assertSources();
+                      },
+                    ),
+                  },
+                  prepare: async (entry, context) => {
+                    assertStoreEntryOwned({
+                      action: "patch",
+                      before: context.existingEntry,
+                      entry,
+                      sessionKey: params.sessionKey,
+                    });
+                    const patch = await params.prepare(entry, context);
+                    assertRuntimeCurrent();
+                    if (patch) {
+                      assertStoreEntryOwned({
+                        action: "patch",
+                        before: context.existingEntry,
+                        entry: params.replaceEntry
+                          ? (patch as SessionEntry)
+                          : { ...entry, ...patch },
+                        sessionKey: params.sessionKey,
+                      });
+                    }
+                    return patch;
+                  },
+                }),
+              );
+            },
             patchSessionEntry: async (params) => {
               const { assertStoredSessionEntryOwned, assertStoreEntryOwned } =
                 await loadSessionOwnership();
@@ -778,23 +852,29 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               });
             },
             upsertSessionEntry: async (params) => {
-              const { assertStoredSessionEntryOwned, assertStoreEntryOwned } =
-                await loadSessionOwnership();
+              const { assertStoreEntryOwned } = await loadSessionOwnership();
               return await runWithPluginScope(async () => {
-                const before = assertStoredSessionEntryOwned({
-                  action: "upsert",
-                  sessionKey: params.sessionKey,
-                  ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
-                  ...(params.env !== undefined ? { env: params.env } : {}),
-                  ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
+                await session.prepareSessionEntryPatch({
+                  ...params,
+                  fallbackEntry: params.entry,
+                  replaceEntry: true,
+                  authority: { kind: "host", assertCurrent: assertRuntimeCurrent },
+                  prepare: (entry, context) => {
+                    assertStoreEntryOwned({
+                      action: "upsert",
+                      before: context.existingEntry,
+                      entry,
+                      sessionKey: params.sessionKey,
+                    });
+                    assertStoreEntryOwned({
+                      action: "upsert",
+                      before: context.existingEntry,
+                      entry: params.entry,
+                      sessionKey: params.sessionKey,
+                    });
+                    return params.entry;
+                  },
                 });
-                assertStoreEntryOwned({
-                  action: "upsert",
-                  before,
-                  entry: params.entry,
-                  sessionKey: params.sessionKey,
-                });
-                await session.upsertSessionEntry(params);
               });
             },
             runWithWorkAdmission: async (params, run) => {

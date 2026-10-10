@@ -1,14 +1,26 @@
-import { MAIN_SESSION_RECOVERY_CLEAR_PATCH } from "../agents/main-session-recovery/main-session-recovery-clear.js";
 import type { SessionAccessScope } from "../config/sessions/session-accessor.js";
-import {
-  projectPublicSessionEntry,
-  SESSION_ENTRY_PRIVATE_CLEAR_PATCH,
-} from "../config/sessions/session-entry-projection.js";
+import { projectPublicSessionEntry } from "../config/sessions/session-entry-projection.js";
 import {
   readSessionEntryByIdReadOnlyInWorker,
   readSessionEntryReadOnlyInWorker,
 } from "../config/sessions/session-entry-read-runtime.js";
+import type { PreparedSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import type { InternalSessionEntry, SessionEntry } from "../config/sessions/types.js";
+
+/** Host checks never query SQLite; prepared sources retain their own predicate owner. */
+export type SessionEntryPatchAuthority =
+  | { kind: "host"; assertCurrent(): void }
+  | { kind: "source"; source: PreparedSessionSourceAssertion };
+
+export function assertSessionEntryPatchAuthority(
+  authority: SessionEntryPatchAuthority | undefined,
+): void {
+  if (authority?.kind === "source" && typeof authority.source.prepareSessionSource !== "function") {
+    throw new Error(
+      "Session entry source authority requires a prepared source capability; use kind: host for SQLite-free checks or the deprecated patchSessionEntry API for legacy callbacks",
+    );
+  }
+}
 
 export type SessionStoreReadParams = {
   agentId?: string;
@@ -75,61 +87,3 @@ export function projectPluginSessionEntry(entry: InternalSessionEntry): SessionE
 }
 
 export { projectPublicSessionEntryPatch as projectPluginSessionEntryPatch } from "../config/sessions/session-entry-projection.js";
-
-export function generationValidPrivateFieldsForSameSession(
-  existingEntry: InternalSessionEntry | undefined,
-  nextSessionId: string | undefined,
-  nextLifecycleRevision: string | undefined,
-): Partial<InternalSessionEntry> | undefined {
-  if (
-    !existingEntry ||
-    existingEntry.sessionId !== nextSessionId ||
-    existingEntry.lifecycleRevision !== nextLifecycleRevision
-  ) {
-    return undefined;
-  }
-  const state: Partial<InternalSessionEntry> = {
-    ...(existingEntry.cliHistoryBoundary
-      ? { cliHistoryBoundary: existingEntry.cliHistoryBoundary }
-      : {}),
-    ...(existingEntry.activeWriterRunId !== undefined
-      ? { activeWriterRunId: existingEntry.activeWriterRunId }
-      : {}),
-    ...(existingEntry.lifecycleRunId !== undefined
-      ? { lifecycleRunId: existingEntry.lifecycleRunId }
-      : {}),
-    ...(existingEntry.pendingProjectGitUrl !== undefined
-      ? { pendingProjectGitUrl: existingEntry.pendingProjectGitUrl }
-      : {}),
-    ...(existingEntry.transcriptByteCompactionLatch
-      ? { transcriptByteCompactionLatch: existingEntry.transcriptByteCompactionLatch }
-      : {}),
-    ...(existingEntry.sessionDiffBaselineCapture
-      ? { sessionDiffBaselineCapture: existingEntry.sessionDiffBaselineCapture }
-      : {}),
-    ...(existingEntry.mainRestartRecovery
-      ? {
-          abortedLastRun: existingEntry.abortedLastRun,
-          restartRecoveryRuns: existingEntry.restartRecoveryRuns,
-          mainRestartRecovery: existingEntry.mainRestartRecovery,
-        }
-      : {}),
-  };
-  return Object.keys(state).length > 0 ? state : undefined;
-}
-
-export function clearGenerationPrivateFieldsForRotatedSessionPatch(
-  existingEntry: InternalSessionEntry,
-  publicPatch: Partial<SessionEntry>,
-): Partial<InternalSessionEntry> {
-  return (Object.hasOwn(publicPatch, "sessionId") &&
-    publicPatch.sessionId !== existingEntry.sessionId) ||
-    (Object.hasOwn(publicPatch, "lifecycleRevision") &&
-      publicPatch.lifecycleRevision !== existingEntry.lifecycleRevision)
-    ? {
-        ...publicPatch,
-        ...SESSION_ENTRY_PRIVATE_CLEAR_PATCH,
-        ...MAIN_SESSION_RECOVERY_CLEAR_PATCH,
-      }
-    : publicPatch;
-}

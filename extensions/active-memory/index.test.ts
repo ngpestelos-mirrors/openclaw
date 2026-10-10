@@ -83,7 +83,7 @@ const hoisted = vi.hoisted(() => {
     getActiveMemorySearchManager: vi.fn(async () => ({ manager: null })),
     getActiveMemoryProvider: vi.fn(async () => ({ provider: null })),
     cleanupSessionLifecycleArtifacts: vi.fn(),
-    patchSessionEntry: vi.fn(),
+    prepareSessionEntryPatch: vi.fn(),
     rawDeltaReads: [] as Array<{ maxBytes?: number; maxEvents?: number; sessionId: string }>,
     runtimeTranscriptFiles: {} as Record<string, string>,
     sessionStore,
@@ -130,7 +130,7 @@ vi.mock("openclaw/plugin-sdk/session-store-runtime", async () => {
   return {
     ...actual,
     cleanupSessionLifecycleArtifacts: hoisted.cleanupSessionLifecycleArtifacts,
-    patchSessionEntry: hoisted.patchSessionEntry,
+    prepareSessionEntryPatch: hoisted.prepareSessionEntryPatch,
     updateSessionStore: hoisted.updateSessionStore,
   };
 });
@@ -354,11 +354,11 @@ describe("active-memory plugin", () => {
               return match ? { sessionKey: match[0], entry: match[1] } : undefined;
             },
           ),
-          patchSessionEntry: vi.fn(
+          prepareSessionEntryPatch: vi.fn(
             async (params: {
               sessionKey: string;
               fallbackEntry?: Record<string, unknown>;
-              update: (entry: Record<string, unknown>) => Record<string, unknown> | null;
+              prepare: (entry: Record<string, unknown>) => Record<string, unknown> | null;
             }) => {
               let result: Record<string, unknown> | null = null;
               await hoisted.updateSessionStore(
@@ -368,7 +368,7 @@ describe("active-memory plugin", () => {
                   if (!existing) {
                     return;
                   }
-                  const patch = params.update({ ...existing });
+                  const patch = params.prepare({ ...existing });
                   if (!patch) {
                     result = existing;
                     return;
@@ -723,13 +723,13 @@ describe("active-memory plugin", () => {
         payloads: [{ text: "- lemon pepper wings\n- blue cheese" }],
       };
     });
-    hoisted.patchSessionEntry.mockImplementation(
+    hoisted.prepareSessionEntryPatch.mockImplementation(
       async (params: {
         fallbackEntry?: Record<string, unknown>;
         replaceEntry?: boolean;
         sessionKey: string;
         skipMaintenance?: boolean;
-        update: (
+        prepare: (
           entry: Record<string, unknown>,
           context: { existingEntry?: Record<string, unknown> },
         ) => Record<string, unknown> | null;
@@ -739,7 +739,7 @@ describe("active-memory plugin", () => {
         if (!entry) {
           return null;
         }
-        const patch = params.update({ ...entry }, { existingEntry });
+        const patch = params.prepare({ ...entry }, { existingEntry });
         if (!patch) {
           return existingEntry ?? entry;
         }
@@ -964,7 +964,7 @@ describe("active-memory plugin", () => {
       sessionId,
       sessionFile: runtimeSessionFile,
     });
-    expect(hoisted.patchSessionEntry).toHaveBeenCalledWith(
+    expect(hoisted.prepareSessionEntryPatch).toHaveBeenCalledWith(
       expect.objectContaining({
         fallbackEntry: expect.objectContaining({
           pluginOwnerId: "active-memory",
@@ -1748,7 +1748,7 @@ describe("active-memory plugin", () => {
       resume.resolve(expectDefined(hoisted.sessionStore["agent:main:main"], "main session"));
       expect(await pending).toBeUndefined();
       expect(runEmbeddedAgent).not.toHaveBeenCalled();
-      expect(hoisted.patchSessionEntry).not.toHaveBeenCalled();
+      expect(hoisted.prepareSessionEntryPatch).not.toHaveBeenCalled();
     } finally {
       resume.resolve(expectDefined(hoisted.sessionStore["agent:main:main"], "main session"));
       await Promise.allSettled([pending]);
@@ -2262,10 +2262,10 @@ describe("active-memory plugin", () => {
       const prepared = createDeferred<void>();
       const resume = createDeferred<void>();
       const patch = expectDefined(
-        hoisted.patchSessionEntry.getMockImplementation(),
+        hoisted.prepareSessionEntryPatch.getMockImplementation(),
         "recall creation",
       );
-      hoisted.patchSessionEntry.mockImplementationOnce(async (...args) => {
+      hoisted.prepareSessionEntryPatch.mockImplementationOnce(async (...args) => {
         const result = await patch(...args);
         prepared.resolve();
         await resume.promise;
@@ -2861,7 +2861,9 @@ describe("active-memory plugin", () => {
     const transcriptRuntime = await vi.importActual<
       typeof import("openclaw/plugin-sdk/session-transcript-runtime")
     >("openclaw/plugin-sdk/session-transcript-runtime");
-    hoisted.patchSessionEntry.mockImplementationOnce(sessionRuntime.patchSessionEntry);
+    hoisted.prepareSessionEntryPatch.mockImplementationOnce(
+      sessionRuntime.prepareSessionEntryPatch,
+    );
     hoisted.cleanupSessionLifecycleArtifacts.mockImplementationOnce(
       sessionRuntime.cleanupSessionLifecycleArtifacts,
     );
@@ -4270,7 +4272,7 @@ describe("active-memory plugin", () => {
 
     const childKey = lastEmbeddedSessionKey();
     expect(childKey).toMatch(/^agent:main:subagent:incognito-[a-f0-9]{12}$/);
-    expect(hoisted.patchSessionEntry).toHaveBeenCalledWith(
+    expect(hoisted.prepareSessionEntryPatch).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionKey: childKey,
         fallbackEntry: expect.objectContaining({ incognito: true }),

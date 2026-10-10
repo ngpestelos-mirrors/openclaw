@@ -2,6 +2,7 @@
 import {
   captureExternalSessionCommitGuard,
   composeSessionSourceAssertion,
+  type PreparedSessionSourceAssertion,
 } from "../config/sessions/session-source-authority.js";
 
 export { captureSessionEntryCurrentCheck } from "../config/sessions/session-entry-current-check.js";
@@ -11,7 +12,7 @@ export function composeSessionEntryCommitGuards(
   sources: readonly ((() => void) | undefined)[],
   /** Bundled live-authority wrapper; opaque SDK predicates belong in sources. */
   checkHostAuthority?: (assertSources: () => void) => void,
-): () => void {
+): PreparedSessionSourceAssertion {
   return composeSessionSourceAssertion(
     sources.map(captureExternalSessionCommitGuard),
     checkHostAuthority,

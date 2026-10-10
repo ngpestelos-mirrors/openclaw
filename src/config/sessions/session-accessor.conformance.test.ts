@@ -101,7 +101,10 @@ type AccessorAdapter = {
   ): Promise<SessionEntry | null>;
   cleanupSessionLifecycleArtifactsCore: typeof cleanupSessionLifecycleArtifactsCore;
   loadTranscriptEvents(scope: SessionTranscriptReadScope): Promise<TranscriptEvent[]>;
-  appendTranscriptEvent(scope: SessionTranscriptAccessScope, event: TranscriptEvent): Promise<void>;
+  appendTranscriptEvent(
+    scope: SessionTranscriptAccessScope,
+    event: TranscriptEvent,
+  ): Promise<boolean>;
   appendTranscriptMessage<TMessage>(
     scope: SessionTranscriptWriteScope,
     options: TranscriptMessageAppendOptions<TMessage>,

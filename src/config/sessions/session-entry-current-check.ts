@@ -9,7 +9,10 @@ import {
 } from "./session-entry-read-request.js";
 import { withSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
 import { captureSessionEntrySourceAssertion } from "./session-entry-source-authority.js";
-import type { SessionSourceAssertion, SessionSourceCheck } from "./session-source-authority.js";
+import type {
+  PreparedSessionSourceAssertion,
+  SessionSourceCheck,
+} from "./session-source-authority.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "./session-sqlite-target-paths.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import {
@@ -44,7 +47,7 @@ export async function captureSessionEntryCurrentCheck(params: {
     isActive?: () => boolean;
   }[];
   errorMessage?: string;
-}): Promise<{ isCurrent: () => boolean; assertCurrent: () => void }> {
+}): Promise<{ isCurrent: () => boolean; assertCurrent: PreparedSessionSourceAssertion }> {
   const storePath = params.storePath ?? resolveSessionStorePathForScope(params);
   const captured = captureSessionEntryReadScope({
     agentId: params.agentId,
@@ -176,8 +179,13 @@ export async function captureSessionEntryCurrentCheck(params: {
           ({ locator }) => locator.physicalPath !== identity.canonicalPath,
         ),
       );
-    const source: SessionSourceAssertion = nativeSource
-      ? Object.assign(assertCurrent, { nativeSource: true })
+    const source: PreparedSessionSourceAssertion = nativeSource
+      ? Object.assign(assertCurrent, {
+          nativeSource: true,
+          async prepareSessionSource() {
+            return { nativeSource: true, checks: [], assertCurrent };
+          },
+        })
       : captureSessionEntrySourceAssertion({
           scope: target,
           readSource: {

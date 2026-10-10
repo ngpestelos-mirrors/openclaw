@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import * as transcriptRedact from "../../agents/transcript-redact.js";
 import {
@@ -529,9 +530,17 @@ describe("conversation turn capture", () => {
       rawText: "peer acknowledged",
       Timestamp: 1_710_000_000,
     } as FinalizedRuntimeMsgContext;
-    await expect(
-      capturePendingConversationTurnReply({ cfg: setup.cfg, ctx: inboundContext }),
-    ).resolves.toBe(true);
+    const sql = observeHostDataSql();
+    try {
+      await expect(
+        capturePendingConversationTurnReply({ cfg: setup.cfg, ctx: inboundContext }),
+      ).resolves.toBe(true);
+    } finally {
+      sql.restore();
+    }
+    expect(
+      sql.queries.filter((query) => /insert\s+into\s+"?transcript_events"?/iu.test(query)),
+    ).toEqual([]);
 
     await expect(pending.wait()).resolves.toMatchObject({
       conversationRef: setup.conversationRef,
