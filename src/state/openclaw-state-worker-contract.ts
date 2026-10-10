@@ -71,6 +71,7 @@ import type {
   GitHubSessionReceiptGeneration,
   GitHubSessionReceiptIdentities,
 } from "./github-publication-read.types.js";
+import type { GitHubPublicationSourceOperations } from "./github-publication-source-contract.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "./openclaw-agent-db-lease.js";
 import type { OpenClawStateLeaseLifecycleOperations } from "./openclaw-state-lease-context.js";
 import type { RegisteredStateWorkerOperations } from "./openclaw-state-worker-registry.js";
@@ -80,6 +81,7 @@ export type OpenClawStateWorkerOpenPreparation = { type: "deviceIdentity"; ident
 
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
 export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
+  GitHubPublicationSourceOperations &
   RestartLifecycleWorkerOperations &
   SandboxRegistryOperations &
   WorktreeTemplateWorkerOperations &

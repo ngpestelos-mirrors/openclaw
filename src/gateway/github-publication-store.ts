@@ -12,10 +12,7 @@ import type {
   GitHubPublicationReceiptTarget,
   GitHubPublicationRow,
 } from "../state/github-publication-read.types.js";
-import {
-  githubPublicationReceipts,
-  sharedGitHubPublicationAuthorityColumns,
-} from "../state/github-publication-receipts.js";
+import { githubPublicationReceipts } from "../state/github-publication-receipts.js";
 import {
   decodeGitHubPublicationRequester,
   matchesGitHubPublicationRequester,
@@ -31,6 +28,7 @@ import type { DB as StateDatabase } from "../state/openclaw-state-db.generated.j
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
+  type OpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { deferSharedGitHubPublicationChanged } from "./github-publication-events.js";
 import type { WorkerSessionTurnClaim } from "./worker-environments/placement-store.js";
@@ -152,7 +150,15 @@ export function listGitHubPublicationsForClaim(
   claim: WorkerSessionTurnClaim,
   options: { pendingOnly?: boolean } = {},
 ): GitHubPublicationRow[] {
-  const db = openOpenClawStateDatabase().db;
+  return listGitHubPublicationsForClaimInDatabase(openOpenClawStateDatabase().db, claim, options);
+}
+
+export function listGitHubPublicationsForClaimInDatabase(
+  db: OpenClawStateDatabase["db"],
+  claim: Pick<WorkerSessionTurnClaim, "sessionId" | "claimId" | "runId">,
+  options: { pendingOnly?: boolean } = {},
+): GitHubPublicationRow[] {
+  if (!tableExists(db, "github_publication_requests")) return [];
   let query = githubPublicationDatabase(db)
     .selectFrom("github_publication_requests")
     .selectAll()
@@ -166,43 +172,149 @@ export function listGitHubPublicationsForClaim(
   return executeSqliteQuerySync(db, query).rows;
 }
 
+export type SharedGitHubPublicationFilter = {
+  pending?: boolean;
+  status?: "requested" | "publishing" | "published" | "failed";
+  claimNull?: boolean;
+  sessionId?: string;
+  unreported?: boolean;
+};
+
+export function listSharedGitHubPublicationsInDatabase(
+  db: OpenClawStateDatabase["db"],
+  filter: SharedGitHubPublicationFilter,
+): GitHubPublicationRow[] {
+  if (!tableExists(db, "github_publication_requests")) return [];
+  let query = githubPublicationDatabase(db).selectFrom("github_publication_requests").selectAll();
+  if (filter.pending !== undefined)
+    query = query.where(
+      "status",
+      "in",
+      filter.pending ? ["requested", "publishing"] : ["published", "failed"],
+    );
+  if (filter.status !== undefined) query = query.where("status", "=", filter.status);
+  if (filter.claimNull !== undefined)
+    query = query.where("claim_id", filter.claimNull ? "is" : "is not", null);
+  if (filter.sessionId !== undefined) query = query.where("session_id", "=", filter.sessionId);
+  if (filter.unreported) query = query.where("reported_at_ms", "is", null);
+  return executeSqliteQuerySync(
+    db,
+    query.orderBy(filter.unreported ? "updated_at_ms" : "created_at_ms"),
+  ).rows;
+}
+
+export function markSharedGitHubPublicationReportedInDatabase(
+  database: OpenClawStateDatabase,
+  requestId: string,
+): GitHubPublicationRow | undefined {
+  if (!tableExists(database.db, "github_publication_requests")) return undefined;
+  const { db } = database;
+  const updated = executeSqliteQueryTakeFirstSync(
+    db,
+    githubPublicationDatabase(db)
+      .updateTable("github_publication_requests")
+      .set({ reported_at_ms: Date.now(), updated_at_ms: Date.now() })
+      .where("request_id", "=", requestId)
+      .where("reported_at_ms", "is", null)
+      .returningAll(),
+  );
+  if (updated) {
+    githubPublicationReceipts.stageRow(db, "shared", updated);
+  }
+  return updated;
+}
+
+export function assertSharedGitHubPublicationClaimInDatabase(
+  db: Parameters<typeof getNodeSqliteKysely>[0],
+  request: {
+    claim: WorkerSessionTurnClaim;
+    sessionKey: string;
+    agentId: string;
+  },
+): void {
+  const row = executeSqliteQuerySync(
+    db,
+    githubPublicationDatabase(db)
+      .selectFrom("worker_session_placements")
+      .select([
+        "agent_id",
+        "session_key",
+        "state",
+        "environment_id",
+        "active_owner_epoch",
+        "turn_claim_owner",
+        "turn_claim_id",
+        "turn_claim_run_id",
+        "turn_claim_generation",
+        "turn_claim_owner_epoch",
+      ])
+      .where("session_id", "=", request.claim.sessionId),
+  ).rows[0];
+  const ownerMatches =
+    request.claim.owner.kind === "worker"
+      ? row?.turn_claim_owner === "worker" &&
+        row.environment_id === request.claim.owner.environmentId &&
+        row.active_owner_epoch === request.claim.owner.ownerEpoch &&
+        row.turn_claim_owner_epoch === request.claim.owner.ownerEpoch
+      : row?.turn_claim_owner === "local";
+  if (
+    !row ||
+    (row.state !== "active" && row.state !== "draining" && row.state !== "local") ||
+    row.agent_id !== request.agentId ||
+    row.session_key !== request.sessionKey ||
+    row.turn_claim_id !== request.claim.claimId ||
+    row.turn_claim_run_id !== request.claim.runId ||
+    row.turn_claim_generation !== request.claim.placementGeneration ||
+    !ownerMatches
+  ) {
+    throw new Error("GitHub publication turn authority changed before recording.");
+  }
+}
+
 export function claimGitHubPublicationExecution(
   requestId: string,
   gatewayInstanceId: string,
 ): GitHubPublicationRow {
   return runOpenClawStateWriteTransaction(
-    ({ db }) => {
-      const query = githubPublicationDatabase(db);
-      const current = readGitHubPublicationRequest(db, { requestId });
-      if (!current) {
-        throw new Error("GitHub publication request disappeared.");
-      }
-      if (current.status === "published" || current.status === "failed") {
-        return current;
-      }
-      let update = query
-        .updateTable("github_publication_requests")
-        .set({
-          status: "publishing",
-          gateway_instance_id: gatewayInstanceId,
-          updated_at_ms: Date.now(),
-        })
-        .where("request_id", "=", current.request_id)
-        .where("status", "=", current.status);
-      update = current.gateway_instance_id
-        ? update.where("gateway_instance_id", "=", current.gateway_instance_id)
-        : update.where("gateway_instance_id", "is", null);
-      const claimed = executeSqliteQueryTakeFirstSync(db, update.returningAll());
-      if (!claimed) {
-        throw new Error("GitHub publication execution ownership changed.");
-      }
-      githubPublicationReceipts.stageRow(db, "shared", claimed);
-      deferSharedGitHubPublicationChanged(db, claimed);
-      return claimed;
-    },
+    (database) => claimGitHubPublicationExecutionInDatabase(database, requestId, gatewayInstanceId),
     undefined,
     { operationLabel: "github-publication.claim" },
   );
+}
+
+export function claimGitHubPublicationExecutionInDatabase(
+  database: OpenClawStateDatabase,
+  requestId: string,
+  gatewayInstanceId: string,
+): GitHubPublicationRow {
+  const { db } = database;
+  const query = githubPublicationDatabase(db);
+  const current = readGitHubPublicationRequest(db, { requestId });
+  if (!current) {
+    throw new Error("GitHub publication request disappeared.");
+  }
+  if (current.status === "published" || current.status === "failed") {
+    return current;
+  }
+  let update = query
+    .updateTable("github_publication_requests")
+    .set({
+      status: "publishing",
+      gateway_instance_id: gatewayInstanceId,
+      updated_at_ms: Date.now(),
+    })
+    .where("request_id", "=", current.request_id)
+    .where("status", "=", current.status);
+  update = current.gateway_instance_id
+    ? update.where("gateway_instance_id", "=", current.gateway_instance_id)
+    : update.where("gateway_instance_id", "is", null);
+  const claimed = executeSqliteQueryTakeFirstSync(db, update.returningAll());
+  if (!claimed) {
+    throw new Error("GitHub publication execution ownership changed.");
+  }
+  githubPublicationReceipts.stageRow(db, "shared", claimed);
+  deferSharedGitHubPublicationChanged(db, claimed);
+  return claimed;
 }
 
 export function matchesGitHubPublicationIdentityRow(
@@ -326,46 +438,72 @@ export function insertGitHubPublicationRequest(
   return stored;
 }
 
-/** Named execution transitions share one instance-bound write owner. */
-export function createGitHubPublicationExecutionStore(instanceId: string) {
+type SharedPublicationTransition = "bind-workspace" | "begin" | "complete";
+
+export function writeGitHubPublicationExecutionInDatabase(
+  database: OpenClawStateDatabase,
+  instanceId: string,
+  row: GitHubPublicationRow,
+  values: Partial<GitHubPublicationRow> | undefined,
+  transition: SharedPublicationTransition,
+): GitHubPublicationRow {
   const errors = {
     "bind-workspace": "GitHub publication workspace snapshot changed before execution.",
     begin: "GitHub publication state changed before execution.",
     complete: "GitHub publication state changed before completion.",
   };
-  const write = (
-    row: GitHubPublicationRow,
-    values: Partial<GitHubPublicationRow> | undefined,
-    transition: keyof typeof errors,
-  ): GitHubPublicationRow =>
-    runOpenClawStateWriteTransaction(
-      ({ db }) => {
-        if (!values) {
-          throw new Error("GitHub publication terminal result is invalid.");
-        }
-        let update = githubPublicationDatabase(db)
-          .updateTable("github_publication_requests")
-          .set({ ...values, updated_at_ms: Date.now() })
-          .where("request_id", "=", row.request_id)
-          .where("status", "=", "publishing")
-          .where("gateway_instance_id", "=", instanceId);
-        if (transition === "bind-workspace") {
-          update = update
-            .where("source_head_commit", "is", null)
-            .where("source_index_tree", "is", null)
-            .where("workspace_tree", "is", null);
-        }
-        const updated = executeSqliteQueryTakeFirstSync(db, update.returningAll());
-        if (!updated) {
-          throw new Error(errors[transition]);
-        }
-        githubPublicationReceipts.stageRow(db, "shared", updated);
-        deferSharedGitHubPublicationChanged(db, updated);
-        return updated;
-      },
+  const { db } = database;
+  if (!values) {
+    throw new Error("GitHub publication terminal result is invalid.");
+  }
+  let update = githubPublicationDatabase(db)
+    .updateTable("github_publication_requests")
+    .set({ ...values, updated_at_ms: Date.now() })
+    .where("request_id", "=", row.request_id)
+    .where("status", "=", "publishing")
+    .where("gateway_instance_id", "=", instanceId);
+  if (transition === "bind-workspace") {
+    update = update
+      .where("source_head_commit", "is", null)
+      .where("source_index_tree", "is", null)
+      .where("workspace_tree", "is", null);
+  }
+  const updated = executeSqliteQueryTakeFirstSync(db, update.returningAll());
+  if (!updated) {
+    throw new Error(errors[transition]);
+  }
+  githubPublicationReceipts.stageRow(db, "shared", updated);
+  deferSharedGitHubPublicationChanged(db, updated);
+  return updated;
+}
+
+export function createGitHubPublicationExecutionStore(instanceId: string) {
+  return createSharedExecutionTransitions((row, values, transition) => {
+    return runOpenClawStateWriteTransaction(
+      (database) =>
+        writeGitHubPublicationExecutionInDatabase(database, instanceId, row, values, transition),
       undefined,
       { operationLabel: `github-publication.${transition}` },
     );
+  });
+}
+
+export function createGitHubPublicationExecutionStoreInDatabase(
+  database: OpenClawStateDatabase,
+  instanceId: string,
+) {
+  return createSharedExecutionTransitions((row, values, transition) =>
+    writeGitHubPublicationExecutionInDatabase(database, instanceId, row, values, transition),
+  );
+}
+
+function createSharedExecutionTransitions(
+  write: (
+    row: GitHubPublicationRow,
+    values: Partial<GitHubPublicationRow> | undefined,
+    transition: SharedPublicationTransition,
+  ) => GitHubPublicationRow,
+) {
   return {
     bindWorkspaceSnapshot: (input: {
       row: GitHubPublicationRow;
@@ -434,41 +572,51 @@ export function createGitHubPublicationExecutionStore(instanceId: string) {
 }
 
 export function deferGitHubPublicationRequests(requestIds: string[]): void {
-  if (requestIds.length === 0) {
-    return;
-  }
+  if (!requestIds.length) return;
   runOpenClawStateWriteTransaction(
-    ({ db }) => {
-      const query = githubPublicationDatabase(db);
-      const updatedAtMs = Date.now();
-      for (const requestId of requestIds) {
-        const changed = executeSqliteQuerySync(
-          db,
-          query
-            .updateTable("github_publication_requests")
-            .set({
-              claim_id: null,
-              run_id: null,
-              environment_id: null,
-              owner_epoch: null,
-              placement_generation: null,
-              status: "requested",
-              gateway_instance_id: null,
-              updated_at_ms: updatedAtMs,
-            })
-            .where("request_id", "=", requestId)
-            .where("status", "in", ["requested", "publishing"])
-            .returning(sharedGitHubPublicationAuthorityColumns),
-        ).rows;
-        for (const row of changed) {
-          githubPublicationReceipts.stageRow(db, "shared", row);
-          deferSharedGitHubPublicationChanged(db, row);
-        }
-      }
-    },
+    (database) => deferGitHubPublicationRequestsInDatabase(database, requestIds),
     undefined,
     { operationLabel: "github-publication.defer" },
   );
+}
+
+export function deferGitHubPublicationRequestsInDatabase(
+  database: OpenClawStateDatabase,
+  requestIds: readonly string[],
+): GitHubPublicationRow[] {
+  if (requestIds.length === 0) {
+    return [];
+  }
+  const { db } = database;
+  const rows: GitHubPublicationRow[] = [];
+  const query = githubPublicationDatabase(db);
+  const updatedAtMs = Date.now();
+  for (const requestId of requestIds) {
+    const changed = executeSqliteQuerySync(
+      db,
+      query
+        .updateTable("github_publication_requests")
+        .set({
+          claim_id: null,
+          run_id: null,
+          environment_id: null,
+          owner_epoch: null,
+          placement_generation: null,
+          status: "requested",
+          gateway_instance_id: null,
+          updated_at_ms: updatedAtMs,
+        })
+        .where("request_id", "=", requestId)
+        .where("status", "in", ["requested", "publishing"])
+        .returningAll(),
+    ).rows;
+    for (const row of changed) {
+      rows.push(row);
+      githubPublicationReceipts.stageRow(db, "shared", row);
+      deferSharedGitHubPublicationChanged(db, row);
+    }
+  }
+  return rows;
 }
 
 export function isGitHubPublicationExecutionOwner(
@@ -617,4 +765,67 @@ export function projectGitHubPublicationResult(
           ? "My GitHub publication was accepted for the selected account and workspace."
           : "Publication was accepted. Finish the turn so the Gateway can reconcile and publish the workspace.",
   };
+}
+
+export type SharedGitHubPublicationAcceptedSnapshot = {
+  row: GitHubPublicationRow;
+  claim: WorkerSessionTurnClaim;
+  sourceHeadCommit: string;
+  sourceIndexTree: string;
+  workspaceTree: string;
+};
+
+export function bindAcceptedGitHubPublicationClaimSnapshotInDatabase(
+  database: OpenClawStateDatabase,
+  input: SharedGitHubPublicationAcceptedSnapshot,
+): GitHubPublicationRow {
+  const { db } = database;
+
+  assertSharedGitHubPublicationClaimInDatabase(db, {
+    claim: input.claim,
+    sessionKey: input.row.session_key,
+    agentId: input.row.agent_id,
+  });
+  const query = githubPublicationDatabase(db);
+  const current = readGitHubPublicationRequest(db, { requestId: input.row.request_id });
+  if (
+    !current ||
+    current.claim_id !== input.claim.claimId ||
+    current.run_id !== input.claim.runId ||
+    (current.status !== "requested" && current.status !== "publishing")
+  ) {
+    throw new Error("GitHub publication workspace snapshot owner changed.");
+  }
+  if (current.source_head_commit || current.source_index_tree || current.workspace_tree) {
+    if (
+      current.source_head_commit !== input.sourceHeadCommit ||
+      current.source_index_tree !== input.sourceIndexTree ||
+      current.workspace_tree !== input.workspaceTree
+    ) {
+      throw new Error("GitHub publication accepted workspace snapshot changed.");
+    }
+    return current;
+  }
+  const updated = executeSqliteQueryTakeFirstSync(
+    db,
+    query
+      .updateTable("github_publication_requests")
+      .set({
+        source_head_commit: input.sourceHeadCommit,
+        source_index_tree: input.sourceIndexTree,
+        workspace_tree: input.workspaceTree,
+        updated_at_ms: Date.now(),
+      })
+      .where("request_id", "=", input.row.request_id)
+      .where("source_head_commit", "is", null)
+      .where("source_index_tree", "is", null)
+      .where("workspace_tree", "is", null)
+      .returningAll(),
+  );
+  if (!updated) {
+    throw new Error("GitHub publication accepted workspace snapshot changed.");
+  }
+  githubPublicationReceipts.stageRow(db, "shared", updated);
+  deferSharedGitHubPublicationChanged(db, updated);
+  return updated;
 }
