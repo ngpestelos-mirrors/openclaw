@@ -30,7 +30,8 @@ import type {
 import type { createSessionActorReplica } from "./session-actor-replica.js";
 
 type NativeAdmission = {
-  admission: Pick<SqliteWorkerOperationAdmission, "committed" | "settlement">;
+  admission: Pick<SqliteWorkerOperationAdmission, "committed" | "settlement"> &
+    Partial<Pick<SqliteWorkerOperationAdmission, "failure" | "failureSource">>;
   retained: RetainedWorkerTransactionAdmission;
 };
 
@@ -348,7 +349,14 @@ export function createSessionActor(params: {
                   (settled.kind === "not-entered" ||
                     native.admission.settlement?.kind === "completed")
                 ) {
-                  result = reply.value;
+                  const failure = native.admission.failure;
+                  result =
+                    native.admission.failureSource === "protocol" ||
+                    hasSqliteWorkerOutcomeUnknown(failure)
+                      ? unknown(failure)
+                      : failure === undefined
+                        ? reply.value
+                        : { kind: "rolled-back", error: errorFacts(failure) };
                 } else {
                   result = unknown(
                     reply.ok ? new Error("Unconfirmed actor settlement") : reply.error,
