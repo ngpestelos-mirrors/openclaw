@@ -163,7 +163,13 @@ describe("plugins cli uninstall", () => {
       expect(pluginCliConfigMock()).toEqual(nextConfig);
       expect(writePersistedInstalledPluginIndexInstallRecordsWithLeaseMock).toHaveBeenCalledWith(
         {},
-        expect.objectContaining({ lease, config: nextConfig }),
+        expect.objectContaining({
+          lease: expect.objectContaining({
+            databasePath,
+            stateLease: lease.stateLease,
+          }),
+          config: nextConfig,
+        }),
       );
       expect(refreshPluginRegistryMock).toHaveBeenCalledWith(
         expect.objectContaining({
