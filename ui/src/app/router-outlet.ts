@@ -207,7 +207,9 @@ class OpenClawRouterOutlet extends OpenClawLightDomElement implements ControlUiR
         }
         return this.presentationSettled;
       }
-      await new Promise<void>((resolve) => this.presentationWaiters.add(resolve));
+      await new Promise<void>((resolve) => {
+        this.presentationWaiters.add(resolve);
+      });
     }
     return false;
   }
