@@ -5034,5 +5034,9 @@
   {
     "source": "Recommended models",
     "target": "推荐模型"
+  },
+  {
+    "source": "MCP Relay",
+    "target": "MCP Relay"
   }
 ]
