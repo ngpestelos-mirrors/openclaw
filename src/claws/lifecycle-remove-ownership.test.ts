@@ -21,7 +21,7 @@ import {
 } from "./lifecycle-remove.test-support.js";
 import { applyClawRemovePlan, buildClawRemovePlan } from "./lifecycle-state.js";
 import { readClawInstallRecord, persistClawPackageRef, readClawPackageRefs } from "./provenance.js";
-import { readClawWorkspaceFiles, upsertClawWorkspaceFile } from "./workspace.js";
+import { readClawWorkspaceFiles, upsertClawWorkspaceFileAsync } from "./workspace.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const cleanups: Array<() => Promise<void>> = [];
@@ -94,7 +94,7 @@ describe("Claw removal operation ownership", () => {
     if (!trackedFile) {
       throw new Error("expected managed workspace file");
     }
-    upsertClawWorkspaceFile({ ...trackedFile, path: "a/tracked.md" });
+    await upsertClawWorkspaceFileAsync({ ...trackedFile, path: "a/tracked.md" });
     const operatorDirectory = path.join(current.workspace, "z");
     await fs.mkdir(operatorDirectory);
     const operatorFile = path.join(operatorDirectory, "operator-note.txt");

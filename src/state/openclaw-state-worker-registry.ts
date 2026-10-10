@@ -7,6 +7,7 @@ import type { WorktreeWorkerOperations } from "../agents/worktrees/dispatch.work
 import type { AuditWorkerOperations } from "../audit/audit-event-writer.worker.js";
 import type { ChannelIngressWorkerOperations } from "../channels/message/ingress-queue.worker-contract.js";
 import type { ClawProvenanceWriteOperations } from "../claws/provenance-write.worker-contract.js";
+import type { ClawWorkspaceOperations } from "../claws/workspace.worker-contract.js";
 import type { DoctorWorkerOperations } from "../commands/doctor-state.worker.js";
 import type { ConfigSnapshotWorkerOperations } from "../config/config-journal-snapshot.worker-contract.js";
 import type { ManagedImageRecordWorkerOperations } from "../gateway/managed-image-record-store.kernel.js";
@@ -59,6 +60,7 @@ export type RegisteredStateWorkerOperations = WorkerOperations<typeof gatewayBoo
   WorkerOperations<typeof agentRecoveryOperations> &
   WorkerOperations<typeof localWorkspaceOperations> &
   ClawProvenanceWriteOperations &
+  ClawWorkspaceOperations &
   GeneratedHtmlProvenanceOperations &
   MentionWorkerOperations &
   ConfigSnapshotWorkerOperations &
@@ -137,6 +139,8 @@ export const stateWorkerRegistry = createWorkerOperationRegistry<
     import("../gateway/worker-environments/prepared-pool-presence.worker.js").then(
       (m) => m.preparedPoolPresenceOperations,
     ),
+  clawWorkspace: () =>
+    import("../claws/workspace.worker.js").then((m) => m.clawWorkspaceOperations),
   clawProvenance: () =>
     import("../claws/provenance-write.worker.js").then((m) => m.clawProvenanceOperations),
   projects: () =>

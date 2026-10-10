@@ -3,30 +3,111 @@ import { realpath } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { root as fsSafeRoot, FsSafeError, type Root } from "../infra/fs-safe.js";
+import { hasSqliteWorkerOutcomeUnknown } from "../infra/sqlite-worker-contract.js";
+import { createSqliteWorkerWriteAdmission } from "../infra/sqlite-worker-store.js";
 import {
   openOpenClawStateDatabase,
-  runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
 import { digestClawBytes } from "./digest.js";
 import { clawContainedRelativePath } from "./path-containment.js";
 import { parseClawMarkdown } from "./reader.js";
 import type { ClawAddPlan, ClawAddPlanAction, ClawDiagnostic } from "./types.js";
 import {
   CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
-  insertClawWorkspaceFileInDatabase,
-  readClawWorkspaceFileInDatabase,
-  updateClawWorkspaceFileStatusInDatabase,
-  upsertClawWorkspaceFileInDatabase,
-  deleteClawWorkspaceFileInDatabase,
-  readClawWorkspaceFilesInDatabase,
   readAllClawWorkspaceFilesInDatabase,
+  readClawWorkspaceFilesInDatabase,
   type PersistedClawWorkspaceFile,
 } from "./workspace-records.js";
-export {
-  CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
-  type PersistedClawWorkspaceFile,
-} from "./workspace-records.js";
+import type { ClawWorkspaceOperations } from "./workspace.worker-contract.js";
+
+export { CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION } from "./workspace-records.js";
+export type { PersistedClawWorkspaceFile } from "./workspace-records.js";
+
+type ClawWorkspaceWriteOptions = OpenClawStateDatabaseOptions & { assertCurrent?: () => void };
+
+function runWorkspaceOperation<Key extends keyof ClawWorkspaceOperations>(
+  type: Key,
+  input: ClawWorkspaceOperations[Key]["input"],
+  options: ClawWorkspaceWriteOptions,
+): Promise<ClawWorkspaceOperations[Key]["output"]> {
+  const context = captureOpenClawStateWorkerContext({
+    ...options,
+    path: options.database?.path ?? options.path,
+  });
+  const captured = structuredClone(input);
+  const assertCurrent = () => {
+    context.admission.assertCurrent();
+    options.assertCurrent?.();
+  };
+  return runOpenClawStateWorkerOperation(
+    context,
+    (scope) => scope.execute({ type, input: captured }),
+    {
+      assertCurrent,
+      ...(type === "clawWorkspace.read" || type === "clawWorkspace.list"
+        ? {}
+        : {
+            createAdmission: createSqliteWorkerWriteAdmission(assertCurrent, [
+              context.admission.databasePath,
+            ]),
+          }),
+    },
+  );
+}
+
+function writeWorkspaceOperation<
+  Key extends Exclude<keyof ClawWorkspaceOperations, "clawWorkspace.read" | "clawWorkspace.list">,
+>(
+  type: Key,
+  input: ClawWorkspaceOperations[Key]["input"],
+  options: ClawWorkspaceWriteOptions,
+): Promise<ClawWorkspaceOperations[Key]["output"]> {
+  if (options.readOnly) {
+    throw new Error("Claw workspace writes require writable state.");
+  }
+  return runWorkspaceOperation(type, input, options);
+}
+
+export function readClawWorkspaceFilesAsync(
+  agentId: string,
+  options: OpenClawStateDatabaseOptions = {},
+) {
+  return runWorkspaceOperation("clawWorkspace.list", { agentId }, options);
+}
+
+export function readAllClawWorkspaceFilesAsync(options: OpenClawStateDatabaseOptions = {}) {
+  return runWorkspaceOperation("clawWorkspace.list", {}, options);
+}
+
+export function upsertClawWorkspaceFileAsync(
+  record: PersistedClawWorkspaceFile,
+  options: ClawWorkspaceWriteOptions = {},
+) {
+  return writeWorkspaceOperation("clawWorkspace.upsert", { record }, options);
+}
+
+export function deleteClawWorkspaceFileRecordAsync(
+  agentId: string,
+  path: string,
+  options: ClawWorkspaceWriteOptions = {},
+) {
+  return writeWorkspaceOperation("clawWorkspace.delete", { agentId, path }, options);
+}
+
+// Synchronous adapters remain for offline migration, Doctor and native authority assertions.
+export function readClawWorkspaceFiles(
+  agentId: string,
+  options: OpenClawStateDatabaseOptions = {},
+) {
+  return readClawWorkspaceFilesInDatabase(openOpenClawStateDatabase(options).db, agentId);
+}
+
+export function readAllClawWorkspaceFiles(options: OpenClawStateDatabaseOptions) {
+  return readAllClawWorkspaceFilesInDatabase(openOpenClawStateDatabase(options).db);
+}
 
 const MAX_CLAW_WORKSPACE_FILE_BYTES = 1024 * 1024;
 
@@ -85,72 +166,6 @@ export async function readClawWorkspaceActionSource(params: {
   return { content: parsed.body, sourceRelative };
 }
 
-function persistWorkspaceFile(
-  record: PersistedClawWorkspaceFile,
-  options: OpenClawStateDatabaseOptions,
-): void {
-  runOpenClawStateWriteTransaction(({ db }) => {
-    insertClawWorkspaceFileInDatabase(db, record);
-  }, options);
-}
-
-function readWorkspaceFile(
-  agentId: string,
-  targetPath: string,
-  options: OpenClawStateDatabaseOptions,
-): PersistedClawWorkspaceFile | undefined {
-  return runOpenClawStateWriteTransaction(
-    ({ db }) => readClawWorkspaceFileInDatabase(db, agentId, targetPath),
-    options,
-  );
-}
-
-function updateWorkspaceFileStatus(
-  record: PersistedClawWorkspaceFile,
-  expectedStatuses: PersistedClawWorkspaceFile["status"][],
-  options: OpenClawStateDatabaseOptions,
-): void {
-  runOpenClawStateWriteTransaction(({ db }) => {
-    updateClawWorkspaceFileStatusInDatabase(db, record, expectedStatuses);
-  }, options);
-}
-
-export function upsertClawWorkspaceFile(
-  record: PersistedClawWorkspaceFile,
-  options: OpenClawStateDatabaseOptions = {},
-): void {
-  runOpenClawStateWriteTransaction(({ db }) => {
-    upsertClawWorkspaceFileInDatabase(db, record);
-  }, options);
-}
-
-export function deleteClawWorkspaceFileRecord(
-  agentId: string,
-  path: string,
-  options: OpenClawStateDatabaseOptions = {},
-): void {
-  runOpenClawStateWriteTransaction(({ db }) => {
-    deleteClawWorkspaceFileInDatabase(db, agentId, path);
-  }, options);
-}
-
-export function readClawWorkspaceFiles(
-  agentId: string,
-  options: OpenClawStateDatabaseOptions = {},
-): PersistedClawWorkspaceFile[] {
-  return readClawWorkspaceFilesInDatabase(
-    openOpenClawStateDatabase(options).db,
-    agentId,
-    options.readOnly,
-  );
-}
-
-export function readAllClawWorkspaceFiles(
-  options: OpenClawStateDatabaseOptions,
-): PersistedClawWorkspaceFile[] {
-  return readAllClawWorkspaceFilesInDatabase(openOpenClawStateDatabase(options).db);
-}
-
 function sameWorkspaceFileOwner(
   existing: PersistedClawWorkspaceFile,
   expected: PersistedClawWorkspaceFile,
@@ -167,7 +182,7 @@ function sameWorkspaceFileOwner(
 
 export async function createClawWorkspaceFiles(
   plan: ClawAddPlan,
-  options: OpenClawStateDatabaseOptions & { nowMs?: number } = {},
+  options: ClawWorkspaceWriteOptions & { nowMs?: number } = {},
 ): Promise<PersistedClawWorkspaceFile[]> {
   const actions = plan.actions.filter((action) => action.kind === "workspaceFile");
   if (actions.length === 0) {
@@ -227,9 +242,9 @@ export async function createClawWorkspaceFiles(
         createdAtMs: nowMs,
         updatedAtMs: nowMs,
       };
-      const existingRecord = readWorkspaceFile(
-        expectedRecord.agentId,
-        expectedRecord.path,
+      const existingRecord = await runWorkspaceOperation(
+        "clawWorkspace.read",
+        { agentId: expectedRecord.agentId, path: expectedRecord.path },
         options,
       );
       if (existingRecord && !sameWorkspaceFileOwner(existingRecord, expectedRecord)) {
@@ -259,7 +274,11 @@ export async function createClawWorkspaceFiles(
         const previousStatus = existingRecord.status;
         existingRecord.status = "complete";
         existingRecord.updatedAtMs = nowMs;
-        updateWorkspaceFileStatus(existingRecord, [previousStatus], options);
+        await writeWorkspaceOperation(
+          "clawWorkspace.status",
+          { record: existingRecord, expectedStatuses: [previousStatus] },
+          options,
+        );
         createdFiles.push(existingRecord);
         continue;
       }
@@ -268,23 +287,42 @@ export async function createClawWorkspaceFiles(
         const previousStatus = record.status;
         record.status = "pending";
         record.updatedAtMs = nowMs;
-        updateWorkspaceFileStatus(record, [previousStatus], options);
+        await writeWorkspaceOperation(
+          "clawWorkspace.status",
+          { record, expectedStatuses: [previousStatus] },
+          options,
+        );
       } else {
-        persistWorkspaceFile(record, options);
+        await writeWorkspaceOperation("clawWorkspace.insert", { record }, options);
       }
       try {
         await workspace.write(targetRelative, resolvedSource.content, {
           mkdir: true,
           overwrite: false,
+          assertBeforeMutation: options.assertCurrent,
         });
         record.status = "complete";
-        updateWorkspaceFileStatus(record, ["pending"], options);
+        await writeWorkspaceOperation(
+          "clawWorkspace.status",
+          { record, expectedStatuses: ["pending"] },
+          options,
+        );
         createdFiles.push(record);
       } catch (error) {
+        if (hasSqliteWorkerOutcomeUnknown(error)) {
+          throw error;
+        }
         record.status = "failed";
         try {
-          updateWorkspaceFileStatus(record, ["pending"], options);
-        } catch {
+          await writeWorkspaceOperation(
+            "clawWorkspace.status",
+            { record, expectedStatuses: ["pending"] },
+            options,
+          );
+        } catch (statusError) {
+          if (hasSqliteWorkerOutcomeUnknown(statusError)) {
+            throw statusError;
+          }
           // A pending row intentionally remains as evidence of uncertain owner state.
           record.status = "pending";
         }
@@ -292,7 +330,7 @@ export async function createClawWorkspaceFiles(
         throw error;
       }
     } catch (error) {
-      if (error instanceof ClawWorkspaceWriteError) {
+      if (hasSqliteWorkerOutcomeUnknown(error) || error instanceof ClawWorkspaceWriteError) {
         throw error;
       }
       const code =

@@ -28,7 +28,7 @@ import type { PersistedClawPackageRef } from "./package-extension-provenance.js"
 import { replaceClawPackageRefExpected } from "./package-update-provenance.js";
 import { claimClawPackageRefStatus } from "./provenance-write.js";
 import { readClawPackageRefs } from "./provenance.js";
-import { upsertClawWorkspaceFile } from "./workspace.js";
+import { upsertClawWorkspaceFileAsync } from "./workspace.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterAll(async () => {
@@ -59,7 +59,7 @@ function withPackageLease<T>(
   );
 }
 
-function packageFixture(kind: PersistedClawPackageRef["kind"] = "plugin") {
+async function packageFixture(kind: PersistedClawPackageRef["kind"] = "plugin") {
   const id = `package-${++sequence}`;
   const ref: PersistedClawPackageRef = {
     schemaVersion: "openclaw.clawPackageRef.v1",
@@ -77,15 +77,15 @@ function packageFixture(kind: PersistedClawPackageRef["kind"] = "plugin") {
     installedAtMs: 1,
     updatedAtMs: 1,
   };
-  replaceClawPackageRefExpected(undefined, ref, options);
+  await replaceClawPackageRefExpected(undefined, ref, options);
   if (kind === "skill") {
-    fixtureWorkspace(ref, "/synthetic/workspace");
+    await fixtureWorkspace(ref, "/synthetic/workspace");
   }
   return ref;
 }
 
-function fixtureWorkspace(ref: PersistedClawPackageRef, workspace: string) {
-  upsertClawWorkspaceFile(
+async function fixtureWorkspace(ref: PersistedClawPackageRef, workspace: string) {
+  await upsertClawWorkspaceFileAsync(
     {
       schemaVersion: "openclaw.clawWorkspaceFileRecord.v1",
       agentId: ref.agentId,
@@ -107,7 +107,7 @@ function persisted(ref: PersistedClawPackageRef) {
 
 describe("Claw provenance worker writes", () => {
   it("retains both package and deletion owners and rejects a replaced deletion journal", async () => {
-    const ref = packageFixture();
+    const ref = await packageFixture();
     await withAgentDeletion(
       ref.agentId,
       async (begin) => {
@@ -156,7 +156,7 @@ describe("Claw provenance worker writes", () => {
   it.each(["plugin", "skill"] as const)(
     "commits %s status without executing SQLite on the caller thread",
     async (kind) => {
-      const ref = packageFixture(kind);
+      const ref = await packageFixture(kind);
       await withPackageLease(ref, async (lease) => {
         const sql = observeMainThreadSql();
         sql.calibrate();
@@ -199,7 +199,7 @@ describe("Claw provenance worker writes", () => {
     const failed = { ...pending, name: "failed", status: "failed" as const };
     const other = { ...pending, agentId: `${agentId}-other` };
     for (const ref of [pending, drifted, failed, other]) {
-      upsertClawMcpServerRef(ref, options);
+      await upsertClawMcpServerRef(ref, options);
     }
     const { error: _error, ...retained } = pending;
     const complete = { ...retained, status: "complete", updatedAtMs: 2 };
@@ -223,7 +223,7 @@ describe("Claw provenance worker writes", () => {
   it.each(["transaction", "commit"] as const)(
     "rolls back a package claim when caller authority retires at %s admission",
     async (stage) => {
-      const ref = packageFixture();
+      const ref = await packageFixture();
       let retired = false;
       probe.admission(workerAdmission, (request, grant, admit) => {
         retired ||= request.stage === stage;
@@ -249,9 +249,9 @@ describe("Claw provenance worker writes", () => {
   );
 
   it("rejects a changed package owner inside the worker transaction", async () => {
-    const ref = packageFixture();
+    const ref = await packageFixture();
     const replacement = { ...ref, independentOwner: true };
-    replaceClawPackageRefExpected(ref, replacement, options);
+    await replaceClawPackageRefExpected(ref, replacement, options);
 
     await withPackageLease(ref, async (lease) => {
       await expect(
@@ -262,9 +262,9 @@ describe("Claw provenance worker writes", () => {
   });
 
   it("keeps queued claims bound to the captured package", async () => {
-    const ref = packageFixture();
+    const ref = await packageFixture();
     const original = structuredClone(ref);
-    const other = packageFixture();
+    const other = await packageFixture();
     let changed = false;
     const result = await withPackageLease(ref, (lease) =>
       claimClawPackageRefStatus(ref, "pending", {
@@ -288,8 +288,8 @@ describe("Claw provenance worker writes", () => {
   it.each(["plugin", "skill"] as const)(
     "refuses to borrow another %s artifact's live package lease",
     async (kind) => {
-      const ref = packageFixture(kind);
-      const unrelated = packageFixture(kind);
+      const ref = await packageFixture(kind);
+      const unrelated = await packageFixture(kind);
       await withPackageLease(unrelated, async (lease) => {
         await expect(
           claimClawPackageRefStatus(ref, "pending", { ...options, lease }),
@@ -301,9 +301,9 @@ describe("Claw provenance worker writes", () => {
   );
 
   it("refuses a skill claim after its recorded workspace changes", async () => {
-    const ref = packageFixture("skill");
+    const ref = await packageFixture("skill");
     await withPackageLease(ref, async (lease) => {
-      fixtureWorkspace(ref, "/synthetic/replacement");
+      await fixtureWorkspace(ref, "/synthetic/replacement");
       await expect(
         claimClawPackageRefStatus(ref, "pending", { ...options, lease }),
       ).rejects.toThrow("does not match the held artifact lease");
@@ -312,7 +312,7 @@ describe("Claw provenance worker writes", () => {
   });
 
   it("refuses a retained callback lease after its owner has closed", async () => {
-    const ref = packageFixture();
+    const ref = await packageFixture();
     const lease = await withPackageLease(ref, async (current) => current);
     await expect(claimClawPackageRefStatus(ref, "pending", { ...options, lease })).rejects.toThrow(
       "requires its original live lease context",
@@ -321,7 +321,7 @@ describe("Claw provenance worker writes", () => {
   });
 
   it("rejects a replaced lifecycle lease even while its original local handle remains active", async () => {
-    const ref = packageFixture();
+    const ref = await packageFixture();
     await expect(
       withPackageLease(ref, async (lease) => {
         runOpenClawStateWriteTransaction(({ db }) => {

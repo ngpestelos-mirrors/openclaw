@@ -1,10 +1,22 @@
 import { coerceErrorMessage } from "@openclaw/normalization-core";
+import { hasSqliteWorkerOutcomeUnknown } from "../infra/sqlite-worker-contract.js";
 
 export type ClawSettlementOptions = {
   assertCurrent?: () => void;
   assertSettlementCurrent?: () => void;
   runSettlement?: <T>(run: () => Promise<T>) => Promise<T>;
 };
+
+export function runClawSettlement<T>(
+  options: ClawSettlementOptions,
+  run: () => Promise<T>,
+): Promise<T> {
+  const settle = async () => {
+    (options.assertSettlementCurrent ?? options.assertCurrent)?.();
+    return await run();
+  };
+  return options.runSettlement ? options.runSettlement(settle) : settle();
+}
 
 type ClawRollbackStep =
   | (() => Promise<void>)
@@ -20,6 +32,9 @@ export async function collectClawRollbackFailures(
     try {
       await rollback();
     } catch (error) {
+      if (hasSqliteWorkerOutcomeUnknown(error)) {
+        throw error;
+      }
       const message = coerceErrorMessage(error);
       failures.push(typeof step === "function" ? message : `${step[0]}: ${message}`);
     }

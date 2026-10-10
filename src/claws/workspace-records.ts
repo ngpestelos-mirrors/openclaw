@@ -126,6 +126,10 @@ export function updateClawWorkspaceFileStatusInDatabase(
       .set({ status: record.status, updated_at_ms: record.updatedAtMs })
       .where("agent_id", "=", record.agentId)
       .where("target_path", "=", record.path)
+      .where("schema_version", "=", record.schemaVersion)
+      .where("workspace", "=", record.workspace)
+      .where("source_path", "=", record.sourcePath)
+      .where("content_digest", "=", record.contentDigest)
       .where("status", "in", expectedStatuses),
   );
   if (result.numAffectedRows !== 1n) {
@@ -176,9 +180,8 @@ export function deleteClawWorkspaceFileInDatabase(
 export function readClawWorkspaceFilesInDatabase(
   db: DatabaseSync,
   agentId: string,
-  readOnly = false,
 ): PersistedClawWorkspaceFile[] {
-  if (readOnly && !tableExists(db, "claw_workspace_files")) {
+  if (!tableExists(db, "claw_workspace_files")) {
     return [];
   }
   const { compiled, bind } = compileSqliteQueryBindings<string, WorkspaceFileRow>((parameter) =>

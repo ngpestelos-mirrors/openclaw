@@ -7,18 +7,25 @@ import {
   DEFAULT_SUBAGENT_MAX_CONCURRENT,
 } from "../config/agent-limits.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { applyClawMigrationPlan, buildClawMigrationPlan, ClawMigrationError } from "./migrate.js";
 import {
   persistClawMigrationOwnership,
   persistClawPackageRef,
   readClawInstallRecord,
 } from "./provenance.js";
-import { CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION, upsertClawWorkspaceFile } from "./workspace.js";
+import {
+  CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
+  upsertClawWorkspaceFileAsync,
+} from "./workspace.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(() => closeOpenClawStateDatabaseForTest());
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 async function fixture(agent: Record<string, unknown> = {}) {
   const root = tempDirs.make("openclaw-claw-migrate-");
@@ -122,7 +129,7 @@ describe("Claw migration planning", () => {
   it("rejects orphan secondary Claw refs during planning and the ownership transaction", async () => {
     const { env, build } = await fixture();
     const migration = await build();
-    persistClawPackageRef(
+    await persistClawPackageRef(
       migration.addPlan,
       {
         kind: "plugin",
@@ -144,7 +151,7 @@ describe("Claw migration planning", () => {
   it("rejects orphan workspace ownership rows during planning and the ownership transaction", async () => {
     const { workspace, env, build } = await fixture();
     const migration = await build();
-    upsertClawWorkspaceFile(
+    await upsertClawWorkspaceFileAsync(
       {
         schemaVersion: CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
         agentId: "worker",

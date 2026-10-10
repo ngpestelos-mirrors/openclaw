@@ -1,11 +1,16 @@
 // Tests create-only Claw workspace files and immediate per-file provenance.
 import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { SqliteWorkerError } from "../infra/sqlite-worker-contract.js";
+import * as workerAdmission from "../infra/sqlite-worker-operation-admission.js";
+import { sqliteWorkerOwnerProbe as probe } from "../infra/sqlite-worker-owner-probe.test-support.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import * as workerStore from "../state/openclaw-state-worker-store.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
+import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
 import { applyClawAddPlan } from "./add.js";
 import { buildClawAddPlan } from "./lifecycle.js";
 import { parseClawManifest } from "./schema.js";
@@ -16,10 +21,12 @@ import {
   createClawWorkspaceFiles,
   readAllClawWorkspaceFiles,
   readClawWorkspaceFiles,
+  readClawWorkspaceFilesAsync,
 } from "./workspace.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
+    vi.restoreAllMocks();
     await closeStateDatabaseForTest();
     cleanup();
   }),
@@ -244,7 +251,18 @@ describe("createClawWorkspaceFiles", () => {
   it("creates canonical bootstrap and supporting files and records their hashes", async () => {
     const { root, workspace, plan } = await makePlan();
 
-    const records = await createClawWorkspaceFiles(plan, { env: stateEnv(root), nowMs: 10 });
+    const sql = observeMainThreadSql();
+    sql.calibrate();
+    let records: Awaited<ReturnType<typeof createClawWorkspaceFiles>>;
+    try {
+      records = await createClawWorkspaceFiles(plan, { env: stateEnv(root), nowMs: 10 });
+      expect(
+        await readClawWorkspaceFilesAsync(plan.agent.finalId, { env: stateEnv(root) }),
+      ).toEqual(records);
+      sql.expectIdle();
+    } finally {
+      sql.restore();
+    }
 
     await expect(readFile(join(workspace, "AGENTS.md"), "utf8")).resolves.toBe("# Agent\n");
     await expect(readFile(join(workspace, "reference", "policy.md"), "utf8")).resolves.toBe(
@@ -350,6 +368,109 @@ describe("createClawWorkspaceFiles", () => {
     }
     await expect(readFile(join(workspace, "AGENTS.md"), "utf8")).resolves.toBe("# Agent\n");
   });
+
+  it("rejects a retry when another operation replaced its workspace provenance", async () => {
+    const { root, workspace, plan } = await makePlan();
+    const options = { env: stateEnv(root), nowMs: 10 };
+    const initial = await createClawWorkspaceFiles(plan, options);
+    const replacement = { ...initial[0]!, contentDigest: "sha256:replacement", updatedAtMs: 15 };
+    let replaced = false;
+    probe.command(workerStore, async (command, args, scope) => {
+      if (command.type === "clawWorkspace.status" && !replaced) {
+        replaced = true;
+        await scope.execute({ type: "clawWorkspace.upsert", input: { record: replacement } });
+      }
+      return scope.execute(command, args);
+    });
+
+    await expect(createClawWorkspaceFiles(plan, { ...options, nowMs: 20 })).rejects.toMatchObject({
+      diagnostics: [
+        expect.objectContaining({ message: expect.stringContaining("changed ownership") }),
+      ],
+    });
+    expect((await readClawWorkspaceFilesAsync(plan.agent.finalId, options))[0]).toEqual(
+      replacement,
+    );
+    await expect(readFile(join(workspace, "AGENTS.md"), "utf8")).resolves.toBe("# Agent\n");
+  });
+
+  it.each(["transaction", "commit"] as const)(
+    "does not publish a workspace claim after authority retires at %s admission",
+    async (stage) => {
+      const { root, workspace, plan } = await makePlan();
+      const options = { env: stateEnv(root) };
+      let retired = false;
+      probe.admission(workerAdmission, (request, grant, admit) => {
+        retired ||= request.stage === stage;
+        admit(request, grant);
+      });
+      await expect(
+        createClawWorkspaceFiles(plan, {
+          ...options,
+          assertCurrent: () => {
+            if (retired) {
+              throw new Error("Owner retired");
+            }
+          },
+        }),
+      ).rejects.toMatchObject({
+        diagnostics: [
+          expect.objectContaining({ message: expect.stringContaining("Owner retired") }),
+        ],
+      });
+      expect(await readClawWorkspaceFilesAsync(plan.agent.finalId, options)).toEqual([]);
+      await expect(readFile(join(workspace, "AGENTS.md"), "utf8")).rejects.toThrow();
+    },
+  );
+
+  it.each(["insert", "complete", "failed"] as const)(
+    "preserves an unknown %s outcome without another workspace mutation",
+    async (phase) => {
+      const { root, workspace, plan } = await makePlan({
+        workspace: { files: [{ source: "content/policy.md", path: "reference/policy.md" }] },
+      });
+      const options = { env: stateEnv(root) };
+      const unknown = new SqliteWorkerError(
+        "Workspace write outcome is unknown",
+        "outcome-unknown",
+      );
+      let uncertaintyReported = false;
+      const mutationsAfterUncertainty: string[] = [];
+      probe.command(workerStore, async (command, args, scope) => {
+        if (uncertaintyReported && command.type !== "clawWorkspace.list") {
+          mutationsAfterUncertainty.push(command.type);
+        }
+        const result = await scope.execute(command, args);
+        if (phase === "failed" && command.type === "clawWorkspace.insert") {
+          await writeFile(join(workspace, "reference"), "parent is a file");
+        }
+        if (
+          !uncertaintyReported &&
+          command.type === (phase === "insert" ? "clawWorkspace.insert" : "clawWorkspace.status")
+        ) {
+          uncertaintyReported = true;
+          throw unknown;
+        }
+        return result;
+      });
+
+      await expect(createClawWorkspaceFiles(plan, options)).rejects.toBe(unknown);
+      expect(mutationsAfterUncertainty).toEqual([]);
+      expect(await readClawWorkspaceFilesAsync(plan.agent.finalId, options)).toEqual([
+        expect.objectContaining({
+          path: "reference/policy.md",
+          status: phase === "insert" ? "pending" : phase,
+        }),
+      ]);
+      if (phase === "complete") {
+        await expect(readFile(join(workspace, "reference/policy.md"), "utf8")).resolves.toBe(
+          "Policy\n",
+        );
+      } else {
+        await expect(readFile(join(workspace, "reference/policy.md"), "utf8")).rejects.toThrow();
+      }
+    },
+  );
 
   it("does not adopt an independently created file after a failed write record", async () => {
     const { root, workspace, plan } = await makePlan();

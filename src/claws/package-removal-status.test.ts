@@ -8,14 +8,14 @@ import {
   persistClawInstallRecord,
   persistClawPackageRef,
 } from "./provenance.js";
-import { upsertClawWorkspaceFile } from "./workspace.js";
+import { upsertClawWorkspaceFileAsync } from "./workspace.js";
 
 it("reads current package ownership in the worker and preserves orphan workspace identity", async () => {
   await withOpenClawTestState({ label: "claw-package-status" }, async (state) => {
     const { plan } = await buildClawRemovalFixture(state.root);
     const options = { env: state.env };
-    const install = persistClawInstallRecord(plan, options);
-    const packageRef = persistClawPackageRef(
+    const install = await persistClawInstallRecord(plan, options);
+    const packageRef = await persistClawPackageRef(
       plan,
       {
         kind: "plugin",
@@ -26,7 +26,7 @@ it("reads current package ownership in the worker and preserves orphan workspace
       },
       { ...options, status: "pending", nowMs: 1234 },
     );
-    upsertClawWorkspaceFile(
+    await upsertClawWorkspaceFileAsync(
       {
         schemaVersion: "openclaw.clawWorkspaceFileRecord.v1",
         agentId: "worker",
@@ -62,7 +62,7 @@ it("reads current package ownership in the worker and preserves orphan workspace
     expect(await read("worker")).toEqual({ install, packages: expectedPackages });
     expect(await read("missing")).toBeUndefined();
 
-    deleteClawInstallRecord("worker", options);
+    await deleteClawInstallRecord("worker", options);
     const orphan = await read("worker");
     expect(orphan?.orphaned).toBe(true);
     expect(orphan?.packages).toEqual(expectedPackages);

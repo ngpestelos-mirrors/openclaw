@@ -478,6 +478,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/canvas/widget-tool.report.test.ts",
   "src/canvas/widget-tool.test.ts",
   "src/claws/add.test.ts",
+  "src/claws/migrate.test.ts",
   "src/claws/bootstrap.test.ts",
   "src/claws/doctor.test.ts",
   "src/claws/export.test.ts",

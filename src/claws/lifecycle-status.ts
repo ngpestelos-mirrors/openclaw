@@ -51,7 +51,7 @@ import {
   type ClawAppliedExtension,
   type ClawPackagePreflight,
 } from "./types.js";
-import { readAllClawWorkspaceFiles, readClawWorkspaceFiles } from "./workspace.js";
+import { readAllClawWorkspaceFilesAsync, readClawWorkspaceFilesAsync } from "./workspace.js";
 
 const CLAW_STATUS_SCHEMA_VERSION = "openclaw.clawStatus.v1" as const;
 
@@ -250,7 +250,7 @@ export async function readClawStatus(
   const allInstalls = readClawInstallRecords(options);
   const installAgentIds = new Set(allInstalls.map((install) => install.agentId));
   const allPackageRefs = readClawPackageRefs(options);
-  const allWorkspaceFiles = readAllClawWorkspaceFiles(options);
+  const allWorkspaceFiles = await readAllClawWorkspaceFilesAsync(options);
   const orphanAgentIds = new Set<string>();
   for (const packageRef of allPackageRefs) {
     if (!installAgentIds.has(packageRef.agentId)) {
@@ -302,7 +302,7 @@ export async function readClawStatus(
       (packageRef) => packageRef.agentId === install.agentId,
     );
     const workspaceFiles = installAgentIds.has(install.agentId)
-      ? readClawWorkspaceFiles(install.agentId, options)
+      ? await readClawWorkspaceFilesAsync(install.agentId, options)
       : allWorkspaceFiles.filter((file) => file.agentId === install.agentId);
     const bootstrap = installAgentIds.has(install.agentId)
       ? await inspectClawBootstrap(install, options)
