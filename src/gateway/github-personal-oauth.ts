@@ -20,9 +20,12 @@ import {
   resolveManagedGitHubProfileRoot,
 } from "../agents/github-tool-identity.js";
 import { hasErrnoCode } from "../infra/errno.js";
+import { warnPluginSdkDeprecation } from "../plugins/sdk-deprecation.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
 import { withOpenClawStateLease } from "../state/openclaw-state-lease.js";
 import {
+  cancelUserGitHubAuthorizationSync,
+  disconnectUserGitHubConnectionSync,
   listUserGitHubConnectionsAsync,
   mutateUserGitHubConnection as mutateConnection,
   observeUserGitHubProfileRetirement,
@@ -649,7 +652,19 @@ export function createPersonalGitHubOAuthLifecycle() {
       guard(action);
       return result;
     },
-    async cancelAuthorization(action: PersonalGitHubAction, requestId: string): Promise<boolean> {
+    /** @deprecated Use cancelAuthorizationAsync; removed in the next Plugin SDK major. */
+    cancelAuthorization(action: PersonalGitHubAction, requestId: string): boolean {
+      warnPluginSdkDeprecation({
+        family: "github-publication",
+        method: "personal.cancelAuthorization",
+        replacement: "personal.cancelAuthorizationAsync",
+      });
+      return cancelUserGitHubAuthorizationSync(action.owner, requestId, () => guard(action));
+    },
+    async cancelAuthorizationAsync(
+      action: PersonalGitHubAction,
+      requestId: string,
+    ): Promise<boolean> {
       guard(action);
       return Boolean(
         await mutateUserGitHubConnection(action.owner, { kind: "cancel", requestId }, () =>
@@ -657,7 +672,17 @@ export function createPersonalGitHubOAuthLifecycle() {
         ),
       );
     },
-    async disconnect(action: PersonalGitHubAction): Promise<void> {
+    /** @deprecated Use disconnectAsync; removed in the next Plugin SDK major. */
+    disconnect(action: PersonalGitHubAction): void {
+      warnPluginSdkDeprecation({
+        family: "github-publication",
+        method: "personal.disconnect",
+        replacement: "personal.disconnectAsync",
+      });
+      disconnectUserGitHubConnectionSync(action.owner, () => guard(action));
+      clearNativeGitHubTokenCache();
+    },
+    async disconnectAsync(action: PersonalGitHubAction): Promise<void> {
       guard(action);
       await mutateUserGitHubConnection(action.owner, { kind: "disconnect" }, () => guard(action));
       clearNativeGitHubTokenCache();

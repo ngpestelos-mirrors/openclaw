@@ -33,8 +33,8 @@ import {
   type GitHubPublicationPreparation,
 } from "./github-publication-failure.js";
 import { captureGitHubPublicationWorkspaceSnapshot } from "./github-publication-git-transport.js";
+import { projectGitHubPublicationResult } from "./github-publication-receipt.js";
 import type { GitHubPublicationRequesterV2 } from "./github-publication-requester.js";
-import { projectGitHubPublicationResult } from "./github-publication-store.js";
 import { prepareGitHubPublicationTarget } from "./github-publication-target.js";
 import {
   readRepositoryGitHubPublication,

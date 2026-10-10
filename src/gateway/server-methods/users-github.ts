@@ -82,7 +82,7 @@ export const usersGitHubHandlers: GatewayRequestHandlers = {
     validateUsersGitHubAuthorizeCancelParams,
     (options) =>
       runPersonalGitHub(options, "My GitHub authorization failed.", async (action, service) => ({
-        cancelled: await service.cancelAuthorization(action, options.params.requestId),
+        cancelled: await service.cancelAuthorizationAsync(action, options.params.requestId),
       })),
   ),
   "users.github.disconnect": defineValidatedGatewayMethod(
@@ -90,7 +90,7 @@ export const usersGitHubHandlers: GatewayRequestHandlers = {
     validateUsersGitHubDisconnectParams,
     (options) =>
       runPersonalGitHub(options, "My GitHub disconnect failed.", async (action, service) => {
-        await service.disconnect(action);
+        await service.disconnectAsync(action);
         return { disconnected: true };
       }),
   ),

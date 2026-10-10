@@ -23,6 +23,10 @@ import {
 } from "./github-publication-availability.js";
 import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-index.js";
 import { captureGitHubPublicationWorkspaceSnapshot } from "./github-publication-git-transport.js";
+import {
+  digestGitHubPublicationRequest as digestRequest,
+  projectGitHubPublicationResult as publicationResult,
+} from "./github-publication-receipt.js";
 import type {
   GitHubPublicationRequester,
   GitHubPublicationRequesterV2,
@@ -30,14 +34,12 @@ import type {
 import { readSharedGitHubPublication } from "./github-publication-shared-read.js";
 import {
   deferGitHubPublicationRequests as deferRequests,
-  digestGitHubPublicationRequest as digestRequest,
   insertGitHubPublicationRequest,
   ensureGitHubPublicationStore as ensureSchema,
   githubPublicationDatabase as publicationDb,
   hasGitHubPublicationStore as schemaExists,
   listGitHubPublicationsForClaim,
   markGitHubPublicationReported,
-  projectGitHubPublicationResult as publicationResult,
   readGitHubPublicationRequest,
 } from "./github-publication-store.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";

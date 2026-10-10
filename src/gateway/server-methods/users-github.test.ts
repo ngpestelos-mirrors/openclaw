@@ -1,3 +1,6 @@
+// Install synthetic OAuth and subprocess transport before RPC modules load.
+// oxfmt-ignore
+import { expireAuthorization, expireAccessToken, network, resetPersonalGitHubNetwork, tokens } from "./users-github.test-support.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { StatementSync } from "node:sqlite";
@@ -17,6 +20,7 @@ import {
 } from "../../agents/github-tool-identity.js";
 import { cleanupRetiredManagedGitHubProfiles } from "../../agents/github-tool-profile-cleanup.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { withPluginRuntimePluginScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { resolveCommandEnv } from "../../process/exec-spawn.js";
 import * as secretsRuntime from "../../secrets/runtime-state.js";
 import {
@@ -52,35 +56,6 @@ import { invalidateOperatorRolePolicy } from "../operator-role-policy.js";
 import { handleGatewayRequest } from "../server-methods.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
 
-const network = vi.hoisted(() => ({
-  assertCli: vi.fn(),
-  start: vi.fn(),
-  poll: vi.fn(),
-  refresh: vi.fn(),
-  verify: vi.fn<typeof import("../../agents/github-oauth-client.js").verifyGitHubCredential>(),
-  command: vi.fn(),
-}));
-vi.mock("../../agents/github-oauth-client.js", () => ({
-  clearGitHubCredentialVerificationCache: vi.fn(),
-  requestGitHubOAuthDeviceCode: network.start,
-  pollGitHubOAuthDeviceToken: network.poll,
-  refreshGitHubOAuthToken: network.refresh,
-  verifyGitHubCredential: network.verify,
-}));
-vi.mock("../../process/exec.js", () => ({ runCommandBuffered: network.command }));
-vi.mock("../github-cli-preflight.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../github-cli-preflight.js")>();
-  return { ...actual, assertGitHubCliAvailable: network.assertCli };
-});
-
-const tokens = {
-  accessToken: "synthetic-access",
-  tokenType: "bearer" as const,
-  scopes: ["gist", "read:org", "repo", "workflow"],
-  expiresInSeconds: 28800,
-  refreshToken: "synthetic-refresh",
-  refreshTokenExpiresInSeconds: 15552000,
-};
 let state: OpenClawTestState;
 let lifecycle: ReturnType<typeof createGitHubOAuthLifecycle>;
 let config: OpenClawConfig;
@@ -142,39 +117,6 @@ function preparePoll(client = alice) {
     () => {},
   );
 }
-function expireAuthorization() {
-  updateUserGitHubConnection(
-    owner(),
-    (current) => {
-      if (current?.pending?.kind !== "device") {
-        throw new Error("Expected pending device authorization");
-      }
-      const expiresAtMs = Date.now() - 1;
-      return {
-        ...current,
-        pending: {
-          ...current.pending,
-          createdAtMs: expiresAtMs - 900000,
-          expiresAtMs,
-          nextPollAtMs: expiresAtMs,
-        },
-      };
-    },
-    () => {},
-  );
-}
-function expireAccessToken() {
-  updateUserGitHubConnection(
-    owner(),
-    (current) => {
-      if (current?.selection.kind !== "connected") {
-        throw new Error("Expected connection");
-      }
-      return { ...current, selection: { ...current.selection, accessExpiresAtMs: Date.now() - 1 } };
-    },
-    () => {},
-  );
-}
 async function connect(client = alice) {
   const started = await start(client);
   preparePoll(client);
@@ -189,55 +131,7 @@ beforeEach(async () => {
   clients = new Set();
   alice = user("alice@example.test");
   bob = user("bob@example.test");
-  network.assertCli.mockReset();
-  network.start.mockReset().mockResolvedValue({
-    deviceCode: "d".repeat(40),
-    userCode: "ABCD-1234",
-    verificationUri: "https://github.com/login/device",
-    expiresInSeconds: 900,
-    intervalSeconds: 5,
-  });
-  network.poll.mockReset().mockResolvedValue({ status: "authorized", tokens });
-  network.refresh.mockReset().mockResolvedValue({
-    status: "refreshed",
-    tokens: {
-      ...tokens,
-      accessToken: "synthetic-rotated-access",
-      refreshToken: "synthetic-rotated-refresh",
-    },
-  });
-  network.verify.mockReset().mockImplementation(async (token) => {
-    const native = token === "synthetic-native";
-    if (
-      !native &&
-      ![tokens.accessToken, "synthetic-rotated-access", "new-access"].includes(token)
-    ) {
-      return { status: "unavailable" };
-    }
-    return {
-      status: "available",
-      account: {
-        accountId: native ? 303 : 101,
-        login: native ? "system-bot" : "personal-alice",
-        avatarUrl: null,
-      },
-      scopes: [],
-    };
-  });
-  vi.stubGlobal(
-    "fetch",
-    vi.fn().mockRejectedValue(new Error("Unexpected credential HTTP request")),
-  );
-  network.command.mockReset().mockImplementation(async (argv: string[]) => {
-    if (argv[0] === "gh" && argv.join(" ") !== "gh auth token --hostname github.com") {
-      throw new Error("Unexpected GitHub CLI operation");
-    }
-    return {
-      code: argv[0] === "git" ? 1 : 0,
-      stdout: Buffer.from(argv[0] === "gh" ? "synthetic-native\n" : ""),
-      stderr: Buffer.alloc(0),
-    };
-  });
+  resetPersonalGitHubNetwork();
   lifecycle = createGitHubOAuthLifecycle({
     scheduler: createTestGatewayScheduler(),
     getConfig: () => config,
@@ -357,7 +251,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
     },
   );
 
-  it("starts and cancels personal authorization without writing SQLite on the Gateway thread", async () => {
+  it("keeps RPC writes off the Gateway thread and legacy completion synchronous", async () => {
     await start();
     const writes = vi.spyOn(StatementSync.prototype, "run");
     try {
@@ -368,6 +262,33 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
       expect(writes).not.toHaveBeenCalled();
     } finally {
       writes.mockRestore();
+    }
+    const pending = await start();
+    const action = { owner: owner(), assertCurrent: () => {} };
+    const publications: UserGitHubConnectionCommit[] = [];
+    const unobserve = observeUserGitHubConnectionAuthority((commit) => publications.push(commit));
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      withPluginRuntimePluginScope({ pluginId: "personal-github-legacy-service-test" }, () => {
+        expect(lifecycle.personal.cancelAuthorization(action, pending.requestId)).toBe(true);
+        expect(readUserGitHubConnection(owner())?.pending).toBeUndefined();
+        expect(publications).toHaveLength(1);
+        expect(lifecycle.personal.cancelAuthorization(action, pending.requestId)).toBe(false);
+        expect(publications).toHaveLength(1);
+        const previous = readUserGitHubConnection(owner())?.generation;
+        expect(lifecycle.personal.disconnect(action)).toBeUndefined();
+        const disconnected = readUserGitHubConnection(owner());
+        expect(disconnected?.generation).not.toBe(previous);
+        expect(disconnected?.selection).toEqual({ kind: "disconnected" });
+        expect(publications).toHaveLength(2);
+      });
+      expect(warning).toHaveBeenCalledExactlyOnceWith(
+        expect.stringContaining("personal.cancelAuthorizationAsync"),
+        { code: "DEP_PLUGIN_SDK", type: "DeprecationWarning" },
+      );
+    } finally {
+      unobserve();
+      warning.mockRestore();
     }
   });
 
@@ -714,7 +635,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
         invalidateOperatorRolePolicy(owner());
       }
       if (race === "expiry") {
-        expireAuthorization();
+        expireAuthorization(owner());
       }
       waiting.resolve({ status: "authorized", tokens });
       const response = await pending;
@@ -760,7 +681,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
             await rpc(alice, "users.github.disconnect");
           }
           if (race === "expiry") {
-            expireAuthorization();
+            expireAuthorization(owner());
           }
         }
         return result;
@@ -959,7 +880,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
     "rechecks %s credentials after acquiring the refresh lease",
     async (kind) => {
       const connected = await connect();
-      expireAccessToken();
+      expireAccessToken(owner());
       const current =
         kind === "fresh"
           ? connected
@@ -996,7 +917,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
     if (connection.selection.kind !== "connected") {
       throw new Error("Expected connection");
     }
-    expireAccessToken();
+    expireAccessToken(owner());
     const refresh = createDeferredCore<{ status: "refreshed"; tokens: typeof tokens }>();
     network.refresh.mockReturnValueOnce(refresh.promise);
     const pending = lifecycle.personal.refresh(owner());
@@ -1027,7 +948,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
     if (connection.selection.kind !== "connected") {
       throw new Error("Expected connection");
     }
-    expireAccessToken();
+    expireAccessToken(owner());
     const refresh = createDeferredCore<{ status: "refreshed"; tokens: typeof tokens }>();
     network.refresh.mockReturnValueOnce(refresh.promise);
     const pending = lifecycle.personal.refresh(owner());
@@ -1050,7 +971,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
       if (connection.selection.kind !== "connected") {
         throw new Error("Expected connection");
       }
-      expireAccessToken();
+      expireAccessToken(owner());
       const db = openOpenClawStateDatabase().db;
       db.exec(
         "CREATE TRIGGER reject_rotation BEFORE UPDATE ON secret_store_entries WHEN NEW.value LIKE '%synthetic-rotated-refresh%' BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END",
@@ -1075,7 +996,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
     if (connection.selection.kind !== "connected") {
       throw new Error("Expected connection");
     }
-    expireAccessToken();
+    expireAccessToken(owner());
     const refreshed = createDeferredCore<{ status: "refreshed"; tokens: typeof tokens }>();
     network.refresh.mockReturnValueOnce(refreshed.promise);
     const pending = lifecycle.personal.refresh(owner());
