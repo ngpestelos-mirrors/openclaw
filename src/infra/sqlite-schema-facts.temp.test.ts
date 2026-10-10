@@ -53,10 +53,8 @@ describe("connection-local SQLite schema admission", () => {
   it.each([
     "CREATE TABLE unexpected (id INTEGER)",
     "CREATE TEMP TABLE scratch (id); CREATE TABLE unexpected (id INTEGER)",
-    "DROP TABLE openclaw_session_nodes_cache_generation",
     "PRAGMA user_version = 2",
     "DROP TRIGGER temp.openclaw_session_nodes_cache_generation_update",
-    "ALTER TABLE temp.openclaw_session_nodes_cache_generation ADD COLUMN unexpected INTEGER",
   ])("still revokes admission for ordinary DDL after tracker installation: %s", (sql) => {
     const database = openDatabase("CREATE TABLE session_nodes (id INTEGER)");
     readSessionNodesGeneration(database);
@@ -149,7 +147,7 @@ describe("connection-local SQLite schema admission", () => {
     expect(tableExists(database, "callback_table")).toBe(true);
   });
 
-  it("revokes admission when tracker installation fails after creating its counter", () => {
+  it("revokes admission when tracker installation fails", () => {
     const database = openDatabase();
     const schemaMutation = vi.fn();
     registerSqliteSchemaMutationListener(database, schemaMutation);
@@ -158,7 +156,7 @@ describe("connection-local SQLite schema admission", () => {
   });
 
   it.each([
-    "CREATE TEMP TABLE openclaw_session_nodes_cache_generation (id INTEGER PRIMARY KEY, generation INTEGER)",
+    "CREATE TEMP TABLE openclaw_session_nodes_cache_generation_update (id INTEGER)",
     "CREATE TEMP TRIGGER openclaw_session_nodes_cache_generation_update AFTER INSERT ON main.session_nodes BEGIN SELECT 1; END",
   ])("revokes admission for a preexisting mismatched tracker object: %s", (sql) => {
     const database = openDatabase(`CREATE TABLE session_nodes (id INTEGER); ${sql}`);
