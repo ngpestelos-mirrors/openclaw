@@ -11,6 +11,7 @@ import {
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const builds = useAutoCleanupTempDirTracker(afterAll);
+const enabledBuildId = "browser-capabilities-e2e";
 const enabled = createControlUiE2eSuite({
   name: "Control UI browser capability gate enabled",
   startServer: async () => {
@@ -18,7 +19,7 @@ const enabled = createControlUiE2eSuite({
     try {
       return await startProductionControlUiE2eServer(
         builds.make("openclaw-browser-capabilities-"),
-        "browser-capabilities-e2e",
+        enabledBuildId,
       );
     } finally {
       vi.unstubAllEnvs();
@@ -127,9 +128,9 @@ enabled.define(() => {
   it("starts the real application when all capabilities are available", async () => {
     await enabled.withPage({ serviceWorkers: "block" }, async ({ page }) => {
       await setBrowserFeatures(page, true);
-      const gateway = await installMockGateway(page);
+      const gateway = await installMockGateway(page, { serverBuildId: enabledBuildId });
       await page.goto(`${enabled.server.baseUrl}chat`);
-      expect(await page.locator(".agent-chat__composer-combobox textarea").isVisible()).toBe(true);
+      await page.locator(".agent-chat__composer-combobox textarea").waitFor();
       expect((await gateway.getRequests()).some((request) => request.method === "connect")).toBe(
         true,
       );
