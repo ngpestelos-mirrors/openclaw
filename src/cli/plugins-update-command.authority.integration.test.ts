@@ -27,6 +27,7 @@ import { defaultRuntime } from "../runtime.js";
 import * as leaseStore from "../state/openclaw-state-lease-store.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { runPluginUpdateCommand } from "./plugins-update-command.js";
+import * as signalExit from "./signal-exit-barrier.js";
 
 vi.mock("../plugins/update.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../plugins/update.js")>()),
@@ -43,10 +44,20 @@ function identity(target: string) {
 }
 
 describe("plugin update metadata refusal and retained package settlement", () => {
-  it.each([false, true])(
-    "preserves package/index agreement after marker handling (refusal=%s)",
-    async (refuse) => {
+  it.each(["success", "refusal", "interrupted"] as const)(
+    "preserves package/index agreement after marker handling (%s)",
+    async (mode) => {
       await withOpenClawTestState({ label: "plugin-update-metadata-refusal" }, async (state) => {
+        const refuse = mode === "refusal";
+        const interrupts: Array<() => void> = [];
+        vi.spyOn(signalExit, "registerSignalExitGate").mockImplementation(
+          (_finished, interrupt) => {
+            if (interrupt) {
+              interrupts.push(interrupt);
+            }
+            return () => undefined;
+          },
+        );
         const pluginId = "metadata-refusal";
         const packageName = "@acme/metadata-refusal";
         const config = { plugins: { enabled: false } };
@@ -154,6 +165,11 @@ describe("plugin update metadata refusal and retained package settlement", () =>
                 pluginId,
                 reason: "retained-package",
               });
+              if (mode === "interrupted") {
+                for (const interrupt of interrupts) {
+                  interrupt();
+                }
+              }
               return {
                 config: {
                   ...params.config,
@@ -166,7 +182,16 @@ describe("plugin update metadata refusal and retained package settlement", () =>
           ),
         );
         const command = runPluginUpdateCommand({ ids: [pluginId], opts: {} });
-        if (refuse) {
+        if (mode === "interrupted") {
+          await expect(command).rejects.toThrow();
+          expect(interrupts.length).toBeGreaterThan(0);
+          expect(readPersistedInstalledPluginIndexInstallRecords({ env: state.env })).toEqual(
+            records,
+          );
+          expect(fs.existsSync(nextRoot), "cancelled update must undo its accepted package").toBe(
+            false,
+          );
+        } else if (refuse) {
           await expect(command).rejects.toThrow();
           expect(failedReads).toBe(1);
           expect(tentativeRow).toBeDefined();
@@ -177,17 +202,19 @@ describe("plugin update metadata refusal and retained package settlement", () =>
           await expect(command).resolves.toBeUndefined();
           expect(failedReads).toBe(0);
         }
-        expect(readPersistedInstalledPluginIndexInstallRecords({ env: state.env })).toEqual(
-          nextRecords,
-        );
-        expect(
-          fs.existsSync(nextPath),
-          "the retained inventory must not point at a rolled-back package",
-        ).toBe(true);
-        expect(identity(nextPath)).toEqual(nextIdentity);
-        expect(
-          JSON.parse(fs.readFileSync(path.join(nextPath, "package.json"), "utf8")).version,
-        ).toBe("2.0.0");
+        if (mode !== "interrupted") {
+          expect(readPersistedInstalledPluginIndexInstallRecords({ env: state.env })).toEqual(
+            nextRecords,
+          );
+          expect(
+            fs.existsSync(nextPath),
+            "the retained inventory must not point at a rolled-back package",
+          ).toBe(true);
+          expect(identity(nextPath)).toEqual(nextIdentity);
+          expect(
+            JSON.parse(fs.readFileSync(path.join(nextPath, "package.json"), "utf8")).version,
+          ).toBe("2.0.0");
+        }
         expect(identity(oldPath)).toEqual(oldIdentity);
         expect(fs.readFileSync(path.join(oldPath, "package.json"), "utf8")).toBe(oldBytes);
         expect(fs.readFileSync(state.configPath, "utf8")).toBe(configBefore);
