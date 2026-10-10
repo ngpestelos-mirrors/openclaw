@@ -154,14 +154,14 @@ export function createSessionActor(params: {
     generation = scope.captureGeneration();
     generation.assertCurrent();
   };
-  const isInstalled = (snapshot: SessionActorHotState): boolean => {
+  const isInstalled = (snapshot: SessionActorHotState, disclose = true): boolean => {
     try {
       generation?.assertCurrent();
     } catch {
       params.replica.invalidate();
       return false;
     }
-    const current = params.replica.read();
+    const current = disclose ? params.replica.read() : params.replica.readAccepted();
     return (
       current !== undefined &&
       current.writeToken === snapshot.writeToken &&
@@ -225,7 +225,7 @@ export function createSessionActor(params: {
           const assertView = disclose ? assertReadable : assertAccepted;
           assertView();
           authority.assertCurrent();
-          let snapshot = params.replica.read();
+          let snapshot = disclose ? params.replica.read() : params.replica.readAccepted();
           if (!snapshot) {
             const pending = params.replica.beginRead();
             try {
@@ -244,7 +244,7 @@ export function createSessionActor(params: {
           authority.authorize("commit", snapshot);
           authority.assertCurrent();
           assertView();
-          if (!isInstalled(snapshot)) {
+          if (!isInstalled(snapshot, disclose)) {
             throw new Error("Session actor changed before read disclosure");
           }
           return snapshot;

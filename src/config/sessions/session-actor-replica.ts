@@ -209,17 +209,25 @@ export function createSessionActorReplica(
     };
   };
 
+  const read = (): SessionActorHotState | undefined => {
+    if (closed || !owned.snapshot) return undefined;
+    if (!accepts(owned.snapshot, owned.generation)) {
+      invalidate();
+      return undefined;
+    }
+    touch(owned);
+    return structuredClone(owned.snapshot);
+  };
   return {
     /** Each borrower validates its current physical generation before disclosure. */
     read(): SessionActorHotState | undefined {
       params.lifetime.assertReadable();
-      if (closed || !owned.snapshot) return undefined;
-      if (!accepts(owned.snapshot, owned.generation)) {
-        invalidate();
-        return undefined;
-      }
-      touch(owned);
-      return structuredClone(owned.snapshot);
+      return read();
+    },
+    /** Already-accepted phase work retains settlement authority after disclosure closes. */
+    readAccepted(): SessionActorHotState | undefined {
+      params.lifetime.assertCurrent();
+      return read();
     },
     beginRead() {
       const settle = begin();
