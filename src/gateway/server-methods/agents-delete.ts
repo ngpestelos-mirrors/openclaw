@@ -156,7 +156,12 @@ export async function deleteGatewayAgent(
       const { deletion, lockedJournal } = prepared;
       const journal = deletion.entry;
       if (journal.phase === "draining") {
-        await drainAgentDeletionRuns(agentId, prepared.config, context, deletion.assertCurrentHost);
+        await drainAgentDeletionRuns(
+          agentId,
+          prepared.config,
+          context,
+          deletion.assertCurrentFinal,
+        );
       }
       const { closeActiveMemorySearchManagerCore } =
         await import("../../plugins/memory-runtime.js");

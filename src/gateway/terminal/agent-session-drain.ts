@@ -3,6 +3,7 @@ import type {
   AgentTerminalOwner,
   AgentTerminalSessionDrain,
   TerminalOwner,
+  TerminalPendingOpen,
   TerminalSession,
 } from "./session-manager.types.js";
 
@@ -26,22 +27,80 @@ export class AgentTerminalSessionDrainTracker {
   private readonly active = new Map<string, Set<() => void>>();
   private readonly exiting = new Set<TerminalSession>();
 
-  begin(owner: AgentTerminalOwner, hasWork: () => boolean): AgentTerminalSessionDrain {
+  begin(
+    owner: AgentTerminalOwner,
+    params: {
+      pendingOpens: ReadonlyMap<TerminalPendingOpen, TerminalOwner>;
+      sessions: ReadonlyMap<string, TerminalSession>;
+      closeSession: (session: TerminalSession) => void;
+      assertCurrent?: () => void;
+    },
+  ): AgentTerminalSessionDrain {
+    params.assertCurrent?.();
+    const pending = [...params.pendingOpens]
+      .filter(([, pendingOwner]) => agentTerminalOwnerMatches(pendingOwner, owner))
+      .map(([entry]) => entry);
+    const sessions = [...params.sessions.values()].filter(
+      (session) => !session.closed && agentTerminalOwnerMatches(session.owner, owner),
+    );
+    let pendingWork = pending;
+    let sessionWork = [
+      ...sessions,
+      ...[...this.exiting].filter((session) => agentTerminalOwnerMatches(session.owner, owner)),
+    ];
+    const hasWork = () =>
+      pendingWork.some((entry) => params.pendingOpens.has(entry)) ||
+      sessionWork.some((session) => !session.closed || this.exiting.has(session));
     const key = drainKey(owner);
     const drained = createDeferredCore();
+    let failure: { error: unknown } | undefined;
+    let cancelling = true;
+    const settle = () => {
+      if (!cancelling && !hasWork()) {
+        if (failure) {
+          drained.reject(failure.error);
+        } else {
+          drained.resolve();
+        }
+      }
+    };
     const receipts = this.active.get(key) ?? new Set<() => void>();
-    receipts.add(drained.resolve);
+    receipts.add(settle);
     this.active.set(key, receipts);
-    this.resolveIfIdle(owner, hasWork);
-    return {
+    const receipt: AgentTerminalSessionDrain = {
       drained: drained.promise,
       hasWork,
       release: () => {
-        if (receipts.delete(drained.resolve) && receipts.size === 0) {
+        if (receipts.delete(settle) && receipts.size === 0) {
           this.active.delete(key);
         }
       },
     };
+    let cancelledPending = 0;
+    try {
+      for (const entry of pending) {
+        params.assertCurrent?.();
+        entry.abort("terminal closed because its session was archived");
+        cancelledPending += 1;
+      }
+      for (const session of sessions) {
+        if (!session.closed) {
+          params.assertCurrent?.();
+          params.closeSession(session);
+        }
+      }
+    } catch (error) {
+      pendingWork = pending.slice(0, cancelledPending);
+      sessionWork = sessions.filter((session) => session.closed);
+      if (pendingWork.length === 0 && sessionWork.length === 0) {
+        receipt.release();
+        throw error;
+      }
+      failure = { error };
+    }
+    cancelling = false;
+    settle();
+    return receipt;
   }
 
   isActive(owner: AgentTerminalOwner): boolean {
@@ -56,17 +115,10 @@ export class AgentTerminalSessionDrainTracker {
     this.exiting.delete(session);
   }
 
-  hasExiting(owner: AgentTerminalOwner): boolean {
-    return [...this.exiting].some((session) => agentTerminalOwnerMatches(session.owner, owner));
-  }
-
-  resolveIfIdle(owner: AgentTerminalOwner, hasWork: () => boolean): void {
-    if (hasWork()) {
-      return;
-    }
-    // Settled receipts retain admission until their own lifecycle mutation releases.
-    for (const resolve of this.active.get(drainKey(owner)) ?? []) {
-      resolve();
+  settleIfIdle(owner: AgentTerminalOwner): void {
+    // Each receipt retains only the work whose cancellation it accepted.
+    for (const settle of this.active.get(drainKey(owner)) ?? []) {
+      settle();
     }
   }
 }

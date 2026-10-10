@@ -133,12 +133,16 @@ export function createAgentWorkAdmissionQueries<T extends AgentSessionWorkAdmiss
   }
 
   function startAgentWorkAdmissionInterruption(
-    params: AgentWorkAdmissionTarget & { reason?: Error },
+    params: AgentWorkAdmissionTarget & { reason?: Error; assertCurrent?: () => void },
   ): {
     released: Promise<void>;
     interruptedRunIds: ReadonlySet<string>;
   } {
-    return interruptSessionWorkAdmissionOwners(collectAgentWorkAdmissions(params), params.reason);
+    return interruptSessionWorkAdmissionOwners(
+      collectAgentWorkAdmissions(params),
+      params.reason,
+      params.assertCurrent,
+    );
   }
 
   return {
@@ -152,19 +156,36 @@ export function createAgentWorkAdmissionQueries<T extends AgentSessionWorkAdmiss
 export function interruptSessionWorkAdmissionOwners(
   admissions: ReadonlySet<AgentSessionWorkAdmission>,
   reason?: Error,
+  assertCurrent?: () => void,
 ) {
   const interruptedRunIds = new Set<string>();
-  for (const admission of admissions) {
-    admission.interrupted ??= reason ?? new Error("Session work admission interrupted");
-    const receipt = admission.interrupt?.(admission.interrupted);
-    if (receipt) {
-      interruptedRunIds.add(receipt.runId);
+  const interrupted = new Set<AgentSessionWorkAdmission>();
+  let failure: { error: unknown } | undefined;
+  try {
+    for (const admission of admissions) {
+      assertCurrent?.();
+      interrupted.add(admission);
+      admission.interrupted ??= reason ?? new Error("Session work admission interrupted");
+      const receipt = admission.interrupt?.(admission.interrupted);
+      if (receipt) {
+        interruptedRunIds.add(receipt.runId);
+      }
     }
+  } catch (error) {
+    // Pending reservations have no writes to settle; acquired owners retain cleanup custody.
+    if (![...interrupted].some((admission) => admission.phase === "acquired")) {
+      throw error;
+    }
+    failure = { error };
   }
   return {
     interruptedRunIds,
-    released: Promise.all(Array.from(admissions, (admission) => admission.released)).then(
-      () => undefined,
-    ),
+    released: Promise.all(
+      Array.from(failure ? interrupted : admissions, (admission) => admission.released),
+    ).then(() => {
+      if (failure) {
+        throw failure.error;
+      }
+    }),
   };
 }

@@ -59,7 +59,6 @@ import {
 import { isModelSelectionLocked } from "../sessions/model-overrides.js";
 import { recordSessionCreated } from "../sessions/session-created.js";
 import {
-  beginSessionWorkAdmission,
   isSessionWorkAdmissionActive,
   runExclusiveSessionLifecycleMutation,
 } from "../sessions/session-lifecycle-admission.js";
@@ -97,7 +96,11 @@ import type {
   GatewaySessionCommitResult,
   PreparedGatewaySessionLifecycle,
 } from "./session-create-service.types.js";
-import { finalizeSessionCreateTarget, readSessionCreateTarget } from "./session-create-target.js";
+import {
+  finalizeSessionCreateTarget,
+  readSessionCreateTarget,
+  withSessionCreateAdmission,
+} from "./session-create-target.js";
 import { resolveSessionCreateVisibility } from "./session-create-visibility.js";
 import {
   prepareGatewaySessionLifecycleTargets,
@@ -122,39 +125,10 @@ import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";
 import { resolveSessionWorkerPlacementContext } from "./session-worker-placement-context.js";
 import { projectSessionsPatchEntry } from "./sessions-patch.js";
 
-export async function createGatewaySession(
+export function createGatewaySession(
   params: CreateGatewaySessionParams,
 ): Promise<CreateGatewaySessionResult> {
-  const selectedAgent = sessionAgent.resolveSessionCreateAgentId(params.cfg, {
-    key: normalizeOptionalString(params.key),
-    agentId: params.agentId,
-    parentSessionKey: normalizeOptionalString(params.parentSessionKey),
-  });
-  if (!selectedAgent.ok) {
-    return selectedAgent;
-  }
-  const interrupted = new AbortController();
-  const assertCurrent = () => {
-    interrupted.signal.throwIfAborted();
-    params.commitGuard?.();
-  };
-  const admission = await beginSessionWorkAdmission({
-    agentId: selectedAgent.agentId,
-    scope: `agent:${selectedAgent.agentId}`,
-    identities: [params.key ?? selectedAgent.agentId],
-    assertAllowed: assertCurrent,
-    onInterrupt: (reason) => interrupted.abort(reason),
-  });
-  try {
-    return await admission.run(() =>
-      createAdmittedGatewaySession(
-        { ...params, commitGuard: assertCurrent },
-        selectedAgent.agentId,
-      ),
-    );
-  } finally {
-    admission.release();
-  }
+  return withSessionCreateAdmission(params, createAdmittedGatewaySession);
 }
 
 async function createAdmittedGatewaySession(
@@ -502,11 +476,10 @@ async function createAdmittedGatewaySession(
     onPhase?.("entry");
     let currentParentSessionEntry = parentSessionEntry;
     if (canonicalParentSessionKey && parentSessionTarget && holdParentLifecycle) {
-      const currentParent = loadGatewaySessionEntryReadOnly(
+      const currentParentEntry = loadGatewaySessionEntryReadOnly(
         canonicalParentSessionKey,
         parentSelectedAgentId ? { agentId: parentSelectedAgentId } : undefined,
-      );
-      const currentParentEntry = currentParent.entry;
+      ).entry;
       if (
         !currentParentEntry?.sessionId ||
         currentParentEntry.sessionId !== parentSessionEntry?.sessionId ||

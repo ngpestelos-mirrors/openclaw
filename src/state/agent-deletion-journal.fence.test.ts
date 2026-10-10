@@ -6,6 +6,7 @@ import {
   beginAgentDeletionJournal,
   removeAgentDeletionJournal,
 } from "../test-utils/agent-deletion-journal.js";
+import { retireAgentDeletionJournalInDatabase } from "./agent-deletion-journal-authority.worker.js";
 import { readAgentDeletionJournal } from "./agent-deletion-journal.js";
 import * as agentDeletionJournal from "./agent-deletion-journal.js";
 import {
@@ -55,11 +56,7 @@ it("admits settlement leases while draining and fences them once retirement begi
           ),
         ).toBe(false);
         expect(
-          agentDeletionJournal.retireAgentDeletionJournalInDatabase(
-            database,
-            deletion.agentId,
-            deletion.operationId,
-          ),
+          retireAgentDeletionJournalInDatabase(database, deletion.agentId, deletion.operationId),
         ).toBe(true);
       },
       { env },

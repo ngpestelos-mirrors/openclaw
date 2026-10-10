@@ -127,6 +127,8 @@ const {
   getSessionWorkAdmissionOwnerRelease,
   getCompetingSessionWorkAdmissionRelease,
   getTerminalSessionWorkAdmissionRelease,
+  isSessionWorkAdmissionActive,
+  isCompetingSessionWorkAdmissionActive,
 } = createSessionWorkAdmissionQueries<SessionWorkAdmission>(ACTIVE_SESSION_WORK_ADMISSIONS, () =>
   CURRENT_SESSION_WORK_ADMISSIONS.getStore(),
 );
@@ -135,6 +137,8 @@ export {
   getSessionWorkAdmissionOwnerRelease,
   getCompetingSessionWorkAdmissionRelease,
   getTerminalSessionWorkAdmissionRelease,
+  isSessionWorkAdmissionActive,
+  isCompetingSessionWorkAdmissionActive,
 };
 
 const {
@@ -406,17 +410,6 @@ export function hasOnlySessionLifecycleMutationKindActive(
   );
 }
 
-export function isSessionWorkAdmissionActive(
-  scope: string,
-  identities: Iterable<string | undefined>,
-): boolean {
-  return normalizeSessionIdentities(scope, identities).some((identity) =>
-    [...(ACTIVE_SESSION_WORK_ADMISSIONS.get(identity) ?? [])].some(
-      (admission) => admission.phase === "acquired",
-    ),
-  );
-}
-
 function isSessionWorkAdmissionTargetActive(params: {
   scope: string;
   sessionKey: string;
@@ -439,20 +432,6 @@ function isSessionWorkAdmissionTargetActive(params: {
         (admission.identities.size === 1 ||
           identities.every((target) => admission.identities.has(target))),
     ),
-  );
-}
-
-/** Whether another admitted turn currently owns any of these session identities. */
-export function isCompetingSessionWorkAdmissionActive(
-  scope: string,
-  identities: Iterable<string | undefined>,
-): boolean {
-  const currentAdmissions = CURRENT_SESSION_WORK_ADMISSIONS.getStore();
-  return normalizeSessionIdentities(scope, identities).some((identity) =>
-    Array.from(
-      ACTIVE_SESSION_WORK_ADMISSIONS.get(identity) ?? [],
-      (admission) => admission.phase === "acquired" && !currentAdmissions?.has(admission),
-    ).some(Boolean),
   );
 }
 
@@ -699,12 +678,21 @@ export async function beginSessionWorkAdmission(params: {
   }
 }
 
-function closeNormalizedSessionWorkAdmissions(identities: readonly string[], reason: Error) {
+function closeNormalizedSessionWorkAdmissions(
+  identities: readonly string[],
+  reason: Error,
+  assertCurrent?: () => void,
+) {
   const owner = { identities, reason };
   SESSION_WORK_ADMISSION_CLOSURES.add(owner);
   // Retire queued ingress immediately; acquired runs keep their canonical cancellation owner.
   try {
-    startNormalizedSessionWorkAdmissionInterruption({ identities, reason, pendingOnly: true });
+    startNormalizedSessionWorkAdmissionInterruption({
+      identities,
+      reason,
+      pendingOnly: true,
+      assertCurrent,
+    });
   } catch (error) {
     SESSION_WORK_ADMISSION_CLOSURES.delete(owner);
     throw error;
@@ -719,10 +707,12 @@ export function closeSessionWorkAdmissions(params: {
   scope: string;
   identities: Iterable<string | undefined>;
   reason: Error;
+  assertCurrent?: () => void;
 }): () => void {
   return closeNormalizedSessionWorkAdmissions(
     normalizeSessionIdentities(params.scope, params.identities),
     params.reason,
+    params.assertCurrent,
   );
 }
 
@@ -730,6 +720,7 @@ function startNormalizedSessionWorkAdmissionInterruption(params: {
   reason?: Error;
   identities: readonly string[];
   pendingOnly?: boolean;
+  assertCurrent?: () => void;
 }): { released: Promise<void>; interruptedRunIds: ReadonlySet<string> } {
   const currentAdmissions = CURRENT_SESSION_WORK_ADMISSIONS.getStore();
   // In-band lifecycle commands suspend their own admitted turn while the
@@ -739,17 +730,19 @@ function startNormalizedSessionWorkAdmissionInterruption(params: {
     (admission) =>
       (!params.pendingOnly || admission.phase === "pending") && !currentAdmissions?.has(admission),
   );
-  return interruptSessionWorkAdmissionOwners(admissions, params.reason);
+  return interruptSessionWorkAdmissionOwners(admissions, params.reason, params.assertCurrent);
 }
 
 export function startSessionWorkAdmissionInterruption(params: {
   reason?: Error;
+  assertCurrent?: () => void;
   scope: string;
   identities: Iterable<string | undefined>;
 }): { released: Promise<void>; interruptedRunIds: ReadonlySet<string> } {
   return startNormalizedSessionWorkAdmissionInterruption({
     identities: normalizeSessionIdentities(params.scope, params.identities),
     reason: params.reason,
+    assertCurrent: params.assertCurrent,
   });
 }
 

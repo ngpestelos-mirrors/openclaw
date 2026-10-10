@@ -1,15 +1,25 @@
 // Combine active-run views without making either lifecycle owner depend on its consumers.
 import {
   getActiveReplyRunCount,
+  isReplyRunActiveForSessionId,
   listActiveReplyRunSessionKeys,
   listActiveReplyRunSessionIds,
   resolveActiveReplyRunSessionId,
 } from "../../auto-reply/reply/reply-run-registry.registry.js";
+import { diagnosticLogger as diag } from "../../logging/diagnostic-runtime.js";
 import {
   ACTIVE_EMBEDDED_RUNS,
   ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY,
   ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE,
 } from "./run-state.js";
+
+export function isEmbeddedAgentRunActive(sessionId: string): boolean {
+  const active = ACTIVE_EMBEDDED_RUNS.has(sessionId) || isReplyRunActiveForSessionId(sessionId);
+  if (active) {
+    diag.debug(`run active check: sessionId=${sessionId} active=true`);
+  }
+  return active;
+}
 
 /** Counts active embedded runs while including auto-reply registry runs for shared sessions. */
 export function getActiveEmbeddedRunCount(): number {

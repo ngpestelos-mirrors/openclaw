@@ -6,8 +6,10 @@ import {
   closeAgentWorkAdmissions,
   collectActiveAgentSessionWorkAdmissions,
   startAgentWorkAdmissionInterruption,
+  startSessionWorkAdmissionInterruption,
 } from "./session-lifecycle-admission.js";
 
+// mock-isolation: Admission decisions use controlled journal status without opening SQLite.
 vi.mock("../state/agent-deletion-journal.read.js", () => ({
   readAgentDeletionJournalStatusInWorker: vi.fn(async () => "absent"),
 }));
@@ -123,3 +125,47 @@ it("refuses deletion from the target agent's own admitted turn before closing in
     active.release();
   }
 });
+
+it.each(["agent", "session"] as const)(
+  "rechecks %s drain authority between admitted cancellations",
+  async (scope) => {
+    const target = {
+      agentId: "worker",
+      env: { OPENCLAW_STATE_DIR: "/agent-admission-revoked" },
+      scope: "agent:worker",
+      identities: ["shared-session"],
+      assertAllowed: () => {},
+    };
+    let current = true;
+    const first = await beginSessionWorkAdmission({
+      ...target,
+      onInterrupt: () => {
+        current = false;
+      },
+    });
+    const laterInterrupt = vi.fn();
+    const later = await beginSessionWorkAdmission({ ...target, onInterrupt: laterInterrupt });
+    const assertCurrent = () => {
+      if (!current) {
+        throw new Error("deletion journal replaced");
+      }
+    };
+    try {
+      const drain =
+        scope === "agent"
+          ? startAgentWorkAdmissionInterruption({ ...target, assertCurrent })
+          : startSessionWorkAdmissionInterruption({ ...target, assertCurrent });
+      const settled = vi.fn();
+      void drain.released.then(settled, settled);
+      await first.run(async () => "cancellation cleanup");
+      expect(settled).not.toHaveBeenCalled();
+      expect(laterInterrupt).not.toHaveBeenCalled();
+      expect(later.isActive()).toBe(true);
+      first.release();
+      await expect(drain.released).rejects.toThrow("deletion journal replaced");
+    } finally {
+      first.release();
+      later.release();
+    }
+  },
+);

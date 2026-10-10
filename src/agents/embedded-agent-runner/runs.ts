@@ -27,7 +27,6 @@ import {
   supersedeReplyRunByRunId,
   type ReplyOperation,
   waitForReplyOperationOwnerSettlement,
-  waitForReplyRunEndBySessionId,
 } from "../../auto-reply/reply/reply-run-registry.js";
 import { getAttachedBackend } from "../../auto-reply/reply/reply-run-registry.state.js";
 import {
@@ -53,6 +52,7 @@ import { diagnosticLogger as diag, logSessionStateChange } from "../../logging/d
 import { hasPromptImageInput } from "../../media/prompt-image-input.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { settlesWithin } from "../../shared/settle-within.js";
 import { QuestionAnswerUnconfirmedError } from "../harness/gateway-question-dispatch.js";
 import { resolveSessionPlacementForcedTerminalSettlement } from "../session-placement-forced-terminal-settlement.js";
 import { getGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js";
@@ -103,6 +103,14 @@ import {
   clearActiveRunSessionIndex,
   normalizeSessionFileRegistryKey,
 } from "./runs.session-index.js";
+import {
+  notifyEmbeddedRunEnded,
+  waitForCurrentEmbeddedAgentRunEnd,
+  waitForEmbeddedAgentRunEnd,
+} from "./runs.wait.js";
+
+export { isEmbeddedAgentRunActive } from "./active-run-projections.js";
+export { waitForEmbeddedAgentRunEnd } from "./runs.wait.js";
 
 export type {
   EmbeddedAgentQueueHandle,
@@ -863,11 +871,6 @@ function logActiveRunCheck(sessionId: string, active: boolean, label: string): b
   return active;
 }
 
-export function isEmbeddedAgentRunActive(sessionId: string): boolean {
-  const active = ACTIVE_EMBEDDED_RUNS.has(sessionId) || isReplyRunActiveForSessionId(sessionId);
-  return logActiveRunCheck(sessionId, active, "run active check");
-}
-
 export function prepareEmbeddedAgentRunCompletionClaim(sessionId: string, runId: string) {
   const { promise: registered, resolve: settleRegistration } = createDeferredCore<
     EmbeddedRunCompletionRegistration | undefined
@@ -1136,6 +1139,35 @@ export function resolveActiveEmbeddedRunOwner(
   return handle && registration ? projectActiveEmbeddedRunOwner(registration, handle) : undefined;
 }
 
+/** Lifecycle drains retain the exact handle, including compaction without a run ID. */
+export function captureEmbeddedRunDrainTarget(sessionId: string, owner: SessionProgressOwner) {
+  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  const registration = handle && ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+  if (!handle || !registration || !matchesSessionProgressOwner(owner, registration)) {
+    return undefined;
+  }
+  const waiting = new AbortController();
+  const ended = waitForCurrentEmbeddedAgentRunEnd(sessionId, null, handle, waiting.signal);
+  const isActive = () =>
+    !waiting.signal.aborted &&
+    ACTIVE_EMBEDDED_RUNS.get(sessionId) === handle &&
+    ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) === registration;
+  return {
+    sessionId,
+    agentId: registration.agentId,
+    sessionKey: registration.sessionKey,
+    isActive,
+    abort: () => isActive() && abortEmbeddedAgentRun(sessionId),
+    waitForEnd: async (timeoutMs: number | null) =>
+      (timeoutMs === null ||
+        (await settlesWithin(ended, resolveTimerTimeoutMs(timeoutMs, 100, 100)))) &&
+      (await ended),
+    release: () => waiting.abort(),
+  };
+}
+
+export type EmbeddedRunDrainTarget = NonNullable<ReturnType<typeof captureEmbeddedRunDrainTarget>>;
+
 function resolveRegisteredEmbeddedRunByRunId(runId: string) {
   const normalizedRunId = runId.trim();
   const handle = normalizedRunId ? ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId) : undefined;
@@ -1172,72 +1204,6 @@ export function getActiveEmbeddedRunSnapshot(
   sessionId: string,
 ): ActiveEmbeddedRunSnapshot | undefined {
   return ACTIVE_EMBEDDED_RUN_SNAPSHOTS.get(sessionId);
-}
-
-function waitForCurrentEmbeddedAgentRunEnd(
-  sessionId: string,
-  timeoutMs: number | null,
-  handle?: EmbeddedAgentQueueHandle,
-): Promise<boolean> {
-  const isHandleActive = () =>
-    handle ? ACTIVE_EMBEDDED_RUNS.get(sessionId) === handle : ACTIVE_EMBEDDED_RUNS.has(sessionId);
-  if (!isHandleActive()) {
-    return handle ? Promise.resolve(true) : waitForReplyRunEndBySessionId(sessionId, timeoutMs);
-  }
-  const timeoutLabel = timeoutMs === null ? "none" : String(timeoutMs);
-  diag.debug(`waiting for run end: sessionId=${sessionId} timeoutMs=${timeoutLabel}`);
-  return new Promise((resolve) => {
-    const waiters = EMBEDDED_RUN_WAITERS.get(sessionId) ?? new Set();
-    const waiter: EmbeddedRunWaiter = {
-      resolve,
-      handle,
-    };
-    const removeWaiter = () => {
-      waiters.delete(waiter);
-      if (waiters.size === 0) {
-        EMBEDDED_RUN_WAITERS.delete(sessionId);
-      }
-    };
-    if (timeoutMs !== null) {
-      waiter.timer = setTimeout(
-        () => {
-          removeWaiter();
-          diag.warn(`wait timeout: sessionId=${sessionId} timeoutMs=${timeoutMs}`);
-          resolve(false);
-        },
-        resolveTimerTimeoutMs(timeoutMs, 100, 100),
-      );
-    }
-    waiters.add(waiter);
-    EMBEDDED_RUN_WAITERS.set(sessionId, waiters);
-    if (!isHandleActive()) {
-      removeWaiter();
-      if (waiter.timer) {
-        clearTimeout(waiter.timer);
-      }
-      resolve(true);
-    }
-  });
-}
-
-export async function waitForEmbeddedAgentRunEnd(
-  sessionId: string,
-  timeoutMs: number | null = 15_000,
-): Promise<boolean> {
-  if (!sessionId) {
-    return true;
-  }
-  const deadline = timeoutMs === null ? undefined : Date.now() + timeoutMs;
-  while (isEmbeddedAgentRunActive(sessionId)) {
-    const remainingMs = deadline === undefined ? null : deadline - Date.now();
-    if (
-      (remainingMs !== null && remainingMs <= 0) ||
-      !(await waitForCurrentEmbeddedAgentRunEnd(sessionId, remainingMs))
-    ) {
-      return false;
-    }
-  }
-  return true;
 }
 
 export type AbortAndDrainEmbeddedAgentRunResult = {
@@ -1354,36 +1320,6 @@ export async function abortAndDrainEmbeddedAgentRun(params: {
     // Queue drains registered on the stale owner must not start while its
     // backend can still claim the same session and requeue the adopted turn.
     staleExpiryBarrier?.resolve();
-  }
-}
-
-function notifyEmbeddedRunEnded(
-  sessionId: string,
-  endedHandle: EmbeddedAgentQueueHandle,
-  aborted = false,
-) {
-  notifyGatewayWorkMetricsChanged();
-  const waiters = EMBEDDED_RUN_WAITERS.get(sessionId);
-  if (!waiters || waiters.size === 0) {
-    return;
-  }
-  const sessionIdle = !ACTIVE_EMBEDDED_RUNS.has(sessionId);
-  diag.debug(`notifying waiters: sessionId=${sessionId} waiterCount=${waiters.size}`);
-  for (const waiter of waiters) {
-    if (aborted && !waiter.settleOnAbort) {
-      continue;
-    }
-    if (waiter.handle ? waiter.handle !== endedHandle : !sessionIdle) {
-      continue;
-    }
-    waiters.delete(waiter);
-    if (waiter.timer) {
-      clearTimeout(waiter.timer);
-    }
-    waiter.resolve(true);
-  }
-  if (waiters.size === 0) {
-    EMBEDDED_RUN_WAITERS.delete(sessionId);
   }
 }
 

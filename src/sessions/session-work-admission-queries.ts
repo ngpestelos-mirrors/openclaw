@@ -32,6 +32,30 @@ export function createSessionWorkAdmissionQueries<T extends ReleasableSessionWor
     return matching;
   }
 
+  function isSessionWorkAdmissionActive(
+    scope: string,
+    identities: Iterable<string | undefined>,
+  ): boolean {
+    return normalizeSessionIdentities(scope, identities).some((identity) =>
+      [...(admissionsByIdentity.get(identity) ?? [])].some(
+        (admission) => admission.phase === "acquired",
+      ),
+    );
+  }
+
+  /** Whether another admitted turn currently owns any of these session identities. */
+  function isCompetingSessionWorkAdmissionActive(
+    scope: string,
+    identities: Iterable<string | undefined>,
+  ): boolean {
+    const current = currentAdmissions();
+    return normalizeSessionIdentities(scope, identities).some((identity) =>
+      [...(admissionsByIdentity.get(identity) ?? [])].some(
+        (admission) => admission.phase === "acquired" && !current?.has(admission),
+      ),
+    );
+  }
+
   function sessionWorkAdmissionRelease(
     params: SessionWorkAdmissionReleaseParams,
     matches: (admission: T) => boolean,
@@ -100,6 +124,8 @@ export function createSessionWorkAdmissionQueries<T extends ReleasableSessionWor
 
   return {
     collectSessionWorkAdmissions,
+    isSessionWorkAdmissionActive,
+    isCompetingSessionWorkAdmissionActive,
     getSessionWorkAdmissionRelease,
     getSessionWorkAdmissionOwnerRelease,
     getCompetingSessionWorkAdmissionRelease,

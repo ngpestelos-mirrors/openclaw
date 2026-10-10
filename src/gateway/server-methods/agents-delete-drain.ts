@@ -1,9 +1,8 @@
 import { tryResolveAgentOperationAgentId } from "../../agents/agent-scope-config.js";
 import { listActiveEmbeddedRunSessionIds } from "../../agents/embedded-agent-runner/active-run-projections.js";
 import {
-  resolveActiveEmbeddedRunOwner,
-  waitForEmbeddedAgentRunEnd,
-  type ActiveEmbeddedRunOwner,
+  captureEmbeddedRunDrainTarget,
+  type EmbeddedRunDrainTarget,
 } from "../../agents/embedded-agent-runner/runs.js";
 import { createAgentRunDirectAbortError } from "../../agents/run-termination.js";
 import { resolveActiveReplyOperationForSessionId } from "../../auto-reply/reply/reply-run-registry.registry.js";
@@ -36,13 +35,10 @@ export async function drainAgentDeletionRuns(
   const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId });
   const defaultAgentId = tryResolveAgentOperationAgentId(cfg);
   const admissions = collectActiveAgentSessionWorkAdmissions({ agentId });
-  const unkeyedRuns: ActiveEmbeddedRunOwner[] = [];
+  const embeddedRuns = new Map<string, EmbeddedRunDrainTarget>();
+  const unkeyedRuns: EmbeddedRunDrainTarget[] = [];
   const targets = new Map<string, Parameters<typeof prepareSessionLifecycleDrain>[0]>();
   const add = (sessionKey: string, sessionId?: string, scope = storePath) => {
-    const active = sessionId ? resolveActiveEmbeddedRunOwner(sessionId) : undefined;
-    if (active && !chatRunBelongsToAgent({ ...active, defaultAgentId }, agentId)) {
-      throw new Error(`Cannot drain session ${sessionId}: its active run belongs to another agent`);
-    }
     const canonicalKey = resolveSessionStoreIdentity({ cfg, sessionKey, agentId }).canonicalKey;
     const keys = [...new Set([sessionKey, canonicalKey])];
     const scoped = [...admissions].find(
@@ -66,6 +62,7 @@ export async function drainAgentDeletionRuns(
       sessionKey: canonicalKey,
       sessionKeys,
       sessionId,
+      embeddedRun: sessionId ? (embeddedRuns.get(sessionId) ?? null) : null,
       lifecycleIdentities: sessionId ? [...sessionKeys, sessionId] : sessionKeys,
     });
   };
@@ -76,50 +73,53 @@ export async function drainAgentDeletionRuns(
       add(run.sessionKey, run.sessionId);
     }
   };
-  // Capture runtime owners before any asynchronous inventory or cancellation can settle them.
-  for (const sessionId of listActiveEmbeddedRunSessionIds()) {
-    const embedded = resolveActiveEmbeddedRunOwner(sessionId);
-    addOwned(embedded);
-    if (embedded && !embedded.sessionKey && chatRunBelongsToAgent(embedded, agentId)) {
-      unkeyedRuns.push(embedded);
-    }
-    const reply = resolveActiveReplyOperationForSessionId(sessionId);
-    if (reply) {
-      addOwned({ agentId: reply.agentId, sessionKey: reply.key, sessionId: reply.sessionId });
-    }
-  }
-  for (const run of context.chatAbortControllers.values()) {
-    addOwned(run);
-  }
-  for (const runId of listLiveAgentRunIds()) {
-    addOwned(getAgentRunContext(runId));
-  }
-  for (const [scope, identities] of admissions) {
-    for (const identity of identities) {
-      if (parseAgentSessionKey(identity)?.agentId === agentId) {
-        add(identity, undefined, scope.startsWith("agent:") ? storePath : scope);
-      }
-    }
-  }
-  for (const { sessionKey, entry } of await readSessionEntrySummariesInWorker({
-    agentId,
-    storePath,
-  })) {
-    const owner = resolvePersistedSessionStoreOwnerForKey(cfg, sessionKey);
-    if (
-      (parseAgentSessionKey(sessionKey)?.agentId ??
-        (owner.kind === "none" ? agentId : owner.agentId)) === agentId
-    ) {
-      add(sessionKey, entry.sessionId);
-    }
-  }
   const drains: SessionLifecycleDrain[] = [];
   try {
+    // Capture runtime owners before any asynchronous inventory or cancellation can settle them.
+    for (const sessionId of listActiveEmbeddedRunSessionIds()) {
+      const embedded = captureEmbeddedRunDrainTarget(sessionId, { agentId, defaultAgentId });
+      if (embedded) {
+        embeddedRuns.set(sessionId, embedded);
+      }
+      addOwned(embedded);
+      if (embedded && !embedded.sessionKey) {
+        unkeyedRuns.push(embedded);
+      }
+      const reply = resolveActiveReplyOperationForSessionId(sessionId);
+      if (reply) {
+        addOwned({ agentId: reply.agentId, sessionKey: reply.key, sessionId: reply.sessionId });
+      }
+    }
+    for (const run of context.chatAbortControllers.values()) {
+      addOwned(run);
+    }
+    for (const runId of listLiveAgentRunIds()) {
+      addOwned(getAgentRunContext(runId));
+    }
+    for (const [scope, identities] of admissions) {
+      for (const identity of identities) {
+        if (parseAgentSessionKey(identity)?.agentId === agentId) {
+          add(identity, undefined, scope.startsWith("agent:") ? storePath : scope);
+        }
+      }
+    }
+    for (const { sessionKey, entry } of await readSessionEntrySummariesInWorker({
+      agentId,
+      storePath,
+    })) {
+      const owner = resolvePersistedSessionStoreOwnerForKey(cfg, sessionKey);
+      if (
+        (parseAgentSessionKey(sessionKey)?.agentId ??
+          (owner.kind === "none" ? agentId : owner.agentId)) === agentId
+      ) {
+        add(sessionKey, entry.sessionId);
+      }
+    }
     assertCurrent();
-    const embedded = unkeyedRuns.map((run) => {
+    const embedded = unkeyedRuns.map(async (run) => {
       assertCurrent();
       run.abort();
-      return waitForEmbeddedAgentRunEnd(run.sessionId, null);
+      return run.waitForEnd(null);
     });
     const sessions = [...targets.values()].map(async (target) => {
       const drain = await prepareSessionLifecycleDrain(target);
@@ -132,6 +132,7 @@ export async function drainAgentDeletionRuns(
       assertCurrent();
       return startAgentWorkAdmissionInterruption({
         agentId,
+        assertCurrent,
         reason: createAgentRunDirectAbortError(),
       }).released;
     });
@@ -147,6 +148,9 @@ export async function drainAgentDeletionRuns(
   } finally {
     for (const drain of drains) {
       drain.release();
+    }
+    for (const run of embeddedRuns.values()) {
+      run.release();
     }
   }
 }

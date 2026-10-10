@@ -22,6 +22,10 @@ import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import { DEFAULT_IDENTITY_FILENAME, ensureAgentWorkspace } from "../../agents/workspace.js";
 import { applyAgentConfig } from "../../commands/agents.config.js";
 import {
+  AgentDeletionTargetsPendingError,
+  assertAgentDeletionTargetsUnchanged,
+} from "../../config/agent-workspace-roster-transition.js";
+import {
   attachRuntimeConfigWriteApplication,
   createRuntimeConfigWriteApplication,
 } from "../../config/runtime-write-application.js";
@@ -201,6 +205,7 @@ export const agentsHandlers: GatewayRequestHandlers = {
     try {
       let ensuredWorkspace: Awaited<ReturnType<typeof ensureAgentWorkspace>> | undefined;
       if (workspaceDir) {
+        await assertAgentDeletionTargetsUnchanged(cfg, nextConfig);
         const skipBootstrap = Boolean(nextConfig.agents?.defaults?.skipBootstrap);
         ensuredWorkspace = await ensureAgentWorkspace({
           dir: workspaceDir,
@@ -274,7 +279,10 @@ export const agentsHandlers: GatewayRequestHandlers = {
         respondAgentNotFound(respond, agentId);
         return;
       }
-      if (error instanceof AgentModelSelectionError) {
+      if (
+        error instanceof AgentModelSelectionError ||
+        error instanceof AgentDeletionTargetsPendingError
+      ) {
         respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, error.message));
         return;
       }

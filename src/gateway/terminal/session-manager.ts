@@ -290,7 +290,7 @@ export class TerminalSessionManager {
         { backendExited: true },
       );
       if (owner) {
-        this.resolveAgentSessionDrainIfIdle(owner);
+        this.agentSessionDrain.settleIfIdle(owner);
       }
     });
 
@@ -417,20 +417,16 @@ export class TerminalSessionManager {
   }
 
   /** Fences and closes one durable agent-session incarnation through archive commit. */
-  beginAgentSessionDrain(owner: AgentTerminalOwner): AgentTerminalSessionDrain {
-    const drain = this.agentSessionDrain.begin(owner, () => this.hasAgentSessionWork(owner));
-    for (const [pending, pendingOwner] of this.pendingOpens) {
-      if (agentTerminalOwnerMatches(pendingOwner, owner)) {
-        pending.abort("terminal closed because its session was archived");
-      }
-    }
-    for (const session of Array.from(this.sessions.values())) {
-      if (!session.closed && agentTerminalOwnerMatches(session.owner, owner)) {
-        this.finalize(session, "closed", {});
-      }
-    }
-    this.resolveAgentSessionDrainIfIdle(owner);
-    return drain;
+  beginAgentSessionDrain(
+    owner: AgentTerminalOwner,
+    assertCurrent?: () => void,
+  ): AgentTerminalSessionDrain {
+    return this.agentSessionDrain.begin(owner, {
+      pendingOpens: this.pendingOpens,
+      sessions: this.sessions,
+      closeSession: (session) => this.finalize(session, "closed", {}, { assertCurrent }),
+      assertCurrent,
+    });
   }
 
   /**
@@ -510,22 +506,6 @@ export class TerminalSessionManager {
     }
   }
 
-  private hasAgentSessionWork(owner: AgentTerminalOwner): boolean {
-    return (
-      [...this.pendingOpens.values()].some((pendingOwner) =>
-        agentTerminalOwnerMatches(pendingOwner, owner),
-      ) ||
-      [...this.sessions.values()].some(
-        (session) => !session.closed && agentTerminalOwnerMatches(session.owner, owner),
-      ) ||
-      this.agentSessionDrain.hasExiting(owner)
-    );
-  }
-
-  private resolveAgentSessionDrainIfIdle(owner: AgentTerminalOwner): void {
-    this.agentSessionDrain.resolveIfIdle(owner, () => this.hasAgentSessionWork(owner));
-  }
-
   private openAbortMessage(signal: AbortSignal | undefined): string {
     return signal?.reason instanceof Error ? signal.reason.message : "terminal open cancelled";
   }
@@ -537,7 +517,7 @@ export class TerminalSessionManager {
   ): void {
     this.pendingOpens.delete(pending);
     if (owner.kind === "agent") {
-      this.resolveAgentSessionDrainIfIdle(owner);
+      this.agentSessionDrain.settleIfIdle(owner);
     }
     const connId = owner.kind === "conn" ? owner.connId : viewerConnId;
     if (connId) {
@@ -738,13 +718,17 @@ export class TerminalSessionManager {
     session: TerminalSession,
     reason: TerminalExitReason,
     detail: { exitCode?: number | null; signal?: number | null; error?: string },
-    opts?: { silent?: boolean; backendExited?: boolean },
+    opts?: { silent?: boolean; backendExited?: boolean; assertCurrent?: () => void },
   ): void {
     if (session.closed) {
       return;
     }
     const recipients = terminalSessionRecipientIds(session);
-    session.output.dispose({ flush: !opts?.silent && recipients.length > 0 });
+    if (!opts?.silent && recipients.length > 0) {
+      session.output.flush();
+    }
+    opts?.assertCurrent?.();
+    session.output.dispose();
     session.closed = true;
     if (session.reaper) {
       clearTimeout(session.reaper);

@@ -2,7 +2,8 @@
 import "../server-start.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, it, vi } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   awaitGateBeforeSettlement,
   createDeferred,
@@ -21,6 +22,10 @@ import {
   withConfigMutationExclusive,
 } from "../../config/config.js";
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
+import type {
+  NativeBindingTestApi,
+  NativeBindingClientTestApi,
+} from "../../config/sessions/session-native-binding.test-support.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { CronService } from "../../cron/service.js";
 import { startCronReceiptAuthorityHost } from "../../cron/store/receipt-authority-owner.js";
@@ -40,6 +45,8 @@ import {
   getOpenClawAgentDatabaseIfOpen,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
+import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
+import { OPENCLAW_STATE_SCHEMA_SQL } from "../../state/openclaw-state-schema.js";
 import { beginAgentDeletionJournal } from "../../test-utils/agent-deletion-journal.js";
 import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
@@ -52,10 +59,17 @@ import { createGatewayMemoryCloseRegistryFactory } from "../server-close.memory.
 import { startGatewayServer } from "../server.js";
 import { connectGatewayClient, disconnectGatewayClient } from "../test-helpers.e2e.js";
 
+let scenarioWork: Promise<void> | undefined;
+afterEach(async () => {
+  // Vitest deadlines do not join the timed-out body before the next fixture changes process.env.
+  await scenarioWork;
+  scenarioWork = undefined;
+});
+
 it.for(["active", "restart-draining", "legacy-retiring"] as const)(
   "deletes real agent storage and permits recreation after %s",
   async (scenario, { signal }) => {
-    await withOpenClawTestState(
+    await (scenarioWork = withOpenClawTestState(
       {
         label: `agent-delete-${scenario}`,
         env: {
@@ -70,6 +84,34 @@ it.for(["active", "restart-draining", "legacy-retiring"] as const)(
         },
       },
       async (state) => {
+        const sharedDatabasePath = resolveOpenClawStateSqlitePath(state.env);
+        if (scenario === "legacy-retiring") {
+          await fs.mkdir(path.dirname(sharedDatabasePath), { recursive: true });
+          const legacy = new DatabaseSync(sharedDatabasePath);
+          try {
+            // Main's v20 journal predates the nullable deletion phase.
+            legacy.exec(`CREATE TABLE agent_deletion_journal (
+              agent_id TEXT PRIMARY KEY,
+              operation_id TEXT NOT NULL DEFAULT '',
+              agent_dir TEXT NOT NULL,
+              workspace_dir TEXT NOT NULL,
+              sessions_dir TEXT NOT NULL,
+              database_paths_json TEXT NOT NULL DEFAULT '[]',
+              cleanup_paths_json TEXT NOT NULL DEFAULT '[]',
+              created_at INTEGER NOT NULL,
+              cleanup_completed INTEGER NOT NULL DEFAULT 0,
+              delete_files INTEGER NOT NULL DEFAULT 1
+            ) STRICT;`);
+            legacy.exec(OPENCLAW_STATE_SCHEMA_SQL);
+            legacy.exec(`PRAGMA user_version = 20;
+              INSERT INTO schema_meta (meta_key, role, schema_version, created_at, updated_at)
+                VALUES ('primary', 'global', 20, 1, 1);
+              INSERT INTO config_machine_state (state_key, value_json, updated_at_ms)
+                VALUES ('state.schema.contentVersion', '20', 1);`);
+          } finally {
+            legacy.close();
+          }
+        }
         await state.writeConfig({
           gateway: { mode: "local", auth: { mode: "token", token: "agent-delete-test-token" } },
           agents: {
@@ -85,6 +127,7 @@ it.for(["active", "restart-draining", "legacy-retiring"] as const)(
         });
         const workspace = state.path("workspace-doomed");
         const created = await createAgent({ name: "doomed", workspace, skipBootstrap: true });
+        signal.throwIfAborted();
         expect(created.status).toBe("created");
         const agentId = "doomed";
         const sessionId = "deletion-active-session";
@@ -121,7 +164,7 @@ it.for(["active", "restart-draining", "legacy-retiring"] as const)(
         try {
           if (scenario === "active") {
             const claim = await acquireTestPortBlock({ offsets: [0, 1, 2, 3, 4] });
-            const hotReloadRecovery = vi.fn(async () => {
+            const hotReloadRecovery = vi.fn(() => {
               throw new Error("Synthetic Gateway hot reload unexpectedly required recovery");
             });
             const server = await startGatewayServer(claim.port, {
@@ -132,14 +175,18 @@ it.for(["active", "restart-draining", "legacy-retiring"] as const)(
             });
             try {
               await server.startupSettled;
+              signal.throwIfAborted();
               const client = await connectGatewayClient({
                 url: `ws://127.0.0.1:${claim.port}`,
                 token: "agent-delete-test-token",
                 scopes: ["operator.admin", "operator.read", "operator.write"],
               });
               const nativeApi = await loadBundledPluginFacade<
-                typeof import("../../../extensions/codex/native-session-binding.test-api.js")
-              >({ pluginId: "codex", artifactBasename: "native-session-binding.test-api.js" });
+                NativeBindingTestApi & NativeBindingClientTestApi
+              >({
+                pluginId: "codex",
+                artifactBasename: "native-session-binding.test-api.js",
+              });
               const native = nativeApi.createNativeBindingDeletionFixture(
                 createPluginRuntimeMock({
                   state: {
@@ -193,6 +240,14 @@ it.for(["active", "restart-draining", "legacy-retiring"] as const)(
                   );
                   expect(readAgentDeletionJournal(agentId)?.phase).toBe("draining");
                   expect(isEmbeddedAgentRunInProgress(sessionId)).toBe(true);
+                  const relocatedWorkspace = state.path("workspace-relocated");
+                  await expect(
+                    client.request("agents.update", { agentId, workspace: relocatedWorkspace }),
+                  ).rejects.toThrow(/deletion cleanup is still pending/);
+                  expect(getRuntimeConfig().agents?.entries?.[agentId]?.workspace).toBe(workspace);
+                  await expect(fs.stat(relocatedWorkspace)).rejects.toMatchObject({
+                    code: "ENOENT",
+                  });
                   // Cancellation checkpoints remain writable until the retained run settles.
                   await withinTest(
                     withConfigMutationExclusive(async () => {
@@ -262,7 +317,6 @@ it.for(["active", "restart-draining", "legacy-retiring"] as const)(
                       sources: ["sessions"],
                       rememberAcrossConversations: true,
                       store: { vector: { enabled: false } },
-                      sync: { watch: false },
                     },
                   },
                 };
@@ -379,7 +433,7 @@ it.for(["active", "restart-draining", "legacy-retiring"] as const)(
             }
             return;
           }
-          beginAgentDeletionJournal({
+          const pending = {
             agentId,
             operationId: "interrupted-deletion",
             agentDir: state.agentDir(agentId),
@@ -387,8 +441,32 @@ it.for(["active", "restart-draining", "legacy-retiring"] as const)(
             sessionsDir: state.sessionsDir(agentId),
             deleteFiles: true,
             ...(scenario === "restart-draining" ? { phase: "draining" as const } : {}),
-          });
+          };
+          if (scenario === "restart-draining") {
+            beginAgentDeletionJournal(pending);
+          }
           await cleanupSessionStateForTest({ stateDir: state.stateDir, rootPath: state.root });
+          if (scenario === "legacy-retiring") {
+            const legacy = new DatabaseSync(sharedDatabasePath);
+            try {
+              expect(legacy.prepare("PRAGMA table_info(agent_deletion_journal)").all()).not.toEqual(
+                expect.arrayContaining([expect.objectContaining({ name: "phase" })]),
+              );
+              legacy
+                .prepare(`INSERT INTO agent_deletion_journal
+                (agent_id, operation_id, agent_dir, workspace_dir, sessions_dir, created_at)
+                VALUES (?, ?, ?, ?, ?, 1)`)
+                .run(
+                  pending.agentId,
+                  pending.operationId,
+                  pending.agentDir,
+                  pending.workspaceDir,
+                  pending.sessionsDir,
+                );
+            } finally {
+              legacy.close();
+            }
+          }
           resetConfigRuntimeState();
           startCronReceiptAuthorityHost();
           await resumeAgentDeletions(context);
@@ -410,12 +488,26 @@ it.for(["active", "restart-draining", "legacy-retiring"] as const)(
             agentId,
           });
           expect(readAgentDeletionJournal(agentId)).toBeUndefined();
+          if (scenario === "legacy-retiring") {
+            await cleanupSessionStateForTest({ stateDir: state.stateDir, rootPath: state.root });
+            const upgraded = new DatabaseSync(sharedDatabasePath);
+            try {
+              expect(upgraded.prepare("PRAGMA user_version").get()).toEqual({ user_version: 20 });
+              expect(upgraded.prepare("PRAGMA table_info(agent_deletion_journal)").all()).toEqual(
+                expect.arrayContaining([
+                  expect.objectContaining({ name: "phase", type: "TEXT", notnull: 0 }),
+                ]),
+              );
+            } finally {
+              upgraded.close();
+            }
+          }
         } finally {
           cron.stop();
           await cron.waitForIdle();
           await scheduler.stop();
         }
       },
-    );
+    ));
   },
 );

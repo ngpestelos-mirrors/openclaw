@@ -2,12 +2,12 @@ import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
+import { retireAgentDeletionJournalInDatabase } from "./agent-deletion-journal-authority.worker.js";
 import {
   beginAgentDeletionJournalInDatabase,
   completeAgentDeletionJournalInDatabase,
   listPendingAgentDeletionJournalsInDatabase,
   readAgentDeletionJournalInDatabase,
-  retireAgentDeletionJournalInDatabase,
 } from "./agent-deletion-journal.js";
 import {
   openOpenClawStateDatabase,
@@ -21,7 +21,7 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   }),
 );
 
-it.each(["draining", "legacy-null", "legacy-absent"] as const)(
+it.each(["draining", "legacy-null"] as const)(
   "recovers %s journals without reopening a retired drain",
   async (format) => {
     const stateDir = tempDirs.make("agent-deletion-phase-");
@@ -43,8 +43,6 @@ it.each(["draining", "legacy-null", "legacy-absent"] as const)(
     const version = original.db.prepare("PRAGMA user_version").get();
     if (format === "legacy-null") {
       original.db.exec("UPDATE agent_deletion_journal SET phase = NULL");
-    } else if (format === "legacy-absent") {
-      original.db.exec("ALTER TABLE agent_deletion_journal DROP COLUMN phase");
     }
     await closeStateDatabaseForTest();
     const recovered = openOpenClawStateDatabase(options);

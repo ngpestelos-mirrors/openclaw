@@ -5,7 +5,10 @@ import {
   deferSqliteWorkerCommitReceipt,
   requestSqliteWorkerOperationAdmission,
 } from "../infra/sqlite-worker-operation-admission.js";
-import { readAgentDeletionJournalAuthorityInDatabase } from "./agent-deletion-journal-authority.worker.js";
+import {
+  readAgentDeletionJournalAuthorityInDatabase,
+  retireAgentDeletionJournalInDatabase,
+} from "./agent-deletion-journal-authority.worker.js";
 import {
   beginAgentDeletionJournalInDatabase,
   completeAgentDeletionJournalInDatabase,
@@ -13,7 +16,6 @@ import {
   handoffAgentDeletionJournalInDatabase,
   listPendingAgentDeletionJournalsInDatabase,
   readAgentDeletionJournalInDatabase,
-  retireAgentDeletionJournalInDatabase,
   updateAgentDeletionJournalPathsInDatabase,
   type AgentDeletionJournalCleanupPath,
   type AgentDeletionJournalEntry,
