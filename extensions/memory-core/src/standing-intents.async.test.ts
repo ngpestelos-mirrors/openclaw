@@ -155,9 +155,9 @@ export function bindSqliteWorkerBackend(input, context) {
 }
 `,
   );
-  const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStore;
+  const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStoreV2;
   return vi
-    .spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStore")
+    .spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStoreV2")
     .mockImplementation((options, source, worker) =>
       open(
         options,

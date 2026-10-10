@@ -9,6 +9,55 @@ sidebarTitle: "How to migrate"
 
 The ordered migration steps. Work through them in order; each step is self-contained. Part of the [Plugin SDK migration](/plugins/sdk-migration) guide.
 
+## Replace native SQLite runtime writes
+
+Plugins using the internal `sqlite-runtime` facade should send data-only commands
+through `openOpenClawAgentSqliteWorkerStoreV2`. Its required `{ version: 2,
+assertCurrent }` capability stays bound to the store's lifetime. The host prepares
+inputs; the paired worker backend rereads predicates and commits in a synchronous
+transaction. Await completion before publishing results or releasing authority.
+
+```ts
+// Before: this callback executes on the host even though admission is awaited.
+await withOpenClawAgentDatabaseWrite(options, ({ db }) => updateRows(db, input));
+
+// After: the paired backend owns updateRows and its transaction.
+const store = await openOpenClawAgentSqliteWorkerStoreV2(
+  options,
+  { version: 2, assertCurrent: owner.assertCurrent },
+  { moduleUrl: workerUrl, input: backendOptions },
+);
+try {
+  await store.prepare(); // Explicit creation/admission, when the flow requires it.
+  await store.execute({ type: "updateRows", input }, owner.assertCurrent);
+} finally {
+  await store.close();
+}
+```
+
+`executeExisting` preserves absence and never creates a missing database. Store
+closure refuses new work and joins accepted operations. Completion includes the
+owning domain's committed-fact installation; an unknown outcome never permits a
+native fallback or automatic replay. There is no universal async raw-SQL callback
+replacement. Host closures are not serialized, and arbitrary transaction-local
+callback visibility is not promised by data-only commands.
+
+Writable raw open/borrow helpers, native query helpers, and opaque
+`withOpenClawAgentDatabaseAsync`, `withOpenClawAgentDatabaseRuntime`,
+`withOpenClawAgentDatabaseWrite`, `runOpenClawAgentWriteAdmission`, and transaction
+callbacks retain their released signatures and ordering during compatibility.
+Synchronous writes still commit before returning. Their `sqlite-runtime` exports
+are deprecated and will be removed in the next Plugin SDK major. Actual legacy
+use emits one warning per plugin and capability family; unscoped imports share
+one SDK warning. Importing a module alone does not warn.
+
+Worker backends use `sqlite-worker-runtime` primitives. External-database reads
+must explicitly open with `readOnly: true`; Doctor/import/reset writes require
+offline maintenance custody while the Gateway is stopped. Test-labeled SQLite
+and state barrels are fixture/QA inspection contracts, not runtime write APIs.
+These exceptions do not authorize writable handles in ordinary plugin handlers.
+There is no schema, stored-byte, retention, or update migration.
+
 ## Await native exec and approval preparation
 
 Node plugins await `context.prepareExecAuthorizationAsync(source)` and consume

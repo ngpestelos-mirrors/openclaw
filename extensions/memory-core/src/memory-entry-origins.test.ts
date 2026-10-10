@@ -72,10 +72,10 @@ describe("memory entry origins", () => {
   }
 
   it("lazily restores the additive origins table without changing the agent schema version", async () => {
-    const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStore;
+    const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStoreV2;
     let transactionAdmissions = 0;
     const observed = vi
-      .spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStore")
+      .spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStoreV2")
       .mockImplementation((options, source, worker) => {
         if (
           worker.moduleUrl.href !==
@@ -410,9 +410,9 @@ export function bindSqliteWorkerBackend(input, context) {
 }
 `,
       );
-      const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStore;
+      const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStoreV2;
       const fault = vi
-        .spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStore")
+        .spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStoreV2")
         .mockImplementation((options, source, worker) =>
           open(
             options,

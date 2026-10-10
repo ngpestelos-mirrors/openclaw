@@ -253,7 +253,7 @@ describe("memory forget source removal", () => {
     },
   );
 
-  it("refuses a retired borrowed handle without writing to its successor after vector preparation", async () => {
+  it("refuses a retired execution owner without writing to its successor after vector preparation", async () => {
     await seedMemoryForgetSession("target");
     const origin = {
       entryKey: "selected-entry",
@@ -288,12 +288,12 @@ describe("memory forget source removal", () => {
     const borrowCaptured = createDeferred<void>();
     const resume = createDeferred<void>();
     let intercepted = false;
-    const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStore;
+    const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStoreV2;
     const openSpy = vi
-      .spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStore")
+      .spyOn(sqliteRuntime, "openOpenClawAgentSqliteWorkerStoreV2")
       .mockImplementation(async (...args) => {
-        const [, source, worker] = args;
-        if (source === db && !intercepted) {
+        const [options, , worker] = args;
+        if (options.path === db.location() && !intercepted) {
           const input = worker.input;
           if (
             typeof input !== "object" ||
@@ -352,7 +352,7 @@ describe("memory forget source removal", () => {
       const after = await readDurable(successor);
       expect.soft(outcome).toMatchObject({
         ok: false,
-        error: { message: "Borrowed agent database closed or changed before Worker admission" },
+        error: { message: "Agent database execution admission is closed" },
       });
       expect(after).toEqual(before);
       expect(after.tombstones).toEqual([]);

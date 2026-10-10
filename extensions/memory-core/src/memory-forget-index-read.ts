@@ -1,11 +1,11 @@
 import { loadSqliteVecExtension } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import { withFreshOpenClawAgentDatabaseReadOnly } from "openclaw/plugin-sdk/sqlite-runtime";
 import {
   executeSqliteQuerySync,
   getNodeSqliteKysely,
   openNodeSqliteDatabase,
   tableExists,
-  withFreshOpenClawAgentDatabaseReadOnly,
-} from "openclaw/plugin-sdk/sqlite-runtime";
+} from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import { referencesSession, scrubMemoryContent } from "./memory-forget-content.js";
 import type {
   ForgetDatabase,
