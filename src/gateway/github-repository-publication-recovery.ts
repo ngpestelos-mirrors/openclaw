@@ -1,6 +1,7 @@
 import type { SessionGitHubPublicationResult } from "../../packages/gateway-protocol/src/schema/session-github-publication.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { warnPluginSdkDeprecation } from "../plugins/sdk-deprecation.js";
 import type { RepositoryGitHubPublicationRow } from "../state/github-publication-read.types.js";
 import { decodeGitHubPublicationRequester } from "../state/github-publication-requester.js";
 import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
@@ -267,8 +268,13 @@ export function createRepositoryGitHubPublicationRecovery(params: {
         }
       }
     },
-
+    /** @deprecated Use deferClaimPreparationAsync; removed in the next Plugin SDK major. */
     deferClaimPreparation(claim: WorkerSessionTurnClaim) {
+      warnPluginSdkDeprecation({
+        family: "github-publication",
+        method: "deferClaimPreparation",
+        replacement: "deferClaimPreparationAsync",
+      });
       deferRepositoryGitHubPublicationClaims(
         listRepositoryGitHubPublications({
           sessionId: claim.sessionId,
@@ -379,8 +385,13 @@ export function createRepositoryGitHubPublicationRecovery(params: {
         throw new AggregateError(failures, failures.map((error) => error.message).join("; "));
       }
     },
-
+    /** @deprecated Use deferOrphanedRequestsAsync; removed in the next Plugin SDK major. */
     deferOrphanedRequests(): void {
+      warnPluginSdkDeprecation({
+        family: "github-publication",
+        method: "deferOrphanedRequests",
+        replacement: "deferOrphanedRequestsAsync",
+      });
       deferOrphanedRequestsWithPendingResults(placements.listPendingWorkspaceResults());
     },
     async deferOrphanedRequestsAsync(): Promise<void> {

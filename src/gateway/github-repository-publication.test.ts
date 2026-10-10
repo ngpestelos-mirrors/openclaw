@@ -62,7 +62,20 @@ describe("repository checkpoint GitHub publication", () => {
 
   it("publishes the accepted checkpoint with an absent-ref lease and replays the same receipt", async () => {
     const f = await repositoryFixture();
-    const input = { agentId: "main", sessionKey: SESSION_KEY, idempotencyKey: "shared" };
+    let checkedPublishingTransaction = false;
+    const input = {
+      agentId: "main",
+      sessionKey: SESSION_KEY,
+      idempotencyKey: "shared",
+      assertCurrent: () => {
+        if (
+          openOpenClawStateDatabase().db.isTransaction &&
+          listRepositoryGitHubPublications().some((row) => row.status === "publishing")
+        ) {
+          checkedPublishingTransaction = true;
+        }
+      },
+    };
     const published = await f.coordinator.requestForSession(input);
     expect(published).toMatchObject({ status: "published", url, publisher: { accountId: 42 } });
     expect(f.runtime.uploaded.get(f.first.sha)).toEqual(Buffer.from("accepted first\n"));
@@ -71,6 +84,7 @@ describe("repository checkpoint GitHub publication", () => {
     expect(f.runtime.effects).toEqual(["push", "pull_request"]);
     expect(mocks.findWorktree).not.toHaveBeenCalled();
     expect(mocks.resolveRepository).not.toHaveBeenCalled();
+    expect(checkedPublishingTransaction).toBe(true);
   });
 
   it.each(["shared", "personal"] as const)(

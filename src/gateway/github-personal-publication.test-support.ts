@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, vi } from "vitest";
+import { expect, onTestFinished, vi } from "vitest";
 import { stringify as stringifyYaml } from "yaml";
 import { resolveManagedGitHubProfileDir } from "../agents/github-tool-identity.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
@@ -15,14 +15,19 @@ import {
   createPersonalGitHubOAuthLifecycle,
   personalGitHubStatus,
 } from "./github-personal-oauth.js";
+import type { PersonalGitHubSessionActionV2 } from "./github-personal-publication.js";
 import {
   SESSION_ID,
   SESSION_KEY,
   createTestGitHubPublicationCoordinator,
   githubPublicationTestMocks,
 } from "./github-publication.test-support.js";
+import { resolveGatewayOperatorAccessAuthority } from "./operator-access-policy.js";
 import { handleGatewayRequest } from "./server-methods.js";
-import { preparePersonalGitHubSessionAction } from "./server-methods/github-personal-authorization.js";
+import {
+  preparePersonalGitHubSessionAction,
+  preparePersonalGitHubSessionActionV2,
+} from "./server-methods/github-personal-authorization.js";
 import type { GatewayClient, GatewayRequestContext } from "./server-methods/types.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 
@@ -30,6 +35,24 @@ const mocks = githubPublicationTestMocks();
 export const personalPublicationAccount = { accountId: 101, login: "personal-alice" };
 const account = personalPublicationAccount;
 const profileId = "ghp_22222222222222222222222222222222";
+
+export async function preparePersonalPublicationFixtureV2(
+  fixture: Pick<Awaited<ReturnType<typeof createPersonalPublicationFixture>>, "client" | "context">,
+) {
+  const owner = fixture.client.authenticatedUserProfile!.profileId;
+  fixture.client.internal = {
+    ...fixture.client.internal,
+    operatorAccessAuthority: resolveGatewayOperatorAccessAuthority(
+      owner,
+      fixture.context.getRuntimeConfig(),
+    ),
+  };
+  const prepared = await preparePersonalGitHubSessionActionV2(fixture, {
+    sessionKey: SESSION_KEY,
+  });
+  onTestFinished(prepared.release);
+  return prepared.action;
+}
 
 export function readPersonalPublicationFixtureStatus(
   fixture: Pick<
@@ -51,25 +74,26 @@ export async function expectPersonalPublicationReplay(
     generation,
     coordinator,
     action,
-  }: Pick<
-    Awaited<ReturnType<typeof createPersonalPublicationFixture>>,
-    "coordinator" | "action"
-  > & { generation: string },
+  }: Pick<Awaited<ReturnType<typeof createPersonalPublicationFixture>>, "coordinator"> & {
+    generation: string;
+    action: ReturnType<typeof preparePersonalGitHubSessionAction> | PersonalGitHubSessionActionV2;
+  },
   capture: (requestId: string) => unknown,
 ) {
   const selection = { source: "personal" as const, generation, account };
   const request = { sessionKey: SESSION_KEY, idempotencyKey: "personal-replay", selection };
-  const published = await coordinator.requestPersonalForSession(request, action);
+  const publish = (input: Parameters<typeof coordinator.requestPersonalForSession>[0]) =>
+    "version" in action
+      ? coordinator.requestPersonalForSessionV2(input, action)
+      : coordinator.requestPersonalForSession(input, action);
+  const published = await publish(request);
   expect(published.status).toBe("published");
   const before = capture(published.requestId);
   await expect(
-    coordinator.requestPersonalForSession(
-      {
-        ...request,
-        selection: { ...selection, account: { ...account, login: account.login.toUpperCase() } },
-      },
-      action,
-    ),
+    publish({
+      ...request,
+      selection: { ...selection, account: { ...account, login: account.login.toUpperCase() } },
+    }),
   ).resolves.toEqual(published);
   for (const changed of [
     { ...request, selection: { ...selection, generation: `${generation}-changed` } },
@@ -81,7 +105,7 @@ export async function expectPersonalPublicationReplay(
     { ...request, title: "Different title" },
     { ...request, body: "Different body" },
   ]) {
-    await expect(coordinator.requestPersonalForSession(changed, action)).rejects.toThrow(
+    await expect(publish(changed)).rejects.toThrow(
       "My GitHub publication idempotency key was reused with a different selection.",
     );
   }

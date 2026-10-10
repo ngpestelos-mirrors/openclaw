@@ -165,6 +165,22 @@ export const systemPublicationRequester: GitHubPublicationRequester = Object.fre
   assertInvocationCurrent: () => {},
 });
 
+export async function createSystemGitHubPublicationRequesterFixture() {
+  const { createSyntheticPluginRuntimeClient } = await import("./server-plugin-runtime-client.js");
+  const captured = await prepareGitHubPublicationRequesterV2(
+    {
+      client: createSyntheticPluginRuntimeClient({
+        operatorRoleActor: { kind: "system" },
+        scopes: ["operator.admin"],
+      }),
+      context: { getRuntimeConfig: currentGitHubPublicationConfig },
+    },
+    { sessionKey: SESSION_KEY, agentId: "main" },
+  );
+  onTestFinished(captured.release);
+  return captured;
+}
+
 export async function createGitHubPublicationRequesterFixture(params: {
   profileId: string;
   scopes: readonly string[];
