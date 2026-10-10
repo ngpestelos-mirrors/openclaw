@@ -228,9 +228,6 @@ describe("selected incognito announcement requester", () => {
         expect([...failures]).toEqual([
           expect.objectContaining({ message: "source revoked during custody" }),
         ]);
-        expect(context.logGateway.warn).toHaveBeenCalledWith(
-          expect.stringContaining("source revoked during custody"),
-        );
       } else {
         expect(failures.size).toBe(0);
       }

@@ -13,6 +13,7 @@ import * as controlScope from "../../agents/subagents/registry/subagent-control-
 import { SUBAGENT_ENDED_REASON_KILLED } from "../../agents/subagents/registry/subagent-lifecycle-events.js";
 import { captureSubagentListReadContext } from "../../agents/subagents/registry/subagent-list.js";
 import { SubagentLifecycleController } from "../../agents/subagents/registry/subagent-registry-lifecycle.js";
+import { subagentRuns } from "../../agents/subagents/registry/subagent-registry-memory.js";
 import { mutateSubagentRuns } from "../../agents/subagents/registry/subagent-registry-persistence.js";
 import { buildSubagentRunReadIndexFromRuns } from "../../agents/subagents/registry/subagent-registry-queries.js";
 import {
@@ -436,10 +437,17 @@ describe("subagents info", () => {
     runs: SubagentRunRecord[];
     restTokens: string[];
   }): Parameters<typeof handleSubagentsInfoAction>[0] {
+    const runs = params.runs.map(({ runId }) => {
+      const run = subagentRuns.get(runId);
+      if (!run) {
+        throw new Error(`Info fixture has no registered run: ${runId}`);
+      }
+      return run;
+    });
     return {
       params: buildCommandTestParams("/subagents info", params.cfg),
       requesterKey: "agent:main:main",
-      readContext: commandReadContext(params.runs),
+      readContext: commandReadContext(runs),
       restTokens: params.restTokens,
     };
   }
@@ -813,13 +821,12 @@ describe("subagents info", () => {
       session: { mainKey: "main", scope: "per-sender", store: TEST_SESSION_STORE_PATH },
     } as OpenClawConfig;
     const result = await handleSubagentsInfoAction({
+      ...buildInfoContext({ cfg, runs: [run], restTokens: ["1"] }),
       params: {
         ...buildCommandTestParams("/subagents info 1", cfg),
         sessionKey: "agent:main:slash-session",
       },
       requesterKey: "agent:main:target",
-      readContext: commandReadContext([run]),
-      restTokens: ["1"],
     });
     const text = requireReplyText(result.reply);
 

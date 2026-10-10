@@ -7,11 +7,8 @@ import { readAcpSessionMetaForEntry } from "../../acp/runtime/session-meta-reado
 import { resolveSessionThreadInfo } from "../../channels/plugins/session-conversation.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../../config/legacy.default-agent-owner.js";
 import { createRuntimeConfigReader } from "../../config/runtime-snapshot.js";
-import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
-import { captureIncognitoSessionSource } from "../../config/sessions/session-incognito-binding.js";
 import { resolvePersistedSessionStoreOwnerForKey } from "../../config/sessions/session-store-owner.js";
 import { shouldResumeParentSubagent } from "../../gateway/session-subagent-resume.js";
-import { resolveGatewaySessionStoreTargetWithStore } from "../../gateway/session-utils-store-lookup.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
@@ -25,7 +22,6 @@ import {
   isUnscopedSessionKeySentinel,
   normalizeAgentId,
   normalizeAgentIdStrict,
-  resolveAgentIdFromSessionKey,
 } from "../../routing/session-key.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import { isCronRunSessionKey, parseAgentSessionKey } from "../../sessions/session-key-utils.js";
@@ -39,7 +35,6 @@ import { resolveNestedAgentLaneForSession } from "../lanes.js";
 import { RESTART_RECOVERY_INTERRUPTION_NOTE } from "../restart-recovery-prompt.js";
 import { isTerminalAgentWaitTimeout, waitForAgentRunReply } from "../run-wait.js";
 import { isSubagentSessionFromEntry } from "../subagents/spawn/subagent-depth-policy.js";
-import { withSubagentSessionSource } from "../subagents/spawn/subagent-session-source.js";
 import {
   describeSessionsSendTool,
   SESSIONS_SEND_TOOL_DISPLAY_SUMMARY,
@@ -72,6 +67,10 @@ import { dispatchSessionsSendFollowup } from "./sessions-send-followup.js";
 import { sendFailure, sendReplyResult } from "./sessions-send-helpers.js";
 import { startSessionsSendReplyFlow } from "./sessions-send-reply-flow.js";
 import { captureSessionsSendResumeCaller, resumeSessionsSendTask } from "./sessions-send-resume.js";
+import {
+  createSessionsSendSessionReaders,
+  withSessionsSendRequesterSource,
+} from "./sessions-send-session-source.js";
 import {
   callSessionsSendGateway,
   createConfiguredAgentMainSession,
@@ -135,16 +134,7 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
       } catch (err) {
         return sendFailure("forbidden", formatErrorMessage(err));
       }
-      const readSession = (key: string, agentId: string) =>
-        resolveGatewaySessionStoreTargetWithStore({
-          cfg,
-          key,
-          agentId,
-          readOnly: true,
-          exactRead: true,
-          clone: false,
-          projection: "full",
-        });
+      const { readTarget: readSession, readRequester } = createSessionsSendSessionReaders(cfg);
 
       const sessionKeyParam = readToolStringParam(params, "sessionKey");
       const labelParam = readToolStringParam(params, "label");
@@ -370,28 +360,10 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
       const mayUseRequesterForLiteralSentinel =
         isLiteralUnscopedMainTarget && normalizeAgentId(targetAgentId) === requesterAgentId;
       const requesterSessionKey = opts?.agentSessionKey ? effectiveRequesterKey : undefined;
-      const requesterSource = captureIncognitoSessionSource({
-        agentId: requesterAgentId,
-        sessionKey: effectiveRequesterKey,
-      });
-      const requesterEntry = requesterSource
-        ? await readSessionEntryReadOnlyInWorker({
-            agentId: requesterAgentId,
-            sessionKey: effectiveRequesterKey,
-          })
-        : undefined;
-      if (requesterSource && !requesterEntry) {
+      const requesterSession = await readRequester(effectiveRequesterKey, requesterAgentId);
+      if (!requesterSession) {
         return sendFailure("forbidden", "The requesting session is no longer available.");
       }
-      const requesterSession = requesterSource
-        ? {
-            agentId: requesterAgentId,
-            canonicalKey: effectiveRequesterKey,
-            storePath:
-              "kind" in requesterSource ? requesterSource.path : requesterSource.actor.path,
-            store: { [effectiveRequesterKey]: requesterEntry },
-          }
-        : readSession(effectiveRequesterKey, requesterAgentId);
       const requesterSessionEntry = requesterSession.store[requesterSession.canonicalKey];
       const requesterSessionId = opts?.agentSessionId ?? requesterSessionEntry?.sessionId;
       const requesterContinuationSession = requesterSessionId
@@ -740,15 +712,6 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
     }),
   };
   const execute = tool.execute;
-  tool.execute = (...args) =>
-    opts?.agentSessionKey
-      ? withSubagentSessionSource(
-          {
-            agentId: opts.agentId ?? resolveAgentIdFromSessionKey(opts.agentSessionKey),
-            sessionKey: opts.agentSessionKey,
-          },
-          () => execute(...args),
-        )
-      : execute(...args);
+  tool.execute = (...args) => withSessionsSendRequesterSource(opts, () => execute(...args));
   return tool;
 }

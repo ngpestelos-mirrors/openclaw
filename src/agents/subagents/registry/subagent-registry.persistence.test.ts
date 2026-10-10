@@ -739,9 +739,6 @@ describe("subagent registry persistence", () => {
         restoreCleanup = () => cleanup.mockRestore();
         markGatewayRestartDraining();
       }
-      if (change === "worker read failure") {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      }
       release.resolve();
       if (admittedDrain || change === "worker read failure") {
         await expect(settling).rejects.toMatchObject({
@@ -766,7 +763,15 @@ describe("subagent registry persistence", () => {
         expect(readFailures).toBe(1);
         expect(callGateway).not.toHaveBeenCalled();
         expect(readPersistedRun(runId)).toEqual(expected);
+        const waitEntered = createDeferred();
+        const gatewayCall = vi.mocked(callGateway).getMockImplementation()!;
+        vi.mocked(callGateway).mockImplementationOnce(async (request) => {
+          const result = await gatewayCall(request);
+          waitEntered.resolve();
+          return result;
+        });
         resumeSubagentRun(runId);
+        await waitEntered.promise;
         await fixture.settle();
         expect(callGateway).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -798,7 +803,7 @@ describe("subagent registry persistence", () => {
       } finally {
         restoreLifecycle?.();
         restoreCleanup?.();
-        if (admittedDrain || change === "worker read failure") {
+        if (admittedDrain) {
           resetGatewayWorkAdmission();
           vi.useRealTimers();
         }

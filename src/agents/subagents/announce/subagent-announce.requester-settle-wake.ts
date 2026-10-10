@@ -64,6 +64,7 @@ import { createRequesterSettleReceiptAdmission } from "./subagent-announce.reque
 import {
   readSharedBatchState,
   createRequesterSettleBatchClaim,
+  createRequesterSettleBatchDeferral,
   captureRequesterRunOwner,
   resolvePrivateSettlePolicy,
   retainedYieldIdentity,
@@ -75,7 +76,6 @@ import {
 
 const REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS = 3;
 const REQUESTER_SETTLE_WAKE_MAX_AMBIGUOUS_REPLAYS = 3;
-const REQUESTER_SETTLE_WAKE_MAX_DEFERRALS = 10;
 const REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS = [30_000, 120_000] as const;
 
 /** Wake top-level or yielded requesters after their descendants settle; lifecycle owns transitions. */
@@ -350,62 +350,14 @@ async function maybeWakeRequesterAfterAllChildrenSettledBound(
       await completeBatch(settledBatch, selectedState);
       return false;
     }
-    // Returns true when the stale-descendant wait is spent: the caller then
-    // dispatches the drained batch instead of deferring it again.
-    async function deferBatch(
-      overrides: Partial<Pick<RequesterSettleWakeBatchState, "status" | "lastError">> = {},
-      countTowardsLimitOverride?: boolean,
-    ): Promise<boolean> {
-      let countTowardsLimit = countTowardsLimitOverride;
-      if (countTowardsLimit === undefined) {
-        const descendants = await readRequesterDescendants();
-        if (!descendants) {
-          return false;
-        }
-        countTowardsLimit = descendants.active === 0;
-      }
-      if (!acquireBatch() || !params.isSourceCurrent() || !refreshBatch()) {
-        return false;
-      }
-      const state = { ...readSharedBatchState(settledBatch), ...overrides };
-      const now = Date.now();
-      if ((state.nextAttemptAt ?? 0) > now) {
-        return false;
-      }
-      // Active work still defers delivery, but cannot recharge a spent wait.
-      const deferralCount =
-        (state.deferralCount ?? 0) >= REQUESTER_SETTLE_WAKE_MAX_DEFERRALS
-          ? REQUESTER_SETTLE_WAKE_MAX_DEFERRALS
-          : countTowardsLimit
-            ? (state.deferralCount ?? 0) + 1
-            : 0;
-      if (countTowardsLimit && deferralCount >= REQUESTER_SETTLE_WAKE_MAX_DEFERRALS) {
-        if (state.deferralCount !== deferralCount) {
-          await transitionBatch({ ...state, deferralCount });
-        }
-        // An ended descendant whose own delivery never settles (its requester
-        // is gone, rate-limited, or running outside the registry) must not cost
-        // this batch its completed results: stop waiting and deliver them.
-        logWarn(
-          `requester settle wake stopped waiting for unsettled descendants after ${deferralCount} deferrals; delivering the drained batch`,
-        );
-        return true;
-      }
-      await transitionBatch({
-        status: state.status,
-        attemptCount: state.attemptCount,
-        ...(state.replayCount !== undefined ? { replayCount: state.replayCount } : {}),
-        nextAttemptAt: Math.max(
-          state.nextAttemptAt ?? 0,
-          now + REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS[0],
-        ),
-        batchRunIds: retainedBatchRunIds,
-        ...retainedYieldIdentity(state),
-        ...(state.lastError !== undefined ? { lastError: state.lastError } : {}),
-        deferralCount,
-      });
-      return false;
-    }
+    const deferBatch = createRequesterSettleBatchDeferral({
+      readDescendants: readRequesterDescendants,
+      claimCurrentBatch: () => acquireBatch() && params.isSourceCurrent() && refreshBatch(),
+      readState: () => readSharedBatchState(settledBatch),
+      transitionBatch,
+      batchRunIds: retainedBatchRunIds,
+      retryDelayMs: REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS[0],
+    });
     // Unfrozen waves with unsettled descendants returned above; a frozen wave
     // defers until its stale-descendant wait is spent.
     if (hasUnsettledDescendants && !(await deferBatch())) {
