@@ -48,7 +48,10 @@ async function executeOriginCommand<Key extends "record" | "delete" | "reserve" 
   try {
     if (command.type === "record") {
       await worker.prepare();
-      return await worker.execute(command, () => assertOriginal?.());
+      return await worker.run(
+        (scope) => scope.execute(command),
+        () => assertOriginal?.(),
+      );
     }
     return (await worker.executeExisting(command, () => assertOriginal?.()))?.value;
   } finally {
