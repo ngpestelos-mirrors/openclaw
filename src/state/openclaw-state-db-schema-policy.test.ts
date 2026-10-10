@@ -83,6 +83,9 @@ function createExistingState(mutate?: (db: DatabaseSync) => void) {
   const env = { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-existing-schema-") };
   const pathname = openOpenClawStateDatabase({ env }).path;
   closeOpenClawStateDatabase();
+  const seedPath = `${pathname}.seed`;
+  renameSync(pathname, seedPath);
+  copyFileSync(seedPath, pathname);
   const db = new DatabaseSync(pathname);
   try {
     db.prepare("UPDATE schema_meta SET app_version = ? WHERE meta_key = 'primary'").run(
@@ -814,7 +817,7 @@ describe("existing shared-state schema admission", () => {
     },
   );
 
-  it("inspects schema indexes once and revalidates same-version changes before handle reuse", () => {
+  it("inspects schema indexes once and observes managed same-version changes before handle reuse", () => {
     const { options } = createExistingState();
     const reads = observeSqliteReadSql(StatementSync.prototype);
     try {

@@ -122,6 +122,7 @@ export function readOpenClawAgentIntegrityVerification(
   env: NodeJS.ProcessEnv = process.env,
   consume = false,
 ): OpenClawAgentIntegrityVerification | undefined {
+  const storePath = resolveQuarantineStorePath(env);
   const read = (database: DatabaseSync) => {
     const query = getNodeSqliteKysely<IntegrityDatabase>(database);
     const row = executeSqliteQueryTakeFirstSync(
@@ -157,14 +158,16 @@ export function readOpenClawAgentIntegrityVerification(
   };
   if (consume) {
     // Failure cannot admit a writer while leaving an old clean receipt reusable.
+    if (statSync(storePath, { throwIfNoEntry: false }) === undefined) {
+      return undefined;
+    }
     return withQuarantineWriter(env, (database) =>
       runSqliteImmediateTransactionSync(database, () => read(database), {
-        databaseLabel: resolveQuarantineStorePath(env),
+        databaseLabel: storePath,
         operationLabel: "quarantine.integrity.consume",
       }),
     );
   }
-  const storePath = resolveQuarantineStorePath(env);
   if (!existsSync(storePath)) {
     return undefined;
   }
