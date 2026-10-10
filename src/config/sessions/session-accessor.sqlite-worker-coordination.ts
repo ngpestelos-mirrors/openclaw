@@ -106,20 +106,27 @@ export async function withSqliteWorkerLifecycleCoordination<T>(
       assertRequest: assertRequestCurrent,
       assertAccess() {
         context.admission.assertCurrent();
-        assertExistingDatabaseIdentity(context.admission.databasePath, identity);
-        assertStateDatabaseAccessAllowed(context.admission.databasePath, {
-          maintenanceScope: context.maintenanceScope,
-        });
+        // First creation stays path-bound until the native lease publishes its file identity.
+        const current = context.admission.identity;
+        if (current.key.startsWith("file:")) {
+          assertExistingDatabaseIdentity(
+            context.admission.databasePath,
+            current.key,
+            current.birthtime,
+          );
+        }
+        context.maintenanceScope?.assertAdmission();
       },
       assertCreate(location) {
-        // Raw agent admission may persist its first integrity receipt in this companion.
+        // Raw agent admission may create shared state and its first integrity receipt.
         if (
+          location !== resolveIdentityPathViaExistingAncestorSync(context.admission.databasePath) &&
           location !==
-          resolveIdentityPathViaExistingAncestorSync(
-            resolveQuarantineStorePath(context.environment),
-          )
+            resolveIdentityPathViaExistingAncestorSync(
+              resolveQuarantineStorePath(context.environment),
+            )
         ) {
-          throw new Error("SQLite mutation creation target differs from its quarantine companion");
+          throw new Error("SQLite mutation creation target differs from its captured companions");
         }
       },
       acquireSchema() {
@@ -189,6 +196,10 @@ export async function runWithSqliteMutationWorkerCoordination<
     return await withSqliteDatabaseAdmissionExchange((facts, location, create) => {
       if (!active) {
         throw new Error("SQLite mutation file admission outlived its request");
+      }
+      if (create) {
+        // First-open creation can run inside this worker's live schema lease.
+        assertStateDatabaseAccessAllowed(coordination.databasePath);
       }
       return exchangeSqliteDatabaseAdmissions(admission, facts, location, create);
     }, execute);
