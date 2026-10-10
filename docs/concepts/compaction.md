@@ -265,6 +265,8 @@ If an older version or transcript redaction removes the complete window needed f
 
 Direct Anthropic API-key requests on models that Anthropic documents for threshold compaction ask the API to compact inside an ordinary request once input reaches the threshold, and OpenClaw replays the returned summary on later requests. `params.anthropicServerCompaction: false` disables it for a model. If Anthropic returns an empty summary, OpenClaw keeps sending the existing history and its client-side compaction remains the fallback. See [Anthropic server-side compaction](/providers/anthropic#advanced-configuration).
 
+Memory flush turns disable provider server-side compaction, including Anthropic threshold compaction and OpenAI inline compaction, so memory extraction sees the unsummarized history.
+
 ### Successor transcripts
 
 A context engine may return an explicit compacted successor session identity within the same agent, session key, and store. OpenClaw publishes the accepted successor before maintenance, hooks, or retries use it, while retaining the current writer's ownership. Cancelling afterward does not roll that completed transition back. The active reply follows the accepted identity for its remaining session-state reads; unrelated resets and cancellation still stop stale work. Tool-policy classification retains its independently captured session identity. The built-in SQLite compactor keeps the current session identity and does not create a second runtime transcript.

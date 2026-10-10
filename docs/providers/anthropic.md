@@ -918,6 +918,8 @@ OpenClaw supports Anthropic's prompt caching feature for API-key auth.
     ```
 
     Set `anthropicServerCompaction: true` to opt in another direct Claude model.
+    Memory flush turns never use server-side compaction, so they can extract
+    durable memories from the unsummarized history.
 
     OpenClaw adds the `compact-2026-01-12` beta header and sends an Anthropic
     `context_management` compaction edit. The edit carries summarization
