@@ -289,8 +289,9 @@ fallback even with explicit `agentRuntime.id: "codex"`; see
 
     `params.responsesServerCompaction: false` or
     `params.responsesCompactEndpoint: false` disables this V2 path. Disabling
-    automatic compaction also disables V2. Manual compaction and provider-confirmed
-    overflow retain their existing policies. A V2 failure before persistence
+    automatic compaction also disables V2. On this route, manual `/compact`
+    (with or without focus instructions) and provider-confirmed overflow use
+    client-side compaction, not V2. A V2 failure before persistence
     returns to the existing compactor and logs its reason; explicit compact-endpoint
     opt-ins still apply there. Cancellation
     does not start a fallback, and a committed checkpoint is not compacted again
