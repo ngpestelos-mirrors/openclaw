@@ -426,6 +426,7 @@ migrations are complete. Outside writers must use the Gateway or hold exclusive
 ownership while it is stopped. Schemas, stored bytes, retention, and update
 behavior are unchanged; published updaters need no migration for these
 process-local facts.
+
 ### Approval, placement, and workspace receipts
 
 Managed approval and exec writers capture exact row postimages and deletion
@@ -461,7 +462,6 @@ only while it is stopped. No runtime freshness probes are added.
 
 Schemas, stored bytes, retention, permissions, and update behavior are unchanged.
 Released synchronous methods still commit and install their facts before returning.
-
 
 Meeting transcript downloads and JSONL artifacts stream through the existing
 shared-state read worker. One private read-only transaction owns the cursor,
