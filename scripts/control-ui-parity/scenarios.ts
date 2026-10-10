@@ -17,6 +17,7 @@ import {
   parityReaderDocuments,
   standaloneApprovalScenario,
   standaloneQuestionScenario,
+  settingsControlsScenario,
 } from "./fixtures.ts";
 
 export { fixedTime, sessionKey };
@@ -54,6 +55,7 @@ export type Scene = {
   scenario?: ControlUiMockGatewayScenario;
   prepare?: (page: Page, gateway: MockGatewayControls) => Promise<void>;
   scrollTo?: string;
+  loading?: boolean;
 };
 const configPages = new Set<string>(CONFIG_PAGE_IDS);
 function routeScene(route: RouteId): Scene {
@@ -86,7 +88,12 @@ function routeScene(route: RouteId): Scene {
         : route === "chat" || route === "dashboard"
           ? `${pathForRoute(route)}?session=${sessionKey}`
           : pathForRoute(route),
-    ready: `openclaw-${host}-page`,
+    ready:
+      route === "workboard" || route === "plugin"
+        ? ".workboard"
+        : destination === "activity" || destination === "logs"
+          ? `openclaw-${host}-page .content-header`
+          : `openclaw-${host}-page`,
     ...(route === "workboard" || route === "plugin" ? { scenario: parityWorkboardScenario } : {}),
   };
 }
@@ -121,6 +128,8 @@ export const scenes: Scene[] = [
       id: `${route}-loading`,
       label: `${route}: loading`,
       ready,
+      scrollTo: ready,
+      loading: true,
       scenario: { heldMethods: [method] },
     }),
   ),
@@ -156,6 +165,7 @@ export const scenes: Scene[] = [
     ready: ".chat-history-error",
     prepare: async (page) => {
       await page
+        .getByRole("alert")
         .getByText("Synthetic history unavailable. Retry the request.", { exact: true })
         .waitFor();
     },
@@ -223,10 +233,16 @@ export const scenes: Scene[] = [
   {
     ...chat,
     id: "session-modal",
-    label: "Session rename modal form",
+    label: "New group modal form",
     prepare: async (page) => {
       await page.locator(".chat-header-session-menu__trigger").click();
-      await page.getByRole("menuitem", { name: "Rename…", exact: true }).click();
+      const groups = page.getByRole("menuitem", { name: "Move to group", exact: true });
+      if (page.viewportSize()!.width <= 560) {
+        await groups.click();
+      } else {
+        await groups.hover();
+      }
+      await page.getByRole("menuitem", { name: "New group", exact: true }).click();
       await page.locator("openclaw-modal-dialog input").waitFor();
     },
   },
@@ -290,6 +306,7 @@ export const scenes: Scene[] = [
     label: "Settings: selected radios and switch",
     ready: "#config-section-browser .settings-row",
     scrollTo: "#config-section-browser",
+    scenario: settingsControlsScenario,
   },
   {
     id: "approval-pending",

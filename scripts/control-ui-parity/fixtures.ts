@@ -1,6 +1,7 @@
 import type { PendingApprovalSnapshot } from "../../packages/gateway-protocol/src/index.ts";
 import type { QuestionRecord } from "../../packages/gateway-protocol/src/schema/questions.ts";
 import type { UserProfile } from "../../packages/gateway-protocol/src/schema/users.ts";
+import { computeBaseConfigSchemaResponse } from "../../src/config/schema-base.ts";
 import type { UsageSummary } from "../../src/infra/provider-usage.types.ts";
 import type { ControlUiLinkReaderDocument } from "../../src/shared/control-ui-link-reader.ts";
 import type { SessionsUsageResult } from "../../src/shared/usage-types.ts";
@@ -129,6 +130,29 @@ const providerUsage = {
   ],
 } satisfies UsageSummary;
 
+export const settingsControlsScenario: ControlUiMockGatewayScenario = {
+  methodResponses: {
+    "config.schema": {
+      generatedAt: new Date(fixedTime).toISOString(),
+      version: "parity",
+      uiHints: {},
+      schema: {
+        type: "object",
+        properties: {
+          browser: {
+            type: "object",
+            title: "Browser",
+            properties: {
+              enabled: { type: "boolean", title: "Browser Enabled" },
+              mode: { type: "string", title: "Mode", enum: ["local", "remote", "disabled"] },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
 export const parityBaseScenario: ControlUiMockGatewayScenario = {
   sessionKey,
   sessions: [session],
@@ -140,9 +164,13 @@ export const parityBaseScenario: ControlUiMockGatewayScenario = {
     "config.get",
     "channels.status",
     "channels.pairing.list",
+    "doctor.memory.status",
+    "backup.status",
     "models.list",
     "models.authStatus",
     "plugins.list",
+    "plugins.catalog.browse",
+    "plugins.catalog.categories",
     "secrets.store.list",
     "sessions.usage",
     "usage.status",
@@ -150,6 +178,9 @@ export const parityBaseScenario: ControlUiMockGatewayScenario = {
     "users.list",
     "forge.preview",
     "forge.detail",
+    "webSearch.status",
+    "openclaw.chat",
+    "openclaw.chat.history",
   ],
   models: [
     { id: "gpt-5.5", name: "gpt-5.5", provider: "openai" },
@@ -184,27 +215,20 @@ export const parityBaseScenario: ControlUiMockGatewayScenario = {
       valid: true,
       issues: [],
     },
-    "config.schema": {
+    "config.schema": computeBaseConfigSchemaResponse({
       generatedAt: new Date(fixedTime).toISOString(),
-      version: "parity",
-      uiHints: {},
-      schema: {
-        type: "object",
-        properties: {
-          browser: {
-            type: "object",
-            title: "Browser",
-            properties: {
-              enabled: { type: "boolean", title: "Browser Enabled" },
-              mode: { type: "string", title: "Mode", enum: ["local", "remote", "disabled"] },
-            },
-          },
-        },
-      },
-    },
+    }),
     "users.self": { profile: profiles[0] },
     "users.list": { profiles },
     "plugins.list": { plugins: [] },
+    "plugins.catalog.browse": { items: [] },
+    "plugins.catalog.categories": { categories: [] },
+    "doctor.memory.status": {
+      agentId: "main",
+      provider: "none",
+      embedding: { ok: false, checked: false },
+    },
+    "backup.status": { targets: [], schedules: [], locations: [] },
     "secrets.store.list": { entries: [] },
     "channels.pairing.list": {
       accounts: [],
@@ -236,7 +260,47 @@ export const parityBaseScenario: ControlUiMockGatewayScenario = {
     },
     "sessions.usage": usage,
     "usage.status": providerUsage,
-    "cron.list": { jobs: [], total: 0, hasMore: false },
+    "cron.list": {
+      jobs: [],
+      snapshotRevision: "parity",
+      total: 0,
+      offset: 0,
+      limit: 50,
+      hasMore: false,
+      nextOffset: null,
+    },
+    "openclaw.chat": {
+      sessionId: "parity-custodian",
+      reply: "How can I help with your OpenClaw setup?",
+      action: "none",
+    },
+    "openclaw.chat.history": { turns: [] },
+    "webSearch.status": {
+      enabled: true,
+      provider: null,
+      agentId: "main",
+      model: { provider: "openai", id: "gpt-5.5", runtime: "openclaw", runtimeLabel: "OpenClaw" },
+      route: {
+        kind: "managed",
+        provider: "parallel-free",
+        label: "Parallel Search (Free)",
+        testable: true,
+      },
+      providers: [
+        {
+          id: "parallel-free",
+          pluginId: "parallel",
+          label: "Parallel Search (Free)",
+          hint: "Free hosted web search",
+          configured: true,
+          installed: true,
+          available: true,
+          requiresCredential: false,
+          credentialSource: "none",
+          configPath: [],
+        },
+      ],
+    },
     "cron.status": { enabled: true, jobs: 0, storePath: "/mock/cron", nextWakeAtMs: null },
     "logs.tail": {
       file: "/mock/gateway.log",

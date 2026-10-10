@@ -154,6 +154,17 @@ suite.define(() => {
                   await page.addStyleTag({ content: stylesheet });
                 }
                 await scene.prepare?.(page, gateway);
+                if (!scene.loading) {
+                  await expect
+                    .poll(() =>
+                      page
+                        .locator(
+                          ".settings-loading-skeleton:visible, openclaw-panel-loading-skeleton:visible",
+                        )
+                        .count(),
+                    )
+                    .toBe(0);
+                }
                 expect(pageErrors, "Synthetic scene must render without uncaught errors").toEqual(
                   [],
                 );
