@@ -491,6 +491,7 @@ export function createReplyRestartRecoveryClaimController(params: {
     }
     const updatedAt = Date.now();
     const sessionId = params.getSessionId();
+    let committed = false;
     const persisted = await patchSessionEntryTarget(
       preparedTarget(),
       (current) =>
@@ -523,12 +524,15 @@ export function createReplyRestartRecoveryClaimController(params: {
       {
         skipMaintenance: true,
         takeCacheOwnership: true,
+        onCommitted: () => {
+          committed = true;
+        },
         workerGuard: {
           assertCurrent: () => assertClaimCurrent(sessionId),
         },
       },
     );
-    if (!persisted) {
+    if (!committed || !persisted) {
       throw new Error(
         `before_agent_reply ${expectedState === "pending" ? "checkpoint" : "start"} lost restart recovery ownership`,
       );

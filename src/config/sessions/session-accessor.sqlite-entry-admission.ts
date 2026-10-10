@@ -34,6 +34,7 @@ import {
   resolveSqliteSessionKey,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
+import type { SessionActor, SessionActorLifetime } from "./session-actor-contract.js";
 import type { SessionCollaborationScope } from "./session-collaboration-scope.js";
 import {
   readRetainedSessionEntryFacts,
@@ -63,6 +64,7 @@ type WorkerSessionAdmissionClaim = {
   identity: string;
   incarnation: string;
   reader?: SessionEntryCohortReader;
+  acquireSessionActor(lifetime: SessionActorLifetime): Promise<SessionActor>;
   afterTransition?(
     transition: SessionAdmissionTransition,
     assertOwnerCurrent: () => void,
@@ -178,6 +180,13 @@ export async function loadSessionEntryForAdmission(
         kind: "worker",
         identity: borrowed.identity.handle,
         incarnation: borrowed.identity.incarnation,
+        acquireSessionActor(lifetime) {
+          assertClaimCurrent();
+          return borrowed.sessionActors.acquire(
+            { database: borrowed.identity, sessionKey: resolved.sessionKey },
+            lifetime,
+          );
+        },
         assertCurrent: assertClaimCurrent,
         isCurrent() {
           try {
@@ -322,6 +331,25 @@ export async function loadSessionEntryForAdmission(
                   kind: "worker",
                   identity: generation.identity,
                   incarnation: generation.incarnation,
+                  async acquireSessionActor(lifetime) {
+                    borrowed.assertCurrent();
+                    generation.assertCurrent();
+                    lifetime.assertCurrent();
+                    const identity = borrowed.fileIdentity;
+                    if (!identity) {
+                      throw new Error("Session actor requires its admitted physical identity");
+                    }
+                    const { captureDurableSessionActor } =
+                      await import("./session-actor-durable.js");
+                    borrowed.assertCurrent();
+                    generation.assertCurrent();
+                    lifetime.assertCurrent();
+                    return captureDurableSessionActor({
+                      database: { ...options, path: borrowed.path },
+                      target: { database: identity, sessionKey },
+                      lifetime,
+                    });
+                  },
                   reader: admitted
                     ? createAdmittedSessionEntryCohortReader({
                         execution: borrowed,

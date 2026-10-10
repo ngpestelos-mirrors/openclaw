@@ -6,6 +6,7 @@ import type {
   SessionAdmissionDatabaseClaim,
   SessionAdmissionTransition,
 } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
+import type { SessionActor } from "../../config/sessions/session-actor-contract.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { notifyGatewayWorkMetricsChanged } from "../../infra/gateway-work-metrics-events.js";
@@ -56,6 +57,8 @@ export type ReplyOperationAdmission = {
   databaseClaim?: SessionAdmissionDatabaseClaim;
   reader?: SessionEntryCohortReader;
   resolveReader?: () => SessionEntryCohortReader | undefined;
+  sessionActor?: SessionActor;
+  acquireSessionActor?: () => Promise<SessionActor>;
   afterTransition?: (transition: SessionAdmissionTransition) => Promise<void>;
 };
 
@@ -92,6 +95,20 @@ export const lifecycleAdmissionByOperation = (replyRunState.lifecycleAdmissionBy
 /** Resolve only the supplied operation's borrow; a key lookup could select its successor. */
 export function getReplyOperationSessionReader(operation: ReplyOperation | undefined) {
   return operation ? lifecycleAdmissionByOperation.get(operation)?.reader : undefined;
+}
+/** Borrow this operation's retained actor; callers never release it independently. */
+export function getReplyOperationSessionActor(operation: ReplyOperation | undefined) {
+  return operation ? lifecycleAdmissionByOperation.get(operation)?.sessionActor : undefined;
+}
+
+export function acquireReplyOperationSessionActor(
+  operation: ReplyOperation,
+): Promise<SessionActor> {
+  const admission = lifecycleAdmissionByOperation.get(operation);
+  if (!admission?.acquireSessionActor) {
+    throw new Error("Reply operation has no session actor admission");
+  }
+  return admission.acquireSessionActor();
 }
 /** Follow acknowledged reader handoffs only within this exact operation admission. */
 export function captureReplyOperationSessionReader(operation: ReplyOperation | undefined) {
