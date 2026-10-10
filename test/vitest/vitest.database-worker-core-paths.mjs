@@ -4,6 +4,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/state/openclaw-state-db-current-reader.test.ts",
   "src/cli/admin-state-owner.process.test.ts",
   "src/cli/config-state-owner.process.test.ts",
+  "src/cli/local-state-owner.settlement.test.ts",
   "src/pairing/pairing-store.test.ts",
   "src/pairing/pairing-store.worker.test.ts",
   "src/plugin-sdk/channel-pairing.store.test.ts",

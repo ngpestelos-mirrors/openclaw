@@ -4,6 +4,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { acquireGatewayLock, type GatewayLockHandle } from "../infra/gateway-lock.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
+import {
+  openOpenClawStateDatabase,
+  closeOpenClawStateDatabaseAsync,
+} from "../state/openclaw-state-db.js";
 import { acquireTestPortBlock, type TestPortClaim } from "../test-utils/port-claims.js";
 import { localStateOwnerFixtureEntrypoint } from "./cli-entrypoint.test-support.js";
 import { runCliProcessChild } from "./cli-process-child.test-helpers.js";
@@ -44,24 +48,8 @@ describe("agent roster offline ownership", () => {
       gateway: { mode: "local", port: claim.port },
     });
     await fs.writeFile(env.OPENCLAW_CONFIG_PATH!, config);
-    const seeded = await runCliProcessChild({
-      nodeArgs: [
-        ...entrypoint,
-        "agents",
-        "add",
-        "seed",
-        "--workspace",
-        path.join(root, "seed-workspace"),
-        "--non-interactive",
-        "--json",
-      ],
-      env,
-    });
-    expect(seeded.code, seeded.stderr).toBe(0);
-    config = await fs.readFile(env.OPENCLAW_CONFIG_PATH!, "utf8");
-    expect(
-      (await fs.stat(path.join(env.OPENCLAW_STATE_DIR!, "state", "openclaw.sqlite"))).isFile(),
-    ).toBe(true);
+    openOpenClawStateDatabase({ env });
+    await closeOpenClawStateDatabaseAsync();
     owner = await acquireGatewayLock({ env, port: claim.port, allowInTests: true, timeoutMs: 0 });
     expect(owner).not.toBeNull();
   });

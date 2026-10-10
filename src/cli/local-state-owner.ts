@@ -23,9 +23,18 @@ type LocalMutationScope = {
   config: OpenClawConfig;
   signal: AbortSignal;
   assertCurrent: () => void;
+  /** Already accepted compensation retains custody after interruption. */
+  assertSettlementCurrent: () => void;
+  runSettlement: <U>(run: () => Promise<U>) => Promise<U>;
 };
 
-type LocalOwnerScope = { assertCurrent: () => void; ownerLockPath: string; configPath: string };
+type LocalOwnerScope = {
+  assertCurrent: () => void;
+  assertSettlementCurrent: () => void;
+  ownerLockPath: string;
+  configPath: string;
+  settling?: true;
+};
 const localOwnerAssertions = resolveGlobalSingleton(
   Symbol.for("openclaw.localStateOwnerAssertions"),
   () => new AsyncLocalStorage<LocalOwnerScope>(),
@@ -64,12 +73,18 @@ export async function runWithLocalStateOwner<T>(params: {
   recoveryCommand?: string;
   requiredCapabilities?: readonly string[];
   /** Local inspection must stay read-only and must not load mutation-capable runtime config. */
-  onForeignOwner?: "refuse" | ((scope: Omit<LocalMutationScope, "config">) => Promise<T>);
+  onForeignOwner?:
+    | "refuse"
+    | ((scope: Omit<LocalMutationScope, "config" | "runSettlement">) => Promise<T>);
   assertTargetCurrent?: () => void;
   runLocal: (scope: LocalMutationScope) => Promise<T>;
 }): Promise<T> {
   const parent = localOwnerAssertions.getStore();
-  parent?.assertCurrent();
+  if (parent?.settling) {
+    parent.assertSettlementCurrent();
+  } else {
+    parent?.assertCurrent();
+  }
   const sourceEnv = params.env ?? process.env;
   const selectedEnv = { ...sourceEnv };
   const selectedStateDir = resolveStateDir(selectedEnv);
@@ -111,9 +126,17 @@ export async function runWithLocalStateOwner<T>(params: {
   const controller = new AbortController();
   const finished = createDeferredCore();
   const releaseExitGate = registerSignalExitGate(finished.promise, () => controller.abort());
-  const assertTargetCurrent = () => {
-    parent?.assertCurrent();
-    controller.signal.throwIfAborted();
+  const assertTargetCurrent = (settlement = false) => {
+    if (settlement) {
+      parent?.assertSettlementCurrent();
+    } else {
+      if (parent?.settling) {
+        parent.assertSettlementCurrent();
+      } else {
+        parent?.assertCurrent();
+      }
+      controller.signal.throwIfAborted();
+    }
     const ambientPaths = resolveGatewayLockPaths(sourceEnv);
     const currentRoot = rootIdentity
       ? statSync(stateDir, { bigint: true, throwIfNoEntry: false })
@@ -155,6 +178,10 @@ export async function runWithLocalStateOwner<T>(params: {
     }
   };
   const runLocal = async (assertOwnerCurrent: () => void): Promise<T> => {
+    const assertSettlementCurrent = () => {
+      assertTargetCurrent(true);
+      assertOwnerCurrent();
+    };
     const assertCurrent = () => {
       assertTargetCurrent();
       assertOwnerCurrent();
@@ -162,18 +189,45 @@ export async function runWithLocalStateOwner<T>(params: {
     assertCurrent();
     const { getRuntimeConfig } = await import("../config/config.js");
     assertCurrent();
-    return await localOwnerAssertions.run(
-      { assertCurrent, ownerLockPath: paths.ownerLockPath, configPath: paths.configPath },
-      () =>
-        params.runLocal({
-          env,
-          get config() {
-            assertCurrent();
-            return getRuntimeConfig();
-          },
-          signal: controller.signal,
-          assertCurrent,
-        }),
+    const selectedScope: LocalOwnerScope = {
+      assertCurrent,
+      assertSettlementCurrent,
+      ownerLockPath: paths.ownerLockPath,
+      configPath: paths.configPath,
+    };
+    const runSettlement = async <U>(run: () => Promise<U>): Promise<U> => {
+      assertSettlementCurrent();
+      let active = true;
+      const assertRetainedSettlement = () => {
+        assertSettlementCurrent();
+        if (!active) {
+          throw new Error("Local state settlement scope has completed");
+        }
+      };
+      return await localOwnerAssertions.run(
+        { ...selectedScope, assertSettlementCurrent: assertRetainedSettlement, settling: true },
+        async () => {
+          try {
+            return await run();
+          } finally {
+            active = false;
+            assertSettlementCurrent();
+          }
+        },
+      );
+    };
+    return await localOwnerAssertions.run(selectedScope, () =>
+      params.runLocal({
+        env,
+        get config() {
+          assertCurrent();
+          return getRuntimeConfig();
+        },
+        signal: controller.signal,
+        assertCurrent,
+        assertSettlementCurrent,
+        runSettlement,
+      }),
     );
   };
   const route = async (owner: GatewayLockIdentity): Promise<T> => {
@@ -183,6 +237,7 @@ export async function runWithLocalStateOwner<T>(params: {
         env,
         signal: controller.signal,
         assertCurrent: assertTargetCurrent,
+        assertSettlementCurrent: () => assertTargetCurrent(true),
       });
       assertTargetCurrent();
       return result;

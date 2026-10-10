@@ -103,7 +103,15 @@ export async function applyConfigStateMutation(
           await store.execute({ type: "config.metadata.write", input: { now: mutation.now } });
           return true;
         case "health":
-          return await store.execute({ type: "config.health.patch", input: mutation });
+          return await store.execute({
+            type: "config.health.patch",
+            input: {
+              configPath: mutation.configPath,
+              patch: mutation.patch,
+              expected: mutation.expected,
+              updatedAtMs: mutation.updatedAtMs,
+            },
+          });
       }
     },
     {
