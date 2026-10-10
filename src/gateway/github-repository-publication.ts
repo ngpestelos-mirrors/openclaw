@@ -35,6 +35,7 @@ import {
   type GitHubPublicationClaimRequest,
   type GitHubPublicationSessionRequest as SharedRequest,
 } from "./github-publication-coordinator-methods.js";
+import { matchesRepositoryGitHubPublicationClaim } from "./github-publication-defer.kernel.js";
 import { GitHubPublicationRequesterUnavailableError } from "./github-publication-failure.js";
 import { restoreGitHubPublicationRequester } from "./github-publication-requester.js";
 import {
@@ -49,7 +50,6 @@ import {
 } from "./github-repository-publication-executor.js";
 import {
   createRepositoryGitHubPublicationRecovery,
-  matchesRepositoryGitHubPublicationClaim,
   settleDeniedRepositoryGitHubPublication,
 } from "./github-repository-publication-recovery.js";
 import {
