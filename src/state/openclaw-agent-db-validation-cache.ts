@@ -191,6 +191,10 @@ export function getOpenClawAgentDatabaseValidation(
 ): OpenClawAgentDatabaseValidation | undefined {
   const pathname = path.resolve(database.path);
   let entry = validatedPaths.get(pathname);
+  // Shared physical facts cannot undo a refusal by this path's admission owner.
+  if (entry?.revoked) {
+    return undefined;
+  }
   if (
     !entry?.integrityVerified ||
     !entry.validation ||
@@ -198,8 +202,19 @@ export function getOpenClawAgentDatabaseValidation(
   ) {
     const validation = getSqliteDatabaseAdmission(database.db, agentDatabaseValidationKey);
     if (validation && matchesValidation(database, validation)) {
-      entry = { validation, integrityVerified: true };
-      validatedPaths.set(pathname, entry);
+      if (
+        entry &&
+        (entry.agentId === undefined || entry.agentId === database.agentId) &&
+        (!entry.validation || matchesValidation(database, entry.validation))
+      ) {
+        // Promotion keeps custody captured before this physical proof arrived.
+        entry.agentId = database.agentId;
+        entry.validation = validation;
+        entry.integrityVerified = true;
+      } else {
+        entry = { agentId: database.agentId, validation, integrityVerified: true };
+        validatedPaths.set(pathname, entry);
+      }
     }
   }
   if (
@@ -361,6 +376,10 @@ function captureValidationTransfer(
           Atomics.load(new Int32Array(captured.validation.valid), 0) !== 1)) ||
       Atomics.load(new Int32Array(received.valid), 0) !== 1
     ) {
+      if (schemaRequired && validatedPaths.get(pathname)?.revoked) {
+        // A refused opener may already have shared its receipt with another worker.
+        Atomics.store(new Int32Array(received.valid), 0, 0);
+      }
       return "stale";
     }
     if (

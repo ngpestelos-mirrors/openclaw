@@ -167,7 +167,8 @@ export function captureSqliteDatabaseAdmissionRecords(
       [...record.facts].filter(([, fact]) => isSqliteDatabaseAdmissionFactCurrent(record, fact)),
     );
     if (cursor) {
-      const revision = `${Atomics.load(cell, 0)}:${Atomics.load(cell, 1)}:${Atomics.load(cell, 4)}:${hostRevision ?? ""}:${[...record.writers.keys()].join(",")}:${[...facts.values()].map((fact) => fact.publication).join(",")}`;
+      // A reused inode starts a new custody generation even when its counters match.
+      const revision = `${record.generationId}:${Atomics.load(cell, 0)}:${Atomics.load(cell, 1)}:${Atomics.load(cell, 4)}:${hostRevision ?? ""}:${[...record.writers.keys()].join(",")}:${[...facts.values()].map((fact) => fact.publication).join(",")}`;
       if (cursor.get(record.identity) === revision) {
         continue;
       }

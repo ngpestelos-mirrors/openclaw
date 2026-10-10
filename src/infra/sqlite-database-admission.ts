@@ -184,7 +184,9 @@ export function prepareSqliteDatabaseAdmission(
         exchange(filename, true);
         const opened = prepareSqliteDatabaseAdmission(filename);
         if (managed && opened === undefined) {
-          throw new Error("SQLite worker file creation requires host authority", { cause: error });
+          throw new Error(`SQLite worker file creation requires host authority: ${filename}`, {
+            cause: error,
+          });
         }
         return opened;
       }

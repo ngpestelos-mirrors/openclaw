@@ -60,7 +60,12 @@ export function invalidateSqliteSchemaFacts(database: DatabaseSync): void {
   invalidateSchemaFacts(database, true);
 }
 
-function invalidateSchemaFacts(database: DatabaseSync, publish: boolean, changesMain = true): void {
+function invalidateSchemaFacts(
+  database: DatabaseSync,
+  publish: boolean,
+  changesMain = true,
+  notify = true,
+): void {
   const owner = owners.get(database);
   if (owner) {
     if (database.isTransaction) {
@@ -73,8 +78,8 @@ function invalidateSchemaFacts(database: DatabaseSync, publish: boolean, changes
     if (changesMain && database.isTransaction && !owner.transactionalSchema) {
       owner.transactionBaseFacts = owner.facts;
     }
-    for (const listener of owner.mutationListeners ?? []) {
-      listener(undefined);
+    if (notify) {
+      owner.mutationListeners?.forEach((listener) => listener(undefined));
     }
     // Capture physical identity before DDL, while the caller owns cleanup on admission failure.
     bindScope(database, owner);
@@ -88,7 +93,7 @@ function invalidateSchemaFacts(database: DatabaseSync, publish: boolean, changes
   }
 }
 
-/** Local mutations revoke before execution; foreign observations carry their committed markers. */
+/** MAIN mutations revoke before execution; TEMP-only table changes expire local facts instead. */
 export function registerSqliteSchemaMutationListener(
   database: DatabaseSync,
   listener: SchemaMutationListener,
@@ -102,7 +107,7 @@ export function registerSqliteSchemaMutationListener(
   return () => listeners.delete(listener);
 }
 
-/** Only the fixed tracking shapes are non-revoking; ordinary TEMP DDL stays observed. */
+/** Fixed tracking shapes retain local facts; other TEMP DDL still expires its connection's facts. */
 export function installSqliteTempTrackingSchema(
   database: DatabaseSync,
   schema: SqliteTempTrackingSchema,
@@ -182,7 +187,7 @@ function trackSchemaChanges(
     }
     const { control, dataChange } = mutation;
     // The parser proves these batches contain only outer rollback plus ordinary reads.
-    const schemaChange = mutation.schemaChange && control?.outerRollback !== true;
+    const schemaChange = control?.outerRollback === true ? false : mutation.schemaChange;
     const mainSchemaChange = mutation.mainSchemaChange && control?.outerRollback !== true;
     observeTransactionState(database, owner);
     const snapshot = phase === "bind" ? undefined : getSqlitePinnedReadSnapshot(database);
@@ -230,13 +235,17 @@ function trackSchemaChanges(
       Boolean(control) && !canPreserveTransactionSnapshot(control, wasTransaction);
     const rollback = control?.kind === "ROLLBACK";
     const rollsBackSchema = rollback && owner.transactionalSchema && !control.outerRollback;
+    // Row-only rollback expires cached reads without revoking live schema-based authority.
+    const notifySchema = schemaChange === true || (rollback && owner.transactionalSchema);
     if (rollback) {
       discardSqliteDatabaseTransactionAdmissions(database);
     }
     if (schemaChange || rollback) {
-      invalidateSchemaFacts(database, false, mainSchemaChange || rollsBackSchema);
+      invalidateSchemaFacts(database, false, mainSchemaChange || rollsBackSchema, notifySchema);
+      owner.transactionalFacts ||= schemaChange === "temp" && database.isTransaction;
     }
-    if (dataChange || control?.kind === "ROLLBACK") {
+    if (dataChange || schemaChange === "temp" || control?.kind === "ROLLBACK") {
+      // TEMP shadowing and savepoint rollback can change row reads without a data write.
       owner.mutationRevision += 1;
     }
     if (control?.kind === "ROLLBACK") {
@@ -317,7 +326,7 @@ function trackSchemaChanges(
           if (rollback) {
             discardSqliteDatabaseTransactionAdmissions(database);
           }
-          invalidateSchemaFacts(database, false, mainSchemaChange || rollsBackSchema);
+          invalidateSchemaFacts(database, false, mainSchemaChange || rollsBackSchema, notifySchema);
         }
         const rolledBack =
           succeeded &&

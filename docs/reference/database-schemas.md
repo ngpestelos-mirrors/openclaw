@@ -203,7 +203,8 @@ and receipt retention are unchanged.
 
 The Gateway does not schedule daily full-database scans. Admission-requested
 background checks stay limited to the requested agent database: `quick_check`
-for clean restart proof, or a full check after proven same-boot process death.
+for clean restart proof, or a full check after proven same-boot process death or
+native WAL admission without a verification receipt while the verifier is running.
 See [integrity admission and Doctor maintenance](/reference/database-schemas/integrity-and-recovery#integrity-checks)
 for the provenance requirements and operator-requested verification.
 

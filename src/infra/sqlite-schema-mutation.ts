@@ -76,6 +76,19 @@ function createsOnlyTemporaryObject(sql: string): boolean {
   return false;
 }
 
+function changesOnlyTemporaryTable(sql: string): boolean {
+  const normalized = normalizeSqlWhitespace(sql);
+  const end = findSqlCharacter(normalized, ";");
+  if (end >= 0 && normalized.slice(end + 1).trim() !== "") {
+    return false;
+  }
+  // An unqualified DROP may resolve to MAIN; only the explicit TEMP namespace is local.
+  return (
+    /^CREATE\s+(?:TEMP|TEMPORARY)\s+TABLE\b/iu.test(normalized) ||
+    /^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:temp|"temp"|`temp`|\[temp\])\s*\./iu.test(normalized)
+  );
+}
+
 // A write to another table can change policy through a trigger.
 function changesData(sql: string): boolean {
   return /\b(?:INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql);
@@ -144,10 +157,10 @@ export function canPreserveTransactionSnapshot(
 }
 
 export function classifySqliteMutation(sql: string, mode: "batch" | "statement") {
-  const schemaChange = changesSchema(sql);
+  const schemaChange = changesSchema(sql) && (changesOnlyTemporaryTable(sql) ? "temp" : true);
   return {
     schemaChange,
-    mainSchemaChange: schemaChange && !createsOnlyTemporaryObject(sql),
+    mainSchemaChange: schemaChange === true && !createsOnlyTemporaryObject(sql),
     dataChange: changesData(sql),
     control: readTransactionControl(sql, mode),
   };
