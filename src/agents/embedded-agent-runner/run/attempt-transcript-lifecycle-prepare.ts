@@ -6,7 +6,6 @@ import {
   toDatabaseOptions,
 } from "../../../config/sessions/session-accessor.sqlite-scope.js";
 import { createSessionActorFactory } from "../../../config/sessions/session-actor-durable.js";
-import { captureNativeIncognitoSessionActorTarget } from "../../../config/sessions/session-actor-native-incognito.js";
 import { prepareCronRootSessionGeneration } from "../../../config/sessions/session-delivery-generation.js";
 import { assertSessionEntryCohortScope } from "../../../config/sessions/session-entry-cohort-scope.js";
 import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
@@ -176,6 +175,9 @@ export async function prepareEmbeddedAttemptTranscriptLifecycle(input: {
         database,
       };
     } else if (isIncognitoOpenClawAgentSqlitePath(database.path, database)) {
+      const { captureNativeIncognitoSessionActorTarget } =
+        await import("../../../config/sessions/session-actor-native-incognito.js");
+      assertCurrent();
       const target = captureNativeIncognitoSessionActorTarget({
         database,
         sessionKey: sessionTarget.sessionKey,
