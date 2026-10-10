@@ -103,7 +103,9 @@ describe("scoped domain projections", () => {
 
   it("reads outbox badges through the storage owner and detaches its invalidation listener", () => {
     vi.stubGlobal("sessionStorage", createStorageMock());
-    onTestFinished(() => vi.unstubAllGlobals());
+    onTestFinished(() => {
+      vi.unstubAllGlobals();
+    });
     const scope = {
       settings: { gatewayUrl: "ws://projection.invalid" },
       connected: false,

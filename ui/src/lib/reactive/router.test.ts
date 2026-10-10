@@ -42,7 +42,7 @@ it("projects real pending/completed navigation without taking loader ownership",
     await navigation;
     flush();
     expect(projection.read().matches[0]?.data).toBe("loaded");
-    const replacement = createRouter({ routes: [] });
+    const replacement = createRouter<"home" | "detail", unknown, string, string>({ routes: [] });
     projection.replaceSource(replacement);
     flush();
     expect(projection.read().status).toBe("idle");

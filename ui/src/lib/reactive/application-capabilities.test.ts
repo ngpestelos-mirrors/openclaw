@@ -147,7 +147,8 @@ describe("application capability projections", () => {
         };
       },
       project: projectSidebarAttention,
-      select: (value) => value.map((entry) => entry.label),
+      select: (value) =>
+        value.flatMap((entry) => (entry.type === "attention" ? [entry.label] : [])),
       initial: [],
       updated: ["projection-job"],
     });

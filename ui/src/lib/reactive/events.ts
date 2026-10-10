@@ -12,10 +12,10 @@ import { subscribeStoredChatOutboxChanges } from "../chat/outbox-store.ts";
 import type { SessionPatchOptions, SessionPatchResult } from "../sessions/patch.ts";
 import { projectEvents } from "./projection.ts";
 
-type ListenerEvent<Subscribe> = Subscribe extends (
-  listener: (event: infer Event) => unknown,
-) => unknown
-  ? Event
+type ListenerEvent<Subscribe> = Subscribe extends (listener: infer Listener) => unknown
+  ? Listener extends (event: infer Event) => unknown
+    ? Event
+    : never
   : never;
 
 // These channels intentionally expose no read/last-value accessor: repeated

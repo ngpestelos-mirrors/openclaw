@@ -101,7 +101,7 @@ describe("owner projections", () => {
   });
 
   it("honors value equality without suppressing revision-only snapshots", () => {
-    const { owner, projection } = source("same", Object.is);
+    const { owner, projection } = source<string>("same", Object.is);
     const listener = vi.fn();
     disposals.push(projection.subscribe(listener));
     owner.set("same");
@@ -173,15 +173,12 @@ describe("owner projections", () => {
 describe("event projections", () => {
   it("keeps incidental void-listener return values synchronous", async () => {
     let deliver: (() => void | Promise<void>) | undefined;
-    const projection = projectEvents(
-      {},
-      {
-        subscribe: (_source, listener: () => void | Promise<void>) => {
-          deliver = listener;
-          return () => {};
-        },
+    const projection = projectEvents<undefined, void>(undefined, {
+      subscribe: (_source, listener) => {
+        deliver = () => listener();
+        return () => {};
       },
-    );
+    });
     disposals.push(projection.dispose);
     const events: string[] = [];
     projection.subscribe(() => events.push("delivered"));

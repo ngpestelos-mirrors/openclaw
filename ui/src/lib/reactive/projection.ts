@@ -208,7 +208,7 @@ export function projectEvents<S, E>(
     connected = true;
     const current = ++generation;
     try {
-      const cleanup = contract.subscribe(source, (event) => {
+      const cleanup = contract.subscribe(source, (event): void | Promise<void> => {
         const pending: Promise<void>[] = [];
         const failures: unknown[] = [];
         for (const listener of [...listeners]) {
@@ -240,6 +240,7 @@ export function projectEvents<S, E>(
         if (failures.length > 0) {
           throw failures[0];
         }
+        return undefined;
       });
       if (disposed || generation !== current) {
         cleanup();
