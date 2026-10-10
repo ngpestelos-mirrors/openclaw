@@ -389,7 +389,9 @@ it("invalidates pending custody for staging, promotion, terminal completion and 
         kind: "stage",
         trackCompletion: true,
       });
-      if (expected.kind !== "stage") throw new Error("Expected a pending input staging snapshot");
+      if (expected.kind !== "stage") {
+        throw new Error("Expected a pending input staging snapshot");
+      }
       mutate({
         ...identity,
         kind: "stage",

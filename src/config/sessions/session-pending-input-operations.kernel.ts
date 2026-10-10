@@ -172,13 +172,11 @@ export function mutatePendingInput(
           state: "queued",
           accepted_at: Date.now(),
         });
-        if (actor) {
-          const inserted = executeSqliteQueryTakeFirstSync(current.db, insert.returningAll());
-          if (!inserted) throw new Error("Pending input insert omitted its committed row");
-          actor.pendingInputs.set(input.idempotencyKey, inserted);
-        } else {
-          executeSqliteQuerySync(current.db, insert);
+        const inserted = executeSqliteQueryTakeFirstSync(current.db, insert.returningAll());
+        if (!inserted) {
+          throw new Error("Pending input insert omitted its committed row");
         }
+        actor?.pendingInputs.set(input.idempotencyKey, inserted);
       }
     } else if (input.kind === "complete") {
       if (!schema?.tables.has("session_input_completions")) {

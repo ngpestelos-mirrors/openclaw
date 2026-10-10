@@ -58,7 +58,9 @@ export function readSessionColdTranscript(
   sessionId: string,
 ): Omit<SessionColdArchive, "archive_blob"> | undefined {
   const actor = readSessionActorTransactionState({ db }, { sessionId });
-  if (actor) return actor.transcript.coldArchive && { ...actor.transcript.coldArchive };
+  if (actor) {
+    return actor.transcript.coldArchive && { ...actor.transcript.coldArchive };
+  }
   return getColdTranscriptQueries(db).metadata(sessionId).rows[0];
 }
 
@@ -75,7 +77,9 @@ export class SessionTranscriptColdError extends Error {
 export function assertSessionTranscriptHot(db: DatabaseSync, sessionId: string): void {
   const actor = readSessionActorTransactionState({ db }, { sessionId });
   if (actor) {
-    if (actor.transcript.coldArchive) throw new SessionTranscriptColdError(sessionId);
+    if (actor.transcript.coldArchive) {
+      throw new SessionTranscriptColdError(sessionId);
+    }
     return;
   }
   if (getColdTranscriptQueries(db).marker(sessionId).rows.length > 0) {

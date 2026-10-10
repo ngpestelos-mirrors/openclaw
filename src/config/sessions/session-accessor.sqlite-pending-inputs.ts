@@ -2,7 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseSync } from "node:sqlite";
 import { classifyAgentRunTerminalOutcome } from "@openclaw/normalization-core/agent-run-terminal-outcome";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import type { Selectable } from "kysely";
 import type { AgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.types.js";
 import {
   isAgentEventLifecycleGenerationCurrent,
@@ -16,80 +15,33 @@ import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
-import type { SessionPendingInputs } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { hasSessionPendingInputsSchema } from "../../state/openclaw-agent-pending-inputs-schema.js";
-import type { OpenClawConfig } from "../types.openclaw.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import { readSessionActorTransactionState } from "./session-actor-transaction.js";
-import type {
-  SessionPendingInputAuthority,
-  SessionPendingInputAuthorityFacts,
-} from "./session-pending-input-authority.js";
+import type { SessionPendingInputAuthorityFacts } from "./session-pending-input-authority.js";
 import { SessionPendingInputCustodyError } from "./session-pending-input-custody-error.js";
-import type { SessionPendingInputState } from "./session-pending-input-receipt.types.js";
+import type {
+  SessionPendingInput,
+  SessionPendingInputRow,
+  SessionPendingInputOwner,
+  SessionPendingInputWorkerFacts,
+  SessionPendingInputWorkerReceipt,
+  SessionPendingInputAppend,
+  SessionInputCompletion,
+} from "./session-pending-input.types.js";
 
-export type SessionPendingInput = {
-  id: string;
-  runId: string;
-  message: PersistedUserTurnMessage;
-  acceptedAt: number;
-  state: SessionPendingInputState;
-};
-export type SessionPendingInputPage = {
-  items: SessionPendingInput[];
-  total: number;
-  nextBefore?: number;
-};
-export type SessionPendingInputRow = Selectable<SessionPendingInputs>;
 type PendingInputDatabase = Pick<OpenClawAgentDatabase, "db" | "path">;
 
-export type SessionPendingInputOwner = {
-  agentId?: string;
-  databaseAgentId?: string;
-  inputId: string;
-  transcriptInputId: string;
-  sessionId: string;
-  sessionKey: string;
-  /** Native cache locator; may be the process-held incognito sentinel. */
-  databasePath: string;
-  /** Captured physical locator, or native incognito locator, for comparisons and workers. */
-  workerDatabasePath: string;
-  idempotencyKey: string;
-  lifecycleGeneration: string;
-  messageJson: string;
-  config?: OpenClawConfig;
-  assertCurrent: () => void;
-  authority?: SessionPendingInputAuthority;
-  /** Published only after the exact input was consumed by a committed transcript write. */
-  consumed?: true;
-  /** Prompt authority is revoked; this owner still holds terminal disposition custody. */
-  settling?: true;
-  finish: (disposition: Exclude<SessionPendingInputState, "queued">) => void;
-  restartRecovered?: true;
-  /** Aggregate authority is the exact source closures, never persisted source identifiers. */
-  sources?: readonly SessionPendingInputOwner[];
-};
-
-/** Transported facts do not grant custody; the host retains and checks the exact live owner. */
-export type SessionPendingInputWorkerFacts = Pick<
+export type {
+  SessionPendingInput,
+  SessionPendingInputPage,
+  SessionPendingInputRow,
   SessionPendingInputOwner,
-  | "inputId"
-  | "agentId"
-  | "databaseAgentId"
-  | "transcriptInputId"
-  | "sessionId"
-  | "sessionKey"
-  | "databasePath"
-  | "idempotencyKey"
-  | "lifecycleGeneration"
-  | "messageJson"
-> & { preparedAuthority?: true; sources?: readonly SessionPendingInputWorkerFacts[] };
-
-export type SessionPendingInputWorkerReceipt = {
-  transcriptInputId: string;
-  consumedInputIds: string[];
-};
+  SessionPendingInputWorkerFacts,
+  SessionPendingInputWorkerReceipt,
+  SessionPendingInputAppend,
+} from "./session-pending-input.types.js";
 
 const workerCustody = resolveGlobalSingleton(
   Symbol.for("openclaw.sessionPendingInputWorkerCustody"),
@@ -362,7 +314,7 @@ type SessionInputCompletionScope = Pick<ResolvedTranscriptScope, "sessionId" | "
 export function readSessionInputCompletion(
   database: PendingInputDatabase,
   scope: SessionInputCompletionScope,
-) {
+): SessionInputCompletion | undefined {
   const actor = readSessionActorTransactionState(database, scope);
   const row = actor
     ? actor.completions.get(scope.idempotencyKey)
@@ -551,14 +503,6 @@ export function readSessionPendingInputByKey(
   );
 }
 
-export type SessionPendingInputAppend = {
-  inputId: string;
-  message: PersistedUserTurnMessage;
-  alreadyPromoted: boolean;
-  sourceInputIds?: readonly string[];
-  stageRelocation?: (destinationInputId: string) => void;
-};
-
 /** The private call-path owner, not a copied id or durable row, permits promotion. */
 export function resolveSessionPendingInputAppend(
   database: PendingInputDatabase,
@@ -644,8 +588,8 @@ export function resolveSessionPendingInputAppend(
     const acceptedByKey = new Map(
       (actor
         ? owner.sources.flatMap((source) => {
-            const row = actor.pendingInputs.get(source.idempotencyKey);
-            return row ? [{ ...row }] : [];
+            const accepted = actor.pendingInputs.get(source.idempotencyKey);
+            return accepted ? [{ ...accepted }] : [];
           })
         : executeSqliteQuerySync(
             database.db,
@@ -753,7 +697,9 @@ export function consumeSessionPendingInput(
   const actor = readSessionActorTransactionState(database);
   if (actor) {
     for (const [key, row] of actor.pendingInputs) {
-      if (!inputIds.has(row.input_id)) continue;
+      if (!inputIds.has(row.input_id)) {
+        continue;
+      }
       if (pending.sourceInputIds) {
         actor.pendingInputs.set(key, { ...row, consumed_event_id: pending.inputId });
       } else {

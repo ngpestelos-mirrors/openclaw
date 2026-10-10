@@ -21,7 +21,7 @@ import {
 } from "./session-transcript-fts.js";
 import {
   prepareSessionTranscriptProjectionAppend,
-  type SessionTranscriptProjectionCursor,
+  type SessionTranscriptProjectionState,
   type TranscriptIndexEntry,
 } from "./session-transcript-projection-append.js";
 import {
@@ -39,9 +39,7 @@ type TranscriptIndexDatabase = Pick<
   | "transcript_events"
 >;
 
-export type SessionTranscriptProjectionState = SessionTranscriptProjectionCursor & {
-  needsRebuild: boolean;
-};
+export type { SessionTranscriptProjectionState } from "./session-transcript-projection-append.js";
 
 type TranscriptIndexAppend = {
   seq: number;
@@ -143,7 +141,9 @@ function readSessionTranscriptProjectionState(
   sessionId: string,
 ): (SessionTranscriptProjectionState & { hasUnclassifiedEvents: boolean }) | undefined {
   const actor = readSessionActorTransactionState({ db }, { sessionId });
-  if (actor) return actor.transcript.projection && { ...actor.transcript.projection };
+  if (actor) {
+    return actor.transcript.projection && { ...actor.transcript.projection };
+  }
   const row = executeSqliteQueryTakeFirstSync(
     db,
     selectSessionTranscriptProjectionState(db, sessionId),
@@ -327,7 +327,9 @@ export function createTranscriptIndexAppenderInTransaction(
       : createWatermarkWriter(db, sessionId);
     write(nextWatermark);
     watermark = nextWatermark;
-    if (actor) actor.transcript.projection = { ...nextWatermark, hasUnclassifiedEvents: false };
+    if (actor) {
+      actor.transcript.projection = { ...nextWatermark, hasUnclassifiedEvents: false };
+    }
     return false;
   };
 }
@@ -348,11 +350,12 @@ export function markSessionTranscriptIndexDirtyInTransaction(
   };
   createWatermarkWriter(db, sessionId)({ ...dirty, updatedAt: now });
   const actor = readSessionActorTransactionState({ db }, { sessionId });
-  if (actor)
+  if (actor) {
     actor.transcript.projection = {
       ...dirty,
       hasUnclassifiedEvents: actor.transcript.projection?.hasUnclassifiedEvents ?? false,
     };
+  }
   return dirty;
 }
 

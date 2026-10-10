@@ -185,7 +185,9 @@ it("installs native commits before reply, retains known commits after reply fail
     };
     const committed = f.mutate(command);
     expect(committed.kind).toBe("committed");
-    if (committed.kind !== "committed") throw new Error("Expected native commit");
+    if (committed.kind !== "committed") {
+      throw new Error("Expected native commit");
+    }
     expect(committed.failure).toEqual({
       name: "Error",
       message: "synthetic reply failure after native commit",
@@ -209,7 +211,9 @@ it("installs native commits before reply, retains known commits after reply fail
     expect(f.read().entry?.updatedAt).toBe(10);
 
     f.hooks.admit = (stage) => {
-      if (stage === "commit") throw new Error("live run revoked before commit");
+      if (stage === "commit") {
+        throw new Error("live run revoked before commit");
+      }
     };
     expect(f.mutate(patch(current, 20))).toMatchObject({
       kind: "rolled-back",
@@ -281,7 +285,9 @@ it("invalidates resident facts on native writes and keeps missing, replaced, and
         error: { message: "Session actor requires an existing session" },
       });
       expect(f.read(missing.target).entry).toBeUndefined();
-      if (f.target.database.kind !== "file") throw new Error("Expected durable target");
+      if (f.target.database.kind !== "file") {
+        throw new Error("Expected durable target");
+      }
       const other = {
         ...f.target,
         database: { ...f.target.database, physicalIdentity: "different-file" },
@@ -303,7 +309,9 @@ it("evicts the least recently used settled actor and hydrates a new epoch after 
       sessionKey: `agent:main:inactive-${index}`,
     }));
     const oldest = f.read(inactive[0]);
-    for (const target of inactive.slice(1, 127)) f.read(target);
+    for (const target of inactive.slice(1, 127)) {
+      f.read(target);
+    }
     expect(f.read().version).toEqual(initial.version);
     f.read(inactive[127]);
     expect(f.read().version).toEqual(initial.version);
@@ -354,7 +362,9 @@ it("adopts a run only under the exact lifecycle and current transaction and comm
     });
     const live = f.read();
     f.hooks.admit = (stage) => {
-      if (stage === "transaction") throw new Error("placement expired at effect boundary");
+      if (stage === "transaction") {
+        throw new Error("placement expired at effect boundary");
+      }
     };
     expect(f.mutate(patch(live, 50))).toMatchObject({
       kind: "rolled-back",
@@ -537,7 +547,9 @@ it.each(["assistant append", "empty append", "bookkeeping"] as const)(
         native.mockRestore();
       }
       expect(committed.kind).toBe("committed");
-      if (committed.kind !== "committed") throw new Error("Expected terminal commit");
+      if (committed.kind !== "committed") {
+        throw new Error("Expected terminal commit");
+      }
       expect(committed.failure).toBeUndefined();
       expect(committed.receipt).toMatchObject({
         phase: "completeTurn",
@@ -841,7 +853,9 @@ it("checks recovery provenance in the actor transaction and refuses a later unre
         idempotencyKey: key,
         trackCompletion: true,
       });
-      if (expected.kind !== "stage") throw new Error("Expected pending-input preparation");
+      if (expected.kind !== "stage") {
+        throw new Error("Expected pending-input preparation");
+      }
       return {
         type: "session.actor.acceptInput",
         input: {

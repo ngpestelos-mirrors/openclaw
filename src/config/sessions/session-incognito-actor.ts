@@ -9,7 +9,7 @@ import type { RetainedWorkerTransactionAdmission } from "../../infra/sqlite-work
 import { SqliteWorkerError } from "../../infra/sqlite-worker-store.js";
 import type { AgentDatabaseIncognitoIdentity } from "../../state/openclaw-agent-execution-contract.js";
 import type { TrajectoryRuntimeRetentionLease } from "../../trajectory/runtime-retention.contract.js";
-import type { SessionActorLifetime } from "./session-actor-contract.js";
+import type { SessionActorLifetime } from "./session-actor-state.types.js";
 import {
   authorizeSessionFacts,
   incognitoEntryPublication,

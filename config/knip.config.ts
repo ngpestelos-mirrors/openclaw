@@ -409,6 +409,9 @@ const rootEntries = [
   "node-runtime-recovery.mjs!",
   "src/index.ts!",
   "src/entry.ts!",
+  // Inactive phase-owner contract for the staged session caller cutover. Remove
+  // this audit root once accept-input, transcript, and delivery callers activate it.
+  "src/config/sessions/session-actor-durable.ts!",
   // Startup metadata renders source help through a generated child module's file-URL import.
   "src/cli/program/root-help.ts!",
   // Packaged postinstall imports this private compiled entry before stage activation.

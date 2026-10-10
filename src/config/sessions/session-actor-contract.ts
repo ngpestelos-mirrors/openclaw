@@ -1,31 +1,25 @@
-import type {
-  AgentDatabaseExecutionFileIdentity,
-  AgentDatabaseIncognitoIdentity,
-} from "../../state/openclaw-agent-execution-contract.js";
 import type { RestartRecoveryTerminalDeliveryClaim } from "./restart-recovery-receipt-state.js";
 import type { HarnessCompletionRecovery } from "./restart-recovery-types.js";
-import type { SessionParticipantRecord } from "./session-accessor.sqlite-participant-projection.js";
 import type {
-  SessionPendingInputRow,
-  SessionPendingInputWorkerReceipt,
-} from "./session-accessor.sqlite-pending-inputs.js";
+  SessionActorTarget,
+  SessionActorVersion,
+  SessionActorLifetime,
+  SessionActorHotState,
+} from "./session-actor-state.types.js";
 import type { SessionEntryBookkeepingReducer } from "./session-entry-patch-operation.js";
 import type {
   InitialSessionEntryCommit,
   SessionMetadataOperations,
 } from "./session-manager-write-contract.js";
-import type { SessionMember } from "./session-membership-facts.types.js";
 import type { PendingFinalDeliverySettlementInput } from "./session-pending-final-settlement.js";
 import type {
   PendingInputMutation,
   PendingInputMutationReceipt,
   PendingInputSnapshot,
 } from "./session-pending-input-operations.types.js";
+import type { SessionPendingInputWorkerReceipt } from "./session-pending-input.types.js";
 import type { SessionSourcePredicate } from "./session-source-authority.js";
-import type {
-  SessionTranscriptContextVersion,
-  SessionTranscriptWatermark,
-} from "./session-transcript-context-version.types.js";
+import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 import type {
   SessionTranscriptTurnExpectedState,
   SessionTranscriptTurnLifecyclePatch,
@@ -34,33 +28,14 @@ import type { SessionTurnCommitted, SessionTurnPlan } from "./session-turn.types
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
-/** Physical identity is a locator, never run, placement, or permission authority. */
-export type SessionActorNativeIncognitoIdentity = Readonly<{
-  kind: "native-incognito";
-  agentId: string;
-  nativeLocation: string;
-  /** The already-open native connection's incarnation, never a new memory owner. */
-  incarnation: string;
-}>;
-
-export type SessionActorTarget = Readonly<{
-  database:
-    | AgentDatabaseExecutionFileIdentity
-    | AgentDatabaseIncognitoIdentity
-    | SessionActorNativeIncognitoIdentity;
-  sessionKey: string;
-}>;
-
-/** Sequences are comparable only within one owner epoch. Rehydration creates a new epoch. */
-export type SessionActorVersion = Readonly<{ epoch: string; sequence: number }>;
-
-export type SessionActorLifetime = {
-  /** Refuse new work without revoking already accepted settlement. */
-  assertAdmission?(): void;
-  assertCurrent(): void;
-  /** Accepted work may still settle after new disclosure has been revoked. */
-  assertReadable(): void;
-};
+export type {
+  SessionActorNativeIncognitoIdentity,
+  SessionActorTarget,
+  SessionActorVersion,
+  SessionActorLifetime,
+  SessionActorHotState,
+  SessionActorSettlement,
+} from "./session-actor-state.types.js";
 
 /** Host-owned live authority, rechecked at both synchronous admission boundaries. */
 export type SessionActorAuthority = {
@@ -71,31 +46,6 @@ export type SessionActorAuthority = {
     /** Existing kernel source/custody evidence remains subject to its owner's checks. */
     publication?: unknown,
   ): void;
-};
-
-/** Complete hot facts. Cold/off-path payloads stay with the bounded history reader. */
-export type SessionActorHotState = {
-  target: SessionActorTarget;
-  version: SessionActorVersion;
-  /** In-process writer receipt revision, not a SQLite foreign-commit observation. */
-  writeToken: string;
-  /** Includes the canonical turn, lifecycle, recovery, and pendingFinalDelivery fields. */
-  entry: SessionEntry | undefined;
-  participants: SessionParticipantRecord[];
-  members: SessionMember[];
-  pendingInputs: Array<Omit<SessionPendingInputRow, "message_json">>;
-  transcript: {
-    watermark: SessionTranscriptWatermark;
-    version: SessionTranscriptContextVersion;
-    /** Empty anchors prove absence only when this exact projection is resident. */
-    anchorsState: "resident" | "unavailable";
-    anchors: TranscriptEntryAnchor[];
-    idempotency: Array<{ key: string; eventId: string; rawSeq: number }>;
-    /** Exact ordered active context membership, including an explicitly empty context. */
-    modelContext:
-      | { kind: "resident"; entries: Array<{ rawSeq: number; eventId: string | null }> }
-      | { kind: "unavailable"; reason: "cold" | "projection"; generation: string | null };
-  };
 };
 
 /** Serializable, pure bookkeeping. These reducers cannot change session identity or authority. */
@@ -296,8 +246,6 @@ export type SessionActorReceipt = {
   /** Complete detached postimage, installed on MAIN before acknowledgement. */
   postimage: SessionActorHotState;
 };
-
-export type SessionActorSettlement = "committed" | "rolled-back" | "unknown";
 
 export type SessionActorOutcome<Value> =
   | {

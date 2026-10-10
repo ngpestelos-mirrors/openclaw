@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { toUSVString } from "node:util";
-import { expressionBuilder, sql, type Selectable, type SqlBool } from "kysely";
+import { expressionBuilder, sql } from "kysely";
 import {
   createSqliteQueryCache,
   getNodeSqliteKysely,
@@ -21,10 +21,7 @@ import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-age
 import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
 import { isInternalSessionEffectsKey } from "./internal-session-key.js";
 import type { ExactSessionEntry, SessionEntrySummary } from "./session-accessor.sqlite-contract.js";
-import {
-  hasSqliteSessionOwnerColumns,
-  type SqliteSessionOwnerRow,
-} from "./session-accessor.sqlite-owner-projection.js";
+import { hasSqliteSessionOwnerColumns } from "./session-accessor.sqlite-owner-projection.js";
 import {
   prepareSqliteSessionParticipantProjection,
   projectSqliteSessionParticipants,
@@ -52,8 +49,8 @@ import {
   attachSessionEntrySnapshots,
   sessionEntrySnapshotColumnsForKeys,
   type SessionEntryProjection,
-  type SessionEntrySnapshotRow,
 } from "./session-entry-snapshots.js";
+import type { ResolvedSessionEntryRow } from "./session-entry-storage.types.js";
 import {
   collectSessionEntryLookupKeys,
   resolveDeliveryProvenCanonicalSessionKey,
@@ -61,8 +58,6 @@ import {
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 type OpenClawAgentDatabaseReader = Pick<OpenClawAgentDatabase, "agentId" | "db">;
-type SessionEntryRow = Selectable<OpenClawAgentKyselyDatabase["session_nodes"]> &
-  SessionEntrySnapshotRow;
 
 function cacheSessionEntryQuery<Row extends ResolvedSessionEntryRow["row"]>(
   database: DatabaseSync,
@@ -139,17 +134,7 @@ const getExactSessionEntryQueries = createSqliteQueryCache((database) => {
   };
 });
 
-export type ResolvedSessionEntryRow = {
-  entry: SessionEntry;
-  row: Pick<SessionEntryRow, "current_session_id" | "entry_json" | "session_key" | "updated_at"> &
-    SqliteSessionOwnerRow &
-    SessionEntrySnapshotRow &
-    Partial<Pick<SessionEntryRow, "legacy_acp_migration_json">> & {
-      board_present?: SqlBool;
-      member_ids_json?: string;
-      window_json?: string | null;
-    };
-};
+export type { ResolvedSessionEntryRow } from "./session-entry-storage.types.js";
 
 type ReadableSessionEntryRow = ResolvedSessionEntryRow["row"] &
   (CanonicalSessionValidationRow | { retained_window_id?: never });
@@ -609,11 +594,14 @@ export function prepareExactSessionEntryRowReads(
         options?.includeWindowFacts,
       );
       if (selected) {
-        if (options?.includeBoardPresence) selected.row.board_present = actor.hasBoard ? 1 : 0;
-        if (options?.includeMembership)
+        if (options?.includeBoardPresence) {
+          selected.row.board_present = actor.hasBoard ? 1 : 0;
+        }
+        if (options?.includeMembership) {
           selected.row.member_ids_json = JSON.stringify(
             actor.hot.members.map((member) => member.identityId),
           );
+        }
       }
       return selected;
     };

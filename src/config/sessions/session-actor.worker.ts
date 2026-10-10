@@ -69,12 +69,11 @@ export function createSessionActorWorker(
     residentBytes += bytes;
     // Keep one oversized working set until another key displaces it; dropping it
     // here would make every read-to-command version check fail after rehydration.
-    while (
-      residents.size > MAX_RESIDENT_SESSIONS ||
-      (residents.size > 1 && residentBytes > MAX_RESIDENT_BYTES)
-    ) {
-      const oldest = residents.keys().next().value;
-      if (oldest === undefined) {
+    for (const oldest of residents.keys()) {
+      if (
+        residents.size <= MAX_RESIDENT_SESSIONS &&
+        (residents.size <= 1 || residentBytes <= MAX_RESIDENT_BYTES)
+      ) {
         break;
       }
       drop(oldest);

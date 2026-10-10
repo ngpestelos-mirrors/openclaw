@@ -347,12 +347,12 @@ export function hydrateSessionActorState(
       row,
     ]),
   );
-  const navigation = (selected ? decodeJsonProjection(selected.actor_navigation) : []).map(
-    (row) => ({
+  const navigation = (selected ? decodeJsonProjection(selected.actor_navigation) : []).map((row) =>
+    Object.assign(
       // SAFETY: The canonical model codec preserves discriminants with readable empty payloads.
-      ...(JSON.parse(row.navigation_json) as SessionTreeEntry),
-      seq: row.seq,
-    }),
+      JSON.parse(row.navigation_json) as SessionTreeEntry,
+      { seq: row.seq },
+    ),
   );
   const contextVersion = {
     generation: rewrite?.generation ?? null,
@@ -412,7 +412,7 @@ export function hydrateSessionActorState(
 export function projectSessionActorHotState(state: SessionActorStoredState): SessionActorHotState {
   const hot = structuredClone(state.hot);
   hot.pendingInputs = [...state.pendingInputs.values()].map(
-    ({ message_json: _message, ...row }) => ({ ...row }),
+    ({ message_json: _message, ...row }) => row,
   );
   hot.transcript.idempotency = [...state.transcript.identities.values()].flatMap((row) =>
     row.message_idempotency_key
@@ -438,7 +438,9 @@ export function projectSessionActorHotState(state: SessionActorStoredState): Ses
     hot.transcript.anchorsState = "resident";
     for (const row of state.transcript.identities.values()) {
       const active = state.transcript.active.get(row.seq);
-      if (active?.message_position === undefined || active.message_position === null) continue;
+      if (active?.message_position === undefined || active.message_position === null) {
+        continue;
+      }
       hot.transcript.anchors.push({
         agentId: state.agentId,
         sessionKey: hot.target.sessionKey,
@@ -462,10 +464,9 @@ export function projectSessionActorHotState(state: SessionActorStoredState): Ses
       hot.transcript.modelContext = { kind: "unavailable", reason: "projection", generation };
     } else {
       const entries = normalizeSessionContextEntryBoundaries(
-        selectSessionTranscriptTreePathNodes(tree, tree.leafId).map(({ entry, parentId }) => ({
-          ...entry,
-          parentId,
-        })),
+        selectSessionTranscriptTreePathNodes(tree, tree.leafId).map(({ entry, parentId }) =>
+          Object.assign({}, entry, { parentId }),
+        ),
         tree.nodes,
       );
       hot.transcript.modelContext = {
