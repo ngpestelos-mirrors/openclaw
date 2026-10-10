@@ -23,7 +23,7 @@ export function createSolidControlUiBuildPlugin(rootDir: string): Plugin {
       build.onLoad({ filter: /\.tsx$/ }, async ({ path: sourcePath }) => {
         if (!compiler) {
           try {
-            // Each plugin owns its compiler and bundled renderer versions.
+            // SAFETY: The author-installed compiler exposes this public transform API.
             compiler = createRequire(path.join(rootDir, "package.json"))(
               "@solidjs/compiler",
             ) as SolidCompiler;

@@ -125,7 +125,7 @@ const mountXReplies: ControlUiView = (container, initialContext) => {
               <label class="x-replies__field">
                 <span>Bot account</span>
                 <select
-                  prop:value={view.accountId ?? ""}
+                  value={view.accountId ?? ""}
                   disabled={view.busy || !view.snapshot}
                   onChange={(event: Event) => {
                     if (!(event.currentTarget instanceof HTMLSelectElement)) {
@@ -170,7 +170,7 @@ const mountXReplies: ControlUiView = (container, initialContext) => {
                     placeholder="@handle"
                     maxlength="16"
                     required
-                    prop:value={view.username}
+                    value={view.username}
                     disabled={view.busy}
                     onInput={(event: Event) => {
                       if (event.currentTarget instanceof HTMLInputElement) {
@@ -209,7 +209,7 @@ const mountXReplies: ControlUiView = (container, initialContext) => {
                       type="button"
                       role="switch"
                       aria-label="Guest mode"
-                      aria-checked={String(view.snapshot.guests.enabled)}
+                      aria-checked={view.snapshot.guests.enabled ? "true" : "false"}
                       disabled={view.busy}
                       onClick={() =>
                         void request("x.guests.set", { enabled: !view.snapshot?.guests.enabled })
@@ -286,7 +286,7 @@ const mountXReplies: ControlUiView = (container, initialContext) => {
                     .
                   </p>
                 ) : null}
-                <div class="x-replies__list" aria-busy={String(view.busy)}>
+                <div class="x-replies__list" aria-busy={view.busy ? "true" : "false"}>
                   {view.snapshot.entries.length ? (
                     <table>
                       <thead>
@@ -458,7 +458,7 @@ const mountXReplies: ControlUiView = (container, initialContext) => {
   }
 
   function publish() {
-    if (!disposed)
+    if (!disposed) {
       setView(() => ({
         accountId,
         snapshot,
@@ -470,6 +470,7 @@ const mountXReplies: ControlUiView = (container, initialContext) => {
         connected: host.connection.connected,
         canAdmin: host.connection.canAdmin,
       }));
+    }
   }
 
   function sync() {

@@ -2,7 +2,6 @@ import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
-import type { XAllowlistSnapshot } from "../../../extensions/x/src/admin.js";
 import { buildPluginControlUi } from "../../../src/cli/plugins-control-ui-build.js";
 import { takeControlUiScreenshotFrame } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import {
@@ -33,7 +32,7 @@ const suite = createControlUiE2eSuite({
   },
 });
 
-function snapshot(accountId = "primary"): XAllowlistSnapshot {
+function snapshot(accountId = "primary") {
   return {
     accountId,
     accounts: [
@@ -159,7 +158,6 @@ suite.define(() => {
           userId: "202",
           username: "example_new",
           name: "Example contributor",
-          addedBy: "example-admin",
           configured: false,
           editable: true,
         });

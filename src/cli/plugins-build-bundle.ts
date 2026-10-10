@@ -1,7 +1,7 @@
 import { createRequire, isBuiltin } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { parse, type AnyNode } from "acorn";
+import { parse } from "acorn";
 import type { BuildOptions, BuildResult, PluginBuild } from "esbuild";
 import { createSolidControlUiBuildPlugin } from "./plugins-build-solid.js";
 
@@ -174,26 +174,26 @@ export async function buildPluginBundle(options: PluginBundleOptions) {
 }
 
 function hasUnbundledDynamicImport(
-  node: AnyNode,
+  node: unknown,
   isBundled: (specifier: string) => boolean,
 ): boolean {
-  if (
-    node.type === "ImportExpression" &&
-    (node.source.type !== "Literal" ||
-      typeof node.source.value !== "string" ||
-      !isBundled(node.source.value))
-  ) {
-    return true;
+  if (!isRecord(node)) {
+    return false;
+  }
+  if (node.type === "ImportExpression") {
+    const source = node.source;
+    if (
+      !isRecord(source) ||
+      source.type !== "Literal" ||
+      typeof source.value !== "string" ||
+      !isBundled(source.value)
+    ) {
+      return true;
+    }
   }
   for (const value of Object.values(node)) {
     for (const child of Array.isArray(value) ? value : [value]) {
-      // SAFETY: These fields belong to the Acorn tree, not arbitrary plugin objects.
-      if (
-        child &&
-        typeof child === "object" &&
-        "type" in child &&
-        hasUnbundledDynamicImport(child as AnyNode, isBundled)
-      ) {
+      if (hasUnbundledDynamicImport(child, isBundled)) {
         return true;
       }
     }
