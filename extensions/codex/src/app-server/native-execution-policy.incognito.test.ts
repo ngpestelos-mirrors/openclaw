@@ -1,11 +1,13 @@
 import "openclaw/plugin-sdk/compiled-subprocess-testing";
 import { patchSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
-import { observeHostDataSql } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import {
+  observeHostDataSql,
+  openIncognitoTestActor,
+  withIncognitoSessionBinding,
+} from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { Type } from "typebox";
 import { afterEach, expect, it, vi } from "vitest";
-import { withIncognitoSessionBinding } from "../../../../src/config/sessions/session-incognito-binding.js";
-import { openIncognitoTestActor } from "../../../../src/state/openclaw-agent-execution-incognito.test-support.js";
 import { createCodexDynamicToolBridge } from "./dynamic-tools.js";
 import { prepareCodexNativeExecutionPolicy } from "./native-execution-policy.js";
 
@@ -34,24 +36,32 @@ it("keeps actor execution policy and rejects a retained tool after policy or gen
     await withIncognitoSessionBinding({ actor }, async () => {
       const sql = observeHostDataSql();
       try {
-        const params = {
+        const params: Parameters<typeof prepareCodexNativeExecutionPolicy>[0] = {
           config: { tools: { exec: { host: "gateway" as const } } },
           agentId: "main",
           sessionKey: "harness:codex:durable-catalog-key",
-          sessionTarget: target,
+          sessionTarget: { ...target },
           readRuntimeSessionEntry: true,
           sandboxAvailable: false,
         };
-        const node = await prepareCodexNativeExecutionPolicy(params);
+        const pendingNode = prepareCodexNativeExecutionPolicy(params);
+        // The worker read is pending; caller changes cannot replace its captured policy inputs.
+        params.execOverrides = { host: "gateway" };
+        params.sessionTarget = { ...target, sessionKey: "agent:main:replacement" };
+        const node = await pendingNode;
         expect(node.policy).toMatchObject({
           nativeToolSurfaceAllowed: false,
           effectiveExecHost: "node",
           node: "synthetic-node",
         });
-        await patchSessionEntry({ ...target, patch: { execHost: "gateway" } });
+        await patchSessionEntry({ ...target, update: () => ({ execHost: "gateway" }) });
         expect(node.assertCurrent).toThrow("execution policy changed");
 
-        const gateway = await prepareCodexNativeExecutionPolicy(params);
+        const gateway = await prepareCodexNativeExecutionPolicy({
+          ...params,
+          sessionTarget: target,
+          execOverrides: undefined,
+        });
         const execute = vi.fn(async () => ({
           content: [{ type: "text" as const, text: "executed" }],
           details: {},
@@ -70,7 +80,10 @@ it("keeps actor execution policy and rejects a retained tool after policy or gen
           assertCurrent: gateway.assertCurrent,
           loading: "direct",
         });
-        await patchSessionEntry({ ...target, patch: { sessionId: "replacement-session" } });
+        await patchSessionEntry({
+          ...target,
+          update: () => ({ sessionId: "replacement-session" }),
+        });
         const response = await bridge.handleToolCall({
           threadId: "synthetic-thread",
           turnId: "synthetic-turn",

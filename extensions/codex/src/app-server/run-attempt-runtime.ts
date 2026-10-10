@@ -16,9 +16,9 @@ import {
 import { isCodexSandboxExecServerEnabled } from "./config.js";
 import {
   resolveCodexAppServerHookChannelId,
-  prepareCodexNativeExecutionPolicyForRun,
   shouldEnableCodexAppServerNativeToolSurface,
 } from "./dynamic-tool-build.js";
+import { prepareCodexNativeExecutionPolicyForRun } from "./native-execution-policy.js";
 import {
   assertCodexNativeHookRelayAllowed,
   CodexManagedHooksOnlyError,

@@ -1715,15 +1715,16 @@ Codex prepares session policy before asynchronous work and rechecks the captured
 session, lifecycle, execution host, and node at native and tool effects. A storage
 refusal never selects default execution policy. Commands and marker-only history
 retain their physical store; by-ID history uses transcript windows rather than
-current-entry discovery. The asynchronous sandbox preparer retains its selected
+current-entry discovery. A conversation binding records its private lifecycle so
+cleanup still releases its subscription after the actor closes. The asynchronous sandbox preparer retains its selected
 entry while the released synchronous sandbox method keeps its existing contract.
 
 This preparation is inactive: unbound incognito remains host-owned and allocates
 no actor. Tests supply canonical actors explicitly. The existing Gateway creator
 still owns fresh creation; the prepared plugin handoff does not activate it.
 Production acquisition, fresh-creation composition, and native selector deletion
-remain P12 work. No incognito T1 retirement, schema, retention, permission, update,
-or stored-data change is claimed. Existing installations need no migration; the
+remain P12 work. No incognito T1 retirement, schema, retention, permission, or update
+migration is claimed. Existing installations need no migration; the
 published-driver update cell remains a separate landing check.
 
 ### Incognito SDK history preparation (P04, inactive)

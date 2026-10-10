@@ -50,7 +50,6 @@ import {
   resolveCodexMessageToolProvider,
   resolveCodexSandboxEnvironmentSelection,
   shouldEnableCodexAppServerNativeToolSurface,
-  prepareCodexNativeExecutionPolicyForRun,
   shouldRequireCodexSandboxExecServerEnvironment,
 } from "./dynamic-tool-build.js";
 import { createCodexDynamicToolDiagnostics } from "./dynamic-tool-diagnostics.js";
@@ -65,6 +64,7 @@ import { routeCodexAppServerElicitationRequest } from "./elicitation-bridge.js";
 import { createCodexElicitationResponse } from "./elicitation-response.js";
 import { CodexEphemeralTurn } from "./ephemeral-turn.js";
 import { CodexNativeToolLifecycleProjector } from "./event-projector-native-tool-lifecycle.js";
+import { prepareCodexNativeExecutionPolicyForRun } from "./native-execution-policy.js";
 import {
   buildCodexNativeHookRelayConfig,
   buildCodexNativeHookRelayDisabledConfig,
@@ -118,7 +118,10 @@ import {
 } from "./shared-client.js";
 import { cleanupCodexSideQuestion } from "./side-question-cleanup.js";
 import { SIDE_DEVELOPER_INSTRUCTIONS } from "./side-question-instructions.js";
-import { buildSideRunAttemptParams } from "./side-question-run-params.js";
+import {
+  applySideQuestionModelSelection,
+  buildSideRunAttemptParams,
+} from "./side-question-run-params.js";
 import {
   CODEX_NATIVE_PERSONALITY_NONE,
   resolveCodexAppServerThreadModelSelection,
@@ -284,34 +287,14 @@ export async function runCodexAppServerSideQuestion(
     fallbackCwd: agentWorkspaceDir,
   });
   const runId = params.opts?.runId ?? randomUUID();
-  // Side runs inherit private-binding capabilities, not outer model metadata.
-  const effectiveParams: AgentHarnessSideQuestionParamsV2 = supervisionModelSelection
-    ? {
-        ...params,
-        provider: supervisionModelSelection.modelProvider,
-        model: supervisionModelSelection.model,
-        runtimeModel: {
-          id: supervisionModelSelection.model,
-          name: supervisionModelSelection.model,
-          provider: supervisionModelSelection.modelProvider,
-          api: "openai-chatgpt-responses",
-          reasoning: true,
-          input: ["text", "image"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        } as NonNullable<AgentHarnessSideQuestionParamsV2["runtimeModel"]>,
-      }
-    : params;
+  const effectiveParams = applySideQuestionModelSelection(params, supervisionModelSelection);
   const sideRunParams = buildSideRunAttemptParams(effectiveParams, {
     cwd,
     authProfileId,
     runId,
     timeoutMs: appServer.requestTimeoutMs,
+    permissionPolicy: sessionPermissionPolicy,
   });
-  sideRunParams.permissionMode = sessionPermissionPolicy?.mode;
-  sideRunParams.sessionRoot = sessionPermissionPolicy?.root;
-  sideRunParams.execOverrides = sessionPermissionPolicy && {
-    mode: sessionPermissionPolicy.execMode,
-  };
   const sandboxExecServerEnabled = isCodexSandboxExecServerEnabled(pluginConfig, params.sandbox);
   const nativeExecutionPolicy = await prepareCodexNativeExecutionPolicyForRun(sideRunParams, {
     agentId: sideRunParams.agentId,

@@ -57,6 +57,7 @@ export async function captureSessionEntryCurrentCheck(params: {
   isCurrent: () => boolean;
   assertCurrent: () => void;
 }> {
+  params = { ...params };
   const incognito = captureIncognitoSessionSource(params);
   const storePath = incognito
     ? "kind" in incognito

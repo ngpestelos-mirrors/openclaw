@@ -1,3 +1,7 @@
+import type {
+  EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
+  resolveSandboxContext,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   resolveAgentConfig,
   tryResolveDefaultAgentId,
@@ -30,24 +34,68 @@ export type PreparedCodexNativeExecutionPolicy = {
   assertCurrent(): void;
 };
 
+type RunPolicyOptions = {
+  agentId?: string;
+  runtimeSessionKey?: string;
+  sandbox?: Awaited<ReturnType<typeof resolveSandboxContext>>;
+};
+
+function resolveRunPolicyParams(params: EmbeddedRunAttemptParams, options: RunPolicyOptions) {
+  return {
+    config: params.config,
+    sessionKey:
+      options.runtimeSessionKey?.trim() ||
+      params.sandboxSessionKey?.trim() ||
+      params.sessionKey?.trim() ||
+      params.sessionId,
+    sessionId: params.sessionId,
+    agentId: options.agentId,
+    sessionTarget: params.sessionTarget,
+    execOverrides: params.execOverrides,
+    // A resolved null sandbox is absence; undefined still requests runtime discovery.
+    sandboxAvailable: options.sandbox === null ? false : options.sandbox?.enabled,
+    readRuntimeSessionEntry: true,
+  };
+}
+
+export function resolveCodexNativeExecutionPolicyForRun(
+  params: EmbeddedRunAttemptParams,
+  options: RunPolicyOptions = {},
+): CodexNativeExecutionPolicy {
+  return resolveCodexNativeExecutionPolicy(resolveRunPolicyParams(params, options));
+}
+
+export function prepareCodexNativeExecutionPolicyForRun(
+  params: EmbeddedRunAttemptParams,
+  options: RunPolicyOptions = {},
+): Promise<PreparedCodexNativeExecutionPolicy> {
+  return prepareCodexNativeExecutionPolicy(resolveRunPolicyParams(params, options));
+}
+
 /** Prepare the selected row once; retained checks use its exact execution policy. */
 export async function prepareCodexNativeExecutionPolicy(
   params: Parameters<typeof resolveCodexNativeExecutionPolicy>[0],
 ): Promise<PreparedCodexNativeExecutionPolicy> {
-  const { sourceAgentId, sourceSessionKey, canReadSessionEntry } = resolveSessionSelection(params);
+  const captured = {
+    ...params,
+    execOverrides: params.execOverrides && { ...params.execOverrides },
+    sessionTarget: params.sessionTarget && { ...params.sessionTarget },
+  };
+  const { sourceAgentId, sourceSessionKey, canReadSessionEntry } =
+    resolveSessionSelection(captured);
   if (!canReadSessionEntry || !sourceAgentId || !sourceSessionKey) {
-    return { policy: resolveCodexNativeExecutionPolicy(params), assertCurrent() {} };
+    return { policy: resolveCodexNativeExecutionPolicy(captured), assertCurrent() {} };
   }
   const selected = await captureSessionEntryCurrentCheck({
     agentId: sourceAgentId,
     sessionKey: sourceSessionKey,
-    storePath: params.sessionTarget?.storePath ?? params.storePath,
+    storePath: captured.sessionTarget?.storePath ?? captured.storePath,
     fields: ["sessionId", "lifecycleRevision", "execHost", "execNode"],
     errorMessage: "Codex session execution policy changed; prepare the operation again.",
   });
   return {
     policy: resolveCodexNativeExecutionPolicy({
-      ...params,
+      ...captured,
       sessionEntry: selected.entry,
       readRuntimeSessionEntry: false,
     }),

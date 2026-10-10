@@ -42,8 +42,8 @@ import {
 } from "./dynamic-tool-profile.js";
 import {
   resolveCodexNodeExecToolOverrides,
-  prepareCodexNativeExecutionPolicy,
-  resolveCodexNativeExecutionPolicy,
+  prepareCodexNativeExecutionPolicyForRun,
+  resolveCodexNativeExecutionPolicyForRun,
   type CodexNativeExecutionPolicy,
   type PreparedCodexNativeExecutionPolicy,
 } from "./native-execution-policy.js";
@@ -537,54 +537,6 @@ export function shouldEnableCodexAppServerNativeToolSurface(
       toolsAllow.some((name) => normalizeCodexDynamicToolName(name) === "*")) &&
     canCodexAppServerNativeToolSurfaceHonorSandbox(sandbox, options)
   );
-}
-function resolveCodexNativeExecutionPolicyForRun(
-  params: EmbeddedRunAttemptParams,
-  options: {
-    agentId?: string;
-    runtimeSessionKey?: string;
-    sandbox?: OpenClawSandboxContext;
-  } = {},
-): CodexNativeExecutionPolicy {
-  return resolveCodexNativeExecutionPolicy({
-    config: params.config,
-    sessionKey:
-      options.runtimeSessionKey?.trim() ||
-      params.sandboxSessionKey?.trim() ||
-      params.sessionKey?.trim() ||
-      params.sessionId,
-    sessionId: params.sessionId,
-    agentId: options.agentId,
-    sessionTarget: params.sessionTarget,
-    execOverrides: params.execOverrides,
-    // A resolved null sandbox is absence; undefined still requests runtime discovery.
-    sandboxAvailable: options.sandbox === null ? false : options.sandbox?.enabled,
-    readRuntimeSessionEntry: true,
-  });
-}
-
-export function prepareCodexNativeExecutionPolicyForRun(
-  params: EmbeddedRunAttemptParams,
-  options: {
-    agentId?: string;
-    runtimeSessionKey?: string;
-    sandbox?: OpenClawSandboxContext;
-  } = {},
-): Promise<PreparedCodexNativeExecutionPolicy> {
-  return prepareCodexNativeExecutionPolicy({
-    config: params.config,
-    sessionKey:
-      options.runtimeSessionKey?.trim() ||
-      params.sandboxSessionKey?.trim() ||
-      params.sessionKey?.trim() ||
-      params.sessionId,
-    sessionId: params.sessionId,
-    agentId: options.agentId,
-    sessionTarget: params.sessionTarget,
-    execOverrides: params.execOverrides,
-    sandboxAvailable: options.sandbox === null ? false : options.sandbox?.enabled,
-    readRuntimeSessionEntry: true,
-  });
 }
 function canCodexAppServerNativeToolSurfaceHonorSandbox(
   sandbox: OpenClawSandboxContext | undefined,

@@ -1,6 +1,6 @@
 import "../test-utils/prepare-compiled-subprocesses.js";
 import path from "node:path";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -12,20 +12,23 @@ import { createPluginRecord } from "./loader-records.js";
 import { createRuntimeTestRegistry } from "./registry-runtime.test-helpers.js";
 import { createPluginRuntime } from "./runtime/index.js";
 
-const dirs = useAutoCleanupTempDirTracker(afterEach);
+const dirs = useAutoCleanupTempDirTracker(afterAll);
 const authority = { assertCurrent() {} };
 let actor: Awaited<ReturnType<typeof openIncognitoTestActor>>;
 
-beforeEach(async () => {
+beforeAll(async () => {
   const stateDir = path.join(dirs.make("plugin-incognito-"), "state");
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
   actor = await openIncognitoTestActor({ OPENCLAW_STATE_DIR: stateDir }, authority);
 });
 
-afterEach(async () => {
+afterAll(async () => {
   await actor.close();
-  vi.restoreAllMocks();
   vi.unstubAllEnvs();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 function registry() {

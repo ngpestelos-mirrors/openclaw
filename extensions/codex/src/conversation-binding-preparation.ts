@@ -11,6 +11,7 @@ import {
   captureSessionEntryCurrentCheck,
   composeSessionEntryCommitGuards,
 } from "openclaw/plugin-sdk/session-binding-runtime";
+import { isIncognitoSessionKey } from "openclaw/plugin-sdk/session-key-runtime";
 import {
   getSessionEntryByIdAsync,
   resolveStorePath,
@@ -113,6 +114,7 @@ export async function resolveConversationAppServerRuntime(params: {
   runtime: ReturnType<typeof resolveCodexAppServerRuntimeOptions>;
   workspaceDir: string;
   assertCurrent: () => void;
+  incognito: boolean | undefined;
 }> {
   const source = params.source;
   const agentId =
@@ -144,7 +146,7 @@ export async function resolveConversationAppServerRuntime(params: {
           agentId,
           storePath,
           sessionKey,
-          fields: ["permissionMode", "sessionRoot", "execHost", "execNode"],
+          fields: ["permissionMode", "sessionRoot", "execHost", "execNode", "incognito"],
           ...(selectedById ? { expected: selectedById.entry } : {}),
         })
       : undefined;
@@ -227,6 +229,10 @@ export async function resolveConversationAppServerRuntime(params: {
   assertCurrent();
   return {
     assertCurrent,
+    incognito:
+      source || sessionKey
+        ? entry?.incognito === true || isIncognitoSessionKey(sessionKey)
+        : undefined,
     runtime: resolveCodexAppServerForModelProvider({
       appServer: runtime,
       provider: params.modelProvider,
@@ -280,10 +286,11 @@ async function resolveThreadBindingRuntime(params: CodexThreadBindingParams) {
     modelProvider: params.modelProvider,
     ...agentLookup,
   });
-  const { runtime, workspaceDir, assertCurrent } = await resolveConversationAppServerRuntime({
-    ...params,
-    modelProvider: reviewerModelProvider,
-  });
+  const { runtime, workspaceDir, assertCurrent, incognito } =
+    await resolveConversationAppServerRuntime({
+      ...params,
+      modelProvider: reviewerModelProvider,
+    });
   assertNativeConversationApprovalPolicySupported(runtime);
   const clientOptions = {
     assertCurrent,
@@ -294,6 +301,7 @@ async function resolveThreadBindingRuntime(params: CodexThreadBindingParams) {
   } satisfies CodexAppServerClientOptions;
   return {
     assertCurrent,
+    incognito: incognito ?? params.incognito,
     runtime,
     workspaceDir,
     agentLookup,
@@ -351,7 +359,7 @@ async function writeThreadBindingFromResponse(
   try {
     const current = params.bindingStore.read(params.identity);
     assertCodexBindingMayBeReplaced(current, "storing a conversation-bound Codex thread");
-    const trackSubscription = !params.incognito && isCodexAppServerClientRuntimeLive(client);
+    const trackSubscription = !resolved.incognito && isCodexAppServerClientRuntimeLive(client);
     sameOwner = isSameCodexAppServerThreadOwner(current, {
       threadId: response.thread.id,
       clientId: client.getInstanceId(),
@@ -382,6 +390,7 @@ async function writeThreadBindingFromResponse(
           threadId: response.thread.id,
           clientId: client.getInstanceId(),
           cwd: resolved.workspaceDir,
+          ...(resolved.incognito ? { conversationIncognito: true } : {}),
           authProfileId: params.authProfileId,
           model: response.model ?? resolved.model ?? params.model,
           modelProvider: normalizeCodexAppServerBindingModelProvider({
@@ -477,7 +486,7 @@ async function bindThread(
               ...request,
               developerInstructions: CODEX_CONVERSATION_THREAD_DEVELOPER_INSTRUCTIONS,
               experimentalRawEvents: true,
-              ...(params.incognito ? { ephemeral: true } : {}),
+              ...(resolved.incognito ? { ephemeral: true } : {}),
             },
             requestOptions(),
           );

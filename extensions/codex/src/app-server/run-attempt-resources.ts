@@ -264,9 +264,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     });
     const { bindingStore, bindingIdentity } = connection;
     const assertParentSessionCurrent = () => {
-      if (historyOwner?.lifecycleRevision) {
-        parent?.assertCurrent();
-      }
+      parent?.assertCurrent();
     };
     const submissionStore: CodexNativeSubagentSubmissionStore | undefined =
       historyOwner && thread.lifecycle.preserveExistingBinding !== true

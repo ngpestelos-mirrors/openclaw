@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
 import {
   createAgentToolResultMiddlewareRunner,
@@ -42,13 +41,11 @@ import {
   type AgentHarnessToolExecutionSnapshot,
 } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
 import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
-import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import type { RemoteWorkspaceFileReader } from "openclaw/plugin-sdk/file-access-runtime";
 import {
   type JsonSchemaObject,
   validateJsonSchemaValue,
 } from "openclaw/plugin-sdk/json-schema-runtime";
-import type { ImageContent } from "openclaw/plugin-sdk/llm";
 import {
   asNonArrayRecord,
   asOptionalRecord,
@@ -59,6 +56,7 @@ import {
   resolveLiveToolResultMaxChars,
 } from "openclaw/plugin-sdk/text-utility-runtime";
 import {
+  computerFrameImageIdentity,
   invalidateCodexComputerFrame,
   type CodexComputerContextEpoch,
 } from "./computer-context.js";
@@ -188,22 +186,6 @@ export type CodexDynamicToolBridge = {
     quarantinedTools: CodexDynamicToolSchemaQuarantine[];
   };
 };
-
-function computerFrameImageIdentity(
-  content: AgentToolResult<unknown>["content"] | undefined,
-): string | undefined {
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-  const images = content.filter((block): block is ImageContent => block.type === "image");
-  if (images.length !== 1) {
-    return undefined;
-  }
-  const image = expectDefined(images[0], "single Codex computer frame image");
-  return createHash("sha256")
-    .update(JSON.stringify([image.mimeType, image.data]))
-    .digest("hex");
-}
 
 export function createCodexDynamicToolBridge(params: {
   tools: AnyAgentTool[];

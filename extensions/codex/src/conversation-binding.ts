@@ -113,7 +113,12 @@ async function runBoundTurn(params: {
         modelProvider: binding.modelProvider,
         ...agentLookup,
       });
-      const { runtime, workspaceDir, assertCurrent } = await resolveConversationAppServerRuntime({
+      const {
+        runtime,
+        workspaceDir,
+        assertCurrent,
+        incognito: sourceIncognito,
+      } = await resolveConversationAppServerRuntime({
         pluginConfig: params.pluginConfig,
         config: params.config,
         agentId: params.data.source?.agentId ?? params.data.agentId,
@@ -124,6 +129,19 @@ async function runBoundTurn(params: {
         model: binding.model,
         agentDir: params.data.agentDir,
       });
+      const incognito = sourceIncognito ?? params.incognito;
+      if (incognito && !binding.conversationIncognito) {
+        const recorded = await params.bindingStore.mutate(
+          identity,
+          { kind: "patch", threadId: binding.threadId, patch: { conversationIncognito: true } },
+          assertCurrent,
+        );
+        if (!recorded) {
+          throw new Error(
+            "Codex conversation binding changed while recording its source lifecycle.",
+          );
+        }
+      }
       const { sessionRoot, approvalPolicy, sandbox } = runtime;
       const permissionProfile = runtime.networkProxy?.profileName;
       const networkProxyConfigFingerprint = runtime.networkProxy?.configFingerprint;
@@ -141,7 +159,13 @@ async function runBoundTurn(params: {
             ...agentLookup,
           })
         : undefined;
-      const threadRequestRuntime = { runtime, workspaceDir, assertCurrent, ...modelSelection };
+      const threadRequestRuntime = {
+        runtime,
+        workspaceDir,
+        assertCurrent,
+        incognito,
+        ...modelSelection,
+      };
 
       const clientOptions = {
         assertCurrent,
@@ -179,7 +203,7 @@ async function runBoundTurn(params: {
           // A new client may already retain this parent's child; check before claiming it.
           await assertResumeInputAllowed();
         }
-        if (!params.incognito && isCodexAppServerClientRuntimeLive(client)) {
+        if (!incognito && isCodexAppServerClientRuntimeLive(client)) {
           const ownership = await consumeCodexAppServerLiveThread(client, threadId);
           if (ownership) {
             liveThreadOwnership = { client, threadId, ownership };
@@ -189,7 +213,7 @@ async function runBoundTurn(params: {
         if (
           networkProxyBindingChanged ||
           binding.clientId !== client.getInstanceId() ||
-          (isCodexAppServerClientRuntimeLive(client) && !params.incognito && !liveThreadOwnership)
+          (isCodexAppServerClientRuntimeLive(client) && !incognito && !liveThreadOwnership)
         ) {
           if (!networkProxyBindingChanged && binding.clientId === client.getInstanceId()) {
             await assertResumeInputAllowed();
@@ -220,7 +244,7 @@ async function runBoundTurn(params: {
                     ...threadRequest,
                     developerInstructions: CODEX_CONVERSATION_THREAD_DEVELOPER_INSTRUCTIONS,
                     experimentalRawEvents: true,
-                    ...(params.incognito ? { ephemeral: true } : {}),
+                    ...(incognito ? { ephemeral: true } : {}),
                   },
                   requestOptions(),
                 );
@@ -313,6 +337,7 @@ async function runBoundTurn(params: {
                     networkProxyProfileName: runtime.networkProxy?.profileName,
                     networkProxyConfigFingerprint: runtime.networkProxy?.configFingerprint,
                     conversationStartId: binding.conversationStartId,
+                    ...(incognito ? { conversationIncognito: true } : {}),
                     conversationSourceTransferComplete: binding.conversationSourceTransferComplete,
                     historyCoveredThrough: binding.historyCoveredThrough,
                   },
@@ -383,7 +408,7 @@ async function runBoundTurn(params: {
           throw error;
         }
         if (error instanceof CodexThreadDirectInputError) {
-          if (params.incognito && ownsNativeSubscription) {
+          if (incognito && ownsNativeSubscription) {
             // Resume can reveal a cold child's capability only after subscribing.
             // Release that subscription without clearing the preserved binding.
             const released = await unsubscribeCodexThreadBestEffort(client, {
@@ -416,7 +441,7 @@ async function runBoundTurn(params: {
             isolatedSubscriptionClient = client;
           }
         }
-        if (params.incognito) {
+        if (incognito) {
           const bindingReleased = await params.bindingStore.mutate(identity, {
             kind: "clear",
             threadId,
@@ -439,7 +464,7 @@ async function runBoundTurn(params: {
           if (
             ownsNativeSubscription &&
             isolatedSubscriptionClient !== client &&
-            !params.incognito &&
+            !incognito &&
             isCodexAppServerClientRuntimeLive(client)
           ) {
             // Ownership callbacks are branded to one physical client and native

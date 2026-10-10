@@ -7,11 +7,13 @@ import {
   type CodexSessionContextSnapshot,
 } from "openclaw/plugin-sdk/codex-session-transcript-runtime";
 import * as transcriptRuntime from "openclaw/plugin-sdk/codex-session-transcript-runtime";
+import {
+  observeHostDataSql,
+  openIncognitoTestActor,
+  withIncognitoSessionActor,
+} from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import { withIncognitoSessionActor } from "../../src/config/sessions/session-incognito-binding.js";
-import { openIncognitoTestActor } from "../../src/state/openclaw-agent-execution-incognito.test-support.js";
-import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { projectCodexSettledHistoryInWorker } from "./session-history-worker-runtime.js";
 import { settledFixture } from "./src/app-server/session-history.test-support.js";
 
