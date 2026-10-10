@@ -44,6 +44,7 @@ import {
 } from "./session-accessor.sqlite-scope.js";
 import { redactTranscriptMessageForStorage } from "./session-accessor.sqlite-transcript-store.js";
 import { captureIncognitoSessionOperation } from "./session-incognito-binding.js";
+import { hasSessionInputActor } from "./session-input-actor.js";
 import {
   withCurrentPendingInputAuthority,
   type SessionPendingInputAuthority,
@@ -216,17 +217,18 @@ export function stageSessionPendingInput(
   };
   const preparedRequest = preparePendingInputRequest(options);
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
-  const admission = resolveSqliteWriteAdmissionScope(captured);
+  const inputActor = hasSessionInputActor();
+  const admission = inputActor ? undefined : resolveSqliteWriteAdmissionScope(captured);
   const stage = async () => {
     const store = await preparePendingInputStore(
       captured,
       options.authority?.assertLifetimeCurrent ?? options.assertCurrent,
     );
-    return store.withAdmission(
-      () =>
-        stagePreparedPendingInput(captured, options, preparedRequest, lifecycleGeneration, store),
-      admission !== undefined,
-    );
+    const accept = () =>
+      stagePreparedPendingInput(captured, options, preparedRequest, lifecycleGeneration, store);
+    // Actor commands own the physical FIFO and revalidate the prepared snapshot.
+    // Holding the legacy reservation here would make native acceptance queue behind itself.
+    return inputActor ? accept() : store.withAdmission(accept, admission !== undefined);
   };
   return admission ? runOpenClawAgentWriteAdmission(toDatabaseOptions(admission), stage) : stage();
 }
