@@ -12,6 +12,7 @@ import type {
   SessionTranscriptContextVersion,
   SessionTranscriptWriteScope,
 } from "./session-accessor.sqlite-contract.js";
+import type { SessionActor } from "./session-actor-contract.js";
 import {
   assertSessionEntryCohortScope,
   matchSessionEntryCohortScope,
@@ -88,6 +89,7 @@ export type OwnedSessionTranscriptWriteContext = {
   sessionTarget?: SessionTranscriptWriteTarget;
   initialWriter?: InitialSessionTranscriptWriter;
   sessionReader?: SessionEntryCohortReader;
+  sessionActor?: SessionActor;
   /** Revalidate the captured owner, including an absent writer, inside each commit. */
   assertCommitAllowed?: SessionSourceAssertion;
   withTranscriptWrite: <T>(run: () => Promise<T> | T) => Promise<T>;
@@ -176,6 +178,27 @@ export function getOwnedSessionTranscriptReader(scope: SessionTranscriptWriteTar
   });
   context.assertCommitAllowed?.();
   return reader;
+}
+
+/** Borrow only the actor retained for this exact admitted transcript. */
+export function getOwnedSessionTranscriptActor(
+  scope: SessionTranscriptWriteTarget,
+): SessionActor | undefined {
+  const context = ownedTranscriptWriteContext.getStore();
+  const actor = context?.sessionActor;
+  if (!actor) {
+    return undefined;
+  }
+  if (
+    !contextMatches({ context, sessionTarget: captureWriteTarget(scope) }) ||
+    context.sessionTarget?.sessionId !== scope.sessionId ||
+    context.sessionTarget?.agentId !== scope.agentId
+  ) {
+    throw new SessionTranscriptWriterClaimReboundError();
+  }
+  context.assertCommitAllowed?.();
+  actor.assertCurrent();
+  return actor;
 }
 
 function captureWriteTarget(target: SessionTranscriptWriteTarget): SessionTranscriptWriteTarget {

@@ -80,20 +80,11 @@ export async function prepareEmbeddedAttemptTranscriptLifecycle(input: {
     },
     input.runAbortController ? (reason) => input.runAbortController?.abort(reason) : undefined,
   );
-  const lifecycle = createEmbeddedAttemptTranscriptLifecycle({
+  const transcriptLifecycle = createEmbeddedAttemptTranscriptLifecycle({
     runId: attempt.runId,
     sessionId: attempt.sessionId,
+    onDrained: () => generation?.release(),
   });
-  const transcriptLifecycle = {
-    ...lifecycle,
-    dispose: async () => {
-      try {
-        await lifecycle.dispose();
-      } finally {
-        generation?.release();
-      }
-    },
-  };
   const assertAdmittedActive = attempt.admittedRunContext
     ? resolveAdmittedRunActiveAssertion(attempt.admittedRunContext, attempt.abortSignal)
     : undefined;
