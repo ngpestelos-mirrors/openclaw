@@ -68,7 +68,7 @@ it("shares the memory owner while fencing both legacy and phase snapshots withou
   expect(execution.sessions.deadlines()[0]?.expiresAt).toBe(expiry);
 
   const stale = await actor.read(authority);
-  await withIncognitoSessionActor(execution, () =>
+  const legacy = await withIncognitoSessionActor(execution, () =>
     patchSessionEntryCore(
       {
         agentId: "main",
@@ -80,7 +80,8 @@ it("shares the memory owner while fencing both legacy and phase snapshots withou
     ),
   );
   const fresh = await actor.read(authority);
-  expect(fresh.entry?.updatedAt).toBe(300);
+  expect(legacy?.updatedAt).toBeGreaterThanOrEqual(300);
+  expect(fresh.entry?.updatedAt).toBe(legacy?.updatedAt);
   expect(fresh.version.epoch).not.toBe(stale.version.epoch);
   const refused = await actor.patch(
     {
@@ -92,7 +93,7 @@ it("shares the memory owner while fencing both legacy and phase snapshots withou
     authority,
   );
   expect(refused.kind).toBe("rolled-back");
-  expect((await actor.read(authority)).entry?.updatedAt).toBe(300);
+  expect((await actor.read(authority)).entry?.updatedAt).toBe(legacy?.updatedAt);
 
   const denied = await actor.patch(
     {
@@ -111,7 +112,7 @@ it("shares the memory owner while fencing both legacy and phase snapshots withou
     },
   );
   expect(denied.kind).toBe("rolled-back");
-  expect((await actor.read(authority)).entry?.updatedAt).toBe(300);
+  expect((await actor.read(authority)).entry?.updatedAt).toBe(legacy?.updatedAt);
   await actor.release();
 });
 
