@@ -6,6 +6,7 @@ type BootImportMeta = ImportMeta & {
 
 // Dormant until the Solid cutover release enables this build-time flag.
 const REQUIRE_MODERN_BROWSER =
+  // SAFETY: Vite owns this optional build-time string; absence leaves the gate disabled.
   (import.meta as BootImportMeta).env?.VITE_OPENCLAW_REQUIRE_MODERN_BROWSER === "true";
 
 export const unsupportedControlUiBrowser = REQUIRE_MODERN_BROWSER && !isControlUiBrowserSupported();
