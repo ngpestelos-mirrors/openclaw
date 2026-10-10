@@ -87,6 +87,10 @@ function getSessionEntry(params: RuntimeSessionStoreReadParams): SessionEntry | 
   return loadSessionEntryReadOnly(toSessionAccessScope(params));
 }
 
+function getLatestSessionEntry(sessionKey: string, storePath: string): SessionEntry | undefined {
+  return getSessionEntry({ sessionKey, storePath, readConsistency: "latest" });
+}
+
 const listSessionEntries: RuntimeSession["listSessionEntries"] = (params = {}) => {
   const listEntries = params.readOnly
     ? listAccessorSessionEntriesReadOnly
@@ -257,11 +261,7 @@ async function createSessionEntry(
           if (!persisted?.acp) {
             throw new Error(`could not persist initial ACP binding for ${context.key}`);
           }
-          const persistedEntry = getSessionEntry({
-            sessionKey: context.key,
-            storePath: context.storePath,
-            readConsistency: "latest",
-          });
+          const persistedEntry = getLatestSessionEntry(context.key, context.storePath);
           if (!persistedEntry || !matchesExceptUpdatedAt(persistedEntry, context.entry)) {
             throw new Error(`created ACP session ${context.key} changed during initialization`);
           }
@@ -283,11 +283,7 @@ async function createSessionEntry(
             } else {
               creationOwner.assertCurrent();
             }
-            const current = getSessionEntry({
-              sessionKey: captured.key,
-              storePath: captured.storePath,
-              readConsistency: "latest",
-            });
+            const current = getLatestSessionEntry(captured.key, captured.storePath);
             if (
               deleted
                 ? current !== undefined
@@ -322,11 +318,7 @@ async function createSessionEntry(
       try {
         const matchingEntry =
           params.recoverMatchingInitialEntry === true
-            ? getSessionEntry({
-                sessionKey: target.canonicalKey,
-                storePath: target.storePath,
-                readConsistency: "latest",
-              })
+            ? getLatestSessionEntry(target.canonicalKey, target.storePath)
             : undefined;
         let recovered = false;
         let created: { key: string; agentId: string; entry: SessionEntry };
@@ -503,11 +495,7 @@ async function createSessionEntry(
         if (!callbackContext) {
           throw error;
         }
-        const current = getSessionEntry({
-          sessionKey: callbackContext.key,
-          storePath: callbackContext.storePath,
-          readConsistency: "latest",
-        });
+        const current = getLatestSessionEntry(callbackContext.key, callbackContext.storePath);
         if (
           current?.sessionId === callbackContext.entry.sessionId &&
           current.lifecycleRevision === callbackContext.entry.lifecycleRevision &&
@@ -520,11 +508,10 @@ async function createSessionEntry(
           // claimant changes the snapshot and must survive failed initialization.
           let expectedEntry = rollbackExpectedEntry ?? callbackContext.entry;
           if (acpInitial && !rollbackExpectedEntry) {
-            const currentEntry = getSessionEntry({
-              sessionKey: callbackContext.key,
-              storePath: callbackContext.storePath,
-              readConsistency: "latest",
-            });
+            const currentEntry = getLatestSessionEntry(
+              callbackContext.key,
+              callbackContext.storePath,
+            );
             if (currentEntry && matchesExceptUpdatedAt(currentEntry, callbackContext.entry)) {
               expectedEntry = currentEntry;
             }
