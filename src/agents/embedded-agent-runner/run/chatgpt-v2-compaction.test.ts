@@ -20,6 +20,7 @@ import { SessionManager } from "../../sessions/session-manager.js";
 import { SettingsManager } from "../../sessions/settings-manager.js";
 import { log } from "../logger.js";
 import { createToolResultPromptProjectionState } from "../session-prompt-state.js";
+import { normalizeMessagesForLlmBoundary } from "./attempt-llm-boundary.js";
 import { submitEmbeddedAttemptPrompt } from "./attempt-prompt-submit.js";
 import {
   createChatGPTV2CompactionBoundary,
@@ -158,6 +159,11 @@ async function fixture(
       },
     ],
   });
+  session.agent.transformContext = async (messages) =>
+    normalizeMessagesForLlmBoundary(messages, {
+      appendOnlyRuntimeContext: true,
+      inHistorySystemUpdates: true,
+    });
   session[agentSessionDeferThresholdCompaction] = true;
   const transport = createOpenAIResponsesTransportStreamFn();
   const providerStream: StreamFn = (activeModel, context, options) => {

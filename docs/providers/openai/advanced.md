@@ -286,6 +286,8 @@ fallback even with explicit `agentRuntime.id: "codex"`; see
     tools, payload hooks, and cache key, with `store: false`. Only a successfully
     completed stream with one opaque checkpoint can replace the covered context.
     Retained human messages remain eligible across subsequent compactions.
+    The saved checkpoint remains active on later tool rounds and user turns,
+    including after the session is restored.
 
     `params.responsesServerCompaction: false` or
     `params.responsesCompactEndpoint: false` disables this V2 path. Disabling
