@@ -1,4 +1,7 @@
-import type { PersistedClawWorkspaceFile } from "./workspace-records.js";
+import type {
+  ClawWorkspaceFileInventory,
+  PersistedClawWorkspaceFile,
+} from "./workspace-records.js";
 
 export type ClawWorkspaceOperations = {
   "clawWorkspace.read": {
@@ -7,7 +10,7 @@ export type ClawWorkspaceOperations = {
   };
   "clawWorkspace.list": {
     input: { agentId?: string };
-    output: PersistedClawWorkspaceFile[];
+    output: ClawWorkspaceFileInventory[];
   };
   "clawWorkspace.insert": {
     input: { record: PersistedClawWorkspaceFile };
@@ -21,7 +24,7 @@ export type ClawWorkspaceOperations = {
     output: void;
   };
   "clawWorkspace.upsert": {
-    input: { record: PersistedClawWorkspaceFile };
+    input: { record: ClawWorkspaceFileInventory };
     output: void;
   };
   "clawWorkspace.delete": {

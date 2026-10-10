@@ -631,6 +631,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["session.publicShare.set", "sessions-sharing", "operator.write", "2026.9"],
   ["claws.add", "claws-commands", "operator.admin", "2026.10", CONTROL_PLANE_WRITE],
   ["claws.update", "claws-commands", "operator.admin", "2026.10", CONTROL_PLANE_WRITE],
+  ["claws.remove", "claws-remove", "operator.admin", "2026.10", CONTROL_PLANE_WRITE],
   ["claws.monitors", "claws-monitors", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
   ["plugins.catalog.browse", "plugins", "operator.read", "2026.9"],
   ["plugins.catalog.categories", "plugins", "operator.read", "2026.9"],

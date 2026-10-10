@@ -98,12 +98,12 @@ export async function applyClawMcpUpdate(
 
   try {
     for (const action of actions) {
-      await withClawMcpLifecycleLease(action.id, options, async (assertOwned, lease) => {
-        const writeOptions = {
+      await withClawMcpLifecycleLease(action.id, options, async (assertLive, ownedLease) => {
+        const updateWriteOptions = {
           ...options,
-          lease,
+          lease: ownedLease,
           assertCurrent: () => {
-            assertOwned();
+            assertLive();
             options.assertCurrent?.();
           },
         };
@@ -134,7 +134,7 @@ export async function applyClawMcpUpdate(
               `MCP server ${JSON.stringify(name)} is no longer safely releasable.`,
             );
           }
-          await deleteRef(updatePlan.agentId, name, writeOptions);
+          await deleteRef(updatePlan.agentId, name, updateWriteOptions);
           undo.push(
             async () =>
               await withClawMcpLifecycleLease(name, rollbackOptions, async (assertOwned, lease) => {
@@ -160,7 +160,10 @@ export async function applyClawMcpUpdate(
               `MCP server ${JSON.stringify(name)} gained another owner after planning.`,
             );
           }
-          await upsertRef({ ...previousRef, status: "pending", updatedAtMs: nowMs }, writeOptions);
+          await upsertRef(
+            { ...previousRef, status: "pending", updatedAtMs: nowMs },
+            updateWriteOptions,
+          );
           configMutationUncertain = true;
           const removed = await unsetServer({
             name,
@@ -170,7 +173,7 @@ export async function applyClawMcpUpdate(
           configMutationUncertain = false;
           if (!removed.ok) {
             configMutationUncertain = true;
-            await upsertRef(previousRef, writeOptions);
+            await upsertRef(previousRef, updateWriteOptions);
             configMutationUncertain = false;
             throw new Error(removed.error);
           }
@@ -200,7 +203,7 @@ export async function applyClawMcpUpdate(
                 await upsertRef(previousRef, writeOptions);
               }),
           );
-          await deleteRef(updatePlan.agentId, name, writeOptions);
+          await deleteRef(updatePlan.agentId, name, updateWriteOptions);
           return;
         }
 
@@ -222,7 +225,7 @@ export async function applyClawMcpUpdate(
           createdAtMs: previousRef?.createdAtMs ?? nowMs,
           updatedAtMs: nowMs,
         };
-        await upsertRef(targetRef, writeOptions);
+        await upsertRef(targetRef, updateWriteOptions);
         configMutationUncertain = true;
         const written = await setServer({
           name,
@@ -234,9 +237,9 @@ export async function applyClawMcpUpdate(
         if (!written.ok) {
           configMutationUncertain = true;
           if (previousRef) {
-            await upsertRef(previousRef, writeOptions);
+            await upsertRef(previousRef, updateWriteOptions);
           } else {
-            await deleteRef(updatePlan.agentId, name, writeOptions);
+            await deleteRef(updatePlan.agentId, name, updateWriteOptions);
           }
           configMutationUncertain = false;
           throw new Error(written.error);
@@ -297,7 +300,7 @@ export async function applyClawMcpUpdate(
               }
             }),
         );
-        await upsertRef({ ...targetRef, status: "complete" }, writeOptions);
+        await upsertRef({ ...targetRef, status: "complete" }, updateWriteOptions);
       });
     }
   } catch (error) {

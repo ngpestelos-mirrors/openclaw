@@ -4,7 +4,6 @@ import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { persistClawInstallRecord, type ClawInstallStatus } from "../claws/provenance.js";
-import { createSqliteWalReclamationResult } from "../infra/sqlite-wal-reclamation.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import * as cliTestHelpers from "./claws-cli.test-helpers.js";
 
@@ -28,9 +27,6 @@ const mocks = vi.hoisted(() => {
     runtime,
     loadConfig: vi.fn<() => Record<string, unknown>>(() => ({})),
     listConfiguredMcpServers: vi.fn(),
-    closeReadOnlyDatabase: vi.fn(),
-    stateTableGet: vi.fn(),
-    openExistingOpenClawStateDatabaseReadOnly: vi.fn(),
     applyClawAddPlan: vi.fn(),
     readClawStatus: vi.fn(),
     buildClawRemovePlan: vi.fn(),
@@ -38,8 +34,6 @@ const mocks = vi.hoisted(() => {
     applyClawUpdatePlan: vi.fn(),
     buildClawUpdatePlan: vi.fn(),
     exportClawAgent: vi.fn(),
-    callGatewayFromCli: vi.fn(),
-    sleep: vi.fn(),
     preflightClawPackage: vi.fn(),
   };
 });
@@ -62,24 +56,9 @@ vi.mock("../config/mcp-config.js", async () => ({
   listConfiguredMcpServers: mocks.listConfiguredMcpServers,
 }));
 
-vi.mock("./gateway-rpc.js", () => ({
-  callGatewayFromCli: mocks.callGatewayFromCli,
-}));
-
-vi.mock("../utils/sleep.js", () => ({
-  sleep: mocks.sleep,
-}));
-
 vi.mock("../claws/packages.js", async () => ({
   ...(await vi.importActual<typeof import("../claws/packages.js")>("../claws/packages.js")),
   preflightClawPackage: mocks.preflightClawPackage,
-}));
-
-vi.mock("../state/openclaw-state-db.js", async () => ({
-  ...(await vi.importActual<typeof import("../state/openclaw-state-db.js")>(
-    "../state/openclaw-state-db.js",
-  )),
-  openExistingOpenClawStateDatabaseReadOnly: mocks.openExistingOpenClawStateDatabaseReadOnly,
 }));
 
 vi.mock("../claws/add.js", async () => ({
@@ -185,36 +164,11 @@ describe("claws cli", () => {
       config: {},
       mcpServers: {},
     });
-    mocks.callGatewayFromCli.mockReset();
-    mocks.sleep.mockReset();
-    mocks.sleep.mockResolvedValue(undefined);
     mocks.preflightClawPackage.mockReset();
     mocks.preflightClawPackage.mockResolvedValue({
       ok: false,
       code: "package_install_unavailable",
       message: "Package preflight is unavailable.",
-    });
-    mocks.closeReadOnlyDatabase.mockReset();
-    mocks.stateTableGet.mockReset();
-    mocks.stateTableGet.mockReturnValue({ 1: 1 });
-    mocks.openExistingOpenClawStateDatabaseReadOnly.mockReset();
-    mocks.openExistingOpenClawStateDatabaseReadOnly.mockReturnValue({
-      db: {
-        prepare: (sql: string) => ({
-          get: sql.includes("sqlite_master") ? mocks.stateTableGet : vi.fn(() => undefined),
-          all: vi.fn(() => [
-            { name: "bootstrap_source_path" },
-            { name: "bootstrap_content_digest" },
-          ]),
-        }),
-      },
-      path: "state.sqlite",
-      walMaintenance: {
-        stop: async () => {},
-        checkpoint: () => false,
-        close: mocks.closeReadOnlyDatabase,
-        reclaimFreePages: createSqliteWalReclamationResult,
-      },
     });
     mocks.applyClawAddPlan.mockReset();
     mocks.applyClawAddPlan.mockImplementation(async (plan) => ({
@@ -450,28 +404,14 @@ describe("claws cli", () => {
       workspace,
     ]);
 
-    expect(mocks.applyClawAddPlan).toHaveBeenCalledWith(
-      expect.objectContaining({ planIntegrity: plan.planIntegrity }),
-      expect.objectContaining({ consentPlanIntegrity: plan.planIntegrity }),
-    );
+    const [appliedPlan, options] = mocks.applyClawAddPlan.mock.calls[0] ?? [];
+    expect(appliedPlan?.planIntegrity).toBe(plan.planIntegrity);
+    expect(options?.consentPlanIntegrity).toBe(plan.planIntegrity);
     expect(mocks.logs[0]).toBe(
       "Experimental: Claws contracts may change while RFC 0016 is under review.",
     );
-    expect(mocks.runtime.log.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.applyClawAddPlan.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-    );
     expect(mocks.logs).toContain("Added agent: demo-agent");
     expect(mocks.logs.some((line) => line.startsWith("Workspace: "))).toBe(true);
-    mocks.callGatewayFromCli.mockResolvedValue({
-      config: { agents: { entries: { "demo-agent": {} } } },
-      configRevisionHash: "applied",
-      appliedConfigHash: "applied",
-    });
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(1).mockReturnValue(20_000);
-    const [, options] = mocks.applyClawAddPlan.mock.calls[0]!;
-    await expect(
-      options.cronGateway.waitUntilAgentAvailable(plan.agent.finalId),
-    ).resolves.toBeUndefined();
   });
 
   it("resumes consented add with the matching in-flight workspace on disk", async () => {
@@ -482,10 +422,10 @@ describe("claws cli", () => {
 
     await resume();
 
-    expect(mocks.applyClawAddPlan).toHaveBeenCalledWith(
-      expect.objectContaining({ planIntegrity: plan.planIntegrity, blockers: [] }),
-      expect.objectContaining({ consentPlanIntegrity: plan.planIntegrity }),
-    );
+    const [appliedPlan, options] = mocks.applyClawAddPlan.mock.calls[0] ?? [];
+    expect(appliedPlan?.planIntegrity).toBe(plan.planIntegrity);
+    expect(appliedPlan?.blockers).toEqual([]);
+    expect(options?.consentPlanIntegrity).toBe(plan.planIntegrity);
     expect(mocks.runtime.exit).not.toHaveBeenCalled();
   });
 
@@ -497,10 +437,10 @@ describe("claws cli", () => {
 
     await resume();
 
-    expect(mocks.applyClawAddPlan).toHaveBeenCalledWith(
-      expect.objectContaining({ planIntegrity: plan.planIntegrity, blockers: [] }),
-      expect.objectContaining({ consentPlanIntegrity: plan.planIntegrity }),
-    );
+    const [appliedPlan, options] = mocks.applyClawAddPlan.mock.calls[0] ?? [];
+    expect(appliedPlan?.planIntegrity).toBe(plan.planIntegrity);
+    expect(appliedPlan?.blockers).toEqual([]);
+    expect(options?.consentPlanIntegrity).toBe(plan.planIntegrity);
     expect(mocks.runtime.exit).not.toHaveBeenCalled();
   });
 
@@ -727,7 +667,6 @@ describe("claws cli", () => {
       "demo-agent",
       expect.objectContaining({ readOnly: true, sourceMcpServers: {} }),
     );
-    expect(mocks.closeReadOnlyDatabase).toHaveBeenCalled();
     expect(mocks.buildClawUpdatePlan).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: "demo-agent",
@@ -744,13 +683,9 @@ describe("claws cli", () => {
     );
   });
 
-  it("returns not found for a supported state database without Claws tables", async () => {
-    mocks.stateTableGet.mockReturnValue(undefined);
-
+  it("reports a missing installed Claw when update has no explicit source", async () => {
     await runCli(["claws", "update", "demo-agent", "--dry-run", "--json"]);
 
-    expect(mocks.readClawStatus).not.toHaveBeenCalled();
-    expect(mocks.closeReadOnlyDatabase).toHaveBeenCalled();
     expect(JSON.parse(mocks.logs[0] ?? "{}")).toMatchObject({
       diagnostics: [expect.objectContaining({ code: "claw_not_found", phase: "plan" })],
     });
@@ -776,7 +711,7 @@ describe("claws cli", () => {
       throw new Error("missing update fixture implementation");
     }
     mocks.applyClawUpdatePlan.mockImplementationOnce(async (...args) => {
-      const options = args[2] as { runtime?: typeof mocks.runtime };
+      const options = args[2];
       (options.runtime ?? mocks.runtime).log("Installed plugin: demo");
       return await applyUpdate(...args);
     });
@@ -793,41 +728,28 @@ describe("claws cli", () => {
       "--json",
     ]);
 
-    expect(mocks.applyClawUpdatePlan).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "demo-agent" }),
-      expect.objectContaining({
-        targetManifest: expect.objectContaining({
-          agent: { id: "demo-agent", name: "Demo Agent" },
-        }),
-      }),
-      expect.objectContaining({
-        config: {},
-        sourceMcpServers: {},
-        consentPlanIntegrity: "sha256:update-plan",
-        packagePreflight: expect.any(Function),
-        cronGateway: expect.objectContaining({
-          add: expect.any(Function),
-          get: expect.any(Function),
-          remove: expect.any(Function),
-        }),
-      }),
-    );
+    const [appliedPlan, request, options] = mocks.applyClawUpdatePlan.mock.calls[0] ?? [];
+    expect(appliedPlan?.agentId).toBe("demo-agent");
+    expect(request?.targetManifest).toMatchObject({
+      agent: { id: "demo-agent", name: "Demo Agent" },
+    });
+    expect({
+      config: options?.config,
+      sourceMcpServers: options?.sourceMcpServers,
+      consentPlanIntegrity: options?.consentPlanIntegrity,
+      packagePreflight: options?.packagePreflight,
+    }).toEqual({
+      config: {},
+      sourceMcpServers: {},
+      consentPlanIntegrity: "sha256:update-plan",
+      packagePreflight: expect.any(Function),
+    });
     expect(mocks.logs).toHaveLength(1);
     expect(JSON.parse(mocks.logs[0] ?? "{}")).toMatchObject({
       schemaVersion: "openclaw.clawUpdateResult.v1",
       status: "complete",
       agentId: "demo-agent",
     });
-    mocks.callGatewayFromCli.mockResolvedValue({
-      config: { agents: { entries: { "demo-agent": {} } } },
-      configRevisionHash: "applied",
-      appliedConfigHash: "applied",
-    });
-    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(1).mockReturnValue(20_000);
-    const [plan, , options] = mocks.applyClawUpdatePlan.mock.calls[0]!;
-    await expect(
-      options.cronGateway.waitUntilAgentAvailable(plan.agentId),
-    ).resolves.toBeUndefined();
   });
 
   it("reports uncertain update mutations as partial JSON", async () => {
@@ -887,13 +809,15 @@ describe("claws cli", () => {
         ...(json ? ["--json"] : []),
       ]);
 
-      expect(mocks.applyClawRemovePlan).toHaveBeenCalledWith(
-        expect.objectContaining({ planIntegrity: "sha256:remove-plan" }),
-        expect.objectContaining({
-          consentPlanIntegrity: "sha256:remove-plan",
-          referencedCleanup: { mode: "retain" },
-        }),
-      );
+      const [appliedPlan, options] = mocks.applyClawRemovePlan.mock.calls[0] ?? [];
+      expect(appliedPlan?.planIntegrity).toBe("sha256:remove-plan");
+      expect({
+        consentPlanIntegrity: options?.consentPlanIntegrity,
+        referencedCleanup: options?.referencedCleanup,
+      }).toEqual({
+        consentPlanIntegrity: "sha256:remove-plan",
+        referencedCleanup: { mode: "retain" },
+      });
       if (json) {
         expect(JSON.parse(mocks.logs[0] ?? "{}")).toMatchObject({
           schemaVersion: "openclaw.clawRemoveResult.v1",
@@ -939,17 +863,12 @@ describe("claws cli", () => {
       "--json",
     ]);
 
-    expect(mocks.buildClawRemovePlan).toHaveBeenCalledWith("demo-agent", {
-      monitorGateway: expect.objectContaining({
-        inspect: expect.any(Function),
-        quiesce: expect.any(Function),
-        drain: expect.any(Function),
-      }),
-      referencedCleanup: {
-        mode: "remove-selected",
-        selected: ["plugin:@acme/audit@1.0.0"],
-        allowConflicts: true,
-      },
+    const [target, options] = mocks.buildClawRemovePlan.mock.calls[0] ?? [];
+    expect(target).toBe("demo-agent");
+    expect(options?.referencedCleanup).toEqual({
+      mode: "remove-selected",
+      selected: ["plugin:@acme/audit@1.0.0"],
+      allowConflicts: true,
     });
     expect(mocks.applyClawRemovePlan).not.toHaveBeenCalled();
   });

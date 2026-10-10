@@ -25,10 +25,10 @@ import {
   type ClawCronGateway,
   type PersistedClawCronRef,
 } from "./cron.js";
-import type { ClawMcpConfigApplicationOptions } from "./mcp.js";
 import {
   ClawMcpInstallError,
   installClawMcpServers,
+  type ClawMcpConfigApplicationOptions,
   type PersistedClawMcpServerRef,
 } from "./mcp.js";
 import { ClawPackageInstallError, installClawPackages } from "./packages.js";

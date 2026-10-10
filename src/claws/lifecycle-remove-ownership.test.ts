@@ -25,7 +25,11 @@ import {
   persistClawPackageRef,
   readClawPackageRefs,
 } from "./provenance.js";
-import { readClawWorkspaceFiles, upsertClawWorkspaceFileAsync } from "./workspace.js";
+import {
+  CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
+  readClawWorkspaceFiles,
+  upsertClawWorkspaceFileAsync,
+} from "./workspace.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const cleanups: Array<() => Promise<void>> = [];
@@ -91,8 +95,8 @@ function expireDeletionLease(): void {
 describe("Claw removal operation ownership", () => {
   it("waits for the Gateway config application before draining removed monitors", async () => {
     const current = await fixture();
-    const committed = createDeferred<void>();
-    const applied = createDeferred<void>();
+    const committed = createDeferred();
+    const applied = createDeferred();
     const drain = vi.fn(quiescentClawMonitorGateway.drain);
     const removal = current.remove({
       onConfigCommitted: async () => {
@@ -151,7 +155,12 @@ describe("Claw removal operation ownership", () => {
     if (!trackedFile) {
       throw new Error("expected managed workspace file");
     }
-    await upsertClawWorkspaceFileAsync({ ...trackedFile, path: "a/tracked.md" });
+    await upsertClawWorkspaceFileAsync({
+      ...trackedFile,
+      schemaVersion: CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
+      status: "complete",
+      path: "a/tracked.md",
+    });
     const operatorDirectory = path.join(current.workspace, "z");
     await fs.mkdir(operatorDirectory);
     const operatorFile = path.join(operatorDirectory, "operator-note.txt");

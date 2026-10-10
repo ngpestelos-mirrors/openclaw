@@ -15,18 +15,21 @@ import {
   rowToPackageRef,
   toPackageRefExtensionSqlParams,
   toPackageRefSqlFields,
-  type ClawPackageOrigin,
   type ClawPackageRefStatus,
-  type ClawPackageRelationship,
   type PackageRefRow,
   type PersistedClawPackageRef,
 } from "./package-extension-provenance.js";
 import { updateClawPackageRefStatusInDatabase } from "./package-status.kernel.js";
-import type { ClawAgentOrigin } from "./provenance-agent-origin.js";
 import { readClawInstallRecordFromDatabase } from "./provenance-read.kernel.js";
 import { clawAgentOwnedPaths, prepareClawInstallRecord } from "./provenance-record.js";
 import * as installRecordSchema from "./provenance-schema-version.js";
 import type { ClawInstallStatus, PersistedClawInstall } from "./provenance-types.js";
+import type {
+  ClawInstallRecordStatusOptions,
+  ClawInstallRecordUpdateOptions,
+  ClawInstallRecordWriteOptions,
+  ClawPackageRefWriteOptions,
+} from "./provenance-write.types.js";
 import type { ClawAddPlan, ResolvedClawPackage } from "./types.js";
 type ClawProvenanceDatabase = Pick<
   DB,
@@ -67,14 +70,7 @@ export function clawInstallRecordMatchesPlan(
 
 export function persistClawInstallRecord(
   plan: ClawAddPlan,
-  options: OpenClawStateDatabaseOptions & {
-    status?: ClawInstallStatus;
-    nowMs?: number;
-    expectedExistingRecord?: PersistedClawInstall;
-    expectedExistingPlan?: ClawAddPlan;
-    deferLegacyPlanUpgrade?: boolean;
-    agentOrigin?: ClawAgentOrigin;
-  } = {},
+  options: OpenClawStateDatabaseOptions & ClawInstallRecordWriteOptions = {},
 ): PersistedClawInstall {
   const nowMs = options.nowMs ?? Date.now();
   const status = options.status ?? "complete";
@@ -135,10 +131,7 @@ export function persistClawInstallRecord(
 export function updateClawInstallRecordStatus(
   agentId: string,
   status: ClawInstallStatus,
-  options: OpenClawStateDatabaseOptions & {
-    nowMs?: number;
-    expectedStatuses?: ClawInstallStatus[];
-  } = {},
+  options: OpenClawStateDatabaseOptions & ClawInstallRecordStatusOptions = {},
 ): void {
   runOpenClawStateWriteTransaction((database) => {
     assertAgentDeletionAllowsMutation(database, agentId);
@@ -161,7 +154,8 @@ export function updateClawInstallRecordStatus(
 
 export function deleteClawInstallRecord(
   agentId: string,
-  options: OpenClawStateDatabaseOptions & { expectedStatuses?: ClawInstallStatus[] } = {},
+  options: OpenClawStateDatabaseOptions &
+    Pick<ClawInstallRecordStatusOptions, "expectedStatuses"> = {},
 ): void {
   runOpenClawStateWriteTransaction((database) => {
     assertAgentDeletionAllowsMutation(database, agentId);
@@ -183,12 +177,7 @@ export function deleteClawInstallRecord(
 
 export function updateClawInstallRecord(
   plan: ClawAddPlan,
-  options: OpenClawStateDatabaseOptions & {
-    nowMs?: number;
-    expectedClaw?: { version: string; integrity: string };
-    status?: ClawInstallStatus;
-    agentConfigDigest?: string;
-  } = {},
+  options: OpenClawStateDatabaseOptions & ClawInstallRecordUpdateOptions = {},
 ): PersistedClawInstall {
   const updatedAtMs = options.nowMs ?? Date.now();
   const status = options.status ?? "complete";
@@ -232,13 +221,7 @@ export function updateClawInstallRecord(
 export function persistClawPackageRef(
   plan: ClawAddPlan,
   pkg: ResolvedClawPackage,
-  options: OpenClawStateDatabaseOptions & {
-    nowMs?: number;
-    status?: ClawPackageRefStatus;
-    relationship?: ClawPackageRelationship;
-    origin?: ClawPackageOrigin;
-    independentOwner?: boolean;
-  } = {},
+  options: OpenClawStateDatabaseOptions & ClawPackageRefWriteOptions = {},
 ): PersistedClawPackageRef {
   const nowMs = options.nowMs ?? Date.now();
   let record: PersistedClawPackageRef = {
@@ -279,9 +262,10 @@ export function persistClawPackageRef(
         package_source: record.source,
         package_ref: record.ref,
         package_version: record.version,
-      }) as PackageRefRow | undefined;
+      });
     if (existing) {
-      const previous = rowToPackageRef(existing);
+      // SAFETY: The explicit projection matches PackageRefRow; this owner writes its enum fields.
+      const previous = rowToPackageRef(existing as PackageRefRow);
       if (previous.integrity !== record.integrity) {
         throw new Error(
           `Claw package reference ${record.kind}:${record.ref}@${record.version} changed integrity from ${previous.integrity} to ${record.integrity}.`,
@@ -333,7 +317,7 @@ export function persistClawPackageRef(
 export function updateClawPackageRefStatus(
   ref: PersistedClawPackageRef,
   status: ClawPackageRefStatus,
-  options: OpenClawStateDatabaseOptions & { nowMs?: number } = {},
+  options: OpenClawStateDatabaseOptions & Pick<ClawPackageRefWriteOptions, "nowMs"> = {},
 ): PersistedClawPackageRef {
   return runOpenClawStateWriteTransaction(
     ({ db }) => updateClawPackageRefStatusInDatabase(db, ref, status, options.nowMs ?? Date.now()),

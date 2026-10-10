@@ -8,8 +8,15 @@ import type {
   ClawPackageRefStatus,
   PersistedClawPackageRef,
 } from "./package-extension-provenance.js";
+import type { ClawInstallStatus, PersistedClawInstall } from "./provenance-types.js";
+import type {
+  ClawInstallRecordStatusOptions,
+  ClawInstallRecordUpdateOptions,
+  ClawInstallRecordWriteOptions,
+  ClawPackageRefWriteOptions,
+} from "./provenance-write.types.js";
 import type { ClawRemovalJournalWorkerInput } from "./removal-journal-contract.js";
-import type { ClawAddPlan, ClawCronJob, ClawMcpServer } from "./types.js";
+import type { ClawAddPlan, ClawCronJob, ClawMcpServer, ResolvedClawPackage } from "./types.js";
 
 export type ClawProvenanceWriteOperations = ClawProvenanceMutationOperations &
   ClawProvenanceReadOperations & {
@@ -33,8 +40,6 @@ export type ClawProvenanceWriteOperations = ClawProvenanceMutationOperations &
     };
   };
 
-import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
-import type * as provenanceKernel from "./provenance.kernel.js";
 export type ClawProvenanceAuthority = {
   lease?: OpenClawStateLeaseIdentity;
   deletion?: AgentDeletionWorkerGuard;
@@ -118,72 +123,54 @@ export type ClawProvenanceMutationOperations = {
 
   "clawProvenance.persistInstall": {
     input: {
-      arg0: Parameters<typeof provenanceKernel.persistClawInstallRecord>[0];
-      options: Omit<
-        NonNullable<Parameters<typeof provenanceKernel.persistClawInstallRecord>[1]>,
-        keyof OpenClawStateDatabaseOptions
-      >;
+      arg0: ClawAddPlan;
+      options: ClawInstallRecordWriteOptions;
       authority?: ClawProvenanceAuthority;
     };
-    output: ReturnType<typeof provenanceKernel.persistClawInstallRecord>;
+    output: PersistedClawInstall;
   };
   "clawProvenance.updateInstall": {
     input: {
-      arg0: Parameters<typeof provenanceKernel.updateClawInstallRecord>[0];
-      options: Omit<
-        NonNullable<Parameters<typeof provenanceKernel.updateClawInstallRecord>[1]>,
-        keyof OpenClawStateDatabaseOptions
-      >;
+      arg0: ClawAddPlan;
+      options: ClawInstallRecordUpdateOptions;
       authority?: ClawProvenanceAuthority;
     };
-    output: ReturnType<typeof provenanceKernel.updateClawInstallRecord>;
+    output: PersistedClawInstall;
   };
   "clawProvenance.installStatus": {
     input: {
-      arg0: Parameters<typeof provenanceKernel.updateClawInstallRecordStatus>[0];
-      arg1: Parameters<typeof provenanceKernel.updateClawInstallRecordStatus>[1];
-      options: Omit<
-        NonNullable<Parameters<typeof provenanceKernel.updateClawInstallRecordStatus>[2]>,
-        keyof OpenClawStateDatabaseOptions
-      >;
+      arg0: string;
+      arg1: ClawInstallStatus;
+      options: ClawInstallRecordStatusOptions;
       authority?: ClawProvenanceAuthority;
     };
-    output: ReturnType<typeof provenanceKernel.updateClawInstallRecordStatus>;
+    output: void;
   };
   "clawProvenance.deleteInstall": {
     input: {
-      arg0: Parameters<typeof provenanceKernel.deleteClawInstallRecord>[0];
-      options: Omit<
-        NonNullable<Parameters<typeof provenanceKernel.deleteClawInstallRecord>[1]>,
-        keyof OpenClawStateDatabaseOptions
-      >;
+      arg0: string;
+      options: Pick<ClawInstallRecordStatusOptions, "expectedStatuses">;
       authority?: ClawProvenanceAuthority;
     };
-    output: ReturnType<typeof provenanceKernel.deleteClawInstallRecord>;
+    output: void;
   };
   "clawProvenance.persistPackage": {
     input: {
-      arg0: Parameters<typeof provenanceKernel.persistClawPackageRef>[0];
-      arg1: Parameters<typeof provenanceKernel.persistClawPackageRef>[1];
-      options: Omit<
-        NonNullable<Parameters<typeof provenanceKernel.persistClawPackageRef>[2]>,
-        keyof OpenClawStateDatabaseOptions
-      >;
+      arg0: ClawAddPlan;
+      arg1: ResolvedClawPackage;
+      options: ClawPackageRefWriteOptions;
       authority?: ClawProvenanceAuthority;
     };
-    output: ReturnType<typeof provenanceKernel.persistClawPackageRef>;
+    output: PersistedClawPackageRef;
   };
   "clawProvenance.updatePackageStatus": {
     input: {
-      arg0: Parameters<typeof provenanceKernel.updateClawPackageRefStatus>[0];
-      arg1: Parameters<typeof provenanceKernel.updateClawPackageRefStatus>[1];
-      options: Omit<
-        NonNullable<Parameters<typeof provenanceKernel.updateClawPackageRefStatus>[2]>,
-        keyof OpenClawStateDatabaseOptions
-      >;
+      arg0: PersistedClawPackageRef;
+      arg1: ClawPackageRefStatus;
+      options: Pick<ClawPackageRefWriteOptions, "nowMs">;
       authority?: ClawProvenanceAuthority;
     };
-    output: ReturnType<typeof provenanceKernel.updateClawPackageRefStatus>;
+    output: PersistedClawPackageRef;
   };
 };
 

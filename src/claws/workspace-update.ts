@@ -16,6 +16,7 @@ import {
   CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
   deleteClawWorkspaceFileRecordAsync,
   readClawWorkspaceFilesAsync,
+  restoreClawWorkspaceFileAsync,
   readClawWorkspaceActionSource,
   upsertClawWorkspaceFileAsync,
   type PersistedClawWorkspaceFile,
@@ -122,7 +123,7 @@ export async function applyClawWorkspaceUpdate(
             });
           }
           if (previousRef) {
-            await upsertClawWorkspaceFileAsync(previousRef, rollbackOptions);
+            await restoreClawWorkspaceFileAsync(previousRef, rollbackOptions);
           }
         });
         if (existed) {
@@ -181,7 +182,7 @@ export async function applyClawWorkspaceUpdate(
           await workspace.remove(path, { assertBeforeMutation: rollbackOptions.assertCurrent });
         }
         if (previousRef) {
-          await upsertClawWorkspaceFileAsync(previousRef, rollbackOptions);
+          await restoreClawWorkspaceFileAsync(previousRef, rollbackOptions);
         } else {
           await deleteClawWorkspaceFileRecordAsync(updatePlan.agentId, path, rollbackOptions);
         }

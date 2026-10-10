@@ -44,7 +44,7 @@ import { readAttachedCronJobsInDatabase } from "./lifecycle-cron-read.kernel.js"
 import type { ClawMonitorCleanupGateway, ClawMonitorSnapshot } from "./monitor-cleanup-contract.js";
 import { deleteCachedClawInstallSchemaVersion } from "./provenance-runtime-read.js";
 import type { PersistedClawInstall } from "./provenance.js";
-import type { PersistedClawWorkspaceFile } from "./workspace.js";
+import type { ClawWorkspaceFileInventory } from "./workspace-records.js";
 
 export class ClawRemoveError extends Error {
   constructor(
@@ -276,7 +276,7 @@ export const clawRemoveQuietRuntime: RuntimeEnv = {
 };
 
 type DigestOwnedWorkspaceFile = Pick<
-  PersistedClawWorkspaceFile,
+  ClawWorkspaceFileInventory,
   "workspace" | "path" | "contentDigest"
 >;
 
@@ -293,7 +293,7 @@ export type RemovedWorkspaceFile = {
   message?: string;
 };
 
-export type ClawManagedFileStatus = PersistedClawWorkspaceFile & {
+export type ClawManagedFileStatus = ClawWorkspaceFileInventory & {
   state: "unchanged" | "modified" | "missing" | "unsafe";
   message?: string;
 };
@@ -337,7 +337,7 @@ async function inspectDigestOwnedWorkspaceFile(
 }
 
 export async function inspectClawWorkspaceFile(
-  record: PersistedClawWorkspaceFile,
+  record: ClawWorkspaceFileInventory,
 ): Promise<ClawManagedFileStatus> {
   return { ...record, ...(await inspectDigestOwnedWorkspaceFile(record)) };
 }

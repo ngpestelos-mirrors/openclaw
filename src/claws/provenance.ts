@@ -2,6 +2,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { assertClawPackageLifecycleWriteArtifact } from "../state/claw-package-lifecycle-lease.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import type { PersistedClawPackageRef } from "./package-extension-provenance.js";
 import { readClawPackageOwnership } from "./provenance-async.js";
 import {
   readClawInstallRecordsInDatabase,
@@ -13,6 +14,7 @@ import {
   deleteCachedClawInstallSchemaVersion,
 } from "./provenance-runtime-read.js";
 import { parseClawInstallRecordSchemaVersion } from "./provenance-schema-version.js";
+import type { PersistedClawInstall } from "./provenance-types.js";
 import { executeClawProvenanceWrite, type ClawProvenanceWriteOptions } from "./provenance-write.js";
 import type * as kernel from "./provenance.kernel.js";
 export { clawInstallRecordMatchesPlan } from "./provenance.kernel.js";
@@ -24,8 +26,6 @@ export {
   CLAW_PACKAGE_REF_SCHEMA_VERSION,
   type PersistedClawPackageRef,
 } from "./package-extension-provenance.js";
-import type { PersistedClawPackageRef } from "./package-extension-provenance.js";
-import type { PersistedClawInstall } from "./provenance-types.js";
 export type { ClawInstallStatus, PersistedClawInstall } from "./provenance-types.js";
 
 export async function persistClawInstallRecord(

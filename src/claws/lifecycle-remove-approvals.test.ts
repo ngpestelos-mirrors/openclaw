@@ -350,13 +350,13 @@ describe("Claw exec approvals removal", () => {
         });
         await child.close();
         const retry = await buildClawRemovePlan("worker", { config });
-        await expect(
-          applyClawRemovePlan(retry, {
-            monitorGateway: quiescentClawMonitorGateway,
-            ...removeOptions,
-            consentPlanIntegrity: retry.planIntegrity,
-          }),
-        ).resolves.toMatchObject({ status: "complete", agentRemoved: true });
+        const result = await applyClawRemovePlan(retry, {
+          monitorGateway: quiescentClawMonitorGateway,
+          ...removeOptions,
+          consentPlanIntegrity: retry.planIntegrity,
+        });
+        expect(result.error).toBeUndefined();
+        expect(result).toMatchObject({ status: "complete", agentRemoved: true });
         expect(trashPath).toHaveBeenCalled();
         expect(unsetMcpServer).toHaveBeenCalledOnce();
         expect(readAgentProvenance("worker")).toBeUndefined();

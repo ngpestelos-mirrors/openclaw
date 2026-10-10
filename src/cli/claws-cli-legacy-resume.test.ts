@@ -136,26 +136,21 @@ describe("claws add legacy v1 resume", () => {
         json: true,
       });
 
-      expect(mocks.applyClawAddPlan).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          planIntegrity: expect.not.stringMatching(legacyPlan.planIntegrity),
-          agent: expect.objectContaining({
-            config: expect.objectContaining({
-              tools: expect.objectContaining({
-                profile: "full",
-                allow: expect.not.arrayContaining(["bundle-mcp"]),
-              }),
-            }),
-          }),
-        }),
-        expect.objectContaining({
-          consentPlanIntegrity: legacyPlan.planIntegrity,
-          resumePlan: expect.objectContaining({ planIntegrity: legacyPlan.planIntegrity }),
-          resumeRecord: expect.objectContaining({
-            schemaVersion: "openclaw.clawInstallRecord.v1",
-          }),
-        }),
-      );
+      const [appliedPlan, options] = mocks.applyClawAddPlan.mock.calls.at(-1) ?? [];
+      expect(appliedPlan?.planIntegrity).not.toBe(legacyPlan.planIntegrity);
+      expect(appliedPlan?.agent.config.tools).toMatchObject({
+        profile: "full",
+        allow: expect.not.arrayContaining(["bundle-mcp"]),
+      });
+      expect({
+        consentPlanIntegrity: options?.consentPlanIntegrity,
+        resumePlanIntegrity: options?.resumePlan.planIntegrity,
+        resumeRecordVersion: options?.resumeRecord.schemaVersion,
+      }).toEqual({
+        consentPlanIntegrity: legacyPlan.planIntegrity,
+        resumePlanIntegrity: legacyPlan.planIntegrity,
+        resumeRecordVersion: "openclaw.clawInstallRecord.v1",
+      });
     },
   );
 });

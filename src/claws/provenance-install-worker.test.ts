@@ -118,7 +118,9 @@ describe("Claw install worker ownership", () => {
         persistClawInstallRecord(plan, {
           ...options,
           assertCurrent: () => {
-            if (retired) throw new Error("owner retired");
+            if (retired) {
+              throw new Error("owner retired");
+            }
           },
         }),
       ).rejects.toThrow("owner retired");

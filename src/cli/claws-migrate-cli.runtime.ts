@@ -15,6 +15,7 @@ import { withConfigSourceLocks } from "../config/write-lock.js";
 import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
 import { emitClawFailure, logClawExperimentalWarning } from "./claws-cli-output.js";
 import type { ClawsMigrateOptions } from "./claws-cli.js";
+import { runWithLocalStateOwner } from "./local-state-owner.js";
 
 async function readMigrationConfig() {
   const snapshot = await readConfigFileSnapshot({ observe: false, isolateEnv: true });
@@ -80,11 +81,13 @@ function emitMigrationFailure(
   });
 }
 
-export async function runClawsMigrateCommand(
+async function executeClawsMigrateCommand(
   agentId: string,
   opts: ClawsMigrateOptions,
-  runtime: RuntimeEnv = defaultRuntime,
+  runtime: RuntimeEnv,
+  owner: { env: NodeJS.ProcessEnv; assertCurrent: () => void },
 ): Promise<void> {
+  owner.assertCurrent();
   assertExperimentalClawsEnabled();
   if (!opts.dryRun && opts.yes && !opts.planIntegrity) {
     emitMigrationFailure(
@@ -109,10 +112,11 @@ export async function runClawsMigrateCommand(
   let previewConfig: Awaited<ReturnType<typeof readMigrationConfig>>;
   try {
     previewConfig = await readMigrationConfig();
+    owner.assertCurrent();
     migration = await buildClawMigrationPlan({
       agentId,
       config: previewConfig.config,
-      options: { env: process.env },
+      options: { env: owner.env },
     });
   } catch (error) {
     const code = error instanceof ClawMigrationError ? error.code : "migration_plan_failed";
@@ -167,6 +171,7 @@ export async function runClawsMigrateCommand(
                 "The agent, workspace files, or ownership changed after consent. Review a fresh dry-run plan before retrying.",
               );
             const latest = await readMigrationConfig();
+            owner.assertCurrent();
             assertCurrent();
             if (digestClawValue(latest.sources) !== digestClawValue(previewConfig.sources)) {
               throw changed();
@@ -174,7 +179,7 @@ export async function runClawsMigrateCommand(
             const current = await buildClawMigrationPlan({
               agentId,
               config: latest.config,
-              options: { env: process.env },
+              options: { env: owner.env },
             });
             if (current.plan.planIntegrity !== migration.plan.planIntegrity) {
               throw changed();
@@ -183,10 +188,12 @@ export async function runClawsMigrateCommand(
             return await applyClawMigrationPlan({
               migration: current,
               config: latest.config,
-              options: { env: process.env },
+              options: { env: owner.env },
               assertCurrentConfig: async () => {
+                owner.assertCurrent();
                 assertCurrent();
                 const live = await readMigrationConfig();
+                owner.assertCurrent();
                 assertCurrent();
                 if (digestClawValue(live) !== expectedConfig) {
                   throw changed();
@@ -194,9 +201,9 @@ export async function runClawsMigrateCommand(
               },
             });
           },
-          process.env,
+          owner.env,
         ),
-      { env: process.env },
+      { env: owner.env },
     );
     if (opts.json) {
       writeRuntimeJson(runtime, result);
@@ -213,4 +220,21 @@ export async function runClawsMigrateCommand(
     const path = error instanceof ClawMigrationError ? error.path : "$";
     emitMigrationFailure(runtime, opts.json, code, message, path);
   }
+}
+
+export async function runClawsMigrateCommand(
+  agentId: string,
+  opts: ClawsMigrateOptions,
+  runtime: RuntimeEnv = defaultRuntime,
+): Promise<void> {
+  assertExperimentalClawsEnabled();
+  const run = (owner: { env: NodeJS.ProcessEnv; assertCurrent: () => void }) =>
+    executeClawsMigrateCommand(agentId, opts, runtime, owner);
+  await runWithLocalStateOwner({
+    method: "claws.migrate",
+    params: {},
+    target: agentId,
+    onForeignOwner: opts.dryRun ? run : "refuse",
+    runLocal: run,
+  });
 }

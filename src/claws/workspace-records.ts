@@ -13,16 +13,21 @@ import type { DB } from "../state/openclaw-state-db.generated.js";
 export const CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION =
   "openclaw.clawWorkspaceFileRecord.v1" as const;
 
-export type PersistedClawWorkspaceFile = {
-  schemaVersion: typeof CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION;
+export type ClawWorkspaceFileInventory = {
+  schemaVersion: string;
   agentId: string;
   workspace: string;
   path: string;
   sourcePath: string;
   contentDigest: string;
-  status: "pending" | "complete" | "failed";
+  status: string;
   createdAtMs: number;
   updatedAtMs: number;
+};
+
+export type PersistedClawWorkspaceFile = ClawWorkspaceFileInventory & {
+  schemaVersion: typeof CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION;
+  status: "pending" | "complete" | "failed";
 };
 
 type WorkspaceDatabase = Pick<DB, "claw_workspace_files">;
@@ -44,10 +49,14 @@ function selectWorkspaceFiles(db: DatabaseSync) {
     ]);
 }
 
-function rowToWorkspaceFile(
+function rowToWorkspaceFile<Version extends string, Status extends string>(
   row: WorkspaceFileRow,
-  schemaVersion: PersistedClawWorkspaceFile["schemaVersion"] = CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
-): PersistedClawWorkspaceFile {
+  schemaVersion: Version,
+  status: Status,
+): Omit<ClawWorkspaceFileInventory, "schemaVersion" | "status"> & {
+  schemaVersion: Version;
+  status: Status;
+} {
   return {
     schemaVersion,
     agentId: row.agent_id,
@@ -55,14 +64,13 @@ function rowToWorkspaceFile(
     path: row.target_path,
     sourcePath: row.source_path,
     contentDigest: row.content_digest,
-    // SAFETY: Inventory keeps its unchecked status contract; the retry reader validates it first.
-    status: row.status as PersistedClawWorkspaceFile["status"],
+    status,
     createdAtMs: sqliteNumber(row.created_at_ms),
     updatedAtMs: sqliteNumber(row.updated_at_ms),
   };
 }
 
-function workspaceFileToRow(record: PersistedClawWorkspaceFile): WorkspaceFileRow {
+function workspaceFileToRow(record: ClawWorkspaceFileInventory): WorkspaceFileRow {
   return {
     agent_id: record.agentId,
     target_path: record.path,
@@ -111,7 +119,7 @@ export function readClawWorkspaceFileInDatabase(
       `Claw workspace file ${JSON.stringify(targetPath)} has unsupported provenance state.`,
     );
   }
-  return rowToWorkspaceFile(row);
+  return rowToWorkspaceFile(row, row.schema_version, row.status);
 }
 
 export function updateClawWorkspaceFileStatusInDatabase(
@@ -141,7 +149,7 @@ export function updateClawWorkspaceFileStatusInDatabase(
 
 export function upsertClawWorkspaceFileInDatabase(
   db: DatabaseSync,
-  record: PersistedClawWorkspaceFile,
+  record: ClawWorkspaceFileInventory,
 ): void {
   executeSqliteQuerySync(
     db,
@@ -180,7 +188,7 @@ export function deleteClawWorkspaceFileInDatabase(
 export function readClawWorkspaceFilesInDatabase(
   db: DatabaseSync,
   agentId: string,
-): PersistedClawWorkspaceFile[] {
+): ClawWorkspaceFileInventory[] {
   if (!tableExists(db, "claw_workspace_files")) {
     return [];
   }
@@ -196,13 +204,16 @@ export function readClawWorkspaceFilesInDatabase(
   const rows =
     db /* sqlite-allow-raw: preserve native list errors outside the write-transaction owner. */
       .prepare(compiled.sql)
+      // SAFETY: The admitted table and explicit projection supply WorkspaceFileRow.
       .all(...bind(agentId)) as WorkspaceFileRow[];
-  return rows.map((row) => rowToWorkspaceFile(row));
+  return rows.map((row) =>
+    rowToWorkspaceFile(row, CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION, row.status),
+  );
 }
 
 export function readAllClawWorkspaceFilesInDatabase(
   db: DatabaseSync,
-): PersistedClawWorkspaceFile[] {
+): ClawWorkspaceFileInventory[] {
   if (!tableExists(db, "claw_workspace_files")) {
     return [];
   }
@@ -213,7 +224,5 @@ export function readAllClawWorkspaceFilesInDatabase(
       // SAFETY: The canonical table and shared explicit projection provide this generated row shape.
       .all() as WorkspaceFileRow[];
   // Orphan inventory reports the stored version; per-agent inventory uses the current constant.
-  return rows.map((row) =>
-    rowToWorkspaceFile(row, row.schema_version as PersistedClawWorkspaceFile["schemaVersion"]),
-  );
+  return rows.map((row) => rowToWorkspaceFile(row, row.schema_version, row.status));
 }

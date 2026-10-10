@@ -8,9 +8,10 @@ import { authorizeLegacyV1Resume } from "../cli/claws-cli-legacy-resume.js";
 import {
   emitClawFailure,
   formatClawDiagnostics,
+  logClawAddPlanSummary,
   logClawExperimentalWarning,
+  requireClawPlanConsent,
 } from "../cli/claws-cli-output.js";
-import { logClawAddPlanSummary, requireClawPlanConsent } from "../cli/claws-cli-output.js";
 import type { ClawsAddOptions } from "../cli/claws-cli.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { listConfiguredMcpServers } from "../config/mcp-config.js";

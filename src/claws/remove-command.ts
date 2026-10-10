@@ -4,12 +4,8 @@ import {
   requireClawPlanConsent,
 } from "../cli/claws-cli-output.js";
 import type { ClawsRemoveOptions } from "../cli/claws-cli.js";
-import { clawMonitorCleanupGateway } from "../cli/claws-cli.monitor-cleanup.js";
-import { clawPackageRemovalGateway } from "../cli/claws-cli.package-removal.js";
-import { clawRemovalJournalGateway } from "../cli/claws-cli.removal-journal.js";
-import { callGatewayFromCli } from "../cli/gateway-rpc.js";
-import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
-import { assertExperimentalClawsEnabled } from "./experimental.js";
+import { writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
+import type { ClawCommandServices } from "./command-runtime.js";
 import {
   applyClawRemovePlan,
   buildClawRemovePlan,
@@ -21,9 +17,10 @@ import { CLAW_OUTPUT_STABILITY } from "./types.js";
 export async function executeClawRemoveCommand(
   target: string,
   opts: ClawsRemoveOptions,
-  runtime: RuntimeEnv = defaultRuntime,
+  runtime: RuntimeEnv,
+  services: ClawCommandServices,
 ): Promise<void> {
-  assertExperimentalClawsEnabled();
+  services.assertCurrent();
   if (requireClawPlanConsent("remove", opts, runtime)) {
     return;
   }
@@ -48,8 +45,9 @@ export async function executeClawRemoveCommand(
       ? { mode: "remove-if-unused" as const }
       : { mode: "retain" as const };
   const plan = await buildClawRemovePlan(target, {
+    assertCurrent: services.assertCurrent,
     referencedCleanup,
-    monitorGateway: clawMonitorCleanupGateway,
+    monitorGateway: services.monitorGateway,
   });
   if (opts.dryRun || plan.blockers.length > 0) {
     if (opts.json) {
@@ -79,15 +77,16 @@ export async function executeClawRemoveCommand(
   }
   try {
     const result = await applyClawRemovePlan(plan, {
-      journalGateway: clawRemovalJournalGateway,
-      monitorGateway: clawMonitorCleanupGateway,
-      packageGateway: clawPackageRemovalGateway,
+      journalGateway: services.journalGateway,
+      monitorGateway: services.monitorGateway,
+      packageGateway: services.packageGateway,
+      unsetMcpServer: services.unsetMcpServer,
+      assertCurrent: services.assertCurrent,
+      configWriteOptions: services.configWriteOptions,
+      onConfigCommitted: services.onConfigCommitted,
       consentPlanIntegrity: opts.planIntegrity,
       referencedCleanup,
-      cronGateway: {
-        get: async (id) => await callGatewayFromCli("cron.get", {}, { id }),
-        remove: async (id) => await callGatewayFromCli("cron.remove", {}, { id }),
-      },
+      cronGateway: services.cronGateway,
     });
     if (opts.json) {
       writeRuntimeJson(runtime, result);

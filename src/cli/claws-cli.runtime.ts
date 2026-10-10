@@ -24,6 +24,7 @@ import type {
   ClawsAddOptions,
   ClawsExportOptions,
   ClawsInspectOptions,
+  ClawsRemoveOptions,
   ClawsStatusOptions,
 } from "./claws-cli.js";
 
@@ -136,6 +137,22 @@ export async function runClawsStatusCommand(
   }
 }
 
+export async function runClawsRemoveCommand(
+  target: string,
+  opts: ClawsRemoveOptions,
+  runtime: RuntimeEnv = defaultRuntime,
+): Promise<void> {
+  assertExperimentalClawsEnabled();
+  const { executeClawRemoveCommand } = await import("../claws/remove-command.js");
+  const { runClawCommandWithOwner } = await import("./claws-command-owner.js");
+  await runClawCommandWithOwner(
+    "claws.remove",
+    { target, options: opts },
+    runtime,
+    (services, output) => executeClawRemoveCommand(target, opts, output, services),
+  );
+}
+
 export async function runClawsExportCommand(
   agentId: string,
   opts: ClawsExportOptions,
@@ -175,5 +192,3 @@ export async function runClawsExportCommand(
     });
   }
 }
-
-export { executeClawRemoveCommand as runClawsRemoveCommand } from "../claws/remove-command.js";

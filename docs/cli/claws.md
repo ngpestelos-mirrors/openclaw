@@ -30,7 +30,7 @@ The current CLI reads a local package directory, `CLAW.md`, or grouped JSON mani
 Publishing, searching, and installing whole Claws through ClawHub are a
 separate registry track and are not part of this command surface yet.
 
-`add` and `update` use the Gateway that owns the selected local state
+`add`, `update`, and `remove` use the Gateway that owns the selected local state
 directory. Planning, consent validation, and database changes run in that owner;
 the next Gateway read sees committed changes. Run the command on the Gateway
 host so its local source and workspace paths identify the same files. An older
@@ -431,6 +431,10 @@ their existing behavior; Claws add provenance and guarded lifecycle operations
 on top.
 
 ## Migrate an existing agent
+
+Enrollment requires the Gateway to be stopped through its service owner. The
+command retains exclusive local state ownership through validation and cleanup.
+`--dry-run` remains available while the Gateway is running.
 
 `claws migrate` enrolls one already configured local agent without creating a
 second agent or moving its workspace. It creates a local package under the

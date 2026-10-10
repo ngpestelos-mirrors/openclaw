@@ -2,7 +2,7 @@ import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { readClawInstallRecord } from "../claws/provenance.js";
+import { readClawInstallRecordAsync } from "../claws/provenance.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
@@ -127,7 +127,7 @@ describe("claws migrate interactive consent", () => {
       await expect(access(join(stateDir, "claws", "local", "worker"))).rejects.toMatchObject({
         code: "ENOENT",
       });
-      expect(readClawInstallRecord("worker", { env })).toBeUndefined();
+      expect(await readClawInstallRecordAsync("worker", { env })).toBeUndefined();
     },
   );
 });

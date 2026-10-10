@@ -755,16 +755,16 @@ describe("installClawPackages", () => {
         assertSettlementCurrent: () => undefined,
         runSettlement: <T>(run: () => Promise<T>) => settlement.run(true, run),
       };
-      const completePackageRef = vi.fn<NonNullable<PackageInstallerDeps["completePackageRef"]>>(
-        async (ref, status, options) => {
-          options?.signal?.throwIfAborted();
-          options?.assertCurrent?.();
-          if (controller.signal.aborted) {
-            expect(settlement.getStore()).toBe(true);
-          }
-          return { ...ref, status };
-        },
-      );
+      const completeSettledPackageRef = vi.fn<
+        NonNullable<PackageInstallerDeps["completePackageRef"]>
+      >(async (ref, status, options) => {
+        options?.signal?.throwIfAborted();
+        options?.assertCurrent?.();
+        if (controller.signal.aborted) {
+          expect(settlement.getStore()).toBe(true);
+        }
+        return { ...ref, status };
+      });
       const rollbackIntegrity =
         "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
       const installPlugin = vi
@@ -821,7 +821,7 @@ describe("installClawPackages", () => {
               probePlugin,
               preflightPlugin: vi.fn().mockResolvedValue({ ok: true, action: "install" }),
               persistPackageRef,
-              completePackageRef,
+              completePackageRef: completeSettledPackageRef,
               readPackageRefs,
               withPackageLease: async (artifact, operation, options) => {
                 options?.signal?.throwIfAborted();

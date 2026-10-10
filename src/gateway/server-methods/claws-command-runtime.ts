@@ -163,15 +163,15 @@ export function createClawGatewayCommandServices(
       get: (id) => call("cron.get", { id }),
       remove: (id) => call("cron.remove", { id }),
       list: async (agentId) => {
-        const assertCurrent = operationAssertion();
-        assertCurrent();
+        const assertOperationCurrent = operationAssertion();
+        assertOperationCurrent();
         const jobs = await options.context.cron.list({ includeDisabled: true });
-        assertCurrent();
+        assertOperationCurrent();
         return { jobs: jobs.filter((job) => job.agentId === agentId) };
       },
       waitUntilAgentAvailable: async (agentId) => {
-        const assertCurrent = operationAssertion();
-        assertCurrent();
+        const assertOperationCurrent = operationAssertion();
+        assertOperationCurrent();
         if (
           !options.context.isConfigReloadSettled() ||
           !Object.hasOwn(options.context.getRuntimeConfig().agents?.entries ?? {}, agentId)
@@ -183,21 +183,26 @@ export function createClawGatewayCommandServices(
       },
     },
     reloadPlugins: async (plugins) => {
-      const assertCurrent = operationAssertion();
+      const assertOperationCurrent = operationAssertion();
       const signal = operationSignal();
-      assertCurrent();
+      assertOperationCurrent();
       const applyRuntime = options.context.applyPluginLifecycleChange;
       if (!applyRuntime) {
         throw new Error("Claw plugin changes require the Gateway plugin lifecycle owner.");
       }
-      const captured = captureGatewayPluginRuntimeApplications(applyRuntime, assertCurrent);
-      const result = await withPluginLifecycleLease({ signal, waitMs: 0, assertCurrent }, () =>
-        reloadManagedPlugin({
-          plugins: [...plugins],
-          applyRuntime: captured.applyRuntime,
-          beforePersistentApply: assertCurrent,
-          signal,
-        }),
+      const captured = captureGatewayPluginRuntimeApplications(
+        applyRuntime,
+        assertOperationCurrent,
+      );
+      const result = await withPluginLifecycleLease(
+        { signal, waitMs: 0, assertCurrent: assertOperationCurrent },
+        () =>
+          reloadManagedPlugin({
+            plugins: [...plugins],
+            applyRuntime: captured.applyRuntime,
+            beforePersistentApply: assertOperationCurrent,
+            signal,
+          }),
       );
       if (!result.application) {
         throw new Error("Claw plugin reload returned without runtime confirmation.");
@@ -205,13 +210,13 @@ export function createClawGatewayCommandServices(
       return result.application;
     },
     commitConfig: async (transform) => {
-      const assertCurrent = operationAssertion();
+      const assertOperationCurrent = operationAssertion();
       const application = createConfigApplication();
       await transformConfigFileWithRetry({
         afterWrite: { mode: "auto" },
         writeOptions: application.writeOptions,
         transform: (config) => {
-          assertCurrent();
+          assertOperationCurrent();
           return { nextConfig: transform(config) };
         },
       });

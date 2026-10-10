@@ -19,6 +19,7 @@ import {
   CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
   readAllClawWorkspaceFilesInDatabase,
   readClawWorkspaceFilesInDatabase,
+  type ClawWorkspaceFileInventory,
   type PersistedClawWorkspaceFile,
 } from "./workspace-records.js";
 import type { ClawWorkspaceOperations } from "./workspace.worker-contract.js";
@@ -84,6 +85,14 @@ export function readAllClawWorkspaceFilesAsync(options: OpenClawStateDatabaseOpt
 
 export function upsertClawWorkspaceFileAsync(
   record: PersistedClawWorkspaceFile,
+  options: ClawWorkspaceWriteOptions = {},
+) {
+  return writeWorkspaceOperation("clawWorkspace.upsert", { record }, options);
+}
+
+/** Rollback restores the captured inventory, including an unknown stored status or version. */
+export function restoreClawWorkspaceFileAsync(
+  record: ClawWorkspaceFileInventory,
   options: ClawWorkspaceWriteOptions = {},
 ) {
   return writeWorkspaceOperation("clawWorkspace.upsert", { record }, options);
