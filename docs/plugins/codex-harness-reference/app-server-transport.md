@@ -84,7 +84,9 @@ selection even when a macOS desktop bundle is installed. When
 the desktop app binary that owns the required macOS permissions. The same
 desktop-first rule applies when an isolated agent home's effective Codex config
 enables native Computer Use. If no desktop app bundle is installed, OpenClaw
-falls back to the package selection.
+falls back to the package selection. When Computer Use or `homeScope: "user"`
+selects an installed desktop app, ChatGPT model discovery keeps reporting the
+shipped version.
 
 Before cutting over a staged OpenClaw package, run the opt-in managed-binary
 check against the candidate installation:

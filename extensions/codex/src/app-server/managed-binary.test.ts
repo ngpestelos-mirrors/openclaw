@@ -8,8 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import { resolveCodexAppServerRuntimeOptions } from "./config-runtime.js";
 import {
-  resolveInstalledCodexAppServer,
+  rejectInstalledCodexAppServer,
   resolveManagedCodexAppServerStartOptions,
+  resolveManagedCodexClientVersion,
   resolveManagedCodexNativeCommand,
   setManagedCodexPluginRoot,
 } from "./managed-binary.js";
@@ -263,6 +264,7 @@ const installedState = (globalThis as Record<PropertyKey, unknown>)[
 ] as {
   selection?: Promise<unknown>;
   selected?: { command: string; nativeCommand: string; version: string };
+  rejected?: string;
 };
 
 const NATIVE_TRIPLES: Record<string, string> = {
@@ -288,6 +290,7 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
     vi.restoreAllMocks();
     installedState.selection = Promise.resolve(undefined);
     delete installedState.selected;
+    delete installedState.rejected;
     setManagedCodexPluginRoot(undefined);
     await rm(root, { recursive: true, force: true });
   });
@@ -311,9 +314,19 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
     return { launcher, native };
   }
 
-  function select(probeHandshake = async () => NEWER) {
-    return resolveInstalledCodexAppServer({ env: { PATH: bin }, probeHandshake });
+  /** Makes this process's decision: what discovery reports and what managed starts use. */
+  async function select(
+    probes: {
+      probeHandshake?: (command: string) => Promise<string | undefined>;
+      runVersion?: (nativeCommand: string) => Promise<string>;
+    } = {},
+  ) {
+    const clientVersion = await resolveManagedCodexClientVersion("package-first", {
+      probes: { env: { PATH: bin }, probeHandshake: async () => NEWER, ...probes },
+    });
+    return { clientVersion, selected: installedState.selected };
   }
+  const BUNDLED = { clientVersion: CODEX_APP_SERVER_VERSION, selected: undefined };
 
   function expectChoice(message: string) {
     expect(embeddedAgentLog.info).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(message));
@@ -323,10 +336,9 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
     const { launcher, native } = await installNpmCodex(`echo "codex-cli ${NEWER}"`);
     const probeHandshake = vi.fn(async () => NEWER);
 
-    await expect(select(probeHandshake)).resolves.toEqual({
-      command: launcher,
-      nativeCommand: native,
-      version: NEWER,
+    await expect(select({ probeHandshake })).resolves.toEqual({
+      clientVersion: NEWER,
+      selected: { command: launcher, nativeCommand: native, version: NEWER },
     });
     expect(probeHandshake).toHaveBeenCalledExactlyOnceWith(launcher);
     expectChoice(
@@ -345,14 +357,14 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
     await installNpmCodex(output);
     const probeHandshake = vi.fn(async () => NEWER);
 
-    await expect(select(probeHandshake)).resolves.toBeUndefined();
+    await expect(select({ probeHandshake })).resolves.toEqual(BUNDLED);
     expect(probeHandshake).not.toHaveBeenCalled();
     expectChoice(`Codex app-server: using bundled ${CODEX_APP_SERVER_VERSION} (installed `);
     expectChoice(reason);
   });
 
   it("keeps the bundled package without a codex on PATH", async () => {
-    await expect(select()).resolves.toBeUndefined();
+    await expect(select()).resolves.toEqual(BUNDLED);
     expectChoice(`Codex app-server: using bundled ${CODEX_APP_SERVER_VERSION} (no codex on PATH)`);
   });
 
@@ -372,7 +384,7 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
   ])("keeps the bundled package when a newer Codex $name", async ({ probe, reason }) => {
     await installNpmCodex(`echo "codex-cli ${NEWER}"`);
 
-    await expect(select(probe)).resolves.toBeUndefined();
+    await expect(select({ probeHandshake: probe })).resolves.toEqual(BUNDLED);
     expectChoice(reason);
   });
 
@@ -380,7 +392,7 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
     await writeFile(path.join(bin, "codex"), `#!/bin/sh\necho "codex-cli ${NEWER}"\n`);
     await chmod(path.join(bin, "codex"), 0o755);
 
-    await expect(select()).resolves.toBeUndefined();
+    await expect(select()).resolves.toEqual(BUNDLED);
     expectChoice("is not a native Codex executable or the official @openai/codex launcher");
   });
 
@@ -392,13 +404,10 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
     await symlink(standalone, path.join(bin, "codex"));
     const runVersion = vi.fn(async () => `codex-cli ${NEWER}\n`);
 
-    await expect(
-      resolveInstalledCodexAppServer({
-        env: { PATH: bin },
-        runVersion,
-        probeHandshake: async () => NEWER,
-      }),
-    ).resolves.toEqual({ command: standalone, nativeCommand: standalone, version: NEWER });
+    await expect(select({ runVersion })).resolves.toEqual({
+      clientVersion: NEWER,
+      selected: { command: standalone, nativeCommand: standalone, version: NEWER },
+    });
     expect(runVersion).toHaveBeenCalledExactlyOnceWith(standalone);
   });
 
@@ -434,5 +443,70 @@ describe.skipIf(process.platform === "win32")("installed Codex selection", () =>
         preferInstalled: false,
       }),
     ).resolves.toMatchObject({ command: packaged });
+  });
+
+  it("keeps reporting the bundled pin when desktop-first starts run the desktop app", async () => {
+    await installNpmCodex(`echo "codex-cli ${NEWER}"`);
+    const probes = { env: { PATH: bin }, probeHandshake: async () => NEWER };
+    const desktopInstalled = async (command: string) => command.includes("Codex.app");
+
+    await expect(
+      resolveManagedCodexClientVersion("desktop-first", {
+        platform: "darwin",
+        pathExists: desktopInstalled,
+        probes,
+      }),
+    ).resolves.toBe(CODEX_APP_SERVER_VERSION);
+    // Without the desktop app, desktop-first starts reach the installed Codex.
+    await expect(
+      resolveManagedCodexClientVersion("desktop-first", {
+        platform: "darwin",
+        pathExists: async () => false,
+        probes,
+      }),
+    ).resolves.toBe(NEWER);
+  });
+
+  it("drops an installed Codex that disappeared after selection", async () => {
+    const pluginRoot = path.join(root, "plugin");
+    const packaged = await writePackageLauncher(pluginRoot);
+    const selected = {
+      command: "/opt/codex/bin/codex",
+      nativeCommand: "/opt/codex/bin/codex",
+      version: NEWER,
+    };
+    installedState.selection = Promise.resolve(selected);
+    installedState.selected = selected;
+    const warn = vi.spyOn(embeddedAgentLog, "warn").mockImplementation(() => undefined);
+
+    await expect(
+      resolveManagedCodexAppServerStartOptions(startOptions("managed"), {
+        platform: "linux",
+        pluginRoot,
+        pathExists: async (command) => command !== selected.command,
+      }),
+    ).resolves.toMatchObject({ command: packaged });
+    await expect(resolveManagedCodexClientVersion("package-first")).resolves.toBe(
+      CODEX_APP_SERVER_VERSION,
+    );
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining(`installed ${selected.command} ${NEWER} failed to start (executable`),
+    );
+  });
+
+  it("lets every start that captured a rejected installed Codex fall back, logging once", () => {
+    const selected = {
+      command: "/opt/codex/bin/codex",
+      nativeCommand: "/opt/codex/bin/codex",
+      version: NEWER,
+    };
+    installedState.selection = Promise.resolve(selected);
+    installedState.selected = selected;
+    const warn = vi.spyOn(embeddedAgentLog, "warn").mockImplementation(() => undefined);
+
+    expect(rejectInstalledCodexAppServer(selected.command, new Error("spawn EACCES"))).toBe(true);
+    expect(rejectInstalledCodexAppServer(selected.command, new Error("spawn EACCES"))).toBe(true);
+    expect(rejectInstalledCodexAppServer("/usr/bin/other-codex", new Error("boom"))).toBe(false);
+    expect(warn).toHaveBeenCalledOnce();
   });
 });

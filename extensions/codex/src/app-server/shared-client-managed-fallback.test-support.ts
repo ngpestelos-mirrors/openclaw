@@ -93,6 +93,8 @@ export function registerSharedClientManagedFallbackTests(params: {
       { failure: "spawn EACCES", installed: "spawn" },
       { failure: "initialize refused", installed: "initialize" },
       { failure: `app-server reported ${CODEX_APP_SERVER_VERSION}`, installed: "version" },
+      // The generic version fallback must not skip dropping the installed selection.
+      { failure: "Codex app-server 0.149.0 or newer is required", installed: "unsupported" },
     ] as const)("falls back to the bundled package on $installed failure", async (scenario) => {
       const installed = createClientHarness();
       const bundled = createClientHarness();
@@ -113,6 +115,8 @@ export function registerSharedClientManagedFallbackTests(params: {
         installed.send({ id: initialize.id, error: { code: -32603, message: scenario.failure } });
       } else if (scenario.installed === "version") {
         await params.sendInitializeResult(installed, `codex-cli/${CODEX_APP_SERVER_VERSION}`);
+      } else if (scenario.installed === "unsupported") {
+        await params.sendInitializeResult(installed, "codex-cli/0.148.0");
       }
       await params.sendInitializeResult(bundled, `codex-cli/${CODEX_APP_SERVER_VERSION}`);
       const failure = scenario.failure;

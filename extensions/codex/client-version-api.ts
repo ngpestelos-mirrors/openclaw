@@ -1,6 +1,6 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveCodexAppServerRuntimeOptions } from "./src/app-server/config.js";
-import { resolveInstalledCodexAppServer } from "./src/app-server/managed-binary.js";
+import { resolveManagedCodexClientVersion } from "./src/app-server/managed-binary.js";
 import { CODEX_APP_SERVER_VERSION } from "./src/app-server/version.js";
 
 /**
@@ -19,5 +19,5 @@ export async function resolveCodexClientVersion(params: {
   if (start.transport !== "stdio" || start.commandSource !== "managed") {
     return CODEX_APP_SERVER_VERSION;
   }
-  return (await resolveInstalledCodexAppServer())?.version ?? CODEX_APP_SERVER_VERSION;
+  return resolveManagedCodexClientVersion(start.managedCommandOrder ?? "package-first");
 }

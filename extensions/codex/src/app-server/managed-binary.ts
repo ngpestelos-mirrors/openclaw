@@ -55,6 +55,8 @@ export type InstalledCodexAppServer = {
 type InstalledCodexAppServerState = {
   selection?: Promise<InstalledCodexAppServer | undefined>;
   selected?: InstalledCodexAppServer;
+  /** Launcher dropped after a failed start; concurrent starts of it still fall back. */
+  rejected?: string;
 };
 
 // One decision per process, so model discovery and every managed start agree on
@@ -65,6 +67,7 @@ const installedCodex = resolveGlobalSingleton<InstalledCodexAppServerState>(
   (state) => {
     delete state.selection;
     delete state.selected;
+    delete state.rejected;
   },
 );
 
@@ -88,10 +91,35 @@ export function setManagedCodexPluginRoot(pluginRoot: string | undefined): void 
 }
 
 /**
+ * Version that managed starts with this command order report to ChatGPT model
+ * discovery. Desktop-first starts run an installed macOS desktop app, whose
+ * version is never probed, so they keep reporting the bundled pin as before.
+ */
+export async function resolveManagedCodexClientVersion(
+  order: CodexManagedCommandOrder,
+  options: Pick<ResolveManagedCodexAppServerOptions, "platform" | "pathExists"> & {
+    probes?: InstalledCodexAppServerProbes;
+  } = {},
+): Promise<string> {
+  const platform = options.platform ?? process.platform;
+  const pathExists = options.pathExists ?? commandPathExists;
+  if (order === "desktop-first") {
+    for (const command of resolveMacOSDesktopCodexAppServerCommandCandidates(platform)) {
+      if (await pathExists(command, platform)) {
+        return CODEX_APP_SERVER_VERSION;
+      }
+    }
+  }
+  return (
+    (await resolveInstalledCodexAppServer(options.probes))?.version ?? CODEX_APP_SERVER_VERSION
+  );
+}
+
+/**
  * Selects the installed Codex once per process; later callers reuse the
  * decision, so probes only apply to the call that makes it.
  */
-export function resolveInstalledCodexAppServer(
+function resolveInstalledCodexAppServer(
   probes: InstalledCodexAppServerProbes = {},
 ): Promise<InstalledCodexAppServer | undefined> {
   if (!installedCodex.selection) {
@@ -108,14 +136,16 @@ export function resolveInstalledCodexAppServer(
 
 /**
  * Drops the selected installed Codex after it failed to start, so this process
- * uses the bundled package until the Gateway restarts. Returns false for any
- * other command, which keeps the first failure as the only logged one.
+ * uses the bundled package until the Gateway restarts. Returns true for that
+ * launcher, including starts that captured it before another start dropped it,
+ * and false for any other command. Only the first failure is logged.
  */
 export function rejectInstalledCodexAppServer(command: string, error: unknown): boolean {
   const selected = installedCodex.selected;
   if (selected?.command !== command) {
-    return false;
+    return installedCodex.rejected === command;
   }
+  installedCodex.rejected = command;
   installedCodex.selection = Promise.resolve(undefined);
   delete installedCodex.selected;
   embeddedAgentLog.warn(
@@ -311,6 +341,9 @@ export async function resolveManagedCodexAppServerStartOptions(
   for (const commandPath of candidateCommandPaths) {
     if (await pathExists(commandPath, platform)) {
       commandPaths.push(commandPath);
+    } else if (commandPath === installed?.command) {
+      // Removed after selection: discovery must stop reporting its version too.
+      rejectInstalledCodexAppServer(commandPath, new Error("executable is no longer available"));
     }
   }
   const [commandPath, ...managedFallbackCommandPaths] = commandPaths;

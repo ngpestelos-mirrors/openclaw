@@ -1057,11 +1057,12 @@ async function startInitializedCodexAppServerClientOnce(
         );
         assertInstalledCodexAppServerVersion(startOptions.command, client.getServerVersion());
       } catch (error) {
+        // The installed check runs first so an unsupported version also drops it.
         if (
+          yieldInstalledCodex(index, startOptions.command, error) ||
           (startOptions.commandSource === "resolved-managed" &&
             index < startOptionsCandidates.length - 1 &&
-            isUnsupportedCodexAppServerVersionError(error)) ||
-          yieldInstalledCodex(index, startOptions.command, error)
+            isUnsupportedCodexAppServerVersionError(error))
         ) {
           continue;
         }
