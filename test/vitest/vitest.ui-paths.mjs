@@ -1,5 +1,27 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
+
+/** Resolve an inventoried owner after a TS/TSX rename, retaining absent paths. */
+export function resolveUiTypeScriptPath(file, cwd = repoRoot) {
+  if (!/\.tsx?$/u.test(file) || existsSync(resolve(cwd, file))) {
+    return file;
+  }
+  const alternate = file.endsWith(".tsx") ? file.slice(0, -1) : `${file}x`;
+  return existsSync(resolve(cwd, alternate)) ? alternate : file;
+}
+
+/** Watch both extensions, including deleted paths that cannot be resolved on disk. */
+export function uiTypeScriptPathGlob(file) {
+  return file.replace(/\.tsx?$/u, ".{ts,tsx}");
+}
+
 // Wall-clock render budgets must not compete with the UI's Chromium workers.
-export const uiTimingTestFiles = ["ui/src/components/markdown.progress.node.test.ts"];
+export const uiTimingTestFiles = ["ui/src/components/markdown.progress.node.test.ts"].map((file) =>
+  resolveUiTypeScriptPath(file),
+);
 
 // These files launch Playwright from Node; all other .browser tests run in Chromium.
 export const uiNodeDrivenBrowserTestFiles = [
@@ -18,22 +40,27 @@ export const uiNodeDrivenBrowserTestFiles = [
   "ui/src/styles/shimmer.browser.test.ts",
   "ui/src/styles/forced-colors-indicators.browser.test.ts",
   "ui/src/styles/sr-only.browser.test.ts",
-];
+].map((file) => resolveUiTypeScriptPath(file));
 
 export function isUiBrowserTestFile(relative) {
   return (
     isUiTestTarget(relative) &&
     !/[*?[\]{}]|[@+!]\(/u.test(relative) &&
-    relative.endsWith(".browser.test.ts") &&
-    !uiNodeDrivenBrowserTestFiles.includes(relative)
+    /\.browser\.test\.tsx?$/u.test(relative) &&
+    !uiNodeDrivenBrowserTestFiles.some(
+      (file) => file.replace(/\.tsx$/u, ".ts") === relative.replace(/\.tsx$/u, ".ts"),
+    )
   );
 }
 
 export const pluginControlUiPathGlob = "extensions/*/browser/**";
-export const controlUiTestGlobs = ["ui/src/**/*.test.ts", "extensions/*/browser/**/*.test.ts"];
+export const controlUiTestGlobs = [
+  "ui/src/**/*.test.{ts,tsx}",
+  "extensions/*/browser/**/*.test.{ts,tsx}",
+];
 export const controlUiE2eTestGlobs = [
-  "ui/src/**/*.e2e.test.ts",
-  "extensions/*/browser/**/*.e2e.test.ts",
+  "ui/src/**/*.e2e.test.{ts,tsx}",
+  "extensions/*/browser/**/*.e2e.test.{ts,tsx}",
 ];
 
 /** Browser plugin source and tests share the Control UI owner, regardless of plugin id.
@@ -52,8 +79,8 @@ export function isControlUiSourcePath(file) {
 export function isUiTestTarget(relative) {
   return (
     isControlUiSourcePath(relative) &&
-    relative.endsWith(".test.ts") &&
-    !relative.endsWith(".e2e.test.ts")
+    /\.test\.tsx?$/u.test(relative) &&
+    !/\.e2e\.test\.tsx?$/u.test(relative)
   );
 }
 
@@ -96,7 +123,7 @@ export const uiE2eRealGatewayTestFiles = [
   "extensions/qa-lab/src/control-ui-media-transcript.real-gateway.e2e.test.ts",
   "extensions/qa-lab/src/control-ui-openclaw-delegation.real-gateway.e2e.test.ts",
   "extensions/qa-lab/src/control-ui-automation-management.real-gateway.e2e.test.ts",
-];
+].map((file) => resolveUiTypeScriptPath(file));
 
 // New real-Gateway files stay serial until their shared readers/writers are audited.
 // Listed fixtures own their HOME, state, ports, and cleanup; UI bytes are either
@@ -129,4 +156,4 @@ export const uiE2ePrebuiltParallelTestFiles = [
   "extensions/qa-lab/src/session-host-command-state.real-gateway.e2e.test.ts",
   "extensions/qa-lab/src/control-ui-openclaw-delegation.real-gateway.e2e.test.ts",
   "extensions/qa-lab/src/control-ui-automation-management.real-gateway.e2e.test.ts",
-];
+].map((file) => resolveUiTypeScriptPath(file));

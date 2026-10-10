@@ -16,7 +16,7 @@ import {
 export function createUiVitestConfig(env?: Record<string, string | undefined>): ViteUserConfig {
   const includePatterns = [
     ...controlUiTestGlobs.map((pattern) =>
-      pattern.replace("*.test.ts", nonBrowserTestBasenamePattern),
+      pattern.replace("*.test.{ts,tsx}", nonBrowserTestBasenamePattern),
     ),
     ...uiNodeDrivenBrowserTestFiles,
   ];

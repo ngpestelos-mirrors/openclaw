@@ -198,7 +198,7 @@ function pageWatch(
   };
 }
 
-export const UI_E2E_OWNER_WATCHES: readonly UiE2eOwnerWatch[] = [
+const ownerWatches: readonly UiE2eOwnerWatch[] = [
   pageWatch("ui/src/e2e/activity-answer-candidates.e2e.test.ts", ["activity", "chat"]),
   pageWatch("ui/src/e2e/activity-current-work.e2e.test.ts", ["activity", "chat"]),
   pageWatch(
@@ -2365,6 +2365,11 @@ export const UI_E2E_OWNER_WATCHES: readonly UiE2eOwnerWatch[] = [
   pageWatch("ui/src/e2e/worktrees.e2e.test.ts", ["config", "worktrees"]),
 ];
 
+export const UI_E2E_OWNER_WATCHES: readonly UiE2eOwnerWatch[] = ownerWatches.map((watch) => ({
+  ...watch,
+  watchGlobs: watch.watchGlobs.map(uiTypeScriptPathGlob),
+}));
+
 export const UI_E2E_SMOKE_TEST_FILES: readonly string[] = [
   // Always run cold history admission, exact session URLs, and desktop/mobile draft and IME preservation.
   "ui/src/e2e/control-ui-route-readiness.e2e.test.ts",
@@ -2377,3 +2382,4 @@ export const UI_E2E_SMOKE_TEST_FILES: readonly string[] = [
   // Always run a settings edit through rendered CSS, persistence, and reset.
   "ui/src/e2e/appearance-accent-selection.e2e.test.ts",
 ];
+import { uiTypeScriptPathGlob } from "../../test/vitest/vitest.ui-paths.mjs";

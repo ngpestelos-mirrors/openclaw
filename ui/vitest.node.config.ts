@@ -14,9 +14,9 @@ export default defineConfig({
     pool: "threads",
     testTimeout: 120_000,
     include: [
-      "src/**/*.node.test.ts",
-      "src/pages/chat/chat-responsive.browser.test.ts",
-      "src/pages/chat/chat-footer-layout.browser.test.ts",
+      "src/**/*.node.test.{ts,tsx}",
+      "src/pages/chat/chat-responsive.browser.test.{ts,tsx}",
+      "src/pages/chat/chat-footer-layout.browser.test.{ts,tsx}",
     ],
     environment: "node",
   },

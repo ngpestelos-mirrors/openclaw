@@ -111,7 +111,7 @@ This directory owns Control UI-specific guidance that should not live in the rep
 
 ## CSS / Template Linting
 
-- `pnpm lint:ui:styles` runs stylelint over `ui/src` stylesheets and Lit `css` templates (postcss-lit). `pnpm lint` includes it; error-class rules only, oxfmt owns formatting. Config: `config/stylelint.config.mjs`.
+- `pnpm lint:ui:styles` runs stylelint over `ui/src` stylesheets and Lit `css` templates in TypeScript and TSX (postcss-lit). `pnpm lint` includes it; error-class rules only, oxfmt owns formatting. Config: `config/stylelint.config.mjs`.
 - Icons: shared 24x24 Lucide icons go through `strokeIcon()` in `ui/src/components/icons-tools.ts` so stroke presentation attributes stay inline and render inside shadow roots. Icon bodies are `svg\`\``fragments, never`html\`\`` (wrong namespace renders nothing).
 - `pnpm lint:ui:lit` is an opt-in lit-analyzer diagnostic for template bindings (slow, ~9 min; known baseline of pre-existing findings). It is not a CI gate.
 

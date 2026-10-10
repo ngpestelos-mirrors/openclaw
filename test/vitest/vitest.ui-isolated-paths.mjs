@@ -43,10 +43,11 @@ export const uiIsolatedTestFiles = [
   "ui/src/pages/config/memory-page.test.ts",
   "ui/src/pages/new-session/draft-persistence.test.ts",
   "ui/src/pages/sessions/sessions-page.archived.test.ts",
-];
+].map((file) => resolveUiTypeScriptPath(file));
 
 const uiIsolatedTestFileSet = new Set(uiIsolatedTestFiles);
 
 export function isUiIsolatedTestFile(value) {
   return uiIsolatedTestFileSet.has(value.replaceAll("\\", "/"));
 }
+import { resolveUiTypeScriptPath } from "./vitest.ui-paths.mjs";

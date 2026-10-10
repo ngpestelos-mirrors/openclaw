@@ -113,7 +113,7 @@ let chromiumLaunchOptions: ReturnType<typeof resolveChromiumLaunchOptions> | nul
 
 export function createUiBrowserVitestConfig(env = process.env): ViteUserConfig {
   const include = includeUiTests(
-    ["src/**/*.browser.test.ts", "../extensions/*/browser/**/*.browser.test.ts"],
+    ["src/**/*.browser.test.{ts,tsx}", "../extensions/*/browser/**/*.browser.test.{ts,tsx}"],
     env,
   );
   const runtimeFiles = loadPatternListFromEnv("OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE", env);
@@ -303,14 +303,17 @@ export default defineConfig({
           // The cleanup runner retires that state per file; without it the lane
           // fails whichever sibling the size sequencer happens to pack together.
           runner: nonIsolatedRunnerPath,
-          include: includeUiTests(["src/**/*.test.ts", "../extensions/*/browser/**/*.test.ts"]),
+          include: includeUiTests([
+            "src/**/*.test.{ts,tsx}",
+            "../extensions/*/browser/**/*.test.{ts,tsx}",
+          ]),
           exclude: [
-            "src/**/*.browser.test.ts",
-            "src/**/*.e2e.test.ts",
-            "src/**/*.node.test.ts",
-            "../extensions/*/browser/**/*.browser.test.ts",
-            "../extensions/*/browser/**/*.e2e.test.ts",
-            "../extensions/*/browser/**/*.node.test.ts",
+            "src/**/*.browser.test.{ts,tsx}",
+            "src/**/*.e2e.test.{ts,tsx}",
+            "src/**/*.node.test.{ts,tsx}",
+            "../extensions/*/browser/**/*.browser.test.{ts,tsx}",
+            "../extensions/*/browser/**/*.e2e.test.{ts,tsx}",
+            "../extensions/*/browser/**/*.node.test.{ts,tsx}",
             ...mockRegistryUnitTests,
           ],
           environment: "jsdom",
@@ -350,8 +353,8 @@ export default defineConfig({
           // layout tests, whose browser lives in module scope. Resetting the
           // module graph between files churns that browser and flakes them.
           include: includeUiTests([
-            "src/**/*.node.test.ts",
-            "../extensions/*/browser/**/*.node.test.ts",
+            "src/**/*.node.test.{ts,tsx}",
+            "../extensions/*/browser/**/*.node.test.{ts,tsx}",
             ...nodeDrivenBrowserLayoutTests,
           ]),
           environment: "jsdom",
