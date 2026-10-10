@@ -657,6 +657,18 @@ export function deferSqliteWorkerCommitReceipt(
   }
   deferSqliteWorkerNativeCommitReceipt(scope.owner, database, facts, delivery);
 }
+
+/** A typed fenced write cannot commit without its destination owner's settlement evidence. */
+export function assertSqliteWorkerCommitReceiptPending(database: DatabaseSync): void {
+  const scope = currentAdmission.getStore();
+  if (!scope?.active || !scope.owner.pendingReceipts?.get(database)) {
+    throw new SqliteWorkerError(
+      "SQLite source fence requires a destination commit receipt",
+      "closed",
+    );
+  }
+}
+
 /** Called on the SQLite worker, after transaction entry and before its row mutation. */
 export function requestSqliteWorkerOperationAdmission(
   request: SqliteWorkerAdmissionRequest,
@@ -665,6 +677,9 @@ export function requestSqliteWorkerOperationAdmission(
   const scope = currentAdmission.getStore();
   if (!scope?.active) {
     throw new SqliteWorkerError("SQLite operation requires its retained admission", "unavailable");
+  }
+  if (scope.owner.sourceReservations) {
+    throw new SqliteWorkerError("SQLite source reservations prohibit host admission", "closed");
   }
   const decision = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
   const startedAt = Date.now();
@@ -683,6 +698,23 @@ export function requestSqliteWorkerOperationAdmission(
     const refusal = new SqliteWorkerError("SQLite transaction admission was refused", "closed");
     scope.owner.refusal = refusal;
     throw refusal;
+  }
+}
+
+/** A native waiter may block MAIN; this interval must complete without host messages. */
+export function withSqliteWorkerSourceReservations<T>(operation: () => T): T {
+  const scope = currentAdmission.getStore();
+  if (!scope?.active || scope.owner.sourceReservations) {
+    throw new SqliteWorkerError(
+      "SQLite source fence requires exclusive operation custody",
+      "closed",
+    );
+  }
+  scope.owner.sourceReservations = true;
+  try {
+    return operation();
+  } finally {
+    delete scope.owner.sourceReservations;
   }
 }
 

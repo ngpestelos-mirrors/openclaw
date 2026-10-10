@@ -13,6 +13,8 @@ export type SqliteWorkerOperationContext = {
   refusal?: SqliteWorkerError;
   committed?: { facts: unknown };
   settled?: true;
+  sourceReservations?: true;
+  pendingReceipts?: Map<DatabaseSync, number>;
 };
 
 export type NativeCommitReceipt = {
@@ -87,11 +89,24 @@ export function deferSqliteWorkerNativeCommitReceipt(
   }
   const captured = structuredClone(facts);
   const operationId = nativeCommitReceipts.get(owner)?.operationId ?? randomUUID();
+  const counts = owner.sourceReservations ? (owner.pendingReceipts ??= new Map()) : undefined;
+  const pending = (delta: number) => {
+    if (!counts) {
+      return;
+    }
+    const count = (counts.get(database) ?? 0) + delta;
+    if (count === 0) {
+      counts.delete(database);
+    } else {
+      counts.set(database, count);
+    }
+  };
   if (
     !stageSqliteTransactionState(database, {
-      stage() {},
-      rollback() {},
+      stage: () => pending(1),
+      rollback: () => pending(-1),
       commit() {
+        pending(-1);
         const previous = nativeCommitReceipts.get(owner);
         const receipt: NativeCommitReceipt = {
           version: 1,
