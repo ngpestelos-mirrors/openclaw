@@ -510,14 +510,25 @@ export async function appendSessionTurnInWorker(
     };
     const run = () => {
       if (actor && inputActor) {
+        let authorityFailure: unknown;
+        const checkAuthority = (check: () => void) => {
+          try {
+            check();
+          } catch (error) {
+            authorityFailure = error;
+            throw error;
+          }
+        };
         const authority = {
-          assertCurrent,
+          assertCurrent: () => checkAuthority(assertCurrent),
           authorize(_stage: "transaction" | "commit", _state: unknown, publication?: unknown) {
-            operation.onTransactionFacts(publication);
-            if (isRecord(publication) && publication.kind === "session-turn") {
-              operation.assertCandidate(publication as SessionTurnCommitted);
-            }
-            assertCurrent();
+            checkAuthority(() => {
+              operation.onTransactionFacts(publication);
+              if (isRecord(publication) && publication.kind === "session-turn") {
+                operation.assertCandidate(publication as SessionTurnCommitted);
+              }
+              assertCurrent();
+            });
           },
         };
         return operation.run(
@@ -638,7 +649,8 @@ export async function appendSessionTurnInWorker(
                       committed: (commit) => record(commit.value),
                     },
                   );
-            if (outcome.kind !== "committed") throwSessionInputActorFailure(outcome);
+            if (outcome.kind !== "committed")
+              throwSessionInputActorFailure(outcome, authorityFailure);
             if (outcome.failure)
               throw Object.assign(new Error(outcome.failure.message), {
                 name: outcome.failure.name,

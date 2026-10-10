@@ -240,7 +240,9 @@ it("retains staged custody when authority ends during committed publication", as
         state: "queued",
       });
       recorder.finishPendingInput?.("interrupted");
-      await recorder.waitForPendingInputSettlement?.();
+      await expect(recorder.waitForPendingInputSettlement?.()).rejects.toThrow(
+        "staged authority ended",
+      );
       expect(
         readSessionPendingInputByKey(owner, recorderTarget, "staged-revoked:user"),
       ).toMatchObject({
@@ -248,8 +250,13 @@ it("retains staged custody when authority ends during committed publication", as
       });
     } finally {
       recorder.finishPendingInput?.("interrupted");
-      await recorder.waitForPendingInputSettlement?.();
-      await input.actor.release();
+      try {
+        await expect(recorder.waitForPendingInputSettlement?.()).rejects.toThrow(
+          "staged authority ended",
+        );
+      } finally {
+        await input.actor.release();
+      }
     }
   });
 });
@@ -314,8 +321,9 @@ it("rolls back recorder adoption when accepted input authority is revoked at COM
     const { input, owner, recorderTarget } = await nativeInputSession(env);
     let live = true;
     let commitReached = false;
+    const failure = new Error("accepted input authority revoked");
     const assertCurrent = () => {
-      if (!live) throw new Error("accepted input authority revoked");
+      if (!live) throw failure;
     };
     const recorder = createUserTurnTranscriptRecorder({
       input: { text: "must remain pending", timestamp: 1, idempotencyKey: "native-revoked:user" },
@@ -347,7 +355,7 @@ it("rolls back recorder adoption when accepted input authority is revoked at COM
           observer,
         ),
       );
-      await expect(recorder.persistApproved()).rejects.toThrow("accepted input authority revoked");
+      await expect(recorder.persistApproved()).rejects.toBe(failure);
       expect(commitReached).toBe(true);
       expect(recorder.hasPersisted()).toBe(false);
       expect(recorder.isPendingInputConsumed?.()).toBe(false);

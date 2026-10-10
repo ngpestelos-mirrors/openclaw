@@ -307,18 +307,24 @@ export async function preparePendingInputStore(
           assertOpen();
           if (inputActor && input.kind === "stage") {
             let committedFacts: PendingInputCustodyGrant | undefined;
+            let authorityFailure: unknown;
             const authority = {
               assertCurrent: assertOpen,
               authorize(stage: "transaction" | "commit", _hot: unknown, publication?: unknown) {
-                if (
-                  isRecord(publication) &&
-                  publication.kind === "pending-input-settlement-custody"
-                ) {
-                  // SAFETY: The actor delegates the same pending-input kernel and grant.
-                  committedFacts = publication as PendingInputCustodyGrant;
-                  guard(stage, committedFacts);
+                try {
+                  if (
+                    isRecord(publication) &&
+                    publication.kind === "pending-input-settlement-custody"
+                  ) {
+                    // SAFETY: The actor delegates the same pending-input kernel and grant.
+                    committedFacts = publication as PendingInputCustodyGrant;
+                    guard(stage, committedFacts);
+                  }
+                  assertOpen();
+                } catch (error) {
+                  authorityFailure = error;
+                  throw error;
                 }
-                assertOpen();
               },
             };
             const hot =
@@ -347,7 +353,8 @@ export async function preparePendingInputStore(
                 },
               },
             );
-            if (outcome.kind !== "committed") throwSessionInputActorFailure(outcome);
+            if (outcome.kind !== "committed")
+              throwSessionInputActorFailure(outcome, authorityFailure);
             if (outcome.failure)
               throw Object.assign(new Error(outcome.failure.message), {
                 name: outcome.failure.name,

@@ -119,12 +119,16 @@ export async function getSessionInputActor(scope: { agentId: string; sessionKey:
   return { ...acquired, phase: binding.phase };
 }
 
-export function throwSessionInputActorFailure(outcome: {
-  kind: "rolled-back" | "unknown";
-  error: { name: string; message: string };
-}): never {
+export function throwSessionInputActorFailure(
+  outcome: {
+    kind: "rolled-back" | "unknown";
+    error: { name: string; message: string };
+  },
+  authorityFailure?: unknown,
+): never {
   if (outcome.kind === "unknown") {
     throw new SqliteWorkerError(outcome.error.message, "outcome-unknown");
   }
+  if (authorityFailure !== undefined) throw authorityFailure;
   throw Object.assign(new Error(outcome.error.message), { name: outcome.error.name });
 }
