@@ -266,6 +266,66 @@ changes. Existing published updaters need no migration for these process-local
 receipts, and no synchronous SDK method is removed or given an asynchronous
 completion contract.
 
+### Session phase actor (B1, inactive)
+
+The shared session actor contract adds an inactive foundation for durable and
+incognito sessions. Production callers retain their existing routes. The actor
+lives inside the canonical agent execution worker and shares its physical writer
+queue; it does not introduce another database, worker service, or writer owner.
+Durable actors bind the physical database identity and session key. Incognito
+actors bind the existing memory database's handle and incarnation.
+
+A cold actor hydrates its entry, participants, membership, pending-input custody,
+and transcript metadata in one autocommit statement. The versioned hot state
+includes exact anchors, idempotency identities, model-context membership, and
+the entry's lifecycle, recovery, and final-delivery fields. Anchor availability
+is explicit when the display projection is unready. When canonical facts
+cannot prove model context, it remains explicitly unavailable; an empty context
+is a different result. Payload history keeps its existing reader. Hydration and
+actor reads reuse process-wide schema and integrity admission without new format
+checks or foreign-commit probes.
+
+Typed commands cover input acceptance, run adoption and pre-hook checkpoints,
+tool results, transcript events, turn completion, pre-send custody, and delivery
+settlement. Each command uses one synchronous transaction and the resident
+preimage through the existing mutation kernels. Only a confirmed commit installs
+the new postimage. Phase-local pure reducers can join the next command; a
+remaining reducer batch commits before that phase settles. These batches do not
+move input, tool-result, or delivery acknowledgement across its required durable
+boundary. Compositions retain actor lifetime across asynchronous work, while
+individual commands acquire their own FIFO turn. No transaction awaits a hook,
+network operation, or another actor command.
+
+The MAIN replica retains complete committed hot state. A synchronous snapshot
+reads installed facts; an ordered read joins the existing physical writer FIFO
+and requests actor state only on a miss. Commit receipts identify the command,
+phase, and before/after version, and install before command acknowledgement.
+Existing session publications and the owning database's in-process write token
+invalidate incomplete or superseded state before reuse. Partial entry or
+transcript receipts cannot certify complete pending-input and model-context
+facts. Native, SDK, recovery, and maintenance writers keep their existing
+publication and final-authority guards during this incremental cutover.
+
+Confirmed rollback leaves committed state intact. A lost reply reconciles
+against native commit evidence; an unknown outcome fences further commands and
+disclosure until a read rehydrates the original owner. Neither path replays the
+mutation. Lifetime closure joins accepted commands and phase flushes before
+releasing transport custody. Durable residency eviction drops settled snapshots,
+not stored sessions. Rehydration starts a new actor epoch and restores durable
+custody evidence without reviving a prior process's run or placement authority.
+Residency has a session-count bound and a soft byte budget; one oversized working
+set remains resident until another session displaces it.
+Incognito keeps its memory-only storage, original nonrenewing 24-hour expiry,
+and terminal session loss on worker failure; snapshot eviction does not delete
+its memory database.
+
+Actor command diagnostics record phase and settlement without payloads. Census
+consumers count commands, database worker requests, transfer frames, native SQL
+statements, and committed transactions separately. This inactive stage claims
+no production SQL reduction or T1 retirement. Schemas, stored bytes, durability,
+retention, permissions, released SDK completion contracts, and update behavior
+are unchanged; existing published updaters need no actor migration.
+
 ### Conversation and plugin-state receipt coverage
 
 Plugin-state keyed mutations publish stored JSON postimages and exact deleted
