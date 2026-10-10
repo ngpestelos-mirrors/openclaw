@@ -9,6 +9,7 @@ import {
   runOpenClawAgentWriteAdmission,
 } from "../../state/openclaw-agent-write-admission.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { resolveInternalSessionEffectsIdentity } from "./internal-session-key.js";
 import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import { patchSessionEntryCore, replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { recordSessionParticipant } from "./session-accessor.sqlite-participants.native.js";
@@ -38,11 +39,16 @@ it("retains exact reads without dispatch, isolates agent stores, and evicts the 
     const first = openOpenClawAgentDatabase({ agentId: "first", env });
     const second = openOpenClawAgentDatabase({ agentId: "second", env });
     const keys = Array.from({ length: 129 }, (_, index) => `agent:first:entry-${index}`);
+    const internal = resolveInternalSessionEffectsIdentity({ agentId: "first", runId: "hidden" });
     runOpenClawAgentWriteTransaction(
       (database) => {
         for (const [index, key] of keys.entries()) {
           writeSessionEntry(database, key, { sessionId: `entry-${index}`, updatedAt: 1 });
         }
+        writeSessionEntry(database, internal.sessionKey, {
+          sessionId: internal.sessionId,
+          updatedAt: 1,
+        });
       },
       { agentId: first.agentId, path: first.path, env },
     );
@@ -87,18 +93,38 @@ it("retains exact reads without dispatch, isolates agent stores, and evicts the 
       requests.clear();
       expect((await read([keys[1]!])).entries[0]?.entry.sessionId).toBe("entry-1");
       expect(requests.count()).toBe(0);
+      expect((await read([internal.sessionKey])).entries[0]?.entry.sessionId).toBe(
+        internal.sessionId,
+      );
+      expect(
+        (
+          await readSessionEntriesFromStoreInWorker({
+            agentId: first.agentId,
+            storePath: first.path,
+            env,
+            sessionKeys: [internal.sessionKey],
+            projection: "list",
+          })
+        ).entries,
+      ).toEqual([]);
     } finally {
       requests.restore();
     }
   });
 });
 
-it("waits behind a pending worker patch before consuming a primed exact entry", async () => {
+it("consumes a queued patch receipt without dispatch and preserves its full snapshots across a partial refresh", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
     const database = openOpenClawAgentDatabase({ agentId: "main", env });
     const sessionKey = "agent:main:pending-patch";
     const scope = { agentId: "main", storePath: database.path, sessionKey, env };
-    replaceSessionEntrySync(scope, { sessionId: "same-session", updatedAt: 1, label: "before" });
+    const skillsSnapshot = { prompt: "saved session instructions", skills: [] };
+    replaceSessionEntrySync(scope, {
+      sessionId: "same-session",
+      updatedAt: 1,
+      label: "before",
+      skillsSnapshot,
+    });
     const input = { agentId: "main", storePath: database.path, sessionKeys: [sessionKey], env };
     expect((await readSessionEntriesFromStoreInWorker(input)).entries[0]?.entry.label).toBe(
       "before",
@@ -124,8 +150,10 @@ it("waits behind a pending worker patch before consuming a primed exact entry", 
     );
     void patch.catch(() => {});
     let read: Promise<void> | undefined;
+    let requests: ReturnType<typeof observeEntryReaderRequests> | undefined;
     try {
       await awaitGateBeforeSettlement(entered.promise, patch, "Patch preparation did not begin");
+      requests = observeEntryReaderRequests();
       read = withSessionEntriesFromStoresInWorker(
         [input],
         ([entry]) => {
@@ -141,18 +169,26 @@ it("waits behind a pending worker patch before consuming a primed exact entry", 
       ready.resolve();
       await Promise.all([patch, read]);
       expect(order).toEqual(["write", "read"]);
-      const requests = observeEntryReaderRequests();
-      try {
-        expect((await readSessionEntriesFromStoreInWorker(input)).entries[0]?.entry.label).toBe(
-          "after",
-        );
-        expect(requests.count()).toBe(0);
-      } finally {
-        requests.restore();
-      }
+      expect(requests.count()).toBe(0);
+
+      const metadata = await readSessionEntriesFromStoreInWorker({
+        ...input,
+        snapshotFields: [],
+        includeMembers: true,
+      });
+      expect(metadata.members?.[sessionKey]).toEqual([]);
+      expect(metadata.entries[0]?.entry.skillsSnapshot).toBeUndefined();
+      expect(requests.count()).toBe(1);
+      requests.clear();
+      expect((await readSessionEntriesFromStoreInWorker(input)).entries[0]?.entry).toMatchObject({
+        label: "after",
+        skillsSnapshot,
+      });
+      expect(requests.count()).toBe(0);
     } finally {
       ready.resolve();
       await Promise.allSettled([patch, ...(read ? [read] : [])]);
+      requests?.restore();
     }
   });
 });

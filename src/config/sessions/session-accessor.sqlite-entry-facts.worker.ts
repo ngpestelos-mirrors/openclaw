@@ -17,6 +17,7 @@ import {
 } from "./session-entry-snapshots.js";
 import type { SessionMember } from "./session-membership-facts.types.js";
 import { MAX_SESSION_ROW_FACTS_KEYS } from "./session-transcript-worker.types.js";
+import { collectSessionEntryLookupKeys } from "./store-entry.js";
 
 // The aggregate crosses JSON instead of node:sqlite's integer conversion boundary.
 function readInteger(value: unknown): number {
@@ -54,6 +55,7 @@ export function readExactSessionEntryFactsInDatabase(
   if (sessionKeys.length > MAX_SESSION_ROW_FACTS_KEYS) {
     throw new Error(`Session entry facts support at most ${MAX_SESSION_ROW_FACTS_KEYS} keys`);
   }
+  const lookupKeys = [...new Set(sessionKeys.flatMap(collectSessionEntryLookupKeys))];
   const eb = expressionBuilder<DB, "session_nodes">();
   const participants = eb
     .selectFrom("session_participants")
@@ -93,21 +95,27 @@ export function readExactSessionEntryFactsInDatabase(
       .select("session_nodes.updated_at")
       .select(sessionEntrySnapshotColumnsForKeys(undefined, projection))
       .select([participants.as("participant_records_json"), membership.as("members_json")])
-      .where("session_nodes.session_key", "in", sqliteStringSet(sessionKeys)),
+      .where("session_nodes.session_key", "in", sqliteStringSet(lookupKeys)),
   ).rows;
-  const byKey = new Map(rows.map((row) => [row.session_key, row]));
+  // Folded aliases guard the logical read even when only the requested spelling is returned.
+  const byKey = new Map(
+    rows.map((row) => [
+      row.session_key,
+      {
+        row,
+        entry: parseReadableSessionEntryData(database, row, projection),
+      },
+    ]),
+  );
   const entries: SessionEntrySummary[] = [];
   const members: Record<string, SessionMember[]> = {};
   const participantRecords: Record<string, SessionParticipantRecord[]> = {};
   for (const sessionKey of sessionKeys) {
-    const row = byKey.get(toUSVString(sessionKey));
-    if (!row) {
+    const selected = byKey.get(toUSVString(sessionKey));
+    if (!selected?.entry) {
       continue;
     }
-    const entry = parseReadableSessionEntryData(database, row, projection);
-    if (!entry) {
-      continue;
-    }
+    const { row, entry } = selected;
     const records = readRows(row.participant_records_json).map((participant) =>
       readParticipantRecord({
         identity_namespace: readString(participant[0]),

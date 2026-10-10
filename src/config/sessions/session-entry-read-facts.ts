@@ -6,6 +6,7 @@ import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { sessionChangeAffectsStoredRow } from "../../sessions/session-row-facts.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { captureOpenClawAgentDatabaseReadValidation } from "../../state/openclaw-agent-db-validation-cache.js";
+import type { AgentDatabaseGenerationClaim } from "../../state/openclaw-agent-execution-admission-contract.js";
 import { runOpenClawAgentWriteAdmissions } from "../../state/openclaw-agent-write-admission.js";
 import {
   readPreparedSessionEntryChange,
@@ -29,6 +30,7 @@ import {
   MAX_SESSION_ROW_FACTS_KEYS,
   type SessionHistoryWorkerDatabase,
 } from "./session-transcript-worker.types.js";
+import { collectSessionEntryLookupKeys } from "./store-entry.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 type Database = { agentId: string; path: string };
@@ -115,10 +117,14 @@ function eligible(request: Selection): request is Selection & { sessionKeys: rea
     !request.selection &&
     request.sessionKeys !== undefined &&
     request.sessionKeys.length <= MAX_SESSION_ROW_FACTS_KEYS &&
+    // A single-key postimage cannot certify a case-folded sibling's canonical guard.
+    request.sessionKeys.every((key) => {
+      const candidates = collectSessionEntryLookupKeys(key);
+      return candidates.length === 1 && candidates[0] === key;
+    }) &&
     (request.projection === undefined ||
       request.projection === "full" ||
-      request.projection === "exact" ||
-      request.projection === "list") &&
+      request.projection === "exact") &&
     !request.lifecycleSessionKey &&
     !request.replyInitializationSessionKey &&
     !request.manualCompact &&
@@ -148,6 +154,7 @@ function matches(store: Store, database: Database) {
 export function readRetainedSessionEntryFacts(
   database: Database,
   request: Selection,
+  nativeOwner?: AgentDatabaseGenerationClaim,
 ): SessionEntryCohortResult | undefined {
   if (!eligible(request)) {
     return undefined;
@@ -161,6 +168,7 @@ export function readRetainedSessionEntryFacts(
   ) {
     return undefined;
   }
+  nativeOwner?.assertCurrent();
   for (const store of stores.values()) {
     if (
       !matches(store, database) ||
@@ -168,7 +176,9 @@ export function readRetainedSessionEntryFacts(
         (request.expectedIdentity.key !== `file:${store.source.databaseIdentity}` ||
           (request.expectedIdentity.birthtime !== undefined &&
             request.expectedIdentity.birthtime !== store.source.databaseBirthtime))) ||
-      (request.expected && store.identity.incarnation !== request.expected.incarnation)
+      (nativeOwner && nativeOwner.identity !== store.source.databaseIdentity) ||
+      (request.expected &&
+        (nativeOwner?.incarnation ?? store.identity.incarnation) !== request.expected.incarnation)
     ) {
       continue;
     }
@@ -228,6 +238,7 @@ export function readRetainedSessionEntryFacts(
       }
     }
     validation.assertCurrent();
+    nativeOwner?.assertCurrent();
     if (readSqliteDatabaseWriteTokenForPath(database.path) !== token) {
       return undefined;
     }
@@ -239,7 +250,11 @@ export function readRetainedSessionEntryFacts(
       participantRecords,
       lifecycleTimestamps: {},
       source: { ...store.source },
-      databaseIdentity: { ...store.identity },
+      databaseIdentity: {
+        ...store.identity,
+        // Physical facts are shared across handles; a cohort keeps its own live native owner.
+        ...(nativeOwner ? { incarnation: nativeOwner.incarnation } : {}),
+      },
     };
   }
   return undefined;
@@ -275,14 +290,21 @@ export function retainSessionEntryReadFacts(
     result.entries.map(({ sessionKey, entry }) => [toUSVString(sessionKey), entry]),
   );
   for (const key of request.sessionKeys) {
+    const previous = store.rows.get(toUSVString(key));
+    const retained = previous?.token === before ? previous : undefined;
+    const entry = byKey.get(toUSVString(key));
+    const fields = snapshots(request);
     install(store, toUSVString(key), {
       token: before,
-      entry: byKey.get(toUSVString(key)),
-      snapshots: snapshots(request),
-      members: result.members ? (result.members[key] ?? []) : undefined,
+      entry: retained?.entry && entry ? { ...retained.entry, ...entry } : entry,
+      snapshots:
+        retained?.snapshots === "full" || fields === "full"
+          ? "full"
+          : [...new Set([...(retained?.snapshots ?? []), ...fields])],
+      members: result.members ? (result.members[key] ?? []) : retained?.members,
       participantRecords: result.participantRecords
         ? (result.participantRecords[key] ?? [])
-        : undefined,
+        : retained?.participantRecords,
     });
   }
   remember(store);
@@ -369,7 +391,11 @@ sessionChanges.subscribeFacts((change) => {
     if (!change.factsInvalidated && (!change.facts || change.facts.kind === "unchanged")) {
       continue;
     }
-    remove(store, toUSVString(change.sessionKey));
+    const retained = store.rows.get(toUSVString(change.sessionKey));
+    if (retained) {
+      // Keep the bounded slot through pending invalidation so its COMMIT can install a postimage.
+      retained.token = "";
+    }
     const prepared =
       !change.factsInvalidated && readPreparedSessionEntryChange(change, change.sessionKey);
     if (

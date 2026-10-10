@@ -128,7 +128,7 @@ export function createAdmittedSessionEntryCohortReader(params: {
         source,
         async (worker) => {
           const before = readSqliteDatabaseWriteTokenForPath(database.path);
-          const cached = readRetainedSessionEntryFacts(database, captured);
+          const cached = readRetainedSessionEntryFacts(database, captured, params.generation);
           const read =
             cached ?? (await worker.execute({ type: "session.entry.read", input: captured }));
           assertCurrent();

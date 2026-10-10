@@ -996,6 +996,7 @@ it.each(["native mutation", "caller revocation"] as const)(
     try {
       const admitted = await admitCohort(scope);
       claim = admitted.claim;
+      addSessionMember(scope, { identityId: "reply-member", addedBy: "owner", addedAt: 2 });
       gate.arm();
       reading = admitted.reader.withRead(
         { sessionKeys: [scope.sessionKey], includeMembers: true },
@@ -1015,7 +1016,9 @@ it.each(["native mutation", "caller revocation"] as const)(
       if (change === "native mutation") {
         // The synchronous SDK can write without entering the FIFO or publishing sessionChanges.
         const mutation = database.db
-          .prepare("UPDATE session_members SET added_at = added_at + 1 WHERE session_key = ?")
+          .prepare(
+            "UPDATE session_members SET added_at = added_at + 1 WHERE session_key = ? AND identity_id = 'native-member'",
+          )
           .run(scope.sessionKey);
         expect(mutation.changes).toBe(1);
       } else {
@@ -1029,7 +1032,9 @@ it.each(["native mutation", "caller revocation"] as const)(
       if (change === "native mutation") {
         const mutateDuringConsumption = vi.fn(() => {
           const mutation = database.db
-            .prepare("UPDATE session_members SET added_at = added_at + 1 WHERE session_key = ?")
+            .prepare(
+              "UPDATE session_members SET added_at = added_at + 1 WHERE session_key = ? AND identity_id = 'native-member'",
+            )
             .run(scope.sessionKey);
           expect(mutation.changes).toBe(1);
           return "must not escape the final witness";
@@ -1064,8 +1069,13 @@ it.each(["release", "close"] as const)(
     try {
       const admitted = await admitCohort(scope);
       claim = admitted.claim;
+      addSessionMember(scope, { identityId: "reply-member", addedBy: "owner", addedAt: 2 });
       gate.arm();
-      reading = admitted.reader.withRead({ sessionKeys: [scope.sessionKey] }, () => {}, consume);
+      reading = admitted.reader.withRead(
+        { sessionKeys: [scope.sessionKey], includeMembers: true },
+        () => {},
+        consume,
+      );
       void reading.catch(() => {});
       await awaitGateBeforeSettlement(
         gate.entered.promise,
