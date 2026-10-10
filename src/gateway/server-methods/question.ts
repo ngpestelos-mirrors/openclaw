@@ -523,11 +523,7 @@ export function createQuestionHandlers(
         }
         const { question, observation, authorize } = selected;
         if (manager.hasDurableCustody(request.id)) {
-          const commitAuthority = await prepareQuestionCommitAuthority(
-            options,
-            observation,
-            request.id,
-          );
+          const commitAuthority = await selected.prepareCommitAuthority();
           try {
             const outcome =
               "cancel" in request

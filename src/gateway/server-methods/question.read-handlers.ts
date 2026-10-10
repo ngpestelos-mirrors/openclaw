@@ -11,10 +11,12 @@ import {
   readDurableQuestionFact,
   projectQuestionContinuationReceipt,
 } from "../question-continuation-receipt.js";
+import { QuestionManagerError, QuestionManagerErrorCodes } from "../question-manager.errors.js";
 import type { QuestionManager } from "../question-manager.js";
 import {
   questionNotFound,
   prepareQuestionAuthorization,
+  prepareQuestionCommitAuthority,
   withPreparedQuestionSessions,
 } from "../question-session-access.js";
 import { managerError } from "./question.errors.js";
@@ -82,10 +84,39 @@ function selectQuestion(
   }
   const observation = manager.observe(id, question);
   const authorize = prepareQuestionAuthorization(options, observation, id, access);
+  // Preparation can race physical retirement. Only the captured native custody
+  // owner may turn that failure into absence; ordinary storage errors remain errors.
+  const preparationFailed = async (error: unknown): Promise<never> => {
+    const authority = readGatewayRequestMutationAuthority(options);
+    authority.assertCurrent();
+    if (observation?.sessionAccess?.durableCustody) {
+      let retired = false;
+      try {
+        await readDurableQuestionFact(observation, authority.assertCurrent, () => {
+          retired = true;
+          manager.retireDurableCustodyObservation(observation);
+        });
+      } catch {
+        authority.assertCurrent();
+        throw error;
+      }
+      authority.assertCurrent();
+      if (retired) {
+        throw new QuestionManagerError(
+          QuestionManagerErrorCodes.NOT_FOUND,
+          questionNotFound(id).message,
+        );
+      }
+    }
+    throw error;
+  };
   return {
     question,
     observation,
     authorize,
+    prepareCommitAuthority() {
+      return prepareQuestionCommitAuthority(options, observation, id).catch(preparationFailed);
+    },
     withCurrent<T>(consume: () => T, includeMembers?: boolean) {
       return withPreparedQuestionSessions(
         options,
@@ -102,7 +133,7 @@ function selectQuestion(
           assertCurrent: authorize.assertCurrent,
           ...(includeMembers !== undefined ? { includeMembers } : {}),
         },
-      );
+      ).catch(preparationFailed);
     },
   };
 }
