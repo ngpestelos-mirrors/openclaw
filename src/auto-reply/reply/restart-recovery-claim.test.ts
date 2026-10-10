@@ -708,6 +708,43 @@ describe("createReplyRestartRecoveryClaimController", () => {
     },
   );
 
+  it.each(["begin", "handled-reply", "unhandled"] as const)(
+    "rejects a stale lifecycle before the %s hook checkpoint",
+    async (checkpoint) => {
+      const fixture = await createAcknowledgedClaim();
+      await fixture.controller.admitUserTurn(fixture.recorder);
+      if (checkpoint !== "begin") {
+        await fixture.controller.beginBeforeAgentReply();
+      }
+      const original = structuredClone(fixture.current());
+      await replaceSessionEntry(fixture.scope, {
+        ...original,
+        lifecycleRevision: "successor-generation",
+      });
+      const successor = fixture.read();
+
+      await expect(
+        checkpoint === "begin"
+          ? fixture.controller.beginBeforeAgentReply()
+          : fixture.controller.checkpointBeforeAgentReply(
+              checkpoint === "unhandled"
+                ? { state: undefined }
+                : {
+                    state: "handled-reply",
+                    pendingFinalDelivery: {
+                      text: "Hook-owned reply",
+                      intentId: "hook-intent",
+                      deliveries: [{ id: "hook-delivery", state: "prepared" }],
+                    },
+                  },
+            ),
+      ).rejects.toThrow("lost restart recovery ownership");
+      expect(fixture.current()).toEqual(original);
+      expect(fixture.read()).toEqual(successor);
+      expect(fixture.read()?.pendingFinalDelivery).toBeUndefined();
+    },
+  );
+
   it.each(["session", "lifecycle"] as const)(
     "does not install a replacement %s after refused claim cleanup",
     async (replacement) => {

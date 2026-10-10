@@ -170,6 +170,7 @@ export function createReplyRestartRecoveryClaimController(params: {
     entry !== undefined &&
     entry.sessionId === trackedSessionId &&
     entry.sessionId === params.getSessionId() &&
+    entry.lifecycleRevision === trackedLifecycleRevision &&
     (entry.restartRecoveryDeliveryRunId !== undefined
       ? entry.restartRecoveryDeliveryRunId === recoveryRunId &&
         normalizeOptionalString(entry.restartRecoveryDeliverySourceRunId) === recoverySourceRunId
