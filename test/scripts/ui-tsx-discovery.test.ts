@@ -6,6 +6,7 @@ import {
   hasSharedUiE2eInput,
 } from "../../scripts/lib/ci-node-test-plan.mts";
 import { listTrackedTestFiles } from "../../scripts/lib/list-test-files.mts";
+import { normalizeWebkitTestSource } from "../../ui/test/webkit-expected-failures.ts";
 import uiNodeConfig from "../../ui/vitest.node.config.ts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { createNestedGitEnv } from "../helpers/temp-repo.js";
@@ -38,6 +39,14 @@ function fixture(files: Record<string, string>) {
 }
 
 describe("TSX discovery", () => {
+  it("keeps WebKit failure attribution stable across TSX renames", () => {
+    expect(normalizeWebkitTestSource("/ui/src/view.test.tsx")).toBe("/ui/src/view.test.ts");
+    expect(normalizeWebkitTestSource("at C:\\ui\\src\\view.test.tsx:42:3")).toBe(
+      "at C:/ui/src/view.test.ts:42:3",
+    );
+    expect(normalizeWebkitTestSource("/ui/src/view.test.tsxyz")).toBe("/ui/src/view.test.tsxyz");
+  });
+
   it("preserves Git pathspec discovery for PR proof planning", () => {
     const files = [
       "ui/src/view.test.ts",

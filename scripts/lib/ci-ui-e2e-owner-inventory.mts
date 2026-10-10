@@ -2381,5 +2381,8 @@ export const UI_E2E_SMOKE_TEST_FILES: readonly string[] = [
   "ui/src/e2e/connection-settings.e2e.test.ts",
   // Always run a settings edit through rendered CSS, persistence, and reset.
   "ui/src/e2e/appearance-accent-selection.e2e.test.ts",
-];
-import { uiTypeScriptPathGlob } from "../../test/vitest/vitest.ui-paths.mjs";
+].map((file) => resolveUiTypeScriptPath(file));
+import {
+  resolveUiTypeScriptPath,
+  uiTypeScriptPathGlob,
+} from "../../test/vitest/vitest.ui-paths.mjs";
