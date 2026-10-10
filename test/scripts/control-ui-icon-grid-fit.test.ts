@@ -260,6 +260,21 @@ describe("JSX icon-grid fixtures", () => {
     return collect(`${imports}\nconst View = () => ${markup};`, "ui/src/control.tsx", document);
   }
 
+  it("does not treat type-only imports as Solid renderers", () => {
+    const dom = new JSDOM();
+    try {
+      for (const source of [
+        'import type { Show } from "solid-js"; const View = () => <Show when={true}><button><svg /></button></Show>;',
+        'import type * as Solid from "solid-js"; const View = () => <Solid.Show when={true}><button><svg /></button></Solid.Show>;',
+        'import { type Show } from "solid-js"; const View = () => <Show when={true}><button><svg /></button></Show>;',
+      ]) {
+        expect(collect(source, "ui/src/control.tsx", dom.window.document)).toEqual([]);
+      }
+    } finally {
+      dom.window.close();
+    }
+  });
+
   it("ignores unnamed array-binding slots when checking component shadowing", () => {
     const dom = new JSDOM();
     try {

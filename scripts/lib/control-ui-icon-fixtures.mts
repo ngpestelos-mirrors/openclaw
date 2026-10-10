@@ -487,7 +487,7 @@ export function collectIconFixtures(
       !ts.isImportDeclaration(statement) ||
       !ts.isStringLiteral(statement.moduleSpecifier) ||
       statement.moduleSpecifier.text !== "solid-js" ||
-      statement.importClause?.isTypeOnly
+      statement.importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword
     ) {
       continue;
     }
