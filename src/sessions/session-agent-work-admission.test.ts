@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
+import { runExclusiveSqliteSessionWrite } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { readAgentDeletionJournalStatusInWorker } from "../state/agent-deletion-journal.read.js";
 import {
   beginSessionWorkAdmission,
@@ -13,6 +14,45 @@ import {
 vi.mock("../state/agent-deletion-journal.read.js", () => ({
   readAgentDeletionJournalStatusInWorker: vi.fn(async () => "absent"),
 }));
+
+it("refuses queued session writes when deletion closes admission before their FIFO turn", async () => {
+  const target = { agentId: "worker", env: { OPENCLAW_STATE_DIR: "/agent-write-admission" } };
+  const entered = createDeferred();
+  const release = createDeferred();
+  const holding = runExclusiveSqliteSessionWrite(
+    target,
+    async () => {
+      entered.resolve();
+      await release.promise;
+    },
+    "session-entry.patch",
+  );
+  await awaitGateBeforeSettlement(entered.promise, holding, "writer did not reserve its FIFO");
+  const write = vi.fn(async () => {});
+  const queued = runExclusiveSqliteSessionWrite(target, write, "session-entry.patch");
+  const reason = new Error("agent deletion began");
+  const refused = expect(queued).rejects.toBe(reason);
+  const reopen = closeAgentWorkAdmissions({ ...target, reason });
+  try {
+    release.resolve();
+    await holding;
+    await refused;
+    expect(write).not.toHaveBeenCalled();
+    await expect(
+      runExclusiveSqliteSessionWrite(
+        { ...target, agentId: "kept" },
+        async () => "saved",
+        "session-entry.patch",
+      ),
+    ).resolves.toBe("saved");
+  } finally {
+    release.resolve();
+    await Promise.allSettled([holding, queued]);
+    reopen();
+  }
+  await runExclusiveSqliteSessionWrite(target, write, "session-entry.patch");
+  expect(write).toHaveBeenCalledOnce();
+});
 
 it("fences unseen agent sessions and joins exact admitted work without blocking another state", async () => {
   const target = { agentId: "worker", env: { OPENCLAW_STATE_DIR: "/agent-admission-state-a" } };

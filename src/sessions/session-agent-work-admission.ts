@@ -1,6 +1,8 @@
 import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import { normalizeAgentId } from "../routing/session-key.js";
-import { readAgentDeletionJournalStatusInWorker } from "../state/agent-deletion-journal.read.js";
+import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { getAgentDeletionDatabaseCleanup } from "../state/agent-deletion-cleanup.js";
+import type { OpenClawAgentDatabaseOptions } from "../state/openclaw-agent-db-contract.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { collectSessionIdentityTargets } from "./session-lifecycle-identity.js";
 import type { HandoffSessionWorkAdmission } from "./session-work-admission-handoff.js";
@@ -17,6 +19,11 @@ export type SessionWorkAdmissionClosure = {
   reason: Error;
 };
 
+export const sessionWorkAdmissionClosures = resolveGlobalSingleton(
+  Symbol.for("openclaw.sessionWorkAdmissionClosures"),
+  () => new Set<SessionWorkAdmissionClosure>(),
+);
+
 export function agentWorkAdmissionIdentity(
   target: AgentWorkAdmissionTarget,
 ): AgentWorkAdmissionIdentity {
@@ -28,17 +35,25 @@ export function agentWorkAdmissionIdentity(
   };
 }
 
-export async function assertAgentWorkAdmissionAvailable(
-  target: AgentWorkAdmissionTarget,
-  signal: AbortSignal,
-): Promise<void> {
-  const journal = await readAgentDeletionJournalStatusInWorker(
-    target.agentId,
-    { path: target.statePath, env: target.env },
-    signal,
+/** Deletion's existing ingress fence also owns admission of new session writes. */
+export function assertAgentSessionWriteAdmission(
+  options: OpenClawAgentDatabaseOptions,
+  logicalAgentId = options.agentId,
+): void {
+  const cleanup = getAgentDeletionDatabaseCleanup(options);
+  if (cleanup) {
+    cleanup.assertCurrentHost();
+    return;
+  }
+  if (sessionWorkAdmissionClosures.size === 0) {
+    return;
+  }
+  const agent = agentWorkAdmissionIdentity({ agentId: logicalAgentId, env: options.env });
+  const closed = [...sessionWorkAdmissionClosures].find((owner) =>
+    matchesAgentWorkAdmission(owner.agent, agent),
   );
-  if (journal !== "absent") {
-    throw new Error(`Agent ${target.agentId} deletion is in progress; new work is unavailable.`);
+  if (closed) {
+    throw closed.reason;
   }
 }
 
@@ -60,9 +75,9 @@ type AgentSessionWorkAdmission = HandoffSessionWorkAdmission & {
 /** Agent drains use the lifecycle owner's existing admission index and closures. */
 export function createAgentWorkAdmissionQueries<T extends AgentSessionWorkAdmission>(
   admissions: ReadonlyMap<string, ReadonlySet<T>>,
-  closures: Set<SessionWorkAdmissionClosure>,
   currentAdmissions: () => ReadonlySet<T> | undefined,
 ) {
+  const closures = sessionWorkAdmissionClosures;
   /** The deletion owner reserves this fence before publishing its durable journal. */
   function closeAgentWorkAdmissions(
     params: AgentWorkAdmissionTarget & { reason: Error },

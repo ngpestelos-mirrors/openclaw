@@ -17,13 +17,13 @@ import {
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { StoreWriterQueue } from "../shared/store-writer-queue.js";
+import { readAgentDeletionJournalStatusInWorker } from "../state/agent-deletion-journal.read.js";
 import {
   agentWorkAdmissionIdentity,
-  assertAgentWorkAdmissionAvailable,
   createAgentWorkAdmissionQueries,
   interruptSessionWorkAdmissionOwners,
+  sessionWorkAdmissionClosures as SESSION_WORK_ADMISSION_CLOSURES,
   type AgentWorkAdmissionIdentity,
-  type SessionWorkAdmissionClosure,
 } from "./session-agent-work-admission.js";
 import {
   createLifecycleDiagnosticOperation,
@@ -76,7 +76,6 @@ type SessionLifecycleAdmissionState = {
   activeAdmissions: Map<string, Set<SessionWorkAdmission>>;
   activeMutations: Map<string, number>;
   activeMutationRuns?: Set<SessionLifecycleMutationOwner>;
-  admissionClosures: Set<SessionWorkAdmissionClosure>;
   activeMutationKinds: Map<string, Map<SessionLifecycleMutationKind, number>>;
   idleWaiters: Map<string, Set<() => void>>;
   currentAdmissions: AsyncLocalStorage<ReadonlySet<SessionWorkAdmission>>;
@@ -107,7 +106,6 @@ const SESSION_LIFECYCLE_ADMISSION_STATE = resolveGlobalSingleton(
     activeAdmissions: new Map(),
     activeMutations: new Map(),
     activeMutationRuns: new Set(),
-    admissionClosures: new Set(),
     activeMutationKinds: new Map(),
     idleWaiters: new Map(),
     currentAdmissions: new AsyncLocalStorage(),
@@ -119,7 +117,6 @@ const {
   activeMutationKinds: ACTIVE_SESSION_LIFECYCLE_MUTATION_KINDS,
   idleWaiters: SESSION_LIFECYCLE_IDLE_WAITERS,
   currentAdmissions: CURRENT_SESSION_WORK_ADMISSIONS,
-  admissionClosures: SESSION_WORK_ADMISSION_CLOSURES,
 } = SESSION_LIFECYCLE_ADMISSION_STATE;
 const {
   collectSessionWorkAdmissions,
@@ -146,10 +143,8 @@ const {
   collectActiveAgentSessionWorkAdmissions,
   startAgentWorkAdmissionInterruption,
   assertSessionWorkAdmissionOpen,
-} = createAgentWorkAdmissionQueries(
-  ACTIVE_SESSION_WORK_ADMISSIONS,
-  SESSION_WORK_ADMISSION_CLOSURES,
-  () => CURRENT_SESSION_WORK_ADMISSIONS.getStore(),
+} = createAgentWorkAdmissionQueries(ACTIVE_SESSION_WORK_ADMISSIONS, () =>
+  CURRENT_SESSION_WORK_ADMISSIONS.getStore(),
 );
 export {
   closeAgentWorkAdmissions,
@@ -614,7 +609,14 @@ export async function beginSessionWorkAdmission(params: {
   const assertAgentIngressOpen = async () => {
     assertIngressOpen();
     if (agent) {
-      await assertAgentWorkAdmissionAvailable({ ...agent, env: params.env }, signal);
+      const journal = await readAgentDeletionJournalStatusInWorker(
+        agent.agentId,
+        { path: agent.statePath, env: params.env },
+        signal,
+      );
+      if (journal !== "absent") {
+        throw new Error(`Agent ${agent.agentId} deletion is in progress; new work is unavailable.`);
+      }
     }
     assertIngressOpen();
   };
