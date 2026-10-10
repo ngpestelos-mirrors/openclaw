@@ -38,8 +38,8 @@ vi.mock("./shared-client.js", () => ({
   },
 }));
 let owner: ReturnType<typeof createCodexAppServerModelCatalog>;
-const loadCodexAppServerModelCatalog = (...args: Parameters<typeof owner.load>) =>
-  owner.load(...args);
+const loadCodexAppServerModelCatalog = async (...args: Parameters<typeof owner.load>) =>
+  (await owner.load(...args)).entries;
 const nativePluginConfig = { appServer: { homeScope: "user" } };
 const read = (overrides = {}, pluginConfig?: unknown) =>
   owner.read(
@@ -212,7 +212,7 @@ describe("Codex app-server model catalog", () => {
       ],
     });
 
-    expect(await owner.load(params, pluginConfig)).toContainEqual(
+    expect((await owner.load(params, pluginConfig)).entries).toContainEqual(
       expect.objectContaining({ id: "synthetic-account-model" }),
     );
     const clientOptions = vi.mocked(withCodexAppServerJsonClient).mock.calls[0]?.[0];
@@ -266,7 +266,7 @@ describe("Codex app-server model catalog", () => {
         ],
       });
       const pluginConfig = { appServer };
-      expect(await owner.load(catalogParams, pluginConfig)).toContainEqual(
+      expect((await owner.load(catalogParams, pluginConfig)).entries).toContainEqual(
         expect.objectContaining({ id: "synthetic-opaque", nativeRuntime: "codex" }),
       );
       expect(
@@ -310,7 +310,7 @@ describe("Codex app-server model catalog", () => {
       ],
     });
 
-    expect(await owner.load(params, undefined)).toContainEqual(
+    expect((await owner.load(params, undefined)).entries).toContainEqual(
       expect.objectContaining({ id: "synthetic-native-only", nativeRuntime: "codex" }),
     );
     expect(
@@ -318,7 +318,7 @@ describe("Codex app-server model catalog", () => {
     ).toEqual({ accountType: "apiKey", authMode: "api_key" });
 
     authOrder.reverse();
-    expect(await owner.load(params, undefined)).toEqual([]);
+    expect(await owner.load(params, undefined)).toEqual({ entries: [] });
     expect(listModelsMock).toHaveBeenCalledOnce();
     expect(withCodexAppServerJsonClient).toHaveBeenCalledOnce();
     expect(
@@ -372,7 +372,7 @@ describe("Codex app-server model catalog", () => {
         { provider: "another", model: "synthetic-other-provider" },
       ],
     };
-    const catalog = await owner.load(params, undefined);
+    const { entries: catalog } = await owner.load(params, undefined);
     expect(catalog.map((model) => model.id)).toEqual(["synthetic-visible", "synthetic-configured"]);
     expect(catalog[1]).toMatchObject({
       nativeRuntime: "codex",
@@ -421,7 +421,11 @@ describe("Codex app-server model catalog", () => {
       });
       listModelsMock.mockResolvedValue(opaqueCatalog());
       rpc.request.mockResolvedValue({ account, requiresOpenaiAuth: true });
-      await owner.load(catalogParams, nativePluginConfig);
+      const result = await owner.load(catalogParams, nativePluginConfig);
+      expect(result.entries).toContainEqual(expect.objectContaining({ id: "synthetic-opaque" }));
+      expect(result.outcomes).toEqual([
+        { provider: "openai", status: account ? "ready" : "unavailable" },
+      ]);
       expect(read({}, nativePluginConfig)).toEqual(readiness);
       expect(read({ agentId: "another" }, nativePluginConfig)).toBeUndefined();
       expect(read({ agentDir: "/tmp/another-agent" }, nativePluginConfig)).toBeUndefined();
@@ -458,7 +462,7 @@ describe("Codex app-server model catalog", () => {
     expect(read()).toBeUndefined();
     await owner.load(catalogParams, undefined);
     pending.resolve({ account: { type: "chatgpt" }, requiresOpenaiAuth: true });
-    expect(await older).toEqual([]);
+    expect(await older).toEqual({ entries: [] });
     expect(read()).toEqual({ accountType: "apiKey", authMode: "api_key" });
     const disposed = createDeferred<unknown>();
     rpc.request.mockReturnValueOnce(disposed.promise);
@@ -466,7 +470,7 @@ describe("Codex app-server model catalog", () => {
     await vi.waitFor(() => expect(rpc.request).toHaveBeenCalledTimes(3));
     owner.dispose();
     disposed.resolve({ account: { type: "apiKey" }, requiresOpenaiAuth: true });
-    expect(await late).toEqual([]);
+    expect(await late).toEqual({ entries: [] });
     expect(read()).toBeUndefined();
   });
 });

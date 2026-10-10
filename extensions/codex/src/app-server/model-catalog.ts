@@ -1,5 +1,6 @@
 import type { AgentHarnessModelCatalogParams } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { ModelCatalogEntry } from "openclaw/plugin-sdk/agent-runtime";
+import type { ProviderCatalogOutcome } from "openclaw/plugin-sdk/provider-catalog-shared";
 import {
   resolveCodexAppServerAuthProfileId,
   resolveCodexAppServerAuthProfileStore,
@@ -88,9 +89,9 @@ export function createCodexAppServerModelCatalog(runtime: string) {
     async load(
       params: AgentHarnessModelCatalogParams,
       pluginConfig: unknown,
-    ): Promise<ModelCatalogEntry[]> {
+    ): Promise<{ entries: ModelCatalogEntry[]; outcomes?: ProviderCatalogOutcome[] }> {
       if (disposed) {
-        return [];
+        return { entries: [] };
       }
       let observations = scopes.get(params.config);
       if (!observations) {
@@ -104,7 +105,7 @@ export function createCodexAppServerModelCatalog(runtime: string) {
       const configured = readCodexPluginConfig(pluginConfig);
       const discovery = configured.discovery;
       if (discovery?.enabled === false) {
-        return [];
+        return { entries: [] };
       }
       const options = resolveCodexAppServerRuntimeOptions({ pluginConfig });
       const ownsLocalProcess =
@@ -122,12 +123,12 @@ export function createCodexAppServerModelCatalog(runtime: string) {
       // SIWC's public provider owns the account model list. Native Codex sees only a
       // placeholder API key here, so its bundled catalog cannot describe that account.
       if (isCodexResponsesOAuthCredential(authProfileStore?.profiles[authProfileId ?? ""])) {
-        return [];
+        return { entries: [] };
       }
       const usesNativeHome = ownsLocalProcess && options.start.homeScope === "user";
       const native = usesNativeHome ? await probeCodexNativeAuth({ pluginConfig }) : undefined;
       if ((usesNativeHome && !native) || disposed || observations.get(key) !== observation) {
-        return [];
+        return { entries: [] };
       }
       const { start } = options;
       const timeoutMs = discovery?.timeoutMs ?? DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS;
@@ -168,7 +169,7 @@ export function createCodexAppServerModelCatalog(runtime: string) {
       );
       // Publish only after the bounded operation settles; a late timed-out callback cannot publish.
       if (disposed || observations.get(key) !== observation || !result.isCurrent()) {
-        return [];
+        return { entries: [] };
       }
       observation.models = new Set(result.models.map((model) => model.id));
       observation.accountType =
@@ -187,7 +188,12 @@ export function createCodexAppServerModelCatalog(runtime: string) {
               (native?.mode === "oauth" || native?.mode === "token")
             ? native.mode
             : undefined;
-      return codexAppServerModelsToCatalogEntries(result.models, runtime);
+      return {
+        entries: codexAppServerModelsToCatalogEntries(result.models, runtime),
+        outcomes: [
+          { provider: "openai", status: observation.accountType ? "ready" : "unavailable" },
+        ],
+      };
     },
   };
 }

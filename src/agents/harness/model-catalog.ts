@@ -337,9 +337,31 @@ export function isPreparedNativeModelCatalogReady(params: {
   input: PreparedModelRuntimeInput;
   pluginGeneration: PreparedModelRuntimePluginGeneration;
   snapshot: ModelCatalogSnapshot;
-  selection: PreparedNativeModelSelection;
+  selection?: PreparedNativeModelSelection;
+  catalogAcquired?: boolean;
+  failedProviders?: ReadonlySet<string | undefined>;
 }): boolean {
   const { selection, snapshot, pluginGeneration } = params;
+  if (!selection) {
+    return (
+      params.catalogAcquired === true &&
+      snapshot.routeVariants.every((entry) => {
+        const runtime = entry.nativeRuntime;
+        return (
+          !runtime ||
+          params.failedProviders?.has(undefined) ||
+          params.failedProviders?.has(entry.provider) ||
+          snapshot.nativeProviderOutcomes?.[runtime]?.some(
+            (outcome) => outcome.provider === entry.provider && outcome.status !== "ready",
+          ) ||
+          isPreparedNativeModelCatalogReady({
+            ...params,
+            selection: { provider: entry.provider, modelId: entry.id, runtime },
+          })
+        );
+      })
+    );
+  }
   if (
     ![...snapshot.entries, ...snapshot.routeVariants].some(
       (entry) =>

@@ -1,4 +1,3 @@
-import { raceWithTimeout } from "@openclaw/retry";
 import pLimit from "p-limit";
 import { withRemoteModelCatalogSnapshot } from "../model-catalog/remote-overlay.js";
 import { resolveInstalledManifestRegistryIndexFingerprint } from "../plugins/manifest-registry-installed.js";
@@ -24,7 +23,11 @@ import {
   prepareInitialModelCatalogAuth,
   replacePreparedModelCatalogAuth,
 } from "./prepared-model-runtime.catalog-auth.js";
-import type { PreparedModelRuntimeCatalogAccessParams } from "./prepared-model-runtime.catalog-contract.js";
+import type {
+  PreparedModelCatalogCandidate,
+  PreparedModelRuntimeCatalogAccess,
+  PreparedModelRuntimeCatalogAccessParams,
+} from "./prepared-model-runtime.catalog-contract.js";
 import { createPreparedModelCatalogProjection } from "./prepared-model-runtime.catalog-projection.js";
 import {
   preparedProviderCatalogCredentials,
@@ -37,7 +40,6 @@ import {
   preparedModelInventoryKey,
 } from "./prepared-model-runtime.facts.js";
 import {
-  type PreparedModelRuntimeCatalogAccess,
   filterPreparedProviderCatalog,
   mergePreparedModelCatalogInventory,
   isPreparedModelCatalogFull,
@@ -62,7 +64,6 @@ import type {
 
 export const MAX_CONCURRENT_FULL_MODEL_CATALOG_BUILDS = 1;
 const limitFullModelCatalogBuild = pLimit(MAX_CONCURRENT_FULL_MODEL_CATALOG_BUILDS);
-const MODEL_CATALOG_FOREGROUND_WAIT_MS = 5_000;
 
 export async function createFullModelCatalogAccess(
   params: PreparedModelRuntimeCatalogAccessParams,
@@ -151,12 +152,7 @@ export async function createFullModelCatalogAccess(
   const hasNativeCatalog = params.pluginGeneration.pluginRegistry?.agentHarnesses.some(
     ({ harness }) => typeof harness.loadModelCatalog === "function",
   );
-  type CatalogCandidate = {
-    inventory: PreparedModelCatalogInventory | undefined;
-    configuredRuntimeModels: typeof params.catalogFacts.configuredRuntimeModels;
-    nativeCatalogAcquired: boolean;
-  };
-  type Publication = CatalogCandidate & { catalog: ModelCatalogSnapshot | undefined };
+  type Publication = PreparedModelCatalogCandidate & { catalog: ModelCatalogSnapshot | undefined };
   let published: Publication = {
     catalog: undefined,
     inventory: retainedInventory,
@@ -218,7 +214,10 @@ export async function createFullModelCatalogAccess(
       published.nativeCatalogAcquired,
     );
   }
-  const publishCatalog = (candidate: CatalogCandidate, source: "provider" | "native") => {
+  const publishCatalog = (
+    candidate: PreparedModelCatalogCandidate,
+    source: "provider" | "native",
+  ) => {
     assertCurrent();
     const previous = published;
     let next: Publication = { ...candidate, catalog: previous.catalog };
@@ -267,7 +266,7 @@ export async function createFullModelCatalogAccess(
   const acquireProviderCatalog = async (
     providerIds: readonly string[] | undefined,
     refresh: boolean,
-  ): Promise<CatalogCandidate> =>
+  ): Promise<PreparedModelCatalogCandidate> =>
     limitFullModelCatalogBuild(async () => {
       assertCurrent();
       const providers = providerIds ?? eligibleProviders;
@@ -358,6 +357,7 @@ export async function createFullModelCatalogAccess(
   const acquireNativeCatalog = (
     providerIds?: readonly string[],
     selection?: PreparedNativeModelSelection,
+    refresh = false,
   ): Promise<ModelCatalogSnapshot> => {
     const captured = selection
       ? getPreparedModelRuntimeBorrowedSnapshot(params.pluginGeneration)
@@ -385,12 +385,14 @@ export async function createFullModelCatalogAccess(
       assertObservationCurrent();
       const snapshot = readCatalog();
       const ready =
-        selection &&
+        !refresh &&
         isPreparedNativeModelCatalogReady({
           input,
           pluginGeneration: params.pluginGeneration,
           snapshot,
           selection,
+          catalogAcquired: published.nativeCatalogAcquired,
+          failedProviders: params.inventoryOwner.catalogAttempt?.failedProviders.native,
         });
       // Readiness invokes plugin code, which may close the captured authority.
       assertObservationCurrent();
@@ -527,6 +529,9 @@ export async function createFullModelCatalogAccess(
     })()
       .catch((error: unknown) => {
         attempt.failed(error, failedProviders ?? providerIds, "native");
+        if (params.isCurrent() && !selection && !providerIds) {
+          published = { ...published, nativeCatalogAcquired: true };
+        }
         if (params.isCurrent() && published.catalog) {
           attempt.withRefreshStatus(published.catalog);
         }
@@ -597,10 +602,10 @@ export async function createFullModelCatalogAccess(
       !options.refresh &&
       !options.changedOnly &&
       published.catalog &&
-      isPreparedModelCatalogFull(published.catalog)
+      eligibleProviders.every((provider) => published.inventory?.providers.has(provider))
     ) {
       refreshExpiredModelCatalog();
-      return published.catalog;
+      return await acquireNativeCatalog();
     }
     const requestedProviders = [
       ...new Set(
@@ -621,10 +626,7 @@ export async function createFullModelCatalogAccess(
     // would, including hosted rows for providers without credentials.
     const fullRefresh =
       !options.providerIds && (!options.changedOnly || !published.inventory?.providers.size);
-    const includeNative =
-      trigger === "request" &&
-      hasNativeCatalog &&
-      (!options.changedOnly || !published.nativeCatalogAcquired);
+    const includeNative = trigger === "request" && hasNativeCatalog && !options.changedOnly;
     const nativeScope = options.providerIds ? requestedProviders : undefined;
     const nativeProviders = includeNative ? nativeScope : [];
     if (!providers.length && !includeNative && !fullRefresh) {
@@ -665,7 +667,7 @@ export async function createFullModelCatalogAccess(
         attempt.published(providerIds, "provider", () => publishCatalog(candidate, "provider"));
       }
       if (includeNative) {
-        return await acquireNativeCatalog(nativeScope);
+        return await acquireNativeCatalog(nativeScope, undefined, options.refresh);
       }
       return published.catalog ?? staticCatalog;
     })().finally(() => {
@@ -680,8 +682,15 @@ export async function createFullModelCatalogAccess(
     () => (pending ? undefined : published.inventory),
     (options) => acquireCatalog(options, "expiry"),
   );
-  const loadNativeModelCatalog = async (selection: PreparedNativeModelSelection) =>
-    await acquireNativeCatalog([normalizeProvider(selection.provider)], selection);
+  const loadNativeModelCatalog = async (selection?: PreparedNativeModelSelection) =>
+    await retry.waitForDiscovery(
+      acquireNativeCatalog(
+        selection ? [normalizeProvider(selection.provider)] : undefined,
+        selection,
+      ),
+      () => published.catalog ?? staticCatalog,
+      Boolean(selection),
+    );
   return {
     accountCatalog,
     initialAuth: currentAuth,
@@ -699,17 +708,12 @@ export async function createFullModelCatalogAccess(
       return published.inventory?.runtimeModels;
     },
     loadNativeModelCatalog,
-    loadFullModelCatalog: async (options) => {
-      // Standalone commands cannot publish background discovery after their process exits.
-      if (options?.refresh && (options.wait || params.inventoryOwner.provenance === "standalone")) {
-        return await acquireCatalog(options);
-      }
-      return await raceWithTimeout(
+    // Standalone commands cannot publish background discovery after their process exits.
+    loadFullModelCatalog: (options) =>
+      retry.waitForDiscovery(
         acquireCatalog(options),
-        MODEL_CATALOG_FOREGROUND_WAIT_MS,
         () => published.catalog ?? staticCatalog,
-        { ref: false },
-      );
-    },
+        options?.refresh && (options.wait || params.inventoryOwner.provenance === "standalone"),
+      ),
   };
 }
