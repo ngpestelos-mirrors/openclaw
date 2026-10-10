@@ -1,5 +1,11 @@
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 
+/** The deletion journal refused a database claim; the caller determines its opening phase. */
+export const AgentDatabaseLeaseAdmissionRefusedError = resolveGlobalSingleton(
+  Symbol.for("openclaw.agentDatabaseLeaseAdmissionRefusedError"),
+  () => class LeaseAdmissionRefusedError extends Error {},
+);
+
 /** A database owner refused new work; an admitted command's failure is never classified here. */
 export const AgentDatabaseExecutionAdmissionClosedError = resolveGlobalSingleton(
   Symbol.for("openclaw.agentDatabaseExecutionAdmissionClosedError"),

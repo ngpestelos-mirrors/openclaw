@@ -23,6 +23,7 @@ import {
   type SqliteWorkerAdmissionRequest,
 } from "../infra/sqlite-worker-operation-admission.js";
 import { withAgentCreationClaimWitness } from "./agent-creation-claim.js";
+import { AgentDatabaseLeaseAdmissionRefusedError } from "./agent-database-admission-error.js";
 import { withAgentDeletionWorkerCleanup } from "./agent-deletion-cleanup.worker.js";
 import { readAgentDeletionJournalStatusInDatabase } from "./agent-deletion-journal.read.js";
 import type { AgentDeletionWorkerGuard } from "./agent-deletion-worker-contract.js";
@@ -281,16 +282,44 @@ function openAgentDatabaseBackend(
       let registration: OpenClawAgentDatabaseRegistrationCommit | undefined;
       let openingResult: Result<OpenClawAgentDatabase, unknown>;
       try {
-        const opened = openOpenClawAgentDatabase(options, lease, {
-          starting: () =>
-            requestSqliteWorkerOperationAdmission({
-              stage: "prepare",
-              facts: { kind: "agent-registration-start", lease: lease.receipt },
-            }),
-          committed(receipt) {
-            registration = receipt;
+        const opened = openOpenClawAgentDatabase(
+          options,
+          {
+            ...lease,
+            claim(onVerification) {
+              try {
+                return lease.claim(onVerification);
+              } catch (error) {
+                if (error instanceof AgentDatabaseLeaseAdmissionRefusedError) {
+                  // Only lease refusal proves the native agent open has not begun.
+                  try {
+                    requestSqliteWorkerOperationAdmission({
+                      stage: "prepare",
+                      facts: {
+                        kind: "agent-open-refused",
+                        lease: lease.receipt,
+                        message: error.message,
+                      },
+                    });
+                  } catch (refusal) {
+                    throw new SqliteWorkerOpenRefusedError(refusal);
+                  }
+                }
+                throw error;
+              }
+            },
           },
-        });
+          {
+            starting: () =>
+              requestSqliteWorkerOperationAdmission({
+                stage: "prepare",
+                facts: { kind: "agent-registration-start", lease: lease.receipt },
+              }),
+            committed(receipt) {
+              registration = receipt;
+            },
+          },
+        );
         database = opened;
         releaseBorrow = retainAgentDatabase(opened.db);
         openingResult = { ok: true, value: opened };

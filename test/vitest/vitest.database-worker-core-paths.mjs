@@ -563,6 +563,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/skills/loading/workspace-skill-library-read.test.ts",
   "src/agents/embedded-agent-runner/skill-runtime.library-read.test.ts",
   "src/state/agent-deletion-cleanup.test.ts",
+  "src/state/agent-deletion-cleanup.straggling-write.test.ts",
   "src/state/claw-package-adoption.test.ts",
   "src/state/openclaw-database-preflight.startup-index.test.ts",
   "src/state/openclaw-state-lease.retention.test.ts",

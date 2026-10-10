@@ -5,13 +5,38 @@ import {
   assertExistingDatabaseIdentity,
   readDatabasePathIdentity,
 } from "../infra/sqlite-worker-identity.js";
-import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
+import {
+  createSqliteWorkerOperationAdmission,
+  type SqliteWorkerOperationAdmission,
+} from "../infra/sqlite-worker-operation-admission.js";
+import type { SqliteWorkerOperationSettlement } from "../infra/sqlite-worker-operation-settlement.js";
 import { runSqliteWorkerStoreOperation } from "../infra/sqlite-worker-store.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "./openclaw-agent-db-lease.js";
 import { invalidateOpenClawAgentDatabaseValidation } from "./openclaw-agent-db-validation-cache.js";
 import type { AgentDatabaseFileExecutionIdentity } from "./openclaw-agent-execution-contract.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 import { openOpenClawStateWorkerCleanupStore } from "./openclaw-state-worker-store.js";
+
+/** Only a settled caller refusal can preserve other logical borrowers. */
+export async function isSettledAgentDatabaseOpenRefusal(
+  error: unknown,
+  opening: {
+    admission: SqliteWorkerOperationAdmission;
+    settled: Promise<SqliteWorkerOperationSettlement>;
+  },
+): Promise<boolean> {
+  const { admission, settled } = opening;
+  const outcome = await settled;
+  // Protocol faults, cleanup aggregates, and uncertain native work retire the whole owner.
+  return (
+    admission.failure !== undefined &&
+    admission.failureSource !== "protocol" &&
+    error === admission.failure &&
+    outcome.kind !== "unknown" &&
+    !admission.committed &&
+    admission.cleanupFailures.length === 0
+  );
+}
 
 /** Release only this owner's prepared lease after the broker certifies native retirement. */
 export async function cleanupRetiredAgentDatabaseLease(params: {
