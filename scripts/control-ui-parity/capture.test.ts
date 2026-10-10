@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createControlUiE2eSuite } from "../../ui/src/e2e/control-ui-e2e-suite.test-support.ts";
 import { createControlUiE2eArtifactDir } from "../../ui/src/test-helpers/control-ui-e2e-artifacts.ts";
@@ -21,12 +22,14 @@ const selectedScenes = scenes.filter(
 const selectedProfiles = profiles.filter(
   (profile) => !options.profile || new RegExp(options.profile, "u").test(profile.id),
 );
-if (!selectedScenes.length || !selectedProfiles.length)
+if (!selectedScenes.length || !selectedProfiles.length) {
   throw new Error("Parity selection matches no scenes or profiles");
+}
 const suite = createControlUiE2eSuite({
   name: "Control UI visual parity",
   startServerBeforeBrowser: true,
 });
+const captureOrigin = "http://parity.localhost:18789";
 let directory: string;
 let stylesheet: string | undefined;
 let capture: Capture;
@@ -40,11 +43,15 @@ suite.define(() => {
       ),
       fixtures: hash(
         JSON.stringify({
-          baseScenario,
           fixedTime,
           profiles: selectedProfiles,
-          scenes: selectedScenes.map((scene) => ({ ...scene, prepare: scene.prepare?.toString() })),
-          runner: hash(await readFile(new URL("./capture.test.ts", import.meta.url))),
+          scenes: selectedScenes.map((scene) => scene.id),
+          // Hash the recipe source, not absolute fixture paths, so two worktrees compare.
+          recipes: await Promise.all(
+            ["capture.test.ts", "scenarios.ts", "fixtures.ts"].map(async (file) =>
+              hash(await readFile(new URL(file, import.meta.url))),
+            ),
+          ),
         }),
       ),
     };
@@ -69,7 +76,9 @@ suite.define(() => {
     await writeGallery(directory, capture);
   });
   afterAll(async () => {
-    if (!capture) return;
+    if (!capture) {
+      return;
+    }
     capture.complete =
       capture.failures.length === 0 &&
       capture.shots.length === selectedScenes.length * selectedProfiles.length;
@@ -97,6 +106,20 @@ suite.define(() => {
                 reducedMotion: profile.reduced ? "reduce" : "no-preference",
               },
               async ({ page }) => {
+                const pageErrors: string[] = [];
+                page.on("pageerror", (error) => pageErrors.push(error.message));
+                await page.route("**/*", async (route) => {
+                  const url = new URL(route.request().url());
+                  if (url.origin !== captureOrigin) {
+                    await route.abort();
+                    return;
+                  }
+                  // The visible connection URL must not inherit the server's random port.
+                  const response = await route.fetch({
+                    url: new URL(`${url.pathname}${url.search}`, suite.server.baseUrl).href,
+                  });
+                  await route.fulfill({ response });
+                });
                 await page.clock.setFixedTime(fixedTime);
                 await page.addInitScript(() => {
                   let seed = 1;
@@ -105,7 +128,7 @@ suite.define(() => {
                     return seed / 2147483647;
                   };
                 });
-                await installMockGateway(page, {
+                const gateway = await installMockGateway(page, {
                   ...baseScenario,
                   ...scene.scenario,
                   methodResponses: {
@@ -113,23 +136,37 @@ suite.define(() => {
                     ...scene.scenario?.methodResponses,
                   },
                 });
-                await page.goto(`${suite.server.baseUrl}${scene.path.replace(/^\//u, "")}`);
-                await waitForControlUiRoute(page, { routeId: scene.route });
+                await page.goto(new URL(scene.path, captureOrigin).href);
+                if (scene.route) {
+                  await waitForControlUiRoute(page, { routeId: scene.route });
+                }
                 const content = page.locator(scene.ready).first();
                 await content.waitFor();
                 await page.evaluate(({ rtl, scale }) => {
-                  if (rtl) document.documentElement.dir = "rtl";
-                  if (scale) document.documentElement.style.fontSize = `${16 * scale}px`;
+                  if (rtl) {
+                    document.documentElement.dir = "rtl";
+                  }
+                  if (scale) {
+                    document.documentElement.style.fontSize = `${16 * scale}px`;
+                  }
                 }, profile);
-                if (stylesheet) await page.addStyleTag({ content: stylesheet });
-                await scene.prepare?.(page);
+                if (stylesheet) {
+                  await page.addStyleTag({ content: stylesheet });
+                }
+                await scene.prepare?.(page, gateway);
+                expect(pageErrors, "Synthetic scene must render without uncaught errors").toEqual(
+                  [],
+                );
                 // The invitation is never part of visual evidence, even after fixture changes.
                 expect(await page.locator(".community-invite").count()).toBe(0);
                 const frame = await takeControlUiScreenshotFrame(
                   page,
                   page.locator("openclaw-app"),
                   [content],
-                  { animations: "disabled" },
+                  {
+                    animations: "disabled",
+                    ...(scene.scrollTo ? { scrollTo: page.locator(scene.scrollTo) } : {}),
+                  },
                 );
                 const file = `${id}.png`;
                 await writeFile(path.join(directory, file), frame.png);
@@ -159,4 +196,22 @@ suite.define(() => {
       );
     }
   }
+  it("keeps gallery feedback across reload and exports the labeled example", async () => {
+    await suite.withPage(
+      { permissions: ["clipboard-read", "clipboard-write"] },
+      async ({ page }) => {
+        const shot = capture.shots[0]!;
+        await page.goto(pathToFileURL(path.join(directory, "index.html")).href);
+        const feedback = page.locator(`textarea[data-id="${shot.id}"]`);
+        await feedback.fill("Review spacing beside this control.");
+        await page.reload();
+        expect(await feedback.inputValue()).toBe("Review spacing beside this control.");
+        await page.getByRole("button", { name: "Copy feedback", exact: true }).click();
+        await expect.poll(() => page.locator("#copy-result").textContent()).toBe("Copied");
+        const copied = await page.evaluate(() => navigator.clipboard.readText());
+        expect(copied).toBe(`## ${shot.id}\n${shot.label}\nReview spacing beside this control.`);
+        await feedback.fill("");
+      },
+    );
+  });
 });

@@ -33,6 +33,8 @@ Selectors are opt-in focused captures; omit them for the complete catalog.`);
       "scripts/control-ui-parity/vitest.config.ts",
       "--configLoader",
       "runner",
+      "--bail",
+      "1",
     ],
     {
       stdio: "inherit",
@@ -42,7 +44,9 @@ Selectors are opt-in focused captures; omit them for the complete catalog.`);
       },
     },
   );
-  if (result.error) throw result.error;
+  if (result.error) {
+    throw result.error;
+  }
   process.exitCode = result.status ?? 1;
 } else if (
   command === "diff" &&

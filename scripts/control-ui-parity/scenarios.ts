@@ -1,110 +1,26 @@
 import type { Page } from "playwright";
+import { expect } from "vitest";
 import { APP_ROUTE_IDS, pathForRoute, type RouteId } from "../../ui/src/app-route-paths.ts";
 import { CONFIG_PAGE_IDS } from "../../ui/src/pages/config/config-sections.ts";
-import {
-  defaultControlUiFeatureMethods,
-  type ControlUiMockGatewayScenario,
+import type {
+  ControlUiMockGatewayScenario,
+  MockGatewayControls,
 } from "../../ui/src/test-helpers/control-ui-e2e.ts";
-import { createControlUiSessionRow } from "../../ui/src/test-helpers/control-ui-session-fixtures.ts";
-
-export const fixedTime = Date.parse("2026-09-01T12:00:00Z");
-export const sessionKey = "agent:main:parity";
-const session = createControlUiSessionRow(sessionKey, "Visual parity", fixedTime - 60_000, {
-  sharingRole: "owner",
-  visibility: "draft",
-  icon: "🦞",
-  color: "blue",
-});
-const config = {
-  browser: { enabled: true, mode: "local" },
-  agents: { defaults: { model: "openai/gpt-5.5" } },
-};
-export const baseScenario: ControlUiMockGatewayScenario = {
+import {
+  fixedTime,
   sessionKey,
-  sessions: [session],
-  allowedSessionVisibilities: ["shared", "read-only", "suggest", "draft"],
-  operatorScopes: ["operator.admin", "operator.read", "operator.write"],
-  featureMethods: [...defaultControlUiFeatureMethods, "forge.preview", "forge.detail"],
-  historyMessages: [
-    {
-      role: "user",
-      content: [{ type: "text", text: "Review the release checklist." }],
-      timestamp: fixedTime - 60_000,
-    },
-    {
-      role: "assistant",
-      content: [
-        {
-          type: "text",
-          text: "## Release checklist\n\n- Build verified\n- Mobile review pending\n\n| Check | Result |\n| --- | --- |\n| Unit | Passed |\n| Browser | Passed |\n\n```ts\nconst ready = true;\n```",
-        },
-      ],
-      timestamp: fixedTime - 30_000,
-    },
-  ],
-  methodResponses: {
-    "config.get": {
-      config,
-      raw: JSON.stringify(config),
-      hash: "parity-config",
-      valid: true,
-      issues: [],
-    },
-    "config.schema": {
-      generatedAt: "2026-09-01T12:00:00Z",
-      version: "parity",
-      uiHints: {},
-      schema: {
-        type: "object",
-        properties: {
-          browser: {
-            type: "object",
-            title: "Browser",
-            properties: {
-              enabled: { type: "boolean", title: "Browser Enabled" },
-              mode: { type: "string", title: "Mode", enum: ["local", "remote", "disabled"] },
-            },
-          },
-        },
-      },
-    },
-    "session.members.listEvidence": {
-      sessionKey,
-      owner: { type: "human", id: "owner", label: "Owner" },
-      members: [],
-      role: "owner",
-      allowedVisibilities: ["shared", "read-only", "suggest", "draft"],
-      identities: Array.from({ length: 30 }, (_, i) => ({
-        type: "human",
-        id: `person-${i}`,
-        label: `Person ${String(i).padStart(2, "0")} with a long display name`,
-      })),
-    },
-    "cron.list": { jobs: [], total: 0, hasMore: false },
-    "cron.status": { enabled: true, jobs: 0, storePath: "/mock/cron", nextWakeAtMs: null },
-    "logs.tail": {
-      file: "/mock/gateway.log",
-      cursor: 0,
-      size: 0,
-      lines: [],
-      truncated: false,
-      reset: false,
-    },
-    "worktrees.list": { worktrees: [] },
-    "worktrees.branches": { branches: [] },
-    "node.list": { nodes: [] },
-    "device.pair.list": { pending: [], paired: [] },
-    "system-presence": [],
-    "channels.status": {
-      ts: fixedTime,
-      channelOrder: [],
-      channelLabels: {},
-      channels: {},
-      channelAccounts: {},
-    },
-  },
-};
+  parityBaseScenario,
+  parityWorkboardScenario,
+  parityPluginPath,
+  parityHovercardScenario,
+  parityTabOverflowScenario,
+  parityReaderDocuments,
+  standaloneApprovalScenario,
+  standaloneQuestionScenario,
+} from "./fixtures.ts";
 
+export { fixedTime, sessionKey };
+export const baseScenario = parityBaseScenario;
 export type Profile = {
   id: string;
   width: number;
@@ -132,15 +48,15 @@ export const profiles: Profile[] = [
 export type Scene = {
   id: string;
   label: string;
-  route: RouteId;
+  route?: RouteId;
   path: string;
   ready: string;
   scenario?: ControlUiMockGatewayScenario;
-  prepare?: (page: Page) => Promise<void>;
+  prepare?: (page: Page, gateway: MockGatewayControls) => Promise<void>;
+  scrollTo?: string;
 };
 const configPages = new Set<string>(CONFIG_PAGE_IDS);
 function routeScene(route: RouteId): Scene {
-  // These catalog entries intentionally redirect; record both the requested and final route.
   const destination =
     route === "settings"
       ? "chat"
@@ -165,15 +81,67 @@ function routeScene(route: RouteId): Scene {
     label: `${route}: main state${destination !== route ? ` (redirect to ${destination})` : ""}`,
     route: destination,
     path:
-      route === "chat" || route === "dashboard"
-        ? `${pathForRoute(route)}?session=${sessionKey}`
-        : pathForRoute(route),
+      route === "plugin"
+        ? parityPluginPath
+        : route === "chat" || route === "dashboard"
+          ? `${pathForRoute(route)}?session=${sessionKey}`
+          : pathForRoute(route),
     ready: `openclaw-${host}-page`,
+    ...(route === "workboard" || route === "plugin" ? { scenario: parityWorkboardScenario } : {}),
   };
 }
 const chat = routeScene("chat");
+const loadingRoutes: Array<{ route: RouteId; method: string; ready: string }> = [
+  {
+    route: "channels",
+    method: "channels.pairing.list",
+    ready: "openclaw-channels-page .settings-loading-skeleton",
+  },
+  {
+    route: "secrets",
+    method: "secrets.store.list",
+    ready: "openclaw-secrets-page .settings-loading-skeleton",
+  },
+  { route: "mcp", method: "config.get", ready: ".mcp-server-list .settings-loading-skeleton" },
+  {
+    route: "plugin-settings",
+    method: "plugins.list",
+    ready: "#plugin-settings-panel .settings-loading-skeleton",
+  },
+  {
+    route: "profile",
+    method: "users.self",
+    ready: "#settings-profile-identity .settings-loading-skeleton",
+  },
+];
 export const scenes: Scene[] = [
   ...APP_ROUTE_IDS.map(routeScene),
+  ...loadingRoutes.map(({ route, method, ready }): Scene =>
+    Object.assign(routeScene(route), {
+      id: `${route}-loading`,
+      label: `${route}: loading`,
+      ready,
+      scenario: { heldMethods: [method] },
+    }),
+  ),
+  ...(["logs", "worktrees", "secrets"] as const).map((route): Scene => {
+    const method = {
+      logs: "logs.tail",
+      worktrees: "worktrees.list",
+      secrets: "secrets.store.list",
+    }[route];
+    const message = `Synthetic ${route} unavailable`;
+    return Object.assign(routeScene(route), {
+      id: `${route}-error`,
+      label: `${route}: recoverable error`,
+      scenario: {
+        methodResponses: { [method]: { __mockError: { code: "UNAVAILABLE", message } } },
+      },
+      prepare: async (page) => {
+        await page.getByText(message, { exact: false }).first().waitFor();
+      },
+    });
+  }),
   {
     ...chat,
     id: "chat-empty",
@@ -192,27 +160,24 @@ export const scenes: Scene[] = [
         .waitFor();
     },
     scenario: {
-      methodResponses: {
-        "chat.startup": {
-          __mockError: {
-            code: "UNAVAILABLE",
-            message: "Synthetic history unavailable. Retry the request.",
+      methodResponses: Object.fromEntries(
+        ["chat.startup", "chat.history"].map((method) => [
+          method,
+          {
+            __mockError: {
+              code: "UNAVAILABLE",
+              message: "Synthetic history unavailable. Retry the request.",
+            },
           },
-        },
-        "chat.history": {
-          __mockError: {
-            code: "UNAVAILABLE",
-            message: "Synthetic history unavailable. Retry the request.",
-          },
-        },
-      },
+        ]),
+      ),
       awaitInitialRoster: false,
     },
   },
   {
     ...chat,
     id: "chat-long-content",
-    label: "Chat: long transcript, wrapping, table and code",
+    label: "Chat: long transcript, wrapping and code",
     prepare: async (page) => {
       await page.getByText(/Message 39: A deliberately long sentence/u).waitFor();
     },
@@ -232,7 +197,7 @@ export const scenes: Scene[] = [
   {
     ...chat,
     id: "session-menu",
-    label: "Session menu: icons, selected and disabled actions",
+    label: "Session menu: icons and actions",
     prepare: async (page) => {
       await page.locator(".chat-header-session-menu__trigger").click();
       await page.getByRole("menu", { name: "Actions for Visual parity" }).waitFor();
@@ -243,9 +208,16 @@ export const scenes: Scene[] = [
     id: "session-submenu",
     label: "Session menu: appearance submenu and selected color",
     prepare: async (page) => {
-      await page.locator(".chat-header-session-menu__trigger").click();
-      await page.getByRole("menuitem", { name: "Icon & color", exact: true }).click();
+      await page.locator(".chat-header-session-menu__trigger").focus();
+      await page.keyboard.press("Enter");
+      // Compact menus drill into a sheet; wide menus retain nested popovers.
+      if (page.viewportSize()!.width <= 560) {
+        await page.getByRole("menuitem", { name: "Icon & color", exact: true }).click();
+      } else {
+        await page.getByRole("menuitem", { name: "Icon & color", exact: true }).hover();
+      }
       await page.locator(".session-menu__appearance:visible").waitFor();
+      await page.getByRole("button", { name: "Blue", exact: true }).waitFor();
     },
   },
   {
@@ -255,14 +227,82 @@ export const scenes: Scene[] = [
     prepare: async (page) => {
       await page.locator(".chat-header-session-menu__trigger").click();
       await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
-      await page.getByRole("dialog").waitFor();
+      await page.locator("openclaw-modal-dialog input").waitFor();
+    },
+  },
+  {
+    ...chat,
+    id: "model-long-list",
+    label: "Model picker: selected row and long scrolling list",
+    prepare: async (page) => {
+      await page.locator('[data-chat-model-select="true"]').click();
+      const picker = page.locator(".chat-controls__model-picker");
+      await picker.waitFor();
+      await picker.getByText("Model 39", { exact: true }).waitFor({ state: "attached" });
+    },
+  },
+  {
+    ...chat,
+    id: "permission-selected",
+    label: "Permission picker: selected and unselected rows",
+    prepare: async (page) => {
+      await page.locator('[data-chat-permission-select="true"]').click();
+      await page.locator('[data-chat-permission-option="guarded"]').waitFor();
+    },
+  },
+  {
+    ...chat,
+    id: "rich-hovercard",
+    label: "Rich link hovercard",
+    scenario: parityHovercardScenario,
+    prepare: async (page) => {
+      await page.locator(".chat-text a.markdown-github-link").first().focus();
+      await page.locator(".link-reader-hovercard__title").waitFor();
+    },
+  },
+  {
+    ...chat,
+    id: "tabs-overflow",
+    label: "Reader tabs: overflowing long labels and selected tab",
+    scenario: parityTabOverflowScenario,
+    prepare: async (page) => {
+      const viewport = page.viewportSize()!;
+      // Arrange the retained tab set with the conversation visible, then capture the
+      // real responsive presentation at the requested width.
+      await page.setViewportSize({ width: 1440, height: 960 });
+      for (const document of parityReaderDocuments) {
+        await page.locator(`.chat-text a[href="${document.url}"]`).click();
+        await page
+          .locator("openclaw-link-reader-panel")
+          .getByRole("heading", { name: document.title, exact: true })
+          .waitFor();
+      }
+      await expect
+        .poll(() => page.locator('[data-region-header="side"] .tabstrip-tab').count())
+        .toBe(parityReaderDocuments.length);
+      await page.setViewportSize(viewport);
     },
   },
   {
     ...routeScene("infrastructure"),
     id: "settings-controls",
     path: "/settings/infrastructure?section=browser&advanced=1#config-section-browser",
-    label: "Settings: switch and radio controls",
+    label: "Settings: selected radios and switch",
     ready: "#config-section-browser .settings-row",
+    scrollTo: "#config-section-browser",
+  },
+  {
+    id: "approval-pending",
+    label: "Approval document: pending command and disabled permanent approval",
+    path: "/approve/parity",
+    ready: ".approval-page__preview",
+    scenario: standaloneApprovalScenario,
+  },
+  {
+    id: "question-pending",
+    label: "Question document: options and disabled submit",
+    path: "/ask/parity",
+    ready: "openclaw-chat-question-panel",
+    scenario: standaloneQuestionScenario,
   },
 ];

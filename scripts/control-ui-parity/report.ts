@@ -126,7 +126,7 @@ export async function compareCaptures(beforeDir: string, afterDir: string, paren
   const beforeShots = new Map(before.shots.map((shot) => [shot.id, shot]));
   const afterShots = new Map(after.shots.map((shot) => [shot.id, shot]));
   const results = [];
-  for (const id of [...new Set([...beforeShots.keys(), ...afterShots.keys()])].sort()) {
+  for (const id of [...new Set([...beforeShots.keys(), ...afterShots.keys()])].toSorted()) {
     const left = beforeShots.get(id);
     const right = afterShots.get(id);
     const row = { id, status: "equal", changedPixels: 0, totalPixels: 0, diff: "" };
@@ -135,8 +135,9 @@ export async function compareCaptures(beforeDir: string, afterDir: string, paren
     } else {
       const leftBytes = await readFile(path.join(beforeDir, left.file));
       const rightBytes = await readFile(path.join(afterDir, right.file));
-      if (hash(leftBytes) !== left.sha256 || hash(rightBytes) !== right.sha256)
+      if (hash(leftBytes) !== left.sha256 || hash(rightBytes) !== right.sha256) {
         throw new Error(`Capture changed on disk: ${id}`);
+      }
       const a = photon.PhotonImage.new_from_byteslice(leftBytes);
       const b = photon.PhotonImage.new_from_byteslice(rightBytes);
       try {
@@ -161,7 +162,9 @@ export async function compareCaptures(beforeDir: string, afterDir: string, paren
             const changed = pixels
               .subarray(i, i + 4)
               .some((value, offset) => value !== other[i + offset]);
-            if (changed) row.changedPixels += 1;
+            if (changed) {
+              row.changedPixels += 1;
+            }
             diff.set(changed ? [255, 0, 80, 255] : [pixels[i]!, pixels[i]!, pixels[i]!, 70], i);
           }
           if (row.changedPixels) {
