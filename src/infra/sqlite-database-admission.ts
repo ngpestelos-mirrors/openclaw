@@ -520,28 +520,23 @@ export function publishSqliteDatabaseAdmission<T>(
   const publish = (publishedRevision = revision) =>
     publishFact(record, key, value, publishedRevision);
   const native = getSqliteNativeAdmissionFacts(database);
-  if (native) {
-    native.set(key.name, {
-      value,
-      revision,
-      schemaDependent: key.schemaDependent === true,
-      ddlRevision: state.ddlRevisions.get(database) ?? 0,
-    });
-    return;
-  }
-  if (!database.isTransaction) {
+  if (!native && !database.isTransaction) {
     publish();
     return;
   }
-  const local = state.local.get(database) ?? new Map<string, StagedAdmissionFact>();
-  state.local.set(database, local);
-  const previous = local.get(key.name);
   const staged: StagedAdmissionFact = {
     value,
     revision,
     schemaDependent: key.schemaDependent === true,
     ddlRevision: state.ddlRevisions.get(database) ?? 0,
   };
+  if (native) {
+    native.set(key.name, staged);
+    return;
+  }
+  const local = state.local.get(database) ?? new Map<string, StagedAdmissionFact>();
+  state.local.set(database, local);
+  const previous = local.get(key.name);
   const restore = () => {
     if (state.local.get(database) !== local) {
       return;

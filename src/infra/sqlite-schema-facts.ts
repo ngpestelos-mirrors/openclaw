@@ -35,6 +35,7 @@ import {
 import { canPreserveTransactionSnapshot } from "./sqlite-schema-mutation.js";
 import {
   bindSqliteSchemaScope as bindScope,
+  finishSqliteReadScope,
   observeSqliteTransactionState as observeTransactionState,
   releaseSqliteSchemaScope,
   publishSqliteSchemaChange as publishSchemaChange,
@@ -167,26 +168,6 @@ function trackSchemaChanges(
       owner.transactionalSchema &&= database.isTransaction;
       owner.transactionalTempSchema &&= database.isTransaction;
       owner.transactionalFacts = false;
-    }
-  };
-  const finishReadScope = (
-    wasTransaction: boolean,
-    expiresRead: boolean,
-    succeeded: boolean,
-    openingMutationRevision?: number,
-  ) => {
-    const inTransaction = database.isTransaction;
-    if (!succeeded && wasTransaction && !inTransaction) {
-      owner.mutationRevision += 1;
-    }
-    owner.transactionOpen = inTransaction;
-    if (!wasTransaction || !inTransaction) {
-      owner.transactionMutationRevision = inTransaction ? openingMutationRevision : undefined;
-    }
-    if (wasTransaction !== inTransaction || expiresRead) {
-      owner.transactionSnapshot = undefined;
-      owner.transactionRead = false;
-      owner.transactionCatalogBound = false;
     }
   };
   const execute = observeSqliteNativeOperations(database, native, (mutation, phase) => {
@@ -405,7 +386,14 @@ function trackSchemaChanges(
             owner.settling = false;
           }
         }
-        finishReadScope(wasTransaction, expiresRead, succeeded, openingMutationRevision);
+        finishSqliteReadScope(
+          database,
+          owner,
+          wasTransaction,
+          expiresRead,
+          succeeded,
+          openingMutationRevision,
+        );
         if (owner.nativeDepth === 0 && !database.isTransaction) {
           finishSqliteDatabaseWrite(database);
         }

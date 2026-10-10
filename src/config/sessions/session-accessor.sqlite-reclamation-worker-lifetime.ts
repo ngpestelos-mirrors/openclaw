@@ -633,14 +633,11 @@ export class SqliteReclamationWorker {
             async (coordination) => {
               try {
                 this.closeRequested = true;
-                worker.postMessage(
-                  {
-                    type: "close",
-                    operationId,
-                    coordination,
-                  } satisfies SqliteReclamationWorkerCloseRequest,
-                  [],
-                );
+                worker.postMessage({
+                  type: "close",
+                  operationId,
+                  coordination,
+                } satisfies SqliteReclamationWorkerCloseRequest);
               } catch (error) {
                 await terminateSqliteMutationWorker(transport);
                 throw error;
@@ -655,7 +652,7 @@ export class SqliteReclamationWorker {
           if (transport.kind === "pooled") {
             // The task cannot yield its slot until the parent's native close has settled.
             try {
-              worker.postMessage({ type: "release", operationId }, []);
+              worker.postMessage({ type: "release", operationId });
             } catch (error) {
               await terminateSqliteMutationWorker(transport);
               throw error;
