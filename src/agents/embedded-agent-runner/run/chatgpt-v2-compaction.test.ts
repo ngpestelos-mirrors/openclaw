@@ -4,6 +4,7 @@ import type { Model, StreamFn } from "@openclaw/llm-core";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureAiTransportHost, getAiTransportHost } from "../../../../packages/ai/src/host.js";
+import type { OpenAIResponsesOptions } from "../../../../packages/ai/src/transports/openai-responses-contracts.js";
 import { ensureCustomApiRegistered } from "../../custom-api-registry.js";
 import {
   createAssistant,
@@ -159,13 +160,15 @@ async function fixture(
   });
   session[agentSessionDeferThresholdCompaction] = true;
   const transport = createOpenAIResponsesTransportStreamFn();
-  const providerStream: StreamFn = (activeModel, context, options) =>
-    transport(activeModel, context, {
+  const providerStream: StreamFn = (activeModel, context, options) => {
+    const transportOptions: OpenAIResponsesOptions = {
       ...options,
       apiKey: options?.apiKey ?? "test-api-key",
       authProfileId: "fixture-profile",
       onPayload: (payload: unknown) => ({ ...(payload as object), hook_marker: "normal-hook" }),
-    });
+    };
+    return transport(activeModel, context, transportOptions);
+  };
   if (asyncProvider) {
     // Plugin providers resolve credentials before dispatch; the registry adapter
     // returns its stream first, as the native ChatGPT route does in production.
