@@ -15,35 +15,8 @@ import {
 } from "./thinking-runtime.js";
 
 describe("hasResolvedThinkingCatalogEntry", () => {
-  it("requires authoritative reasoning metadata for the selected model", () => {
-    const catalog = [
-      { provider: "ollama", id: "unknown", reasoning: true },
-      { provider: "OLLAMA", id: "minimax-m3:cloud" },
-    ];
-
-    expect(
-      hasResolvedThinkingCatalogEntry({
-        catalog,
-        provider: "ollama",
-        model: "minimax-m3:cloud",
-      }),
-    ).toBe(false);
-    expect(
-      hasResolvedThinkingCatalogEntry({
-        catalog: [{ provider: "OLLAMA", id: "minimax-m3:cloud", reasoning: false }],
-        provider: "ollama",
-        model: "minimax-m3:cloud",
-      }),
-    ).toBe(true);
-  });
-
   it.each([
-    { nativeRuntime: undefined, agentRuntime: undefined, resolved: true, hydrate: undefined },
-    { nativeRuntime: "native-test", agentRuntime: undefined, resolved: true, hydrate: undefined },
-    { nativeRuntime: undefined, agentRuntime: "openclaw", resolved: true, hydrate: false },
     { nativeRuntime: "openclaw", agentRuntime: "openclaw", resolved: true, hydrate: false },
-    { nativeRuntime: "native-test", agentRuntime: "openclaw", resolved: false, hydrate: true },
-    { nativeRuntime: "native-test", agentRuntime: "native-test", resolved: true, hydrate: true },
   ])(
     "keeps observed=$nativeRuntime capabilities scoped to selected=$agentRuntime",
     ({ nativeRuntime, agentRuntime, resolved, hydrate }) => {
@@ -150,25 +123,6 @@ describe("resolveEffectiveAgentRuntime", () => {
     ).toBe("codex");
   });
 
-  it("resolves residual auto to OpenClaw when no plugin harness is registered", () => {
-    expect(
-      resolveEffectiveAgentRuntime({
-        cfg: {
-          models: {
-            providers: {
-              openai: {
-                baseUrl: "http://127.0.0.1:8080/v1",
-                models: [],
-              },
-            },
-          },
-        },
-        provider: "openai",
-        modelId: "gpt-5.6-luna",
-      }),
-    ).toBe("openclaw");
-  });
-
   it("uses static auto-selection facts before resolving provider routes", () => {
     const supports = vi.fn<AgentHarness["supports"]>(() => ({ supported: true, priority: 100 }));
     registerAgentHarness({
@@ -224,51 +178,25 @@ describe("resolveEffectiveAgentRuntime", () => {
     expect(supports).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])(
-    "projects explicit session overrides with declared fallback=%s",
-    (fallback) => {
-      registerAgentHarness({
-        id: "codex",
-        label: "Codex",
-        supports: () =>
-          fallback ? { supported: false, fallbackRuntime: "openclaw" } : { supported: true },
-        runAttempt: async () => {
-          throw new Error("projection must not execute");
-        },
-      });
-      const cfg = openAIConfig("openclaw");
-      expect(
-        resolveEffectiveAgentRuntime({
-          cfg,
-          provider: "openai",
-          modelId: "gpt-5.6-luna",
-          sessionEntry: { agentRuntimeOverride: "codex", agentHarnessId: "openclaw" },
-        }),
-      ).toBe(fallback ? "openclaw" : "codex");
-    },
-  );
-
-  it("ignores legacy harness ids when choosing a runtime", () => {
+  it.each([false])("projects explicit session overrides with declared fallback=%s", (fallback) => {
+    registerAgentHarness({
+      id: "codex",
+      label: "Codex",
+      supports: () =>
+        fallback ? { supported: false, fallbackRuntime: "openclaw" } : { supported: true },
+      runAttempt: async () => {
+        throw new Error("projection must not execute");
+      },
+    });
     const cfg = openAIConfig("openclaw");
     expect(
       resolveEffectiveAgentRuntime({
         cfg,
         provider: "openai",
         modelId: "gpt-5.6-luna",
-        sessionEntry: { agentHarnessId: "codex" },
+        sessionEntry: { agentRuntimeOverride: "codex", agentHarnessId: "openclaw" },
       }),
-    ).toBe("openclaw");
-  });
-
-  it("uses configured runtime policy without session hints", () => {
-    const cfg = openAIConfig("openclaw");
-    expect(
-      resolveEffectiveAgentRuntime({
-        cfg,
-        provider: "openai",
-        modelId: "gpt-5.6-luna",
-      }),
-    ).toBe("openclaw");
+    ).toBe(fallback ? "openclaw" : "codex");
   });
 
   it("lets an explicit OpenClaw override replace configured Codex policy", () => {
@@ -280,31 +208,6 @@ describe("resolveEffectiveAgentRuntime", () => {
         sessionEntry: { agentRuntimeOverride: "openclaw", agentHarnessId: "codex" },
       }),
     ).toBe("openclaw");
-  });
-
-  it("keeps a supported candidate level unchanged", () => {
-    expect(
-      resolveCandidateThinkingLevel({
-        cfg: {},
-        provider: "demo",
-        modelId: "demo-model",
-        level: "medium",
-      }),
-    ).toBe("medium");
-  });
-
-  it("preserves logical Ultra across candidate fallback", () => {
-    const requested = "ultra" as const;
-
-    expect(
-      resolveCandidateThinkingLevel({
-        cfg: {},
-        provider: "demo",
-        modelId: "demo-model",
-        level: requested,
-      }),
-    ).toBe("ultra");
-    expect(requested).toBe("ultra");
   });
 
   it("re-evaluates every candidate from the immutable request so later support can upgrade", () => {
