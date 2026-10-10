@@ -3,6 +3,11 @@ import {
   type ExistingOpenClawStateWriter,
 } from "../state/openclaw-state-db-existing-write.js";
 import { resolveUpdateRunCodecEnv, type UpdateRunLedgerOptions } from "./update-run-codec.js";
+import {
+  isRequiredUpdateRunStep,
+  retryUpdateRunWrite,
+  UpdateRunWriteBusyError,
+} from "./update-run-contention.js";
 import type {
   UpdateRunWriteCommand,
   UpdateRunWriteOperations,
@@ -19,6 +24,7 @@ export function openUpdateRunWriter(options: UpdateRunLedgerOptions): ExistingOp
   return openExistingOpenClawStateWriter(options, {
     schemaSql: updateRunLedgerSchema,
     operationLabel: "update.run",
+    beginLockFailureReporting: "suppress",
   });
 }
 
@@ -38,28 +44,49 @@ export function recordUpdateRunMutationInWorker(
     ...options,
     env: resolveUpdateRunCodecEnv(options.env, input.redactionFacts),
   };
-  return writer.run(({ db }) => {
-    assertCurrent("transaction");
-    if (input.requireNoRecovery) {
-      const recovery = readRecovery(db, input.runId);
-      if (recovery) {
-        assertCurrent("commit");
-        return { kind: "recovery-required", recovery };
-      }
-    }
-    const record = mutateRunInTransaction(
-      db,
-      input.runId,
-      (current) => {
-        if (command.type === "updateRuns.recordPhase") {
-          applyUpdateRunPhase(current, command.input.phase, command.input.patch);
-        } else {
-          applyUpdateRunStep(current, command.input.step);
-        }
-      },
-      codecOptions,
+  // Recovery exclusion is itself an admission decision: it must serialize
+  // behind the competing writer even when the progress receipt is expendable.
+  const bookkeeping =
+    command.type === "updateRuns.recordStep" &&
+    !input.requireNoRecovery &&
+    !isRequiredUpdateRunStep(command.input.step);
+  try {
+    return retryUpdateRunWrite(
+      (busyTimeoutMs) =>
+        writer.run(
+          ({ db }) => {
+            assertCurrent("transaction");
+            if (input.requireNoRecovery) {
+              const recovery = readRecovery(db, input.runId);
+              if (recovery) {
+                assertCurrent("commit");
+                return { kind: "recovery-required", recovery };
+              }
+            }
+            const record = mutateRunInTransaction(
+              db,
+              input.runId,
+              (current) => {
+                if (command.type === "updateRuns.recordPhase") {
+                  applyUpdateRunPhase(current, command.input.phase, command.input.patch);
+                } else {
+                  applyUpdateRunStep(current, command.input.step);
+                }
+              },
+              codecOptions,
+            );
+            assertCurrent("commit");
+            return { kind: "recorded", record };
+          },
+          { ...options, busyTimeoutMs },
+        ),
+      options,
+      bookkeeping,
     );
-    assertCurrent("commit");
-    return { kind: "recorded", record };
-  }, options);
+  } catch (error) {
+    if (!bookkeeping || !(error instanceof UpdateRunWriteBusyError)) {
+      throw error;
+    }
+    return { kind: "bookkeeping-skipped" };
+  }
 }

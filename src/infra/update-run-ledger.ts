@@ -19,6 +19,7 @@ import {
 } from "./update-run-activity.js";
 import { runUpdateRunAdmission } from "./update-run-admission.js";
 import { encodeRun, type UpdateRunLedgerOptions as LedgerOptions } from "./update-run-codec.js";
+import { recordUpdateRunBookkeeping } from "./update-run-contention.js";
 import {
   inspectUpdateRunDriver,
   readUpdateRunDriver,
@@ -44,7 +45,6 @@ import { inspectRecoveryRows } from "./update-run-recovery-store.js";
 import { recordUpdateRunVerificationRecord } from "./update-run-verification.js";
 import {
   applyUpdateRunPhase,
-  applyUpdateRunStep,
   mutateRun,
   mutateRunInTransaction,
   persistRun,
@@ -67,7 +67,11 @@ export {
   reconcileAbandonedUpdateRunsAsync,
 } from "./update-run-reconciliation.js";
 
-export { finishUpdateRun, recordUpdateRunDiagnostics } from "./update-run-write.js";
+export {
+  finishUpdateRun,
+  recordUpdateRunDiagnostics,
+  recordUpdateRunStep,
+} from "./update-run-write.js";
 
 type LedgerDatabase = Pick<DB, "update_runs">;
 export function createUpdateRun(
@@ -248,17 +252,21 @@ export function heartbeatUpdateRun(
   if (!driver) {
     return;
   }
-  mutateRun(
-    runId,
-    (record) => {
-      if (
-        record.status === "running" &&
-        recordedUpdateRunDrivers(record).some((current) => sameUpdateRunDriver(current, driver))
-      ) {
-        record.updatedAtMs = Math.max(Date.now(), record.updatedAtMs + 1);
-      }
-    },
-    options,
+  recordUpdateRunBookkeeping(() =>
+    mutateRun(
+      runId,
+      (record) => {
+        if (
+          record.status === "running" &&
+          recordedUpdateRunDrivers(record).some((current) => sameUpdateRunDriver(current, driver))
+        ) {
+          record.updatedAtMs = Math.max(Date.now(), record.updatedAtMs + 1);
+        }
+      },
+      options,
+      undefined,
+      true,
+    ),
   );
 }
 
@@ -300,14 +308,6 @@ export function recordUpdateRunPhase(
   );
 }
 
-export function recordUpdateRunStep(
-  runId: string,
-  step: UpdateRunStep & { reason?: string },
-  options: LedgerOptions = {},
-): UpdateRunRecord {
-  return mutateRun(runId, (record) => applyUpdateRunStep(record, step), options);
-}
-
 export function recordUpdateRunRepairContinuation(
   runId: string,
   inheritedRunId: string | undefined,
@@ -347,13 +347,17 @@ export function recordUpdateRunDiagnostic(
   detail: string,
   options: LedgerOptions = {},
   step = "finalize:exit",
-): UpdateRunRecord {
-  return mutateRun(
-    runId,
-    (record) => {
-      upsertStep(record, { step, status: "completed", endedAtMs: Date.now(), detail });
-    },
-    options,
+): UpdateRunRecord | undefined {
+  return recordUpdateRunBookkeeping(() =>
+    mutateRun(
+      runId,
+      (record) => {
+        upsertStep(record, { step, status: "completed", endedAtMs: Date.now(), detail });
+      },
+      options,
+      undefined,
+      true,
+    ),
   );
 }
 

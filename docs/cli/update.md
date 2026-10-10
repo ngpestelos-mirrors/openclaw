@@ -147,6 +147,15 @@ not prompt after rollback.
 
 Update completion prints the terminal outcome and a local Markdown report path before exiting, including unexpected failures. Failed runs keep rollback-facing diagnostic JSON within the released 8 KiB limit. That file links a separate artifact containing every individually bounded Doctor finding; the Markdown report also retains the complete inventory. JSON output includes `reportPath`; a report-write failure prints a warning and preserves the update outcome.
 
+When another process briefly holds the state database writer, update history
+retries outside its write transactions. Phase changes, terminal outcomes, recovery
+receipts, and writes that check recovery admission wait up to two minutes.
+Ordinary progress and diagnostic bookkeeping retry for one second, then warn and
+continue without claiming a saved receipt. Persistent contention on a required
+write names the busy database and asks you to retry after the writer finishes;
+the updater keeps its existing service recovery and rollback handling. This fix
+must be present in the installed updater to protect the next update it runs.
+
 Exit always waits for accepted state operations, pending database opens, and live
 worker references to settle. After settlement, retained-worker native close and
 thread termination have a ten-second grace period. Expiry records a warning,

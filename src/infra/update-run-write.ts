@@ -9,6 +9,11 @@ import { extractSqliteTableSchema } from "./sqlite-schema-sql.js";
 import { createUpdateErrorFact } from "./update-failure-facts.js";
 import { completeUpdateFailureSummary } from "./update-failure-result.js";
 import { encodeRun, isRetainedStep, type UpdateRunLedgerOptions } from "./update-run-codec.js";
+import {
+  isRequiredUpdateRunStep,
+  recordUpdateRunBookkeeping,
+  retryUpdateRunWrite,
+} from "./update-run-contention.js";
 import type { UpdateRunPhasePatch } from "./update-run-mutation.types.js";
 import { decodeRun, readUpdateRunRecord } from "./update-run-read.kernel.js";
 import {
@@ -148,18 +153,38 @@ export function mutateRun(
   update: (record: UpdateRunRecord) => void,
   options: UpdateRunLedgerOptions,
   captureBefore?: Parameters<typeof mutateRunInTransaction>[4],
+  bookkeeping = false,
 ): UpdateRunRecord {
   // An existing run can belong to a restored older runtime. History updates
   // must never reopen through bootstrap/migration merely to report its outcome.
-  return runExistingOpenClawStateWriteTransaction(
-    ({ db }) => mutateRunInTransaction(db, runId, update, options, captureBefore),
-    options,
-    {
-      schemaSql: updateRunLedgerSchema,
-      operationLabel: "update.run",
-      busyTimeoutMs: options.busyTimeoutMs,
+  return retryUpdateRunWrite(
+    (busyTimeoutMs) => {
+      const writeOptions = { ...options, busyTimeoutMs };
+      return runExistingOpenClawStateWriteTransaction(
+        ({ db }) => mutateRunInTransaction(db, runId, update, options, captureBefore),
+        writeOptions,
+        {
+          schemaSql: updateRunLedgerSchema,
+          operationLabel: "update.run",
+          busyTimeoutMs,
+          beginLockFailureReporting: "suppress",
+        },
+      );
     },
+    options,
+    bookkeeping,
   );
+}
+
+export function recordUpdateRunStep(
+  runId: string,
+  step: UpdateRunStep & { reason?: string },
+  options: UpdateRunLedgerOptions = {},
+): UpdateRunRecord | undefined {
+  const bookkeeping = !isRequiredUpdateRunStep(step);
+  const write = () =>
+    mutateRun(runId, (record) => applyUpdateRunStep(record, step), options, undefined, bookkeeping);
+  return bookkeeping ? recordUpdateRunBookkeeping(write) : write();
 }
 
 type RecoveryDiagnostics = Pick<UpdateRunRecord["verification"], "recovery" | "rollbackOutcome">;
@@ -244,7 +269,13 @@ export function recordUpdateRunDiagnostics(
     ) {
       return undefined;
     }
-    return mutateRun(runId, (record) => applyUpdateRunDiagnostics(record, diagnostics), options);
+    return mutateRun(
+      runId,
+      (record) => applyUpdateRunDiagnostics(record, diagnostics),
+      options,
+      undefined,
+      true,
+    );
   } catch (error) {
     if (hasCommandProcessCleanupError(error)) {
       throw error;

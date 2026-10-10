@@ -6,6 +6,7 @@ import { isOpenClawStateWriteContentionError } from "../state/openclaw-state-own
 import { formatErrorMessage } from "./errors.js";
 import { assertSqliteIntegrity, SqliteRepairableForeignKeyError } from "./sqlite-integrity.js";
 import type { UpdateRunLedgerOptions } from "./update-run-codec.js";
+import { retryUpdateRunWrite, UpdateRunWriteBusyError } from "./update-run-contention.js";
 import { updateRunLedgerSchema } from "./update-run-write.js";
 
 export class UpdateRunAdmissionBusyError extends Error {
@@ -41,17 +42,21 @@ export function runUpdateRunAdmission<T>(
       throw inspection.repairable;
     }
     try {
-      return runExistingOpenClawStateWriteTransaction(
-        ({ db, recoveryChanges }) => operation(db, recoveryChanges),
-        options,
-        {
-          schemaSql: updateRunLedgerSchema,
-          operationLabel: "update.run",
-          busyTimeoutMs: options.busyTimeoutMs,
-          initializeAdditiveSchema: true,
-          ...(inspection.repairable ? { recoverTaskDeliveryOrphans: true } : {}),
-        },
-      );
+      return retryUpdateRunWrite((busyTimeoutMs) => {
+        const writeOptions = { ...options, busyTimeoutMs };
+        return runExistingOpenClawStateWriteTransaction(
+          ({ db, recoveryChanges }) => operation(db, recoveryChanges),
+          writeOptions,
+          {
+            schemaSql: updateRunLedgerSchema,
+            operationLabel: "update.run",
+            busyTimeoutMs,
+            beginLockFailureReporting: "suppress",
+            initializeAdditiveSchema: true,
+            ...(inspection.repairable ? { recoverTaskDeliveryOrphans: true } : {}),
+          },
+        );
+      }, options);
     } catch (error) {
       if (inspection.repairable) {
         throw new Error(
@@ -59,7 +64,7 @@ export function runUpdateRunAdmission<T>(
           { cause: error },
         );
       }
-      if (isOpenClawStateWriteContentionError(error)) {
+      if (error instanceof UpdateRunWriteBusyError || isOpenClawStateWriteContentionError(error)) {
         throw new UpdateRunAdmissionBusyError(
           "Update history is busy. Admission was deferred; previous history is unchanged. Retry `openclaw update` after the current database writer finishes.",
           { cause: error },

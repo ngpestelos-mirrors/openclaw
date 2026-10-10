@@ -31,7 +31,7 @@ async function recordUpdateRunMutationAsync(
     | { kind: "step"; step: UpdateRunStep & { reason?: string } }
     | { kind: "phase"; phase: UpdateRunPhase; patch: UpdateRunPhasePatch },
   options: UpdateRunWriteOptions = {},
-): Promise<UpdateRunRecord> {
+): Promise<UpdateRunRecord | undefined> {
   options.assertAccepting?.();
   if (options.database || options.readOnly) {
     throw new Error("Existing-state writes require their own tracked writable connection.");
@@ -85,6 +85,13 @@ async function recordUpdateRunMutationAsync(
   if (reply.kind === "recovery-required") {
     throw new UpdateRecoveryRequiredError(reply.recovery);
   }
+  if (reply.kind === "bookkeeping-skipped") {
+    console.warn(
+      "[update] Update history database is locked by another writer; " +
+        "a bookkeeping receipt could not be recorded. The update will continue.",
+    );
+    return undefined;
+  }
   return reply.record;
 }
 
@@ -92,15 +99,23 @@ export function recordUpdateRunStepAsync(
   runId: string,
   step: UpdateRunStep & { reason?: string },
   options: UpdateRunWriteOptions = {},
-): Promise<UpdateRunRecord> {
+): Promise<UpdateRunRecord | undefined> {
   return recordUpdateRunMutationAsync(runId, { kind: "step", step }, options);
 }
 
-export function recordUpdateRunPhaseAsync(
+export async function recordUpdateRunPhaseAsync(
   runId: string,
   phase: UpdateRunPhase,
   patch: UpdateRunPhasePatch = {},
   options: UpdateRunWriteOptions = {},
 ): Promise<UpdateRunRecord> {
-  return recordUpdateRunMutationAsync(runId, { kind: "phase", phase, patch }, options);
+  const record = await recordUpdateRunMutationAsync(
+    runId,
+    { kind: "phase", phase, patch },
+    options,
+  );
+  if (!record) {
+    throw new Error("Required update phase was not recorded");
+  }
+  return record;
 }
