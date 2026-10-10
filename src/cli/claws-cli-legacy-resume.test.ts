@@ -5,10 +5,8 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { buildClawAddPlan } from "../claws/lifecycle.js";
 import { persistClawInstallRecord } from "../claws/provenance.js";
 import { readClawManifestFile } from "../claws/reader.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../state/openclaw-state-db.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 
 const mocks = vi.hoisted(() => ({
   logs: [] as string[],
@@ -49,7 +47,13 @@ vi.mock("../claws/packages.js", async () => ({
 }));
 
 const { runClawsAddCommand } = await import("./claws-cli.runtime.js");
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    vi.unstubAllEnvs();
+    cleanup();
+  }),
+);
 
 beforeEach(() => {
   vi.stubEnv("OPENCLAW_EXPERIMENTAL_CLAWS", "1");
@@ -63,11 +67,6 @@ beforeEach(() => {
     status: "complete",
     agent: { finalId: "demo-agent", workspace: "" },
   });
-});
-
-afterEach(() => {
-  closeOpenClawStateDatabaseForTest();
-  vi.unstubAllEnvs();
 });
 
 describe("claws add legacy v1 resume", () => {
@@ -102,7 +101,7 @@ describe("claws add legacy v1 resume", () => {
         source: read.source,
         context: { workspace, packagePreflight: mocks.preflightClawPackage },
       });
-      persistClawInstallRecord(legacyPlan, { status: "workspace_ready", nowMs: 1 });
+      await persistClawInstallRecord(legacyPlan, { status: "workspace_ready", nowMs: 1 });
       openOpenClawStateDatabase()
         .db /* sqlite-allow-raw: test-only downgrade simulates a pre-v2 interrupted add. */
         .prepare("UPDATE claw_installs SET schema_version = ? WHERE agent_id = ?")

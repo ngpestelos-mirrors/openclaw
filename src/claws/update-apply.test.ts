@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -8,7 +9,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { commitPluginInstallRecordsWithConfig } from "../plugins/install-record-commit.js";
 import { hasPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { readClawCronRefs } from "./cron.js";
 import { readClawStatus } from "./lifecycle-status.js";
@@ -20,8 +21,12 @@ import { applyClawUpdatePlan } from "./update-apply.js";
 import { addPlan, consent, install, manifest, plan, source } from "./update-apply.test-helpers.js";
 import { buildClawUpdatePlan, type ClawUpdatePlan } from "./update-plan.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(closeOpenClawStateDatabaseForTest);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 describe("applyClawUpdatePlan", () => {
   it("rejects consent that does not match the preview before rebuilding", async () => {
@@ -85,7 +90,7 @@ describe("applyClawUpdatePlan", () => {
         ...consent(updatePlan),
         rebuildPlan: vi.fn(async () => updatePlan),
         buildAddPlan: vi.fn(async () => addPlan),
-        readInstall: vi.fn(() => install),
+        readInstall: vi.fn(async () => install),
         applyWorkspace: vi.fn(async () => {
           order.push("workspace");
           return { appliedPaths: [], rollback: vi.fn(async () => undefined) };
@@ -119,7 +124,7 @@ describe("applyClawUpdatePlan", () => {
           get: vi.fn(),
           remove: vi.fn(),
         },
-        persistInstall: vi.fn(() => {
+        persistInstall: vi.fn(async () => {
           order.push("provenance");
           return { ...install, claw: source };
         }),
@@ -201,7 +206,7 @@ describe("applyClawUpdatePlan", () => {
           ...consent(updatePlan),
           rebuildPlan: vi.fn(async () => updatePlan),
           buildAddPlan: vi.fn(async () => packageAddPlan),
-          readInstall: vi.fn(() => install),
+          readInstall: vi.fn(async () => install),
           applyPackage: vi.fn(async (phase) => {
             order.push("requirement");
             expect(
@@ -238,7 +243,7 @@ describe("applyClawUpdatePlan", () => {
           config: { id: "worker", name: "Worker", workspace: addPlan.agent.workspace },
         },
       };
-      const currentRecord = persistClawInstallRecord(currentAddPlan, { env, nowMs: 1 });
+      const currentRecord = await persistClawInstallRecord(currentAddPlan, { env, nowMs: 1 });
       const updatePlan = plan([
         {
           kind: "agent",
@@ -438,8 +443,8 @@ describe("applyClawUpdatePlan", () => {
         ...consent(updatePlan),
         rebuildPlan: vi.fn(async () => updatePlan),
         packagePreflight: vi.fn(async () => conflictPreflight),
-        readInstall: vi.fn(() => install),
-        persistInstall: vi.fn(() => ({ ...install, claw: source })),
+        readInstall: vi.fn(async () => install),
+        persistInstall: vi.fn(async () => ({ ...install, claw: source })),
         applyWorkspace: vi.fn(async () => ({
           appliedPaths: [],
           rollback: vi.fn(async () => undefined),
@@ -542,7 +547,7 @@ describe("applyClawUpdatePlan", () => {
           ...consent(updatePlan),
           rebuildPlan: vi.fn(async () => updatePlan),
           buildAddPlan: vi.fn(async () => addPlan),
-          readInstall: vi.fn(() => install),
+          readInstall: vi.fn(async () => install),
           applyWorkspace: vi.fn(async () => workspaceExecution),
           applyMcp: vi.fn(async () => ({ appliedNames: [], rollback: mcpRollback })),
           applyPackage: vi.fn(async () => {
@@ -560,7 +565,7 @@ describe("applyClawUpdatePlan", () => {
           applyCron: vi.fn(async () => {
             return { appliedIds: [], rollback: () => rollback("cron") };
           }),
-          persistInstall: vi.fn(() => {
+          persistInstall: vi.fn(async () => {
             throw failure;
           }),
         },
@@ -574,46 +579,62 @@ describe("applyClawUpdatePlan", () => {
     expect(workspaceRollback).toHaveBeenCalledOnce();
   });
 
-  it("restores the agent when the config commit throws after transforming state", async () => {
-    const currentAgent = { id: "worker", name: "Worker" };
-    const currentDigest = `sha256:${createHash("sha256").update(stableStringify(currentAgent)).digest("hex")}`;
-    const updatePlan = plan([
-      {
-        kind: "agent",
-        id: "worker",
-        action: "change",
-        target: 'agents.entries["worker"]',
-        blocked: false,
-        reason: "target changed",
-        currentDigest,
-      },
-    ]);
-    let config: OpenClawConfig = { agents: { entries: { worker: { name: "Worker" } } } };
-    let commits = 0;
-
-    await expect(
-      applyClawUpdatePlan(
-        updatePlan,
-        { targetManifest: manifest, targetSource: source },
+  it.each([false, true])(
+    "restores agent config after a committed write fails (request cancelled: %s)",
+    async (cancelled) => {
+      const currentAgent = { id: "worker", name: "Worker" };
+      const currentDigest = `sha256:${createHash("sha256").update(stableStringify(currentAgent)).digest("hex")}`;
+      const updatePlan = plan([
         {
-          config,
-          ...consent(updatePlan),
-          rebuildPlan: vi.fn(async () => updatePlan),
-          buildAddPlan: vi.fn(async () => addPlan),
-          readInstall: vi.fn(() => install),
-          commitConfig: async (transform) => {
-            config = transform(config);
-            commits += 1;
-            if (commits === 1) {
-              throw new Error("post-write failure");
-            }
-          },
+          kind: "agent",
+          id: "worker",
+          action: "change",
+          target: 'agents.entries["worker"]',
+          blocked: false,
+          reason: "target changed",
+          currentDigest,
         },
-      ),
-    ).rejects.toMatchObject({ code: "agent_update_failed" });
-    expect(config.agents?.entries?.worker).toEqual({ name: "Worker" });
-    expect(commits).toBe(2);
-  });
+      ]);
+      let config: OpenClawConfig = { agents: { entries: { worker: { name: "Worker" } } } };
+      let commits = 0;
+      const request = new AbortController();
+      const settlement = new AsyncLocalStorage<boolean>();
+      const assertCurrent = () => request.signal.throwIfAborted();
+
+      await expect(
+        applyClawUpdatePlan(
+          updatePlan,
+          { targetManifest: manifest, targetSource: source },
+          {
+            config,
+            signal: request.signal,
+            assertCurrent,
+            assertSettlementCurrent: () => undefined,
+            runSettlement: <T>(run: () => Promise<T>) => settlement.run(true, run),
+            ...consent(updatePlan),
+            rebuildPlan: vi.fn(async () => updatePlan),
+            buildAddPlan: vi.fn(async () => addPlan),
+            readInstall: vi.fn(async () => install),
+            commitConfig: async (transform) => {
+              if (!settlement.getStore()) {
+                assertCurrent();
+              }
+              config = transform(config);
+              commits += 1;
+              if (commits === 1) {
+                if (cancelled) {
+                  request.abort(new Error("Claw request cancelled"));
+                }
+                throw new Error("post-write failure");
+              }
+            },
+          },
+        ),
+      ).rejects.toMatchObject({ code: "agent_update_failed" });
+      expect(config.agents?.entries?.worker).toEqual({ name: "Worker" });
+      expect(commits).toBe(2);
+    },
+  );
 
   it("does not recreate an agent removed after planning", async () => {
     const currentAgent = { id: "worker", name: "Worker" };
@@ -640,7 +661,7 @@ describe("applyClawUpdatePlan", () => {
           ...consent(updatePlan),
           rebuildPlan: vi.fn(async () => updatePlan),
           buildAddPlan: vi.fn(async () => addPlan),
-          readInstall: vi.fn(() => install),
+          readInstall: vi.fn(async () => install),
           commitConfig: async (transform) => {
             config = transform(config);
           },
@@ -668,7 +689,7 @@ describe("applyClawUpdatePlan", () => {
       },
     };
 
-    const readInstall = vi.fn(() => install);
+    const readInstall = vi.fn(async () => install);
     await expect(
       applyClawUpdatePlan(
         updatePlan,
@@ -702,7 +723,7 @@ describe("applyClawUpdatePlan", () => {
         },
       ],
     };
-    const readInstall = vi.fn(() => install);
+    const readInstall = vi.fn(async () => install);
     await expect(
       applyClawUpdatePlan(
         updatePlan,
@@ -806,35 +827,51 @@ describe("updating an adopted agent", () => {
     ).resolves.toMatchObject({ records: [{ agentState: "present" }] });
   });
 
-  it("preserves operator changes made before adopted-agent rollback", async () => {
-    const current = await adoptedFixture();
-    let config = current.config;
-    let reachedCron = false;
-    await expect(
-      applyClawUpdatePlan(current.plan, current.target, {
-        config,
-        env: current.env,
-        sourceMcpServers: {},
-        consentPlanIntegrity: current.plan.planIntegrity,
-        commitConfig: async (transform) => {
-          config = transform(config);
-        },
-        applyCron: async () => {
-          reachedCron = true;
-          expect(config.agents?.entries?.worker?.name).toBe("Worker v2");
-          config = {
-            ...config,
-            agents: { ...config.agents, defaults: { model: "provider/operator-change" } },
-          };
-          throw new Error("cron unavailable");
-        },
-      }),
-    ).rejects.toMatchObject({ code: "update_partial" });
-    expect(reachedCron).toBe(true);
-    expect(config.agents?.defaults?.model).toBe("provider/operator-change");
-    expect(config.agents?.entries?.worker?.name).toBe("Worker v2");
-    expect(readClawInstallRecord("worker", { env: current.env })?.status).toBe("partial");
-  });
+  it.each([false, true])(
+    "records partial state and preserves operator changes after cancellation: %s",
+    async (cancelled) => {
+      const current = await adoptedFixture();
+      let config = current.config;
+      let reachedCron = false;
+      const request = new AbortController();
+      const settlement = new AsyncLocalStorage<boolean>();
+      const assertCurrent = () => request.signal.throwIfAborted();
+      await expect(
+        applyClawUpdatePlan(current.plan, current.target, {
+          config,
+          signal: request.signal,
+          assertCurrent,
+          assertSettlementCurrent: () => undefined,
+          runSettlement: <T>(run: () => Promise<T>) => settlement.run(true, run),
+          env: current.env,
+          sourceMcpServers: {},
+          consentPlanIntegrity: current.plan.planIntegrity,
+          commitConfig: async (transform) => {
+            if (!settlement.getStore()) {
+              assertCurrent();
+            }
+            config = transform(config);
+          },
+          applyCron: async () => {
+            reachedCron = true;
+            expect(config.agents?.entries?.worker?.name).toBe("Worker v2");
+            config = {
+              ...config,
+              agents: { ...config.agents, defaults: { model: "provider/operator-change" } },
+            };
+            if (cancelled) {
+              request.abort(new Error("Claw request cancelled"));
+            }
+            throw new Error("cron unavailable");
+          },
+        }),
+      ).rejects.toMatchObject({ code: "update_partial" });
+      expect(reachedCron).toBe(true);
+      expect(config.agents?.defaults?.model).toBe("provider/operator-change");
+      expect(config.agents?.entries?.worker?.name).toBe("Worker v2");
+      expect(readClawInstallRecord("worker", { env: current.env })?.status).toBe("partial");
+    },
+  );
 });
 
 it.each(["partial", "rejected"] as const)(
@@ -898,7 +935,7 @@ it.each(["partial", "rejected"] as const)(
             },
           },
           rebuildPlan: async () => updatePlan,
-          readInstall: () => ({
+          readInstall: async () => ({
             ...install,
             status: "partial",
           }),
@@ -919,7 +956,7 @@ it.each(["partial", "rejected"] as const)(
           applyPackage,
           applyMcp: async () => ({ appliedNames: [], rollback: async () => {} }),
           applyCron: async () => ({ appliedIds: [], rollback: async () => {} }),
-          persistInstall: () => ({ ...install, status: "complete" }),
+          persistInstall: async () => ({ ...install, status: "complete" }),
         },
       );
       if (outcome === "rejected") {

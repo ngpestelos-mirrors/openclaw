@@ -3,10 +3,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/config.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../state/openclaw-state-db.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { applyClawAddPlan } from "./add.js";
 import { readClawStatus } from "./lifecycle-state.js";
 import { buildClawAddPlan } from "./lifecycle.js";
@@ -17,13 +15,44 @@ import { applyClawUpdatePlan } from "./update-apply.js";
 import { consent, manifest, source } from "./update-apply.test-helpers.js";
 import { buildClawUpdatePlan } from "./update-plan.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
-afterEach(() => {
-  closeOpenClawStateDatabaseForTest();
-});
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 describe("Claw add lifecycle", () => {
+  it("settles accepted workspace cleanup when add is canceled before config commit", async () => {
+    const root = tempDirs.make("openclaw-claw-add-canceled-");
+    const { plan } = await makeProvenancePlan(root, { schemaVersion: 1, agent: { id: "worker" } });
+    const env = stateEnv(root);
+    const controller = new AbortController();
+    const commitConfig = vi.fn();
+    const assertCurrent = () => controller.signal.throwIfAborted();
+    await expect(
+      applyClawAddPlan(plan, {
+        env,
+        consentPlanIntegrity: plan.planIntegrity,
+        signal: controller.signal,
+        assertCurrent,
+        assertSettlementCurrent: () => undefined,
+        runSettlement: async (operation) => operation(),
+        seedPackageBootstrap: async () => {
+          controller.abort(new Error("request canceled after workspace creation"));
+        },
+        commitConfig,
+      }),
+    ).resolves.toMatchObject({
+      status: "partial",
+      workspaceCreated: false,
+      configCommitted: false,
+    });
+    expect(commitConfig).not.toHaveBeenCalled();
+    await expect(access(plan.agent.workspace)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(readClawInstallRecord("worker", { env })).toMatchObject({ status: "partial" });
+  });
+
   it("applies, tracks drift, updates, and removes profile model and delegation settings", async () => {
     const root = tempDirs.make("openclaw-claw-update-profile-");
     const env = { OPENCLAW_STATE_DIR: join(root, "state") };
@@ -166,7 +195,7 @@ describe("Claw add lifecycle", () => {
       },
     };
     await mkdir(boundedPlan.agent.workspace, { recursive: true });
-    persistClawInstallRecord(legacyPlan, { env, status: "workspace_ready", nowMs: 1 });
+    await persistClawInstallRecord(legacyPlan, { env, status: "workspace_ready", nowMs: 1 });
     openOpenClawStateDatabase({ env })
       .db /* sqlite-allow-raw: test-only downgrade simulates an interrupted v1 add. */
       .prepare("UPDATE claw_installs SET schema_version = ? WHERE agent_id = ?")

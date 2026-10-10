@@ -45,7 +45,7 @@ describe("Gateway-owned Claw removal journal", () => {
         ...(scenario === "shared-session-owner" ? { session: { store: sharedStorePath } } : {}),
       });
       resetConfigRuntimeState();
-      const install = persistClawInstallRecord(plan);
+      const install = await persistClawInstallRecord(plan);
       if (scenario === "shared-session-owner") {
         openOpenClawAgentDatabase({ agentId: "worker", path: sharedStorePath, env: state.env });
       }

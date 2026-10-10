@@ -1,17 +1,16 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../state/openclaw-state-db.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { persistClawInstallRecord, readClawInstallRecord } from "./provenance.js";
 import { makeProvenancePlan, stateEnv } from "./provenance.test-helpers.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
-afterEach(() => {
-  closeOpenClawStateDatabaseForTest();
-});
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 async function makePlan() {
   const root = tempDirs.make("openclaw-claw-provenance-schema-");
@@ -30,14 +29,14 @@ describe("Claw install provenance schema migration", () => {
   it("upgrades matching incomplete v1 provenance from an exact resume handoff", async () => {
     const { root, plan } = await makePlan();
     const env = stateEnv(root);
-    persistClawInstallRecord(plan, { env, status: "pending", nowMs: 1 });
+    await persistClawInstallRecord(plan, { env, status: "pending", nowMs: 1 });
     downgradeInstallRecord(root);
     const legacyRecord = readClawInstallRecord("worker", { env });
     if (!legacyRecord) {
       throw new Error("expected legacy install record");
     }
 
-    const resumed = persistClawInstallRecord(plan, {
+    const resumed = await persistClawInstallRecord(plan, {
       env,
       status: "pending",
       nowMs: 2,
@@ -55,7 +54,7 @@ describe("Claw install provenance schema migration", () => {
   it("atomically replaces legacy plan identity with the bounded resume plan", async () => {
     const { root, plan: legacyPlan } = await makePlan();
     const env = stateEnv(root);
-    persistClawInstallRecord(legacyPlan, { env, status: "pending", nowMs: 1 });
+    await persistClawInstallRecord(legacyPlan, { env, status: "pending", nowMs: 1 });
     downgradeInstallRecord(root);
     const legacyRecord = readClawInstallRecord("worker", { env });
     if (!legacyRecord) {
@@ -73,7 +72,7 @@ describe("Claw install provenance schema migration", () => {
       },
     };
 
-    const resumed = persistClawInstallRecord(boundedPlan, {
+    const resumed = await persistClawInstallRecord(boundedPlan, {
       env,
       status: "pending",
       nowMs: 2,
@@ -95,7 +94,7 @@ describe("Claw install provenance schema migration", () => {
   it("can defer the legacy identity replacement until config migration succeeds", async () => {
     const { root, plan: legacyPlan } = await makePlan();
     const env = stateEnv(root);
-    persistClawInstallRecord(legacyPlan, { env, status: "workspace_ready", nowMs: 1 });
+    await persistClawInstallRecord(legacyPlan, { env, status: "workspace_ready", nowMs: 1 });
     downgradeInstallRecord(root);
     const legacyRecord = readClawInstallRecord("worker", { env });
     if (!legacyRecord) {
@@ -106,7 +105,7 @@ describe("Claw install provenance schema migration", () => {
       planIntegrity: "sha256:bounded-plan",
     };
 
-    const deferred = persistClawInstallRecord(boundedPlan, {
+    const deferred = await persistClawInstallRecord(boundedPlan, {
       env,
       status: "pending",
       expectedExistingRecord: legacyRecord,
@@ -121,12 +120,12 @@ describe("Claw install provenance schema migration", () => {
   it("does not upgrade a v1 record outside an exact resume handoff", async () => {
     const { root, plan } = await makePlan();
     const env = stateEnv(root);
-    persistClawInstallRecord(plan, { env, status: "partial", nowMs: 1 });
+    await persistClawInstallRecord(plan, { env, status: "partial", nowMs: 1 });
     downgradeInstallRecord(root);
 
-    expect(() => persistClawInstallRecord(plan, { env, status: "pending", nowMs: 2 })).toThrow(
-      "not an exact resumable attempt",
-    );
+    await expect(
+      persistClawInstallRecord(plan, { env, status: "pending", nowMs: 2 }),
+    ).rejects.toThrow("not an exact resumable attempt");
     expect(readClawInstallRecord("worker", { env })).toMatchObject({
       schemaVersion: "openclaw.clawInstallRecord.v1",
       status: "partial",

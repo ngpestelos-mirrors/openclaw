@@ -52,7 +52,7 @@ async function fixture() {
     { schemaVersion: 1, agent: { id: "worker" } },
     { openClawProfile: { schemaVersion: 1, agent: { tools: { allow: ["read"] } } } },
   );
-  persistClawInstallRecord(plan, { env: process.env });
+  await persistClawInstallRecord(plan, { env: process.env });
   const { id, ...agent } = plan.agent.config;
   const config = {
     ...CUSTOM_PROXY_MODELS_CONFIG,

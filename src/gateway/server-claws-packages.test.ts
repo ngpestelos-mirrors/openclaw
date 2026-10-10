@@ -262,7 +262,9 @@ describe("Gateway Claw package cleanup owner", () => {
         } else if (change === "abort") {
           f.controller.abort(new Error("Removal was canceled during the state read"));
         } else {
-          expect(() => updateClawInstallRecordStatus("worker", "partial")).toThrow(/deletion/i);
+          await expect(updateClawInstallRecordStatus("worker", "partial")).rejects.toThrow(
+            /deletion/i,
+          );
           expect(readClawInstallRecord("worker")).toEqual(snapshot.install);
         }
       } finally {

@@ -47,7 +47,7 @@ function options(updatePlan: ClawUpdatePlan, packagePreflight: ClawPackagePrefli
     sourceMcpServers: {},
     consentPlanIntegrity: updatePlan.planIntegrity,
     rebuildPlan: vi.fn(async () => updatePlan),
-    readInstall: vi.fn(() => install),
+    readInstall: vi.fn(async () => install),
     packagePreflight,
   };
 }
@@ -87,7 +87,7 @@ describe("applyClawUpdatePlan package compatibility", () => {
           rollback: vi.fn(async () => undefined),
         })),
         applyPackage,
-        persistInstall: vi.fn(() => ({ ...install, claw: source })),
+        persistInstall: vi.fn(async () => ({ ...install, claw: source })),
       },
     );
 

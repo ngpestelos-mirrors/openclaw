@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { persistClawInstallRecord, type ClawInstallStatus } from "../claws/provenance.js";
 import { createSqliteWalReclamationResult } from "../infra/sqlite-wal-reclamation.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import * as cliTestHelpers from "./claws-cli.test-helpers.js";
 
 const mocks = vi.hoisted(() => {
@@ -114,7 +114,13 @@ vi.mock("../claws/update-apply.js", async () => ({
 const { registerClawsCli } = await import("./claws-cli.js");
 const { runClawsAddCommand } = await import("./claws-cli.runtime.js");
 const { ClawUpdateMutationError } = await import("../claws/update-apply.js");
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    vi.restoreAllMocks();
+    cleanup();
+  }),
+);
 
 async function writeManifest(value: unknown = cliTestHelpers.minimalManifest): Promise<string> {
   return await cliTestHelpers.writeManifestFile(tempDirs, value);
@@ -139,7 +145,7 @@ async function preparePendingAdd(status: ClawInstallStatus) {
   vi.stubEnv("OPENCLAW_STATE_DIR", join(tempDirs.make("openclaw-claws-state-"), "state"));
   await runCli(["claws", "add", manifestPath, "--dry-run", "--workspace", workspace, "--json"]);
   const plan = JSON.parse(mocks.logs[0] ?? "{}");
-  persistClawInstallRecord(plan, { status, nowMs: 1 });
+  await persistClawInstallRecord(plan, { status, nowMs: 1 });
   mocks.logs.length = 0;
   mocks.runtime.exit.mockClear();
   mocks.applyClawAddPlan.mockClear();
@@ -306,11 +312,6 @@ describe("claws cli", () => {
       },
       filesWritten: ["package.json", "openclaw.claw.json"],
     });
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-    closeOpenClawStateDatabaseForTest();
   });
 
   it("does not register without the process opt-in", () => {

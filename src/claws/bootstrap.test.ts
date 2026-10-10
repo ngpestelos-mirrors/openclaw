@@ -6,7 +6,7 @@ import { MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES } from "../agents/workspace-bootstra
 import { readWorkspaceStateSnapshot } from "../agents/workspace-state-store.js";
 import { withTempHomeConfig } from "../config/test-helpers.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { setTestEnvValue } from "../test-utils/env.js";
 import { applyClawAddPlan } from "./add.js";
 import { seedClawPackageBootstrap } from "./bootstrap.js";
@@ -21,9 +21,12 @@ import {
 import { readClawManifestFile } from "./reader.js";
 import { parseClawManifest } from "./schema.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
-afterEach(() => closeOpenClawStateDatabaseForTest());
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 async function createPackage(bootstrap = "# First run\n\nAsk which repositories matter.\n") {
   const root = tempDirs.make("openclaw-claw-bootstrap-");
@@ -164,6 +167,22 @@ describe("package-root BOOTSTRAP.md", () => {
       summary: { pendingBootstrap: 0 },
       records: [{ bootstrapState: "complete" }],
     });
+  });
+
+  it("refuses package bootstrap publication after the caller owner retires", async () => {
+    const { workspace, env, plan } = await bootstrapPlan();
+    await expect(
+      seedClawPackageBootstrap(plan, {
+        env,
+        assertCurrent: () => {
+          throw new Error("Owner retired");
+        },
+      }),
+    ).rejects.toThrow("Owner retired");
+    await expect(readFile(join(workspace, "BOOTSTRAP.md"), "utf8")).rejects.toThrow();
+    expect(
+      (await readWorkspaceStateSnapshot(workspace, { env })).setup.bootstrapSeededAt,
+    ).toBeUndefined();
   });
 
   it("keeps the agent unpublished and resumable when package bootstrap seeding fails", async () => {
@@ -331,7 +350,7 @@ describe("package-root BOOTSTRAP.md", () => {
 
   it("preserves bootstrap provenance when update omits the seed-once action", async () => {
     const { read, workspace, env, plan: addPlan } = await bootstrapPlan();
-    const initial = persistClawInstallRecord(addPlan, { env });
+    const initial = await persistClawInstallRecord(addPlan, { env });
     const updatePlan = await buildClawAddPlan({
       manifest: read.manifest,
       packageBootstrap: read.packageBootstrap,
@@ -341,7 +360,7 @@ describe("package-root BOOTSTRAP.md", () => {
     });
 
     expect(updatePlan.actions.some((action) => action.kind === "bootstrap")).toBe(false);
-    updateClawInstallRecord(updatePlan, { env });
+    await updateClawInstallRecord(updatePlan, { env });
 
     expect(readClawInstallRecord("bootstrap-worker", { env })?.bootstrap).toEqual(
       initial.bootstrap,

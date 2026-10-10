@@ -32,7 +32,8 @@ import {
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { applyClawMigrationPlan, buildClawMigrationPlan } from "./migrate.js";
-import { persistClawInstallRecord } from "./provenance.js";
+// Native setup is intentional: these fixtures exercise direct corruption and physical replacement.
+import { persistClawInstallRecord } from "./provenance.kernel.js";
 import { makeProvenancePlan, stateEnv } from "./provenance.test-helpers.js";
 import { prepareCapturedClawToolPolicyConsent } from "./tool-policy-runtime.js";
 import type { ClawOpenClawProfile } from "./types.js";

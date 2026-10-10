@@ -6,6 +6,7 @@ import { listAgentEntries } from "../agents/agent-scope.js";
 import { transformConfigFileWithRetry } from "../config/config.js";
 import type { AgentConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { hasSqliteWorkerOutcomeUnknown } from "../infra/sqlite-worker-contract.js";
 import type { PluginInstallBatchReload } from "../plugins/install-runtime-batch.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
@@ -23,6 +24,7 @@ import {
   ClawMcpUpdateError,
   type ClawMcpUpdateExecution,
 } from "./mcp-update.js";
+import type { ClawMcpConfigApplicationOptions } from "./mcp.js";
 import { normalizeWorkspaceConfig, resolveMigrationAgentSettings } from "./migrate-validation.js";
 import {
   applyClawPackageUpdate,
@@ -31,7 +33,7 @@ import {
 } from "./package-update.js";
 import { runClawPluginBatch, type ClawPluginRuntimeOptions } from "./plugin-runtime.js";
 import {
-  readClawInstallRecord,
+  readClawInstallRecordAsync,
   updateClawInstallRecord,
   updateClawInstallRecordStatus,
   type PersistedClawInstall,
@@ -43,7 +45,7 @@ import {
   type ClawSourceIdentity,
 } from "./types.js";
 import { buildClawUpdatePlan, type ClawUpdateAction, type ClawUpdatePlan } from "./update-plan.js";
-import { collectClawRollbackFailures } from "./update-rollback.js";
+import { collectClawRollbackFailures, runClawSettlement } from "./update-rollback.js";
 import {
   applyClawWorkspaceUpdate,
   ClawWorkspaceUpdateError,
@@ -114,25 +116,32 @@ export async function applyClawUpdatePlan(
     targetOpenClawProfile?: ClawOpenClawProfile;
     targetSource: ClawSourceIdentity;
   },
-  options: OpenClawStateDatabaseOptions & {
-    config: OpenClawConfig;
-    sourceMcpServers: Record<string, Record<string, unknown>>;
-    consentPlanIntegrity: string | undefined;
-    packagePreflight?: ClawAddPlanContext["packagePreflight"];
-    runtime?: RuntimeEnv;
-    reloadPlugins?: PluginInstallBatchReload;
-    commitConfig?: ConfigCommit;
-    rebuildPlan?: typeof buildClawUpdatePlan;
-    buildAddPlan?: typeof buildClawAddPlan;
-    readInstall?: typeof readClawInstallRecord;
-    persistInstall?: typeof updateClawInstallRecord;
-    applyWorkspace?: typeof applyClawWorkspaceUpdate;
-    applyMcp?: typeof applyClawMcpUpdate;
-    applyCron?: typeof applyClawCronUpdate;
-    applyPackage?: typeof applyClawPackageUpdate;
-    cronGateway?: ClawCronGateway;
-  },
+  options: OpenClawStateDatabaseOptions &
+    ClawMcpConfigApplicationOptions & {
+      assertCurrent?: () => void;
+      assertSettlementCurrent?: () => void;
+      runSettlement?: <T>(run: () => Promise<T>) => Promise<T>;
+      signal?: AbortSignal;
+      waitMs?: number;
+      config: OpenClawConfig;
+      sourceMcpServers: Record<string, Record<string, unknown>>;
+      consentPlanIntegrity: string | undefined;
+      packagePreflight?: ClawAddPlanContext["packagePreflight"];
+      runtime?: RuntimeEnv;
+      reloadPlugins?: PluginInstallBatchReload;
+      commitConfig?: ConfigCommit;
+      rebuildPlan?: typeof buildClawUpdatePlan;
+      buildAddPlan?: typeof buildClawAddPlan;
+      readInstall?: typeof readClawInstallRecordAsync;
+      persistInstall?: typeof updateClawInstallRecord;
+      applyWorkspace?: typeof applyClawWorkspaceUpdate;
+      applyMcp?: typeof applyClawMcpUpdate;
+      applyCron?: typeof applyClawCronUpdate;
+      applyPackage?: typeof applyClawPackageUpdate;
+      cronGateway?: ClawCronGateway;
+    },
 ): Promise<ClawUpdateResult> {
+  options.assertCurrent?.();
   if (options.consentPlanIntegrity !== plan.planIntegrity) {
     throw new ClawUpdateMutationError(
       "plan_integrity_mismatch",
@@ -174,8 +183,8 @@ export async function applyClawUpdatePlan(
   }
 
   const buildAddPlan = options.buildAddPlan ?? buildClawAddPlan;
-  const readInstall = options.readInstall ?? readClawInstallRecord;
-  const currentInstall = readInstall(fresh.agentId, options);
+  const readInstall = options.readInstall ?? readClawInstallRecordAsync;
+  const currentInstall = await readInstall(fresh.agentId, options);
   if (!currentInstall) {
     throw new ClawUpdateMutationError("update_changed", "The Claw install record disappeared.");
   }
@@ -187,13 +196,23 @@ export async function applyClawUpdatePlan(
     ...options,
     ...(adoptedAgentConfigDigest ? { agentConfigDigest: adoptedAgentConfigDigest } : {}),
   };
-  const partialMutation = (
+  const settlementOptions = {
+    ...options,
+    signal: undefined,
+    assertCurrent: options.assertSettlementCurrent ?? options.assertCurrent,
+  };
+  const partialMutation = async (
     message: string,
     errorOptions?: ErrorOptions,
-  ): ClawUpdateMutationError => {
+  ): Promise<ClawUpdateMutationError> => {
     try {
-      updateClawInstallRecordStatus(fresh.agentId, "partial", options);
-    } catch {
+      await runClawSettlement(options, () =>
+        updateClawInstallRecordStatus(fresh.agentId, "partial", settlementOptions),
+      );
+    } catch (error) {
+      if (hasSqliteWorkerOutcomeUnknown(error)) {
+        throw error;
+      }
       // Preserve the owner failure; doctor can still reconcile subordinate pending records.
     }
     return new ClawUpdateMutationError("update_partial", message, errorOptions);
@@ -373,20 +392,26 @@ export async function applyClawUpdatePlan(
           )
         : await applyPackageActions(requirementActions);
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     if (error instanceof ClawPackageUpdateError && error.partial) {
-      throw partialMutation(error.message, { cause: error });
+      throw await partialMutation(error.message, { cause: error });
     }
     throw new ClawUpdateMutationError("package_update_failed", coerceErrorMessage(error), {
       cause: error,
     });
   }
   const retainedRequirementMutation = requirementExecution.appliedIds.length > 0;
-  const throwIfUpdatePartial = (error: unknown, rollbackFailures: string[] = []): void => {
+  const throwIfUpdatePartial = async (
+    error: unknown,
+    rollbackFailures: string[] = [],
+  ): Promise<void> => {
     if (rollbackFailures.length > 0) {
-      throw partialMutation(`${coerceErrorMessage(error)}; ${rollbackFailures.join("; ")}`);
+      throw await partialMutation(`${coerceErrorMessage(error)}; ${rollbackFailures.join("; ")}`);
     }
     if (retainedRequirementMutation) {
-      throw partialMutation(
+      throw await partialMutation(
         `${coerceErrorMessage(error)}; successfully realized shared requirements were retained`,
       );
     }
@@ -397,10 +422,13 @@ export async function applyClawUpdatePlan(
   try {
     workspaceExecution = await applyWorkspace(fresh, targetAddPlan, options);
   } catch (error) {
-    if (error instanceof ClawWorkspaceUpdateError && error.partial) {
-      throw partialMutation(error.message);
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
     }
-    throwIfUpdatePartial(error);
+    if (error instanceof ClawWorkspaceUpdateError && error.partial) {
+      throw await partialMutation(error.message);
+    }
+    await throwIfUpdatePartial(error);
     throw new ClawUpdateMutationError("workspace_update_failed", coerceErrorMessage(error));
   }
 
@@ -409,18 +437,24 @@ export async function applyClawUpdatePlan(
   try {
     mcpExecution = await applyMcp(fresh, params.targetManifest, options);
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     const partial = error instanceof ClawMcpUpdateError && error.partial;
     try {
       await workspaceExecution.rollback();
     } catch (rollbackError) {
-      throw partialMutation(
+      if (hasSqliteWorkerOutcomeUnknown(rollbackError)) {
+        throw rollbackError;
+      }
+      throw await partialMutation(
         `${coerceErrorMessage(error)}; workspace rollback failed: ${coerceErrorMessage(rollbackError)}`,
       );
     }
     if (partial) {
-      throw partialMutation(`${error.message}; MCP config write outcome is uncertain`);
+      throw await partialMutation(`${error.message}; MCP config write outcome is uncertain`);
     }
-    throwIfUpdatePartial(error);
+    await throwIfUpdatePartial(error);
     throw new ClawUpdateMutationError("mcp_update_failed", coerceErrorMessage(error));
   }
 
@@ -433,11 +467,14 @@ export async function applyClawUpdatePlan(
   try {
     packageExecution = await applyPackageActions(remainingPackageActions);
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     const rollbackFailures = await collectClawRollbackFailures(resourceRollbacks);
     if (error instanceof ClawPackageUpdateError && error.partial) {
       rollbackFailures.unshift("package artifact rollback is unavailable");
     }
-    throwIfUpdatePartial(error, rollbackFailures);
+    await throwIfUpdatePartial(error, rollbackFailures);
     throw new ClawUpdateMutationError("package_update_failed", coerceErrorMessage(error));
   }
 
@@ -472,28 +509,31 @@ export async function applyClawUpdatePlan(
       return undefined;
     }
   };
-  const rollbackAgent = async (): Promise<void> => {
-    if (!agentChanged) {
-      return;
-    }
-    await commit((config) => {
-      const current = listAgentEntries(config).find((agent) => agent.id === fresh.agentId);
-      const targetDigest = adoptedAgentConfigDigest ?? digest(targetAddPlan.agent.config);
-      const liveDigest = liveAgentDigest(config, current);
-      if (liveDigest !== targetDigest) {
-        throw new Error("The agent changed before rollback.");
+  const rollbackAgent = (): Promise<void> =>
+    runClawSettlement(options, async () => {
+      if (!agentChanged) {
+        return;
       }
-      const nextEntries = { ...config.agents?.entries };
-      if (previousAgent) {
-        const { id: _id, ...previousEntry } = previousAgent;
-        nextEntries[fresh.agentId] = previousEntry;
-      } else {
-        delete nextEntries[fresh.agentId];
-      }
-      return { ...config, agents: { ...config.agents, entries: nextEntries } };
+      settlementOptions.assertCurrent?.();
+      await commit((config) => {
+        settlementOptions.assertCurrent?.();
+        const current = listAgentEntries(config).find((agent) => agent.id === fresh.agentId);
+        const targetDigest = adoptedAgentConfigDigest ?? digest(targetAddPlan.agent.config);
+        const liveDigest = liveAgentDigest(config, current);
+        if (liveDigest !== targetDigest) {
+          throw new Error("The agent changed before rollback.");
+        }
+        const nextEntries = { ...config.agents?.entries };
+        if (previousAgent) {
+          const { id: _id, ...previousEntry } = previousAgent;
+          nextEntries[fresh.agentId] = previousEntry;
+        } else {
+          delete nextEntries[fresh.agentId];
+        }
+        return { ...config, agents: { ...config.agents, entries: nextEntries } };
+      });
+      agentChanged = false;
     });
-    agentChanged = false;
-  };
   const rollbackCompleted = (cron?: ClawCronUpdateExecution) =>
     collectClawRollbackFailures([
       ["agent rollback failed", () => rollbackAgent()],
@@ -503,7 +543,9 @@ export async function applyClawUpdatePlan(
     ]);
   if (agentAction?.action === "change") {
     try {
+      options.assertCurrent?.();
       await commit((config) => {
+        options.assertCurrent?.();
         const current = listAgentEntries(config).find((agent) => agent.id === fresh.agentId);
         previousAgent = current;
         if (agentAction.currentDigest !== undefined) {
@@ -528,8 +570,11 @@ export async function applyClawUpdatePlan(
         return { ...config, agents: { ...config.agents, entries: nextEntries } };
       });
     } catch (error) {
+      if (hasSqliteWorkerOutcomeUnknown(error)) {
+        throw error;
+      }
       const rollbackFailures = await rollbackCompleted();
-      throwIfUpdatePartial(error, rollbackFailures);
+      await throwIfUpdatePartial(error, rollbackFailures);
       if (error instanceof ClawUpdateMutationError) {
         throw error;
       }
@@ -543,34 +588,46 @@ export async function applyClawUpdatePlan(
   try {
     cronExecution = await applyCron(fresh, params.targetManifest, options);
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     if (error instanceof ClawCronUpdateError && error.partial) {
       try {
-        persistInstall(targetAddPlan, {
-          ...installPersistenceOptions,
-          expectedClaw: fresh.currentClaw,
-          status: "partial",
-        });
+        await runClawSettlement(options, () =>
+          persistInstall(targetAddPlan, {
+            ...installPersistenceOptions,
+            ...settlementOptions,
+            expectedClaw: fresh.currentClaw,
+            status: "partial",
+          }),
+        );
       } catch (persistError) {
-        throw partialMutation(
+        if (hasSqliteWorkerOutcomeUnknown(persistError)) {
+          throw persistError;
+        }
+        throw await partialMutation(
           `${error.message}; cron gateway mutation outcome is uncertain; provenance update failed: ${coerceErrorMessage(persistError)}`,
         );
       }
-      throw partialMutation(`${error.message}; cron gateway mutation outcome is uncertain`);
+      throw await partialMutation(`${error.message}; cron gateway mutation outcome is uncertain`);
     }
     const rollbackFailures = await rollbackCompleted();
-    throwIfUpdatePartial(error, rollbackFailures);
+    await throwIfUpdatePartial(error, rollbackFailures);
     throw new ClawUpdateMutationError("cron_update_failed", coerceErrorMessage(error));
   }
 
   let installRecord: PersistedClawInstall;
   try {
-    installRecord = persistInstall(targetAddPlan, {
+    installRecord = await persistInstall(targetAddPlan, {
       ...installPersistenceOptions,
       expectedClaw: fresh.currentClaw,
     });
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     const rollbackFailures = await rollbackCompleted(cronExecution);
-    throwIfUpdatePartial(error, rollbackFailures);
+    await throwIfUpdatePartial(error, rollbackFailures);
     throw new ClawUpdateMutationError("provenance_update_failed", coerceErrorMessage(error));
   }
   return {

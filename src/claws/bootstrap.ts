@@ -22,6 +22,7 @@ export async function seedClawPackageBootstrap(
   plan: ClawAddPlan,
   options: {
     nowMs?: number;
+    assertCurrent?: () => void;
   } & OpenClawStateDatabaseOptions = {},
 ): Promise<"seeded" | "already-seeded" | "consumed" | undefined> {
   const actions = plan.actions.filter((action) => action.kind === "bootstrap");
@@ -77,5 +78,6 @@ export async function seedClawPackageBootstrap(
     content: read.buffer,
     ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
     stateOptions: options,
+    assertCurrent: options.assertCurrent,
   });
 }

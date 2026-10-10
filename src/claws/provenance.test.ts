@@ -131,7 +131,7 @@ describe("Claw root install provenance", () => {
   it("persists package identity, agent ownership, workspace, and config digest", async () => {
     const { root, plan } = await makePlan();
 
-    const record = persistClawInstallRecord(plan, { env: stateEnv(root), nowMs: 42 });
+    const record = await persistClawInstallRecord(plan, { env: stateEnv(root), nowMs: 42 });
 
     expect(record).toMatchObject({
       schemaVersion: "openclaw.clawInstallRecord.v2",
@@ -162,21 +162,23 @@ describe("Claw root install provenance", () => {
 
   it("does not overwrite a completed install record for the same agent", async () => {
     const { root, plan } = await makePlan();
-    persistClawInstallRecord(plan, { env: stateEnv(root), nowMs: 1 });
+    await persistClawInstallRecord(plan, { env: stateEnv(root), nowMs: 1 });
 
-    expect(() => persistClawInstallRecord(plan, { env: stateEnv(root), nowMs: 2 })).toThrow();
+    await expect(
+      persistClawInstallRecord(plan, { env: stateEnv(root), nowMs: 2 }),
+    ).rejects.toThrow();
     expect(Number(readInstallRow("worker", root)?.added_at_ms)).toBe(1);
   });
 
   it("resumes a matching non-complete install record without inserting again", async () => {
     const { root, plan } = await makePlan();
-    const first = persistClawInstallRecord(plan, {
+    const first = await persistClawInstallRecord(plan, {
       env: stateEnv(root),
       status: "pending",
       nowMs: 1,
     });
 
-    const resumed = persistClawInstallRecord(plan, {
+    const resumed = await persistClawInstallRecord(plan, {
       env: stateEnv(root),
       status: "pending",
       nowMs: 2,
@@ -196,36 +198,36 @@ describe("Claw root install provenance", () => {
   it("rejects a stale phase update after an install reaches complete", async () => {
     const { root, plan } = await makePlan();
     const options = { env: stateEnv(root) };
-    persistClawInstallRecord(plan, { ...options, status: "pending", nowMs: 1 });
-    updateClawInstallRecordStatus("worker", "workspace_ready", {
+    await persistClawInstallRecord(plan, { ...options, status: "pending", nowMs: 1 });
+    await updateClawInstallRecordStatus("worker", "workspace_ready", {
       ...options,
       expectedStatuses: ["pending"],
       nowMs: 2,
     });
-    updateClawInstallRecordStatus("worker", "config_committed", {
+    await updateClawInstallRecordStatus("worker", "config_committed", {
       ...options,
       expectedStatuses: ["workspace_ready"],
       nowMs: 3,
     });
-    updateClawInstallRecordStatus("worker", "complete", {
+    await updateClawInstallRecordStatus("worker", "complete", {
       ...options,
       expectedStatuses: ["config_committed"],
       nowMs: 4,
     });
 
-    expect(() =>
+    await expect(
       updateClawInstallRecordStatus("worker", "partial", {
         ...options,
         expectedStatuses: ["pending", "partial"],
         nowMs: 5,
       }),
-    ).toThrow("did not match the expected phase");
+    ).rejects.toThrow("did not match the expected phase");
     expect(readClawInstallRecord("worker", options)?.status).toBe("complete");
   });
 
   it("advances package identity while preserving install creation time", async () => {
     const { root, plan } = await makePlan();
-    const original = persistClawInstallRecord(plan, { env: stateEnv(root), nowMs: 1 });
+    const original = await persistClawInstallRecord(plan, { env: stateEnv(root), nowMs: 1 });
     const target = {
       ...plan,
       claw: { ...plan.claw, version: "2.0.0", integrity: "sha256:target" },
@@ -235,7 +237,7 @@ describe("Claw root install provenance", () => {
       },
     };
 
-    const updated = updateClawInstallRecord(target, { env: stateEnv(root), nowMs: 2 });
+    const updated = await updateClawInstallRecord(target, { env: stateEnv(root), nowMs: 2 });
 
     expect(updated).toMatchObject({
       claw: { version: "2.0.0", integrity: "sha256:target" },
@@ -249,19 +251,19 @@ describe("Claw root install provenance", () => {
 
   it("rejects an update when package provenance changed after planning", async () => {
     const { root, plan } = await makePlan();
-    const original = persistClawInstallRecord(plan, { env: stateEnv(root), nowMs: 1 });
+    const original = await persistClawInstallRecord(plan, { env: stateEnv(root), nowMs: 1 });
     const target = {
       ...plan,
       claw: { ...plan.claw, version: "2.0.0", integrity: "sha256:target" },
     };
 
-    expect(() =>
+    await expect(
       updateClawInstallRecord(target, {
         env: stateEnv(root),
         nowMs: 2,
         expectedClaw: { version: "0.9.0", integrity: "sha256:stale" },
       }),
-    ).toThrow("changed");
+    ).rejects.toThrow("changed");
     expect(readClawInstallRecord("worker", { env: stateEnv(root) })).toEqual(original);
   });
 
@@ -470,7 +472,7 @@ describe("applyClawAddPlan", () => {
   it("preserves a config-committed phase when a resumed host requirement fails", async () => {
     const { root, plan } = await makePackagePlan();
     await mkdir(plan.agent.workspace, { recursive: true });
-    persistClawInstallRecord(plan, {
+    await persistClawInstallRecord(plan, {
       env: stateEnv(root),
       status: "config_committed",
       nowMs: 1,
@@ -721,7 +723,7 @@ describe("applyClawAddPlan", () => {
       applyClawAddPlan(plan, {
         consentPlanIntegrity: plan.planIntegrity,
         env: stateEnv(root),
-        updateRecord: (_agentId, status) => {
+        updateRecord: async (_agentId, status) => {
           statuses.push(status);
           if (status === "workspace_ready") {
             throw new Error("database unavailable");
@@ -784,7 +786,7 @@ describe("applyClawAddPlan", () => {
 
   it("recreates a missing workspace for a matching workspace-ready record", async () => {
     const { root, plan } = await makePlan();
-    persistClawInstallRecord(plan, {
+    await persistClawInstallRecord(plan, {
       env: stateEnv(root),
       status: "workspace_ready",
       nowMs: 1,
@@ -806,7 +808,7 @@ describe("applyClawAddPlan", () => {
 
   it("rejects a non-directory replacement for a workspace-ready record", async () => {
     const { root, plan } = await makePlan();
-    persistClawInstallRecord(plan, {
+    await persistClawInstallRecord(plan, {
       env: stateEnv(root),
       status: "workspace_ready",
       nowMs: 1,

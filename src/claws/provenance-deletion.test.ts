@@ -58,7 +58,7 @@ describe("Claw installation identity during deletion", () => {
           agent: { id: "worker" },
         });
         const options = { env };
-        const original = persistClawInstallRecord(plan, {
+        const original = await persistClawInstallRecord(plan, {
           ...options,
           nowMs: 1,
           agentOrigin: "adopted",
@@ -95,17 +95,19 @@ describe("Claw installation identity during deletion", () => {
           );
           const journal = readAgentDeletionJournal("worker", options);
           expect(journal?.operationId).toBe(operation.entry.operationId);
-          expect(() => updateClawInstallRecord(next, options)).toThrow("pending deletion");
+          await expect(updateClawInstallRecord(next, options)).rejects.toThrow("pending deletion");
           expect(() => persistClawMigrationOwnership(next, [], options)).toThrow(
             "pending deletion",
           );
           await expect(
             releaseAdoptedClawInstallRecord("worker", original.planIntegrity, options),
           ).rejects.toThrow("pending deletion");
-          expect(() => updateClawInstallRecordStatus("worker", "partial", options)).toThrow(
+          await expect(updateClawInstallRecordStatus("worker", "partial", options)).rejects.toThrow(
             "pending deletion",
           );
-          expect(() => deleteClawInstallRecord("worker", options)).toThrow("pending deletion");
+          await expect(deleteClawInstallRecord("worker", options)).rejects.toThrow(
+            "pending deletion",
+          );
           expect(readClawInstallRecord("worker", options)).toEqual(original);
           expect(readAgentDeletionJournal("worker", options)).toEqual(journal);
           await withAgentDeletion(
@@ -144,7 +146,9 @@ describe("Claw installation identity during deletion", () => {
         );
         expect(readClawInstallRecord("worker", options)).toBeUndefined();
         expect(readAgentDeletionJournal("worker", options)?.cleanupCompleted).toBe(true);
-        expect(persistClawInstallRecord(next, { ...options, nowMs: 3 }).claw.version).toBe("2.0.0");
+        expect((await persistClawInstallRecord(next, { ...options, nowMs: 3 })).claw.version).toBe(
+          "2.0.0",
+        );
       },
     );
   });
@@ -158,7 +162,7 @@ describe("Claw installation identity during deletion", () => {
           agent: { id: "worker" },
         });
         const options = { env };
-        const original = persistClawInstallRecord(plan, { ...options, nowMs: 1 });
+        const original = await persistClawInstallRecord(plan, { ...options, nowMs: 1 });
         await withAgentDeletion(
           "worker",
           async (begin) => {
@@ -197,7 +201,7 @@ describe("Claw installation identity during deletion", () => {
           });
           const options = { env };
           if (kind === "legacy") {
-            persistClawInstallRecord(plan, { ...options, status: "pending", nowMs: 1 });
+            await persistClawInstallRecord(plan, { ...options, status: "pending", nowMs: 1 });
             runOpenClawStateWriteTransaction(({ db }) => {
               db.prepare("UPDATE claw_installs SET schema_version = ? WHERE agent_id = ?").run(
                 "openclaw.clawInstallRecord.v1",
@@ -210,13 +214,13 @@ describe("Claw installation identity during deletion", () => {
             { ...deletionEntry(root), operationId: "interrupted-deletion" },
             options,
           );
-          expect(() =>
+          await expect(
             persistClawInstallRecord(plan, {
               ...options,
               status: "pending",
               expectedExistingRecord: original,
             }),
-          ).toThrow("pending deletion");
+          ).rejects.toThrow("pending deletion");
           expect(readClawInstallRecord("worker", options)).toEqual(original);
           await withAgentDeletion(
             "worker",
@@ -224,11 +228,13 @@ describe("Claw installation identity during deletion", () => {
             options,
           );
           expect(
-            persistClawInstallRecord(plan, {
-              ...options,
-              status: "pending",
-              expectedExistingRecord: original,
-            }).schemaVersion,
+            (
+              await persistClawInstallRecord(plan, {
+                ...options,
+                status: "pending",
+                expectedExistingRecord: original,
+              })
+            ).schemaVersion,
           ).toBe("openclaw.clawInstallRecord.v2");
         },
       );

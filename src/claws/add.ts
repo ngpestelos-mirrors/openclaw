@@ -10,6 +10,7 @@ import type { AgentConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
 import { normalizeWindowsPathForComparison } from "../infra/path-guards.js";
+import { hasSqliteWorkerOutcomeUnknown } from "../infra/sqlite-worker-contract.js";
 import type { PluginInstallBatchReload } from "../plugins/install-runtime-batch.js";
 import { DEFAULT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -24,6 +25,7 @@ import {
   type ClawCronGateway,
   type PersistedClawCronRef,
 } from "./cron.js";
+import type { ClawMcpConfigApplicationOptions } from "./mcp.js";
 import {
   ClawMcpInstallError,
   installClawMcpServers,
@@ -48,24 +50,30 @@ import {
 export const CLAW_ADD_RESULT_SCHEMA_VERSION = "openclaw.clawAddResult.v1" as const;
 
 type ConfigCommit = (transform: (config: OpenClawConfig) => OpenClawConfig) => Promise<void>;
-type ClawAddApplyOptions = OpenClawStateDatabaseOptions & {
-  reloadPlugins?: PluginInstallBatchReload;
-  consentPlanIntegrity?: string;
-  resumeRecord?: PersistedClawInstall;
-  resumePlan?: ClawAddPlan;
-  commitConfig?: ConfigCommit;
-  persistRecord?: typeof persistClawInstallRecord;
-  deleteRecord?: typeof deleteClawInstallRecord;
-  updateRecord?: typeof updateClawInstallRecordStatus;
-  createWorkspaceFiles?: typeof createClawWorkspaceFiles;
-  runtime?: RuntimeEnv;
-  installPackages?: typeof installClawPackages;
-  installMcpServers?: typeof installClawMcpServers;
-  installCronJobs?: typeof installClawCronJobs;
-  seedPackageBootstrap?: typeof seedClawPackageBootstrap;
-  cronGateway?: Pick<ClawCronGateway, "add" | "list" | "waitUntilAgentAvailable">;
-  nowMs?: number;
-};
+type ClawAddApplyOptions = OpenClawStateDatabaseOptions &
+  ClawMcpConfigApplicationOptions & {
+    assertCurrent?: () => void;
+    assertSettlementCurrent?: () => void;
+    runSettlement?: <T>(operation: () => Promise<T>) => Promise<T>;
+    signal?: AbortSignal;
+    waitMs?: number;
+    reloadPlugins?: PluginInstallBatchReload;
+    consentPlanIntegrity?: string;
+    resumeRecord?: PersistedClawInstall;
+    resumePlan?: ClawAddPlan;
+    commitConfig?: ConfigCommit;
+    persistRecord?: typeof persistClawInstallRecord;
+    deleteRecord?: typeof deleteClawInstallRecord;
+    updateRecord?: typeof updateClawInstallRecordStatus;
+    createWorkspaceFiles?: typeof createClawWorkspaceFiles;
+    runtime?: RuntimeEnv;
+    installPackages?: typeof installClawPackages;
+    installMcpServers?: typeof installClawMcpServers;
+    installCronJobs?: typeof installClawCronJobs;
+    seedPackageBootstrap?: typeof seedClawPackageBootstrap;
+    cronGateway?: Pick<ClawCronGateway, "add" | "list" | "waitUntilAgentAvailable">;
+    nowMs?: number;
+  };
 export class ClawAddMutationError extends Error {
   constructor(
     readonly code: string,
@@ -99,24 +107,24 @@ type ClawAddResult = {
   };
 };
 
-function markInstallStatus(
+async function markInstallStatus(
   agentId: string,
   status: ClawInstallStatus,
   expectedStatuses: ClawInstallStatus[],
   options: ClawAddApplyOptions,
-): void {
-  (options.updateRecord ?? updateClawInstallRecordStatus)(agentId, status, {
+): Promise<void> {
+  await (options.updateRecord ?? updateClawInstallRecordStatus)(agentId, status, {
     ...options,
     expectedStatuses,
   });
 }
 
-function clearUnownedInstallRecord(
+async function clearUnownedInstallRecord(
   agentId: string,
   expectedStatuses: ClawInstallStatus[],
   options: ClawAddApplyOptions,
-): void {
-  (options.deleteRecord ?? deleteClawInstallRecord)(agentId, {
+): Promise<void> {
+  await (options.deleteRecord ?? deleteClawInstallRecord)(agentId, {
     ...options,
     expectedStatuses,
   });
@@ -140,6 +148,7 @@ export async function applyClawAddPlan(
   plan: ClawAddPlan,
   options: ClawAddApplyOptions = {},
 ): Promise<ClawAddResult> {
+  options.assertCurrent?.();
   if (plan.blockers.length > 0) {
     throw new ClawAddMutationError("plan_blocked", "The Claw add plan contains blockers.");
   }
@@ -153,7 +162,7 @@ export async function applyClawAddPlan(
   const persistRecord = options.persistRecord ?? persistClawInstallRecord;
   let installRecord: PersistedClawInstall;
   try {
-    installRecord = persistRecord(plan, {
+    installRecord = await persistRecord(plan, {
       ...options,
       status: "pending",
       expectedExistingRecord: options.resumeRecord,
@@ -161,6 +170,9 @@ export async function applyClawAddPlan(
       deferLegacyPlanUpgrade: options.resumePlan !== undefined,
     });
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     throw new ClawAddMutationError("provenance_failed", (error as Error).message);
   }
 
@@ -215,6 +227,7 @@ export async function applyClawAddPlan(
   const workspacePhaseRecorded = statusAtLeast(installRecord.status, "workspace_ready");
   let workspaceState: Stats | undefined;
   try {
+    options.assertCurrent?.();
     assertWorkspacePathUnchanged(workspace);
     workspaceState = await lstat(workspace).catch((error: unknown) => {
       if (
@@ -228,7 +241,10 @@ export async function applyClawAddPlan(
       throw error;
     });
   } catch (error) {
-    clearUnownedInstallRecord(plan.agent.finalId, ["pending", "partial"], options);
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
+    await clearUnownedInstallRecord(plan.agent.finalId, ["pending", "partial"], options);
     if (error instanceof ClawAddMutationError) {
       throw error;
     }
@@ -239,7 +255,7 @@ export async function applyClawAddPlan(
   }
 
   if (!workspacePhaseRecorded && workspaceState) {
-    markInstallStatus(plan.agent.finalId, "partial", ["pending", "partial"], options);
+    await markInstallStatus(plan.agent.finalId, "partial", ["pending", "partial"], options);
     return partialResult({
       workspaceCreated: false,
       configCommitted: false,
@@ -261,11 +277,11 @@ export async function applyClawAddPlan(
   workspaceCreated = workspaceState?.isDirectory() ?? false;
   configCommitted = statusAtLeast(installRecord.status, "config_committed");
   const installPackages = options.installPackages ?? installClawPackages;
-  const preserveRecordedPhaseOrMarkPartial = (): ClawInstallStatus => {
+  const preserveRecordedPhaseOrMarkPartial = async (): Promise<ClawInstallStatus> => {
     if (workspacePhaseRecorded) {
       return installRecord.status;
     }
-    markInstallStatus(plan.agent.finalId, "partial", ["pending", "partial"], options);
+    await markInstallStatus(plan.agent.finalId, "partial", ["pending", "partial"], options);
     return "partial";
   };
 
@@ -280,8 +296,11 @@ export async function applyClawAddPlan(
     try {
       packages = await installPackages(hostRequirementPlan, options);
     } catch (error) {
+      if (hasSqliteWorkerOutcomeUnknown(error)) {
+        throw error;
+      }
       const packageError = error instanceof ClawPackageInstallError ? error : undefined;
-      const installStatus = preserveRecordedPhaseOrMarkPartial();
+      const installStatus = await preserveRecordedPhaseOrMarkPartial();
       return partialResult({
         packages: packageError?.installedPackages ?? packages,
         installStatus,
@@ -295,12 +314,17 @@ export async function applyClawAddPlan(
   }
 
   try {
+    options.assertCurrent?.();
     assertWorkspacePathUnchanged(workspace);
     await mkdir(dirname(workspace), { recursive: true });
+    options.assertCurrent?.();
     assertWorkspacePathUnchanged(workspace);
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     if (packages.length > 0) {
-      const installStatus = preserveRecordedPhaseOrMarkPartial();
+      const installStatus = await preserveRecordedPhaseOrMarkPartial();
       return partialResult({
         installStatus,
         error: {
@@ -313,7 +337,7 @@ export async function applyClawAddPlan(
         nowMs: options.nowMs,
       });
     }
-    clearUnownedInstallRecord(plan.agent.finalId, ["pending", "partial"], options);
+    await clearUnownedInstallRecord(plan.agent.finalId, ["pending", "partial"], options);
     if (error instanceof ClawAddMutationError) {
       throw error;
     }
@@ -325,10 +349,14 @@ export async function applyClawAddPlan(
 
   if (!workspaceCreated) {
     try {
+      options.assertCurrent?.();
       await mkdir(workspace);
       workspaceCreated = true;
     } catch (error) {
-      markInstallStatus(plan.agent.finalId, "partial", ["pending", "partial"], options);
+      if (hasSqliteWorkerOutcomeUnknown(error)) {
+        throw error;
+      }
+      await markInstallStatus(plan.agent.finalId, "partial", ["pending", "partial"], options);
       return partialResult({
         workspaceCreated: false,
         configCommitted: false,
@@ -342,7 +370,7 @@ export async function applyClawAddPlan(
 
     try {
       if (!workspacePhaseRecorded) {
-        markInstallStatus(
+        await markInstallStatus(
           plan.agent.finalId,
           "workspace_ready",
           ["pending", "partial", "workspace_ready"],
@@ -350,13 +378,19 @@ export async function applyClawAddPlan(
         );
       }
     } catch (error) {
+      if (hasSqliteWorkerOutcomeUnknown(error)) {
+        throw error;
+      }
       const removedWorkspace = await rmdir(workspace)
         .then(() => true)
         .catch(() => false);
       if (removedWorkspace) {
         try {
-          clearUnownedInstallRecord(plan.agent.finalId, ["pending", "partial"], options);
-        } catch {
+          await clearUnownedInstallRecord(plan.agent.finalId, ["pending", "partial"], options);
+        } catch (cleanupError) {
+          if (hasSqliteWorkerOutcomeUnknown(cleanupError)) {
+            throw cleanupError;
+          }
           // Preserve the phase-write failure if the unowned attempt cannot be reconciled.
         }
       }
@@ -374,10 +408,13 @@ export async function applyClawAddPlan(
       ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
     });
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     const installStatus: ClawInstallStatus = configCommitted
       ? "config_committed"
       : "workspace_ready";
-    markInstallStatus(
+    await markInstallStatus(
       plan.agent.finalId,
       installStatus,
       configCommitted ? ["config_committed"] : ["workspace_ready", "config_committed"],
@@ -402,7 +439,9 @@ export async function applyClawAddPlan(
           transform: (config) => ({ nextConfig: transform(config) }),
         });
       });
+    options.assertCurrent?.();
     await commit((config) => {
+      options.assertCurrent?.();
       const existingAgents = listAgentEntries(config);
       const agentsToPreserve: AgentConfig[] =
         existingAgents.length > 0 ? existingAgents : [{ id: DEFAULT_AGENT_ID }];
@@ -473,23 +512,29 @@ export async function applyClawAddPlan(
     try {
       await recordAgentProvenance(plan.agent.finalId, { createdVia: "claw" }, options);
     } catch (error) {
+      if (hasSqliteWorkerOutcomeUnknown(error)) {
+        throw error;
+      }
       throw new ClawAddMutationError("provenance_failed", coerceErrorMessage(error));
     }
     if (options.resumePlan && installRecord.schemaVersion === "openclaw.clawInstallRecord.v1") {
-      installRecord = persistRecord(plan, {
+      installRecord = await persistRecord(plan, {
         ...options,
         status: "pending",
         expectedExistingRecord: options.resumeRecord,
         expectedExistingPlan: options.resumePlan,
       });
     }
-    markInstallStatus(
+    await markInstallStatus(
       plan.agent.finalId,
       "config_committed",
       ["workspace_ready", "config_committed"],
       options,
     );
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     let installStatus: ClawInstallStatus = "workspace_ready";
     if (!configCommitted) {
       const removedWorkspace = await rmdir(workspace)
@@ -498,7 +543,12 @@ export async function applyClawAddPlan(
       if (removedWorkspace) {
         workspaceCreated = false;
         installStatus = "partial";
-        markInstallStatus(plan.agent.finalId, "partial", ["workspace_ready", "partial"], options);
+        await markInstallStatus(
+          plan.agent.finalId,
+          "partial",
+          ["workspace_ready", "partial"],
+          options,
+        );
       }
     }
     return partialResult({
@@ -515,6 +565,9 @@ export async function applyClawAddPlan(
   try {
     workspaceFiles = await createFiles(plan, options);
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     const workspaceError =
       error instanceof ClawWorkspaceWriteError
         ? error
@@ -530,7 +583,7 @@ export async function applyClawAddPlan(
             ],
             workspaceFiles,
           );
-    markInstallStatus(plan.agent.finalId, "config_committed", ["config_committed"], options);
+    await markInstallStatus(plan.agent.finalId, "config_committed", ["config_committed"], options);
     return partialResult({
       workspaceFiles: workspaceError.createdFiles,
       installStatus: "config_committed",
@@ -558,6 +611,9 @@ export async function applyClawAddPlan(
       packages = [...packages, ...workspacePackages];
     }
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     const packageError = error instanceof ClawPackageInstallError ? error : undefined;
     return partialResult({
       packages: [...packages, ...(packageError?.installedPackages ?? [])],
@@ -574,8 +630,11 @@ export async function applyClawAddPlan(
   try {
     mcpServers = await installMcpServers(plan, options);
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     const mcpError = error instanceof ClawMcpInstallError ? error : undefined;
-    markInstallStatus(plan.agent.finalId, "config_committed", ["config_committed"], options);
+    await markInstallStatus(plan.agent.finalId, "config_committed", ["config_committed"], options);
     return partialResult({
       mcpServers: mcpError?.mcpServers ?? mcpServers,
       installStatus: "config_committed",
@@ -591,8 +650,11 @@ export async function applyClawAddPlan(
   try {
     cronJobs = await installCronJobs(plan, { ...options, gateway: options.cronGateway });
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     const cronError = error instanceof ClawCronInstallError ? error : undefined;
-    markInstallStatus(plan.agent.finalId, "config_committed", ["config_committed"], options);
+    await markInstallStatus(plan.agent.finalId, "config_committed", ["config_committed"], options);
     return partialResult({
       cronJobs: cronError?.cronJobs ?? cronJobs,
       installStatus: "config_committed",
@@ -605,7 +667,12 @@ export async function applyClawAddPlan(
   }
 
   try {
-    markInstallStatus(plan.agent.finalId, "complete", ["config_committed", "complete"], options);
+    await markInstallStatus(
+      plan.agent.finalId,
+      "complete",
+      ["config_committed", "complete"],
+      options,
+    );
     return {
       schemaVersion: CLAW_ADD_RESULT_SCHEMA_VERSION,
       stability: CLAW_OUTPUT_STABILITY,
@@ -628,6 +695,9 @@ export async function applyClawAddPlan(
       },
     };
   } catch (error) {
+    if (hasSqliteWorkerOutcomeUnknown(error)) {
+      throw error;
+    }
     return partialResult({
       error: { code: "provenance_failed", message: (error as Error).message },
     });

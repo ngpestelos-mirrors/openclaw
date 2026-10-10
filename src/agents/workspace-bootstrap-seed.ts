@@ -19,6 +19,7 @@ type SeedWorkspaceBootstrapParams = {
   content: Buffer;
   nowMs?: number;
   stateOptions?: OpenClawStateDatabaseOptions;
+  assertCurrent?: () => void;
 };
 
 export async function seedWorkspaceBootstrap(
@@ -51,9 +52,14 @@ export async function seedWorkspaceBootstrap(
   if (text.trim().length === 0) {
     throw new WorkspaceBootstrapSeedConflictError("BOOTSTRAP.md must not be empty.");
   }
-  return runWorkspacePreparation(captured.dir, (assertCurrent) =>
-    seedWorkspaceBootstrapOwned(captured, assertCurrent),
-  );
+  return runWorkspacePreparation(captured.dir, (assertWorkspaceCurrent) => {
+    const assertCurrent = () => {
+      assertWorkspaceCurrent();
+      captured.assertCurrent?.();
+    };
+    assertCurrent();
+    return seedWorkspaceBootstrapOwned(captured, assertCurrent);
+  });
 }
 
 async function seedWorkspaceBootstrapOwned(
