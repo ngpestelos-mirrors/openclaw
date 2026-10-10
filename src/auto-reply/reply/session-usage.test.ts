@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it } from "vitest";
@@ -5,7 +6,15 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { loadSessionEntry, replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  getOpenClawAgentDatabaseIfOpen,
+} from "../../state/openclaw-agent-db.js";
+import {
+  resolveIncognitoOpenClawAgentSqlitePath,
+  resolveOpenClawAgentSqlitePath,
+} from "../../state/openclaw-agent-db.paths.js";
+import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { withAgentTurnCompletion } from "./agent-runner-completion.js";
 import { createReplyOperation } from "./reply-run-registry.js";
 import { prepareSessionUsageUpdate } from "./session-usage.js";
@@ -20,17 +29,21 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
 describe("session actor usage accounting", () => {
   type UsageUpdate = Parameters<typeof prepareSessionUsageUpdate>[0];
   async function usageSession(seed: Partial<SessionEntry> = {}, sessionKey = "agent:main:main") {
-    const storePath = path.join(
-      tempDirs.make("openclaw-usage-"),
-      "agents",
-      "main",
-      "sessions",
-      "sessions.json",
-    );
-    const scope = { agentId: "main", storePath, sessionKey };
+    const root = tempDirs.make("openclaw-usage-");
+    const env = { OPENCLAW_STATE_DIR: root };
+    const storePath = seed.incognito
+      ? resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main", env })
+      : path.join(root, "agents", "main", "sessions", "sessions.json");
+    const scope = {
+      agentId: "main",
+      storePath,
+      sessionKey,
+      ...(seed.incognito ? { env } : {}),
+    };
     await replaceSessionEntry(scope, { sessionId: "s1", updatedAt: 1, ...seed });
     const read = () => expectDefined(loadSessionEntry(scope), "stored session");
     return {
+      scope,
       update: async (update: UsageUpdate) => {
         const entry = read();
         const operation = createReplyOperation({
@@ -85,6 +98,30 @@ describe("session actor usage accounting", () => {
     contextTokensUsed: 1_000_000,
     contextTokensSource: "runtime",
   } satisfies UsageUpdate;
+  it("completes usage in the existing unbound native incognito owner", async () => {
+    const session = await usageSession(
+      { incognito: true },
+      "agent:main:dashboard:incognito-native-completion",
+    );
+    const { scope } = session;
+    const database = { agentId: scope.agentId, path: scope.storePath, env: scope.env };
+    const native = expectDefined(
+      getOpenClawAgentDatabaseIfOpen(database),
+      "native incognito owner",
+    );
+    expect(captureOpenClawAgentDatabaseExecution.listIncognito(scope.env)).toEqual([]);
+
+    await session.update(producingUpdate);
+
+    expect(session.read()).toMatchObject({ incognito: true, inputTokens: 120, outputTokens: 8 });
+    expect(getOpenClawAgentDatabaseIfOpen(database)).toBe(native);
+    expect(captureOpenClawAgentDatabaseExecution.listIncognito(scope.env)).toEqual([]);
+    expect(existsSync(scope.storePath)).toBe(false);
+    expect(
+      existsSync(resolveOpenClawAgentSqlitePath({ agentId: scope.agentId, env: scope.env })),
+    ).toBe(false);
+  });
+
   const retainedRuntime = {
     modelProvider: "google",
     model: "gemini-3-pro",
