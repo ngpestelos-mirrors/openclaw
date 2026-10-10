@@ -2,20 +2,34 @@ import type { PathLike } from "node:fs";
 import type * as FsPromises from "node:fs/promises";
 import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import * as processRuntime from "openclaw/plugin-sdk/process-runtime";
 import { withTempDir } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { probeCodexAppServerHandshake } from "./installed-probe.js";
 
-const fixture = vi.hoisted(() => ({ managedConfig: false }));
+const fixture = vi.hoisted(() => ({ blockedPath: "" }));
 const originalPlatform = process.platform;
+const missingPreferences = {
+  stdout: "",
+  stderr: "Error: Domain 'com.openai.codex' not found.",
+  code: 1,
+  signal: null,
+  killed: false,
+  termination: "exit" as const,
+};
 // mock-isolation: never read or depend on the host's managed Codex configuration.
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof FsPromises>();
   return {
     ...actual,
     access(file: PathLike, mode?: number) {
-      if (file === "/etc/codex/managed_config.toml") {
-        return fixture.managedConfig
+      const normalized = typeof file === "string" ? file.replaceAll("\\", "/") : undefined;
+      if (
+        normalized === "/etc/codex/managed_config.toml" ||
+        normalized === "/etc/codex/requirements.toml" ||
+        normalized === "C:/ProgramData/OpenAI/Codex/requirements.toml"
+      ) {
+        return normalized === fixture.blockedPath
           ? Promise.resolve()
           : Promise.reject(Object.assign(new Error("absent fixture"), { code: "ENOENT" }));
       }
@@ -25,9 +39,17 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 beforeEach(() => {
-  fixture.managedConfig = false;
+  fixture.blockedPath = "";
   if (originalPlatform === "darwin") {
     Object.defineProperty(process, "platform", { value: "linux" });
+  }
+  if (originalPlatform === "win32") {
+    vi.spyOn(processRuntime, "runUtf8CommandWithTimeout").mockResolvedValue({
+      ...missingPreferences,
+      stdout: "C:\\ProgramData",
+      stderr: "",
+      code: 0,
+    });
   }
 });
 afterEach(() => {
@@ -36,9 +58,22 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-it.each(["environment", "system configuration"] as const)(
-  "isolates Codex SQLite state from %s during the selection handshake",
-  async (source) => {
+it.each([
+  { source: "environment", platform: originalPlatform === "darwin" ? "linux" : originalPlatform },
+  {
+    source: "system configuration",
+    platform: originalPlatform === "darwin" ? "linux" : originalPlatform,
+  },
+  ...(originalPlatform === "win32"
+    ? []
+    : [{ source: "an absent macOS preferences domain", platform: "darwin" }]),
+])(
+  "isolates Codex SQLite state from $source during the selection handshake",
+  async ({ source, platform }) => {
+    Object.defineProperty(process, "platform", { value: platform });
+    if (platform === "darwin") {
+      vi.spyOn(processRuntime, "runUtf8CommandWithTimeout").mockResolvedValue(missingPreferences);
+    }
     await withTempDir("openclaw-installed-probe-", async (root) => {
       const existingHome = path.join(root, "existing-codex-state");
       const observedPath = path.join(root, "observed.json");
@@ -81,12 +116,44 @@ readline.createInterface({input: process.stdin}).once("line", (line) => {
   },
 );
 
-it.skipIf(originalPlatform === "win32")(
-  "does not launch a selection probe when legacy managed settings can override its storage",
-  async () => {
-    fixture.managedConfig = true;
+it.each([
+  { name: "legacy Unix configuration", platform: "linux", file: "/etc/codex/managed_config.toml" },
+  { name: "Unix requirements", platform: "linux", file: "/etc/codex/requirements.toml" },
+  {
+    name: "Windows requirements",
+    platform: "win32",
+    file: "C:/ProgramData/OpenAI/Codex/requirements.toml",
+  },
+])("does not launch a selection probe under $name", async ({ platform, file }) => {
+  Object.defineProperty(process, "platform", { value: platform });
+  fixture.blockedPath = file;
+  if (platform === "win32") {
+    vi.spyOn(processRuntime, "runUtf8CommandWithTimeout").mockResolvedValue({
+      ...missingPreferences,
+      stdout: "C:\\ProgramData",
+      stderr: "",
+      code: 0,
+    });
+  }
+  await expect(probeCodexAppServerHandshake(process.execPath)).rejects.toThrow(
+    "managed Codex configuration prevents an isolated selection probe",
+  );
+});
+
+it.each(["config_toml_base64", "requirements_toml_base64"])(
+  "does not launch a selection probe under macOS managed %s",
+  async (key) => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.spyOn(processRuntime, "runUtf8CommandWithTimeout").mockImplementation(async (argv) =>
+      argv.at(-1) === key
+        ? { ...missingPreferences, code: 0, stdout: "Type is string", stderr: "" }
+        : {
+            ...missingPreferences,
+            stderr: `Error: Could not find key '${argv.at(-1)}' in domain 'com.openai.codex'.`,
+          },
+    );
     await expect(probeCodexAppServerHandshake(process.execPath)).rejects.toThrow(
-      "managed Codex configuration prevents an isolated selection probe",
+      "managed Codex preferences cannot be excluded from the selection probe",
     );
   },
 );

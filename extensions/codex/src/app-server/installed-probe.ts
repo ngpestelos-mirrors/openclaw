@@ -27,10 +27,41 @@ const HANDSHAKE_EXIT_TIMEOUT_MS = 2_000;
 const INITIALIZE_REQUEST_ID = 1;
 
 async function assertProbeCanOverrideStorage(timeoutMs: number): Promise<void> {
-  // Legacy managed layers override even -c flags. Do not execute a candidate
-  // when an administrator can redirect its disposable storage.
-  if (process.platform !== "win32") {
-    const managedFile = await access("/etc/codex/managed_config.toml").then(
+  const metadataOptions = {
+    baseEnv: { ...process.env, LC_ALL: "C" },
+    input: "",
+    timeoutMs: Math.min(1_000, timeoutMs),
+    maxOutputBytes: 4_096,
+    killProcessTree: true,
+    killSignal: "SIGKILL" as const,
+    killGraceMs: 0,
+  };
+  // Requirements and legacy managed layers can override even -c flags.
+  let managedPaths = ["/etc/codex/managed_config.toml", "/etc/codex/requirements.toml"];
+  if (process.platform === "win32") {
+    const result = await runUtf8CommandWithTimeout(
+      [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); [Environment]::GetFolderPath('CommonApplicationData')",
+      ],
+      metadataOptions,
+    );
+    const programData = result.stdout.trim();
+    if (
+      result.termination !== "exit" ||
+      result.code !== 0 ||
+      result.outputLimitExceeded ||
+      !path.win32.isAbsolute(programData)
+    ) {
+      throw new Error("cannot locate managed Codex requirements for an isolated selection probe");
+    }
+    managedPaths = [path.win32.join(programData, "OpenAI", "Codex", "requirements.toml")];
+  }
+  for (const managedPath of managedPaths) {
+    const exists = await access(managedPath).then(
       () => true,
       (error: unknown) => {
         if (error instanceof Error && "code" in error && error.code === "ENOENT") {
@@ -39,31 +70,29 @@ async function assertProbeCanOverrideStorage(timeoutMs: number): Promise<void> {
         throw error;
       },
     );
-    if (managedFile) {
+    if (exists) {
       throw new Error("managed Codex configuration prevents an isolated selection probe");
     }
   }
   if (process.platform === "darwin") {
     // read-type reveals only presence/type, never the configuration's contents.
-    const result = await runUtf8CommandWithTimeout(
-      ["/usr/bin/defaults", "read-type", "com.openai.codex", "config_toml_base64"],
-      {
-        baseEnv: { ...process.env, LC_ALL: "C" },
-        input: "",
-        timeoutMs: Math.min(1_000, timeoutMs),
-        maxOutputBytes: 4_096,
-        killProcessTree: true,
-        killSignal: "SIGKILL",
-        killGraceMs: 0,
-      },
-    );
-    if (
-      result.termination !== "exit" ||
-      result.code !== 1 ||
-      (!result.stderr.includes("does not exist") &&
-        !result.stderr.includes("Could not find key 'config_toml_base64'"))
-    ) {
-      throw new Error("managed Codex preferences cannot be excluded from the selection probe");
+    for (const key of ["config_toml_base64", "requirements_toml_base64"]) {
+      const result = await runUtf8CommandWithTimeout(
+        ["/usr/bin/defaults", "read-type", "com.openai.codex", key],
+        metadataOptions,
+      );
+      const missing =
+        result.stderr.includes("does not exist") ||
+        result.stderr.includes(`Could not find key '${key}'`) ||
+        result.stderr.includes("Domain 'com.openai.codex' not found.");
+      if (
+        result.termination !== "exit" ||
+        result.code !== 1 ||
+        result.outputLimitExceeded ||
+        !missing
+      ) {
+        throw new Error("managed Codex preferences cannot be excluded from the selection probe");
+      }
     }
   }
 }

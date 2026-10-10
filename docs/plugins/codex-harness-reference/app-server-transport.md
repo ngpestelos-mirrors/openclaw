@@ -53,9 +53,10 @@ on `PATH` and uses it only when all of these hold:
 - A real app-server `initialize` handshake against a throwaway `CODEX_HOME`
   succeeds within the remaining selection budget and reports the same version.
   Its SQLite location is forced into that temporary home through both environment
-  and CLI configuration. Legacy managed configuration that can override this
-  location disables installed selection, because the probe cannot guarantee
-  isolation from existing state. No auth or turn is involved.
+  and CLI configuration. The presence of system requirements files, managed
+  preferences, or legacy managed configuration disables installed selection
+  because those sources can override this location. An absent macOS preferences
+  domain is not a restriction. No auth or turn is involved.
 
 Otherwise OpenClaw uses the shipped binary. The Gateway logs one line with the
 chosen binary, its version, and the reason, for example
