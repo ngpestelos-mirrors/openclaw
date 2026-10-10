@@ -2,17 +2,25 @@ import path from "node:path";
 
 type GlobMatcher = (value: string, pattern: string) => boolean;
 
-export const nonBrowserTestBasenamePattern = "!(*.browser.test.{ts,tsx}|!(*.test.{ts,tsx}))";
+function nonBrowserPattern(extension: string): string {
+  return `!(*.browser.test.${extension}|!(*.test.${extension}))`;
+}
+
+export const nonBrowserTestBasenamePattern = nonBrowserPattern("{ts,tsx}");
 
 export function resolveNonBrowserTestPattern(pattern: string): string | null {
-  if (!pattern.endsWith(nonBrowserTestBasenamePattern)) {
-    return null;
+  for (const extension of ["{ts,tsx}", "ts", "tsx"]) {
+    const basename = nonBrowserPattern(extension);
+    if (!pattern.endsWith(basename)) {
+      continue;
+    }
+    const prefix = pattern.slice(0, -basename.length);
+    if (prefix && !prefix.endsWith("/") && !prefix.endsWith("\\")) {
+      return null;
+    }
+    return prefix + `!(*.browser).test.${extension}`;
   }
-  const prefix = pattern.slice(0, -nonBrowserTestBasenamePattern.length);
-  if (prefix && !prefix.endsWith("/") && !prefix.endsWith("\\")) {
-    return null;
-  }
-  return prefix + "!(*.browser).test.{ts,tsx}";
+  return null;
 }
 
 export function filterFilesByPatterns(
@@ -186,7 +194,14 @@ function intersectTestExtensions(pattern: string, constraint: string): string[] 
   if (!extension || !allowed || allowed === "{ts,tsx}" || extension === allowed) {
     return [pattern];
   }
-  return extension === "{ts,tsx}" ? [normalized.replace(suffix, `.test.${allowed}`)] : [];
+  if (extension !== "{ts,tsx}") {
+    return [];
+  }
+  return [
+    resolveNonBrowserTestPattern(pattern)
+      ? pattern.slice(0, -nonBrowserTestBasenamePattern.length) + nonBrowserPattern(allowed)
+      : pattern.replace(suffix, `.test.${allowed}`),
+  ];
 }
 
 export function intersectIncludePatterns(
