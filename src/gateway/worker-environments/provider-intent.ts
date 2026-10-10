@@ -21,6 +21,7 @@ import { prepareRepositoryWorkerProjectSource } from "./repository-project-admis
 import type { RepositoryWorkerProjectSnapshot } from "./repository-project-source.schema.js";
 import { deriveEnvironmentIntent } from "./service-contract.js";
 import {
+  readWorkerProfileSelection,
   requireInheritedWorkerProfileAuthorization,
   requireWorkerProfile,
 } from "./service-validation.js";
@@ -163,9 +164,7 @@ export function createWorkerProviderIntent(options: WorkerProviderIntentOptions)
     const { provider, providerId } = resolved;
     const { signal, projectPath } = createOptions;
     let profileSnapshot = resolved.profileSnapshot;
-    const machineClass =
-      typeof profileSnapshot.machineClass === "string" ? profileSnapshot.machineClass : undefined;
-    const os = typeof profileSnapshot.os === "string" ? profileSnapshot.os : undefined;
+    const { machineClass, os } = readWorkerProfileSelection(profileSnapshot);
     let assertArtifactsCurrent: (() => void) | undefined;
     let repositoryAdmission:
       | Awaited<ReturnType<typeof prepareRepositoryWorkerProjectSource>>
@@ -325,17 +324,11 @@ export function createWorkerProviderIntent(options: WorkerProviderIntentOptions)
     if (!project || !preparation || !options.prepareNodeArtifacts || !options.projectNamespace) {
       return undefined;
     }
+    const { machineClass, os, executionMode } = readWorkerProfileSelection(record.profileSnapshot);
     const createOptions: WorkerProviderIntentPreparationOptions = {
-      machineClass:
-        typeof record.profileSnapshot.machineClass === "string"
-          ? record.profileSnapshot.machineClass
-          : undefined,
-      os: typeof record.profileSnapshot.os === "string" ? record.profileSnapshot.os : undefined,
-      executionMode:
-        record.profileSnapshot.executionMode === "worker-turn" ||
-        record.profileSnapshot.executionMode === "remote-exec"
-          ? record.profileSnapshot.executionMode
-          : undefined,
+      machineClass,
+      os,
+      executionMode,
       signal,
     };
     const isConfiguredSelectionCurrent = () => {

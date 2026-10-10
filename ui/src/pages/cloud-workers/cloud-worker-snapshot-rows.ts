@@ -4,6 +4,7 @@ import { renderSettingsRow, renderSettingsStatus } from "../../components/settin
 import { t } from "../../i18n/index.ts";
 import { formatDurationHuman } from "../../lib/format-duration.ts";
 import { formatRelativeTimestamp } from "../../lib/format.ts";
+import { renderCloudWorkerAction } from "./cloud-worker-action.ts";
 
 export type SnapshotImage = {
   profileKey: string;
@@ -73,18 +74,10 @@ function renderImageAction(
   title?: string,
 ) {
   const label = t(`cloudWorkersPage.snapshots.${action}`);
-  return onClick
-    ? html`<button
-        class=${action === "delete" ? "btn btn--sm danger" : "btn btn--sm"}
-        type="button"
-        aria-label=${`${label}: ${target}`}
-        title=${title ?? nothing}
-        ?disabled=${disabled}
-        @click=${onClick}
-      >
-        ${label}
-      </button>`
-    : nothing;
+  return renderCloudWorkerAction(label, target, onClick, disabled, {
+    danger: action === "delete",
+    title,
+  });
 }
 
 export function renderSnapshotImage(image: SnapshotImage, options: SnapshotRowOptions) {
@@ -243,16 +236,6 @@ export function renderSnapshotBuildRow(
     ${t(`cloudWorkersPage.snapshots.buildStates.${worker.state}`)} ·
     ${t("cloudWorkersPage.snapshots.buildAge", { age: formatDurationHuman(worker.ageMs) })}
     ${failed && worker.error ? html`<div class="callout warning" role="alert">${worker.error}</div>` : nothing}`,
-    control: action
-      ? html`<button
-          class="btn btn--sm"
-          type="button"
-          aria-label=${`${actionLabel}: ${environment.id}`}
-          ?disabled=${options.busy}
-          @click=${action}
-        >
-          ${actionLabel}
-        </button>`
-      : nothing,
+    control: renderCloudWorkerAction(actionLabel, environment.id, action, options.busy),
   });
 }

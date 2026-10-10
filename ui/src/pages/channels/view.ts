@@ -100,7 +100,7 @@ export function renderChannels(props: ChannelsProps) {
           : repeat(
               connected,
               (key) => key,
-              (key) => renderConnectedRow(key, props),
+              (key) => renderChannelNavigationRow(key, props),
             ),
       )}
       ${renderSettingsSection(
@@ -117,7 +117,7 @@ export function renderChannels(props: ChannelsProps) {
                   (key) => key,
                   (key) => renderAvailableRow(key, props),
                 )}
-                ${renderBrowseAllRow(props)}`
+                ${renderChannelNavigationRow(null, props)}`
           }
         `,
       )}
@@ -226,31 +226,44 @@ function lastActivityLine(key: string, props: ChannelsProps): string | null {
   return t("channels.hub.lastMessageAgo", { ago: formatRelativeTimestamp(lastInbound) });
 }
 
-function renderConnectedRow(key: string, props: ChannelsProps) {
-  const label = resolveChannelLabel(props, key);
+function renderChannelNavigationRow(key: string | null, props: ChannelsProps) {
+  const label = key === null ? t("channels.hub.browseAllTitle") : resolveChannelLabel(props, key);
   const statusIssue = props.channels.channelsSnapshot?.statusIssues?.find(
     (issue) => issue.channel === key,
   );
-  const description = statusIssue
-    ? formatUiExternalText(statusIssue.message)
-    : (lastActivityLine(key, props) ??
-      resolveChannelDetailLabel(props, key) ??
-      t("channels.hub.openDetails"));
+  const description =
+    key === null
+      ? t("channels.hub.browseAllSubtitle")
+      : statusIssue
+        ? formatUiExternalText(statusIssue.message)
+        : (lastActivityLine(key, props) ??
+          resolveChannelDetailLabel(props, key) ??
+          t("channels.hub.openDetails"));
   return html`
     <button
       type="button"
       class="settings-row settings-row--nav channels-item"
-      @click=${() => props.onShowDetail(key)}
+      @click=${() => (key === null ? props.onStartSetup(null) : props.onShowDetail(key))}
     >
-      ${renderChannelIcon(key, label, "tile", {
-        pluginIconUrl: props.presentation.pluginIconUrls[key],
-      })}
+      ${
+        key === null
+          ? html`<span
+              class="channels-tile channels-tile--fallback"
+              style="--channels-art-a:#64748b;--channels-art-b:#1e293b"
+              aria-hidden="true"
+            >
+              <span>+</span>
+            </span>`
+          : renderChannelIcon(key, label, "tile", {
+              pluginIconUrl: props.presentation.pluginIconUrls[key],
+            })
+      }
       <div class="settings-row__text">
         <span class="settings-row__title">${label}</span>
         <span class="settings-row__desc">${description}</span>
       </div>
       <div class="settings-row__control">
-        ${rowStatus(statusIssue ? "attention" : resolveRowState(key, props))}
+        ${key === null ? nothing : rowStatus(statusIssue ? "attention" : resolveRowState(key, props))}
         <span class="settings-row__chevron">${icons.chevronRight}</span>
       </div>
     </button>
@@ -284,30 +297,5 @@ function renderAvailableRow(key: string, props: ChannelsProps) {
         </button>
       </div>
     </div>
-  `;
-}
-
-function renderBrowseAllRow(props: ChannelsProps) {
-  return html`
-    <button
-      type="button"
-      class="settings-row settings-row--nav channels-item"
-      @click=${() => props.onStartSetup(null)}
-    >
-      <span
-        class="channels-tile channels-tile--fallback"
-        style="--channels-art-a:#64748b;--channels-art-b:#1e293b"
-        aria-hidden="true"
-      >
-        <span>+</span>
-      </span>
-      <div class="settings-row__text">
-        <span class="settings-row__title">${t("channels.hub.browseAllTitle")}</span>
-        <span class="settings-row__desc">${t("channels.hub.browseAllSubtitle")}</span>
-      </div>
-      <div class="settings-row__control">
-        <span class="settings-row__chevron">${icons.chevronRight}</span>
-      </div>
-    </button>
   `;
 }

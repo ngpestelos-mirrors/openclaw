@@ -46,109 +46,85 @@ type Input<Handler extends (input: never) => unknown> = Omit<
   "databaseOptions"
 >;
 
-function transact<Payload, Result>(
-  input: Payload,
-  context: Context,
+function operation<Handler extends (input: never) => unknown>(
+  apply: Handler,
+  receiptOf?: (result: ReturnType<Handler>) => OperatorApprovalCommitReceipt | undefined,
+): (input: Input<Handler>, context: Context) => ReturnType<Handler>;
+function operation<Payload, Result>(
   apply: (input: Payload & { databaseOptions: OpenClawStateDatabaseOptions }) => Result,
   receiptOf?: (result: Result) => OperatorApprovalCommitReceipt | undefined,
-): Result {
-  const attachment = context.native
-    ? context.native.receiptAuthority
-    : readCronReceiptAuthorityAttachment();
-  const options = { ...context.stateOptions(), database: context.open() };
-  const assertCurrent = (stage: "transaction" | "commit") =>
-    context.native
-      ? context.native.assertCurrent()
-      : requestSqliteWorkerOperationAdmission({ stage, facts: undefined });
-  return runOpenClawStateWriteTransaction((database) => {
-    assertCurrent("transaction");
-    const approval = operatorApprovalPublication.capture(database.db, () =>
-      operatorStandingGrantPublication.capture(database.db, () =>
-        execApprovalsPublication.capture(database.db, () =>
-          apply({ ...input, databaseOptions: { ...options, database } }),
+) {
+  return (input: Payload, context: Context): Result => {
+    const attachment = context.native
+      ? context.native.receiptAuthority
+      : readCronReceiptAuthorityAttachment();
+    const options = { ...context.stateOptions(), database: context.open() };
+    const assertCurrent = (stage: "transaction" | "commit") =>
+      context.native
+        ? context.native.assertCurrent()
+        : requestSqliteWorkerOperationAdmission({ stage, facts: undefined });
+    return runOpenClawStateWriteTransaction((database) => {
+      assertCurrent("transaction");
+      const approval = operatorApprovalPublication.capture(database.db, () =>
+        operatorStandingGrantPublication.capture(database.db, () =>
+          execApprovalsPublication.capture(database.db, () =>
+            apply({ ...input, databaseOptions: { ...options, database } }),
+          ),
         ),
-      ),
-    );
-    const standing = approval.result;
-    const exec = standing.result;
-    const result = exec.result;
-    const receiptAuthority = attachment
-      ? context.native
-        ? { nonce: attachment.nonce, sequence: 1 }
-        : prepareCronReceiptAuthorityPublication(database.db, attachment)
-      : undefined;
-    const receipt = {
-      ...receiptOf?.(result),
-      ...(receiptAuthority ? { receiptAuthority } : {}),
-      approvalFacts: operatorApprovalPublication.bound(approval.receipt),
-      standingGrantFacts: operatorStandingGrantPublication.bound(standing.receipt),
-      execFacts: execApprovalsPublication.bound(exec.receipt),
-    };
-    if (!context.native) {
-      const changed =
-        approval.receipt.facts.size + standing.receipt.facts.size + exec.receipt.facts.size > 0;
-      deferSqliteWorkerCommitReceipt(
-        database.db,
-        receipt,
-        changed || receipt.resolutionKey || receipt.grantUse ? "commit" : "settlement",
       );
-    } else {
-      const publish = context.native.onCommitted;
-      if (!deferSqlitePostCommitPublication(database.db, () => publish(receipt))) {
-        throw new Error("Operator approval commit receipt requires a transaction owner");
+      const standing = approval.result;
+      const exec = standing.result;
+      const result = exec.result;
+      const receiptAuthority = attachment
+        ? context.native
+          ? { nonce: attachment.nonce, sequence: 1 }
+          : prepareCronReceiptAuthorityPublication(database.db, attachment)
+        : undefined;
+      const receipt = {
+        ...receiptOf?.(result),
+        ...(receiptAuthority ? { receiptAuthority } : {}),
+        approvalFacts: operatorApprovalPublication.bound(approval.receipt),
+        standingGrantFacts: operatorStandingGrantPublication.bound(standing.receipt),
+        execFacts: execApprovalsPublication.bound(exec.receipt),
+      };
+      if (!context.native) {
+        const changed =
+          approval.receipt.facts.size + standing.receipt.facts.size + exec.receipt.facts.size > 0;
+        deferSqliteWorkerCommitReceipt(
+          database.db,
+          receipt,
+          changed || receipt.resolutionKey || receipt.grantUse ? "commit" : "settlement",
+        );
+      } else {
+        const publish = context.native.onCommitted;
+        if (!deferSqlitePostCommitPublication(database.db, () => publish(receipt))) {
+          throw new Error("Operator approval commit receipt requires a transaction owner");
+        }
       }
-    }
-    assertCurrent("commit");
-    return result;
-  }, options);
+      assertCurrent("commit");
+      return result;
+    }, options);
+  };
 }
 
 export const operatorApprovalOperations = {
-  "operatorApprovals.insert": (
-    input: Input<typeof store.insertOperatorApprovalInDatabase>,
-    context,
-  ) => transact(input, context, store.insertOperatorApprovalInDatabase),
-  "operatorApprovals.get": (
-    input: Input<typeof store.getOperatorApprovalDetailedInDatabase>,
-    context,
-  ) => transact(input, context, store.getOperatorApprovalDetailedInDatabase),
-  "operatorApprovals.pending": (
-    input: Input<typeof store.listPendingOperatorApprovalsInDatabase>,
-    context,
-  ) => transact(input, context, store.listPendingOperatorApprovalsInDatabase),
-  "operatorApprovals.resolve": (
-    input: Input<typeof transitions.resolveOperatorApprovalInDatabase>,
-    context,
-  ) =>
-    transact(input, context, transitions.resolveOperatorApprovalInDatabase, (result) =>
-      result.outcome === "resolved"
-        ? {
-            type: "operatorApprovals.resolve",
-            resolutionKey: getOperatorApprovalResolutionKey(result.record),
-          }
-        : undefined,
-    ),
-  "operatorApprovals.deny": (
-    input: Input<typeof transitions.forceDenyOperatorApprovalInDatabase>,
-    context,
-  ) => transact(input, context, transitions.forceDenyOperatorApprovalInDatabase),
-  "operatorApprovals.expire": (
-    input: Input<typeof transitions.expireDueOperatorApprovalsInDatabase>,
-    context,
-  ) => transact(input, context, transitions.expireDueOperatorApprovalsInDatabase),
-  "operatorApprovals.consume": (
-    input: Input<typeof transitions.consumeOperatorApprovalAllowOnceInDatabase>,
-    context,
-  ) => transact(input, context, transitions.consumeOperatorApprovalAllowOnceInDatabase),
-  "operatorApprovals.consumeCronGrant": (
-    input: Input<typeof grants.consumeCronStandingGrantInDatabase>,
-    context,
-  ) =>
-    transact(input, context, grants.consumeCronStandingGrantInDatabase, (result) =>
-      result.outcome === "consumed" ? { grantUse: result.grant } : undefined,
-    ),
-  "operatorApprovals.revokeCronGrant": (
-    input: Input<typeof grants.revokeCronStandingGrantInDatabase>,
-    context,
-  ) => transact(input, context, grants.revokeCronStandingGrantInDatabase),
+  "operatorApprovals.insert": operation(store.insertOperatorApprovalInDatabase),
+  "operatorApprovals.get": operation(store.getOperatorApprovalDetailedInDatabase),
+  "operatorApprovals.pending": operation(store.listPendingOperatorApprovalsInDatabase),
+  "operatorApprovals.resolve": operation(transitions.resolveOperatorApprovalInDatabase, (result) =>
+    result.outcome === "resolved"
+      ? {
+          type: "operatorApprovals.resolve",
+          resolutionKey: getOperatorApprovalResolutionKey(result.record),
+        }
+      : undefined,
+  ),
+  "operatorApprovals.deny": operation(transitions.forceDenyOperatorApprovalInDatabase),
+  "operatorApprovals.expire": operation(transitions.expireDueOperatorApprovalsInDatabase),
+  "operatorApprovals.consume": operation(transitions.consumeOperatorApprovalAllowOnceInDatabase),
+  "operatorApprovals.consumeCronGrant": operation(
+    grants.consumeCronStandingGrantInDatabase,
+    (result) => (result.outcome === "consumed" ? { grantUse: result.grant } : undefined),
+  ),
+  "operatorApprovals.revokeCronGrant": operation(grants.revokeCronStandingGrantInDatabase),
 } satisfies Record<string, (input: never, context: Context) => unknown>;

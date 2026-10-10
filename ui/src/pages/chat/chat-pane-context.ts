@@ -476,7 +476,6 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
         // Gateway uses the same session key. Never bind its offline Stop to them.
         reconcileChatRunLifecycle(state, {
           clearLocalRun: true,
-          clearChatStream: true,
           clearToolStream: true,
           clearRunStatus: true,
           requestUpdate: false,

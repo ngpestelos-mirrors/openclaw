@@ -465,18 +465,17 @@ export async function ensureWorkerSessionPlacement(params: {
         );
       }
     };
+    const canStartDispatch = (placement: Placement) =>
+      placement.state === "local" ||
+      (placement.state === "failed" &&
+        placement.activeOwnerEpoch === null &&
+        isFailedWorkerPlacementEnvironmentGone({
+          placement,
+          environmentService: params.environments,
+        }));
     const useRecorded = async () => {
       const placement = read();
-      if (
-        !placement ||
-        placement.state === "local" ||
-        (placement.state === "failed" &&
-          placement.activeOwnerEpoch === null &&
-          isFailedWorkerPlacementEnvironmentGone({
-            placement,
-            environmentService: params.environments,
-          }))
-      ) {
+      if (!placement || canStartDispatch(placement)) {
         return false;
       }
       if (
@@ -507,16 +506,7 @@ export async function ensureWorkerSessionPlacement(params: {
       if (placement?.turnClaim) {
         throw new Error("A local turn is still active; stop it before worker setup.");
       }
-      return (
-        !placement ||
-        placement.state === "local" ||
-        (placement.state === "failed" &&
-          placement.activeOwnerEpoch === null &&
-          isFailedWorkerPlacementEnvironmentGone({
-            placement,
-            environmentService: params.environments,
-          }))
-      );
+      return !placement || canStartDispatch(placement);
     });
     if (await useRecorded()) {
       return { assertCurrent: assertDestinationCurrent, release: prepared.release };

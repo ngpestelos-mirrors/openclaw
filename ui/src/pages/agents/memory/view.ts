@@ -15,6 +15,7 @@ import { pathDisplayName } from "../../../lib/path-display.ts";
 import "../../../styles/dreams.css";
 import type {
   DreamingEntry,
+  DreamingResources,
   WikiImportInsights,
   WikiOverview,
   WikiPagePreview,
@@ -112,19 +113,11 @@ type DreamingProps = {
   timezone: string | null;
   statusError: string | null;
   modeSaving: boolean;
-  dreamDiaryLoading: boolean;
   dreamDiaryActionLoading: boolean;
   dreamDiaryActionMessage: { kind: "success" | "error"; text: string } | null;
   dreamDiaryActionArchivePath: string | null;
-  dreamDiaryError: string | null;
-  dreamDiaryContent: string | null;
+  resources: DreamingResources;
   memoryWikiEnabled: boolean;
-  wikiImportInsightsLoading: boolean;
-  wikiImportInsightsError: string | null;
-  wikiImportInsights: WikiImportInsights | null;
-  wikiOverviewLoading: boolean;
-  wikiOverviewError: string | null;
-  wikiOverview: WikiOverview | null;
   onRefreshDiary: () => void;
   onRefreshImports: () => void;
   onRefreshWikiOverview: () => void;
@@ -1113,10 +1106,10 @@ function renderWikiClusterSection<
 function renderDiaryImportsSection(props: DreamingProps) {
   return renderWikiClusterSection(props, {
     kind: "imports",
-    clusters: props.wikiImportInsights?.clusters ?? [],
-    totalItems: props.wikiImportInsights?.totalItems ?? 0,
-    truncated: props.wikiImportInsights?.truncated ?? false,
-    loading: props.wikiImportInsightsLoading,
+    clusters: props.resources.wikiImportInsights.value?.clusters ?? [],
+    totalItems: props.resources.wikiImportInsights.value?.totalItems ?? 0,
+    truncated: props.resources.wikiImportInsights.value?.truncated ?? false,
+    loading: props.resources.wikiImportInsights.loading,
     loadingKey: "dreaming.wiki.loadingInsights",
     emptyKey: "dreaming.wiki.noInsights",
     emptyHintKey: "dreaming.wiki.noInsightsHint",
@@ -1153,13 +1146,13 @@ function renderDiaryImportsSection(props: DreamingProps) {
 }
 
 function renderWikiOverviewSection(props: DreamingProps) {
-  const overview = props.wikiOverview;
+  const overview = props.resources.wikiOverview.value;
   return renderWikiClusterSection(props, {
     kind: "wiki",
     clusters: overview?.clusters ?? [],
     totalItems: overview?.totalItems ?? 0,
     truncated: overview?.truncated ?? false,
-    loading: props.wikiOverviewLoading,
+    loading: props.resources.wikiOverview.loading,
     loadingKey: "dreaming.wiki.loadingWiki",
     emptyKey: "dreaming.wiki.emptyWiki",
     emptyHintKey: "dreaming.wiki.emptyWikiHint",
@@ -1203,7 +1196,7 @@ function renderWikiOverviewSection(props: DreamingProps) {
 
 function renderDreamDiaryEntries(props: DreamingProps): DiaryPanel {
   const state = props.viewState;
-  if (typeof props.dreamDiaryContent !== "string") {
+  if (typeof props.resources.dreamDiary.value?.content !== "string") {
     return renderDiaryEmpty(
       t("dreaming.diary.noDreamsYet"),
       t("dreaming.diary.noDreamsHint"),
@@ -1216,7 +1209,7 @@ function renderDreamDiaryEntries(props: DreamingProps): DiaryPanel {
     );
   }
 
-  const entries = parseDiaryEntries(props.dreamDiaryContent);
+  const entries = parseDiaryEntries(props.resources.dreamDiary.value?.content);
   if (entries.length === 0) {
     return renderDiaryEmpty(t("dreaming.diary.waitingTitle"), t("dreaming.diary.waitingHint"));
   }
@@ -1253,22 +1246,22 @@ function renderDiarySection(props: DreamingProps) {
   const activeDiarySubTab = state.activeDiarySubTab;
   const diary = {
     dreams: {
-      error: props.dreamDiaryError,
-      loading: props.dreamDiaryLoading,
+      error: props.resources.dreamDiary.error,
+      loading: props.resources.dreamDiary.loading,
       refresh: props.onRefreshDiary,
       render: renderDreamDiaryEntries,
       explainer: "dreaming.wiki.dreamsExplainer",
     },
     insights: {
-      error: props.wikiImportInsightsError,
-      loading: props.wikiImportInsightsLoading,
+      error: props.resources.wikiImportInsights.error,
+      loading: props.resources.wikiImportInsights.loading,
       refresh: props.onRefreshImports,
       render: renderDiaryImportsSection,
       explainer: "dreaming.wiki.insightsExplainer",
     },
     wiki: {
-      error: props.wikiOverviewError,
-      loading: props.wikiOverviewLoading,
+      error: props.resources.wikiOverview.error,
+      loading: props.resources.wikiOverview.loading,
       refresh: props.onRefreshWikiOverview,
       render: renderWikiOverviewSection,
       explainer: "dreaming.wiki.wikiExplainer",

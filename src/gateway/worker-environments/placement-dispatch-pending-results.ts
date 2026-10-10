@@ -337,6 +337,14 @@ export async function recoverPendingWorkspaceResults(
                     ...(finishBlockedMove ? { destination: "reclaimed", currentCheck } : {}),
                   });
             };
+            const destroyRecoveredEnvironment = async () => {
+              const assertMoveCurrent = await prepareGatewayMove(
+                active,
+                turnClaim,
+                recovery.assertCurrent,
+              );
+              await destroyPendingEnvironment(active, assertMoveCurrent ?? recovery.assertCurrent);
+            };
             const settleRecoveredResult = async (
               result: Pick<
                 Parameters<typeof finalizeWorkspaceResultConflicts>[0],
@@ -414,15 +422,7 @@ export async function recoverPendingWorkspaceResults(
                 await placements.closeWorkerTurnToolState(turnClaim);
               }
               if (!preserveEnvironment && !finishBlockedMove) {
-                const assertMoveCurrent = await prepareGatewayMove(
-                  active,
-                  turnClaim,
-                  recovery.assertCurrent,
-                );
-                await destroyPendingEnvironment(
-                  active,
-                  assertMoveCurrent ?? recovery.assertCurrent,
-                );
+                await destroyRecoveredEnvironment();
               }
               await prepareAcceptedPublication(deps, turnClaim);
               await deps.publishAcceptedWorkspace?.(turnClaim);
@@ -508,15 +508,7 @@ export async function recoverPendingWorkspaceResults(
                   {
                     beforeComplete: async () => {
                       if (!preserveEnvironment && !finishBlockedMove) {
-                        const assertMoveCurrent = await prepareGatewayMove(
-                          active,
-                          turnClaim,
-                          recovery.assertCurrent,
-                        );
-                        await destroyPendingEnvironment(
-                          active,
-                          assertMoveCurrent ?? recovery.assertCurrent,
-                        );
+                        await destroyRecoveredEnvironment();
                       }
                     },
                     complete: completeResult,
@@ -580,14 +572,12 @@ export async function recoverPendingWorkspaceResults(
                     journal,
                     stagedResult: {
                       ref: canonicalStagedResultRef,
-                      record: (ref) => {
+                      record: (ref, workspaceId) => {
                         recovery.assertCurrent();
                         return placements.recordStagedWorkspaceResult(
                           turnClaim,
                           ref,
-                          workspace.kind === "repository"
-                            ? workspace.repository.workspaceId
-                            : undefined,
+                          workspaceId,
                           recovery.assertCurrent,
                         );
                       },

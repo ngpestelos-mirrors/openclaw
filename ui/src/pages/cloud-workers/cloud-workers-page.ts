@@ -28,6 +28,7 @@ import { canCallGatewayMethod } from "../../lib/gateway-methods.ts";
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
+import { renderCloudWorkerAction } from "./cloud-worker-action.ts";
 import { CloudWorkerConfigSave } from "./cloud-worker-config-save.ts";
 import {
   buildCloudWorkerDeletePatch,
@@ -288,24 +289,8 @@ class CloudWorkersPage extends OpenClawLightDomElement {
       description: this.profileDescription(profile),
       control: html`
         ${statusControl}
-        ${[
-          { label: t("cloudWorkersPage.editAction"), onClick: () => this.openEditor(profile) },
-          {
-            label: t("common.delete"),
-            danger: true,
-            onClick: () => void this.deleteProfile(profile),
-          },
-        ].map(
-          (action) => html`<button
-            class=${action.danger ? "btn btn--sm danger" : "btn btn--sm"}
-            type="button"
-            aria-label=${`${action.label}: ${profile.id}`}
-            ?disabled=${!canManage}
-            @click=${action.onClick}
-          >
-            ${action.label}
-          </button>`,
-        )}
+        ${renderCloudWorkerAction(t("cloudWorkersPage.editAction"), profile.id, () => this.openEditor(profile), !canManage)}
+        ${renderCloudWorkerAction(t("common.delete"), profile.id, () => void this.deleteProfile(profile), !canManage, { danger: true })}
       `,
     });
   }

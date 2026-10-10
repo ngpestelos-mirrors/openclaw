@@ -91,20 +91,16 @@ function renderPendingDevice(req: PendingDevice, props: DevicesProps, paired?: P
         </span>
       </div>
       <div class="settings-row__control">
-        <button
-          class="btn btn--sm"
-          ?disabled=${!props.canManagePairing}
-          @click=${() => props.onDeviceApprove(req.requestId)}
-        >
-          ${t("devices.inventory.approve")}
-        </button>
-        <button
-          class="btn btn--sm"
-          ?disabled=${!props.canManagePairing}
-          @click=${() => props.onDeviceReject(req.requestId)}
-        >
-          ${t("devices.inventory.reject")}
-        </button>
+        ${(["approve", "reject"] as const).map(
+          (action) => html`<button
+            class="btn btn--sm"
+            ?disabled=${!props.canManagePairing}
+            @click=${() =>
+              props[action === "approve" ? "onDeviceApprove" : "onDeviceReject"](req.requestId)}
+          >
+            ${t(`devices.inventory.${action}`)}
+          </button>`,
+        )}
         ${renderDeviceEntryMenu(props, { name, deviceId: req.deviceId })}
       </div>
       <details class="device-entry__details">

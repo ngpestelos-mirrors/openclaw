@@ -18,10 +18,9 @@ import {
   prepareWorkerSsh,
   type PreparedWorkerSsh,
   type WorkerSshIdentityResolver,
+  workerSshCommand,
   workerSshCommandOptions,
-  workerSshCommandPrefix,
   workerSshOptions,
-  workerSshRemoteCommand,
 } from "./ssh.js";
 import { joinWorkerTunnelStops } from "./tunnel-contract.js";
 import {
@@ -63,15 +62,6 @@ class WorkerDesktopUnsupportedError extends Error {
 
 function successful(result: Awaited<ReturnType<WorkerSshRunner["run"]>>): boolean {
   return result.termination === "exit" && result.code === 0;
-}
-
-function desktopSshCommand(prepared: PreparedWorkerSsh, argv: readonly string[]): string[] {
-  return [
-    ...workerSshCommandPrefix(prepared),
-    "--",
-    prepared.sshTarget,
-    workerSshRemoteCommand(argv),
-  ];
 }
 
 /** Owns worker-specific desktop SSH acquisition and app launch processes. */
@@ -183,7 +173,7 @@ export function createWorkerDesktopTunnels(deps: {
       let vncPassword: string | undefined;
       if (request.desktop.passwordFilePath) {
         const result = await deps.runner.run(
-          desktopSshCommand(prepared, ["cat", request.desktop.passwordFilePath]),
+          workerSshCommand(prepared, ["cat", request.desktop.passwordFilePath]),
           workerSshCommandOptions({ timeoutMs: PASSWORD_READ_TIMEOUT_MS }),
         );
         assertCurrent();
@@ -298,7 +288,7 @@ export function createWorkerDesktopTunnels(deps: {
         // Launchers are stateful: SSH exit 255 cannot prove the remote app did not start.
         // Use the lifecycle-selected port once so an ambiguous disconnect cannot launch twice.
         const result = await deps.runner.run(
-          desktopSshCommand(prepared, [request.app.executablePath, ...(request.app.args ?? [])]),
+          workerSshCommand(prepared, [request.app.executablePath, ...(request.app.args ?? [])]),
           workerSshCommandOptions({
             timeoutMs: remainingLaunchMs,
             signal: abortController.signal,

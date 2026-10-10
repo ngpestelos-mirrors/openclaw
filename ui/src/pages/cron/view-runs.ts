@@ -110,21 +110,40 @@ function toggleSelection<T extends string>(selected: T[], value: T, checked: boo
 const FILTER_OPTION_PREFIX = "option:";
 const FILTER_COMMAND_PREFIX = "command:";
 
-function renderFilterDropdown(params: {
-  id: string;
-  title: string;
-  allLabel: string;
-  options: Array<{ value: string; label: string }>;
-  selected: string[];
-  onToggle: (value: string, checked: boolean) => void;
-  onClear: () => void;
-}) {
-  const selectedLabels = params.options
-    .filter((option) => params.selected.includes(option.value))
+function renderFilterDropdown(props: CronRunsSectionProps, kind: "status" | "delivery") {
+  const title = t(`cron.runs.${kind}`);
+  const allLabel = t(kind === "status" ? "cron.runs.allStatuses" : "cron.runs.allDelivery");
+  const selected: readonly string[] =
+    kind === "status" ? props.runsStatuses : props.runsDeliveryStatuses;
+  const options = Array.from(
+    kind === "status" ? RUN_STATUS_LABELS : RUN_DELIVERY_LABELS,
+    ([value, key]) => ({ value, label: t(key) }),
+  );
+  const onToggle = (value: string, checked: boolean) => {
+    void props.onRunsFiltersChange(
+      kind === "status"
+        ? {
+            cronRunsStatuses: toggleSelection(
+              props.runsStatuses,
+              value as CronRunsStatusValue,
+              checked,
+            ),
+          }
+        : {
+            cronRunsDeliveryStatuses: toggleSelection(
+              props.runsDeliveryStatuses,
+              value as CronDeliveryStatus,
+              checked,
+            ),
+          },
+    );
+  };
+  const selectedLabels = options
+    .filter((option) => selected.includes(option.value))
     .map((option) => option.label);
   const summary =
     selectedLabels.length === 0
-      ? params.allLabel
+      ? allLabel
       : selectedLabels.length <= 2
         ? selectedLabels.join(", ")
         : `${selectedLabels[0]} +${selectedLabels.length - 1}`;
@@ -136,42 +155,42 @@ function renderFilterDropdown(params: {
         }).format(selectedLabels)})`
       : summary;
   return html`
-    <div class="cron-filter-dropdown" data-filter=${params.id}>
+    <div class="cron-filter-dropdown" data-filter=${kind}>
       <wa-dropdown
         class="cron-filter-dropdown__details"
         placement="bottom-start"
         @wa-select=${(event: CustomEvent<{ item: { value?: string } }>) => {
           const value = event.detail.item.value;
           if (value === `${FILTER_COMMAND_PREFIX}clear`) {
-            params.onClear();
+            void props.onRunsFiltersChange(
+              kind === "status" ? { cronRunsStatuses: [] } : { cronRunsDeliveryStatuses: [] },
+            );
             return;
           }
           if (value?.startsWith(FILTER_OPTION_PREFIX)) {
             event.preventDefault();
             const optionValue = value.slice(FILTER_OPTION_PREFIX.length);
-            params.onToggle(optionValue, !params.selected.includes(optionValue));
+            onToggle(optionValue, !selected.includes(optionValue));
           }
         }}
       >
         <button
           slot="trigger"
           type="button"
-          class="btn btn--sm cron-filter-dropdown__trigger ${
-            params.selected.length > 0 ? "active" : ""
-          }"
-          title=${params.title}
-          aria-label=${`${params.title} ${accessibleSummary}`}
+          class="btn btn--sm cron-filter-dropdown__trigger ${selected.length > 0 ? "active" : ""}"
+          title=${title}
+          aria-label=${`${title} ${accessibleSummary}`}
         >
           <span>${summary}</span>
           ${icon("chevronDown")}
         </button>
-        ${params.options.map(
+        ${options.map(
           (option) => html`
             <wa-dropdown-item
               class="cron-filter-dropdown__option"
               type="checkbox"
               value=${`${FILTER_OPTION_PREFIX}${option.value}`}
-              .checked=${params.selected.includes(option.value)}
+              .checked=${selected.includes(option.value)}
             >
               ${option.label}
             </wa-dropdown-item>
@@ -213,38 +232,7 @@ export function renderRunsSection(props: CronRunsSectionProps) {
               props.onRunsFiltersChange({ cronRunsQuery: (e.target as HTMLInputElement).value })}
           />
         </div>
-        ${renderFilterDropdown({
-          id: "status",
-          title: t("cron.runs.status"),
-          allLabel: t("cron.runs.allStatuses"),
-          options: Array.from(RUN_STATUS_LABELS, ([value, key]) => ({ value, label: t(key) })),
-          selected: props.runsStatuses,
-          onToggle: (value, checked) => {
-            const next = toggleSelection(props.runsStatuses, value as CronRunsStatusValue, checked);
-            void props.onRunsFiltersChange({ cronRunsStatuses: next });
-          },
-          onClear: () => {
-            void props.onRunsFiltersChange({ cronRunsStatuses: [] });
-          },
-        })}
-        ${renderFilterDropdown({
-          id: "delivery",
-          title: t("cron.runs.delivery"),
-          allLabel: t("cron.runs.allDelivery"),
-          options: Array.from(RUN_DELIVERY_LABELS, ([value, key]) => ({ value, label: t(key) })),
-          selected: props.runsDeliveryStatuses,
-          onToggle: (value, checked) => {
-            const next = toggleSelection(
-              props.runsDeliveryStatuses,
-              value as CronDeliveryStatus,
-              checked,
-            );
-            void props.onRunsFiltersChange({ cronRunsDeliveryStatuses: next });
-          },
-          onClear: () => {
-            void props.onRunsFiltersChange({ cronRunsDeliveryStatuses: [] });
-          },
-        })}
+        ${renderFilterDropdown(props, "status")} ${renderFilterDropdown(props, "delivery")}
         <div class="cron-filter-dropdown">
           <wa-dropdown
             class="cron-filter-dropdown__details"

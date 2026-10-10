@@ -14,6 +14,7 @@ import { canCallGatewayMethod } from "../../lib/gateway-methods.ts";
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomContentsElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
+import { renderCloudWorkerAction } from "./cloud-worker-action.ts";
 import { CloudWorkerConfigSave } from "./cloud-worker-config-save.ts";
 import { readCloudWorkerProfiles } from "./cloud-worker-config.ts";
 import {
@@ -267,24 +268,10 @@ class CloudWorkerRepositories extends OpenClawLightDomContentsElement {
               renderSettingsRow({
                 title: html`<code>${mapping.repository}</code>`,
                 description: mapping.profileId,
-                control: html` <button
-                    class="btn btn--sm"
-                    type="button"
-                    aria-label=${`${t("cloudWorkersPage.editAction")}: ${mapping.repository}`}
-                    ?disabled=${!editable}
-                    @click=${() => this.openEditor(mapping)}
-                  >
-                    ${t("cloudWorkersPage.editAction")}
-                  </button>
-                  <button
-                    class="btn btn--sm danger"
-                    type="button"
-                    aria-label=${`${t("common.delete")}: ${mapping.repository}`}
-                    ?disabled=${!editable}
-                    @click=${() => void this.save((base) => buildCloudWorkerRepositoryDeletePatch(base, mapping))}
-                  >
-                    ${t("common.delete")}
-                  </button>`,
+                control: html`
+                  ${renderCloudWorkerAction(t("cloudWorkersPage.editAction"), mapping.repository, () => this.openEditor(mapping), !editable)}
+                  ${renderCloudWorkerAction(t("common.delete"), mapping.repository, () => void this.save((base) => buildCloudWorkerRepositoryDeletePatch(base, mapping)), !editable, { danger: true })}
+                `,
               }),
             )
           : renderSettingsEmpty(t("cloudWorkersPage.repositoriesEmpty")),
