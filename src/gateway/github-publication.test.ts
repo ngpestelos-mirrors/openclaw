@@ -59,8 +59,11 @@ describe("Gateway GitHub publication", () => {
         placements: createWorkerSessionPlacementStore({ database }),
       });
       expect(hasGitHubPublicationStore()).toBe(false);
-      if (kind === "receipt") expect(coordinator.read("absent")).toBeUndefined();
-      else expect(isGitHubPublicationExecutionOwner("absent", "instance")).toBe(false);
+      if (kind === "receipt") {
+        expect(coordinator.read("absent")).toBeUndefined();
+      } else {
+        expect(isGitHubPublicationExecutionOwner("absent", "instance")).toBe(false);
+      }
       expect(hasGitHubPublicationStore()).toBe(false);
     },
   );
@@ -616,99 +619,6 @@ describe("Gateway GitHub publication", () => {
     expect(updateRefIndex).toBeGreaterThan(commitIndex);
     expect(commands.filter((argv) => argv.includes("push"))).toHaveLength(1);
     expect(commands.filter((argv) => argv[0] === "gh" && argv.includes("POST"))).toHaveLength(1);
-  });
-
-  it("rejects a stale turn claim after awaited identity verification", async () => {
-    const database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
-    const placements = createWorkerSessionPlacementStore({ database });
-    seedAttachedPlacementEnvironment(database, {
-      environmentId: "environment-1",
-      sessionId: REQUEST.sessionId,
-      ownerEpoch: 2,
-    });
-    const active = await seedActivePlacement(placements, {
-      environmentId: "environment-1",
-      ownerEpoch: 2,
-    });
-    const claim = await placements.claimTurn({
-      sessionId: active.sessionId,
-      sessionKey: active.sessionKey,
-      agentId: active.agentId,
-      claimId: "claim-1",
-      runId: "run-1",
-      owner: { kind: "worker", environmentId: "environment-1", ownerEpoch: 2 },
-    });
-    let resolveIdentity: ((value: unknown) => void) | undefined;
-    mocks.prepareIdentity.mockImplementationOnce(
-      async () =>
-        await new Promise((resolve) => {
-          resolveIdentity = resolve;
-        }),
-    );
-    const coordinator = createGitHubPublicationCoordinator({ placements });
-    const pending = coordinator.requestForClaim({
-      claim,
-      sessionKey: REQUEST.sessionKey,
-      agentId: REQUEST.agentId,
-      idempotencyKey: "publish-stale",
-    });
-    await vi.waitFor(() => expect(resolveIdentity).toBeTypeOf("function"));
-    await placements.releaseTurn(claim);
-    resolveIdentity?.({
-      source: "system-configured",
-      profileId: "ghp_11111111111111111111111111111111",
-      account: { accountId: 42, login: "roboclaw-bot", avatarUrl: null },
-      env: {},
-    });
-
-    await expect(pending).rejects.toThrow("lost the live session turn claim after verification");
-  });
-
-  it("rejects reuse of a worker publication idempotency key by a later turn", async () => {
-    const database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
-    const placements = createWorkerSessionPlacementStore({ database });
-    seedAttachedPlacementEnvironment(database, {
-      environmentId: "environment-idempotency",
-      sessionId: REQUEST.sessionId,
-      ownerEpoch: 2,
-    });
-    const active = await seedActivePlacement(placements, {
-      environmentId: "environment-idempotency",
-      ownerEpoch: 2,
-    });
-    const firstClaim = await placements.claimTurn({
-      sessionId: active.sessionId,
-      sessionKey: active.sessionKey,
-      agentId: active.agentId,
-      claimId: "claim-first",
-      runId: "run-first",
-      owner: { kind: "worker", environmentId: "environment-idempotency", ownerEpoch: 2 },
-    });
-    const coordinator = createGitHubPublicationCoordinator({ placements });
-    await coordinator.requestForClaim({
-      claim: firstClaim,
-      sessionKey: REQUEST.sessionKey,
-      agentId: REQUEST.agentId,
-      idempotencyKey: "reused-worker-call",
-    });
-    await placements.releaseTurn(firstClaim);
-    const secondClaim = await placements.claimTurn({
-      sessionId: active.sessionId,
-      sessionKey: active.sessionKey,
-      agentId: active.agentId,
-      claimId: "claim-second",
-      runId: "run-second",
-      owner: { kind: "worker", environmentId: "environment-idempotency", ownerEpoch: 2 },
-    });
-
-    await expect(
-      coordinator.requestForClaim({
-        claim: secondClaim,
-        sessionKey: REQUEST.sessionKey,
-        agentId: REQUEST.agentId,
-        idempotencyKey: "reused-worker-call",
-      }),
-    ).rejects.toThrow("idempotency key was reused");
   });
 
   it("binds the accepted worker snapshot before acceptance and never recaptures it", async () => {

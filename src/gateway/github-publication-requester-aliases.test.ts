@@ -1,7 +1,6 @@
 // Register shared transport mocks before production publication owners load.
 // oxfmt-ignore
 import {
-  createGitHubPublicationRequesterFixture,
   githubPublicationTestMocks,
   installGitHubPublicationTestHarness,
 } from "./github-publication.test-support.js";
@@ -27,6 +26,7 @@ import {
   restoreGitHubPublicationRequester,
 } from "./github-publication-requester.js";
 import {
+  createGitHubPublicationRequesterFixture,
   createRequesterPolicyFixture,
   createRequesterPublicationFixture,
   guestScopes,

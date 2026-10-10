@@ -28,6 +28,16 @@ no new GitHub-specific SDK subpath.
 | `listUnreportedResults`     | `await listUnreportedResultsAsync` |
 | `markReported`              | `await markReportedAsync`          |
 
+The same Gateway context exposes personal connection operations through
+`githubOAuthService.personal`. Replace
+`personal.cancelAuthorization(action, requestId)` with
+`await personal.cancelAuthorizationAsync(action, requestId)`, and
+`personal.disconnect(action)` with `await personal.disconnectAsync(action)`.
+The arguments are unchanged. The legacy methods retain their synchronous
+`boolean` and `void` results and commit before returning; the async methods
+resolve after the worker commits and installs the connection facts. They share
+the publication family's deprecation warning and removal window below.
+
 The V2 request methods require the host's `GitHubPublicationRequesterV2`;
 personal methods require `PersonalGitHubSessionActionV2`. Prepare them through
 `prepareGitHubPublicationRequesterV2` or `preparePersonalGitHubSessionActionV2`

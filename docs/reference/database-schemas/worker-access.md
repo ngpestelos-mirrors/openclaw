@@ -279,7 +279,11 @@ authority fence; display and alias consumers retain the full profile projection.
 These changes do not alter the schema, stored representation, or update behavior.
 
 Released coordinator methods with opaque requester assertions remain explicit
-native compatibility adapters. Their route is selected before any callback runs;
+native compatibility adapters. Personal OAuth `cancelAuthorization` and
+`disconnect` also retain synchronous completion through the same connection
+mutation kernel and commit-receipt owner. Their `cancelAuthorizationAsync` and
+`disconnectAsync` replacements select the worker path explicitly.
+The compatibility route is selected before any callback runs;
 worker failure never selects it as a fallback. Synchronous compatibility writes
 still commit before returning. The shared SDK helper warns once per plugin and
 `github-publication` family on actual legacy use, and all bundled callers use the

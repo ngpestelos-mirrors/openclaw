@@ -32,7 +32,10 @@ import {
 } from "./github-publication-executor.js";
 import { GitHubPublicationRequesterUnavailableError } from "./github-publication-failure.js";
 import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-index.js";
-import { captureGitHubPublicationWorkspaceSnapshot } from "./github-publication-git-transport.js";
+import {
+  digestGitHubPublicationRequest as digestRequest,
+  projectGitHubPublicationResult as publicationResult,
+} from "./github-publication-receipt.js";
 import { readGitHubPublicationRequestInWorker } from "./github-publication-recovery.js";
 import { insertGitHubPublicationRequestAsync } from "./github-publication-request-async.js";
 import {
@@ -42,28 +45,28 @@ import {
 } from "./github-publication-requester.js";
 import { bindGitHubPublicationSourceLifetime } from "./github-publication-source.js";
 import {
-  bindAcceptedGitHubPublicationClaimSnapshotAsync,
   claimGitHubPublicationExecutionAsync,
   createGitHubPublicationExecutionStoreAsync,
   deferGitHubPublicationRequestsAsync,
-  listGitHubPublicationsForClaimAsync,
   readGitHubPublicationRequestAsync,
 } from "./github-publication-store-async.js";
 import {
   claimGitHubPublicationExecution as claimExecution,
   createGitHubPublicationExecutionStore,
   deferGitHubPublicationRequests as deferRequests,
-  digestGitHubPublicationRequest as digestRequest,
   insertGitHubPublicationRequest,
   ensureGitHubPublicationStore as ensureSchema,
   hasGitHubPublicationStore,
   isGitHubPublicationExecutionOwner as ownsExecution,
-  listGitHubPublicationsForClaim,
-  projectGitHubPublicationResult as publicationResult,
   readGitHubPublicationRequest,
   assertSharedGitHubPublicationClaimInDatabase as assertStoredClaim,
 } from "./github-publication-store.js";
 import { assertGitHubPublicationWorkflowChangesAllowed } from "./github-publication-workflows.js";
+import {
+  deferGitHubPublicationClaimPreparation,
+  prepareGitHubPublicationClaimWorkspace,
+  sameWorktree,
+} from "./github-publication-workspace.js";
 import { createRepositoryGitHubPublicationCoordinator } from "./github-repository-publication.js";
 import { loadGatewaySessionEntryReadOnlyInWorker } from "./session-utils-store-worker.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";
@@ -73,17 +76,6 @@ import type {
 } from "./worker-environments/placement-store.js";
 
 const activePublicationExecutions = new Map<string, Promise<SessionGitHubPublicationResult>>();
-
-function sameWorktree(
-  row: PublicationRow,
-  worktree: Awaited<ReturnType<typeof readGitHubPublicationWorktreeOwner>>["worktree"],
-): boolean {
-  return (
-    row.worktree_id === worktree.id &&
-    row.repository_fingerprint === worktree.repoFingerprint &&
-    row.branch === worktree.branch
-  );
-}
 
 function sameClaim(row: PublicationRow, claim: WorkerSessionTurnClaim): boolean {
   return (
@@ -488,77 +480,6 @@ export function createGitHubPublicationCoordinator(params: {
     );
   };
 
-  const prepareClaimWorkspace = async (claim: WorkerSessionTurnClaim): Promise<void> => {
-    await params.placements.closeWorkerTurnToolAdmission(claim);
-    const rows = await listGitHubPublicationsForClaimAsync(claim, { pendingOnly: true });
-    if (rows.length === 0) {
-      return;
-    }
-    await params.placements.prepareWorkspaceResultClaim(claim);
-    const first = rows[0]!;
-    const worktreeOwner = await readGitHubPublicationWorktreeOwner({
-      sessionId: first.session_id,
-      sessionKey: first.session_key,
-      agentId: first.agent_id,
-      expected: {
-        worktreeId: first.worktree_id,
-        repositoryFingerprint: first.repository_fingerprint,
-        branch: first.branch,
-      },
-    });
-    const { worktree } = worktreeOwner;
-    if (!params.placements.validateWorkspaceResultClaim(claim)) {
-      throw new Error("GitHub publication lost its workspace result claim before snapshot.");
-    }
-    for (const row of rows) {
-      if (!sameWorktree(row, worktree)) {
-        throw new Error("GitHub publication worktree changed before accepted snapshot.");
-      }
-    }
-    const bound = rows.find(
-      (row) => row.source_head_commit && row.source_index_tree && row.workspace_tree,
-    );
-    if (bound) {
-      for (const row of rows) {
-        if (
-          (row.source_head_commit || row.source_index_tree || row.workspace_tree) &&
-          (row.source_head_commit !== bound.source_head_commit ||
-            row.source_index_tree !== bound.source_index_tree ||
-            row.workspace_tree !== bound.workspace_tree)
-        ) {
-          throw new Error("GitHub publication accepted workspace snapshot changed.");
-        }
-      }
-      if (
-        rows.every((row) => row.source_head_commit && row.source_index_tree && row.workspace_tree)
-      ) {
-        return;
-      }
-    }
-    const snapshot = await captureGitHubPublicationWorkspaceSnapshot({
-      cwd: worktree.path,
-      assertCurrent: () => {
-        worktreeOwner.assertCurrent();
-        if (!params.placements.validateWorkspaceResultClaim(claim)) {
-          throw new Error("GitHub publication lost its workspace result claim during snapshot.");
-        }
-      },
-    });
-    for (const row of rows) {
-      await bindAcceptedGitHubPublicationClaimSnapshotAsync({ row, claim, ...snapshot }, () => {
-        assertCurrent();
-        if (!params.placements.validateWorkspaceResultClaim(claim))
-          throw new Error("GitHub publication lost its workspace result claim.");
-      });
-    }
-  };
-
-  const deferClaimPreparation = (claim: WorkerSessionTurnClaim): void => {
-    ensureSchema();
-    const rows = listGitHubPublicationsForClaim(claim, { pendingOnly: true });
-    deferRequests(rows.map((row) => row.request_id));
-  };
-
   const repository = createRepositoryGitHubPublicationCoordinator({
     ...params,
     assertCurrent,
@@ -615,7 +536,10 @@ export function createGitHubPublicationCoordinator(params: {
         : requestForClaim(request, request.requester);
     },
     async prepareClaimWorkspace(claim: WorkerSessionTurnClaim) {
-      await prepareClaimWorkspace(claim);
+      await prepareGitHubPublicationClaimWorkspace(
+        { placements: params.placements, assertCurrent },
+        claim,
+      );
       await repository.prepareClaimWorkspace(claim);
     },
     /** @deprecated Use deferClaimPreparationAsync; removed in the next Plugin SDK major. */
@@ -625,7 +549,7 @@ export function createGitHubPublicationCoordinator(params: {
         method: "deferClaimPreparation",
         replacement: "deferClaimPreparationAsync",
       });
-      deferClaimPreparation(claim);
+      deferGitHubPublicationClaimPreparation(claim);
       repository.deferClaimPreparation(claim);
     },
     async deferClaimPreparationAsync(claim: WorkerSessionTurnClaim) {

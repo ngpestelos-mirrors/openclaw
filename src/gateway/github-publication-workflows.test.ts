@@ -5,7 +5,6 @@ import {
   SESSION_KEY,
   BRANCH,
   commandResult,
-  createGitHubPublicationRequesterFixture,
   githubPublicationTestMocks,
   installGitHubPublicationTestHarness,
   root,
@@ -21,6 +20,7 @@ import { setCanonicalUserProfileRole } from "../state/user-profile-writes.js";
 import * as publicationExecutor from "./github-publication-executor.js";
 import { GitHubPublicationRecoveryPendingError } from "./github-publication-git-index.js";
 import {
+  createGitHubPublicationRequesterFixture,
   createRequesterPublicationFixture,
   guestScopes,
 } from "./github-publication-requester.test-support.js";

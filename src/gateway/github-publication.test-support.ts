@@ -182,39 +182,6 @@ export async function createSystemGitHubPublicationRequesterFixture() {
   return captured;
 }
 
-export async function createGitHubPublicationRequesterFixture(params: {
-  profileId: string;
-  scopes: readonly string[];
-  sessionKey: string;
-  agentId: string;
-  getCommittedRuntimeConfig?: () => OpenClawConfig;
-}) {
-  const [{ createOperatorWsClient }, { prepareGatewayConnectOperatorAccess }] = await Promise.all([
-    import("./server/ws-connection/authenticated-request-dispatch.test-support.js"),
-    import("./server/ws-connection/connect-operator-access.js"),
-  ]);
-  const client = createOperatorWsClient({
-    connId: params.profileId,
-    scopes: [...params.scopes],
-  });
-  client.authenticatedUserProfile = {
-    profileId: params.profileId,
-    displayName: null,
-    avatarRevision: "fixture",
-    hasAvatar: false,
-    updatedAt: 1,
-  };
-  prepareGatewayConnectOperatorAccess(client);
-  const context = {
-    getRuntimeConfig: currentGitHubPublicationConfig,
-    getCommittedRuntimeConfig: params.getCommittedRuntimeConfig ?? currentGitHubPublicationConfig,
-  };
-  const session = { sessionKey: params.sessionKey, agentId: params.agentId };
-  const captured = await prepareGitHubPublicationRequesterV2({ client, context }, session);
-  onTestFinished(captured.release);
-  return { ...captured, client, context, session };
-}
-
 type PublicationFixtureRequest<T> = Omit<T, "requester"> & {
   requester?: GitHubPublicationRequester;
   assertCurrent?: () => void;

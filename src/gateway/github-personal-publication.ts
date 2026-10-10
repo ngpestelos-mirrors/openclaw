@@ -39,6 +39,7 @@ import {
   type GitHubPublicationPreparation,
 } from "./github-publication-failure.js";
 import { captureGitHubPublicationWorkspaceSnapshot } from "./github-publication-git-transport.js";
+import { projectGitHubPublicationResult } from "./github-publication-receipt.js";
 import { insertPersonalGitHubPublicationAsync } from "./github-publication-request-async.js";
 import type { GitHubPublicationRequesterV2 } from "./github-publication-requester.js";
 import { bindGitHubPublicationSourceLifetime } from "./github-publication-source.js";
@@ -48,7 +49,6 @@ import {
   readRepositoryGitHubPublicationAsync,
   type GitHubPublicationTransitionAuthority,
 } from "./github-publication-store-async.js";
-import { projectGitHubPublicationResult } from "./github-publication-store.js";
 import { prepareGitHubPublicationTarget } from "./github-publication-target.js";
 import { terminalRepositoryGitHubPublication } from "./github-repository-publication-store.js";
 import { resolveReceiptOwner } from "./github-repository-publication-workspace.js";

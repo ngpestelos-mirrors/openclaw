@@ -124,23 +124,33 @@ it("retains synchronous placement and publication contracts from the released Ga
     Promise<void>
   >();
   // v2026.9.8 exposed these opaque callbacks through all three Gateway context entry points.
-  type ReleasedRequester = Readonly<{
-    snapshot: Readonly<{
-      version: 1;
-      actor: Readonly<{ kind: "system" } | { kind: "operator"; profileId: string }>;
+  type ReleasedRequesterData = {
+    version: 1;
+    actor: { kind: "operator"; profileId: string } | { kind: "system" };
+    scopes: string[];
+    grant: { pluginId: string; grantId: string; aliasBindingIds: string[] } | null;
+  };
+  type ReleasedRequesterSnapshot = Readonly<
+    Omit<ReleasedRequesterData, "actor" | "scopes" | "grant"> & {
+      actor: Readonly<ReleasedRequesterData["actor"]>;
       scopes: readonly string[];
-      grant: Readonly<{
-        pluginId: string;
-        grantId: string;
-        aliasBindingIds: readonly string[];
-      }> | null;
-    }>;
+      grant: Readonly<
+        Omit<NonNullable<ReleasedRequesterData["grant"]>, "aliasBindingIds"> & {
+          aliasBindingIds: readonly string[];
+        }
+      > | null;
+    }
+  >;
+  type ReleasedRequester = Readonly<{
+    snapshot: ReleasedRequesterSnapshot;
     assertCurrent: () => void;
-    assertInvocationCurrent: () => void;
-  }>;
-  type ReleasedPersonalAction = {
+  }> &
+    Readonly<{ assertInvocationCurrent: () => void }>;
+  type ReleasedPersonalConnectionAction = {
     owner: string;
     assertCurrent: () => void;
+  };
+  type ReleasedPersonalAction = ReleasedPersonalConnectionAction & {
     sessionId: string;
     sessionKey: string;
     agentId: string;
@@ -179,4 +189,23 @@ it("retains synchronous placement and publication contracts from the released Ga
   expectTypeOf<ReturnType<Publications["listUnreportedResultsAsync"]>>().toEqualTypeOf<
     Promise<ReturnType<Publications["listUnreportedResults"]>>
   >();
+  type PersonalGitHub = NonNullable<NonNullable<Context>["githubOAuthService"]>["personal"];
+  expectTypeOf<Parameters<PersonalGitHub["cancelAuthorization"]>>().toEqualTypeOf<
+    [action: ReleasedPersonalConnectionAction, requestId: string]
+  >();
+  expectTypeOf<Parameters<PersonalGitHub["disconnect"]>>().toEqualTypeOf<
+    [action: ReleasedPersonalConnectionAction]
+  >();
+  expectTypeOf<ReturnType<PersonalGitHub["cancelAuthorization"]>>().toEqualTypeOf<boolean>();
+  expectTypeOf<ReturnType<PersonalGitHub["disconnect"]>>().toEqualTypeOf<void>();
+  expectTypeOf<Parameters<PersonalGitHub["cancelAuthorizationAsync"]>>().toEqualTypeOf<
+    Parameters<PersonalGitHub["cancelAuthorization"]>
+  >();
+  expectTypeOf<Parameters<PersonalGitHub["disconnectAsync"]>>().toEqualTypeOf<
+    Parameters<PersonalGitHub["disconnect"]>
+  >();
+  expectTypeOf<ReturnType<PersonalGitHub["cancelAuthorizationAsync"]>>().toEqualTypeOf<
+    Promise<boolean>
+  >();
+  expectTypeOf<ReturnType<PersonalGitHub["disconnectAsync"]>>().toEqualTypeOf<Promise<void>>();
 });

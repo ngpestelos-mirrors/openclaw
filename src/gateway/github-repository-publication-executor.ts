@@ -24,8 +24,8 @@ import {
   runPublicationCommand,
 } from "./github-publication-git-transport.js";
 import { findGitHubPublicationPullRequest } from "./github-publication-pull-requests.js";
+import { projectGitHubPublicationResult } from "./github-publication-receipt.js";
 import type { RepositoryGitHubPublicationExecutionAsync } from "./github-publication-store-async.js";
-import { projectGitHubPublicationResult } from "./github-publication-store.js";
 import {
   hasRepositoryGitHubPublicationWorkflowChanges,
   prepareGitHubPublicationWorkflowGuard,
