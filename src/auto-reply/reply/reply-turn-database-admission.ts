@@ -75,7 +75,7 @@ export function bindReplyOperationDatabaseAdmission(
       }
       const claim = operationAdmission.databaseClaim;
       if (!claim || !("kind" in claim)) {
-        throw new Error("Reply operation has no worker session actor admission");
+        throw new Error("Reply operation has no session actor admission");
       }
       sessionActor ??= claim
         .acquireSessionActor({

@@ -17,8 +17,15 @@ import {
   closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
+  getOpenClawAgentDatabaseIfOpen,
+  resolveIncognitoOpenClawAgentSqlitePath,
 } from "../../state/openclaw-agent-db.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import * as registry from "./reply-run-registry.js";
+import {
+  acquireReplyOperationSessionActor,
+  getReplyOperationSessionActor,
+} from "./reply-run-registry.state.js";
 import { testing } from "./reply-run-registry.test-support.js";
 import { admitReplyTurn } from "./reply-turn-admission.js";
 
@@ -54,6 +61,79 @@ function complete(result: Awaited<ReturnType<typeof admitReplyTurn>> | undefined
     result.operation.complete();
   }
 }
+
+it("retains the native incognito owner until accepted actor work drains", async ({ signal }) => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const key = "agent:main:dashboard:incognito-reply-admission";
+    const storePath = resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main", env: state.env });
+    const scope = { agentId: "main", storePath, sessionKey: key };
+    sessionEntries.replaceSessionEntrySync(scope, { sessionId, updatedAt: 1, incognito: true });
+    const native = getOpenClawAgentDatabaseIfOpen({
+      agentId: "main",
+      path: storePath,
+      env: state.env,
+    });
+    expect(native).toBeDefined();
+    const release = createDeferred();
+    let phase: Promise<void> | undefined;
+    const result = await admit(storePath, { agentId: "main", sessionKey: key });
+    try {
+      if (result.status !== "owned" || !result.databaseClaim) {
+        throw new Error("Native incognito admission must retain its database claim");
+      }
+      const { operation, databaseClaim } = result;
+      const [actor, sibling] = await Promise.all([
+        acquireReplyOperationSessionActor(operation),
+        acquireReplyOperationSessionActor(operation),
+      ]);
+      expect(sibling).toBe(actor);
+      const authority = {
+        assertCurrent: () => databaseClaim.assertCurrent(),
+        authorize() {},
+      };
+      const snapshot = await actor.read(authority);
+      expect(snapshot.entry).toMatchObject({ sessionId, incognito: true, updatedAt: 1 });
+      expect(getOpenClawAgentDatabaseIfOpen({ agentId: "main", path: storePath })).toBe(native);
+      expect(fs.existsSync(storePath)).toBe(false);
+
+      const entered = createDeferred();
+      phase = actor.withPhase("native-reply-admission", authority, async ({ patch }) => {
+        patch([{ kind: "activity", updatedAt: 543 }]);
+        entered.resolve();
+        await release.promise;
+      });
+      await withinTest(
+        awaitGateBeforeSettlement(
+          entered.promise,
+          phase,
+          "Native actor phase completed before retaining accepted work",
+        ),
+        signal,
+      );
+      operation.complete();
+      expect(getReplyOperationSessionActor(operation)).toBeUndefined();
+      expect(() => actor.snapshot(authority)).toThrow();
+      expect(() => acquireReplyOperationSessionActor(operation)).toThrow();
+      expect(registry.isReplyRunSuccessorAdmissionBlocked(key)).toBe(true);
+      expect(databaseClaim.isCurrent()).toBe(true);
+
+      release.resolve();
+      await withinTest(phase, signal);
+      expect(
+        await withinTest(registry.waitForReplyRunSuccessorAdmission(key, null), signal),
+      ).toMatchObject({ settled: true });
+      expect(databaseClaim.isCurrent()).toBe(false);
+      expect(sessionEntries.loadSessionEntry(scope)).toMatchObject({ sessionId, updatedAt: 543 });
+      expect(getOpenClawAgentDatabaseIfOpen({ agentId: "main", path: storePath })).toBe(native);
+      expect(fs.existsSync(storePath)).toBe(false);
+    } finally {
+      release.resolve();
+      await Promise.allSettled([phase]);
+      complete(result);
+      await registry.waitForReplyRunSuccessorAdmission(key, null);
+    }
+  });
+});
 
 it.each(["cancelled", "request-changed", "later-rebound-store"] as const)(
   "does not admit a delayed healthy rotation after %s",

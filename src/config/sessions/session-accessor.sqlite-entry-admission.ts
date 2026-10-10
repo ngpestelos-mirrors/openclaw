@@ -74,9 +74,18 @@ type WorkerSessionAdmissionClaim = {
   release(): Promise<void>;
 };
 
+type NativeIncognitoSessionAdmissionClaim = Omit<OpenClawAgentDatabaseClaim, "release"> & {
+  kind: "native-incognito";
+  reader?: undefined;
+  afterTransition?: undefined;
+  acquireSessionActor(lifetime: SessionActorLifetime): Promise<SessionActor>;
+  release(): Promise<void>;
+};
+
 export type SessionAdmissionDatabaseClaim =
   | OpenClawAgentDatabaseClaim
-  | WorkerSessionAdmissionClaim;
+  | WorkerSessionAdmissionClaim
+  | NativeIncognitoSessionAdmissionClaim;
 
 /** Admission retains the exact owner that supplied its row across asynchronous policy work. */
 export async function loadSessionEntryForAdmission(
@@ -221,12 +230,49 @@ export async function loadSessionEntryForAdmission(
     const options = toDatabaseOptions(resolved);
     const database = openOpenClawAgentDatabase(options);
     const borrowed = borrowOpenClawAgentDatabase(options);
-    const databaseClaim = createOpenClawAgentDatabaseClaim(database, borrowed.release);
+    const nativeClaim = createOpenClawAgentDatabaseClaim(database, borrowed.release);
+    const databaseClaim: NativeIncognitoSessionAdmissionClaim = {
+      ...nativeClaim,
+      kind: "native-incognito",
+      async acquireSessionActor(lifetime) {
+        nativeClaim.assertCurrent();
+        lifetime.assertCurrent();
+        const { captureNativeIncognitoSessionActor, captureNativeIncognitoSessionActorTarget } =
+          await import("./session-actor-native-incognito.js");
+        nativeClaim.assertCurrent();
+        lifetime.assertCurrent();
+        const actorDatabase = { ...options, path: database.path };
+        const target = captureNativeIncognitoSessionActorTarget({
+          database: actorDatabase,
+          sessionKey: resolved.sessionKey,
+        });
+        if (!target || target.database.incarnation !== nativeClaim.incarnation) {
+          throw new IncognitoSessionEndedError();
+        }
+        return captureNativeIncognitoSessionActor({
+          database: actorDatabase,
+          target,
+          lifetime: {
+            assertCurrent() {
+              nativeClaim.assertCurrent();
+              lifetime.assertCurrent();
+            },
+            assertReadable() {
+              nativeClaim.assertCurrent();
+              lifetime.assertReadable();
+            },
+          },
+        });
+      },
+      async release() {
+        nativeClaim.release();
+      },
+    };
     try {
       assertCurrent();
       return { entry: readSessionEntryRow(database, resolved.sessionKey)?.entry, databaseClaim };
     } catch (error) {
-      databaseClaim.release();
+      await databaseClaim.release();
       throw error;
     }
   }
