@@ -21,7 +21,7 @@ import {
 import { truncateUtf16Safe } from "../utils.js";
 import type { MeetingRealtimeAudioFormat } from "./realtime-audio-format.js";
 
-export const MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS = 900;
+const MEETING_AGENT_TRANSCRIPT_DEBOUNCE_MS = 900;
 // Playback duration plus a tail blocks live loopback; transcript lookback catches delayed echo.
 const MEETING_OUTPUT_ECHO_SUPPRESSION_TAIL_MS = 3_000;
 const MEETING_TRANSCRIPT_ECHO_LOOKBACK_MS = 45_000;
