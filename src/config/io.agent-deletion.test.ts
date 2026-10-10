@@ -69,5 +69,25 @@ it("keeps pending deletion targets stable across config writers while allowing o
       name: "Renamed",
       model: "openai/gpt-4.1",
     });
+    const removed: OpenClawConfig = {
+      ...original,
+      agents: { ...original.agents, entries: { keeper: {} } },
+    };
+    await io.writeConfigFile(removed, { allowedAgentRosterRemovals: ["worker"] });
+    const removedBytes = await fs.readFile(state.configPath, "utf8");
+    await expect(
+      io.writeConfigFile({
+        ...removed,
+        session: { store: state.path("moved-after-removal", "{agentId}", "sessions.json") },
+      }),
+    ).rejects.toThrow(/Agent "worker" deletion cleanup is still pending/);
+    expect(await fs.readFile(state.configPath, "utf8")).toBe(removedBytes);
+    await io.writeConfigFile({
+      ...removed,
+      agents: { ...removed.agents, entries: { keeper: { name: "Renamed survivor" } } },
+    });
+    expect((await io.readConfigFileSnapshot()).config.agents?.entries?.keeper?.name).toBe(
+      "Renamed survivor",
+    );
   });
 });
