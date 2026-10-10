@@ -333,3 +333,355 @@ This is a personal display preference, stored in this browser separately for eac
 
 Changing or clearing an owner or status filter never changes the saved preference.
 **Reset** in the popover restores **When filtering** when the empty-group control is visible. Populated groups stay visible even when collapsed, and hidden custom groups remain available in **Move to group**. Choose **Never** to recover their headers as drag targets. Catalog sections and empty agent groups in team mode retain their existing behavior. On phone-width layouts, the choices open as a page inside the filter sheet, with **Back**. Escape returns focus to the setting without closing the filter panel.
+
+Native CLI catalogs appear only when they contain sessions matching the current owner filter. Empty catalogs stay hidden even when discovery fails or the CLI can start new sessions. Catalogs load on connection. When the Gateway advertises catalog change events, catalogs refresh on those events with paced bursts and a ten-minute safety refresh. Otherwise, visible tabs refresh catalogs every 30 seconds. Returning to a hidden tab also refreshes its catalog. If more pages remain, discovery follows their cursors until a matching session appears, the catalog is exhausted, or a host reports an error, without repeating the first-page request. Discovery preserves its progress and pauses while the browser tab is hidden. A later refresh checks the first page for new sessions and restarts completed empty scans so older sessions that become visible are still discovered. Expanded catalogs preserve their loaded pages across refreshes. Populated catalogs remain visible when another host fails, with discovery details in their status indicator. Hidden catalogs do not keep the **Other** heading visible when it is the only remaining section. Native CLI starts remain available from **New session**.
+
+**Mark as unread** creates a reminder that remains unread while the current chat stays open, including while a run streams or completes. Leave and reopen the session, or choose **Mark as read**, to clear it.
+
+Opening a session as a viewer leaves its unread marker intact, including shared sessions. Draft sessions acknowledge reads automatically only for their owner or an administrator. If the Gateway rejects an automatic read acknowledgement because of invalid session state or missing access, the UI reports the error once for that unread episode and waits for a new episode or for you to reopen the session. Temporary failures can retry on a later session update. Manual unread reminders still remain until you reopen the session or choose **Mark as read**.
+
+**Delete** removes the confirmed selection from loaded session lists immediately and leaves any deleted conversation that is open. The Gateway finishes deletion in the background, safely stopping and reclaiming an attached cloud worker first. If deletion fails, the affected session can reappear with an error; other successful deletions and any navigation you made in the meantime are preserved. Browser drafts are retired only after deletion is confirmed, not while the request is pending. In-memory draft handoffs are retired immediately on confirmation. Switching Gateways during storage cleanup preserves the other Gateway's drafts and queued messages. If the connection or signed-in owner changes before storage cleanup starts, or recovery readiness takes more than ten seconds, stored drafts remain untouched and the UI reports the cleanup failure.
+
+Deleting a nested session keeps the remaining child list usable while the request
+is pending. A session hidden by pending deletion does not make an otherwise complete
+child list incomplete. If the Gateway cannot return a complete child list after
+bounded retries, the sidebar still shows the list error and offers **Retry**.
+
+On the Sessions page, checkbox selections survive paging through the loaded list.
+When the list refreshes, sessions that have disappeared, left the current filter,
+or been replaced are deselected. A replacement never inherits the old session's
+selection. Bulk deletion remains bound to the sessions you selected, including
+while its confirmation dialog is open.
+
+**Rename** in the sidebar, chat header, and Sessions page starts with your custom name or the generated dashboard title. Edit the text, then save or press Enter. Saving an unchanged generated title leaves automatic naming intact; clearing a custom name restores the generated title. Channel and account decorations stay outside the editable name. Rename targets the session you started editing. If that session is deleted and recreated at the same key before you save, the edit is rejected instead of renaming the replacement. Reopen Rename on the current session to try again. Resetting the conversation keeps the same session identity and does not invalidate the edit.
+
+Automatic titles follow the language of the first message, including short instructions with quoted literals. Titles are capped at 60 characters and unmatched quotation marks are removed after truncation. Empty or quote-only model output uses a readable crustacean-themed fallback name.
+
+**New group** from the sidebar, chat header, or Sessions page keeps the original session selection while the dialog is open and the group is being saved. A deleted or replaced session is not moved; an error is shown and the new group remains available. For a sidebar multi-selection, sessions that still exist can move even if another target fails. Paging a selected session out of the visible list does not cancel its move.
+
+Your saved custom name always takes precedence over an automatic title, even if
+it resembles an Android device label such as `OpenClaw App · Phone · abc123`.
+Older device labels saved as custom names keep that precedence until you clear
+or replace them explicitly. New Android device labels are stored separately, so
+a generated conversation title can replace the device label without changing
+your custom name.
+
+### Session menu
+
+Root sessions and ordinary Home-linked dashboard sessions can be pinned. Spawned and nested-child sessions reject pin requests, including when they appear as top-level threads. Subagent runs also reject pin requests and remain outside sidebar navigation.
+
+An ordinary conversation's **Actions** menu also offers **Move to group**, even
+when its header links back to Home. That breadcrumb does not make the
+conversation a nested child.
+
+A pinned parent is a single rail shortcut. Its indented child tree and expand/collapse controls remain in the Sessions list, subject to the current filters.
+
+The menu groups routine actions first: **Pin/Unpin**, **Rename**, **Mark as unread/read**, and **Archive/Unarchive**. The sidebar session menu also offers **Snooze/Wake session** beside Archive. **Delete** stays separate at the bottom.
+
+- In the sidebar session menu, **Snooze** offers **In 1 hour**, **In 3 hours**, **This evening** (18:00 local, when more than one hour away), **Tomorrow** (09:00 local), and **Next week** (next Monday at 09:00 local). On Sundays, Next week is omitted because it matches Tomorrow. Each preset shows its wake time in your locale. Active sessions eligible for pinning can be snoozed, except protected main and sentinel sessions; archived and nested child sessions cannot. A child moved to the top level can be snoozed. A snoozed session offers **Wake session** instead.
+- **Icon & color** opens one picker with color swatches, an icon grid, and **Reset to default**. It stays open while you change both; the sidebar reflects your changes.
+- **Move to group** includes **New group** and **Remove from group**. Multi-user gateways also offer **Assign to** ([session ownership](/concepts/multi-user#assigning-an-owner)).
+- **Fork conversation** creates a separate conversation; while a run is active, it forks from the last completed message. Forks of local folder and project sessions keep that workspace, so existing file references continue to open. **Fork from here** keeps the same local workspace as well.
+- **Copy** offers a session link, conversation text as Markdown, and the session ID. The link requires normal Gateway authentication and session access; copying it does not grant access. Markdown loads the available conversation history, not just the messages currently visible. Both copied Markdown and `/export` downloads retain the conversation's sender labels, so messages from different participants remain distinguishable. Records without exportable text, such as tool calls without text output, are omitted.
+- In the Control UI, `/export` and `/export-session` download Markdown through your browser and take no file path. An argument leaves the draft intact and shows how to retry. The server-side HTML export available through other clients keeps its separate workspace-path behavior.
+- The chat header's **Session sharing** control manages authenticated teammate visibility and membership. For a saved, non-incognito session, its creator or a Gateway admin can also enable world-readable, read-only public access.
+- **Open in** offers a new browser tab or window. Desktop chat also offers **Split right** and **Split below**. When the same conversation is open in multiple splits, each pane restores its transcript after a page reload and catches up independently when another pane is further ahead. After an upgrade, older cached transcripts are refreshed from the Gateway before incremental updates resume. Eligible local workspaces expose native editor destinations, and the chat header includes **Continue in terminal** in this submenu.
+
+If an owner assignment fails on the Sessions page, the page keeps the session and
+shows the Gateway's error. Resolve the reported problem, then reopen **Assign to**
+to retry. A late failure from a previous connection does not replace the current page's state.
+The **Assign to** menu marks the session's current owner and disables that choice,
+including while the team directory is loading or unavailable.
+
+### Share a session publicly
+
+1. Open the saved session and select **Session sharing** in the chat header. In the compact header menu, select **Session sharing** there instead.
+2. Under **Public access**, select **Enable public access…**, review the warning, then select **Make public**.
+3. Select **Copy public link** to copy the normal thread URL. The **Public** badge in the chat header remains visible while the transcript is published.
+4. Open that same URL in a signed-out browser to verify the read-only conversation and **Log in** button. Signing in returns to the thread with your existing permissions. New user messages and assistant final answers become visible to public readers automatically.
+5. Return to **Session sharing** and select **Disable public access** to stop anonymous reads. The same URL then returns an unavailable page to signed-out readers. Enabling access again makes that URL public again; disabling access cannot recall saved copies.
+
+The public page excludes tools, reasoning, files, images, widgets, hidden messages,
+and internal metadata. Credential-pattern redaction is best effort, so review the
+conversation itself before publishing. Public access does not let visitors send
+messages or grant authenticated Control UI permissions. For link lifecycle, pagination,
+backup behavior, and login-proxy configuration, see
+[Public session transcripts](/web/urls#public-session-transcripts).
+
+### Session placement
+
+Hover a cloud session in the sidebar to see its provider and profile. When known, a compact line below them shows the operating system, machine class, vCPU count, and memory in GB. The placement badge tooltip includes the same machine details; unavailable fields are omitted.
+
+A selected session running on a worker shows a quiet **Runs on Cloud** chip in the chat header. Connections with `operator.write` can choose **Move session…** to continue on the Gateway or an eligible paired device, and can use **Stop cloud worker…** through the write-scoped `sessions.reclaim` lifecycle. Moving to a configured cloud profile requires `operator.admin`. Cloud rows are filtered against all execution modes advertised by each profile: the same bundled Crabbox profile is selectable for OpenClaw `worker-turn` and Codex `remote-exec`, while a genuinely single-mode profile stays disabled for the other runtime. Profiles with multiple machine classes show a machine picker. Leaving the Move session picker untouched omits a size override; explicitly selecting a class, including the displayed default, sends that class. Choosing a different class on the current profile resizes the session. The confirmation explains that an active turn is interrupted and never replayed; OpenClaw reconciles the workspace before activating the destination. While the durable operation is in progress, the chip shows **Moving to…**. If recovery is blocked, the chip exposes the bounded error after reconnect so the action never fails silently.
+
+You can send a message while an existing worker session is provisioning or preparing its workspace. The accepted message shows **Received · waiting for worker setup** and starts automatically once that worker is ready. Stop, Move, and Restart keep their own admission controls; cancelled or interrupted input is not silently started on a different destination. The unsent draft in the New Session flow remains separate from accepted input.
+
+During the initial handoff, the chat placement menu and stop confirmation use the selected destination: **Stop device worker…** for explicit or automatic paired-device placement, **Stop cloud worker…** for a cloud profile, or neutral **Stop worker…** when the target is unknown; all use `sessions.reclaim`. A destination retained for retry after a failed startup does not label a later restart.
+
+### Session icons
+
+Choose **Icon & color** from a single session's context menu to give its sidebar row a persistent emoji, monochrome icon, or custom SVG. The picker includes common emoji and six named icons: `braces`, `book`, `monitor`, `bot`, `kanban`, and `coins`. Choose **Custom icon…** to enter a single emoji, paste SVG markup, or paste an SVG data URL (percent encoded or base64). SVGs must be self-contained and at most 16 KiB decoded; scripts, embedded documents, and external references are rejected. Include `xmlns="http://www.w3.org/2000/svg"` and a `viewBox`. Custom SVGs render as images, preserving their own colors. For emoji, press Control-Command-Space on macOS or Windows-period on Windows to open the system picker. The `sessions` agent tool can set the same `icon` field. An empty value removes it. This decoration replaces the owner avatar in the leading glyph slot, but temporary attention state always takes precedence so an operator request cannot be hidden.
+
+With **Person** grouping, use **Filter & sort → Owners** in the **Sessions** toolbar to filter to one owner, including yourself. Choose **All owners** to clear the owner filter. Active owner, **Involving me**, and non-default status filters appear beside **Sessions** in the toolbar. Click that summary to clear all filters and return to active sessions.
+
+## Session colors
+
+Choose **Icon & color** from a session menu and select a color swatch to add a narrow color stripe to its sidebar row and a matching dot beside the chat title. Pick one of eight colors, or choose **Default** to clear only the color. **Reset to default** clears both the icon and color. The colors match Claude Code’s `/color` names, so imported Claude Code sessions keep the same color. Imported catalog rows show their color without offering color editing.
+
+## Direct session shortcuts
+
+- **⌘⇧O** on Mac or **Ctrl+Shift+O** on Windows/Linux opens **New Session**
+  and focuses its composer. It opens a draft, without creating an empty session
+  or sending a message. **⌘N / Ctrl+N** remains **New Window**.
+- **⌘⇧A** on Mac or **Ctrl+Shift+A** on Windows/Linux requests **Archive**
+  for the current chat pane only, not other sessions selected in the sidebar.
+  It uses the same permissions, protected-session checks, archive lifecycle, and
+  **Undo** as the chat header menu. The archived conversation stays open; this
+  is not a separate stop or delete action.
+
+Both shortcuts work from the chat composer, ignore key repeat and text
+composition, and leave open modal dialogs in control. The keyboard-shortcuts help
+dialog is the exception for New Session: the shortcut closes help before opening
+and focusing the draft. Press **⌘/** or **Ctrl+/** again to close help without
+navigating. Archive remains blocked while help is open. New Session preserves the
+existing conversation's draft through normal navigation. Archive does not clear
+that draft or navigate to another conversation.
+
+Browser shortcut handling can vary by browser version and configuration. If your
+browser handles a chord itself, use the corresponding New Session control or
+**Archive** in the current chat's header menu. The menu's **A** shortcut still
+works while that menu is open.
+
+In the macOS app, these additional shortcuts apply while the Dashboard web view
+has keyboard focus. A separate native reading pane does not forward Archive to
+the Dashboard or another window. The existing native **⌘N** New Gateway Window
+and **⌘⇧N** New Thread commands are unchanged.
+
+These direct shortcuts do not change the command palette's **⌘K / Ctrl+K**, then
+**⌘Enter / Ctrl+Enter** workflow for starting a task in the background.
+
+## Command palette
+
+The command palette can start an independent task without leaving your current
+conversation or settings page. Search sessions, settings, and commands as usual,
+or write a prompt in the same field. Multiline text or a prompt of 60 or more
+characters pauses palette searches and gently hides the search tabs, results, and
+hints. The input stays anchored in place. Search returns when the text is
+single-line and shortened to 50 characters or fewer, or cleared. Between 51 and
+59 characters, the palette keeps its current mode to avoid flickering while you
+edit. Counts exclude leading and trailing whitespace. Session-creation errors and
+recovery actions remain visible in either mode.
+
+Pasted images appear as small, removable thumbnails below the text. Pasting or
+removing them leaves the input, **New session** action, and settings control in
+place; the palette grows downward. Images can start a session on their own or
+accompany text. There is no attachment picker in the palette.
+
+Type **@** to search eligible people by name or verified GitHub handle, just as
+in the chat composer. Use **↑/↓** or **Home/End**, then **Enter** or **Tab** to
+select a person; **Escape** dismisses the people picker before the palette.
+The compact **Will notify** row shows selected people once each, with **+N**
+when space is tight. You can select up to ten mention references. Editing or
+deleting a selected name removes that reference; **Remove mention** clears all
+recipient selections without deleting the text. Pasted names and email addresses
+remain ordinary text. The picker replaces search results while open, and selected
+mentions keep the palette in composer mode. Mentions travel with the first message
+of the new session; they never share a session, invite people, or grant access.
+
+- **Enter** selects a person while the people picker is open; otherwise it opens
+  or runs the selected search result. With no result, Enter does not send.
+- **Shift+Enter** adds a line. The field grows downward to three lines, then scrolls
+  without moving the palette or its top-right controls.
+- **Command+Enter** on macOS or **Ctrl+Enter** on Windows/Linux starts a new session
+  in the background. You can also choose **New session** beside the input.
+
+Selecting an installed plugin search result opens that plugin's overview, including
+disabled plugins. An uninstalled plugin with a catalog entry opens its catalog
+page directly. Search results show the plugin artwork when available. The
+**Plugins** navigation command opens the catalog hub.
+
+Open **New session settings** beside the input to choose the agent, workspace and
+machine, or whether to use a new worktree. These controls reuse the permissions
+and device/cloud availability rules of the full New session page. Model,
+attachment, and visibility controls remain on that page.
+
+The palette starts with your usual defaults. Turn on **Remember settings** to
+reuse different choices for Cmd/Ctrl+K without changing those defaults. Clearing
+the checkbox restores your usual choices immediately and leaves the prompt
+intact. One-off choices are not remembered for the next palette session.
+
+Accepted creation closes the palette and offers **Open session** without changing
+the foreground view or its draft. Creation and completion notices can open a session
+only while the original Gateway and account remain selected; reconnecting to the
+same account keeps the action available. A failed submission retains the prompt, selected mentions, images, and
+choices with an error. These settings do not affect sessions opened from search,
+and the existing conversation composer keeps its own send and steer/queue
+shortcuts. Long prompts remain intact for session creation and are never sent as
+search queries.
+
+## New session page
+
+New session **+** controls are links: click to open the draft in the current browser tab, Command-click (macOS) or Ctrl-click (Windows/Linux) to open another tab, or right-click for the browser's **Open Link in New Tab/Window** menu. Middle-click works too. The smaller plus controls on group and catalog sections preserve their target in the new tab; your current conversation stays open.
+
+The **+** in the sidebar's **Sessions** toolbar opens a full-page draft at `/new`: nothing is created until you send the first message. Separate destination and project controls choose where the session runs and which project or folder it uses. Connections with `operator.write` can choose **Local** (the Gateway host), **Auto** (least-busy device), or any paired device returned by `environments.list`; administrators additionally see configured cloud profiles and, when no devices are connected, **Connect a device**. A cloud profile is selectable when its advertised execution modes include the selected runtime, so one Crabbox profile row in the **Cloud** section supports both OpenClaw and Codex. For runtimes that consume worker slots, automatic selection first prefers eligible hosts with less admitted work relative to worker capacity, then compares free slots after accounting for pending dispatches, and breaks remaining ties by device ID. Runtimes that do not consume worker slots use device ID order. Device eligibility remains authoritative to the environment catalog and the selected runtime: OpenClaw `worker-turn` requires an available current session host with valid worker capacity and at least one free slot; Codex `remote-exec` requires its currently invocable, explicitly authorized exec-server command and consumes no worker slot. When that command is unavailable, the picker distinguishes a node that did not declare it, a declaration that awaits pairing approval, and a declaration blocked by Gateway command policy. Offline known hosts, connected non-hosts, incompatible or saturated hosts, hosts missing required capabilities, outdated hosts, and unavailable hosts remain visible with a reason and next step.
+
+The destination picker opens with **Search environments** focused. Its compact, single-line results are grouped under **Local**, **Your devices**, and **Cloud**. Only the environment list scrolls. Local uses the Gateway's name when available, with a house icon; it means the Gateway host, not necessarily the computer running your browser. Connected Macs named MacBook, Mac mini, or Mac Studio use the matching hardware outline; unknown devices use a monitor. The macOS app shell supplies native SF Symbols for those three shapes; other clients keep the web outlines. This is a display-name hint, not hardware detection, and never changes placement eligibility. Search matches destination names, types, IDs, and device facts, including capabilities and unavailable reasons. Usable devices appear before unavailable devices. Hover or keyboard focus reveals device details and available capacity; blocked devices explain their reason and next step, while offline devices remain muted without a details card.
+
+**Auto** is the first selectable row under **Your devices**, shown when more than one device is known. Its information icon explains how the device is chosen. Selecting Local, a device, or a cloud profile turns Auto off. When no devices are known, administrators see **Connect a device** in that section instead. Closing and reopening the picker clears its search.
+
+Hover a configurable cloud profile or focus its row to open its operating-system and machine options. Unavailable operating systems are omitted. Before selecting a profile, dashed outlines identify the defaults; choosing any option selects that profile and activates the defaults for the other setting. The selected profile shows its operating system and machine as muted text beside its name in the menu. The closed selector keeps only the profile name. Options use equal-width tiles, up to four columns, with long catalogs scrollable.
+
+**Hosted workspaces** lists provider-managed environments advertised by the
+Gateway’s model catalog, including **OpenAI (Agents API)** when configured.
+Choosing one selects its eligible model and runtime together; the model picker
+and environment picker show the same selection. Hosted workspaces do not mount
+or clone local folders, projects, or worktrees. Those controls are hidden while
+hosted execution is selected, and their draft choices remain available when
+switching back. Use chat attachments for files. Unavailable choices explain
+their setup requirements; Agents API requires an OpenAI API key, not a ChatGPT
+subscription. See [Agents API setup](/plugins/agentsapi).
+
+The folder defaults to the agent workspace. Write-scoped connections can browse, restore recent Gateway folders, and start sessions anywhere inside a configured agent workspace; another absolute Gateway path requires `operator.admin` but can run directly without being a Git checkout. Local placement keeps the optional **Worktree** control with a base-branch picker backed by `worktrees.branches` (no fetch) and an optional worktree name (the branch becomes `openclaw/<name>`). Choosing a device or cloud profile with a Gateway folder selected uses a managed worktree. With a GitHub repository selected, **Remote checkout** sends its URL and optional ref directly to the runner without creating a Gateway checkout.
+
+Leave **From** empty to fetch `origin` when creating the worktree and use its default branch. The placeholder is a suggestion, not a saved branch selection. Explicitly selected or saved branches and commits are used as entered without fetching; selecting local `main` uses that local branch, which can lag behind `origin/main`. If fetching or resolving the remote default fails, the Gateway falls back to the source checkout's `HEAD`.
+
+### Start a native coding CLI
+
+The **+** beside **Codex** or **Claude Code** opens a native CLI draft, not an
+OpenClaw Chat. Choose the machine and folder, optionally enter a first prompt,
+and press **Start in terminal** or Enter (or your configured submit shortcut).
+The terminal opens with keyboard focus. The CLI uses that
+machine's native account, model, and configuration; OpenClaw does not translate
+model or authentication settings or automatically adopt the native session.
+Native draft text is not sent to OpenClaw for automatic title preparation.
+Ordinary **New Chat** and explicit catalog continuation remain separate flows.
+
+Native starts require `operator.admin`, `gateway.cliAgents.enabled`,
+an enabled catalog plugin, and its installed CLI. Terminals are on by default;
+`gateway.terminal.enabled: false` blocks native starts.
+No matching OpenClaw model route is required. Each machine has one launch
+destination. The **Where** picker appears only when there is a choice or the
+previously selected machine is unavailable. It lists the Gateway's native CLI
+and connected nodes with the exact fresh-start command currently invocable;
+resume-only nodes are not eligible. Availability updates after Gateway reconnects
+and node connection or capability changes. After installing a CLI, reconnect to
+the Gateway; after approving a node capability change, reconnect that node.
+
+New Gateway-local Codex sessions use the primary native Codex profile configured
+for its catalog, normally the Gateway user's `CODEX_HOME` or `~/.codex`. Selecting
+a folder lets Codex load that project's trusted configuration; it does not select
+another account or Codex home. Additional Codex homes remain available for browsing
+and resuming existing sessions with their original profile. An OpenClaw agent's
+temporary app-server login is separate from a native CLI login.
+
+On the Gateway, the folder/worktree controls still provision the selected managed
+worktree before launching. On a node, enter an existing absolute directory on
+that node; create a worktree there first if needed. Native starts do not use
+OpenClaw worker placement, cloud/Auto selection, attachment submission, model
+controls, or Incognito. Add files and change native CLI settings in the terminal.
+A missing directory, disabled capability, or disconnected host produces an error;
+OpenClaw never starts a Chat or substitutes another host or home directory.
+If the CLI exits during startup, the terminal retains its output and exit status.
+If startup is rejected, the draft remains available to correct and retry.
+
+### OpenClaw Chat workspace startup
+
+On an OpenClaw Chat send, the submitted text and attachments appear immediately with a **Starting** indicator while the Gateway creates or adopts the session. This is a pending submission, not a Gateway acknowledgment. If creation is rejected, your prompt and attachments remain available to correct and retry. Once creation succeeds, the UI opens the session's chat. If navigation fails, the submitted message stays visible with an **Open session** action that retries navigation without creating or sending again. A background start keeps the same visible acknowledgment above the next draft, with a link to the created session.
+
+If the model catalog is still loading, session creation stops waiting after a shared 20-second catalog deadline and reports that the session was not created. Retry shortly; your draft remains available. Closing the requesting connection or losing its authority also ends a pending catalog wait.
+
+Starting a suggested task keeps its instructions visible through acceptance, with **Task started** and **Open session** after confirmation. Interrupted acceptance remains visible, and Retry checks the same task. Skill Workshop revisions carry their submitted instructions into chat while history loads.
+
+Attributed submissions show your avatar immediately, in the same position as the chat transcript. Opening the created session focuses the composer quietly; the attention cue is reserved for navigation that prefills a draft.
+
+The project picker refreshes after sign-in, reconnects, and Gateway configuration changes. Remote repository choices stay in the signed-in person's Gateway-scoped preferences and are excluded from shared browser fallback/migration. A saved remote repository from a previous GitHub host is discarded; New Session uses the current configured repository or the agent workspace instead. Gateway reconnects and Git verification retries preserve your edited base branch and worktree name. Choosing another folder or project clears those repository-specific details.
+
+For local worktree sessions, sending the first message opens the admitted session before naming, checkout, and setup finish. The chat shows the submitted message and preparation stages. A generated title is saved as soon as naming completes, independently of checkout and setup. Setup failures remain visible in that session; send a retry there after correcting the problem. The retry reuses the saved title. If naming itself fails, another attempt uses the original first prompt, including text attachments. Stopping during setup cancels preparation without starting the agent. Steering an active run keeps its progress visible, and delayed history cannot replace a newer startup stage or restore startup labels after activity begins.
+
+For device and cloud sessions, the submitted prompt also starts background naming as soon as the session is created. The sidebar can show its topic while the worker is still provisioning; the first task turn waits until placement is ready. A prepared title or custom session name keeps precedence. Incognito sessions skip this early naming step.
+
+For a remote target, the Control UI creates the repository or managed-worktree session with an empty initial message and no `execNode`, dispatches it by exact `deviceId`, `autoDevice: true`, or `profileId` (plus an optional cloud machine class), waits for active placement, and then sends the first message and attachments with the same idempotency key used by recovery. Explicit and automatic device dispatch require `operator.write`; cloud profile dispatch requires `operator.admin`. The composer footer chooses the new session's model and reasoning level.
+
+Model and **Effort** are separate adjacent composer controls in chat and New session, on desktop and mobile. The model picker never contains Effort or Fast-mode controls. Long model labels ellipsize to leave room for the other controls; the full name remains in the open picker and accessible label. Narrow composers, including split panes in wider windows, use compact controls so each picker stays independently clickable. Effort uses a gauge in these layouts whose needle reflects the current level, with a lightning badge when Fast mode is active. In chat, Fast mode stays in the Effort menu, or appears as the adjacent control when reasoning is unavailable. Models with neither available control omit it.
+
+The model picker initially opens with the selected model’s provider section expanded and other provider sections collapsed. Closing and reopening the same picker preserves your provider expansion choices and clears the search. Reloading the page initializes provider sections from the selected model again. Search the model picker by model name, model ID, provider, or provider/model reference. Your search stays applied as the model catalog refreshes. Press **Escape** to clear a nonempty search while keeping the picker open; press it again to close the picker and return focus to its trigger.
+
+When you switch sessions, the composer keeps the session's known model name visible while refreshing the model options available for that session. If the model is not yet known, the control shows a loading placeholder. Locked chats also show the selected model, or **Session model** when it is not known. The lock prevents model selection changes; it does not indicate that a native runtime owns the model.
+
+Once the session is created, chat opens immediately. Remote startup uses the same transcript progress indicator and elapsed timer as GitHub workspace preparation, showing provisioning, workspace preparation, startup, and first-message delivery as they happen. The composer stays disabled until the first message is accepted; normal startup is not an error. Startup failures remain visible in the session, with **Retry** when recovery is available.
+
+If startup recovery cannot load after a page reload, the session keeps the loading error and **Retry** available across session switches. Switching sessions does not restart recovery or reset its elapsed time. The saved first message continues holding later input until recovery loads and confirms its delivery state. While this page is responsive and unsaved starts await the recovery code, automatic in-app reloads are blocked and **Retry** is replaced by a warning. This includes Incognito starts and paused starts whose recovery could not be saved. Reload controls elsewhere in the app explain the same restriction. Choose **Discard unsaved starts and reload** to resume saved starts and discard the unsaved starts. The same action is available in the warning shown by other blocked Reload controls. This protection is limited to the open, responsive page; closing it or browser-managed navigation can still discard unsaved input. Incognito input is never saved to browser storage.
+
+If remote startup fails before the first message is sent, chat retains the submitted text, attachments, selected destination, and a bounded error in the same browser tab and Gateway credential scope. Reloading shows the paused submission without provisioning another worker. **Retry** retains the repository URL/ref or Gateway worktree choice and uses the already-created session and the original profile and machine class, device, or Auto selection; it waits for active placement before sending. The session keeps its model and reasoning settings, including any later changes you make in that session. This tab-local startup recovery uses the tab's existing session-storage lifetime, separately from the ordinary browser draft limits below. Incognito startup recovery remains in memory only. An ordinary reconnect keeps the already-submitted prompt visible with **Reconnecting**, while send and retry actions remain unavailable. Changing the Gateway, credentials, or authenticated owner clears private presentation. Reconnecting does not release the first-turn hold: later input stays in the composer instead of entering the ordinary offline queue. Sessions without an unresolved initial turn keep normal offline queuing.
+
+If the Gateway explicitly rejects the first send, **Retry** creates a new send attempt on that same session and destination. If delivery is uncertain, **Check delivery** looks for the original user message or an exact Gateway receipt showing that the input was retained or consumed. It never resends the prompt, provisions a worker, or treats missing history as proof that delivery failed. A matching receipt clears the browser startup hold without implying that the run has finished. The prompt stays visible until chat receives the corresponding Gateway-owned input or transcript message, then switches to that authoritative copy without duplication. Retained inputs keep their Gateway-owned status, including interrupted or cancelled inputs. Without a receipt, the prompt and attachments remain accessible and normal sending stays disabled. Inspect the conversation, or copy the retained prompt if you choose to start a separate attempt. This recovery does not promise exactly-once delivery across Gateway restarts. If browser storage rejects a recovery update, keep the current page open to preserve its in-memory input.
+
+When an interrupted remote-placement draft needs deletion, cleanup reclaims the placement by session key, archives it with its expected session identity, then uses the write-scoped archived-only delete contract. Cleanup errors remain visible. If an interrupted Incognito startup is successfully cleaned up, the current pane keeps a read-only copy of its prompt and an interruption notice. It does not recreate the session or resend the message; the copy lasts only in the current browser tab and credential scope. Restoring paused or unconfirmed recovery does not itself request deletion.
+
+Unsent text and staged attachments can be recovered only in the same browser profile and Gateway credential scope; they are never stored on the Gateway or synced across devices. The browser keeps the 20 most recently edited draft scopes per Gateway credential scope for up to seven days, with at most 25 MiB of attachment data per draft, but it can evict browser storage sooner. A successful send or New Session creation, explicit attachment removal, or confirmed session deletion retires the corresponding browser draft. If cleanup fails after deletion, clear site data for the Control UI origin to remove it. Clearing site data also removes every other browser draft. If a draft's attachments exceed the cap, the current tab keeps them and shows the existing storage warning, but only the text is restart-recoverable. OpenClaw **Incognito** drafts are never durable. Turning Incognito off resumes browser autosave for the current text and attachments, without requiring another edit. Switching New Session destinations, or leaving an existing Incognito chat for Settings and returning with Back, keeps unsent text and attachments in the current tab. Reloading or closing the tab discards that unsent input. Automatic UI updates pause while an unsent Incognito draft remains in a chat pane, New Session, or its navigation handoff. If an update requires a fresh page, sending remains unavailable; choose **Refresh** and **Review private draft** to copy the text or download staged files, keep the tab open, or explicitly discard that draft and retry the refresh. Other unsaved-work guards still apply. This protection requires a document running the updated UI; a server update cannot retrofit it into an already-open older page. A manual browser reload or closing the tab still discards the memory-only draft. Submitted Incognito messages in the tab-only inline outbox retain their separate reload behavior. In a private browser window, IndexedDB availability and lifetime are controlled by the browser and stored data is normally cleared when the private session ends. The **Incognito** toggle in the new-session page's top-right control rail retires that browser draft and creates a web-only thread whose session entry, transcript, and compaction state stay in memory for 24 hours after creation or until the Gateway restarts, whichever comes first; OpenClaw also skips its automatic memory flush. The agent keeps its normal tools, so an explicit save request or tool-driven file write can still persist data. The model provider still processes messages, and content-free audit metadata is still recorded. Remote-placement starts persist their model and reasoning choices before dispatching the session to its worker.
+
+<a id="register-an-existing-repository" />
+
+**Projects.** The Place picker lists configured agent workspaces and repositories recorded with `projects.register`. Read-only connections receive project names and IDs; checkout paths and origin URLs are included only at `operator.write`. An admin can browse to a Git checkout and choose **Register as project**; write-only operators see a hint directing them to that flow. Choosing a project sends its ID through `sessions.create`, so it can run directly or supply the source for optional Worktree isolation without submitting a raw path. If an agent workspace was moved or removed, update that agent's configured workspace path. If a recorded checkout was moved or removed, re-register it before starting another session there.
+
+You can also register an existing checkout through the
+[Gateway CLI](/cli/gateway/query#gateway-call-%3Cmethod%3E). Registration requires
+`operator.admin`; listing requires `operator.read`.
+
+```bash
+openclaw gateway call projects.register \
+  --params '{"path":"/srv/projects/example","name":"example"}' --json
+openclaw gateway call projects.list --json
+```
+
+Use an absolute path on the machine running the Gateway, even when the CLI runs
+on another machine. The Gateway service account must be able to access the Git
+checkout, and its `HEAD` must resolve to a commit. Registration records the
+existing checkout without cloning it. `name` is optional and defaults to the
+checkout directory's name.
+
+Registering the same resolved repository root again returns its existing project ID and
+display name. Passing a different `name` does not rename an existing project.
+
+`projects.list` returns recorded projects without checking Git. Recent projects
+and folders do not wait for session display details to refresh. Operators with
+`operator.write` can request `{"includeObserved":true}` to discover additional
+checkouts from visible sessions and managed worktrees. Concurrent discovery of
+the same checkout set shares one bounded Git pass; subsequent requests read
+fresh repository metadata, including external remote changes and moved checkouts.
+
+**Projects from GitHub.** Search the same picker or paste a GitHub HTTPS or `git@github.com` repository URL. For a remote destination, creation records that source and the runner fetches it during dispatch; no Gateway project clone is required. For Gateway execution, the picker clones into the Gateway-managed projects area. Recent repository sources retain their URL without inventing a local path. Public repository search and cloning work anonymously. Private remote checkout uses the effective shared `tools.github` identity; the discovery credential below only grants picker access. For affiliated and private repositories, prefer the explicit `gateway.controlUi.github.token` SecretRef so this service access has a clear runtime owner. Set `gateway.controlUi.github.host` to the selected Enterprise host; an omitted credential host means `github.com`. The shipped `GH_TOKEN` then `GITHUB_TOKEN` fallback applies only to `github.com`. A trusted host that sets `gateway.projects.nativeGitHubSearch: true` instead prepares the current native system GitHub identity for each search; this is intended for a protected `gh` wrapper or host login and retains the native identity's 60-second cache and rotation fences. Ambient `GH_ENTERPRISE_TOKEN` or `GITHUB_ENTERPRISE_TOKEN` requires `GH_HOST` to match the selected Enterprise host; host-specific native login remains supported. When a Control UI SecretRef is explicit, its exact environment or store name is excluded from agent execution without clearing unrelated native GitHub CLI variables. Search rechecks the requesting connection before each outbound request and stops after revocation or cancellation. Search requires `operator.read`, cloning requires `operator.write`, and deleting a Gateway-managed cloned checkout requires `operator.admin`. Clone deletion refuses while a live session or managed worktree still references the checkout. SecretRef ownership is not an OS-user security boundary; use a sandbox, dedicated host, or dedicated OS user when same-account processes are not trusted.
+
+For a GitHub Enterprise deployment, configure `gateway.github.host` and `gateway.github.apiBaseUrl`. GitHub Enterprise Server uses `https://HOSTNAME/api/v3`; its GraphQL requests use `/api/graphql`. To preselect a repository on New Session, set `gateway.projects.defaultRepository.url` and optionally its `ref`. OpenClaw derives the repository identity from the URL and selects a worker profile through the existing `cloudWorkers.projectProfiles` mapping. The profile can use any configured provider, including Azure through the Crabbox plugin. The default is returned only to clients authorized for `sessions.create`, and applies only while the user has no saved project choice; selecting a folder or another project overrides it.
+
+```json5
+{
+  gateway: {
+    github: { host: "ghe.example.test", apiBaseUrl: "https://ghe.example.test/api/v3" },
+    controlUi: {
+      github: {
+        host: "ghe.example.test",
+        token: { source: "store", provider: "default", id: "example-enterprise-service-token" },
+      },
+    },
+    projects: {
+      defaultRepository: { url: "https://ghe.example.test/acme/private-repo.git", ref: "main" },
+    },
+  },
+  cloudWorkers: {
+    projectProfiles: { "ghe.example.test/acme/private-repo": "example-worker" },
+  },
+}
+```
+
+Use the Effort menu to choose Fast Mode before creating a session. New Session persists that choice before the first local or remote turn starts.
+
+Refreshing sessions after an initial `/think` command finishes updates chat's Effort setting.
+
+For agent GitHub CLI identity and Git author setup, see [`tools.github`](/gateway/config-tools#tools-github).
+
+An expired Incognito link shows an expiration notice instead of an ordinary new conversation. **New Incognito session** opens a fresh private conversation and carries over unsent composer text and attachments within the current tab; it does not send them automatically. Previously submitted messages that were not sent remain on the expired conversation for copying or discarding, without a retry action.
+
+On multi-user gateways, only admin-scope connections can create or view incognito threads, and other sessions cannot reach them through agent session tools or transcript search. Incognito protects against storage and other gateway-mediated users, not against the gateway owner or process operator, who can always observe live sessions.
+
+**Browse folders** opens the Place picker's inline Gateway directory browser through `fs.listDir`. Typing in the path field filters the current folder's subfolders as you type (exact and prefix matches first, and hidden folders match only when the text starts with a dot); typing a new directory prefix lists that directory. Up/Down highlight a folder, Enter opens it, and Tab completes its name. Write-scope browsing starts at the configured agent workspace and cannot navigate above it; realpath checks also reject symlinks that escape the workspace. Admin connections can browse arbitrary Gateway paths. Recent places restore only Gateway folders the current connection can submit; New Session does not browse or remember node filesystem paths. Local submission can call `sessions.create` with the first message in the same round-trip. Remote submission uses the create, dispatch, then send sequence described above. If the Gateway creates the session but rejects that first send, the chat preserves the prompt and error across reloads; **Retry** sends it through the already-created session instead of creating another one.
