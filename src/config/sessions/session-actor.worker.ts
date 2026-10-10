@@ -232,9 +232,14 @@ export function createSessionActorWorker(
                     (appended && "messageId" in appended ? [appended] : []),
                   append,
                   projectionNeedsReconcile:
-                    turn?.projectionNeedsReconcile ??
-                    append?.value.projectionNeedsReconcile ??
-                    false,
+                    Boolean(turn?.projectionNeedsReconcile) ||
+                    Boolean(append?.value.projectionNeedsReconcile) ||
+                    Boolean(append?.header?.projectionNeedsReconcile) ||
+                    Boolean(
+                      value &&
+                      "projectionNeedsReconcile" in value &&
+                      value.projectionNeedsReconcile,
+                    ),
                 },
                 pendingInputReceipt: turn?.custody ?? append?.value.pendingInputReceipt,
                 pendingInputMutationReceipt: applied.pendingInputMutationReceipt,

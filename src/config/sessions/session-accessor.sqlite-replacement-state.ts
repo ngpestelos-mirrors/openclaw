@@ -35,6 +35,7 @@ import type {
 } from "./session-accessor.sqlite-replacement-types.js";
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import { readSessionTranscriptWatermarkInDatabase } from "./session-accessor.sqlite-transcript-watermark.js";
+import { readSessionActorTransactionState } from "./session-actor-transaction.js";
 import {
   captureSessionEntryPublicationSource,
   hasSessionEntryPublicationCapacity,
@@ -120,7 +121,10 @@ export function prepareSessionEntryReplacementPublication(
   const source = getAdmittedSqliteSchemaFacts(database.db)
     ? captureSessionEntryPublicationSource(database.db, {
         ...readOpenClawAgentDatabaseIdentity(database),
-        revision: readSessionNodesGeneration(database.db),
+        // Actor receipts carry the complete postimage at the native writer revision.
+        ...(!readSessionActorTransactionState(database)
+          ? { revision: readSessionNodesGeneration(database.db) }
+          : {}),
       })
     : undefined;
   const changedKeys = [
