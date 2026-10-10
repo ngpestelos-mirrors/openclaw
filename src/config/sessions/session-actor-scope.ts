@@ -11,8 +11,9 @@ import type {
   SessionActorHotState,
   SessionActorLifetime,
   SessionActorOutcome,
+  SessionActorTarget,
 } from "./session-actor-contract.js";
-import { createDurableSessionActorFactory } from "./session-actor-durable.js";
+import { createSessionActorFactory } from "./session-actor-durable.js";
 import { captureIncognitoSessionSource } from "./session-incognito-binding.js";
 
 /** Reprepare only an explicitly refused version, never an uncertain accepted write. */
@@ -74,13 +75,11 @@ export async function withSessionActor<T>(
   const scope = await prepareSqliteScope(input);
   lifetime.assertCurrent();
   const options = toDatabaseOptions(scope);
-  const identity = readDatabasePathIdentitySync(resolveOpenClawAgentSqlitePath(options));
-  if (!identity.key.startsWith("file:")) return undefined;
-  const actor = await createDurableSessionActorFactory({
-    ...options,
-    path: identity.canonicalPath,
-  }).acquire(
-    {
+  const database = { ...options, path: resolveOpenClawAgentSqlitePath(options) };
+  const identity = readDatabasePathIdentitySync(database.path);
+  let target: SessionActorTarget | undefined;
+  if (identity.key.startsWith("file:")) {
+    target = {
       database: {
         kind: "file",
         physicalIdentity: identity.key.slice("file:".length),
@@ -88,9 +87,18 @@ export async function withSessionActor<T>(
         nativeLocation: identity.canonicalPath,
       },
       sessionKey: scope.sessionKey,
-    },
-    lifetime,
-  );
+    };
+  } else {
+    const { captureNativeIncognitoSessionActorTarget } =
+      await import("./session-actor-native-incognito.js");
+    lifetime.assertCurrent();
+    target = captureNativeIncognitoSessionActorTarget({ database, sessionKey: scope.sessionKey });
+  }
+  if (!target) return undefined;
+  const actor = await createSessionActorFactory({
+    ...database,
+    path: target.database.kind === "file" ? identity.canonicalPath : database.path,
+  }).acquire(target, lifetime);
   try {
     return await consume(actor);
   } finally {
