@@ -47,6 +47,10 @@ multiple active Gateways would require a separate ownership and coordination
 design. A shared database alone does not make process-local writer queues,
 session lifecycles, or host-owned leases safe across Gateway instances.
 
+`pnpm check:database-dialect-ratchet` keeps mechanical, design, and engine-maintenance counts shrink-only against the Git base by scanning only differing production `.ts`/`.mts`/`.sql` files under `src/`, `extensions/`, and `packages/` (excluding tests and fixtures); `--staged` reads the index, `--full-tree` reports totals, and the `sqliteStringSet` owner subset is reported within mechanical debt.
+The frozen lexical contract uses case-insensitive word-boundary regexes over static TypeScript strings and template parts (never substitutions), whole `.sql` files minus comments, and the `orReplace`/`orIgnore`/`orAbort`/`orFail`/`orRollback` method calls: SQL double-quoted text is excluded, functions require `name(`, and `data_version`/`schema_version`/`user_version` require `PRAGMA <name>` or `pragma_<name>(`.
+Split literals, substitutions, and prose may be over- or under-counted; both revisions use identical rules, with no type, symbol, import, or SQL token-role analysis and no runtime or schema change.
+
 ### Keep operations at the owning store
 
 Session cleanup reads entry metadata and missing-transcript classifications in one

@@ -760,6 +760,12 @@ export function createChangedCheckPlan(
       "--base",
       options.base ?? (options.staged ? "HEAD" : "origin/main"),
     ]);
+    add("SQLite dialect ratchet", [
+      "check:database-dialect-ratchet",
+      ...(options.staged ? ["--staged"] : []),
+      "--base",
+      options.base ?? (options.staged ? "HEAD" : "origin/main"),
+    ]);
   }
   if (
     result.paths.some(
