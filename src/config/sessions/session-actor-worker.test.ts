@@ -368,6 +368,49 @@ it("adopts a run only under the exact lifecycle and current transaction and comm
   });
 });
 
+it.each([
+  { stored: "current-generation", requested: null },
+  { stored: undefined, requested: "old-generation" },
+])("refuses raw appends across nullable lifecycle revisions: %j", async ({ stored, requested }) => {
+  await withActor(async (f) => {
+    runSqliteImmediateTransactionSync(f.database.db, () => {
+      writeSessionEntry(f.database, f.target.sessionKey, {
+        ...f.nativeEntry()!,
+        lifecycleRevision: stored,
+      });
+    });
+    const before = f.read();
+    const events = readTranscriptEventRows(f.database, f.scope.sessionId);
+    const command: Mutation = {
+      type: "session.actor.appendTranscriptEvent",
+      input: {
+        target: f.target,
+        expected: before.version,
+        commandId: "stale-model-change",
+        phaseId: "model",
+        sessionId: f.scope.sessionId,
+        lifecycleRevision: requested,
+        eventJson: JSON.stringify({
+          type: "model_change",
+          id: "stale-model",
+          parentId: null,
+          timestamp: "2026-01-01T00:00:00Z",
+          provider: "synthetic",
+          modelId: "test-model",
+        }),
+      },
+    };
+    await f.prepare(command);
+    expect(f.mutate(command)).toMatchObject({
+      kind: "rolled-back",
+      error: { message: "Session actor transcript lifecycle changed before append" },
+    });
+    expect(f.receipt()).toBeUndefined();
+    expect(f.nativeEntry()).toEqual(before.entry);
+    expect(readTranscriptEventRows(f.database, f.scope.sessionId)).toEqual(events);
+  });
+});
+
 it.each(["assistant append", "empty append"] as const)(
   "commits terminal custody and guarded accounting atomically with %s",
   async (mode) => {
@@ -473,6 +516,7 @@ it.each(["assistant append", "empty append"] as const)(
       expect(readTranscriptEventRows(f.database, f.scope.sessionId)).toEqual(originalEvents);
 
       const native = vi.spyOn(f.database.db, "exec");
+      const clock = vi.spyOn(Date, "now").mockReturnValue(55);
       let committed: ReturnType<Fixture["mutate"]>;
       try {
         committed = f.mutate(complete(fresh, "fixture-before"));
@@ -482,6 +526,7 @@ it.each(["assistant append", "empty append"] as const)(
             .map(([sql]) => sql),
         ).toEqual(["BEGIN IMMEDIATE", "COMMIT"]);
       } finally {
+        clock.mockRestore();
         native.mockRestore();
       }
       expect(committed.kind).toBe("committed");
