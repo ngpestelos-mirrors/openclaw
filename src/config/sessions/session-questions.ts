@@ -10,15 +10,18 @@ import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
 import { prepareSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import { runSessionEntryWorkerOperation } from "./session-entry-patch.js";
 import { SessionQuestionCustodyRetiredError } from "./session-questions-custody-error.js";
-import type { DurableQuestion } from "./session-questions.types.js";
-import type { SessionQuestionOperation, SessionQuestionResult } from "./session-questions.types.js";
+import type {
+  DurableQuestion,
+  SessionQuestionOperation,
+  SessionQuestionResult,
+} from "./session-questions.types.js";
 import type {
   SessionQuestionCandidate,
   SessionQuestionOperations,
 } from "./session-questions.worker.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 
-export type { DurableQuestion, QuestionContinuationProvenance } from "./session-questions.types.js";
+export type { DurableQuestion } from "./session-questions.types.js";
 
 /** Host authority stays live through native transaction and commit admission. */
 export async function executeSessionQuestionOperation(

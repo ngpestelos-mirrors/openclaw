@@ -37,11 +37,11 @@ import { GatewayClientRegistry } from "../server/client-registry.js";
 import type { GatewayWsClient } from "../server/ws-types.js";
 import { canReceiveSessionEvent } from "../session-sharing.js";
 import * as questionRegistration from "./question.durable-registration.js";
+import { registerQuestionCollisionTests } from "./question.registration-collision.test-harness.js";
 import {
   adminRequestClient,
   broadcast,
   callQuestionRpc,
-  installQuestionTestHooks,
   manager,
   requestParams,
   secretRequestParams,
@@ -49,7 +49,7 @@ import {
 } from "./question.test-support.js";
 import type { GatewayClient } from "./types.js";
 
-installQuestionTestHooks();
+registerQuestionCollisionTests(createOwnRunFixture);
 
 const answers = { answers: { destination: ["Library"] } };
 const sessionScope = { agentId: "main", sessionKey: requestParams.sessionKey };
@@ -376,7 +376,7 @@ describe("durable post-commit registration", () => {
     });
   });
 
-  it("does not reopen channel delivery or publish a prompt when registration retries a terminal fact", async () => {
+  it("rejects a terminal ID without reopening channel delivery or publishing a prompt", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const f = await createOwnRunFixture(true);
       const requested = vi.spyOn(questionChannel, "handleQuestionChannelRequested");
@@ -394,7 +394,7 @@ describe("durable post-commit registration", () => {
         requested.mockClear();
         broadcast.mockClear();
         const retry = await f.call("question.request", params, f.runtime);
-        expect(retry[1]).toMatchObject({ id: params.id, durable: true, status: "answered" });
+        expect(retry[0]).toBe(false);
         expect(manager.get(params.id)).toMatchObject({ status: "answered", answers });
         expect(requested).not.toHaveBeenCalled();
         expect(broadcast.mock.calls.some(([event]) => event === "question.requested")).toBe(false);
@@ -437,7 +437,8 @@ describe("durable post-commit registration", () => {
           if (!target.path) {
             throw new Error("Expected successor database path");
           }
-          const identity = readDatabasePathIdentitySync(target.path);
+          const successorPath = target.path;
+          const identity = readDatabasePathIdentitySync(successorPath);
           const successor = {
             ...original,
             record: { ...original.record, runId: "successor-asking" },
@@ -456,7 +457,7 @@ describe("durable post-commit registration", () => {
             sessionBinding: {
               ...original.sessionBinding,
               storePath: replacementScope.storePath,
-              databasePath: target.path,
+              databasePath: successorPath,
               databaseIdentity: {
                 identity: identity.key.slice("file:".length),
                 birthtime: identity.birthtime,
@@ -481,14 +482,14 @@ describe("durable post-commit registration", () => {
           if (firstRead === "resolve") {
             expect((await f.call("question.resolve", { id, answers }, f.runtime))[0]).toBe(true);
           }
-          await closeOpenClawAgentDatabaseByPathAsync(target.path);
+          await closeOpenClawAgentDatabaseByPathAsync(successorPath);
           await closeOpenClawAgentDatabaseByPathAsync(original.sessionBinding.databasePath);
           const replaceDatabase = () => {
             fs.renameSync(
               original.sessionBinding.databasePath,
               state.statePath("original-question.sqlite"),
             );
-            fs.copyFileSync(target.path, original.sessionBinding.databasePath);
+            fs.copyFileSync(successorPath, original.sessionBinding.databasePath);
           };
           if (firstRead.endsWith("after-read")) {
             const read = questionStorage.readSessionQuestionCustody;

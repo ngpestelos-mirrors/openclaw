@@ -1,13 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { SessionAccessScope } from "../config/sessions/session-accessor.sqlite-contract.js";
-import { hasSessionQuestionCustodyRetiredError } from "../config/sessions/session-questions-custody-error.js";
+import {
+  SessionQuestionCustodyRetiredError,
+  hasSessionQuestionCustodyRetiredError,
+} from "../config/sessions/session-questions-custody-error.js";
 import {
   executeSessionQuestionOperation,
   readSessionQuestionCustody,
 } from "../config/sessions/session-questions.js";
 import type { DurableQuestion } from "../config/sessions/session-questions.types.js";
 import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
+import { hasSqliteWorkerErrorCode } from "../infra/sqlite-worker-contract.js";
 import { CommandLane } from "../process/lanes.js";
 import { prepareChannelOperatorAdmin } from "./channel-operator-authority.js";
 import { captureChannelOperatorRunAuthority } from "./operator-run-authority.js";
@@ -16,7 +20,25 @@ import type { GatewayInstanceRuntime } from "./server-instance-runtime.types.js"
 import type { GatewayRequestContext } from "./server-methods/shared-types.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
 
+export type QuestionCompletionOwed = {
+  status: "completion_owed";
+  questionId: string;
+  runId: string;
+  repair: () => Promise<void>;
+};
+
+export type QuestionTerminalOwed = {
+  status: "terminal_owed";
+  questionId: string;
+  runId: string;
+  repair: () => Promise<void>;
+};
+
+export type QuestionReceiptOwed = QuestionCompletionOwed | QuestionTerminalOwed;
+
 export type QuestionContinuationReceipt =
+  | { status: "admission_owed"; questionId: string }
+  | QuestionReceiptOwed
   | { status: "settled"; questionId: string; runId: string }
   | { status: "interrupted"; questionId: string; runId: string }
   | { status: "not_owed"; questionId: string };
@@ -65,10 +87,14 @@ export async function dispatchQuestionContinuation(params: {
     );
   const finish = async (interrupted: boolean, reason?: string) => {
     const result = await executeSessionQuestionOperation(
-      { ...scope, assertCurrent: params.assertCurrent },
+      { ...scope, assertCurrent },
       { kind: "finish", id: questionId, runId, interrupted, reason, expectedQuestion },
     );
-    if (!interrupted && (!isOwnReceipt(result) || result.continuation.status !== "settled")) {
+    if (
+      !isOwnReceipt(result) ||
+      result.continuation.status !== (interrupted ? "interrupted" : "settled") ||
+      (interrupted && result.continuation.reason !== reason)
+    ) {
       throw new Error("Durable question completion receipt was not settled.");
     }
   };
@@ -160,7 +186,8 @@ export async function dispatchQuestionContinuation(params: {
         expectedExistingSessionLifecycleRevision: question.lifecycleRevision,
         idempotencyKey: runId,
         lane: CommandLane.Main,
-        message: `The previously requested user question has resolved. Continue the original task using this result:\n${JSON.stringify({ id: questionId, status: question.record.status, answers: question.record.answers })}`,
+        message: `The previously requested user question has resolved. Continue the original task using this result:
+${JSON.stringify({ id: questionId, status: question.record.status, answers: question.record.answers })}`,
         ...(delivery
           ? {
               channel: delivery.channel,
@@ -214,6 +241,8 @@ export async function dispatchQuestionContinuation(params: {
       },
     );
     executionCompleted = true;
+    restored?.release();
+    restored = undefined;
     await finish(false);
     return { status: "settled", questionId, runId };
   } catch (error) {
@@ -221,65 +250,148 @@ export async function dispatchQuestionContinuation(params: {
       throw error;
     }
     if (executionCompleted) {
-      // Repair only this completed turn's receipt. Repeating dispatch could repeat
-      // delivered output or effects even when the first receipt ACK was lost.
-      const canonical = await readSessionQuestionCustody(
-        question.sessionBinding,
-        questionId,
-        params.assertCurrent,
-      );
-      if (!isOwnReceipt(canonical)) {
-        throw error;
-      }
-      if (canonical.continuation.status === "settled") {
-        return { status: "settled", questionId, runId };
-      }
-      if (canonical.continuation.status !== "claimed") {
-        throw error;
-      }
-      try {
+      const repair = async () => {
+        const canonical = await readSessionQuestionCustody(
+          expectedQuestion.sessionBinding,
+          questionId,
+          assertCurrent,
+        );
+        if (
+          !isOwnReceipt(canonical) ||
+          (canonical.continuation.status !== "settled" &&
+            canonical.continuation.status !== "claimed")
+        ) {
+          throw new SessionQuestionCustodyRetiredError(
+            "Completed question receipt custody changed.",
+          );
+        }
+        if (canonical.continuation.status === "settled") {
+          return;
+        }
         await finish(false);
+      };
+      // The native execution is complete. Preserve only its write-only receipt
+      // obligation across storage outages; never reconstruct or repeat execution.
+      try {
+        await repair();
       } catch (repairError) {
         if (hasSessionQuestionCustodyRetiredError(repairError)) {
           throw repairError;
         }
-        const repaired = await readSessionQuestionCustody(
-          question.sessionBinding,
-          questionId,
-          params.assertCurrent,
-        );
-        if (!isOwnReceipt(repaired) || repaired.continuation.status !== "settled") {
-          throw repairError;
+        try {
+          const repaired = await readSessionQuestionCustody(
+            expectedQuestion.sessionBinding,
+            questionId,
+            assertCurrent,
+          );
+          if (
+            !isOwnReceipt(repaired) ||
+            (repaired.continuation.status !== "settled" &&
+              repaired.continuation.status !== "claimed")
+          ) {
+            throw new SessionQuestionCustodyRetiredError(
+              "Completed question receipt custody changed.",
+            );
+          }
+          if (repaired.continuation.status === "settled") {
+            return { status: "settled", questionId, runId };
+          }
+        } catch (readError) {
+          if (hasSessionQuestionCustodyRetiredError(readError)) {
+            throw readError;
+          }
         }
+        return { status: "completion_owed", questionId, runId, repair };
       }
       return { status: "settled", questionId, runId };
     }
-    if (claimAttempted && !claimed) {
-      // An uncertain worker acknowledgement never authorizes execution. Read only
-      // our exact claim back so its interrupted receipt can be presented safely.
-      const canonical = await readSessionQuestionCustody(
-        question.sessionBinding,
-        questionId,
-        params.assertCurrent,
-      );
-      claimed = isOwnReceipt(canonical) && canonical.continuation.status === "claimed";
+    if (
+      !claimAttempted &&
+      hasSqliteWorkerErrorCode(error, ["closed", "overloaded", "unavailable", "outcome-unknown"])
+    ) {
+      // No native claim was attempted. Retry preparation only while the same
+      // Gateway owns this exact custody; fresh policy still owns admission.
+      assertCurrent();
+      return { status: "admission_owed", questionId };
     }
-    if (claimed) {
-      await finish(
-        true,
-        "Continuation was interrupted. Start a new user turn to inspect the current state; the previous turn will not automatically repeat.",
+    // Execution has ended (or admission was uncertain). Retain only terminal
+    // persistence, never a source grant or permission to repeat the turn.
+    restored?.release();
+    restored = undefined;
+    const interruptedReason =
+      "Continuation was interrupted. Start a new user turn to inspect the current state; the previous turn will not automatically repeat.";
+    const blockedReason =
+      "Continuation could not be admitted under the original caller authority. Start a new user turn to inspect the question and current session.";
+    const intent = claimed ? "interrupt" : claimAttempted ? "reconcile" : "block";
+    const matchesCustody = (current: DurableQuestion | undefined): current is DurableQuestion =>
+      Boolean(
+        current &&
+        current.sessionKey === expectedQuestion.sessionKey &&
+        current.sessionId === expectedQuestion.sessionId &&
+        current.lifecycleRevision === expectedQuestion.lifecycleRevision &&
+        isDeepStrictEqual(current.record, expectedQuestion.record) &&
+        isDeepStrictEqual(current.sessionBinding, expectedQuestion.sessionBinding) &&
+        isDeepStrictEqual(current.provenance, expectedQuestion.provenance) &&
+        current.resolutionId === expectedQuestion.resolutionId,
       );
-    } else {
-      await executeSessionQuestionOperation(
-        { ...scope, assertCurrent: params.assertCurrent },
-        {
-          kind: "block",
-          id: questionId,
-          expectedQuestion,
-          reason:
-            "Continuation could not be admitted under the original caller authority. Start a new user turn to inspect the question and current session.",
-        },
+    const repair = async () => {
+      const canonical = await readSessionQuestionCustody(
+        expectedQuestion.sessionBinding,
+        questionId,
+        assertCurrent,
       );
+      if (!matchesCustody(canonical)) {
+        throw new SessionQuestionCustodyRetiredError("Terminal question receipt custody changed.");
+      }
+      const status = canonical.continuation.status;
+      if (status === "claimed" || status === "interrupted" || status === "settled") {
+        if (!isOwnReceipt(canonical)) {
+          // A different run won the same canonical obligation. Its projection
+          // remains healthy; this old attempt owns neither a write nor a replay.
+          if (intent !== "interrupt") {
+            return;
+          }
+          throw new Error("Interrupted question receipt run owner changed.", { cause: error });
+        }
+        if (status === "interrupted" && canonical.continuation.reason === interruptedReason) {
+          return;
+        }
+        if (status !== "claimed") {
+          throw new Error("Question terminal receipt intent changed.", { cause: error });
+        }
+        await finish(true, interruptedReason);
+        return;
+      }
+      if (status === "blocked") {
+        if (intent !== "interrupt") {
+          return;
+        }
+        throw new Error("Interrupted question receipt intent changed.", { cause: error });
+      }
+      if (status !== "owed" || intent === "interrupt") {
+        throw new Error("Question terminal receipt is not owed.", { cause: error });
+      }
+      const blocked = await executeSessionQuestionOperation(
+        { ...scope, assertCurrent },
+        { kind: "block", id: questionId, expectedQuestion, reason: blockedReason },
+      );
+      if (
+        Array.isArray(blocked) ||
+        !matchesCustody(blocked) ||
+        blocked.continuation.status !== "blocked" ||
+        blocked.continuation.reason !== blockedReason
+      ) {
+        throw new Error("Question blocked receipt was not committed.", { cause: error });
+      }
+    };
+    try {
+      await repair();
+    } catch (repairError) {
+      if (hasSessionQuestionCustodyRetiredError(repairError)) {
+        throw repairError;
+      }
+      assertCurrent();
+      return { status: "terminal_owed", questionId, runId, repair };
     }
     throw error;
   } finally {

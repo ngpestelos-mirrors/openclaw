@@ -1,5 +1,9 @@
 import { createServer } from "node:http";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  GATEWAY_CLIENT_MODES,
+  GATEWAY_CLIENT_NAMES,
+} from "../../packages/gateway-protocol/src/client-info.js";
 import type { GatewayClientOptions } from "../../src/gateway/client.js";
 import { buildMockOpenAiResponsesProvider } from "../../src/gateway/test-openai-responses-model.js";
 import { loadOrCreateDeviceIdentity } from "../../src/infra/device-identity.js";
@@ -23,7 +27,10 @@ export async function createDurableQuestionGateway(
   const failed = createDeferred<never>();
   void failed.promise.catch(() => {});
   let issued = false;
+  let searched = false;
   let ordinal = 0;
+  let observedToolNames: string[] = [];
+  let observedDurableGuidance = false;
   const provider = await reserveTestPortListener({
     offsets: [0],
     signal,
@@ -40,12 +47,62 @@ export async function createDurableQuestionGateway(
             throw new Error(`Unexpected provider route ${request.url}`);
           }
           ordinal += 1;
+          observedDurableGuidance ||= text.includes(
+            "Durably accepted ordinary questions hand off this turn",
+          );
+          observedToolNames = Array.isArray(body.tools)
+            ? body.tools.flatMap((tool) =>
+                isRecord(tool) && typeof tool.name === "string" ? [tool.name] : [],
+              )
+            : [];
           const nativeTools =
             Array.isArray(body.tools) &&
             body.tools.some((tool) => isRecord(tool) && tool.name === "ask_user");
-          if (nativeTools && text.includes("DURABLE_ASK_PROOF") && !issued) {
+          if (text.includes("DURABLE_ASK_PROOF") && !issued && !nativeTools && !searched) {
+            if (
+              !observedToolNames.includes("tool_search") ||
+              !observedToolNames.includes("tool_call")
+            ) {
+              throw new Error(
+                `Native question discovery unavailable: ${observedToolNames.join(", ")}`,
+              );
+            }
+            searched = true;
+            const item = {
+              type: "function_call",
+              id: "fc_question_search",
+              call_id: "call_question_search",
+              name: "tool_search",
+              arguments: JSON.stringify({ query: "ask_user" }),
+            };
+            writeOpenAiResponsesSse(response, [
+              {
+                type: "response.output_item.added",
+                output_index: 0,
+                item: { ...item, arguments: "" },
+              },
+              {
+                type: "response.function_call_arguments.delta",
+                output_index: 0,
+                item_id: item.id,
+                delta: item.arguments,
+              },
+              { type: "response.output_item.done", output_index: 0, item },
+              {
+                type: "response.completed",
+                response: {
+                  id: "resp_question_search",
+                  status: "completed",
+                  output: [item],
+                  usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+                },
+              },
+            ]);
+            return;
+          }
+          if (text.includes("DURABLE_ASK_PROOF") && !issued) {
             issued = true;
-            const args = JSON.stringify({
+            const questionArgs = {
               questions: [
                 {
                   id: "choice",
@@ -58,12 +115,15 @@ export async function createDurableQuestionGateway(
                 },
               ],
               timeoutSeconds: 900,
-            });
+            };
+            const args = JSON.stringify(
+              nativeTools ? questionArgs : { id: "ask_user", args: questionArgs },
+            );
             const item = {
               type: "function_call",
               id: "fc_durable_question",
               call_id: "call_durable_question",
-              name: "ask_user",
+              name: nativeTools ? "ask_user" : "tool_call",
               arguments: args,
             };
             const later = {
@@ -113,15 +173,22 @@ export async function createDurableQuestionGateway(
             asked.resolve();
             return;
           }
-          const isContinuation = text.includes(
-            "The previously requested user question has resolved.",
-          );
-          if (
-            nativeTools &&
-            text.includes("DURABLE_BUSY_PROOF") &&
-            !busyIssued &&
-            !isContinuation
-          ) {
+          const continuationPrefix =
+            "The previously requested user question has resolved. Continue the original task using this result:\n";
+          const continuationInput = Array.isArray(body.input)
+            ? body.input
+                .filter((item) => isRecord(item) && item.role === "user")
+                .flatMap((item) =>
+                  isRecord(item) && Array.isArray(item.content)
+                    ? item.content.flatMap((part) =>
+                        isRecord(part) && typeof part.text === "string" ? [part.text] : [],
+                      )
+                    : [],
+                )
+                .find((input) => input.includes(continuationPrefix))
+            : undefined;
+          const isContinuation = continuationInput !== undefined;
+          if (text.includes("DURABLE_BUSY_PROOF") && !busyIssued && !isContinuation) {
             busyIssued = true;
             busyStarted.resolve();
             await busyRelease.promise;
@@ -138,7 +205,20 @@ export async function createDurableQuestionGateway(
             ? "DURABLE_CONTINUATION_USED_STAGING"
             : "Synthetic durable question session";
           if (isContinuation) {
-            if (!text.includes("Staging")) {
+            const resultText = continuationInput
+              .slice(continuationInput.indexOf(continuationPrefix) + continuationPrefix.length)
+              .split("\n")[0];
+            if (!resultText) {
+              throw new Error("Continuation result envelope missing");
+            }
+            const result: unknown = JSON.parse(resultText);
+            if (
+              !isRecord(result) ||
+              result.status !== "answered" ||
+              !isRecord(result.answers) ||
+              !isRecord(result.answers.answers) ||
+              JSON.stringify(result.answers.answers.choice) !== JSON.stringify(["Staging"])
+            ) {
               throw new Error("Continuation lost committed answer context");
             }
             continuationCount++;
@@ -196,6 +276,7 @@ export async function createDurableQuestionGateway(
       NODE_OPTIONS: undefined,
       OPENCLAW_NO_RESPAWN: "1",
       OPENCLAW_SKIP_PROVIDERS: undefined,
+      OPENCLAW_SKIP_CHANNELS: undefined,
     },
   });
   const identity = loadOrCreateDeviceIdentity({
@@ -212,14 +293,17 @@ export async function createDurableQuestionGateway(
       return continuationCount;
     },
     failed: failed.promise,
+    diagnostics: () =>
+      `Provider requests: ${ordinal}; question emitted: ${issued}; native durable guidance observed: ${observedDurableGuidance}; tool names: ${observedToolNames.join(", ")}`,
     connect: (onEvent?: GatewayClientOptions["onEvent"]) =>
       acquireGatewayTestClient(
         {
           url: instance.url,
           token: instance.gatewayToken,
           deviceIdentity: identity,
-          clientName: "gateway-client",
-          mode: "backend",
+          // Persistent user ingress acquires its profile through the real handshake.
+          clientName: GATEWAY_CLIENT_NAMES.TUI,
+          mode: GATEWAY_CLIENT_MODES.UI,
           clientVersion: "test",
           platform: process.platform,
           role: "operator",

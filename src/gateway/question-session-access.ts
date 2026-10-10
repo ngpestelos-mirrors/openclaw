@@ -250,7 +250,9 @@ export function prepareQuestionAuthorization(
       }
       if (observation.sessionAccess?.durableCustody) {
         try {
-          if (!prepared) return questionNotFound(id);
+          if (!prepared) {
+            return questionNotFound(id);
+          }
           observation.sessionAccess.assertCurrent(prepared);
         } catch {
           return questionNotFound(id);
@@ -303,6 +305,9 @@ export async function prepareQuestionCommitAuthority(
       questionNotFound(id).message,
     );
   }
+  const custody = observation?.sessionAccess?.durableCustody
+    ? observation.sessionAccess.durableBinding
+    : undefined;
   const facts =
     target.sessionKey && resolved?.ok
       ? await prepareSessionMutationFacts({
@@ -310,6 +315,22 @@ export async function prepareQuestionCommitAuthority(
           sessionKey: target.sessionKey,
           agentId: resolved.agentId,
           allowMissing: true,
+          ...(custody
+            ? {
+                preparedSource: {
+                  agentId: custody.agentId,
+                  storePath: custody.storePath,
+                  canonicalKey: custody.sessionKey,
+                  path: custody.databasePath,
+                  databaseIdentity: custody.databaseIdentity.identity,
+                  databaseBirthtime: custody.databaseIdentity.birthtime,
+                  assertCurrent: () => {
+                    authorization.assertCurrent();
+                    observation?.sessionAccess?.assertSourceCurrent();
+                  },
+                },
+              }
+            : {}),
         })
       : undefined;
   let callerCommit:
@@ -342,18 +363,18 @@ export async function prepareQuestionCommitAuthority(
       const identity = current?.sourcePath
         ? readDatabasePathIdentitySync(current.sourcePath)
         : undefined;
-      const target = current?.target;
+      const currentTarget = current?.target;
       if (
         !identity ||
         identity.key !== `file:${binding.databaseIdentity.identity}` ||
         identity.birthtime !== binding.databaseIdentity.birthtime ||
         current?.sourcePath !== binding.databasePath ||
-        target?.agentId !== binding.agentId ||
-        target.canonicalKey !== binding.sessionKey ||
-        target.storePath !== binding.storePath ||
-        target.entry.sessionId !== binding.sessionId ||
-        target.entry.lifecycleRevision !== binding.lifecycleRevision ||
-        target.entry.incognito
+        currentTarget?.agentId !== binding.agentId ||
+        currentTarget.canonicalKey !== binding.sessionKey ||
+        currentTarget.storePath !== binding.storePath ||
+        currentTarget.entry.sessionId !== binding.sessionId ||
+        currentTarget.entry.lifecycleRevision !== binding.lifecycleRevision ||
+        currentTarget.entry.incognito
       ) {
         throw new QuestionManagerError(
           QuestionManagerErrorCodes.NOT_FOUND,

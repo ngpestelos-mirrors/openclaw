@@ -133,7 +133,7 @@ export function registerDurableQuestionRecoveryCases(getFixture: () => QuestionR
       });
       await expectRecovery({ started: 0, settled: 1, failed: 0, skipped: 0 });
       expect(callGateway).not.toHaveBeenCalled();
-      expect(await readEntry()).toMatchObject({
+      expect(readEntry()).toMatchObject({
         status: "interrupted",
         abortedLastRun: false,
         durableQuestionOwners: [marker],
@@ -244,8 +244,9 @@ export function registerDurableQuestionRecoveryCases(getFixture: () => QuestionR
         deliveries: [{ id: `question-final-${state}`, state }],
       });
       try {
-        if (state === "queued")
+        if (state === "queued") {
           seedQueuedFinal(`question-final-${state}`, "Already produced answer");
+        }
         const { readEntry } = await makeMainSessionFixture({
           lifecycleRevision: marker.lifecycleRevision,
           durableQuestionOwners: [marker],

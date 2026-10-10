@@ -1,11 +1,15 @@
-import type { ConversationDeliveryRecord } from "./conversation-delivery-store.types.js";
-import type { ConversationDeliveryLookup } from "./conversation-delivery-store.types.js";
-import type { SessionGoalOperationLookupResult } from "./goals-operations.types.js";
-import type { SessionGoalOperationLookup } from "./goals-operations.types.js";
+import type {
+  ConversationDeliveryLookup,
+  ConversationDeliveryRecord,
+} from "./conversation-delivery-store.types.js";
+import type {
+  SessionGoalOperationLookup,
+  SessionGoalOperationLookupResult,
+} from "./goals-operations.types.js";
 import type { listSessionPendingInputReceipts } from "./session-accessor.sqlite-pending-input-receipts.js";
 import type { SessionQuestionReadInput, SessionQuestionResult } from "./session-questions.types.js";
 
-export type SessionPendingInputReceiptsWorkerInput = {
+type SessionPendingInputReceiptsWorkerInput = {
   kind: "session-pending-input-receipts";
   database: { agentId: string; path: string };
   agentId: string;
@@ -15,14 +19,14 @@ export type SessionPendingInputReceiptsWorkerInput = {
   env: NodeJS.ProcessEnv;
 };
 
-export type ConversationDeliveryWorkerInput = {
+type ConversationDeliveryWorkerInput = {
   kind: "conversation-delivery";
   database: { agentId: string; path: string };
   env: NodeJS.ProcessEnv;
   lookup: ConversationDeliveryLookup;
 };
 
-export type SessionGoalOperationReceiptWorkerInput = SessionGoalOperationLookup & {
+type SessionGoalOperationReceiptWorkerInput = SessionGoalOperationLookup & {
   kind: "goal-operation-receipt";
   database: { agentId: string; path: string };
   env: NodeJS.ProcessEnv;

@@ -5,11 +5,14 @@ import type {
   QuestionResolvedEvent,
 } from "../../packages/gateway-protocol/src/index.js";
 import type { OperationalRunInstanceRef } from "../agents/admitted-run-context.js";
+import type { DurableQuestion } from "../config/sessions/session-questions.types.js";
 import type { GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import type { GatewayRootWorkAdmissionContinuationScope } from "../process/gateway-work-admission.js";
+import type { QuestionRegistrationReservation } from "./question-registration-reservations.js";
 import type { QuestionSessionAccess } from "./question-session-access.types.js";
 
 export type DurableQuestionCustody = {
+  definition?: DurableQuestion;
   settle: (
     outcome:
       | { status: "answered"; answers: QuestionAnswers; resolvedBy?: string; resolutionId?: string }
@@ -21,6 +24,7 @@ export type DurableQuestionCustody = {
 };
 
 export type QuestionManagerRequest = {
+  registrationReservation?: QuestionRegistrationReservation;
   id?: string;
   questions: Question[];
   agentId?: string;
@@ -67,6 +71,7 @@ export type QuestionEntry = {
 export type QuestionObservation = {
   readonly record: QuestionRecord;
   readonly ordinary: boolean;
+  readonly durableDefinition?: DurableQuestion;
   readonly sessionAccess?: QuestionSessionAccess;
   isCurrent: () => boolean;
   refreshRequester: () => void;

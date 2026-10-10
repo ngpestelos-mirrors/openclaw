@@ -343,8 +343,8 @@ describe("durable question custody", () => {
     expect(
       loadSessionEntry(scope())
         ?.durableQuestionOwners?.map((owner) => owner.questionId)
-        .sort(),
-    ).toEqual([first.record.id, second.record.id, third.record.id].sort());
+        .toSorted(),
+    ).toEqual([first.record.id, second.record.id, third.record.id].toSorted());
     await replaceSessionEntry(scope(), { sessionId, lifecycleRevision, updatedAt: 4 });
     await operate({ kind: "register", question: third });
     // An idempotent registration returns the original receipt without changing ownership.
@@ -357,8 +357,8 @@ describe("durable question custody", () => {
     expect(
       loadSessionEntry(scope())
         ?.durableQuestionOwners?.map((owner) => owner.questionId)
-        .sort(),
-    ).toEqual([second.record.id, third.record.id].sort());
+        .toSorted(),
+    ).toEqual([second.record.id, third.record.id].toSorted());
   });
 
   it("counts settled receipts toward capacity and hides expired receipts before pruning", async () => {

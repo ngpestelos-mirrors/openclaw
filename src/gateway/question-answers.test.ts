@@ -38,9 +38,12 @@ it.each(
       };
       const result = manager.resolve(question.id, answers);
       expect(result).toEqual(expected);
-      expect(JSON.parse(JSON.stringify(result))).toEqual(expected);
+      const serializedAnswer = JSON.stringify(result);
+      expect(JSON.parse(serializedAnswer)).toEqual(expected);
       expect(await waiting).toEqual(expected);
-      if (result.status !== "answered") throw new Error("Expected an answered receipt");
+      if (result.status !== "answered") {
+        throw new Error("Expected an answered receipt");
+      }
       expect(Object.hasOwn(result.answers.answers, questionId)).toBe(true);
       expect(Object.getPrototypeOf(result.answers.answers)).toBe(Object.prototype);
     } finally {

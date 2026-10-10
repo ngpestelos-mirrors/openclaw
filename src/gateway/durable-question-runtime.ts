@@ -6,7 +6,9 @@ import {
 } from "../config/sessions/session-questions.js";
 import type { DurableQuestion } from "../config/sessions/session-questions.types.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../infra/sqlite-worker-contract.js";
+import { QuestionManagerError, QuestionManagerErrorCodes } from "./question-manager.errors.js";
 import { QuestionManager, type DurableQuestionCustody } from "./question-manager.js";
+import type { QuestionRegistrationReservation } from "./question-registration-reservations.js";
 import { createDurableQuestionSessionAccess } from "./question-session-durable-access.js";
 
 /** Installs a committed worker fact; the Gateway map is only its current observation. */
@@ -15,8 +17,25 @@ export function installDurableQuestion(
   question: DurableQuestion,
   onContinuationOwed: (question: DurableQuestion) => void,
   publication?: Pick<Parameters<QuestionManager["request"]>[0], "onResolved">,
+  reservation?: QuestionRegistrationReservation,
 ): void {
-  if (manager.observe(question.record.id)) {
+  reservation?.assertCurrent();
+  const existing = manager.observe(question.record.id);
+  if (existing) {
+    if (
+      !existing.durableDefinition ||
+      existing.durableDefinition.record.createdAtMs !== question.record.createdAtMs ||
+      existing.durableDefinition.record.expiresAtMs !== question.record.expiresAtMs ||
+      !matchesDurableQuestionDefinition(existing.durableDefinition, {
+        ...question,
+        record: { ...question.record, status: "pending" },
+      })
+    ) {
+      throw new QuestionManagerError(
+        QuestionManagerErrorCodes.ID_IN_USE,
+        `question '${question.record.id}' already exists`,
+      );
+    }
     return;
   }
   let current = question;
@@ -26,6 +45,7 @@ export function installDurableQuestion(
     storePath: question.sessionBinding.storePath,
   };
   const custody: DurableQuestionCustody = {
+    definition: question,
     settle: async (outcome, assertCurrent, assertCustodyCurrent) => {
       const resolutionId =
         "resolutionId" in outcome && outcome.resolutionId
@@ -82,6 +102,7 @@ export function installDurableQuestion(
     },
   };
   manager.request({
+    registrationReservation: reservation,
     id: question.record.id,
     questions: question.record.questions,
     agentId: question.record.agentId,

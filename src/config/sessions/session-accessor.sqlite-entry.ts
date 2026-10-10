@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { normalizeInternalTurnContext } from "../../auto-reply/internal-turn-source.js";
 import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
+import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { OpenClawAgentDatabaseReadOnlyScope } from "../../state/openclaw-agent-db-readonly-scope.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
@@ -641,6 +643,11 @@ async function patchSqliteSessionEntrySnapshot(
   return committed;
 }
 
+function createInboundSessionFallback(sessionKey: string): SessionEntry {
+  const patch = isIncognitoSessionKey(sessionKey) ? {} : { lifecycleRevision: randomUUID() };
+  return mergeSessionEntry(undefined, patch);
+}
+
 export async function recordInboundSessionMeta(
   params: RecordInboundSessionMetaParams,
 ): Promise<SessionEntry | null> {
@@ -668,7 +675,9 @@ export async function recordInboundSessionMeta(
       // evaluation relies on updatedAt from actual session turns.
       preserveActivity: true,
       workerGuard: {},
-      ...(createIfMissing ? { fallbackEntry: mergeSessionEntry(undefined, {}) } : {}),
+      ...(createIfMissing
+        ? { fallbackEntry: createInboundSessionFallback(params.sessionKey) }
+        : {}),
     },
   );
 }
@@ -732,7 +741,7 @@ export async function updateSessionLastRouteInScope(
       preserveActivity: true,
       ...commitGuard,
       workerGuard: { ...routeGuard, ...commitGuard.workerGuard },
-      ...(createIfMissing ? { fallbackEntry: mergeSessionEntry(undefined, {}) } : {}),
+      ...(createIfMissing ? { fallbackEntry: createInboundSessionFallback(scope.sessionKey) } : {}),
     },
     scope.databaseAgentId,
   );

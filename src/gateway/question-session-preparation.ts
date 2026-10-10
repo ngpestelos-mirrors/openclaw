@@ -1,7 +1,10 @@
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import type { PreparedQuestionCallerRead } from "../agents/harness/host-private-capabilities.js";
 import { withSessionEntriesFromStoresInWorker } from "../config/sessions/session-entry-read-runtime.js";
-import type { PreparedSessionEntryWorkerRead } from "../config/sessions/session-entry-read-runtime.types.js";
+import type {
+  PreparedSessionEntryWorkerRead,
+  SessionStoreWorkerReadScope,
+} from "../config/sessions/session-entry-read-runtime.types.js";
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
@@ -105,6 +108,7 @@ export async function withPreparedQuestionSessionOwner<T>(
         includeMembers: boolean;
         includeAuthorization: true;
         snapshotFields: readonly [];
+        preparedSource?: SessionStoreWorkerReadScope["preparedSource"];
       }
     >();
     const selections = questions.map((question) => {
@@ -116,13 +120,23 @@ export async function withPreparedQuestionSessionOwner<T>(
         return undefined;
       }
       const agentId = resolved.agentId;
-      const sessionKey = resolveStoredSessionKeyForAgentStore({
-        cfg,
+      const custody = question.sessionAccess?.durableCustody
+        ? question.sessionAccess.durableBinding
+        : undefined;
+      if (custody && custody.agentId !== agentId) {
+        return undefined;
+      }
+      const sessionKey =
+        custody?.sessionKey ??
+        resolveStoredSessionKeyForAgentStore({ cfg, agentId, sessionKey: question.sessionKey });
+      const storePath =
+        custody?.storePath ?? resolveSessionStorePathForScope({ agentId, sessionKey }, cfg);
+      const key = JSON.stringify([
         agentId,
-        sessionKey: question.sessionKey,
-      });
-      const storePath = resolveSessionStorePathForScope({ agentId, sessionKey }, cfg);
-      const key = JSON.stringify([agentId, storePath]);
+        storePath,
+        custody?.databasePath,
+        custody?.databaseIdentity,
+      ]);
       const group = groups.get(key) ?? {
         agentId,
         storePath,
@@ -130,10 +144,24 @@ export async function withPreparedQuestionSessionOwner<T>(
         includeMembers: operation.includeMembers ?? false,
         includeAuthorization: true as const,
         snapshotFields: [] as const,
+        ...(custody
+          ? {
+              preparedSource: {
+                agentId,
+                path: custody.databasePath,
+                databaseIdentity: custody.databaseIdentity.identity,
+                databaseBirthtime: custody.databaseIdentity.birthtime,
+                assertCurrent: () => {
+                  operation.assertCurrent();
+                  question.sessionAccess?.assertSourceCurrent();
+                },
+              },
+            }
+          : {}),
       };
       group.sessionKeys.push(sessionKey);
       groups.set(key, group);
-      return { key, agentId, sessionKey, storePath, binding: question.sessionAccess };
+      return { key, agentId, sessionKey, storePath, binding: question.sessionAccess, custody };
     });
     // An empty batch completes locally after a waiter closes. Actual reads still
     // belong to the work scope; request authority is checked for both paths.
@@ -212,12 +240,13 @@ export async function withPreparedQuestionSessionOwner<T>(
               }
               const currentCfg = context.getRuntimeConfig();
               if (
-                resolveSessionStorePathForScope(
+                !selection.custody &&
+                (resolveSessionStorePathForScope(
                   { agentId: selection.agentId, sessionKey: selection.sessionKey },
                   currentCfg,
                 ) !== selection.storePath ||
-                resolveStoredSessionKeyForAgentStore({ cfg: currentCfg, ...selection }) !==
-                  selection.sessionKey
+                  resolveStoredSessionKeyForAgentStore({ cfg: currentCfg, ...selection }) !==
+                    selection.sessionKey)
               ) {
                 throw new Error("Question session route changed");
               }

@@ -1,8 +1,8 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
+import { wrapToolWithAbortSignal } from "./agent-tools.abort.js";
 import "./test-helpers/fast-coding-tools.js";
 import "./test-helpers/fast-openclaw-tools.js";
-import { wrapToolWithAbortSignal } from "./agent-tools.abort.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
 import {
   getActiveAgentRingZeroTools,
@@ -14,6 +14,7 @@ import {
   getInternalToolExecutionPreparer,
 } from "./runtime/internal-hooks.js";
 import { stubTool } from "./test-helpers/fast-tool-stubs.js";
+import { markToolTurnHandoffOwner } from "./tool-invocation-metadata.js";
 import { createSessionsYieldTool } from "./tools/sessions-yield-tool.js";
 
 const abortError = { name: "AbortError", message: "Aborted" };
@@ -79,10 +80,12 @@ describe("wrapToolWithAbortSignal", () => {
   it("preserves native ask_user handoff only when its run owner aborts", async () => {
     const runAbort = new AbortController();
     const wrapped = wrapToolWithAbortSignal(
-      tool(async () => {
-        runAbort.abort(handoffReason);
-        return { content: [], details: { status: "waiting" } };
-      }, "ask_user"),
+      markToolTurnHandoffOwner(
+        tool(async () => {
+          runAbort.abort(handoffReason);
+          return { content: [], details: { status: "waiting" } };
+        }, "ask_user"),
+      ),
       runAbort.signal,
     );
     await expect(wrapped.execute("question", {})).resolves.toMatchObject({

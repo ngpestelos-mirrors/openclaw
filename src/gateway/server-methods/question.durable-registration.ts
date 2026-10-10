@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type {
   Question,
   QuestionRequestParams,
@@ -15,8 +14,11 @@ import { handleQuestionChannelResolved } from "../../infra/question-channel-runt
 import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contract.js";
 import { installDurableQuestion } from "../durable-question-runtime.js";
 import type { QuestionManager } from "../question-manager.js";
-import { publishDurableQuestionResolution } from "../question-session-access.js";
-import { withQuestionSessionAccess } from "../question-session-access.js";
+import type { QuestionRegistrationReservation } from "../question-registration-reservations.js";
+import {
+  publishDurableQuestionResolution,
+  withQuestionSessionAccess,
+} from "../question-session-access.js";
 import { QuestionRequestValidationError } from "./question.errors.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
@@ -33,6 +35,7 @@ export async function registerDurableQuestion(params: {
   scheduler: GatewayScheduler;
   defaultTimeoutMs: number;
   assertGatewayCurrent: () => void;
+  reservation: QuestionRegistrationReservation;
 }): Promise<DurableQuestion> {
   const {
     options,
@@ -45,6 +48,7 @@ export async function registerDurableQuestion(params: {
     scheduler,
     defaultTimeoutMs,
   } = params;
+  params.reservation.assertCurrent();
   const client = options.client;
   const authority = readGatewayRequestMutationAuthority(options);
   const requester = client?.internal?.agentRuntimeIdentity;
@@ -87,9 +91,9 @@ export async function registerDurableQuestion(params: {
     };
     const createdAtMs = scheduler.now();
     const record: QuestionRecord = {
-      id: request.id ?? randomUUID(),
+      id: params.reservation.id,
       questions,
-      agentId: agentId,
+      agentId,
       sessionKey,
       runId: requester.operationalRunInstance.runId,
       createdAtMs,
@@ -134,6 +138,7 @@ export async function registerDurableQuestion(params: {
       continuation: { status: "pending" },
     };
     const assertCurrent = () => {
+      params.reservation.assertCurrent();
       authority.assertCurrent();
       operatorAuthority?.assertCurrent();
       captured.access.assertSourceCurrent();
@@ -174,13 +179,17 @@ export function retainUnpublishedDurableQuestion(
   question: DurableQuestion,
   onContinuationOwed: (question: DurableQuestion) => void,
   context: GatewayRequestHandlerOptions["context"],
+  reservation?: QuestionRegistrationReservation,
 ): void {
-  if (manager.observe(question.record.id)) {
-    return;
-  }
-  installDurableQuestion(manager, question, onContinuationOwed, {
-    onResolved: durableQuestionPublication(context),
-  });
+  installDurableQuestion(
+    manager,
+    question,
+    onContinuationOwed,
+    {
+      onResolved: durableQuestionPublication(context),
+    },
+    reservation,
+  );
 }
 
 /** Durable publication belongs to the Gateway observation, beyond the asking invocation. */

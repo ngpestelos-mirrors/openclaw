@@ -114,6 +114,13 @@ export function readSessionQuestionCustodyInDatabase(
 ): DurableQuestion | undefined {
   assertCapturedQuestionBinding(database, binding);
   const question = readQuestion(database, id);
+  // Serialize first to normalize deeply omitted optional fields at the persisted boundary.
+  const serializedBinding = JSON.stringify(binding);
+  const persistedBinding: unknown = JSON.parse(serializedBinding);
+  const serializedQuestionBinding = question ? JSON.stringify(question.sessionBinding) : undefined;
+  const persistedQuestionBinding: unknown = serializedQuestionBinding
+    ? JSON.parse(serializedQuestionBinding)
+    : undefined;
   if (
     question &&
     (question.record.agentId !== binding.agentId ||
@@ -121,10 +128,7 @@ export function readSessionQuestionCustodyInDatabase(
       question.sessionKey !== binding.sessionKey ||
       question.sessionId !== binding.sessionId ||
       question.lifecycleRevision !== binding.lifecycleRevision ||
-      !isDeepStrictEqual(
-        JSON.parse(JSON.stringify(question.sessionBinding)),
-        JSON.parse(JSON.stringify(binding)),
-      ))
+      !isDeepStrictEqual(persistedQuestionBinding, persistedBinding))
   ) {
     throw new SessionQuestionCustodyRetiredError(
       "Durable question custody binding does not match the committed owner.",

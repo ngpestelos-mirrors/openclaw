@@ -29,7 +29,7 @@ let handlers: ReturnType<typeof createQuestionHandlers>;
 type SecretStoreReload = Parameters<typeof createSecretStoreWriteService>[0]["reloadSecrets"];
 export let reloadSecrets: ReturnType<typeof vi.fn<SecretStoreReload>>;
 
-export function installQuestionTestHooks() {
+export function installQuestionTestHooks(options?: { waitForRecovery?: () => Promise<void> }) {
   beforeEach(() => {
     // Keep projection metadata alive independently of the exact admitted authority.
     registerAgentRunContext(requestParams.runId, {
@@ -64,6 +64,7 @@ export function installQuestionTestHooks() {
     storeWriteService = createSecretStoreWriteService({ reloadSecrets });
     handlers = createQuestionHandlers(manager, storeWriteService, scheduler, {
       onContinuationOwed: vi.fn(),
+      ...(options?.waitForRecovery ? { waitForRecovery: options.waitForRecovery } : {}),
     });
   });
 

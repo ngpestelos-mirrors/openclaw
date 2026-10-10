@@ -7,7 +7,7 @@ import type { DurableQuestionSessionBinding } from "../../gateway/question-sessi
 import type { UserChannelAuthorizationReference } from "../../state/user-profiles.types.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 
-export type QuestionContinuationProvenance = {
+type QuestionContinuationProvenance = {
   issuer: "operator" | "channel";
   sourceRunId: string;
   recoverySource?: RestartRecoveryOperatorSource;

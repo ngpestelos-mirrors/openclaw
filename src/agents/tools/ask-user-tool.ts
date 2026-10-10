@@ -21,6 +21,7 @@ import {
   withAgentQuestionAnswerAuthority,
 } from "../harness/host-private-capabilities.js";
 import { ASK_USER_TOOL_DISPLAY_SUMMARY, describeAskUserTool } from "../tool-description-presets.js";
+import { markToolTurnHandoffOwner } from "../tool-invocation-metadata.js";
 import {
   AskUserToolSchema,
   DEFAULT_ASK_USER_TIMEOUT_SECONDS,
@@ -470,7 +471,7 @@ export function createAskUserTool(params: {
   // Tool callbacks may run outside their creation scope; never borrow the invoker's owner.
   const questionAuthority = resolveAgentQuestionAnswerAuthority();
   const gatewayCall = resolveAgentQuestionGatewayCall(params.gatewayCall);
-  return {
+  return markToolTurnHandoffOwner({
     label: "Ask User",
     name: "ask_user",
     ...(params.nativeQuestionHandoff ? { executionMode: "sequential" as const } : {}),
@@ -721,5 +722,5 @@ export function createAskUserTool(params: {
         delivery.release();
       }
     },
-  };
+  });
 }

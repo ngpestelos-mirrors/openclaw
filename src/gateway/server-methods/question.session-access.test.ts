@@ -6,6 +6,11 @@ import {
   loadSessionEntry,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import {
+  executeSessionQuestionOperation,
+  readSessionQuestionCustody,
+} from "../../config/sessions/session-questions.js";
+import type { DurableQuestion } from "../../config/sessions/session-questions.types.js";
 import { projectionLane } from "../../config/sessions/session-transcript-worker-resources.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { releaseAgentRunDelegatedAuthority } from "../../infra/agent-run-registry.js";
@@ -20,6 +25,7 @@ import {
   withOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
+import { installDurableQuestion } from "../durable-question-runtime.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { publishDurableQuestionResolution } from "../question-session-access.js";
 import { createDurableQuestionSessionAccess } from "../question-session-durable-access.js";
@@ -826,7 +832,9 @@ it("publishes server-owned terminal receipts to current own-session recipients a
     const observation = manager.observe("server-receipt")!;
     manager.resolve("server-receipt", { answers: { destination: ["Own answer"] } });
     await manager.drain();
-    for (const peer of [owner, revoked, viewer]) peer.send.mockClear();
+    for (const peer of [owner, revoked, viewer]) {
+      peer.send.mockClear();
+    }
     const publication = {
       context: {
         getRuntimeConfig: () => f.cfg,
@@ -835,7 +843,7 @@ it("publishes server-owned terminal receipts to current own-session recipients a
       event: {
         id: "server-receipt",
         status: "answered" as const,
-        answers: { destination: ["Own answer"] },
+        answers: { answers: { destination: ["Own answer"] } },
       },
       observation,
       assertCurrent() {},
@@ -851,13 +859,105 @@ it("publishes server-owned terminal receipts to current own-session recipients a
   });
 });
 
+it("reads and settles canonical restored custody in its original store after the configured route changes", async () => {
+  vi.useRealTimers();
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const f = await fixture(state);
+    expect((await f.request("original-store-question"))[0]).toBe(true);
+    const original = manager.observe("original-store-question")!;
+    const binding = original.sessionAccess?.durableBinding;
+    if (!binding) {
+      throw new Error("Expected native captured conversation binding");
+    }
+    const record = structuredClone(original.record);
+    const question: DurableQuestion = {
+      record,
+      sessionKey: binding.sessionKey,
+      sessionId: binding.sessionId,
+      lifecycleRevision: binding.lifecycleRevision,
+      sessionBinding: binding,
+      provenance: { issuer: "operator", sourceRunId: requestParams.runId },
+      continuation: { status: "pending" },
+    };
+    const canonical = await executeSessionQuestionOperation(
+      {
+        agentId: binding.agentId,
+        sessionKey: binding.sessionKey,
+        storePath: binding.storePath,
+        assertCurrent() {},
+      },
+      { kind: "register", question },
+    );
+    if (!canonical || Array.isArray(canonical)) {
+      throw new Error("Expected canonical native question registration");
+    }
+    manager.reset();
+    const continuationOwed = vi.fn();
+    installDurableQuestion(manager, canonical, continuationOwed);
+    const replacement = state.statePath("replacement", "catalog.sqlite");
+    await upsertSessionEntryCore(
+      { agentId: "main", storePath: replacement, sessionKey: requestParams.sessionKey },
+      { ...f.entry, sessionId: "different-configured-session" },
+    );
+    f.cfg.session = { ...f.cfg.session, store: replacement };
+    await state.writeConfig(f.cfg);
+    setRuntimeConfigSnapshot(f.cfg);
+    expect(await f.call("question.get", { id: record.id })).toEqual([
+      true,
+      { question: record },
+      undefined,
+    ]);
+    expect(await f.call("question.list", {})).toEqual([true, { questions: [record] }, undefined]);
+    const answers = { answers: { destination: ["Home"] } };
+    expect(await f.call("question.resolve", { id: record.id, answers })).toEqual([
+      true,
+      { status: "answered", answers },
+      undefined,
+    ]);
+    expect(continuationOwed).toHaveBeenCalledOnce();
+    expect(await readSessionQuestionCustody(binding, record.id, () => {})).toMatchObject({
+      record: { status: "answered", answers },
+      continuation: { status: "owed" },
+    });
+    expect(
+      await executeSessionQuestionOperation(
+        {
+          agentId: "main",
+          sessionKey: binding.sessionKey,
+          storePath: replacement,
+          assertCurrent() {},
+        },
+        { kind: "get", id: record.id },
+      ),
+    ).toBeUndefined();
+    expect(
+      await f.call("question.resolve", {
+        id: record.id,
+        answers: { answers: { destination: ["Office"] } },
+      }),
+    ).toEqual([true, { status: "answered", answers }, undefined]);
+    // A healthy old physical source stays usable; its generation still revokes access.
+    await upsertSessionEntryCore(
+      { agentId: "main", storePath: binding.storePath, sessionKey: binding.sessionKey },
+      { ...f.entry, lifecycleRevision: "original-store-successor" },
+    );
+    expect(await f.call("question.get", { id: record.id })).toMatchObject([
+      false,
+      undefined,
+      { details: { reason: "QUESTION_NOT_FOUND" } },
+    ]);
+  });
+});
+
 it("keeps durable broad terminal publication bound to the original conversation after producer retirement", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const f = await fixture(state);
     expect((await f.request("durable-broad-receipt"))[0]).toBe(true);
     const original = manager.observe("durable-broad-receipt")!;
     const binding = original.sessionAccess?.durableBinding;
-    if (!binding) throw new Error("Expected native captured conversation binding");
+    if (!binding) {
+      throw new Error("Expected native captured conversation binding");
+    }
     manager.reset();
     manager.request({
       ...original.record,
@@ -882,7 +982,7 @@ it("keeps durable broad terminal publication bound to the original conversation 
       event: {
         id: "durable-broad-receipt",
         status: "answered" as const,
-        answers: { destination: ["Private answer"] },
+        answers: { answers: { destination: ["Private answer"] } },
       },
       observation,
       assertCurrent() {},
@@ -895,6 +995,8 @@ it("keeps durable broad terminal publication bound to the original conversation 
     }
     await f.write({ lifecycleRevision: "successor" });
     await publishDurableQuestionResolution(publication);
-    for (const recipient of [broad, admin]) expect(recipient.send).not.toHaveBeenCalled();
+    for (const recipient of [broad, admin]) {
+      expect(recipient.send).not.toHaveBeenCalled();
+    }
   });
 });

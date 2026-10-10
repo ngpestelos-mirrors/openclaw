@@ -1,4 +1,3 @@
-export const SESSION_QUESTIONS_TABLE = "session_questions";
 export const DURABLE_QUESTIONS_SCHEMA_VERSION = 26;
 
 /** Historical contracts must not acquire durable question custody implicitly. */

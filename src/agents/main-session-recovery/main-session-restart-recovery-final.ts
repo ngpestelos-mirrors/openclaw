@@ -8,7 +8,7 @@ import {
   isDurableQuestionCurrentSource,
 } from "./main-session-question-recovery.js";
 import { buildMainSessionRecoverySettlementPatch } from "./main-session-recovery-clear.js";
-import { type MainSessionRecoveryStoreTarget } from "./main-session-recovery-store.js";
+import type { MainSessionRecoveryStoreTarget } from "./main-session-recovery-store.js";
 import { resolveRestartRecoveryTerminalClientRunId } from "./main-session-restart-recovery-shared.js";
 export async function pendingFinalRecoveryAction(
   pending: NonNullable<SessionEntry["pendingFinalDelivery"]>,

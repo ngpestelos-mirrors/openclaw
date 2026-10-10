@@ -16,7 +16,10 @@ export function matchesDurableQuestionDefinition(
   });
   // Definitions cross the worker's JSON boundary. Omitted optional fields and
   // explicit undefined fields represent the same persisted custody, at every depth.
-  const persisted = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+  const persisted = (value: unknown): unknown => {
+    const serialized = JSON.stringify(value);
+    return JSON.parse(serialized);
+  };
   return (
     requested.record.status === "pending" &&
     isDeepStrictEqual(persisted(definition(current)), persisted(definition(requested))) &&

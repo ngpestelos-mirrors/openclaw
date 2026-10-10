@@ -2,7 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionQuestionCustodyRetiredError } from "../config/sessions/session-questions-custody-error.js";
 import type { DurableQuestion } from "../config/sessions/session-questions.types.js";
 import { SqliteWorkerError } from "../infra/sqlite-worker-contract.js";
+import { AsyncWorkScope } from "../shared/async-work-scope.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import type { InternalAgentTurnDispatchOptions } from "./agent-turn/internal-facade.types.js";
+import { createQuestionCompletionReceipts } from "./question-completion-receipts.js";
+import { createQuestionContinuationWork } from "./question-continuation-work.js";
 import { dispatchQuestionContinuation } from "./question-continuation.js";
 import type { GatewayInstanceRuntime } from "./server-instance-runtime.types.js";
 import type { AgentRunRequest } from "./server-methods/agent-request-types.js";
@@ -15,21 +22,29 @@ const state = vi.hoisted(() => ({
   prepareChannel: vi.fn(),
   captureChannel: vi.fn(),
 }));
-vi.mock("../config/sessions/session-questions.js", () => ({
+vi.mock("../config/sessions/session-questions.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../config/sessions/session-questions.js")>()),
   executeSessionQuestionOperation: state.operate,
   readSessionQuestionCustody: state.readCustody,
 }));
-vi.mock("../infra/agent-events.js", () => ({ getAgentEventLifecycleGeneration: () => "epoch" }));
-vi.mock("./operator-run-recovery.js", () => ({
+vi.mock("../infra/agent-events.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/agent-events.js")>()),
+  getAgentEventLifecycleGeneration: () => "epoch",
+}));
+vi.mock("./operator-run-recovery.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./operator-run-recovery.js")>()),
   restoreGatewayQuestionOperatorRecovery: state.restore,
 }));
-vi.mock("./operator-run-authority.js", () => ({
+vi.mock("./operator-run-authority.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./operator-run-authority.js")>()),
   captureChannelOperatorRunAuthority: state.captureChannel,
 }));
-vi.mock("./channel-operator-authority.js", () => ({
+vi.mock("./channel-operator-authority.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./channel-operator-authority.js")>()),
   prepareChannelOperatorAdmin: state.prepareChannel,
 }));
-vi.mock("./server-plugin-runtime-client.js", () => ({
+vi.mock("./server-plugin-runtime-client.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./server-plugin-runtime-client.js")>()),
   createSyntheticPluginRuntimeClient: (source: unknown) => source,
 }));
 
@@ -104,23 +119,29 @@ function fixture(saved = question()) {
     async (_request: AgentRunRequest, _options: InternalAgentTurnDispatchOptions) => ({}),
   );
   const facade = vi.fn(async (_principal: { client: unknown }) => ({ dispatch }));
-  state.operate.mockImplementation(async (_scope, operation) =>
-    operation.kind === "get"
-      ? saved
-      : {
-          ...saved,
-          continuation: {
-            status:
-              operation.kind === "finish"
-                ? operation.interrupted
-                  ? "interrupted"
-                  : "settled"
-                : "claimed",
-            runId: operation.runId,
-            gatewayEpoch: operation.gatewayEpoch ?? "epoch",
-          },
-        },
-  );
+  let canonical = saved;
+  state.operate.mockImplementation(async (_scope, operation) => {
+    if (operation.kind === "get") {
+      return canonical;
+    }
+    canonical = {
+      ...saved,
+      continuation: {
+        status:
+          operation.kind === "finish"
+            ? operation.interrupted
+              ? "interrupted"
+              : "settled"
+            : operation.kind === "block"
+              ? "blocked"
+              : "claimed",
+        runId: operation.runId,
+        gatewayEpoch: operation.gatewayEpoch ?? "epoch",
+        reason: operation.reason,
+      },
+    };
+    return canonical;
+  });
   state.restore.mockResolvedValue({ authority, release: vi.fn() });
   return {
     saved,
@@ -163,14 +184,13 @@ describe("durable question continuation custody", () => {
 
   it("rejects a canonical claim receipt owned by another run before continuation execution", async () => {
     const f = fixture();
-    state.operate.mockImplementation(async (_scope, operation) =>
-      operation.kind === "get"
-        ? f.saved
-        : {
-            ...f.saved,
-            continuation: { status: "claimed", runId: "another-run", gatewayEpoch: "epoch" },
-          },
-    );
+    state.operate.mockImplementation(async (_scope, operation) => ({
+      ...f.saved,
+      continuation:
+        operation.kind === "get" && !state.operate.mock.calls.some(([, op]) => op.kind === "claim")
+          ? f.saved.continuation
+          : { status: "claimed", runId: "another-run", gatewayEpoch: "epoch" },
+    }));
     f.dispatch.mockImplementation(async (request, options) => {
       expect(request.expectedExistingSessionLifecycleRevision).toBe("revision");
       await options.commitAdmission!({
@@ -210,7 +230,7 @@ describe("durable question continuation custody", () => {
     expect(state.restore).toHaveBeenCalledWith(
       expect.objectContaining({ expectedQuestion: f.saved }),
     );
-    expect(f.facade.mock.calls[0][0].client).toMatchObject({
+    expect(f.facade.mock.calls.at(0)?.[0].client).toMatchObject({
       operatorRoleActor: { kind: "operator", profileId: "original-person" },
     });
   });
@@ -222,7 +242,9 @@ describe("durable question continuation custody", () => {
       let committed: DurableQuestion | undefined;
       const executed = vi.fn();
       state.operate.mockImplementation(async (_scope, operation) => {
-        if (operation.kind === "get") return committed ?? f.saved;
+        if (operation.kind === "get") {
+          return committed ?? f.saved;
+        }
         if (operation.kind === "claim") {
           committed = {
             ...f.saved,
@@ -232,8 +254,20 @@ describe("durable question continuation custody", () => {
               gatewayEpoch: operation.gatewayEpoch,
             },
           };
-          if (owner === "revoked") throw new Error("authority revoked after commit");
+          if (owner === "revoked") {
+            throw new Error("authority revoked after commit");
+          }
           throw new SqliteWorkerError("worker acknowledgement lost", "outcome-unknown");
+        }
+        if (operation.kind === "finish" && committed) {
+          committed = {
+            ...committed,
+            continuation: {
+              ...committed.continuation,
+              status: "interrupted",
+              reason: operation.reason,
+            },
+          };
         }
         return committed;
       });
@@ -260,8 +294,9 @@ describe("durable question continuation custody", () => {
         ([, operation]) => operation.kind === "finish",
       );
       expect(finishes).toHaveLength(owner !== "another" ? 1 : 0);
-      if (owner !== "another")
-        expect(finishes[0][1]).toMatchObject({ interrupted: true, expectedQuestion: f.saved });
+      if (owner !== "another") {
+        expect(finishes[0]?.[1]).toMatchObject({ interrupted: true, expectedQuestion: f.saved });
+      }
     },
   );
 
@@ -305,7 +340,9 @@ describe("durable question continuation custody", () => {
       let canonical = f.saved;
       let finishAttempts = 0;
       state.operate.mockImplementation(async (_scope, operation) => {
-        if (operation.kind === "get") return canonical;
+        if (operation.kind === "get") {
+          return canonical;
+        }
         if (operation.kind === "claim") {
           canonical = {
             ...f.saved,
@@ -356,6 +393,386 @@ describe("durable question continuation custody", () => {
           .filter(([, operation]) => operation.kind === "finish")
           .every(([, operation]) => operation.interrupted === false),
       ).toBe(true);
+    },
+  );
+  it.each(["available", "retired", "close"] as const)(
+    "retains only a completed receipt through prolonged outage until %s",
+    async (outcome) => {
+      const f = fixture();
+      let canonical = f.saved;
+      let completed = false;
+      let available = false;
+      let retired = false;
+      const release = vi.fn();
+      state.restore.mockResolvedValue({ authority: f.authority, release });
+      state.operate.mockImplementation(async (_scope, operation) => {
+        if (retired) {
+          throw new SessionQuestionCustodyRetiredError("replaced");
+        }
+        if (completed && !available) {
+          throw new Error("persistent storage outage");
+        }
+        if (operation.kind === "get") {
+          return canonical;
+        }
+        if (operation.kind === "claim") {
+          canonical = {
+            ...f.saved,
+            continuation: {
+              status: "claimed",
+              runId: operation.runId,
+              gatewayEpoch: operation.gatewayEpoch,
+            },
+          };
+          return canonical;
+        }
+        if (operation.kind === "finish") {
+          expect(operation.interrupted).toBe(false);
+          canonical = {
+            ...canonical,
+            continuation: { ...canonical.continuation, status: "settled" },
+          };
+          return canonical;
+        }
+        throw new Error("Completed effects cannot be blocked");
+      });
+      f.dispatch.mockImplementation(async (request, options) => {
+        await options.commitAdmission!({
+          runId: request.idempotencyKey,
+          sessionId: "session",
+          sessionKey: "agent:main:test",
+          storePath: "/tmp/fixture.db",
+          lifecycleGeneration: "epoch",
+          assertCurrent() {},
+        });
+        completed = true;
+        return {};
+      });
+      const receipt = await dispatchQuestionContinuation(f.params);
+      expect(receipt.status).toBe("completion_owed");
+      expect(release).toHaveBeenCalledOnce();
+      if (receipt.status !== "completion_owed") {
+        throw new Error("Missing completed obligation");
+      }
+      const clock = createGatewaySchedulerClock();
+      const scheduler = createTestGatewayScheduler(clock.clock);
+      const settled = vi.fn(async () => {});
+      const owner = createQuestionCompletionReceipts({
+        scheduler,
+        warn: vi.fn(),
+        onSettled: settled,
+      });
+      try {
+        owner.offer(receipt);
+        owner.offer(receipt);
+        await clock.advanceBy(1_000);
+        await clock.advanceBy(2_000);
+        expect(f.dispatch).toHaveBeenCalledOnce();
+        expect(settled).not.toHaveBeenCalled();
+        if (outcome === "available") {
+          available = true;
+        } else if (outcome === "retired") {
+          retired = true;
+        } else {
+          owner.beginClose();
+        }
+        await clock.advanceBy(4_000);
+        expect(settled).toHaveBeenCalledTimes(outcome === "available" ? 1 : 0);
+        expect(canonical.continuation.status).toBe(outcome === "available" ? "settled" : "claimed");
+        expect(scheduler.nextWakeAtMs).toBeNull();
+        const calls = state.operate.mock.calls.length;
+        await clock.advanceBy(60_000);
+        expect(state.operate).toHaveBeenCalledTimes(calls);
+        expect(f.dispatch).toHaveBeenCalledOnce();
+      } finally {
+        await owner.stop();
+        await scheduler.stop();
+      }
+    },
+  );
+});
+
+describe("pre-admission infrastructure recovery", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each(["available", "retired", "close"] as const)(
+    "keeps pre-admission infrastructure debt until %s without blocking",
+    async (outcome) => {
+      const f = fixture();
+      let available = false;
+      let retired = false;
+      state.readCustody.mockImplementation(async () => {
+        if (retired) {
+          throw new SessionQuestionCustodyRetiredError("replacement");
+        }
+        if (!available) {
+          throw new AggregateError([new SqliteWorkerError("Temporary", "unavailable")]);
+        }
+        return f.saved;
+      });
+      f.dispatch.mockImplementation(async (request, options) => {
+        if (!options.commitAdmission) {
+          throw new Error("Missing native claim owner");
+        }
+        await options.commitAdmission({
+          runId: request.idempotencyKey,
+          sessionId: "session",
+          sessionKey: "agent:main:test",
+          storePath: "/tmp/fixture.db",
+          lifecycleGeneration: "epoch",
+          assertCurrent() {},
+        });
+        return {};
+      });
+      const clock = createGatewaySchedulerClock();
+      const scheduler = createTestGatewayScheduler(clock.clock);
+      const scope = new AsyncWorkScope();
+      const work = createQuestionContinuationWork({
+        scheduler,
+        track: (run) => scope.track(run),
+        isClosing: () => false,
+      });
+      const run = vi.fn(async () => {
+        try {
+          const result = await dispatchQuestionContinuation(f.params);
+          return result.status === "admission_owed" ? ("admission_owed" as const) : undefined;
+        } catch (error) {
+          if (!(error instanceof SessionQuestionCustodyRetiredError)) {
+            throw error;
+          }
+        }
+        return undefined;
+      });
+      try {
+        await work.offer(f.saved, run);
+        expect(work.offer(structuredClone(f.saved), run)).toBeUndefined();
+        await clock.advanceBy(1_000);
+        await clock.advanceBy(2_000);
+        expect(f.dispatch).not.toHaveBeenCalled();
+        expect(state.operate).not.toHaveBeenCalled();
+        if (outcome === "available") {
+          available = true;
+        }
+        if (outcome === "retired") {
+          retired = true;
+        }
+        if (outcome === "close") {
+          work.beginClose();
+        }
+        await clock.advanceBy(4_000);
+        expect(f.dispatch).toHaveBeenCalledTimes(outcome === "available" ? 1 : 0);
+        expect(state.operate.mock.calls.some(([, op]) => op.kind === "block")).toBe(false);
+        expect(clock.armedAtMs).toBeNull();
+      } finally {
+        work.beginClose();
+        await work.stop();
+        await scope.drain();
+        await scheduler.stop();
+      }
+    },
+  );
+
+  it("does not classify a revoked Gateway as recoverable infrastructure debt", async () => {
+    const f = fixture();
+    f.params.assertCurrent.mockImplementation(() => {
+      throw new SqliteWorkerError("Owner retired", "closed");
+    });
+    await expect(dispatchQuestionContinuation(f.params)).rejects.toThrow("Owner retired");
+    expect(f.dispatch).not.toHaveBeenCalled();
+  });
+});
+
+describe("write-only terminal receipt persistence", () => {
+  beforeEach(() => vi.clearAllMocks());
+  it.each(["interruption", "unknown-claim", "unknown-not-committed", "block"] as const)(
+    "retains %s debt through a persistent outage without repeating execution",
+    async (kind) => {
+      const f = fixture();
+      let canonical = f.saved;
+      let available = true;
+      const release = vi.fn();
+      state.restore.mockResolvedValue(
+        kind === "block" ? undefined : { authority: f.authority, release },
+      );
+      state.operate.mockImplementation(async (_scope, op) => {
+        if (!available) {
+          throw new SqliteWorkerError("Receipt unavailable", "unavailable");
+        }
+        if (op.kind === "get") {
+          return canonical;
+        }
+        if (op.kind === "claim") {
+          if (kind === "unknown-not-committed") {
+            available = false;
+            throw new SqliteWorkerError("Claim outcome unknown", "outcome-unknown");
+          }
+          canonical = {
+            ...canonical,
+            continuation: { status: "claimed", runId: op.runId, gatewayEpoch: op.gatewayEpoch },
+          };
+          if (kind === "unknown-claim") {
+            available = false;
+            throw new SqliteWorkerError("Claim ACK lost", "outcome-unknown");
+          }
+        } else if (op.kind === "finish") {
+          expect(op.interrupted).toBe(true);
+          canonical = {
+            ...canonical,
+            continuation: { ...canonical.continuation, status: "interrupted", reason: op.reason },
+          };
+        } else if (op.kind === "block") {
+          canonical = { ...canonical, continuation: { status: "blocked", reason: op.reason } };
+        }
+        return canonical;
+      });
+      if (kind === "block") {
+        state.restore.mockImplementation(async () => {
+          available = false;
+          return undefined;
+        });
+      }
+      f.dispatch.mockImplementation(async (request, options) => {
+        if (!options.commitAdmission) {
+          throw new Error("Missing native claim");
+        }
+        await options.commitAdmission({
+          runId: request.idempotencyKey,
+          sessionId: "session",
+          sessionKey: "agent:main:test",
+          storePath: "/tmp/fixture.db",
+          lifecycleGeneration: "epoch",
+          assertCurrent() {},
+        });
+        available = false;
+        throw new Error("Native execution interrupted");
+      });
+      const receipt = await dispatchQuestionContinuation(f.params);
+      expect(receipt).toMatchObject({ status: "terminal_owed" });
+      if (!("repair" in receipt)) {
+        throw new Error("Missing write-only terminal obligation");
+      }
+      expect(release).toHaveBeenCalledTimes(kind === "block" ? 0 : 1);
+      const clock = createGatewaySchedulerClock();
+      const scheduler = createTestGatewayScheduler(clock.clock);
+      const owner = createQuestionCompletionReceipts({ scheduler, warn: vi.fn() });
+      try {
+        owner.offer(receipt);
+        await clock.advanceBy(1_000);
+        await clock.advanceBy(2_000);
+        const dispatches = f.dispatch.mock.calls.length;
+        available = true;
+        await clock.advanceBy(4_000);
+        expect(canonical.continuation.status).toBe(
+          kind === "block" || kind === "unknown-not-committed" ? "blocked" : "interrupted",
+        );
+        expect(f.dispatch).toHaveBeenCalledTimes(dispatches);
+        expect(f.dispatch).toHaveBeenCalledTimes(kind === "block" ? 0 : 1);
+        expect(clock.armedAtMs).toBeNull();
+      } finally {
+        owner.beginClose();
+        await owner.stop();
+        await scheduler.stop();
+      }
+    },
+  );
+});
+
+describe("unknown claim terminal reconciliation ownership", () => {
+  beforeEach(() => vi.clearAllMocks());
+  it.each(["lost-ack", "foreign", "retired", "close"] as const)(
+    "repairs %s without replay or retiring a healthy winner",
+    async (outcome) => {
+      const f = fixture();
+      let canonical = f.saved;
+      let available = true;
+      let retired = false;
+      let ackLost = false;
+      state.operate.mockImplementation(async (_scope, op) => {
+        if (retired) {
+          throw new SessionQuestionCustodyRetiredError("Physical replacement");
+        }
+        if (!available) {
+          throw new SqliteWorkerError("Unavailable", "unavailable");
+        }
+        if (op.kind === "get") {
+          return canonical;
+        }
+        if (op.kind === "claim") {
+          canonical = {
+            ...canonical,
+            continuation: { status: "claimed", runId: op.runId, gatewayEpoch: op.gatewayEpoch },
+          };
+          available = false;
+          throw new SqliteWorkerError("Claim ACK lost", "outcome-unknown");
+        }
+        if (op.kind !== "finish") {
+          throw new Error("Foreign winner must never be overwritten");
+        }
+        canonical = {
+          ...canonical,
+          continuation: { ...canonical.continuation, status: "interrupted", reason: op.reason },
+        };
+        if (!ackLost) {
+          ackLost = true;
+          throw new SqliteWorkerError("Finish ACK lost", "outcome-unknown");
+        }
+        return canonical;
+      });
+      f.dispatch.mockImplementation(async (request, options) => {
+        if (!options.commitAdmission) {
+          throw new Error("Missing native claim");
+        }
+        await options.commitAdmission({
+          runId: request.idempotencyKey,
+          sessionId: "session",
+          sessionKey: "agent:main:test",
+          storePath: "/tmp/fixture.db",
+          lifecycleGeneration: "epoch",
+          assertCurrent() {},
+        });
+        throw new Error("Unknown claim cannot execute");
+      });
+      const receipt = await dispatchQuestionContinuation(f.params);
+      expect(receipt).toMatchObject({ status: "terminal_owed" });
+      if (!("repair" in receipt)) {
+        throw new Error("Missing terminal receipt");
+      }
+      const clock = createGatewaySchedulerClock();
+      const scheduler = createTestGatewayScheduler(clock.clock);
+      const notified = vi.fn(async () => {});
+      const onRetired = vi.fn();
+      const owner = createQuestionCompletionReceipts({ scheduler, warn: vi.fn() });
+      try {
+        owner.offer(receipt, notified, onRetired);
+        if (outcome === "foreign") {
+          canonical = {
+            ...canonical,
+            continuation: { status: "claimed", runId: "winner", gatewayEpoch: "epoch" },
+          };
+        }
+        if (outcome === "retired") {
+          retired = true;
+        }
+        if (outcome === "close") {
+          owner.beginClose();
+        }
+        available = true;
+        await clock.advanceBy(1_000);
+        await clock.advanceBy(2_000);
+        expect(f.dispatch).toHaveBeenCalledOnce();
+        expect(onRetired).toHaveBeenCalledTimes(outcome === "retired" ? 1 : 0);
+        expect(notified).toHaveBeenCalledTimes(
+          outcome === "foreign" || outcome === "lost-ack" ? 1 : 0,
+        );
+        expect(state.operate.mock.calls.filter(([, op]) => op.kind === "finish")).toHaveLength(
+          outcome === "lost-ack" ? 1 : 0,
+        );
+        expect(clock.armedAtMs).toBeNull();
+      } finally {
+        owner.beginClose();
+        await owner.stop();
+        await scheduler.stop();
+      }
     },
   );
 });

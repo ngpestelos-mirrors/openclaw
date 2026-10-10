@@ -1,8 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  resolveExpiresAtMsFromDurationMs,
-  resolveTimerTimeoutMs,
-} from "@openclaw/normalization-core/number-coercion";
+import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import type {
   Question,
   QuestionAnswers,
@@ -29,15 +26,22 @@ import type {
   QuestionObservation,
   Waiter,
 } from "./question-manager.types.js";
-export type { DurableQuestionCustody, QuestionObservation } from "./question-manager.types.js";
-
+import {
+  QuestionRegistrationReservations,
+  resolveQuestionRequestTiming,
+  type QuestionRegistrationReservation,
+} from "./question-registration-reservations.js";
 import { questionWaitResult } from "./question-wait-result.js";
+export type { DurableQuestionCustody, QuestionObservation } from "./question-manager.types.js";
 export { QuestionManagerError, QuestionManagerErrorCodes } from "./question-manager.errors.js";
 
 const QUESTION_RESOLVED_ENTRY_GRACE_MS = 15_000;
 
 export class QuestionManager {
   private readonly entries = new Map<string, QuestionEntry>();
+  private readonly registrations = new QuestionRegistrationReservations((id) =>
+    this.entries.has(id),
+  );
   private closed = false;
   private custodyGeneration = 0;
   private readonly publications = new AsyncWorkScope();
@@ -59,6 +63,13 @@ export class QuestionManager {
     }
   }
 
+  reserveRegistration(id?: string): QuestionRegistrationReservation {
+    if (this.closed) {
+      throw new Error("Question manager is closed");
+    }
+    return this.registrations.reserve(id);
+  }
+
   request(params: QuestionManagerRequest): QuestionRecord {
     if (this.closed) {
       throw new Error("Question manager is closed");
@@ -69,21 +80,11 @@ export class QuestionManager {
         "the agent run that requested this question is no longer active",
       );
     }
-    const createdAtMs = params.storedRecord?.createdAtMs ?? this.scheduler.now();
-    const timeoutMs = resolveTimerTimeoutMs(params.timeoutMs, 1);
-    const expiresAtMs =
-      params.storedRecord?.expiresAtMs ??
-      resolveExpiresAtMsFromDurationMs(timeoutMs, { nowMs: createdAtMs });
-    if (expiresAtMs === undefined) {
-      throw new Error("question expiry is unavailable");
-    }
-    const id = params.storedRecord?.id ?? params.id ?? randomUUID();
-    if (this.entries.has(id)) {
-      throw new QuestionManagerError(
-        QuestionManagerErrorCodes.ID_IN_USE,
-        `question '${id}' already exists`,
-      );
-    }
+    const { id, createdAtMs, expiresAtMs } = resolveQuestionRequestTiming(
+      params,
+      this.scheduler.now(),
+    );
+    this.registrations.assertAvailable(id, params.registrationReservation);
     const record: QuestionRecord = params.storedRecord ?? {
       id,
       questions: params.questions,
@@ -162,6 +163,7 @@ export class QuestionManager {
         return entry.record;
       },
       ordinary: entry.ordinary,
+      durableDefinition: entry.durableCustody?.definition,
       sessionAccess: entry.sessionAccess,
       isCurrent: () => this.entries.get(entry.record.id) === entry,
       refreshRequester: () => this.refreshRequester(entry),
@@ -502,6 +504,7 @@ export class QuestionManager {
   /** Reusable on open owners (v2026.8.1 SDK context); never reopens a closed owner. */
   reset(): void {
     this.custodyGeneration++;
+    this.registrations.reset();
     const entries = [...this.entries.values()];
     this.entries.clear();
     for (const entry of entries) {

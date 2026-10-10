@@ -22,6 +22,7 @@ import { installDurableQuestion } from "../durable-question-runtime.js";
 import { authorizeGatewaySessionCreation, hasOperatorBoundary } from "../operator-role-policy.js";
 import { usesOwnRunQuestionAccess } from "../question-access.js";
 import { QuestionManager, type QuestionObservation } from "../question-manager.js";
+import type { QuestionRegistrationReservation } from "../question-registration-reservations.js";
 import {
   withQuestionSessionAccess,
   withPreparedQuestionSessions,
@@ -95,7 +96,10 @@ export function createQuestionHandlers(
   manager: QuestionManager,
   storeWriteService: SecretStoreWriteService,
   scheduler: GatewayScheduler,
-  durable?: { onContinuationOwed: (question: DurableQuestion) => void },
+  durable?: {
+    onContinuationOwed: (question: DurableQuestion) => void;
+    waitForRecovery?: () => Promise<void>;
+  },
 ): GatewayRequestHandlers {
   return {
     "question.request": async (options) => {
@@ -111,6 +115,7 @@ export function createQuestionHandlers(
       let sessionAccess: QuestionSessionAccess | undefined;
       let accepted = false;
       let durableCommitted: DurableQuestion | undefined;
+      let registrationReservation: QuestionRegistrationReservation | undefined;
       const requiresSharing = () =>
         !isGatewayAdmin(client) && hasOperatorBoundary(client, context.getRuntimeConfig());
       // Store-bound questions end in a secret-store write on resolve. Without
@@ -312,6 +317,7 @@ export function createQuestionHandlers(
               durableCommitted,
               durable.onContinuationOwed,
               managerRequest,
+              registrationReservation,
             );
             record = manager.observe(durableCommitted.record.id)?.record ?? durableCommitted.record;
           } else {
@@ -363,6 +369,7 @@ export function createQuestionHandlers(
               "Durable custody requires an ordinary native ask_user question in an existing session.",
             );
           }
+          registrationReservation = manager.reserveRegistration(request.id);
           durableCommitted = await registerDurableQuestion({
             options,
             request,
@@ -374,6 +381,7 @@ export function createQuestionHandlers(
             scheduler,
             defaultTimeoutMs: DEFAULT_QUESTION_TIMEOUT_MS,
             assertGatewayCurrent: manager.captureCustodyCurrent(),
+            reservation: registrationReservation,
           });
           sessionAccess = createDurableQuestionSessionAccess(durableCommitted.sessionBinding);
           await withPreparedQuestionSessions(
@@ -440,16 +448,21 @@ export function createQuestionHandlers(
           throw error;
         }
       } finally {
-        if (!accepted) {
-          sessionAccess?.release();
-          if (durableCommitted && durable) {
-            retainUnpublishedDurableQuestion(
-              manager,
-              durableCommitted,
-              durable.onContinuationOwed,
-              context,
-            );
+        try {
+          if (!accepted) {
+            sessionAccess?.release();
+            if (durableCommitted && durable) {
+              retainUnpublishedDurableQuestion(
+                manager,
+                durableCommitted,
+                durable.onContinuationOwed,
+                context,
+                registrationReservation,
+              );
+            }
           }
+        } finally {
+          registrationReservation?.release();
         }
       }
     },
@@ -462,7 +475,14 @@ export function createQuestionHandlers(
       }
       const request = params;
       try {
-        const selected = prepareSelectedQuestion(manager, options, request.id, "read");
+        const selection = prepareSelectedQuestion(
+          manager,
+          options,
+          request.id,
+          "read",
+          durable?.waitForRecovery,
+        );
+        const selected = selection instanceof Promise ? await selection : selection;
         if (!selected) {
           return;
         }
@@ -490,7 +510,14 @@ export function createQuestionHandlers(
       }
       const request = params;
       try {
-        const selected = prepareSelectedQuestion(manager, options, request.id, "mutate");
+        const selection = prepareSelectedQuestion(
+          manager,
+          options,
+          request.id,
+          "mutate",
+          durable?.waitForRecovery,
+        );
+        const selected = selection instanceof Promise ? await selection : selection;
         if (!selected) {
           return;
         }
@@ -675,6 +702,6 @@ export function createQuestionHandlers(
         }
       }
     },
-    ...createQuestionReadHandlers(manager),
+    ...createQuestionReadHandlers(manager, durable?.waitForRecovery),
   };
 }

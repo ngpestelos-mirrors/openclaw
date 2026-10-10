@@ -6,13 +6,19 @@ import {
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 
 function ownedRunIds(entry: InternalSessionEntry): Set<string> {
-  return new Set(
-    (entry.durableQuestionOwners ?? []).flatMap((owner) =>
-      owner.sessionId === entry.sessionId && owner.lifecycleRevision === entry.lifecycleRevision
-        ? [owner.sourceRunId, ...(owner.continuationRunId ? [owner.continuationRunId] : [])]
-        : [],
-    ),
-  );
+  const owned = new Set<string>();
+  for (const owner of entry.durableQuestionOwners ?? []) {
+    if (
+      owner.sessionId === entry.sessionId &&
+      owner.lifecycleRevision === entry.lifecycleRevision
+    ) {
+      owned.add(owner.sourceRunId);
+      if (owner.continuationRunId) {
+        owned.add(owner.continuationRunId);
+      }
+    }
+  }
+  return owned;
 }
 
 /** Native question custody outlives its presentation receipt and transcript retention. */
@@ -34,8 +40,12 @@ export function isDurableQuestionCurrentSource(entry: InternalSessionEntry): boo
     entry.restartRecoveryDeliveryRunId,
     entry.restartRecoveryDeliverySourceRunId,
   ].filter((runId): runId is string => runId !== undefined);
-  if (explicit.length) return explicit.some((runId) => owned.has(runId));
-  if (entry.lifecycleRunId) return owned.has(entry.lifecycleRunId);
+  if (explicit.length) {
+    return explicit.some((runId) => owned.has(runId));
+  }
+  if (entry.lifecycleRunId) {
+    return owned.has(entry.lifecycleRunId);
+  }
   // Cohort IDs without independent ingress provenance cannot authorize a replay
   // of the whole conversation after a question acquired durable custody.
   return (entry.restartRecoveryRuns ?? []).some((run) => owned.has(run.runId));
