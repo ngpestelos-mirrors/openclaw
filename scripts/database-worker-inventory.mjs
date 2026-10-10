@@ -2284,6 +2284,17 @@ function ownerOf(file) {
   return parts.slice(0, depth).join("/");
 }
 
+/**
+ * @typedef {object} InventoryCall
+ * @property {string} primitive
+ * @property {number} line
+ * @property {number} column
+ * @property {string} operation
+ * @property {string} [binding]
+ * @property {string[]} [guards]
+ * @property {{namespace: string, module: string, arguments: string[]}} [forwarding]
+ */
+
 function findCalls(source) {
   const names = new Map([...primitives.keys()].map((name) => [name, name]));
   const namespaces = new Map();
@@ -2307,6 +2318,7 @@ function findCalls(source) {
       }
     }
   }
+  /** @type {InventoryCall[]} */
   const calls = [];
   function visit(node, parentOperation, parentBinding, parentGuards = [], owner, parent) {
     let operation = parentOperation;
@@ -2456,6 +2468,14 @@ export function inventory(root = defaultRoot, ref = "", staged = false) {
   return files
     .flatMap((file, index) => {
       const calls = findCalls(sources[index]);
+      /** @type {Map<string, {
+       * file: string,
+       * owner: string,
+       * tier: string,
+       * priority: number,
+       * calls: InventoryCall[],
+       * evidence: Set<string>
+       * }>} */
       const groups = new Map();
       for (const call of calls) {
         const classification = classify(file, call.operation, call.binding, call.guards);
@@ -2470,10 +2490,10 @@ export function inventory(root = defaultRoot, ref = "", staged = false) {
         group.evidence.add(classification.evidence);
         groups.set(classification.tier, group);
       }
-      return [...groups.values()].map((group) => {
-        group.evidence = [...group.evidence].join("; ");
-        return group;
-      });
+      return [...groups.values()].map((group) => ({
+        ...group,
+        evidence: [...group.evidence].join("; "),
+      }));
     })
     .toSorted(
       (a, b) =>
