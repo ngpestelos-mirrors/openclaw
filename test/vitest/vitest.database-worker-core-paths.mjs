@@ -9,6 +9,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/state/openclaw-agent-db.open-timing.test.ts",
   "src/state/openclaw-state-db-read-connection.cache.test.ts",
   "src/agents/auth-profiles.sqlite-read-pool.test.ts",
+  "src/agents/openclaw-tools.session-status.gateway-model.test.ts",
   "src/state/openclaw-state-db-cron-delivery-migration.test.ts",
   "src/state/openclaw-quarantine-store.test.ts",
   "src/state/openclaw-agent-db-readonly-scope.test.ts",
