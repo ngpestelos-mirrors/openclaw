@@ -30,6 +30,7 @@ import {
   expectRecordFields,
   expectRespondErrorContaining,
   expectRespondOk,
+  expectPendingDeletion,
   firstRespondResult,
   makeFileStat,
   mockCallArg,
@@ -601,20 +602,6 @@ async function call(method: keyof typeof agentsHandlers, params: Record<string, 
   const { respond, promise } = makeCall(method, params);
   await promise;
   return respond;
-}
-
-function expectPendingDeletion(
-  respond: ReturnType<typeof vi.fn>,
-  expected: Record<string, unknown>,
-) {
-  expect(respond).toHaveBeenCalledWith(
-    false,
-    expect.objectContaining(expected),
-    expect.objectContaining({
-      code: "UNAVAILABLE",
-      message: expect.stringContaining("deletion cleanup is still pending"),
-    }),
-  );
 }
 
 type MockIdentity = {
@@ -1662,7 +1649,7 @@ describe("agents.delete", () => {
 
     const respond = await call("agents.delete", { agentId: "test-agent" });
 
-    const result = expectRespondOk(respond, {});
+    const result = expectPendingDeletion(respond, {});
     expect(result.failed).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ reason: "cleanup path parent changed before deletion" }),

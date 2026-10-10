@@ -205,6 +205,21 @@ export function expectRespondOk(
   return payload;
 }
 
+export function expectPendingDeletion(
+  respond: ReturnType<typeof vi.fn>,
+  expected: Record<string, unknown>,
+) {
+  expect(respond).toHaveBeenCalledWith(
+    false,
+    expect.objectContaining(expected),
+    expect.objectContaining({
+      code: "UNAVAILABLE",
+      message: expect.stringContaining("deletion cleanup is still pending"),
+    }),
+  );
+  return expectRecordFields(mockCallArg(respond, 0, 1), expected);
+}
+
 export function expectRespondErrorContaining(respond: ReturnType<typeof vi.fn>, text: string) {
   expect(mockCallArg(respond)).toBe(false);
   expect(mockCallArg(respond, 0, 1)).toBeUndefined();

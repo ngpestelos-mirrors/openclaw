@@ -22,6 +22,7 @@ import {
 } from "../../config/config.js";
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
 import { CronService } from "../../cron/service.js";
+import { startCronReceiptAuthorityHost } from "../../cron/store/receipt-authority-owner.js";
 import { createPluginRuntimeMock } from "../../plugin-sdk/test-helpers/plugin-runtime-mock.js";
 import {
   createPluginStateKeyedStore,
@@ -251,6 +252,7 @@ it.for(["active", "restart-draining", "legacy-retiring"] as const)(
           });
           await cleanupSessionStateForTest({ stateDir: state.stateDir, rootPath: state.root });
           resetConfigRuntimeState();
+          startCronReceiptAuthorityHost();
           await resumeAgentDeletions(context);
           expect(context.logGateway.warn).not.toHaveBeenCalled();
           expect(readAgentDeletionJournal(agentId)?.cleanupCompleted).toBe(true);
