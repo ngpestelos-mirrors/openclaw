@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { safeParseJson } from "@openclaw/normalization-core/json-coercion";
-import { z } from "zod";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { deferSqlitePostCommitPublication } from "../infra/sqlite-post-commit.js";
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
@@ -10,94 +9,16 @@ import {
   readPersonalGitHubSecret,
   writePersonalGitHubSecret,
 } from "../secrets/store/secret-store-hidden-github.js";
-import {
-  githubOAuthTimestamp as timestamp,
-  githubOAuthSecret as secret,
-  githubOAuthProfileId as profileId,
-  githubOAuthScopes as scopes,
-  githubOAuthRefreshFields,
-  githubOAuthDeviceFields,
-  validGitHubDeviceTiming,
-} from "../shared/github-oauth-values.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import type { DB } from "./openclaw-state-db.generated.js";
 import { publishUserGitHubProfileRetirement } from "./user-github-connection-events.js";
+import {
+  userGitHubConnectionSchema,
+  type UserGitHubConnection,
+  type UserGitHubTokenPair,
+} from "./user-github-connections.types.js";
 import { selectResolvedUserProfileMetadataById } from "./user-profiles-internal.js";
 import type { UserProfilesDatabase } from "./user-profiles.types.js";
-
-const tokenPair = z.strictObject({
-  accessToken: secret,
-  refreshToken: secret,
-  tokenType: z.literal("bearer"),
-  scopes,
-  expiresInSeconds: z
-    .number()
-    .int()
-    .positive()
-    .max(366 * 86400),
-  refreshTokenExpiresInSeconds: z
-    .number()
-    .int()
-    .positive()
-    .max(366 * 86400),
-});
-const deviceFields = {
-  requestId: z.string().uuid(),
-  createdAtMs: timestamp,
-  expiresAtMs: timestamp,
-};
-const device = z.strictObject({
-  ...deviceFields,
-  kind: z.literal("device"),
-  ...githubOAuthDeviceFields,
-  candidate: z.strictObject({ profileId, tokens: tokenPair, receivedAtMs: timestamp }).optional(),
-});
-const connected = z.strictObject({
-  kind: z.literal("connected"),
-  profileId,
-  ...githubOAuthRefreshFields,
-  refreshFailure: z.enum(["expired", "failed"]).optional(),
-  refresh: z
-    .strictObject({
-      operationId: z.string().uuid(),
-      tokens: tokenPair.optional(),
-      receivedAtMs: timestamp.optional(),
-    })
-    .optional(),
-});
-const connectionSchema = z
-  .strictObject({
-    version: z.literal(1),
-    generation: z.string().uuid(),
-    selection: z.discriminatedUnion("kind", [
-      z.strictObject({ kind: z.literal("disconnected") }),
-      connected,
-    ]),
-    pending: z
-      .discriminatedUnion("kind", [
-        z.strictObject({ ...deviceFields, kind: z.literal("starting") }),
-        device,
-      ])
-      .optional(),
-  })
-  .superRefine((record, ctx) => {
-    const pending = record.pending;
-    if (pending && !validGitHubDeviceTiming(pending)) {
-      ctx.addIssue({ code: "custom", message: "Invalid device timing" });
-    }
-    const selection = record.selection;
-    if (
-      selection.kind === "connected" &&
-      (selection.refreshExpiresAtMs <= selection.accessExpiresAtMs ||
-        Boolean(selection.refresh?.tokens) !== (selection.refresh?.receivedAtMs !== undefined))
-    ) {
-      ctx.addIssue({ code: "custom", message: "Invalid refresh state" });
-    }
-  });
-
-export type UserGitHubConnection = z.infer<typeof connectionSchema>;
-export type UserGitHubConnected = z.infer<typeof connected>;
-export type UserGitHubDevice = z.infer<typeof device>;
 
 function retireAfterCommit(
   db: DatabaseSync,
@@ -111,7 +32,7 @@ function retireAfterCommit(
 }
 
 export function parseUserGitHubConnection(raw: string): UserGitHubConnection {
-  const result = connectionSchema.safeParse(safeParseJson(raw));
+  const result = userGitHubConnectionSchema.safeParse(safeParseJson(raw));
   if (!result.success) {
     throw new PersonalGitHubStateError();
   }
@@ -131,7 +52,7 @@ export function parseUserGitHubConnection(raw: string): UserGitHubConnection {
   return record;
 }
 
-function registerTokens(tokens: z.infer<typeof tokenPair>): void {
+function registerTokens(tokens: UserGitHubTokenPair): void {
   registerSecretValueForRedaction(tokens.accessToken);
   registerSecretValueForRedaction(tokens.refreshToken);
 }
@@ -194,10 +115,28 @@ export function disconnectedUserGitHubConnection(): UserGitHubConnection {
   return { version: 1, generation: randomUUID(), selection: { kind: "disconnected" } };
 }
 
+export function cancelUserGitHubAuthorizationInDatabase(
+  db: DatabaseSync,
+  owner: string,
+  requestId: string,
+  retire?: (ids: string[]) => void,
+): UserGitHubConnection | undefined {
+  const current = readUserGitHubConnectionInDatabase(db, owner);
+  return current?.pending?.requestId === requestId
+    ? writeUserGitHubConnectionInDatabase(
+        db,
+        owner,
+        { ...current, pending: undefined },
+        current,
+        retire,
+      )
+    : undefined;
+}
+
 export function disconnectUserGitHubConnectionInDatabase(
   db: DatabaseSync,
   owner: string,
-  retire: (ids: string[]) => void,
+  retire?: (ids: string[]) => void,
 ): UserGitHubConnection {
   requireOwner(db, owner);
   return writeUserGitHubConnectionInDatabase(

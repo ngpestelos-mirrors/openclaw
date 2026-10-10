@@ -4,14 +4,15 @@ import {
   requestSqliteWorkerOperationAdmission,
 } from "../infra/sqlite-worker-operation-admission.js";
 import {
+  cancelUserGitHubAuthorizationInDatabase,
   disconnectedUserGitHubConnection,
   disconnectUserGitHubConnectionInDatabase,
   readUserGitHubConnectionInDatabase,
   readCanonicalUserGitHubConnectionInDatabase,
   writeUserGitHubConnectionInDatabase,
-  type UserGitHubConnection,
 } from "./user-github-connections.kernel.js";
 import type {
+  UserGitHubConnection,
   UserGitHubConnectionCommit,
   UserGitHubConnectionMutation,
   UserGitHubRefreshMutation,
@@ -40,7 +41,7 @@ function requirePending(
 
 function applyMutation(
   current: UserGitHubConnection | undefined,
-  mutation: Exclude<UserGitHubConnectionMutation, { kind: "disconnect" }>,
+  mutation: Exclude<UserGitHubConnectionMutation, { kind: "disconnect" | "cancel" }>,
 ): UserGitHubConnection | undefined {
   switch (mutation.kind) {
     case "start":
@@ -100,10 +101,6 @@ function applyMutation(
         },
       };
     }
-    case "cancel":
-      return current?.pending?.requestId === mutation.requestId
-        ? { ...current, pending: undefined }
-        : undefined;
     case "expire":
       return current?.pending && current.pending.expiresAtMs <= mutation.nowMs
         ? { ...current, pending: undefined }
@@ -164,6 +161,9 @@ export const userGitHubConnectionOperations = {
       const { owner, mutation } = input;
       if (mutation.kind === "disconnect") {
         return disconnectUserGitHubConnectionInDatabase(db, owner, retire);
+      }
+      if (mutation.kind === "cancel") {
+        return cancelUserGitHubAuthorizationInDatabase(db, owner, mutation.requestId, retire);
       }
       const current = readUserGitHubConnectionInDatabase(db, owner);
       const next = applyMutation(current, mutation);
