@@ -10,6 +10,7 @@ import {
 } from "../../config/sessions/session-source-authority.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { redactSensitiveText } from "../../logging/redact.js";
+import { bindUserTurnInputActor } from "../../sessions/user-turn-transcript-admission.js";
 import {
   buildRunUserTurnIdempotencyKey,
   createUserTurnTranscriptRecorder,
@@ -257,6 +258,7 @@ export function createGatewayChatUserTurnController(params: {
         }
       : {}),
   });
+  bindUserTurnInputActor(recorder, { phase: "acceptInput", acquire: admission.acquireInputActor });
   const persist: GatewayChatUserTurnController["persist"] = async (options) => {
     if (options?.contextFreeCommand === true && !recorder.hasPersisted()) {
       contextFreeCommand = true;

@@ -193,6 +193,7 @@ export function bindSessionPendingInputSources(
 }
 
 type PendingInputStageOptions = PendingInputRequest & {
+  onCommitted?: (receipt: SessionPendingInputReceipt) => void;
   authority?: SessionPendingInputAuthority;
   trackCompletion?: boolean;
   assertCurrent: () => void;
@@ -553,6 +554,8 @@ async function stagePreparedPendingInput(
             options.assertCurrent();
             assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
             registerSessionPendingInputOwner(owner!);
+            retained = true;
+            options.onCommitted?.(Object.assign(ownerReceipt(owner!), completionMethods));
           },
           assertSourceCurrent,
         );

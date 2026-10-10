@@ -42,6 +42,7 @@ import {
 } from "../../infra/agent-lifecycle-error.js";
 import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
+import { bindUserTurnInputActor } from "../../sessions/user-turn-transcript-admission.js";
 import type {
   UserTurnTranscriptRecorder,
   UserTurnTranscriptTarget,
@@ -334,6 +335,10 @@ export function createReplyRestartRecoveryClaimController(params: {
   }): Promise<SessionEntry> => {
     const expectedSessionState = buildRestartRecoveryExpectedState(options.entry);
     if (options.recorder && !options.recorder.hasPersisted()) {
+      bindUserTurnInputActor(options.recorder, {
+        phase: "adoptRun",
+        acquire: async () => ({ actor: await acquireActor(), target: preparedTarget() }),
+      });
       const result = await options.recorder.persistApproved({
         target: params.resolveUserTurnTarget?.({
           entry: options.entry,

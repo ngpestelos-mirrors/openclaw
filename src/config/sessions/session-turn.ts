@@ -1,14 +1,17 @@
+import { randomUUID } from "node:crypto";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   createSqliteLifecycleAggregateError,
   throwSqliteLifecycleErrors,
 } from "../../infra/sqlite-lifecycle-errors.js";
 import { retainSqliteWorkerErrorCode } from "../../infra/sqlite-worker-contract.js";
+import { getOpenClawAgentDatabaseIfOpen } from "../../state/openclaw-agent-db.js";
 import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { getCliHistoryWriter } from "./cli-history-boundary.js";
 import { assertSessionGoalOperationTime } from "./goals-operations.js";
 import { publishCommittedSessionIdentity } from "./session-accessor.sqlite-identity.js";
 import { captureSessionPendingInputWorkerCustody } from "./session-accessor.sqlite-pending-inputs.js";
+import { withSessionEntryWorker } from "./session-accessor.sqlite-replacement-worker.js";
 import {
   captureLifecycleDatabaseScope,
   toDatabaseOptions,
@@ -20,12 +23,14 @@ import type {
   SessionTranscriptTurnMessageAppend,
   SessionTranscriptTurnWriteContext,
 } from "./session-accessor.types.js";
+import { captureNativeIncognitoSessionActorSources } from "./session-actor-native-incognito.js";
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
 import { runSessionEntryWorkerOperation } from "./session-entry-patch.js";
 import {
   captureIncognitoSessionOperation,
   publishIncognitoSessionEntry,
 } from "./session-incognito-binding.js";
+import { getSessionInputActor, throwSessionInputActorFailure } from "./session-input-actor.js";
 import type { SessionPendingInputAuthorityFacts } from "./session-pending-input-authority.js";
 import {
   acceptSessionSourceValidation,
@@ -36,6 +41,7 @@ import {
 } from "./session-source-authority.js";
 import { completeSessionTranscriptCommit } from "./session-transcript-commit-completion.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
+import { buildRestartRecoveryExpectedState } from "./session-transcript-turn-state.js";
 import { prepareSessionTurnGoalMessage } from "./session-turn.kernel.js";
 import type {
   IncognitoSessionTurnOperations,
@@ -55,8 +61,13 @@ export async function appendSessionTurnInWorker(
 ): Promise<SqliteExpectedSessionTranscriptTurnResult> {
   const scope = captureLifecycleDatabaseScope(requested);
   const database = { ...toDatabaseOptions(scope), path: scope.path };
+  const inputActor = await getSessionInputActor(scope);
+  if (inputActor && inputActor.target.readSource?.path !== database.path) {
+    throw new Error("Input actor changed the transcript's physical target");
+  }
   const incognito = captureIncognitoSessionOperation({ ...scope, storePath: scope.path });
-  const execution = incognito ? undefined : captureOpenClawAgentDatabaseExecution(database);
+  const execution =
+    incognito || inputActor ? undefined : captureOpenClawAgentDatabaseExecution(database);
   const ownerSource = options.ownerSource;
   const custody = captureSessionPendingInputWorkerCustody();
   const cliWriter = getCliHistoryWriter({ ...scope, storePath: scope.path });
@@ -117,6 +128,20 @@ export async function appendSessionTurnInWorker(
     custody: custody?.facts,
     relocation: custody?.relocation,
   };
+  const actor = inputActor?.actor;
+  const transportSources = (checks: PreparedSessionSourceAuthority["checks"]) => {
+    const sources = checks.map(({ predicate }) => predicate);
+    return actor?.target.database.kind === "native-incognito"
+      ? captureNativeIncognitoSessionActorSources({
+          database,
+          target: { ...actor.target, database: actor.target.database },
+          sources,
+        })
+      : sources;
+  };
+  if (ownerSource && actor) {
+    plan.ownerSources = transportSources(ownerSource.checks);
+  }
   const fixedVoiceTranscript =
     !incognito &&
     Boolean(options.voiceTranscript) &&
@@ -153,6 +178,7 @@ export async function appendSessionTurnInWorker(
   }
   let outcome = await (async () => {
     if (
+      !actor &&
       incognito &&
       ownerSource &&
       (ownerSource.nativeSource ||
@@ -167,7 +193,7 @@ export async function appendSessionTurnInWorker(
       throw new Error("Incognito turns require owner authority prepared for the same actor");
     }
     const restore = async () => {
-      if (incognito) {
+      if (incognito || actor?.target.database.kind === "native-incognito") {
         return undefined;
       }
       const { restoreSessionColdTranscript, SessionColdTurnReboundError } =
@@ -339,7 +365,7 @@ export async function appendSessionTurnInWorker(
             const source = await prepareSessionSourceAuthority(hooks.beforeFreshMessageCommit);
             sources[index] = source;
             if (
-              source.nativeSource ||
+              (!actor && source.nativeSource) ||
               (incognito && source.hasOpaqueCheck) ||
               source.checks.some((check) => check.predicate.source.path !== database.path)
             ) {
@@ -374,7 +400,7 @@ export async function appendSessionTurnInWorker(
             assertCurrent();
           }
           if (!facts?.pending && message !== undefined && hooks?.beforeFreshMessageCommit) {
-            append.sources = sources[index]?.checks.map((check) => check.predicate);
+            append.sources = sources[index] ? transportSources(sources[index].checks) : undefined;
             append.freshGuard = true;
           }
           if (!facts?.pending && message !== undefined && options.atomicGroup !== true) {
@@ -425,11 +451,12 @@ export async function appendSessionTurnInWorker(
             candidate.result.sessionEntry
           ) {
             const identity = execution?.fileIdentity;
-            if (!identity && !incognito) {
+            const originalSource = inputActor?.target.readSource;
+            if (!identity && !incognito && !originalSource) {
               throw new Error("Committed transcript turn omitted its admitted database identity");
             }
             options.onCommittedSource(
-              {
+              originalSource ?? {
                 agentId: scope.agentId,
                 path: database.path,
                 databaseIdentity: incognito
@@ -481,6 +508,142 @@ export async function appendSessionTurnInWorker(
       ): Promise<SqliteExpectedSessionTranscriptTurnResult | { kind: "restore-cold-transcript" }>;
     };
     const run = () => {
+      if (actor && inputActor) {
+        const authority = {
+          assertCurrent,
+          authorize(_stage: "transaction" | "commit", _state: unknown, publication?: unknown) {
+            operation.onTransactionFacts(publication);
+            if (isRecord(publication) && publication.kind === "session-turn") {
+              operation.assertCandidate(publication as SessionTurnCommitted);
+            }
+            assertCurrent();
+          },
+        };
+        return operation.run(
+          async () => {
+            if (actor.target.database.kind === "native-incognito") {
+              const opened = getOpenClawAgentDatabaseIfOpen(database);
+              if (!opened) throw new Error("Input actor lost its native database");
+              const { prepareSessionTurn } = await import("./session-turn.worker.js");
+              return prepareSessionTurn(
+                plan,
+                {
+                  options: database,
+                  open: () => opened,
+                  admit: (_stage, publication) => {
+                    operation.onTransactionFacts(publication);
+                    assertCurrent();
+                  },
+                  writeTransaction: () => {
+                    throw new Error("Input preparation cannot write");
+                  },
+                },
+                actor.target.database.incarnation,
+              );
+            }
+            if (incognito) {
+              return incognito.actor.sessions.entry(
+                { assertCurrent },
+                { type: "session.turn.prepare", input: plan },
+                incognito.admissionSignal,
+              );
+            }
+            return withSessionEntryWorker(
+              database,
+              undefined,
+              assertCurrent,
+              (preparedExecution, source) =>
+                preparedExecution
+                  .runExisting(source, (worker) =>
+                    worker.execute({ type: "session.turn.prepare", input: plan }),
+                  )
+                  .then((prepared) => {
+                    if (!prepared) throw new Error("Input preparation lost its database");
+                    return prepared;
+                  }),
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              (publication) => {
+                operation.onTransactionFacts(publication);
+              },
+            );
+          },
+          async () => {
+            const before = actor.snapshot(authority) ?? (await actor.read(authority));
+            const expectedState =
+              options.expectedSessionState ??
+              buildRestartRecoveryExpectedState(
+                before.entry ?? { sessionId: options.expectedSessionId, updatedAt: 0 },
+              );
+            let candidate: SessionTurnCommitted | undefined;
+            const record = (turn: SessionTurnCommitted | undefined) => {
+              if (!turn) throw new Error("Input actor omitted its committed turn");
+              candidate = turn;
+              try {
+                operation.onAcknowledged(turn);
+              } finally {
+                if (incognito) {
+                  publishIncognitoSessionEntry(
+                    incognito.actor,
+                    scope.sessionKey,
+                    before.entry,
+                    turn.result.sessionEntry,
+                  );
+                } else if (turn.result.sessionEntry && inputActor.target.readSource) {
+                  publishCommittedSessionIdentity(
+                    scope.agentId,
+                    inputActor.target.readSource.databaseIdentity,
+                    new Map(before.entry ? [[scope.sessionKey, before.entry]] : []),
+                    new Map([[scope.sessionKey, turn.result.sessionEntry]]),
+                  );
+                }
+              }
+            };
+            const command = {
+              commandId: randomUUID(),
+              phaseId: `${inputActor.phase}:${options.expectedSessionId}`,
+            };
+            const outcome =
+              inputActor.phase === "acceptInput"
+                ? await actor.acceptInput(
+                    {
+                      ...command,
+                      expected: before.version,
+                      expectedState,
+                      lifecycle: {},
+                      turn: plan,
+                    },
+                    authority,
+                    {
+                      committed: (commit) => record(commit.value.turn),
+                    },
+                  )
+                : await actor.adoptRun(
+                    {
+                      ...command,
+                      expected: before.version,
+                      sessionId: options.expectedSessionId,
+                      expectedState,
+                      lifecycle: {},
+                      turn: plan,
+                    },
+                    authority,
+                    {
+                      committed: (commit) => record(commit.value),
+                    },
+                  );
+            if (outcome.kind !== "committed") throwSessionInputActorFailure(outcome);
+            if (outcome.failure)
+              throw Object.assign(new Error(outcome.failure.message), {
+                name: outcome.failure.name,
+              });
+            if (!candidate) throw new Error("Input actor omitted its native receipt");
+            return candidate.result;
+          },
+        );
+      }
       if (incognito) {
         return incognito.actor.sessions.withSharedState(() =>
           operation.run(
