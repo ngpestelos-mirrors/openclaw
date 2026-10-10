@@ -629,6 +629,21 @@
           once: true,
         });
 
+        window.addEventListener(
+          "openclaw-control-ui-unsupported-browser-failed",
+          function () {
+            title.textContent = "Browser guidance could not load";
+            setSummary("Check your connection, then try again to load the browser requirements.");
+            fallback.querySelector("ul").hidden = true;
+            wait.hidden = true;
+            fallback.hidden = false;
+            document.body.replaceChildren(fallback);
+            document.body.classList.add("openclaw-mount-fallback-active");
+            retry.focus();
+          },
+          { once: true },
+        );
+
         if (retry) {
           retry.addEventListener("click", function () {
             cancelRecovery();

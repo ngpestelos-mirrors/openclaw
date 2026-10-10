@@ -28,24 +28,34 @@ const enabled = createControlUiE2eSuite({
   },
 });
 
-async function setBrowserFeatures(page: Page, supported: boolean): Promise<void> {
-  await page.addInitScript((available) => {
-    const supports = CSS.supports.bind(CSS);
-    CSS.supports = (feature: string, value?: string) => {
-      if (feature === "anchor-name: --a" || feature === "field-sizing: content") {
-        return available;
-      }
-      return value === undefined ? supports(feature) : supports(feature, value);
-    };
-    Object.defineProperty(HTMLElement.prototype, "showPopover", {
-      configurable: true,
-      value: available ? () => {} : undefined,
-    });
-    Object.defineProperty(HTMLButtonElement.prototype, "commandForElement", {
-      configurable: true,
-      value: null,
-    });
-  }, supported);
+async function setBrowserFeatures(
+  page: Page,
+  supported: boolean,
+  fieldSizing = supported,
+): Promise<void> {
+  await page.addInitScript(
+    ({ supported: available, fieldSizing }) => {
+      const supports = CSS.supports.bind(CSS);
+      CSS.supports = (feature: string, value?: string) => {
+        if (feature === "anchor-name: --a") {
+          return available;
+        }
+        if (feature === "field-sizing: content") {
+          return fieldSizing;
+        }
+        return value === undefined ? supports(feature) : supports(feature, value);
+      };
+      Object.defineProperty(HTMLElement.prototype, "showPopover", {
+        configurable: true,
+        value: available ? () => {} : undefined,
+      });
+      Object.defineProperty(HTMLButtonElement.prototype, "commandForElement", {
+        configurable: true,
+        value: null,
+      });
+    },
+    { supported, fieldSizing },
+  );
 }
 
 enabled.define(() => {
@@ -163,18 +173,57 @@ enabled.define(() => {
     );
   });
 
-  it("starts the real application when all capabilities are available", async () => {
+  it("offers manual retry when the unsupported-screen download fails", async () => {
     await enabled.withPage({ serviceWorkers: "block" }, async ({ page }) => {
-      await setBrowserFeatures(page, true);
-      const gateway = await installMockGateway(page, { serverBuildId: enabledBuildId });
-      await page.goto(`${enabled.server.baseUrl}chat`);
-      await page.locator(".agent-chat__composer-combobox textarea").waitFor();
-      expect((await gateway.getRequests()).some((request) => request.method === "connect")).toBe(
-        true,
+      await setBrowserFeatures(page, false);
+      await page.clock.install();
+      let failures = 0;
+      let recoveryRequests = 0;
+      page.on("request", (request) => {
+        if (new URL(request.url()).searchParams.has("openclaw_mount_recovery")) {
+          recoveryRequests += 1;
+        }
+      });
+      await page.route("**/assets/unsupported-browser-*.js", async (route) => {
+        if (failures === 0) {
+          failures += 1;
+          await route.fulfill({ status: 503, body: "temporarily unavailable" });
+        } else {
+          await route.continue();
+        }
+      });
+      await page.goto(`${enabled.server.baseUrl}chat`, { waitUntil: "domcontentloaded" });
+      await page.getByRole("heading", { name: "Browser guidance could not load" }).waitFor();
+      await page.clock.runFor(30_000);
+      expect(recoveryRequests).toBe(0);
+      const frame = await takeControlUiScreenshotFrame(
+        page,
+        page.locator("#openclaw-mount-fallback"),
+        [page.getByRole("heading", { name: "Browser guidance could not load" })],
+        { animations: "disabled" },
       );
-      expect(await page.locator(".unsupported-browser").count()).toBe(0);
+      await writeFile(path.join(enabled.artifactDir, "unsupported-download-failed.png"), frame.png);
+      await page.getByRole("button", { name: "Try again", exact: true }).click();
+      await page.getByRole("heading", { name: "Update your browser to use OpenClaw" }).waitFor();
+      expect(failures).toBe(1);
     });
   });
+
+  it.each([true, false])(
+    "starts the application with required overlays (field sizing: %s)",
+    async (fieldSizing) => {
+      await enabled.withPage({ serviceWorkers: "block" }, async ({ page }) => {
+        await setBrowserFeatures(page, true, fieldSizing);
+        const gateway = await installMockGateway(page, { serverBuildId: enabledBuildId });
+        await page.goto(`${enabled.server.baseUrl}chat`);
+        await page.locator(".agent-chat__composer-combobox textarea").waitFor();
+        expect((await gateway.getRequests()).some((request) => request.method === "connect")).toBe(
+          true,
+        );
+        expect(await page.locator(".unsupported-browser").count()).toBe(0);
+      });
+    },
+  );
 });
 
 const dormant = createControlUiE2eSuite({ name: "Control UI browser capability gate dormant" });

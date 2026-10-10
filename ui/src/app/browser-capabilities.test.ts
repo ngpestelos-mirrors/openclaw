@@ -1,12 +1,12 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isControlUiBrowserSupported } from "./browser-capabilities.ts";
+import { detectControlUiBrowserCapabilities } from "./browser-capabilities.ts";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Control UI browser capability admission", () => {
   it.each(["supported", "css", "anchor", "popover", "invoker", "field-sizing"])(
-    "requires the native features (%s)",
+    "reports required overlays and optional sizing (%s)",
     (missing) => {
       vi.stubGlobal(
         "CSS",
@@ -25,11 +25,14 @@ describe("Control UI browser capability admission", () => {
       vi.stubGlobal("HTMLButtonElement", {
         prototype: missing === "invoker" ? {} : { commandForElement: null },
       });
-      expect(isControlUiBrowserSupported()).toBe(missing === "supported");
+      expect(detectControlUiBrowserCapabilities()).toEqual({
+        supported: missing === "supported" || missing === "field-sizing",
+        fieldSizing: missing !== "css" && missing !== "field-sizing",
+      });
     },
   );
 
   it("rejects a non-browser environment without throwing", () => {
-    expect(isControlUiBrowserSupported()).toBe(false);
+    expect(detectControlUiBrowserCapabilities()).toEqual({ supported: false, fieldSizing: false });
   });
 });
