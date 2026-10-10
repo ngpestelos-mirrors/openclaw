@@ -9,6 +9,27 @@ sidebarTitle: "How to migrate"
 
 The ordered migration steps. Work through them in order; each step is self-contained. Part of the [Plugin SDK migration](/plugins/sdk-migration) guide.
 
+## Await native exec and approval preparation
+
+Node plugins await `context.prepareExecAuthorizationAsync(source)` and consume
+its returned synchronous guard immediately before dispatch, after their last
+await. The guard still checks current policy, command scope, configuration, and
+invocation lifetime. Use `loadExecApprovalsReadOnlyAsync` or
+`readExecApprovalsSnapshotAsync` for policy preparation. The released synchronous
+`prepareExecAuthorization`, policy readers, and opaque approval commit guards
+remain deprecated adapters until the next Plugin SDK major.
+
+Use host-bound `api.runtime.gateway.request` for approval requests, reads,
+history, grant operations, resolution, and waiting. Reads that expire rows are
+worker operations too. The host's method classification does not enlarge the
+internal principal's allowed methods. A released opaque approval commit guard
+selects its native compatibility adapter before execution, preserving its
+transaction-local visibility; worker failure never selects that adapter.
+
+The shared warning budget is per plugin and capability family, on legacy use.
+Current effect-time authority checks remain synchronous. Schemas, stored bytes,
+permissions, and update behavior are unchanged.
+
 ## Workspace mutation guards
 
 Await `api.runtime.agent.ensureAgentWorkspace({ dir, guard: { assertHost } })`.
@@ -102,6 +123,13 @@ Gateway contexts provide `workerSessionPlacementService.getManyAsync` and
 starting dependent work, or releasing request resources. Their synchronous
 counterparts shipped through the 2026.9.8 Gateway SDK and remain deprecated
 compatibility methods until the next Plugin SDK major.
+
+Startup also awaits `clearLocalTurnClaimsAfterRestartAsync`. It commits exact
+claim postimages in the placement worker and installs the whole batch before
+revocation notifications or release waiters. Legacy synchronous retirement and
+restart cleanup warn once per plugin and capability family. Bundled reset and
+deletion paths await retirement; released custom Gateway contexts retain a
+separately selected synchronous adapter through the compatibility window.
 
 Use `placementStandingGrants.resolveBindingAsync`, `validateAsync`, and
 `retainAsync` for node-grant preparation. `resolveAsync` combines binding and

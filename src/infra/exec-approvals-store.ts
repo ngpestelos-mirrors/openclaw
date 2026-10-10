@@ -6,6 +6,7 @@ import {
   AgentDeletionAuthorityRollbackError,
   AgentDeletionCommitUncertainError,
 } from "../agents/agent-lifecycle-registry.js";
+import { warnPluginSdkDeprecation } from "../plugins/sdk-deprecation.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -65,7 +66,7 @@ class ExecApprovalsStoreUnavailableError extends Error {
   }
 }
 
-export function readExecApprovalsSnapshot(): ExecApprovalsSnapshot {
+function readExecApprovalsSnapshotNative(): ExecApprovalsSnapshot {
   try {
     assertNoPendingLegacyExecApprovals();
     return snapshotFromExecApprovalsDatabase(openOpenClawStateDatabase().db);
@@ -76,6 +77,16 @@ export function readExecApprovalsSnapshot(): ExecApprovalsSnapshot {
     // A caller-selected state owner must fail closed instead of reading another database.
     throw new ExecApprovalsStoreUnavailableError(error);
   }
+}
+
+/** @deprecated Await readExecApprovalsSnapshotAsync; removed in the next Plugin SDK major. */
+export function readExecApprovalsSnapshot(): ExecApprovalsSnapshot {
+  warnPluginSdkDeprecation({
+    family: "exec-policy-sync-read",
+    method: "readExecApprovalsSnapshot",
+    replacement: "await readExecApprovalsSnapshotAsync()",
+  });
+  return readExecApprovalsSnapshotNative();
 }
 
 function snapshotFromReadReply(
@@ -113,9 +124,15 @@ export async function readExecApprovalsSnapshotAsync(
   }
 }
 
+/** @deprecated Await loadExecApprovalsReadOnlyAsync; removed in the next Plugin SDK major. */
 export function loadExecApprovals(): ExecApprovalsFile {
+  warnPluginSdkDeprecation({
+    family: "exec-policy-sync-read",
+    method: "loadExecApprovals",
+    replacement: "await loadExecApprovalsReadOnlyAsync()",
+  });
   try {
-    return readExecApprovalsSnapshot().file;
+    return readExecApprovalsSnapshotNative().file;
   } catch (error) {
     if (!(error instanceof ExecApprovalsStoreUnavailableError)) {
       throw error;

@@ -1,5 +1,6 @@
 import type { CronReceiptAuthorityAttachment } from "../cron/store/receipt-authority.types.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
+import { warnPluginSdkDeprecation } from "../plugins/sdk-deprecation.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import {
@@ -15,8 +16,7 @@ const operations: {
   ) => OperatorApprovalWorkerOperations[Key]["output"];
 } = operatorApprovalOperations;
 
-// Retain the v2026.9.4 opaque SDK commit guard beside the same native transaction.
-// Remove this branch only when that SDK contract can require a worker-safe guard.
+/** @deprecated Use api.runtime.gateway.request approval methods; removed in the next Plugin SDK major. */
 export function executeNativeOperatorApproval<Key extends keyof OperatorApprovalWorkerOperations>(
   type: Key,
   input: OperatorApprovalWorkerOperations[Key]["input"],
@@ -26,6 +26,11 @@ export function executeNativeOperatorApproval<Key extends keyof OperatorApproval
   onCommitted: (receipt: OperatorApprovalCommitReceipt) => void,
 ): OperatorApprovalWorkerOperations[Key]["output"] {
   context.admission.assertCurrent();
+  warnPluginSdkDeprecation({
+    family: "native-approval-callback",
+    method: "GatewayRequestHandlerOptions.sessionMutationCommitGuard (approval persistence)",
+    replacement: "api.runtime.gateway.request approval methods with host-bound authority",
+  });
   return runWithSqliteWorkerStateContext(context, () => {
     const options = { env: context.environment, path: context.admission.databasePath };
     return operations[type](input, {

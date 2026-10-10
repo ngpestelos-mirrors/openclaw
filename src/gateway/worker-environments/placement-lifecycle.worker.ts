@@ -25,6 +25,7 @@ import {
   updateTransition,
 } from "./placement-row-codec.js";
 import type { PlacementStoreRuntime } from "./placement-runtime.js";
+import { clearLocalTurnClaimsInDatabase } from "./placement-turn-claims.js";
 import { consumePreparedEnvironment } from "./prepared-environment-store.js";
 
 type Moves = ReturnType<typeof createPlacementMoveOps>;
@@ -95,6 +96,20 @@ export const placementReadOperations = {
 } satisfies WorkerOperationHandlers;
 
 export const placementLifecycleOperations = {
+  "workerPlacements.clearLocalTurnClaims": (
+    input: { nowMs?: number },
+    { write }: WorkerWriteOperationContext,
+  ) =>
+    write(
+      ({ db, path }) => {
+        requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
+        const placements = clearLocalTurnClaimsInDatabase(db, path, input.nowMs ?? Date.now());
+        requestSqliteWorkerOperationAdmission({ stage: "commit", facts: placements });
+        deferSqliteWorkerCommitReceipt(db, placements);
+        return placements;
+      },
+      { operationLabel: "workerPlacements.clearLocalTurnClaims" },
+    ),
   "workerPlacements.beginMove": operation(
     "workerPlacements.beginMove",
     (runtime, input: MoveInput<"beginPlacementMove">, admit) => ({

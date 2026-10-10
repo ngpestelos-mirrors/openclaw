@@ -20,7 +20,7 @@ import { isInterpreterLikeAllowlistPattern } from "../infra/command-analysis/inl
 import { emitTrustedSecurityEvent } from "../infra/diagnostic-events.js";
 import {
   type ExecApprovalsFile,
-  loadExecApprovals,
+  loadExecApprovalsReadOnly,
   resolveExecModePolicy,
 } from "../infra/exec-approvals.js";
 import {
@@ -517,7 +517,7 @@ function collectExecRuntimeFindings(cfg: OpenClawConfig): SecurityAuditFinding[]
   const globalStrictInlineEval = cfg.tools?.exec?.strictInlineEval === true;
   const defaultSandboxMode = resolveSandboxConfigForAgent(cfg).mode;
   const defaultHostIsExplicitSandbox = globalExecHost === "sandbox";
-  const approvals = loadExecApprovals();
+  const approvals = loadExecApprovalsReadOnly();
 
   if (defaultHostIsExplicitSandbox && defaultSandboxMode === "off") {
     findings.push({

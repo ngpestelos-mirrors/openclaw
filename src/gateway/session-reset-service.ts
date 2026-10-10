@@ -760,11 +760,15 @@ export async function performGatewaySessionReset(params: {
       // Drain first so a legitimate local turn can release its claim. Retire only
       // after every non-destructive guard is rechecked; a placement race must abort
       // before hooks, runtime cleanup, or session mutation begins.
-      const placementRetirementError = retireSessionWorkerPlacementBeforeMutation({
+      const placementRetirementError = await retireSessionWorkerPlacementBeforeMutation({
         action: "reset",
         context: workerPlacementContext,
         key: params.key,
         sessionId: normalizeOptionalString(entry?.sessionId),
+        assertCurrent: () => {
+          params.assertCurrent?.();
+          params.assertAuthorizedInstance?.();
+        },
       });
       if (placementRetirementError) {
         return invalidSessionRequest(placementRetirementError.message);

@@ -537,7 +537,7 @@ export function waitersFor(path: string, sessionId: string): Set<TurnClaimReleas
   return waiters;
 }
 
-function signalTurnClaimRelease(path: string, sessionId: string): void {
+export function signalTurnClaimRelease(path: string, sessionId: string): void {
   const bySession = turnClaimReleaseWaiters.get(path);
   const waiters = bySession?.get(sessionId);
   if (!bySession || !waiters) {

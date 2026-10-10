@@ -66,6 +66,12 @@ read enters its snapshot before policy reads, avoiding discarded probes.
 
 ## Committed facts and completeness
 
+Node exec policy preparation and host-bound approval requests use workers,
+including reads that expire rows. The final exec-policy SELECT, current
+placement/parent checks, and released opaque callback guards remain current
+authority boundaries. This cutover adds no freshness probes, persistent schema,
+stored-byte, durability, retention, or update migration.
+
 Synchronous compatibility writers and workers share the existing postcommit
 installation boundary. A managed outer transaction installs every owner's facts,
 then projections, then public notifications. Releasing a nested savepoint does
@@ -570,7 +576,11 @@ reviewed worker-only entries. The event recorder's `registeredWatcherKeys`
 initializer is classified separately from its native event/head SQL.
 Creation, compaction, adoption, and child-spawn producers are non-notifying.
 Creation, compaction, adoption, child-spawn cursor seeding, reset/deletion cleanup,
-and periodic retention use the existing signal worker. Placement restart clearing remains T2.
+and periodic retention use the existing signal worker. Placement restart clearing
+uses the placement lifecycle worker. Its `UPDATE ... RETURNING` captures exact
+postimages in the mutation, installing the entire batch before revocation
+notifications and release waiters. Confirmed commit receipts survive lost replies;
+an uncertain write is never replayed.
 Move intents, move completion, and prepared-environment binding use the existing
 placement writer. Their synchronous transactions reread the exact placement and
 environment, check live host authority at transaction and commit admission, and
@@ -595,8 +605,10 @@ profile ownership while the placement writer holds its transaction.
 Retained readers reuse admitted schema facts, recheck ownership after foreign
 commits, and refuse changed schemas before re-admission.
 
-The released `getMany` and `retireSessionPlacement` methods retain synchronous
-SDK adapters through the next Plugin SDK major. Native source/reset and final
+The released `getMany`, `retireSessionPlacement`, and restart-clear methods retain
+synchronous SDK adapters through the next Plugin SDK major. Bundled reset and
+deletion await retirement; legacy writer use shares one warning per plugin and
+capability family. Native source and final
 workspace-effect predicates also retain their current checks where synchronous
 SDK or foreign writers bypass owner publication. They remain explicit migration
 debt, as do synchronous result compatibility readers and pending-result guards.

@@ -12,14 +12,19 @@ import { required, type WorkerSessionPlacementRecord } from "./placement-record.
 import type { WorkerSessionPlacementRetirement } from "./placement-retirement.js";
 import {
   stagePlacementRetirementWorkerPublication,
+  stagePlacementTurnClaimsClearedWorkerPublication,
   stagePlacementTurnClaimWorkerPublication,
   stagePlacementWorkspaceJournalWorkerPublication,
 } from "./placement-turn-authority.js";
+import { signalTurnClaimRelease } from "./placement-turn-claim-events.js";
 import { createPlacementWorkerMutation } from "./placement-worker-mutation.js";
 import { reserveWorkerEnvironmentNativePublication } from "./store-native-publication.js";
 
 type Moves = ReturnType<typeof createPlacementMoveOps>;
-type Operations = WorkerOperations<typeof placementLifecycleOperations>;
+type Operations = Omit<
+  WorkerOperations<typeof placementLifecycleOperations>,
+  "workerPlacements.clearLocalTurnClaims"
+>;
 type Guard = { assertCurrent?: WorkerPlacementAuthorization };
 
 function isReceipt(value: unknown): value is PlacementLifecycleReceipt {
@@ -30,6 +35,18 @@ function isReceipt(value: unknown): value is PlacementLifecycleReceipt {
       (isRecord(value.placement) && value.placement.sessionId === value.sessionId)) &&
     (value.intent === undefined ||
       (isRecord(value.intent) && value.intent.sessionId === value.sessionId))
+  );
+}
+
+function isRestartReceipt(value: unknown): value is WorkerSessionPlacementRecord[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (placement) =>
+        isRecord(placement) &&
+        typeof placement.sessionId === "string" &&
+        placement.turnClaim === null,
+    )
   );
 }
 
@@ -149,6 +166,39 @@ export function createPlacementLifecycleWorkerOps(runtime: {
     return receipt.placement;
   };
   return {
+    async clearLocalTurnClaimsAfterRestartAsync(): Promise<number> {
+      const readReceipt = (facts: unknown): WorkerSessionPlacementRecord[] | undefined =>
+        isRestartReceipt(facts) ? facts : undefined;
+      const mutation = createPlacementWorkerMutation<WorkerSessionPlacementRecord[]>({
+        context,
+        label: "Worker placement restart cleanup",
+        nativeLocation: context.admission.databasePath,
+        orderedAdmission: true,
+        stageCommit(facts) {
+          const placements = readReceipt(facts);
+          if (!placements) {
+            throw new Error("Worker placement restart cleanup has no committed placements");
+          }
+          return stagePlacementTurnClaimsClearedWorkerPublication(
+            context.admission.identity,
+            placements,
+          );
+        },
+        readReceipt,
+        publish(placements) {
+          for (const placement of placements) {
+            signalTurnClaimRelease(runtime.path, placement.sessionId);
+          }
+        },
+      });
+      const placements = await mutation.run((scope) =>
+        scope.execute({
+          type: "workerPlacements.clearLocalTurnClaims",
+          input: { nowMs: runtime.now?.() },
+        }),
+      );
+      return placements.length;
+    },
     async beginPlacementMove(
       input: Parameters<Moves["beginPlacementMove"]>[0],
       guard: Guard & { assertNewSource?: (placement: WorkerSessionPlacementRecord) => void } = {},

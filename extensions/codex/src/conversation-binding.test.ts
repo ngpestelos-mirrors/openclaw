@@ -39,7 +39,10 @@ const publicBindingMocks = vi.hoisted(() => ({
 }));
 
 const execApprovalsRuntimeMocks = vi.hoisted(() => ({
-  loadExecApprovals: vi.fn<() => ExecApprovalsFile>(() => ({ version: 1, agents: {} })),
+  loadExecApprovalsReadOnlyAsync: vi.fn<() => Promise<ExecApprovalsFile>>(async () => ({
+    version: 1,
+    agents: {},
+  })),
 }));
 
 const agentRuntimeMocks = vi.hoisted(() => ({
@@ -152,7 +155,7 @@ vi.mock("openclaw/plugin-sdk/exec-approvals-runtime", async (importOriginal) => 
     await importOriginal<typeof import("openclaw/plugin-sdk/exec-approvals-runtime")>();
   return {
     ...actual,
-    loadExecApprovals: execApprovalsRuntimeMocks.loadExecApprovals,
+    loadExecApprovalsReadOnlyAsync: execApprovalsRuntimeMocks.loadExecApprovalsReadOnlyAsync,
   };
 });
 vi.mock("openclaw/plugin-sdk/agent-runtime", async (importOriginal) => {
@@ -522,8 +525,11 @@ describe("codex conversation binding", () => {
     sharedClientMocks.retireSharedCodexAppServerClientIfCurrent.mockReset();
     sharedClientMocks.clearSharedCodexAppServerClientIfCurrent.mockReset();
     sharedClientMocks.clearSharedCodexAppServerClientIfCurrent.mockReturnValue(false);
-    execApprovalsRuntimeMocks.loadExecApprovals.mockReset();
-    execApprovalsRuntimeMocks.loadExecApprovals.mockReturnValue({ version: 1, agents: {} });
+    execApprovalsRuntimeMocks.loadExecApprovalsReadOnlyAsync.mockReset();
+    execApprovalsRuntimeMocks.loadExecApprovalsReadOnlyAsync.mockResolvedValue({
+      version: 1,
+      agents: {},
+    });
     agentRuntimeMocks.ensureAuthProfileStore.mockReset();
     agentRuntimeMocks.loadAuthProfileStoreForSecretsRuntime.mockReset();
     agentRuntimeMocks.resolveApiKeyForProfile.mockReset();
@@ -1465,7 +1471,7 @@ describe("codex conversation binding", () => {
   it("applies host exec approval floors to configless native bind threads", async () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const request = vi.fn();
-    execApprovalsRuntimeMocks.loadExecApprovals.mockReturnValue({
+    execApprovalsRuntimeMocks.loadExecApprovalsReadOnlyAsync.mockResolvedValue({
       version: 1,
       defaults: {
         security: "deny",
@@ -1482,7 +1488,7 @@ describe("codex conversation binding", () => {
         model: "gpt-5.4-mini",
       }),
     ).rejects.toThrow("tools.exec.mode=deny");
-    expect(execApprovalsRuntimeMocks.loadExecApprovals).toHaveBeenCalled();
+    expect(execApprovalsRuntimeMocks.loadExecApprovalsReadOnlyAsync).toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
   });
 

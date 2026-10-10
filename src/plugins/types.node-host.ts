@@ -34,8 +34,12 @@ export type OpenClawPluginNodeHostCommandContext = {
   sessionKey?: string;
   /** Aborts when the Gateway cancels this specific node-host invocation. */
   signal?: AbortSignal;
-  /** Prepare local exec policy; call the returned guard synchronously immediately before spawn. */
+  /** @deprecated Await prepareExecAuthorizationAsync; removed in the next Plugin SDK major. */
   prepareExecAuthorization?: (source: "human-approved" | "session-full") => () => void;
+  /** Read local policy on the worker; consume the retained guard immediately before spawn. */
+  prepareExecAuthorizationAsync?: (
+    source: "human-approved" | "session-full",
+  ) => Promise<() => void>;
   /** @deprecated Use acquireManagedWorkspaceAsync; retained for synchronous plugin compatibility. */
   acquireManagedWorkspace?: (request: OpenClawPluginNodeWorkspace) => {
     workspaceDir: string;
