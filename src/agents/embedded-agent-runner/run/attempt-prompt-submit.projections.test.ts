@@ -51,6 +51,7 @@ afterEach(() => {
 describe("durable model prompt projection at provider dispatch", () => {
   const sessionId = modelPromptSessionId;
   it.each([
+    { projection: "plain prompt", steering: "midturn" },
     { projection: "prepend/append hooks", steering: "midturn" },
     { projection: "modelPrompt replacement", steering: "midturn" },
     { projection: "prepend/append hooks", steering: "initial" },
@@ -104,9 +105,11 @@ describe("durable model prompt projection at provider dispatch", () => {
           );
         });
         const expectedProjection = (turn: number) =>
-          projection === "modelPrompt replacement"
-            ? `replacement for turn ${turn}`
-            : `hook before ${turn}${redactHook ? " ***" : ""}\n\noriginal turn ${turn}\n\nhook after ${turn}`;
+          projection === "plain prompt"
+            ? `original turn ${turn}`
+            : projection === "modelPrompt replacement"
+              ? `replacement for turn ${turn}`
+              : `hook before ${turn}${redactHook ? " ***" : ""}\n\noriginal turn ${turn}\n\nhook after ${turn}`;
         const submit = async (active: typeof first, turn: number) => {
           const transcriptPrompt = `original turn ${turn}`;
           const recorder = createUserTurnTranscriptRecorder({
@@ -127,8 +130,11 @@ describe("durable model prompt projection at provider dispatch", () => {
             activeSession: active.session,
             transcriptPrompt,
             modelPrompt: projection === "modelPrompt replacement" ? expectedProjection(turn) : "",
-            prependContext: `hook before ${turn}${redactHook ? " hidden" : ""}`,
-            appendContext: `hook after ${turn}`,
+            prependContext:
+              projection === "plain prompt"
+                ? undefined
+                : `hook before ${turn}${redactHook ? " hidden" : ""}`,
+            appendContext: projection === "plain prompt" ? undefined : `hook after ${turn}`,
             getUserTranscriptContexts: active.getUserTranscriptContexts,
             withTranscriptWrite: (write) => withSessionManagerWrite(active.sessionManager, write),
             promptActiveSession: (prompt, options) => active.session.prompt(prompt, options),
