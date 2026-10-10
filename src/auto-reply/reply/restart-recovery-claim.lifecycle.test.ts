@@ -31,6 +31,7 @@ import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import { handleReplyAgentRunError } from "./agent-runner-core.js";
 import { createReplyOperation, type ReplyOperation } from "./reply-run-registry.js";
 import { createReplyRestartRecoveryClaimController } from "./restart-recovery-claim.js";
+import { createReplyRecoveryActorFixture } from "./restart-recovery-claim.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -40,6 +41,7 @@ async function withTrackedReply(
     operation: ReplyOperation;
     confirmArmed: () => Promise<void>;
     replaceWithSuccessor: () => Promise<void>;
+    releaseDatabase: () => Promise<void>;
     readEntry: () => ReturnType<typeof loadSessionEntry>;
   }) => Promise<void>,
 ) {
@@ -62,8 +64,14 @@ async function withTrackedReply(
       resetTriggered: false,
     });
     operation.setPhase("running");
+    await using actor = createReplyRecoveryActorFixture({
+      ...scope,
+      getSessionId: () => operation.sessionId,
+      operation,
+    });
     const controller = createReplyRestartRecoveryClaimController({
       ...scope,
+      acquireSessionActor: actor.acquireSessionActor,
       admissionRunId: "old-recovery",
       lifecycleGeneration: operation.lifecycleGeneration,
       getEntry: () => entry,
@@ -96,6 +104,7 @@ async function withTrackedReply(
           await replaceSessionEntry(scope, entry);
         },
         readEntry: () => loadSessionEntry(scope),
+        releaseDatabase: actor.release,
       });
     } finally {
       operation.complete();
@@ -115,7 +124,14 @@ it.each([
   "settles restart readiness without adopting successor facts ($stage, confirmed=$confirmed)",
   async ({ stage, confirmed }) => {
     await withTrackedReply(
-      async ({ controller, operation, confirmArmed, replaceWithSuccessor, readEntry }) => {
+      async ({
+        controller,
+        operation,
+        confirmArmed,
+        replaceWithSuccessor,
+        readEntry,
+        releaseDatabase,
+      }) => {
         if (confirmed) {
           await confirmArmed();
         }
@@ -124,6 +140,7 @@ it.each([
         let drains = 0;
         try {
           if (stage === "cold-registration") {
+            await releaseDatabase();
             await closeOpenClawAgentDatabasesAsync();
             clearOpenClawAgentDatabaseValidationCache();
             let witnessed = 0;
@@ -252,8 +269,15 @@ describe("restart recovery claim settlement", () => {
         updatedAt: 1,
       };
       await replaceSessionEntry({ storePath, sessionKey }, entry);
+      await using actor = createReplyRecoveryActorFixture({
+        agentId: "main",
+        storePath,
+        sessionKey,
+        getSessionId: () => sessionId,
+      });
       const controller = createReplyRestartRecoveryClaimController({
         agentId: "main",
+        acquireSessionActor: actor.acquireSessionActor,
         lifecycleGeneration: getAgentEventLifecycleGeneration(),
         admissionRunId: "recovery-run",
         getEntry: () => entry,
@@ -300,8 +324,15 @@ describe("restart recovery claim settlement", () => {
       updatedAt: 1,
     };
     await replaceSessionEntry({ storePath, sessionKey }, entry);
+    await using actor = createReplyRecoveryActorFixture({
+      agentId: "main",
+      storePath,
+      sessionKey,
+      getSessionId: () => sessionId,
+    });
     const controller = createReplyRestartRecoveryClaimController({
       agentId: "main",
+      acquireSessionActor: actor.acquireSessionActor,
       lifecycleGeneration: getAgentEventLifecycleGeneration(),
       admissionRunId: "recovery-run",
       getEntry: () => entry,
@@ -355,8 +386,14 @@ describe("restart recovery claim settlement", () => {
         restartRecoverySourceIngress: "channel",
       };
       await replaceSessionEntry(scope, entry);
+      await using actor = createReplyRecoveryActorFixture({
+        agentId: "main",
+        ...scope,
+        getSessionId: () => sessionId,
+      });
       const controller = createReplyRestartRecoveryClaimController({
         agentId: "main",
+        acquireSessionActor: actor.acquireSessionActor,
         lifecycleGeneration:
           interruption === "missing-generation" ? undefined : lifecycleGeneration,
         admissionRunId: "recovery-run",
@@ -497,8 +534,14 @@ describe("restart recovery claim settlement", () => {
       restartRecoverySourceIngress: "channel",
     };
     await replaceSessionEntry(scope, entry);
+    await using actor = createReplyRecoveryActorFixture({
+      agentId: "main",
+      ...scope,
+      getSessionId: () => "session",
+    });
     const controller = createReplyRestartRecoveryClaimController({
       agentId: "main",
+      acquireSessionActor: actor.acquireSessionActor,
       lifecycleGeneration: getAgentEventLifecycleGeneration(),
       admissionRunId: "recovery-run",
       getEntry: () => entry,
