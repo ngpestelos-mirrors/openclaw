@@ -146,7 +146,7 @@ export const scenes: Scene[] = [
       scenario: {
         methodResponses: { [method]: { __mockError: { code: "UNAVAILABLE", message } } },
       },
-      prepare: async (page) => {
+      prepare: async (page: Page) => {
         await page.getByText(message, { exact: false }).first().waitFor();
       },
     });
