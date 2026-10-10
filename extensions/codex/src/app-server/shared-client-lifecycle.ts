@@ -108,18 +108,39 @@ export function getOrCreateSharedClientEntry(
   return entry;
 }
 
+export class SharedCodexFallbackJoinError extends Error {
+  readonly code = "CODEX_SHARED_FALLBACK_JOIN";
+
+  constructor() {
+    super("Shared Codex fallback already has a startup owner");
+    this.name = "SharedCodexFallbackJoinError";
+  }
+}
+
+export function isSharedCodexFallbackJoinError(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "CODEX_SHARED_FALLBACK_JOIN";
+}
+
 /**
- * Moves a current entry to the key that fresh acquisitions now resolve to, so
- * they share its client; keeps any entry already registered there.
+ * Moves a current entry to the fallback key. False means the caller must
+ * re-acquire instead of starting a second client under an already-owned key.
  */
-export function rekeySharedClientEntry(entry: SharedCodexAppServerClientEntry, key: string): void {
+export function rekeySharedClientEntry(
+  entry: SharedCodexAppServerClientEntry,
+  key: string,
+): boolean {
   const state = getSharedCodexAppServerClientState();
-  if (state.clients.get(entry.key) !== entry || state.clients.has(key)) {
-    return;
+  if (state.clients.get(entry.key) !== entry) {
+    return false;
+  }
+  const target = state.clients.get(key);
+  if (target) {
+    return target === entry;
   }
   state.clients.delete(entry.key);
   entry.key = key;
   state.clients.set(key, entry);
+  return true;
 }
 
 export function closeSharedClientEntryIfUnclaimed(entry: SharedCodexAppServerClientEntry): boolean {

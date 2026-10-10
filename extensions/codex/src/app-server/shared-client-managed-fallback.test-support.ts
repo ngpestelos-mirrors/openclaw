@@ -9,7 +9,9 @@ import {
 import {
   clearSharedCodexAppServerClientAndWait,
   createIsolatedCodexAppServerClient,
+  getLeasedSharedCodexAppServerClient,
   getSharedCodexAppServerClient,
+  releaseLeasedSharedCodexAppServerClient,
 } from "./shared-client.js";
 import { createClientHarness } from "./test-support.js";
 import { CODEX_APP_SERVER_VERSION } from "./version.js";
@@ -193,6 +195,50 @@ export function registerSharedClientManagedFallbackTests(params: {
       expect(installedState.selected?.command).toBe(installedCommand);
       await clearSharedCodexAppServerClientAndWait({ exitTimeoutMs: 25, forceKillDelayMs: 5 });
     });
+
+    it.each(["this startup", "another startup"] as const)(
+      "shares pending bundled fallback after %s rejects the installed binary",
+      async (rejector) => {
+        const installed = createClientHarness();
+        const bundled = createClientHarness();
+        const startSpy = vi
+          .spyOn(CodexAppServerClient, "start")
+          .mockResolvedValueOnce(installed.client)
+          .mockResolvedValueOnce(bundled.client)
+          .mockRejectedValue(new Error("unexpected duplicate bundled startup"));
+        const requested = selectInstalledCodex();
+        const options = { startOptions: requested, timeoutMs: 1_000 };
+        const first = getLeasedSharedCodexAppServerClient(options);
+        await installed.waitForWrite(0);
+        params.resolveManagedStart.mockImplementation(
+          async (start: CodexAppServerStartOptions) => ({
+            ...start,
+            command: "/cache/openclaw/codex",
+            commandSource: "resolved-managed",
+          }),
+        );
+        if (rejector === "this startup") {
+          await params.sendInitializeResult(installed, `codex-cli/${CODEX_APP_SERVER_VERSION}`);
+          await bundled.waitForWrite(0);
+        } else {
+          rejectInstalledCodexAppServer(installedCommand, new Error("peer rejected"));
+        }
+        const second = getLeasedSharedCodexAppServerClient(options);
+        const both = Promise.all([first, second]);
+        if (rejector === "another startup") {
+          await bundled.waitForWrite(0);
+          await params.sendInitializeResult(installed, `codex-cli/${installedVersion}`);
+        }
+        await params.sendInitializeResult(bundled, `codex-cli/${CODEX_APP_SERVER_VERSION}`);
+        expect(await both).toEqual([bundled.client, bundled.client]);
+        expect(startSpy).toHaveBeenCalledTimes(2);
+        expect(installed.process.stdin.destroyed).toBe(true);
+        expect(releaseLeasedSharedCodexAppServerClient(bundled.client)).toBe(true);
+        expect(releaseLeasedSharedCodexAppServerClient(bundled.client)).toBe(true);
+        expect(releaseLeasedSharedCodexAppServerClient(bundled.client)).toBe(false);
+        await clearSharedCodexAppServerClientAndWait({ exitTimeoutMs: 25, forceKillDelayMs: 5 });
+      },
+    );
 
     it.each(["config", "env"] as const)(
       "does not reject a working %s override when managed startup rejected the same path",

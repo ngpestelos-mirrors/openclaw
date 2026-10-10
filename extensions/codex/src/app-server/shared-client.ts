@@ -8,7 +8,11 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { AuthProfileStore } from "openclaw/plugin-sdk/provider-auth";
 import { codexBuildSymbol } from "../build-state.js";
 import { observeCodexCatalogClient } from "../session-catalog-events.js";
-import { CodexAppServerStartupError } from "./attempt-timeouts.js";
+import {
+  CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MESSAGE,
+  buildCodexAppServerInitializeTimeoutError,
+  CodexAppServerStartupError,
+} from "./attempt-timeouts.js";
 import {
   applyCodexAppServerAuthProfile,
   bridgeCodexAppServerStartOptions,
@@ -68,6 +72,8 @@ import { createCodexResponsesOAuth, isCodexResponsesOAuth } from "./responses-oa
 import { codexPrewriteRejectionCause } from "./rpc-error.js";
 import { createSharedCodexAppServerClientKeyResolver } from "./shared-client-key.js";
 import {
+  SharedCodexFallbackJoinError,
+  isSharedCodexFallbackJoinError,
   notifyDesktopGenerationDrainChecks,
   retainSharedClientEntry,
   releaseSharedClientEntry,
@@ -128,9 +134,9 @@ type CodexAppServerClientStartupOptions = Omit<
     authProfileId: string | null | undefined;
     onStartingClient?: (starting: Promise<CodexAppServerClient>) => void;
     onInitializedClient?: () => void;
+    /** False asks this acquisition to join an already owned fallback startup. */
+    onManagedFallback?: (startOptions: CodexAppServerStartOptions) => boolean;
   };
-
-const CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MESSAGE = "codex app-server initialize timed out";
 
 async function prepareCodexAppServerClient(options?: CodexAppServerClientOptions) {
   const lifetime = getSharedCodexAppServerClientState().startup;
@@ -668,6 +674,7 @@ async function acquireSharedCodexAppServerClient(
       ...startContext,
       lifetime,
       entry,
+      onManagedFallback: (fallback) => rekeySharedClientEntry(entry, keyFor(fallback)),
       authProfileId: usesNativeAuth || preparedAuth?.kind === "api-key" ? null : authProfileId,
       runtimeArtifactMode,
       expectedRuntimeArtifact: options?.expectedRuntimeArtifact,
@@ -690,16 +697,6 @@ async function acquireSharedCodexAppServerClient(
     );
     if (entry.closeError) {
       throw entry.closeError;
-    }
-    // Once the installed Codex is rejected, fresh acquisitions resolve straight
-    // to the fallback this startup used; let them share its client.
-    const started = state.startMetadata.get(client)?.startOptions;
-    if (
-      started &&
-      started.command !== startOptions.command &&
-      readInstalledCodexAppServerStatus(startOptions.command) === "rejected"
-    ) {
-      rekeySharedClientEntry(entry, keyFor(started));
     }
     // Later leases of the same keyed client may carry fresher config; the
     // runtime install itself stays one-per-physical-client.
@@ -725,24 +722,18 @@ async function acquireSharedCodexAppServerClient(
     retirePendingSharedClientEntryIfUnclaimed(entry);
     observeAcquire(options, { boundary: "cleanup" });
     await waitForUnclaimedSharedClientStartup(entry);
+    if (isSharedCodexFallbackJoinError(error)) {
+      return acquireSharedCodexAppServerClient(
+        { ...options, timeoutMs: resolveRemainingAcquireTimeout(timeoutMs, startedAt) },
+        leased,
+      );
+    }
     throw error;
   } finally {
     cleanupAbandonSignal?.();
     stopStartedClientNotifications();
     releasePendingAcquire();
   }
-}
-
-function buildCodexAppServerInitializeTimeoutError(
-  client: CodexAppServerClient | undefined,
-): CodexAppServerStartupError {
-  const stderr = client?.getStderrDiagnostic();
-  return new CodexAppServerStartupError(
-    "timed_out",
-    stderr
-      ? `${CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MESSAGE}; stderr=${JSON.stringify(stderr)}`
-      : CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MESSAGE,
-  );
 }
 
 function createSharedCodexAppServerClientStartup(
@@ -893,6 +884,7 @@ async function startInitializedCodexAppServerClientOnce(
     if (
       params.startOptions.commandSource !== "resolved-managed" ||
       index + 1 >= startOptionsCandidates.length ||
+      readInstalledCodexAppServerStatus(command) === undefined ||
       abandonSignal.aborted
     ) {
       return false;
@@ -902,7 +894,14 @@ async function startInitializedCodexAppServerClientOnce(
     } catch {
       return false;
     }
-    return rejectInstalledCodexAppServer(command, error);
+    // Publish fallback ownership before rejection makes fresh callers resolve
+    // the bundled command. A prior owner is joined through a fresh acquisition.
+    const ownsFallback = params.onManagedFallback?.(startOptionsCandidates[index + 1]!) ?? true;
+    rejectInstalledCodexAppServer(command, error);
+    if (!ownsFallback) {
+      throw new SharedCodexFallbackJoinError();
+    }
+    return true;
   };
   for (const [index, startOptions] of startOptionsCandidates.entries()) {
     params.assertCurrent?.();
