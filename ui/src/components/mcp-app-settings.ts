@@ -1,5 +1,4 @@
 import { html, nothing } from "lit";
-import { ifDefined } from "lit/directives/if-defined.js";
 import { keyed } from "lit/directives/keyed.js";
 import { live } from "lit/directives/live.js";
 import type { McpAppSettings } from "../../../src/shared/mcp-app-extensions.js";
@@ -63,12 +62,12 @@ export function renderMcpAppSettings(view: McpAppSettingsView) {
                   .value=${live(String(value ?? ""))}
                   ?required=${required}
                   ?disabled=${view.busy}
-                  minlength=${ifDefined(schema.type === "string" ? schema.minLength : undefined)}
-                  maxlength=${ifDefined(schema.type === "string" ? schema.maxLength : undefined)}
-                  pattern=${ifDefined(schema.type === "string" ? schema.pattern : undefined)}
-                  min=${ifDefined(schema.type !== "string" ? schema.minimum : undefined)}
-                  max=${ifDefined(schema.type !== "string" ? schema.maximum : undefined)}
-                  step=${ifDefined(schema.type === "string" ? undefined : (schema.multipleOf ?? (schema.type === "integer" ? 1 : "any")))}
+                  minlength=${schema.type === "string" ? (schema.minLength ?? nothing) : nothing}
+                  maxlength=${schema.type === "string" ? (schema.maxLength ?? nothing) : nothing}
+                  pattern=${schema.type === "string" ? (schema.pattern ?? nothing) : nothing}
+                  min=${schema.type !== "string" ? (schema.minimum ?? nothing) : nothing}
+                  max=${schema.type !== "string" ? (schema.maximum ?? nothing) : nothing}
+                  step=${schema.type === "string" ? nothing : (schema.multipleOf ?? (schema.type === "integer" ? 1 : "any"))}
                   @input=${(event: Event) => {
                     const input = event.currentTarget;
                     if (input instanceof HTMLInputElement) {

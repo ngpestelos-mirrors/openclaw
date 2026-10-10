@@ -1,5 +1,4 @@
 import { html, nothing, type TemplateResult } from "lit";
-import type { DirectiveResult } from "lit/directive.js";
 import type { SessionParticipantIdentity } from "../../../packages/gateway-protocol/src/schema/session-participant.js";
 import { t } from "../i18n/index.ts";
 import type { SidebarRecentSession } from "./app-sidebar-session-types.ts";
@@ -56,7 +55,7 @@ export function renderSessionLeadingState(
   avatarAuth?: SessionAvatarAuth,
   trailingState = false,
   icon?: TemplateResult,
-  runVisibility?: DirectiveResult,
+  runVisibility?: Parameters<typeof renderSessionGlyph>[0]["runVisibility"],
 ): {
   running: boolean;
   leadingIndicator: TemplateResult | typeof nothing;
