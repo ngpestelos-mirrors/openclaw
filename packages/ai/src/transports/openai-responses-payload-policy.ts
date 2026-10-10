@@ -201,11 +201,10 @@ export function resolveOpenAIResponsesServerCompactionPlan(
   };
 }
 
-/** Resolve the Responses compact-endpoint gate for one route and compaction purpose. */
+/** Resolve the Responses compact-endpoint gate for one route. */
 export function resolveOpenAIResponsesCompactEndpointPlan(
   model: OpenAIResponsesPayloadModel,
   extraParams?: Record<string, unknown>,
-  purpose: "manual" | "budget" = "manual",
 ): { enabled: boolean } {
   const configured = extraParams?.responsesCompactEndpoint;
   const provider = typeof model.provider === "string" ? normalizeProviderId(model.provider) : "";
@@ -213,10 +212,7 @@ export function resolveOpenAIResponsesCompactEndpointPlan(
   const endpointClass = resolveOpenAIResponsesEndpointClass(model.baseUrl);
   const enabledByDefault =
     ((provider === "xai" || provider === "x-ai") && endpointClass === "xai-native") ||
-    (purpose === "budget" &&
-      provider === "openai" &&
-      api === "openai-responses" &&
-      endpointClass === "openai-public");
+    (provider === "openai" && api === "openai-responses" && endpointClass === "openai-public");
   return {
     enabled:
       isOpenAIResponsesApi(api) &&

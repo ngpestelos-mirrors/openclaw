@@ -556,7 +556,66 @@ describe("anthropic transport stream", () => {
     expect(offResult.usage.contextUsage?.state).toBe("available");
   });
 
-  it("records suppression when Anthropic rejects a replayed compaction block", async () => {
+  it("keeps full history for client recovery when the compaction summary is null", async () => {
+    guardedFetchMock
+      .mockResolvedValueOnce(
+        createSseResponse([
+          anthropicMessageStart({
+            id: "msg_null_compaction",
+            model: "claude-sonnet-4-6",
+            usage: { input_tokens: 50_001, output_tokens: 0 },
+          }),
+          anthropicContentBlockStart(0, {
+            type: "compaction",
+            content: null,
+            encrypted_content: null,
+          }),
+          anthropicContentBlockDelta(0, { type: "compaction_delta", content: null }),
+          { type: "content_block_stop", index: 0 },
+          anthropicContentBlockStart(1, { type: "text", text: "Done." }),
+          { type: "content_block_stop", index: 1 },
+          anthropicMessageDelta({ stop_reason: "end_turn" }, { input_tokens: 1, output_tokens: 1 }),
+          { type: "message_stop" },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        createSseResponse([
+          anthropicMessageStart({ id: "msg_next", usage: { input_tokens: 1, output_tokens: 0 } }),
+          anthropicMessageDelta({ stop_reason: "end_turn" }, { input_tokens: 1, output_tokens: 1 }),
+          { type: "message_stop" },
+        ]),
+      );
+    const model = makeAnthropicTransportModel();
+    const options = {
+      apiKey: "sk-ant-api",
+      anthropicServerCompaction: true,
+      sessionId: "session-1",
+    } as unknown as AnthropicStreamOptions;
+    const firstUser = { role: "user" as const, content: "old question", timestamp: 1 };
+
+    const first = await runTransportStream(
+      model,
+      { messages: [firstUser] } as AnthropicStreamContext,
+      options,
+    );
+    expect(first.providerReplay).toBeUndefined();
+    expect(first.content.map((block) => block.type)).toEqual(["text"]);
+
+    await runTransportStream(
+      model,
+      {
+        messages: [firstUser, first, { role: "user", content: "new question", timestamp: 2 }],
+      } as AnthropicStreamContext,
+      options,
+    );
+    const nextMessages = latestAnthropicRequest().payload.messages as Array<
+      Record<string, unknown>
+    >;
+    expect(nextMessages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+    expect(JSON.stringify(nextMessages)).not.toContain('"type":"compaction"');
+  });
+
+  it("records suppression and notifies the owner when Anthropic rejects a replayed compaction block", async () => {
     const model = makeAnthropicTransportModel();
     const replayIdentity = {
       authProfileId: "anthropic:work",
@@ -581,6 +640,7 @@ describe("anthropic transport stream", () => {
         { status: 400, headers: { "content-type": "application/json" } },
       ),
     );
+    const onCompactionRejected = vi.fn();
 
     const result = await runTransportStream(
       model,
@@ -595,6 +655,7 @@ describe("anthropic transport stream", () => {
         apiKey: "sk-ant-api",
         anthropicServerCompaction: true,
         ...replayIdentity,
+        onCompactionRejected,
       } as unknown as AnthropicStreamOptions,
     );
 
@@ -603,6 +664,7 @@ describe("anthropic transport stream", () => {
       type: "anthropic-compaction-suppression",
       data: "rejected",
     });
+    expect(onCompactionRejected).toHaveBeenCalledExactlyOnceWith({ data: "summary checkpoint" });
     expect(guardedFetchMock).toHaveBeenCalledTimes(1);
   });
 

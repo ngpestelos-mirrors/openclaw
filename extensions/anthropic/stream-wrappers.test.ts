@@ -155,6 +155,7 @@ function runCompactionProviderWrapper(params?: {
   provider?: string;
   api?: string;
   baseUrl?: string;
+  modelId?: string;
   extraParams?: Record<string, unknown>;
   headers?: Record<string, string>;
   payload?: Record<string, unknown>;
@@ -164,10 +165,11 @@ function runCompactionProviderWrapper(params?: {
     payload?: Record<string, unknown>;
     options?: Parameters<StreamFn>[2];
   } = {};
+  const modelId = params?.modelId ?? "claude-sonnet-4-6";
   const wrapped = wrapAnthropicProviderStream({
     streamFn: createPayloadCapturingBaseStream(captured),
-    modelId: "claude-sonnet-4-6",
-    extraParams: params?.extraParams ?? { anthropicServerCompaction: true },
+    modelId,
+    extraParams: params?.extraParams ?? {},
   } as never);
   const payload = params?.payload ?? {};
   void wrapped?.(
@@ -175,7 +177,7 @@ function runCompactionProviderWrapper(params?: {
       provider: params?.provider ?? "anthropic",
       api: params?.api ?? "anthropic-messages",
       baseUrl: params?.baseUrl ?? "https://api.anthropic.com/v1",
-      id: "claude-sonnet-4-6",
+      id: modelId,
       contextWindow: 200_000,
     } as never,
     {} as never,
@@ -223,8 +225,16 @@ describe("anthropic stream wrappers", () => {
     expect(captured.payload).toMatchObject({ service_tier: "auto" });
   });
 
-  it("passes opt-in server compaction to the direct API-key transport", () => {
+  it.each([
+    { name: "a documented model by default", modelId: "claude-sonnet-4-6", extraParams: {} },
+    {
+      name: "an explicit opt-in on another Claude model",
+      modelId: "claude-opus-4-5",
+      extraParams: { anthropicServerCompaction: true },
+    },
+  ])("passes server compaction for $name to the direct API-key transport", (params) => {
     const captured = runCompactionProviderWrapper({
+      ...params,
       headers: { "Anthropic-Beta": "files-api-2025-04-14" },
     });
 
@@ -244,8 +254,12 @@ describe("anthropic stream wrappers", () => {
 
   it.each([
     {
-      name: "the feature is not enabled",
-      extraParams: {},
+      name: "the feature is disabled",
+      extraParams: { anthropicServerCompaction: false },
+    },
+    {
+      name: "the model is not documented for compaction",
+      modelId: "claude-opus-4-5",
     },
     {
       name: "OAuth auth is used",
@@ -466,7 +480,7 @@ describe("anthropic stream wrappers", () => {
       { apiKey: "sk-ant-api03-test-key" } as never,
     );
 
-    expect(captured.headers).toBeUndefined();
+    expect(captured.headers?.["anthropic-beta"] ?? "").not.toContain("fast-mode");
     expect(captured.payload).toEqual({});
   });
 });
