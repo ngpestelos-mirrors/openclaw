@@ -109,8 +109,11 @@ async function deliverAgentHarnessCompletionBound(
   const requester = await loadRequesterSessionEntry(requesterSessionKey, scope.requesterAgentId);
   const requesterSessionId = requester.entry?.sessionId;
   const requesterLifecycleRevision = requester.entry?.lifecycleRevision;
-  const isRequesterCurrent = () => {
+  const isRequesterCurrent = (rejectRetiredCustody = false) => {
     if (completionCustody && !isAgentHarnessCompletionCustodyCurrent(completionCustody, scope)) {
+      if (rejectRetiredCustody) {
+        throw new Error("Harness completion custody retired");
+      }
       return false;
     }
     let current: ReturnType<typeof readRequesterCurrent>;
@@ -163,7 +166,7 @@ async function deliverAgentHarnessCompletionBound(
   ];
   const prompt = formatAgentInternalEventsForPrompt(internalEvents);
   const deliver = async (): Promise<AgentHarnessCompletionDelivery> => {
-    if (!requesterSessionId || !isRequesterCurrent()) {
+    if (!requesterSessionId || !isRequesterCurrent(true)) {
       return {
         delivered: false,
         path: "none",
