@@ -22,6 +22,7 @@ import {
   withConfigMutationExclusive,
 } from "../../config/config.js";
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
+import { patchSessionEntryCore } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import type {
   NativeBindingTestApi,
   NativeBindingClientTestApi,
@@ -45,12 +46,16 @@ import {
   getOpenClawAgentDatabaseIfOpen,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
+import * as agentExecutions from "../../state/openclaw-agent-execution.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../../state/openclaw-state-schema.js";
 import { beginAgentDeletionJournal } from "../../test-utils/agent-deletion-journal.js";
 import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
-import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import {
+  withOpenClawTestState,
+  type OpenClawTestState,
+} from "../../test-utils/openclaw-test-state.js";
 import { acquireTestPortBlock } from "../../test-utils/port-claims.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { resumeAgentDeletions } from "../server-agent-deletion-recovery.js";
@@ -65,6 +70,157 @@ afterEach(async () => {
   await scenarioWork;
   scenarioWork = undefined;
 });
+
+async function exerciseLateSessionWritesDuringDeletion(params: {
+  state: OpenClawTestState;
+  client: Awaited<ReturnType<typeof connectGatewayClient>>;
+  agentId: string;
+  workspace: string;
+  signal: AbortSignal;
+}): Promise<void> {
+  const { state, client, agentId, workspace, signal } = params;
+  const databasePath = path.join(state.agentDir(agentId), "openclaw-agent.sqlite");
+  const storePath = path.join(state.sessionsDir(agentId), "sessions.json");
+  let session = await client.request<{ key: string; sessionId: string }>("sessions.create", {
+    agentId,
+    key: `agent:${agentId}:late-write-0`,
+  });
+  for (let iteration = 0; iteration < 20; iteration += 1) {
+    signal.throwIfAborted();
+    const aborted = createDeferred();
+    const closed = createDeferred();
+    const releaseClosed = createDeferred();
+    const purgeCaptured = createDeferred();
+    const releasePurge = createDeferred();
+    const handle = createEmbeddedRunHandle({
+      runId: `deletion-late-write-${iteration}`,
+      abort: () => aborted.resolve(),
+    });
+    const realCloseDatabase = agentDatabases.closeOpenClawAgentDatabaseByPathAsync;
+    let closeHeld = false;
+    const closeDatabase = vi
+      .spyOn(agentDatabases, "closeOpenClawAgentDatabaseByPathAsync")
+      .mockImplementation(async (...args) => {
+        const result = await realCloseDatabase(...args);
+        if (!closeHeld && args[0] === databasePath) {
+          closeHeld = true;
+          closed.resolve();
+          await releaseClosed.promise;
+        }
+        return result;
+      });
+    const realCaptureCleanup = agentExecutions.captureAgentDeletionDatabaseExecution;
+    let purgeHeld = false;
+    const captureCleanup = vi
+      .spyOn(agentExecutions, "captureAgentDeletionDatabaseExecution")
+      .mockImplementation(async (...args) => {
+        const execution = await realCaptureCleanup(...args);
+        if (!purgeHeld && args[0].agentId === agentId && args[0].path === databasePath) {
+          purgeHeld = true;
+          purgeCaptured.resolve();
+          await releasePurge.promise;
+        }
+        return execution;
+      });
+    const captureOrdinary = vi.spyOn(agentExecutions, "captureOpenClawAgentDatabaseExecution");
+    const refuseLatePatch = async (checkpoint: string) => {
+      const capturesBefore = captureOrdinary.mock.calls.filter(
+        ([options]) => options.agentId === agentId,
+      ).length;
+      const update = vi.fn(() => ({ label: `late-${iteration}-${checkpoint}` }));
+      await expect(
+        patchSessionEntryCore(
+          { agentId, env: state.env, sessionKey: session.key, storePath },
+          update,
+          { skipMaintenance: true },
+        ),
+        `iteration ${iteration}, ${checkpoint}`,
+      ).rejects.toThrow(/deletion is draining active work/);
+      expect(update).not.toHaveBeenCalled();
+      expect(
+        captureOrdinary.mock.calls.filter(([options]) => options.agentId === agentId),
+        `iteration ${iteration}, ${checkpoint} must not acquire an executor`,
+      ).toHaveLength(capturesBefore);
+    };
+    setActiveEmbeddedRun(session.sessionId, handle, session.key, undefined, agentId);
+    // The test owns the deadline while deliberately holding all three deletion phases.
+    const deleting = client.request(
+      "agents.delete",
+      { agentId, deleteFiles: true },
+      { signal, timeoutMs: null },
+    );
+    void deleting.catch(() => {});
+    try {
+      await withinTest(
+        awaitGateBeforeSettlement(aborted.promise, deleting, "deletion did not abort its run"),
+        signal,
+      );
+      expect(readAgentDeletionJournal(agentId)?.phase).toBe("draining");
+      expect(isEmbeddedAgentRunInProgress(session.sessionId)).toBe(true);
+      await refuseLatePatch("before-run-settlement");
+      clearActiveEmbeddedRun(session.sessionId, handle, session.key);
+
+      await withinTest(
+        awaitGateBeforeSettlement(closed.promise, deleting, "deletion did not close its database"),
+        signal,
+      );
+      expect(readAgentDeletionJournal(agentId)?.phase).toBe("retiring");
+      expect(getRuntimeConfig().agents?.entries).toHaveProperty(agentId);
+      await refuseLatePatch("after-clean-close-before-config-reload");
+      releaseClosed.resolve();
+
+      await withinTest(
+        awaitGateBeforeSettlement(
+          purgeCaptured.promise,
+          deleting,
+          "deletion did not capture its purge executor",
+        ),
+        signal,
+      );
+      expect(readAgentDeletionJournal(agentId)?.phase).toBe("retiring");
+      await refuseLatePatch("during-purge");
+      releasePurge.resolve();
+      await expect(
+        withinTest(deleting, signal),
+        `deletion iteration ${iteration}`,
+      ).resolves.toMatchObject({
+        ok: true,
+        failed: [],
+        removed: expect.arrayContaining([{ path: workspace, method: "trash" }]),
+      });
+      expect(await deleting).not.toHaveProperty("purgeFailed");
+      expect(readAgentDeletionJournal(agentId)?.cleanupCompleted).toBe(true);
+      for (const pathname of [
+        workspace,
+        state.agentDir(agentId),
+        state.sessionsDir(agentId),
+        databasePath,
+      ]) {
+        await expect(fs.stat(pathname)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    } finally {
+      clearActiveEmbeddedRun(session.sessionId, handle, session.key);
+      releaseClosed.resolve();
+      releasePurge.resolve();
+      await Promise.allSettled([deleting]);
+      captureOrdinary.mockRestore();
+      captureCleanup.mockRestore();
+      closeDatabase.mockRestore();
+    }
+    await expect(
+      client.request("agents.create", { name: agentId, workspace }),
+    ).resolves.toMatchObject({
+      ok: true,
+      agentId,
+    });
+    expect(readAgentDeletionJournal(agentId)).toBeUndefined();
+    session = await client.request<{ key: string; sessionId: string }>("sessions.create", {
+      agentId,
+      key: `agent:${agentId}:late-write-${iteration + 1}`,
+    });
+    expect(session.sessionId).toBeTruthy();
+  }
+}
 
 it.for(["active", "restart-draining", "legacy-retiring"] as const)(
   "deletes real agent storage and permits recreation after %s",
@@ -418,6 +574,13 @@ it.for(["active", "restart-draining", "legacy-retiring"] as const)(
                   await memory.runtime.closeAllMemorySearchManagers?.();
                   await disposePluginRegistryInstances(memory.registry);
                 }
+                await exerciseLateSessionWritesDuringDeletion({
+                  state,
+                  client,
+                  agentId,
+                  workspace,
+                  signal,
+                });
                 expect(hotReloadRecovery).not.toHaveBeenCalled();
               } finally {
                 registry.agentHarnesses.splice(registry.agentHarnesses.indexOf(registration), 1);

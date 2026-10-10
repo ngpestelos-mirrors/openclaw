@@ -14,7 +14,6 @@ import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { resolveAgentCreationClaimAgentId } from "./agent-creation-claim.js";
-import { AgentDatabaseLeaseAdmissionRefusedError } from "./agent-database-admission-error.js";
 import { getAgentDeletionDatabaseCleanup } from "./agent-deletion-cleanup.js";
 import { hasClawDeletionOwnership } from "./agent-deletion-journal-authority.worker.js";
 import { resolveAgentDeletionRecoveryHolds } from "./agent-deletion-journal-recovery.js";
@@ -85,7 +84,7 @@ function assertAgentDeletionIdentityClaimAllowed(
   deletedAgentId: string | undefined,
 ): void {
   if (deletedAgentId && normalizeAgentId(claimAgentId) === normalizeAgentId(deletedAgentId)) {
-    throw new AgentDatabaseLeaseAdmissionRefusedError(
+    throw new Error(
       `OpenClaw agent database is unavailable while agent ${normalizeAgentId(deletedAgentId)} is deleted.`,
     );
   }
@@ -200,9 +199,7 @@ export function assertAgentDeletionPathFence(
     journalFenceFingerprint(snapshot.entries.map((entry) => entry.row)) !==
     journalFenceFingerprint(journalRows)
   ) {
-    throw new AgentDatabaseLeaseAdmissionRefusedError(
-      "Agent deletion journal changed while preparing a database claim.",
-    );
+    throw new Error("Agent deletion journal changed while preparing a database claim.");
   }
   // Existing foreign leases remain blockers even inside the deletion's cleanup scope.
   const cleanup = snapshot.fenceAgentId
@@ -253,9 +250,7 @@ export function assertAgentDeletionPathFence(
       journalFenceFields.every((field) => candidate.row[field] === row[field]),
     );
     if (!entry) {
-      throw new AgentDatabaseLeaseAdmissionRefusedError(
-        "Agent deletion journal changed while preparing a database claim.",
-      );
+      throw new Error("Agent deletion journal changed while preparing a database claim.");
     }
     for (const fence of entry.fences) {
       const blockedPath = snapshot.targetPaths.find(
@@ -263,7 +258,7 @@ export function assertAgentDeletionPathFence(
           targetPath === fence.canonicalPath || isPathInside(fence.canonicalPath, targetPath),
       );
       if (blockedPath) {
-        throw new AgentDatabaseLeaseAdmissionRefusedError(
+        throw new Error(
           `OpenClaw agent database ${blockedPath} is unavailable while agent ${row.agent_id} deletion owns ${fence.path}.`,
         );
       }

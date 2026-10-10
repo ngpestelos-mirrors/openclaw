@@ -45,7 +45,6 @@ import {
 import type { AgentDatabaseRequestExecutionSource } from "./openclaw-agent-execution-admission-contract.js";
 import {
   cleanupRetiredAgentDatabaseLease,
-  isSettledAgentDatabaseOpenRefusal,
   readAgentDatabaseClosedReceipt,
   publishAgentDatabaseCloseCheckpoint,
 } from "./openclaw-agent-execution-cleanup.js";
@@ -270,19 +269,12 @@ export function createAgentDatabaseNativeGeneration(
           request.stage === "prepare" &&
           isRecord(facts) &&
           (facts.kind === "agent-integrity-check" ||
-            facts.kind === "agent-open-refused" ||
             facts.kind === "agent-open-resume" ||
             facts.kind === "agent-validation-start")
         ) {
           assertSourceCurrent();
           if (!lease || !isDeepStrictEqual(facts.lease, lease)) {
             throw new Error("Agent open notice differs from its captured native lease");
-          }
-          if (facts.kind === "agent-open-refused") {
-            if (typeof facts.message !== "string") {
-              throw new Error("Agent open refusal omitted its reason");
-            }
-            throw new AgentDatabaseExecutionAdmissionClosedError(facts.message);
           }
           if (facts.kind === "agent-validation-start") {
             // Lease cleanup can revoke borrowed proof. Capture before verification,
@@ -490,11 +482,21 @@ export function createAgentDatabaseNativeGeneration(
           closedOpeningRefusal !== undefined && error === closedOpeningRefusal
             ? "open-refused"
             : "native";
-        if (
-          openingAdmission &&
-          (await isSettledAgentDatabaseOpenRefusal(error, openingAdmission))
-        ) {
-          openingFailure = "open-refused";
+        if (openingAdmission) {
+          const { admission: captured, settled } = openingAdmission;
+          const outcome = await settled;
+          // Only a settled caller refusal can preserve other logical borrowers.
+          // Protocol faults, cleanup aggregates, and uncertain native work retire the whole owner.
+          if (
+            captured.failure !== undefined &&
+            captured.failureSource !== "protocol" &&
+            error === captured.failure &&
+            outcome.kind !== "unknown" &&
+            !captured.committed &&
+            captured.cleanupFailures.length === 0
+          ) {
+            openingFailure = "open-refused";
+          }
         }
         throw error;
       })

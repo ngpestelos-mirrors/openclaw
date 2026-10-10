@@ -73,6 +73,7 @@ export function createAgentDatabaseExecution(
   const { agentId, pathname, identity, initialIdentity, expectedCreationIdentity } = prepared;
   const context = captureOpenClawStateWorkerContext({ env: options.env });
   const executionOptions = { agentId, path: pathname, env: context.environment };
+  const cleanupOwner = getAgentDeletionDatabaseCleanup(executionOptions);
   const creationClaim = creationClaims.captureAgentCreationClaim(options);
   const aliases = new Map<string, () => void>();
   const assertAgentAdmitted = captureAgentDatabaseAdmission(agentId, { env: context.environment });
@@ -320,13 +321,6 @@ export function createAgentDatabaseExecution(
     },
     borrow(borrowedPath, expected, creating, requestedPath) {
       const cleanup = getAgentDeletionDatabaseCleanup({ ...executionOptions, path: borrowedPath });
-      if (cleanup?.worker && !generation?.isPrepared()) {
-        registerAgentDeletionExecutionCleanup(
-          owner,
-          { ...executionOptions, path: borrowedPath },
-          () => drainAgentDatabaseResources({ path: borrowedPath, agentId }, async () => {}),
-        );
-      }
       const expectedIdentity = expected ? Object.freeze({ ...expected }) : undefined;
       const creatingTarget = creating ? Object.freeze({ ...creating }) : undefined;
       const assertReferenceCurrent = (nativeIdentity?: AgentDatabaseExecutionFileIdentity) => {
@@ -513,7 +507,7 @@ export function createAgentDatabaseExecution(
               }
             }
             borrowers -= 1;
-            if (borrowers !== 0 || retired || cleanupFailure) {
+            if (borrowers !== 0 || retired || cleanupFailure || cleanupOwner) {
               return;
             }
             const drainSignal = getGatewayRestartDrainSignal();
@@ -568,6 +562,15 @@ export function createAgentDatabaseExecution(
       // A reborrow may have retained the owner or started its next native generation.
       if (borrowers === 0 && !generation) {
         finishRetirement();
+      }
+    },
+    async retireForCleanup() {
+      if (!cleanupOwner) {
+        // Accepted writes keep their original owner through publication and settlement.
+        while (acceptedWork.pending.size > 0) {
+          await Promise.allSettled(acceptedWork.pending.keys());
+        }
+        await owner.close();
       }
     },
     close() {
@@ -628,11 +631,14 @@ export function createAgentDatabaseExecution(
   try {
     retainAlias(pathname);
     retainAlias(identity.canonicalPath);
+    registerAgentDeletionExecutionCleanup(owner, executionOptions, () =>
+      drainAgentDatabaseResources({ path: pathname, agentId }, async () => {}, cleanupOwner),
+    );
     unregisterConfig = watchAgentDatabaseExecutionConfig(agentId, context.environment, () => {
       // Routing changes retire warm retention, not borrowers of the captured physical store.
       // Keep the owner registered until native cleanup settles so pinned reborrows can join it.
       retainIdle = false;
-      if (borrowers === 0) {
+      if (borrowers === 0 && !cleanupOwner) {
         void owner.closeIdle().catch(reportCleanupFailure);
       }
     });

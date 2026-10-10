@@ -88,6 +88,9 @@ export function createAgentDeletionDatabaseCleanup(owner: {
             errors.push(error);
           }
         }
+        if (errors.length === 0) {
+          cleanupExecutions.delete(scope);
+        }
         return errors;
       };
       const assertActive = () => {
@@ -169,6 +172,8 @@ export function createAgentDeletionDatabaseCleanup(owner: {
           }
           await owner.assertAdmission();
           scope.assertCurrentHost();
+          // Reserve capture before the previous executor can yield while settling its work.
+          cleanupExecutions.set(scope, scope);
           const value = await run();
           // Callback settlement retires local admission before any owner check can yield.
           active = false;
@@ -249,6 +254,22 @@ export function getAgentDeletionDatabaseCleanup(
   return scope;
 }
 
+/** Resource registration captures only the cleanup scope that admitted this target. */
+export function captureAgentDeletionResourceOwner(
+  matches: (target: { agentId: string; path: string }) => boolean,
+): object | undefined {
+  const scope = databaseCleanup.getStore();
+  if (
+    !scope ||
+    (!matches(scope) &&
+      (!scope.canonicalPath || !matches({ agentId: scope.agentId, path: scope.canonicalPath })))
+  ) {
+    return undefined;
+  }
+  scope.assertCurrentHost();
+  return scope;
+}
+
 export function assertAgentDeletionDatabaseCleanupAccess(
   database: OpenClawAgentDatabase,
   options: OpenClawAgentDatabaseOptions,
@@ -291,7 +312,7 @@ export function assertAgentDeletionExecutionCleanupAccess(
   scope?.assertCurrentHost();
 }
 
-/** Only a cold executor belongs to cleanup; existing surviving stores retain their owner. */
+/** Only a newly created executor belongs to cleanup; borrowing never transfers ownership. */
 export function registerAgentDeletionExecutionCleanup(
   execution: object,
   options: OpenClawAgentDatabaseOptions,

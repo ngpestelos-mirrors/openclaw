@@ -3,11 +3,19 @@ import {
   type DatabasePathIdentity,
 } from "../infra/sqlite-worker-identity.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { assertAgentSessionWriteAdmission } from "../sessions/session-agent-work-admission.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import * as creationClaims from "./agent-creation-claim.js";
-import { assertAgentDeletionExecutionCleanupAccess } from "./agent-deletion-cleanup.js";
+import {
+  assertAgentDeletionCleanupAliases,
+  assertAgentDeletionExecutionCleanupAccess,
+  getAgentDeletionDatabaseCleanup,
+} from "./agent-deletion-cleanup.js";
 import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
-import { resolveOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
+import {
+  isSameOpenClawAgentDatabasePath,
+  resolveOpenClawAgentSqlitePath,
+} from "./openclaw-agent-db.paths.js";
 import type { OpenClawAgentDatabaseExecution } from "./openclaw-agent-execution-contract.js";
 import { createAgentDatabaseExecutionCapture } from "./openclaw-agent-execution-incognito.js";
 import {
@@ -37,6 +45,27 @@ export const captureOpenClawAgentDatabaseExecution = createAgentDatabaseExecutio
   captureFileAgentDatabaseExecution,
 );
 
+/** Cleanup receives a fresh owner after ordinary operations settle on their original one. */
+export async function captureAgentDeletionDatabaseExecution(
+  options: OpenClawAgentDatabaseOptions,
+): Promise<OpenClawAgentDatabaseExecution> {
+  const cleanup = getAgentDeletionDatabaseCleanup(options);
+  if (cleanup?.worker) {
+    cleanup.assertCurrentHost();
+    const pathname = resolveOpenClawAgentSqlitePath(options);
+    const previous =
+      executions.get(pathname) ??
+      executions.get(readDatabasePathIdentitySync(pathname).canonicalPath);
+    if (previous?.kind === "file") {
+      assertAgentDatabaseExecutionSharedState(options, previous.sharedDatabaseKey);
+      assertAgentDeletionExecutionCleanupAccess(previous, options);
+      await previous.retireForCleanup();
+      cleanup.assertCurrentHost();
+    }
+  }
+  return captureFileAgentDatabaseExecution(options);
+}
+
 /** Borrow an existing physical owner without opening or preparing a writer. */
 export function captureExistingOpenClawAgentDatabaseExecution(
   options: { path: string; env?: NodeJS.ProcessEnv },
@@ -54,6 +83,8 @@ function captureFileAgentDatabaseExecution(
   options: OpenClawAgentDatabaseOptions,
   constraints: AgentDatabaseExecutionCaptureConstraints = {},
 ): OpenClawAgentDatabaseExecution {
+  assertAgentSessionWriteAdmission(options);
+  assertAgentDeletionCleanupAliases(options, isSameOpenClawAgentDatabasePath);
   const agentId = normalizeAgentId(options.agentId);
   const pathname = resolveOpenClawAgentSqlitePath(options);
   creationClaims.assertAgentCreationClaimAliases(options);
