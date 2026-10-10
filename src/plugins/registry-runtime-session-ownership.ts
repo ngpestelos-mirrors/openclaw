@@ -9,11 +9,11 @@ import {
   sqliteSessionFileMarkerMatchesTarget,
 } from "../config/sessions/legacy-sqlite-marker.js";
 import { resolveSessionEntryAccessTarget } from "../config/sessions/session-accessor.entry.js";
+import { assertSessionEntryPatchAuthority } from "../config/sessions/session-entry-patch-authority.js";
 import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { assertSessionEntryPatchAuthority } from "../plugin-sdk/session-store-runtime-internal.js";
 import {
   classifySessionKeyShape,
   isUnscopedSessionKeySentinel,

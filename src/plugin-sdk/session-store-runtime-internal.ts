@@ -4,23 +4,7 @@ import {
   readSessionEntryByIdReadOnlyInWorker,
   readSessionEntryReadOnlyInWorker,
 } from "../config/sessions/session-entry-read-runtime.js";
-import type { PreparedSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import type { InternalSessionEntry, SessionEntry } from "../config/sessions/types.js";
-
-/** Host checks never query SQLite; prepared sources retain their own predicate owner. */
-export type SessionEntryPatchAuthority =
-  | { kind: "host"; assertCurrent(): void }
-  | { kind: "source"; source: PreparedSessionSourceAssertion };
-
-export function assertSessionEntryPatchAuthority(
-  authority: SessionEntryPatchAuthority | undefined,
-): void {
-  if (authority?.kind === "source" && typeof authority.source.prepareSessionSource !== "function") {
-    throw new Error(
-      "Session entry source authority requires a prepared source capability; use kind: host for SQLite-free checks or the deprecated patchSessionEntry API for legacy callbacks",
-    );
-  }
-}
 
 export type SessionStoreReadParams = {
   agentId?: string;

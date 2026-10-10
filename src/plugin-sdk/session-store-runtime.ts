@@ -29,6 +29,10 @@ import {
   updateSessionLastRoute,
   updateSessionLastRouteInScope,
 } from "../config/sessions/session-accessor.sqlite-entry.js";
+import {
+  assertSessionEntryPatchAuthority,
+  type SessionEntryPatchAuthority,
+} from "../config/sessions/session-entry-patch-authority.js";
 import { preserveGenerationPrivateFields } from "../config/sessions/session-entry-public-patch.js";
 import { readSessionUpdatedAtInWorker } from "../config/sessions/session-entry-read-runtime.js";
 import { captureIncognitoSessionSource } from "../config/sessions/session-incognito-binding.js";
@@ -43,8 +47,6 @@ import type { AmbientTranscriptWatermark, SessionEntry } from "../config/session
 import { warnPluginSdkDeprecation } from "../plugins/sdk-deprecation.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import {
-  assertSessionEntryPatchAuthority,
-  type SessionEntryPatchAuthority,
   projectPluginSessionEntry,
   projectPluginSessionEntryPatch,
   type SessionStoreEntrySummary,
@@ -96,7 +98,7 @@ type PatchSessionEntryParams = SessionStoreReadParams & {
   update: SessionStoreEntryPatch;
 };
 
-export type { SessionEntryPatchAuthority } from "./session-store-runtime-internal.js";
+export type { SessionEntryPatchAuthority } from "../config/sessions/session-entry-patch-authority.js";
 export type { PreparedSessionSourceAssertion as SessionEntrySourceAuthority } from "../config/sessions/session-source-authority.js";
 
 export type PrepareSessionEntryPatchParams = Omit<

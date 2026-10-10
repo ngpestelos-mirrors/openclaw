@@ -2,8 +2,6 @@ import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { createChannelIngressDrain } from "../channels/message/ingress-drain.js";
 import { createChannelIngressQueue } from "../channels/message/ingress-queue.js";
 import { getRuntimeConfig } from "../config/config.js";
-import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
-import { assertSessionEntryPatchAuthority } from "../plugin-sdk/session-store-runtime-internal.js";
 import {
   createPluginBlobStore,
   type OpenBlobStoreOptions,
@@ -23,7 +21,10 @@ import {
   isPluginRecordActive,
   isPluginRegistryPreparing,
 } from "./registry-lifecycle.js";
-import { createRegisteredChannelRuntimeResolver } from "./registry-runtime-channel.js";
+import {
+  createRegisteredChannelRuntimeResolver,
+  createScopedPluginChannelRuntime,
+} from "./registry-runtime-channel.js";
 import type { PluginRegistryState } from "./registry-state.js";
 import type { PluginRecord, PluginRegistry } from "./registry-types.js";
 import {
@@ -343,87 +344,11 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
           if (scopedChannelRuntime?.source === channel) {
             return scopedChannelRuntime.value;
           }
-          const inbound = {
-            ...channel.inbound,
-            run: ((...args: Parameters<typeof channel.inbound.run>) =>
-              invokeSelectedRuntime(() =>
-                channel.inbound.run(...args),
-              )) as typeof channel.inbound.run, // SAFETY: Forward unchanged arguments/results for both generic run overloads.
-            runPreparedReply: (...args) =>
-              invokeSelectedRuntime(() => channel.inbound.runPreparedReply(...args)),
-            dispatch: ((...args: Parameters<typeof channel.inbound.dispatch>) =>
-              invokeSelectedRuntime(() =>
-                channel.inbound.dispatch(...args),
-              )) as typeof channel.inbound.dispatch, // SAFETY: Preserve each routed-turn overload and its result.
-            dispatchReply: (...args) =>
-              invokeSelectedRuntime(() => channel.inbound.dispatchReply(...args)),
-          } satisfies PluginRuntime["channel"]["inbound"];
-          const value = {
-            ...channel,
-            inbound,
-            turn: inbound,
-            session: {
-              ...channel.session,
-              updateLastRoute: (params) =>
-                invokeSelectedRuntime(() =>
-                  params.assertCommitAllowed
-                    ? channel.session.updateLastRoute(params)
-                    : channel.session.updateLastRouteWithAuthority({
-                        ...params,
-                        authority: { kind: "host", assertCurrent: assertRuntimeCurrent },
-                      }),
-                ),
-              updateLastRouteWithAuthority: (params) => {
-                assertSessionEntryPatchAuthority(params.authority);
-                return invokeSelectedRuntime(() =>
-                  channel.session.updateLastRouteWithAuthority({
-                    ...params,
-                    authority: {
-                      kind: "source",
-                      source: composeSessionSourceAssertion(
-                        [params.authority.kind === "source" ? params.authority.source : undefined],
-                        (assertSources) => {
-                          assertRuntimeCurrent();
-                          if (params.authority.kind === "host") params.authority.assertCurrent();
-                          assertSources();
-                        },
-                      ),
-                    },
-                  }),
-                );
-              },
-            },
-            outbound: {
-              ...channel.outbound,
-              loadAdapter: (...args) =>
-                invokeSelectedRuntime(() => channel.outbound.loadAdapter(...args)),
-            },
-            threadBindings: {
-              setIdleTimeoutBySessionKey: (...args) =>
-                invokeSelectedRuntime(() =>
-                  channel.threadBindings.setIdleTimeoutBySessionKey(...args),
-                ),
-              setMaxAgeBySessionKey: (...args) =>
-                invokeSelectedRuntime(() => channel.threadBindings.setMaxAgeBySessionKey(...args)),
-              setIdleTimeoutBySessionKeyAsync: (...args) =>
-                invokeSelectedRuntime(() =>
-                  channel.threadBindings.setIdleTimeoutBySessionKeyAsync(...args),
-                ),
-              setMaxAgeBySessionKeyAsync: (...args) =>
-                invokeSelectedRuntime(() =>
-                  channel.threadBindings.setMaxAgeBySessionKeyAsync(...args),
-                ),
-            },
-            reply: {
-              ...channel.reply,
-              dispatchReplyFromConfig: (...args) =>
-                invokeSelectedRuntime(() => channel.reply.dispatchReplyFromConfig(...args)),
-              dispatchReplyWithBufferedBlockDispatcher: (...args) =>
-                invokeSelectedRuntime(() =>
-                  channel.reply.dispatchReplyWithBufferedBlockDispatcher(...args),
-                ),
-            },
-          } satisfies PluginRuntime["channel"];
+          const value = createScopedPluginChannelRuntime(
+            channel,
+            invokeSelectedRuntime,
+            assertRuntimeCurrent,
+          );
           scopedChannelRuntime = { source: channel, value };
           return value;
         }

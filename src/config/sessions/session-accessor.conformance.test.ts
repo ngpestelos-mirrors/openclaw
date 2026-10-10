@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { StatementSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -22,7 +21,11 @@ import {
   readSessionArchiveContentSync,
 } from "./archive-compression.js";
 import { isSessionArchiveArtifactName } from "./artifacts.js";
-import { closeSessionAccessorConformanceFixture } from "./session-accessor.conformance.test-support.js";
+import {
+  closeSessionAccessorConformanceFixture,
+  createSessionAccessorConformanceFixture,
+  type SessionAccessorConformancePaths as TestPaths,
+} from "./session-accessor.conformance.test-support.js";
 import {
   appendTranscriptEvent,
   appendTranscriptMessage,
@@ -115,13 +118,6 @@ type AccessorAdapter = {
   ): Promise<void>;
 };
 
-type TestPaths = {
-  sqlitePath: string;
-  stateDir: string;
-  storePath: string;
-  tempDir: string;
-};
-
 const publicAccessorAdapter: AccessorAdapter = {
   name: "public-accessor",
   entryScope: (paths) => ({
@@ -185,13 +181,7 @@ describe.each([publicAccessorAdapter, sqliteAdapter])(
     };
 
     beforeEach(() => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-session-accessor-conf-"));
-      paths = {
-        sqlitePath: path.join(tempDir, "openclaw-agent.sqlite"),
-        stateDir: path.join(tempDir, "state"),
-        storePath: path.join(tempDir, "sessions.json"),
-        tempDir,
-      };
+      paths = createSessionAccessorConformanceFixture("openclaw-session-accessor-conf-");
     });
 
     afterEach(async () => {
@@ -1168,13 +1158,7 @@ describe("sqlite session normalization", () => {
   let paths: TestPaths;
 
   beforeEach(() => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-session-sqlite-norm-"));
-    paths = {
-      sqlitePath: path.join(tempDir, "openclaw-agent.sqlite"),
-      stateDir: path.join(tempDir, "state"),
-      storePath: path.join(tempDir, "sessions.json"),
-      tempDir,
-    };
+    paths = createSessionAccessorConformanceFixture("openclaw-session-sqlite-norm-");
   });
 
   afterEach(async () => {
