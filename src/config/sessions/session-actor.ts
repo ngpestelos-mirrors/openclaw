@@ -30,7 +30,7 @@ import type {
 import type { createSessionActorReplica } from "./session-actor-replica.js";
 
 type NativeAdmission = {
-  admission: SqliteWorkerOperationAdmission;
+  admission: Pick<SqliteWorkerOperationAdmission, "committed" | "settlement">;
   retained: RetainedWorkerTransactionAdmission;
 };
 
@@ -57,6 +57,27 @@ export type SessionActorTransport = {
 };
 
 type TransportScope = Parameters<Parameters<SessionActorTransport["run"]>[0]>[0];
+
+const executePhase: {
+  [Phase in SessionActorPhase]: (
+    scope: TransportScope,
+    input: SessionActorCommandContext &
+      SessionActorPhaseInputs[Phase] & { target: SessionActorTarget },
+  ) => Promise<SessionActorOutcome<SessionActorPhaseResults[Phase]>>;
+} = {
+  acceptInput: (scope, input) => scope.execute({ type: "session.actor.acceptInput", input }),
+  adoptRun: (scope, input) => scope.execute({ type: "session.actor.adoptRun", input }),
+  appendToolResult: (scope, input) =>
+    scope.execute({ type: "session.actor.appendToolResult", input }),
+  appendTranscriptEvent: (scope, input) =>
+    scope.execute({ type: "session.actor.appendTranscriptEvent", input }),
+  completeTurn: (scope, input) => scope.execute({ type: "session.actor.completeTurn", input }),
+  deliveryPending: (scope, input) =>
+    scope.execute({ type: "session.actor.deliveryPending", input }),
+  deliverySettled: (scope, input) =>
+    scope.execute({ type: "session.actor.deliverySettled", input }),
+  patch: (scope, input) => scope.execute({ type: "session.actor.patch", input }),
+};
 
 type PhaseState = {
   id: string;
@@ -282,15 +303,10 @@ export function createSessionActor(params: {
                 );
               }
               const pending = params.replica.beginCommand({ ...captured, phase: name });
-              const reply = await scope
-                .execute({
-                  type: `session.actor.${name}`,
-                  input: { ...captured, target },
-                })
-                .then(
-                  (value) => ({ ok: true as const, value }),
-                  (error: unknown) => ({ ok: false as const, error }),
-                );
+              const reply = await executePhase[name](scope, { ...captured, target }).then(
+                (value) => ({ ok: true as const, value }),
+                (error: unknown) => ({ ok: false as const, error }),
+              );
               const native = selected.native;
               let result: Outcome;
               if (native) {

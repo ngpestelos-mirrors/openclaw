@@ -109,7 +109,9 @@ export function applySessionMetadataAppendInTransaction(
           ? preparation.expectedMutationAt
           : readTranscriptMutationStateInTransaction(database, input.scope.sessionId).updatedAt;
     }
-    const snapshot = appendTranscriptMessageSnapshotSync(
+    const snapshot = appendTranscriptMessageSnapshotSync<
+      SessionMessageEntry["message"] | undefined
+    >(
       input.scope,
       {
         ...options,
@@ -158,7 +160,7 @@ export function applySessionDirectMessageInTransaction(
     throw new Error("Invalid serialized session transcript message");
   }
   let projectionNeedsReconcile = false;
-  const snapshot = appendTranscriptMessageSnapshotSync(
+  const snapshot = appendTranscriptMessageSnapshotSync<SessionMessageEntry["message"] | undefined>(
     input.scope,
     {
       message,

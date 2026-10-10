@@ -38,7 +38,15 @@ export function captureDurableSessionActor(params: {
   return createSessionActor({
     target: params.target,
     lifetime,
-    replica: createSessionActorReplica({ target: params.target, lifetime }),
+    replica: createSessionActorReplica({
+      target: params.target,
+      lifetime,
+      currentGeneration() {
+        const generation = execution.capturePreparedGenerationClaim();
+        generation?.assertCurrent();
+        return generation?.incarnation;
+      },
+    }),
     transport: {
       run: (operation, authorize) =>
         withSessionEntryWorker(
@@ -75,20 +83,74 @@ export function captureDurableSessionActor(params: {
   });
 }
 
-export function createDurableSessionActorFactory(
+/** Select the current physical owner; native incognito remains native until P12. */
+export function createSessionActorFactory(
   database: OpenClawAgentDatabaseOptions & { path: string },
 ): SessionActorFactory {
+  const captured = {
+    ...database,
+    env: Object.freeze({ ...(database.env ?? process.env) }),
+  };
   return {
-    async acquire(target, lifetime) {
-      if (target.database.kind !== "file") {
-        throw new Error("Durable session actors require an exact file target");
-      }
+    async acquire(requestedTarget, lifetime) {
+      const target = structuredClone(requestedTarget);
       lifetime.assertCurrent();
-      return captureDurableSessionActor({
-        database,
-        target: { sessionKey: target.sessionKey, database: target.database },
-        lifetime,
+      if (target.database.kind === "file") {
+        return captureDurableSessionActor({
+          database: captured,
+          target: { sessionKey: target.sessionKey, database: target.database },
+          lifetime,
+        });
+      }
+      if (target.database.kind === "native-incognito") {
+        const { captureNativeIncognitoSessionActor } =
+          await import("./session-actor-native-incognito.js");
+        return captureNativeIncognitoSessionActor({
+          database: captured,
+          target: { sessionKey: target.sessionKey, database: target.database },
+          lifetime,
+        });
+      }
+      const expected = target.database;
+      const existing = captureOpenClawAgentDatabaseExecution
+        .listIncognito(captured.env)
+        .find(
+          (owner) =>
+            owner.agentId === captured.agentId &&
+            owner.storePath === captured.path &&
+            owner.identity.handle === expected.handle &&
+            owner.identity.incarnation === expected.incarnation,
+        );
+      if (!existing) throw new Error("Incognito session actor lost its captured worker owner");
+      const execution = await captureOpenClawAgentDatabaseExecution({
+        kind: "ephemeral",
+        agentId: captured.agentId,
+        env: captured.env,
+        existingOnly: true,
+        authority: {
+          assertCurrent() {
+            lifetime.assertCurrent();
+            existing.assertCurrent();
+          },
+        },
       });
+      if (!execution) throw new Error("Incognito session actor owner is unavailable");
+      try {
+        const actor = await execution.sessionActors.acquire(target, lifetime);
+        return {
+          ...actor,
+          async release() {
+            await actor.release();
+            await execution.release();
+          },
+        };
+      } catch (error) {
+        await execution.release();
+        throw error;
+      }
     },
   };
 }
+
+/** Existing cutover callers keep the factory name while acquisition covers every owner kind. */
+export const createDurableSessionActorFactory = createSessionActorFactory;

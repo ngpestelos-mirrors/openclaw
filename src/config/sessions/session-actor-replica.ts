@@ -2,6 +2,7 @@ import { readSqliteDatabaseWriteTokenForPath } from "../../infra/sqlite-database
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { sessionChangeAffectsStoredRow } from "../../sessions/session-row-facts.js";
+import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import type {
   AgentDatabaseExecutionFileIdentity,
@@ -11,6 +12,7 @@ import type {
   SessionActorCommandContext,
   SessionActorHotState,
   SessionActorLifetime,
+  SessionActorNativeIncognitoIdentity,
   SessionActorOutcome,
   SessionActorPhase,
   SessionActorTarget,
@@ -18,188 +20,262 @@ import type {
 } from "./session-actor-contract.js";
 
 type FileTarget = SessionActorTarget & { database: AgentDatabaseExecutionFileIdentity };
-type EphemeralTarget = SessionActorTarget & { database: AgentDatabaseIncognitoIdentity };
+type EphemeralTarget = SessionActorTarget & {
+  database: AgentDatabaseIncognitoIdentity | SessionActorNativeIncognitoIdentity;
+};
+type ReplicaCell = {
+  target: SessionActorTarget;
+  snapshot?: SessionActorHotState;
+  generation?: string;
+  reservation: number;
+  handles: number;
+  pending: number;
+  bytes: number;
+};
+
+const MAX_SNAPSHOTS = 128;
+const MAX_BYTES = 8 * 1024 * 1024;
+const pool = resolveGlobalSingleton(Symbol.for("openclaw.sessionActorReplicas"), () => {
+  const cells = new Map<string, ReplicaCell>();
+  sessionChanges.subscribeFacts((change) => {
+    for (const cell of cells.values()) {
+      const { database, sessionKey } = cell.target;
+      if (
+        database.kind !== "file" ||
+        !sessionChangeAffectsStoredRow(change, {
+          sessionKeys: [sessionKey],
+          storePaths: new Set([database.nativeLocation]),
+          databaseIdentities: new Set([database.physicalIdentity]),
+        })
+      )
+        continue;
+      if (change.factsInvalidated) cell.reservation += 1;
+      // A command's partial publication precedes its full receipt. Its native
+      // token rejects superseded postimages without cancelling that receipt.
+      discard(cell);
+      forgetUnused(cell);
+    }
+  });
+  return { cells, snapshots: 0, bytes: 0 };
+});
+
+function targetKey(target: SessionActorTarget): string {
+  const { database, sessionKey } = target;
+  return JSON.stringify(
+    database.kind === "file"
+      ? [database.kind, database.physicalIdentity, database.birthtime, sessionKey]
+      : database.kind === "ephemeral"
+        ? [database.kind, database.handle, database.incarnation, sessionKey]
+        : [
+            database.kind,
+            database.agentId,
+            database.nativeLocation,
+            database.incarnation,
+            sessionKey,
+          ],
+  );
+}
+
+function discard(cell: ReplicaCell): void {
+  if (cell.snapshot) pool.snapshots -= 1;
+  pool.bytes -= cell.bytes;
+  cell.snapshot = undefined;
+  cell.generation = undefined;
+  cell.bytes = 0;
+}
+
+function forgetUnused(cell: ReplicaCell): void {
+  const key = targetKey(cell.target);
+  if (!cell.handles && !cell.pending && !cell.snapshot && pool.cells.get(key) === cell) {
+    pool.cells.delete(key);
+  }
+}
+
+function touch(cell: ReplicaCell): void {
+  const key = targetKey(cell.target);
+  pool.cells.delete(key);
+  pool.cells.set(key, cell);
+  for (const candidate of pool.cells.values()) {
+    if (pool.snapshots <= MAX_SNAPSHOTS && (pool.bytes <= MAX_BYTES || pool.snapshots === 1)) break;
+    if (!candidate.snapshot) continue;
+    discard(candidate);
+    forgetUnused(candidate);
+  }
+}
 
 function sameVersion(left: SessionActorVersion, right: SessionActorVersion): boolean {
   return left.epoch === right.epoch && left.sequence === right.sequence;
 }
 
-/**
- * A replica retains one actor's complete committed postimage. The host owns its
- * residency and closes it when releasing the actor; it never becomes a writer.
- */
+/** Handles retain their own authority; complete physical postimages survive handle release. */
 export function createSessionActorReplica(
   params: { lifetime: SessionActorLifetime } & (
-    | { target: FileTarget; currentWriteToken?: never }
-    | { target: EphemeralTarget; currentWriteToken: () => string | undefined }
+    | { target: FileTarget; currentWriteToken?: never; currentGeneration: () => string | undefined }
+    | {
+        target: EphemeralTarget;
+        currentWriteToken: () => string | undefined;
+        currentGeneration?: never;
+      }
   ),
 ) {
   const target = freezeJsonSnapshot(structuredClone(params.target));
-  let snapshot: SessionActorHotState | undefined;
-  let reservation = 0;
+  const key = targetKey(target);
+  let cell = pool.cells.get(key);
+  if (!cell) {
+    cell = { target, reservation: 0, handles: 0, pending: 0, bytes: 0 };
+    pool.cells.set(key, cell);
+  }
+  const owned = cell;
+  owned.handles += 1;
   let closed = false;
 
   const invalidate = () => {
-    reservation += 1;
-    snapshot = undefined;
+    owned.reservation += 1;
+    discard(owned);
+    forgetUnused(owned);
+  };
+  const generation = (): string | undefined => {
+    try {
+      return target.database.kind === "file"
+        ? params.currentGeneration?.()
+        : target.database.incarnation;
+    } catch {
+      return undefined;
+    }
   };
   const currentToken = (): string | undefined => {
     const database = target.database;
-    if (database.kind === "ephemeral") {
-      return params.currentWriteToken?.();
-    }
+    if (database.kind !== "file") return params.currentWriteToken?.();
     try {
       const identity = readDatabasePathIdentitySync(database.nativeLocation);
       if (
         identity.key !== `file:${database.physicalIdentity}` ||
         (database.birthtime !== undefined && identity.birthtime !== database.birthtime)
-      ) {
+      )
         return undefined;
-      }
       return readSqliteDatabaseWriteTokenForPath(database.nativeLocation);
     } catch {
       return undefined;
     }
   };
-  const accepts = (state: SessionActorHotState): boolean => {
-    const database = state.target.database;
-    const sameDatabase =
-      database.kind === "file" && target.database.kind === "file"
-        ? database.physicalIdentity === target.database.physicalIdentity &&
-          database.birthtime === target.database.birthtime
-        : database.kind === "ephemeral" &&
-          target.database.kind === "ephemeral" &&
-          database.handle === target.database.handle &&
-          database.incarnation === target.database.incarnation;
-    return (
-      sameDatabase &&
-      state.target.sessionKey === target.sessionKey &&
-      state.version.epoch.length > 0 &&
-      Number.isSafeInteger(state.version.sequence) &&
-      state.version.sequence >= 0 &&
-      state.writeToken.length > 0 &&
-      state.writeToken === currentToken()
-    );
-  };
-  const install = (state: SessionActorHotState): boolean => {
-    if (!accepts(state)) {
-      snapshot = undefined;
+  const accepts = (state: SessionActorHotState, expectedGeneration: string | undefined): boolean =>
+    expectedGeneration !== undefined &&
+    expectedGeneration === generation() &&
+    targetKey(state.target) === key &&
+    state.version.epoch.length > 0 &&
+    Number.isSafeInteger(state.version.sequence) &&
+    state.version.sequence >= 0 &&
+    state.writeToken.length > 0 &&
+    state.writeToken === currentToken();
+  const install = (
+    state: SessionActorHotState,
+    expectedGeneration: string | undefined,
+  ): boolean => {
+    if (!accepts(state, expectedGeneration)) {
+      discard(owned);
       return false;
     }
     const detached = freezeJsonSnapshot(structuredClone(state));
-    if (!accepts(detached)) {
-      snapshot = undefined;
+    if (!accepts(detached, expectedGeneration)) {
+      discard(owned);
       return false;
     }
-    snapshot = detached;
-    return true;
+    discard(owned);
+    owned.snapshot = detached;
+    owned.generation = expectedGeneration;
+    owned.bytes = JSON.stringify(detached).length * 2;
+    pool.snapshots += 1;
+    pool.bytes += owned.bytes;
+    touch(owned);
+    return owned.snapshot !== undefined;
   };
   const begin = () => {
     params.lifetime.assertCurrent();
-    if (closed) {
-      throw new Error("Session actor replica is closed");
-    }
+    if (closed) throw new Error("Session actor replica is closed");
+    owned.pending += 1;
     invalidate();
-    const selected = reservation;
+    const selected = owned.reservation;
+    const expectedGeneration = generation();
     let settled = false;
-    return () => {
-      if (settled) {
-        return false;
-      }
+    return (operation: (expectedGeneration: string | undefined) => boolean): boolean => {
+      if (settled) return false;
       settled = true;
-      return selected === reservation;
+      try {
+        return selected === owned.reservation && operation(expectedGeneration);
+      } finally {
+        owned.pending -= 1;
+        forgetUnused(owned);
+      }
     };
   };
-  const unsubscribe = sessionChanges.subscribeFacts((change) => {
-    if (
-      target.database.kind === "file" &&
-      sessionChangeAffectsStoredRow(change, {
-        sessionKeys: [target.sessionKey],
-        storePaths: new Set([target.database.nativeLocation]),
-        databaseIdentities: new Set([target.database.physicalIdentity]),
-      })
-    ) {
-      if (change.factsInvalidated) {
-        invalidate();
-      } else {
-        // The command's own partial publications precede its full receipt. Drop
-        // retained rows without cancelling that receipt; its native token still
-        // rejects a postimage superseded by another writer.
-        snapshot = undefined;
-      }
-    }
-  });
 
   return {
-    /** The host joins the physical writer FIFO before consuming retained facts. */
+    /** Each borrower validates its current physical generation before disclosure. */
     read(): SessionActorHotState | undefined {
       params.lifetime.assertReadable();
-      if (closed || !snapshot) {
-        return undefined;
-      }
-      if (!accepts(snapshot)) {
+      if (closed || !owned.snapshot) return undefined;
+      if (!accepts(owned.snapshot, owned.generation)) {
         invalidate();
         return undefined;
       }
-      return structuredClone(snapshot);
+      touch(owned);
+      return structuredClone(owned.snapshot);
     },
-    /** Reserve before dispatch; only that read may install a new owner epoch. */
     beginRead() {
       const settle = begin();
       return {
         install(state: SessionActorHotState): boolean {
-          return settle() && install(state);
+          return settle((expectedGeneration) => install(state, expectedGeneration));
         },
         cancel(): void {
-          settle();
+          settle(() => false);
         },
       };
     },
-    /** Native commit evidence settles independently of the ordinary command reply. */
     beginCommand(
       command: Pick<SessionActorCommandContext, "commandId" | "phaseId" | "expected"> & {
         phase: SessionActorPhase;
       },
     ) {
-      const previous = snapshot;
+      const previous = owned.snapshot;
       const captured = structuredClone(command);
       const settle = begin();
       return {
         settle<Value>(outcome: SessionActorOutcome<Value>): boolean {
-          if (!settle()) {
-            return false;
-          }
-          if (outcome.kind === "rolled-back") {
-            return previous !== undefined && install(previous);
-          }
-          if (outcome.kind === "unknown") {
-            snapshot = undefined;
-            return false;
-          }
-          const { receipt } = outcome;
-          const version = receipt.postimage.version;
-          if (
-            receipt.commandId !== captured.commandId ||
-            receipt.phaseId !== captured.phaseId ||
-            receipt.phase !== captured.phase ||
-            !sameVersion(receipt.beforeVersion, captured.expected) ||
-            !sameVersion(receipt.afterVersion, version) ||
-            version.epoch !== captured.expected.epoch ||
-            version.sequence !== captured.expected.sequence + 1
-          ) {
-            snapshot = undefined;
-            return false;
-          }
-          // Closing revokes disclosure, not custody of a previously accepted commit.
-          return install(receipt.postimage);
+          return settle((expectedGeneration) => {
+            if (outcome.kind === "rolled-back") {
+              return previous !== undefined && install(previous, expectedGeneration);
+            }
+            if (outcome.kind === "unknown") {
+              discard(owned);
+              return false;
+            }
+            const { receipt } = outcome;
+            const version = receipt.postimage.version;
+            if (
+              receipt.commandId !== captured.commandId ||
+              receipt.phaseId !== captured.phaseId ||
+              receipt.phase !== captured.phase ||
+              !sameVersion(receipt.beforeVersion, captured.expected) ||
+              !sameVersion(receipt.afterVersion, version) ||
+              version.epoch !== captured.expected.epoch ||
+              version.sequence !== captured.expected.sequence + 1
+            ) {
+              discard(owned);
+              return false;
+            }
+            // Closing revokes this handle's disclosure, not accepted commit custody.
+            return install(receipt.postimage, expectedGeneration);
+          });
         },
       };
     },
     invalidate,
     close(): void {
+      if (closed) return;
       closed = true;
-      snapshot = undefined;
-      unsubscribe();
+      owned.handles -= 1;
+      forgetUnused(owned);
     },
   };
 }

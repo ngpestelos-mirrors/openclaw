@@ -275,6 +275,14 @@ queue; it does not introduce another database, worker service, or writer owner.
 Durable actors bind the physical database identity and session key. Incognito
 actors bind the existing memory database's handle and incarnation.
 
+Before worker-backed incognito activation, acquisition selects an adapter for
+the already-open native memory owner. It uses that owner's writer admission,
+synchronous transaction and connection incarnation, then installs the same
+committed receipts on MAIN. It never opens a replacement memory database or
+falls back to a file. After activation, acquisition selects the captured
+incognito execution owner. Closing either owner invalidates captured targets;
+acquisition cannot revive its old run authority.
+
 A cold actor hydrates its entry, participants, membership, pending-input custody,
 and transcript metadata in one autocommit statement. The versioned hot state
 includes exact anchors, idempotency identities, model-context membership, and
