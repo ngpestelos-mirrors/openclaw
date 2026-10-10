@@ -182,7 +182,9 @@ export function prepareSqliteDatabaseAdmission(
         exchange(filename, true);
         const opened = prepareSqliteDatabaseAdmission(filename);
         if (managed && opened === undefined) {
-          throw new Error("SQLite worker file creation requires host authority", { cause: error });
+          throw new Error(`SQLite worker file creation requires host authority: ${filename}`, {
+            cause: error,
+          });
         }
         return opened;
       }
@@ -694,7 +696,8 @@ export function captureSqliteDatabaseAdmissions(
     const facts = new Map([...record.facts].filter(([, fact]) => valid(record, fact)));
     if (cursor) {
       const cell = new Int32Array(record.generation);
-      const revision = `${Atomics.load(cell, 0)}:${Atomics.load(cell, 1)}:${Atomics.load(cell, 4)}:${[...record.writers.keys()].join(",")}:${[...facts.values()].map((fact) => fact.publication).join(",")}`;
+      // A reused inode starts a new custody generation even when its counters match.
+      const revision = `${record.generationId}:${Atomics.load(cell, 0)}:${Atomics.load(cell, 1)}:${Atomics.load(cell, 4)}:${[...record.writers.keys()].join(",")}:${[...facts.values()].map((fact) => fact.publication).join(",")}`;
       if (cursor.get(record.identity) === revision) {
         continue;
       }
