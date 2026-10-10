@@ -40,6 +40,7 @@ import {
   normalizeWebkitTestSource,
   webkitExpectedFailures,
 } from "./test/webkit-expected-failures.ts";
+import { controlUiSolidPlugin } from "./vite.config.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -216,6 +217,7 @@ export function createUiBrowserVitestConfig(
   return defineProject({
     root: here,
     plugins: [
+      controlUiSolidPlugin(),
       mermaidClassicBundlePlugin(),
       controlUiLocaleModulesPlugin(),
       createVitestProjectCachePlugin(),
@@ -378,7 +380,11 @@ export default defineConfig({
     projects: [
       {
         extends: false,
-        plugins: [controlUiLocaleModulesPlugin(), createVitestProjectCachePlugin()],
+        plugins: [
+          controlUiSolidPlugin(),
+          controlUiLocaleModulesPlugin(),
+          createVitestProjectCachePlugin(),
+        ],
         resolve: {
           alias: workspaceSourceAliases,
         },
@@ -411,7 +417,11 @@ export default defineConfig({
       },
       {
         extends: false,
-        plugins: [controlUiLocaleModulesPlugin(), createVitestProjectCachePlugin()],
+        plugins: [
+          controlUiSolidPlugin(),
+          controlUiLocaleModulesPlugin(),
+          createVitestProjectCachePlugin(),
+        ],
         resolve: {
           alias: workspaceSourceAliases,
         },
@@ -429,7 +439,11 @@ export default defineConfig({
       },
       {
         extends: false,
-        plugins: [controlUiLocaleModulesPlugin(), createVitestProjectCachePlugin()],
+        plugins: [
+          controlUiSolidPlugin(),
+          controlUiLocaleModulesPlugin(),
+          createVitestProjectCachePlugin(),
+        ],
         resolve: {
           alias: workspaceSourceAliases,
         },
@@ -456,7 +470,11 @@ export default defineConfig({
         : []),
       {
         extends: false,
-        plugins: [controlUiLocaleModulesPlugin(), createVitestProjectCachePlugin()],
+        plugins: [
+          controlUiSolidPlugin(),
+          controlUiLocaleModulesPlugin(),
+          createVitestProjectCachePlugin(),
+        ],
         resolve: { alias: workspaceSourceAliases },
         test: {
           ...sharedUiTestConfig,

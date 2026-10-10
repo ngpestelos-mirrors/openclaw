@@ -29,7 +29,9 @@ export function resolveUiTypeScriptPath(file, cwd = repoRoot) {
   const inventory = sourceInventory(cwd);
   const exists = (candidate) =>
     inventory ? inventory.has(candidate) : existsSync(resolve(cwd, candidate));
-  if (exists(file)) return file;
+  if (exists(file)) {
+    return file;
+  }
   const alternate = file.endsWith(".tsx") ? file.slice(0, -1) : `${file}x`;
   return exists(alternate) ? alternate : file;
 }

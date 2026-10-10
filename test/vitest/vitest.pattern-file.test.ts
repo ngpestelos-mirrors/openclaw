@@ -225,59 +225,64 @@ describe("batch file selection", () => {
 describe("intersectIncludePatterns", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-  it.each(["ts", "tsx"])(
-    "preserves native non-browser %s discovery through directory selection",
-    (extension) => {
-      const withExtension = (file: string) => file.replace(/\.ts$/u, `.${extension}`);
-      const root = tempDirs.make("vitest-ui-selector-");
-      const uiFiles = [
-        "ui/src/ordinary.test.ts",
-        "ui/src/shared.browser-import.test.ts",
-        "ui/src/folder.browser/ordinary.test.ts",
-        "ui/src/shared.browser.contract.test.ts",
-      ].map(withExtension);
-      const pluginFiles = ["extensions/example/browser/shared.browser-import.test.ts"].map(
-        withExtension,
+  it("preserves native non-browser TS and TSX discovery through directory selection", () => {
+    const root = tempDirs.make("vitest-ui-selector-");
+    const uiTs = [
+      "ui/src/ordinary.test.ts",
+      "ui/src/shared.browser-import.test.ts",
+      "ui/src/folder.browser/ordinary.test.ts",
+      "ui/src/shared.browser.contract.test.ts",
+    ];
+    const uiTsx = uiTs.map((file) => `${file}x`);
+    const pluginTs = ["extensions/example/browser/shared.browser-import.test.ts"];
+    const pluginTsx = pluginTs.map((file) => `${file}x`);
+    const files = [
+      ...uiTs,
+      ...uiTsx,
+      ...pluginTs,
+      ...pluginTsx,
+      "ui/src/only.browser.test.ts",
+      "ui/src/only.browser.test.tsx",
+      "ui/src/helper.browser-helper.browser.test.ts",
+      "ui/src/helper.browser-helper.browser.test.tsx",
+      "ui/src/readme.ts",
+      "extensions/example/browser/only.browser.test.ts",
+      "extensions/example/browser/only.browser.test.tsx",
+      "other/example.test.ts",
+    ];
+    for (const file of files) {
+      const target = path.join(root, file);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, "");
+    }
+    const owner = [
+      "ui/src/**/" + nonBrowserTestBasenamePattern,
+      "extensions/*/browser/**/" + nonBrowserTestBasenamePattern,
+    ];
+    for (const { requested, expected } of [
+      { requested: ["ui/src/**/*.test.ts"], expected: uiTs },
+      { requested: ["ui/src/**/*.test.tsx"], expected: uiTsx },
+      { requested: ["ui/src/**/*.test.ts", "ui/src/**/*.test.tsx"], expected: [...uiTs, ...uiTsx] },
+      { requested: ["extensions/**/*.test.ts"], expected: pluginTs },
+      { requested: ["extensions/**/*.test.tsx"], expected: pluginTsx },
+      { requested: ["**/*.test.ts"], expected: [...uiTs, ...pluginTs] },
+      { requested: ["**/*.test.tsx"], expected: [...uiTsx, ...pluginTsx] },
+    ]) {
+      const selected = intersectIncludePatterns(owner, requested, matchesVitestGlob);
+      expect(filterFilesByPatterns(files, selected!, [], matchesVitestGlob).toSorted()).toEqual(
+        expected.toSorted(),
       );
-      const files = [
-        ...uiFiles,
-        ...pluginFiles,
-        "ui/src/only.browser.test.ts",
-        "ui/src/helper.browser-helper.browser.test.ts",
-        "ui/src/readme.ts",
-        "extensions/example/browser/only.browser.test.ts",
-        "other/example.test.ts",
-      ].map(withExtension);
-      for (const file of files) {
-        const target = path.join(root, file);
-        mkdirSync(path.dirname(target), { recursive: true });
-        writeFileSync(target, "");
-      }
-      const owner = [
-        "ui/src/**/" + nonBrowserTestBasenamePattern,
-        "extensions/*/browser/**/" + nonBrowserTestBasenamePattern,
-      ];
-      for (const { requested, expected } of [
-        { requested: ["ui/src/**/*.test.ts"], expected: uiFiles },
-        { requested: ["extensions/**/*.test.ts"], expected: pluginFiles },
-        { requested: ["**/*.test.ts"], expected: [...uiFiles, ...pluginFiles] },
-      ]) {
-        const selected = intersectIncludePatterns(
-          owner,
-          requested.map(withExtension),
-          matchesVitestGlob,
-        );
-        expect(filterFilesByPatterns(files, selected!, [], matchesVitestGlob).toSorted()).toEqual(
-          expected.toSorted(),
-        );
-        expect(
-          globSync(selected!, { cwd: root, dot: true, expandDirectories: false })
-            .map((file) => file.replaceAll("\\", "/"))
-            .toSorted(),
-        ).toEqual(expected.toSorted());
-      }
-    },
-  );
+      expect(
+        globSync(selected!, { cwd: root, dot: true, expandDirectories: false })
+          .map((file) => file.replaceAll("\\", "/"))
+          .toSorted(),
+      ).toEqual(expected.toSorted());
+    }
+    const narrowed = narrowIncludePatternsForCli(owner, ["node", "vitest", "run", "ui/src"]);
+    expect(filterFilesByPatterns(files, narrowed!, [], matchesVitestGlob).toSorted()).toEqual(
+      [...uiTs, ...uiTsx].toSorted(),
+    );
+  });
 
   it("projects arbitrary candidate globs onto a finite literal owner", () => {
     const owner = [
