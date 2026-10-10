@@ -2,6 +2,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWizardPrompter } from "../../test/helpers/wizard-prompter.js";
 import { runWithLocalStateOwner } from "../cli/local-state-owner.js";
+import * as config from "../config/config.js";
 import { clearRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import * as gatewayLock from "../infra/gateway-lock.js";
 import { loadAndActivateRootPluginRegistry } from "../plugins/loader.js";
@@ -15,7 +16,7 @@ import {
   listSetupMigrationOptions,
 } from "../wizard/setup.migration-import.js";
 import { offerPostInstallMigrations } from "../wizard/setup.post-install-migration.js";
-import { migrateDefaultCommand } from "./migrate.js";
+import { migrateDefaultCommand, migrateListCommand } from "./migrate.js";
 import { withMemoryMigrationProviders } from "./migrate/memory-import.js";
 
 vi.mock("../cli/prompt.js", () => ({ promptYesNo: async () => true }));
@@ -28,11 +29,12 @@ afterEach(() => {
 });
 
 describe("migration command resources", () => {
-  it.each(["command", "memory"] as const)(
+  it.each(["command", "list", "memory"] as const)(
     "refuses %s imports before provider loading when discovery finds a live Gateway",
     async (surface) => {
       const fixture = createMigrationResourceFixture();
       fixture.state.resumeApply.resolve();
+      const loadConfig = vi.spyOn(config, "getRuntimeConfig");
       const discover = vi.spyOn(gatewayLock, "readActiveGatewayLockIdentity").mockResolvedValue({
         pid: process.pid,
         port: 18789,
@@ -45,16 +47,18 @@ describe("migration command resources", () => {
           const operation =
             surface === "memory"
               ? withMemoryMigrationProviders(fixture.config, consume)
-              : migrateDefaultCommand(createNonExitingRuntime(), {
-                  provider: fixture.id,
-                  configOverride: fixture.config,
-                  yes: true,
-                  json: true,
-                  noBackup: true,
-                  force: true,
-                });
+              : surface === "list"
+                ? migrateListCommand(createNonExitingRuntime(), { json: true })
+                : migrateDefaultCommand(createNonExitingRuntime(), {
+                    provider: fixture.id,
+                    yes: true,
+                    json: true,
+                    noBackup: true,
+                    force: true,
+                  });
           await expect(operation).rejects.toThrow("stop the Gateway");
           expect(discover).toHaveBeenCalled();
+          expect(loadConfig).not.toHaveBeenCalled();
           expect(fixture.state.connections).toEqual([]);
           expect(consume).not.toHaveBeenCalled();
           expect(fixture.state.applyCalls).toBe(0);

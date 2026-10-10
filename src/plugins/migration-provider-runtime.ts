@@ -124,8 +124,10 @@ export async function withPluginMigrationProviders<T>(
     params: {},
     target: params.providerId ?? "migration providers",
     onForeignOwner: "refuse",
-    runLocal: async ({ assertCurrent }) => {
+    runLocal: async (scope) => {
+      const { assertCurrent } = scope;
       assertCurrent();
+      const config = params.cfg ?? scope.config;
       const consume = async (providers: MigrationProviderPlugin[]) => {
         assertCurrent();
         return await run(providers);
@@ -138,7 +140,7 @@ export async function withPluginMigrationProviders<T>(
       ) {
         return await consume(mergeMigrationProviders(activeRegistry));
       }
-      const resolution = resolveMigrationProviderPluginResolution(params);
+      const resolution = resolveMigrationProviderPluginResolution({ ...params, cfg: config });
       if (params.providerId) {
         const providers = resolveMigrationProviderPublicArtifacts({
           plugins: resolution.publicPlugins,
@@ -157,7 +159,7 @@ export async function withPluginMigrationProviders<T>(
         return await consume(mergeMigrationProviders(activeRegistry));
       }
       const compatConfig = withBundledPluginEnablementCompat({
-        config: params.cfg,
+        config,
         pluginIds: resolution.bundledCompatPluginIds,
       });
       const acquisition = await acquirePluginRegistryForInspection({
