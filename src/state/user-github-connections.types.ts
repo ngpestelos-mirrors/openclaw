@@ -1,9 +1,134 @@
-import type { GitHubOAuthTokenPair } from "../agents/github-oauth-client.js";
-import type {
-  UserGitHubConnection,
-  UserGitHubConnectionAuthority,
-  UserGitHubDevice,
-} from "./user-github-connections.kernel.js";
+import { z } from "zod";
+import {
+  githubOAuthTimestamp as timestamp,
+  githubOAuthSecret as secret,
+  githubOAuthProfileId as profileId,
+  githubOAuthScopes as scopes,
+  githubOAuthRefreshFields,
+  githubOAuthDeviceFields,
+  validGitHubDeviceTiming,
+} from "../shared/github-oauth-values.js";
+
+const tokenPair = z.strictObject({
+  accessToken: secret,
+  refreshToken: secret,
+  tokenType: z.literal("bearer"),
+  scopes,
+  expiresInSeconds: z
+    .number()
+    .int()
+    .positive()
+    .max(366 * 86400),
+  refreshTokenExpiresInSeconds: z
+    .number()
+    .int()
+    .positive()
+    .max(366 * 86400),
+});
+const deviceFields = {
+  requestId: z.string().uuid(),
+  createdAtMs: timestamp,
+  expiresAtMs: timestamp,
+};
+const device = z.strictObject({
+  ...deviceFields,
+  kind: z.literal("device"),
+  ...githubOAuthDeviceFields,
+  candidate: z.strictObject({ profileId, tokens: tokenPair, receivedAtMs: timestamp }).optional(),
+});
+const connected = z.strictObject({
+  kind: z.literal("connected"),
+  profileId,
+  ...githubOAuthRefreshFields,
+  refreshFailure: z.enum(["expired", "failed"]).optional(),
+  refresh: z
+    .strictObject({
+      operationId: z.string().uuid(),
+      tokens: tokenPair.optional(),
+      receivedAtMs: timestamp.optional(),
+    })
+    .optional(),
+});
+export const userGitHubConnectionSchema = z
+  .strictObject({
+    version: z.literal(1),
+    generation: z.string().uuid(),
+    selection: z.discriminatedUnion("kind", [
+      z.strictObject({ kind: z.literal("disconnected") }),
+      connected,
+    ]),
+    pending: z
+      .discriminatedUnion("kind", [
+        z.strictObject({ ...deviceFields, kind: z.literal("starting") }),
+        device,
+      ])
+      .optional(),
+  })
+  .superRefine((record, ctx) => {
+    const pending = record.pending;
+    if (pending && !validGitHubDeviceTiming(pending)) {
+      ctx.addIssue({ code: "custom", message: "Invalid device timing" });
+    }
+    const selection = record.selection;
+    if (
+      selection.kind === "connected" &&
+      (selection.refreshExpiresAtMs <= selection.accessExpiresAtMs ||
+        Boolean(selection.refresh?.tokens) !== (selection.refresh?.receivedAtMs !== undefined))
+    ) {
+      ctx.addIssue({ code: "custom", message: "Invalid refresh state" });
+    }
+  });
+
+export type UserGitHubConnection = z.infer<typeof userGitHubConnectionSchema>;
+export type UserGitHubConnected = z.infer<typeof connected>;
+export type UserGitHubDevice = z.infer<typeof device>;
+export type UserGitHubTokenPair = z.infer<typeof tokenPair>;
+
+const connectionAuthoritySchema = z.strictObject({
+  generation: z.string().uuid(),
+  selection: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("disconnected") }),
+    connected.omit({ refreshToken: true, refresh: true }).extend({ refreshing: z.boolean() }),
+  ]),
+});
+const connectionCommitSchema = z.strictObject({
+  kind: z.literal("user-github-connection"),
+  changes: z.array(
+    z.strictObject({ owner: z.string(), connection: connectionAuthoritySchema.nullable() }),
+  ),
+  retiredProfileIds: z.array(z.string()),
+});
+export type UserGitHubConnectionAuthority = z.infer<typeof connectionAuthoritySchema>;
+export type UserGitHubConnectionCommit = z.infer<typeof connectionCommitSchema>;
+
+/** The connection owner defines the same credential-free projection for snapshots and commits. */
+export function projectUserGitHubConnectionAuthority(
+  connection: UserGitHubConnection | undefined,
+): UserGitHubConnectionAuthority | null {
+  if (!connection) return null;
+  const selected = connection.selection;
+  return {
+    generation: connection.generation,
+    selection:
+      selected.kind === "disconnected"
+        ? { kind: "disconnected" }
+        : {
+            kind: selected.kind,
+            profileId: selected.profileId,
+            accountId: selected.accountId,
+            login: selected.login,
+            accessExpiresAtMs: selected.accessExpiresAtMs,
+            refreshExpiresAtMs: selected.refreshExpiresAtMs,
+            refreshFailure: selected.refreshFailure,
+            scopes: [...selected.scopes],
+            refreshing: Boolean(selected.refresh),
+          },
+  };
+}
+
+export function isUserGitHubConnectionCommit(value: unknown): value is UserGitHubConnectionCommit {
+  return connectionCommitSchema.safeParse(value).success;
+}
 
 export type UserGitHubConnectionMutation =
   | { kind: "start"; requestId: string; createdAtMs: number; expiresAtMs: number }
@@ -36,15 +161,9 @@ export type UserGitHubRefreshMutation = {
   profileId: string;
   operationId: string;
   result:
-    | { kind: "rotated"; tokens: GitHubOAuthTokenPair; receivedAtMs: number }
+    | { kind: "rotated"; tokens: UserGitHubTokenPair; receivedAtMs: number }
     | { kind: "materialized"; login: string }
     | { kind: "failed"; failure: "failed" | "expired" };
-};
-
-export type UserGitHubConnectionCommit = {
-  kind: "user-github-connection";
-  changes: Array<{ owner: string; connection: UserGitHubConnectionAuthority | null }>;
-  retiredProfileIds: string[];
 };
 
 export type UserGitHubConnectionEntry = { owner: string; connection: UserGitHubConnection };

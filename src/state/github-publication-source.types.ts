@@ -4,7 +4,7 @@ import type { SessionMember } from "../config/sessions/session-membership-facts.
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { DB } from "./openclaw-state-db.generated.js";
 import type { SessionRepositoryWorkspaceRecord } from "./session-repository-workspaces.types.js";
-import type { UserGitHubConnectionAuthority } from "./user-github-connections.kernel.js";
+import type { UserGitHubConnectionAuthority } from "./user-github-connections.types.js";
 import type { UserProfileEmailBinding } from "./user-profiles.types.js";
 
 export type GitHubPublicationSourceSelector = {
