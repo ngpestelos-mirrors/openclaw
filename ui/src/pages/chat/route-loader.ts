@@ -443,9 +443,7 @@ export async function loadChatRoute(
             .then(() => canonicalMainLocation(context, routeLocation, face, target.sessionKey))
             .catch(() => null)
         : undefined;
-    const preferenceLocation = preferenceDerived
-      ? locationWithoutNavigationHints(routeLocation)
-      : null;
+    const navigationLocation = locationWithoutNavigationHints(routeLocation);
     return {
       kind: "session",
       sessionKey: target.sessionKey,
@@ -453,8 +451,8 @@ export async function loadChatRoute(
       face,
       ...(canonicalLocation
         ? { canonicalLocation, canonicalLocationSource: routeLocation }
-        : preferenceLocation && preferenceLocation.search !== routeLocation.search
-          ? { canonicalLocation: preferenceLocation, canonicalLocationSource: routeLocation }
+        : navigationLocation.search !== routeLocation.search
+          ? { canonicalLocation: navigationLocation, canonicalLocationSource: routeLocation }
           : {}),
       ...(canonicalLocationReady
         ? { canonicalLocationReady, canonicalLocationSource: routeLocation }
