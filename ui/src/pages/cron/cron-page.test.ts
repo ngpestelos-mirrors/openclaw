@@ -3,6 +3,7 @@ import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { CronJob, CronJobsListResult } from "../../api/types.ts";
 import { startCronClone } from "../../lib/cron/index.ts";
+import { updateCronRunsFilter } from "../../lib/cron/runs.ts";
 import {
   createContext,
   createGateway,
@@ -12,25 +13,13 @@ import {
   operatorHello,
   waitForCronPage,
 } from "./cron-page.test-support.ts";
-import { createCronViewJob, selectSegmented } from "./view.test-support.ts";
+import { createCronViewJob, scheduledJob, selectSegmented } from "./view.test-support.ts";
 import "./cron-page.ts";
 
 afterEach(() => {
   document.body.replaceChildren();
   vi.restoreAllMocks();
 });
-
-function scheduledJob(id: string, overrides: Partial<CronJob> = {}): CronJob {
-  return createCronViewJob(id, {
-    name: "Nightly digest",
-    schedule: { kind: "every", everyMs: 60_000 },
-    sessionTarget: "isolated",
-    wakeMode: "now",
-    payload: { kind: "agentTurn", message: "digest" },
-    state: {},
-    ...overrides,
-  });
-}
 
 describe("CronPage header", () => {
   it("uses the shared settings header with concise context and scope actions", async () => {
@@ -194,6 +183,7 @@ describe("CronPage editor state sync", () => {
         name: "Linked automation",
       });
       const jobs = createDeferred<CronJobsListResult>();
+      const ordinaryHistory = createDeferred();
       const request = vi.fn(async (method: string, params?: unknown) => {
         if (method === "cron.list") {
           return jobs.promise;
@@ -205,9 +195,12 @@ describe("CronPage editor state sync", () => {
           return { enabled: true, jobs: 1, triggersEnabled: true };
         }
         if (method === "cron.runs") {
-          const filter = params as { id?: string; agentId?: string };
+          const filter = params as { id?: string; agentId?: string; runId?: string };
           if (filter.id === job.id && filter.agentId && filter.agentId !== job.agentId) {
             throw new Error("Automation not found");
+          }
+          if (filter.id === job.id && !filter.runId) {
+            ordinaryHistory.resolve();
           }
           const entries =
             (params as { id?: string }).id === job.id
@@ -237,6 +230,12 @@ describe("CronPage editor state sync", () => {
       });
       const gateway = createGateway({ request } as unknown as GatewayBrowserClient, true);
       const page = createPage(createContext(gateway), { render: true });
+      const previousFilters = {
+        cronRunsQuery: "older search",
+        cronRunsStatuses: ["error" as const],
+        cronRunsDeliveryStatuses: ["not-delivered" as const],
+      };
+      updateCronRunsFilter(page.cron, previousFilters);
       page.routeSearch = "?job=linked-job&run=cron%3Alinked-job%3A1";
 
       await waitForCronPage(() => expect(page.cron.cronLoading).toBe(true));
@@ -268,6 +267,30 @@ describe("CronPage editor state sync", () => {
         );
       });
       expect(page.querySelectorAll(".cron-run-entry--highlighted")).toHaveLength(1);
+      expect(request).toHaveBeenCalledWith(
+        "cron.runs",
+        expect.objectContaining({
+          id: job.id,
+          runId: "cron:linked-job:1",
+          query: undefined,
+          status: "all",
+          statuses: undefined,
+          deliveryStatuses: undefined,
+        }),
+      );
+      updateCronRunsFilter(page.cron, previousFilters);
+      page.routeSearch = "?job=linked-job";
+      await ordinaryHistory.promise;
+      expect(request).toHaveBeenLastCalledWith(
+        "cron.runs",
+        expect.objectContaining({
+          id: job.id,
+          runId: undefined,
+          query: "older search",
+          statuses: ["error"],
+          deliveryStatuses: ["not-delivered"],
+        }),
+      );
     },
   );
 

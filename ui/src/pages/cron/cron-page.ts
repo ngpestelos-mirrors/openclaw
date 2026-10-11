@@ -34,6 +34,7 @@ import {
 import {
   getCronRunsViewState,
   loadCronRuns,
+  loadCronRunsForJob,
   loadMoreCronRuns,
   updateCronRunsFilter,
 } from "../../lib/cron/runs.ts";
@@ -94,7 +95,6 @@ class CronPage extends OpenClawLightDomElement {
   });
   private pendingRouteData: ReturnType<typeof resolveCronRouteData> | null = null;
   private routeJobRequested = false;
-  private highlightedRunId: string | null = null;
   private pendingRunScroll = false;
   private modelSuggestionsRequest: { state: CronState; agentId: string } | null = null;
   private readonly deliveryDirectory = new DeliveryConversationsController({
@@ -271,7 +271,7 @@ class CronPage extends OpenClawLightDomElement {
       this.detailTab = "settings";
       this.pendingRouteData = routeData.jobId || routeData.session ? routeData : null;
       this.routeJobRequested = false;
-      this.highlightedRunId = null;
+      this.cron.cronRunsRunId = null;
       this.pendingRunScroll = false;
     }
     // The panel owns its transcript and detail tab. Retire the previous run
@@ -282,7 +282,7 @@ class CronPage extends OpenClawLightDomElement {
     if (panelKey !== this.lastPanelKey) {
       this.lastPanelKey = panelKey;
       this.runTranscript.close();
-      this.detailTab = editingJobId && this.highlightedRunId ? "history" : "settings";
+      this.detailTab = editingJobId && this.cron.cronRunsRunId ? "history" : "settings";
       const scroller = this.closest(".content");
       if (scroller instanceof HTMLElement && typeof scroller.scrollTo === "function") {
         scroller.scrollTo({ top: 0 });
@@ -425,7 +425,6 @@ class CronPage extends OpenClawLightDomElement {
   private selectJob(job: CronJob, runId: string | null = null) {
     this.clearHeartbeatScratch();
     this.pendingRouteData = null;
-    this.highlightedRunId = runId;
     this.pendingRunScroll = Boolean(runId);
     if (runId) {
       this.detailTab = "history";
@@ -441,14 +440,8 @@ class CronPage extends OpenClawLightDomElement {
       // Claim the run pane before awaiting: loadCronRuns drops responses whose
       // job no longer matches, so a slower earlier selection cannot overwrite
       // this task's history.
-      await this.refreshRunsScope(cronState, job.id);
+      await loadCronRunsForJob(cronState, job.id, runId);
     });
-  }
-
-  private refreshRunsScope(cronState: CronState, jobId: string | null) {
-    updateCronRunsFilter(cronState, { cronRunsScope: jobId === null ? "all" : "job" });
-    cronState.cronRunsJobId = jobId;
-    return loadCronRuns(cronState);
   }
 
   private clearHeartbeatScratch() {
@@ -580,7 +573,7 @@ class CronPage extends OpenClawLightDomElement {
       // Removing the selected task drops the panel back to overview;
       // the runs scope must follow or recent activity stays empty.
       if (current.cronRunsScope === "job" && current.cronRunsJobId === null) {
-        await this.refreshRunsScope(current, null);
+        await loadCronRunsForJob(current, null);
       }
     });
   }
@@ -589,7 +582,7 @@ class CronPage extends OpenClawLightDomElement {
     this.resetEditor(false);
     this.requestCronUpdate();
     void this.runCronTask(async (cronState) => {
-      await this.refreshRunsScope(cronState, null);
+      await loadCronRunsForJob(cronState, null);
     });
   }
 
@@ -625,7 +618,7 @@ class CronPage extends OpenClawLightDomElement {
       // Creating from a selected task drops back to overview; recent activity
       // must cover all tasks again, not the previously selected job.
       if (cronState.cronRunsScope === "job") {
-        await this.refreshRunsScope(cronState, null);
+        await loadCronRunsForJob(cronState, null);
       }
     });
   }
@@ -705,7 +698,7 @@ class CronPage extends OpenClawLightDomElement {
           channelMeta: channels.channelsSnapshot?.channelMeta ?? [],
           runs: this.cron.cronRuns,
           runsState: getCronRunsViewState(this.cron),
-          highlightedRunId: this.highlightedRunId,
+          highlightedRunId: this.cron.cronRunsRunId,
           runsHasMore: this.cron.cronRunsHasMore,
           runsLoadingMore: this.cron.cronRunsLoadingMore,
           runsStatuses: this.cron.cronRunsStatuses,

@@ -1,8 +1,9 @@
 import { html, nothing } from "lit";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
+import { cronRunEntryMatchesLink } from "../../../../src/cron/run-link.js";
 import type { CronRunLogEntry, CronDeliveryStatus, CronRunsStatusValue } from "../../api/types.ts";
-import { icon } from "../../components/icons.ts";
 import "../../components/web-awesome.ts";
+import { icon } from "../../components/icons.ts";
 import { toSanitizedMarkdownHtml } from "../../components/markdown.ts";
 import { i18n, t } from "../../i18n/index.ts";
 import { registerCronEnglish } from "../../i18n/locales/en-cron.ts";
@@ -13,7 +14,6 @@ import {
   createMsFormatter,
   formatCompactTokenCount,
 } from "../../lib/format.ts";
-import { cronRunEntryMatchesLink } from "./route-model.ts";
 import type { CronProps } from "./view-types.ts";
 
 registerCronEnglish();
@@ -192,6 +192,7 @@ export function renderRunsSection(props: CronRunsSectionProps) {
     props.runsSortDir === "asc" ? a.ts - b.ts : b.ts - a.ts,
   );
   const hasRunFilters =
+    Boolean(props.highlightedRunId) ||
     props.runsQuery.trim().length > 0 ||
     props.runsStatuses.length > 0 ||
     props.runsDeliveryStatuses.length > 0;
@@ -200,6 +201,19 @@ export function renderRunsSection(props: CronRunsSectionProps) {
   return html`
     <div class="cron-runs" aria-busy=${String(props.runsState === "pending")}>
       ${props.conditionActivity ? renderConditionActivity(props.conditionActivity) : nothing}
+      ${
+        props.highlightedRunId
+          ? html`<div class="row">
+              <span>${t("cron.linkedRun.label")}</span>
+              <button
+                class="btn btn--sm"
+                @click=${() => props.onRunsFiltersChange({ cronRunsRunId: null })}
+              >
+                ${t("cron.linkedRun.showAll")}
+              </button>
+            </div>`
+          : nothing
+      }
       <div class="cron-run-filters">
         <div class="cron-search-box cron-run-filter-search">
           <span class="cron-search-box__icon" aria-hidden="true">${icon("search")}</span>
