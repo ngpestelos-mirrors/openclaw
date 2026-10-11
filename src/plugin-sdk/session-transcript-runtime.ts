@@ -1,7 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readNonBlankString as readNonEmptyString } from "@openclaw/normalization-core/string-coerce";
 import { buildSessionsYieldContextMessage } from "../agents/sessions-yield-context.js";
-import { redactTranscriptMessage } from "../agents/transcript-redact.js";
+import { sanitizeTranscriptMessage } from "../agents/transcript-sanitize.js";
 import {
   appendTranscriptMessage,
   appendTranscriptMessages,
@@ -421,7 +421,6 @@ export async function appendAssistantMirrorMessageByIdentity(
         ? findLatestEquivalentAssistantMessageId(
             selectVisibleTranscriptEvents(await locked.readEvents()),
             message,
-            params.config,
           )
         : undefined;
     if (latestEquivalentAssistantId) {
@@ -465,12 +464,7 @@ export async function appendAssistantMirrorMessageByIdentity(
             events = selectVisibleTranscriptEvents(await locked.readEvents());
           }
         }
-        sourceAssistantMessageId = findLatestEquivalentAssistantMessageId(
-          events,
-          message,
-          params.config,
-          true,
-        );
+        sourceAssistantMessageId = findLatestEquivalentAssistantMessageId(events, message, true);
       }
       const correlatedMessage = {
         ...message,
@@ -609,7 +603,7 @@ export async function appendSessionTranscriptMessageByIdentityStrict<TMessage>(
 
 /**
  * Atomically appends one ordered, already-hooked message group. Preparation and
- * redaction finish before SQLite begins; this is the canonical future harness seam.
+ * normalization finish before SQLite begins; this is the canonical future harness seam.
  */
 export async function appendSessionTranscriptMessagesByIdentity<TMessage>(
   params: SessionTranscriptAppendMessagesParams<TMessage>,
@@ -695,10 +689,9 @@ function createAssistantMirrorMessage(params: {
 function findLatestEquivalentAssistantMessageId(
   events: readonly SessionTranscriptEvent[],
   message: SessionTranscriptAssistantMessage,
-  config: OpenClawConfig | undefined,
   excludeDeliveryMirrors = false,
 ): string | undefined {
-  const expectedText = extractAssistantMirrorComparableText(message, config);
+  const expectedText = extractAssistantMirrorComparableText(message);
   if (!expectedText) {
     return undefined;
   }
@@ -718,7 +711,7 @@ function findLatestEquivalentAssistantMessageId(
     ) {
       return undefined;
     }
-    return extractAssistantMirrorComparableText(candidate, config) === expectedText &&
+    return extractAssistantMirrorComparableText(candidate) === expectedText &&
       typeof record.id === "string" &&
       record.id
       ? record.id
@@ -729,13 +722,11 @@ function findLatestEquivalentAssistantMessageId(
 
 function extractAssistantMirrorComparableText(
   message: SessionTranscriptAssistantMessage,
-  config: OpenClawConfig | undefined,
 ): string | undefined {
-  const redacted = redactTranscriptMessage(
-    message as Parameters<typeof redactTranscriptMessage>[0],
-    config,
+  const normalized = sanitizeTranscriptMessage(
+    message as Parameters<typeof sanitizeTranscriptMessage>[0],
   ) as SessionTranscriptAssistantMessage;
-  return extractAssistantPhaseText(redacted)?.trim() || undefined;
+  return extractAssistantPhaseText(normalized)?.trim() || undefined;
 }
 
 function isDeliveryMirrorAssistantMessage(message: SessionTranscriptAssistantMessage): boolean {

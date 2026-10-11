@@ -22,7 +22,6 @@ import { projectInFlightRunSnapshot } from "../gateway/chat-inflight-snapshot.js
 import { createAgentEventTestHarness } from "../gateway/server-chat.agent-events.test-harness.js";
 import { subscribeAgentEvents } from "../gateway/server-chat.agent-events.test-helpers.js";
 import type { AgentEventRuntimePayload } from "../infra/agent-events.js";
-import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
 import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
@@ -50,12 +49,6 @@ import { installSessionToolResultGuard } from "./session-tool-result-guard.js";
 import { persistAgentSessionMessage } from "./sessions/agent-session-transcript.js";
 import { makeAgentAssistantMessage } from "./test-helpers/agent-message-fixtures.js";
 import { makeProviderModelFixture } from "./test-helpers/provider-model-fixture.js";
-import {
-  prepareCodeModeSourceAppend,
-  takeCodeModeResponseSource,
-  wrapStreamFnCodeModeSource,
-} from "./transcript-code-mode-source.js";
-
 const assistantText = (text: string) =>
   makeAgentAssistantMessage({ content: [{ type: "text", text }] });
 const model = makeProviderModelFixture({
@@ -70,18 +63,6 @@ const codeCall = (id: string) => ({
   name: "exec",
   arguments: { code: "const API_TOKEN = computeToken(); return API_TOKEN;" },
 });
-async function withSource(message: ReturnType<typeof makeAgentAssistantMessage>) {
-  const stream = createAssistantMessageEventStream();
-  if (message.stopReason === "error") {
-    stream.push({ type: "error", reason: "error", error: message });
-  } else {
-    stream.push({ type: "done", reason: "toolUse", message });
-  }
-  return await (
-    await wrapStreamFnCodeModeSource(() => stream, new Set(["exec"]))(model, { messages: [] })
-  ).result();
-}
-
 function installWriteHook(
   handler: (
     event: PluginHookBeforeMessageWriteEvent,
@@ -270,19 +251,17 @@ describe("guardSessionManager transcript updates", () => {
     }
   });
 
-  it("preserves prepared source and redaction when a concurrent append forces a retry", async () => {
+  it("preserves source text when a concurrent append forces a retry", async () => {
     const { root, sessionManager: manager, target } = await openPersistedSessionManager();
     const baseId = manager.appendMessage(makeUserMessage("Compute a value", 1));
     installSessionToolResultGuard(manager, {
       config: { logging: { redactPatterns: [String.raw`/opaque\(([^)]+)\)/g`] } },
     });
     const toolCall = codeCall("retry-source");
-    const emitted = await withSource(
-      makeAgentAssistantMessage({
-        content: [{ type: "text", text: "opaque(abcdefghijklmnopqrst)" }, toolCall],
-        stopReason: "toolUse",
-      }),
-    );
+    const emitted = makeAgentAssistantMessage({
+      content: [{ type: "text", text: "opaque(abcdefghijklmnopqrst)" }, toolCall],
+      stopReason: "toolUse",
+    });
     const { db } = openOpenClawAgentDatabase({ agentId: target.agentId, path: target.storePath });
     const exec = db.exec.bind(db);
     let injected = false;
@@ -300,10 +279,7 @@ describe("guardSessionManager transcript updates", () => {
     });
     let entryId: string;
     try {
-      entryId = manager.appendMessage(
-        emitted,
-        prepareCodeModeSourceAppend({}, emitted, takeCodeModeResponseSource(emitted)),
-      );
+      entryId = manager.appendMessage(emitted);
       expect(execSpy).toHaveBeenCalledWith("ROLLBACK");
     } finally {
       execSpy.mockRestore();
@@ -317,7 +293,7 @@ describe("guardSessionManager transcript updates", () => {
       { id: entryId, parentId: "concurrent-assistant" },
     ]);
     expect(entries.at(-1)).toMatchObject({
-      message: { content: [{ type: "text", text: "opaque(abcdef…qrst)" }, toolCall] },
+      message: { content: [{ type: "text", text: "opaque(abcdefghijklmnopqrst)" }, toolCall] },
     });
   });
 
@@ -443,12 +419,12 @@ describe("guardSessionManager transcript updates", () => {
     },
   );
 
-  it("combines explicit redaction with one fresh SQLite admission across replay", async () => {
+  it("preserves text with one fresh SQLite admission across replay despite logging patterns", async () => {
     const { root, target, sessionEntry, sessionManager } = await openPersistedSessionManager();
     const message = {
       role: "user" as const,
       content: "private-note=fixture-only-redaction-value",
-      idempotencyKey: "redacted-admission:user",
+      idempotencyKey: "faithful-admission:user",
       timestamp: 1,
     };
     const assertOriginalInputCommit = vi.fn(() => {
@@ -486,9 +462,9 @@ describe("guardSessionManager transcript updates", () => {
       .getBranch()
       .filter((entry) => entry.type === "message");
     expect(persisted).toMatchObject([
-      { id: entryId, message: { role: "user", content: "private-note=***" } },
+      { id: entryId, message: { role: "user", content: message.content } },
     ]);
-    expect(JSON.stringify(persisted)).not.toContain(message.content);
+    expect(JSON.stringify(persisted)).toContain(message.content);
   });
 
   it("admits an excluded ingress user through a stale bounded manager without appending", async () => {
@@ -665,11 +641,7 @@ describe("deferred assistant error transcript", () => {
       stopReason: "error",
       errorMessage: "provider rate limit",
     });
-    const emitted = await withSource(failed);
-    manager.appendMessage(
-      emitted,
-      prepareCodeModeSourceAppend({}, emitted, takeCodeModeResponseSource(emitted)),
-    );
+    manager.appendMessage(failed);
     manager.appendMessage({
       role: "toolResult",
       toolCallId: toolCall.id,

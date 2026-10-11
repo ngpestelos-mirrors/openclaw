@@ -172,7 +172,6 @@ export function applySessionDirectMessageInTransaction(
     },
     { messageJson: input.messageJson, persistedMessage: message },
     {
-      messageAlreadyRedacted: true,
       scheduleProjectionReconcile: false,
       onProjectionReconcileNeeded: () => {
         projectionNeedsReconcile = true;

@@ -34,6 +34,11 @@ If you need transcript storage details, see
 
 ---
 
+Tool arguments, results, and conversation text are not secret-masked in model
+context or persisted transcripts. Reads of `.env` files also preserve their text.
+Logging and diagnostic exports retain secret masking; history size limits,
+media handling, and provider replay normalization described below still apply.
+
 ## Failed attempts and recovery
 
 Text-only assistant errors are buffered until the logical run settles. Recovery
