@@ -39,6 +39,7 @@ export function toJsonColumn(value: unknown): string | null {
 
 // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Persisted JSON columns are typed by the receiving field.
 function fromJsonColumn<T>(value: string | null): T | undefined {
+  // SAFETY: Matching typed row encoders own these JSON fields; callers name the persisted field type.
   return value === null ? undefined : (JSON.parse(value) as T);
 }
 
@@ -49,6 +50,7 @@ function toBooleanColumn(value: boolean | undefined): number | null {
 // Column null means the optional record key was absent; keep it absent on read
 // so records round-trip byte-identical to the retired JSON store.
 function optional<K extends string, V>(key: K, value: V | null): { [P in K]?: V } {
+  // SAFETY: The computed property uses the supplied K key and its V value; null produces no key.
   return value === null ? {} : ({ [key]: value } as { [P in K]: V });
 }
 
@@ -124,6 +126,7 @@ export function toPairedRow(device: PairedDevice): DevicePairingPaired {
 }
 
 function fromApprovedViaColumn(value: string | null): PairedDeviceApprovalKind | null {
+  // SAFETY: The exhaustive approval-kind set admits only PairedDeviceApprovalKind members.
   return value !== null && APPROVAL_KINDS.has(value) ? (value as PairedDeviceApprovalKind) : null;
 }
 
@@ -138,6 +141,7 @@ const PAIRING_SETUP_ACCESS_MEMBERS = {
 const PAIRING_SETUP_ACCESS_VALUES = new Set(Object.keys(PAIRING_SETUP_ACCESS_MEMBERS));
 
 function fromSetupCompletionAccessColumn(value: string): PairingSetupAccess {
+  // SAFETY: The exhaustive access-level set admits only PairingSetupAccess members.
   return PAIRING_SETUP_ACCESS_VALUES.has(value) ? (value as PairingSetupAccess) : "limited";
 }
 

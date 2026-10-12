@@ -196,7 +196,7 @@ test.each([false, true])(
   "reuses one paired snapshot without stale reads or escaped rollback state (rollback=%s)",
   (rollback) => {
     const reads = trackSqliteStatementExecutions(database.db, ["paired"], (sql) =>
-      /\bfrom "device_pairing_paired"/iu.test(sql) ? "paired" : null,
+      /^\s*select\b.*\bfrom "device_pairing_paired"/iu.test(sql) ? "paired" : null,
     );
     const env = { ...process.env, OPENCLAW_STATE_DIR: baseDir };
     const expected = {
