@@ -57,7 +57,6 @@ export { resolveAgentExecutorController } from "../plugins/agent-executor-contro
 
 export { projectAgentActivityItem } from "../agents/agent-activity-presentation.js";
 export { projectAgentToolActivity } from "../infra/agent-activity-events.js";
-export type { ExecRequestCustody as AgentHarnessRequestCustody } from "../infra/exec-request-context.js";
 
 export {
   formatToolProgressOutput,
@@ -124,7 +123,6 @@ export type {
   AgentHarnessModelCatalogParams,
   AgentHarnessRegistrationOptions,
   AgentHarnessDeliveryDefaults,
-  AgentHarnessDescendantCancellationResult,
   AgentHarnessResultClassification,
   AgentHarnessRuntimeArtifactBinding,
   AgentHarnessSideQuestionParams,

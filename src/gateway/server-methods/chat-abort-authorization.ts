@@ -21,7 +21,7 @@ import {
   PENDING_CHAT_SEND_DEDUPE_PREFIX,
   type DedupeEntry,
 } from "../server-shared.js";
-import type { ChatSessionAbortParams } from "./chat-abort-runtime.types.js";
+import type { ChatAbortSessionSnapshot } from "./chat-aborted-partial.js";
 import type {
   GatewayRequestContext,
   GatewayRequestHandlerOptions,
@@ -39,9 +39,11 @@ export type ChatAbortRequester = {
   };
 };
 
-export function captureSessionAbortRequestFilter(
-  params: Pick<ChatSessionAbortParams, "requester" | "includeProtectedRuns" | "preserveSideRuns">,
-): SubagentRequestSessionOrigin["acceptsRequest"] {
+export function captureSessionAbortRequestFilter(params: {
+  requester: ChatAbortRequester;
+  includeProtectedRuns?: boolean;
+  preserveSideRuns?: boolean;
+}): SubagentRequestSessionOrigin["acceptsRequest"] {
   return (identity) =>
     canRequesterAbortChatRun(identity, params.requester) &&
     (params.includeProtectedRuns === true ||
@@ -50,7 +52,11 @@ export function captureSessionAbortRequestFilter(
 }
 
 export function captureSessionAbortRequestOrigin(
-  params: Pick<ChatSessionAbortParams, "session" | "requiredSessionId" | "sessionId">,
+  params: {
+    session?: ChatAbortSessionSnapshot;
+    requiredSessionId?: string;
+    sessionId?: string;
+  },
   acceptsRequest: SubagentRequestSessionOrigin["acceptsRequest"],
 ): SubagentRequestSessionOrigin | undefined {
   const session = params.session?.ok ? params.session.value : undefined;

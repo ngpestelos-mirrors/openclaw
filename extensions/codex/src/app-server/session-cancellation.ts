@@ -1,7 +1,5 @@
-import type {
-  AgentHarness,
-  AgentHarnessDescendantCancellationResult,
-} from "openclaw/plugin-sdk/agent-harness-runtime";
+import type { AgentHarness } from "openclaw/plugin-sdk/agent-harness-runtime";
+import type { NativeDescendantCancellationResult } from "./native-subagent-monitor-types.js";
 import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
 import type { CodexAppServerBindingStore } from "./session-binding.js";
 import { retainSharedCodexAppServerClientByInstanceId } from "./shared-client.js";
@@ -11,7 +9,7 @@ import { isSameCodexAppServerThreadOwner } from "./thread-ownership.js";
 export async function withCodexSessionDescendantCancellation<T>(
   bindingStore: CodexAppServerBindingStore,
   params: Parameters<NonNullable<AgentHarness["withDescendantCancellation"]>>[0],
-  run: (cancel: () => Promise<AgentHarnessDescendantCancellationResult>) => Promise<T>,
+  run: (cancel: () => Promise<NativeDescendantCancellationResult>) => Promise<T>,
 ): Promise<T> {
   const identity = {
     kind: "session" as const,

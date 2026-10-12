@@ -1,8 +1,8 @@
-import type { AgentHarnessRequestCustody } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { awaitGateBeforeSettlement } from "openclaw/plugin-sdk/test-fixtures";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { interruptCodexTurnAndWaitBestEffort } from "./attempt-client-cleanup.js";
+import type { ParentOwner } from "./native-subagent-monitor-types.js";
 import {
   CodexNativeSubagentMonitor,
   childTurnCompletedNotification,
@@ -20,7 +20,7 @@ import {
 const parentThreadId = "parent-thread";
 const sessionKey = "agent:main:native-stop";
 // The Gateway supplies selection; this fixture proves the native owner's custody propagation.
-const requestCustody: AgentHarnessRequestCustody = Object.freeze({});
+const requestCustody: NonNullable<ParentOwner["requestCustody"]> = Object.freeze({});
 const requester = {
   parentThreadId,
   agentId: "main",
@@ -28,7 +28,7 @@ const requester = {
   sessionId: "physical-1",
   lifecycleRevision: "revision-1",
   requesterTurnRunId: "parent-run",
-  acceptsRequest: (custody: AgentHarnessRequestCustody | undefined) => custody === requestCustody,
+  acceptsRequest: (custody: ParentOwner["requestCustody"]) => custody === requestCustody,
   assertCurrent: () => {},
 };
 const registration = {

@@ -6,8 +6,7 @@ import type {
   deliverAgentHarnessCompletion,
 } from "openclaw/plugin-sdk/agent-harness-completion";
 import type {
-  AgentHarnessDescendantCancellationResult,
-  AgentHarnessRequestCustody,
+  AgentHarness,
   EmbeddedRunAttemptParamsV2,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { CodexAppServerClient } from "./client.js";
@@ -21,6 +20,11 @@ import type {
   CodexNativeSubagentSubmission,
   CodexNativeSubagentSubmissionStore,
 } from "./native-subagent-submission.js";
+
+type DescendantCancellation = NonNullable<AgentHarness["withDescendantCancellation"]>;
+type NativeRequestCustody = NonNullable<
+  Parameters<Parameters<DescendantCancellation>[0]["acceptsRequest"]>[0]
+>;
 
 export type NativeSubagentMonitorRuntime = {
   deliverAgentHarnessCompletion: typeof deliverAgentHarnessCompletion;
@@ -88,7 +92,7 @@ export type NativeModelToolInputRequest = Omit<NativeModelInputRequest, "targetT
 };
 
 export type ParentOwner = {
-  requestCustody?: AgentHarnessRequestCustody;
+  requestCustody?: NativeRequestCustody;
   requesterAgentId?: string;
   requesterSessionKey?: string;
   requesterTurnRunId?: string;
@@ -194,7 +198,7 @@ export type NativeTurnObservation = {
 };
 
 export type ChildState = NativeSubagentAssignment & {
-  requestCustody?: AgentHarnessRequestCustody;
+  requestCustody?: NativeRequestCustody;
   requesterTurnRunId?: string;
   cancellationRequested?: true;
   terminalHandling?: Promise<void>;
@@ -263,15 +267,8 @@ export type ThreadRecovery = {
   threadState: "unavailable" | "active" | "system_error" | "other";
 };
 
-export type NativeDescendantCancellation = {
+export type NativeDescendantCancellation = Parameters<DescendantCancellation>[0] & {
   parentThreadId: string;
-  agentId: string;
-  sessionKey: string;
-  sessionId: string;
-  lifecycleRevision?: string;
-  requesterTurnRunId?: string;
-  acceptsRequest: (custody: AgentHarnessRequestCustody | undefined) => boolean;
-  assertCurrent: () => void;
 };
 
 export type MonitorOptions = {
@@ -294,4 +291,6 @@ export type MonitorOptions = {
   captureChildThreadForget?: (threadId: string) => Promise<(() => void) | undefined>;
 };
 
-export type NativeDescendantCancellationResult = AgentHarnessDescendantCancellationResult;
+export type NativeDescendantCancellationResult = Awaited<
+  ReturnType<Parameters<Parameters<DescendantCancellation>[1]>[0]>
+>;
