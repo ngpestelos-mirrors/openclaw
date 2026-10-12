@@ -298,7 +298,7 @@ function collectExpiredCronRunIds(records: readonly CronRunRecord[], now: number
   return expired;
 }
 
-export function pruneCronRunHistoryInDatabase(
+function pruneCronRunHistoryInDatabase(
   db: DatabaseSync,
   now: number,
   schema: CronRunReceiptWriteSchema,

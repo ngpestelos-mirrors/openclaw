@@ -57,7 +57,7 @@ export function purgeExpiredSecretStoreEntriesInDatabase(
             .selectFrom("secret_store_entries")
             .select((eb) => eb.fn.min("deleted_at_ms").as("deletedAtMs")),
         );
-        const deletedAtMs = normalizeSqliteNumber(deleted?.deletedAtMs);
+        const deletedAtMs = normalizeSqliteNumber(deleted?.deletedAtMs ?? null);
         let nextExpiryAtMs =
           deletedAtMs === undefined ? null : deletedAtMs + SECRET_STORE_RETENTION_MS + 1;
         const hidden = executeSqliteQuerySync(
@@ -136,6 +136,6 @@ export function purgeExpiredSecretStoreEntriesInDatabase(
         writeToken: readSqliteDatabaseWriteTokenForPath(state.path),
       };
     },
-    { removed: 0, nextExpiryAtMs: null },
+    { removed: 0, nextExpiryAtMs: null, writeToken: undefined },
   );
 }

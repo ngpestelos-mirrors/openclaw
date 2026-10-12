@@ -19,6 +19,7 @@ import {
   deleteGitHubDeviceAuthorizationRecord,
   deleteGitHubOAuthRecord,
   inspectGitHubOAuthRecord,
+  listGitHubDeviceAuthorizationRecords,
   readGitHubDeviceAuthorizationRecord,
   type GitHubDeviceAuthorizationRecord,
   type GitHubIdentityScope,
