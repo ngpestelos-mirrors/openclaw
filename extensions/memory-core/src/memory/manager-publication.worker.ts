@@ -28,7 +28,7 @@ import {
   type SqliteWorkerBackend,
 } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import { hasMemorySessionTombstone } from "../memory-session-tombstones.js";
-import { publishMemoryDatabaseTables, readMemoryDatabaseRevision } from "./manager-db-kernel.js";
+import { publishMemoryDatabaseTables } from "./manager-db-kernel.js";
 import {
   clearMemoryEmbeddingCacheIdentities,
   countMemoryEmbeddingCache,
@@ -451,9 +451,6 @@ function createPublicationBackend(
       }
       if (command.type === "cache.clear") {
         return write(() => {
-          if (readMemoryDatabaseRevision(db) !== command.input.expectedRevision) {
-            return false;
-          }
           clearMemoryEmbeddingCacheIdentities(db, command.input.identities);
           return true;
         });
@@ -474,9 +471,6 @@ function createPublicationBackend(
           readEntries = () => readPublicationRows<MemoryEmbeddingCacheEntry>(fragments);
         }
         const outcome = write(() => {
-          if (readMemoryDatabaseRevision(db) !== command.input.expectedRevision) {
-            return false;
-          }
           const eligible = new Map<string, boolean>();
           function* entries() {
             for (const entry of readEntries()) {
@@ -587,17 +581,12 @@ function createPublicationBackend(
             "A session was forgotten while memory indexing was running; retry the memory index.",
           );
         }
-        const beforeRevision = readMemoryDatabaseRevision(db);
         const { retainedDrift } = new MemorySourceIndexKernel(db, command.input.state).replaceRows(
           header,
           rows,
         );
         facts = readMemoryDatabaseFacts(db);
-        return {
-          beforeRevision,
-          databaseRevision: facts.revision,
-          retainedDrift,
-        };
+        return { retainedDrift };
       });
       const published = outcome.ok ? { ...outcome, facts } : outcome;
       return command.type === "source.replace.inline" ? published : finish(published);
