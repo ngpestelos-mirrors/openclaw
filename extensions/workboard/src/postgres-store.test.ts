@@ -7,13 +7,11 @@ import {
   hasSqliteWorkerOutcomeUnknown,
   readSqliteDatabaseWriteTokenForPath,
 } from "openclaw/plugin-sdk/sqlite-runtime";
-import {
-  PostgresSyncConnection,
-  runSqliteImmediateTransactionSync,
-} from "openclaw/plugin-sdk/sqlite-worker-runtime";
+import { runSqliteImmediateTransactionSync } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { Client } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { PostgresSyncConnection } from "../../../src/infra/postgres-sync/connection.js";
 import { workboardSqliteBackendEntrypoint } from "./sqlite-backend-entrypoint.test-support.js";
 import { createWorkboardDatabase } from "./sqlite-store-schema.js";
 import { createWorkboardSqliteStores } from "./sqlite-store.js";
@@ -290,7 +288,7 @@ describe.skipIf(!postgresUrl)("experimental PostgreSQL workboard admission and r
     expect(db.prepare("SELECT id FROM deferred_unique").all()).toEqual([{ id: 2 }]);
   });
 
-  it("refuses a PostgreSQL anchor when the experimental URL is unset without creating SQLite data", () => {
+  it("refuses a PostgreSQL anchor when the PostgreSQL config is absent without creating SQLite data", () => {
     const dbPath = databasePath();
     const opened = openDatabase(dbPath);
     const schema = opened.db.schema;
@@ -334,6 +332,12 @@ describe.skipIf(!postgresUrl)("experimental PostgreSQL workboard admission and r
     ).toEqual({ name: "Keep remote data" });
   });
 
+  // External metadata changes are visible on the next physical-store admission, not warm reopen.
+  function replaceAnchorForFreshAdmission(dbPath: string) {
+    fs.copyFileSync(dbPath, `${dbPath}.replacement`);
+    fs.renameSync(`${dbPath}.replacement`, dbPath);
+  }
+
   it("refuses a PostgreSQL schema version mismatch without migrating it", async () => {
     const dbPath = databasePath();
     const opened = openDatabase(dbPath);
@@ -342,6 +346,7 @@ describe.skipIf(!postgresUrl)("experimental PostgreSQL workboard admission and r
     await observer.query(
       `UPDATE ${quoteIdentifier(schema)}.openclaw_schema_meta SET version = 4 WHERE store = 'workboard'`,
     );
+    replaceAnchorForFreshAdmission(dbPath);
     expect(() => createWorkboardDatabase(dbPath, undefined, postgresInput)).toThrow(/expected.*3/i);
     expect(
       (
@@ -367,6 +372,7 @@ describe.skipIf(!postgresUrl)("experimental PostgreSQL workboard admission and r
       `UPDATE ${quoteIdentifier(schema)}.openclaw_schema_meta SET store_id = $1 WHERE store = 'workboard'`,
       [otherId],
     );
+    replaceAnchorForFreshAdmission(dbPath);
     expect(() => createWorkboardDatabase(dbPath, undefined, postgresInput)).toThrow(
       new RegExp(`${originalId}.*${otherId}|${otherId}.*${originalId}`),
     );
