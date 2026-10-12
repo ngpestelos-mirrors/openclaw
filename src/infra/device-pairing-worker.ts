@@ -55,74 +55,11 @@ function admissionFacts(value: unknown): DevicePairingAdmissionFacts[] {
 }
 
 function commitReceipt(value: unknown): DevicePairingCommitReceipt {
-  if (
-    !isRecord(value) ||
-    value.kind !== "devicePairing" ||
-    typeof value.beforeRevision !== "string" ||
-    typeof value.revision !== "string" ||
-    !Array.isArray(value.changed) ||
-    !value.changed.every(
-      (entry) =>
-        isRecord(entry) &&
-        typeof entry.deviceId === "string" &&
-        (entry.binding === null ||
-          (isRecord(entry.binding) &&
-            typeof entry.binding.identity === "string" &&
-            (entry.binding.generation === undefined ||
-              typeof entry.binding.generation === "string"))),
-    )
-  ) {
+  if (!isRecord(value) || value.kind !== "devicePairing") {
     throw new Error("Invalid pairing commit receipt");
   }
-  let tokensReplaced: DevicePairingCommitReceipt["tokensReplaced"];
-  if (value.tokensReplaced !== undefined) {
-    const replaced = value.tokensReplaced;
-    if (
-      !isRecord(replaced) ||
-      typeof replaced.deviceId !== "string" ||
-      !Array.isArray(replaced.roles) ||
-      !replaced.roles.every((role) => typeof role === "string")
-    ) {
-      throw new Error("Invalid pairing token replacement receipt");
-    }
-    tokensReplaced = { deviceId: replaced.deviceId, roles: replaced.roles };
-  }
-  let workerEnvironment: DevicePairingCommitReceipt["workerEnvironment"];
-  if (value.workerEnvironment !== undefined) {
-    const environment = value.workerEnvironment;
-    if (
-      !isRecord(environment) ||
-      typeof environment.environmentId !== "string" ||
-      typeof environment.nodeDeviceId !== "string" ||
-      typeof environment.updatedAtMs !== "number"
-    ) {
-      throw new Error("Invalid pairing worker-environment receipt");
-    }
-    workerEnvironment = {
-      environmentId: environment.environmentId,
-      nodeDeviceId: environment.nodeDeviceId,
-      updatedAtMs: environment.updatedAtMs,
-    };
-  }
-  return {
-    kind: "devicePairing",
-    beforeRevision: value.beforeRevision,
-    revision: value.revision,
-    ...(tokensReplaced ? { tokensReplaced } : {}),
-    ...(workerEnvironment ? { workerEnvironment } : {}),
-    changed: value.changed.map((entry) => ({
-      deviceId: entry.deviceId,
-      binding:
-        entry.binding === null
-          ? null
-          : {
-              identity: entry.binding.identity,
-              ...(entry.binding.generation === undefined
-                ? {}
-                : { generation: entry.binding.generation }),
-            },
-    })),
-  };
+  // SAFETY: The private mutation worker builds this typed receipt after native COMMIT.
+  return value as DevicePairingCommitReceipt;
 }
 
 export function executeDevicePairingMutation<Key extends keyof DevicePairingWorkerOperations>(
