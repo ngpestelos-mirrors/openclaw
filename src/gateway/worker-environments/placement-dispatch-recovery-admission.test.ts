@@ -547,6 +547,7 @@ describe("placement recovery session admission with persisted placements", () =>
     });
     const harness = await createHarness(support.testState.stateDb, placements, {
       workspacePath: root,
+      environmentGeneration: 3,
     });
     const coordinated = coordinate(harness);
     await coordinated.reconcile("startup");
