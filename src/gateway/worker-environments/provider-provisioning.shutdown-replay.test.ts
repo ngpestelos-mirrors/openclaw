@@ -133,9 +133,9 @@ describe("worker node provisioning shutdown replay", () => {
       ensureNodeWorkerBundle: async () => receipt,
     });
 
-    const createDispatch = (environments: typeof first) =>
+    const createDispatch = async (environments: typeof first) =>
       createProviderReplayDispatch({
-        initialPlacements: placements.list(),
+        initialPlacements: await placements.listAsync(),
         placements,
         environments,
         resolveDevicePlacementRequirement: async () => ({
@@ -144,12 +144,12 @@ describe("worker node provisioning shutdown replay", () => {
         }),
         isCurrentNodePlacement: () => true,
       });
-    const firstDispatch = createDispatch(first);
+    const firstDispatch = await createDispatch(first);
     const uninstallFirstGuard = first.installReconcileEnvironmentGuard(
       async (environmentId, reconcileCore) => {
-        const owner = placements
-          .list()
-          .find((candidate) => candidate.environmentId === environmentId);
+        const owner = (await placements.listAsync()).find(
+          (candidate) => candidate.environmentId === environmentId,
+        );
         if (owner?.state !== "provisioning") {
           throw new Error("guarded recovery lost its provisioning owner");
         }
@@ -217,11 +217,13 @@ describe("worker node provisioning shutdown replay", () => {
       nodeTunnelManager,
     });
     bindProviderReplayNodeAvailability(restarted);
-    const restartedDispatch = createDispatch(restarted);
+    const restartedDispatch = await createDispatch(restarted);
     const uninstallRestartedGuard = restarted.installReconcileEnvironmentGuard(
       async (environmentId, reconcileCore) => {
         const owner = expectDefined(
-          placements.list().find((candidate) => candidate.environmentId === environmentId),
+          (await placements.listAsync()).find(
+            (candidate) => candidate.environmentId === environmentId,
+          ),
           "restarted provisioning owner",
         );
         if (owner.state !== "provisioning") {

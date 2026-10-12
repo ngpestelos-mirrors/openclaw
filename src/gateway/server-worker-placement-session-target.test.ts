@@ -234,7 +234,7 @@ test.each([
       });
       try {
         const runtime = createGatewayWorkerPlacementRuntime({
-          initialPlacements: placements.list(),
+          initialPlacements: await placements.listAsync(),
           scheduler,
           placements,
           environments,

@@ -188,16 +188,22 @@ test("starts and notifies when identity enrichment fails, then resolves child id
   }
 });
 
-test("reports manual collection after real destination capture fails, then recovers on the same tool", async ({
+test("reports manual collection after destination capture fails, then recovers on the same tool", async ({
   signal,
 }) => {
   const sessionKey = "agent:main:exec-capture-failure";
   await seedOrigin(sessionKey);
   let faults = 0;
-  vi.spyOn(sessionReads, "withSessionEntryReadOnlyInWorker").mockImplementationOnce(async () => {
-    faults++;
-    throw new Error("session worker transport unavailable");
-  });
+  const capture = sessionEvents.captureSessionEventTargetForHost;
+  vi.spyOn(sessionEvents, "captureSessionEventTargetForHost").mockImplementation(
+    async (...args) => {
+      if (args[0] === "main" && args[1] === sessionKey && faults === 0) {
+        faults++;
+        throw new Error("session event destination unavailable");
+      }
+      return capture(...args);
+    },
+  );
   const exec = createExecTool({
     config,
     host: "gateway",
