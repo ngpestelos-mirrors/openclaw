@@ -10,10 +10,7 @@ import {
   reconcileCronRunHistoryInDatabase,
 } from "./run-history.kernel.js";
 import { readActiveCronRunReceiptsInDatabase } from "./run-receipt-read.js";
-import {
-  isCronRunReceiptOwnerStale,
-  listActiveCronRunReceiptJobIdsInDatabase,
-} from "./run-receipt-store.js";
+import { listActiveCronRunReceiptJobIdsInDatabase } from "./run-receipt-store.js";
 import { prepareCronRunReceiptWriteSchema } from "./run-receipt-write-admission.js";
 import {
   loadCronRuntimeAuthorities,
@@ -49,17 +46,10 @@ export function maintainCronRunHistoryInWorker(
       const receipts = schema.cronRunReceipts
         ? readActiveCronRunReceiptsInDatabase(db, undefined, jobIds)
         : [];
-      const { nowMs, protectedJobIds, locallyOwnedReceiptIds } = input.snapshot;
+      const { nowMs, protectedJobIds } = input.snapshot;
       const protectedJobs = new Set([
         ...protectedJobIds,
-        ...receipts
-          // Host-only liveness is captured before dispatch; new ownership may race this snapshot.
-          .filter((receipt) =>
-            receipt.ownerPid === process.pid
-              ? locallyOwnedReceiptIds.includes(receipt.receiptId)
-              : !isCronRunReceiptOwnerStale(receipt, nowMs),
-          )
-          .map((receipt) => receipt.jobId),
+        ...receipts.map((receipt) => receipt.jobId),
       ]);
       const reconciled = reconcileCronRunHistoryInDatabase(db, records, nowMs, protectedJobs);
       // Newly lost rows retain their first lost observation until the next sweep, as before.
