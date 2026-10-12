@@ -22,7 +22,20 @@ export function setupSidebarTest() {
     ].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
     // JSDOM has no paint cycle. Keep ordinary sidebar settlement deterministic;
     // frame-sensitive cases replace this scheduler with their controlled clock.
-    if (navigator.userAgent.includes("jsdom")) {
+    if (!("__vitest_browser__" in globalThis)) {
+      // Fake clocks must leave this fixture's frame scheduler in place.
+      vi.setConfig({
+        fakeTimers: {
+          toFake: [
+            "setTimeout",
+            "clearTimeout",
+            "setInterval",
+            "clearInterval",
+            "Date",
+            "performance",
+          ],
+        },
+      });
       let nextFrame = 0;
       const frames = new Map<number, FrameRequestCallback>();
       Object.defineProperty(globalThis, "requestAnimationFrame", {
@@ -93,6 +106,7 @@ export function setupSidebarTest() {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.useRealTimers();
+    vi.resetConfig();
     await vi.dynamicImportSettled();
     // Removing a prompt's DOM does not settle its promise or release its reentrancy guard.
     for (const modal of document.body.querySelectorAll("openclaw-modal-dialog")) {
