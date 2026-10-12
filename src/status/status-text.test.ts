@@ -147,8 +147,8 @@ describe("buildStatusText channel features", () => {
 
 describe("buildStatusText global subagent scope", () => {
   beforeEach(() => resetSubagentRegistryForTests({ persist: false }));
-  afterEach(() => {
-    resetSubagentRegistryForTests({ persist: false });
+  afterEach(async () => {
+    await resetSubagentRegistryForTests({ persist: false });
     clearRuntimeConfigSnapshot();
   });
 

@@ -440,7 +440,7 @@ describe("gateway session utils", () => {
   test("Activity lists select newest interactions and completions before the 100-row page", async () => {
     const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.4" });
     setRuntimeConfigSnapshot(cfg);
-    onTestFinished(resetConfigRuntimeState);
+    onTestFinished(() => resetConfigRuntimeState());
     const now = Date.now();
     const store: Record<string, SessionEntry> = Object.fromEntries(
       Array.from({ length: 101 }, (_, index) => [
@@ -497,7 +497,7 @@ describe("gateway session utils", () => {
   test("Activity time filters use activity age without changing ordinary metadata filters", async () => {
     const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.4" });
     setRuntimeConfigSnapshot(cfg);
-    onTestFinished(resetConfigRuntimeState);
+    onTestFinished(() => resetConfigRuntimeState());
     const now = 1_800_000_000_000;
     const cutoff = now - 60 * 60_000;
     const clock = vi.spyOn(Date, "now").mockReturnValue(now);
@@ -550,7 +550,7 @@ describe("gateway session utils", () => {
   test("session lists page from an offset after filtering and sorting", async () => {
     const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.4" });
     setRuntimeConfigSnapshot(cfg);
-    onTestFinished(resetConfigRuntimeState);
+    onTestFinished(() => resetConfigRuntimeState());
     const store = Object.fromEntries(
       Array.from({ length: 6 }, (_value, index) => [
         `session-${index}`,
@@ -764,7 +764,7 @@ describe("gateway session utils", () => {
   test("session list thinking cache preserves case-distinct model catalog entries", async () => {
     const cfg = createModelDefaultsConfig({ primary: "custom/CaseModel" });
     setRuntimeConfigSnapshot(cfg);
-    onTestFinished(resetConfigRuntimeState);
+    onTestFinished(() => resetConfigRuntimeState());
     const modelCatalog = [
       {
         provider: "custom",
@@ -888,7 +888,7 @@ describe("gateway session utils", () => {
     async (lightweightListRow) => {
       const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.6-sol" });
       setRuntimeConfigSnapshot(cfg);
-      onTestFinished(resetConfigRuntimeState);
+      onTestFinished(() => resetConfigRuntimeState());
       const entry = (sessionId: string): InternalSessionEntry => ({
         sessionId,
         updatedAt: 1,

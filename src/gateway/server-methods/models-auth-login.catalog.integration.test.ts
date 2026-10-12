@@ -187,7 +187,8 @@ it.for([false, true])(
           signal,
           start: () => list(true),
           read: list,
-          ready: () => catalogWork.read().completedTasks > 0,
+          ready: ({ result }) =>
+            catalogWork.read().completedTasks > 0 && !result.pendingProviders?.includes(provider),
         });
         const beforeLoginWork = catalogWork.read();
         await client.request("models.authLogin", {
