@@ -8,6 +8,7 @@ import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import { prepareOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../test-utils/env.js";
@@ -692,6 +693,10 @@ describe("auth profile batch persistence", () => {
         },
         agentDir,
       );
+      await prepareOpenClawAgentDatabaseExecution(
+        { agentId: "work", path: resolveAuthProfileDatabasePath(agentDir) },
+        () => {},
+      );
       const database = openOpenClawAgentDatabase({
         agentId: "work",
         path: resolveAuthProfileDatabasePath(agentDir),
@@ -778,6 +783,10 @@ describe("auth profile batch persistence", () => {
 
   it("leaves no partial profile batch when the SQLite state write fails", async () => {
     await withAgentDir(async (agentDir) => {
+      await prepareOpenClawAgentDatabaseExecution(
+        { agentId: "work", path: resolveAuthProfileDatabasePath(agentDir) },
+        () => {},
+      );
       const database = openOpenClawAgentDatabase({
         agentId: "work",
         path: resolveAuthProfileDatabasePath(agentDir),

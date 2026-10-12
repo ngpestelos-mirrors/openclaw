@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../../test/helpers/promise.js";
 import { getRuntimeConfig } from "../../../config/config.js";
+import { setRuntimeConfigSnapshot } from "../../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions.js";
 import {
   loadSessionEntryReadOnly,
@@ -31,6 +32,9 @@ export function registerSubagentSweeperSessionReadTests(ignoreRecovery: () => vo
       .mocked(loadSubagentSessionEntry)
       .withImplementation(actual.loadSubagentSessionEntry, async () => {
         await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+          setRuntimeConfigSnapshot({
+            session: { store: state.statePath("agents/{agentId}/sessions/sessions.json") },
+          });
           ignoreRecovery();
           const { entry, completeSubagentRunWithRecovery, sweeper } = createHarness({});
           replaceSessionEntrySync(
@@ -103,6 +107,9 @@ export function registerSubagentSweeperSessionReadTests(ignoreRecovery: () => vo
       .mocked(loadSubagentSessionEntry)
       .withImplementation(actual.loadSubagentSessionEntry, async () => {
         await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+          setRuntimeConfigSnapshot({
+            session: { store: state.statePath("agents/{agentId}/sessions/sessions.json") },
+          });
           ignoreRecovery();
           const { entry, runs, completeSubagentRunWithRecovery, sweeper } = createHarness({});
           const scope = {

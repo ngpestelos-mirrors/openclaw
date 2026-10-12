@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { expect, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../../test/helpers/promise.js";
+import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import {
   persistSessionTranscriptTurn,
   replaceSessionEntrySync,
@@ -32,6 +33,7 @@ export async function proveSubscriptionDoesNotWaitForDisplayRows(
     const cfg = rolePolicyConfig();
     cfg.gateway!.roles!.definitions.view!.scopes.push("operator.approvals");
     await state.writeConfig(cfg);
+    setRuntimeConfigSnapshot(cfg);
     const scope = {
       agentId: "main",
       sessionKey: "agent:main:subscribe-dirty-row",

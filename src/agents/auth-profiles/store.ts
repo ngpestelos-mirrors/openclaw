@@ -1347,7 +1347,10 @@ export function createAuthProfileStoreRuntime(
     return { ...scope, store: await scope.readAsync() };
   }
 
-  /** @deprecated Use loadAuthProfileStoreForSecretsRuntimeAsync. Removed at the next Plugin SDK major. */
+  /**
+   * @deprecated Await loadAuthProfileStoreForRuntimeAsync from openclaw/plugin-sdk/agent-runtime
+   * with readOnly: true and allowKeychainPrompt: false. Removed at the next Plugin SDK major.
+   */
   function loadAuthProfileStoreForSecretsRuntime(
     agentDir?: string,
     options?: Pick<
@@ -1363,7 +1366,8 @@ export function createAuthProfileStoreRuntime(
     warnPluginSdkDeprecation({
       family: "auth-profiles",
       method: "loadAuthProfileStoreForSecretsRuntime",
-      replacement: "loadAuthProfileStoreForSecretsRuntimeAsync",
+      replacement:
+        "loadAuthProfileStoreForRuntimeAsync from openclaw/plugin-sdk/agent-runtime with readOnly: true and allowKeychainPrompt: false",
     });
     return loadAuthProfileStoreForRuntime(agentDir, {
       ...options,
@@ -1610,7 +1614,10 @@ export function createAuthProfileStoreRuntime(
     };
   }
 
-  /** @deprecated Use updateAuthProfileStoreWithLock. Removed at the next Plugin SDK major. */
+  /**
+   * @deprecated Use updateAuthProfileStoreWithLock from openclaw/plugin-sdk/provider-auth.
+   * Removed at the next Plugin SDK major.
+   */
   function saveAuthProfileStore(
     store: AuthProfileStore,
     agentDir?: string,
@@ -1620,7 +1627,7 @@ export function createAuthProfileStoreRuntime(
     warnPluginSdkDeprecation({
       family: "auth-profiles",
       method: "saveAuthProfileStore",
-      replacement: "updateAuthProfileStoreWithLock",
+      replacement: "updateAuthProfileStoreWithLock from openclaw/plugin-sdk/provider-auth",
     });
     // Reject lossy SDK inputs before opening the write owner; normalize its detached copy later.
     for (const credential of Object.values(store.profiles)) {

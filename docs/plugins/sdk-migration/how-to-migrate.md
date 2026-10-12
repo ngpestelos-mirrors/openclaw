@@ -1494,8 +1494,7 @@ Keep the same arguments and await the replacement's result:
 | `provider-auth`                          | `listUsableProviderAuthProfileIds`            | `listUsableProviderAuthProfileIdsAsync`              |
 | `provider-auth-runtime`                  | `resolveProviderAuthProfileMetadata`          | `resolveProviderAuthProfileMetadataAsync`            |
 | `agent-runtime`                          | `loadAuthProfileStoreWithoutExternalProfiles` | `loadAuthProfileStoreWithoutExternalProfilesAsync`   |
-| `agent-runtime`                          | `loadAuthProfileStoreForSecretsRuntime`       | `loadAuthProfileStoreForSecretsRuntimeAsync`         |
-| `agent-runtime`                          | `resolveAuthStorePathForDisplay`              | `resolveAuthStorePathForDisplayAsync`                |
+| `agent-runtime`                          | `loadAuthProfileStoreForSecretsRuntime`       | `loadAuthProfileStoreForRuntimeAsync`                |
 | `agent-runtime`                          | `findPersistedAuthProfileCredential`          | `findPersistedAuthProfileCredentialAsync`            |
 | `agent-runtime`                          | `resolvePersistedAuthProfileOwnerAgentDir`    | `resolvePersistedAuthProfileOwnerAgentDirAsync`      |
 | `agent-harness-runtime`                  | `resolveModelAuthMode`                        | `resolveModelAuthModeAsync`                          |
@@ -1516,6 +1515,17 @@ Keep the same arguments and await the replacement's result:
 
 The deprecated broad `agent-runtime` subpath also exposes
 `ensureAuthProfileStoreAsync`; use the focused `provider-auth` subpath for new imports.
+
+For secret-resolution reads, use `loadAuthProfileStoreForRuntimeAsync` from
+`agent-runtime` with `readOnly: true` and `allowKeychainPrompt: false`, preserving
+any other existing read options. The core helper
+`loadAuthProfileStoreForSecretsRuntimeAsync` is not a public SDK export.
+
+`resolveAuthStorePathForDisplay` remains a deprecated SDK compatibility export
+through the current Plugin SDK major. Its async replacement,
+`resolveAuthStorePathForDisplayAsync`, is core-internal. New plugins should
+present credential or provider metadata through public APIs such as
+`resolveProviderAuthProfileMetadataAsync` from `provider-auth-runtime`.
 
 Use `loadAuthProfileStoreWithoutExternalProfilesAsync` when an existing
 `agent-runtime` integration needs persisted credential or usage facts without

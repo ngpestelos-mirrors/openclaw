@@ -18,11 +18,17 @@ export const {
   saveAuthProfileStoreIfPersistenceSnapshotMatches,
 } = nativePluginBindings.authStore;
 
-/** @deprecated Use loadAuthProfileStoreForSecretsRuntimeAsync. Removed at the next Plugin SDK major. */
+/**
+ * @deprecated Await loadAuthProfileStoreForRuntimeAsync from openclaw/plugin-sdk/agent-runtime
+ * with readOnly: true and allowKeychainPrompt: false. Removed at the next Plugin SDK major.
+ */
 export const loadAuthProfileStoreForSecretsRuntime =
   nativePluginBindings.authStore.loadAuthProfileStoreForSecretsRuntime;
 
-/** @deprecated Use updateAuthProfileStoreWithLock. Removed at the next Plugin SDK major. */
+/**
+ * @deprecated Use updateAuthProfileStoreWithLock from openclaw/plugin-sdk/provider-auth.
+ * Removed at the next Plugin SDK major.
+ */
 export const saveAuthProfileStore = nativePluginBindings.authStore.saveAuthProfileStore;
 
 /** @deprecated Use loadAuthProfileStoreForRuntimeAsync. Removed at the next Plugin SDK major. */

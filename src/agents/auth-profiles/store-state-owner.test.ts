@@ -219,6 +219,7 @@ describe("explicit auth state ownership", () => {
       const revision = getActiveSecretsRuntimeSnapshotRevisionState();
       const expected = mode === "rollback" ? first : third;
       if (mode === "rollback") {
+        await closeOpenClawAgentDatabaseByPathAsync(resolveAuthProfileDatabasePath(agentDir));
         await updateAuthProfileStoreWithLock({
           stateDir: second.stateDir,
           agentDir,

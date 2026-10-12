@@ -2,6 +2,10 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { PROTOCOL_VERSION } from "../../../packages/gateway-protocol/src/version.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import { registerWebPushSubscription } from "../../infra/push-web.js";
 import { resetGatewayWorkAdmission } from "../../process/gateway-work-admission.js";
 import { prepareUserProfileSelectionAuthority } from "../../state/user-channel-identity-operations.js";
@@ -152,7 +156,11 @@ describe("Web Push router authority at the worker grant", () => {
     const isConnectionActive = vi.fn(() => true);
     const getClientConnIds = vi.fn(() => new Set(["original-connection"]));
     const context = createDirectChatContext({ isConnectionActive, getClientConnIds });
-    onTestFinished(() => closeGatewayDeviceRevocation(context));
+    setRuntimeConfigSnapshot(context.getRuntimeConfig());
+    onTestFinished(() => {
+      closeGatewayDeviceRevocation(context);
+      clearRuntimeConfigSnapshot();
+    });
     const harness = createDispatchTestHarness({
       connId: "original-connection",
       getRequiredSharedGatewaySessionGeneration: new SharedGatewaySessionGenerationState({

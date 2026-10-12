@@ -36,12 +36,19 @@ function normalizeDisplayPath(pathname: string, env: NodeJS.ProcessEnv = process
   return pathname.startsWith("~") ? pathname : resolveUserPath(pathname, env);
 }
 
-/** @deprecated Use resolveAuthStorePathForDisplayAsync in runtime callers. */
+/**
+ * @deprecated New SDK displays should use resolveProviderAuthProfileMetadataAsync from
+ * openclaw/plugin-sdk/provider-auth-runtime. This selected-path helper remains supported in the
+ * current Plugin SDK major; resolveAuthStorePathForDisplayAsync is core-internal.
+ */
 export function resolveAuthStorePathForDisplay(agentDir?: string): string {
   warnPluginSdkDeprecation({
     family: "auth-profile-sync-operations",
     method: "resolveAuthStorePathForDisplay",
-    replacement: "resolveAuthStorePathForDisplayAsync",
+    replacement:
+      "provider metadata from resolveProviderAuthProfileMetadataAsync in openclaw/plugin-sdk/provider-auth-runtime",
+    compatibility:
+      "This selected-path helper remains supported in the current Plugin SDK major; its async path replacement is core-internal.",
   });
   const localPath = agentDir
     ? path.join(resolveUserPath(agentDir), "openclaw-agent.sqlite")

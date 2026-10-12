@@ -4,6 +4,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import type { CronHistoryResult } from "../../../packages/gateway-protocol/src/index.js";
+import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import {
   appendTranscriptMessage,
@@ -51,6 +52,7 @@ async function withHistoryState(run: () => Promise<void>) {
   let registry: ReturnType<typeof captureActivePluginRegistrySnapshot> | undefined;
   try {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      setRuntimeConfigSnapshot({});
       registry = captureActivePluginRegistrySnapshot();
       setActivePluginRegistry(createEmptyPluginRegistry());
       try {

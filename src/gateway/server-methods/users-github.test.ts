@@ -19,6 +19,10 @@ import {
   writeManagedGitHubProfileFiles,
 } from "../../agents/github-tool-identity.js";
 import { cleanupRetiredManagedGitHubProfiles } from "../../agents/github-tool-profile-cleanup.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { withPluginRuntimePluginScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { resolveCommandEnv } from "../../process/exec-spawn.js";
@@ -129,6 +133,7 @@ async function connect(client = alice) {
 beforeEach(async () => {
   state = await createOpenClawTestState({ scenario: "minimal", applyEnv: true });
   config = { agents: { entries: { main: { workspace: state.workspaceDir } } } };
+  setRuntimeConfigSnapshot(config);
   clients = new Set();
   alice = user("alice@example.test");
   bob = user("bob@example.test");
@@ -154,6 +159,7 @@ afterEach(async () => {
   await lifecycle.stop();
   profileCatalog.release();
   await state.cleanup();
+  clearRuntimeConfigSnapshot();
   vi.unstubAllGlobals();
 });
 
@@ -182,6 +188,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
         ...config,
         gateway: { controlUi: { github: { token: "synthetic-preview" } } },
       };
+      setRuntimeConfigSnapshot(config, sourceConfig);
       const snapshot = vi
         .spyOn(secretsRuntime, "getActiveSecretsRuntimeConfigSnapshot")
         .mockReturnValue({ config, sourceConfig, configRefsPrepared: true });
@@ -440,6 +447,7 @@ describe("personal GitHub through authenticated Gateway RPC", () => {
         expect(polled.mock.calls[0]?.[1]).toMatchObject({ status: "success" });
       }
       config = JSON.parse(await fs.readFile(state.configPath, "utf8")) as OpenClawConfig;
+      setRuntimeConfigSnapshot(config);
       const identity =
         scope === "system" ? config.tools?.github : config.agents?.entries?.main?.tools?.github;
       if (!identity) {

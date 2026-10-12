@@ -5,6 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { reloadControlUiDocument } from "../../ui/src/app/stale-chunk-reload.ts";
 import { sessionNavigationTarget } from "../../ui/src/lib/sessions/route-navigation.ts";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import { computeInlineScriptHashes } from "./control-ui-csp.js";
 import { AUTH_TOKEN, createTestGatewayServer, sendRequest } from "./server-http.test-harness.js";
 import { createSessionRowProjectionFixture } from "./session-row-projection.test-support.js";
@@ -47,6 +51,7 @@ const servers: Server[] = [];
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 function server(mode: "token" | "password" = "token") {
   const cfg = { gateway: { publicOrigin: "https://example.test", trustedProxies: ["127.0.0.1"] } };
+  setRuntimeConfigSnapshot(cfg);
   const root = dirs.make("chat-deeplink-");
   fs.writeFileSync(
     path.join(root, "index.html"),
@@ -92,6 +97,7 @@ afterEach(() => {
   for (const instance of servers.splice(0)) {
     instance.emit("close");
   }
+  clearRuntimeConfigSnapshot();
 });
 
 describe("canonical anonymous HTTP entry", () => {

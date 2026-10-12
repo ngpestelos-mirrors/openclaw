@@ -14,7 +14,11 @@ const sessionKey = "agent:main:queued-identity";
 afterEach(() => clearFollowupQueue(sessionKey));
 
 function fixture(originatingChannel = "webchat") {
-  const context = createDirectChatContext({ chatQueuedTurns: new Map() });
+  const cfg = {};
+  const context = createDirectChatContext({
+    chatQueuedTurns: new Map(),
+    getRuntimeConfig: () => cfg,
+  });
   function source(runId: string) {
     const controller = new AbortController();
     const adoption = createChatSendTurnAdoptionLifecycle({
@@ -35,7 +39,7 @@ function fixture(originatingChannel = "webchat") {
       session: {
         agentId: "main",
         backingSessionId: "session",
-        cfg: {},
+        cfg,
         clientRunId: runId,
         sessionKey,
         sessionLoadOptions: { agentId: "main" },

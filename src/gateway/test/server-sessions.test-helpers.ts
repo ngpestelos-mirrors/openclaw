@@ -365,7 +365,9 @@ function createGatewaySessionsTestHarness(startServer: boolean, setup?: GatewayS
     const dir = path.join(requireSharedSessionStoreDir(), `case-${sessionStoreCaseSeq++}`);
     await fs.mkdir(dir, { recursive: true });
     testState.sessionStorePath = path.join(dir, "sessions.json");
-    (await getGatewayConfigModule()).clearRuntimeConfigSnapshot(); // A suite server may prewarm before case setup.
+    const config = await getGatewayConfigModule();
+    config.clearRuntimeConfigSnapshot(); // A suite server may prewarm before case setup.
+    config.getRuntimeConfig();
     return { dir, storePath: testState.sessionStorePath };
   }
 
