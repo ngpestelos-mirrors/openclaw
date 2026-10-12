@@ -171,16 +171,18 @@ describe("ConfigPage custom theme import ownership", () => {
     const { gateway } = createApplicationGateway();
     patchSettings({ gatewayUrl: gateway.connection.gatewayUrl, theme: "claw" });
     const theme = createApplicationTheme(loadSettings(), gateway);
-    const context = completeConfigContext({
-      gateway,
-      theme,
-      runtimeConfig: {
-        state: {
-          connected: true,
-          configSnapshot: { config: {}, valid: true, issues: [] },
+    const context: ApplicationContext = {
+      ...completeConfigContext({
+        gateway,
+        runtimeConfig: {
+          state: {
+            connected: true,
+            configSnapshot: { config: {}, valid: true, issues: [] },
+          },
         },
-      },
-    } as unknown as ApplicationContext);
+      } as unknown as ApplicationContext),
+      theme,
+    };
     const provider = createSolidApplicationContextProvider(context);
     const view = mountSolid(
       () => createComponent(ConfigPage, { pageId: "appearance", routeData: null }),

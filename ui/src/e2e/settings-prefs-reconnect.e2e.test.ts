@@ -130,7 +130,7 @@ async function observePreferenceReplay(page: Page): Promise<void> {
       shellGateway: ShellGatewayOwner;
     };
     const owner = shell.shellGateway;
-    const ensure = owner.ensureRuntimeConfig;
+    const ensure = owner.ensureRuntimeConfig.bind(owner);
     const trace: { phase: string; connected: boolean; canPatch: boolean | undefined }[] = [];
     Object.assign(window, { preferenceReplayTrace: trace });
     owner.ensureRuntimeConfig = function (snapshot, runtimeConfig) {
@@ -139,7 +139,7 @@ async function observePreferenceReplay(page: Page): Promise<void> {
         connected: runtimeConfig?.state.connected ?? false,
         canPatch: runtimeConfig?.canPatch,
       });
-      return ensure.call(this, snapshot, runtimeConfig);
+      return ensure(snapshot, runtimeConfig);
     };
   });
 }

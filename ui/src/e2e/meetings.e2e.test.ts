@@ -1,6 +1,10 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { TranscriptSessionSummary, TranscriptsGetResult } from "@openclaw/gateway-protocol";
+import type {
+  TranscriptSessionSummary,
+  TranscriptsGetResult,
+  TranscriptsStatusResult,
+} from "@openclaw/gateway-protocol";
 import { expect, it } from "vitest";
 import type { MockGatewayWindow } from "../test-helpers/control-ui-e2e-contract.ts";
 import { takeControlUiScreenshotFrame } from "../test-helpers/control-ui-e2e-screenshot.ts";
@@ -54,6 +58,14 @@ suite.define(() => {
           methodResponses: {
             "transcripts.list": { sessions: [meeting], nextCursor: null },
             "transcripts.get": detail,
+            "transcripts.status": {
+              enabled: true,
+              providers: [],
+              configuredSources: [],
+              active: [],
+              latestTranscript: meeting,
+              omitted: { providers: 0, configuredSources: 0, active: 0 },
+            } satisfies TranscriptsStatusResult,
           },
         });
         const meetingUrl = `${suite.server.baseUrl}meetings?query=design&selector=${encodeURIComponent(meeting.selector)}`;
