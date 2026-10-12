@@ -35,9 +35,9 @@ describe("failed placement Gateway recovery", () => {
           }),
         ).rejects.toThrow();
       });
-      const harness = createHarness(database, placementStore, { prepareGatewayMove });
+      const harness = await createHarness(database, placementStore, { prepareGatewayMove });
       const requested = await placementStore.startDispatch(REQUEST);
-      const failed = placementStore.fail({
+      const failed = await placementStore.fail({
         sessionId: REQUEST.sessionId,
         expectedGeneration: requested.generation,
         recoveryError: "worker disappeared",
@@ -94,19 +94,19 @@ describe("failed placement Gateway recovery", () => {
       }
       if (failure === "replaced placement") {
         const replacement = await placementStore.startDispatch(REQUEST);
-        placementStore.fail({
+        await placementStore.fail({
           sessionId: REQUEST.sessionId,
           expectedGeneration: replacement.generation,
           recoveryError: "replacement worker failed",
         });
       }
     });
-    const harness = createHarness(database, placementStore, { prepareGatewayMove });
+    const harness = await createHarness(database, placementStore, { prepareGatewayMove });
     const requested =
       failure === "pending cleanup"
         ? await harness.placements.seedStarting()
         : await placementStore.startDispatch(REQUEST);
-    const failed = placementStore.fail({
+    const failed = await placementStore.fail({
       sessionId: REQUEST.sessionId,
       expectedGeneration: requested.generation,
       recoveryError: "worker disappeared",

@@ -7,8 +7,15 @@ import {
 import { ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS_ENV } from "../../config/future-version-guard.js";
 import { GATEWAY_CONFIG_SELECTION_ENV_KEYS } from "../../config/gateway-env-selection.js";
 import { CONFIG_AUDIT_STORE_LABEL } from "../../config/io.audit.js";
+import type { ConfigSnapshotReadOptions } from "../../config/io.js";
 import { describeConfigSnapshotInputChange } from "../../config/snapshot-inputs.js";
 import type { ConfigFileSnapshot } from "../../config/types.js";
+import type { DeferredPluginMigration } from "../../infra/deferred-plugin-migrations.js";
+import {
+  clearFsSafeEnvFallback,
+  fsSafeEnvInput,
+  normalizeFsSafeNativeEnv,
+} from "../../infra/fs-safe-env.js";
 import { ExitError, type RuntimeEnv } from "../../runtime.js";
 import { withArtifactPreservingStateReads } from "../../state/openclaw-state-db-readonly.js";
 import { formatCliCommand } from "../command-format.js";
@@ -37,7 +44,10 @@ let selectedGatewayRunEnvironment: GatewayRunEnvironmentSelection | undefined;
 let appliedGatewayRunConfigEnvironment: GatewayRunEnvironmentSelection | undefined;
 let lastGuardedGatewayRunSnapshot: ConfigFileSnapshot | undefined;
 let preparedGatewayRunBootstrap:
-  | (Pick<GatewayRunOpts, "allowUnconfigured" | "dev"> & { snapshot: ConfigFileSnapshot })
+  | (Pick<GatewayRunOpts, "allowUnconfigured" | "dev"> & {
+      snapshot: ConfigFileSnapshot;
+      acceptedPluginMigrations?: readonly DeferredPluginMigration[];
+    })
   | undefined;
 let preparedGatewayRunReset: PreparedGatewayRunReset | undefined;
 let gatewayRunTargetSelectedByConfig = false;
@@ -130,6 +140,7 @@ function restoreGatewayEnvChanges(params: {
   after: Record<string, string | undefined>;
   preservedKeys?: ReadonlySet<string>;
 }): void {
+  clearFsSafeEnvFallback(process.env);
   const keys = new Set([...Object.keys(params.before), ...Object.keys(params.after)]);
   for (const key of keys) {
     const preservedKey = process.platform === "win32" ? key.toUpperCase() : key;
@@ -146,6 +157,7 @@ function restoreGatewayEnvChanges(params: {
       process.env[key] = previous;
     }
   }
+  normalizeFsSafeNativeEnv(process.env);
 }
 
 function restoreSupersededGatewaySelectionEnv(params: {
@@ -154,7 +166,7 @@ function restoreSupersededGatewaySelectionEnv(params: {
 }): void {
   restoreGatewayEnvChanges({
     before: params.beforeCurrentPass,
-    after: { ...process.env },
+    after: { ...fsSafeEnvInput(process.env) },
     preservedKeys: GATEWAY_CONFIG_SELECTION_ENV_KEYS,
   });
   if (params.environmentSelection) {
@@ -265,19 +277,19 @@ async function guardGatewayRunSelectedConfig(
   const applySelectedConfigEnv = (snapshot: ConfigFileSnapshot) => {
     restoreAppliedGatewayRunConfigEnvironment(params.opts.reset !== true);
     if (snapshot.valid && params.opts.reset !== true) {
-      const envBeforeApply = { ...process.env };
+      const envBeforeApply = { ...fsSafeEnvInput(process.env) };
       applyConfigEnvVars(snapshot.sourceConfig, process.env);
       normalizeStateDirEnv(process.env);
       normalizeEnv();
       appliedGatewayRunConfigEnvironment = {
         before: envBeforeApply,
-        after: { ...process.env },
+        after: { ...fsSafeEnvInput(process.env) },
       };
     }
     applyInvocationDestructiveOverride(invocationDestructiveOverride);
   };
   for (;;) {
-    const envBeforeTrustedApply = { ...process.env };
+    const envBeforeTrustedApply = { ...fsSafeEnvInput(process.env) };
     const trustedSelectionSignature = resolveGatewayConfigSelectionSignature(process.env);
     const trustedEnvLoad = applyTrustedGatewayEnv(invocationDestructiveOverride);
     if (resolveGatewayConfigSelectionSignature(process.env) !== trustedSelectionSignature) {
@@ -292,7 +304,7 @@ async function guardGatewayRunSelectedConfig(
         );
         restoreGatewayEnvChanges({
           before: envBeforeTrustedApply,
-          after: { ...process.env },
+          after: { ...fsSafeEnvInput(process.env) },
           preservedKeys: new Set(
             [...GATEWAY_CONFIG_SELECTION_ENV_KEYS].filter((key) => !fallbackSelectorKeys.has(key)),
           ),
@@ -346,7 +358,7 @@ async function guardGatewayRunSelectedConfig(
 
 async function guardGatewayRunReset(params: GatewayRunGuardParams): Promise<boolean> {
   gatewayRunTargetSelectedByConfig = false;
-  const envBeforeGuard = { ...process.env };
+  const envBeforeGuard = { ...fsSafeEnvInput(process.env) };
   try {
     return await guardGatewayRunSelectedConfig(params);
   } finally {
@@ -357,7 +369,7 @@ async function guardGatewayRunReset(params: GatewayRunGuardParams): Promise<bool
     // config being deleted must not survive into the replacement config or gateway runtime.
     restoreGatewayEnvChanges({
       before: envBeforeGuard,
-      after: { ...process.env },
+      after: { ...fsSafeEnvInput(process.env) },
       preservedKeys: GATEWAY_RESET_SELECTION_ENV_KEYS,
     });
   }
@@ -397,6 +409,35 @@ export async function recheckGatewayRunReset(params: GatewayRunGuardParams): Pro
   return true;
 }
 
+/**
+ * Config readiness accepted the startup preflight's admitted shared-state generation. The final
+ * reread already reuses that generation's plugin metadata; its migration rows belong with it.
+ * No Gateway owns state yet, so a later pre-ownership read would be no fresher in kind.
+ */
+export function acceptGatewayRunPreflightMigrations(
+  pending: readonly DeferredPluginMigration[],
+): void {
+  if (preparedGatewayRunBootstrap) {
+    preparedGatewayRunBootstrap = {
+      ...preparedGatewayRunBootstrap,
+      acceptedPluginMigrations: pending,
+    };
+  }
+}
+
+/** One start attempt consumes the accepted facts; a retry after in-process repair reads rows. */
+export function takeAcceptedGatewayRunMigrations(): Pick<
+  ConfigSnapshotReadOptions,
+  "deferredPluginMigrations"
+> {
+  if (!preparedGatewayRunBootstrap?.acceptedPluginMigrations) {
+    return {};
+  }
+  const { acceptedPluginMigrations, ...prepared } = preparedGatewayRunBootstrap;
+  preparedGatewayRunBootstrap = prepared;
+  return { deferredPluginMigrations: acceptedPluginMigrations };
+}
+
 export async function applyFinalGatewayRunConfigEnv(params: {
   lowerPrecedenceEnv?: Readonly<Record<string, string>>;
   runtime: RuntimeEnv;
@@ -417,7 +458,7 @@ export async function applyFinalGatewayRunConfigEnv(params: {
     return true;
   }
   const invocationDestructiveOverride = resolveInvocationDestructiveOverride();
-  const envBeforeApply = { ...process.env };
+  const envBeforeApply = { ...fsSafeEnvInput(process.env) };
   const selectionSignature = resolveGatewayConfigSelectionSignature(process.env);
   const [
     {
@@ -449,7 +490,7 @@ export async function applyFinalGatewayRunConfigEnv(params: {
     return false;
   }
   restoreAppliedGatewayRunConfigEnvironment();
-  const envBeforeConfigApply = { ...process.env };
+  const envBeforeConfigApply = { ...fsSafeEnvInput(process.env) };
   const replacedLowerPrecedenceKeys: string[] = [];
   applyConfigEnvVars(params.snapshot.sourceConfig, process.env, {
     lowerPrecedenceEnv: params.lowerPrecedenceEnv,
@@ -463,7 +504,7 @@ export async function applyFinalGatewayRunConfigEnv(params: {
   applyInvocationDestructiveOverride(invocationDestructiveOverride);
   appliedGatewayRunConfigEnvironment = {
     before: envBeforeApply,
-    after: { ...process.env },
+    after: { ...fsSafeEnvInput(process.env) },
   };
   if (resolveGatewayConfigSelectionSignature(process.env) === selectionSignature) {
     initializePublishedConfigRuntimeEnv(params.snapshot.sourceConfig, {
@@ -477,7 +518,7 @@ export async function applyFinalGatewayRunConfigEnv(params: {
     return true;
   }
   appliedGatewayRunConfigEnvironment = undefined;
-  restoreGatewayEnvChanges({ before: envBeforeApply, after: { ...process.env } });
+  restoreGatewayEnvChanges({ before: envBeforeApply, after: { ...fsSafeEnvInput(process.env) } });
   params.runtime.error(
     "Refusing to start the gateway because the final config read changed config or state selection. Retry startup so the selected target can be validated.",
   );
@@ -532,14 +573,17 @@ export async function reloadTrustedGatewayRunEnvironment(params: {
   runtime: RuntimeEnv;
 }): Promise<boolean> {
   const applyTrustedGatewayEnv = await createTrustedGatewayEnvLoader();
-  const envBeforeReload = { ...process.env };
+  const envBeforeReload = { ...fsSafeEnvInput(process.env) };
   const selectionSignature = resolveGatewayConfigSelectionSignature(process.env);
   const invocationDestructiveOverride = resolveInvocationDestructiveOverride();
   applyTrustedGatewayEnv(invocationDestructiveOverride);
   if (resolveGatewayConfigSelectionSignature(process.env) !== selectionSignature) {
     // Runtime modules already derived process-stable paths before startup mutations. A replacement
     // dotenv cannot select another target without splitting the running gateway across state dirs.
-    restoreGatewayEnvChanges({ before: envBeforeReload, after: { ...process.env } });
+    restoreGatewayEnvChanges({
+      before: envBeforeReload,
+      after: { ...fsSafeEnvInput(process.env) },
+    });
     applyInvocationDestructiveOverride(invocationDestructiveOverride);
     await pinGatewayRunRuntimePaths();
     params.runtime.error(
@@ -557,7 +601,7 @@ export async function selectGatewayRunEnvironment(params: GatewayRunGuardParams)
   preparedGatewayRunBootstrap = undefined;
   preparedGatewayRunReset = undefined;
   restoreAppliedGatewayRunConfigEnvironment(params.opts.reset !== true);
-  const envBeforeGuard = { ...process.env };
+  const envBeforeGuard = { ...fsSafeEnvInput(process.env) };
   selectedGatewayRunEnvironment = undefined;
   let guarded: boolean;
   try {
@@ -567,14 +611,14 @@ export async function selectGatewayRunEnvironment(params: GatewayRunGuardParams)
       restoreAppliedGatewayRunConfigEnvironment(false);
       restoreGatewayEnvChanges({
         before: envBeforeGuard,
-        after: { ...process.env },
+        after: { ...fsSafeEnvInput(process.env) },
         preservedKeys: GATEWAY_RESET_SELECTION_ENV_KEYS,
       });
     }
   }
   selectedGatewayRunEnvironment = {
     before: envBeforeGuard,
-    after: { ...process.env },
+    after: { ...fsSafeEnvInput(process.env) },
   };
   await pinGatewayRunRuntimePaths();
   return guarded;
@@ -621,7 +665,9 @@ export async function prepareGatewayRunBootstrap(params: GatewayRunGuardParams):
 }
 
 export async function recheckGatewayRunBootstrap(
-  params: GatewayRunGuardParams & { snapshot?: ConfigFileSnapshot },
+  params: GatewayRunGuardParams & {
+    snapshot?: ConfigFileSnapshot;
+  },
 ): Promise<boolean> {
   // This callback can run while startup preflight owns the shared preparation lease.
   // Throw a typed exit so its finally releases the lease before the CLI exits.
@@ -631,8 +677,8 @@ export async function recheckGatewayRunBootstrap(
       throw new ExitError(code);
     },
   };
-  const expected = preparedGatewayRunBootstrap?.snapshot;
-  if (!expected) {
+  const prepared = preparedGatewayRunBootstrap;
+  if (!prepared) {
     params.runtime.error(
       "Refusing to run gateway state preparation without a prepared config snapshot. Retry startup.",
     );
@@ -652,7 +698,7 @@ export async function recheckGatewayRunBootstrap(
   }
   // Selection already admitted any current-config backup. Later authored drift
   // must be validated by a new startup attempt.
-  const change = describeGatewayRunConfigChange(expected, current, {
+  const change = describeGatewayRunConfigChange(prepared.snapshot, current, {
     allowPathChange: params.snapshot !== undefined,
   });
   if (!change) {

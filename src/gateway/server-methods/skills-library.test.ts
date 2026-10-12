@@ -1,39 +1,46 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type {
   SkillsLibraryListResult,
   SkillsLibraryReadResult,
   SkillsLibraryReceipt,
 } from "../../../packages/gateway-protocol/src/schema/skill-library.js";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   upsertSessionEntryCore,
   loadSessionEntry,
   patchSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import {
+  addSessionMemberInWorker,
+  removeSessionMemberInWorker,
+} from "../../config/sessions/session-sharing-store.async.js";
 import * as fsSafe from "../../infra/fs-safe.js";
 import * as libraryBundle from "../../skills/library/bundle.js";
 import { seedSkillLibrarySelection } from "../../skills/library/selection.js";
 import { mutateSkillLibrary, saveSkillLibrary } from "../../skills/library/service.js";
 import type { SkillLibraryAuthority } from "../../skills/library/store.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import * as stateReads from "../../state/openclaw-state-db-readonly.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
+import {
+  cleanupSessionStateForTest,
+  useSessionStoreTempDirs,
+} from "../../test-utils/session-state-cleanup.js";
 import { createGatewayMethodRegistry } from "../methods/registry.js";
 import { handleGatewayRequest } from "../server-methods.js";
 import type { GatewayClient } from "./client-types.js";
 import { skillsLibraryHandlers } from "./skills-library.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
-const temps = useAutoCleanupTempDirTracker((cleanup) =>
-  afterEach(() => {
-    closeOpenClawAgentDatabasesForTest();
-    closeOpenClawStateDatabaseForTest();
-    vi.unstubAllEnvs();
-    cleanup();
-  }),
-);
+const temps = useSessionStoreTempDirs(afterAll, "library-session-projection-");
+let currentStateDir: string | undefined;
+afterEach(async () => {
+  if (currentStateDir) {
+    await cleanupSessionStateForTest({ stateDir: currentStateDir });
+    currentStateDir = undefined;
+  }
+  vi.unstubAllEnvs();
+});
 const content =
   "---\nname: shared-session\ndescription: Session-pinned private procedure\n---\n# Session procedure\n";
 const image = {
@@ -44,7 +51,8 @@ const image = {
 };
 
 function retainedFilesHarness() {
-  const root = temps.make("library-retained-files-");
+  const root = temps.make();
+  currentStateDir = root;
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
   const alice = ensureProfileForEmail("alice@example.test");
   const bob = ensureProfileForEmail("bob@example.test");
@@ -323,7 +331,7 @@ describe("skill library retained support files", () => {
         details: { code: "SKILL_LIBRARY_NOT_FOUND" },
       }),
     ]);
-    mutateSkillLibrary(actor(alice.id), {
+    await mutateSkillLibrary(actor(alice.id), {
       skillId: saved.entry.skillId,
       expectedRevision: saved.entry.revision,
       action: "share",
@@ -342,12 +350,13 @@ describe("skill library retained support files", () => {
 });
 
 describe("read-only session skill library projection", () => {
-  it("exposes exact private pins to a shared-session reader without granting library access or changing selections", async () => {
-    const root = temps.make("library-session-projection-");
+  it("exposes exact private pins only while session access remains current", async () => {
+    const root = temps.make();
+    currentStateDir = root;
     vi.stubEnv("OPENCLAW_STATE_DIR", root);
     const alice = ensureProfileForEmail("alice@example.test");
     const bob = ensureProfileForEmail("bob@example.test");
-    const cfg = { agents: { list: [{ id: "main", workspace: path.join(root, "workspace") }] } };
+    const cfg = { agents: { entries: { main: { workspace: path.join(root, "workspace") } } } };
     const actor = (profileId: string): SkillLibraryAuthority => ({
       profileId,
       scopes: ["operator.read", "operator.write"],
@@ -364,7 +373,7 @@ describe("read-only session skill library projection", () => {
       content,
       expectedRevision: null,
     });
-    const pins = seedSkillLibrarySelection(actor(alice.id));
+    const pins = await seedSkillLibrarySelection(actor(alice.id));
     const key = "agent:main:library-session";
     await upsertSessionEntryCore(
       { agentId: "main", sessionKey: key },
@@ -396,10 +405,17 @@ describe("read-only session skill library projection", () => {
       } as unknown as GatewayRequestHandlerOptions);
       return respond.mock.calls[0]!;
     };
-    const listed = await call("skills.library.list", { sessionKey: key });
+    const executeRead = stateReads.executeExistingOpenClawStateRead;
+    using reads = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
+    const listed = await call("skills.library.list", { sessionKey: key, scope: "team" });
     expect(listed[0]).toBe(true);
     const projection = listed[1] as SkillsLibraryListResult;
-    expect(projection.entries.map((entry) => entry.skillId)).toEqual([bobSkill.entry.skillId]);
+    expect(projection.entries).toEqual([]);
+    expect(
+      reads.mock.calls.filter(
+        ([, command]) => command.type === "skillLibrary.read" && command.input.kind === "list",
+      ),
+    ).toHaveLength(1);
     expect(projection.session?.selections).toMatchObject([
       {
         skillId: saved.entry.skillId,
@@ -436,6 +452,36 @@ describe("read-only session skill library projection", () => {
       entry: { canEdit: false },
     });
     expect((read[1] as SkillsLibraryReadResult).revisions).toHaveLength(1);
+    const scope = { agentId: "main", sessionKey: key };
+    await patchSessionEntryCore(scope, () => ({ visibility: "read-only" }));
+    await addSessionMemberInWorker(scope, { identityId: bob.id, addedBy: alice.id });
+    await saveSkillLibrary(actor(bob.id), {
+      skillId: bobSkill.entry.skillId,
+      slug: bobSkill.entry.slug,
+      content: content + "Updated instructions.\n",
+      expectedRevision: bobSkill.entry.revision,
+    });
+    let revoked = false;
+    reads.mockImplementation(async (...args) => {
+      const result = await executeRead(...args);
+      const [, command] = args;
+      if (command.type === "skillLibrary.read" && command.input.kind === "pins") {
+        await removeSessionMemberInWorker(scope, bob.id);
+        revoked = true;
+      }
+      return result;
+    });
+    const revokedList = await call("skills.library.list", { sessionKey: key });
+    expect(revoked).toBe(true);
+    expect(revokedList[0]).toBe(false);
+    expect(revokedList[1]).toBeUndefined();
+    expect(revokedList[2]).toMatchObject({ details: { code: "SESSION_PARTICIPATION_REQUIRED" } });
+    const missingPin = await call("skills.library.read", {
+      sessionKey: key,
+      skillId: saved.entry.skillId,
+      revision: newer.entry.revision,
+    });
+    expect(missingPin[2]).toMatchObject({ details: { code: "SESSION_PARTICIPATION_REQUIRED" } });
     await patchSessionEntryCore({ agentId: "main", sessionKey: key }, () => ({
       visibility: "draft",
     }));

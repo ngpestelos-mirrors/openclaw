@@ -29,9 +29,8 @@ import {
 import type { CodexAttemptResources } from "./run-attempt-resources.js";
 import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
 import { resolveCodexUltrafastServiceTier } from "./service-tier.js";
-import { buildTurnStartParams } from "./thread-lifecycle.js";
 import { recordCodexTrajectoryContext } from "./trajectory.js";
-import { buildCodexParentLocalInstructions } from "./turn-params.js";
+import { buildCodexParentLocalInstructions, buildTurnStartParams } from "./turn-params.js";
 import type { CodexThreadRouteReservation } from "./turn-router.js";
 import { buildCodexUserPromptMessage } from "./user-prompt-message.js";
 
@@ -111,22 +110,6 @@ export async function prepareCodexAttemptTurnRequest(
       });
     },
   });
-  const throwIfTurnStartAcceptedAfterAbort = () => {
-    if (!runAbortController.signal.aborted) {
-      return;
-    }
-    const reason = runAbortController.signal.reason;
-    if (reason instanceof Error) {
-      throw reason;
-    }
-    const error = new Error(
-      typeof reason === "string" && reason.length > 0
-        ? reason
-        : "codex app-server turn start aborted before acceptance",
-    );
-    error.name = "AbortError";
-    throw error;
-  };
   const prepareWorkspaceReferences = () => {
     const references = prepareCodexWorkspaceReferences(
       resourceState.client,
@@ -179,7 +162,7 @@ export async function prepareCodexAttemptTurnRequest(
       resourceState.client,
       resourceState.thread.threadId,
     );
-    const turnStartParams = buildTurnStartParams(runtimeParams, {
+    const turnStartParams = await buildTurnStartParams(runtimeParams, {
       threadId: resourceState.thread.threadId,
       cwd: resourceState.codexExecutionCwd,
       appServer: turnAppServer,
@@ -196,8 +179,6 @@ export async function prepareCodexAttemptTurnRequest(
             model: resourceState.thread.model,
             modelProvider: resourceState.thread.modelProvider,
           }),
-      turnScopedDeveloperInstructions: workspaceBootstrapContext.turnScopedDeveloperInstructions,
-      memoryCollaborationInstructions: workspaceBootstrapContext.memoryCollaborationInstructions,
       preserveNativeTurnSettings: usesSupervisionConnection,
       parentLocalEgress: inferenceRoute !== undefined,
       messageToolAvailable: toolBridge.availableTools.some((tool) => tool.name === "message"),
@@ -207,11 +188,11 @@ export async function prepareCodexAttemptTurnRequest(
       ),
     });
     const serviceTier = await resolveCodexUltrafastServiceTier({
-      enabled:
-        fastMode === "ultrafast" || (turnAppServer.enableUltrafast === true && fastMode !== false),
+      enabled: fastMode === "ultrafast" && turnAppServer.enableUltrafast !== false,
       serviceTier: turnStartParams.serviceTier,
       model: turnStartParams.model ?? model,
-      modelProvider,
+      // ChatGPT sign-in and user-home threads omit the native provider after resume.
+      modelProvider: modelProvider ?? effectiveRuntimeProviderId,
       client: turnClient,
       timeoutMs: Math.min(params.timeoutMs, 2500),
       signal: runAbortController.signal,
@@ -256,16 +237,14 @@ export async function prepareCodexAttemptTurnRequest(
         text: usesSupervisionConnection
           ? ""
           : (buildCodexParentLocalInstructions(runtimeParams, {
-              turnScopedDeveloperInstructions:
-                workspaceBootstrapContext.turnScopedDeveloperInstructions,
+              personaInstructions: workspaceBootstrapContext.personaInstructions,
               skillsInstructions: context.skillsInstructions,
-              memoryCollaborationInstructions:
-                workspaceBootstrapContext.memoryCollaborationInstructions,
+              memoryInstructions: workspaceBootstrapContext.memoryInstructions,
             }) ?? ""),
         signal: runAbortController.signal,
         assertCurrent: () => {
           params.hostCapabilities.assertActive();
-          connection.assertCurrent();
+          connection.assertLegacyCurrent();
           if (
             resourceState.thread !== inferenceThread ||
             getCodexInferenceThread(resourceState.client, inferenceThread.threadId) !==
@@ -281,22 +260,10 @@ export async function prepareCodexAttemptTurnRequest(
         ...turnStartParams.responsesapiClientMetadata,
         [CODEX_INFERENCE_GENERATION_KEY]: registration.generation,
       };
-    } else if (!usesSupervisionConnection) {
+    } else if (workspaceBootstrapContext.personaFiles?.some((file) => file.personalUser)) {
       embeddedAgentLog.warn(
-        "Codex parent-local egress workaround is unavailable for this connection or native network profile; legacy collaboration delivery is not guaranteed.",
+        "Personal USER.md was omitted: this Codex connection has no parent-only inference relay. Shared workspace persona is still delivered.",
       );
-      prompt.systemPromptReport.source = "estimate";
-      prompt.systemPromptReport.injectedWorkspaceFiles =
-        prompt.systemPromptReport.injectedWorkspaceFiles.map((file) =>
-          ["SOUL.MD", "IDENTITY.MD", "USER.MD"].includes(file.name.toUpperCase())
-            ? {
-                ...file,
-                injectionStatus: "native_unverified",
-                injectedChars: null,
-                truncated: null,
-              }
-            : file,
-        );
     }
     const continuation = await prepareCodexProviderReviewContinuation({
       acknowledgment: params.providerReviewAcknowledgment,
@@ -342,6 +309,7 @@ export async function prepareCodexAttemptTurnRequest(
         await turnClient.request("turn/start", turnStartParams, {
           timeoutMs: params.timeoutMs,
           signal: runAbortController.signal,
+          withCurrent: connection.withCurrent,
           assertCurrent: () => {
             assertTurnCurrent();
             continuation?.dispatch();
@@ -356,7 +324,19 @@ export async function prepareCodexAttemptTurnRequest(
       if (upstreamUserText.includes(workspaceBootstrapContext.promptContext ?? "")) {
         references.accepted();
       }
-      throwIfTurnStartAcceptedAfterAbort();
+      if (runAbortController.signal.aborted) {
+        const reason = runAbortController.signal.reason;
+        if (reason instanceof Error) {
+          throw reason;
+        }
+        const error = new Error(
+          typeof reason === "string" && reason.length > 0
+            ? reason
+            : "codex app-server turn start aborted before acceptance",
+        );
+        error.name = "AbortError";
+        throw error;
+      }
       await continuation?.accept(acceptedTurnId);
       return { turn: startedTurn, upstreamUserText };
     } catch (error) {

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { prepareUserProfileCatalog } from "../../state/user-profile-list.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { SessionRowProjection } from "../session-row-projection.js";
@@ -11,6 +12,7 @@ import {
 } from "../session-sharing.test-utils.js";
 import {
   ArtifactSessionResolutionError,
+  createArtifactSessionAccess,
   prepareArtifactSessionResolution,
   type ArtifactQuery,
 } from "./artifacts-session-resolution.js";
@@ -21,7 +23,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../server-session-key.js", () => ({
-  resolveSessionKeyForRun: mocks.resolveRunSession,
+  resolveSessionForRun: mocks.resolveRunSession,
 }));
 
 async function resolveSession(
@@ -29,8 +31,13 @@ async function resolveSession(
   getRuntimeConfig: () => OpenClawConfig | undefined,
   client: GatewayClient | null,
 ) {
+  using access = createArtifactSessionAccess({
+    getRuntimeConfig: () => getRuntimeConfig() ?? {},
+    client,
+  });
   const resolve = await prepareArtifactSessionResolution(query);
-  return resolve(getRuntimeConfig(), client);
+  const selected = await resolve(access);
+  return selected ? { sessionKey: selected.sessionKey, agentId: selected.agentId } : undefined;
 }
 
 function identifiedClient(scopes: string[], profileId = "viewer@example.com"): GatewayClient {
@@ -59,9 +66,23 @@ describe("artifact session authorization", () => {
     const unavailable = new Error("session projection is unavailable");
     const projection: Pick<
       SessionRowProjection,
-      "ensureMaterialized" | "findBySessionId" | "sharingRevision"
+      | "ensureMaterialized"
+      | "findBySessionId"
+      | "sharingRevision"
+      | "sharingTarget"
+      | "sharingTargetState"
+      | "readSource"
+      | "readMembership"
+      | "needsMembershipPreparation"
+      | "prepareMembership"
     > = {
       sharingRevision: undefined,
+      sharingTarget: vi.fn(),
+      sharingTargetState: vi.fn(),
+      readSource: vi.fn(),
+      readMembership: vi.fn(),
+      needsMembershipPreparation: vi.fn(),
+      prepareMembership: vi.fn(),
       ensureMaterialized: vi
         .fn<SessionRowProjection["ensureMaterialized"]>()
         .mockRejectedValue(unavailable),
@@ -83,7 +104,7 @@ describe("artifact session authorization", () => {
   it("denies direct and indirect incognito selectors while preserving admin access", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const sessionKey = "agent:main:dashboard:incognito-artifacts";
-      const cfg = { agents: { list: [{ id: "main", default: true }] } };
+      const cfg = { agents: { entries: { main: {} } } };
       await upsertSessionEntryCore(
         { agentId: "main", sessionKey },
         {
@@ -93,7 +114,7 @@ describe("artifact session authorization", () => {
           visibility: "shared",
         },
       );
-      mocks.resolveRunSession.mockReturnValue(sessionKey);
+      mocks.resolveRunSession.mockReturnValue({ sessionKey, agentId: "main" });
       const viewer = identifiedClient(["operator.read"]);
 
       await expect(
@@ -147,6 +168,7 @@ describe("artifact session authorization", () => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const viewerProfile = ensureProfileForEmail("viewer@example.com");
         const ownerProfile = ensureProfileForEmail("owner@example.com");
+        using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
         const sessionKey = "agent:main:foreign-artifacts";
         await upsertSessionEntryCore(
           { agentId: "main", sessionKey },
@@ -157,7 +179,7 @@ describe("artifact session authorization", () => {
             visibility,
           },
         );
-        mocks.resolveRunSession.mockReturnValue(sessionKey);
+        mocks.resolveRunSession.mockReturnValue({ sessionKey, agentId: "main" });
         const viewer = role
           ? roleClient(role, "artifact-viewer")
           : identifiedClient(["operator.read"], viewerProfile.id);

@@ -20,7 +20,6 @@ import { flattenTranslations } from "../../../scripts/lib/control-ui-i18n-sync-p
 import { createDeferred as deferred } from "../../../test/helpers/promise.js";
 import { controlUiLocaleModulesPlugin } from "../../config/control-ui-locales.ts";
 import {
-  controlUiBrowserOnlySharedModuleAliases,
   createControlUiPrecompressedAssetVariants,
   resolveControlUiBuildInfo,
   resolveControlUiModulePreloadDependencies,
@@ -59,12 +58,6 @@ vi.mock("vite", async (importOriginal) => {
 });
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-type ResolveIdHandler = (
-  this: never,
-  source: string,
-  importer: string | undefined,
-  options: { custom: Record<string, never>; isEntry: boolean; ssr: boolean },
-) => unknown;
 
 function findStringAlias(key: string) {
   return resolveTsconfigPathAliasesForVite().find((alias) => alias.find === key);
@@ -345,6 +338,8 @@ describe("Control UI Vite config", () => {
       resolveControlUiBuildInfo({
         env: { OPENCLAW_CONTROL_UI_RELEASE_BUILD: "true" },
         readGitCommit: () => null,
+        readGitBranch: () => null,
+        readGitDirty: () => null,
         readPackageVersion: () => "2026.7.10",
       }),
     ).toThrow("OPENCLAW_CONTROL_UI_RELEASE_BUILD must be 1 when set");
@@ -356,6 +351,8 @@ describe("Control UI Vite config", () => {
       resolveControlUiBuildInfo({
         env: { GITHUB_SHA: "b".repeat(40) },
         readGitCommit,
+        readGitBranch: () => null,
+        readGitDirty: () => null,
         readPackageVersion: () => null,
       }),
     ).toMatchObject({ commit: "c".repeat(40), commitAt: null });
@@ -364,6 +361,8 @@ describe("Control UI Vite config", () => {
       resolveControlUiBuildInfo({
         env: { GITHUB_SHA: "b".repeat(40) },
         readGitCommit: () => null,
+        readGitBranch: () => null,
+        readGitDirty: () => null,
         readPackageVersion: () => null,
       }).commit,
     ).toBe("b".repeat(40));
@@ -382,6 +381,8 @@ describe("Control UI Vite config", () => {
       resolveControlUiBuildInfo({
         env: { GIT_SHA: "A".repeat(40), GITHUB_SHA: "b".repeat(40) },
         readGitCommit,
+        readGitBranch: () => null,
+        readGitDirty: () => null,
         readPackageVersion: () => null,
       }).commit,
     ).toBe("a".repeat(40));
@@ -474,6 +475,8 @@ describe("Control UI Vite config", () => {
           OPENCLAW_BUILD_TIMESTAMP: "2026-07-10T13:14:15.000Z",
         },
         readGitCommit: () => "a".repeat(40),
+        readGitBranch: () => null,
+        readGitDirty: () => null,
         readPackageVersion: () => "2026.7.10",
       }).buildId,
     ).toBe("2026.7.10-aaaaaaaaaaaa-2026-07-10T13-14-15.000Z");
@@ -487,6 +490,8 @@ describe("Control UI Vite config", () => {
           OPENCLAW_BUILD_TIMESTAMP: "2026-07-10T13:14:15.000Z",
         },
         readGitCommit: () => "a".repeat(40),
+        readGitBranch: () => null,
+        readGitDirty: () => null,
         readPackageVersion: () => "2026.7.10",
       }).buildId,
     ).toBe("2026.7.10-aaaaaaaaaaaa-2026-07-10T13-14-15.000Z");
@@ -603,28 +608,6 @@ describe("Control UI Vite config", () => {
     expect(broadOpenClawWildcardIndex).toBeGreaterThanOrEqual(0);
     expect(netPolicyIpIndex).toBeLessThan(netPolicyPackageIndex);
     expect(netPolicyWildcardIndex).toBeLessThan(broadOpenClawWildcardIndex);
-  });
-
-  it("uses a browser-safe redactor for shared tool display imports", async () => {
-    const plugin = controlUiBrowserOnlySharedModuleAliases();
-    const resolveIdHook = plugin.resolveId;
-    const resolveIdHandler = (
-      typeof resolveIdHook === "function" ? resolveIdHook : resolveIdHook?.handler
-    ) as ResolveIdHandler | undefined;
-    if (!resolveIdHandler) {
-      throw new Error("Expected browser-only shared module alias plugin to expose resolveId");
-    }
-
-    for (const importerSuffix of ["", "?browserv=123"]) {
-      const resolved = await resolveIdHandler.call(
-        {} as never,
-        "../logging/redact.js",
-        `${path.join(repoRoot, "src/agents/tool-display-common.ts")}${importerSuffix}`,
-        { custom: {}, isEntry: false, ssr: false },
-      );
-
-      expect(resolved).toBe(path.join(repoRoot, "ui/src/lib/browser-redact.ts"));
-    }
   });
 
   it("composes the complete source without registering runtime English", () => {

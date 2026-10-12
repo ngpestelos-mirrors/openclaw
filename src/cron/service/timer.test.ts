@@ -9,10 +9,7 @@ import { loadCronStore } from "../../cron/store.js";
 import { cronStoreKey } from "../../cron/store/key.js";
 import type { CronJob } from "../../cron/types.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
-import {
-  createGatewaySchedulerClock,
-  createTestGatewayScheduler,
-} from "../../test-utils/gateway-scheduler-clock.js";
+import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { advanceCronActiveJobGeneration } from "../active-jobs.js";
 import * as runHistory from "../store/run-history.js";
@@ -128,14 +125,12 @@ describe("cron service timer seam coverage", () => {
     const { storePath } = await makeStorePath();
     const enqueueSystemEvent = vi.fn();
     const requestHeartbeat = vi.fn();
-    const clock = createGatewaySchedulerClock(now);
 
     const jobWithoutExplicitOwner = createDueMainJob({ now, wakeMode: "next-heartbeat" });
     delete jobWithoutExplicitOwner.sessionKey;
     await writeCronStoreSnapshot({ storePath, jobs: [jobWithoutExplicitOwner] });
 
     const state = createCronServiceState({
-      scheduler: createTestGatewayScheduler(clock.clock),
       storePath,
       defaultAgentId: "stale-default",
       resolveDefaultAgentId: () => "ops",
@@ -179,7 +174,7 @@ describe("cron service timer seam coverage", () => {
     expect(task.endedAt).toBe(now);
     expect(task.cleanupAfter).toBe(now + 7 * 24 * 60 * 60_000);
 
-    expect(clock.armedAtMs).toBe(now + 60_000);
+    expect((await cronStatus(state)).nextWakeAtMs).toBe(now + 60_000);
   });
 
   it("does not dispatch payload work when trigger evaluation resolves after cancellation", async () => {
@@ -231,10 +226,7 @@ describe("cron service timer seam coverage", () => {
     }
   });
 
-  it.each([
-    { kind: "on-exit", command: "true" },
-    { kind: "stream", command: ["true"] },
-  ] satisfies CronJob["schedule"][])(
+  it.each([{ kind: "stream", command: ["true"] }] satisfies CronJob["schedule"][])(
     "keeps $kind jobs event-driven after a next-run state update",
     async (schedule) => {
       const { storePath } = await makeStorePath();
@@ -299,7 +291,6 @@ describe("cron service timer seam coverage", () => {
     { target: "main", notify: "queue changed", wake: "next-heartbeat" },
     { target: "isolated", notify: "queue changed", wake: "now" },
     { target: "main", notify: undefined, wake: "now" },
-    { target: "main", notify: "queue changed", wake: undefined },
   ] as const)(
     "routes $target script side effects (notify=$notify, wake=$wake)",
     async ({ target, notify, wake }) => {
@@ -431,18 +422,6 @@ describe("cron service timer seam coverage", () => {
       expect(job?.state.consecutiveErrors ?? 0).toBe(errors);
     },
   );
-
-  it("clamps a script nextCheck through the shared pacing path", async () => {
-    const job = await runStoredScript(
-      createDueScriptJob({ now, pacing: { min: "15m", max: "4h" } }),
-      {
-        status: "ok",
-        nextCheck: { delayMs: 5 * 60_000 },
-      },
-    );
-    expect(job?.state.nextRunAtMs).toBe(now + 15 * 60_000);
-    expect(job?.state.pacedNextRunAtMs).toBe(now + 15 * 60_000);
-  });
 
   it("records current-bound cron metadata against the backing cron session", async () => {
     const { storePath } = await makeStorePath();

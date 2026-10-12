@@ -1,4 +1,4 @@
-import type { AssistantMessage, Model, ProviderReplayState } from "@openclaw/llm-core";
+import type { AssistantMessage, Model } from "@openclaw/llm-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveNewestAnthropicCompaction } from "./anthropic-compaction-replay.js";
 import { resolveAnthropicServerCompactionPlan } from "./anthropic-payload-policy.js";
@@ -8,6 +8,15 @@ import {
 } from "./openai-responses-compaction-replay.js";
 import { resolveResponsesContextUsageBoundary } from "./openai-responses-context-usage.js";
 import { OPENAI_RESPONSES_APIS } from "./openai-responses-contracts.js";
+import {
+  isCompactionReplayCheckpoint,
+  stripCompactionReplayCheckpoint,
+} from "./provider-compaction-checkpoint.js";
+
+export {
+  isCompactionReplayCheckpoint,
+  stripCompactionReplayCheckpoint,
+} from "./provider-compaction-checkpoint.js";
 
 export { CompactionReplayRefreshRequiredError } from "./openai-responses-compaction-replay.js";
 
@@ -141,6 +150,7 @@ function estimateResponsesContent(
 function estimateResponsesInput(
   input: readonly unknown[],
   estimate: ReplayPressureEstimator,
+  compactionOutputTokens?: number,
 ): number {
   return input.reduce<number>((tokens, entry) => {
     if (!isRecord(entry)) {
@@ -148,7 +158,11 @@ function estimateResponsesInput(
     }
     if (entry.type === "compaction" && typeof entry.encrypted_content === "string") {
       const { encrypted_content, ...metadata } = entry;
-      return tokens + estimate.text(encrypted_content) + estimate.json(metadata);
+      return (
+        tokens +
+        (compactionOutputTokens ?? estimate.text(encrypted_content)) +
+        estimate.json(metadata)
+      );
     }
     if (entry.type === "message") {
       const { content, ...metadata } = entry;
@@ -196,7 +210,7 @@ export function resolveCompactionReplayPressure<T extends ReplayMessage>(
     checkpoint.family === "anthropic"
       ? estimate.text(checkpoint.summary)
       : checkpoint.mode === "complete-window"
-        ? estimateResponsesInput(checkpoint.output, estimate)
+        ? estimateResponsesInput(checkpoint.output, estimate, checkpoint.outputTokens)
         : estimate.text(checkpoint.item.encrypted_content);
   const measuredBoundary =
     checkpoint.family === "responses"
@@ -231,27 +245,6 @@ export function resolveCompactionReplayPressure<T extends ReplayMessage>(
     ],
     prefixTokens,
   };
-}
-
-/** Whether provider replay state is a prefix-bound server compaction checkpoint. */
-export function isCompactionReplayCheckpoint(replay: unknown): replay is ProviderReplayState {
-  const type =
-    replay && typeof replay === "object" ? (replay as { type?: unknown }).type : undefined;
-  return (
-    type === "anthropic-compaction" ||
-    type === "openai-responses-compaction" ||
-    type === "openai-responses-retained-compaction"
-  );
-}
-
-/** Strip prefix-bound checkpoints after local history rewrites. */
-export function stripCompactionReplayCheckpoint(message: AssistantMessage): AssistantMessage {
-  if (!isCompactionReplayCheckpoint(message.providerReplay)) {
-    return message;
-  }
-  const replaySafeMessage = { ...message };
-  delete replaySafeMessage.providerReplay;
-  return replaySafeMessage;
 }
 
 /** Strip prefix-bound checkpoint state from an in-place message rewrite. */

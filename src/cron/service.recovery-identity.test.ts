@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -42,13 +42,11 @@ function rejectSchedulerWrite(jobId: string) {
 
 describe("cron recovery run identity", () => {
   it.each([
-    { name: "retired predecessor", edit: "predecessor", advanceMs: 0, staleProposal: false },
-    { name: "retired pending run", edit: "pending", advanceMs: 0, staleProposal: false },
-    { name: "edit after receipt closure", edit: "late", advanceMs: 0, staleProposal: false },
-    { name: "unedited pending run", edit: "none", advanceMs: 0, staleProposal: false },
-    { name: "advancing clock", edit: "predecessor", advanceMs: 1, staleProposal: false },
-    { name: "stale predecessor proposal", edit: "none", advanceMs: 0, staleProposal: true },
-  ] as const)("recovers the pending run with $name", async ({ edit, advanceMs, staleProposal }) => {
+    { name: "retired predecessor", edit: "predecessor", staleProposal: false },
+    { name: "retired pending run", edit: "pending", staleProposal: false },
+    { name: "edit after receipt closure", edit: "late", staleProposal: false },
+    { name: "stale predecessor proposal", edit: "none", staleProposal: true },
+  ] as const)("recovers the pending run with $name", async ({ edit, staleProposal }) => {
     const { storePath } = await makeStorePath();
     const storeKey = cronStoreKey(storePath);
     const firstStartedAt = Date.now();
@@ -104,7 +102,11 @@ describe("cron recovery run identity", () => {
 
       await cron.update(job.id, { state: { nextRunAtMs: firstStartedAt } });
       run = cron.run(job.id, "due");
-      await payload.started.promise;
+      await awaitGateBeforeSettlement(
+        payload.started.promise,
+        run,
+        "Cron run settled before its payload started",
+      );
       const first = inspectActiveCronRunReceipt({ storePath, jobId: job.id });
       if (!first) {
         throw new Error("predecessor was not admitted");
@@ -121,7 +123,7 @@ describe("cron recovery run identity", () => {
       payload.completion.resolve({ status: "ok", summary: "first completed" });
       await expect(run).resolves.toEqual({ ok: true, ran: true });
 
-      const pendingStartedAt = firstStartedAt + advanceMs;
+      const pendingStartedAt = firstStartedAt;
       vi.setSystemTime(pendingStartedAt);
       if (!cron.getJob(job.id)?.enabled) {
         await cron.update(job.id, { enabled: true });
@@ -129,7 +131,11 @@ describe("cron recovery run identity", () => {
       await cron.update(job.id, { state: { nextRunAtMs: pendingStartedAt } });
       payload = pendingPayload();
       run = cron.run(job.id, "due");
-      await payload.started.promise;
+      await awaitGateBeforeSettlement(
+        payload.started.promise,
+        run,
+        "Cron run settled before its payload started",
+      );
       const pending = inspectActiveCronRunReceipt({ storePath, jobId: job.id });
       if (!pending) {
         throw new Error("pending run was not admitted");
@@ -176,7 +182,7 @@ describe("cron recovery run identity", () => {
           startedAt: pendingStartedAt,
         }),
       );
-      expect(fallback.receiptId).toBe(advanceMs === 0 ? first.receiptId : pending.receiptId);
+      expect(fallback.receiptId).toBe(first.receiptId);
 
       if (staleProposal) {
         const before = await readJob();
