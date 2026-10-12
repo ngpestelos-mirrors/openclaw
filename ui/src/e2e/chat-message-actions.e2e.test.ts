@@ -94,7 +94,7 @@ async function expectHoverTooltip(button: Locator, text: string): Promise<void> 
               HTMLElement & { anchor?: Element | null; popup?: { active?: boolean } }
             >("wa-tooltip"),
           )
-          .find((tooltip) => tooltip?.anchor === element);
+          .find((popup) => popup?.anchor === element);
         const body = tooltip?.shadowRoot?.querySelector<HTMLElement>('[part="body"]');
         const bounds = body?.getBoundingClientRect();
         // Apple modifier glyphs pair hidden text with an aria-hidden SVG whose
@@ -128,7 +128,7 @@ async function expectHoverTooltip(button: Locator, text: string): Promise<void> 
       .map((host) =>
         host.shadowRoot?.querySelector<HTMLElement & { anchor?: Element | null }>("wa-tooltip"),
       )
-      .find((tooltip) => tooltip?.anchor === element);
+      .find((popup) => popup?.anchor === element);
     const body = tooltip?.shadowRoot?.querySelector<HTMLElement>('[part="body"]');
     const slot = body?.querySelector<HTMLSlotElement>("slot");
     const textNode = slot?.assignedNodes().find((node) => node.textContent?.trim());
