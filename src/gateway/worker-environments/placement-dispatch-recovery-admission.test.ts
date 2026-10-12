@@ -530,7 +530,7 @@ describe("placement recovery session admission with persisted placements", () =>
     }
   });
 
-  it("retries orphan cleanup on the next full sweep when a sharing session was busy", async () => {
+  it("retries orphan cleanup on the next full sweep when a startup placement was busy", async () => {
     const root = support.testState.root;
     await git(root, "init", "--quiet");
     await fs.writeFile(path.join(root, "result.txt"), "retired workspace result");
@@ -539,14 +539,10 @@ describe("placement recovery session admission with persisted placements", () =>
     const cleanupRef = cleanupWorkerWorkspaceResultRef(workerWorkspaceResultRef("orphan-claim"));
     await git(root, "update-ref", cleanupRef, tree);
     const placements = createStore();
-    const idle = await placements.startDispatch({
-      ...REQUEST,
-      sessionId: "idle",
-      sessionKey: "agent:main:idle",
-    });
+    const requested = await placements.startDispatch(REQUEST);
     await placements.fail({
-      sessionId: idle.sessionId,
-      expectedGeneration: idle.generation,
+      sessionId: requested.sessionId,
+      expectedGeneration: requested.generation,
       recoveryError: "finished fixture",
     });
     const harness = await createHarness(support.testState.stateDb, placements, {
