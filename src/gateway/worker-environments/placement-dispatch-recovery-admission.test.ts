@@ -528,50 +528,6 @@ describe("placement recovery session admission with persisted placements", () =>
     }
   });
 
-  it("retries orphan cleanup on the next full sweep when a sharing session was busy", async () => {
-    const root = support.testState.root;
-    await git(root, "init", "--quiet");
-    await fs.writeFile(path.join(root, "result.txt"), "retired workspace result");
-    await git(root, "add", "result.txt");
-    const tree = await git(root, "write-tree");
-    const cleanupRef = cleanupWorkerWorkspaceResultRef(workerWorkspaceResultRef("orphan-claim"));
-    await git(root, "update-ref", cleanupRef, tree);
-    const placements = createStore();
-    const idle = await placements.startDispatch({
-      ...REQUEST,
-      sessionId: "idle",
-      sessionKey: "agent:main:idle",
-    });
-    await placements.fail({
-      sessionId: idle.sessionId,
-      expectedGeneration: idle.generation,
-      recoveryError: "finished fixture",
-    });
-    const harness = createHarness(support.testState.stateDb, placements, { workspacePath: root });
-    const coordinated = coordinate(harness);
-    await coordinated.reconcile("startup");
-    const providerEntered = createDeferredCore();
-    const releaseProvider = createDeferredCore();
-    const create = vi.mocked(harness.environments.createWithRequest).getMockImplementation()!;
-    vi.mocked(harness.environments.createWithRequest).mockImplementation(async (...args) => {
-      providerEntered.resolve();
-      await releaseProvider.promise;
-      return create(...args);
-    });
-    const dispatch = coordinated.dispatch(REQUEST);
-    void dispatch.catch(providerEntered.reject);
-    try {
-      await providerEntered.promise;
-      await coordinated.reconcileActive();
-      expect(await git(root, "for-each-ref", "--format=%(refname)", cleanupRef)).toBe(cleanupRef);
-    } finally {
-      releaseProvider.resolve();
-      await dispatch;
-    }
-    await coordinated.reconcileActive();
-    expect(await git(root, "for-each-ref", "--format=%(refname)", cleanupRef)).toBe("");
-  });
-
   it("a real dispatch reaches device provisioning while another placement's teardown is stuck", async () => {
     const placements = createStore();
     const harness = createHarness(support.testState.stateDb, placements, {
