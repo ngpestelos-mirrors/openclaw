@@ -6,8 +6,10 @@ import {
   createDeferred,
   withinTest,
 } from "../../test/helpers/promise.js";
+import * as stateRead from "../state/openclaw-state-db-readonly.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import * as stateWorker from "../state/openclaw-state-worker-store.js";
 import { executeOpenClawStateWorker } from "../state/openclaw-state-worker-store.js";
 import {
   createGatewaySchedulerClock,
@@ -15,7 +17,13 @@ import {
 } from "../test-utils/gateway-scheduler-clock.js";
 import { resolveCronJobConfigRevision } from "./config-revision.js";
 import { CronService } from "./service.js";
-import { setupCronServiceSuite } from "./service.test-harness.js";
+import {
+  createCronServiceWithStateForTest,
+  setupCronServiceSuite,
+} from "./service.test-harness.js";
+import { drainCronRunQueue } from "./service/run-queue.js";
+import { runCronSchedulerMaintenance } from "./service/scheduler-maintenance.js";
+import { onTimer } from "./service/timer.test-support.js";
 import { loadCronStore, saveCronStore } from "./store.js";
 import { cronStreamScheduleKey } from "./stream-schedule.js";
 import type { CronJob } from "./types.js";
@@ -33,6 +41,57 @@ function commandJob(id: string, nextRunAtMs = NOW + 60_000): CronJob {
     payload: { kind: "command", argv: ["synthetic", id] },
   };
 }
+
+it("keeps owned running work out of recovery and queue database polling", async ({ signal }) => {
+  const { storePath } = await makeStorePath();
+  const job = commandJob("owned-running", NOW);
+  const entered = createDeferred();
+  const release = createDeferred();
+  await saveCronStore(storePath, { version: 1, jobs: [job] });
+  const { cron, state } = createCronServiceWithStateForTest({
+    scheduler: createTestGatewayScheduler(),
+    nowMs: () => NOW,
+    storePath,
+    cronEnabled: true,
+    defaultAgentId: "main",
+    log: logger,
+    enqueueSystemEvent() {},
+    requestHeartbeat() {},
+    runIsolatedAgentJob: async () => ({ status: "ok" }),
+    runCommandJob: async () => {
+      entered.resolve();
+      await release.promise;
+      return { status: "ok" };
+    },
+  });
+  let completion: Promise<unknown> | undefined;
+  try {
+    completion = cron.run(job.id, "force");
+    await withinTest(
+      awaitGateBeforeSettlement(entered.promise, completion, "owned run did not start"),
+      signal,
+    );
+    // Consume the queue's committed publication once, then the loaded owner is current.
+    await runCronSchedulerMaintenance(state);
+    await drainCronRunQueue(state);
+    const reads = vi.spyOn(stateRead, "executeExistingOpenClawStateRead");
+    const writes = vi.spyOn(stateWorker, "runOpenClawStateWorkerOperation");
+    try {
+      await runCronSchedulerMaintenance(state);
+      await drainCronRunQueue(state);
+      expect(reads).not.toHaveBeenCalled();
+      expect(writes).not.toHaveBeenCalled();
+    } finally {
+      reads.mockRestore();
+      writes.mockRestore();
+    }
+  } finally {
+    release.resolve();
+    await completion;
+    cron.stop();
+    await cron.waitForIdle();
+  }
+});
 
 it("force-runs a disabled job while scheduling is paused without consuming its paced slot", async () => {
   const { storePath } = await makeStorePath();
@@ -125,7 +184,7 @@ it("shares capacity across sibling services for timer, manual, stream, and consu
   });
   const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
   const createService = () =>
-    new CronService({
+    createCronServiceWithStateForTest({
       scheduler: createTestGatewayScheduler(clock.clock),
       nowMs: clock.clock.now,
       storePath,
@@ -137,12 +196,12 @@ it("shares capacity across sibling services for timer, manual, stream, and consu
       runCommandJob,
       runIsolatedAgentJob,
     });
-  const cron = createService();
-  const sibling = createService();
+  const { cron, state } = createService();
+  const { cron: sibling } = createService();
   sibling.pauseScheduling();
   const pending: Array<Promise<unknown>> = [];
-  const stopObserving = observeCronJobCommits(timed.id, (state) => {
-    if (state.queuedAtMs !== undefined) {
+  const stopObserving = observeCronJobCommits(timed.id, (runtime) => {
+    if (runtime.queuedAtMs !== undefined) {
       timerRequested.resolve();
     }
   });
@@ -151,7 +210,8 @@ it("shares capacity across sibling services for timer, manual, stream, and consu
     pending.push(...blockers.map((job) => cron.run(job.id, "force")));
     await withinTest(capacityFilled.promise, signal);
 
-    const tick = Promise.resolve(clock.advanceBy(10_000));
+    await clock.advanceBy(10_000);
+    const tick = onTimer(state);
     pending.push(tick);
     await withinTest(
       awaitGateBeforeSettlement(timerRequested.promise, tick, "timer did not queue its due job"),

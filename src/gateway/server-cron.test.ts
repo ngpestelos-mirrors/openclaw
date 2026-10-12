@@ -23,6 +23,7 @@ import type { CliDeps } from "../cli/deps.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type * as deliveryTarget from "../cron/isolated-agent/delivery-target.js";
 import { CronService } from "../cron/service.js";
+import { waitForCronRunQueue } from "../cron/service/run-queue.js";
 import { onTimer as onCronTimer } from "../cron/service/timer.test-support.js";
 import type { HeartbeatRunResult } from "../infra/heartbeat-wake.js";
 import {
@@ -821,13 +822,13 @@ describe("buildGatewayCronService", () => {
       vi.setSystemTime(new Date("2026-08-14T12:01:00.000Z"));
       clock.setTime(Date.now());
       await onCronTimer(getCronState(state));
+      await waitForCronRunQueue(getCronState(state));
 
       expect(state.cron.getJob(job.id)?.state).toMatchObject({
         lastStatus: "ok",
         consecutiveErrors: 0,
-        lastError: undefined,
       });
-      expect(getCronState(state).activeTimerTicks).toBe(0);
+      expect(state.cron.getJob(job.id)?.state.lastError).toBeUndefined();
       expectIsolatedRunFields({ agentId: "main" });
     } finally {
       state.cron.stop();
@@ -1954,27 +1955,16 @@ describe("buildGatewayCronService", () => {
     }
   });
 
-  it("does not retry cancelled command output while still notifying terminal failure", async () => {
+  it("does not retry or alert after an operator cancels command output delivery", async () => {
     vi.stubEnv("OPENCLAW_TEST_FAST", "1");
     let deliverySignal: AbortSignal | undefined;
-    const failureDelivered = createDeferred();
-    const send = expectDefined(
-      sendCronAnnouncePayloadStrictMock.getMockImplementation(),
-      "cron delivery mock",
-    );
-    sendCronAnnouncePayloadStrictMock
-      .mockImplementationOnce(async (request) => {
-        deliverySignal = request.abortSignal;
-        expect(abortActiveCronTaskRuns("Cancelled by operator.")).toBe(1);
-        throw new PlatformMessageNotDispatchedError("platform unavailable before dispatch", {
-          cause: new Error("connect ECONNREFUSED"),
-        });
-      })
-      .mockImplementationOnce(async (...args) => {
-        const result = await send(...args);
-        failureDelivered.resolve();
-        return result;
+    sendCronAnnouncePayloadStrictMock.mockImplementationOnce(async (request) => {
+      deliverySignal = request.abortSignal;
+      expect(abortActiveCronTaskRuns("Cancelled by operator.")).toBe(1);
+      throw new PlatformMessageNotDispatchedError("platform unavailable before dispatch", {
+        cause: new Error("connect ECONNREFUSED"),
       });
+    });
 
     try {
       await withCronService(createCronConfig("cron-cancelled-retry"), async (state) => {
@@ -1983,28 +1973,21 @@ describe("buildGatewayCronService", () => {
           delivery: { mode: "announce", channel: "telegram", to: "123" },
         });
         await state.cron.run(job.id, "force");
-        await failureDelivered.promise;
 
-        expect(sendCronAnnouncePayloadStrictMock).toHaveBeenCalledTimes(2);
+        // The cancelled completion is the only send: an operator cancel is not a terminal failure.
+        expect(sendCronAnnouncePayloadStrictMock).toHaveBeenCalledOnce();
         const completion = sendCronAnnouncePayloadStrictMock.mock.calls[0]?.[0];
-        const failure = sendCronAnnouncePayloadStrictMock.mock.calls[1]?.[0];
         expect(completion?.completion).toBeDefined();
         expect(completion?.payload).toEqual([
           expect.objectContaining({ text: "scheduled result" }),
         ]);
         expect(deliverySignal?.aborted).toBe(true);
-        expect(failure?.completion).toBeUndefined();
-        expect(failure?.payload).toEqual(
-          expect.objectContaining({
-            text: expect.stringContaining('Automation "cancelled" failed 1 times'),
-          }),
-        );
-        expect(failure?.abortSignal).not.toBe(deliverySignal);
-        expect(failure?.abortSignal?.aborted).toBe(false);
-        expect(state.cron.getJob(job.id)).toMatchObject({
+        const stored = state.cron.getJob(job.id);
+        expect(stored).toMatchObject({
           enabled: false,
           state: { lastRunStatus: "error", lastError: "Cancelled by operator." },
         });
+        expect(stored?.state.autoDisabled).toBeUndefined();
       });
     } finally {
       vi.unstubAllEnvs();
@@ -3182,7 +3165,6 @@ describe("buildGatewayCronService", () => {
           ).id,
       );
       expect(new Set(attemptedIds)).toEqual(new Set(jobIds));
-      expect(getCronState(state).activeTimerTicks).toBe(0);
     } finally {
       state.cron.stop();
       vi.useRealTimers();

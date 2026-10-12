@@ -378,9 +378,6 @@ describe("cron run receipt store", () => {
         }
       } finally {
         admission.close();
-        if (state.timer) {
-          state.timer.cancel();
-        }
         await finishCronRunReceiptAsync({
           handle: receipt,
           status: "ok",
@@ -829,6 +826,7 @@ describe("cron run receipt store", () => {
       activateCronRunReceiptInDatabase({
         database: db,
         handle: foreign.handle,
+        job,
         startedAtMs: Date.now(),
         resolveAgentId: () => job.agentId!,
       }),

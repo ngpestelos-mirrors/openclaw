@@ -30,6 +30,7 @@ import {
 import {
   prepareExactSessionEntryRowReads,
   readExactSessionEntryRow,
+  readSessionChildEntriesInDatabase,
   readSessionEntryByIdInDatabase,
   readSessionEntryRow,
 } from "./session-accessor.sqlite-entry-read.js";
@@ -68,6 +69,7 @@ import type {
 import type { SessionRowDatabaseFacts } from "./session-row-facts.types.js";
 import { listSessionMembersInDatabase } from "./session-sharing-store.kernel.js";
 import type { SessionStoreProjectionWorkerInput } from "./session-store-projection.types.js";
+import { readSessionEntryTranscriptFacts } from "./session-transcript-anchor-read.kernel.js";
 import { runWithSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 import {
   MAX_SESSION_ROW_FACTS_KEYS,
@@ -248,6 +250,12 @@ export function readSessionDiagnosticText(request: SessionDiagnosticTextWorkerIn
   };
 }
 
+function selectsChildEntries(
+  request: SessionExactEntriesWorkerInput,
+): request is Extract<SessionExactEntriesWorkerInput, { selection: { kind: "children" } }> {
+  return request.selection?.kind === "children";
+}
+
 /** Full rows share a snapshot with lifecycle fallback; list reads retain listing admission. */
 export function readExactSessionEntriesWithLifecycle(
   request: SessionExactEntriesWorkerInput,
@@ -255,6 +263,30 @@ export function readExactSessionEntriesWithLifecycle(
 ): SessionExactEntriesWorkerResult {
   const { readDatabase, snapshot, assertCanonicalRead } =
     createSessionEntryReadScope(capturedDatabase);
+  if (selectsChildEntries(request)) {
+    const { parentSessionKeys } = request.selection;
+    const result = readDatabase(
+      (database) => {
+        assertCanonicalRead(database, request.expectedIdentity);
+        return {
+          kind: "session-exact-entries" as const,
+          entries: readSessionChildEntriesInDatabase(
+            database,
+            parentSessionKeys,
+            request.snapshotFields ?? request.projection,
+          ),
+          lifecycleTimestamps: {},
+        };
+      },
+      { ...request.database, env: request.env },
+    );
+    if (!result.found && result.reason !== "database-missing") {
+      throw new SessionMetadataUnavailableError(result.reason);
+    }
+    return result.found
+      ? result.value
+      : { kind: "session-exact-entries", entries: [], lifecycleTimestamps: {} };
+  }
   if (
     !request.selection &&
     (request.projection === undefined ||
@@ -262,6 +294,7 @@ export function readExactSessionEntriesWithLifecycle(
       request.projection === "exact") &&
     !request.manualCompact &&
     !request.replyInitializationSessionKey &&
+    !request.transcript &&
     request.sessionKeys.length <= MAX_SESSION_ROW_FACTS_KEYS
   ) {
     const result = readDatabase(
@@ -304,7 +337,10 @@ export function readExactSessionEntriesWithLifecycle(
     }
     return { kind: "session-exact-entries", entries: [], lifecycleTimestamps: {} };
   }
-  if (request.projection === "exact" || request.projection === "worktree") {
+  if (
+    (request.projection === "exact" || request.projection === "worktree") &&
+    !request.transcript
+  ) {
     // Logical accessors validate only their candidates; unrelated rows are not listing admission.
     let source: SessionExactEntriesWorkerResult["source"];
     const read = readDatabase(
@@ -436,13 +472,14 @@ export function readExactSessionEntriesWithLifecycle(
                   replacement: { ...replacement, databaseIdentity: identity },
                 };
               }
-              const selectedById = request.selection
-                ? readSessionEntryByIdInDatabase(database, {
-                    sessionId: request.selection.sessionId,
-                    orderBy: request.selection.orderBy,
-                    projection: request.projection === "sharing" ? "list" : "full",
-                  })
-                : undefined;
+              const selectedById =
+                request.selection?.kind === "session-id"
+                  ? readSessionEntryByIdInDatabase(database, {
+                      sessionId: request.selection.sessionId,
+                      orderBy: request.selection.orderBy,
+                      projection: request.projection === "sharing" ? "list" : "full",
+                    })
+                  : undefined;
               const selected = request.selection
                 ? ok(selectedById ? [selectedById] : [])
                 : expectDefined(
@@ -583,6 +620,7 @@ export function readExactSessionEntriesWithLifecycle(
                   : {}),
                 kind: "session-exact-entries" as const,
                 entries: selected.value,
+                ...readSessionEntryTranscriptFacts(database, request, selected.value),
                 ...(request.projection === "lifecycle"
                   ? { pendingArchives: hasPendingSessionTranscriptArchives(database) }
                   : {}),
