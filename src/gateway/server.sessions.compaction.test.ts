@@ -119,6 +119,7 @@ test("sessions.compact reads entry and transcript facts after the prior writer s
     entry: {
       agentHarnessId: "codex",
       cliSessionBindings: { "codex-cli": { sessionId: "thread-1" } },
+      modelSelectionLocked: true,
     },
   });
   const settle = settlementOwner.waitForTerminalSessionRunSettlement;
