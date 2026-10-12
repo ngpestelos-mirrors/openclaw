@@ -39,6 +39,19 @@ Missing outcomes and already committed claims for the same run return without
 another write. New claims keep their atomic conditional update and live commit
 authority check; retries retain the original claim timestamp.
 
+Ordinary admitted session-entry and prepared transcript reads use the existing
+read workers and WAL snapshots without reserving the writer FIFO. Writer receipts
+invalidate retained entry facts, and reads retain their admitted physical database
+and lifecycle. An explicit transcript lock lends its writer connection and
+settlement queue for read-your-writes. Synchronous authority acceptance, mutation
+preparation, cold initialization, retirement comparisons, and accepted-write
+barriers retain their ordered reservations.
+
+Session actor mutations borrow the connection opened by their transaction owner;
+they do not request a second handle admission before that transaction. Current
+transaction authority and final commit admission remain unchanged. These changes
+require no schema, stored-format, retention, or update migration.
+
 Runtime database access belongs in workers. The Gateway main thread owns live
 projections, caches, and caller authority; it awaits prepared facts and installs
 committed results. Synchronous boot admission, migrations, Doctor/CLI one-shots,
@@ -62,11 +75,17 @@ Scheduled cron runs reuse the job and receipt loaded by their queue transaction
 when claiming and activating work. Activation commits ownership and start time
 together. Isolated preparation persists skills with the pre-run metadata, and
 continuation synchronization includes its selected CLI provider in the same
-write. Transcript existence is read only when resume fields need reconciliation.
+write. The first unchanged embedded candidate reuses the successfully persisted
+pre-run model and harness plus its initialized continuation; failed preparation
+writes, CLI candidates, fallbacks, and later prompt attempts still persist before
+execution. Transcript existence is read only when resume fields need reconciliation.
 Duplicate-run exclusion, delivery settlement, and run-history retention keep
 their existing owners and semantics.
 The watchdog reuses write-invalidated scheduler rows and live local receipt
 ownership. Running contexts do not trigger queue drains; queued rows still do.
+After scheduled completion, committed job rows determine whether schedule repair
+is needed before dispatching a maintenance sweep. Manual runs retain their
+expired-slot and cadence repair.
 
 Managed outgoing media cleanup uses the same retained session reader as media
 serving. Durable session discovery and entry reads execute in the existing
@@ -964,20 +983,30 @@ completion contract.
 
 The shared session actor contract separates phase batching and caller lifetime
 from storage. The durable backend lives inside the canonical agent execution
-worker and shares its physical writer queue. Backend selection happens once at
-acquisition; commands never fall back to another store.
+worker and shares its physical writer queue. The memory backend owns incognito
+entries, transcript bytes, pending inputs, and completion outcomes in process
+memory. It opens no SQLite database and allocates no database worker. Backend
+selection happens once at acquisition; commands never fall back to another store.
+
+Memory actors serialize commands for the same session and publish complete
+postimages before acknowledgement. Releasing a caller drains its accepted work
+without deleting the session. Session closure invalidates its old handles and
+discards its state; database closure discards all of that owner's sessions. A
+later acquisition creates empty state without reviving an old handle. A process
+exit loses this memory by design. Existing transport teardown still guards
+external effects; work already handed to a transport may finish during closure.
+Talk's voice-session metadata retains its separately selected durable owner;
+incognito transcript storage does not change its reservation or confirmation contract.
 
 Native incognito acquisition returns `not-actor-owned`; those sessions keep
-their existing owner. The actor has no native incognito adapter. Worker-backed
-incognito acquisition selects the captured ephemeral execution owner. Closing
-that owner invalidates captured targets; acquisition cannot revive its old run
-authority or create a replacement memory database. Follow-on input, turn, and
-delivery cutovers must honor the native decline until all entry, transcript,
-history, and side-data consumers move together. There is no separate standalone
-in-memory actor backend or process-wide registry for it. Generic storage
-operations remain available to explicitly supplied actors within their own
-namespace; another memory namespace stays unavailable instead of selecting a
-native store. Native incognito expiry retains its existing owner.
+their existing owner and get no actor savings until Phase E / P12. The actor
+has no native incognito adapter. Worker-backed incognito acquisition selects
+the captured memory execution owner. Closing that owner invalidates captured
+targets; acquisition cannot revive its old run authority or create a replacement
+memory database. Follow-on input, turn, and delivery cutovers must honor the
+native decline until all entry, transcript, history, and side-data consumers move
+to the memory backend together. Explicit memory acquisition is available for that
+cutover; it never mirrors an existing native or worker-backed incognito database.
 
 Agent attempts retain this actor for SessionManager transcript and tool-result
 appends. Each append captures its exact committed snapshot before fallible
@@ -3352,11 +3381,12 @@ successor. Binding renewal continues during queue waits, drains before transacti
 entry, and stays quiesced through settlement. Separate shared-state and agent receipts
 prevent a binding deletion receipt from publishing a successful session deletion.
 Unknown outcomes block reuse of that native generation and never replay the write.
-ACP finalizers become eligible only after acknowledged agent COMMIT. Initialization
-rollback and opaque released SDK mutations retain native planning and transactions:
-their synchronous authority callbacks may reread the same agent database. Their
-authority checks stay live through the native transaction; initialization is consumed
-only after COMMIT. Ordinary host-minted binding participants retain the worker route,
+ACP finalizers and initialization rollback become eligible only after acknowledged
+agent COMMIT. Initialization rollback uses the existing commit-only worker participant,
+including initializers without a stored binding. Opaque released SDK mutations retain
+native planning and transactions: their synchronous authority callbacks may reread
+the same agent database. Their authority checks stay live through the native transaction.
+Ordinary host-minted binding participants retain the worker route,
 and incognito retains its native owner.
 The existing cross-database crash window, schemas, retention, and update behavior
 are unchanged; no migration is required.
