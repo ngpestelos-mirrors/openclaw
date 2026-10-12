@@ -47,7 +47,6 @@ import {
   recordAcquiringSessionMember,
   type CommittedSessionSharingFacts,
 } from "./session-accessor.sqlite-sharing-acquisition.js";
-import { ensureReplicaSubscription } from "./session-actor-replica.js";
 import { sealSessionEntryPublicationSource } from "./session-entry-publication-source.js";
 import type { SessionEntry } from "./types.js";
 
@@ -186,8 +185,6 @@ export async function withSessionEntryCreationPublication<T>(
   ),
   run: (operation: SessionEntryCreationOperation) => Promise<T>,
 ): Promise<T> {
-  // The first creation receipt must reach the replica before any reader has used it.
-  ensureReplicaSubscription();
   const operation = createSessionEntryCreationOperation();
   const creation: CreationRecord = {
     agentId: params.agentId,

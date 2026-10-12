@@ -10,6 +10,7 @@ import { resolveSqliteSessionKey } from "./session-accessor.sqlite-scope-helpers
 import type { SessionEntryReadScope } from "./session-accessor.types.js";
 import type { SessionActorTarget } from "./session-actor-contract.js";
 import {
+  ensureReplicaSubscription,
   readSessionActorEntryFacts,
   retainSessionActorEntryFacts,
 } from "./session-actor-replica.js";
@@ -310,6 +311,8 @@ export async function readSessionEntriesWithRetainedFacts(
   request: Selection,
   read: () => Promise<SessionExactEntriesWorkerResult>,
 ): Promise<SessionExactEntriesWorkerResult> {
+  // Creation reads skip the cache, but their subsequent receipt must reach the replica.
+  ensureReplicaSubscription();
   if (!eligible(request)) {
     return await read();
   }
