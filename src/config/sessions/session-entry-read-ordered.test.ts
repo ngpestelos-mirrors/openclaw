@@ -333,13 +333,33 @@ it("retains exact membership and participant reads across metadata-only worker p
       expect(patched.participantRecords).toEqual(initial.participantRecords);
       expect(requests.count()).toBe(0);
 
-      await recordSessionParticipantInWorker(scope, { ...participant, promptedAt: 3 });
+      for (const [index, writer] of ["native", "worker"].entries()) {
+        requests.clear();
+        const promptedAt = index + 3;
+        if (writer === "native") {
+          recordSessionParticipant(scope, { ...participant, promptedAt });
+        } else {
+          await recordSessionParticipantInWorker(scope, { ...participant, promptedAt });
+        }
+        await patchSessionEntryCore(scope, () => ({ label: writer }), {
+          assertCommitAllowed() {},
+          shouldCommit: () => true,
+          skipMaintenance: true,
+        });
+        expect((await read()).participantRecords?.[sessionKey]?.[0]).toMatchObject({
+          contributionCount: index + 2,
+          lastPromptedAt: promptedAt,
+        });
+        expect(requests.count()).toBe(1);
+      }
+
+      requests.clear();
       await removeSessionMemberInWorker(scope, "reader");
       const changed = await read();
       expect(changed.members?.[sessionKey]).toEqual([]);
       expect(changed.participantRecords?.[sessionKey]?.[0]).toMatchObject({
-        contributionCount: 2,
-        lastPromptedAt: 3,
+        contributionCount: 3,
+        lastPromptedAt: 4,
       });
       expect(requests.count()).toBe(1);
     } finally {
