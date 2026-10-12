@@ -72,7 +72,8 @@ vi.mock("../health-state.js", () => ({
   getHealthVersion: vi.fn(() => 1),
 }));
 
-vi.mock("../../session-row-projection-access.js", () => ({
+vi.mock("../../session-row-projection-access.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../session-row-projection-access.js")>()),
   getSessionRowProjection: getSessionRowProjectionMock,
 }));
 
