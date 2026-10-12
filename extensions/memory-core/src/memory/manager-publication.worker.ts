@@ -23,6 +23,7 @@ import {
   runSqliteImmediateTransactionSync,
   runSqliteSingleStatementSync,
   setSqliteBusyTimeout,
+  stageOpenClawAgentDatabaseSchemaExtension,
   supportsNodeSqliteExtensionLoading,
   tableExists,
   type SqliteWorkerBackend,
@@ -505,6 +506,7 @@ function createPublicationBackend(
         }
         return withFacts(
           write(() => {
+            stageOpenClawAgentDatabaseSchemaExtension(db);
             db.exec("DROP TABLE IF EXISTS chunks_vec");
             return { extensionPath: loadedPath, retiredLegacy: true };
           }),
@@ -523,6 +525,7 @@ function createPublicationBackend(
         loadExtension(command.input.state.extensionPath);
         return withFacts(
           write(() => {
+            stageOpenClawAgentDatabaseSchemaExtension(db);
             db.exec(`DROP TABLE IF EXISTS ${MEMORY_INDEX_VECTOR_TABLE}`);
             db.exec(
               `CREATE VIRTUAL TABLE ${MEMORY_INDEX_VECTOR_TABLE} USING vec0(\n` +

@@ -5,6 +5,10 @@ import {
   type TranscriptEntryAnchor,
 } from "../../config/sessions/session-accessor.js";
 import {
+  resolveSqliteTranscriptScope,
+  toDatabaseOptions,
+} from "../../config/sessions/session-accessor.sqlite-scope.js";
+import {
   prepareTranscriptMessageAppend,
   prepareTranscriptMessageAppendForWorker,
 } from "../../config/sessions/session-accessor.sqlite-transcript-message-append.js";
@@ -12,6 +16,7 @@ import { SqliteTranscriptMutationConflictError } from "../../config/sessions/ses
 import { transcriptEventContextEligibility } from "../../config/sessions/session-transcript-projection-append.js";
 import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { applyAssistantDeliveryDirectives } from "../../config/sessions/transcript-assistant-delivery.js";
+import { prepareTranscriptPayloadForReuse } from "../../config/sessions/transcript-payload.js";
 import { sameSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import { isSessionTranscriptSideAppendEntry } from "../../config/sessions/transcript-tree.js";
 import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/transcript-write-context.js";
@@ -19,8 +24,8 @@ import type { Message } from "../../llm/types.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { readNestedToolActivity } from "../../sessions/nested-tool-activity.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
+import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import { recordModelFallbackStop } from "../model-fallback-stop.js";
-import { copyCodeModeSourceAppendOptions } from "../transcript-code-mode-source.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import { getSessionCompactionPersistenceAsync } from "./session-compaction-persistence.js";
 import { withSessionManagerAppend } from "./session-manager-append-admission.js";
@@ -78,7 +83,7 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
     appended: boolean;
     viewWasSuperseded?: true;
   }> {
-    const canonical = canonicalizeSessionEntry(entry, options);
+    const canonical = canonicalizeSessionEntry(entry);
     return withSessionManagerAppend(
       this,
       async (admission) => {
@@ -124,12 +129,10 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
         const message =
           canonical.type === "message"
             ? {
-                prepared: prepareTranscriptMessageAppendForWorker(
-                  copyCodeModeSourceAppendOptions(options, {
-                    message: canonical.message,
-                    config: options?.config,
-                  }),
-                ),
+                prepared: prepareTranscriptMessageAppendForWorker({
+                  message: canonical.message,
+                  config: options?.config,
+                }),
                 cwd: this.cwd,
                 validateTurn:
                   activeBranchAppend &&
@@ -195,16 +198,16 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
     preserveParent = false,
   ): { entry: T; anchor?: TranscriptEntryAnchor; lifecycleRevision?: string; appended: boolean } {
     this.assertTranscriptViewAvailable();
-    const canonicalEntry = canonicalizeSessionEntry(entry, options);
+    const canonicalEntry = canonicalizeSessionEntry(entry);
     const activeBranchAppend =
       !preserveParent &&
       !this.pendingDeliberateAppend &&
       this.appendMode !== "side" &&
       !isSessionTranscriptSideAppendEntry(canonicalEntry);
-    const persistenceOptions = copyCodeModeSourceAppendOptions(options, {
+    const persistenceOptions = {
       ...options,
       ...(activeBranchAppend ? { appendIntent: "active-branch" as const } : {}),
-    });
+    };
     const preparedTurnAppend =
       activeBranchAppend &&
       canonicalEntry.type === "message" &&
@@ -226,31 +229,46 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
       if (validatedMutationAt === undefined) {
         throw new SqliteTranscriptMutationConflictError(this.persistenceTarget.sessionId);
       }
-      attemptOptions = copyCodeModeSourceAppendOptions(persistenceOptions, {
+      attemptOptions = {
         ...persistenceOptions,
         expectedMutationAt: validatedMutationAt,
-      });
+      };
     }
-    // Keep preparation local to this append: retries must not redact the payload again or
-    // consume its code-mode source token against a different message object.
+    // Reuse the prepared payload across retries of this append.
     const preparedMessage =
       this.persistenceTarget && canonicalEntry.type === "message"
-        ? prepareTranscriptMessageAppend(
-            copyCodeModeSourceAppendOptions(options, {
-              message: canonicalEntry.message,
-              config: options?.config,
-            }),
-            {
-              scope: this.persistenceTarget,
-              envelope: {
-                type: "message",
-                id: canonicalEntry.id,
-                parentId: canonicalEntry.parentId,
-                timestamp: canonicalEntry.timestamp,
-              },
-            },
-          )
+        ? prepareTranscriptMessageAppend({
+            message: canonicalEntry.message,
+            config: options?.config,
+          })
         : undefined;
+    if (
+      preparedMessage &&
+      canonicalEntry.type === "message" &&
+      (canonicalEntry.message.role === "assistant" ||
+        canonicalEntry.message.role === "toolResult") &&
+      this.persistenceTarget
+    ) {
+      // The deprecated synchronous API prepares compression before taking its writer lock.
+      const envelope = {
+        type: "message" as const,
+        id: canonicalEntry.id,
+        parentId: canonicalEntry.parentId,
+        timestamp: canonicalEntry.timestamp,
+      };
+      const eventJson = `${JSON.stringify(envelope).slice(0, -1)},"message":${preparedMessage.messageJson}}`;
+      const physical = withOpenClawAgentDatabaseReadOnly(
+        ({ db }) =>
+          prepareTranscriptPayloadForReuse(db, eventJson, {
+            ...envelope,
+            message: preparedMessage.persistedMessage,
+          }),
+        toDatabaseOptions(resolveSqliteTranscriptScope(this.persistenceTarget)),
+      );
+      if (physical.found) {
+        preparedMessage.physicalPayload = physical.value;
+      }
+    }
     let persistenceResult;
     try {
       persistenceResult = this.persistRecord(canonicalEntry, attemptOptions, preparedMessage);
@@ -293,10 +311,10 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
           ? readTranscriptMutationAtSync(this.persistenceTarget)
           : null;
       }
-      const retryOptions = copyCodeModeSourceAppendOptions(persistenceOptions, {
+      const retryOptions = {
         ...persistenceOptions,
         expectedMutationAt,
-      });
+      };
       persistenceResult = this.persistRecord(canonicalEntry, retryOptions, preparedMessage);
     }
     return this.adoptPersistedEntry(canonicalEntry, persistenceResult, admittedUserId, (append) => {
@@ -505,7 +523,10 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
   // SDK v2026.9.5 exposes this synchronous opt-in; internal replay uses async preparation.
   resolveCurrentTurnEntryId(
     isInterruptedTail?: (entry: SessionEntry) => boolean,
-    options?: { includeOmittedCustomMessages?: boolean },
+    options?: {
+      /** @deprecated Await openAsync and traverse the complete view without this option. */
+      includeOmittedCustomMessages?: boolean;
+    },
   ): string | null {
     this.assertTranscriptViewAvailable();
     const includeOmitted = options?.includeOmittedCustomMessages === true;
