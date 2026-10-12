@@ -28,7 +28,7 @@ import type {
 
 export function maintainCronRunHistoryInWorker(
   database: OpenClawStateDatabase,
-  input: CronRuntimeWorkerOperations["cron.maintainHistory"]["input"],
+  input: { snapshot: CronRuntimeMutationContracts["cron.maintainHistory"]["snapshot"] },
 ): CronRuntimeWorkerOperations["cron.maintainHistory"]["output"] {
   const records = readCronRunRecordsInDatabase(database.db);
   const jobIds = [
