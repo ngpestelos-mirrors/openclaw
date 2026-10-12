@@ -41,6 +41,7 @@ const reviewed = new Map<string, readonly string[]>([
     ],
   ],
   ["src/plugin-sdk/session-transcript-runtime.ts", ["withSessionTranscriptWriteLock"]],
+  ["src/plugin-sdk/session-transcript-hit.ts", ["loadCombinedSessionStoreForGateway"]],
   ["src/plugin-sdk/provider-selection-runtime.ts", ["resolveConfiguredCapabilityProvider"]],
   ["src/pairing/pairing-store.ts", ["readChannelAllowFromStoreSync"]],
   ["src/media-generation/runtime-shared.ts", ["resolveCapabilityModelCandidates"]],
@@ -88,30 +89,68 @@ const reviewed = new Map<string, readonly string[]>([
   ],
 ]);
 
-type CompatibilityOperation = {
+// These are candidates, not exemptions: every value reference must resolve to
+// another proven candidate or an inventory-reviewed worker/maintenance entry.
+const nonRuntimeCandidates = new Map<string, readonly string[]>([
+  ["src/state/openclaw-state-db-maintenance.ts", ["writeCurrentStateSchemaMetadata"]],
+  [
+    "src/state/github-publication-session-lifecycles.ts",
+    ["insertGitHubPublicationSessionLifecycle"],
+  ],
+  ["src/state/user-github-connections.kernel.ts", ["listUserGitHubConnectionsInDatabase"]],
+]);
+
+// These exact declarations consume their inline callbacks synchronously.
+const synchronousScopes = new Map<string, ReadonlyMap<string, number>>([
+  ["src/infra/state-database-maintenance.ts", new Map([["withStateDatabaseSchemaMaintenance", 1]])],
+  [
+    "src/state/openclaw-state-db-maintenance.ts",
+    new Map([["runStateSchemaMigrationTransaction", 2]]),
+  ],
+]);
+
+// Installed by openclaw-state-worker-registry.ts; this table is never a host callback API.
+const workerHandlers = new Map([
+  [
+    "src/state/user-github-connections.worker.ts",
+    "userGitHubConnectionOperations.userGitHubConnections.list",
+  ],
+]);
+
+type NonRuntimeTier = "T2" | "T3" | "W";
+
+type BoundaryOperation = {
   file: string;
   name: string;
   valid: boolean;
   reviewed: boolean;
+  candidate: boolean;
+  nonRuntimeValid: boolean;
+  entries: Set<NonRuntimeTier>;
   node: ts.FunctionDeclaration;
 };
 
-/** Classify only deprecated operations with no bundled runtime callers or escaped references. */
-export function inspectDatabaseWorkerCompatibility(
+/** Prove compatibility and maintenance kernels from their complete value-reference graph. */
+export function inspectDatabaseWorkerBoundaries(
   root: string,
   sourceTexts: ReadonlyMap<string, string>,
   isNonRuntime: (file: string, operation: string) => boolean = (file) =>
     /\.worker\.[cm]?[jt]s$/.test(file),
+  classifyEntry: (file: string, operation: string) => NonRuntimeTier | undefined = () => undefined,
 ): {
   operations: Map<string, Set<string>>;
   callLocations: Map<string, Set<string>>;
+  nonRuntimeOperations: Map<string, Map<string, NonRuntimeTier>>;
+  nonRuntimeCallLocations: Map<string, Set<string>>;
   violations: string[];
 } {
   const operations = new Map<string, Set<string>>();
   const callLocations = new Map<string, Set<string>>();
+  const nonRuntimeOperations = new Map<string, Map<string, NonRuntimeTier>>();
+  const nonRuntimeCallLocations = new Map<string, Set<string>>();
   const violations: string[] = [];
-  if (![...reviewed.keys()].some((file) => sourceTexts.has(file))) {
-    return { operations, callLocations, violations };
+  if (![...reviewed.keys(), ...nonRuntimeCandidates.keys()].some((file) => sourceTexts.has(file))) {
+    return { operations, callLocations, nonRuntimeOperations, nonRuntimeCallLocations, violations };
   }
   const config = ".openclaw-database-worker-compat.tsconfig.json";
   const files = Object.fromEntries(sourceTexts);
@@ -154,15 +193,52 @@ export function inspectDatabaseWorkerCompatibility(
       symbol && symbol.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
     return target && (forwarded.get(target) ?? target);
   };
-  const registered = new Map<Symbol, CompatibilityOperation>();
-  const declarations = new Map<ts.Node, CompatibilityOperation>();
-  const names = new Set([...reviewed.values()].flat());
+  const isInlineInvocation = (node: ts.Node): boolean => {
+    const property = node.parent;
+    if (ts.isPropertyAssignment(property) && ts.isObjectLiteralExpression(property.parent)) {
+      const initializer = property.parent.parent;
+      const declaration = ts.isSatisfiesExpression(initializer) ? initializer.parent : initializer;
+      const file = path.relative(root, node.getSourceFile().fileName).split(path.sep).join("/");
+      if (
+        ts.isVariableDeclaration(declaration) &&
+        ts.isVariableDeclarationList(declaration.parent) &&
+        ts.isVariableStatement(declaration.parent.parent) &&
+        ts.isSourceFile(declaration.parent.parent.parent) &&
+        ts.isIdentifier(declaration.name) &&
+        (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
+        workerHandlers.get(file) === `${declaration.name.text}.${property.name.text}`
+      ) {
+        return true;
+      }
+    }
+    const call = node.parent;
+    if (!ts.isCallExpression(call)) {
+      return false;
+    }
+    if (call.expression === node) {
+      return true;
+    }
+    const symbol = resolveSymbol(checker.getSymbolAtLocation(call.expression));
+    const declaration = symbol?.valueDeclaration?.resolve();
+    if (!declaration || !ts.isFunctionDeclaration(declaration) || !declaration.name) {
+      return false;
+    }
+    const file = path
+      .relative(root, declaration.getSourceFile().fileName)
+      .split(path.sep)
+      .join("/");
+    const argument = synchronousScopes.get(file)?.get(declaration.name.text);
+    return argument !== undefined && call.arguments[argument] === node;
+  };
+  const registered = new Map<Symbol, BoundaryOperation>();
+  const declarations = new Map<ts.Node, BoundaryOperation>();
+  const names = new Set([...reviewed.values(), ...nonRuntimeCandidates.values()].flat());
   const sources = [...sourceTexts.keys()].map((file) => {
     const source = program.getSourceFile(path.resolve(root, file));
     if (!source) {
       throw new Error(`Compatibility scan did not load ${file}`);
     }
-    for (const name of reviewed.get(file) ?? []) {
+    for (const name of [...(reviewed.get(file) ?? []), ...(nonRuntimeCandidates.get(file) ?? [])]) {
       const node = source.statements.find(
         (statement): statement is ts.FunctionDeclaration =>
           ts.isFunctionDeclaration(statement) &&
@@ -176,11 +252,22 @@ export function inspectDatabaseWorkerCompatibility(
       if (!symbol) {
         throw new Error(`Compatibility scan could not resolve ${file}:${name}`);
       }
-      const valid = checker.getJsDocTagsOfSymbol(symbol).some((tag) => tag.name === "deprecated");
+      const candidate = nonRuntimeCandidates.get(file)?.includes(name) ?? false;
+      const valid =
+        candidate || checker.getJsDocTagsOfSymbol(symbol).some((tag) => tag.name === "deprecated");
       if (!valid) {
         violations.push(`${file}:${name}: reviewed compatibility operation must be @deprecated`);
       }
-      const operation = { file, name, valid, reviewed: true, node };
+      const operation: BoundaryOperation = {
+        file,
+        name,
+        valid,
+        reviewed: true,
+        candidate,
+        nonRuntimeValid: true,
+        entries: new Set(),
+        node,
+      };
       registered.set(symbol, operation);
       declarations.set(node, operation);
     }
@@ -255,7 +342,16 @@ export function inspectDatabaseWorkerCompatibility(
       if (isNonRuntime(file, name)) {
         continue;
       }
-      const operation = { file, name, valid: true, reviewed: false, node };
+      const operation: BoundaryOperation = {
+        file,
+        name,
+        valid: true,
+        reviewed: false,
+        candidate: false,
+        nonRuntimeValid: true,
+        entries: new Set(),
+        node,
+      };
       registered.set(symbol, operation);
       declarations.set(node, operation);
       names.add(node.name.text);
@@ -280,8 +376,8 @@ export function inspectDatabaseWorkerCompatibility(
     };
     source.forEachChild(visit);
   }
-  const contained = new Map<Symbol, Set<CompatibilityOperation>>();
-  const targets = (rawSymbol: Symbol | undefined): Set<CompatibilityOperation> => {
+  const contained = new Map<Symbol, Set<BoundaryOperation>>();
+  const targets = (rawSymbol: Symbol | undefined): Set<BoundaryOperation> => {
     const symbol = resolveSymbol(rawSymbol);
     if (!symbol) {
       return new Set();
@@ -290,7 +386,7 @@ export function inspectDatabaseWorkerCompatibility(
     if (cached) {
       return cached;
     }
-    const found = new Set<CompatibilityOperation>();
+    const found = new Set<BoundaryOperation>();
     contained.set(symbol, found);
     const direct = registered.get(symbol);
     if (direct) {
@@ -371,7 +467,7 @@ export function inspectDatabaseWorkerCompatibility(
       handledImports.add(dynamicImport);
     }
   }
-  const edges = new Map<CompatibilityOperation, Set<CompatibilityOperation>>();
+  const edges = new Map<BoundaryOperation, Set<BoundaryOperation>>();
   const accessSymbol = (expression: ts.Expression): Symbol | undefined => {
     const known = resolveSymbol(checker.getSymbolAtLocation(expression));
     if (known) {
@@ -438,7 +534,7 @@ export function inspectDatabaseWorkerCompatibility(
       ) {
         continue;
       }
-      let owner: CompatibilityOperation | undefined;
+      let owner: BoundaryOperation | undefined;
       let unprovenCallback = false;
       for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
         owner = declarations.get(parent);
@@ -449,7 +545,7 @@ export function inspectDatabaseWorkerCompatibility(
           ts.isMethodDeclaration(parent) ||
           ts.isFunctionDeclaration(parent) ||
           ((ts.isArrowFunction(parent) || ts.isFunctionExpression(parent)) &&
-            !(ts.isCallExpression(parent.parent) && parent.parent.expression === parent))
+            !isInlineInvocation(parent))
         ) {
           unprovenCallback = ts.isArrowFunction(parent) || ts.isFunctionExpression(parent);
           break;
@@ -463,12 +559,12 @@ export function inspectDatabaseWorkerCompatibility(
         const directCall =
           ts.isCallExpression(expression.parent) && expression.parent.expression === expression;
         if (owner && directCall) {
-          const outgoing = edges.get(owner) ?? new Set<CompatibilityOperation>();
+          const outgoing = edges.get(owner) ?? new Set<BoundaryOperation>();
           outgoing.add(callee);
           edges.set(owner, outgoing);
         } else {
           let nonRuntime = false;
-          if (!callee.reviewed && directCall && !unprovenCallback) {
+          if ((!callee.reviewed || callee.candidate) && directCall && !unprovenCallback) {
             const enclosingNames: string[] = [];
             for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
               if (
@@ -479,13 +575,22 @@ export function inspectDatabaseWorkerCompatibility(
                 enclosingNames.unshift(parent.name.text);
               }
             }
-            nonRuntime = isNonRuntime(file, enclosingNames.join("."));
+            const name = enclosingNames.join(".");
+            const tier = classifyEntry(file, name);
+            nonRuntime = tier !== undefined || isNonRuntime(file, name);
+            if (tier) {
+              callee.entries.add(tier);
+            } else {
+              callee.nonRuntimeValid = false;
+            }
+          } else {
+            callee.nonRuntimeValid = false;
           }
           if (nonRuntime) {
             continue;
           }
           const { line, character } = source.getLineAndCharacterOfPosition(node.getStart());
-          if (callee.reviewed) {
+          if (callee.reviewed && !callee.candidate) {
             violations.push(
               `${file}:${line + 1}:${character + 1}: bundled runtime reference to deprecated synchronous SQLite API ${callee.file}:${callee.name}`,
             );
@@ -495,15 +600,46 @@ export function inspectDatabaseWorkerCompatibility(
       }
     }
   }
-  // A reachable compatibility wrapper also makes its compatibility callees live.
+  const compatibilityReachable = new Set(
+    [...registered.values()].filter((operation) => operation.reviewed && !operation.candidate),
+  );
+  for (const operation of compatibilityReachable) {
+    for (const callee of edges.get(operation) ?? []) {
+      compatibilityReachable.add(callee);
+    }
+  }
+  // A public export can be called outside this source snapshot. Only reviewed
+  // deprecated boundaries may rely on the separate compatibility contract.
+  for (const { file, source } of sources) {
+    if (
+      !file.startsWith("src/plugin-sdk/") &&
+      !/^extensions\/[^/]+\/(?:runtime-api|api)\.ts$/.test(file)
+    ) {
+      continue;
+    }
+    for (const operation of targets(checker.getSymbolAtLocation(source))) {
+      if (!compatibilityReachable.has(operation)) {
+        operation.nonRuntimeValid = false;
+      }
+    }
+  }
+  // A reachable wrapper also makes its callees live.
   changed = true;
   while (changed) {
     changed = false;
     for (const [caller, callees] of edges) {
-      if (!caller.valid) {
-        for (const callee of callees) {
-          if (callee.valid) {
-            callee.valid = false;
+      for (const callee of callees) {
+        if (!caller.valid && callee.valid) {
+          callee.valid = false;
+          changed = true;
+        }
+        if (!caller.nonRuntimeValid && callee.nonRuntimeValid) {
+          callee.nonRuntimeValid = false;
+          changed = true;
+        }
+        for (const tier of caller.entries) {
+          if (!callee.entries.has(tier)) {
+            callee.entries.add(tier);
             changed = true;
           }
         }
@@ -513,6 +649,7 @@ export function inspectDatabaseWorkerCompatibility(
   for (const operation of registered.values()) {
     if (
       operation.reviewed &&
+      !operation.candidate &&
       !operation.valid &&
       !violations.some((violation) => violation.includes(`${operation.file}:${operation.name}`))
     ) {
@@ -520,17 +657,29 @@ export function inspectDatabaseWorkerCompatibility(
         `${operation.file}:${operation.name}: reviewed compatibility operation is reachable through a live or escaped kernel`,
       );
     }
-    if (operation.valid) {
-      const selected = operations.get(operation.file) ?? new Set<string>();
-      selected.add(operation.name);
-      operations.set(operation.file, selected);
-      const locations = callLocations.get(operation.file) ?? new Set<string>();
+    const compatibility = compatibilityReachable.has(operation);
+    if (
+      operation.valid &&
+      (compatibility || (operation.nonRuntimeValid && operation.entries.size))
+    ) {
+      const selectedLocations = compatibility ? callLocations : nonRuntimeCallLocations;
+      if (compatibility) {
+        const selected = operations.get(operation.file) ?? new Set<string>();
+        selected.add(operation.name);
+        operations.set(operation.file, selected);
+      } else {
+        const selected =
+          nonRuntimeOperations.get(operation.file) ?? new Map<string, NonRuntimeTier>();
+        const tier = operation.entries.has("T2") ? "T2" : operation.entries.has("T3") ? "T3" : "W";
+        selected.set(operation.name, tier);
+        nonRuntimeOperations.set(operation.file, selected);
+      }
+      const locations = selectedLocations.get(operation.file) ?? new Set<string>();
       const source = operation.node.getSourceFile();
       const visit = (node: ts.Node) => {
         if (ts.isFunctionLikeDeclaration(node) && node !== operation.node) {
-          // Only an actual IIFE keeps the caller's execution scope. Callback
-          // arguments and returned functions may escape, even inside a legacy API.
-          if (!(ts.isCallExpression(node.parent) && node.parent.expression === node)) {
+          // Only IIFEs and reviewed callback entries retain this execution scope.
+          if (!isInlineInvocation(node)) {
             return;
           }
         }
@@ -543,8 +692,14 @@ export function inspectDatabaseWorkerCompatibility(
         node.forEachChild(visit);
       };
       visit(operation.node);
-      callLocations.set(operation.file, locations);
+      selectedLocations.set(operation.file, locations);
     }
   }
-  return { operations, callLocations, violations: [...new Set(violations)].toSorted() };
+  return {
+    operations,
+    callLocations,
+    nonRuntimeOperations,
+    nonRuntimeCallLocations,
+    violations: [...new Set(violations)].toSorted(),
+  };
 }
