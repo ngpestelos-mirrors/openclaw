@@ -17,11 +17,16 @@ import {
   prepareCachedPlacementPreservationRead,
   preparePlacementRead,
   projectCachedLocalPlacementTurnClaim,
+  prunePublication,
+  readCachedPlacementRecoveryCandidates,
   readCachedPlacementProjection,
   retainProjection,
   retainSessionPlacementRead,
 } from "./placement-read-authority.js";
-import type { WorkerSessionPlacementReadResult } from "./placement-read-projection.types.js";
+import type {
+  WorkerPlacementRecoveryCandidate,
+  WorkerSessionPlacementReadResult,
+} from "./placement-read-projection.types.js";
 import {
   isCurrentPlacementTurnClaim,
   sameWorkerSessionTurnClaim,
@@ -77,6 +82,7 @@ function closeOwner(owner: PlacementAuthorityOwner): void {
   owner.placementReaders.clear();
   owner.projections.clear();
   owner.preservation = undefined;
+  owner.recoveryCandidatesEmpty = undefined;
 }
 
 const owners = resolveGlobalSingleton(
@@ -135,21 +141,6 @@ function allows(change: ClaimChange, claim: WorkerSessionTurnClaim): boolean {
   );
 }
 
-function prunePublication(owner: PlacementAuthorityOwner, sessionId: string): void {
-  if (
-    !owner.claims.has(sessionId) &&
-    !owner.workspaceResults.has(sessionId) &&
-    !owner.observations.has(sessionId) &&
-    !owner.placementReaders.has(sessionId) &&
-    ![...owner.pending].some((change) => change.sessionId === sessionId)
-  ) {
-    owner.published.delete(sessionId);
-    if (!owner.tools.get(sessionId)?.authority) {
-      owner.tools.delete(sessionId);
-    }
-  }
-}
-
 function commitChange(owner: PlacementAuthorityOwner, change: ClaimChange, sequence: number): void {
   owner.pending.delete(change);
   if (!owner.active) {
@@ -160,6 +151,7 @@ function commitChange(owner: PlacementAuthorityOwner, change: ClaimChange, seque
     owner.preservation = undefined;
   }
   if (change.kind !== "tools") {
+    owner.recoveryCandidatesEmpty = undefined;
     owner.projections.delete(change.sessionId);
     if (change.kind === "claim" && change.projection && !change.indeterminate) {
       retainProjection(owner, change.sessionId, change.projection);
@@ -348,6 +340,13 @@ export async function preparePlacementPreservationRead(
   read: () => Promise<WorkerSessionPlacementRecord[]>,
 ) {
   return await prepareCachedPlacementPreservationRead(capturePlacementObservation(pathname), read);
+}
+
+export function readPlacementRecoveryCandidates(
+  pathname: string,
+  read: () => Promise<WorkerPlacementRecoveryCandidate[]>,
+): Promise<WorkerPlacementRecoveryCandidate[]> {
+  return readCachedPlacementRecoveryCandidates(capturePlacementObservation(pathname), read);
 }
 
 /** Retain writer postimages, rather than invalidating a destination on ordinary turn claims. */
