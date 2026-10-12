@@ -170,8 +170,10 @@ describe("ConfigPage custom theme import ownership", () => {
     importCustomThemeFromUrl.mockReturnValueOnce(pending.promise);
     const { gateway } = createApplicationGateway();
     patchSettings({ gatewayUrl: gateway.connection.gatewayUrl, theme: "claw" });
+    const theme = createApplicationTheme(loadSettings(), gateway);
     const context = completeConfigContext({
       gateway,
+      theme,
       runtimeConfig: {
         state: {
           connected: true,
@@ -179,8 +181,6 @@ describe("ConfigPage custom theme import ownership", () => {
         },
       },
     } as unknown as ApplicationContext);
-    const theme = createApplicationTheme(loadSettings(), gateway);
-    context.theme = theme;
     const provider = createSolidApplicationContextProvider(context);
     const view = mountSolid(
       () => createComponent(ConfigPage, { pageId: "appearance", routeData: null }),

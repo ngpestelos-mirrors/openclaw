@@ -289,7 +289,7 @@ export function Config(props: ConfigProps) {
     );
     // The section renderer is a stable factory; recreating it discards live field nodes.
     const renderSection = untrack(() => props.renderSection);
-    return renderSection ? renderSection(editor) : editor;
+    return <>{renderSection ? renderSection(editor) : editor}</>;
   }
   return (
     <>
