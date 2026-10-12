@@ -47,7 +47,9 @@ describe.runIf("__vitest_browser__" in globalThis)("sidebar session row DOM iden
       gamma.createdAt = Date.now();
     }
     harness.publishList(next);
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
     await settleLitElement(sidebar);
 
     const rowKeys = Array.from(sidebar.querySelectorAll("[data-session-tree]")).map((row) =>
