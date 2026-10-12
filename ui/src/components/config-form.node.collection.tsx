@@ -49,6 +49,8 @@ type CollectionProps = {
 
 export function ConfigObject(props: CollectionProps): JSX.Element {
   const object = createMemo(() => resolveConfigObjectFields(props.params));
+  // Native details owns user toggles; refresh its default only when the depth policy changes.
+  const initiallyOpen = createMemo(() => props.params.path.length <= 2);
   const meta = createMemo(() => {
     getLocale();
     return resolveFieldMeta(props.params.path, props.params.schema, props.params.hints);
@@ -74,7 +76,7 @@ export function ConfigObject(props: CollectionProps): JSX.Element {
       when={props.params.path.length !== 1 && props.params.showLabel !== false}
       fallback={fields()}
     >
-      <details class="cfg-object cfg-block" open={props.params.path.length <= 2}>
+      <details class="cfg-object cfg-block" open={initiallyOpen()}>
         <summary class="settings-row cfg-object__summary">
           <div class="settings-row__text">
             <span class="settings-row__title">{meta().label}</span>

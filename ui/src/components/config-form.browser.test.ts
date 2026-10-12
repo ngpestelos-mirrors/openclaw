@@ -72,6 +72,60 @@ afterEach(async () => {
 
 describe("config form renderer", () => {
   it.each([
+    { label: "Ingress", initiallyOpen: false },
+    { label: "Portals", initiallyOpen: true },
+  ])(
+    "retains the manually toggled $label disclosure across a form update",
+    ({ label, initiallyOpen }) => {
+      const schema = object({
+        gateway: object({
+          portals: {
+            ...object({
+              ingress: {
+                ...object({ port: { type: "integer" } }),
+                title: "Ingress",
+              },
+            }),
+            title: "Portals",
+          },
+        }),
+      });
+      const props = renderConfigForm({
+        schema,
+        uiHints: {},
+        value: { gateway: { portals: { ingress: { port: 443 } } } },
+        onPatch,
+      });
+      const findDisclosure = () =>
+        [...container.querySelectorAll<HTMLDetailsElement>("details.cfg-object")].find(
+          (node) =>
+            node.querySelector(":scope > summary .settings-row__title")?.textContent?.trim() ===
+            label,
+        );
+      renderConfigFormFixture(container, props);
+      const disclosure = expectElement(findDisclosure(), label);
+      const input = expectElement(
+        container.querySelector<HTMLInputElement>('input[type="number"]'),
+        "port field",
+      );
+      expect(input.value).toBe("443");
+      expect(disclosure.open).toBe(initiallyOpen);
+      expectElement(disclosure.querySelector("summary"), "object disclosure summary").click();
+      expect(disclosure.open).toBe(!initiallyOpen);
+
+      renderConfigFormFixture(container, {
+        ...props,
+        value: { gateway: { portals: { ingress: { port: 8443 } } } },
+      });
+
+      expect(findDisclosure()).toBe(disclosure);
+      expect(container.querySelector('input[type="number"]')).toBe(input);
+      expect(input.value).toBe("8443");
+      expect(disclosure.open).toBe(!initiallyOpen);
+    },
+  );
+
+  it.each([
     {
       key: "gateway.auth.token",
       label: "Gateway Token",
