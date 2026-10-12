@@ -264,6 +264,11 @@ from SQLite's native connection descriptor.
 Synchronous admission exchanges carry the requested physical database's facts and
 custody, including a retained file whose original pathname now points elsewhere.
 
+A refused opener can preserve another owner's reader validation only when its
+refusal certifies that no agent handle opened and admission cleanup succeeded.
+Admission failures during native open or schema refresh cannot carry that
+certificate; retirement keeps conservative validation and lease cleanup.
+
 Quarantine guards load each target pathname's decision once and consume committed
 record/clear postimages through the existing database-fact transport. Absence is
 an explicit fact, so unchanged guards do not query the quarantine store. Rollback
