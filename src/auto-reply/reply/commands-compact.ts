@@ -272,6 +272,7 @@ export async function handleCompactCommand(
       if (!(await prepareCurrentEntry())) {
         return compactionUnavailable("command session changed", interruptionNotice);
       }
+      params.opts?.turnAdoptionLifecycle?.abortSignal?.throwIfAborted();
       await params.opts?.turnAdoptionLifecycle?.onAdopted();
       ingressAdopted = true;
       failure = authorityFailure();
@@ -324,6 +325,7 @@ export async function handleCompactCommand(
   };
   // Keep read-only preflight retryable; adopt before the first compaction effect.
   if (!ingressAdopted) {
+    params.opts?.turnAdoptionLifecycle?.abortSignal?.throwIfAborted();
     await params.opts?.turnAdoptionLifecycle?.onAdopted();
   }
   failure = authorityFailure();

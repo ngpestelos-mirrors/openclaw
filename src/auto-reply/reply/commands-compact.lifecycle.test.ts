@@ -100,6 +100,35 @@ describe("handleCompactCommand lifecycle authority", () => {
     expect(compactEmbeddedAgentSession).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])(
+    "does not adopt cancelled ingress after preflight, active run=%s",
+    async (active) => {
+      const controller = new AbortController();
+      const onAdopted = vi.fn();
+      vi.mocked(isEmbeddedAgentRunAbortableForCompaction).mockReturnValueOnce(active);
+      if (active) {
+        vi.mocked(waitForEmbeddedAgentRunEnd).mockResolvedValueOnce(false);
+      }
+      vi.mocked(prepareCurrentSessionEntry).mockImplementationOnce(async ({ expected }) => {
+        controller.abort(new Error("ingress stopped"));
+        return { entry: { updatedAt: 1, ...expected }, assertCurrent() {}, release() {} };
+      });
+
+      await expect(
+        handleCompactCommand(
+          buildLifecycleParams({
+            opts: { turnAdoptionLifecycle: { onAdopted, abortSignal: controller.signal } },
+          }),
+          true,
+        ),
+      ).rejects.toThrow("ingress stopped");
+
+      expect(onAdopted).not.toHaveBeenCalled();
+      expect(abortEmbeddedAgentRun).not.toHaveBeenCalled();
+      expect(compactEmbeddedAgentSession).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["caller", "channel owner", "plugin owner"] as const)(
     "rechecks %s authority after ingress adoption",
     async (authority) => {
