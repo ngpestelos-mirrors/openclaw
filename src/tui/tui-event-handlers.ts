@@ -85,9 +85,12 @@ export function createEventHandlers(context: EventHandlerContext) {
     finalizeHistoryOwnedRun: ({ runId, result, previouslyDisplayed }) => {
       // Persisted history owns the final row; retain the previous display fact
       // after a failed rebuild so delayed finals never duplicate or disappear.
+      const wasActiveRun =
+        state.activeChatRunId === runId || getPendingSubmitAcceptedRunId(state) === runId;
+      clearPendingSubmit(state, runId);
       finalizeRun({
         runId,
-        wasActiveRun: state.activeChatRunId === runId,
+        wasActiveRun,
         status: "idle",
         displayedFinal: result.loaded || previouslyDisplayed,
       });
@@ -365,7 +368,12 @@ export function createEventHandlers(context: EventHandlerContext) {
     const persistedRunId = evt.clientRunId || evt.runId;
     if (persistedRunId && (evt.phase === "end" || evt.phase === "error")) {
       runCoordinator.notePersistedRun(persistedRunId);
-      if (pendingNewSessionRunIds.delete(persistedRunId)) {
+      if (
+        pendingNewSessionRunIds.delete(persistedRunId) ||
+        sessionRuns.has(persistedRunId) ||
+        state.activeChatRunId === persistedRunId ||
+        getPendingSubmitAcceptedRunId(state) === persistedRunId
+      ) {
         if (evt.phase === "end") {
           const displayedRunIds = finalizedRunsWithDisplay.has(persistedRunId)
             ? [persistedRunId]

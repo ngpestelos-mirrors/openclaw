@@ -30,6 +30,7 @@ function abortHarness(
   const dropPendingUser = vi.fn();
   const setActivityStatus = vi.fn();
   const requestRender = vi.fn();
+  const invalidateRunOwnership = vi.fn();
   const state = createBaseState({ historyLoaded: true, ...overrides });
   const actions = createTestSessionActions({
     client: makeTuiBackend({ describeSession: vi.fn(), abortChat }),
@@ -38,6 +39,7 @@ function abortHarness(
     opts: { local },
     state,
     setActivityStatus,
+    invalidateRunOwnership,
   });
   return {
     ...actions,
@@ -46,6 +48,7 @@ function abortHarness(
     dropPendingUser,
     setActivityStatus,
     requestRender,
+    invalidateRunOwnership,
     state,
   };
 }
@@ -57,6 +60,13 @@ describe("TUI selected-session abort", () => {
     { name: "selected global run", draft: null, active: null, global: true, aborted: true },
     { name: "queued gateway run", draft: null, active: "run-active", global: false, aborted: true },
     { name: "missing backend run", draft: "hello", active: null, global: false, aborted: false },
+    {
+      name: "completed active run",
+      draft: null,
+      active: "run-active",
+      global: false,
+      aborted: false,
+    },
   ])(
     "reconciles $name after a session-scoped abort",
     async ({ draft, active, global, aborted }) => {
@@ -76,17 +86,15 @@ describe("TUI selected-session abort", () => {
         sessionKey,
         ...(global ? { agentId: "work" } : {}),
       });
-      if (aborted) {
-        expect(h.addSystem).not.toHaveBeenCalledWith("no active run");
-        expect(h.state.pendingSubmit).toBeNull();
-        expect(h.setActivityStatus).toHaveBeenCalledWith("aborted");
-      } else {
-        expect(getPendingSubmitAcceptedRunId(h.state)).toBe("run-pending");
-        expect(getPendingSubmitDraft(h.state)).toEqual({ runId: "run-pending", text: "hello" });
+      expect(h.state.pendingSubmit).toBeNull();
+      expect(h.setActivityStatus).toHaveBeenCalledWith(aborted ? "aborted" : "idle");
+      if (!aborted) {
+        expect(h.state.activeChatRunId).toBeNull();
+        expect(h.invalidateRunOwnership).toHaveBeenCalledOnce();
         expect(h.addSystem).toHaveBeenCalledWith("no active run", { coalesceConsecutive: true });
         expect(h.requestRender).toHaveBeenCalledOnce();
       }
-      if (aborted && draft !== null) {
+      if (draft !== null) {
         expect(h.dropPendingUser).toHaveBeenCalledWith("run-pending");
       } else {
         expect(h.dropPendingUser).not.toHaveBeenCalled();
@@ -121,6 +129,28 @@ describe("TUI selected-session abort", () => {
 
     expect(dropPendingUser).toHaveBeenCalledTimes(1);
     expect(dropPendingUser).toHaveBeenCalledWith("run-queued");
+  });
+
+  it("preserves a newer run when an older abort reports no active run", async () => {
+    const deferred = createDeferred<Awaited<ReturnType<TuiBackend["abortChat"]>>>();
+    const state = createBaseState({ historyLoaded: true, activeChatRunId: "run-old" });
+    const invalidateRunOwnership = vi.fn();
+    const setActivityStatus = vi.fn();
+    const { abortActive } = createTestSessionActions({
+      state,
+      client: makeTuiBackend({ abortChat: vi.fn(() => deferred.promise) }),
+      invalidateRunOwnership,
+      setActivityStatus,
+    });
+
+    const pendingAbort = abortActive();
+    state.activeChatRunId = "run-new";
+    deferred.resolve({ ok: true, aborted: false });
+    await pendingAbort;
+
+    expect(state.activeChatRunId).toBe("run-new");
+    expect(invalidateRunOwnership).not.toHaveBeenCalled();
+    expect(setActivityStatus).not.toHaveBeenCalled();
   });
 
   it.each([
