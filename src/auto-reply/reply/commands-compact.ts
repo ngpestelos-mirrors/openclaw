@@ -258,6 +258,13 @@ export async function handleCompactCommand(
     return failure;
   }
   assertOwnerBeforeAcceptance();
+  // Release the ingress watchdog before waiting for active work or summarization.
+  await params.opts?.turnAdoptionLifecycle?.onAdopted();
+  failure = authorityFailure();
+  if (failure) {
+    return failure;
+  }
+  assertOwnerBeforeAcceptance();
   if (runtime.isEmbeddedAgentRunAbortableForCompaction(sessionId)) {
     // Preserve the pending answer when the active turn can finish on its own.
     const settled = await runtime.waitForEmbeddedAgentRunEnd(sessionId, 60_000);
