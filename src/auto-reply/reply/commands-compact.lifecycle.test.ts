@@ -71,7 +71,7 @@ describe("handleCompactCommand lifecycle authority", () => {
     expect(compactEmbeddedAgentSession).not.toHaveBeenCalled();
   });
 
-  it.each(["caller", "owner"] as const)(
+  it.each(["caller", "channel owner", "plugin owner"] as const)(
     "rechecks %s authority after ingress adoption",
     async (authority) => {
       const controller = new AbortController();
@@ -80,22 +80,27 @@ describe("handleCompactCommand lifecycle authority", () => {
         controller.abort();
         ownerCurrent = false;
       };
-      const operation = handleCompactCommand(
-        buildLifecycleParams({
-          opts: {
-            abortSignal: authority === "caller" ? controller.signal : undefined,
-            turnAdoptionLifecycle: { onAdopted },
-          },
-        }),
-        true,
-        () => {
-          if (!ownerCurrent) {
-            throw new Error("Command owner was revoked");
-          }
+      const assertOwnerCurrent = () => {
+        if (!ownerCurrent) {
+          throw new Error("Command owner was revoked");
+        }
+      };
+      const params = buildLifecycleParams({
+        opts: {
+          abortSignal: authority === "caller" ? controller.signal : undefined,
+          turnAdoptionLifecycle: { onAdopted },
         },
+      });
+      if (authority === "channel owner") {
+        params.command.assertOwnerCurrent = assertOwnerCurrent;
+      }
+      const operation = handleCompactCommand(
+        params,
+        true,
+        authority === "plugin owner" ? assertOwnerCurrent : undefined,
       );
 
-      if (authority === "owner") {
+      if (authority !== "caller") {
         await expect(operation).rejects.toThrow("Command owner was revoked");
       } else {
         expect((await operation)?.sessionCompaction?.reason).toBe("command invocation closed");
