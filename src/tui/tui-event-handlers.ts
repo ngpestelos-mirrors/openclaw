@@ -92,6 +92,7 @@ export function createEventHandlers(context: EventHandlerContext) {
           state.activeChatRunId === runId || (!state.activeChatRunId && !hasPendingSubmit(state)),
         status: "idle",
         displayedFinal: result.loaded || previouslyDisplayed,
+        reconcileIdle: false,
       });
     },
     replayHistoryRunEvent: (event) => handleChatEvent(event),
