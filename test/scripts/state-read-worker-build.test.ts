@@ -31,9 +31,14 @@ describe("state read worker artifacts", () => {
       helper: string;
       bundledNative: boolean;
       originalNative: boolean;
+      manifestVersion: string;
+      originalManifestVersion: string;
+      packageErrors: string[];
     };
     expect(observed.helper).toBe(path.join(packageRoot, "dist/windows-security-helper.exe"));
     expect(observed.bundledNative).toBe(observed.originalNative);
+    expect(observed.manifestVersion).toBe(observed.originalManifestVersion);
+    expect(observed.packageErrors).toEqual([]);
   });
 
   it.each([

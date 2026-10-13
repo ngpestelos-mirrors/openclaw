@@ -19,7 +19,20 @@ export function createPackageRuntimeUrlBuildPlugin(packageName: string) {
         return null;
       }
       const originalUrl = `new URL(${JSON.stringify(relative.split(path.sep).join("/"))}, import.meta.resolve(${JSON.stringify(`${packageName}/package.json`)})).href`;
-      return code.replaceAll("import.meta.url", originalUrl);
+      return code
+        .replaceAll("import.meta.url", originalUrl)
+        .replace(
+          /\brequire\(\s*(["'])(\.[^"']*)\1\s*\)/g,
+          (call, _quote: string, specifier: string) => {
+            if (
+              path.resolve(path.dirname(id), specifier) !== path.join(packageRoot, "package.json")
+            ) {
+              return call;
+            }
+            // Keep the installed manifest explicit in the emitted package dependency graph.
+            return `require(${JSON.stringify(`${packageName}/package.json`)})`;
+          },
+        );
     },
   };
 }

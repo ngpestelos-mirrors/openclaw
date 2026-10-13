@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "tsdown";
+import { collectPackageDistImportErrors } from "../../scripts/lib/package-dist-imports.mjs";
 import { createPackageRuntimeUrlBuildPlugin } from "../../scripts/lib/package-runtime-url-build-plugin.mts";
 
 const root = process.argv[2];
@@ -18,7 +19,7 @@ const output = path.join(root, "output");
 fs.writeFileSync(
   entry,
   [
-    `export { getNativeBinding } from ${JSON.stringify(nativePath)};`,
+    `export { getNativeBinding, getNativeFallbackDiagnostic } from ${JSON.stringify(nativePath)};`,
     `export { windowsSecurityHelperPath } from ${JSON.stringify(helperPath)};`,
   ].join("\n"),
 );
@@ -38,11 +39,18 @@ try {
   fs.symlinkSync(path.resolve("node_modules"), path.join(output, "node_modules"), "junction");
   const bundled = await import(pathToFileURL(path.join(output, "entry.mjs")).href);
   const original = await import(pathToFileURL(nativePath).href);
+  const files = fs.readdirSync(output);
   process.stdout.write(
     JSON.stringify({
       helper: bundled.windowsSecurityHelperPath(),
       bundledNative: Boolean(bundled.getNativeBinding()),
       originalNative: Boolean(original.getNativeBinding()),
+      manifestVersion: bundled.getNativeFallbackDiagnostic().packageVersion,
+      originalManifestVersion: original.getNativeFallbackDiagnostic().packageVersion,
+      packageErrors: collectPackageDistImportErrors({
+        files,
+        readText: (file: string) => fs.readFileSync(path.join(output, file), "utf8"),
+      }),
     }),
   );
 } finally {
