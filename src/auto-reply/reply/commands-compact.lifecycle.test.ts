@@ -29,14 +29,14 @@ function buildLifecycleParams(overrides: Partial<HandleCommandsParams> = {}): Ha
 describe("handleCompactCommand lifecycle authority", () => {
   beforeEach(resetCompactCommandMocks);
 
-  it("adopts ingress before draining active work and compacting", async () => {
+  it("keeps the natural drain retryable and adopts ingress before compacting", async () => {
     let adopted = false;
     const onAdopted = vi.fn(async () => {
       adopted = true;
     });
     vi.mocked(isEmbeddedAgentRunAbortableForCompaction).mockReturnValueOnce(true);
     vi.mocked(waitForEmbeddedAgentRunEnd).mockImplementationOnce(async () => {
-      expect(adopted).toBe(true);
+      expect(adopted).toBe(false);
       return true;
     });
     vi.mocked(compactEmbeddedAgentSession).mockImplementationOnce(async () => {
@@ -55,20 +55,49 @@ describe("handleCompactCommand lifecycle authority", () => {
     expect(result?.reply?.text).toContain("Compaction skipped");
   });
 
-  it("propagates adoption failure without starting or interrupting work", async () => {
-    const error = new Error("ingress adoption lost");
-    const onAdopted = vi.fn().mockRejectedValue(error);
+  it.each([false, true])(
+    "propagates adoption failure before effects, active run=%s",
+    async (active) => {
+      const error = new Error("ingress adoption lost");
+      const onAdopted = vi.fn().mockRejectedValue(error);
+      vi.mocked(isEmbeddedAgentRunAbortableForCompaction).mockReturnValueOnce(active);
+      if (active) {
+        vi.mocked(waitForEmbeddedAgentRunEnd).mockResolvedValueOnce(false);
+      }
 
-    await expect(
-      handleCompactCommand(
-        buildLifecycleParams({ opts: { turnAdoptionLifecycle: { onAdopted } } }),
-        true,
-      ),
-    ).rejects.toBe(error);
+      await expect(
+        handleCompactCommand(
+          buildLifecycleParams({ opts: { turnAdoptionLifecycle: { onAdopted } } }),
+          true,
+        ),
+      ).rejects.toBe(error);
 
-    expect(waitForEmbeddedAgentRunEnd).not.toHaveBeenCalled();
-    expect(abortEmbeddedAgentRun).not.toHaveBeenCalled();
-    expect(compactEmbeddedAgentSession).not.toHaveBeenCalled();
+      expect(waitForEmbeddedAgentRunEnd).toHaveBeenCalledTimes(active ? 1 : 0);
+      expect(abortEmbeddedAgentRun).not.toHaveBeenCalled();
+      expect(compactEmbeddedAgentSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it("adopts only once before interrupting an active run and compacting", async () => {
+    const onAdopted = vi.fn(async () => {});
+    vi.mocked(isEmbeddedAgentRunAbortableForCompaction).mockReturnValueOnce(true);
+    vi.mocked(waitForEmbeddedAgentRunEnd).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    vi.mocked(abortEmbeddedAgentRun).mockImplementationOnce(() => {
+      expect(onAdopted).toHaveBeenCalledOnce();
+      return true;
+    });
+    vi.mocked(compactEmbeddedAgentSession).mockImplementationOnce(async () => {
+      expect(onAdopted).toHaveBeenCalledOnce();
+      return { ok: true, compacted: false };
+    });
+
+    await handleCompactCommand(
+      buildLifecycleParams({ opts: { turnAdoptionLifecycle: { onAdopted } } }),
+      true,
+    );
+
+    expect(abortEmbeddedAgentRun).toHaveBeenCalledOnce();
+    expect(compactEmbeddedAgentSession).toHaveBeenCalledOnce();
   });
 
   it.each(["caller", "channel owner", "plugin owner"] as const)(

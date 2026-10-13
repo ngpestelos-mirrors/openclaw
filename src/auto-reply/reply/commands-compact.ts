@@ -226,6 +226,7 @@ export async function handleCompactCommand(
   });
   let expectedSession: InternalSessionEntry = targetSessionEntry;
   let compactionAccepted = false;
+  let ingressAdopted = false;
   const assertOwnerBeforeAcceptance = () => {
     operatorAuthority?.assertCurrent();
     if (!compactionAccepted) {
@@ -259,13 +260,6 @@ export async function handleCompactCommand(
     return failure;
   }
   assertOwnerBeforeAcceptance();
-  // Release the ingress watchdog before waiting for active work or summarization.
-  await params.opts?.turnAdoptionLifecycle?.onAdopted();
-  failure = authorityFailure();
-  if (failure) {
-    return failure;
-  }
-  assertOwnerBeforeAcceptance();
   if (runtime.isEmbeddedAgentRunAbortableForCompaction(sessionId)) {
     // Preserve the pending answer when the active turn can finish on its own.
     const settled = await runtime.waitForEmbeddedAgentRunEnd(sessionId, 60_000);
@@ -278,6 +272,8 @@ export async function handleCompactCommand(
       if (!(await prepareCurrentEntry())) {
         return compactionUnavailable("command session changed", interruptionNotice);
       }
+      await params.opts?.turnAdoptionLifecycle?.onAdopted();
+      ingressAdopted = true;
       failure = authorityFailure();
       if (failure) {
         return failure;
@@ -320,14 +316,23 @@ export async function handleCompactCommand(
     entry: prepared.entry,
     cfg: params.cfg,
   });
-  const replyOperation = params.opts?.replyOperation;
-  replyOperation?.setPhase("preflight_compacting");
   const assertActive = () => {
     assertOwnerBeforeAcceptance();
     params.opts?.abortSignal?.throwIfAborted();
     params.commandInvocationSignal?.throwIfAborted();
     currentRead?.assertCurrent();
   };
+  // Keep read-only preflight retryable; adopt before the first compaction effect.
+  if (!ingressAdopted) {
+    await params.opts?.turnAdoptionLifecycle?.onAdopted();
+  }
+  failure = authorityFailure();
+  if (failure) {
+    return failure;
+  }
+  assertActive();
+  const replyOperation = params.opts?.replyOperation;
+  replyOperation?.setPhase("preflight_compacting");
   const compaction = runtime.compactEmbeddedAgentSession(
     {
       abortSignal: params.opts?.abortSignal,
