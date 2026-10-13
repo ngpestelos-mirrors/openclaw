@@ -26,6 +26,7 @@ function abortHarness(
   local = false,
 ) {
   const abortChat = vi.fn().mockResolvedValue({ ok: true, aborted });
+  const loadHistory = vi.fn().mockResolvedValue({ sessionInfo: { hasActiveRun: false } });
   const addSystem = vi.fn();
   const dropPendingUser = vi.fn();
   const setActivityStatus = vi.fn();
@@ -33,7 +34,7 @@ function abortHarness(
   const invalidateRunOwnership = vi.fn();
   const state = createBaseState({ historyLoaded: true, ...overrides });
   const actions = createTestSessionActions({
-    client: makeTuiBackend({ describeSession: vi.fn(), abortChat }),
+    client: makeTuiBackend({ loadHistory, abortChat }),
     chatLog: makeChatLog({ addSystem, clearAll: vi.fn(), dropPendingUser }),
     tui: makeTui({ requestRender }),
     opts: { local },
@@ -44,6 +45,7 @@ function abortHarness(
   return {
     ...actions,
     abortChat,
+    loadHistory,
     addSystem,
     dropPendingUser,
     setActivityStatus,
@@ -130,6 +132,32 @@ describe("TUI selected-session abort", () => {
     expect(dropPendingUser).toHaveBeenCalledTimes(1);
     expect(dropPendingUser).toHaveBeenCalledWith("run-queued");
   });
+
+  it.each([true, undefined])(
+    "preserves a non-abortable run until the session is idle (hasActiveRun=%s)",
+    async (hasActiveRun) => {
+      const h = abortHarness(
+        {
+          activeChatRunId: "run-finalizing",
+          pendingSubmit: acceptedSubmit("run-pending"),
+          activityStatus: "finishing context",
+        },
+        false,
+      );
+      h.loadHistory.mockResolvedValue({ sessionInfo: { hasActiveRun } });
+
+      await h.abortActive();
+
+      expect(h.state.activeChatRunId).toBe("run-finalizing");
+      expect(getPendingSubmitAcceptedRunId(h.state)).toBe("run-pending");
+      expect(h.invalidateRunOwnership).not.toHaveBeenCalled();
+      expect(h.dropPendingUser).not.toHaveBeenCalled();
+      expect(h.setActivityStatus).not.toHaveBeenCalled();
+      expect(h.addSystem).toHaveBeenCalledWith("run is still active; waiting for completion", {
+        coalesceConsecutive: true,
+      });
+    },
+  );
 
   it("preserves a newer run when an older abort reports no active run", async () => {
     const deferred = createDeferred<Awaited<ReturnType<TuiBackend["abortChat"]>>>();
