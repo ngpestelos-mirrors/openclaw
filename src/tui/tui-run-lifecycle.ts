@@ -288,7 +288,7 @@ export function createTuiRunLifecycle(context: TuiRunLifecycleContext) {
         if (streamingWatchdogRunId === params.runId) {
           clearStreamingWatchdog();
         }
-        if (reconcileIdle) {
+        if (reconcileIdle && !state.activeChatRunId) {
           clearStaleStreamingIfNoTrackedRunRemains();
         }
       }

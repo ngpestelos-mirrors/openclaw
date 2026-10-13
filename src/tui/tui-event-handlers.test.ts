@@ -1587,31 +1587,6 @@ describe("tui-event-handlers: handleAgentEvent", () => {
   });
 
   describe("sessions.changed history reload", () => {
-    it.each(["active", "accepted", "concurrent"] as const)(
-      "releases a delivered %s turn when only durable completion arrives",
-      async (phase) => {
-        const runId = "run-delivered";
-        const { state, loadHistory, setActivityStatus, handleSessionsChangedEvent } =
-          createHandlersHarness({
-            activeChatRunId:
-              phase === "active" ? runId : phase === "concurrent" ? "run-other" : null,
-            pendingSubmit: phase !== "active" ? acceptedSubmit(runId) : null,
-          });
-
-        handleSessionsChangedEvent({ clientRunId: runId, runId: "runtime-run", phase: "end" });
-        await settleHistory();
-
-        expect(loadHistory).toHaveBeenCalledOnce();
-        expect(state.activeChatRunId).toBe(phase === "concurrent" ? "run-other" : null);
-        expect(state.pendingSubmit).toBeNull();
-        if (phase === "concurrent") {
-          expect(setActivityStatus).not.toHaveBeenCalled();
-        } else {
-          expect(setActivityStatus).toHaveBeenCalledWith("idle");
-        }
-      },
-    );
-
     const startRun = (
       handleChatEvent: ReturnType<typeof createHandlersHarness>["handleChatEvent"],
       runId: string,

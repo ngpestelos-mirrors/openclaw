@@ -85,13 +85,11 @@ export function createEventHandlers(context: EventHandlerContext) {
     finalizeHistoryOwnedRun: ({ runId, result, previouslyDisplayed }) => {
       // Persisted history owns the final row; retain the previous display fact
       // after a failed rebuild so delayed finals never duplicate or disappear.
-      const wasActiveRun =
-        state.activeChatRunId === runId ||
-        (!state.activeChatRunId && getPendingSubmitAcceptedRunId(state) === runId);
       clearPendingSubmit(state, runId);
       finalizeRun({
         runId,
-        wasActiveRun,
+        wasActiveRun:
+          state.activeChatRunId === runId || (!state.activeChatRunId && !hasPendingSubmit(state)),
         status: "idle",
         displayedFinal: result.loaded || previouslyDisplayed,
       });
