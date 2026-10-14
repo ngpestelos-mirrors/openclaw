@@ -1094,6 +1094,7 @@ src/infra/sqlite-readonly-native-resource.client.ts
 src/infra/sqlite-readonly-native-resource.types.ts
 src/infra/sqlite-readonly-operation-registry.ts
 src/infra/sqlite-readonly-worker-context.ts
+src/infra/sqlite-readonly-worker-pool.ts
 src/infra/sqlite-readonly-worker-protocol.ts
 src/infra/sqlite-readonly-worker-session.ts
 src/infra/sqlite-readonly-worker.ts
@@ -1352,6 +1353,7 @@ src/plugins/config-policy.ts
 src/plugins/config-state.ts
 src/plugins/control-plane-workspace.ts
 src/plugins/control-ui-assets.ts
+src/plugins/control-ui-build-manifest.ts
 src/plugins/current-plugin-metadata-snapshot.ts
 src/plugins/current-plugin-metadata-state.ts
 src/plugins/default-enablement.ts
