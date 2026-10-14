@@ -152,7 +152,7 @@ export function createSqliteWorkerBackend(
       return undefined;
     }
     if (command.type === "writeRows") {
-      return runSqliteImmediateTransactionSync(database, () => {
+      const write = () => {
         if (command.input.awaitPublication) {
           requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
         }
@@ -165,7 +165,10 @@ export function createSqliteWorkerBackend(
           }
         });
         return { lookupMessages };
-      });
+      };
+      return command.input.awaitPublication
+        ? runSqliteImmediateTransactionSync(database, write)
+        : write();
     }
     if (command.type === "mutateAfterHostAdmission") {
       requestSqliteWorkerOperationAdmission({ stage: "prepare", facts: undefined });
