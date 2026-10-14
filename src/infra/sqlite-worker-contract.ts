@@ -99,6 +99,7 @@ export type SqliteWorkerRequest = {
   actor: number;
   stateContext?: SqliteWorkerStateContext;
   operationAdmission?: MessagePort;
+  operationAttachment?: { value: unknown };
   requestCustody?: SqliteWorkerRequestCustodyDescriptor;
   executionAuthority?: SqliteWorkerExecutionAuthority;
   stateDatabasePath?: string;
@@ -112,21 +113,22 @@ export type SqliteWorkerRequest = {
       databasePath: string;
       existingIdentity?: string;
       openAdmission?: "input" | "identity";
-      input: Uint8Array;
-      preparation?: Uint8Array;
+      input: Uint8Array<ArrayBuffer>;
+      preparation?: Uint8Array<ArrayBuffer>;
     }
-  | { type: "execute"; input: Uint8Array }
+  | { type: "execute"; input: Uint8Array<ArrayBuffer> }
   | { type: "execute-start"; transfer: SqliteWorkerTransferHandle }
-  | { type: "execute-frame"; input: Uint8Array }
+  | { type: "execute-frame"; input: Uint8Array<ArrayBuffer> }
   | { type: "result-next"; transferId: number }
   | { type: "close" }
 );
 
 export type SqliteWorkerReply = {
   id: number;
+  /** Explicit outer BEGINs in this frame, including rollback; excludes savepoints/autocommit. */
+  transactionCount?: number;
   timing?: DiagnosticWorkerRequestFields["timing"];
   cleanupFailure?: OpenClawStateWorkerErrorPayload;
-  databaseAdmissions?: SqliteDatabaseAdmissions;
 } & (
   | {
       ok: true;
