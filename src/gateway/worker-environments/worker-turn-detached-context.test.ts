@@ -112,7 +112,7 @@ async function launchProbe(
   assertRunCurrent?: () => void,
   waitForInitialPlacement?: WorkerTurnLauncherOptions["waitForInitialPlacement"],
 ) {
-  if (!waitForInitialPlacement && placements.get(SESSION_ID)?.state !== "active") {
+  if (!waitForInitialPlacement && (await placements.getAsync(SESSION_ID))?.state !== "active") {
     await seedActivePlacement();
   }
   const deliberateStop = new WorkerRunnerUnavailableError();
