@@ -107,24 +107,6 @@ function runtimeEntries(root, relative = "") {
   return entries;
 }
 
-export function pruneStandaloneRuntime(root) {
-  let removedFiles = 0;
-  let removedBytes = 0;
-  for (const { name, symlink } of runtimeEntries(root)) {
-    if (!symlink && /(?:\.map|\.d\.(?:ts|mts|cts))$/.test(name)) {
-      const filename = path.join(root, name);
-      removedBytes += fs.statSync(filename).size;
-      fs.unlinkSync(filename);
-      removedFiles += 1;
-    }
-  }
-  return {
-    patterns: ["**/*.map", "**/*.d.ts", "**/*.d.mts", "**/*.d.cts"],
-    removedFiles,
-    removedBytes,
-  };
-}
-
 /** Tree SHA256 frames sorted POSIX path, kind, and content hash/link target with NULs and LF. */
 export async function describeStandaloneRuntime(root) {
   const digest = createHash("sha256");
@@ -155,8 +137,10 @@ export async function createStandaloneManifest({
   openclaw,
   embedded,
   pruning,
+  sqlite,
 }) {
   const executable = path.join(outputRoot, "openclaw");
+  const { categories, sidecarPlugins, ...pruningSummary } = pruning;
   return {
     schemaVersion: 1,
     mode,
@@ -168,9 +152,14 @@ export async function createStandaloneManifest({
       sizeBytes: fs.statSync(executable).size,
       sha256: await sha256File(executable),
     },
-    runtime: await describeStandaloneRuntime(path.join(outputRoot, "runtime")),
+    runtime: {
+      ...(await describeStandaloneRuntime(path.join(outputRoot, "runtime"))),
+      categories,
+      sidecarPlugins,
+      sqlite,
+    },
     embedded,
-    pruning,
+    pruning: pruningSummary,
     ...(process.platform === "darwin"
       ? {
           macos: { hardenedRuntime: true, entitlements: standaloneMacosEntitlements(mode) },

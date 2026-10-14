@@ -1,0 +1,650 @@
+import fs from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
+
+const TABLE_MARKER = "__OPENCLAW_STANDALONE_NATIVE_TABLE__";
+const NATIVE_LIBRARY = /\.(?:dylib|dll|so(?:\.\d+)*)$/;
+const NATIVE_ADDON = /\.node$/;
+const RESOURCE = /\.wasm$/;
+const COPILOT_RUNTIME_PACKAGE = /^@github\/copilot-sdk-(?:darwin|linux|linuxmusl|win32)-/;
+const LICENSE = /^(?:licen[cs]e|copying|notice)(?:[.-].*)?$/i;
+const slash = (filename) => filename.split(path.sep).join("/");
+
+function matchesPlatform(values, actual) {
+  if (!Array.isArray(values)) {
+    return true;
+  }
+  return (
+    !values.includes(`!${actual}`) &&
+    (!values.some((value) => !value.startsWith("!")) || values.includes(actual))
+  );
+}
+
+// Packages can carry several prebuilds even though only one platform is installed.
+function hostResource(filename, platform, arch) {
+  const segments = filename.split("/");
+  const platforms = new Set(["darwin", "linux", "win32", "freebsd", "android"]);
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index];
+    if (platforms.has(segment) && segment !== platform) {
+      return false;
+    }
+    if (
+      /^(?:darwin|linux|win32|freebsd|android)-(?:arm64|x64|ia32)(?:-|$)/.test(segment) &&
+      !segment.startsWith(`${platform}-${arch}`)
+    ) {
+      return false;
+    }
+    if (
+      platforms.has(segments[index - 1]) &&
+      /^(?:arm64|x64|ia32)$/.test(segment) &&
+      segment !== arch
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Copilot's runtimeArtifacts collector owns this separate process's package layout.
+// Its extension/plugin scripts are executed by that runtime, not by the host image.
+function copilotRuntimeResource(packageName, filename) {
+  if (!COPILOT_RUNTIME_PACKAGE.test(packageName)) {
+    return false;
+  }
+  const parts = filename.split("/");
+  const excluded = new Set([
+    "app.js",
+    "assets",
+    "changelog.json",
+    "copilot",
+    "copilot.exe",
+    "foundry-local-sdk",
+    "index.js",
+    "LICENSE.md",
+    "napi-oop-runtime",
+    "npm-loader.js",
+    "package.json",
+    "pvrecorder",
+    "queries",
+    "README.md",
+    "sea-loader.js",
+    "webview",
+  ]);
+  const name = parts.at(-1);
+  return (
+    !excluded.has(parts[0]) &&
+    !/^tree-sitter.*\.wasm$/.test(parts[0]) &&
+    !/^voice-.*\.js$/.test(parts[0]) &&
+    name !== "cli-native.node" &&
+    !parts.includes("mediaremote-adapter") &&
+    !name.startsWith("copilot-runtime-bin") &&
+    !/\.(?:map|d\.[cm]?ts)$/.test(name)
+  );
+}
+
+function resourceCategory(filename, executable, packageName) {
+  // Playwright loads its registry and Chromium icon from disk, and serves its own
+  // browser-side tools as static assets. Its injected server code is already inline.
+  if (
+    packageName === "playwright-core" &&
+    (filename === "browsers.json" ||
+      filename.startsWith("bin/") ||
+      filename.startsWith("lib/vite/") ||
+      /^lib\/(?:server\/chromium|tools\/dashboard)\/appIcon\.png$/.test(filename))
+  ) {
+    return "dependencyAssets";
+  }
+  if (COPILOT_RUNTIME_PACKAGE.test(packageName)) {
+    return copilotRuntimeResource(packageName, filename) ? "externalRuntime" : undefined;
+  }
+  if (NATIVE_ADDON.test(filename)) {
+    return "nativeAddons";
+  }
+  if (NATIVE_LIBRARY.test(filename)) {
+    return "nativeLibraries";
+  }
+  if (RESOURCE.test(filename) || executable || /(?:^|\/)spawn-helper$/.test(filename)) {
+    return "dependencyAssets";
+  }
+  return undefined;
+}
+
+// Module pseudo-globals are replaceable only when no lexical binding shadows them.
+function lexicalBindings(ast) {
+  const scopes = new WeakMap();
+  const bind = (node, scope) => {
+    if (!node) {
+      return;
+    }
+    if (node.type === "Identifier") {
+      scope.names.add(node.name);
+    } else if (node.type === "RestElement") {
+      bind(node.argument, scope);
+    } else if (node.type === "AssignmentPattern") {
+      bind(node.left, scope);
+    } else if (node.type === "ArrayPattern") {
+      node.elements.forEach((entry) => bind(entry, scope));
+    } else if (node.type === "ObjectPattern") {
+      node.properties.forEach((entry) =>
+        bind(entry.type === "RestElement" ? entry.argument : entry.value, scope),
+      );
+    }
+  };
+  function visit(node, parent, parentScope) {
+    let scope = parentScope;
+    if (!node || typeof node !== "object") {
+      return;
+    }
+    const callable = /^(?:FunctionDeclaration|FunctionExpression|ArrowFunctionExpression)$/.test(
+      node.type,
+    );
+    if (node.type === "FunctionDeclaration" || node.type === "ClassDeclaration") {
+      bind(node.id, scope);
+    }
+    if (callable || node.type === "BlockStatement" || node.type === "CatchClause") {
+      scope = { parent: scope, names: new Set(), callable };
+    }
+    scopes.set(node, scope);
+    if (callable) {
+      bind(node.id, scope);
+      node.params.forEach((parameter) => bind(parameter, scope));
+    }
+    if (node.type === "CatchClause") {
+      bind(node.param, scope);
+    }
+    if (node.type === "VariableDeclarator") {
+      let target = scope;
+      if (parent.kind === "var") {
+        while (target.parent && !target.callable) {
+          target = target.parent;
+        }
+      }
+      bind(node.id, target);
+    }
+    if (/^Import(?:Default|Namespace)?Specifier$/.test(node.type)) {
+      bind(node.local, scope);
+    }
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) {
+        value.forEach((child) => visit(child, node, scope));
+      } else if (value && typeof value === "object") {
+        visit(value, node, scope);
+      }
+    }
+  }
+  visit(ast, undefined, { names: new Set(), callable: true });
+  return (node) => {
+    for (let scope = scopes.get(node); scope; scope = scope.parent) {
+      if (scope.names.has(node.name)) {
+        return true;
+      }
+    }
+    return false;
+  };
+}
+
+/** Capture dependency resources and resolution before removing pnpm's installation topology. */
+export function createStandaloneNativeAdapter({
+  runtimeRoot: inputRuntimeRoot,
+  parse,
+  platform = process.platform,
+  arch = process.arch,
+}) {
+  const runtimeRoot = fs.realpathSync(inputRuntimeRoot);
+  const packages = new Map();
+  const ownerCache = new Map();
+  const observed = new Set();
+  const additionalModuleEntries = [];
+  const commonJsEntries = [];
+  const contained = (filename) => {
+    const relative = path.relative(runtimeRoot, filename);
+    return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  };
+  const relative = (filename) => slash(path.relative(runtimeRoot, filename));
+
+  function register(inputDirectory) {
+    const directory = fs.realpathSync(inputDirectory);
+    if (packages.has(directory)) {
+      return packages.get(directory);
+    }
+    if (!contained(directory)) {
+      return undefined;
+    }
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8"));
+    if (
+      (!manifest.name && directory !== runtimeRoot) ||
+      !matchesPlatform(manifest.os, platform) ||
+      !matchesPlatform(manifest.cpu, arch)
+    ) {
+      return undefined;
+    }
+    const original = relative(directory);
+    const storeMatch = original.match(/(?:^|\/)\.pnpm\/([^/]+)\/node_modules\//);
+    const namespace =
+      storeMatch?.[1] ??
+      `${(manifest.name ?? "root").replaceAll("/", "+")}@${manifest.version ?? "0"}`;
+    const owner = {
+      directory,
+      manifest,
+      original,
+      destination: `native/${namespace}/${manifest.name}`,
+      relocate: /(?:^|\/)node_modules\//.test(original) || original.startsWith("packages/"),
+      dependencies: new Map(),
+      resources: [],
+      require: createRequire(path.join(directory, "package.json")),
+    };
+    packages.set(directory, owner);
+    function scan(current, prefix = "") {
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        if (
+          [
+            "node_modules",
+            ".git",
+            ".vite",
+            ".cache",
+            "test",
+            "tests",
+            "__tests__",
+            "fixtures",
+            "examples",
+            "benchmarks",
+            "docs",
+            "coverage",
+          ].includes(entry.name)
+        ) {
+          continue;
+        }
+        const name = prefix ? `${prefix}/${entry.name}` : entry.name;
+        const source = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          scan(source, name);
+          continue;
+        }
+        if (!entry.isFile() && !entry.isSymbolicLink()) {
+          continue;
+        }
+        const resolved = fs.realpathSync(source);
+        if (!contained(resolved)) {
+          throw new Error(`Dependency resource escapes runtime: ${source}`);
+        }
+        const stat = fs.statSync(resolved);
+        if (!stat.isFile() || !hostResource(name, platform, arch)) {
+          continue;
+        }
+        // Executable support programs (pty helper, browser driver, etc.) remain disk assets.
+        const executable =
+          (stat.mode & 0o111) !== 0 &&
+          !/\.(?:[cm]?[jt]s|map|json|md|sh|ps1|cmd|bat|d\.ts)$/.test(name);
+        const category = resourceCategory(name, executable, manifest.name);
+        if (category) {
+          owner.resources.push({
+            source: relative(source),
+            destination: `${owner.destination}/${name}`,
+            category,
+          });
+        }
+      }
+    }
+    if (owner.relocate) {
+      scan(directory);
+    }
+    for (const name of Object.keys({
+      ...manifest.dependencies,
+      ...manifest.optionalDependencies,
+    })) {
+      let manifestPath;
+      try {
+        // package.json exports are often deliberately private; walking the Node search path
+        // keeps resolution faithful without evaluating package code.
+        for (const search of owner.require.resolve.paths(name) ?? []) {
+          const candidate = path.join(search, name, "package.json");
+          if (fs.existsSync(candidate)) {
+            manifestPath = candidate;
+            break;
+          }
+        }
+      } catch {
+        continue;
+      }
+      if (!manifestPath || !contained(fs.realpathSync(manifestPath))) {
+        continue;
+      }
+      const dependency = register(path.dirname(manifestPath));
+      if (dependency) {
+        owner.dependencies.set(name, dependency);
+      }
+    }
+    return owner;
+  }
+
+  function ownerOf(filename) {
+    if (ownerCache.has(filename)) {
+      return ownerCache.get(filename);
+    }
+    let directory = path.dirname(filename);
+    let found;
+    while (contained(directory) && directory !== runtimeRoot) {
+      if (fs.existsSync(path.join(directory, "package.json"))) {
+        found = register(directory);
+        break;
+      }
+      directory = path.dirname(directory);
+    }
+    ownerCache.set(filename, found);
+    return found;
+  }
+
+  // Discover native optional wrappers before Bun's graph is fixed. Only production
+  // dependency declarations seed this pass; dev-tool prebuilds never become entries.
+  const roots = [runtimeRoot];
+  for (const rootName of ["extensions", "dist/extensions"]) {
+    const directory = path.join(runtimeRoot, rootName);
+    if (!fs.existsSync(directory)) {
+      continue;
+    }
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory() && fs.existsSync(path.join(directory, entry.name, "package.json"))) {
+        roots.push(path.join(directory, entry.name));
+      }
+    }
+  }
+  for (const directory of roots) {
+    if (!fs.existsSync(path.join(directory, "package.json"))) {
+      continue;
+    }
+    const rootOwner = register(directory);
+    if (rootOwner) {
+      observed.add(rootOwner);
+    }
+  }
+  for (const owner of packages.values()) {
+    for (const name of Object.keys(owner.manifest.optionalDependencies ?? {})) {
+      const dependency = owner.dependencies.get(name);
+      if (!dependency?.resources.length || COPILOT_RUNTIME_PACKAGE.test(dependency.manifest.name)) {
+        continue;
+      }
+      let entry;
+      try {
+        entry = owner.require.resolve(name);
+      } catch {
+        continue;
+      }
+      if (!/\.[cm]?js$/.test(entry)) {
+        continue;
+      }
+      const value = relative(entry);
+      if (!additionalModuleEntries.includes(value)) {
+        additionalModuleEntries.push(value);
+      }
+      if (entry.endsWith(".cjs") || dependency.manifest.type !== "module") {
+        commonJsEntries.push(value);
+      }
+    }
+  }
+
+  const bootstrap = `import { createRequire as __standaloneNativeCreateRequire } from "node:module";
+(() => {
+  const table = ${JSON.stringify(TABLE_MARKER)};
+  globalThis.__openclawStandaloneNativePath = (relative) => path.join(root, relative);
+  const original = (filename) => {
+    const absolute = filename.startsWith("file:") ? fileURLToPath(filename) : filename;
+    const key = path.relative(root, absolute).split(path.sep).join("/");
+    for (const owner of table.owners) {
+      if (key === owner.destination || key.startsWith(owner.destination + "/")) {
+        return path.join(root, owner.original, key.slice(owner.destination.length));
+      }
+    }
+    return absolute;
+  };
+  globalThis.__openclawStandaloneOriginalPath = original;
+  globalThis.__openclawStandaloneNativeResolve = (parent, specifier) => {
+    if (typeof specifier !== "string" || specifier.startsWith("node:") || specifier.startsWith("bun:")) return undefined;
+    const from = original(parent);
+    const parentKey = path.relative(root, from);
+    const internalParent = parentKey !== ".." && !parentKey.startsWith(".." + path.sep) && !path.isAbsolute(parentKey);
+    if (!internalParent && !path.isAbsolute(specifier) && !specifier.startsWith("file:")) return undefined;
+    let target;
+    if (specifier.startsWith("file:")) target = original(specifier);
+    else if (path.isAbsolute(specifier)) target = original(specifier);
+    else if (specifier.startsWith(".")) target = path.resolve(path.dirname(from), specifier);
+    else {
+      const key = path.relative(root, from).split(path.sep).join("/");
+      const owner = table.owners.find((candidate) => candidate.original === "" || key.startsWith(candidate.original + "/"));
+      const name = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0];
+      const dependency = owner?.dependencies[name];
+      if (!dependency) return undefined;
+      target = specifier === name ? path.join(root, dependency.entry ?? dependency.original)
+        : path.join(root, dependency.original, specifier.slice(name.length + 1));
+    }
+    const key = path.relative(root, target).split(path.sep).join("/");
+    return table.files[key] ? path.join(root, table.files[key]) : table.embedded[key];
+  };
+  globalThis.__openclawStandaloneNativeResolvePaths = (parent, specifier) => {
+    if (typeof specifier !== "string" || specifier.startsWith(".") || path.isAbsolute(specifier)) return undefined;
+    const from = original(parent);
+    const key = path.relative(root, from).split(path.sep).join("/");
+    if (key === ".." || key.startsWith("../") || path.isAbsolute(key)) return undefined;
+    const owner = table.owners.find((candidate) => candidate.original === "" || key.startsWith(candidate.original + "/"));
+    const name = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0];
+    const dependency = owner?.dependencies[name];
+    const selected = dependency && table.owners.find((candidate) => candidate.original === dependency.original);
+    if (!selected) return undefined;
+    let search = path.join(root, selected.destination);
+    for (const part of name.split("/")) search = path.dirname(search);
+    return [search];
+  };
+  const requires = new Map();
+  globalThis.__openclawStandaloneNativeRequire = (parent, specifier) => {
+    let require = requires.get(parent);
+    if (!require) {
+      require = globalThis.__openclawStandaloneCreateRequire(__standaloneNativeCreateRequire, parent);
+      requires.set(parent, require);
+    }
+    return require(specifier);
+  };
+})();\n`;
+
+  return {
+    bootstrap,
+    additionalModuleEntries: additionalModuleEntries.toSorted((a, b) => a.localeCompare(b)),
+    commonJsEntries: commonJsEntries.toSorted((a, b) => a.localeCompare(b)),
+    transform({ filename: inputFilename, contents: inputContents }) {
+      const filename = path.join(
+        fs.realpathSync(path.dirname(inputFilename)),
+        path.basename(inputFilename),
+      );
+      let contents = inputContents;
+      const owner = ownerOf(filename);
+      if (!owner) {
+        return { contents, count: 0 };
+      }
+      observed.add(owner);
+      if (!owner.relocate) {
+        return { contents, count: 0 };
+      }
+      if (!/import\.meta|__dirname|__filename|require\s*\(/.test(contents)) {
+        return { contents, count: 0 };
+      }
+      const ast = parse(contents, {
+        ecmaVersion: "latest",
+        sourceType: "module",
+        allowReturnOutsideFunction: true,
+      });
+      const isBound = lexicalBindings(ast);
+      const moduleRequire = createRequire(filename);
+      const nativeRequest = (argument) => {
+        if (argument?.type !== "Literal") {
+          return true;
+        }
+        if (typeof argument.value !== "string") {
+          return false;
+        }
+        const nativeFilename = (value) =>
+          NATIVE_ADDON.test(value) || NATIVE_LIBRARY.test(value) || RESOURCE.test(value);
+        if (nativeFilename(argument.value)) {
+          return true;
+        }
+        try {
+          return nativeFilename(moduleRequire.resolve(argument.value));
+        } catch {
+          // Optional packages for other platforms still use their original resolution path.
+          return false;
+        }
+      };
+      const destination = `${owner.destination}/${slash(path.relative(owner.directory, filename))}`;
+      const physical = `(globalThis.__openclawStandaloneRootUrl + ${JSON.stringify(destination)})`;
+      const edits = [];
+      function visit(node, parent, key) {
+        if (!node || typeof node !== "object") {
+          return;
+        }
+        if (
+          node.type === "MemberExpression" &&
+          !node.computed &&
+          node.object?.type === "MetaProperty" &&
+          node.object.meta.name === "import"
+        ) {
+          if (node.property.name === "url") {
+            edits.push([node.start, node.end, physical]);
+            return;
+          }
+          if (["dir", "dirname", "path", "filename"].includes(node.property.name)) {
+            const suffix = ["dir", "dirname"].includes(node.property.name)
+              ? path.posix.dirname(destination)
+              : destination;
+            edits.push([
+              node.start,
+              node.end,
+              `globalThis.__openclawStandaloneNativePath(${JSON.stringify(suffix)})`,
+            ]);
+            return;
+          }
+        }
+        if (
+          node.type === "Identifier" &&
+          ["__dirname", "__filename"].includes(node.name) &&
+          !isBound(node) &&
+          !(parent?.type === "MemberExpression" && key === "property" && !parent.computed) &&
+          !(parent?.type === "Property" && key === "key") &&
+          !(parent?.type === "VariableDeclarator" && key === "id")
+        ) {
+          const suffix = node.name === "__dirname" ? path.posix.dirname(destination) : destination;
+          edits.push([
+            node.start,
+            node.end,
+            `${parent?.type === "Property" && parent.shorthand ? `${node.name}: ` : ""}globalThis.__openclawStandaloneNativePath(${JSON.stringify(suffix)})`,
+          ]);
+          return;
+        }
+        if (
+          node.type === "CallExpression" &&
+          node.callee?.type === "Identifier" &&
+          node.callee.name === "require" &&
+          !isBound(node.callee) &&
+          nativeRequest(node.arguments[0])
+        ) {
+          edits.push([
+            node.callee.start,
+            node.callee.end,
+            `globalThis.__openclawStandaloneNativeRequire.bind(null, ${physical})`,
+          ]);
+        }
+        for (const [childKey, value] of Object.entries(node)) {
+          if (Array.isArray(value)) {
+            value.forEach((child) => visit(child, node, childKey));
+          } else if (value && typeof value === "object") {
+            visit(value, node, childKey);
+          }
+        }
+      }
+      visit(ast);
+      for (const [start, end, replacement] of edits.toSorted((a, b) => b[0] - a[0])) {
+        contents = contents.slice(0, start) + replacement + contents.slice(end);
+      }
+      return { contents, count: edits.length };
+    },
+    finalize({ metafile, embeddedPaths = {} } = {}) {
+      const graph = typeof metafile === "string" ? JSON.parse(metafile) : metafile;
+      for (const filename of Object.keys(graph?.inputs ?? {})) {
+        const absolute = path.isAbsolute(filename) ? filename : path.resolve(filename);
+        if (fs.existsSync(absolute)) {
+          const canonical = fs.realpathSync(absolute);
+          if (!contained(canonical)) {
+            continue;
+          }
+          const owner = ownerOf(canonical);
+          if (owner) {
+            observed.add(owner);
+          }
+        }
+      }
+      const retained = new Set(observed);
+      for (const owner of retained) {
+        if (!owner.relocate) {
+          continue;
+        }
+        for (const dependency of owner.dependencies.values()) {
+          if (dependency.resources.length) {
+            retained.add(dependency);
+          }
+        }
+      }
+      const files = [];
+      for (const owner of retained) {
+        if (!owner.relocate) {
+          continue;
+        }
+        files.push(...owner.resources);
+        files.push({
+          source: `${owner.original}/package.json`,
+          destination: `${owner.destination}/package.json`,
+          category: "dependencyMetadata",
+        });
+        for (const name of fs.readdirSync(owner.directory)) {
+          if (LICENSE.test(name) && fs.statSync(path.join(owner.directory, name)).isFile()) {
+            files.push({
+              source: relative(fs.realpathSync(path.join(owner.directory, name))),
+              destination: `${owner.destination}/${name}`,
+              category: "dependencyLicenses",
+            });
+          }
+        }
+      }
+      for (const file of files) {
+        if (/\.[cm]?js$/.test(file.source) && Object.hasOwn(embeddedPaths, file.source)) {
+          throw new Error(`Standalone resource is already embedded: ${file.source}`);
+        }
+      }
+      const owners = [...retained]
+        .map((owner) => ({
+          original: owner.original,
+          destination: owner.destination,
+          dependencies: Object.fromEntries(
+            [[owner.manifest.name, owner], ...owner.dependencies].map(([name, dependency]) => {
+              let entry;
+              try {
+                entry = relative(owner.require.resolve(name));
+              } catch {
+                /* Optional package has no Node entry. */
+              }
+              return [name, { original: dependency.original, entry }];
+            }),
+          ),
+        }))
+        .toSorted((a, b) => b.original.length - a.original.length);
+      const table = {
+        owners,
+        files: Object.fromEntries(files.map((file) => [file.source, file.destination])),
+        embedded: embeddedPaths,
+      };
+      return {
+        files,
+        bootstrapReplacement: {
+          search: JSON.stringify(TABLE_MARKER),
+          replacement: JSON.stringify(table),
+        },
+      };
+    },
+  };
+}

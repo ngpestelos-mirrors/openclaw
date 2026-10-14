@@ -8,7 +8,6 @@ import {
   createStandaloneManifest,
   describeStandaloneRuntime,
   parseStandaloneArguments,
-  pruneStandaloneRuntime,
   relativeStandaloneEntry,
   resolveStandaloneBuildIdentity,
 } from "../../scripts/lib/bun-standalone-contract.mjs";
@@ -91,31 +90,6 @@ describe("standalone build interface", () => {
     );
   });
 
-  it("prunes declarations and maps while preserving runtime assets and links", () => {
-    const root = fixture();
-    const runtime = path.join(root, "runtime");
-    for (const name of [
-      "a.js",
-      "a.js.map",
-      "a.d.ts",
-      "a.d.mts",
-      "a.d.cts",
-      "addon.node",
-      "package.json",
-    ]) {
-      fs.writeFileSync(path.join(runtime, name), "123");
-    }
-    fs.symlinkSync("a.js", path.join(runtime, "linked.js.map"));
-    expect(pruneStandaloneRuntime(runtime)).toEqual({
-      patterns: ["**/*.map", "**/*.d.ts", "**/*.d.mts", "**/*.d.cts"],
-      removedFiles: 4,
-      removedBytes: 12,
-    });
-    expect(
-      fs.readdirSync(runtime).toSorted((left, right) => (left < right ? -1 : left > right ? 1 : 0)),
-    ).toEqual(["a.js", "addon.node", "linked.js.map", "package.json"]);
-  });
-
   it("describes the executable and deterministic sidecar without following links", async () => {
     const root = fixture();
     const runtime = path.join(root, "runtime");
@@ -128,13 +102,41 @@ describe("standalone build interface", () => {
       bun: { version: "1.4.3", revision: "1.4.3+fixture", executableSha256: "a".repeat(64) },
       openclaw: { version: "2026.10.3", commit: "b".repeat(40) },
       embedded: { modules: 4, plugins: 1, workers: 2, inlineWorkers: 0 },
-      pruning: { patterns: [], removedFiles: 0, removedBytes: 0 },
+      sqlite: {
+        source: "bun",
+        version: "3.53.4",
+        extensionLoadingSupported: true,
+        compileOptions: ["ENABLE_FTS5"],
+        license: "public-domain",
+      },
+      pruning: {
+        policy: "runtime-resources-v1",
+        removedFiles: 0,
+        removedBytes: 0,
+        removedSymlinks: 0,
+        categories: { pluginAssets: { files: 1, bytes: 24 } },
+        sidecarPlugins: [],
+      },
     });
     expect(manifest).toMatchObject({
       schemaVersion: 1,
       mode: "jit",
       executable: { path: "openclaw", sizeBytes: 11 },
-      runtime: { path: "runtime", sizeBytes: 24, fileCount: 1, symlinkCount: 1 },
+      runtime: {
+        path: "runtime",
+        sizeBytes: 24,
+        fileCount: 1,
+        symlinkCount: 1,
+        categories: { pluginAssets: { files: 1, bytes: 24 } },
+        sidecarPlugins: [],
+        sqlite: {
+          source: "bun",
+          version: "3.53.4",
+          extensionLoadingSupported: true,
+          compileOptions: ["ENABLE_FTS5"],
+          license: "public-domain",
+        },
+      },
       embedded: { modules: 4, plugins: 1, workers: 2, inlineWorkers: 0 },
     });
     expect(manifest.runtime.sha256).toBe(

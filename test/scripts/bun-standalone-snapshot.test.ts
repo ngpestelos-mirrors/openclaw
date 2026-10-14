@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { copyStandaloneRuntime } from "../../scripts/lib/bun-standalone-snapshot.mjs";
+import { resolveOpenClawReferencePaths } from "../../src/agents/docs-path.js";
 import { discoverSkillCandidates } from "../../src/skills/loading/skill-root-discovery.js";
 import { resolveWorkspaceSkillSourcePlan } from "../../src/skills/loading/workspace-skill-sources.js";
 import { withTempDir } from "../../src/test-utils/temp-dir.js";
@@ -16,7 +17,7 @@ vi.mock("../../src/skills/loading/plugin-skills.js", () => ({
   },
 }));
 
-it("packages custodian skills at the owning agent's standalone source root", async () => {
+it("packages docs and custodian skills at their standalone source roots", async () => {
   await withTempDir("openclaw-standalone-skills-", async (root) => {
     const sourceRoot = path.join(root, "source");
     const runtimeRoot = path.join(root, "runtime");
@@ -33,13 +34,15 @@ it("packages custodian skills at the owning agent's standalone source root", asy
       fs.mkdirSync(path.join(sourceRoot, directory), { recursive: true });
     }
     for (const filename of [
-      "package.json",
       "LICENSE",
       "THIRD_PARTY_NOTICES.md",
       "scripts/windows-cmd-helpers.mjs",
     ]) {
       fs.writeFileSync(path.join(sourceRoot, filename), "fixture\n");
     }
+    fs.writeFileSync(path.join(sourceRoot, "package.json"), '{"name":"openclaw"}\n');
+    fs.writeFileSync(path.join(sourceRoot, "docs/docs.json"), "{}\n");
+    fs.writeFileSync(path.join(sourceRoot, "docs/start.md"), "Start documentation\n");
     fs.writeFileSync(path.join(sourceRoot, "skills/example/SKILL.md"), "Example skill\n");
     const skillText = "---\nname: diagnose-gateway\ndescription: Synthetic custodian skill\n---\n";
     fs.writeFileSync(
@@ -48,6 +51,15 @@ it("packages custodian skills at the owning agent's standalone source root", asy
     );
 
     copyStandaloneRuntime(sourceRoot, runtimeRoot);
+    expect(
+      await resolveOpenClawReferencePaths({
+        argv1: path.join(runtimeRoot, "openclaw.mjs"),
+        cwd: runtimeRoot,
+      }),
+    ).toEqual({ docsPath: path.join(runtimeRoot, "docs"), sourcePath: null });
+    expect(fs.readFileSync(path.join(runtimeRoot, "docs/start.md"), "utf8")).toBe(
+      "Start documentation\n",
+    );
     const plan = resolveWorkspaceSkillSourcePlan(path.join(root, "workspace"), {
       config: { agents: { entries: { main: {} } } },
       agentId: "main",

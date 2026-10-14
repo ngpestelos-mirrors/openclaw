@@ -14,7 +14,6 @@ import {
   assertStandalonePlatform,
   createStandaloneManifest,
   parseStandaloneArguments,
-  pruneStandaloneRuntime,
   relativeStandaloneEntry,
   resolveStandaloneBuildIdentity,
   sha256File,
@@ -22,12 +21,19 @@ import {
 } from "./lib/bun-standalone-contract.mjs";
 import { rewriteStandaloneImports } from "./lib/bun-standalone-imports.mjs";
 import { createStandaloneMetadataAdapter } from "./lib/bun-standalone-metadata.mjs";
+import { createStandaloneNativeAdapter } from "./lib/bun-standalone-native.mjs";
 import { createStandaloneRequireAdapter } from "./lib/bun-standalone-require.mjs";
+import {
+  pruneStandaloneRuntime,
+  standaloneResourceCategory,
+} from "./lib/bun-standalone-sidecar.mjs";
 import { copyStandaloneRuntime, STANDALONE_RUNTIME_ROOTS } from "./lib/bun-standalone-snapshot.mjs";
+import { stageStandaloneSqlite } from "./lib/bun-standalone-sqlite.mjs";
 import {
   discoverStandaloneWorkers,
   prepareStandaloneWorkers,
 } from "./lib/bun-standalone-workers.mjs";
+import { listPackagedStaticExtensionAssetOutputs } from "./lib/static-extension-assets.mts";
 
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(path.join(sourceRoot, "package.json"));
@@ -74,6 +80,9 @@ const runtimeRoot = path.join(outputRoot, "runtime");
 console.log(`Building ${mode} standalone in ${outputRoot}`);
 
 copyStandaloneRuntime(sourceRoot, runtimeRoot);
+const declaredPluginAssets = new Set(
+  listPackagedStaticExtensionAssetOutputs({ rootDir: runtimeRoot }),
+);
 
 let runtimeBuildInfo;
 try {
@@ -89,6 +98,11 @@ const openclawIdentity = resolveStandaloneBuildIdentity(
   runtimeBuildInfo,
   JSON.parse(fs.readFileSync(path.join(runtimeRoot, "package.json"), "utf8")).version,
 );
+const sqlite = stageStandaloneSqlite({
+  repoRoot: sourceRoot,
+  runtimeRoot,
+  bunExecutable: process.execPath,
+});
 
 // The existing install owner governs CLI, Gateway/UI and automatic update admission.
 fs.writeFileSync(
@@ -117,7 +131,13 @@ function runtimeJavaScriptEntries(directory, relative = "") {
     if (entry.isDirectory() && !entry.isSymbolicLink()) {
       result.push(...runtimeJavaScriptEntries(path.join(directory, entry.name), name));
     } else if (entry.isFile() && /\.[cm]?js$/.test(entry.name)) {
-      result.push(name);
+      const resource = path
+        .relative(runtimeRoot, path.join(directory, entry.name))
+        .split(path.sep)
+        .join("/");
+      if (!standaloneResourceCategory(resource, declaredPluginAssets)) {
+        result.push(name);
+      }
     }
   }
   return result;
@@ -137,6 +157,8 @@ moduleEntries.push(
     .filter((entry) => entry.endsWith(".mjs"))
     .toSorted(),
 );
+const native = createStandaloneNativeAdapter({ runtimeRoot, parse });
+moduleEntries.push(...native.additionalModuleEntries);
 // Include conditional ESM/CJS entries reached through computed imports.
 for (const packageName of ["@openclaw/fs-safe", "@openclaw/proc-safe", "sqlite-vec", "ws"]) {
   const manifest = fs.realpathSync(
@@ -251,6 +273,7 @@ const commonJsEntries = [
     )
     .map((entry) => embeddedPaths[entry]),
   ...Object.keys(moduleAliases).map((name) => embeddedPaths[name]),
+  ...native.commonJsEntries.map((entry) => embeddedPaths[entry]),
 ];
 const artifacts = createStandaloneArtifactAdapter({
   runtimeRoot,
@@ -272,18 +295,22 @@ const entries = ${JSON.stringify(embeddedPaths)};
 const embeddedEntries = new Set(Object.values(entries));
 const commonJsEntries = new Set(${JSON.stringify(commonJsEntries)});
 function embedded(pathname) {
+  pathname = globalThis.__openclawStandaloneOriginalPath?.(pathname) ?? pathname;
   if (embeddedEntries.has(pathname)) return pathname;
   return entries[pathname] ?? entries[path.relative(root, pathname).split(path.sep).join("/")];
 }
 ${artifacts.bootstrap}
 ${metadata.bootstrap}
-globalThis.__openclawStandaloneResolve = (parent, specifier, from = parent) =>
-  import.meta.resolve(specifier, from);
+${native.bootstrap}
+globalThis.__openclawStandaloneResolve = (parent, specifier, from = parent) => {
+  const resolved = globalThis.__openclawStandaloneNativeResolve(from, specifier);
+  return resolved === undefined ? import.meta.resolve(specifier, from) : pathToFileURL(resolved).href;
+};
 globalThis.__openclawStandaloneImport = (parent, specifier, options) => {
   const text = String(specifier);
-  let target = text;
-  if (text.startsWith("file:")) target = fileURLToPath(text);
-  else if (!path.isAbsolute(text) && !text.startsWith("node:") && !text.startsWith("bun:")) {
+  let target = globalThis.__openclawStandaloneNativeResolve(parent, text) ?? text;
+  if (target.startsWith("file:")) target = fileURLToPath(target);
+  else if (target === text && !path.isAbsolute(text) && !text.startsWith("node:") && !text.startsWith("bun:")) {
     target = Bun.resolveSync(text, path.dirname(fileURLToPath(parent)));
   }
   target = embedded(target) ?? target;
@@ -298,12 +325,13 @@ if (isMainThread) Bun.plugin({ name: "openclaw-embedded-modules", setup(build) {
     let target;
     try {
       resolving = true;
-      target = specifier.startsWith("file:") ? fileURLToPath(specifier)
+      target = globalThis.__openclawStandaloneNativeResolve(importer || path.join(root, "openclaw.mjs"), specifier)
+        ?? (specifier.startsWith("file:") ? fileURLToPath(specifier)
         : path.isAbsolute(specifier) ? specifier
         : (() => {
           try { return Bun.resolveSync(specifier, importer ? path.dirname(importer) : root); }
           catch { return Bun.resolveSync(specifier, root); }
-        })();
+        })());
     } catch { return; } finally { resolving = false; }
     const entry = embedded(target);
     if (entry) return {path: entry, namespace: "file"};
@@ -440,6 +468,7 @@ const result = await Bun.build({
               `await (${choices}import(new URL(specifier, globalThis.__openclawStandaloneRootUrl).href))`,
             );
           }
+          contents = native.transform({ filename, contents }).contents;
           contents = rewriteStandaloneImports({
             contents,
             filename,
@@ -501,6 +530,28 @@ fs.writeFileSync(path.join(outputRoot, "audit-sites.json"), JSON.stringify(audit
 const compiledEntries = result.outputs
   .filter((output) => output.path.endsWith(".js"))
   .map((output) => output.path);
+const nativeResources = native.finalize({ metafile: result.metafile, embeddedPaths });
+fs.writeFileSync(
+  path.join(outputRoot, "native-resources.json"),
+  JSON.stringify(nativeResources.files, null, 2),
+);
+let nativeTables = 0;
+for (const filename of compiledEntries) {
+  const contents = fs.readFileSync(filename, "utf8");
+  if (contents.includes(nativeResources.bootstrapReplacement.search)) {
+    nativeTables += 1;
+    fs.writeFileSync(
+      filename,
+      contents.replaceAll(
+        nativeResources.bootstrapReplacement.search,
+        nativeResources.bootstrapReplacement.replacement,
+      ),
+    );
+  }
+}
+if (nativeTables === 0) {
+  throw new Error("Standalone bundle omitted its native resource resolution table");
+}
 // Bun preserves CJS -> ESM requires as import.meta.require in split output.
 // The second split pass moves callers, so pin those edges to embedded entry names.
 const splitRequireEdges = [];
@@ -609,7 +660,11 @@ const compiled = spawnSync(
 if (compiled.status !== 0) {
   throw new Error(`Standalone compilation failed (${compiled.status})`);
 }
-const pruning = pruneStandaloneRuntime(runtimeRoot);
+const pruning = pruneStandaloneRuntime(
+  runtimeRoot,
+  [...nativeResources.files, ...sqlite.files],
+  declaredPluginAssets,
+);
 const manifest = await createStandaloneManifest({
   outputRoot,
   mode,
@@ -631,6 +686,7 @@ const manifest = await createStandaloneManifest({
     inlineWorkers: workers.inlineWorkers.length,
   },
   pruning,
+  sqlite: sqlite.manifest,
 });
 fs.mkdirSync(destinationRoot);
 fs.renameSync(executable, path.join(destinationRoot, "openclaw"));
