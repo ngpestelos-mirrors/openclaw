@@ -6,6 +6,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import vm from "node:vm";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { parse } from "acorn";
 import { transformSync } from "esbuild";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -216,7 +217,7 @@ function fixture({ withPublicSurfaces = false, minifiedMetadata = false } = {}) 
     safeFileSignature: (name: string) => observedFs.statSync(name),
     safeHashFile: ({ filePath }: { filePath: string }) =>
       crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex"),
-    normalizeLowercaseStringOrEmpty: (value: string) => value.toLowerCase(),
+    normalizeLowercaseStringOrEmpty,
   });
   vm.runInContext(adapter.bootstrap.replace("import.meta.require(", "require("), context);
   for (const [file, name] of [

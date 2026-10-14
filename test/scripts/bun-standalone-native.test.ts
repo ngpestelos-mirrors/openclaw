@@ -248,7 +248,7 @@ describe("standalone native sidecar", () => {
       ),
     ).toBe(true);
     const report = pruneStandaloneRuntime(root, finalized.files);
-    expect(report.categories.dependencyLicenses.files).toBe(1);
+    expect(report.categories.dependencyLicenses?.files).toBe(1);
     expect(
       fs.readFileSync(
         path.join(root, "native/@openclaw+fs-safe@1.0.0/@openclaw/fs-safe/LICENSE"),
