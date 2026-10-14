@@ -2,6 +2,14 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+const metadataOwnerHooks = new Map([
+  ["pluginCacheExistsSync", "ImageExists"],
+  ["pluginCacheStatSync", "ImageStat"],
+  ["pluginCacheLstatSync", "ImageLstat"],
+  ["pluginCacheRealpathSync", "ImageRealpath"],
+  ["checkPluginCacheEntry", "ImageCheck"],
+]);
+
 function visit(node, callback, owner) {
   if (!node || typeof node !== "object") {
     return;
@@ -421,13 +429,7 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
         }
         if (node.type === "FunctionDeclaration" && node.params[0]?.type === "Identifier") {
           const parameter = slice(node.params[0]);
-          const hook = {
-            pluginCacheExistsSync: "ImageExists",
-            pluginCacheStatSync: "ImageStat",
-            pluginCacheLstatSync: "ImageLstat",
-            pluginCacheRealpathSync: "ImageRealpath",
-            checkPluginCacheEntry: "ImageCheck",
-          }[node.id?.name];
+          const hook = metadataOwnerHooks.get(node.id?.name);
           if (hook) {
             edits.push([
               node.body.start + 1,
@@ -436,19 +438,80 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
             ]);
           }
           if (node.id?.name === "readPluginCacheFile") {
-            const cachedReturn = node.body.body.find(
-              (statement) =>
-                statement.type === "IfStatement" &&
-                statement.test.type === "Identifier" &&
-                statement.test.name === "cached",
-            );
+            const cachedReturn = node.body.body.find((statement) => {
+              if (statement.type !== "IfStatement" || statement.test.type !== "Identifier") {
+                return false;
+              }
+              const returned =
+                statement.consequent.type === "BlockStatement"
+                  ? statement.consequent.body[0]
+                  : statement.consequent;
+              return (
+                returned?.type === "ReturnStatement" &&
+                returned.argument?.type === "CallExpression" &&
+                returned.argument.arguments[0]?.type === "Identifier" &&
+                returned.argument.arguments[0].name === statement.test.name &&
+                resolvesTo(returned.argument.callee, "enforceFileSize", ast, filename)
+              );
+            });
             if (!cachedReturn) {
               throw new Error("Unsupported standalone metadata read cache");
+            }
+            const returned =
+              cachedReturn.consequent.type === "BlockStatement"
+                ? cachedReturn.consequent.body[0]
+                : cachedReturn.consequent;
+            const declarations = node.body.body.flatMap((statement) =>
+              statement.type === "VariableDeclaration" ? statement.declarations : [],
+            );
+            const cached = declarations.find(
+              (declaration) =>
+                declaration.id.type === "Identifier" &&
+                declaration.id.name === cachedReturn.test.name,
+            );
+            let cacheRead;
+            visit(cached?.init, (candidate) => {
+              if (
+                !cacheRead &&
+                candidate.type === "CallExpression" &&
+                candidate.callee.type === "MemberExpression" &&
+                candidate.callee.property.name === "get" &&
+                candidate.callee.object.type === "MemberExpression" &&
+                candidate.callee.object.property.name === "files"
+              ) {
+                cacheRead = candidate;
+              }
+            });
+            const cacheRoot = cacheRead?.callee.object.object;
+            const root = declarations.find(
+              (declaration) =>
+                declaration.id.type === "Identifier" && declaration.id.name === cacheRoot?.name,
+            );
+            let bind;
+            visit(node, (candidate, cacheOwner) => {
+              if (
+                cacheOwner === node &&
+                candidate.type === "CallExpression" &&
+                resolvesTo(candidate.callee, "bindPluginCacheRoot", ast, filename)
+              ) {
+                bind ??= candidate.callee;
+              }
+            });
+            if (
+              cacheRoot?.type !== "Identifier" ||
+              cacheRead.arguments.length !== 1 ||
+              root?.init?.type !== "CallExpression" ||
+              root.init.arguments.length !== 1 ||
+              !resolvesTo(root.init.callee, "getPluginCacheRoot", ast, filename) ||
+              !bind ||
+              returned.argument.arguments.length !== 2
+            ) {
+              throw new Error("Unsupported standalone metadata cache bindings");
             }
             edits.push([
               cachedReturn.end,
               cachedReturn.end,
-              `\nconst __imageFile = globalThis.__openclawStandaloneImageRead(${parameter});\nif (__imageFile !== undefined) {\nroot = bindPluginCacheRoot(lexicalRoot, __imageFile.rootRealPath);\nroot.files.set(key, __imageFile);\nreturn enforceFileSize(__imageFile, maxBytes);\n}\n`,
+              `\nconst __imageFile = globalThis.__openclawStandaloneImageRead(${parameter});\nif (__imageFile !== undefined) {\n${slice(cacheRoot)} = ${slice(bind)}(${slice(root.init.arguments[0])}, __imageFile.rootRealPath);\n${slice(cacheRoot)}.files.set(${slice(cacheRead.arguments[0])}, __imageFile);\nreturn ${slice(returned.argument.callee)}(__imageFile, ${slice(returned.argument.arguments[1])});\n}\n`,
             ]);
             adaptedOwners.add(node);
           }

@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import vm from "node:vm";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { parse } from "acorn";
+import { transformSync } from "esbuild";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseFrontmatterBlockResult } from "../../packages/markdown-core/src/frontmatter.js";
 import { rewriteStandaloneImports } from "../../scripts/lib/bun-standalone-imports.mjs";
@@ -47,7 +48,7 @@ function ownerSource(relative: string, functionName?: string): string {
     .join("\n");
 }
 
-function fixture({ withPublicSurfaces = false } = {}) {
+function fixture({ withPublicSurfaces = false, minifiedMetadata = false } = {}) {
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-image-metadata-"));
   temporaryRoots.push(runtime);
   const plugin = path.join(runtime, "dist/extensions/example");
@@ -234,9 +235,17 @@ function fixture({ withPublicSurfaces = false } = {}) {
     ["extensions/mxc/src/plugin-root.ts", undefined],
     ["extensions/vault/src/cli.ts", "resolveResolverScriptPath"],
   ] as const) {
+    const source = ownerSource(file, name);
     const transformed = adapter.transform({
       filename: path.join(runtime, "dist/owner.js"),
-      contents: ownerSource(file, name),
+      contents:
+        minifiedMetadata && file === "src/plugins/plugin-cache-files.ts"
+          ? transformSync(source, {
+              minifyIdentifiers: true,
+              minifySyntax: true,
+              minifyWhitespace: true,
+            }).code
+          : source,
     });
     vm.runInContext(
       transformed.contents.replaceAll("import.meta.url", JSON.stringify(pathToFileURL(entry).href)),
@@ -269,78 +278,103 @@ function fixture({ withPublicSurfaces = false } = {}) {
 }
 
 describe("standalone image metadata", () => {
-  it("admits embedded plugin sources and reads Doctor bytes with no physical JavaScript", () => {
-    const { plugin, entry, doctor, doctorBytes, context, safeOpen } = fixture();
-    expect(context.pluginCacheExistsSync(entry)).toBe(true);
-    expect(context.pluginCacheStatSync(entry).isFile()).toBe(true);
-    expect(context.pluginCacheLstatSync(entry).isSymbolicLink()).toBe(false);
-    expect(context.pluginCacheRealpathSync(entry)).toBe(entry);
-    expect(
-      context.checkPluginCacheEntry({
-        rootDir: plugin,
-        relativePath: "index.js",
-        rejectHardlinks: true,
-      }),
-    ).toEqual({ ok: true, exists: true, path: entry, rootRealPath: plugin });
-    const imageRead = vi.fn(context["__openclawStandaloneImageRead"]);
-    context["__openclawStandaloneImageRead"] = imageRead;
-    const file = context.readPluginCacheFile({
-      rootDir: plugin,
-      relativePath: "doctor-contract-api.js",
-      rejectHardlinks: true,
+  it("leaves prototype-named functions unchanged in minified metadata modules", () => {
+    const { runtime, entry, context, adapter } = fixture();
+    const source = transformSync(
+      `function valueOf(value) { return value + 1; }
+       function constructor(value) { return value * 2; }
+       ${ownerSource("src/plugins/plugin-cache-files.ts", "pluginCacheExistsSync")}`,
+      { minifyIdentifiers: true, minifySyntax: true, minifyWhitespace: true },
+    ).code;
+    const transformed = adapter.transform({
+      filename: path.join(runtime, "dist/minified-metadata.js"),
+      contents: source,
     });
-    expect(file.contents).toEqual(doctorBytes);
-    expect(
-      context.readPluginCacheFile({
-        rootDir: plugin,
-        relativePath: "doctor-contract-api.js",
-        rejectHardlinks: true,
-      }),
-    ).toBe(file);
-    expect(imageRead).toHaveBeenCalledOnce();
-    expect(context.fileContentMatches(doctor, file.hash)).toBe(true);
-    expect(context.fileContentMatches(doctor, "different-build")).toBe(false);
-    expect(
-      context.readPluginCacheFile({
-        rootDir: plugin,
-        relativePath: "doctor-contract-api.js",
-        rejectHardlinks: true,
-        maxBytes: 1,
-      }).ok,
-    ).toBe(false);
-    expect(safeOpen).not.toHaveBeenCalled();
+    vm.runInContext(transformed.contents, context);
+    expect(vm.runInContext("[valueOf(4), constructor(3)]", context)).toEqual([5, 6]);
+    expect(context.pluginCacheExistsSync(entry)).toBe(true);
   });
 
-  it("keeps external, escaping and symlink-root plugin admission on the physical owner", () => {
-    const { runtime, plugin, context, safeOpen } = fixture();
-    const external = path.join(runtime, "external");
-    fs.mkdirSync(external);
-    fs.writeFileSync(path.join(external, "index.js"), "external");
-    expect(
-      context.checkPluginCacheEntry({
-        rootDir: external,
-        relativePath: "index.js",
-        rejectHardlinks: true,
-      }).ok,
-    ).toBe(false);
-    expect(
-      context.checkPluginCacheEntry({
-        rootDir: external,
-        relativePath: "../dist/extensions/example/index.js",
-        rejectHardlinks: true,
-      }).ok,
-    ).toBe(false);
-    const alias = path.join(runtime, "alias");
-    fs.symlinkSync(plugin, alias);
-    expect(
-      context.readPluginCacheFile({
-        rootDir: alias,
+  it.each([false, true])(
+    "admits embedded plugin sources and caches Doctor bytes (minified=%s)",
+    (minifiedMetadata) => {
+      const { plugin, entry, doctor, doctorBytes, context, safeOpen } = fixture({
+        minifiedMetadata,
+      });
+      expect(context.pluginCacheExistsSync(entry)).toBe(true);
+      expect(context.pluginCacheStatSync(entry).isFile()).toBe(true);
+      expect(context.pluginCacheLstatSync(entry).isSymbolicLink()).toBe(false);
+      expect(context.pluginCacheRealpathSync(entry)).toBe(entry);
+      expect(
+        context.checkPluginCacheEntry({
+          rootDir: plugin,
+          relativePath: "index.js",
+          rejectHardlinks: true,
+        }),
+      ).toEqual({ ok: true, exists: true, path: entry, rootRealPath: plugin });
+      const imageRead = vi.fn(context["__openclawStandaloneImageRead"]);
+      context["__openclawStandaloneImageRead"] = imageRead;
+      const file = context.readPluginCacheFile({
+        rootDir: plugin,
         relativePath: "doctor-contract-api.js",
         rejectHardlinks: true,
-      }).ok,
-    ).toBe(false);
-    expect(safeOpen).toHaveBeenCalledTimes(3);
-  });
+      });
+      expect(file.contents).toEqual(doctorBytes);
+      expect(
+        context.readPluginCacheFile({
+          rootDir: plugin,
+          relativePath: "doctor-contract-api.js",
+          rejectHardlinks: true,
+        }),
+      ).toBe(file);
+      expect(imageRead).toHaveBeenCalledOnce();
+      expect(context.fileContentMatches(doctor, file.hash)).toBe(true);
+      expect(context.fileContentMatches(doctor, "different-build")).toBe(false);
+      expect(
+        context.readPluginCacheFile({
+          rootDir: plugin,
+          relativePath: "doctor-contract-api.js",
+          rejectHardlinks: true,
+          maxBytes: 1,
+        }).ok,
+      ).toBe(false);
+      expect(safeOpen).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    "keeps external plugin admission physical (minified=%s)",
+    (minifiedMetadata) => {
+      const { runtime, plugin, context, safeOpen } = fixture({ minifiedMetadata });
+      const external = path.join(runtime, "external");
+      fs.mkdirSync(external);
+      fs.writeFileSync(path.join(external, "index.js"), "external");
+      expect(
+        context.checkPluginCacheEntry({
+          rootDir: external,
+          relativePath: "index.js",
+          rejectHardlinks: true,
+        }).ok,
+      ).toBe(false);
+      expect(
+        context.checkPluginCacheEntry({
+          rootDir: external,
+          relativePath: "../dist/extensions/example/index.js",
+          rejectHardlinks: true,
+        }).ok,
+      ).toBe(false);
+      const alias = path.join(runtime, "alias");
+      fs.symlinkSync(plugin, alias);
+      expect(
+        context.readPluginCacheFile({
+          rootDir: alias,
+          relativePath: "doctor-contract-api.js",
+          rejectHardlinks: true,
+        }).ok,
+      ).toBe(false);
+      expect(safeOpen).toHaveBeenCalledTimes(3);
+    },
+  );
 
   it("preserves public file discovery and checks non-JavaScript SDK dependencies", () => {
     const { plugin, sdk, sdkEntry, context } = fixture();

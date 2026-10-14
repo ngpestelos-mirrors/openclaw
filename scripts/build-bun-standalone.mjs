@@ -396,6 +396,11 @@ const result = await Bun.build({
   root: outputRoot,
   splitting: true,
   target: "bun",
+  // Platform packages can reference other targets' files behind these fixed host guards.
+  define: {
+    "process.platform": JSON.stringify(process.platform),
+    "process.arch": JSON.stringify(process.arch),
+  },
   format: "esm",
   // These optional upstream imports are absent from this install, including normal Bun.
   external,
