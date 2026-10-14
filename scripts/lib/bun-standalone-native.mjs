@@ -415,7 +415,8 @@ export function createStandaloneNativeAdapter({
       const name = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0];
       const dependency = owner?.dependencies[name];
       if (!dependency) return undefined;
-      target = specifier === name ? path.join(root, dependency.entry ?? dependency.original)
+      target = dependency.entries[specifier] ? path.join(root, dependency.entries[specifier])
+        : specifier === name ? path.join(root, dependency.original)
         : path.join(root, dependency.original, specifier.slice(name.length + 1));
     }
     const key = path.relative(root, target).split(path.sep).join("/");
@@ -623,13 +624,20 @@ export function createStandaloneNativeAdapter({
           destination: owner.destination,
           dependencies: Object.fromEntries(
             [[owner.manifest.name, owner], ...owner.dependencies].map(([name, dependency]) => {
-              let entry;
-              try {
-                entry = relative(owner.require.resolve(name));
-              } catch {
-                /* Optional package has no Node entry. */
+              const entries = {};
+              const subpaths = Object.keys(dependency.manifest.exports ?? {}).filter(
+                (key) => key.startsWith("./") && !key.includes("*"),
+              );
+              // Public export names need not match filenames (fs-safe's secure-temp-root
+              // exports dist/secure-temp-dir.js). Capture Node's resolution before pruning.
+              for (const specifier of [name, ...subpaths.map((key) => name + key.slice(1))]) {
+                try {
+                  entries[specifier] = relative(owner.require.resolve(specifier));
+                } catch {
+                  /* Optional packages and import-only exports may have no require entry. */
+                }
               }
-              return [name, { original: dependency.original, entry }];
+              return [name, { original: dependency.original, entries }];
             }),
           ),
         }))

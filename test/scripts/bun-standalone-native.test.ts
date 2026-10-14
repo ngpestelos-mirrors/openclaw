@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -6,6 +7,7 @@ import vm from "node:vm";
 import { parse } from "acorn";
 import { afterEach, describe, expect, it } from "vitest";
 import { createStandaloneNativeAdapter } from "../../scripts/lib/bun-standalone-native.mjs";
+import { createStandaloneRequireAdapter } from "../../scripts/lib/bun-standalone-require.mjs";
 import { pruneStandaloneRuntime } from "../../scripts/lib/bun-standalone-sidecar.mjs";
 
 const temporary: string[] = [];
@@ -62,6 +64,51 @@ function evaluate(
 }
 
 describe("standalone native sidecar", () => {
+  it("loads exported package subpaths from the image after removing node_modules", () => {
+    const { root, write, pkg } = fixture();
+    const dependency = pkg(
+      "@fixture/fs-safe",
+      { exports: { "./secure-temp-root": "./dist/secure-temp-dir.js" } },
+      { "dist/secure-temp-dir.js": "module.exports = { resolveSecureTempRoot: () => 'safe' };" },
+    );
+    write(
+      path.join(root, "package.json"),
+      JSON.stringify({ dependencies: { "@fixture/fs-safe": "1.0.0" } }),
+    );
+    const image = fs.mkdtempSync(path.join(os.tmpdir(), "standalone-image-"));
+    temporary.push(image);
+    const imageEntry = path.join(image, "secure-temp-dir.cjs");
+    fs.copyFileSync(path.join(dependency, "dist/secure-temp-dir.js"), imageEntry);
+    const sourceEntry = path.relative(root, path.join(dependency, "dist/secure-temp-dir.js"));
+    const embeddedPaths = { [sourceEntry]: imageEntry };
+    const adapter = createStandaloneNativeAdapter({ runtimeRoot: root, parse });
+    const finalized = adapter.finalize({ embeddedPaths });
+    const requireAdapter = createStandaloneRequireAdapter({ runtimeRoot: root, embeddedPaths });
+    const context = vm.createContext({
+      root,
+      path,
+      fileURLToPath,
+      createRequire,
+      commonJsEntries: new Set(),
+      embedded: (filename: string) =>
+        filename === imageEntry ? imageEntry : embeddedPaths[path.relative(root, filename)],
+    });
+    vm.runInContext(
+      adapter.bootstrap
+        .replace(/^import[^\n]+\n/, "")
+        .replace(finalized.bootstrapReplacement.search, finalized.bootstrapReplacement.replacement),
+      context,
+    );
+    vm.runInContext(requireAdapter.bootstrap, context);
+    pruneStandaloneRuntime(root, finalized.files);
+    expect(fs.existsSync(path.join(root, "node_modules"))).toBe(false);
+    const load = context["__openclawStandaloneCreateRequire"](
+      createRequire,
+      path.join(root, "dist/entry.mjs"),
+    );
+    expect(load("@fixture/fs-safe/secure-temp-root").resolveSecureTempRoot()).toBe("safe");
+  });
+
   it("retains native resources when the output parent is a symlink", () => {
     const { root, write, pkg } = fixture();
     const owner = pkg(
