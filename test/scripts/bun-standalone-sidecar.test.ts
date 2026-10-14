@@ -140,6 +140,36 @@ describe("standalone resource allowlist", () => {
     expect(fs.existsSync(path.join(runtime, "package.json"))).toBe(true);
   });
 
+  it("preserves image metadata directories without their embedded files", () => {
+    const runtime = fixture([
+      "package.json",
+      "dist/plugin-sdk/index.js",
+      "dist/state/openclaw-state.worker.js",
+      "extensions/example/index.ts",
+    ]);
+    const directories = ["dist/plugin-sdk", "dist/state", "extensions/example"];
+    const result = pruneStandaloneRuntime(runtime, [], new Set(), directories);
+    for (const directory of directories) {
+      const filename = path.join(runtime, directory);
+      expect(fs.realpathSync(filename)).toBe(path.join(fs.realpathSync(runtime), directory));
+      expect(fs.lstatSync(filename).isDirectory()).toBe(true);
+      expect(fs.readdirSync(filename)).toEqual([]);
+    }
+    expect(result.categories).toEqual({ runtimeMetadata: { files: 1, bytes: 8 } });
+    expect(fs.existsSync(path.join(runtime, "node_modules"))).toBe(false);
+  });
+
+  it.each(["node_modules/.pnpm/example", "dist/../outside", "dist/node_modules/example"])(
+    "rejects metadata directory %s",
+    (directory) => {
+      const runtime = fixture(["package.json"]);
+      expect(() => pruneStandaloneRuntime(runtime, [], new Set(), [directory])).toThrow(
+        "Invalid standalone metadata directory",
+      );
+      expect(fs.existsSync(path.join(runtime, "package.json"))).toBe(true);
+    },
+  );
+
   it("rejects traversal in resource destinations", () => {
     const runtime = fixture(["package.json"]);
     expect(() =>

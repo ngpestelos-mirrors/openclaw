@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { createRequire, stripTypeScriptTypes } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import vm from "node:vm";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
@@ -69,6 +69,7 @@ function fixture({ withPublicSurfaces = false, minifiedMetadata = false } = {}) 
   const mxcLauncher = path.join(mxc, "mxc-spawn-launcher.mjs");
   const vault = path.join(runtime, "dist/extensions/vault");
   const vaultResolver = path.join(vault, "vault-secret-ref-resolver.js");
+  const sqliteWorker = path.join(runtime, "dist/state/openclaw-state.worker.js");
   const doctorBytes = Buffer.from("export const contract = { version: 1 };\n");
   fs.writeFileSync(entry, "export default {};\n");
   fs.writeFileSync(doctor, doctorBytes);
@@ -106,6 +107,8 @@ function fixture({ withPublicSurfaces = false, minifiedMetadata = false } = {}) 
     undeclaredEntrypoint,
     mxcLauncher,
     vaultResolver,
+    sqliteWorker,
+    path.join(runtime, "node_modules/fixture/index.js"),
   ];
   const sourceFiles: string[] = [];
   if (withPublicSurfaces) {
@@ -127,6 +130,7 @@ function fixture({ withPublicSurfaces = false, minifiedMetadata = false } = {}) 
     imageEntries.push(path.join(plugin, "unlisted-api.js"));
   }
   for (const file of imageEntries.slice(5)) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, "export default () => {};\n");
   }
   fs.mkdirSync(path.dirname(bridge), { recursive: true });
@@ -200,7 +204,8 @@ function fixture({ withPublicSurfaces = false, minifiedMetadata = false } = {}) 
     isRecord,
     PUBLIC_SURFACE_SOURCE_EXTENSIONS,
     openClawRootFsSync: observedFs,
-    fileURLToPath: (value: string) => new URL(value).pathname,
+    fileURLToPath,
+    pathToFileURL,
     bindPluginCacheRoot: (name: string) => getRoot(name),
     openPluginRootFileSync: safeOpen,
     openRootFileSync: rootOpen,
@@ -271,6 +276,7 @@ function fixture({ withPublicSurfaces = false, minifiedMetadata = false } = {}) 
     mxcLauncher,
     vault,
     vaultResolver,
+    sqliteWorker,
     safeOpen,
     rootOpen,
     context,
@@ -279,6 +285,86 @@ function fixture({ withPublicSurfaces = false, minifiedMetadata = false } = {}) 
 }
 
 describe("standalone image metadata", () => {
+  it("retains metadata directories without retaining dependency namespaces", () => {
+    const { adapter } = fixture({ withPublicSurfaces: true });
+    expect(adapter.directories).toContain("dist/state");
+    expect(adapter.directories).toContain("extensions/example");
+    expect(
+      adapter.directories.some((directory: string) => directory.includes("node_modules")),
+    ).toBe(false);
+  });
+
+  it.each(["source", "compiled"])("admits embedded SQLite worker identity (%s)", async (shape) => {
+    const { runtime, sqliteWorker, context, adapter } = fixture();
+    const realpath = vi.fn((filename: string) => fs.promises.realpath(filename));
+    const stat = vi.fn((filename: string) => fs.promises.stat(filename));
+    Object.assign(context, {
+      realpath,
+      stat,
+      qe: realpath,
+      We: fileURLToPath,
+      Ge: pathToFileURL,
+      Je: stat,
+    });
+    // Captured worker output retains the owner name and shortens imported filesystem helpers.
+    const contents =
+      shape === "source"
+        ? ownerSource("src/infra/sqlite-worker-broker-admission.ts", "resolveSqliteWorkerModuleUrl")
+        : String.raw`async function resolveSqliteWorkerModuleUrl(e){let t=await qe(We(e)),n=Ge(t).href;if(!/\.[cm]?[jt]s$/.test(t)||!(await Je(t)).isFile())throw Error("SQLite worker backend must identify a JavaScript or TypeScript file");return{modulePath:t,moduleUrl:n}}`;
+    vm.runInContext(contents, context);
+    await expect(
+      context.resolveSqliteWorkerModuleUrl(pathToFileURL(sqliteWorker)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    realpath.mockClear();
+    stat.mockClear();
+    const transformed = adapter.transform({
+      filename: path.join(runtime, "dist/owner.js"),
+      contents,
+    });
+    vm.runInContext(transformed.contents, context);
+    fs.rmdirSync(path.dirname(sqliteWorker));
+    const realpathSync = vi.spyOn(fs, "realpathSync");
+    const lstatSync = vi.spyOn(fs, "lstatSync");
+    try {
+      expect(await context.resolveSqliteWorkerModuleUrl(pathToFileURL(sqliteWorker))).toEqual({
+        modulePath: sqliteWorker,
+        moduleUrl: pathToFileURL(sqliteWorker).href,
+      });
+      expect(realpath).not.toHaveBeenCalled();
+      expect(stat).not.toHaveBeenCalled();
+      expect(realpathSync).not.toHaveBeenCalled();
+      expect(lstatSync).not.toHaveBeenCalled();
+    } finally {
+      realpathSync.mockRestore();
+      lstatSync.mockRestore();
+    }
+    const external = path.join(runtime, "external-worker.mjs");
+    fs.writeFileSync(external, "export {};\n");
+    const alias = path.join(runtime, "external-alias.mjs");
+    fs.symlinkSync(external, alias);
+    expect(await context.resolveSqliteWorkerModuleUrl(pathToFileURL(alias))).toEqual({
+      modulePath: external,
+      moduleUrl: pathToFileURL(external).href,
+    });
+    expect(realpath).toHaveBeenCalledWith(alias);
+    expect(stat).toHaveBeenCalledWith(external);
+    fs.mkdirSync(path.dirname(sqliteWorker));
+    fs.symlinkSync(external, sqliteWorker);
+    realpath.mockClear();
+    stat.mockClear();
+    expect(await context.resolveSqliteWorkerModuleUrl(pathToFileURL(sqliteWorker))).toEqual({
+      modulePath: sqliteWorker,
+      moduleUrl: pathToFileURL(sqliteWorker).href,
+    });
+    expect(realpath).not.toHaveBeenCalled();
+    expect(stat).not.toHaveBeenCalled();
+    const directory = path.join(runtime, "directory.js");
+    fs.mkdirSync(directory);
+    await expect(context.resolveSqliteWorkerModuleUrl(pathToFileURL(directory))).rejects.toThrow(
+      "SQLite worker backend must identify a JavaScript or TypeScript file",
+    );
+  });
+
   it("leaves prototype-named functions unchanged in minified metadata modules", () => {
     const { runtime, entry, context, adapter } = fixture();
     const source = transformSync(

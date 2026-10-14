@@ -669,6 +669,7 @@ const pruning = pruneStandaloneRuntime(
   runtimeRoot,
   [...nativeResources.files, ...sqlite.files],
   declaredPluginAssets,
+  metadata.directories,
 );
 const manifest = await createStandaloneManifest({
   outputRoot,

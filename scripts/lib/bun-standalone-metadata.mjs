@@ -280,6 +280,13 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
     const parent = canonicalDirectory(path.dirname(filename));
     return parent && path.join(parent, path.basename(filename));
   };
+  globalThis.__openclawStandaloneSqliteWorkerModule = (sourceUrl) => {
+    if (sourceUrl?.protocol !== "file:" || sourceUrl.search || sourceUrl.hash) return;
+    const modulePath = path.resolve(fileURLToPath(sourceUrl));
+    if (get(imageFiles, modulePath) === undefined) return;
+    // The executable owns this module's identity; disk aliases cannot replace its code.
+    return { modulePath, moduleUrl: pathToFileURL(modulePath).href };
+  };
   globalThis.__openclawStandaloneImageDirectory = (directory, read) => {
     const children = get(imageDirectories, directory);
     let existing;
@@ -330,9 +337,12 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
   return {
     bootstrap,
     facts: { doctor, sdk },
+    directories: Object.keys(imageDirectories)
+      .filter((directory) => !directory.split("/").includes("node_modules"))
+      .toSorted(),
     transform({ filename, contents }) {
       if (
-        !/checkDistPluginSdkArtifact|fileContentMatches|pluginCache(?:Exists|Stat|Lstat|Realpath)Sync|readPluginCache(?:File|Directory)|checkPluginCacheEntry|collectBundledPluginPublicSurfaceArtifacts|resolveBundledPluginGeneratedPath|resolveManagedToolsMcpServerConfig|candidateDirsFromArgv1|resolveHostPackageRoot|loadHookFromDir|prepareInternalHooks|resolveNodeEntrypointArg|resolveMxcLauncherPath|resolveResolverScriptPath/.test(
+        !/checkDistPluginSdkArtifact|fileContentMatches|pluginCache(?:Exists|Stat|Lstat|Realpath)Sync|readPluginCache(?:File|Directory)|checkPluginCacheEntry|collectBundledPluginPublicSurfaceArtifacts|resolveBundledPluginGeneratedPath|resolveManagedToolsMcpServerConfig|candidateDirsFromArgv1|resolveHostPackageRoot|loadHookFromDir|prepareInternalHooks|resolveNodeEntrypointArg|resolveMxcLauncherPath|resolveResolverScriptPath|resolveSqliteWorkerModuleUrl/.test(
           contents,
         )
       ) {
@@ -436,6 +446,14 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
               node.body.start + 1,
               `\nconst __imageFact = globalThis.__openclawStandalone${hook}(${parameter});\nif (__imageFact !== undefined) return __imageFact;\n`,
             ]);
+          }
+          if (node.id?.name === "resolveSqliteWorkerModuleUrl") {
+            edits.push([
+              node.body.start + 1,
+              node.body.start + 1,
+              `\nconst __imageModule = globalThis.__openclawStandaloneSqliteWorkerModule(${parameter});\nif (__imageModule !== undefined) return __imageModule;\n`,
+            ]);
+            adaptedOwners.add(node);
           }
           if (node.id?.name === "readPluginCacheFile") {
             const cachedReturn = node.body.body.find((statement) => {
@@ -631,6 +649,7 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
             "loadHookFromDir",
             "prepareInternalHooks",
             "resolveNodeEntrypointArg",
+            "resolveSqliteWorkerModuleUrl",
           ].includes(node.id?.name) &&
           !adaptedOwners.has(node)
         ) {

@@ -82,6 +82,7 @@ export function pruneStandaloneRuntime(
   root,
   dependencyResources = [],
   declaredPluginAssets = new Set(),
+  metadataDirectories = [],
 ) {
   const resources = new Map();
   let originalFiles = 0;
@@ -135,6 +136,22 @@ export function pruneStandaloneRuntime(
       counts.bytes += size;
       retainedFiles += 1;
       retainedBytes += size;
+    }
+    // Image discovery still inspects directory ownership and merges physical entries.
+    // Keep that directory shape without retaining embedded modules or pnpm namespaces.
+    for (const directory of metadataDirectories) {
+      const parts = directory.split("/");
+      if (
+        !["dist", "extensions"].includes(parts[0]) ||
+        parts.some((part) => !part || part === "." || part === ".." || part === "node_modules")
+      ) {
+        throw new Error(`Invalid standalone metadata directory: ${directory}`);
+      }
+      const source = fs.realpathSync(path.join(root, directory));
+      if (!source.startsWith(canonicalRoot) || !fs.statSync(source).isDirectory()) {
+        throw new Error(`Standalone metadata path is not a contained directory: ${directory}`);
+      }
+      fs.mkdirSync(path.join(minimal, directory), { recursive: true });
     }
     fs.rmSync(root, { recursive: true });
     fs.renameSync(minimal, root);
