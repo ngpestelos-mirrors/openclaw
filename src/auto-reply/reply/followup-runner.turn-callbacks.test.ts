@@ -93,6 +93,7 @@ describe("queued turn callback ownership", () => {
           sessionId: "session",
           sessionKey: "main",
           storePath: "/tmp/store",
+          sessionEntry: undefined,
         },
         message: { role: "user", content: "original request", timestamp: 1 },
         updateMode: "none",
