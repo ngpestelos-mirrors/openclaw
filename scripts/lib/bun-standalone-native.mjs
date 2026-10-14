@@ -275,6 +275,7 @@ export function createStandaloneNativeAdapter({
         // Executable support programs (pty helper, browser driver, etc.) remain disk assets.
         const executable =
           (stat.mode & 0o111) !== 0 &&
+          !LICENSE.test(name) &&
           !/\.(?:[cm]?[jt]s|map|json|md|sh|ps1|cmd|bat|d\.ts)$/.test(name);
         const category = resourceCategory(name, executable, manifest.name);
         if (category) {

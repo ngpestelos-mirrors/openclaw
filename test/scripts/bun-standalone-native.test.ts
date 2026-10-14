@@ -6,6 +6,7 @@ import vm from "node:vm";
 import { parse } from "acorn";
 import { afterEach, describe, expect, it } from "vitest";
 import { createStandaloneNativeAdapter } from "../../scripts/lib/bun-standalone-native.mjs";
+import { pruneStandaloneRuntime } from "../../scripts/lib/bun-standalone-sidecar.mjs";
 
 const temporary: string[] = [];
 afterEach(() =>
@@ -178,6 +179,7 @@ describe("standalone native sidecar", () => {
         LICENSE: "MIT",
       },
     );
+    fs.chmodSync(path.join(fsOwner, "LICENSE"), 0o755);
     const procOwner = pkg(
       "@openclaw/proc-safe",
       { optionalDependencies: { "@openclaw/proc-safe-darwin-arm64": "1.0.0" } },
@@ -245,6 +247,14 @@ describe("standalone native sidecar", () => {
           !file.destination.includes(".pnpm") && !/\.[cm]?js$/.test(file.destination),
       ),
     ).toBe(true);
+    const report = pruneStandaloneRuntime(root, finalized.files);
+    expect(report.categories.dependencyLicenses.files).toBe(1);
+    expect(
+      fs.readFileSync(
+        path.join(root, "native/@openclaw+fs-safe@1.0.0/@openclaw/fs-safe/LICENSE"),
+        "utf8",
+      ),
+    ).toBe("MIT");
   });
 
   it("rebases resource expressions and resolves embedded optional wrappers through their original identity", () => {
