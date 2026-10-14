@@ -150,7 +150,10 @@ export function projectGatewaySessionEntry(
           resolveSourceKey?.(sessionKey) ??
           canonicalizeMainSessionAlias({ cfg, agentId: parsed.agentId, sessionKey });
         if (sourceKey !== sessionKey) {
-          projected = { ...projected, [field]: sourceKey };
+          if (projected === entry) {
+            projected = { ...entry };
+          }
+          projected[field] = sourceKey;
         }
       }
     }
