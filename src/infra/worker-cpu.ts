@@ -377,8 +377,12 @@ export function receiveWorkerMemoryPort(worker: WorkerCpuHandle, message: unknow
         // Capture registry-owned identity before a native exit can free this slot.
         const workerThreadId = worker.threadId;
         const workerSlot = source.workerSlot;
-        void import("../logging/code-mode-diagnostic.js").then(({ logCodeModeGcStorm }) =>
-          logCodeModeGcStorm(record.gcStorm, workerThreadId, workerSlot),
+        void import("../logging/subsystem.js").then(({ createSubsystemLogger }) =>
+          createSubsystemLogger("agents/code-mode").warn("Code Mode worker GC storm", {
+            ...record.gcStorm,
+            workerThreadId,
+            workerSlot,
+          }),
         );
         return;
       }

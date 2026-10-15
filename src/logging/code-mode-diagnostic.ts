@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import type { WorkerGcStorm } from "../infra/worker-memory.js";
 import { createSubsystemLogger } from "./subsystem.js";
 import type { SubsystemLogger } from "./subsystem.js";
 
@@ -77,12 +76,4 @@ export function codeModeGcAttribution(runId: string, sessionKey?: string) {
       ? createHash("sha256").update(sessionKey).digest("hex").slice(0, 16)
       : undefined,
   };
-}
-
-export function logCodeModeGcStorm(
-  sample: WorkerGcStorm,
-  workerThreadId: number,
-  workerSlot?: number,
-): void {
-  failureLog.warn("Code Mode worker GC storm", { ...sample, workerThreadId, workerSlot });
 }
