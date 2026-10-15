@@ -145,6 +145,17 @@ export function pruneStandaloneRuntime(
       retainedFiles += 1;
       retainedBytes += size;
     }
+    // SDK metadata fallback and plugin discovery still inspect these directory boundaries.
+    for (const directory of ["scripts", "dist/extensions/node_modules"]) {
+      if (!fs.existsSync(path.join(root, directory))) {
+        continue;
+      }
+      const source = fs.realpathSync(path.join(root, directory));
+      if (!source.startsWith(canonicalRoot) || !fs.statSync(source).isDirectory()) {
+        throw new Error(`Standalone resolution path is not a contained directory: ${directory}`);
+      }
+      fs.mkdirSync(path.join(minimal, directory), { recursive: true });
+    }
     // Image discovery still inspects directory ownership and merges physical entries.
     // Keep that directory shape without retaining embedded modules or pnpm namespaces.
     for (const directory of metadataDirectories) {

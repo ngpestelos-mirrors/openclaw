@@ -170,6 +170,31 @@ describe("standalone resource allowlist", () => {
     expect(fs.existsSync(path.join(runtime, "node_modules"))).toBe(false);
   });
 
+  it("preserves empty resolution directories without scripts or dependency contents", () => {
+    const runtime = fixture([
+      "package.json",
+      "scripts/windows-cmd-helpers.mjs",
+      "dist/extensions/node_modules/openclaw/package.json",
+      "dist/extensions/node_modules/openclaw/index.js",
+    ]);
+    const result = pruneStandaloneRuntime(runtime);
+    for (const directory of ["scripts", "dist/extensions/node_modules"]) {
+      const filename = path.join(runtime, directory);
+      expect(fs.lstatSync(filename).isDirectory()).toBe(true);
+      expect(fs.readdirSync(filename)).toEqual([]);
+    }
+    expect(result.categories).toEqual({ runtimeMetadata: { files: 1, bytes: 8 } });
+    expect(result.removedFiles).toBe(3);
+    expect(result.removedSymlinks).toBe(0);
+  });
+
+  it("does not create resolution directories absent from the build snapshot", () => {
+    const runtime = fixture(["package.json"]);
+    pruneStandaloneRuntime(runtime);
+    expect(fs.existsSync(path.join(runtime, "scripts"))).toBe(false);
+    expect(fs.existsSync(path.join(runtime, "dist/extensions/node_modules"))).toBe(false);
+  });
+
   it.each([
     "node_modules/.pnpm/example",
     "dist/../outside",
