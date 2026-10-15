@@ -71,7 +71,7 @@ type WakeAttempt = {
   signal: AbortSignal;
   wake: PendingWake;
   terminalPollDisposition: boolean;
-  retryIntervalMs?: number;
+  retryIntervalMs?: number | null;
 };
 type RequestOptions = Omit<HeartbeatWakeRequest, "retainedWork"> & { coalesceMs?: number };
 
@@ -346,33 +346,35 @@ function createSessionEventWakeRuntime() {
   function retry(
     wake: PendingWake,
     result?: Extract<HeartbeatRunResult, { status: "skipped" }>,
-    retryIntervalMs = wake.scheduledEveryMs ?? SESSION_EVENT_IDLE_RETRY_MS,
+    retryIntervalMs?: number | null,
   ): void {
     const channelNotReady = result?.reason === "channel-not-ready";
-    const channelRetryDelayMs = Math.min(
-      retryIntervalMs,
-      (wake.channelRetryDelayMs ?? SESSION_EVENT_IDLE_RETRY_MS / 2) * 2,
-    );
-    if (channelNotReady && wake.channelRetryDelayMs === undefined) {
+    const channelRetryDelayMs =
+      channelNotReady && retryIntervalMs != null
+        ? Math.min(
+            retryIntervalMs,
+            (wake.channelRetryDelayMs ?? SESSION_EVENT_IDLE_RETRY_MS / 2) * 2,
+          )
+        : undefined;
+    if (channelRetryDelayMs !== undefined && wake.channelRetryDelayMs === undefined) {
       heartbeatLog.info("heartbeat: channel not ready; backing off before the next turn", {
         agentId: wake.agentId,
         sessionKey: wake.sessionKey,
       });
     }
     const idleGrace =
-      result &&
-      (result.reason === "preempted" ||
-        result.reason === "channel-not-ready" ||
-        ((result.reason === "requests-in-flight" || result.reason === "active-run") &&
-          (wake.intent === "scheduled" || wake.intent === "task")));
+      channelNotReady ||
+      result?.reason === "preempted" ||
+      ((result?.reason === "requests-in-flight" || result?.reason === "active-run") &&
+        (wake.intent === "scheduled" || wake.intent === "task"));
     const guard = idleGrace || (result && GUARD_REASONS.has(result.reason));
-    const delay = channelNotReady
-      ? channelRetryDelayMs
-      : result?.retryAtMs !== undefined
+    const delay =
+      channelRetryDelayMs ??
+      (result?.retryAtMs !== undefined
         ? Math.max(0, result.retryAtMs - Date.now())
         : idleGrace
           ? SESSION_EVENT_IDLE_RETRY_MS
-          : RETRY_MS;
+          : RETRY_MS);
     const deadline = performance.now() + delay;
     if (result) {
       const retryAtMs = Date.now() + delay;
@@ -569,12 +571,6 @@ function createSessionEventWakeRuntime() {
         })
       : undefined;
     handler = next;
-    if (!next) {
-      // Waiters cannot depend on a future runner; shared notifications retain their queue ownership.
-      for (const waiter of waiters) {
-        waiter.settle({ status: "skipped", reason: "handler-unavailable" });
-      }
-    }
     clearTimeout(timer);
     timer = undefined;
     timerDefersReadyWork = false;
@@ -590,6 +586,10 @@ function createSessionEventWakeRuntime() {
         }
       }
     } else {
+      // Waiters cannot depend on a future runner; shared notifications retain their queue ownership.
+      for (const waiter of waiters) {
+        waiter.settle({ status: "skipped", reason: "handler-unavailable" });
+      }
       for (const owner of active.values()) {
         owner.controller.abort();
       }
@@ -690,15 +690,16 @@ function createSessionEventWakeRuntime() {
   }
 
   // These operations stay internal to the owner/runner, outside the SDK adapter.
-  function markSessionEventWakeWorkStarted(retryIntervalMs?: number): void {
+  function markSessionEventWakeWorkStarted(ambientRetryIntervalMs?: number): void {
     const attempt = attempts.getStore();
     if (attempt) {
       attempt.signal.throwIfAborted();
       attempt.wake.workStarted = true;
-      // Broadcast attempts share a wake; its retry must fit every participating cadence.
-      if (retryIntervalMs !== undefined) {
-        attempt.retryIntervalMs = Math.min(attempt.retryIntervalMs ?? Infinity, retryIntervalMs);
-      }
+      // A broadcast carrying any required work must keep its ordinary delivery retry.
+      attempt.retryIntervalMs =
+        ambientRetryIntervalMs === undefined || attempt.retryIntervalMs === null
+          ? null
+          : Math.min(attempt.retryIntervalMs ?? Infinity, ambientRetryIntervalMs);
       attempt.terminalPollDisposition = false;
     }
   }

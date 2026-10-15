@@ -53,9 +53,11 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
   }
   // Preparation can admit isolated work; later busy skips must retain the occurrence.
   markSessionEventWakeWorkStarted(
-    opts.scheduledEveryMs ??
-      resolveHeartbeatIntervalMs(wake.cfg, undefined, wake.heartbeat) ??
-      undefined,
+    wake.isAmbientPoll
+      ? (opts.scheduledEveryMs ??
+          resolveHeartbeatIntervalMs(wake.cfg, undefined, wake.heartbeat) ??
+          undefined)
+      : undefined,
   );
   const prepared = await prepareHeartbeatRunStage(wake);
   if (prepared.kind === "skipped") {
@@ -75,7 +77,7 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
   }
   const channel = delivery.channel !== "none" ? delivery.channel : undefined;
   const readiness =
-    channel && delivery.to
+    wake.isAmbientPoll && channel && delivery.to
       ? await resolveHeartbeatChannelPlugin(channel)
           ?.heartbeat?.checkReady?.({ cfg, accountId: delivery.accountId, deps: opts.deps })
           .catch((error: unknown) => ({ ok: false, reason: formatErrorMessage(error) }))

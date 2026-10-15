@@ -165,6 +165,32 @@ describe("heartbeat-wake", () => {
     expect(checks.slice(-2)).toEqual([1_620_000, 1_680_000]);
   });
 
+  it.each(["task", "event"] as const)(
+    "keeps the one-minute delivery retry for required %s work",
+    async (intent) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      const log = vi.spyOn(heartbeatLog, "info");
+      const attempts: number[] = [];
+      setHeartbeatWakeHandler(async () => {
+        markSessionEventWakeWorkStarted();
+        attempts.push(Date.now());
+        return { status: "skipped", reason: "channel-not-ready" };
+      });
+      requestHeartbeat(
+        wake("interval", {
+          agentId: "main",
+          intent,
+          scheduledEveryMs: 5 * 60_000,
+          coalesceMs: 0,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(attempts).toEqual([0, 60_000, 120_000, 180_000]);
+      expect(log).not.toHaveBeenCalled();
+    },
+  );
+
   it("coalesces a colliding scheduled wake into the task turn", async () => {
     vi.useFakeTimers();
     const handler = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });

@@ -37,7 +37,7 @@ import {
   withTempTelegramHeartbeatSandbox,
 } from "./heartbeat-runner.test-utils.js";
 import { isRetryableHeartbeatSkipReason } from "./heartbeat-wake.js";
-import { resetSystemEventsForTest } from "./system-events.js";
+import { enqueueSystemEvent, resetSystemEventsForTest } from "./system-events.js";
 
 // mock-isolation: Keep speech policy and synthesis real while isolating live guards and audio persistence.
 vi.mock("../tts/tts.runtime.js", async () => {
@@ -160,6 +160,59 @@ describe("runHeartbeatOnce structured heartbeat delivery", () => {
           expect(replySpy).toHaveBeenCalledOnce();
           expect(sendTelegram).toHaveBeenCalledOnce();
         }
+      })(),
+  );
+
+  it.each([
+    { kind: "task", source: "interval", intent: "task" },
+    { kind: "event", source: "cron", intent: "immediate" },
+    { kind: "event", source: "interval", intent: "scheduled" },
+    { kind: "manual", source: "manual", intent: "manual" },
+  ] as const)(
+    "executes $kind work from $source before gating unavailable delivery",
+    async ({ kind, source, intent }) =>
+      heartbeatCase(async ({ cfg, seed, replySpy, sendTelegram, run }) => {
+        const payload = "Check inbox for queued work.";
+        const order: string[] = [];
+        setActivePluginRegistry(
+          createTestRegistry([
+            {
+              pluginId: "telegram",
+              source: "test",
+              plugin: {
+                ...heartbeatRunnerTelegramPlugin,
+                heartbeat: {
+                  checkReady: async () => {
+                    order.push("readiness");
+                    return { ok: false, reason: "terminal-disconnect" };
+                  },
+                },
+              },
+            },
+          ]),
+        );
+        cfg.agents!.defaults!.heartbeat!.prompt =
+          kind === "manual" ? payload : "Ambient monitor only.";
+        const sessionKey = await seed();
+        if (kind === "event") {
+          enqueueSystemEvent(`Reminder: ${payload}`, { sessionKey, contextKey: "cron:inbox" });
+        }
+        replySpy.mockImplementation(async () => {
+          order.push("model");
+          return { text: "Inbox needs attention." };
+        });
+        const result = await run({
+          source,
+          intent,
+          ...(kind === "task"
+            ? { tasks: [{ jobId: "inbox", name: "Check inbox", prompt: payload }] }
+            : {}),
+        });
+        expect(replySpy).toHaveBeenCalledOnce();
+        expect(replySpy.mock.calls[0]?.[0].Body).toContain(payload);
+        expect(order).toEqual(["model", "readiness"]);
+        expect(result).toMatchObject({ status: "skipped", reason: "channel-not-ready" });
+        expect(sendTelegram).not.toHaveBeenCalled();
       })(),
   );
 
