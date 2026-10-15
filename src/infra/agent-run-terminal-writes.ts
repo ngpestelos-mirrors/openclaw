@@ -9,6 +9,7 @@ import type { AgentRunContext } from "./agent-run-registry.types.js";
 type OperationalRunInstance = AgentRunDelegatedAuthority["operationalRunInstance"];
 type TerminalWriteContext = { run: <T>(write: () => T) => T };
 type TerminalWrites = {
+  owner: AgentRunContext;
   instance: OperationalRunInstance;
   context?: TerminalWriteContext;
   pending: Set<Promise<void>>;
@@ -28,7 +29,7 @@ function prepareTerminalWrites(owner: AgentRunContext, instance: OperationalRunI
     throw new Error("Terminal write settlement owner changed");
   }
   if (!current || current.instance !== instance) {
-    current = { instance, pending: new Set() };
+    current = { owner, instance, pending: new Set() };
     terminalWrites.set(owner, current);
   }
   operationalTerminalWrites.set(instance, current);
@@ -141,12 +142,16 @@ function captureAgentRunTerminalWriteContext(
   };
 }
 
-/** Normal completion joins accepted terminal writes; explicit authority close stays immediate. */
+/** Join accepted terminal writes, then retire their binding; execution close stays immediate. */
 export async function drainAgentRunTerminalWrites(instance: OperationalRunInstance): Promise<void> {
   const current = operationalTerminalWrites.get(instance);
   if (current) {
     while (current.pending.size > 0) {
       await Promise.allSettled(current.pending);
     }
+    if (terminalWrites.get(current.owner)?.instance === instance) {
+      terminalWrites.delete(current.owner);
+    }
+    operationalTerminalWrites.delete(instance);
   }
 }

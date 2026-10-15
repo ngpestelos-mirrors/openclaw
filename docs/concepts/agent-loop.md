@@ -299,6 +299,7 @@ accepted terminal bookkeeping still settles through the lifecycle owner, so
 Stop and restart cancellation can record the session outcome and any applicable
 failure notice. A replaced session, runtime candidate, or Gateway lifecycle
 cannot reuse that terminal writer.
+The lifecycle owner retires the terminal writer after its accepted writes settle.
 
 The model idle and provider HTTP rows describe the built-in OpenClaw model
 path. Codex owns its native stream deadlines and network retries. After exact
