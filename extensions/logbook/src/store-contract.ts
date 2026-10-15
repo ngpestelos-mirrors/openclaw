@@ -68,6 +68,6 @@ export type LogbookOperations = {
   listDays: Operation<undefined, LogbookDay[]>;
   timelineForDay: Operation<{ day: string }, LogbookTimeline>;
   getStandup: Operation<{ day: string }, LogbookStandup | null>;
-  saveStandup: Operation<{ day: string; text: string }, void>;
+  saveStandup: Operation<{ day: string; text: string }, LogbookStandup>;
   pruneFrames: Operation<{ olderThanMs: number }, number>;
 };
