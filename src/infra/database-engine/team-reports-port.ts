@@ -5,8 +5,8 @@ export const teamReportsPortProvider: DatabasePortProvider = {
   id: "team-reports",
   minimumPostgresVersion: 16,
   async loadDescriptor(owner) {
-    const { loadDescriptor } = await import("./team-reports-port-descriptor.js");
-    return loadDescriptor(owner);
+    const { loadTeamReportsPortDescriptor } = await import("./team-reports-port-descriptor.js");
+    return loadTeamReportsPortDescriptor(owner);
   },
   matchesSqlite: (tables) => tables.has("team_reports_schema_migrations"),
   resolveRoots(context) {

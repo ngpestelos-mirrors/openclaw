@@ -7,7 +7,7 @@ import {
 import { expectedPostgresCatalog } from "./postgres-catalog.js";
 import metadata from "./team-reports-port.generated.json" with { type: "json" };
 
-export async function loadDescriptor(
+export async function loadTeamReportsPortDescriptor(
   owner?: Parameters<DatabasePortProvider["loadDescriptor"]>[0],
 ): Promise<PortDescriptor> {
   const api = loadBundledPluginPublicArtifactModuleFromCandidatesSync<{
