@@ -132,9 +132,10 @@ describe("worker placement session events", () => {
         await time.advanceBy(60_000);
         expect(await placements.getAsync(orphan.sessionId)).toBeUndefined();
         expect(await placements.getAsync(identity.sessionId)).toMatchObject(identity);
-        expect(runtimeFactoryMocks.createSessionEvidenceResolver).toHaveBeenLastCalledWith([
-          expect.objectContaining(orphan),
-        ]);
+        expect(runtimeFactoryMocks.createSessionEvidenceResolver).toHaveBeenLastCalledWith(
+          [expect.objectContaining(orphan)],
+          expect.any(AbortSignal),
+        );
         expect(list).toHaveBeenCalledTimes(3);
 
         reconciled = createDeferredCore();
@@ -146,9 +147,10 @@ describe("worker placement session events", () => {
         });
         await reconciled.promise;
         expect(await placements.getAsync(identity.sessionId)).toBeUndefined();
-        expect(runtimeFactoryMocks.createSessionEvidenceResolver).toHaveBeenLastCalledWith([
-          expect.objectContaining(identity),
-        ]);
+        expect(runtimeFactoryMocks.createSessionEvidenceResolver).toHaveBeenLastCalledWith(
+          [expect.objectContaining(identity)],
+          expect.any(AbortSignal),
+        );
         expect(list).toHaveBeenCalledTimes(3);
         expect(warn).not.toHaveBeenCalled();
       } finally {
