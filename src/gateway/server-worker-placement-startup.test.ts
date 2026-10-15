@@ -277,7 +277,7 @@ describe("worker placement startup health lifetime", () => {
     },
   );
 
-  it("immediately retires absent sessions after readiness and drains retirement on stop", async () => {
+  it("defers unaccepted retirement when shutdown begins during its evidence read", async () => {
     const evidence = createDeferredCore<"absent">();
     const reconcileActive = vi.fn().mockResolvedValue(undefined);
     const retireSessionPlacementAsync = vi.fn(async () => {});
@@ -364,7 +364,7 @@ describe("worker placement startup health lifetime", () => {
       expect(environments.stop).not.toHaveBeenCalled();
       evidence.resolve("absent");
       await Promise.all([stopping, repeatedStop]);
-      expect(retireSessionPlacementAsync).toHaveBeenCalledOnce();
+      expect(retireSessionPlacementAsync).not.toHaveBeenCalled();
       expect(environments.stop).toHaveBeenCalledOnce();
       expect(unregisterSidecar).not.toHaveBeenCalled();
     } finally {
