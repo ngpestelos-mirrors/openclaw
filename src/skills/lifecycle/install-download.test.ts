@@ -50,9 +50,19 @@ const TAR_BZIP2_FIXTURES = {
     "QlpoOTFBWSZTWY+FyHAAAI17gOGQAQBAAneAASB3JB4QCIggAHQSUKep6nqaYj1GekRskEkkGgaAAaA+1I1khQyAHTJIRZdEvHDGEE8HiEMLpytUpEF0HAjVoCIM7I6+zEYyIweaTJqDybg1luMVofqBwMXfaxFdiT5XLK+/NBIP4u5IpwoSEfC5DgA=",
     "base64",
   ),
+  // a-readable (0644), then z-target (0000).
+  unreadableFile: Buffer.from(
+    "QlpoOTFBWSZTWfDwP48AAIz7gOuQCABAAn+AAUB/pB4QCIggAHIaU9RpoAGgeoDI9QJJU/UI2iGj1GHqmRoNNo98QckwANSkhHI1K+sxifa4sVYhDJW5uo+9yoFQMCMtwQwnItvvJ3EFXRYydPJxmAS9HE58ZwRkUFMeQaHsNtDVFIUplNR9gCID8XckU4UJDw8D+PA=",
+    "base64",
+  ),
   // a-readable, then z-directory (0400) containing a file.
   unsearchableDirectory: Buffer.from(
     "QlpoOTFBWSZTWd+NhiUAAKv7gOOQBABAAv+ARQB/LJ4wCIggAJIJJU9EZPQg2kGmQG9U9QIpQCNGgAPKAGh+lfGY1Q1GWBWLEFMDT4dZbc0OzRVDA3KJCHrpSGJPE3loYQrY30CspTrRsgisnxppZjopZRGVV5ayxgRCGpVsLtfjgpTehQ7jmSfzVpEbR3K7ixWUq4tmphtJqg/bpIQfxdyRThQkN+NhiUA=",
+    "base64",
+  ),
+  // An empty directory (0400), which is readable without search permission.
+  emptyReadOnlyDirectory: Buffer.from(
+    "QlpoOTFBWSZTWXXuRd4AAHB7gOCAABBAANeAAQBuIJ4gAAggAFRCAAaADQSUyIxANAaXwqwkE4oQivbyeY5JAiCgXZJosI2dCYkSyVUVNQHt3rteudMzOExEQD4u5IpwoSDr3Iu8",
     "base64",
   ),
 };
@@ -242,6 +252,10 @@ describe("installDownloadSpec extraction safety", () => {
       name: "encoded-response-length",
       headers: new Headers({ "content-encoding": "gzip", "content-length": "268435457" }),
     },
+    {
+      name: "malformed-response-length",
+      headers: new Headers({ "content-length": "1e9" }),
+    },
   ])("streams a decoded response with an unusable declared length ($name)", async (testCase) => {
     const body = Buffer.from("decoded skill artifact");
     const release = vi.fn(async () => undefined);
@@ -344,7 +358,7 @@ describe("installDownloadSpec extraction safety", () => {
     );
   }, 45_000);
 
-  it.each([500])(
+  it.each([200, 500])(
     "settles a chunked HTTP %s response and releases guarded resources",
     async (statusCode) => {
       const chunks = [Buffer.from("skill "), Buffer.from("artifact"), Buffer.from([0, 255])];
@@ -397,54 +411,54 @@ describe("installDownloadSpec extraction safety", () => {
     },
   );
 
-  it.each([{ name: "new destination", existing: false }])(
-    "rejects a SHA-256 mismatch without changing a $name",
-    async ({ existing }) => {
-      const archive = Buffer.from("unverified archive bytes");
-      const expected = "0".repeat(64);
-      const actual = createHash("sha256").update(archive).digest("hex");
-      const skillKey = `digest-mismatch-${existing ? "existing" : "new"}`;
-      const toolsRoot = resolveSkillToolsRootDir(skillKey);
-      const targetDir = path.join(toolsRoot, "runtime");
-      if (existing) {
-        await fs.mkdir(targetDir, { recursive: true });
-        await fs.writeFile(path.join(targetDir, "existing.txt"), "preserved");
-      }
-      mockArchiveResponse(archive);
+  it.each([
+    { name: "new destination", existing: false },
+    { name: "existing destination", existing: true },
+  ])("rejects a SHA-256 mismatch without changing a $name", async ({ existing }) => {
+    const archive = Buffer.from("unverified archive bytes");
+    const expected = "0".repeat(64);
+    const actual = createHash("sha256").update(archive).digest("hex");
+    const skillKey = `digest-mismatch-${existing ? "existing" : "new"}`;
+    const toolsRoot = resolveSkillToolsRootDir(skillKey);
+    const targetDir = path.join(toolsRoot, "runtime");
+    if (existing) {
+      await fs.mkdir(targetDir, { recursive: true });
+      await fs.writeFile(path.join(targetDir, "existing.txt"), "preserved");
+    }
+    mockArchiveResponse(archive);
 
-      const result = await installDownloadSpec({
-        skillKey,
-        spec: {
-          ...buildDownloadSpec({
-            url: "https://example.invalid/runtime.tar.bz2?token=do-not-disclose",
-            archive: "tar.bz2",
-            targetDir: "runtime",
-          }),
-          sha256: expected,
-        },
-        timeoutMs: 30_000,
-      });
+    const result = await installDownloadSpec({
+      skillKey,
+      spec: {
+        ...buildDownloadSpec({
+          url: "https://example.invalid/runtime.tar.bz2?token=do-not-disclose",
+          archive: "tar.bz2",
+          targetDir: "runtime",
+        }),
+        sha256: expected,
+      },
+      timeoutMs: 30_000,
+    });
 
-      expect(result.ok).toBe(false);
-      expect(result.stderr).toContain("runtime.tar.bz2");
-      expect(result.stderr).toContain(expected);
-      expect(result.stderr).toContain(actual);
-      expect(result.stderr).toContain("download was discarded");
-      expect(result.stderr).toContain("verify the publisher checksum");
-      expect(result.stderr).not.toContain("do-not-disclose");
-      await expect(fileExists(path.join(targetDir, "runtime.tar.bz2"))).resolves.toBe(false);
-      if (existing) {
-        await expect(fs.readdir(toolsRoot)).resolves.toEqual(["runtime"]);
-        await expect(fs.readdir(targetDir)).resolves.toEqual(["existing.txt"]);
-        await expect(fs.readFile(path.join(targetDir, "existing.txt"), "utf8")).resolves.toBe(
-          "preserved",
-        );
-      } else {
-        await expect(fs.readdir(toolsRoot)).resolves.toEqual([]);
-        await expect(fileExists(targetDir)).resolves.toBe(false);
-      }
-    },
-  );
+    expect(result.ok).toBe(false);
+    expect(result.stderr).toContain("runtime.tar.bz2");
+    expect(result.stderr).toContain(expected);
+    expect(result.stderr).toContain(actual);
+    expect(result.stderr).toContain("download was discarded");
+    expect(result.stderr).toContain("verify the publisher checksum");
+    expect(result.stderr).not.toContain("do-not-disclose");
+    await expect(fileExists(path.join(targetDir, "runtime.tar.bz2"))).resolves.toBe(false);
+    if (existing) {
+      await expect(fs.readdir(toolsRoot)).resolves.toEqual(["runtime"]);
+      await expect(fs.readdir(targetDir)).resolves.toEqual(["existing.txt"]);
+      await expect(fs.readFile(path.join(targetDir, "existing.txt"), "utf8")).resolves.toBe(
+        "preserved",
+      );
+    } else {
+      await expect(fs.readdir(toolsRoot)).resolves.toEqual([]);
+      await expect(fileExists(targetDir)).resolves.toBe(false);
+    }
+  });
 
   it.runIf(process.platform !== "win32")(
     "fails closed when the tools root is replaced after verified archive publication",
@@ -519,7 +533,7 @@ describe("installDownloadSpec extraction safety", () => {
     },
   );
 
-  it.each(["tar.gz"] as const)(
+  it.each(["tar.gz", "tar.bz2", "zip"] as const)(
     "publishes verified %s archives with executable files and empty directories",
     async (archiveType) => {
       const skillKey = `verified-published-${archiveType}`;
@@ -529,9 +543,19 @@ describe("installDownloadSpec extraction safety", () => {
       await fs.mkdir(path.join(packageDir, "empty"), { recursive: true });
       await fs.writeFile(path.join(packageDir, "run.sh"), executableContents, { mode: 0o755 });
 
-      const fixtureArchive = path.join(fixtureRoot, "runtime.tar.gz");
-      await tar.c({ cwd: fixtureRoot, file: fixtureArchive, gzip: true }, ["package"]);
-      const archive = await fs.readFile(fixtureArchive);
+      let archive: Buffer;
+      if (archiveType === "tar.bz2") {
+        archive = TAR_BZIP2_FIXTURES.safe;
+      } else if (archiveType === "zip") {
+        const zip = new JSZip();
+        zip.folder("package/empty/");
+        zip.file("package/run.sh", executableContents, { unixPermissions: 0o755 });
+        archive = await zip.generateAsync({ type: "nodebuffer", platform: "UNIX" });
+      } else {
+        const fixtureArchive = path.join(fixtureRoot, "runtime.tar.gz");
+        await tar.c({ cwd: fixtureRoot, file: fixtureArchive, gzip: true }, ["package"]);
+        archive = await fs.readFile(fixtureArchive);
+      }
       mockArchiveResponse(archive);
 
       const archiveName = `runtime.${archiveType}`;
@@ -553,12 +577,20 @@ describe("installDownloadSpec extraction safety", () => {
       expect(result.ok).toBe(true);
       await expect(fs.readdir(resolveSkillToolsRootDir(skillKey))).resolves.toEqual(["runtime"]);
       await expect(fs.readFile(path.join(destinationDir, archiveName))).resolves.toEqual(archive);
+      if (archiveType === "tar.bz2") {
+        await expect(fs.readFile(path.join(destinationDir, "private.txt"), "utf8")).resolves.toBe(
+          "private data\n",
+        );
+      }
       await expect(fs.readFile(path.join(destinationDir, "run.sh"), "utf8")).resolves.toBe(
         executableContents,
       );
       expect((await fs.stat(path.join(destinationDir, "empty"))).isDirectory()).toBe(true);
       if (process.platform !== "win32") {
-        expect((await fs.stat(path.join(destinationDir, "run.sh"))).mode & 0o777).toBe(0o755);
+        const mask = archiveType === "tar.bz2" && process.geteuid?.() !== 0 ? process.umask() : 0;
+        expect((await fs.stat(path.join(destinationDir, "run.sh"))).mode & 0o777).toBe(
+          0o755 & ~mask,
+        );
       }
     },
   );
@@ -586,9 +618,10 @@ describe("installDownloadSpec extraction safety", () => {
     await expect(fileExists(escapedTargetDir)).resolves.toBe(false);
   });
 
-  it
-    .runIf(process.platform !== "win32")
-    .each([{ name: "a matching-digest download", verified: true }])(
+  it.runIf(process.platform !== "win32").each([
+    { name: "a legacy download", verified: false },
+    { name: "a matching-digest download", verified: true },
+  ])(
     "fails closed when $name rebinds the lexical tools root before the final copy",
     async ({ verified }) => {
       const skillKey = `base-rebind-${verified ? "verified" : "legacy"}`;
@@ -640,7 +673,7 @@ describe("installDownloadSpec extraction safety", () => {
     },
   );
 
-  it.each([undefined])(
+  it.each([undefined, false])(
     "keeps extensionless downloads unextracted with extract=%s",
     async (extract) => {
       const payload = Buffer.from("not an archive");
@@ -663,7 +696,7 @@ describe("installDownloadSpec extraction safety", () => {
     },
   );
 
-  it.each(['attachment; filename="one.zip"; filename="two.zip"'])(
+  it.each([undefined, 'attachment; filename="one.zip"; filename="two.zip"'])(
     "fails cleanly without a usable archive name: %s",
     async (disposition) => {
       fetchWithSsrFGuardMock.mockResolvedValue({
@@ -694,10 +727,30 @@ describe("installDownloadSpec extraction safety", () => {
       disposition: 'attachment; filename="runtime.zip"',
       urlPath: "/download",
     },
+    {
+      name: "RFC 5987 filename* with a language tag",
+      disposition: "attachment; filename*=UTF-8'en'runtime.zip",
+      urlPath: "/download",
+    },
+    {
+      name: "quoted filename containing a semicolon",
+      disposition: 'attachment; filename="runtime;linux.zip"',
+      urlPath: "/download",
+    },
+    {
+      name: "URL suffix when Content-Disposition is a generic download name",
+      disposition: 'attachment; filename="download"',
+      urlPath: "/runtime.zip",
+    },
     ...[
+      'attachment; filename="wrong.tar.gz"; filename="runtime.zip"',
       "attachment; filename*=UTF-8''wrong.tar.gz; filename*=UTF-8''runtime.zip",
+      'attachment; filename="wrong.tar.gz"; FILENAME="runtime.zip"',
+      'attachment; filename="wrong.tar.gz',
       'attachment; filename="wrong.tar.gz"garbage',
       "attachment; filename*=UTF-8'invalid language'wrong.tar.gz",
+      "attachment; filename*=UTF-8'--'wrong.tar.gz",
+      "attachment; filename*=UTF-8''wrong%GG.tar.gz",
       "attachment; filename*=UTF-8''wrong%FF.tar.gz",
       "attachment; filename=\"wrong.tar.gz\"; filename*=UTF-8''",
     ].map((disposition) => ({
@@ -755,8 +808,14 @@ describe("installDownloadSpec extraction safety (tar.bz2)", () => {
       archive: TAR_BZIP2_FIXTURES.traversal,
       error: /archive-entry-path-invalid|archive entry (?:escapes|contains a parent segment)/i,
     },
+    {
+      name: "truncated",
+      archive: TAR_BZIP2_FIXTURES.safe.subarray(0, 40),
+      error: /decompression not finished but EOF reached|incomplete compressed stream/i,
+    },
     ...(process.platform !== "win32" && process.geteuid?.() !== 0
       ? [
+          { name: "unreadable-file", archive: TAR_BZIP2_FIXTURES.unreadableFile, error: undefined },
           {
             name: "unsearchable-directory",
             archive: TAR_BZIP2_FIXTURES.unsearchableDirectory,
@@ -913,6 +972,23 @@ describe("installDownloadSpec extraction safety (tar.bz2)", () => {
       }
     },
   );
+
+  it.runIf(process.platform !== "win32")("installs an empty read-only directory", async () => {
+    const name = "tbz2-empty-read-only-directory";
+    const targetDir = path.join(resolveSkillToolsRootDir(name), "target");
+    mockArchiveResponse(TAR_BZIP2_FIXTURES.emptyReadOnlyDirectory);
+
+    const result = await installDownloadSkill({
+      name,
+      url: "https://example.invalid/archive.tbz2",
+      archive: "tar.bz2",
+      targetDir,
+    });
+
+    expect(result.ok).toBe(true);
+    expect((await fs.stat(path.join(targetDir, "directory"))).isDirectory()).toBe(true);
+    await expect(fs.readdir(path.join(targetDir, "directory"))).resolves.toEqual([]);
+  });
 
   it("rejects tar.bz2 entries that traverse pre-existing targetDir symlinks", async () => {
     const skillKey = "tbz2-targetdir-symlink";

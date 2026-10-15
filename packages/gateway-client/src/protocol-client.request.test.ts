@@ -252,7 +252,7 @@ describe("GatewayProtocolClient requests", () => {
     client.stop();
   });
 
-  it.each(["prepared"])(
+  it.each(["preparing", "draining", "prepared"])(
     "replaces refusal probes with an announced %s pause despite late refusals",
     async (phase) => {
       vi.useFakeTimers();
@@ -317,7 +317,7 @@ describe("GatewayProtocolClient requests", () => {
     client.stop();
   });
 
-  it.each(["gateway-restarting"])(
+  it.each(["gateway-suspending", "gateway-restarting"])(
     "retains the longest outstanding retry deadline for %s",
     async (reason) => {
       vi.useFakeTimers();
@@ -538,9 +538,9 @@ describe("GatewayProtocolClient requests", () => {
     client.stop();
   });
 
-  it.each(["disconnect"])(
+  it.each(["timeout", "abort", "disconnect"])(
     "retires a parked identity on %s without sending it after resume",
-    async () => {
+    async (retirement) => {
       vi.useFakeTimers();
       const { client, connections } = createRequestHarness();
       const connection = connections[0];
@@ -560,9 +560,19 @@ describe("GatewayProtocolClient requests", () => {
       );
       const outcome = request.catch((error: unknown) => error);
       expect(connection.frames).toHaveLength(0);
-      connection.close(1012, "restart");
-      expect(await outcome).toMatchObject({ message: "gateway closed (1012): restart" });
-      client.start();
+      if (retirement === "timeout") {
+        await vi.advanceTimersByTimeAsync(500);
+        expect(await outcome).toMatchObject({ code: "CLIENT_TIMEOUT", requestSent: false });
+      } else if (retirement === "abort") {
+        controller.abort();
+        expect(await outcome).toMatchObject({
+          message: "gateway request aborted for agent.identity.get",
+        });
+      } else {
+        connection.close(1012, "restart");
+        expect(await outcome).toMatchObject({ message: "gateway closed (1012): restart" });
+        client.start();
+      }
       connection.handlers.message(
         JSON.stringify({
           type: "event",
@@ -671,6 +681,49 @@ describe("GatewayProtocolClient requests", () => {
     } finally {
       client.stop();
     }
+  });
+
+  it("reports typed deadlines before and after the send boundary", async () => {
+    vi.useFakeTimers();
+    const sentHarness = createRequestHarness();
+    const sentRequest = sentHarness.client.request("sent.request", {}, { timeoutMs: 5 });
+    const sentOutcome = sentRequest.catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(5);
+
+    await expect(sentOutcome).resolves.toMatchObject({
+      code: "CLIENT_TIMEOUT",
+      method: "sent.request",
+      timeoutMs: 5,
+      requestSent: true,
+    });
+
+    let deadline: (() => void) | undefined;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: Parameters<typeof setTimeout>[0],
+    ) => {
+      deadline = callback as () => void;
+      return { unref: () => undefined } as unknown as ReturnType<typeof setTimeout>;
+    }) as unknown as typeof setTimeout);
+    const onSent = vi.fn();
+    const unsentHarness = createRequestHarness({ send: () => deadline?.() });
+    const unsentRequest = unsentHarness.client.request(
+      "unsent.request",
+      {},
+      { timeoutMs: 5, onSent },
+    );
+
+    await expect(unsentRequest).rejects.toMatchObject({
+      code: "CLIENT_TIMEOUT",
+      method: "unsent.request",
+      timeoutMs: 5,
+      requestSent: false,
+    });
+    expect(onSent).not.toHaveBeenCalled();
+    expect(unsentHarness.client.hasPendingRequests).toBe(false);
+    expect(sentHarness.client.hasPendingRequests).toBe(false);
+    sentHarness.client.stop();
+    unsentHarness.client.stop();
   });
 
   it("retires aborted and send-failed IDs before a replacement request", async () => {
