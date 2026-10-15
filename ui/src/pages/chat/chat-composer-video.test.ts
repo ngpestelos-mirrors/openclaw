@@ -1,9 +1,10 @@
 /* @vitest-environment jsdom */
 
+import { createComponent } from "solid-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Icon, type IconName } from "../../components/solid/icon.tsx";
 import { t } from "../../i18n/index.ts";
-import { mountSolid } from "../../test-helpers/solid-render.tsx";
+import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import {
   createComposerContainer,
   createComposerProps as props,
@@ -14,13 +15,13 @@ import {
 } from "./chat-composer.test-support.ts";
 
 function iconShapes(name: IconName): string[] {
-  const view = mountSolid(Icon, { name });
-  const shapes = Array.from(
-    view.container.querySelector("svg")?.children ?? [],
-    (shape) => shape.outerHTML,
-  );
-  view.dispose();
-  return shapes;
+  const container = document.createElement("div");
+  const view = mountSolid(() => createComponent(Icon, { name }), { container });
+  try {
+    return Array.from(container.querySelector("svg")?.children ?? [], (shape) => shape.outerHTML);
+  } finally {
+    view.unmount();
+  }
 }
 
 afterEach(async () => {
@@ -130,7 +131,7 @@ describe("renderChatComposer video", () => {
       realtimeTalkStatus: "listening",
       realtimeTalkVideoStream: stream,
     });
-    const draw = () => renderComposerInto(composerProps, container);
+    const draw = () => renderComposerInto(container, composerProps);
     draw();
 
     const preview = container.querySelector<HTMLVideoElement>(

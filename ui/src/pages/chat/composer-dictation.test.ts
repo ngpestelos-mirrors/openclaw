@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
+import { createComponent, createSignal } from "solid-js";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient, GatewayEventFrame } from "../../api/gateway.ts";
 import { loadSettings, patchSettings } from "../../app/settings.ts";
 import { GatewaySpeechPlayback } from "../../lib/speech-playback.ts";
-import { mountSolid } from "../../test-helpers/solid-render.tsx";
+import { cleanupSolid, mountSolid } from "../../test-helpers/mount-solid.ts";
+import { flush } from "../../test-helpers/solid-settle.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
 import { renderComposerVoiceButtonSolid } from "./components/chat-composer-controls.tsx";
 import { ComposerDictationSession } from "./composer-dictation-session.ts";
@@ -159,9 +161,7 @@ function createButtonHarness() {
   const onTap = vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
-  let view:
-    | ReturnType<typeof mountSolid<Parameters<typeof renderComposerVoiceButtonSolid>[0]>>
-    | undefined;
+  const [revision, setRevision] = createSignal(0);
   const controller = new ComposerDictationController({
     client: createClient(),
     connected: true,
@@ -173,19 +173,22 @@ function createButtonHarness() {
     onTap,
   });
   function renderButton() {
-    const props: Parameters<typeof renderComposerVoiceButtonSolid>[0] = {
-      connected: true,
-      readDictation: () => controller,
-      onDictationPointerDown: (event) => controller.handlePointerDown(event),
-      onToggleVoice: vi.fn(),
-    };
-    if (view) {
-      view.update(props);
-    } else {
-      view = mountSolid(renderComposerVoiceButtonSolid, props, container);
-    }
+    setRevision((value) => value + 1);
+    flush();
   }
-  renderButton();
+  mountSolid(
+    () =>
+      createComponent(renderComposerVoiceButtonSolid, {
+        connected: true,
+        readDictation: () => {
+          revision();
+          return controller;
+        },
+        onDictationPointerDown: (event) => controller.handlePointerDown(event),
+        onToggleVoice: vi.fn(),
+      }),
+    { container },
+  );
   const target = container.querySelector("button");
   if (!target) {
     throw new Error("expected the microphone button");
@@ -268,6 +271,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanupSolid();
   document.body.replaceChildren();
   listeners.clear();
   processors.length = 0;

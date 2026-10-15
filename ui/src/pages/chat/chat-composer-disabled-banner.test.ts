@@ -31,18 +31,15 @@ describe("archived session composer banner", () => {
     action.focus();
     const banner = action.parentElement;
 
-    renderComposerInto(
-      {
-        ...props,
-        disabledBanner: {
-          kind: "composer-replacement",
-          text: "This session is still archived.",
-          actionLabel: "Unarchive",
-          onAction: refreshedAction,
-        },
+    renderComposerInto(container, {
+      ...props,
+      disabledBanner: {
+        kind: "composer-replacement",
+        text: "This session is still archived.",
+        actionLabel: "Unarchive",
+        onAction: refreshedAction,
       },
-      container,
-    );
+    });
 
     expect(container.querySelector(".agent-chat__disabled-banner")?.textContent).toContain(
       "This session is still archived.",

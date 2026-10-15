@@ -16,8 +16,8 @@ import {
   createComposerContainer,
   createComposerProps,
   resetComposerFixture,
+  disposeComposer,
   renderComposerInto,
-  unmountComposer,
 } from "./chat-composer.test-support.ts";
 import { installChatComposerPickerDismissal } from "./components/chat-picker-overlay.ts";
 
@@ -70,7 +70,7 @@ export function composerFixture(
     if (native) {
       native.unmount();
     } else {
-      unmountComposer(container);
+      disposeComposer(container);
     }
     container.remove();
   });
@@ -96,25 +96,22 @@ export function composerFixture(
       params: kind === "chat" ? { sessionKey: "agent:main:chat" } : { agentId: "main" },
     };
     if (kind === "chat") {
-      renderComposerInto(
-        {
-          ...props,
-          submitDisabledReason,
-          draft,
-          mentions,
-          getDraft: () => draft,
-          getMentions: () => mentions,
-          mentionDirectory: unsupported ? undefined : directory,
-          mentionsUnsupported: unsupported,
-          onDraftChange: onInput,
-          onRequestUpdate: renderCurrent,
-          onSlashCommand: slashCommand,
-          canAbort: true,
-          onAbort: abort,
-          onSend: () => send({ draft, mentions }),
-        },
-        container,
-      );
+      renderComposerInto(container, {
+        ...props,
+        submitDisabledReason,
+        draft,
+        mentions,
+        getDraft: () => draft,
+        getMentions: () => mentions,
+        mentionDirectory: unsupported ? undefined : directory,
+        mentionsUnsupported: unsupported,
+        onDraftChange: onInput,
+        onRequestUpdate: renderCurrent,
+        onSlashCommand: slashCommand,
+        canAbort: true,
+        onAbort: abort,
+        onSend: () => send({ draft, mentions }),
+      });
     } else {
       nativeOptions = {
         agentId: "main",

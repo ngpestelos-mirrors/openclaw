@@ -1,4 +1,5 @@
 /* @vitest-environment jsdom */
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { AgentsListResult } from "../../api/types.ts";
@@ -15,7 +16,7 @@ import {
   createComposerProps,
   resetComposerFixture,
   renderComposerInto,
-  unmountComposer,
+  disposeComposer,
 } from "./chat-composer.test-support.ts";
 import { applyChatAgentsList } from "./chat-history.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
@@ -565,6 +566,7 @@ describe("queued message edit round-trip", () => {
         expect(host.chatQueue).toEqual([]);
         const active = activeQueuedMessageEdit(host);
         renderComposerInto(
+          container,
           createComposerProps({
             queue: host.chatQueue,
             sessionKey: host.sessionKey,
@@ -575,7 +577,6 @@ describe("queued message edit round-trip", () => {
               onCancel: () => cancelQueuedMessageEdit(host),
             },
           }),
-          container,
         );
         await submitQueuedEdit(host);
         expect(send).not.toHaveBeenCalled();
@@ -593,7 +594,7 @@ describe("queued message edit round-trip", () => {
         expect(cancelQueuedMessageEdit(host)).toBe(true);
         expect(listStoredChatOutboxes(host)).toEqual(originalOutboxes);
       } finally {
-        unmountComposer(container);
+        disposeComposer(container);
         unsubscribe();
         await resetComposerFixture();
       }

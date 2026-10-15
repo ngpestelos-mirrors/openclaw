@@ -1,16 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
+import {
+  createComposerContainer,
+  createComposerProps,
+  disposeComposer,
+  renderComposerInto,
+} from "./chat-composer.test-support.ts";
 import "@awesome.me/webawesome/dist/styles/themes/default.css";
 import "../../styles.css";
 import "../../styles/chat.ts";
 import "../../styles/chat/composer.css";
 import "../../styles/chat/composer-progress.css";
-import {
-  createComposerContainer,
-  createComposerProps,
-  renderComposerInto,
-  unmountComposer,
-} from "./chat-composer.test-support.ts";
+
 import { resetChatComposerState } from "./components/chat-composer.tsx";
 import { installChatComposerPickerDismissal } from "./components/chat-picker-overlay.ts";
 
@@ -26,7 +27,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  unmountComposer(container);
+  disposeComposer(container);
   container.remove();
   resetChatComposerState();
   releaseDismissal();
@@ -36,6 +37,7 @@ afterEach(async () => {
 
 function drawComposer(attachment = false, goal = false) {
   renderComposerInto(
+    container,
     createComposerProps({
       goalDraftMode: goal ? { action: "start" } : null,
       attachments: attachment
@@ -51,7 +53,6 @@ function drawComposer(attachment = false, goal = false) {
         outputTokens: 126,
       },
     }),
-    container,
   );
   return {
     composer: container.querySelector<HTMLElement>(".agent-chat__input")!,

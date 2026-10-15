@@ -175,7 +175,7 @@ function mountComposer(overrides: Parameters<typeof props>[0]) {
   const container = createComposerContainer();
   document.body.append(container);
   const composerProps = props(overrides);
-  const draw = () => renderComposerInto(composerProps, container);
+  const draw = () => renderComposerInto(container, composerProps);
   composerProps.onRequestUpdate = draw;
   draw();
   return { container };
@@ -235,7 +235,7 @@ describe("renderChatComposer controls", () => {
     composerProps.realtimeTalkDetail = "The selected microphone is unavailable";
     composerProps.onUseSystemDefaultMicrophone = vi.fn();
     composerProps.onDismissRealtimeTalkError = dismissRecovery;
-    const draw = () => renderComposerInto(composerProps, container);
+    const draw = () => renderComposerInto(container, composerProps);
     composerProps.onRequestUpdate = draw;
     draw();
     await vi.advanceTimersByTimeAsync(0);
@@ -590,14 +590,14 @@ describe("renderChatComposer status", () => {
       onRequestUpdate,
     });
 
-    renderComposerInto(composerProps, container);
+    renderComposerInto(container, composerProps);
     let panel = container.querySelector<ChatQuestionCard>("openclaw-chat-question-card")!;
     expect(panel.props!.model.questions[0]?.question).toBe("First prompt");
     expect(panel.props!.model.requestPosition).toEqual({ current: 1, total: 2 });
 
     panel.props!.onNextRequest?.();
     expect(onRequestUpdate).toHaveBeenCalledOnce();
-    renderComposerInto(composerProps, container);
+    renderComposerInto(container, composerProps);
     panel = container.querySelector<ChatQuestionCard>("openclaw-chat-question-card")!;
     expect(panel.props!.model.questions[0]?.question).toBe("Second prompt");
     expect(panel.props!.model.requestPosition).toEqual({ current: 2, total: 2 });

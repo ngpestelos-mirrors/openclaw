@@ -1,15 +1,14 @@
 /* @vitest-environment jsdom */
 
-import { describe, expect, it, vi } from "vitest";
+import { createComponent, createSignal, merge } from "solid-js";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { ModelCatalogEntry, SessionsListResult } from "../../api/types.ts";
 import { createSessionsListResult } from "../../test-helpers/chat-model.ts";
-import { mountSolid } from "../../test-helpers/solid-render.tsx";
+import { mountSolid } from "../../test-helpers/mount-solid.ts";
+import { flush } from "../../test-helpers/solid-settle.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
 import { switchChatModel } from "./chat-session.ts";
 import { ChatModelControls } from "./components/chat-model-controls.tsx";
-
-type ModelControlProps = Parameters<typeof ChatModelControls>[0];
-const modelViews = new WeakMap<HTMLElement, ReturnType<typeof mountSolid<ModelControlProps>>>();
 
 const model: ModelCatalogEntry = {
   id: "gpt-5.6-sol",
@@ -23,13 +22,16 @@ const model: ModelCatalogEntry = {
   ],
 };
 
+type ModelControlsProps = Parameters<typeof ChatModelControls>[0];
+const mountedControls = new WeakMap<HTMLElement, (props: ModelControlsProps) => void>();
+
 function renderControls(
   result: SessionsListResult,
   models: ModelCatalogEntry[],
-  options: Pick<ModelControlProps, "onModelSelect" | "onModelSetup" | "modelSelectionLocked"> = {},
+  options: Pick<ModelControlsProps, "onModelSelect" | "onModelSetup" | "modelSelectionLocked"> = {},
   container = document.createElement("div"),
 ) {
-  const props: ModelControlProps = {
+  const props: ModelControlsProps = {
     activeRunId: null,
     connected: true,
     gatewayAvailable: true,
@@ -44,12 +46,21 @@ function renderControls(
     stream: null,
     ...options,
   };
-  const previous = modelViews.get(container);
-  if (previous) {
-    previous.update(props);
+  const update = mountedControls.get(container);
+  if (update) {
+    update(props);
   } else {
-    modelViews.set(container, mountSolid(ChatModelControls, props, container));
+    const [current, setCurrent] = createSignal(props);
+    const view = mountSolid(() => createComponent(ChatModelControls, merge(current)), {
+      container,
+    });
+    mountedControls.set(container, setCurrent);
+    onTestFinished(() => {
+      view.unmount();
+      mountedControls.delete(container);
+    });
   }
+  flush();
   return container;
 }
 

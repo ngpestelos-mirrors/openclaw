@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { QuestionPrompt } from "../../app/question-prompt.ts";
+import { solidContent } from "../../lit/solid-content.tsx";
 import {
   createComposerContainer,
   createComposerProps as props,
@@ -9,7 +10,6 @@ import {
   resetComposerFixture,
   renderComposerInto,
 } from "./chat-composer.test-support.ts";
-import { solidTemplate } from "./components/chat-composer-controls.ts";
 import { questionPanelIn } from "./components/chat-question-card.test-support.ts";
 
 function questionPrompt(id: string, question: string): QuestionPrompt {
@@ -46,9 +46,6 @@ describe("composer question takeover", () => {
     async (progressOpen) => {
       const container = createComposerContainer();
       document.body.append(container);
-      const modelControl = document.createElement("button");
-      modelControl.type = "button";
-      modelControl.textContent = "Model";
       const prompt = questionPrompt("question-swap", "Choose a release target");
       const composerProps = props({
         paneId: `question-swap-pane-${progressOpen}`,
@@ -63,13 +60,20 @@ describe("composer question takeover", () => {
         sessionKey: "queue-test",
         draft: "Keep this draft",
         gatewayQuestionPrompts: [],
-        composerControls: solidTemplate(() => modelControl, {}),
+        composerControls: solidContent(
+          () =>
+            Object.assign(document.createElement("button"), {
+              type: "button",
+              textContent: "Model",
+            }),
+          {},
+        ),
         onRequestUpdate: vi.fn(),
       });
       composerProps.onDraftChange = (next) => {
         composerProps.draft = next;
       };
-      const draw = () => renderComposerInto(composerProps, container);
+      const draw = () => renderComposerInto(container, composerProps);
 
       draw();
       const progress = container.querySelector<HTMLDetailsElement>(

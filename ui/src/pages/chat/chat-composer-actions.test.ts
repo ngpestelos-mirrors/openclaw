@@ -126,7 +126,7 @@ describe("renderChatComposer controls", () => {
     const finishActive = vi.spyOn(dictation, "finishActive").mockResolvedValue(true);
     const handleClick = vi.spyOn(dictation, "handleClick");
     const update = vi.spyOn(dictation, "update");
-    renderComposerInto(props, container);
+    renderComposerInto(container, props);
     const commit = update.mock.lastCall?.[0].onCommit;
     if (!commit) {
       throw new Error("expected the composer transcript callback");

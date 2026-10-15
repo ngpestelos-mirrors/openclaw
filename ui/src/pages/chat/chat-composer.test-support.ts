@@ -1,4 +1,4 @@
-import { createComponent } from "solid-js";
+import { createComponent, createSignal, getOwner, merge } from "solid-js";
 import { expect, onTestFinished, vi } from "vitest";
 import type { ApplicationContext } from "../../app/context.ts";
 import { i18n } from "../../i18n/index.ts";
@@ -7,64 +7,46 @@ import {
   createApplicationContextProvider,
   createApplicationGateway,
 } from "../../test-helpers/application-context.ts";
+import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import { createSolidApplicationContextProvider } from "../../test-helpers/solid-application-context.tsx";
-import { mountSolid } from "../../test-helpers/solid-render.tsx";
-import { renderChatQueueSolid } from "./components/chat-composer-queue.tsx";
+import { flush } from "../../test-helpers/solid-settle.ts";
+import type { ChatComposerProps } from "./components/chat-composer-types.ts";
 import { ChatComposer, resetChatComposerState } from "./components/chat-composer.tsx";
 
-type ComposerProps = Parameters<typeof ChatComposer>[0];
-const composerViews = new Map<HTMLElement, ReturnType<typeof mountSolid<ComposerProps>>>();
-const composerWrappers = new WeakMap<
+type ComposerProps = ChatComposerProps;
+type NativeComposerProps = Parameters<typeof ChatComposer>[0];
+
+const providers = new WeakMap<
   HTMLElement,
-  ReturnType<typeof createSolidApplicationContextProvider>["wrapper"]
+  ReturnType<typeof createSolidApplicationContextProvider>
 >();
-type QueueProps = Parameters<typeof renderChatQueueSolid>[0];
-const queueViews = new Map<HTMLElement, ReturnType<typeof mountSolid<QueueProps>>>();
+const composers = new Map<
+  HTMLElement,
+  { update: (props: NativeComposerProps) => void; unmount: () => void }
+>();
 
-export function renderComposerQueueInto(props: QueueProps, container: HTMLElement) {
-  const previous = queueViews.get(container);
-  if (previous) {
-    previous.update({ ...props });
-    return;
-  }
-  queueViews.set(container, mountSolid(renderChatQueueSolid, { ...props }, container));
-  onTestFinished(() => unmountComposerQueue(container));
-}
-
-export function unmountComposerQueue(container: HTMLElement) {
-  const view = queueViews.get(container);
-  queueViews.delete(container);
-  view?.dispose();
-}
-
-export function renderComposerInto(props: ComposerProps, container: HTMLElement) {
+export function renderComposerInto(container: HTMLElement, props: ComposerProps) {
   const next = { ...props, renderRevision: {} };
-  const previous = composerViews.get(container);
-  if (previous) {
-    previous.update(next);
-    return;
+  const mounted = composers.get(container);
+  if (mounted) {
+    mounted.update(next);
+  } else {
+    const [current, update] = createSignal<NativeComposerProps>(next, { ownedWrite: true });
+    const view = mountSolid(() => createComponent(ChatComposer, merge(current)), {
+      container,
+      wrapper: providers.get(container)!.wrapper,
+    });
+    composers.set(container, { update, unmount: view.unmount });
+    onTestFinished(() => disposeComposer(container));
   }
-  const wrapper = composerWrappers.get(container);
-  const view = mountSolid(
-    (current: ComposerProps) =>
-      wrapper
-        ? createComponent(wrapper, {
-            get children() {
-              return createComponent(ChatComposer, current);
-            },
-          })
-        : createComponent(ChatComposer, current),
-    next,
-    container,
-  );
-  composerViews.set(container, view);
-  onTestFinished(() => unmountComposer(container));
+  if (!getOwner()) {
+    flush();
+  }
 }
 
-export function unmountComposer(container: HTMLElement) {
-  const view = composerViews.get(container);
-  composerViews.delete(container);
-  view?.dispose();
+export function disposeComposer(container: HTMLElement) {
+  composers.get(container)?.unmount();
+  composers.delete(container);
 }
 
 export function createComposerProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
@@ -97,7 +79,7 @@ export function createComposerProps(overrides: Partial<ComposerProps> = {}): Com
 export function renderComposerFixture(overrides: Partial<ComposerProps> = {}) {
   const container = createComposerContainer();
   const props = createComposerProps(overrides);
-  renderComposerInto(props, container);
+  renderComposerInto(container, props);
   return { container, props };
 }
 
@@ -119,7 +101,13 @@ export function createComposerContainer() {
   // SAFETY: Disconnected composer and transcript fixtures only consume these capabilities.
   const application = context as ApplicationContext;
   const container = createApplicationContextProvider(application);
-  composerWrappers.set(container, createSolidApplicationContextProvider(application).wrapper);
+  const provider = createSolidApplicationContextProvider(application);
+  const setContext = container.setContext;
+  container.setContext = (next) => {
+    setContext(next);
+    provider.setContext(next);
+  };
+  providers.set(container, provider);
   return container;
 }
 
@@ -146,11 +134,8 @@ export function findPrimaryButton(container: Element): HTMLButtonElement {
 }
 
 export async function resetComposerFixture(afterStateReset?: () => void): Promise<void> {
-  for (const container of composerViews.keys()) {
-    unmountComposer(container);
-  }
-  for (const container of queueViews.keys()) {
-    unmountComposerQueue(container);
+  for (const container of composers.keys()) {
+    disposeComposer(container);
   }
   resetChatComposerState();
   afterStateReset?.();

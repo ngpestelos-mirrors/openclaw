@@ -42,7 +42,7 @@ async function mountedPicker(container: HTMLElement) {
 
 async function mountPicker(composerProps: ReturnType<typeof props>) {
   const container = document.body.appendChild(createComposerContainer());
-  const draw = () => renderComposerInto(composerProps, container);
+  const draw = () => renderComposerInto(container, composerProps);
   composerProps.onRequestUpdate = draw;
   draw();
   const dropdown = await mountedPicker(container);
@@ -77,7 +77,7 @@ describe("composer microphone picker", () => {
     const composerProps = props({ onToggleRealtimeTalk: vi.fn() });
     const draw = () => {
       composerProps.realtimeTalkInputDeviceId = theme.settings.realtimeTalkInputDeviceId;
-      renderComposerInto(composerProps, container);
+      renderComposerInto(container, composerProps);
     };
     onTestFinished(theme.subscribe(draw));
     composerProps.onRequestUpdate = draw;

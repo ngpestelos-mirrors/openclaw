@@ -1,9 +1,15 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { createComponent, createSignal, getOwner, merge } from "solid-js";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { i18n, t } from "../../i18n/index.ts";
 import type { HumanMention } from "../../lib/chat/chat-types.ts";
-import { renderComposerQueueInto } from "./chat-composer.test-support.ts";
+import { mountSolid } from "../../test-helpers/mount-solid.ts";
+import { flush } from "../../test-helpers/solid-settle.ts";
+import { renderChatQueueSolid } from "./components/chat-composer-queue.tsx";
+
+type QueueProps = Parameters<typeof renderChatQueueSolid>[0];
+const queues = new WeakMap<HTMLElement, (props: QueueProps) => void>();
 
 afterEach(async () => {
   document.body.replaceChildren();
@@ -58,7 +64,7 @@ describe("chat composer steering queue", () => {
     const container = document.createElement("div");
     document.body.append(container);
     const onQueueSteer = vi.fn();
-    renderComposerQueueInto(
+    renderQueue(
       {
         canAbort: true,
         queue: [
@@ -92,7 +98,7 @@ describe("chat composer steering queue", () => {
   it("keeps the queue identifier on failed and unconfirmed rows", () => {
     const container = document.createElement("div");
     document.body.append(container);
-    renderComposerQueueInto(
+    renderQueue(
       {
         queue: [
           {
@@ -130,16 +136,31 @@ describe("chat composer steering queue", () => {
   });
 });
 
-function renderQueue(props: Parameters<typeof renderComposerQueueInto>[0]) {
-  const container = document.createElement("div");
-  document.body.append(container);
-  renderComposerQueueInto(props, container);
+function renderQueue(
+  props: QueueProps,
+  container = document.body.appendChild(document.createElement("div")),
+) {
+  const update = queues.get(container);
+  if (update) {
+    update(props);
+  } else {
+    const [current, setCurrent] = createSignal(props, { ownedWrite: true });
+    const view = mountSolid(() => createComponent(renderChatQueueSolid, merge(current)), {
+      container,
+    });
+    queues.set(container, setCurrent);
+    onTestFinished(() => {
+      queues.delete(container);
+      view.unmount();
+    });
+  }
+  if (!getOwner()) {
+    flush();
+  }
   return container;
 }
 
-function queueEdit(
-  overrides: Partial<NonNullable<Parameters<typeof renderComposerQueueInto>[0]["queuedEdit"]>>,
-) {
+function queueEdit(overrides: Partial<NonNullable<QueueProps["queuedEdit"]>>) {
   return { editingId: null, onCancel: vi.fn(), ...overrides };
 }
 
@@ -274,7 +295,7 @@ describe("chat composer queue reordering", () => {
     });
 
     const rows = [...container.querySelectorAll(".chat-queue__item")];
-    expect(rows.map((row) => row.querySelector("wa-dropdown") !== null)).toEqual([
+    expect(rows.map((row) => row.querySelector(".chat-queue__overflow") !== null)).toEqual([
       true,
       false,
       true,
@@ -290,7 +311,6 @@ describe("chat composer queue reordering", () => {
 
     const disabled = (selector: string) =>
       rows.map((row) => row.querySelector(selector)?.hasAttribute("disabled") ?? false);
-    expect(disabled("wa-dropdown-item")).toEqual([true, false, true]);
     expect(disabled(".chat-queue__more")).toEqual([true, false, true]);
     expect(disabled(".chat-queue__remove")).toEqual([false, false, false]);
 
@@ -323,10 +343,7 @@ describe("chat composer queue reordering", () => {
     expect(onQueueEditChange).toHaveBeenCalledWith("updated draft");
     const valueWrites = vi.spyOn(editor, "value", "set");
     const publishDraft = (editingText: string) =>
-      renderComposerQueueInto(
-        { ...props, queuedEdit: { ...props.queuedEdit, editingText } },
-        container,
-      );
+      renderQueue({ ...props, queuedEdit: { ...props.queuedEdit, editingText } }, container);
     publishDraft("updated draft");
     expect(container.querySelector(".chat-queue__edit-input")).toBe(editor);
     expect(valueWrites).not.toHaveBeenCalled();
@@ -403,7 +420,7 @@ describe("chat composer queue reordering", () => {
     const container = document.createElement("div");
     document.body.append(container);
     const draw = () =>
-      renderComposerQueueInto(
+      renderQueue(
         {
           queue: [{ ...waiting("a", 1), text: "@Alex @Alex" }],
           onQueueRemove: vi.fn(),
