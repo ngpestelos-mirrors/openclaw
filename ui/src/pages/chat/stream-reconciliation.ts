@@ -32,7 +32,7 @@ import {
   resolveLiveToolStreamRefs,
   resolveMatchingLiveToolIdentity,
 } from "./tool-stream-identity.ts";
-import { resetToolStream } from "./tool-stream-state.ts";
+import { canResetToolStream, resetToolStream, resetToolStreamRun } from "./tool-stream-state.ts";
 
 type StreamReconciliationState = StreamCausalBoundaryState &
   LiveToolStreamState & {
@@ -40,8 +40,9 @@ type StreamReconciliationState = StreamCausalBoundaryState &
     chatStreamStartedAt: number | null;
   };
 
-export type ToolStreamReconciliationState = StreamReconciliationState &
-  Parameters<typeof resetToolStream>[0];
+export type ToolStreamReconciliationState = StreamReconciliationState & {
+  chatToolMessages?: unknown[];
+};
 
 type VisibleAssistantStreamPart = {
   afterUserSendId?: string;
@@ -67,18 +68,31 @@ type MaterializeVisibleStreamOptions = {
 };
 
 export function maybeResetToolStream(
-  state: Parameters<typeof resetToolStream>[0],
+  state: StreamReconciliationState,
   opts?: { preserveStreamSegments?: boolean },
 ) {
-  const preservedStreamSegments = opts?.preserveStreamSegments ? state.chatStreamSegments : null;
+  if (!canResetToolStream(state)) {
+    return;
+  }
+  const preservedStreamSegments = opts?.preserveStreamSegments
+    ? [...state.chatStreamSegments]
+    : null;
   resetToolStream(state);
   if (preservedStreamSegments) {
     state.chatStreamSegments = preservedStreamSegments;
   }
 }
 
+export function maybeResetToolStreamRun(state: StreamReconciliationState, runId: string) {
+  if (canResetToolStream(state)) {
+    resetToolStreamRun(state, runId);
+  }
+}
+
 export function clearToolStreamSegments(state: StreamReconciliationState) {
-  state.chatStreamSegments = [];
+  if (Array.isArray(state.chatStreamSegments)) {
+    state.chatStreamSegments = [];
+  }
 }
 
 function streamFallbackMetadata(message: unknown): Record<string, unknown> | null {

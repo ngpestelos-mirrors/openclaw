@@ -11,6 +11,15 @@ type ToolStreamState = Pick<
   | "waitingApprovalStatuses"
 > & { toolStreamSyncTimer?: number | null };
 
+export function canResetToolStream(host: Partial<ToolStreamState>): host is ToolStreamState {
+  return (
+    host.toolStreamById instanceof Map &&
+    Array.isArray(host.toolStreamOrder) &&
+    Array.isArray(host.chatToolMessages) &&
+    Array.isArray(host.chatStreamSegments)
+  );
+}
+
 export function syncToolStreamMessages(host: ToolStreamState) {
   host.chatToolMessages = host.toolStreamOrder
     .map((id) => host.toolStreamById.get(id)?.message)
