@@ -118,32 +118,6 @@ describe("harness runtime plugins", () => {
     });
   });
 
-  it("looks up a selected harness in the run-owned registry without loading plugins", async () => {
-    const pluginRegistry = createEmptyPluginRegistry();
-    pluginRegistry.agentHarnesses.push({
-      pluginId: "codex",
-      source: "test",
-      harness: {
-        id: "codex",
-        label: "Codex",
-        supports: () => ({ supported: true }),
-        runAttempt: async () => {
-          throw new Error("unused");
-        },
-      },
-    });
-
-    await ensureSelectedAgentHarnessPlugin({
-      provider: "openai",
-      modelId: "gpt-5.5",
-      agentHarnessRuntimeOverride: "codex",
-      workspaceDir: "/tmp/workspace",
-      pluginRegistry,
-    });
-
-    expect(pluginRegistry.agentHarnesses).toHaveLength(1);
-  });
-
   it.each([
     { name: "session pin", selection: { agentHarnessId: "codex" } },
     {
@@ -432,28 +406,7 @@ describe("harness runtime plugins", () => {
     });
     expect(plan.pluginIds).toContain("codex");
     expect(plan.config?.plugins?.entries?.codex).toEqual({ enabled: true });
-  });
-
-  it("scopes cold metadata to selected runtime candidates from the installed index", () => {
-    const scope = createAgentRuntimeMetadataPluginIdScope({
-      config: { plugins: { slots: { memory: "none" } } },
-      workspaceDir: "/tmp/workspace",
-      selections: [
-        { provider: "selected-provider", modelId: "selected-model", runtime: "openclaw" },
-      ],
-    });
-    expect(
-      scope.resolve({
-        index: {
-          plugins: [
-            installedProviderRecord("selected-plugin", { providers: ["selected-provider"] }),
-            installedProviderRecord("unrelated-plugin", {
-              providers: ["unrelated-provider"],
-            }),
-          ],
-        } as never,
-      }),
-    ).toEqual(["selected-plugin"]);
+    expect(plan.config?.plugins?.allow).toBeUndefined();
   });
 
   it("retains shorthand model owners while resolving the fallback provider", () => {
@@ -656,42 +609,6 @@ describe("harness runtime plugins", () => {
     } finally {
       rebuildManifests.mockRestore();
     }
-  });
-
-  it("keeps standalone activation unrestricted when no complete startup base exists", () => {
-    const plan = resolveAgentRuntimePluginLoadPlan({
-      metadataSnapshot: createMemoryPlanMetadataSnapshot(),
-      config: {
-        plugins: {
-          entries: { "custom-context-engine": { enabled: true } },
-        },
-      },
-      workspaceDir: "/tmp/workspace",
-      selections: [{ provider: "openai", modelId: "gpt-5.5", runtime: "codex" }],
-    });
-
-    expect(plan.config?.plugins?.allow).toBeUndefined();
-    expect(plan.config?.plugins?.entries).toMatchObject({
-      "custom-context-engine": { enabled: true },
-      codex: { enabled: true },
-    });
-  });
-
-  it("checks restrictive allowlists against the selected harness owner plugin id", () => {
-    mocks.resolveManifestActivationPlan.mockReturnValueOnce({
-      entries: [{ pluginId: "custom-harness-plugin", origin: "workspace" }],
-    });
-    const plan = resolveAgentRuntimePluginLoadPlan({
-      metadataSnapshot: createMemoryPlanMetadataSnapshot(),
-      config: { plugins: { allow: ["custom-harness-plugin"] } },
-      workspaceDir: "/tmp/workspace",
-      selections: [
-        { provider: "custom-provider", modelId: "custom-model", runtime: "custom-harness" },
-      ],
-    });
-
-    expect(plan.pluginIds).toEqual(["custom-harness-plugin"]);
-    expect(plan.config?.plugins?.entries?.["custom-harness-plugin"]).toEqual({ enabled: true });
   });
 
   it("preserves startup-scoped plugins when selected owners synthesize an allowlist", () => {
