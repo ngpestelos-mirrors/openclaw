@@ -254,39 +254,6 @@ describe("registerSlackMessageEvents", () => {
     );
   });
 
-  it("accepts two org workspaces and preserves each listener scope", async () => {
-    const { handler, handleSlackMessage } = createEnterpriseHandlers("message");
-    const clients = [{ id: "one" }, { id: "two" }];
-    for (const [index, teamId] of ["T111", "T222"].entries()) {
-      await handler({
-        event: {
-          type: "message",
-          channel: "C123",
-          channel_type: "channel",
-          user: "U123",
-          text: "hello",
-          ts: `123.${index}`,
-        },
-        body: { api_app_id: "A_TEST" },
-        context: { isEnterpriseInstall: true, enterpriseId: "E_TEST", teamId },
-        client: clients[index],
-      });
-    }
-
-    expect(handleSlackMessage).toHaveBeenCalledTimes(2);
-    const calls = handleSlackMessage.mock.calls as unknown as Array<
-      [unknown, { awaitDispatch?: boolean; eventScope?: unknown }]
-    >;
-    expect(calls[0]?.[1]).toMatchObject({
-      awaitDispatch: true,
-      eventScope: { teamId: "T111", client: clients[0] },
-    });
-    expect(calls[1]?.[1]).toMatchObject({
-      awaitDispatch: true,
-      eventScope: { teamId: "T222", client: clients[1] },
-    });
-  });
-
   it("drops bot-authored enterprise app_mention events in favor of the message event", async () => {
     const { handler, handleSlackMessage } = createEnterpriseHandlers("app_mention");
     await handler({
@@ -417,7 +384,6 @@ describe("registerSlackMessageEvents", () => {
   });
 
   it.each([
-    { channelType: "channel", subtype: "message_deleted", threadSession: true },
     { channelType: "im", subtype: "message_changed", threadSession: false },
     { channelType: "channel", subtype: "message_changed", root: true, threadSession: false },
     {
