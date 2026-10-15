@@ -4,6 +4,7 @@ import type { DatabasePortProvider } from "./port-descriptor.js";
 export const teamReportsPortProvider: DatabasePortProvider = {
   id: "team-reports",
   minimumPostgresVersion: 16,
+  requiresPluginOwner: true,
   async loadDescriptor(owner) {
     const { loadTeamReportsPortDescriptor } = await import("./team-reports-port-descriptor.js");
     return loadTeamReportsPortDescriptor(owner);

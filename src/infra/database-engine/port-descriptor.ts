@@ -19,6 +19,8 @@ export class DatabasePortDataError extends Error {}
 export type DatabasePortProvider = {
   id: string;
   minimumPostgresVersion: number;
+  /** Resolve the selected installation before loading its public port artifact. */
+  requiresPluginOwner?: true;
   resolveRoots(context: {
     config: OpenClawConfig;
     stateDir: string;
