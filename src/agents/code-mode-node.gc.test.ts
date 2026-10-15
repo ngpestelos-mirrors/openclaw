@@ -16,17 +16,20 @@ const fixture = vi.hoisted(() => ({
     | undefined,
   warn: vi.fn(),
 }));
+// mock-isolation: Drive exact GC windows without starting a native observer.
 vi.mock("../infra/gc-observer.js", () => ({
   observeGcSamples: (observe: (samples: GcSample[]) => void) => {
     fixture.observe = observe;
     return () => {};
   },
 }));
+// mock-isolation: Exercise the cell handler without installing a process task server.
 vi.mock("../infra/worker-task-server.js", () => ({
   serveWorkerTasks: (run: typeof fixture.run) => {
     fixture.run = run;
   },
 }));
+// mock-isolation: Capture warnings without opening process-wide file or console loggers.
 vi.mock("../logging/subsystem.js", () => ({
   createSubsystemLogger: () => ({ warn: fixture.warn }),
 }));
