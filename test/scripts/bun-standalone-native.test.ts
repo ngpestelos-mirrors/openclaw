@@ -50,9 +50,9 @@ function fixture() {
 function evaluate(
   adapter: ReturnType<typeof createStandaloneNativeAdapter>,
   embeddedPaths: Record<string, string> = {},
+  root = "/relocated/runtime",
 ) {
   const finalized = adapter.finalize({ embeddedPaths });
-  const root = "/relocated/runtime";
   const context = vm.createContext({ root, path, fileURLToPath });
   vm.runInContext(
     adapter.bootstrap
@@ -64,6 +64,75 @@ function evaluate(
 }
 
 describe("standalone native sidecar", () => {
+  it("resolves graph-retained root and peer packages without retaining unused development packages", () => {
+    const { root, write, pkg } = fixture();
+    const first = pkg("hoisted", { main: "index.js" }, { "index.js": "module.exports = 'first';" });
+    const second = path.join(root, "node_modules/.pnpm/hoisted@2.0.0/node_modules/hoisted");
+    write(
+      path.join(second, "package.json"),
+      JSON.stringify({ name: "hoisted", version: "2.0.0", main: "index.js" }),
+    );
+    write(path.join(second, "index.js"), "module.exports = 'second';");
+    fs.unlinkSync(path.join(root, "node_modules/hoisted"));
+    fs.symlinkSync(second, path.join(root, "node_modules/hoisted"));
+    const consumer = pkg(
+      "peer-consumer",
+      { peerDependencies: { hoisted: "*" } },
+      { "index.js": "module.exports = {};" },
+    );
+    fs.mkdirSync(path.join(consumer, "node_modules"));
+    fs.symlinkSync(first, path.join(consumer, "node_modules/hoisted"));
+    pkg("unused-development", { main: "binding.node" }, { "binding.node": "unused" });
+    write(
+      path.join(root, "package.json"),
+      JSON.stringify({
+        dependencies: { "peer-consumer": "1.0.0" },
+        devDependencies: { hoisted: "2.0.0", "unused-development": "1.0.0" },
+      }),
+    );
+    const image = fs.mkdtempSync(path.join(os.tmpdir(), "standalone-image-"));
+    temporary.push(image);
+    const embeddedPaths: Record<string, string> = {};
+    const adapter = createStandaloneNativeAdapter({ runtimeRoot: root, parse });
+    for (const [name, directory] of Object.entries({ first, second, consumer })) {
+      const filename = path.join(directory, "index.js");
+      const contents = fs.readFileSync(filename, "utf8");
+      adapter.transform({ filename, contents });
+      const imageEntry = path.join(image, `${name}.cjs`);
+      fs.writeFileSync(imageEntry, contents);
+      embeddedPaths[path.relative(root, filename)] = imageEntry;
+    }
+    const { context, finalized } = evaluate(adapter, embeddedPaths, root);
+    const requireAdapter = createStandaloneRequireAdapter({ runtimeRoot: root, embeddedPaths });
+    Object.assign(context, {
+      commonJsEntries: new Set(),
+      embedded: (filename: string) =>
+        Object.values(embeddedPaths).includes(filename)
+          ? filename
+          : embeddedPaths[path.relative(root, filename)],
+    });
+    vm.runInContext(requireAdapter.bootstrap, context);
+    pruneStandaloneRuntime(root, finalized.files);
+    const fromRoot = context["__openclawStandaloneCreateRequire"](
+      createRequire,
+      path.join(root, "dist/entry.mjs"),
+    );
+    const fromPeer = context["__openclawStandaloneCreateRequire"](
+      createRequire,
+      path.join(root, "native/peer-consumer@1.0.0/peer-consumer/index.js"),
+    );
+    expect(fs.existsSync(path.join(root, "node_modules"))).toBe(false);
+    expect(fromRoot("hoisted/package.json").version).toBe("2.0.0");
+    expect(fromRoot("hoisted")).toBe("second");
+    expect(fromPeer("hoisted/package.json").version).toBe("1.0.0");
+    expect(fromPeer("hoisted")).toBe("first");
+    expect(
+      finalized.files.some((file: { source: string }) =>
+        file.source.includes("unused-development"),
+      ),
+    ).toBe(false);
+  });
+
   it("loads exported package subpaths from the image after removing node_modules", () => {
     const { root, write, pkg } = fixture();
     const dependency = pkg(

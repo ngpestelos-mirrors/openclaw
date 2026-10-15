@@ -618,12 +618,61 @@ export function createStandaloneNativeAdapter({
           throw new Error(`Standalone resource is already embedded: ${file.source}`);
         }
       }
+      const retainedByDirectory = new Map([...retained].map((owner) => [owner.directory, owner]));
+      // Flattened root chunks can use graph-retained hoisted packages without a production
+      // declaration. Preserve their installed name/version mapping without retaining more files.
+      const rootVisibleNames = new Set();
+      const rootOwner = packages.get(runtimeRoot);
+      for (const search of rootOwner?.require.resolve.paths("__standalone_package__") ?? []) {
+        if (!contained(search) || !fs.existsSync(search)) {
+          continue;
+        }
+        for (const entry of fs.readdirSync(search, { withFileTypes: true })) {
+          if (entry.name.startsWith(".") || (!entry.isDirectory() && !entry.isSymbolicLink())) {
+            continue;
+          }
+          if (entry.name.startsWith("@")) {
+            for (const scoped of fs.readdirSync(path.join(search, entry.name))) {
+              rootVisibleNames.add(`${entry.name}/${scoped}`);
+            }
+          } else {
+            rootVisibleNames.add(entry.name);
+          }
+        }
+      }
+      function resolutionDependencies(owner) {
+        const dependencies = new Map([[owner.manifest.name, owner], ...owner.dependencies]);
+        const additionalNames =
+          owner === rootOwner
+            ? rootVisibleNames
+            : Object.keys(owner.manifest.peerDependencies ?? {});
+        for (const name of additionalNames) {
+          if (dependencies.has(name)) {
+            continue;
+          }
+          for (const search of owner.require.resolve.paths(name) ?? []) {
+            if (!contained(search)) {
+              continue;
+            }
+            const manifest = path.join(search, name, "package.json");
+            if (!fs.existsSync(manifest)) {
+              continue;
+            }
+            const dependency = retainedByDirectory.get(fs.realpathSync(path.dirname(manifest)));
+            if (dependency) {
+              dependencies.set(name, dependency);
+            }
+            break;
+          }
+        }
+        return dependencies;
+      }
       const owners = [...retained]
         .map((owner) => ({
           original: owner.original,
           destination: owner.destination,
           dependencies: Object.fromEntries(
-            [[owner.manifest.name, owner], ...owner.dependencies].map(([name, dependency]) => {
+            [...resolutionDependencies(owner)].map(([name, dependency]) => {
               const entries = {};
               const subpaths = Object.keys(dependency.manifest.exports ?? {}).filter(
                 (key) => key.startsWith("./") && !key.includes("*"),
