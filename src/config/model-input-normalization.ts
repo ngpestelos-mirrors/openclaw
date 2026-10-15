@@ -96,14 +96,15 @@ function normalizeAgentModelScope(value: unknown): unknown {
   }
   next = normalizeNestedModelField(next, "utilityModel", normalizeStringModelRef);
   next = normalizeNestedModelField(next, "mediaModels", (mediaModels) => {
+    let nextMediaModels = mediaModels;
     for (const key of MEDIA_MODEL_KEYS) {
-      mediaModels = normalizeNestedModelField(
-        mediaModels,
+      nextMediaModels = normalizeNestedModelField(
+        nextMediaModels,
         key,
         normalizeAgentModelSelectionForConfig,
       );
     }
-    return mediaModels;
+    return nextMediaModels;
   });
   next = normalizeNestedModelField(next, "heartbeat", (heartbeat) =>
     normalizeNestedModelField(heartbeat, "model", normalizeStringModelRef),

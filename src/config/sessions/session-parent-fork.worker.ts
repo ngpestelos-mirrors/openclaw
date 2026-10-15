@@ -11,6 +11,7 @@ import { forkCliSessionBindings } from "./cli-session-binding.js";
 import type {
   ForkSessionEntryFromParentTargetResult,
   ForkSessionFromParentTranscriptResult,
+  SessionParentForkDecision,
 } from "./session-accessor.sqlite-contract.js";
 import {
   normalizeLifecycleTarget,
