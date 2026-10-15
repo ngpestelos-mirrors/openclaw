@@ -12,9 +12,12 @@ const metadataOwnerHooks = new Map([
 const moduleAdmissionOwners = new Map([
   ["preparePluginModule", "openPluginRootFileSync"],
   ["loadRuntimePluginCandidate", "openPluginRootFileSync"],
+  ["loadChannelPluginModule", "openPluginRootFileSync"],
+  ["loadSetupRuntimeChannelCandidate", "openPluginRootFileSync"],
   ["loadLegacySessionSurface", "openRootFileSync"],
   ["resolveBundledEntryModulePath", "openRootFileSync"],
 ]);
+const moduleAdmissionPattern = new RegExp([...moduleAdmissionOwners.keys()].join("|"));
 
 function visit(node, callback, owner) {
   if (!node || typeof node !== "object") {
@@ -352,7 +355,8 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
       .toSorted(),
     transform({ filename, contents }) {
       if (
-        !/checkDistPluginSdkArtifact|fileContentMatches|pluginCache(?:Exists|Stat|Lstat|Realpath)Sync|readPluginCache(?:File|Directory)|checkPluginCacheEntry|collectBundledPluginPublicSurfaceArtifacts|resolveBundledPluginGeneratedPath|resolveManagedToolsMcpServerConfig|candidateDirsFromArgv1|resolveHostPackageRoot|loadHookFromDir|prepareInternalHooks|resolveNodeEntrypointArg|resolveMxcLauncherPath|resolveResolverScriptPath|resolveSqliteWorkerModuleUrl|preparePluginModule|loadRuntimePluginCandidate|loadLegacySessionSurface|resolveBundledEntryModulePath|normalizePathCandidate|resolveOpenClawCliEntryPath|isContainedPluginPath/.test(
+        !moduleAdmissionPattern.test(contents) &&
+        !/checkDistPluginSdkArtifact|fileContentMatches|pluginCache(?:Exists|Stat|Lstat|Realpath)Sync|readPluginCache(?:File|Directory)|checkPluginCacheEntry|collectBundledPluginPublicSurfaceArtifacts|resolveBundledPluginGeneratedPath|resolveManagedToolsMcpServerConfig|candidateDirsFromArgv1|resolveHostPackageRoot|loadHookFromDir|prepareInternalHooks|resolveNodeEntrypointArg|resolveMxcLauncherPath|resolveResolverScriptPath|resolveSqliteWorkerModuleUrl|normalizePathCandidate|resolveOpenClawCliEntryPath|isContainedPluginPath|findDependencyPackageDir/.test(
           contents,
         )
       ) {
@@ -384,6 +388,30 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
       const adaptedOwners = new Set();
       const imageIdentityOwners = new Set();
       visit(ast, (node, owner) => {
+        if (
+          owner?.id?.name === "findDependencyPackageDir" &&
+          owner.params[0]?.type === "Identifier" &&
+          node.type === "VariableDeclarator" &&
+          node.init?.type === "CallExpression" &&
+          node.init.callee.type === "MemberExpression" &&
+          node.init.callee.property.name === "join" &&
+          node.init.arguments.length === 3 &&
+          (node.init.arguments[1].value === "node_modules" ||
+            (node.init.arguments[1].type === "TemplateLiteral" &&
+              node.init.arguments[1].expressions.length === 0 &&
+              node.init.arguments[1].quasis[0].value.cooked === "node_modules")) &&
+          node.init.arguments[2].type === "SpreadElement"
+        ) {
+          const join = slice(node.init.callee);
+          const current = slice(node.init.arguments[0]);
+          // Validated segments preserve the name even when minification shadows the parameter.
+          edits.push([
+            node.init.start,
+            node.init.end,
+            `((manifest) => manifest === undefined ? ${slice(node.init)} : ${slice(node.init.callee.object)}.dirname(manifest))(globalThis.__openclawStandaloneNativeResolve(${join}(${current}, "package.json"), ${slice(node.init.arguments[2].argument)}.join("/") + "/package.json"))`,
+          ]);
+          adaptedOwners.add(owner);
+        }
         if (node.type === "CallExpression") {
           const ownerName = owner?.id?.name;
           const isHookDiscovery =
@@ -749,6 +777,7 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
             "normalizePathCandidate",
             "resolveOpenClawCliEntryPath",
             "isContainedPluginPath",
+            "findDependencyPackageDir",
             ...moduleAdmissionOwners.keys(),
           ].includes(node.id?.name) &&
           !adaptedOwners.has(node)

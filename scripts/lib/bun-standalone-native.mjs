@@ -423,7 +423,8 @@ export function createStandaloneNativeAdapter({
         : path.join(root, dependency.original, specifier.slice(name.length + 1));
     }
     const key = path.relative(root, target).split(path.sep).join("/");
-    return table.files[key] ? path.join(root, table.files[key]) : table.embedded[key];
+    return table.files[key] ? path.join(root, table.files[key])
+      : table.embedded[key] ? path.join(root, key) : undefined;
   };
   globalThis.__openclawStandaloneNativeResolvePaths = (parent, specifier) => {
     if (typeof specifier !== "string" || specifier.startsWith(".") || path.isAbsolute(specifier)) return undefined;

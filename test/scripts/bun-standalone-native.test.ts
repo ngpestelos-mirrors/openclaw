@@ -107,7 +107,7 @@ fs.copyFileSync(library, imageLibrary);
 const embeddedPaths = { [path.relative(root, library)]: imageLibrary };
 const native = createStandaloneNativeAdapter({ runtimeRoot: root, parse });
 native.transform({ filename: library, contents: fs.readFileSync(library, "utf8") });
-const source = 'import { createRequire } from "node:module"; import path from "node:path"; const require = createRequire(import.meta.url); const root = path.dirname(require.resolve("ws/package.json")); export const marker = require(path.join(root, "lib/websocket.js")).marker;';
+const source = 'import { createRequire } from "node:module"; import path from "node:path"; const require = createRequire(import.meta.url); const root = path.dirname(require.resolve("ws/package.json")); export const filename = require.resolve(path.join(root, "lib/websocket.js")); export const marker = require(filename).marker;';
 fs.mkdirSync(path.dirname(filename), { recursive: true });
 const transformed = rewriteStandaloneImports({ contents: native.transform({ filename, contents: source }).contents, filename, runtimeRoot: root, embeddedPaths, moduleAliases: {}, workerThreadsShim: "", parse });
 const finalized = native.finalize({ embeddedPaths });
@@ -130,7 +130,9 @@ fs.writeFileSync(moduleFile, transformed);
 pruneStandaloneRuntime(root, finalized.files);
 if (fs.existsSync(path.join(root, "node_modules"))) throw new Error("node_modules remains");
 await import(pathToFileURL(bootstrapFile).href);
-if ((await import(pathToFileURL(moduleFile).href)).marker !== "full-ws") throw new Error("loaded the wrong ws implementation");
+const loaded = await import(pathToFileURL(moduleFile).href);
+if (loaded.filename !== library) throw new Error("require.resolve did not preserve the runtime filename");
+if (loaded.marker !== "full-ws") throw new Error("loaded the wrong ws implementation");
 console.log("full-ws loaded without node_modules");
 `,
     );
@@ -203,8 +205,10 @@ console.log("full-ws loaded without node_modules");
     );
     expect(fs.existsSync(path.join(root, "node_modules"))).toBe(false);
     expect(fromRoot("hoisted/package.json").version).toBe("2.0.0");
+    expect(fromRoot.resolve("hoisted")).toBe(path.join(second, "index.js"));
     expect(fromRoot("hoisted")).toBe("second");
     expect(fromPeer("hoisted/package.json").version).toBe("1.0.0");
+    expect(fromPeer.resolve("hoisted")).toBe(path.join(first, "index.js"));
     expect(fromPeer("hoisted")).toBe("first");
     expect(
       finalized.files.some((file: { source: string }) =>
@@ -563,7 +567,7 @@ console.log("full-ws loaded without node_modules");
         path.join(destination, path.relative(root, owner), "index.js"),
         "terminal-native",
       ),
-    ).toBe(embedded);
+    ).toBe(path.join(destination, path.relative(root, native), "lib/index.js"));
     expect(
       finalized.files.some((file: { source: string }) => file.source.includes("unused.node")),
     ).toBe(false);

@@ -14,12 +14,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseFrontmatterBlockResult } from "../../packages/markdown-core/src/frontmatter.js";
 import { rewriteStandaloneImports } from "../../scripts/lib/bun-standalone-imports.mjs";
 import { createStandaloneMetadataAdapter } from "../../scripts/lib/bun-standalone-metadata.mjs";
+import { createStandaloneNativeAdapter } from "../../scripts/lib/bun-standalone-native.mjs";
 import { resolveHookManifestMetadata } from "../../src/hooks/frontmatter.js";
 import {
   describeRootFileOpenFailure,
   openRootFileSync,
   readFileDescriptorBoundedSync,
 } from "../../src/infra/boundary-file-read.js";
+import { readRootJsonObjectSync } from "../../src/infra/json-files.js";
 import { shouldRejectHardlinkedPluginFiles } from "../../src/plugins/hardlink-policy.js";
 import { PUBLIC_SURFACE_SOURCE_EXTENSIONS } from "../../src/plugins/package-entrypoints.js";
 import {
@@ -304,6 +306,300 @@ function fixture({
 }
 
 describe("standalone image metadata", () => {
+  it.each(["source", "minified", "shadowed-template"])(
+    "checks flattened dependency manifests through the status owner (%s)",
+    (format) => {
+      const { runtime, plugin, context, adapter } = fixture();
+      const dependencyName = "@example/shared";
+      const writeManifest = (directory: string, value: unknown) => {
+        fs.mkdirSync(directory, { recursive: true });
+        fs.writeFileSync(path.join(directory, "package.json"), JSON.stringify(value));
+      };
+      const dependency = (version: string) => {
+        const directory = path.join(
+          runtime,
+          "node_modules/.pnpm",
+          `@example+shared@${version}`,
+          "node_modules/@example/shared",
+        );
+        writeManifest(directory, { name: dependencyName, version });
+        fs.writeFileSync(path.join(directory, "index.js"), "export {};\n");
+        return directory;
+      };
+      const dependencies = [dependency("1.0.0"), dependency("2.0.0")] as const;
+      const sibling = path.join(runtime, "dist/extensions/sibling");
+      for (const [directory, name, dependencyDirectory] of [
+        [runtime, "openclaw", dependencies[0]],
+        [plugin, "example", dependencies[1]],
+        [sibling, "sibling", dependencies[0]],
+      ] as const) {
+        writeManifest(directory, {
+          name,
+          version: "1.0.0",
+          dependencies: { [dependencyName]: "*" },
+        });
+        fs.mkdirSync(path.join(directory, "node_modules/@example"), { recursive: true });
+        fs.symlinkSync(dependencyDirectory, path.join(directory, "node_modules", dependencyName));
+      }
+      const native = createStandaloneNativeAdapter({ runtimeRoot: runtime, parse });
+      context.root = fs.realpathSync(runtime);
+      for (const directory of dependencies) {
+        native.transform({ filename: path.join(directory, "index.js"), contents: "export {};\n" });
+      }
+      const finalized = native.finalize();
+      vm.runInContext(
+        native.bootstrap
+          .replace(/^import[^\n]+\n/, "")
+          .replace(
+            finalized.bootstrapReplacement.search,
+            finalized.bootstrapReplacement.replacement,
+          ),
+        context,
+      );
+      for (const file of finalized.files) {
+        const destination = path.join(runtime, file.destination);
+        fs.mkdirSync(path.dirname(destination), { recursive: true });
+        fs.copyFileSync(path.join(runtime, file.source), destination);
+      }
+      for (const directory of [runtime, plugin, sibling]) {
+        fs.rmSync(path.join(directory, "node_modules"), { recursive: true });
+      }
+      Object.assign(context, {
+        readRootJsonObjectSync,
+        safeRealpathSync,
+        isPathInside,
+        MAX_DEPENDENCY_MANIFEST_BYTES: 1024 * 1024,
+      });
+      let source = [
+        "dependencyPathSegments",
+        "findDependencyPackageDir",
+        "buildDependencyEntries",
+        "buildPluginDependencyStatus",
+      ]
+        .map((name) => ownerSource("src/plugins/status-dependencies-core.ts", name))
+        .join("\n");
+      if (format === "shadowed-template") {
+        source = source
+          .replaceAll("params", "candidate")
+          .replaceAll('"node_modules"', "`node_modules`");
+      }
+      const status = (rootDir: string, dependencyRootDir = runtime) =>
+        context.buildPluginDependencyStatus({
+          rootDir,
+          dependencyRootDir,
+          dependencies: { [dependencyName]: "*" },
+        });
+      vm.runInContext(source, context);
+      expect(status(plugin).requiredInstalled).toBe(false);
+      const transformed = adapter.transform({
+        filename: path.join(runtime, "dist/dependency-owner.js"),
+        contents:
+          format === "minified"
+            ? transformSync(source, {
+                minifyIdentifiers: true,
+                minifySyntax: true,
+                minifyWhitespace: true,
+              }).code
+            : source,
+      });
+      vm.runInContext(transformed.contents, context);
+      const flatRoot = path.join(
+        fs.realpathSync(runtime),
+        "native/@example+shared@1.0.0/@example/shared",
+      );
+      const flatPlugin = path.join(
+        fs.realpathSync(runtime),
+        "native/@example+shared@2.0.0/@example/shared",
+      );
+      for (const [directory, expected, version] of [
+        [runtime, flatRoot, "1.0.0"],
+        [plugin, flatPlugin, "2.0.0"],
+        [sibling, flatRoot, "1.0.0"],
+      ] as const) {
+        const actual = status(directory);
+        expect(actual.requiredInstalled).toBe(true);
+        expect(actual.dependencies[0].resolvedPath).toBe(expected);
+        expect(
+          JSON.parse(fs.readFileSync(path.join(expected, "package.json"), "utf8")).version,
+        ).toBe(version);
+      }
+      expect(status(plugin, plugin).requiredInstalled).toBe(false);
+      const manifest = path.join(flatPlugin, "package.json");
+      fs.writeFileSync(manifest, "{");
+      expect(status(plugin).requiredInstalled).toBe(false);
+      fs.unlinkSync(manifest);
+      expect(status(plugin).dependencies[0].resolvedPath).toBe(flatRoot);
+      fs.unlinkSync(path.join(flatRoot, "package.json"));
+      expect(status(plugin).requiredInstalled).toBe(false);
+      writeManifest(flatRoot, { name: dependencyName, version: "1.0.0" });
+      fs.mkdirSync(manifest);
+      expect(status(plugin).requiredInstalled).toBe(false);
+      fs.rmdirSync(manifest);
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-external-dependency-"));
+      temporaryRoots.push(outside);
+      writeManifest(outside, { name: dependencyName, version: "external" });
+      fs.symlinkSync(path.join(outside, "package.json"), manifest);
+      expect(status(plugin).requiredInstalled).toBe(false);
+
+      const externalPlugin = path.join(outside, "plugin");
+      const externalDependency = path.join(externalPlugin, "node_modules", dependencyName);
+      writeManifest(externalDependency, { name: dependencyName, version: "3.0.0" });
+      const externalStatus = status(externalPlugin, outside);
+      expect(externalStatus.requiredInstalled).toBe(true);
+      expect(externalStatus.dependencies[0].resolvedPath).toBe(fs.realpathSync(externalDependency));
+      fs.writeFileSync(path.join(externalDependency, "package.json"), "{");
+      expect(status(externalPlugin, outside).requiredInstalled).toBe(false);
+    },
+  );
+
+  it.each(
+    (["channel", "setup"] as const).flatMap((owner) =>
+      (["source", "minified", "imported"] as const).map((format) => ({ owner, format })),
+    ),
+  )("admits modules through the $owner loader ($format)", ({ owner, format }) => {
+    const { runtime, plugin, entry, context, adapter } = fixture();
+    const errors: string[] = [];
+    const channels: unknown[] = [];
+    const sources = new Map<string, { variants: Map<string, unknown> }>();
+    const open = vi.fn(openPluginRootFileSync);
+    const moduleExport = {
+      kind: "bundled-channel-entry",
+      id: "example",
+      loadChannelPlugin: () => ({ id: "example", meta: { runtime: true } }),
+    };
+    const require = createRequire(import.meta.url);
+    const loadModule = vi.fn((filename: string) =>
+      filename === entry ? moduleExport : require(filename),
+    );
+    Object.assign(context, {
+      openPluginRootFileSync: open,
+      secureOpen: open,
+      fsAlias: context.fs,
+      describeRootFileOpenFailure,
+      getPluginCacheSource: (filename: string) => {
+        let source = sources.get(filename);
+        if (!source) {
+          source = { variants: new Map() };
+          sources.set(filename, source);
+        }
+        return source;
+      },
+      getCachedPluginModuleLoader: () => loadModule,
+      resolvePluginRuntimeExecutionArtifact: (artifact: unknown) => artifact,
+      getPluginInstance: () => undefined,
+      withProfile: (_params: unknown, _label: string, callback: () => unknown) => callback(),
+    });
+    for (const [file, name] of [
+      ["src/plugins/native-module-require.ts", "isJavaScriptModulePath"],
+      ["src/plugins/native-module-require.ts", "PLUGIN_SOURCE_MODULE_EXTENSIONS"],
+      ["src/channels/plugins/module-loader.ts", "loadModule"],
+      ["src/plugins/module-export.ts", "unwrapDefaultModuleExport"],
+      ["src/channels/plugins/merge-plugin-section.ts", "mergeChannelPluginSection"],
+      ["src/plugins/loader-channel-setup.ts", undefined],
+    ] as const) {
+      vm.runInContext(
+        ownerSource(file, name).replaceAll("import.meta.url", JSON.stringify(import.meta.url)),
+        context,
+      );
+    }
+    const ownerName =
+      owner === "channel" ? "loadChannelPluginModule" : "loadSetupRuntimeChannelCandidate";
+    const source = ownerSource(
+      owner === "channel"
+        ? "src/channels/plugins/module-loader.ts"
+        : "src/plugins/loader-channel-runtime.ts",
+      ownerName,
+    );
+    const invoke = (modulePath: string, rootDir = plugin, rejectHardlinks = false) => {
+      errors.length = 0;
+      if (owner === "channel") {
+        return context.loadChannelPluginModule({ modulePath, rootDir });
+      }
+      channels.length = 0;
+      context.loadSetupRuntimeChannelCandidate({
+        mod: {
+          kind: "bundled-channel-setup-entry",
+          loadSetupPlugin: () => ({ id: "example", meta: { setup: true } }),
+        },
+        manifestRecord: { setupSource: "setup.js", channels: ["example"] },
+        record: { id: "example" },
+        registrationPlan: { loadSetupEntry: true, loadSetupRuntimeEntry: true },
+        runtimeCandidateEntry: { source: modulePath, rootDir },
+        safeSource: "setup.js",
+        rejectHardlinks,
+        loadPluginModule: loadModule,
+        registryBuilder: {
+          createApi: () => ({ registerChannel: (channel: unknown) => channels.push(channel) }),
+          registry: { plugins: [] },
+        },
+        cfg: {},
+        seenIds: new Map(),
+        pushPluginLoadError: (error: string) => errors.push(error),
+      });
+      if (errors.length) {
+        throw new Error(errors.join("\n"));
+      }
+      return channels[0];
+    };
+    vm.runInContext(source, context);
+    expect(() => invoke(entry)).toThrow(
+      owner === "channel" ? "plugin module path" : "plugin entry path",
+    );
+    expect(loadModule).not.toHaveBeenCalled();
+    open.mockClear();
+    const imports =
+      'import { s as secureOpen } from "./admission-export.js";\nimport fsAlias from "node:fs";\n';
+    fs.writeFileSync(
+      path.join(runtime, "dist/admission-export.js"),
+      `${ownerSource("src/plugins/path-safety.ts", "openPluginRootFileSync")}\nexport { openPluginRootFileSync as s };\n`,
+    );
+    const input =
+      format === "imported"
+        ? imports +
+          source
+            .replaceAll("openPluginRootFileSync(", "secureOpen(")
+            .replaceAll("fs.closeSync", "fsAlias.closeSync")
+        : format === "minified"
+          ? transformSync(source, {
+              minifyIdentifiers: true,
+              minifySyntax: true,
+              minifyWhitespace: true,
+            }).code
+          : source;
+    const transformed = adapter.transform({
+      filename: path.join(runtime, "dist/channel-owner.js"),
+      contents: input,
+    });
+    vm.runInContext(transformed.contents.replace(imports, ""), context);
+    expect(invoke(entry)).toEqual(
+      owner === "channel" ? moduleExport : { id: "example", meta: { runtime: true, setup: true } },
+    );
+    expect(open).not.toHaveBeenCalled();
+    if (owner === "channel") {
+      expect(invoke(entry)).toBe(moduleExport);
+      expect(loadModule).toHaveBeenCalledOnce();
+    }
+
+    const externalRoot = path.join(runtime, "external-channel");
+    fs.mkdirSync(externalRoot);
+    const external = path.join(externalRoot, "index.cjs");
+    fs.writeFileSync(
+      external,
+      'module.exports = { kind: "bundled-channel-entry", id: "example", loadChannelPlugin: () => ({id: "example"}) };\n',
+    );
+    expect(invoke(external, externalRoot)).toMatchObject({ id: "example" });
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ filePath: external }));
+    const escape = path.join(plugin, "escape.cjs");
+    fs.symlinkSync(external, escape);
+    expect(() => invoke(escape)).toThrow();
+    if (owner === "setup") {
+      const hardlink = path.join(externalRoot, "hardlink.cjs");
+      fs.linkSync(external, hardlink);
+      expect(() => invoke(hardlink, externalRoot, true)).toThrow();
+    }
+    expect(loadModule).toHaveBeenCalledTimes(2);
+  });
+
   it.each(
     ([false, true] as const).flatMap((minified) =>
       (["cli", "containment"] as const).map((owner) => ({ owner, minified })),
