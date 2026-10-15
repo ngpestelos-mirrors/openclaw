@@ -198,6 +198,31 @@ describe("deliverWebReply", () => {
     ({ createWhatsAppReplyTransportContext, deliverWebReply } = await import("./deliver-reply.js"));
   });
 
+  it.each(["text", "media"])("keeps %s reply content out of delivery logs", async (kind) => {
+    const text = "private WhatsApp delivery\nprivate second line";
+    const deliveryLogger = { info: vi.fn(), warn: vi.fn() };
+    const { msg, params } =
+      kind === "media"
+        ? createImageDelivery(text, { replyLogger: deliveryLogger })
+        : createDelivery({ text }, { replyLogger: deliveryLogger });
+
+    const result = await deliverWebReply(params);
+
+    expect(result.providerAccepted).toBe(true);
+    if (kind === "media") {
+      expect(expectFirstSendMediaPayload(msg).caption).toBe(text);
+    } else {
+      expect(replyText(msg)).toBe(text);
+    }
+    expect(deliveryLogger.info).toHaveBeenCalled();
+    const logged = JSON.stringify([
+      ...deliveryLogger.info.mock.calls,
+      ...deliveryLogger.warn.mock.calls,
+    ]);
+    expect(logged).not.toContain("private WhatsApp delivery");
+    expect(logged).not.toContain("private second line");
+  });
+
   it("does not resend an accepted reply when its transport reports a disconnect afterward", async () => {
     const { msg, params } = createDelivery({ text: "already delivered" });
     const disconnect = new Error("connection closed");

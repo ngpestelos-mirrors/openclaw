@@ -14,7 +14,6 @@ import { timestampMsToIsoString } from "openclaw/plugin-sdk/number-runtime";
 import { logVerbose, shouldLogVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { evaluateSupplementalContextVisibility } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { normalizeAllowFrom } from "./bot-access.js";
 import type { BuildTelegramInboundContextPayloadParams } from "./bot-message-context.session.types.js";
 import type {
@@ -761,9 +760,8 @@ export async function buildTelegramInboundContextPayload(
       : undefined;
 
   if (visibleReplyTarget && shouldLogVerbose()) {
-    const preview = truncateUtf16Safe((visibleReplyTarget.body ?? "").replace(/\s+/g, " "), 120);
     logVerbose(
-      `telegram reply-context: replyToId=${visibleReplyTarget.id} replyToSender=${visibleReplyTarget.sender} replyToBody="${preview}"`,
+      `telegram reply-context: replyToId=${visibleReplyTarget.id} replyToSender=${visibleReplyTarget.sender} replyToChars=${visibleReplyTarget.body?.length ?? 0}`,
     );
   }
 
@@ -774,11 +772,10 @@ export async function buildTelegramInboundContextPayload(
   }
 
   if (shouldLogVerbose()) {
-    const preview = truncateUtf16Safe(body, 200).replace(/\n/g, "\\n");
     const mediaInfo = allMedia.length > 1 ? ` mediaCount=${allMedia.length}` : "";
     const topicInfo = resolvedThreadId != null ? ` topic=${resolvedThreadId}` : "";
     logVerbose(
-      `telegram inbound: chatId=${chatId} from=${ctxPayload.From} len=${body.length}${mediaInfo}${topicInfo} preview="${preview}"`,
+      `telegram inbound: chatId=${chatId} from=${ctxPayload.From} len=${body.length}${mediaInfo}${topicInfo}`,
     );
   }
 

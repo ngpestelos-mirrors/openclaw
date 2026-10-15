@@ -320,10 +320,9 @@ defineDiscordVoiceTests(
       expect(lastTtsArgs().text).toBe("hello back");
     });
 
-    it("logs a bounded inbound transcript preview for voice debugging", async () => {
-      transcribeAudioFileMock.mockResolvedValueOnce({
-        text: `hello from voice\n\n${"x".repeat(700)}`,
-      });
+    it("keeps voice transcripts in agent input and out of logs", async () => {
+      const transcript = `private voice transcript\n\n${"x".repeat(700)}`;
+      transcribeAudioFileMock.mockResolvedValueOnce({ text: transcript });
       const client = createClientWithMember("u-debug", "Debug", "0001", "Debug Speaker");
       const manager = createManager(
         makeVoiceConfig({}, { groupPolicy: "open", allowFrom: ["discord:u-debug"] }),
@@ -336,9 +335,9 @@ defineDiscordVoiceTests(
       const transcriptLog = logVerboseMock.mock.calls
         .map((call) => String(call[0]))
         .find((message) => message.includes("transcript from Debug Speaker (u-debug)"));
-      expect(transcriptLog).toContain("hello from voice ");
-      expect(transcriptLog).not.toContain("\n");
-      expect(transcriptLog?.length).toBeLessThan(650);
+      expect(lastAgentCommandArgs().message).toContain(transcript);
+      expect(transcriptLog).toContain(`chars=${transcript.length}`);
+      expect(logVerboseMock.mock.calls.flat().join("\n")).not.toContain("private voice transcript");
     });
 
     it("logs a failed streaming provider once per session when using file fallback", async () => {

@@ -31,7 +31,6 @@ import {
 import { resolvePinnedMainDmOwnerFromAllowlist } from "openclaw/plugin-sdk/security-runtime";
 import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { normalizeOptionalString, uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import {
   evaluateSupplementalContextVisibility,
   normalizeAgentId,
@@ -914,7 +913,6 @@ export async function handleFeishuMessage(params: {
       }
     }
 
-    const preview = truncateUtf16Safe(ctx.content.replace(/\s+/g, " "), 160);
     const inboundLabel = isGroup
       ? `Feishu[${account.accountId}] message in group ${ctx.chatId}`
       : `Feishu[${account.accountId}] DM from ${ctx.senderOpenId}`;
@@ -933,10 +931,7 @@ export async function handleFeishuMessage(params: {
       mode: contextVisibilityMode,
     };
 
-    // Do not enqueue inbound user previews as system events.
-    // System events are prepended to future prompts and can be misread as
-    // authoritative transcript turns.
-    log(`feishu[${account.accountId}]: ${inboundLabel}: ${preview}`);
+    log(`feishu[${account.accountId}]: ${inboundLabel} chars=${ctx.content.length}`);
 
     const mediaMaxBytes = (feishuCfg?.mediaMaxMb ?? 30) * 1024 * 1024;
     const mediaList = await resolveFeishuMediaList({
@@ -980,9 +975,7 @@ export async function handleFeishuMessage(params: {
           }))
         ) {
           quotedContent = quotedMessageInfo.content;
-          log(
-            `feishu[${account.accountId}]: fetched quoted message: ${truncateUtf16Safe(quotedContent, 100)}`,
-          );
+          log(`feishu[${account.accountId}]: fetched quoted message chars=${quotedContent.length}`);
         } else if (quotedMessageInfo) {
           log(
             `feishu[${account.accountId}]: skipped quoted message from sender ${quotedMessageInfo.senderId ?? "unknown"} (mode=${contextVisibilityMode})`,

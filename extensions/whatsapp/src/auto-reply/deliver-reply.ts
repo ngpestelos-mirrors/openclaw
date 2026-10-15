@@ -35,7 +35,6 @@ import { newConnectionId } from "../reconnect.js";
 import { formatError } from "../session.js";
 import { markdownToWhatsAppChunks } from "../targets-runtime.js";
 import { whatsappOutboundLog } from "./loggers.js";
-import { elide } from "./util.js";
 
 export type WhatsAppReplyDeliveryResult = Awaited<ReturnType<typeof deliverWebReply>>;
 
@@ -266,7 +265,7 @@ async function deliverWebReplyInActivityScope(params: WhatsAppReplyDeliveryParam
       connectionId: connectionId ?? null,
       to: conversationId,
       from: transport.recipientJid,
-      text: elide(replyResult.text, 240),
+      textChars: text.length,
       mediaUrl: null,
       mediaSizeBytes: null,
       mediaKind: null,
@@ -329,7 +328,7 @@ async function deliverWebReplyInActivityScope(params: WhatsAppReplyDeliveryParam
           connectionId: connectionId ?? null,
           to: conversationId,
           from: transport.recipientJid,
-          text: caption ?? null,
+          textChars: caption?.length ?? 0,
           mediaUrl,
           mediaSizeBytes: media.buffer.length,
           mediaKind: media.kind,

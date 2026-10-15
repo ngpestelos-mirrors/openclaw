@@ -13,8 +13,10 @@ import {
   updateWhatsAppMainLastRoute,
 } from "./inbound-dispatch.js";
 
-const { readAgentRunTerminalOutcome } = vi.hoisted(() => ({
+const { readAgentRunTerminalOutcome, logVerbose, shouldLogVerbose } = vi.hoisted(() => ({
   readAgentRunTerminalOutcome: vi.fn(),
+  logVerbose: vi.fn(),
+  shouldLogVerbose: vi.fn(() => false),
 }));
 vi.mock("openclaw/plugin-sdk/channel-inbound", async (importOriginal) => ({
   ...(await importOriginal<typeof import("openclaw/plugin-sdk/channel-inbound")>()),
@@ -23,8 +25,8 @@ vi.mock("openclaw/plugin-sdk/channel-inbound", async (importOriginal) => ({
 vi.mock("./runtime-api.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./runtime-api.js")>()),
   getAgentScopedMediaLocalRoots: () => [],
-  logVerbose: () => {},
-  shouldLogVerbose: () => false,
+  logVerbose,
+  shouldLogVerbose,
 }));
 vi.mock("../../media.js", () => ({ loadWebMedia: vi.fn() }));
 
@@ -129,6 +131,8 @@ const replacement = { text: "captioned replacement", mediaUrls: ["/tmp/a.jpg"] }
 
 beforeEach(() => {
   readAgentRunTerminalOutcome.mockReset();
+  logVerbose.mockClear();
+  shouldLogVerbose.mockReset().mockReturnValue(false);
   vi.mocked(loadWebMedia).mockReset();
 });
 
@@ -248,6 +252,31 @@ describe("prepared WhatsApp inbound boundary", () => {
 });
 
 describe("WhatsApp reply delivery", () => {
+  it("delivers reply text without copying it into verbose logs", async () => {
+    const text = "private WhatsApp reply\nsecond private line";
+    shouldLogVerbose.mockReturnValue(true);
+    const { deliver, deliverReply, replyLogger } = await fixture();
+
+    await expect(deliver({ text })).resolves.toMatchObject({
+      content: text,
+      visibleReplySent: true,
+    });
+
+    expect(deliverReply).toHaveBeenCalledWith(
+      expect.objectContaining({ replyResult: expect.objectContaining({ text }) }),
+    );
+    expect(logVerbose).toHaveBeenCalled();
+    const logged = [
+      ...logVerbose.mock.calls,
+      ...Object.values(replyLogger).flatMap((log) => log.mock.calls),
+    ]
+      .flat()
+      .map((value) => (typeof value === "string" ? value : JSON.stringify(value)))
+      .join("\n");
+    expect(logged).not.toContain("private WhatsApp reply");
+    expect(logged).not.toContain("second private line");
+  });
+
   it("does not force a self-chat response prefix without identity", () => {
     expect(
       resolveWhatsAppResponsePrefix({ cfg: { messages: {} }, agentId: "main", isSelfChat: true }),
