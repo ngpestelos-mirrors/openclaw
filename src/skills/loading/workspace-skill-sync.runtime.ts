@@ -22,7 +22,12 @@ import {
 import { getSkillsSnapshotVersion, getSkillsResourceVersion } from "../runtime/refresh-state.js";
 import { resolveSkillSnapshotExecutionFileHost } from "../runtime/skill-snapshot-provenance.js";
 import { fingerprintSkillSnapshotConfig } from "../runtime/snapshot-config-fingerprint.js";
-import type { SkillEligibilityContext, SkillSnapshot, SkillUsagePath } from "../types.js";
+import type {
+  SkillEligibilityContext,
+  SkillEntry,
+  SkillSnapshot,
+  SkillUsagePath,
+} from "../types.js";
 import { resolveSkillKey } from "./frontmatter.js";
 import { ensureWritableSkillDirectories } from "./skill-directory-modes.js";
 import { shouldSyncSkillPath } from "./skill-paths.js";

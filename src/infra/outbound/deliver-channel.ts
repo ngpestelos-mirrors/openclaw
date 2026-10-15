@@ -257,15 +257,20 @@ function createPluginHandler(
       }
     : undefined;
   const sendMessage = async <TContext extends ChannelMessageSendAttemptContext>(
-    baseCtx: TContext,
+    ctx: TContext,
     send: ((ctx: TContext) => Promise<ChannelMessageSendResult>) | undefined,
-    fallback: (ctx: TContext) => Promise<OutboundDeliveryResult>,
+    fallback: (
+      ctx: Omit<TContext, "onDeliveryResult"> & {
+        onDeliveryResult: typeof params.onDeliveryResult;
+      },
+    ) => Promise<OutboundDeliveryResult>,
   ): Promise<OutboundDeliveryResult> => {
-    assertUnknownSendReconciliationKind(baseCtx.kind);
+    assertUnknownSendReconciliationKind(ctx.kind);
     if (!send) {
-      return dispatchToAdapter(baseCtx, () => fallback(baseCtx));
+      return dispatchToAdapter(ctx, () =>
+        fallback({ ...ctx, onDeliveryResult: params.onDeliveryResult }),
+      );
     }
-    const ctx = { ...baseCtx, onDeliveryResult: onMessageDeliveryResult };
     if (!messageLifecycle) {
       return normalizeChannelMessageSendResult(
         params.channel,
@@ -335,6 +340,10 @@ function createPluginHandler(
       overrides && "formatting" in overrides
         ? { ...baseCtx.formatting, ...overrides.formatting }
         : baseCtx.formatting,
+  });
+  const resolveMessageCtx = (overrides?: OutboundMessageSendOverrides) => ({
+    ...resolveCtx(overrides),
+    onDeliveryResult: onMessageDeliveryResult,
   });
   return {
     chunker,
@@ -447,7 +456,7 @@ function createPluginHandler(
         ? (payload, overrides) =>
             sendMessage(
               {
-                ...resolveCtx(overrides),
+                ...resolveMessageCtx(overrides),
                 kind: "payload",
                 text: payload.text ?? "",
                 mediaUrl: payload.mediaUrl,
@@ -483,7 +492,7 @@ function createPluginHandler(
         }
       : undefined,
     sendText: (text, overrides) =>
-      sendMessage({ ...resolveCtx(overrides), kind: "text", text }, messageText, sendText!),
+      sendMessage({ ...resolveMessageCtx(overrides), kind: "text", text }, messageText, sendText!),
     buildTargetRef: (overrides?: OutboundMessageSendOverrides): ChannelOutboundTargetRef => ({
       channel: params.channel,
       to: params.to,
@@ -492,7 +501,7 @@ function createPluginHandler(
     }),
     sendMedia: (caption, mediaUrl, overrides) =>
       sendMessage(
-        { ...resolveCtx(overrides), kind: "media", text: caption, mediaUrl },
+        { ...resolveMessageCtx(overrides), kind: "media", text: caption, mediaUrl },
         messageMedia,
         sendMedia ?? sendText!,
       ),
