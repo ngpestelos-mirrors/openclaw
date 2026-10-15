@@ -787,7 +787,6 @@ export const en: TranslationMap & {
     advanced: "Advanced",
     copyDetails: "Copy details",
     copyLink: "Copy link",
-    archiveSessionOnly: "Session only",
     communication: {
       title: "Cross-session messaging",
       send: "Send messages",
@@ -3976,6 +3975,14 @@ export const en: TranslationMap & {
       readFailed: "Could not attach: {names}{more}",
       imagesOnly: "Side chat accepts image attachments only.",
       tooLarge: "Too large to send: {names}{more}",
+      compressToFit: "Compress to fit",
+      compressionHint:
+        "Video is too large. Compress a copy on this device; the original stays unchanged.",
+      compressing: "Compressing… {progress}%",
+      compressionUnsupported:
+        "This browser cannot compress this video with its audio. Try another browser or a smaller file.",
+      compressionTooLarge: "This video could not fit. Trim it or choose a smaller file.",
+      compressionFailed: "Could not compress this video. Try again or choose a smaller file.",
       showInTextField: "Show in text field",
       pastedText: "Pasted text",
       outsideAllowedFolders: "Outside allowed folders",
