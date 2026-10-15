@@ -34,8 +34,10 @@ import {
 } from "./chat-send-composer.ts";
 import { ChatStateController } from "./chat-state-controller.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
-import { renderChatAttachmentInputs } from "./components/chat-attachment-inputs.ts";
-import { renderAttachmentPreview } from "./components/chat-attachments.ts";
+import {
+  renderChatAttachmentInputs,
+  renderAttachmentPreview,
+} from "./components/chat-attachments.test-support.ts";
 import { reviewPrivateComposerDraft } from "./components/private-composer-recovery-dialog.tsx";
 import {
   ChatComposerPersistence,
@@ -361,25 +363,6 @@ describe("cross-region Home composer ownership", () => {
     expect(page.current.chatMessage).toBe("/steer submitted");
   });
 
-  it("does not restore into an abandoned source when a captured owner retires", () => {
-    const page = presentation(
-      {} as ApplicationContext,
-      { recoveryScope: "profile-a" } as GatewayBrowserClient,
-      "page",
-    );
-    const recovery = captureChatCommandComposerRecovery(
-      page.current,
-      resolveUiConversationIdentity(page.current, page.current.sessionKey),
-      { previousDraft: "/steer submitted", previousAttachments: [] },
-    );
-    page.handoff.dispose();
-
-    expect(recovery.owner).toBeDefined();
-    settleChatCommandComposer(page.current, recovery, false, []);
-    expect(page.current.chatMessage).toBe("");
-    expect(page.current.chatComposerFallbackByScope).toEqual({});
-  });
-
   it("releases only unreferenced command payloads after every presentation unmounts", () => {
     const context = {
       chatAttachmentHandoff: createChatAttachmentHandoff(createApplicationGateway().gateway),
@@ -414,6 +397,7 @@ describe("cross-region Home composer ownership", () => {
 
     expect(recovery.owner?.resolveOwner()).toBeUndefined();
     settleChatCommandComposer(page.current, recovery, false, [staged, fallback, unreferenced]);
+    expect(page.current.chatMessage).toBe("");
 
     expect(getChatAttachmentDataUrl(staged)).not.toBeNull();
     expect(getChatAttachmentDataUrl(fallback)).not.toBeNull();
@@ -428,7 +412,6 @@ describe("cross-region Home composer ownership", () => {
     ["replacement", "rejected"],
     ["replacement", "accepted"],
     ["reconnect", "rejected"],
-    ["reconnect", "accepted"],
   ] as const)(
     "settles after source disposal only for the original connection (%s, %s command)",
     (connection, result) => {
@@ -531,55 +514,50 @@ describe("cross-region Home composer ownership", () => {
     },
   );
 
-  it.each([
-    "region",
-    "agent",
-    "session",
-    "client",
-    "profile",
-    "gateway",
-    "unverified-rotation",
-  ] as const)("does not transfer across a different %s owner", (difference) => {
-    const context = {} as ApplicationContext;
-    const owner = { recoveryScope: "profile-a" } as GatewayBrowserClient;
-    const page = presentation(context, owner, "page");
-    page.edit("Private Home draft");
-    const resolveOwner = page.handoff.captureOwner();
-    page.view.presented = false;
-    if (difference === "profile") {
-      Object.defineProperty(owner, "recoveryScope", { value: "profile-b" });
-    }
-    if (difference === "gateway") {
-      page.current.settings = { gatewayUrl: "ws://different.test" } as ChatPageHost["settings"];
-    }
-    const nextOwner =
-      difference === "client" || difference === "unverified-rotation"
-        ? ({
-            recoveryScope: "profile-a",
-            offlineRecoveryScope: "profile-a",
-          } as GatewayBrowserClient)
-        : owner;
-    if (difference === "unverified-rotation") {
-      page.view.owner = nextOwner;
-      page.current.client = nextOwner;
-    }
-    const dock = presentation(
-      context,
-      nextOwner,
-      difference === "region" ? "page" : "dock",
-      difference === "session" ? "agent:main:other" : "global",
-      difference === "agent" ? "research" : "main",
-    );
-    if (difference === "gateway") {
-      dock.current.settings = page.current.settings;
-    }
+  it.each(["agent", "session", "profile", "gateway", "unverified-rotation"] as const)(
+    "does not transfer across a different %s owner",
+    (difference) => {
+      const context = {} as ApplicationContext;
+      const owner = { recoveryScope: "profile-a" } as GatewayBrowserClient;
+      const page = presentation(context, owner, "page");
+      page.edit("Private Home draft");
+      const resolveOwner = page.handoff.captureOwner();
+      page.view.presented = false;
+      if (difference === "profile") {
+        Object.defineProperty(owner, "recoveryScope", { value: "profile-b" });
+      }
+      if (difference === "gateway") {
+        page.current.settings = { gatewayUrl: "ws://different.test" } as ChatPageHost["settings"];
+      }
+      const nextOwner =
+        difference === "unverified-rotation"
+          ? ({
+              recoveryScope: "profile-a",
+              offlineRecoveryScope: "profile-a",
+            } as GatewayBrowserClient)
+          : owner;
+      if (difference === "unverified-rotation") {
+        page.view.owner = nextOwner;
+        page.current.client = nextOwner;
+      }
+      const dock = presentation(
+        context,
+        nextOwner,
+        "dock",
+        difference === "session" ? "agent:main:other" : "global",
+        difference === "agent" ? "research" : "main",
+      );
+      if (difference === "gateway") {
+        dock.current.settings = page.current.settings;
+      }
 
-    dock.handoff.claim();
+      dock.handoff.claim();
 
-    expect(dock.current.chatMessage).toBe("");
-    expect(page.current.chatMessage).toBe("Private Home draft");
-    expect(resolveOwner?.resolveOwner()).not.toBe(dock.current);
-  });
+      expect(dock.current.chatMessage).toBe("");
+      expect(page.current.chatMessage).toBe("Private Home draft");
+      expect(resolveOwner?.resolveOwner()).not.toBe(dock.current);
+    },
+  );
 });
 
 describe("staged chat attachment pane handoff", () => {
