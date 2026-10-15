@@ -185,7 +185,12 @@ it("settles a recovered source's start and terminal lifecycle without caller-thr
 it("settles terminal bookkeeping after its recovery receipt no longer admits work", async () => {
   const fixture = await recoveryFixture("changed");
   try {
-    const replacement = { ...fixture.entry, restartRecoveryHarnessCompletion: undefined };
+    // A yielded checkpoint needs a resume write; an already-running start is a no-op.
+    const replacement = {
+      ...fixture.entry,
+      endedAt: 1_500,
+      restartRecoveryHarnessCompletion: undefined,
+    };
     replaceSessionEntrySync(fixture.target, replacement);
     await expect(fixture.start()).rejects.toBeInstanceOf(SessionWorkStartChangedError);
     await fixture.finish();
