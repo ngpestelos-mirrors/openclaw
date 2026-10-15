@@ -171,14 +171,11 @@ async function loadClientBundleValidator(version: 1 | 2 = 1) {
     "packages/model-catalog-core/src/remote-catalog-bundle.ts",
   );
   const module = await importToolingTypeScript(pathToFileURL(modulePath).href, import.meta.url);
-  const name =
-    version === 1
-      ? "validateAndSanitizeRemoteModelCatalogBundle"
-      : "validateAndSanitizeRemoteModelCatalogBundleV2";
+  const name = version === 1 ? "parseRemoteModelCatalogBundle" : "parseRemoteModelCatalogBundleV2";
   if (typeof module[name] !== "function") {
     throw new Error("remote catalog bundle validator export is unavailable");
   }
-  return module[name];
+  return (bundle: unknown) => module.sanitizeRemoteModelCatalogBundle(module[name](bundle));
 }
 
 export async function assembleModelCatalogBundle(options: {
@@ -1132,6 +1129,11 @@ export async function enrichModelCatalogPricing(options: {
   return { modelsEnriched: enriched, pricingEntries: hosted.size };
 }
 
+// Both hosted formats serve released clients whose input enum predates video.
+function publishedModelInput(input: ModelCatalogModel["input"]) {
+  return input?.filter((value) => value === "text" || value === "image" || value === "document");
+}
+
 export function serializeModelCatalogBundle(bundle: PublishedModelCatalogBundle): string {
   const providers = Object.fromEntries(
     Object.entries(bundle.providers)
@@ -1140,7 +1142,9 @@ export function serializeModelCatalogBundle(bundle: PublishedModelCatalogBundle)
         providerId,
         {
           ...provider,
-          models: provider.models.toSorted((left, right) => left.id.localeCompare(right.id)),
+          models: provider.models
+            .toSorted((left, right) => left.id.localeCompare(right.id))
+            .map((model) => Object.assign({}, model, { input: publishedModelInput(model.input) })),
         },
       ]),
   );
@@ -1291,8 +1295,7 @@ export async function assembleModelCatalogBundleV2(
     }
   }
   const validateBundle = await loadClientBundleValidator(2);
-  // The first supporting release is not assigned yet. schemaVersion gates v2;
-  // never copy v1's older client floor onto a new wire contract.
+  // schemaVersion gates v2; never copy v1's older client floor onto this wire contract.
   const upstreamPricing = serializeStandalonePricing(standalonePricing?.upstream);
   const providerPricing = serializeStandalonePricing(standalonePricing?.provider);
   return validateBundle({
@@ -1312,11 +1315,11 @@ export function serializeModelCatalogBundleV2(bundle: RemoteModelCatalogBundleV2
       (left, right) =>
         left.provider.localeCompare(right.provider) || left.id.localeCompare(right.id),
     )
-    .map(({ id, provider, ...metadata }) =>
+    .map(({ id, provider, input, ...metadata }) =>
       Object.assign(
         { id, provider },
         Object.fromEntries(
-          Object.entries(metadata)
+          Object.entries({ ...metadata, input: publishedModelInput(input) })
             .toSorted(([left], [right]) => left.localeCompare(right))
             .map(([key, value]) => [key, sortJsonValueKeys(value)]),
         ),

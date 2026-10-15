@@ -49,7 +49,9 @@ function fixtureRoot() {
             // Retired manifest authoring field: ignored, never published.
             recommendedModels: ["seed-0"],
             models: seeds.map((model, index) =>
-              index === 0 ? { ...model, cost: { input: 0.5 } } : model,
+              index === 0
+                ? { ...model, input: ["text", "image", "video", "document"], cost: { input: 0.5 } }
+                : model,
             ),
           },
           openai: {
@@ -401,7 +403,7 @@ describe("publish model catalog v2", () => {
     );
   });
 
-  it("writes paired catalogs from one source snapshot, preserving authoritative zero and withdrawal", async () => {
+  it("writes paired catalogs compatible with released input schemas, preserving prices", async () => {
     const rootDir = fixtureRoot();
     const fetchImpl = fixtureFetch();
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -422,6 +424,18 @@ describe("publish model catalog v2", () => {
     expect(v1.generatedAt).toBe(v2.generatedAt);
     expect(v1.sourceCommit).toBe(v2.sourceCommit);
     expect(v1.minVersion).toBe("2026.7.0");
+    expect(v1.providers.anthropic?.models[0]?.input).toEqual(["text", "image", "document"]);
+    expect(
+      v2.models.find((model) => model.provider === "anthropic" && model.id === "seed-0")?.input,
+    ).toEqual(["text", "image", "document"]);
+    for (const model of [
+      ...Object.values(v1.providers).flatMap((provider) => provider.models),
+      ...v2.models,
+    ]) {
+      expect(
+        model.input?.every((input) => ["text", "image", "document"].includes(input)) ?? true,
+      ).toBe(true);
+    }
     expect(v2.models).toHaveLength(203);
     expect(v2.providers.openai?.defaultModel).toBe("seed-0");
     expect(v2.providers.openai?.recommendedModels).toEqual(["seed-2"]);
