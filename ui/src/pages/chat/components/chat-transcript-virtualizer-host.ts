@@ -207,7 +207,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
             onOffset: () => this.endAnchor.recordViewport(this.scrollElement),
             onComposerLayout: (changed) => this.commitComposerResize(changed),
             onReaderScroll: (towardEnd) => {
-              this.initialPositionPending = false;
+              this.finishInitialPosition();
               this.callbacks.onReaderScroll?.(towardEnd);
             },
           },
@@ -233,8 +233,9 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
       hostUpdated: updateVirtualizer,
       hostDisconnected: () => cleanupVirtualizer?.(),
     });
+    // Initial placement owns compensation; an estimated end is not a native scroll target.
+    this.virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => false;
     this.presentation = new TranscriptPresentation(this, this.virtualizer, () => {
-      // Initial measurement retains the requested edge; native zero is not a reader position yet.
       if (!this.initialPositionPending) {
         this.offsetState.syncNativeOffset?.();
       }
@@ -254,7 +255,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
       pendingScrollFrame: null,
       onReaderScroll: () => {
         if (this.initialPositionPending) {
-          this.initialPositionPending = false;
+          this.finishInitialPosition();
           this.host.requestUpdate();
         }
         this.callbacks.onReaderScroll?.();
@@ -272,6 +273,11 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
 
   get updateComplete() {
     return this.host.updateComplete;
+  }
+
+  private finishInitialPosition(): void {
+    this.initialPositionPending = false;
+    this.virtualizer.shouldAdjustScrollPositionOnItemSizeChange = undefined;
   }
 
   get liveAnnouncementText() {
@@ -360,7 +366,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     if (!this.initialPositionPending || (this.contentReady && this.rowKeys.length === 0)) {
       applyPendingScrollOffset(this.scrollRestoreHost);
       if (this.initialPositionPending) {
-        this.initialPositionPending = false;
+        this.finishInitialPosition();
         this.renderer.syncInitialPosition();
       }
     }
@@ -575,7 +581,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
       return false;
     }
     if (source !== "auto") {
-      this.initialPositionPending = false;
+      this.finishInitialPosition();
     }
     scrollTranscriptToEnd(
       this.offsetState,
@@ -643,7 +649,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     if (!rowKey) {
       return false;
     }
-    this.initialPositionPending = false;
+    this.finishInitialPosition();
     this.cancelScroll();
     // History can be projected while scrolling or MCP teardown still holds the old rows.
     this.offsetState.scrollCommand = {
@@ -669,7 +675,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     onSettled?: (position: ChatSessionScrollPosition) => void,
   ): void {
     this.cancelScroll();
-    this.initialPositionPending = false;
+    this.finishInitialPosition();
     this.offsetState.pendingScrollOffset = { offset, stableFrames: 0, zeroMaxFrames: 0, onSettled };
     if (this.connected) {
       this.host.requestUpdate();
@@ -760,7 +766,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
       this.offsetState.syncNativeOffset?.();
     }
     if (isTranscriptRangeCommitted(this.threadInnerElement, this.virtualizer)) {
-      this.initialPositionPending = false;
+      this.finishInitialPosition();
       this.renderer.syncInitialPosition();
     }
     this.host.requestUpdate();
