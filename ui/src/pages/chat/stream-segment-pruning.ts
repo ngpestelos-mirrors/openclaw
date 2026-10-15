@@ -69,9 +69,6 @@ export function pruneHistoryReplacedStreamSegments(
     isHiddenStreamText: StreamVisibility;
   },
 ): boolean {
-  if (!Array.isArray(state.chatStreamSegments)) {
-    return false;
-  }
   const replacedIndexes = new Set<number>();
   for (const part of visibleAssistantStreamParts(state, {
     includeCurrent: false,
@@ -112,28 +109,17 @@ export function prunePersistedToolStreamMessages(
     return;
   }
   const liveToolRefs = resolveLiveToolStreamRefs(state);
-  if (state.toolStreamById instanceof Map) {
-    for (const id of persistedToolIds) {
-      state.toolStreamById.delete(id);
-    }
+  for (const id of persistedToolIds) {
+    state.toolStreamById.delete(id);
   }
-  if (Array.isArray(state.toolStreamOrder)) {
-    state.toolStreamOrder = state.toolStreamOrder.filter(
-      (id): id is string => typeof id === "string" && !persistedToolIds.has(id),
-    );
-  }
-  if (Array.isArray(state.chatToolMessages)) {
-    state.chatToolMessages = state.chatToolMessages.filter((message) => {
-      const refs = extractToolMessageRefs(message);
-      return refs.every((ref) => {
-        const identity = resolveMatchingLiveToolIdentity(ref, liveToolRefs);
-        return identity === undefined || !persistedToolIds.has(identity);
-      });
+  state.toolStreamOrder = state.toolStreamOrder.filter((id) => !persistedToolIds.has(id));
+  state.chatToolMessages = state.chatToolMessages.filter((message) => {
+    const refs = extractToolMessageRefs(message);
+    return refs.every((ref) => {
+      const identity = resolveMatchingLiveToolIdentity(ref, liveToolRefs);
+      return identity === undefined || !persistedToolIds.has(identity);
     });
-  }
-  if (!Array.isArray(state.chatStreamSegments)) {
-    return;
-  }
+  });
   let toolIndexedSegmentIndex = 0;
   state.chatStreamSegments = pruneAccumulatedStreamSegments(
     state.chatStreamSegments,

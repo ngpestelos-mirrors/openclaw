@@ -1,6 +1,5 @@
 import { DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS } from "@openclaw/gateway-client/browser";
 import {
-  GATEWAY_SERVER_CAPS,
   validateTalkSessionCancelOutputResult,
   type TalkCatalogResult,
 } from "../../../../../packages/gateway-protocol/src/index.js";
@@ -8,7 +7,6 @@ import type { RealtimeVoiceCloseOptions } from "../../../../../src/talk/provider
 import { t } from "../../../i18n/index.ts";
 import { bytesToBase64 } from "../../../lib/bytes-base64.ts";
 import { formatUiError } from "../../../lib/format-error.ts";
-import { isGatewayCapabilityAdvertised } from "../../../lib/gateway-methods.ts";
 import { RealtimeTalkAudioInputBudget } from "./audio-input-budget.ts";
 import {
   floatToPcm16,
@@ -38,14 +36,9 @@ const MAX_PENDING_ACTIVATION_EVENTS = 32;
 const MAX_PENDING_ACTIVATION_EVENT_BYTES = 256 * 1024;
 
 function estimateRelayEventBytes(event: GatewayRelayEvent): number {
-  try {
-    const serialized = JSON.stringify(event);
-    // Browser strings may use two bytes per code unit; use the upper bound without
-    // allocating a second encoded copy on this realtime event path.
-    return (serialized?.length ?? 0) * 2;
-  } catch {
-    return MAX_PENDING_ACTIVATION_EVENT_BYTES + 1;
-  }
+  // Gateway events already crossed the JSON boundary. Browser strings may use
+  // two bytes per code unit; avoid allocating a second encoded copy here.
+  return JSON.stringify(event).length * 2;
 }
 
 export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport {
@@ -178,12 +171,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
           "talk.session.close",
           {
             sessionId: this.session.relaySessionId,
-            ...(isGatewayCapabilityAdvertised(
-              this.ctx.client,
-              GATEWAY_SERVER_CAPS.TALK_SESSION_CLOSE_DISPOSITION,
-            ) === true
-              ? { disposition }
-              : {}),
+            disposition,
           },
           { timeoutMs: RELAY_CLOSE_TIMEOUT_MS },
         )

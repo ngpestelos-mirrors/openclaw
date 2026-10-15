@@ -40,6 +40,10 @@ function makeHost(over: Partial<ReconcileHost> = {}): ReconcileHost {
     sessionKey: "s1",
     chatRunId: null,
     chatStream: null,
+    toolStreamById: new Map(),
+    toolStreamOrder: [],
+    chatToolMessages: [],
+    chatStreamSegments: [],
     sessionsResult: makeSessionsResult([
       { key: "s1", hasActiveRun: true, activeRunIds: ["r1"], status: "running" },
     ]),

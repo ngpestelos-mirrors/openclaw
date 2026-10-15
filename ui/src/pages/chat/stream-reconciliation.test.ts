@@ -231,6 +231,9 @@ describe("stream reconciliation", () => {
 
   it("retains the cumulative baseline after history replaces an earlier displayed prefix", () => {
     const state = makeIdleStreamState({
+      toolStreamById: new Map(),
+      toolStreamOrder: [],
+      chatToolMessages: [],
       chatStreamSegments: [
         {
           text: "Before steer.",

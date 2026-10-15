@@ -162,7 +162,7 @@ export class GoogleLiveRealtimeTalkTransport implements RealtimeTalkTransport {
       this.send(this.session.initialMessage ?? { setup: {} });
     });
     ws.addEventListener("message", (event) => {
-      void this.handleMessage(ws, event.data);
+      this.handleMessage(ws, event.data);
     });
     ws.addEventListener("close", () => {
       this.failConnection(ws, "Realtime connection closed");
@@ -307,17 +307,16 @@ export class GoogleLiveRealtimeTalkTransport implements RealtimeTalkTransport {
     return false;
   }
 
-  private async handleMessage(ws: WebSocket, data: unknown): Promise<void> {
+  private handleMessage(ws: WebSocket, data: string | ArrayBuffer): void {
     if (this.closed || this.ws !== ws) {
       return;
     }
     let message: GoogleLiveMessage;
     try {
-      message = JSON.parse(await decodeGoogleLiveMessageData(data)) as GoogleLiveMessage;
+      message = JSON.parse(
+        typeof data === "string" ? data : new TextDecoder().decode(data),
+      ) as GoogleLiveMessage;
     } catch {
-      return;
-    }
-    if (this.closed || this.ws !== ws) {
       return;
     }
     if (message.setupComplete) {
@@ -601,27 +600,4 @@ export class GoogleLiveRealtimeTalkTransport implements RealtimeTalkTransport {
           },
     );
   }
-}
-
-async function decodeGoogleLiveMessageData(dataInput: unknown): Promise<string> {
-  let data = dataInput;
-  if (typeof data === "string") {
-    return data;
-  }
-  if (typeof Blob !== "undefined" && data instanceof Blob) {
-    data = await data.arrayBuffer();
-  }
-  if (isArrayBufferLike(data)) {
-    return new TextDecoder().decode(new Uint8Array(data));
-  }
-  if (ArrayBuffer.isView(data)) {
-    return new TextDecoder().decode(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
-  }
-  return String(data);
-}
-
-function isArrayBufferLike(data: unknown): data is ArrayBuffer {
-  return (
-    data instanceof ArrayBuffer || Object.prototype.toString.call(data) === "[object ArrayBuffer]"
-  );
 }

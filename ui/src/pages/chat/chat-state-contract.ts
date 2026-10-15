@@ -18,7 +18,7 @@ import type { ChatMessageCache } from "./session-message-cache.ts";
 import type { StreamCausalBoundaryState } from "./stream-causal-boundary.ts";
 import type {
   ChatReasoning,
-  LiveToolStreamState,
+  ToolStreamHost,
   ProviderPolicyNotice,
   RunOutputUsage,
 } from "./tool-stream-contract.ts";
@@ -102,4 +102,7 @@ export type ChatState = StreamCausalBoundaryState & {
   transcriptLoadingChanged?: () => void;
   /** Reports transient read recovery to the shell connection indicator. */
   historyRecoveryChanged?: () => void;
-} & LiveToolStreamState;
+} & Pick<
+    ToolStreamHost,
+    "toolStreamById" | "toolStreamOrder" | "chatToolMessages" | "chatStreamSegments"
+  >;
