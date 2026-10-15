@@ -374,6 +374,7 @@ export function receiveWorkerMemoryPort(worker: WorkerCpuHandle, message: unknow
     "message",
     (record: WorkerMemorySample | { gc: GcSample[] } | { gcStorm: WorkerGcStorm }) => {
       if ("gcStorm" in record) {
+        recordWorkerMessage("memory", "from_worker");
         // Capture registry-owned identity before a native exit can free this slot.
         const workerThreadId = worker.threadId;
         const workerSlot = source.workerSlot;

@@ -4,6 +4,7 @@ import { expect, it, vi } from "vitest";
 import type { GcSample } from "../infra/gc-observer.js";
 import { receiveWorkerMemoryPort, trackNativeWorkerForCpu } from "../infra/worker-cpu.js";
 import { serveWorkerMemorySamples } from "../infra/worker-memory.js";
+import { getWorkerMessageMetrics } from "../infra/worker-message-metrics.js";
 import { codeModeGcAttribution } from "../logging/code-mode-diagnostic.js";
 import { codeModeNodeInitialization, prepareCodeModeNodeCatalog } from "./code-mode-node-input.js";
 import { CodeModeNodeProgress } from "./code-mode-node-progress.js";
@@ -15,6 +16,11 @@ const fixture = vi.hoisted(() => ({
     | ((input: CodeModeNodeInput) => Promise<CodeModeWorkerThreadResult<undefined>>)
     | undefined,
   warn: vi.fn(),
+}));
+// The memory-port consumer runs on the Gateway main thread; Vitest runs in a worker.
+vi.mock("node:worker_threads", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:worker_threads")>()),
+  isMainThread: true,
 }));
 // mock-isolation: Drive exact GC windows without starting a native observer.
 vi.mock("../infra/gc-observer.js", () => ({
@@ -51,6 +57,10 @@ it("warns through the memory port with parked-cell attribution, bounded cadence,
   const initial = once(message.port, "message");
   receiveWorkerMemoryPort(worker, message);
   await initial;
+  const previousUnmeasured =
+    getWorkerMessageMetrics().find(
+      (row) => row.kind === "memory" && row.direction === "from_worker",
+    )?.unmeasuredMessages ?? 0;
   const config = {
     timeoutMs: 5_000,
     memoryLimitBytes: 64 * 1024 * 1024,
@@ -145,6 +155,13 @@ it("warns through the memory port with parked-cell attribution, bounded cadence,
     expect(fixture.warn).toHaveBeenCalledTimes(2);
     await collect(140_000, 100);
     expect(fixture.warn).toHaveBeenCalledTimes(2);
+    expect(getWorkerMessageMetrics()).toContainEqual(
+      expect.objectContaining({
+        kind: "memory",
+        direction: "from_worker",
+        unmeasuredMessages: previousUnmeasured + 2,
+      }),
+    );
   } finally {
     close();
     parent.port1.close();
