@@ -65,7 +65,6 @@ export class GoogleLiveRealtimeTalkTransport implements RealtimeTalkTransport {
   private setupTimeout: ReturnType<typeof globalThis.setTimeout> | null = null;
   private readonly input = this.ctx.input;
   private inputContext: AudioContext | null = null;
-  private outputContext: AudioContext | null = null;
   private inputMeter: RealtimeTalkMediaStreamMeter | null = null;
   private readonly inputPump = new RealtimeTalkPcmInputPump();
   private closed = false;
@@ -142,7 +141,7 @@ export class GoogleLiveRealtimeTalkTransport implements RealtimeTalkTransport {
     const wsUrl = buildGoogleLiveUrl(this.session);
     this.input.adopt((detail) => this.failConnection(this.ws, detail));
     this.inputContext = new AudioContext({ sampleRate: this.session.audio.inputSampleRateHz });
-    this.outputContext = new AudioContext({ sampleRate: this.session.audio.outputSampleRateHz });
+    this.outputQueue.open(this.session.audio.outputSampleRateHz);
     const ws = new WebSocket(wsUrl);
     this.ws = ws;
     ws.binaryType = "arraybuffer";
@@ -237,11 +236,9 @@ export class GoogleLiveRealtimeTalkTransport implements RealtimeTalkTransport {
     this.input.stop();
     this.toolOwner.release();
     this.inputPump.stop();
-    this.outputQueue.stop(this.outputContext);
+    this.outputQueue.close();
     void this.inputContext?.close();
     this.inputContext = null;
-    void this.outputContext?.close();
-    this.outputContext = null;
     this.ws?.close();
     this.ws = null;
     // Release capture and native resources before notifying presentation callbacks.
@@ -335,7 +332,7 @@ export class GoogleLiveRealtimeTalkTransport implements RealtimeTalkTransport {
     const content = message.serverContent;
     if (content?.interrupted) {
       this.interruptedTurn = true;
-      this.outputQueue.stop(this.outputContext);
+      this.outputQueue.stop();
     }
     if (content?.inputTranscription && !this.appendTranscript("user", content.inputTranscription)) {
       return;
@@ -464,7 +461,7 @@ export class GoogleLiveRealtimeTalkTransport implements RealtimeTalkTransport {
         emitTalkEvent: this.emitTalkEvent,
         onControlResult: (result) => {
           if (shouldInterruptRealtimeTalkControlResponse(result)) {
-            this.outputQueue.stop(this.outputContext);
+            this.outputQueue.stop();
           }
         },
         speakControlResult: (message) => this.sendControlSpeechMessage(message),
@@ -478,15 +475,11 @@ export class GoogleLiveRealtimeTalkTransport implements RealtimeTalkTransport {
     if (this.closed) {
       return;
     }
-    const result = this.outputQueue.play(
-      base64,
-      this.outputContext,
-      this.session.audio.outputSampleRateHz,
-    );
+    const result = this.outputQueue.play(base64);
     if (result !== "overflow") {
       return;
     }
-    this.outputQueue.stop(this.outputContext);
+    this.outputQueue.stop();
     this.emitTalkEvent({
       type: "turn.cancelled",
       final: true,
@@ -596,7 +589,7 @@ export class GoogleLiveRealtimeTalkTransport implements RealtimeTalkTransport {
   }
 
   private sendControlSpeechMessage(message: string): void {
-    this.outputQueue.stop(this.outputContext);
+    this.outputQueue.stop();
     this.send(
       this.gemini31LiveModel
         ? { realtimeInput: { text: message } }

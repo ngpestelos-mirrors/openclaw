@@ -51,7 +51,6 @@ function estimateRelayEventBytes(event: GatewayRelayEvent): number {
 export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport {
   private readonly input = this.ctx.input;
   private inputContext: AudioContext | null = null;
-  private outputContext: AudioContext | null = null;
   private inputMeter: RealtimeTalkMediaStreamMeter | null = null;
   private readonly inputPump = new RealtimeTalkPcmInputPump();
   private unsubscribe: (() => void) | null = null;
@@ -139,7 +138,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
       return "cancelled";
     }
     this.inputContext = new AudioContext({ sampleRate: this.session.audio.inputSampleRateHz });
-    this.outputContext = new AudioContext({ sampleRate: this.session.audio.outputSampleRateHz });
+    this.outputQueue.open(this.session.audio.outputSampleRateHz);
     this.abortPendingAudioAppends();
     this.audioAppendAbortController = new AbortController();
     if (this.ctx.callbacks.onInputLevel) {
@@ -220,8 +219,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
     this.stopOutput();
     void this.inputContext?.close();
     this.inputContext = null;
-    void this.outputContext?.close();
-    this.outputContext = null;
+    this.outputQueue.close();
   }
 
   private startMicrophonePump(): void {
@@ -427,11 +425,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
   }
 
   private playPcm16(base64: string): void {
-    const result = this.outputQueue.play(
-      base64,
-      this.outputContext,
-      this.session.audio.outputSampleRateHz,
-    );
+    const result = this.outputQueue.play(base64);
     if (result === "overflow") {
       this.playbackOverflowed = true;
       this.cancelOutput("playback-overflow", false);
@@ -439,7 +433,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
   }
 
   private stopOutput(releaseDelayedToolResults = true): void {
-    this.outputQueue.stop(this.outputContext);
+    this.outputQueue.stop();
     this.speechFramesDuringPlayback = 0;
     if (releaseDelayedToolResults) {
       this.rescheduleDelayedToolResults();
@@ -447,7 +441,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
   }
 
   private scheduleMarkAck(markName: string): void {
-    const delayMs = this.outputPlaybackDelayMs();
+    const delayMs = this.outputQueue.playbackDelayMs;
     if (delayMs > 0) {
       const timer = window.setTimeout(() => {
         this.markAckTimers.delete(timer);
@@ -541,7 +535,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
     if (
       !this.closed &&
       !willContinue &&
-      (this.pendingOutputCancellations > 0 || this.outputPlaybackDelayMs() > 0)
+      (this.pendingOutputCancellations > 0 || this.outputQueue.playbackDelayMs > 0)
     ) {
       const pending = { callId, result };
       this.delayedToolResults.add(pending);
@@ -572,16 +566,6 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
     }
   }
 
-  private outputPlaybackDelayMs(): number {
-    if (!this.outputContext) {
-      return 0;
-    }
-    return Math.max(
-      0,
-      Math.ceil((this.outputQueue.queuedUntil - this.outputContext.currentTime) * 1000),
-    );
-  }
-
   private rescheduleDelayedToolResult(pending: DelayedToolResult): void {
     if (this.closed) {
       this.discardDelayedToolResult(pending);
@@ -590,7 +574,7 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
     if (this.pendingOutputCancellations > 0) {
       return;
     }
-    const playbackDelayMs = this.outputPlaybackDelayMs();
+    const playbackDelayMs = this.outputQueue.playbackDelayMs;
     if (playbackDelayMs > 0) {
       pending.timer = window.setTimeout(() => {
         pending.timer = undefined;
