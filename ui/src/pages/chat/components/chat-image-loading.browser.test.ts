@@ -1,8 +1,9 @@
 import { html, nothing, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
+import { solidContent } from "../../../lit/solid-content.tsx";
 import { waitForFast } from "../../../test-helpers/wait-for.ts";
-import { renderCompactAttachmentCard } from "./chat-attachment-card.ts";
+import { CompactAttachmentCard } from "./chat-attachment-card-solid.tsx";
 import { renderMessageImages } from "./chat-message-images.ts";
 import {
   projectMessageMedia,
@@ -88,6 +89,24 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
     } else {
       document.documentElement.dataset.themeMode = originalTheme;
     }
+  });
+
+  it("replaces a legacy immutable thumbnail rendition before loading its preview", async () => {
+    const container = mount(500);
+    const source = `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/thumbnail?v=2`;
+    const fetchMock = vi.fn(async (url: string) => {
+      // Model the old immutable response separately from the new bounded rendition.
+      return new URL(url, location.href).searchParams.get("v") === "2"
+        ? svgResponse(2400, 1200)
+        : svgResponse(400, 200);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(renderMessageImages([{ url: source, alt: "Versioned preview" }]), container);
+    const image = await admittedImage(container);
+    await image.decode();
+    expect(image.naturalWidth).toBe(400);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(new URL(fetchMock.mock.calls[0]![0], location.href).searchParams.get("v")).toBe("3");
   });
 
   it("keeps a horizontally clipped image keyboard reachable before admission", async () => {
@@ -471,7 +490,7 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
           html`<div class="chat-group ${role}">
             <div class="chat-group-messages">
               ${renderMessageImages(images, { sessionKey: "unavailable-geometry", agentId: "main", onRequestUpdate: draw })}
-              ${withDocument ? renderCompactAttachmentCard({ kind: "document", label: "notes.pdf" }) : nothing}
+              ${withDocument ? solidContent(CompactAttachmentCard, { kind: "document", label: "notes.pdf" }) : nothing}
               <p data-next-message>Next message</p>
             </div>
           </div>`,
@@ -487,7 +506,10 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       await Promise.all([...container.querySelectorAll("img")].map((image) => image.decode()));
       const reference = withDocument ? container : mount(400);
       if (!withDocument) {
-        render(renderCompactAttachmentCard({ kind: "document", label: "notes.pdf" }), reference);
+        render(
+          solidContent(CompactAttachmentCard, { kind: "document", label: "notes.pdf" }),
+          reference,
+        );
       }
       const file = reference.querySelector<HTMLElement>(
         ".chat-assistant-attachment-card--compact",
