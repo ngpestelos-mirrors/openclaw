@@ -960,4 +960,32 @@ describe("main session recovery store", () => {
       tokens: ["current-owner"],
     });
   });
+
+  it("rejects a delayed admitted-interruption callback after lifecycle rotation", async () => {
+    await write(
+      interruptedEntry({
+        status: undefined,
+        abortedLastRun: false,
+        restartRecoveryRuns: [{ runId: "recovery-1", lifecycleGeneration }],
+      }),
+    );
+    rotateAgentEventLifecycleGeneration();
+
+    const result = await commitRecovery({
+      kind: "mark_admitted_recovery_interrupted",
+      cycleId: "cycle-1",
+      attempt: 0,
+      lifecycleGeneration,
+      now: 300,
+      runId: "recovery-1",
+      sessionId: "session-1",
+    });
+
+    expect(result.transition).toEqual({ kind: "rejected", reason: "stale_generation" });
+    expect(read()).toMatchObject({
+      sessionId: "session-1",
+      abortedLastRun: false,
+    });
+    expect(read().status).toBeUndefined();
+  });
 });

@@ -169,6 +169,21 @@ describe("evaluateFilePolicy — denyPaths always wins", () => {
       expected,
     );
   });
+
+  it("denies even with ask=always (denyPaths is hard)", () => {
+    withConfig({
+      n1: {
+        ask: "always",
+        denyPaths: ["**/secrets/**"],
+      },
+    });
+    const r = evaluateFilePolicy({
+      nodeId: "n1",
+      kind: "read",
+      path: "/var/secrets/api.key",
+    });
+    expectResultFields(r, { ok: false, code: "POLICY_DENIED", askable: false });
+  });
 });
 
 describe("evaluateFilePolicy — allow matching", () => {
@@ -182,6 +197,24 @@ describe("evaluateFilePolicy — allow matching", () => {
     expectResultFields(evaluateFilePolicy({ nodeId: "n1", kind: "write", path: "/tmp/out.txt" }), {
       ok: false,
       code: "POLICY_DENIED",
+    });
+  });
+
+  it("propagates followSymlinks=false by default and =true when configured", () => {
+    withConfig({
+      n1: { allowReadPaths: ["/tmp/**"] },
+    });
+    expectResultFields(evaluateFilePolicy({ nodeId: "n1", kind: "read", path: "/tmp/x" }), {
+      ok: true,
+      followSymlinks: false,
+    });
+
+    withConfig({
+      n2: { allowReadPaths: ["/tmp/**"], followSymlinks: true },
+    });
+    expectResultFields(evaluateFilePolicy({ nodeId: "n2", kind: "read", path: "/tmp/x" }), {
+      ok: true,
+      followSymlinks: true,
     });
   });
 });

@@ -414,6 +414,13 @@ describe("Discord action message bodies", () => {
     expect(writes()).toEqual([]);
   });
 
+  it("normalizes identifiers without normalizing the message body", async () => {
+    const content = "  Changed caption\n";
+    await edit(content, cfg, ` ${messageId} `);
+    expectEdit(channelId, content);
+    expect(current).toEqual({ content, attachments: [attachment] });
+  });
+
   it("rejects malformed message IDs before a message mutation", async () => {
     await expect(edit("Changed caption", cfg, "..")).rejects.toThrow("Invalid Discord message ID");
     expect(writes()).toEqual([]);

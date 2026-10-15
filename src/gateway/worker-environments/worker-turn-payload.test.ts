@@ -154,20 +154,23 @@ beforeEach(() => {
 });
 
 describe("windowInitialMessages", () => {
-  it("rejects invalid runtime carrier metadata", () => {
-    expect(() =>
-      windowInitialMessages([
-        {
-          role: "custom",
-          customType: "openclaw.runtime-context",
-          content: "retained context",
-          display: false,
-          details: { source: "openclaw-runtime-context", runtimeContextCarrier: false },
-          timestamp: 1,
-        },
-      ]),
-    ).toThrow("Invalid worker runtime context");
-  });
+  it.each([{}, { source: "openclaw-runtime-context", runtimeContextCarrier: false }])(
+    "rejects invalid runtime carrier metadata %j",
+    (details) => {
+      expect(() =>
+        windowInitialMessages([
+          {
+            role: "custom",
+            customType: "openclaw.runtime-context",
+            content: "retained context",
+            display: false,
+            details,
+            timestamp: 1,
+          },
+        ]),
+      ).toThrow("Invalid worker runtime context");
+    },
+  );
 
   it.each([false, true])(
     "retains hidden runtime context before the provider replay anchor (structured: %s)",

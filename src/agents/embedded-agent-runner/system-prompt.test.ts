@@ -104,6 +104,27 @@ describe("buildConfiguredAgentSystemPrompt", () => {
     expect(prompt).toContain("Agent workspace: /tmp/openclaw");
   });
 
+  it("keeps post-compaction curated context scoped to the prepared project", () => {
+    const prompt = buildConfiguredAgentSystemPrompt({
+      ...basicPromptInputs(),
+      activeProjectKeys: ["github.com/acme/Alpha"],
+      contextFiles: [
+        {
+          path: "/tmp/openclaw/MEMORY.md",
+          content: [
+            "- Alpha compaction fact. <!-- project: github.com/acme/Alpha -->",
+            "- Beta compaction fact. <!-- project: github.com/acme/Beta -->",
+            "- Global compaction fact.",
+          ].join("\n"),
+        },
+      ],
+    });
+
+    expect(prompt).toContain("Alpha compaction fact");
+    expect(prompt).toContain("Global compaction fact");
+    expect(prompt).not.toContain("Beta compaction fact");
+  });
+
   it.each(["create", "rename-only", "absent"] as const)(
     "routes explicit task creation from the native %s tool surface in default suggest mode",
     (surface) => {

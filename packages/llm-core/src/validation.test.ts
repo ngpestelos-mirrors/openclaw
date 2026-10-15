@@ -144,36 +144,36 @@ describe("validateToolArguments", () => {
     }
   });
 
-  it.each([{ name: "object/null", types: ["object", "null"] }])(
-    "keeps invalid non-null values out of a $name type array",
-    ({ types }) => {
-      const validateArgs = validator("nullable-parent", {
-        type: "object",
-        properties: {
-          parent: {
-            type: types,
-            properties: {
-              kind: { type: "string", enum: ["page"] },
-              count: { type: "integer", minimum: 1 },
-            },
-            required: ["kind", "count"],
-            additionalProperties: false,
+  it.each([
+    { name: "object/null", types: ["object", "null"] },
+    { name: "null/object", types: ["null", "object"] },
+  ])("keeps invalid non-null values out of a $name type array", ({ types }) => {
+    const validateArgs = validator("nullable-parent", {
+      type: "object",
+      properties: {
+        parent: {
+          type: types,
+          properties: {
+            kind: { type: "string", enum: ["page"] },
+            count: { type: "integer", minimum: 1 },
           },
+          required: ["kind", "count"],
+          additionalProperties: false,
         },
-        required: ["parent"],
-        additionalProperties: false,
-      });
-      const validate = (parent: unknown) => validateArgs({ parent });
-      expect(validate(null)).toEqual({ parent: null });
-      const parent = { kind: "page", count: "2" };
-      for (const input of [parent, JSON.stringify(parent)]) {
-        expect(validate(input)).toEqual({ parent: { kind: "page", count: 2 } });
-      }
-      for (const input of [false, 0, "", [], { kind: "wrong", count: 2 }]) {
-        expect(() => validate(input)).toThrow(/Validation failed for tool "nullable-parent"/);
-      }
-    },
-  );
+      },
+      required: ["parent"],
+      additionalProperties: false,
+    });
+    const validate = (parent: unknown) => validateArgs({ parent });
+    expect(validate(null)).toEqual({ parent: null });
+    const parent = { kind: "page", count: "2" };
+    for (const input of [parent, JSON.stringify(parent)]) {
+      expect(validate(input)).toEqual({ parent: { kind: "page", count: 2 } });
+    }
+    for (const input of [false, 0, "", [], { kind: "wrong", count: 2 }]) {
+      expect(() => validate(input)).toThrow(/Validation failed for tool "nullable-parent"/);
+    }
+  });
 
   it("preserves nullable scalar values and null-only coercions", () => {
     const numbers = [
@@ -301,6 +301,17 @@ describe("validateToolArguments — root references", () => {
   function validate(parameters: Tool["parameters"], value: unknown) {
     return validator("refs", parameters)({ value });
   }
+
+  it.each(["anyOf", "oneOf"])("preserves values accepted by a referenced %s branch", (keyword) => {
+    const parameters = {
+      type: "object",
+      properties: {
+        value: { [keyword]: [{ $ref: "#/$defs/number" }, { $ref: "#/$defs/text" }] },
+      },
+      $defs: { number: { type: "number" }, text: { type: "string" } },
+    };
+    expect(validate(parameters, "00123")).toEqual({ value: "00123" });
+  });
 
   it.each(["anyOf", "oneOf"])("checks %s alternatives in their root context", (keyword) => {
     const parameters = {
