@@ -113,6 +113,8 @@ relative POSIX paths in UTF-16 lexical order. Each file contributes
 `path\0file\0content-sha256\n`; each link contributes
 `path\0symlink\0link-target\n`. Hash these UTF-8 records with SHA-256. Directory
 entries and symlink targets are not counted again in `runtime.sizeBytes`.
+Manifest generation rejects absolute symlinks, dangling symlinks, and links whose
+resolved targets are outside `runtime/`, so links remain valid when the artifact moves.
 
 ### macOS signing
 

@@ -145,4 +145,49 @@ describe("standalone build interface", () => {
     fs.writeFileSync(path.join(runtime, "a.js"), "changed\n");
     expect((await describeStandaloneRuntime(runtime)).sha256).not.toBe(manifest.runtime.sha256);
   });
+
+  it.each(["dangling", "outside", "indirect-outside", "cycle", "absolute-inside"])(
+    "rejects a %s runtime symlink before describing the sidecar",
+    async (kind) => {
+      const root = fixture();
+      const runtime = path.join(root, "runtime");
+      const outside = path.join(root, "outside");
+      fs.writeFileSync(outside, "outside\n");
+      const link = path.join(runtime, "node_modules/.pnpm/node_modules/openclaw-control-ui");
+      fs.mkdirSync(path.dirname(link), { recursive: true });
+      const asset = path.join(runtime, "asset");
+      fs.writeFileSync(asset, "asset\n");
+      const target =
+        kind === "dangling"
+          ? "../../../ui"
+          : kind === "cycle"
+            ? path.basename(link)
+            : kind === "absolute-inside"
+              ? asset
+              : path.relative(path.dirname(link), outside);
+      if (kind === "indirect-outside") {
+        const bridge = path.join(runtime, "bridge");
+        fs.symlinkSync("../outside", bridge);
+        fs.symlinkSync(path.relative(path.dirname(link), bridge), link);
+      } else {
+        fs.symlinkSync(target, link);
+      }
+      await expect(describeStandaloneRuntime(runtime)).rejects.toThrow(
+        "Invalid standalone runtime symlink",
+      );
+    },
+  );
+
+  it("allows contained directory links without counting their contents twice", async () => {
+    const root = fixture();
+    const runtime = path.join(root, "runtime");
+    fs.mkdirSync(path.join(runtime, "assets"));
+    fs.writeFileSync(path.join(runtime, "assets", "data"), "data");
+    fs.symlinkSync("assets", path.join(runtime, "asset-link"));
+    expect(await describeStandaloneRuntime(runtime)).toMatchObject({
+      fileCount: 1,
+      symlinkCount: 1,
+      sizeBytes: 4,
+    });
+  });
 });

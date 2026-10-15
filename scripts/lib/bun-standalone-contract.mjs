@@ -107,6 +107,34 @@ function runtimeEntries(root, relative = "") {
   return entries;
 }
 
+function assertStandaloneRuntimeLinks(root, entries) {
+  const canonicalRoot = fs.realpathSync(root);
+  for (const { name, symlink } of entries) {
+    if (!symlink) {
+      continue;
+    }
+    const filename = path.join(root, name);
+    // Publication moves the staging tree, so even contained absolute links would break.
+    if (path.isAbsolute(fs.readlinkSync(filename))) {
+      throw new Error(
+        `Invalid standalone runtime symlink ${name}: absolute target is not relocatable`,
+      );
+    }
+    let target;
+    try {
+      target = fs.realpathSync(filename);
+    } catch (error) {
+      throw new Error(`Invalid standalone runtime symlink ${name}: dangling or unreadable target`, {
+        cause: error,
+      });
+    }
+    const relative = path.relative(canonicalRoot, target);
+    if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
+      throw new Error(`Invalid standalone runtime symlink ${name}: target is outside runtime/`);
+    }
+  }
+}
+
 /** Tree SHA256 frames sorted POSIX path, kind, and content hash/link target with NULs and LF. */
 export async function describeStandaloneRuntime(root) {
   const digest = createHash("sha256");
@@ -116,6 +144,7 @@ export async function describeStandaloneRuntime(root) {
   const entries = runtimeEntries(root).toSorted((a, b) =>
     a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
   );
+  assertStandaloneRuntimeLinks(root, entries);
   for (const { name, symlink } of entries) {
     const filename = path.join(root, name);
     if (symlink) {
@@ -139,6 +168,7 @@ export async function createStandaloneManifest({
   pruning,
   sqlite,
 }) {
+  const runtime = await describeStandaloneRuntime(path.join(outputRoot, "runtime"));
   const executable = path.join(outputRoot, "openclaw");
   const { categories, sidecarPlugins, ...pruningSummary } = pruning;
   return {
@@ -153,7 +183,7 @@ export async function createStandaloneManifest({
       sha256: await sha256File(executable),
     },
     runtime: {
-      ...(await describeStandaloneRuntime(path.join(outputRoot, "runtime"))),
+      ...runtime,
       categories,
       sidecarPlugins,
       sqlite,
