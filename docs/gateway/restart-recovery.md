@@ -352,7 +352,7 @@ receipt alone does not authorize process exit.
 
 Worker-placement maintenance stops admitting new candidates when drain begins.
 Optional session-evidence reads, disk probes, and node-retention preparation are
-cancelled; an accepted retirement, workspace recovery, reclaim, or publication
+canceled; an accepted retirement, workspace recovery, reclaim, or publication
 effect still settles before its database or transport closes. A later restart
 resumes deferred maintenance from durable state. Deadline diagnostics name the
 pending placement subphase, such as

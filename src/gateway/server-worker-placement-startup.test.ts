@@ -128,6 +128,7 @@ describe("worker placement startup health lifetime", () => {
       subscribeMachineShapeChanged: vi.fn(() => vi.fn()),
       installReconcileEnvironmentGuard: vi.fn(() => vi.fn()),
       start: vi.fn(),
+      isStopping: () => false,
       beginClose: vi.fn(),
       stop: vi.fn().mockResolvedValue(undefined),
     };
@@ -226,6 +227,7 @@ describe("worker placement startup health lifetime", () => {
         subscribeMachineShapeChanged: vi.fn(() => vi.fn()),
         installReconcileEnvironmentGuard: vi.fn(() => vi.fn()),
         start: vi.fn(),
+        isStopping: () => false,
         beginClose: vi.fn(),
         stop: vi.fn().mockResolvedValue(undefined),
       };
@@ -315,6 +317,7 @@ describe("worker placement startup health lifetime", () => {
       subscribeMachineShapeChanged: vi.fn(() => vi.fn()),
       installReconcileEnvironmentGuard: vi.fn(() => vi.fn()),
       start: vi.fn(),
+      isStopping: () => false,
       stop: vi.fn().mockResolvedValue(undefined),
       beginClose: vi.fn(),
     };
@@ -383,6 +386,7 @@ describe("worker placement startup health lifetime", () => {
       subscribeMachineShapeChanged: vi.fn(() => vi.fn()),
       installReconcileEnvironmentGuard: vi.fn(() => vi.fn()),
       start: vi.fn(),
+      isStopping: () => false,
       beginClose: vi.fn(),
       stop: vi.fn().mockRejectedValueOnce(stopError).mockResolvedValueOnce(undefined),
     };
@@ -478,6 +482,7 @@ describe("worker placement startup health lifetime", () => {
                 return vi.fn();
               }),
               start: vi.fn(),
+              isStopping: () => false,
               beginClose: vi.fn(),
               stop: vi.fn().mockResolvedValue(undefined),
             };
