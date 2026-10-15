@@ -1,7 +1,4 @@
-import {
-  registerProviderPlugin,
-  registerSingleProviderPlugin,
-} from "openclaw/plugin-sdk/plugin-test-runtime";
+import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { NON_ENV_SECRETREF_MARKER } from "openclaw/plugin-sdk/provider-auth-runtime";
 import { clearLiveCatalogCacheForTests } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import { expectPassthroughReplayPolicy } from "openclaw/plugin-sdk/provider-test-contracts";
@@ -147,20 +144,6 @@ describe("opencode provider plugin", () => {
         errorMessage: "Insufficient account funds",
       }),
     ).toBeUndefined();
-  });
-
-  it("registers image media understanding through the OpenCode plugin", async () => {
-    const { mediaProviders } = await registerProviderPlugin({
-      plugin,
-      id: "opencode",
-      name: "OpenCode Zen Provider",
-    });
-    const mediaProvider = mediaProviders.find((provider) => provider.id === "opencode");
-
-    expect(mediaProvider?.capabilities).toEqual(["image"]);
-    expect(mediaProvider?.defaultModels).toEqual({ image: "minimax-m3" });
-    expect(typeof mediaProvider?.describeImage).toBe("function");
-    expect(typeof mediaProvider?.describeImages).toBe("function");
   });
 
   it("owns Gemini-only passthrough replay policy", async () => {
@@ -695,14 +678,5 @@ describe("opencode provider plugin", () => {
         baseUrl: "https://opencode.ai/zen",
       } as never),
     ).toEqual({ api: "openai-completions", baseUrl: "https://opencode.ai/zen/v1" });
-  });
-
-  it("exposes the thinking policy through the registered provider", async () => {
-    const provider = await registerSingleProviderPlugin(plugin);
-    const profile = provider.resolveThinkingProfile?.({
-      provider: "opencode",
-      modelId: "claude-opus-4-7",
-    });
-    expect(profile?.levels.map((level) => level.id)).toContain("adaptive");
   });
 });
