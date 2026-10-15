@@ -20,26 +20,82 @@ function matchesPlatform(values, actual) {
   );
 }
 
-// Packages can carry several prebuilds even though only one platform is installed.
-function hostResource(filename, platform, arch) {
+function nativeResourceTarget(filename) {
+  const header = Buffer.allocUnsafe(4096);
+  const fd = fs.openSync(filename, "r");
+  let bytes;
+  try {
+    bytes = header.subarray(0, fs.readSync(fd, header, 0, header.length, 0));
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (bytes.length < 4) {
+    return undefined;
+  }
+  const magic = bytes.readUInt32BE(0);
+  if (magic === 0x0061736d) {
+    return { portable: true };
+  }
+  if (magic === 0x7f454c46) {
+    const machine =
+      bytes.length >= 20
+        ? bytes[5] === 2
+          ? bytes.readUInt16BE(18)
+          : bytes.readUInt16LE(18)
+        : undefined;
+    return {
+      platform: "linux",
+      architectures: [{ 3: "ia32", 40: "arm", 62: "x64", 183: "arm64" }[machine]].filter(Boolean),
+    };
+  }
+  if (bytes.readUInt16BE(0) === 0x4d5a) {
+    return { platform: "win32", architectures: [] };
+  }
+  const thin = [0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe].includes(magic);
+  const fat = [0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca].includes(magic);
+  if ((!thin && !fat) || bytes.length < 8) {
+    return undefined;
+  }
+  const littleEndian = [0xcefaedfe, 0xcffaedfe, 0xbebafeca, 0xbfbafeca].includes(magic);
+  const read = (offset) => (littleEndian ? bytes.readUInt32LE(offset) : bytes.readUInt32BE(offset));
+  const stride = [0xcafebabf, 0xbfbafeca].includes(magic) ? 32 : 20;
+  const count = fat ? Math.min(read(4), Math.floor((bytes.length - 8) / stride)) : 1;
+  const architectures = Array.from(
+    { length: count },
+    (_, index) =>
+      ({ 7: "ia32", 12: "arm", 0x01000007: "x64", 0x0100000c: "arm64" })[
+        read(fat ? 8 + index * stride : 4)
+      ],
+  ).filter(Boolean);
+  return { platform: "darwin", architectures };
+}
+
+// Native headers own target selection; directory labels cover opaque prebuilds.
+function hostResource(filename, platform, arch, target) {
+  if (target?.portable) {
+    return true;
+  }
+  if (target?.platform && target.platform !== platform) {
+    return false;
+  }
+  const architectures = target?.architectures ?? [];
+  if (architectures.length && !architectures.includes(arch)) {
+    return false;
+  }
   const segments = filename.split("/");
   const platforms = new Set(["darwin", "linux", "win32", "freebsd", "android"]);
-  for (let index = 0; index < segments.length; index++) {
-    const segment = segments[index];
+  for (const segment of segments) {
     if (platforms.has(segment) && segment !== platform) {
       return false;
     }
+    const qualified = /^(darwin|linux|win32|freebsd|android)-(arm64|x64|ia32)(?:-|$)/.exec(segment);
     if (
-      /^(?:darwin|linux|win32|freebsd|android)-(?:arm64|x64|ia32)(?:-|$)/.test(segment) &&
-      !segment.startsWith(`${platform}-${arch}`)
+      qualified &&
+      (qualified[1] !== platform || (!architectures.length && qualified[2] !== arch))
     ) {
       return false;
     }
-    if (
-      platforms.has(segments[index - 1]) &&
-      /^(?:arm64|x64|ia32)$/.test(segment) &&
-      segment !== arch
-    ) {
+    if (!architectures.length && /^(?:arm64|x64|ia32)$/.test(segment) && segment !== arch) {
       return false;
     }
   }
@@ -272,7 +328,7 @@ export function createStandaloneNativeAdapter({
           throw new Error(`Dependency resource escapes runtime: ${source}`);
         }
         const stat = fs.statSync(resolved);
-        if (!stat.isFile() || !hostResource(name, platform, arch)) {
+        if (!stat.isFile()) {
           continue;
         }
         // Executable support programs (pty helper, browser driver, etc.) remain disk assets.
@@ -281,7 +337,19 @@ export function createStandaloneNativeAdapter({
           !LICENSE.test(name) &&
           !/\.(?:[cm]?[jt]s|map|json|md|sh|ps1|cmd|bat|d\.ts)$/.test(name);
         const category = resourceCategory(name, executable, manifest.name);
-        if (category) {
+        const target =
+          category &&
+          category !== "externalRuntime" &&
+          (NATIVE_ADDON.test(name) ||
+            NATIVE_LIBRARY.test(name) ||
+            RESOURCE.test(name) ||
+            executable)
+            ? nativeResourceTarget(resolved)
+            : undefined;
+        if (
+          category &&
+          (category === "externalRuntime" || hostResource(name, platform, arch, target))
+        ) {
           owner.resources.push({
             source: relative(source),
             destination: `${owner.destination}/${name}`,

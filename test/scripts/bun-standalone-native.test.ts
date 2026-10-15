@@ -357,6 +357,103 @@ console.log("full-ws loaded without node_modules");
     expect(fs.readFileSync(path.join(root, alias!.source), "utf8")).toBe("library");
   });
 
+  it.each([
+    {
+      platform: "darwin",
+      retained: [
+        "bin/arm64/native.dylib",
+        "lib/macho.so",
+        "lib/universal.node",
+        "lib/portable.so",
+        "opaque/arm64/tool",
+      ],
+    },
+    {
+      platform: "linux",
+      retained: ["bin/arm64/native.so", "bin/arm64/tool", "lib/portable.so", "opaque/arm64/tool"],
+    },
+  ] as const)(
+    "selects $platform arm64 resources from native headers and bare architecture directories",
+    ({ platform, retained }) => {
+      const { root, write, pkg } = fixture();
+      const macho = (cpu: number) => {
+        const header = Buffer.alloc(32);
+        header.writeUInt32LE(0xfeedfacf, 0);
+        header.writeUInt32LE(cpu, 4);
+        header.writeUInt32LE(6, 12);
+        return header;
+      };
+      const elf = (machine: number) => {
+        const header = Buffer.alloc(64);
+        header.writeUInt32BE(0x7f454c46, 0);
+        header.set([2, 1, 1], 4);
+        header.writeUInt16LE(3, 16);
+        header.writeUInt16LE(machine, 18);
+        header.writeUInt32LE(1, 20);
+        header.writeUInt16LE(64, 52);
+        return header;
+      };
+      const universal = Buffer.alloc(112);
+      universal.writeUInt32BE(0xcafebabe, 0);
+      universal.writeUInt32BE(2, 4);
+      for (const [index, cpu] of [0x01000007, 0x0100000c].entries()) {
+        universal.writeUInt32BE(cpu, 8 + index * 20);
+        universal.writeUInt32BE(48 + index * 32, 16 + index * 20);
+        universal.writeUInt32BE(32, 20 + index * 20);
+        universal.writeUInt32BE(4, 24 + index * 20);
+        macho(cpu).copy(universal, 48 + index * 32);
+      }
+      const windows = Buffer.alloc(512);
+      windows.writeUInt16LE(0x5a4d, 0);
+      windows.writeUInt32LE(64, 0x3c);
+      windows.writeUInt32LE(0x00004550, 64);
+      windows.writeUInt16LE(0xaa64, 68);
+      windows.writeUInt16LE(240, 84);
+      windows.writeUInt16LE(0x2022, 86);
+      windows.writeUInt16LE(0x20b, 88);
+      windows.writeUInt32LE(512, 148);
+      const files = {
+        "bin/arm64/native.dylib": macho(0x0100000c),
+        "bin/arm64/native.so": elf(183),
+        "bin/x64/native.so": elf(62),
+        "bin/arm64/tool": elf(183),
+        "lib/macho.so": macho(0x0100000c),
+        "lib/wrong-arch.node": macho(0x01000007),
+        "lib/universal.node": universal,
+        "lib/portable.so": Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]),
+        "lib/windows.dll": windows,
+        "opaque/arm64/tool": Buffer.from("opaque"),
+        "opaque/x64/tool": Buffer.from("opaque"),
+      };
+      const owner = pkg("native-matrix", {}, { "index.js": "export {};" });
+      for (const [name, bytes] of Object.entries(files)) {
+        const filename = path.join(owner, name);
+        write(filename);
+        fs.writeFileSync(filename, bytes);
+        if (name.endsWith("/tool")) {
+          fs.chmodSync(filename, 0o755);
+        }
+      }
+      write(
+        path.join(root, "package.json"),
+        JSON.stringify({ dependencies: { "native-matrix": "1" } }),
+      );
+      const adapter = createStandaloneNativeAdapter({
+        runtimeRoot: root,
+        parse,
+        platform,
+        arch: "arm64",
+      });
+      adapter.transform({ filename: path.join(owner, "index.js"), contents: "export {};" });
+      const actual = adapter
+        .finalize()
+        .files.filter((file: { category: string }) => file.category !== "dependencyMetadata")
+        .map((file: { source: string }) => path.relative(owner, path.join(root, file.source)))
+        .toSorted();
+      expect(actual).toEqual(retained.toSorted());
+    },
+  );
+
   it("captures computed fs-safe/proc-safe and sqlite-vec imports without a pnpm tree", () => {
     const { root, write, pkg } = fixture();
     const fsNative = pkg(
@@ -634,6 +731,8 @@ console.log("full-ws loaded without node_modules");
         "schemas/api.schema.json": "{}",
         "definitions/task.agent.yaml": "name: task",
         "plugins/computer-use/plugin.json": "{}",
+        "plugins/guest.dll": "MZguest",
+        "runtimes/linux-x64/guest.so": "\u007fELFguest",
         "assets/unused.png": "excluded by runtime owner",
         "index.js": "excluded by runtime owner",
       },
@@ -669,6 +768,8 @@ console.log("full-ws loaded without node_modules");
     const sources = finalized.files.map((file: { source: string }) => file.source);
     expect(sources).toContain(`${path.relative(root, runtime)}/copilot-sdk/extension.js`);
     expect(sources).toContain(`${path.relative(root, runtime)}/definitions/task.agent.yaml`);
+    expect(sources).toContain(`${path.relative(root, runtime)}/plugins/guest.dll`);
+    expect(sources).toContain(`${path.relative(root, runtime)}/runtimes/linux-x64/guest.so`);
     expect(sources).not.toContain(`${path.relative(root, runtime)}/assets/unused.png`);
     expect(sources).not.toContain(`${path.relative(root, runtime)}/index.js`);
     expect(() =>
