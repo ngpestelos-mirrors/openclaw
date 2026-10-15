@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -64,6 +65,85 @@ function evaluate(
 }
 
 describe("standalone native sidecar", () => {
+  it("loads the full ws implementation through a transformed ESM caller after pruning", () => {
+    const { root, write, pkg } = fixture();
+    const dependency = pkg(
+      "ws",
+      {
+        main: "index.js",
+        exports: {
+          ".": { require: "./index.js", default: "./index.js" },
+          "./package.json": "./package.json",
+        },
+      },
+      {
+        "index.js": "module.exports = require('./lib/websocket.js');",
+        "lib/websocket.js": "module.exports = { marker: 'full-ws' };",
+      },
+    );
+    write(path.join(root, "package.json"), JSON.stringify({ dependencies: { ws: "1.0.0" } }));
+    const image = fs.mkdtempSync(path.join(os.tmpdir(), "standalone-image-"));
+    temporary.push(image);
+    const runner = path.join(image, "runner.mjs");
+    write(
+      runner,
+      String.raw`
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+import { createStandaloneNativeAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/bun-standalone-native.mjs")).href)};
+import { createStandaloneRequireAdapter } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/bun-standalone-require.mjs")).href)};
+import { rewriteStandaloneImports } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/bun-standalone-imports.mjs")).href)};
+import { pruneStandaloneRuntime } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/bun-standalone-sidecar.mjs")).href)};
+const { parse } = createRequire(${JSON.stringify(path.resolve("package.json"))})("acorn");
+const root = ${JSON.stringify(root)};
+const image = ${JSON.stringify(image)};
+const dependency = ${JSON.stringify(dependency)};
+const filename = path.join(root, "dist/websocket.mjs");
+const library = path.join(dependency, "lib/websocket.js");
+const imageLibrary = path.join(image, "websocket.cjs");
+fs.copyFileSync(library, imageLibrary);
+const embeddedPaths = { [path.relative(root, library)]: imageLibrary };
+const native = createStandaloneNativeAdapter({ runtimeRoot: root, parse });
+native.transform({ filename: library, contents: fs.readFileSync(library, "utf8") });
+const source = 'import { createRequire } from "node:module"; import path from "node:path"; const require = createRequire(import.meta.url); const root = path.dirname(require.resolve("ws/package.json")); export const marker = require(path.join(root, "lib/websocket.js")).marker;';
+fs.mkdirSync(path.dirname(filename), { recursive: true });
+const transformed = rewriteStandaloneImports({ contents: native.transform({ filename, contents: source }).contents, filename, runtimeRoot: root, embeddedPaths, moduleAliases: {}, workerThreadsShim: "", parse });
+const finalized = native.finalize({ embeddedPaths });
+const requireAdapter = createStandaloneRequireAdapter({ runtimeRoot: root, embeddedPaths });
+const bootstrap = [
+  'import path from "node:path";',
+  'import { fileURLToPath, pathToFileURL } from "node:url";',
+  'const root = ' + JSON.stringify(root) + ';',
+  'globalThis.__openclawStandaloneRootUrl = pathToFileURL(root + "/").href;',
+  'const entries = ' + JSON.stringify(embeddedPaths) + ';',
+  'const commonJsEntries = new Set();',
+  'function embedded(filename) { filename = globalThis.__openclawStandaloneOriginalPath?.(filename) ?? filename; return Object.values(entries).includes(filename) ? filename : entries[path.relative(root, filename)]; }',
+  native.bootstrap.replace(finalized.bootstrapReplacement.search, finalized.bootstrapReplacement.replacement),
+  requireAdapter.bootstrap,
+].join("\n");
+const bootstrapFile = path.join(image, "bootstrap.mjs");
+const moduleFile = path.join(image, "caller.mjs");
+fs.writeFileSync(bootstrapFile, bootstrap);
+fs.writeFileSync(moduleFile, transformed);
+pruneStandaloneRuntime(root, finalized.files);
+if (fs.existsSync(path.join(root, "node_modules"))) throw new Error("node_modules remains");
+await import(pathToFileURL(bootstrapFile).href);
+if ((await import(pathToFileURL(moduleFile).href)).marker !== "full-ws") throw new Error("loaded the wrong ws implementation");
+console.log("full-ws loaded without node_modules");
+`,
+    );
+    const result = spawnSync(
+      process.env.OPENCLAW_STANDALONE_TEST_RUNTIME ?? process.execPath,
+      [runner],
+      { encoding: "utf8" },
+    );
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("full-ws loaded without node_modules");
+  });
+
   it("resolves graph-retained root and peer packages without retaining unused development packages", () => {
     const { root, write, pkg } = fixture();
     const first = pkg("hoisted", { main: "index.js" }, { "index.js": "module.exports = 'first';" });

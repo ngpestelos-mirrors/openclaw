@@ -202,6 +202,9 @@ export function createStandaloneNativeAdapter({
     return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
   };
   const relative = (filename) => slash(path.relative(runtimeRoot, filename));
+  // Bun's built-in ws has no search paths; installed package discovery still needs Node's roots.
+  const packageSearchPaths = (owner) =>
+    owner?.require.resolve.paths("__standalone_package__") ?? [];
 
   function register(inputDirectory) {
     const directory = fs.realpathSync(inputDirectory);
@@ -298,7 +301,7 @@ export function createStandaloneNativeAdapter({
       try {
         // package.json exports are often deliberately private; walking the Node search path
         // keeps resolution faithful without evaluating package code.
-        for (const search of owner.require.resolve.paths(name) ?? []) {
+        for (const search of packageSearchPaths(owner)) {
           const candidate = path.join(search, name, "package.json");
           if (fs.existsSync(candidate)) {
             manifestPath = candidate;
@@ -623,7 +626,7 @@ export function createStandaloneNativeAdapter({
       // declaration. Preserve their installed name/version mapping without retaining more files.
       const rootVisibleNames = new Set();
       const rootOwner = packages.get(runtimeRoot);
-      for (const search of rootOwner?.require.resolve.paths("__standalone_package__") ?? []) {
+      for (const search of packageSearchPaths(rootOwner)) {
         if (!contained(search) || !fs.existsSync(search)) {
           continue;
         }
@@ -650,7 +653,7 @@ export function createStandaloneNativeAdapter({
           if (dependencies.has(name)) {
             continue;
           }
-          for (const search of owner.require.resolve.paths(name) ?? []) {
+          for (const search of packageSearchPaths(owner)) {
             if (!contained(search)) {
               continue;
             }
@@ -681,7 +684,10 @@ export function createStandaloneNativeAdapter({
               // exports dist/secure-temp-dir.js). Capture Node's resolution before pruning.
               for (const specifier of [name, ...subpaths.map((key) => name + key.slice(1))]) {
                 try {
-                  entries[specifier] = relative(owner.require.resolve(specifier));
+                  const resolved = owner.require.resolve(specifier);
+                  if (path.isAbsolute(resolved) && contained(resolved)) {
+                    entries[specifier] = relative(resolved);
+                  }
                 } catch {
                   /* Optional packages and import-only exports may have no require entry. */
                 }
