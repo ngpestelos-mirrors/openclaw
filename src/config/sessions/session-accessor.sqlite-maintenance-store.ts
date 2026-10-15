@@ -171,15 +171,16 @@ export function prepareSessionEntryMaintenanceInDatabase(
     if (!preserveKeys) {
       const snapshot = readPreservation();
       const keyProjection =
-        activeSessionKeys.length > 0 ||
-        snapshot.workIdentities.length > 0 ||
-        snapshot.lifecycleIdentities.length > 0
+        snapshot.workIdentities.length > 0 || snapshot.lifecycleIdentities.length > 0
           ? readSessionMaintenanceKeyProjection(reader)
-          : {};
-      baseKeys = collectSqliteSessionMaintenanceBaseKeys(keyProjection, activeSessionKeys);
+          : undefined;
+      baseKeys = collectSqliteSessionMaintenanceBaseKeys(
+        (keys) => keyProjection ?? readSessionMaintenanceKeyProjection(reader, keys),
+        activeSessionKeys,
+      );
       preserveKeys = resolveSessionMaintenancePreserveKeys({
         snapshot,
-        store: keyProjection,
+        store: keyProjection ?? {},
         baseKeys,
       });
     }
@@ -201,7 +202,10 @@ export function prepareSessionEntryMaintenanceInDatabase(
           modelRunPruneAfterMs,
         }),
       readCapCandidates: (remainingEntryCount) => {
-        const overflow = Math.max(0, remainingEntryCount - maintenance.maxEntries);
+        const overflow = Math.min(
+          Math.max(0, remainingEntryCount - maintenance.maxEntries),
+          params.maxCapEntries ?? Infinity,
+        );
         if (overflow > 0) {
           const candidates = readSessionMaintenanceCapCandidates({
             database: reader,
@@ -300,23 +304,11 @@ export function prepareSessionEntryMaintenanceInDatabase(
     if (selectedKeys.length > 0) {
       // Admission refreshes live protection after planning. Reread only its active
       // ancestry under the writer lock; unrelated activity cannot invalidate victims.
-      const currentBaseKeys = new Set(baseKeys);
-      let pending = uniqueStrings([
-        params.activeSessionKey ?? "",
-        ...(params.activeSessionKeys ?? []),
-      ]);
-      while (pending.length > 0) {
-        pending = pending
-          .map(normalizeStoreSessionKey)
-          .filter((key) => key && !currentBaseKeys.has(key));
-        if (pending.length === 0) {
-          break;
-        }
-        pending.forEach((key) => currentBaseKeys.add(key));
-        pending = Object.values(readSessionMaintenanceKeyProjection(database, pending)).flatMap(
-          (entry) => (entry.parentSessionKey ? [entry.parentSessionKey] : []),
-        );
-      }
+      const currentBaseKeys = collectSqliteSessionMaintenanceBaseKeys(
+        (keys) => readSessionMaintenanceKeyProjection(database, keys),
+        [params.activeSessionKey ?? "", ...(params.activeSessionKeys ?? [])],
+        baseKeys,
+      );
       const currentPreserveKeys = resolveSessionMaintenancePreserveKeys({
         snapshot: refreshCandidates ? refreshCandidates(selectedKeys) : readPreservation(),
         store: selectedEntries,

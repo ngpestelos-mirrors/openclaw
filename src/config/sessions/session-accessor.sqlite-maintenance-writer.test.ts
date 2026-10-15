@@ -311,6 +311,57 @@ it.each([false, true])(
   },
 );
 
+it("limits protection reads to active ancestry and preserves cyclic or missing parents", async () => {
+  const now = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(now);
+  const { database, storePath } = createPlannerStore(32, now);
+  const key = (index: number) => `agent:main:planner-${index}`;
+  const expired = now - 40 * 24 * 60 * 60 * 1_000;
+  // Root 0; child 1 -> 2; cycle 3 <-> 4; child 5 -> absent 32; unrelated victim 6.
+  const parents = [undefined, 2, undefined, 4, 3, 32, undefined];
+  for (const [index, parent] of parents.entries()) {
+    replaceSessionEntrySync(
+      { sessionKey: key(index), storePath },
+      {
+        sessionId: `planner-${index}`,
+        updatedAt: expired,
+        ...(parent === undefined ? {} : { parentSessionKey: key(parent) }),
+      },
+    );
+  }
+  const preservation = await prepareSessionMaintenancePreservation(storePath);
+  onTestFinished(preservation.dispose);
+  const inventory = trackSqliteStatementExecutions(database.db, ["protection"], (sql) =>
+    sql.includes(
+      'select "current_session_id", "parent_session_key", "session_key", "updated_at" from "session_nodes"',
+    )
+      ? "protection"
+      : null,
+  );
+  try {
+    const plan = runOpenClawAgentWriteTransaction(
+      (owner) =>
+        maintenance.applySessionEntryMaintenance(owner, {
+          preservation: preservation.capture,
+          activeSessionKeys: [key(0), key(1), key(3), key(5)],
+          archiveDirectory: path.join(path.dirname(database.path), "archives"),
+          maintenanceConfig: resolveMaintenanceConfigFromInput(),
+          storePath,
+        }),
+      { agentId: "main", path: database.path },
+    );
+    expect(plan.archivedEntries).toEqual([{ sessionKey: key(6), sessionId: "planner-6" }]);
+    for (const index of [0, 1, 2, 3, 4, 5]) {
+      const entry = loadSessionEntry({ sessionKey: key(index), storePath });
+      expect(entry).toMatchObject({ sessionId: `planner-${index}` });
+      expect(entry?.archivedAt).toBeUndefined();
+    }
+    expect(inventory.rowCounts.protection).toBe(6);
+  } finally {
+    inventory.restore();
+  }
+});
+
 it("resolves protection once before capping aged candidates", async () => {
   const { database, storePath } = createPlannerStore(6, Date.now());
   const key = (index: number) => `agent:main:planner-${index}`;

@@ -50,20 +50,27 @@ function maintenanceCandidates(database: Pick<OpenClawAgentDatabase, "db">) {
 }
 
 export function collectSqliteSessionMaintenanceBaseKeys(
-  store: Record<string, SessionEntry>,
+  readProjection: (sessionKeys: readonly string[]) => Record<string, SessionEntry>,
   activeSessionKeys: Iterable<string>,
+  baseKeys: readonly string[] = [],
 ): string[] {
-  const keys: string[] = [];
-  const seen = new Set<string>();
-  for (const activeSessionKey of activeSessionKeys) {
-    let currentKey = normalizeStoreSessionKey(activeSessionKey);
-    while (currentKey && !seen.has(currentKey)) {
-      seen.add(currentKey);
-      keys.push(currentKey);
-      currentKey = normalizeStoreSessionKey(store[currentKey]?.parentSessionKey ?? "");
+  const keys = new Set(baseKeys);
+  let pending = [...activeSessionKeys];
+  while (pending.length > 0) {
+    pending = [...new Set(pending.map(normalizeStoreSessionKey))].filter(
+      (key) => key && !keys.has(key),
+    );
+    if (pending.length === 0) {
+      break;
     }
+    pending.forEach((key) => keys.add(key));
+    const projection = readProjection(pending);
+    pending = pending.flatMap((key) => {
+      const parent = projection[key]?.parentSessionKey;
+      return parent ? [parent] : [];
+    });
   }
-  return keys;
+  return [...keys];
 }
 
 export function readSessionMaintenanceKeyProjection(
