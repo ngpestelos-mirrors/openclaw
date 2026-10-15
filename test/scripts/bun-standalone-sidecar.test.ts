@@ -146,8 +146,14 @@ describe("standalone resource allowlist", () => {
       "dist/plugin-sdk/index.js",
       "dist/state/openclaw-state.worker.js",
       "extensions/example/index.ts",
+      "packages/gateway-client/dist/index.mjs",
     ]);
-    const directories = ["dist/plugin-sdk", "dist/state", "extensions/example"];
+    const directories = [
+      "dist/plugin-sdk",
+      "dist/state",
+      "extensions/example",
+      "packages/gateway-client/dist",
+    ];
     const result = pruneStandaloneRuntime(runtime, [], new Set(), directories);
     for (const directory of directories) {
       const filename = path.join(runtime, directory);
@@ -159,16 +165,18 @@ describe("standalone resource allowlist", () => {
     expect(fs.existsSync(path.join(runtime, "node_modules"))).toBe(false);
   });
 
-  it.each(["node_modules/.pnpm/example", "dist/../outside", "dist/node_modules/example"])(
-    "rejects metadata directory %s",
-    (directory) => {
-      const runtime = fixture(["package.json"]);
-      expect(() => pruneStandaloneRuntime(runtime, [], new Set(), [directory])).toThrow(
-        "Invalid standalone metadata directory",
-      );
-      expect(fs.existsSync(path.join(runtime, "package.json"))).toBe(true);
-    },
-  );
+  it.each([
+    "node_modules/.pnpm/example",
+    "dist/../outside",
+    "dist/node_modules/example",
+    "packages/gateway-client/node_modules/example",
+  ])("rejects metadata directory %s", (directory) => {
+    const runtime = fixture(["package.json"]);
+    expect(() => pruneStandaloneRuntime(runtime, [], new Set(), [directory])).toThrow(
+      "Invalid standalone metadata directory",
+    );
+    expect(fs.existsSync(path.join(runtime, "package.json"))).toBe(true);
+  });
 
   it("rejects traversal in resource destinations", () => {
     const runtime = fixture(["package.json"]);

@@ -440,14 +440,16 @@ export function createStandaloneNativeAdapter({
     return [search];
   };
   const requires = new Map();
-  globalThis.__openclawStandaloneNativeRequire = (parent, specifier) => {
+  const requireFrom = (parent) => {
     let require = requires.get(parent);
     if (!require) {
       require = globalThis.__openclawStandaloneCreateRequire(__standaloneNativeCreateRequire, parent);
       requires.set(parent, require);
     }
-    return require(specifier);
+    return require;
   };
+  globalThis.__openclawStandaloneNativeRequire = (parent, specifier) => requireFrom(parent)(specifier);
+  globalThis.__openclawStandaloneNativeRequire.resolve = (parent, ...args) => requireFrom(parent).resolve(...args);
 })();\n`;
 
   return {
@@ -468,7 +470,7 @@ export function createStandaloneNativeAdapter({
       if (!owner.relocate) {
         return { contents, count: 0 };
       }
-      if (!/import\.meta|__dirname|__filename|require\s*\(/.test(contents)) {
+      if (!/import\.meta|__dirname|__filename|require\s*(?:\(|\.\s*resolve\s*\()/.test(contents)) {
         return { contents, count: 0 };
       }
       const ast = parse(contents, {
@@ -542,17 +544,22 @@ export function createStandaloneNativeAdapter({
           ]);
           return;
         }
+        const requireResolve =
+          node.callee?.type === "MemberExpression" &&
+          !node.callee.computed &&
+          node.callee.property?.name === "resolve";
+        const requireCallee = requireResolve ? node.callee.object : node.callee;
         if (
           node.type === "CallExpression" &&
-          node.callee?.type === "Identifier" &&
-          node.callee.name === "require" &&
-          !isBound(node.callee) &&
+          requireCallee?.type === "Identifier" &&
+          requireCallee.name === "require" &&
+          !isBound(requireCallee) &&
           nativeRequest(node.arguments[0])
         ) {
           edits.push([
             node.callee.start,
             node.callee.end,
-            `globalThis.__openclawStandaloneNativeRequire.bind(null, ${physical})`,
+            `globalThis.__openclawStandaloneNativeRequire${requireResolve ? ".resolve" : ""}.bind(null, ${physical})`,
           ]);
         }
         for (const [childKey, value] of Object.entries(node)) {

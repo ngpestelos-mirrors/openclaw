@@ -7,6 +7,12 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRuntimeProcessEntrypoints } from "../src/infra/runtime-process-manifest.ts";
+import {
+  WORKSPACE_PACKAGE_ALIAS_ENTRIES,
+  WORKSPACE_PACKAGE_EXPORT_DIRS,
+  workspacePackageAliasCandidates,
+  workspacePackageExportAliasEntries,
+} from "../src/plugins/sdk-alias-workspace.ts";
 import { createStandaloneArtifactAdapter } from "./lib/bun-standalone-artifacts.mjs";
 import { createStandaloneCodegenAdapter } from "./lib/bun-standalone-codegen.mjs";
 import {
@@ -146,6 +152,33 @@ function runtimeJavaScriptEntries(directory, relative = "") {
 const moduleEntries = runtimeJavaScriptEntries(path.join(runtimeRoot, "dist"))
   .map((entry) => `dist/${entry}`)
   .toSorted();
+const workspaceEntries = [...WORKSPACE_PACKAGE_ALIAS_ENTRIES];
+for (const packageDir of WORKSPACE_PACKAGE_EXPORT_DIRS) {
+  let manifest;
+  try {
+    manifest = JSON.parse(
+      fs.readFileSync(path.join(runtimeRoot, "packages", packageDir, "package.json"), "utf8"),
+    );
+  } catch {
+    // Root-packaged fallbacks are already present in the dist entry inventory.
+    continue;
+  }
+  workspaceEntries.push(
+    ...workspacePackageExportAliasEntries({
+      packageName: `@openclaw/${packageDir}`,
+      packageDir,
+      exports: manifest.exports,
+    }),
+  );
+}
+for (const entry of workspaceEntries) {
+  const candidate = workspacePackageAliasCandidates(entry, "dist").find((name) =>
+    fs.existsSync(path.join(runtimeRoot, name)),
+  );
+  if (candidate && !moduleEntries.includes(candidate)) {
+    moduleEntries.push(candidate.split(path.sep).join("/"));
+  }
+}
 const workerEntries = discoverStandaloneWorkers({
   runtimeRoot,
   moduleEntries,

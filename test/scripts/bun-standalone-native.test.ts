@@ -453,6 +453,61 @@ console.log("full-ws loaded without node_modules");
     ).toBe("MIT");
   });
 
+  it("resolves a computed native library from transformed CommonJS after pruning", () => {
+    const { root, write, pkg } = fixture();
+    pkg("sqlite-vec-darwin-arm64", {}, { "vec0.dylib": "native-library" });
+    const source =
+      'exports.getLoadablePath = () => require.resolve("sqlite-vec-darwin-arm64/" + "vec0.dylib");';
+    const owner = pkg(
+      "sqlite-vec",
+      { main: "index.cjs", optionalDependencies: { "sqlite-vec-darwin-arm64": "1.0.0" } },
+      { "index.cjs": source },
+    );
+    write(path.join(root, "package.json"), JSON.stringify({ dependencies: { "sqlite-vec": "1" } }));
+    const filename = path.join(owner, "index.cjs");
+    const adapter = createStandaloneNativeAdapter({
+      runtimeRoot: root,
+      parse,
+      platform: "darwin",
+      arch: "arm64",
+    });
+    const transformed = adapter.transform({ filename, contents: source });
+    const requireAdapter = createStandaloneRequireAdapter({ runtimeRoot: root, embeddedPaths: {} });
+    const finalized = adapter.finalize();
+    pruneStandaloneRuntime(root, finalized.files);
+    const context = vm.createContext({
+      root,
+      path,
+      fileURLToPath,
+      embedded: () => undefined,
+      __standaloneNativeCreateRequire: createRequire,
+      __openclawStandaloneRootUrl: pathToFileURL(root + "/").href,
+      require: createRequire(filename),
+      exports: {},
+    });
+    vm.runInContext(source, context);
+    expect(() => vm.runInContext("exports.getLoadablePath()", context)).toThrow(
+      "Cannot find module",
+    );
+    vm.runInContext(
+      adapter.bootstrap
+        .replace(/^import[^\n]+\n/, "")
+        .replace(
+          finalized.bootstrapReplacement.search,
+          finalized.bootstrapReplacement.replacement,
+        ) +
+        requireAdapter.bootstrap +
+        transformed.contents,
+      context,
+    );
+    const resolved = vm.runInContext("exports.getLoadablePath()", context);
+    expect(resolved).toBe(
+      path.join(root, "native/sqlite-vec-darwin-arm64@1.0.0/sqlite-vec-darwin-arm64/vec0.dylib"),
+    );
+    expect(fs.readFileSync(resolved, "utf8")).toBe("native-library");
+    expect(fs.existsSync(path.join(root, "node_modules"))).toBe(false);
+  });
+
   it("rebases resource expressions and resolves embedded optional wrappers through their original identity", () => {
     const { root, write, pkg } = fixture();
     const native = pkg(

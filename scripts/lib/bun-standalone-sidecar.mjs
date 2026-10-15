@@ -142,7 +142,7 @@ export function pruneStandaloneRuntime(
     for (const directory of metadataDirectories) {
       const parts = directory.split("/");
       if (
-        !["dist", "extensions"].includes(parts[0]) ||
+        !["dist", "extensions", "packages"].includes(parts[0]) ||
         parts.some((part) => !part || part === "." || part === ".." || part === "node_modules")
       ) {
         throw new Error(`Invalid standalone metadata directory: ${directory}`);

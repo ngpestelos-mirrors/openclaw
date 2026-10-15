@@ -9,6 +9,12 @@ const metadataOwnerHooks = new Map([
   ["pluginCacheRealpathSync", "ImageRealpath"],
   ["checkPluginCacheEntry", "ImageCheck"],
 ]);
+const moduleAdmissionOwners = new Map([
+  ["preparePluginModule", "openPluginRootFileSync"],
+  ["loadRuntimePluginCandidate", "openPluginRootFileSync"],
+  ["loadLegacySessionSurface", "openRootFileSync"],
+  ["resolveBundledEntryModulePath", "openRootFileSync"],
+]);
 
 function visit(node, callback, owner) {
   if (!node || typeof node !== "object") {
@@ -310,7 +316,8 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
   };
   globalThis.__openclawStandaloneModuleOpen = (params) =>
     globalThis.__openclawStandaloneImageCheck({ rootDir: params.rootPath,
-      rootRealPath: params.rootRealPath, relativePath: path.relative(params.rootPath, params.filePath) });
+      rootRealPath: params.rootRealPath,
+      relativePath: path.relative(params.rootPath, params.filePath ?? params.absolutePath) });
   globalThis.__openclawStandaloneHookEntry = (params) => {
     if (params.source !== "openclaw-bundled" ||
         !/^dist(?:-runtime)?\\/bundled\\/[^/]+\\/(?:handler|index)\\.[cm]?js$/.test(relative(params.absolutePath))) return;
@@ -345,7 +352,7 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
       .toSorted(),
     transform({ filename, contents }) {
       if (
-        !/checkDistPluginSdkArtifact|fileContentMatches|pluginCache(?:Exists|Stat|Lstat|Realpath)Sync|readPluginCache(?:File|Directory)|checkPluginCacheEntry|collectBundledPluginPublicSurfaceArtifacts|resolveBundledPluginGeneratedPath|resolveManagedToolsMcpServerConfig|candidateDirsFromArgv1|resolveHostPackageRoot|loadHookFromDir|prepareInternalHooks|resolveNodeEntrypointArg|resolveMxcLauncherPath|resolveResolverScriptPath|resolveSqliteWorkerModuleUrl|preparePluginModule/.test(
+        !/checkDistPluginSdkArtifact|fileContentMatches|pluginCache(?:Exists|Stat|Lstat|Realpath)Sync|readPluginCache(?:File|Directory)|checkPluginCacheEntry|collectBundledPluginPublicSurfaceArtifacts|resolveBundledPluginGeneratedPath|resolveManagedToolsMcpServerConfig|candidateDirsFromArgv1|resolveHostPackageRoot|loadHookFromDir|prepareInternalHooks|resolveNodeEntrypointArg|resolveMxcLauncherPath|resolveResolverScriptPath|resolveSqliteWorkerModuleUrl|preparePluginModule|loadRuntimePluginCandidate|loadLegacySessionSurface|resolveBundledEntryModulePath|normalizePathCandidate|resolveOpenClawCliEntryPath|isContainedPluginPath/.test(
           contents,
         )
       ) {
@@ -389,8 +396,8 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
             ownerName === "resolveNodeEntrypointArg" &&
             resolvesTo(node.callee, "openRootFileSync", ast, filename);
           const isModuleOpen =
-            ownerName === "preparePluginModule" &&
-            resolvesTo(node.callee, "openPluginRootFileSync", ast, filename);
+            moduleAdmissionOwners.has(ownerName) &&
+            resolvesTo(node.callee, moduleAdmissionOwners.get(ownerName), ast, filename);
           if (isHookDiscovery || isHookLoader || isSecretEntrypoint || isModuleOpen) {
             const options = node.arguments[0];
             if (options?.type !== "ObjectExpression") {
@@ -422,9 +429,8 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
             adaptedOwners.add(owner);
           }
           if (
-            ["prepareInternalHooks", "resolveNodeEntrypointArg", "preparePluginModule"].includes(
-              ownerName,
-            ) &&
+            (moduleAdmissionOwners.has(ownerName) ||
+              ["prepareInternalHooks", "resolveNodeEntrypointArg"].includes(ownerName)) &&
             node.callee.type === "MemberExpression" &&
             isFsMember(node.callee) &&
             node.callee.property.name === "closeSync" &&
@@ -437,11 +443,26 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
               `("fd" in ${slice(node.arguments[0].object)} && ${slice(node)})`,
             ]);
           }
+          // Single-file workers inline and rename the receipt identity helper.
           if (
             ownerName === "preparePluginModule" &&
-            resolvesTo(node.callee, "sameFileIdentity", ast, filename) &&
+            node.arguments.length === 2 &&
             node.arguments[0]?.type === "MemberExpression" &&
-            node.arguments[0].property.name === "exactIdentity"
+            node.arguments[0].property.name === "exactIdentity" &&
+            node.arguments[1]?.type === "CallExpression" &&
+            node.arguments[1].callee.type === "MemberExpression" &&
+            node.arguments[1].callee.property.name === "statSync" &&
+            isFsMember(node.arguments[1].callee) &&
+            node.arguments[1].arguments[0]?.type === "MemberExpression" &&
+            node.arguments[1].arguments[0].property.name === "path" &&
+            slice(node.arguments[0].object) === slice(node.arguments[1].arguments[0].object) &&
+            (resolvesTo(node.callee, "sameFileIdentity", ast, filename) ||
+              (node.callee.type === "Identifier" &&
+                ast.body.some(
+                  (declaration) =>
+                    declaration.type === "FunctionDeclaration" &&
+                    declaration.id?.name === node.callee.name,
+                )))
           ) {
             edits.push([
               node.start,
@@ -594,16 +615,67 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
           node.type === "CallExpression" &&
           node.callee.type === "MemberExpression" &&
           node.callee.property.name === "realpathSync" &&
-          ["candidateDirsFromArgv1", "resolveHostPackageRoot"].includes(owner?.id?.name)
+          [
+            "candidateDirsFromArgv1",
+            "resolveHostPackageRoot",
+            "resolveOpenClawCliEntryPath",
+          ].includes(owner?.id?.name)
         ) {
           edits.push([
             node.start,
             node.end,
             `(globalThis.__openclawStandaloneImageRealpath(${slice(node.arguments[0])}) ?? ${slice(node)})`,
           ]);
+          if (owner?.id?.name === "resolveOpenClawCliEntryPath") {
+            adaptedOwners.add(owner);
+          }
+        }
+        if (
+          node.type === "CallExpression" &&
+          owner?.id?.name === "normalizePathCandidate" &&
+          node.callee.type === "MemberExpression" &&
+          node.callee.property.name === "native" &&
+          node.callee.object.type === "MemberExpression" &&
+          node.callee.object.property.name === "realpathSync" &&
+          isFsMember(node.callee.object)
+        ) {
+          edits.push([
+            node.start,
+            node.end,
+            `(globalThis.__openclawStandaloneImageRealpath(${slice(node.arguments[0])}) ?? ${slice(node)})`,
+          ]);
+          adaptedOwners.add(owner);
         }
         if (node.type !== "FunctionDeclaration") {
           return;
+        }
+        if (node.id?.name === "isContainedPluginPath") {
+          const projectors = node.body.body
+            .filter((statement) => statement.type === "VariableDeclaration")
+            .flatMap((statement) => statement.declarations)
+            .map((declaration) => declaration.init)
+            .filter((initializer) => initializer?.type === "ArrowFunctionExpression")
+            .filter((initializer) => {
+              const target = initializer.body.body?.[0]?.declarations?.[0];
+              return (
+                initializer.params[0]?.type === "Identifier" &&
+                target?.id.type === "Identifier" &&
+                target.init?.type === "CallExpression" &&
+                target.init.callee.type === "MemberExpression" &&
+                target.init.callee.property.name === "resolve" &&
+                target.init.arguments[0]?.name === initializer.params[0].name
+              );
+            });
+          if (projectors.length !== 1) {
+            throw new Error("Unsupported standalone path containment projector");
+          }
+          const targetDeclaration = projectors[0].body.body[0];
+          edits.push([
+            targetDeclaration.end,
+            targetDeclaration.end,
+            `\nconst __imageProjected = globalThis.__openclawStandaloneImageRealpath(${slice(targetDeclaration.declarations[0].id)});\nif (__imageProjected !== undefined) return __imageProjected;\n`,
+          ]);
+          adaptedOwners.add(node);
         }
         if (node.id?.name === "checkDistPluginSdkArtifact") {
           const first = node.body.body[0];
@@ -674,7 +746,10 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
             "prepareInternalHooks",
             "resolveNodeEntrypointArg",
             "resolveSqliteWorkerModuleUrl",
-            "preparePluginModule",
+            "normalizePathCandidate",
+            "resolveOpenClawCliEntryPath",
+            "isContainedPluginPath",
+            ...moduleAdmissionOwners.keys(),
           ].includes(node.id?.name) &&
           !adaptedOwners.has(node)
         ) {

@@ -16,12 +16,17 @@ import { rewriteStandaloneImports } from "../../scripts/lib/bun-standalone-impor
 import { createStandaloneMetadataAdapter } from "../../scripts/lib/bun-standalone-metadata.mjs";
 import { resolveHookManifestMetadata } from "../../src/hooks/frontmatter.js";
 import {
+  describeRootFileOpenFailure,
   openRootFileSync,
   readFileDescriptorBoundedSync,
 } from "../../src/infra/boundary-file-read.js";
 import { shouldRejectHardlinkedPluginFiles } from "../../src/plugins/hardlink-policy.js";
 import { PUBLIC_SURFACE_SOURCE_EXTENSIONS } from "../../src/plugins/package-entrypoints.js";
-import { openPluginRootFileSync } from "../../src/plugins/path-safety.js";
+import {
+  isPathInside,
+  openPluginRootFileSync,
+  safeRealpathSync,
+} from "../../src/plugins/path-safety.js";
 import { createPluginCacheSdk, getPluginSdkHostFacts } from "../../src/plugins/plugin-cache-sdk.js";
 
 const temporaryRoots: string[] = [];
@@ -76,6 +81,7 @@ function fixture({
   const vault = path.join(runtime, "dist/extensions/vault");
   const vaultResolver = path.join(vault, "vault-secret-ref-resolver.js");
   const sqliteWorker = path.join(runtime, "dist/state/openclaw-state.worker.js");
+  const mainEntry = path.join(runtime, "dist/entry.js");
   const providerPolicy = path.join(plugin, "provider-policy-api.js");
   const doctorBytes = Buffer.from("export const contract = { version: 1 };\n");
   fs.writeFileSync(entry, "export default {};\n");
@@ -115,6 +121,7 @@ function fixture({
     mxcLauncher,
     vaultResolver,
     sqliteWorker,
+    mainEntry,
     path.join(runtime, "node_modules/fixture/index.js"),
   ];
   const sourceFiles: string[] = [];
@@ -287,6 +294,7 @@ function fixture({
     vault,
     vaultResolver,
     sqliteWorker,
+    mainEntry,
     providerPolicy,
     safeOpen,
     rootOpen,
@@ -296,9 +304,265 @@ function fixture({
 }
 
 describe("standalone image metadata", () => {
+  it.each(
+    ([false, true] as const).flatMap((minified) =>
+      (["cli", "containment"] as const).map((owner) => ({ owner, minified })),
+    ),
+  )("resolves $owner paths from image facts (minified=$minified)", ({ owner, minified }) => {
+    const { runtime, plugin, entry, context, adapter } = fixture();
+    const realpath = vi.fn((filename: string) => fs.realpathSync(filename));
+    const lstat = vi.fn((filename: string) => fs.lstatSync(filename));
+    Object.assign(context, {
+      fs: { realpathSync: realpath, lstatSync: lstat },
+      isPathInside,
+      safeRealpathSync,
+    });
+    const source =
+      owner === "cli"
+        ? ownerSource("src/infra/openclaw-cli-invocation.ts", "resolveOpenClawCliEntryPath")
+        : ownerSource("src/plugins/plugin-registry-comparison.ts", "isContainedPluginPath");
+    const invoke = (target: string) =>
+      owner === "cli"
+        ? context.resolveOpenClawCliEntryPath(target)
+        : context.isContainedPluginPath(plugin, target, new Map());
+    vm.runInContext(source, context);
+    expect(invoke(entry)).toBe(owner === "cli" ? entry : true);
+    expect((owner === "cli" ? realpath : lstat).mock.calls).toContainEqual([entry]);
+    realpath.mockClear();
+    lstat.mockClear();
+    const transformed = adapter.transform({
+      filename: path.join(runtime, "dist/path-owner.js"),
+      contents: minified
+        ? transformSync(source, {
+            minifyIdentifiers: true,
+            minifySyntax: true,
+            minifyWhitespace: true,
+          }).code
+        : source,
+    });
+    vm.runInContext(transformed.contents, context);
+    expect(invoke(entry)).toBe(owner === "cli" ? entry : true);
+    expect(realpath).not.toHaveBeenCalled();
+    expect(lstat).not.toHaveBeenCalled();
+
+    const external = path.join(runtime, "external-target");
+    fs.mkdirSync(external);
+    const target = path.join(external, "index.js");
+    fs.writeFileSync(target, "export {};\n");
+    const escape = path.join(plugin, "escape.js");
+    fs.symlinkSync(target, escape);
+    expect(invoke(escape)).toBe(owner === "cli" ? target : false);
+    expect((owner === "cli" ? realpath : lstat).mock.calls).toContainEqual([escape]);
+    if (owner === "containment") {
+      const escapeDirectory = path.join(plugin, "escape-directory");
+      fs.symlinkSync(external, escapeDirectory);
+      expect(invoke(path.join(escapeDirectory, "missing.js"))).toBe(false);
+      expect(invoke(path.join(plugin, "missing.js"))).toBe(true);
+    }
+  });
+
   it.each([false, true])(
-    "admits public surfaces through the secure loader (minified=%s)",
+    "detects embedded main entries without native realpath probes (minified=%s)",
     (minified) => {
+      const { runtime, launcher, mainEntry, context, adapter } = fixture();
+      const native = vi.fn((filename: string) => fs.realpathSync.native(filename));
+      context.fs = { realpathSync: { native } };
+      const source = ownerSource("src/infra/is-main.ts");
+      vm.runInContext(source, context);
+      const launch = {
+        currentFile: mainEntry,
+        argv: [process.execPath, launcher],
+        env: {},
+        cwd: runtime,
+        wrapperEntryPairs: [{ wrapperBasename: "openclaw.mjs", entryBasename: "entry.js" }],
+      };
+      expect(context.isMainModule(launch)).toBe(true);
+      expect(native.mock.calls).toEqual([[mainEntry], [launcher]]);
+      native.mockClear();
+      const transformed = adapter.transform({
+        filename: path.join(runtime, "dist/is-main.js"),
+        contents: minified
+          ? transformSync(source, {
+              minifyIdentifiers: true,
+              minifySyntax: true,
+              minifyWhitespace: true,
+            }).code
+          : source,
+      });
+      vm.runInContext(transformed.contents, context);
+      expect(context.isMainModule(launch)).toBe(true);
+      expect(native).not.toHaveBeenCalled();
+
+      const external = path.join(runtime, "external-main.js");
+      const link = path.join(runtime, "external-bin");
+      fs.writeFileSync(external, "export {};\n");
+      fs.symlinkSync(external, link);
+      expect(
+        context.isMainModule({ ...launch, currentFile: external, argv: [process.execPath, link] }),
+      ).toBe(true);
+      expect(native.mock.calls).toEqual([[external], [link]]);
+
+      const redirected = path.join(runtime, "redirected-dist");
+      fs.mkdirSync(redirected);
+      const redirectedEntry = path.join(redirected, "entry.js");
+      fs.writeFileSync(redirectedEntry, "export {};\n");
+      fs.renameSync(path.join(runtime, "dist"), path.join(runtime, "original-dist"));
+      fs.symlinkSync(redirected, path.join(runtime, "dist"));
+      native.mockClear();
+      expect(context.normalizePathCandidate(mainEntry, runtime)).toBe(redirectedEntry);
+      expect(native.mock.calls).toEqual([[mainEntry]]);
+    },
+  );
+
+  it.each(
+    ([false, true] as const).flatMap((minified) =>
+      (["runtime", "legacy", "companion"] as const).map((owner) => ({ owner, minified })),
+    ),
+  )("admits $owner entries without disk JavaScript (minified=$minified)", ({ owner, minified }) => {
+    const { runtime, plugin, entry, providerPolicy, context, adapter } = fixture({
+      withPublicSurface: true,
+    });
+    const errors: string[] = [];
+    const open = vi.fn(openRootFileSync);
+    const loadModule = vi.fn((filename: string) => ({ filename }));
+    const resolveArtifact = (params: { source: string; rootDir: string }) => params;
+    Object.assign(context, {
+      performance,
+      openRootFileSync: open,
+      openPluginRootFileSync: vi.fn(openPluginRootFileSync),
+      describeRootFileOpenFailure,
+      shouldRejectHardlinkedPluginFiles,
+      resolvePluginRuntimeArtifact: resolveArtifact,
+      resolvePluginRuntimeExecutionArtifact: resolveArtifact,
+      getCachedPluginModuleLoader: () => loadModule,
+      resolveLegacySessionSurface: (value: unknown) => value,
+      createBundledEntryModulePathCacheKey: (url: string, specifier: string) =>
+        `${url}\0${specifier}`,
+      resolveEntryBoundaryRoot: (url: string) => path.dirname(fileURLToPath(url)),
+      resolveBundledEntryModuleCandidates: (url: string, specifier: string) => [
+        { path: path.resolve(path.dirname(fileURLToPath(url)), specifier), boundaryRoot: plugin },
+      ],
+      getPluginCacheRoot: () => ({ entryPaths: new Map() }),
+      formatBundledEntryModuleOpenFailure: () => "entry admission failed",
+      preparePluginLoadRecord: ({ candidate }: { candidate: { source: string } }) => ({
+        pluginId: "example",
+        activationState: {},
+        enableState: { enabled: true },
+        record: { id: "example", source: candidate.source },
+      }),
+      resolveRealpathOrAbsolute: (value: string) => fs.realpathSync(value),
+      findActiveDegradedPlugin: () => undefined,
+      resolveManifestOwnerBasePolicyBlock: () => null,
+      hasExplicitManifestOwnerTrust: () => false,
+      resolveExternalPluginRuntimeDependencyRepairHint: () => undefined,
+      resolvePluginRegistrationPlan: () => ({ mode: "full" }),
+      resolveConfiguredRuntimePluginInstallCandidate: () => undefined,
+      resolveCompatibilityHostVersion: () => "2026.10.14",
+      prefersBuiltPluginArtifacts: () => true,
+      bindPluginRuntimeArtifactSelection: () => ({}),
+      recordImportedPluginId: () => {},
+      withProfile: (_params: unknown, _label: string, callback: () => unknown) => callback(),
+      getPluginInstance: () => undefined,
+      loadSetupRuntimeChannelCandidate: () => true,
+      recordPluginError: ({ error }: { error: string }) => errors.push(error),
+      detailPluginStartupTrace: () => {},
+    });
+    const ownerFile =
+      owner === "runtime"
+        ? "src/plugins/loader-runtime-candidate.ts"
+        : owner === "legacy"
+          ? "src/plugins/legacy-session-surfaces.ts"
+          : "src/plugin-sdk/channel-entry-contract.ts";
+    const ownerName =
+      owner === "runtime"
+        ? "loadRuntimePluginCandidate"
+        : owner === "legacy"
+          ? "loadLegacySessionSurface"
+          : "resolveBundledEntryModulePath";
+    if (owner === "runtime") {
+      vm.runInContext(ownerSource(ownerFile, "prepareRuntimePluginConfig"), context);
+    }
+    const source = ownerSource(ownerFile, ownerName).replaceAll(
+      "import.meta.url",
+      JSON.stringify(pathToFileURL(path.join(runtime, "dist/owner.js")).href),
+    );
+    const invoke = (sourcePath: string, origin = "bundled", rootDir = plugin) => {
+      errors.length = 0;
+      let result: unknown;
+      if (owner === "runtime") {
+        context.loadRuntimePluginCandidate({
+          candidate: { source: sourcePath, rootDir, origin },
+          manifestRecord: { channels: [], configSchema: {} },
+          context: { normalized: { slots: {} }, shouldLoadModules: true, env: {} },
+          options: {},
+          state: { seenIds: new Map(), pluginLoadAttemptCount: 0 },
+          preparedConfig: { validation: { ok: true } },
+          registryBuilder: {
+            registry: { plugins: [] },
+            rollbackPluginGlobalSideEffects: () => {},
+          },
+          logger: {},
+          loadPluginModule: loadModule,
+        });
+        result = loadModule.mock.calls.at(-1)?.[0];
+      } else if (owner === "legacy") {
+        result = context.loadLegacySessionSurface({
+          record: { id: "example", rootDir, origin },
+          setupSource: sourcePath,
+          env: {},
+          artifactRegistry: {},
+        }).filename;
+      } else {
+        context.resolveBundledEntryModuleCandidates = () => [
+          { path: sourcePath, boundaryRoot: rootDir },
+        ];
+        result = context.resolveBundledEntryModulePath(pathToFileURL(entry).href, sourcePath);
+      }
+      if (errors.length) {
+        throw new Error(errors.join("\n"));
+      }
+      return result;
+    };
+    const imageEntry = owner === "companion" ? providerPolicy : entry;
+    vm.runInContext(source, context);
+    expect(() => invoke(imageEntry)).toThrow();
+    expect(loadModule).not.toHaveBeenCalled();
+    const transformed = adapter.transform({
+      filename: path.join(runtime, "dist/owner.js"),
+      contents: minified
+        ? transformSync(source, {
+            minifyIdentifiers: true,
+            minifySyntax: true,
+            minifyWhitespace: true,
+          }).code
+        : source,
+    });
+    vm.runInContext(transformed.contents, context);
+    expect(invoke(imageEntry)).toBe(imageEntry);
+
+    const externalRoot = path.join(runtime, "external-entry");
+    fs.mkdirSync(externalRoot);
+    const external = path.join(externalRoot, "index.js");
+    fs.writeFileSync(external, "export default {};\n");
+    expect(invoke(external, "global", externalRoot)).toBe(external);
+    const escape = path.join(plugin, "escape.js");
+    fs.symlinkSync(external, escape);
+    expect(() => invoke(escape)).toThrow();
+    if (owner !== "companion") {
+      const hardlink = path.join(externalRoot, "hardlink.js");
+      fs.linkSync(external, hardlink);
+      expect(() => invoke(hardlink, "global", externalRoot)).toThrow();
+    }
+    expect(loadModule).toHaveBeenCalledTimes(owner === "companion" ? 0 : 2);
+  });
+
+  it.each([
+    { minified: false, localIdentity: false },
+    { minified: true, localIdentity: false },
+    { minified: true, localIdentity: true },
+  ])(
+    "admits public surfaces through the secure loader (minified=$minified, localIdentity=$localIdentity)",
+    ({ minified, localIdentity }) => {
       const { runtime, plugin, providerPolicy, context, adapter } = fixture({
         withPublicSurface: true,
       });
@@ -357,10 +621,12 @@ describe("standalone image metadata", () => {
       );
       expect(open).toHaveBeenCalled();
       open.mockClear();
-      const source = ownerSource(
-        "src/plugins/plugin-module-loader-cache.ts",
-        "preparePluginModule",
-      );
+      let source = ownerSource("src/plugins/plugin-module-loader-cache.ts", "preparePluginModule");
+      if (localIdentity) {
+        source = `function bundledIdentityCheck(left, right) {
+          return sameFileIdentity(left, right);
+        }\n${source.replace("sameFileIdentity(", "bundledIdentityCheck(")}`;
+      }
       const transformed = adapter.transform({
         filename: path.join(runtime, "dist/plugin-module-loader-cache.js"),
         contents: minified
