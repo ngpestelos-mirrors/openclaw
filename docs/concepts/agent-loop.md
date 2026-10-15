@@ -293,6 +293,9 @@ controls rather than inheriting callbacks from the completed attempt.
 A terminal timeout is a failed turn, not a successful completion. Chat and
 command results retain its timeout explanation; earlier tool errors do not
 replace that explanation or restart an already-final timed-out turn.
+This includes a timeout during tool execution when no final payload or accepted
+continuation remains. A compaction failure label does not turn that unfinished
+tool timeout into a paused run; completed tool results remain in the transcript.
 
 The model idle and provider HTTP rows describe the built-in OpenClaw model
 path. Codex owns its native stream deadlines and network retries. After exact

@@ -386,7 +386,10 @@ export function resolveRunLivenessState(params: {
     return "abandoned";
   }
   const terminal = projectAgentRunAttemptTerminal(params.attempt.terminal);
-  if (terminal.promptErrorSource === "compaction" || terminal.timedOutDuringCompaction) {
+  if (
+    !terminal.timedOutDuringToolExecution &&
+    (terminal.promptErrorSource === "compaction" || terminal.timedOutDuringCompaction)
+  ) {
     return "paused";
   }
   if ((params.aborted || params.timedOut) && params.payloadCount === 0) {
