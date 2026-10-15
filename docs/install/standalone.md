@@ -153,7 +153,8 @@ The builder embeds the application modules, bundled plugin entrypoints, worker
 programs, and generated metadata needed by the runtime. It preserves lazy module
 boundaries. The sidecar contains the resources read from disk:
 
-- Documentation Markdown and its navigation metadata, including workspace templates.
+- Public documentation Markdown and its navigation metadata, plus workspace
+  templates, including JSON team presets and workspace instructions.
 - Bundled and Custodian skills, including their supporting files.
 - Plugin manifests, package metadata, and assets such as browser scripts, styles,
   WebAssembly, SQL templates, browser extensions, and plugin-declared static files.
@@ -170,6 +171,9 @@ directories; the packaged sidecar has no symlinks or pnpm store. Immutable
 executable metadata supplies bundled plugin source checks and Doctor contract
 hashes. Installed plugins keep their normal filesystem admission and loading
 rules and live in the configured state directory.
+
+Private `docs/internal/` content and the root documentation authoring instructions
+(`docs/AGENTS.md` and `docs/CLAUDE.md`) are excluded from the snapshot and sidecar.
 
 Bundled hook handlers and plugin helper programs use the executable's embedded
 child entrypoints. Browser scripts and HTML export scripts remain physical assets

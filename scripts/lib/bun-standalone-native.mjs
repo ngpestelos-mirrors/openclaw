@@ -10,6 +10,10 @@ const COPILOT_RUNTIME_PACKAGE = /^@github\/copilot-sdk-(?:darwin|linux|linuxmusl
 const LICENSE = /^(?:licen[cs]e|copying|notice)(?:[.-].*)?$/i;
 const slash = (filename) => filename.split(path.sep).join("/");
 
+function isCommonJsEntry(filename, packageType) {
+  return filename.endsWith(".cjs") || (filename.endsWith(".js") && packageType !== "module");
+}
+
 function matchesPlatform(values, actual) {
   if (!Array.isArray(values)) {
     return true;
@@ -169,6 +173,7 @@ function resourceCategory(filename, executable, packageName) {
 // Module pseudo-globals are replaceable only when no lexical binding shadows them.
 function lexicalBindings(ast) {
   const scopes = new WeakMap();
+  const root = { names: new Set(), callable: true };
   const bind = (node, scope) => {
     if (!node) {
       return;
@@ -229,14 +234,18 @@ function lexicalBindings(ast) {
       }
     }
   }
-  visit(ast, undefined, { names: new Set(), callable: true });
-  return (node) => {
+  visit(ast, undefined, root);
+  const bindingScope = (node) => {
     for (let scope = scopes.get(node); scope; scope = scope.parent) {
       if (scope.names.has(node.name)) {
-        return true;
+        return scope;
       }
     }
-    return false;
+    return undefined;
+  };
+  return {
+    isBound: (node) => Boolean(bindingScope(node)),
+    isModuleBinding: (node) => bindingScope(node) === root,
   };
 }
 
@@ -251,6 +260,9 @@ export function createStandaloneNativeAdapter({
   const packages = new Map();
   const ownerCache = new Map();
   const observed = new Set();
+  const runtimeReferenced = new Set();
+  const declaredPluginDependencies = new Set();
+  const requireExports = new Map();
   const additionalModuleEntries = [];
   const commonJsEntries = [];
   const contained = (filename) => {
@@ -407,6 +419,219 @@ export function createStandaloneNativeAdapter({
     return found;
   }
 
+  function requireBindings(ast, filename) {
+    const { isBound, isModuleBinding } = lexicalBindings(ast);
+    const origins = new Map();
+    const factories = new Set();
+    const moduleRequire = createRequire(filename);
+    const calls = new Set();
+    const pending = [ast];
+    while (pending.length) {
+      const node = pending.pop();
+      if (!node || typeof node !== "object") {
+        continue;
+      }
+      if (node.type === "CallExpression") {
+        const callee = node.callee.type === "MemberExpression" ? node.callee.object : node.callee;
+        if (callee.type === "Identifier") {
+          calls.add(callee.name);
+        }
+      }
+      for (const value of Object.values(node)) {
+        if (Array.isArray(value)) {
+          pending.push(...value);
+        } else if (value && typeof value === "object") {
+          pending.push(value);
+        }
+      }
+    }
+    for (const node of ast.body) {
+      if (node.type !== "ImportDeclaration") {
+        continue;
+      }
+      if (["node:module", "module"].includes(node.source.value)) {
+        for (const specifier of node.specifiers) {
+          if (specifier.imported?.name === "createRequire") {
+            factories.add(specifier.local.name);
+          }
+        }
+      } else if (node.source.value.startsWith(".")) {
+        const used = node.specifiers.filter(
+          (specifier) => specifier.type === "ImportSpecifier" && calls.has(specifier.local.name),
+        );
+        if (!used.length) {
+          continue;
+        }
+        let target;
+        try {
+          target = moduleRequire.resolve(node.source.value);
+        } catch {
+          continue;
+        }
+        if (!contained(target) || !/\.[cm]?js$/.test(target)) {
+          continue;
+        }
+        let exported = requireExports.get(target);
+        if (!exported) {
+          exported = new Map();
+          requireExports.set(target, exported);
+          const source = fs.readFileSync(target, "utf8");
+          if (!source.includes("createRequire")) {
+            continue;
+          }
+          const targetAst = parse(source, {
+            ecmaVersion: "latest",
+            sourceType: "module",
+          });
+          const targetBindings = requireBindings(targetAst, target);
+          for (const statement of targetAst.body) {
+            if (statement.type !== "ExportNamedDeclaration") {
+              continue;
+            }
+            for (const specifier of statement.specifiers) {
+              const origin = targetBindings.origins.get(specifier.local.name);
+              if (origin) {
+                exported.set(specifier.exported.name ?? specifier.exported.value, origin);
+              }
+            }
+          }
+        }
+        for (const specifier of used) {
+          const origin = exported.get(specifier.imported.name ?? specifier.imported.value);
+          if (origin) {
+            origins.set(specifier.local.name, origin);
+          }
+        }
+      }
+    }
+    function originOf(node) {
+      if (node?.type === "Identifier" && isModuleBinding(node)) {
+        return origins.get(node.name);
+      }
+      if (node?.type !== "CallExpression") {
+        return undefined;
+      }
+      if (
+        node.callee.type === "Identifier" &&
+        factories.has(node.callee.name) &&
+        isModuleBinding(node.callee)
+      ) {
+        const argument = node.arguments[0];
+        if (
+          (argument?.type === "MemberExpression" &&
+            !argument.computed &&
+            argument.object.type === "MetaProperty" &&
+            argument.object.meta.name === "import" &&
+            argument.property.name === "url") ||
+          (argument?.type === "Identifier" && argument.name === "__filename" && !isBound(argument))
+        ) {
+          return filename;
+        }
+      }
+      // Rolldown exports its native require through this zero-argument closure.
+      if (
+        node.arguments.length === 0 &&
+        node.callee.type === "ArrowFunctionExpression" &&
+        node.callee.params.length === 0
+      ) {
+        return originOf(node.callee.body);
+      }
+      return undefined;
+    }
+    for (const statement of ast.body) {
+      const declaration =
+        statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
+      if (declaration?.type !== "VariableDeclaration") {
+        continue;
+      }
+      for (const entry of declaration.declarations) {
+        const origin = originOf(entry.init);
+        if (entry.id.type === "Identifier" && origin) {
+          origins.set(entry.id.name, origin);
+        }
+      }
+    }
+    return { origins, isBound, isModuleBinding };
+  }
+
+  function retainRuntimeReference(filename, specifier) {
+    if (typeof specifier !== "string" || /(?:^|\/)package\.json$/.test(specifier)) {
+      return undefined;
+    }
+    let target;
+    try {
+      target = createRequire(filename).resolve(specifier);
+    } catch {
+      // Absent optional platform packages do not become runtime requirements.
+      return undefined;
+    }
+    if (!path.isAbsolute(target) || !contained(target) || target.endsWith(".json")) {
+      return undefined;
+    }
+    const dependency = ownerOf(fs.realpathSync(target));
+    if (
+      dependency?.resources.length &&
+      (/\.[cm]?[jt]s$/.test(target) ||
+        dependency.resources.some((resource) => resource.source === relative(target)))
+    ) {
+      runtimeReferenced.add(dependency);
+    }
+    return target;
+  }
+
+  function collectRuntimeReferences(ast, filename, admitModules = false) {
+    const bindings = requireBindings(ast, filename);
+    function visit(node) {
+      if (!node || typeof node !== "object") {
+        return;
+      }
+      if (
+        [
+          "ImportDeclaration",
+          "ExportNamedDeclaration",
+          "ExportAllDeclaration",
+          "ImportExpression",
+        ].includes(node.type)
+      ) {
+        retainRuntimeReference(filename, node.source?.value);
+      }
+      const resolveCall =
+        node.callee?.type === "MemberExpression" &&
+        !node.callee.computed &&
+        node.callee.property?.name === "resolve";
+      const callee = resolveCall ? node.callee.object : node.callee;
+      if (node.type === "CallExpression" && callee?.type === "Identifier") {
+        const opaqueOrigin = bindings.isModuleBinding(callee) && bindings.origins.get(callee.name);
+        const origin =
+          !bindings.isBound(callee) && callee.name === "require" ? filename : opaqueOrigin;
+        if (origin) {
+          const target = retainRuntimeReference(origin, node.arguments[0]?.value);
+          if (admitModules && opaqueOrigin && target && /\.[cm]?js$/.test(target)) {
+            const entry = relative(target);
+            if (!additionalModuleEntries.includes(entry)) {
+              additionalModuleEntries.push(entry);
+            }
+            const owner = ownerOf(target);
+            if (isCommonJsEntry(target, owner?.manifest.type)) {
+              if (!commonJsEntries.includes(entry)) {
+                commonJsEntries.push(entry);
+              }
+            }
+          }
+        }
+      }
+      for (const value of Object.values(node)) {
+        if (Array.isArray(value)) {
+          value.forEach(visit);
+        } else if (value && typeof value === "object") {
+          visit(value);
+        }
+      }
+    }
+    visit(ast);
+    return bindings;
+  }
+
   // Discover native optional wrappers before Bun's graph is fixed. Only production
   // dependency declarations seed this pass; dev-tool prebuilds never become entries.
   const roots = [runtimeRoot];
@@ -428,6 +653,11 @@ export function createStandaloneNativeAdapter({
     const rootOwner = register(directory);
     if (rootOwner) {
       observed.add(rootOwner);
+      if (directory !== runtimeRoot) {
+        for (const dependency of rootOwner.dependencies.values()) {
+          declaredPluginDependencies.add(dependency);
+        }
+      }
     }
   }
   for (const owner of packages.values()) {
@@ -449,7 +679,7 @@ export function createStandaloneNativeAdapter({
       if (!additionalModuleEntries.includes(value)) {
         additionalModuleEntries.push(value);
       }
-      if (entry.endsWith(".cjs") || dependency.manifest.type !== "module") {
+      if (isCommonJsEntry(entry, dependency.manifest.type)) {
         commonJsEntries.push(value);
       }
     }
@@ -523,8 +753,32 @@ export function createStandaloneNativeAdapter({
 
   return {
     bootstrap,
-    additionalModuleEntries: additionalModuleEntries.toSorted((a, b) => a.localeCompare(b)),
-    commonJsEntries: commonJsEntries.toSorted((a, b) => a.localeCompare(b)),
+    discover(moduleEntries) {
+      const pending = new Set([...moduleEntries, ...additionalModuleEntries]);
+      for (const entry of pending) {
+        const filename = path.join(runtimeRoot, entry);
+        const contents = fs.readFileSync(filename, "utf8");
+        if (!/import|createRequire/.test(contents)) {
+          continue;
+        }
+        const ast = parse(contents, {
+          ecmaVersion: "latest",
+          sourceType: "module",
+          allowReturnOutsideFunction: true,
+        });
+        collectRuntimeReferences(ast, filename, true);
+        // Bun owns ordinary imports/requires; only opaque require targets need entries.
+        for (const additional of additionalModuleEntries) {
+          pending.add(additional);
+        }
+      }
+    },
+    get additionalModuleEntries() {
+      return additionalModuleEntries.toSorted((a, b) => a.localeCompare(b));
+    },
+    get commonJsEntries() {
+      return commonJsEntries.toSorted((a, b) => a.localeCompare(b));
+    },
     transform({ filename: inputFilename, contents: inputContents }) {
       const filename = path.join(
         fs.realpathSync(path.dirname(inputFilename)),
@@ -536,10 +790,7 @@ export function createStandaloneNativeAdapter({
         return { contents, count: 0 };
       }
       observed.add(owner);
-      if (!owner.relocate) {
-        return { contents, count: 0 };
-      }
-      if (!/import\.meta|__dirname|__filename|require\s*(?:\(|\.\s*resolve\s*\()/.test(contents)) {
+      if (!/import|export|__dirname|__filename|require\s*(?:\(|\.\s*resolve\s*\()/.test(contents)) {
         return { contents, count: 0 };
       }
       const ast = parse(contents, {
@@ -547,7 +798,10 @@ export function createStandaloneNativeAdapter({
         sourceType: "module",
         allowReturnOutsideFunction: true,
       });
-      const isBound = lexicalBindings(ast);
+      const { isBound } = collectRuntimeReferences(ast, filename);
+      if (!owner.relocate) {
+        return { contents, count: 0 };
+      }
       const moduleRequire = createRequire(filename);
       const nativeRequest = (argument) => {
         if (argument?.type !== "Literal") {
@@ -660,7 +914,7 @@ export function createStandaloneNativeAdapter({
           }
         }
       }
-      const retained = new Set(observed);
+      const retained = new Set([...observed, ...runtimeReferenced]);
       for (const owner of retained) {
         if (!owner.relocate) {
           continue;
@@ -671,17 +925,22 @@ export function createStandaloneNativeAdapter({
           }
         }
       }
+      // Doctor inspects declared plugin dependencies before their runtime is loaded.
+      const metadataOwners = new Set([...retained, ...declaredPluginDependencies]);
       const files = [];
-      for (const owner of retained) {
+      for (const owner of metadataOwners) {
         if (!owner.relocate) {
           continue;
         }
-        files.push(...owner.resources);
         files.push({
           source: `${owner.original}/package.json`,
           destination: `${owner.destination}/package.json`,
           category: "dependencyMetadata",
         });
+        if (!retained.has(owner)) {
+          continue;
+        }
+        files.push(...owner.resources);
         for (const name of fs.readdirSync(owner.directory)) {
           if (LICENSE.test(name) && fs.statSync(path.join(owner.directory, name)).isFile()) {
             files.push({
@@ -697,7 +956,9 @@ export function createStandaloneNativeAdapter({
           throw new Error(`Standalone resource is already embedded: ${file.source}`);
         }
       }
-      const retainedByDirectory = new Map([...retained].map((owner) => [owner.directory, owner]));
+      const retainedByDirectory = new Map(
+        [...metadataOwners].map((owner) => [owner.directory, owner]),
+      );
       // Flattened root chunks can use graph-retained hoisted packages without a production
       // declaration. Preserve their installed name/version mapping without retaining more files.
       const rootVisibleNames = new Set();
@@ -746,7 +1007,7 @@ export function createStandaloneNativeAdapter({
         }
         return dependencies;
       }
-      const owners = [...retained]
+      const owners = [...metadataOwners]
         .map((owner) => ({
           original: owner.original,
           destination: owner.destination,

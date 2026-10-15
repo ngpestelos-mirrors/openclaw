@@ -3,9 +3,17 @@ import path from "node:path";
 
 const developmentFile = /(?:\.map|\.d\.[cm]?ts|\.tsbuildinfo)$/;
 
+export function isStandalonePrivateDocumentation(name) {
+  return (
+    name === "docs/internal" ||
+    name.startsWith("docs/internal/") ||
+    /^docs\/(?:AGENTS|CLAUDE)\.md$/.test(name)
+  );
+}
+
 /** Disk resources have owners; compiled modules never become a second code distribution. */
 export function standaloneResourceCategory(name, declaredPluginAssets = new Set()) {
-  if (developmentFile.test(name)) {
+  if (developmentFile.test(name) || isStandalonePrivateDocumentation(name)) {
     return undefined;
   }
   if (name === "LICENSE" || name === "THIRD_PARTY_NOTICES.md") {

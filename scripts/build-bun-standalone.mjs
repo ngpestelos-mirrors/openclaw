@@ -191,6 +191,7 @@ moduleEntries.push(
     .toSorted(),
 );
 const native = createStandaloneNativeAdapter({ runtimeRoot, parse });
+native.discover(moduleEntries);
 moduleEntries.push(...native.additionalModuleEntries);
 // Include conditional ESM/CJS entries reached through computed imports.
 for (const packageName of ["@openclaw/fs-safe", "@openclaw/proc-safe", "sqlite-vec", "ws"]) {

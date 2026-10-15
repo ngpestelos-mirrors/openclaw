@@ -281,8 +281,15 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
   };
   globalThis.__openclawStandaloneImageStat = stat;
   globalThis.__openclawStandaloneImageLstat = (filename) => stat(filename, true);
-  globalThis.__openclawStandaloneImageExists = (filename) =>
-    get(imageFiles, filename) !== undefined || get(imageDirectories, filename) !== undefined ? true : undefined;
+  globalThis.__openclawStandaloneImageExists = (filename) => {
+    if (get(imageFiles, filename) !== undefined || get(imageDirectories, filename) !== undefined) return true;
+    const entry = relative(filename);
+    // Source-only module aliases are absent from standalone artifacts.
+    if (entry === "scripts" ||
+        /^(?:src|packages\\/[^/]+\\/src)\\/.+\\.(?:[cm]?ts|[cm]?tsx|[cm]?js)$/.test(entry) ||
+        /^extensions\\/[^/]+\\/[^/]+\\.(?:[cm]?ts|[cm]?js)$/.test(entry)) return false;
+    return undefined;
+  };
   globalThis.__openclawStandaloneImageRealpath = (filename) => {
     if (get(imageDirectories, filename) !== undefined) return canonicalDirectory(filename);
     if (get(imageFiles, filename) === undefined) return;
@@ -356,7 +363,7 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
     transform({ filename, contents }) {
       if (
         !moduleAdmissionPattern.test(contents) &&
-        !/checkDistPluginSdkArtifact|fileContentMatches|pluginCache(?:Exists|Stat|Lstat|Realpath)Sync|readPluginCache(?:File|Directory)|checkPluginCacheEntry|collectBundledPluginPublicSurfaceArtifacts|resolveBundledPluginGeneratedPath|resolveManagedToolsMcpServerConfig|candidateDirsFromArgv1|resolveHostPackageRoot|loadHookFromDir|prepareInternalHooks|resolveNodeEntrypointArg|resolveMxcLauncherPath|resolveResolverScriptPath|resolveSqliteWorkerModuleUrl|normalizePathCandidate|resolveOpenClawCliEntryPath|isContainedPluginPath|findDependencyPackageDir/.test(
+        !/checkDistPluginSdkArtifact|fileContentMatches|pluginCache(?:Exists|Stat|Lstat|Realpath)Sync|readPluginCache(?:File|Directory)|checkPluginCacheEntry|collectBundledPluginPublicSurfaceArtifacts|resolveBundledPluginGeneratedPath|resolveManagedToolsMcpServerConfig|candidateDirsFromArgv1|resolveHostPackageRoot|loadHookFromDir|prepareInternalHooks|resolveNodeEntrypointArg|resolveMxcLauncherPath|resolveResolverScriptPath|resolveSqliteWorkerModuleUrl|normalizePathCandidate|resolveOpenClawCliEntryPath|isContainedPluginPath|findDependencyPackageDir|hasStalePersistedPluginMetadataFiles/.test(
           contents,
         )
       ) {
@@ -677,6 +684,27 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
         if (node.type !== "FunctionDeclaration") {
           return;
         }
+        if (node.id?.name === "hasStalePersistedPluginMetadataFiles") {
+          const firstEdit = edits.length;
+          visit(node.body, (check) => {
+            if (
+              check.type === "CallExpression" &&
+              check.callee.type === "MemberExpression" &&
+              check.callee.property.name === "existsSync" &&
+              isFsMember(check.callee)
+            ) {
+              edits.push([
+                check.start,
+                check.end,
+                `(globalThis.__openclawStandaloneImageExists(${slice(check.arguments[0])}) ?? ${slice(check)})`,
+              ]);
+            }
+          });
+          if (edits.length === firstEdit) {
+            throw new Error("Unsupported standalone persisted metadata existence checks");
+          }
+          adaptedOwners.add(node);
+        }
         if (node.id?.name === "isContainedPluginPath") {
           const projectors = node.body.body
             .filter((statement) => statement.type === "VariableDeclaration")
@@ -778,6 +806,7 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
             "resolveOpenClawCliEntryPath",
             "isContainedPluginPath",
             "findDependencyPackageDir",
+            "hasStalePersistedPluginMetadataFiles",
             ...moduleAdmissionOwners.keys(),
           ].includes(node.id?.name) &&
           !adaptedOwners.has(node)

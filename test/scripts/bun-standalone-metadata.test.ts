@@ -62,6 +62,8 @@ function fixture({
   withPublicSurfaces = false,
   withPublicSurface = false,
   minifiedMetadata = false,
+  retainSourceFiles = false,
+  retainImageFiles = false,
 } = {}) {
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-image-metadata-"));
   temporaryRoots.push(runtime);
@@ -166,8 +168,12 @@ function fixture({
     ]),
   );
   const adapter = createStandaloneMetadataAdapter({ runtimeRoot: runtime, embeddedPaths, parse });
-  imageEntries.forEach((file) => fs.unlinkSync(file));
-  sourceFiles.forEach((file) => fs.unlinkSync(file));
+  if (!retainImageFiles) {
+    imageEntries.forEach((file) => fs.unlinkSync(file));
+  }
+  if (!retainSourceFiles) {
+    sourceFiles.forEach((file) => fs.unlinkSync(file));
+  }
   const imageFiles = new Set(imageEntries);
   const observedFs = new Proxy(fs, {
     get(target, property, receiver) {
@@ -306,6 +312,169 @@ function fixture({
 }
 
 describe("standalone image metadata", () => {
+  it.each(
+    [false, true].flatMap((physical) => [false, true].map((minified) => ({ physical, minified }))),
+  )(
+    "keeps persisted image metadata fresh (physical=$physical, minified=$minified)",
+    ({ physical, minified }) => {
+      const { runtime, plugin, entry, providerPolicy, context, adapter } = fixture({
+        withPublicSurface: true,
+        retainImageFiles: physical,
+      });
+      Object.assign(context, { fs, safeRealpathSync, isPathInside });
+      for (const [file, name] of [
+        ["src/plugins/plugin-registry-comparison.ts", "isContainedPluginPath"],
+        ["src/plugins/installed-plugin-index-manifest.ts", "isOptionalPluginManifestFile"],
+        ["src/plugins/installed-plugin-index-manifest.ts", "hasOptionalMissingPluginManifestFile"],
+      ] as const) {
+        vm.runInContext(
+          adapter.transform({
+            filename: path.join(runtime, "dist/snapshot-helper.js"),
+            contents: ownerSource(file, name),
+          }).contents,
+          context,
+        );
+      }
+      const manifestPath = path.join(plugin, "openclaw.plugin.json");
+      const record = {
+        rootDir: plugin,
+        enabled: true,
+        source: entry,
+        setupSource: providerPolicy,
+        manifestPath,
+        manifestHash: crypto
+          .createHash("sha256")
+          .update(fs.readFileSync(manifestPath))
+          .digest("hex"),
+      };
+      const source = ownerSource(
+        "src/plugins/plugin-registry-snapshot.ts",
+        "hasStalePersistedPluginMetadataFiles",
+      );
+      vm.runInContext(source, context);
+      expect(context.hasStalePersistedPluginMetadataFiles({ plugins: [record] })).toBe(!physical);
+      const transformed = adapter.transform({
+        filename: path.join(runtime, "dist/snapshot-owner.js"),
+        contents: minified
+          ? transformSync(source, {
+              minifyIdentifiers: true,
+              minifySyntax: true,
+              minifyWhitespace: true,
+            }).code
+          : source,
+      });
+      vm.runInContext(transformed.contents, context);
+      const exists = vi.spyOn(fs, "existsSync");
+      try {
+        expect(context.hasStalePersistedPluginMetadataFiles({ plugins: [record] })).toBe(false);
+        expect(exists).not.toHaveBeenCalledWith(entry);
+        expect(exists).not.toHaveBeenCalledWith(providerPolicy);
+        fs.writeFileSync(manifestPath, "{}");
+        expect(context.hasStalePersistedPluginMetadataFiles({ plugins: [record] })).toBe(true);
+
+        const externalRoot = path.join(runtime, "external-plugin");
+        fs.mkdirSync(externalRoot);
+        const externalSource = path.join(externalRoot, "index.js");
+        const externalManifest = path.join(externalRoot, "openclaw.plugin.json");
+        fs.writeFileSync(externalSource, "export {};\n");
+        fs.writeFileSync(externalManifest, "{}");
+        const externalRecord = {
+          ...record,
+          rootDir: externalRoot,
+          source: externalSource,
+          setupSource: undefined,
+          manifestPath: externalManifest,
+          manifestHash: crypto.createHash("sha256").update("{}").digest("hex"),
+        };
+        expect(context.hasStalePersistedPluginMetadataFiles({ plugins: [externalRecord] })).toBe(
+          false,
+        );
+        fs.unlinkSync(externalSource);
+        expect(context.hasStalePersistedPluginMetadataFiles({ plugins: [externalRecord] })).toBe(
+          true,
+        );
+      } finally {
+        exists.mockRestore();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "omits development source probes without filesystem access (physical=%s)",
+    (physical) => {
+      const { runtime, plugin, context } = fixture();
+      const omitted = [
+        path.join(runtime, "scripts"),
+        path.join(runtime, "src/plugin-sdk/example.ts"),
+        path.join(runtime, "src/plugins/runtime/index.ts"),
+        path.join(runtime, "packages/ai/src/index.ts"),
+        path.join(runtime, "extensions/example/api.ts"),
+        path.join(runtime, "extensions/example/api.mjs"),
+      ];
+      if (physical) {
+        for (const filename of omitted) {
+          if (filename === omitted[0]) {
+            fs.mkdirSync(filename);
+          } else {
+            fs.mkdirSync(path.dirname(filename), { recursive: true });
+            fs.writeFileSync(filename, "export {};\n");
+          }
+        }
+      }
+      const unknown = path.join(runtime, "unknown-file");
+      const asset = path.join(plugin, "assets/browser.js");
+      const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-external-source-"));
+      temporaryRoots.push(externalRoot);
+      const external = path.join(externalRoot, "packages/ai/src/index.ts");
+      for (const filename of [unknown, asset, external]) {
+        fs.mkdirSync(path.dirname(filename), { recursive: true });
+        fs.writeFileSync(filename, "fixture");
+      }
+      const probes = [
+        vi.spyOn(fs, "existsSync"),
+        vi.spyOn(fs, "statSync"),
+        vi.spyOn(fs, "lstatSync"),
+        vi.spyOn(fs, "realpathSync"),
+      ];
+      try {
+        for (const filename of omitted) {
+          expect(context.pluginCacheExistsSync(filename)).toBe(false);
+        }
+        expect(probes.every((probe) => probe.mock.calls.length === 0)).toBe(true);
+        for (const filename of [unknown, asset, external, path.join(plugin, "package.json")]) {
+          expect(context.pluginCacheExistsSync(filename)).toBe(true);
+          expect(probes[0]).toHaveBeenCalledWith(filename);
+        }
+        Object.assign(context, {
+          INTERNAL_CORE_PACKAGE_ALIASES: [
+            { packageName: "@openclaw/ai", packageDir: "ai", subpaths: [["", "index.ts"]] },
+          ],
+          INTERNAL_CORE_EXPORTED_PACKAGE_DIRS: [],
+          normalizePathForBoundary: (filename: string) =>
+            context.pluginCacheRealpathSync(filename) ?? path.resolve(filename),
+        });
+        vm.runInContext(
+          ownerSource(
+            "src/plugins/plugin-sdk-native-resolver.ts",
+            "listInternalCorePackageNativeAliases",
+          ),
+          context,
+        );
+        expect(context.listInternalCorePackageNativeAliases(runtime)).toEqual([]);
+        expect(context.listInternalCorePackageNativeAliases(externalRoot)).toMatchObject([
+          { request: "@openclaw/ai", target: external },
+        ]);
+        for (const filename of omitted) {
+          expect(
+            probes.every((probe) => !probe.mock.calls.some((args) => args[0] === filename)),
+          ).toBe(true);
+        }
+      } finally {
+        probes.forEach((probe) => probe.mockRestore());
+      }
+    },
+  );
+
   it.each(["source", "minified", "shadowed-template"])(
     "checks flattened dependency manifests through the status owner (%s)",
     (format) => {
@@ -1168,53 +1337,61 @@ describe("standalone image metadata", () => {
     expect(context["__openclawStandaloneSdkComplete"](sdkEntry, fs.existsSync)).toBe(false);
   });
 
-  it("preserves source-declared package API aliases without source or built JavaScript on disk", () => {
-    const { runtime, plugin, context, adapter } = fixture({ withPublicSurfaces: true });
-    context.openPluginRootFileSync = openPluginRootFileSync;
-    for (const name of [
-      "BUNDLED_PLUGIN_PUBLIC_SURFACE_SOURCE_PATTERN",
-      "sdkHost",
-      "readSdkJsonFile",
-      "readPluginSdkPackageJson",
-      "readBundledPluginPackageName",
-      "listBundledPluginPublicSurfaceSourceBasenames",
-      "resolveBundledPluginPublicSurfaceAliasTarget",
-      "normalizeJitiAliasTargetPath",
-      "resolveBundledPluginPackagePublicSurfaceAliasMap",
-    ]) {
-      const transformed = adapter.transform({
-        filename: path.join(runtime, "dist/sdk-owner.js"),
-        contents: ownerSource("src/plugins/sdk-alias.ts", name),
+  it.each([false, true])(
+    "selects compiled package API aliases with physical sources=%s",
+    (retainSourceFiles) => {
+      const { runtime, plugin, context, adapter } = fixture({
+        withPublicSurfaces: true,
+        retainSourceFiles,
       });
-      vm.runInContext(transformed.contents, context);
-    }
-    const aliases = (packageRoot: string, includePrivateQa = false) =>
-      context.resolveBundledPluginPackagePublicSurfaceAliasMap({
-        packageRoot,
-        orderedKinds: ["src", "dist"],
-        includePrivateQa,
+      context.openPluginRootFileSync = openPluginRootFileSync;
+      for (const name of [
+        "BUNDLED_PLUGIN_PUBLIC_SURFACE_SOURCE_PATTERN",
+        "sdkHost",
+        "readSdkJsonFile",
+        "readPluginSdkPackageJson",
+        "readBundledPluginPackageName",
+        "listBundledPluginPublicSurfaceSourceBasenames",
+        "resolveBundledPluginPublicSurfaceAliasTarget",
+        "normalizeJitiAliasTargetPath",
+        "resolveBundledPluginPackagePublicSurfaceAliasMap",
+      ]) {
+        const transformed = adapter.transform({
+          filename: path.join(runtime, "dist/sdk-owner.js"),
+          contents: ownerSource("src/plugins/sdk-alias.ts", name),
+        });
+        vm.runInContext(transformed.contents, context);
+      }
+      const aliases = (packageRoot: string, includePrivateQa = false) =>
+        context.resolveBundledPluginPackagePublicSurfaceAliasMap({
+          packageRoot,
+          orderedKinds: ["src", "dist"],
+          includePrivateQa,
+        });
+      expect(fs.existsSync(path.join(runtime, "extensions/example/api.ts"))).toBe(
+        retainSourceFiles,
+      );
+      expect(fs.existsSync(path.join(plugin, "api.js"))).toBe(false);
+      expect(aliases(runtime)).toEqual({
+        "@openclaw/example/api.js": path.join(plugin, "api.js"),
+        "@openclaw/example/diagnostics-api.js": path.join(plugin, "diagnostics-api.js"),
+        "@openclaw/example/runtime-api.js": path.join(plugin, "runtime-api.js"),
       });
-    expect(fs.existsSync(path.join(runtime, "extensions/example/api.ts"))).toBe(false);
-    expect(fs.existsSync(path.join(plugin, "api.js"))).toBe(false);
-    expect(aliases(runtime)).toEqual({
-      "@openclaw/example/api.js": path.join(plugin, "api.js"),
-      "@openclaw/example/diagnostics-api.js": path.join(plugin, "diagnostics-api.js"),
-      "@openclaw/example/runtime-api.js": path.join(plugin, "runtime-api.js"),
-    });
-    expect(aliases(runtime, true)).toEqual({
-      ...aliases(runtime),
-      "@openclaw/example/test-api.js": path.join(plugin, "test-api.js"),
-    });
+      expect(aliases(runtime, true)).toEqual({
+        ...aliases(runtime),
+        "@openclaw/example/test-api.js": path.join(plugin, "test-api.js"),
+      });
 
-    const externalRoot = path.join(runtime, "external-host");
-    const externalPlugin = path.join(externalRoot, "extensions/external");
-    fs.mkdirSync(externalPlugin, { recursive: true });
-    fs.writeFileSync(path.join(externalPlugin, "package.json"), '{"name":"@openclaw/external"}');
-    fs.writeFileSync(path.join(externalPlugin, "api.ts"), "export {};\n");
-    expect(aliases(externalRoot)).toEqual({
-      "@openclaw/external/api.js": path.join(externalPlugin, "api.ts"),
-    });
-  });
+      const externalRoot = path.join(runtime, "external-host");
+      const externalPlugin = path.join(externalRoot, "extensions/external");
+      fs.mkdirSync(externalPlugin, { recursive: true });
+      fs.writeFileSync(path.join(externalPlugin, "package.json"), '{"name":"@openclaw/external"}');
+      fs.writeFileSync(path.join(externalPlugin, "api.ts"), "export {};\n");
+      expect(aliases(externalRoot)).toEqual({
+        "@openclaw/external/api.js": path.join(externalPlugin, "api.ts"),
+      });
+    },
+  );
 
   it("resolves absent image-only directories without accepting symlink escapes", () => {
     const { runtime, sdk, sdkEntry, context, safeOpen } = fixture();

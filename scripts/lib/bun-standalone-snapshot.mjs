@@ -1,6 +1,10 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import {
+  isStandalonePrivateDocumentation,
+  standaloneResourceCategory,
+} from "./bun-standalone-sidecar.mjs";
 
 export const STANDALONE_RUNTIME_ROOTS = [
   "dist",
@@ -28,10 +32,13 @@ export function copyStandaloneRuntime(sourceRoot, runtimeRoot) {
     if (entry === "docs") {
       fs.cpSync(source, destination, {
         recursive: true,
-        filter: (filename) =>
-          fs.statSync(filename).isDirectory() ||
-          filename.endsWith(".md") ||
-          filename === path.join(source, "docs.json"),
+        filter: (filename) => {
+          const name = path.relative(sourceRoot, filename).split(path.sep).join("/");
+          return (
+            !isStandalonePrivateDocumentation(name) &&
+            (fs.statSync(filename).isDirectory() || standaloneResourceCategory(name) !== undefined)
+          );
+        },
       });
       continue;
     }

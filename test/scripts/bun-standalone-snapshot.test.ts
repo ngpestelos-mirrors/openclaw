@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
+import { pruneStandaloneRuntime } from "../../scripts/lib/bun-standalone-sidecar.mjs";
 import { copyStandaloneRuntime } from "../../scripts/lib/bun-standalone-snapshot.mjs";
 import { resolveOpenClawReferencePaths } from "../../src/agents/docs-path.js";
 import { discoverSkillCandidates } from "../../src/skills/loading/skill-root-discovery.js";
@@ -29,6 +30,9 @@ it("packages docs and custodian skills at their standalone source roots", async 
       "skills/example",
       "custodian-skills/diagnose-gateway",
       "docs/reference/templates",
+      "docs/reference/templates/roles/presets",
+      "docs/reference/templates/roles/coordinator/workspace",
+      "docs/internal/nested",
       "scripts",
     ]) {
       fs.mkdirSync(path.join(sourceRoot, directory), { recursive: true });
@@ -43,6 +47,20 @@ it("packages docs and custodian skills at their standalone source roots", async 
     fs.writeFileSync(path.join(sourceRoot, "package.json"), '{"name":"openclaw"}\n');
     fs.writeFileSync(path.join(sourceRoot, "docs/docs.json"), "{}\n");
     fs.writeFileSync(path.join(sourceRoot, "docs/start.md"), "Start documentation\n");
+    const preset = '{"schemaVersion":1,"coordinator":{"id":"coordinator","role":"coordinator"}}\n';
+    const template = "Public workspace instructions\n";
+    fs.writeFileSync(
+      path.join(sourceRoot, "docs/reference/templates/roles/presets/team.json"),
+      preset,
+    );
+    fs.writeFileSync(
+      path.join(sourceRoot, "docs/reference/templates/roles/coordinator/workspace/AGENTS.md"),
+      template,
+    );
+    const privateDocs = ["docs/internal/nested/runbook.md", "docs/AGENTS.md", "docs/CLAUDE.md"];
+    for (const filename of privateDocs) {
+      fs.writeFileSync(path.join(sourceRoot, filename), "Private authoring fixture\n");
+    }
     fs.writeFileSync(path.join(sourceRoot, "skills/example/SKILL.md"), "Example skill\n");
     const skillText = "---\nname: diagnose-gateway\ndescription: Synthetic custodian skill\n---\n";
     fs.writeFileSync(
@@ -51,6 +69,22 @@ it("packages docs and custodian skills at their standalone source roots", async 
     );
 
     copyStandaloneRuntime(sourceRoot, runtimeRoot);
+    for (const filename of privateDocs) {
+      expect(fs.existsSync(path.join(runtimeRoot, filename))).toBe(false);
+    }
+    pruneStandaloneRuntime(runtimeRoot);
+    expect(
+      fs.readFileSync(
+        path.join(runtimeRoot, "docs/reference/templates/roles/presets/team.json"),
+        "utf8",
+      ),
+    ).toBe(preset);
+    expect(
+      fs.readFileSync(
+        path.join(runtimeRoot, "docs/reference/templates/roles/coordinator/workspace/AGENTS.md"),
+        "utf8",
+      ),
+    ).toBe(template);
     expect(
       await resolveOpenClawReferencePaths({
         argv1: path.join(runtimeRoot, "openclaw.mjs"),

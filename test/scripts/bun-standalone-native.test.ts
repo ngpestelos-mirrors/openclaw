@@ -217,6 +217,79 @@ console.log("full-ws loaded without node_modules");
     ).toBe(false);
   });
 
+  it("keeps unloaded plugins' declared dependency metadata without promoting runtime payloads", () => {
+    const { root, write, pkg } = fixture();
+    const first = pkg(
+      "declared",
+      { main: "index.js" },
+      {
+        "index.js": "module.exports = 'first';",
+        "native.node": "unused-native",
+      },
+    );
+    const second = path.join(root, "node_modules/.pnpm/declared@2.0.0/node_modules/declared");
+    write(
+      path.join(second, "package.json"),
+      JSON.stringify({ name: "declared", version: "2.0.0", main: "index.js" }),
+    );
+    write(path.join(second, "index.js"), "module.exports = 'second';");
+    fs.unlinkSync(path.join(root, "node_modules/declared"));
+    fs.symlinkSync(second, path.join(root, "node_modules/declared"));
+    pkg("optional", { main: "index.js" }, { "index.js": "module.exports = 'optional';" });
+    pkg(
+      "unrelated",
+      { main: "index.js" },
+      { "index.js": "unused", "native.node": "unused-native" },
+    );
+    write(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "openclaw", devDependencies: { unrelated: "1" } }),
+    );
+    const pluginA = path.join(root, "dist/extensions/a");
+    const pluginB = path.join(root, "dist/extensions/b");
+    write(
+      path.join(pluginA, "package.json"),
+      JSON.stringify({
+        name: "@openclaw/a",
+        dependencies: { declared: "1" },
+        optionalDependencies: { optional: "1", missing: "1" },
+      }),
+    );
+    write(
+      path.join(pluginB, "package.json"),
+      JSON.stringify({ name: "@openclaw/b", dependencies: { declared: "2" } }),
+    );
+    fs.mkdirSync(path.join(pluginA, "node_modules"));
+    fs.symlinkSync(first, path.join(pluginA, "node_modules/declared"));
+    const adapter = createStandaloneNativeAdapter({ runtimeRoot: root, parse });
+    const { context, finalized } = evaluate(adapter, {}, root);
+    const requireAdapter = createStandaloneRequireAdapter({ runtimeRoot: root, embeddedPaths: {} });
+    Object.assign(context, { embedded: () => undefined, commonJsEntries: new Set() });
+    vm.runInContext(requireAdapter.bootstrap, context);
+    pruneStandaloneRuntime(root, finalized.files);
+    const fromA = context["__openclawStandaloneCreateRequire"](
+      createRequire,
+      path.join(pluginA, "index.js"),
+    );
+    const fromB = context["__openclawStandaloneCreateRequire"](
+      createRequire,
+      path.join(pluginB, "index.js"),
+    );
+    expect(fromA("declared/package.json").version).toBe("1.0.0");
+    expect(fromB("declared/package.json").version).toBe("2.0.0");
+    expect(fromA("optional/package.json").name).toBe("optional");
+    expect(() => fromA.resolve("missing/package.json")).toThrow();
+    expect(() => fromA("declared")).toThrow();
+    expect(fs.existsSync(path.join(root, "node_modules"))).toBe(false);
+    expect(
+      finalized.files.map((file: { destination: string }) => file.destination).toSorted(),
+    ).toEqual([
+      "native/declared@1.0.0/declared/package.json",
+      "native/declared@2.0.0/declared/package.json",
+      "native/optional@1.0.0/optional/package.json",
+    ]);
+  });
+
   it("loads exported package subpaths from the image after removing node_modules", () => {
     const { root, write, pkg } = fixture();
     const dependency = pkg(
@@ -260,6 +333,91 @@ console.log("full-ws loaded without node_modules");
       path.join(root, "dist/entry.mjs"),
     );
     expect(load("@fixture/fs-safe/secure-temp-root").resolveSecureTempRoot()).toBe("safe");
+  });
+
+  it("discovers opaque bundled requires without promoting metadata-only or shadowed packages", () => {
+    const { root, write, pkg } = fixture();
+    const native = pkg("native-helper", { main: "binding.node" }, { "binding.node": "native" });
+    const library = pkg(
+      "runtime-library",
+      { main: "index.js" },
+      { "index.js": "module.exports = 'embedded';" },
+    );
+    const esmLibrary = pkg(
+      "esm-library",
+      { main: "index.mjs", type: "commonjs" },
+      { "index.mjs": "export default 'default-value'; export const named = 'named-value';" },
+    );
+    pkg("metadata-only", { main: "binding.node" }, { "binding.node": "metadata-only" });
+    pkg("shadowed", { main: "binding.node" }, { "binding.node": "shadowed" });
+    write(path.join(root, "package.json"), JSON.stringify({ name: "openclaw" }));
+    const plugin = path.join(root, "dist/extensions/example");
+    write(
+      path.join(plugin, "package.json"),
+      JSON.stringify({
+        name: "example-plugin",
+        dependencies: { "runtime-library": "1", "esm-library": "1" },
+        optionalDependencies: { "native-helper": "1", "metadata-only": "1", shadowed: "1" },
+      }),
+    );
+    const helper = path.join(plugin, ".setup/runtime.mjs");
+    write(
+      helper,
+      'import { createRequire as factory } from "node:module"; const load = (() => factory(import.meta.url))(); export { load as r };',
+    );
+    const entry = path.join(plugin, ".setup/chunk.mjs");
+    write(
+      entry,
+      `import { r as load } from "./runtime.mjs";
+      export const library = load("runtime-library");
+      export const esmLibrary = load("esm-library");
+      export const native = load.resolve("native-helper");
+      export const metadata = load("metadata-only/package.json");
+      export const shadowed = (load) => load("shadowed");`,
+    );
+    const adapter = createStandaloneNativeAdapter({ runtimeRoot: root, parse });
+    adapter.discover([path.relative(root, entry)]);
+    expect(adapter.additionalModuleEntries).toContain(
+      path.relative(root, path.join(library, "index.js")),
+    );
+    expect(adapter.commonJsEntries).toContain(path.relative(root, path.join(library, "index.js")));
+    const image = fs.mkdtempSync(path.join(os.tmpdir(), "standalone-image-"));
+    temporary.push(image);
+    const imageEntry = path.join(image, "library.cjs");
+    const esmImageEntry = path.join(image, "esm-library.mjs");
+    fs.copyFileSync(path.join(library, "index.js"), imageEntry);
+    fs.copyFileSync(path.join(esmLibrary, "index.mjs"), esmImageEntry);
+    const embeddedPaths = {
+      [path.relative(root, path.join(library, "index.js"))]: imageEntry,
+      [path.relative(root, path.join(esmLibrary, "index.mjs"))]: esmImageEntry,
+    };
+    const { context, finalized } = evaluate(adapter, embeddedPaths, root);
+    Object.assign(context, {
+      commonJsEntries: new Set(
+        adapter.commonJsEntries.map((moduleEntry) => embeddedPaths[moduleEntry]),
+      ),
+      embedded: (filename: string) => embeddedPaths[path.relative(root, filename)],
+    });
+    vm.runInContext(
+      createStandaloneRequireAdapter({ runtimeRoot: root, embeddedPaths }).bootstrap,
+      context,
+    );
+    pruneStandaloneRuntime(root, finalized.files);
+    const load = context["__openclawStandaloneCreateRequire"](createRequire, helper);
+    expect(load("runtime-library")).toBe("embedded");
+    expect(load("esm-library")).toMatchObject({ default: "default-value", named: "named-value" });
+    expect(load("metadata-only/package.json").name).toBe("metadata-only");
+    const nativePath = load.resolve("native-helper");
+    expect(fs.readFileSync(nativePath, "utf8")).toBe("native");
+    expect(nativePath).toBe(
+      path.join(root, "native/native-helper@1.0.0/native-helper/binding.node"),
+    );
+    expect(
+      finalized.files
+        .filter((file: { category: string }) => file.category === "nativeAddons")
+        .map((file: { source: string }) => file.source),
+    ).toEqual([path.relative(root, path.join(native, "binding.node"))]);
+    expect(fs.existsSync(path.join(root, "node_modules"))).toBe(false);
   });
 
   it("retains native resources when the output parent is a symlink", () => {

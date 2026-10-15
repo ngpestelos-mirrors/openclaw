@@ -29,8 +29,13 @@ function fixture(files: string[]) {
 describe("standalone resource allowlist", () => {
   it.each([
     ["docs/reference/templates/BOOT.md", "templates"],
+    ["docs/reference/templates/roles/presets/team.json", "templates"],
+    ["docs/reference/templates/roles/coordinator/workspace/AGENTS.md", "templates"],
     ["docs/gateway/configuration.md", "docs"],
     ["docs/docs.json", "docs"],
+    ["docs/internal/runbook.md", undefined],
+    ["docs/AGENTS.md", undefined],
+    ["docs/CLAUDE.md", undefined],
     ["skills/example/run.py", "skills"],
     ["custodian-skills/recover/SKILL.md", "skills"],
     ["dist/control-ui/assets/index.js", "controlUi"],
