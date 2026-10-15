@@ -63,7 +63,7 @@ export function admitAttachmentFiles(
   candidates: readonly File[],
   limits: ChatAttachmentLimits | undefined,
   stagedBytes: number,
-  options: { resizeImages?: boolean } = {},
+  options: { resizeImages?: boolean; onRejected?: (file: File, message: string) => void } = {},
 ): File[] {
   const admitted: File[] = [];
   const empty: File[] = [];
@@ -84,8 +84,15 @@ export function admitAttachmentFiles(
       total += reservation;
     }
   }
-  skippedFilesToast("chat.attachments.readFailed", empty);
-  skippedFilesToast("chat.attachments.tooLarge", oversized);
+  for (const [messageKey, files] of [
+    ["chat.attachments.readFailed", empty],
+    ["chat.attachments.tooLarge", oversized],
+  ] as const) {
+    skippedFilesToast(messageKey, files);
+    for (const file of files) {
+      options.onRejected?.(file, skippedFilesMessage(messageKey, [file.name]));
+    }
+  }
   return admitted;
 }
 

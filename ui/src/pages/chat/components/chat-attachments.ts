@@ -122,18 +122,18 @@ export function appendChatAttachmentFiles(
   if (unsupported.length) {
     showToast({ message: t("chat.attachments.imagesOnly") });
   }
+  const reads =
+    props.attachmentReads ?? new ChatAttachmentReadLifecycle(() => props.onRequestUpdate?.());
   const stagedBytes = stagedAttachmentBytes(props);
   const files = admitAttachmentFiles(
     candidates.filter((file) => !unsupported.includes(file)),
     props.attachmentLimits,
     stagedBytes,
-    { resizeImages: true },
+    { resizeImages: true, onRejected: (file, message) => reads.reject(file, message) },
   );
   if (files.length === 0) {
     return 0;
   }
-  const reads =
-    props.attachmentReads ?? new ChatAttachmentReadLifecycle(() => props.onRequestUpdate?.());
   const entries = reads.begin(files, currentAttachments(props), {
     getAttachments: () => currentAttachments(props),
     onAttachmentsChange: props.onAttachmentsChange,
@@ -395,6 +395,13 @@ export function renderAttachmentPreview(props: ChatAttachmentControlsProps) {
   if (entries.length === 0) {
     return nothing;
   }
+  const failureLabel = (entry: ChatAttachmentRead) =>
+    entry.errorMessage ??
+    t("chat.attachments.readFailed", {
+      names: entry.attachment.fileName ?? t("chat.attachments.attachedFile"),
+      more: "",
+    });
+  const failures = entries.filter((entry) => entry.state === "error");
   return html`
     <div class="chat-attachments-preview" ${scrollState(true)}>
       ${renderChatSelectionAnnotations(props)}
@@ -405,10 +412,7 @@ export function renderAttachmentPreview(props: ChatAttachmentControlsProps) {
           const att = entry.attachment;
           const reading = entry.state === "reading";
           const failed = entry.state === "error";
-          const failureLabel = t("chat.attachments.readFailed", {
-            names: att.fileName ?? t("chat.attachments.attachedFile"),
-            more: "",
-          });
+          const errorLabel = failureLabel(entry);
           const removeLabel = att.fileName?.trim()
             ? t("chat.composer.removeNamedAttachment", { name: att.fileName })
             : t("chat.composer.removeAttachment");
@@ -429,12 +433,12 @@ export function renderAttachmentPreview(props: ChatAttachmentControlsProps) {
                   >
                     ${
                       failed
-                        ? html`<openclaw-tooltip .content=${failureLabel}>
+                        ? html`<openclaw-tooltip .content=${errorLabel}>
                             <span
                               class="chat-attachment-error"
                               tabindex="0"
                               role="img"
-                              aria-label=${failureLabel}
+                              aria-label=${errorLabel}
                             >
                               ${renderAttachmentFileIcon({ filename: att.fileName ?? "", mimeType: att.mimeType, mode: "large-placeholder", unavailable: true })}
                             </span>
@@ -468,5 +472,13 @@ export function renderAttachmentPreview(props: ChatAttachmentControlsProps) {
         },
       )}
     </div>
+    ${
+      failures.length > 0
+        ? html`<div class="chat-attachment-failures" role="alert">
+            ${failures.map((entry) => html`<div>${failureLabel(entry)}</div>`)}
+            <div class="chat-attachment-failures__help">${t("chat.attachments.retryHelp")}</div>
+          </div>`
+        : nothing
+    }
   `;
 }
