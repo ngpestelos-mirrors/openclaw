@@ -265,13 +265,13 @@ describe("managed worktree cap eviction", () => {
   });
 
   it("ranks shared heads once per repository when creating at the fleet cap", async () => {
-    // Two shared branch heads and one detached head exercise the same probe bounds.
-    config.worktreeMaxCount = 3;
+    // Six records make even one Git command per worktree exceed the five-command bound.
+    config.worktreeMaxCount = 6;
     const records = await materializeManagedWorktreeFixtures({
       env,
       repoRoot,
       stateDir: env.OPENCLAW_STATE_DIR!,
-      names: ["rank-00", "rank-01", "rank-02"],
+      names: ["rank-00", "rank-01", "rank-02", "rank-03", "rank-04", "rank-05"],
       now: 1,
     });
     await requireGit(repoRoot, [
