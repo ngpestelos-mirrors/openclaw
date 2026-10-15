@@ -234,8 +234,10 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
       hostDisconnected: () => cleanupVirtualizer?.(),
     });
     this.presentation = new TranscriptPresentation(this, this.virtualizer, () => {
-      // Observe native input before compensating deferred row growth.
-      this.offsetState.syncNativeOffset?.();
+      // Initial measurement retains the requested edge; native zero is not a reader position yet.
+      if (!this.initialPositionPending) {
+        this.offsetState.syncNativeOffset?.();
+      }
     });
     this.rowRefs = new TranscriptRowRefs(this.virtualizer, {
       isCurrentRow: (element, key) =>
