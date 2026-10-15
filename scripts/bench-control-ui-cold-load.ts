@@ -92,9 +92,14 @@ function summarizeResponseTasks(raw: unknown[]) {
 type LiveRpc = {
   method: string;
   params: Record<string, unknown>;
+  ms: number;
   responseAtMs: number;
   responseBytes: number;
 };
+
+function requestedAtMs(rpc: LiveRpc) {
+  return rpc.responseAtMs - rpc.ms;
+}
 
 function sidebarWindow(params: Record<string, unknown>) {
   if (params.rowMode !== "sidebar" || params.limit !== 200) return null;
@@ -127,6 +132,7 @@ function summarizeSidebarWindows(
         if (!task) throw new Error(`Sidebar response ${rpc.rpcIndex} lacks a task measurement`);
         return {
           ...windowReads[index]!,
+          requestedAtMs: requestedAtMs(rpc),
           responseAtMs: rpc.responseAtMs,
           wireBytes: rpc.responseBytes,
           responseTaskMs: task.taskMs,
@@ -582,19 +588,20 @@ try {
       );
       const after = await readLivePresentation();
       const liveMetrics = await page.evaluate(() => Reflect.get(window, "__coldLoad").readLive());
+      // Independent coordinators drift; pair request starts within half their minimum cooldown.
       const pairedRefreshes = values["sidebar-list-churn"]
         ? liveMetrics.rpcs.filter(
             (rpc: LiveRpc) =>
               rpc.method === "sessions.list" &&
               sidebarWindow(rpc.params) === "ownerFirst" &&
               rpc.params.ifRowsRevision !== undefined &&
-              rpc.responseAtMs >= 6000 &&
+              requestedAtMs(rpc) >= 6000 &&
               liveMetrics.rpcs.some(
                 (other: LiveRpc) =>
                   other.method === "sessions.list" &&
                   sidebarWindow(other.params) === "involvingMe" &&
                   other.params.ifRowsRevision !== undefined &&
-                  Math.abs(other.responseAtMs - rpc.responseAtMs) < 1000,
+                  Math.abs(requestedAtMs(other) - requestedAtMs(rpc)) < 2500,
               ),
           ).length
         : undefined;
@@ -617,6 +624,8 @@ try {
             )
           : undefined,
         pairedRefreshes,
+        pairingMeasurement:
+          "Conditional request starts after six seconds, paired within half the five-second minimum cooldown; response arrival skew is separate.",
         responseTasks,
         activeStreamMs,
         rateMeasurement:
@@ -631,7 +640,7 @@ try {
       );
       if (pairedRefreshes !== undefined && pairedRefreshes < 3) {
         throw new Error(
-          "Sidebar churn did not reproduce three sustained conditional sidebar pairs",
+          `Sidebar churn reproduced ${pairedRefreshes} sustained conditional sidebar pairs; expected at least three`,
         );
       }
     }
