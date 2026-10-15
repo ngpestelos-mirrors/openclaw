@@ -2,6 +2,7 @@ import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import type { Client } from "pg";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { PluginManifestRecord } from "../../plugins/manifest-registry.js";
 import type { resolvePluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.js";
 import { readTableColumns } from "../../state/openclaw-state-db-schema-helpers.js";
 import { assertSqliteIntegrity } from "../sqlite-integrity.js";
@@ -17,6 +18,7 @@ export class DatabasePortDataError extends Error {}
 
 export type DatabasePortProvider = {
   id: string;
+  minimumPostgresVersion: number;
   resolveRoots(context: {
     config: OpenClawConfig;
     stateDir: string;
@@ -25,7 +27,9 @@ export type DatabasePortProvider = {
   }): readonly string[];
   matchesSqlite(tables: ReadonlySet<string>): boolean;
   /** Includes the expected catalog from the same generated source as the bundled DDL. */
-  loadDescriptor(): Promise<PortDescriptor>;
+  loadDescriptor(
+    owner?: Pick<PluginManifestRecord, "id" | "rootDir" | "source" | "origin">,
+  ): Promise<PortDescriptor>;
 };
 
 export type PortRow = Record<string, SQLInputValue>;

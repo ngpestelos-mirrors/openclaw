@@ -1,4 +1,12 @@
 import type { AggregateDayOptions } from "./aggregate.js";
+export const TEAM_REPORTS_WRITES = new Set<string>([
+  "resetActivity",
+  "appendActivity",
+  "upsertPeriod",
+  "startRun",
+  "finishRun",
+  "prune",
+]);
 import type {
   ActivityEntry,
   DiscordMessage,
