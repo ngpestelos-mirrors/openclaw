@@ -14,10 +14,7 @@ import {
   type DiagnosticEventPrivateData,
   type DiagnosticModelCallContent,
 } from "../../infra/diagnostic-events.js";
-import {
-  cloneDiagnosticContentValue,
-  resolveDiagnosticModelContentCapturePolicy,
-} from "../../infra/diagnostic-llm-content.js";
+import { resolveDiagnosticModelContentCapturePolicy } from "../../infra/diagnostic-llm-content.js";
 import {
   createDiagnosticTraceContextFromActiveScope,
   freezeDiagnosticTraceContext,
@@ -364,12 +361,12 @@ export function createClaudeCliModelCallDiagnostics(params: {
     const content: DiagnosticModelCallContent = {
       ...(capture.inputMessages
         ? {
-            inputMessages: cloneDiagnosticContentValue([
+            inputMessages: [
               {
                 role: "user",
                 content: [{ type: "text", text: captureBoundedText(params.prompt) }],
               },
-            ]),
+            ],
           }
         : {}),
       ...(capture.systemPrompt && params.systemPrompt
@@ -397,7 +394,7 @@ export function createClaudeCliModelCallDiagnostics(params: {
     if (outputContentBudget.truncated) {
       appendOutputTruncationMarker(messages);
     }
-    return cloneDiagnosticContentValue(messages);
+    return messages;
   };
   const completedModelContent = (output?: CliOutput): DiagnosticModelCallContent | undefined => {
     const base = baseModelContent();
