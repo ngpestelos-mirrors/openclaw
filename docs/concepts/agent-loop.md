@@ -294,6 +294,12 @@ A terminal timeout is a failed turn, not a successful completion. Chat and
 command results retain its timeout explanation; earlier tool errors do not
 replace that explanation or restart an already-final timed-out turn.
 
+Cancellation revokes the run's tool and approval authority immediately. Its
+accepted terminal bookkeeping still settles through the lifecycle owner, so
+Stop and restart cancellation can record the session outcome and any applicable
+failure notice. A replaced session, runtime candidate, or Gateway lifecycle
+cannot reuse that terminal writer.
+
 The model idle and provider HTTP rows describe the built-in OpenClaw model
 path. Codex owns its native stream deadlines and network retries. After exact
 native terminal receipt, OpenClaw allows two minutes for local settlement.
