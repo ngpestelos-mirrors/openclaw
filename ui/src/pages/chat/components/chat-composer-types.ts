@@ -26,7 +26,6 @@ import type { HumanMentionInput } from "../../../lib/chat/human-mentions.ts";
 import type { ProviderUsageDisplayProps } from "../../../lib/provider-quota-summary.ts";
 import type { SessionToolOverrides } from "../../../lib/sessions/patch.ts";
 import type { PresentationBinding } from "../../../lit/presentation-binding.ts";
-import type { solidContent } from "../../../lit/solid-content.tsx";
 import type { ChatRunStartupStatus } from "../chat-run-startup.ts";
 import type { ComposerDictationController } from "../composer-dictation.ts";
 import type { ComposerMicrophonePicker } from "../composer-microphone-picker.ts";
@@ -158,7 +157,7 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   onOpenDictationSettings?: () => void;
   suggestionComposer?: boolean;
   onTypingChange?: (typing: boolean, preview?: string, cursor?: number) => void;
-  composerControls?: TemplateResult | ReturnType<typeof solidContent> | typeof nothing;
+  composerControls?: TemplateResult | typeof nothing;
   footerContent?: JSX.Element;
   composerRecovery?: TemplateResult | typeof nothing;
   notices?: JSX.Element;
