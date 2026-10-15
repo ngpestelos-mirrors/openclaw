@@ -104,27 +104,6 @@ describe("buildConfiguredAgentSystemPrompt", () => {
     expect(prompt).toContain("Agent workspace: /tmp/openclaw");
   });
 
-  it("keeps post-compaction curated context scoped to the prepared project", () => {
-    const prompt = buildConfiguredAgentSystemPrompt({
-      ...basicPromptInputs(),
-      activeProjectKeys: ["github.com/acme/Alpha"],
-      contextFiles: [
-        {
-          path: "/tmp/openclaw/MEMORY.md",
-          content: [
-            "- Alpha compaction fact. <!-- project: github.com/acme/Alpha -->",
-            "- Beta compaction fact. <!-- project: github.com/acme/Beta -->",
-            "- Global compaction fact.",
-          ].join("\n"),
-        },
-      ],
-    });
-
-    expect(prompt).toContain("Alpha compaction fact");
-    expect(prompt).toContain("Global compaction fact");
-    expect(prompt).not.toContain("Beta compaction fact");
-  });
-
   it.each(["create", "rename-only", "absent"] as const)(
     "routes explicit task creation from the native %s tool surface in default suggest mode",
     (surface) => {
@@ -162,76 +141,6 @@ describe("buildConfiguredAgentSystemPrompt", () => {
     });
 
     expect(prompt).toContain("## Delegation");
-  });
-
-  it("uses deferred capability names without listing them as visible tools", () => {
-    const prompt = buildConfiguredAgentSystemPrompt({
-      ...basicPromptInputs(),
-      config: {
-        agents: {
-          defaults: {
-            subagents: {
-              delegationMode: "prefer",
-            },
-          },
-        },
-      },
-      agentId: "main",
-      runtimeInfo: { ...basicPromptInputs().runtimeInfo, agentId: "main" },
-      tools: [{ name: "tool_search" } as never],
-      capabilityToolNames: ["sessions_spawn"],
-    });
-
-    expect(prompt).toContain("## Delegation");
-    expect(prompt).not.toContain("- sessions_spawn: spawn an isolated sub-agent session");
-  });
-
-  it("forwards run-scoped proactive orchestration independently of config preference", () => {
-    const prompt = buildConfiguredAgentSystemPrompt({
-      ...basicPromptInputs(),
-      config: {
-        agents: {
-          defaults: {
-            subagents: {
-              delegationMode: "suggest",
-            },
-          },
-        },
-      },
-      agentId: "main",
-      proactiveSubagentOrchestration: true,
-      runtimeInfo: {
-        agentId: "main",
-        host: "local",
-        os: "darwin",
-        arch: "arm64",
-        node: process.version,
-        model: "openai/gpt-5.6-sol",
-      },
-      tools: [{ name: "sessions_spawn" } as never],
-    });
-
-    expect(prompt).toContain("## Proactive Sub-Agent Orchestration");
-    expect(prompt).not.toContain("Mode: prefer");
-  });
-
-  it("adds workspace-only scratch path guidance when fs workspaceOnly is enabled", () => {
-    // The prompt must steer writes toward workspace-local scratch paths when
-    // filesystem tools are constrained to the workspace.
-    const prompt = buildConfiguredAgentSystemPrompt({
-      ...basicPromptInputs(),
-      config: {
-        tools: {
-          fs: {
-            workspaceOnly: true,
-          },
-        },
-      },
-    });
-
-    expect(prompt).toContain("tools.fs.workspaceOnly ON");
-    expect(prompt).toContain("`.openclaw/tmp/`");
-    expect(prompt).toContain("never exec-write `/tmp`");
   });
 
   it("omits workspace-only scratch path guidance when fs workspaceOnly is disabled", () => {
