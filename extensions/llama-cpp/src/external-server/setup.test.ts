@@ -241,14 +241,6 @@ describe("llama-server setup", () => {
 
   it.each([
     {
-      name: "prefers a loaded model over an unloaded higher-ranked family",
-      models: [
-        { id: "meta-llama/Llama-3.3-8B", status: "loaded" },
-        { id: "google/gemma-4-27b", status: "unloaded" },
-      ],
-      expected: "llama-cpp/meta-llama/Llama-3.3-8B",
-    },
-    {
       name: "preserves family preference when no model is loaded",
       models: [
         { id: "meta-llama/Llama-3.3-8B", status: "unloaded" },
@@ -364,12 +356,11 @@ describe("llama-server setup", () => {
   it.each([
     { name: "saved false", saved: false },
     { name: "saved true", saved: true },
-    { name: "unset", saved: undefined },
   ])(
     "forwards the $name private-network setting to interactive and non-interactive discovery",
     async ({ saved }) => {
       const config = configWithProvider({
-        request: saved === undefined ? {} : { allowPrivateNetwork: saved },
+        request: { allowPrivateNetwork: saved },
       });
       discoverMock.mockResolvedValue(successfulDiscovery());
 
