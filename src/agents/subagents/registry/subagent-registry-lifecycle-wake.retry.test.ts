@@ -39,7 +39,6 @@ vi.mock("./subagent-registry-lifecycle-log.js", () => ({
   buildSafeLifecycleErrorMeta: (error: unknown) => ({
     message: error instanceof Error ? error.message : String(error),
   }),
-  maskLifecycleIdentifier: () => "synthetic",
 }));
 vi.mock("../completion/subagent-completion-admission.store.js", async (importOriginal) => ({
   ...(await importOriginal<

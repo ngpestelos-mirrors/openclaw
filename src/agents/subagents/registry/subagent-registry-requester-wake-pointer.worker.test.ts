@@ -17,9 +17,7 @@ import { createRequesterWakeContextFixture } from "./subagent-registry-requester
 import { loadSubagentRegistryFromSqlite } from "./subagent-registry-state.fixture.test-support.js";
 import { withSubagentRunReadSnapshot } from "./subagent-registry-state.js";
 
-vi.mock("./subagent-registry-lifecycle-log.js", () => ({
-  maskLifecycleIdentifier: () => "synthetic",
-}));
+vi.mock("./subagent-registry-lifecycle-log.js", () => ({}));
 
 it("publishes a selected requester wake before an overlapping row mutation plans", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
