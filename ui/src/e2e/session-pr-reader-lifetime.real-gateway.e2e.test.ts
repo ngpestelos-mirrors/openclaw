@@ -534,7 +534,27 @@ suite.define(() => {
             expect(await refreshFromBrowser(page)).toEqual(["operator.read"]);
             releaseProvider.resolve();
             const settled = await racePromiseWithAbortSignal(changedDelivery.promise, signal);
-            // A new session incarnation resets the pane-local Details presentation.
+            // PR delivery does not establish the browser roster's replacement incarnation.
+            const replacementRoster = await evaluateControlUiContext(
+              page,
+              async (context, key) => {
+                await context.sessions.refresh({ agentId: "main", force: true });
+                const rosterState = context.sessions.state;
+                return {
+                  sessionId: rosterState.result?.sessions.find((row) => row.key === key)?.sessionId,
+                  resultCached: rosterState.resultCached,
+                  error: rosterState.error,
+                };
+              },
+              sessionKey,
+            );
+            expect(replacementRoster).toEqual({
+              sessionId: "00000000-0000-4000-8000-000000000202",
+              resultCached: false,
+              error: null,
+            });
+            // Finish the incarnation's rendered reset before reopening the floating Details pane.
+            await pane.locator('.chat-details[role="dialog"]').waitFor({ state: "hidden" });
             await openDetailsPullRequests(pane);
             await chip
               .locator(".chat-pr__number")
