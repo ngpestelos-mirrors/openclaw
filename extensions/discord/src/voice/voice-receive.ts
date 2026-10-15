@@ -506,7 +506,7 @@ export class DiscordVoiceReceive {
       );
     }
     logger.info(
-      `discord voice: agent turn start guild=${entry.guildId} channel=${entry.channelId} voiceSession=${entry.voiceSessionKey} supervisorSession=${entry.route.sessionKey} agent=${entry.route.agentId} user=${userId} speaker=${context.speakerLabel} owner=${context.senderIsOwner} model=${this.params.discordConfig.voice?.model ?? "route-default"} messageChars=${message.length}`,
+      `discord voice: agent turn start guild=${entry.guildId} channel=${entry.channelId} voiceSession=${entry.voiceSessionKey} supervisorSession=${entry.route.sessionKey} agent=${entry.route.agentId} user=${userId} owner=${context.senderIsOwner} model=${this.params.discordConfig.voice?.model ?? "route-default"} chars=${message.length}`,
     );
     const text = await runDiscordVoiceAgentTurn({
       ...this.params,

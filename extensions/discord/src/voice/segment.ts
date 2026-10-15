@@ -104,9 +104,6 @@ export async function processDiscordVoiceSegment(
   logVoiceVerbose(
     `transcription ok (${transcript.length} chars): guild ${entry.guildId} channel ${entry.channelId}`,
   );
-  logVoiceVerbose(
-    `transcript from ${speakerLabel} (${userId}) in guild ${entry.guildId} channel ${entry.channelId} chars=${transcript.length}`,
-  );
   if (recording?.capture.isCurrent()) {
     await recording.capture.onUtterance({
       sessionId: recording.capture.sessionId,

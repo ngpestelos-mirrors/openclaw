@@ -759,18 +759,6 @@ export async function buildTelegramInboundContextPayload(
         }
       : undefined;
 
-  if (visibleReplyTarget && shouldLogVerbose()) {
-    logVerbose(
-      `telegram reply-context: replyToId=${visibleReplyTarget.id} replyToSender=${visibleReplyTarget.sender} replyToChars=${visibleReplyTarget.body?.length ?? 0}`,
-    );
-  }
-
-  if (visibleForwardOrigin && shouldLogVerbose()) {
-    logVerbose(
-      `telegram forward-context: forwardedFrom="${visibleForwardOrigin.from}" type=${visibleForwardOrigin.fromType}`,
-    );
-  }
-
   if (shouldLogVerbose()) {
     const mediaInfo = allMedia.length > 1 ? ` mediaCount=${allMedia.length}` : "";
     const topicInfo = resolvedThreadId != null ? ` topic=${resolvedThreadId}` : "";
