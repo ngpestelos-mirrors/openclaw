@@ -38,7 +38,7 @@ export function AssistantAttachmentStatusCard(
   props: AssistantAttachmentStatusCardProps,
 ): JSX.Element {
   const unavailable = () => props.reason !== undefined;
-  const action = () => props.onAllow ?? props.onOpen ?? props.onRetry;
+  const action = () => props.onAllow ?? props.onRetry ?? props.onOpen;
   const statusClass = () =>
     !unavailable()
       ? "chat-assistant-attachment-card--checking"
@@ -114,22 +114,31 @@ export function AssistantAttachmentStatusCard(
           <button
             class={[
               "chat-assistant-attachment-card__action chat-assistant-attachment-card__action--labeled",
-              { "chat-assistant-attachment-card__retry": !props.onAllow && !props.onOpen },
+              { "chat-assistant-attachment-card__retry": !props.onAllow && Boolean(props.onRetry) },
             ]}
             type="button"
             onClick={() => action()?.()}
           >
-            <Show when={!props.onAllow && !props.onOpen}>
+            <Show when={!props.onAllow && Boolean(props.onRetry)}>
               <Icon name="refresh" />
             </Show>
             {props.onAllow
               ? t("chat.attachments.allowImage")
-              : props.onOpen
-                ? t("chat.attachments.openOriginal")
-                : t("common.retry")}
+              : props.onRetry
+                ? t("common.retry")
+                : t("chat.attachments.openOriginal")}
           </button>
         </Show>
       </div>
+      <Show when={props.onOpen && (props.onRetry || props.onAllow)}>
+        <button
+          type="button"
+          class="chat-assistant-attachment-card__action chat-assistant-attachment-card__action--labeled chat-assistant-attachment-card__original"
+          onClick={() => props.onOpen?.()}
+        >
+          {t("chat.attachments.openOriginal")}
+        </button>
+      </Show>
     </div>
   );
 }

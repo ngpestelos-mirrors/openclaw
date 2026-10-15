@@ -429,7 +429,12 @@ suite.define(() => {
       const artifactDir = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim()
         ? suite.artifactDir
         : undefined;
-      const context = await suite.newBrowserContext(createControlUiE2eContextOptions());
+      const context = await suite.newBrowserContext({
+        ...createControlUiE2eContextOptions(),
+        ...(previewFails
+          ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }
+          : {}),
+      });
       const page = await context.newPage();
       const requestedMediaUrls: URL[] = [];
       await page.route("**/__openclaw__/assistant-media?**", async (route) => {
@@ -464,6 +469,8 @@ suite.define(() => {
         });
       });
       await installMockGateway(page, {
+        agentModel: "demo/model",
+        models: [{ id: "model", name: "Demo", provider: "demo" }],
         historyMessages: [
           {
             id: "user-inbound-media-ref",
@@ -494,6 +501,12 @@ suite.define(() => {
               .filter((url) => url.searchParams.get("meta") !== "1")
               .map((url) => url.searchParams.get("variant")),
           ).toEqual(["thumbnail"]);
+          if (artifactDir) {
+            await page.screenshot({
+              path: `${artifactDir}/inbound-preview-unavailable.png`,
+              animations: "disabled",
+            });
+          }
           await openOriginal.click();
           const original = page.locator("openclaw-image-lightbox img").first();
           await original.waitFor({ state: "visible" });

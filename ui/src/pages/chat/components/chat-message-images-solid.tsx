@@ -281,8 +281,15 @@ class MessageImagePresentation {
       return this.present(
         this.renderImageElement(
           image,
-          isCanonicalInboundMediaSource(source) && availability.status === "available"
-            ? `${displayUrl}&variant=thumbnail`
+          availability.status === "available"
+            ? buildAssistantAttachmentUrl(
+                source,
+                options?.resourceBasePath,
+                availability.mediaTicket,
+                options,
+                image.fileName,
+                "thumbnail",
+              )
             : displayUrl,
         ),
       );
