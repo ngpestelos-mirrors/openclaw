@@ -172,10 +172,12 @@ async function loadClientBundleValidator(version: 1 | 2 = 1) {
   );
   const module = await importToolingTypeScript(pathToFileURL(modulePath).href, import.meta.url);
   const name = version === 1 ? "parseRemoteModelCatalogBundle" : "parseRemoteModelCatalogBundleV2";
-  if (typeof module[name] !== "function") {
+  const parse = module[name];
+  const sanitize = module.sanitizeRemoteModelCatalogBundle;
+  if (typeof parse !== "function" || typeof sanitize !== "function") {
     throw new Error("remote catalog bundle validator export is unavailable");
   }
-  return (bundle: unknown) => module.sanitizeRemoteModelCatalogBundle(module[name](bundle));
+  return (bundle: unknown) => sanitize(parse(bundle));
 }
 
 export async function assembleModelCatalogBundle(options: {
