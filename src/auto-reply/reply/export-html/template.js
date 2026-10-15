@@ -813,7 +813,7 @@
 
   function formatOutputLines(lines, lang) {
     if (lang) {
-      return highlightCode(lines.join("\n"), lang);
+      return `<pre><code class="hljs">${highlightCode(lines.join("\n"), lang)}</code></pre>`;
     }
     return lines.map((line) => `<div>${escapeHtml(line)}</div>`).join("");
   }
@@ -824,34 +824,14 @@
     const displayLines = lines.slice(0, maxLines);
     const remaining = lines.length - maxLines;
 
-    if (lang) {
-      const highlighted = formatOutputLines(lines, lang);
-
-      if (remaining > 0) {
-        const previewHighlighted = formatOutputLines(displayLines, lang);
-
-        return `<div class="tool-output expandable" onclick="this.classList.toggle('expanded')">
-              <div class="output-preview"><pre><code class="hljs">${previewHighlighted}</code></pre>
-              <div class="expand-hint">... (${remaining} more lines)</div></div>
-              <div class="output-full"><pre><code class="hljs">${highlighted}</code></pre></div></div>`;
-      }
-
-      return `<div class="tool-output"><pre><code class="hljs">${highlighted}</code></pre></div>`;
-    }
-
     if (remaining > 0) {
-      let out =
-        '<div class="tool-output expandable" onclick="this.classList.toggle(\'expanded\')">';
-      out += '<div class="output-preview">';
-      out += formatOutputLines(displayLines);
-      out += `<div class="expand-hint">... (${remaining} more lines)</div></div>`;
-      out += '<div class="output-full">';
-      out += formatOutputLines(lines);
-      out += "</div></div>";
-      return out;
+      return `<div class="tool-output expandable" onclick="this.classList.toggle('expanded')">
+              <div class="output-preview">${formatOutputLines(displayLines, lang)}
+              <div class="expand-hint">... (${remaining} more lines)</div></div>
+              <div class="output-full">${formatOutputLines(lines, lang)}</div></div>`;
     }
 
-    return `<div class="tool-output">${formatOutputLines(displayLines)}</div>`;
+    return `<div class="tool-output">${formatOutputLines(displayLines, lang)}</div>`;
   }
 
   function renderContentImages(content, containerClass, imageClass) {
