@@ -33,7 +33,7 @@ export function resolveEmbeddedRunTerminalTimeout(input: {
     !input.terminalPrepared.payloadsWithToolMedia?.some(
       (payload) => payload.isError !== true && payload.isReasoning !== true,
     ) &&
-    !hasYieldContinuationEvidence(input.attempt);
+    !hasYieldContinuationEvidence(input.attempt, { requireCompletionMessage: true });
   if (
     (!input.terminalPrepared.timedOutDuringPrompt && !unfinishedToolTimeout) ||
     (!timeoutFinal &&

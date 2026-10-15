@@ -14,6 +14,7 @@ import { makeTerminalInput } from "./terminal-resolution.test-support.js";
 import { resolveEmbeddedRunTerminalTimeout } from "./terminal-timeout.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
+// mock-isolation: Observe bookkeeping calls without profile-store writes or auth-binding effects.
 vi.mock("./auth-profile-success.js", () => ({
   markEmbeddedRunAuthProfileSuccess: vi.fn(),
   reportEmbeddedRunSuccessfulAuthBinding: vi.fn(),
@@ -77,14 +78,27 @@ describe("tool timeout terminal bookkeeping", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it.each([
-    { compactionFailure: false, toolWarning: false },
-    { compactionFailure: true, toolWarning: false },
-    { compactionFailure: false, toolWarning: true },
+    { compactionFailure: false, toolWarning: false, quietChild: false },
+    { compactionFailure: true, toolWarning: false, quietChild: false },
+    { compactionFailure: false, toolWarning: true, quietChild: false },
+    { compactionFailure: false, toolWarning: false, quietChild: true },
   ])(
-    "reports an unfinished tool timeout without success bookkeeping (compaction failure: $compactionFailure, tool warning: $toolWarning)",
-    async ({ compactionFailure, toolWarning }) => {
+    "reports an unfinished tool timeout without success bookkeeping (compaction failure: $compactionFailure, tool warning: $toolWarning, quiet child: $quietChild)",
+    async ({ compactionFailure, toolWarning, quietChild }) => {
       const attempt = toolAttempt({
         lastToolError: toolWarning ? { toolName: "read", error: "Earlier read failed" } : undefined,
+        ...(quietChild
+          ? {
+              acceptedSessionSpawns: [
+                {
+                  runId: "quiet-child",
+                  childSessionKey: "agent:main:subagent:quiet",
+                  expectsCompletionMessage: false,
+                },
+              ],
+              replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+            }
+          : {}),
         terminal: {
           kind: "timeout",
           phase: "tool_execution",
@@ -127,7 +141,13 @@ describe("tool timeout terminal bookkeeping", () => {
         toolAttempt({
           ...(kind === "ok" ? { terminal: { kind } } : {}),
           yieldDetected: true,
-          acceptedSessionSpawns: [{ runId: "child-1", childSessionKey: "agent:main:subagent:1" }],
+          acceptedSessionSpawns: [
+            {
+              runId: "child-1",
+              childSessionKey: "agent:main:subagent:1",
+              expectsCompletionMessage: true,
+            },
+          ],
         }),
       );
       expect(result.meta.error).toBeUndefined();

@@ -9,6 +9,7 @@ import { formatErrorMessage } from "../../../infra/errors.js";
 import {
   hasAcceptedSessionSpawn,
   hasCompletionMessageSessionSpawn,
+  type AcceptedSessionSpawn,
 } from "../../accepted-session-spawn.js";
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
 import type { AuthProfileFailureReason } from "../../auth-profiles.js";
@@ -256,7 +257,7 @@ interface YieldContinuationAttempt {
   clientToolCalls?: readonly unknown[];
   didSendDeterministicApprovalPrompt?: boolean;
   successfulCronAdds?: number;
-  acceptedSessionSpawns?: readonly { runId: string; childSessionKey: string }[];
+  acceptedSessionSpawns?: readonly AcceptedSessionSpawn[];
   runtimeContinuationStarted?: boolean;
   yieldMessageWaitRegistered?: boolean;
   messagingToolSentTexts?: readonly string[];
@@ -266,14 +267,19 @@ interface YieldContinuationAttempt {
 }
 
 /** Continuation evidence for a yielded turn — sources that will produce future output. */
-export function hasYieldContinuationEvidence(attempt: YieldContinuationAttempt): boolean {
+export function hasYieldContinuationEvidence(
+  attempt: YieldContinuationAttempt,
+  options?: { requireCompletionMessage?: boolean },
+): boolean {
   // Only same-attempt evidence is causal here. Session-wide active descendants may be
   // stale or unrelated and must not suppress the diagnostic for this yielded turn.
   return (
     (attempt.clientToolCalls?.length ?? 0) > 0 ||
     attempt.didSendDeterministicApprovalPrompt === true ||
     hasCommittedMessagingToolDeliveryEvidence(attempt) ||
-    hasAcceptedSessionSpawn(attempt.acceptedSessionSpawns) ||
+    (options?.requireCompletionMessage
+      ? hasCompletionMessageSessionSpawn(attempt.acceptedSessionSpawns)
+      : hasAcceptedSessionSpawn(attempt.acceptedSessionSpawns)) ||
     attempt.runtimeContinuationStarted === true ||
     attempt.yieldMessageWaitRegistered === true ||
     hasAsyncActivity(attempt.toolMetas) ||
