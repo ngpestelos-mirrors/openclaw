@@ -216,23 +216,6 @@ function buildManifestCatalogModelLookup(
   };
 }
 
-function normalizeAgentModels<T extends { model?: unknown; models?: Record<string, unknown> }>(
-  agent: T,
-): T {
-  let next = agent;
-  const model = normalizeAgentModelSelectionForConfig(agent.model);
-  if (model !== agent.model) {
-    next = { ...next, model };
-  }
-  if (isRecord(agent.models)) {
-    const models = normalizeAgentModelMapForConfig(agent.models);
-    if (models !== agent.models) {
-      next = { ...next, models };
-    }
-  }
-  return next;
-}
-
 export function applyModelDefaults(
   cfg: OpenClawConfig,
   options: ProviderPolicyDefaultsOptions = {},
@@ -398,8 +381,21 @@ export function applyModelDefaults(
         if (!isRecord(agent)) {
           return [id, agent];
         }
-        const nextAgent = normalizeAgentModels(agent);
-        entriesMutated ||= nextAgent !== agent;
+        let nextAgent = agent;
+        if (Object.hasOwn(agent, "model")) {
+          const normalizedModel = normalizeAgentModelSelectionForConfig(agent.model);
+          if (normalizedModel !== agent.model) {
+            nextAgent = { ...nextAgent, model: normalizedModel as typeof agent.model };
+            entriesMutated = true;
+          }
+        }
+        if (isRecord(agent.models)) {
+          const normalizedModels = normalizeAgentModelMapForConfig(agent.models);
+          if (normalizedModels !== agent.models) {
+            nextAgent = { ...nextAgent, models: normalizedModels };
+            entriesMutated = true;
+          }
+        }
         return [id, nextAgent];
       }),
     );
@@ -414,9 +410,18 @@ export function applyModelDefaults(
     return nextAgents === nextCfg.agents ? nextCfg : { ...nextCfg, agents: nextAgents };
   }
 
-  const nextAgent = normalizeAgentModels(existingAgent);
-  mutated ||= nextAgent !== existingAgent;
-  const existingModels = nextAgent.models ?? {};
+  let nextAgent = existingAgent;
+  const normalizedModel = normalizeAgentModelSelectionForConfig(existingAgent.model);
+  if (normalizedModel !== existingAgent.model) {
+    nextAgent = { ...nextAgent, model: normalizedModel as typeof existingAgent.model };
+    mutated = true;
+  }
+
+  const rawExistingModels = existingAgent.models ?? {};
+  const existingModels = normalizeAgentModelMapForConfig(rawExistingModels);
+  if (existingModels !== rawExistingModels) {
+    mutated = true;
+  }
   if (Object.keys(existingModels).length === 0) {
     return mutated
       ? {

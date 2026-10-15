@@ -1777,7 +1777,7 @@ src/config/channel-doctor-helpers.ts	5
 src/config/config-env-vars.ts	1
 src/config/config-journal-snapshot.ts	2
 src/config/context-visibility.ts	1
-src/config/defaults.ts	3
+src/config/defaults.ts	5
 src/config/doc-baseline.ts	6
 src/config/docs-config-examples.ts	1
 src/config/gateway-dispatch-config.ts	1

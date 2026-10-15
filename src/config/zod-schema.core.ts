@@ -21,11 +21,6 @@ export {
 } from "./zod-schema.messages.js";
 export { SecretInputSchema, SecretRefSchema } from "./zod-schema.secret-input.js";
 
-/** Shared strict contract for optional feature-toggle objects. Defaults belong to each owner. */
-export const OptionalEnabledConfigSchema = z
-  .strictObject({ enabled: z.boolean().optional() })
-  .optional();
-
 const WINDOWS_ABS_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 const WINDOWS_UNC_PATH_PATTERN = /^\\\\[^\\]+\\[^\\]+/;
 

@@ -11,7 +11,6 @@ import { CloudWorkersConfigSchema } from "./zod-schema.cloud-workers.js";
 import {
   HexColorSchema,
   ModelsConfigSchema,
-  OptionalEnabledConfigSchema,
   SecretInputSchema,
   SecretsConfigSchema,
   SsrFPolicyConfigSchema,
@@ -91,7 +90,11 @@ export const OpenClawSchemaShape = {
         ])
         .optional(),
       checkOnStart: z.boolean().optional(),
-      auto: OptionalEnabledConfigSchema,
+      auto: z
+        .strictObject({
+          enabled: z.boolean().optional(),
+        })
+        .optional(),
     })
     .optional(),
   telemetry: TelemetryConfigSchema,
@@ -222,8 +225,13 @@ export const OpenClawSchemaShape = {
        * Example: ["--window-size=1920,1080", "--disable-infobars"]
        */
       extraArgs: z.array(z.string()).optional(),
-      /** Best-effort cleanup for tabs opened by primary-agent browser sessions. Default: true. */
-      tabCleanup: OptionalEnabledConfigSchema,
+      /** Best-effort cleanup policy for tabs opened by primary-agent browser sessions. */
+      tabCleanup: z
+        .strictObject({
+          /** Enable best-effort cleanup for tracked primary-agent browser tabs. Default: true */
+          enabled: z.boolean().optional(),
+        })
+        .optional(),
       /** Chrome extension relay authentication compatibility settings. */
       extensionRelay: z
         .strictObject({
@@ -317,7 +325,11 @@ export const OpenClawSchemaShape = {
   acp: z
     .strictObject({
       enabled: z.boolean().optional(),
-      dispatch: OptionalEnabledConfigSchema,
+      dispatch: z
+        .strictObject({
+          enabled: z.boolean().optional(),
+        })
+        .optional(),
       backend: z.string().optional(),
       fallbacks: z.array(z.string()).optional(),
       defaultAgent: z.string().optional(),
@@ -378,7 +390,11 @@ export const OpenClawSchemaShape = {
       enabled: z.boolean().optional(),
       /** Skip missed recurring slots at startup; one-shot catch-up is unchanged. Default: false. */
       skipMissedJobs: z.boolean().optional(),
-      triggers: OptionalEnabledConfigSchema,
+      triggers: z
+        .strictObject({
+          enabled: z.boolean().optional(),
+        })
+        .optional(),
       /** Bearer token for cron webhook POST delivery. */
       webhookToken: SecretInputSchema.optional().register(sensitive),
       /** SSRF policy for all outbound cron webhook deliveries. */

@@ -19,7 +19,6 @@ import {
   isValidPortalIngressDomain,
   portalIngressConflictsWithOrigin,
 } from "./gateway-portal-ingress.js";
-import { OptionalEnabledConfigSchema } from "./zod-schema.core.js";
 import {
   GatewayRemoteConfigSchema,
   ResponsesEndpointUrlFetchShape,
@@ -270,10 +269,18 @@ export const GatewayConfigSchema = z
         dangerouslyAllowHostHeaderOriginFallback: z.boolean().optional(),
       })
       .optional(),
-    /** Allow client file/image uploads to the Gateway (default true). Hot-applies. */
-    uploads: OptionalEnabledConfigSchema,
-    /** Show catalog-backed CLI agents in the new-session model picker. Default: true. */
-    cliAgents: OptionalEnabledConfigSchema,
+    uploads: z
+      .strictObject({
+        /** Allow client file/image uploads to the Gateway (default true). Hot-applies. */
+        enabled: z.boolean().optional(),
+      })
+      .optional(),
+    cliAgents: z
+      .strictObject({
+        /** Show catalog-backed CLI agents in the new-session model picker. Default: true. */
+        enabled: z.boolean().optional(),
+      })
+      .optional(),
     terminal: z
       .strictObject({
         /** Master switch for the operator terminal. Default: true; set false to opt out. */
@@ -605,7 +612,12 @@ export const GatewayConfigSchema = z
           })
           .optional(),
         /** Controls whether paired nodes may publish agent-visible plugin tools (default: true). */
-        pluginTools: OptionalEnabledConfigSchema,
+        pluginTools: z
+          .strictObject({
+            /** Accept node-published plugin tool descriptors (default: true). */
+            enabled: z.boolean().optional(),
+          })
+          .optional(),
         /** Accept node-published skill descriptors (default: true). */
         allowSkills: z.boolean().optional(),
         commands: z
