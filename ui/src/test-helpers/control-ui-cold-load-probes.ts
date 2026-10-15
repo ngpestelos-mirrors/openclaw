@@ -13,6 +13,7 @@ export function installColdLoadProbes(
     responseBytes: number;
     ms: number;
     dispatchMs?: number;
+    responseAtMs?: number;
     params: unknown;
     stack: string | undefined;
   }> = [];
@@ -508,8 +509,10 @@ export function installColdLoadProbes(
                 requestBytes: request.bytes,
                 responseBytes: new TextEncoder().encode(event.data).length,
                 ms: performance.now() - request.at,
+                ...(liveStartedAt ? { responseAtMs: performance.now() - liveStartedAt } : {}),
               });
             }
+            const responseMark = request && `cold-load-rpc:${rpcIndex}:${request.method}`;
             const delivery = liveEvent
               ? { ...liveEvent, deliveredAtMs: performance.now() - liveStartedAt }
               : null;
@@ -518,9 +521,13 @@ export function installColdLoadProbes(
               liveEvents.set(delivery.kind, (liveEvents.get(delivery.kind) ?? 0) + 1);
             }
             const dispatchStarted = performance.now();
+            if (responseMark) {
+              performance.mark(`${responseMark}:start`);
+            }
             frameProbe.withDelivery(delivery, () => dispatch(event));
             if (request) {
               rpcs[rpcIndex]!.dispatchMs = performance.now() - dispatchStarted;
+              performance.mark(`${responseMark}:end`);
             }
             lastActivity = performance.now();
           },
@@ -611,7 +618,10 @@ export function installColdLoadProbes(
         }));
       }
       for (const [index, item] of (input.liveEvents ?? []).entries()) {
-        window.setTimeout(() => {
+        window.setTimeout(async () => {
+          if (item.sessionMutation) {
+            await Reflect.get(window, "__teamScaleSidebarLists").apply(item.sessionMutation);
+          }
           emittingLiveEvent = {
             index: index + 1,
             kind: item.kind,
@@ -658,6 +668,7 @@ export function installColdLoadProbes(
       return {
         elapsedMs: (liveFinishedAt || performance.now()) - liveStartedAt,
         rpcs: rpcs.slice(liveRpcOffset),
+        rpcOffset: liveRpcOffset,
         sentEvents: [...liveEvents.values()].reduce((sum, count) => sum + count, 0),
         events: Object.fromEntries(liveEvents),
         deliveryCadence: frameProbe.readDeliveryCadence(),

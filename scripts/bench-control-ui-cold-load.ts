@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import { chromium, type Browser } from "playwright";
 import { buildSandboxHostPath } from "../src/agents/sandbox-host.js";
 import { createSandboxHostHttpServer } from "../src/gateway/mcp-app-sandbox-http.js";
+import { shareSidebarSessionRows } from "../src/gateway/session-row-presentation.js";
 import {
   createColdLoadFrameProbe,
   type ColdLoadProbeInput,
@@ -21,7 +22,10 @@ import {
   startProductionControlUiE2eServer,
   startBuiltControlUiE2eServer,
 } from "../ui/src/test-helpers/control-ui-e2e.ts";
-import { createControlUiTeamScaleFixture } from "../ui/src/test-helpers/control-ui-team-scale-fixture.ts";
+import {
+  createControlUiTeamScaleFixture,
+  createTeamScaleSidebarListOwner,
+} from "../ui/src/test-helpers/control-ui-team-scale-fixture.ts";
 import {
   mapColdLoadCpuProfile,
   prepareColdLoadTraceEvent,
@@ -33,9 +37,62 @@ function createColdLoadProbeInitScript(input: ColdLoadProbeInput): string {
   return `(${installColdLoadProbes.toString()})(${JSON.stringify(input)}, ${createColdLoadFrameProbe.toString()});`;
 }
 
+function summarizeResponseTasks(raw: unknown[]) {
+  const events = raw.map(prepareColdLoadTraceEvent);
+  const tasks: Array<{ pid: number; tid: number; start: number; end: number }> = [];
+  const stacks = new Map<string, (typeof events)[number][]>();
+  const add = (event: (typeof events)[number], end: number) => {
+    if (event.name === "RunTask" || event.name === "ThreadControllerImpl::RunTask") {
+      tasks.push({ pid: event.pid, tid: event.tid, start: event.ts, end });
+    }
+  };
+  for (const event of events) {
+    if (event.ph === "X" && event.dur !== undefined) {
+      add(event, event.ts + event.dur);
+    } else if (event.ph === "B") {
+      const key = `${event.pid}:${event.tid}`;
+      const stack = stacks.get(key) ?? [];
+      stack.push(event);
+      stacks.set(key, stack);
+    } else if (event.ph === "E") {
+      const begin = stacks.get(`${event.pid}:${event.tid}`)?.pop();
+      if (begin) {
+        add(begin, event.ts);
+      }
+    }
+  }
+  const responses = events.flatMap((event) => {
+    const match = /^cold-load-rpc:(\d+):(.+):start$/u.exec(event.name ?? "");
+    if (!match) {
+      return [];
+    }
+    const task = tasks
+      .filter(
+        (candidate) =>
+          candidate.pid === event.pid &&
+          candidate.tid === event.tid &&
+          candidate.start <= event.ts &&
+          candidate.end >= event.ts,
+      )
+      .toSorted((left, right) => left.end - left.start - (right.end - right.start))[0];
+    if (!task) {
+      throw new Error(`Response mark lacks an enclosing renderer task: ${event.name}`);
+    }
+    return [
+      { rpcIndex: Number(match[1]), method: match[2], taskMs: (task.end - task.start) / 1000 },
+    ];
+  });
+  return {
+    measurement:
+      "response task including application JSON parse and reconciliation microtasks; excludes later animation-frame rendering",
+    responses,
+  };
+}
+
 const { values } = parseArgs({
   options: {
     "live-events": { type: "boolean", default: false },
+    "sidebar-list-churn": { type: "boolean", default: false },
     "bundle-dir": { type: "string" },
     runs: { type: "string", default: "3" },
     "latency-ms": { type: "string", default: "35" },
@@ -44,6 +101,9 @@ const { values } = parseArgs({
     output: { type: "string", default: ".artifacts/control-ui-cold-load" },
   },
 });
+if (values["sidebar-list-churn"] && !values["live-events"]) {
+  throw new Error("sidebar-list-churn requires live-events");
+}
 const sidebarView = values["sidebar-view"];
 if (sidebarView !== "sessions" && sidebarView !== "online") {
   throw new Error("Expected sidebar-view sessions or online");
@@ -86,7 +146,11 @@ const fixture = createControlUiTeamScaleFixture({
   sandboxUrl: buildSandboxHostPath({ blockDescendantFrames: true }),
   sandboxPort: address.port,
   liveRun: values["live-events"],
+  sidebarListChurn: values["sidebar-list-churn"],
 });
+let sidebarLists = fixture.sidebarListChurn
+  ? createTeamScaleSidebarListOwner(fixture.sidebarListChurn)
+  : undefined;
 let browser: Browser | undefined;
 const results = [];
 try {
@@ -105,6 +169,30 @@ try {
     permissions: ["local-network-access"],
   });
   const page = await context.newPage();
+  if (fixture.sidebarListChurn) {
+    await context.exposeBinding("__teamScaleList", (_source, params: Record<string, unknown>) => {
+      const result = sidebarLists!.list(params);
+      const response =
+        params.rowMode === "sidebar"
+          ? {
+              ...result,
+              ...shareSidebarSessionRows(
+                result.sessions,
+                typeof params.ifRowsRevision === "string" ? params.ifRowsRevision : undefined,
+              ),
+            }
+          : result;
+      sidebarLists!.recordWire(response);
+      return response;
+    });
+    await context.exposeBinding(
+      "__teamScaleMutate",
+      (
+        _source,
+        mutation: Parameters<ReturnType<typeof createTeamScaleSidebarListOwner>["apply"]>[0],
+      ) => sidebarLists!.apply(mutation),
+    );
+  }
   const errors: string[] = [];
   const harnessWarnings: string[] = [];
   page.on("pageerror", (error) => {
@@ -153,7 +241,7 @@ try {
     },
   );
   await page.addInitScript({
-    content: `;(() => { if (window !== window.top) return; ${createControlUiMockGatewayInitScript(prepared.scenario)}\n${createColdLoadProbeInitScript({ latencyMs, frameGapMs, events: fixture.events, liveEvents: fixture.liveEvents, liveHistory: fixture.liveHistory })} })();`,
+    content: `;(() => { if (window !== window.top) return; ${createControlUiMockGatewayInitScript(prepared.scenario)}\n${fixture.sidebarListChurn ? `window.__teamScaleSidebarLists = { apply: (mutation) => window.__teamScaleMutate(mutation) }; window.openclawControlUiE2eGateway.setRequestHandler("sessions.list", async ({ params, respond }) => respond(await window.__teamScaleList(params)));` : ""}\n${createColdLoadProbeInitScript({ latencyMs, frameGapMs, events: fixture.events, liveEvents: fixture.liveEvents, liveHistory: fixture.liveHistory })} })();`,
   });
   const url = controlUiSessionUrl(server.baseUrl, fixture.selectedSessionKey, "dashboard");
   async function settle() {
@@ -208,7 +296,11 @@ try {
   await page.goto(url);
   try {
     await page.locator("#sidebar-session-owner-title").click();
-    await page.locator('.sidebar-session-owner-filter [role="option"][data-value="all"]').click();
+    await page
+      .locator(
+        `.sidebar-session-owner-filter [role="option"][data-value="${values["sidebar-list-churn"] ? "involving-me" : "all"}"]`,
+      )
+      .click();
   } catch (error) {
     await writeFile(
       path.join(artifactDir, "setup-failure.json"),
@@ -229,7 +321,8 @@ try {
   for (let run = 0; run < runs; run++) {
     const cdp = await context.newCDPSession(page);
     const rawTrace: unknown[] = [];
-    cdp.on("Tracing.dataCollected", (data) => rawTrace.push(...data.value));
+    let collectedTrace = rawTrace;
+    cdp.on("Tracing.dataCollected", (data) => collectedTrace.push(...data.value));
     await cdp.send("Profiler.enable");
     await cdp.send("Profiler.setSamplingInterval", { interval: 1000 });
     await cdp.send("Profiler.start");
@@ -238,6 +331,9 @@ try {
         "toplevel,loading,blink.user_timing,devtools.timeline,disabled-by-default-devtools.timeline,disabled-by-default-devtools.timeline.stack,disabled-by-default-devtools.screenshot,v8",
       transferMode: "ReportEvents",
     });
+    if (fixture.sidebarListChurn) {
+      sidebarLists = createTeamScaleSidebarListOwner(fixture.sidebarListChurn);
+    }
     await page.reload({ waitUntil: "domcontentloaded" });
     await settle();
     const metrics = await page.evaluate(() => Reflect.get(window, "__coldLoad").read());
@@ -308,11 +404,12 @@ try {
         transitionGroups,
       };
     }, screenshots);
-    const mapped = await mapColdLoadCpuProfile(profile.profile, {
-      assetBaseUrl: new URL("assets/", server.baseUrl).href,
-      assetDirectory: path.join(bundleDir, "assets"),
-    });
-    await cdp.detach();
+    const mapped = values["sidebar-list-churn"]
+      ? { profile: profile.profile, mappedFrames: 0, unmappedFrames: profile.profile.nodes.length }
+      : await mapColdLoadCpuProfile(profile.profile, {
+          assetBaseUrl: new URL("assets/", server.baseUrl).href,
+          assetDirectory: path.join(bundleDir, "assets"),
+        });
     let live;
     const readLivePresentation = () =>
       page.evaluate(
@@ -353,21 +450,67 @@ try {
       );
     if (values["live-events"]) {
       const before = await readLivePresentation();
+      const liveTrace: unknown[] = [];
+      collectedTrace = liveTrace;
+      await cdp.send("Tracing.start", {
+        categories: "toplevel,blink.user_timing,devtools.timeline",
+        transferMode: "ReportEvents",
+      });
+      const listOffset = sidebarLists?.stats().length ?? 0;
       await page.evaluate(() => Reflect.get(window, "__coldLoad").startLive());
       await page.waitForFunction(
         (count) => Reflect.get(window, "__coldLoad").readLive().sentEvents === count,
         fixture.liveEvents.length,
         { timeout: 35_000 },
       );
-      const plannedWindowMs = fixture.liveEvents.at(-1)!.atMs + 750;
+      const plannedWindowMs =
+        fixture.liveEvents.at(-1)!.atMs + (values["sidebar-list-churn"] ? 16_000 : 750);
       await page.waitForFunction(
         (windowMs) => Reflect.get(window, "__coldLoad").readLive().elapsedMs >= windowMs,
         plannedWindowMs,
       );
+      if (values["sidebar-list-churn"]) {
+        await page.waitForFunction(() => {
+          const state = Reflect.get(window, "__coldLoad").read();
+          return !state.pending && !state.queued && state.idleMs > 750;
+        });
+      }
       await page.evaluate(() => Reflect.get(window, "__coldLoad").finishLive());
+      const liveComplete = new Promise<void>((resolve) => {
+        cdp.once("Tracing.tracingComplete", () => resolve());
+      });
+      await cdp.send("Tracing.end");
+      await liveComplete;
       const after = await readLivePresentation();
+      const liveMetrics = await page.evaluate(() => Reflect.get(window, "__coldLoad").readLive());
+      const pairedRefreshes = values["sidebar-list-churn"]
+        ? liveMetrics.rpcs.filter(
+            (rpc: {
+              method: string;
+              params: { ownerFirst?: boolean; limit?: number };
+              responseAtMs: number;
+            }) =>
+              rpc.method === "sessions.list" &&
+              rpc.params.ownerFirst === true &&
+              rpc.params.limit === 200 &&
+              liveMetrics.rpcs.some(
+                (other: {
+                  method: string;
+                  params: { involvingMe?: boolean; limit?: number };
+                  responseAtMs: number;
+                }) =>
+                  other.method === "sessions.list" &&
+                  other.params.involvingMe === true &&
+                  other.params.limit === 200 &&
+                  Math.abs(other.responseAtMs - rpc.responseAtMs) < 1000,
+              ),
+          ).length
+        : undefined;
       live = {
-        ...(await page.evaluate(() => Reflect.get(window, "__coldLoad").readLive())),
+        ...liveMetrics,
+        sidebarLists: sidebarLists?.stats().slice(listOffset),
+        pairedRefreshes,
+        responseTasks: summarizeResponseTasks(liveTrace),
         plannedWindowMs,
         presentation: { before, after },
       };
@@ -376,7 +519,15 @@ try {
         path.join(artifactDir, `run-${run + 1}.live.json`),
         JSON.stringify(live, null, 2),
       );
+      await writeFile(
+        path.join(artifactDir, `run-${run + 1}.live.trace.json`),
+        JSON.stringify({ traceEvents: liveTrace }),
+      );
+      if (pairedRefreshes === 0) {
+        throw new Error("Sidebar churn did not reproduce paired ownerFirst/involvingMe refreshes");
+      }
     }
+    await cdp.detach();
     const result = {
       run: run + 1,
       ...metrics,
@@ -411,6 +562,7 @@ try {
         bundleDir,
         fixture: fixture.counts,
         sidebarView,
+        sidebarListChurn: values["sidebar-list-churn"],
         latencyMs,
         frameGapMs,
         results,
