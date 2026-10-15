@@ -155,7 +155,7 @@ The builder embeds the application modules, bundled plugin entrypoints, worker
 programs, and generated metadata needed by the runtime. It preserves lazy module
 boundaries. The sidecar contains the resources read from disk:
 
-- Public documentation Markdown and its navigation metadata, plus workspace
+- Public documentation Markdown/MDX and its navigation metadata, plus workspace
   templates, including JSON team presets and workspace instructions.
 - Bundled and Custodian skills, including their supporting files.
 - Plugin manifests, package metadata, and assets such as browser scripts, styles,

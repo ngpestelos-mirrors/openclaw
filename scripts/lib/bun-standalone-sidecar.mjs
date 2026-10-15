@@ -25,7 +25,7 @@ export function standaloneResourceCategory(name, declaredPluginAssets = new Set(
   if (name.startsWith("docs/reference/templates/") || name.startsWith("dist/export-html/")) {
     return "templates";
   }
-  if (name === "docs/docs.json" || (name.startsWith("docs/") && name.endsWith(".md"))) {
+  if (name === "docs/docs.json" || (name.startsWith("docs/") && /\.mdx?$/.test(name))) {
     return "docs";
   }
   if (name.startsWith("skills/") || name.startsWith("custodian-skills/")) {

@@ -47,6 +47,7 @@ it("packages docs and custodian skills at their standalone source roots", async 
     fs.writeFileSync(path.join(sourceRoot, "package.json"), '{"name":"openclaw"}\n');
     fs.writeFileSync(path.join(sourceRoot, "docs/docs.json"), "{}\n");
     fs.writeFileSync(path.join(sourceRoot, "docs/start.md"), "Start documentation\n");
+    fs.writeFileSync(path.join(sourceRoot, "docs/deploy.mdx"), "Deployment documentation\n");
     const preset = '{"schemaVersion":1,"coordinator":{"id":"coordinator","role":"coordinator"}}\n';
     const template = "Public workspace instructions\n";
     fs.writeFileSync(
@@ -93,6 +94,9 @@ it("packages docs and custodian skills at their standalone source roots", async 
     ).toEqual({ docsPath: path.join(runtimeRoot, "docs"), sourcePath: null });
     expect(fs.readFileSync(path.join(runtimeRoot, "docs/start.md"), "utf8")).toBe(
       "Start documentation\n",
+    );
+    expect(fs.readFileSync(path.join(runtimeRoot, "docs/deploy.mdx"), "utf8")).toBe(
+      "Deployment documentation\n",
     );
     const plan = resolveWorkspaceSkillSourcePlan(path.join(root, "workspace"), {
       config: { agents: { entries: { main: {} } } },
