@@ -491,6 +491,7 @@ export function installColdLoadProbes(
           return dispatch(event);
         }
         const frame = JSON.parse(event.data);
+        const responseBytes = new TextEncoder().encode(event.data).length;
         const liveEvent = emittingLiveEvent;
         // A single wire delivers one message task at a time, including concurrent RPC replies.
         nextFrameAt = Math.max(performance.now() + input.latencyMs, nextFrameAt + input.frameGapMs);
@@ -507,7 +508,7 @@ export function installColdLoadProbes(
                 params: request.params,
                 stack: request.stack,
                 requestBytes: request.bytes,
-                responseBytes: new TextEncoder().encode(event.data).length,
+                responseBytes,
                 ms: performance.now() - request.at,
                 ...(liveStartedAt ? { responseAtMs: performance.now() - liveStartedAt } : {}),
               });
@@ -611,11 +612,15 @@ export function installColdLoadProbes(
       const history = input.liveHistory;
       const gateway = Reflect.get(window, "openclawControlUiE2eGateway");
       if (history) {
-        gateway.setRequestHandler("chat.history", () => ({
-          ...history,
-          messages: [...history.messages],
-          inFlightRun: { ...history.inFlightRun },
-        }));
+        gateway.setRequestHandler(
+          "chat.history",
+          ({ respond }: { respond: (payload: unknown) => void }) =>
+            respond({
+              ...history,
+              messages: [...history.messages],
+              inFlightRun: { ...history.inFlightRun },
+            }),
+        );
       }
       for (const [index, item] of (input.liveEvents ?? []).entries()) {
         window.setTimeout(async () => {

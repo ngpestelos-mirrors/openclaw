@@ -86,7 +86,10 @@ export function createTeamScaleSidebarListOwner(input: TeamScaleSidebarListInven
         ts = Math.max(ts, row.snapshotAt ?? row.updatedAt ?? ts);
       }
     },
-    list(params: Record<string, unknown>): SessionsListResult {
+    list(params: Record<string, unknown>): {
+      result: SessionsListResult;
+      previousRows?: GatewaySessionRow[];
+    } {
       const { source: _source, ifRowsRevision: _ifRowsRevision, ...query } = params;
       const key = JSON.stringify(Object.entries(query).toSorted(([a], [b]) => a.localeCompare(b)));
       const eligible = [...rows.values()]
@@ -190,7 +193,7 @@ export function createTeamScaleSidebarListOwner(input: TeamScaleSidebarListInven
         revision: rowsRevision,
       });
       previous.set(key, { rows: result.sessions, revision: rowsRevision });
-      return result;
+      return { result, previousRows: prior?.rows };
     },
     recordWire(result: SessionsListResult) {
       const read = reads.at(-1);
@@ -796,6 +799,9 @@ export function createControlUiTeamScaleFixture(options: FixtureOptions = {}) {
           participants:
             index === 2 ? [{ identity: { type: "profile", id: self.id }, label: self.name }] : [],
           hiddenFromInvolvingMe: false,
+          hasActiveRun: true,
+          status: "running",
+          activeRunIds: [`team-scale-created-run-${index}`],
           ...(index === 1
             ? { spawnedBy: selectedSessionKey, childOwnerSessionKeys: [selectedSessionKey] }
             : {}),
@@ -805,7 +811,8 @@ export function createControlUiTeamScaleFixture(options: FixtureOptions = {}) {
           const parent = working.get(selectedSessionKey)!;
           ancestors = [{ ...parent, snapshotAt: ts, childSessions: [key] }];
         }
-        reason = "create";
+        // A following run-start can supersede creation in the Gateway event coalescer.
+        reason = "agent.run.started";
         sessionMutation = { upsert: [row, ...ancestors] };
       } else if (cycle === 0) {
         kind = "window.enter";

@@ -31,7 +31,7 @@ it("reproduces paired sidebar refreshes for Team membership churn while applying
       personal: params.involvingMe === true,
       ownerFirst: params.ownerFirst === true,
     });
-    return owner.list(params);
+    return owner.list(params).result;
   });
   const harness = createGatewayHarness(client, undefined, {
     selfUser: { id: inventory.viewerProfileId },

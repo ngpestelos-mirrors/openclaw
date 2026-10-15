@@ -89,10 +89,76 @@ function summarizeResponseTasks(raw: unknown[]) {
   };
 }
 
+type LiveRpc = {
+  method: string;
+  params: Record<string, unknown>;
+  responseAtMs: number;
+  responseBytes: number;
+};
+
+function sidebarWindow(params: Record<string, unknown>) {
+  if (params.rowMode !== "sidebar" || params.limit !== 200) return null;
+  return params.ownerFirst === true
+    ? "ownerFirst"
+    : params.involvingMe === true
+      ? "involvingMe"
+      : null;
+}
+
+function summarizeSidebarWindows(
+  rpcs: LiveRpc[],
+  rpcOffset: number,
+  reads: ReturnType<ReturnType<typeof createTeamScaleSidebarListOwner>["stats"]>,
+  tasks: ReturnType<typeof summarizeResponseTasks>,
+  activeStreamMs: number,
+  elapsedMs: number,
+) {
+  return Object.fromEntries(
+    (["ownerFirst", "involvingMe"] as const).map((window) => {
+      const windowReads = reads.filter((read) => sidebarWindow(read.params) === window);
+      const windowRpcs = rpcs
+        .map((rpc, index) => ({ ...rpc, rpcIndex: rpcOffset + index }))
+        .filter((rpc) => rpc.method === "sessions.list" && sidebarWindow(rpc.params) === window);
+      if (windowReads.length !== windowRpcs.length) {
+        throw new Error(`Sidebar ${window} response/stat count mismatch`);
+      }
+      const samples = windowRpcs.map((rpc, index) => {
+        const task = tasks.responses.find((response) => response.rpcIndex === rpc.rpcIndex);
+        if (!task) throw new Error(`Sidebar response ${rpc.rpcIndex} lacks a task measurement`);
+        return {
+          ...windowReads[index]!,
+          responseAtMs: rpc.responseAtMs,
+          wireBytes: rpc.responseBytes,
+          responseTaskMs: task.taskMs,
+        };
+      });
+      const taskMs = samples.map((sample) => sample.responseTaskMs).toSorted((a, b) => a - b);
+      const median = taskMs.length
+        ? (taskMs[Math.floor((taskMs.length - 1) / 2)]! + taskMs[Math.floor(taskMs.length / 2)]!) /
+          2
+        : 0;
+      return [
+        window,
+        {
+          reads: samples.length,
+          readsPerMinuteObserved: (samples.length * 60_000) / elapsedMs,
+          readsPerMinuteNormalizedToActiveStream: (samples.length * 60_000) / activeStreamMs,
+          changedRows: samples.reduce((sum, sample) => sum + sample.changedRows, 0),
+          rowsSent: samples.reduce((sum, sample) => sum + sample.rowsSent, 0),
+          wireBytes: samples.reduce((sum, sample) => sum + sample.wireBytes, 0),
+          responseTaskMs: { sum: taskMs.reduce((sum, value) => sum + value, 0), median },
+          samples,
+        },
+      ];
+    }),
+  );
+}
+
 const { values } = parseArgs({
   options: {
     "live-events": { type: "boolean", default: false },
     "sidebar-list-churn": { type: "boolean", default: false },
+    "sidebar-row-transfer": { type: "string", default: "full" },
     "bundle-dir": { type: "string" },
     runs: { type: "string", default: "3" },
     "latency-ms": { type: "string", default: "35" },
@@ -103,6 +169,13 @@ const { values } = parseArgs({
 });
 if (values["sidebar-list-churn"] && !values["live-events"]) {
   throw new Error("sidebar-list-churn requires live-events");
+}
+const sidebarRowTransfer = values["sidebar-row-transfer"];
+if (!["full", "delta", "interleaved"].includes(sidebarRowTransfer)) {
+  throw new Error("Expected sidebar-row-transfer full, delta or interleaved");
+}
+if (!values["sidebar-list-churn"] && sidebarRowTransfer !== "full") {
+  throw new Error("sidebar-row-transfer requires sidebar-list-churn");
 }
 const sidebarView = values["sidebar-view"];
 if (sidebarView !== "sessions" && sidebarView !== "online") {
@@ -121,6 +194,9 @@ if (
   frameGapMs < 0
 ) {
   throw new Error("Expected 1–20 runs and nonnegative finite wire delays");
+}
+if (sidebarRowTransfer === "interleaved" && (runs < 14 || runs % 2 !== 0)) {
+  throw new Error("Interleaved sidebar transfer requires an even run count of at least 14");
 }
 const artifactDir = path.resolve(values.output, new Date().toISOString().replaceAll(":", "-"));
 await mkdir(artifactDir, { recursive: true });
@@ -151,6 +227,7 @@ const fixture = createControlUiTeamScaleFixture({
 let sidebarLists = fixture.sidebarListChurn
   ? createTeamScaleSidebarListOwner(fixture.sidebarListChurn)
   : undefined;
+let runTransfer: "full" | "delta" = sidebarRowTransfer === "delta" ? "delta" : "full";
 let browser: Browser | undefined;
 const results = [];
 try {
@@ -171,7 +248,7 @@ try {
   const page = await context.newPage();
   if (fixture.sidebarListChurn) {
     await context.exposeBinding("__teamScaleList", (_source, params: Record<string, unknown>) => {
-      const result = sidebarLists!.list(params);
+      const { result, previousRows } = sidebarLists!.list(params);
       const response =
         params.rowMode === "sidebar"
           ? {
@@ -179,6 +256,7 @@ try {
               ...shareSidebarSessionRows(
                 result.sessions,
                 typeof params.ifRowsRevision === "string" ? params.ifRowsRevision : undefined,
+                runTransfer === "delta" ? previousRows : undefined,
               ),
             }
           : result;
@@ -319,6 +397,10 @@ try {
   await settle();
   await page.locator('aside.sidebar[data-snapshot-saved="true"]').waitFor();
   for (let run = 0; run < runs; run++) {
+    runTransfer =
+      sidebarRowTransfer === "delta" || (sidebarRowTransfer === "interleaved" && run % 2 === 1)
+        ? "delta"
+        : "full";
     const cdp = await context.newCDPSession(page);
     const rawTrace: unknown[] = [];
     let collectedTrace = rawTrace;
@@ -470,10 +552,23 @@ try {
         plannedWindowMs,
       );
       if (values["sidebar-list-churn"]) {
-        await page.waitForFunction(() => {
-          const state = Reflect.get(window, "__coldLoad").read();
-          return !state.pending && !state.queued && state.idleMs > 750;
-        });
+        try {
+          await page.waitForFunction(() => {
+            const state = Reflect.get(window, "__coldLoad").read();
+            return !state.pending && !state.queued;
+          });
+        } catch (error) {
+          await writeFile(
+            path.join(artifactDir, `run-${run + 1}.live-failure.json`),
+            JSON.stringify({
+              error: String(error),
+              metrics: await page.evaluate(() => Reflect.get(window, "__coldLoad").read()),
+              live: await page.evaluate(() => Reflect.get(window, "__coldLoad").readLive()),
+              sidebarLists: sidebarLists?.stats().slice(listOffset),
+            }),
+          );
+          throw error;
+        }
       }
       await page.evaluate(() => Reflect.get(window, "__coldLoad").finishLive());
       const liveComplete = new Promise<void>((resolve) => {
@@ -481,36 +576,51 @@ try {
       });
       await cdp.send("Tracing.end");
       await liveComplete;
+      await writeFile(
+        path.join(artifactDir, `run-${run + 1}.live.trace.json`),
+        JSON.stringify({ traceEvents: liveTrace }),
+      );
       const after = await readLivePresentation();
       const liveMetrics = await page.evaluate(() => Reflect.get(window, "__coldLoad").readLive());
       const pairedRefreshes = values["sidebar-list-churn"]
         ? liveMetrics.rpcs.filter(
-            (rpc: {
-              method: string;
-              params: { ownerFirst?: boolean; limit?: number };
-              responseAtMs: number;
-            }) =>
+            (rpc: LiveRpc) =>
               rpc.method === "sessions.list" &&
-              rpc.params.ownerFirst === true &&
-              rpc.params.limit === 200 &&
+              sidebarWindow(rpc.params) === "ownerFirst" &&
+              rpc.params.ifRowsRevision !== undefined &&
+              rpc.responseAtMs >= 6000 &&
               liveMetrics.rpcs.some(
-                (other: {
-                  method: string;
-                  params: { involvingMe?: boolean; limit?: number };
-                  responseAtMs: number;
-                }) =>
+                (other: LiveRpc) =>
                   other.method === "sessions.list" &&
-                  other.params.involvingMe === true &&
-                  other.params.limit === 200 &&
+                  sidebarWindow(other.params) === "involvingMe" &&
+                  other.params.ifRowsRevision !== undefined &&
                   Math.abs(other.responseAtMs - rpc.responseAtMs) < 1000,
               ),
           ).length
         : undefined;
+      const activeStreamMs = fixture.liveEvents.at(-1)!.atMs;
+      const sidebarReads = sidebarLists?.stats().slice(listOffset);
+      const responseTasks = summarizeResponseTasks(liveTrace);
       live = {
         ...liveMetrics,
-        sidebarLists: sidebarLists?.stats().slice(listOffset),
+        head,
+        sidebarRowTransfer: values["sidebar-list-churn"] ? runTransfer : undefined,
+        sidebarLists: sidebarReads,
+        sidebarWindows: sidebarReads
+          ? summarizeSidebarWindows(
+              liveMetrics.rpcs,
+              liveMetrics.rpcOffset,
+              sidebarReads,
+              responseTasks,
+              activeStreamMs,
+              liveMetrics.elapsedMs,
+            )
+          : undefined,
         pairedRefreshes,
-        responseTasks: summarizeResponseTasks(liveTrace),
+        responseTasks,
+        activeStreamMs,
+        rateMeasurement:
+          "Observed rates use the complete capture including drain; active-stream-normalized rates charge trailing coalesced reads to the event stream.",
         plannedWindowMs,
         presentation: { before, after },
       };
@@ -519,17 +629,17 @@ try {
         path.join(artifactDir, `run-${run + 1}.live.json`),
         JSON.stringify(live, null, 2),
       );
-      await writeFile(
-        path.join(artifactDir, `run-${run + 1}.live.trace.json`),
-        JSON.stringify({ traceEvents: liveTrace }),
-      );
-      if (pairedRefreshes === 0) {
-        throw new Error("Sidebar churn did not reproduce paired ownerFirst/involvingMe refreshes");
+      if (pairedRefreshes !== undefined && pairedRefreshes < 3) {
+        throw new Error(
+          "Sidebar churn did not reproduce three sustained conditional sidebar pairs",
+        );
       }
     }
     await cdp.detach();
     const result = {
       run: run + 1,
+      head,
+      sidebarRowTransfer: values["sidebar-list-churn"] ? runTransfer : undefined,
       ...metrics,
       trace: summarizeColdLoadTrace(trace, metrics.at),
       cpu: summarizeCpuProfile(mapped.profile),
@@ -563,6 +673,10 @@ try {
         fixture: fixture.counts,
         sidebarView,
         sidebarListChurn: values["sidebar-list-churn"],
+        sidebarRowTransfer,
+        sidebarComparison: values["sidebar-list-churn"]
+          ? "Same final client bundle; full/delta wire response A/B using the production presenter and one synthetic query/history owner. This does not measure real Gateway selection, history reset/fallback lifecycle, or server projection CPU. Node IPC is outside the measured application response task."
+          : undefined,
         latencyMs,
         frameGapMs,
         results,
