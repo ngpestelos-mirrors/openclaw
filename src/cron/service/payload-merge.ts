@@ -1,7 +1,6 @@
 // Cron payload merge rules applied when cron.update patches an existing job.
 import type { CronPayload, CronPayloadPatch } from "../types.js";
 
-type CronAgentTurnPayload = Extract<CronPayload, { kind: "agentTurn" }>;
 type CronPayloadToolAllow = Pick<CronPayload, "toolsAllow" | "toolsAllowIsDefault">;
 type CronPayloadToolAllowPatch = Pick<CronPayloadPatch, "toolsAllow" | "toolsAllowIsDefault">;
 
@@ -56,15 +55,12 @@ export function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch)
 }
 
 function mergePayloadFields(existing: CronPayload, patch: CronPayloadPatch): CronPayload {
-  if (patch.kind === "systemEvent" && existing.kind === "systemEvent") {
-    const text = typeof patch.text === "string" ? patch.text : existing.text;
-    const next: Extract<CronPayload, { kind: "systemEvent" }> = { ...existing, text };
-    applyToolsAllowPatch(next, patch, existing);
-    return next;
-  }
-
-  if (patch.kind === "command" && existing.kind === "command") {
-    const next: Extract<CronPayload, { kind: "command" }> = { ...existing };
+  const next = { ...existing };
+  if (patch.kind === "systemEvent" && next.kind === "systemEvent") {
+    if (typeof patch.text === "string") {
+      next.text = patch.text;
+    }
+  } else if (patch.kind === "command" && next.kind === "command") {
     if (Array.isArray(patch.argv)) {
       next.argv = patch.argv;
     }
@@ -77,73 +73,54 @@ function mergePayloadFields(existing: CronPayload, patch: CronPayloadPatch): Cro
     if (typeof patch.input === "string") {
       next.input = patch.input;
     }
-    if (typeof patch.timeoutSeconds === "number") {
-      next.timeoutSeconds = patch.timeoutSeconds;
-    } else if (patch.timeoutSeconds === null) {
-      delete next.timeoutSeconds;
-    }
     if (typeof patch.noOutputTimeoutSeconds === "number") {
       next.noOutputTimeoutSeconds = patch.noOutputTimeoutSeconds;
     }
     if (typeof patch.outputMaxBytes === "number") {
       next.outputMaxBytes = patch.outputMaxBytes;
     }
-    applyToolsAllowPatch(next, patch, existing);
-    return next;
-  }
-  if (patch.kind === "script" && existing.kind === "script") {
-    const next: Extract<CronPayload, { kind: "script" }> = { ...existing };
+  } else if (patch.kind === "script" && next.kind === "script") {
     if (typeof patch.script === "string") {
       next.script = patch.script;
-    }
-    if (typeof patch.timeoutSeconds === "number") {
-      next.timeoutSeconds = patch.timeoutSeconds;
-    } else if (patch.timeoutSeconds === null) {
-      delete next.timeoutSeconds;
     }
     if (typeof patch.toolBudget === "number") {
       next.toolBudget = patch.toolBudget;
     }
-    applyToolsAllowPatch(next, patch, existing);
-    return next;
-  }
-
-  if (patch.kind !== "agentTurn" || existing.kind !== "agentTurn") {
+  } else if (patch.kind === "agentTurn" && next.kind === "agentTurn") {
+    if (typeof patch.message === "string") {
+      next.message = patch.message;
+    }
+    for (const field of ["model", "thinking"] as const) {
+      if (typeof patch[field] === "string") {
+        next[field] = patch[field];
+      } else if (patch[field] === null) {
+        delete next[field];
+      }
+    }
+    if (Array.isArray(patch.fallbacks)) {
+      next.fallbacks = patch.fallbacks;
+    } else if (patch.fallbacks === null) {
+      delete next.fallbacks;
+    }
+    if (typeof patch.lightContext === "boolean") {
+      next.lightContext = patch.lightContext;
+    }
+    if (typeof patch.allowUnsafeExternalContent === "boolean") {
+      next.allowUnsafeExternalContent = patch.allowUnsafeExternalContent;
+    }
+  } else {
     // System-owned payloads carry no fields; the service boundary already
     // rejects client patches for them.
     return buildPayloadFromPatch(patch);
   }
 
-  const next: CronAgentTurnPayload = { ...existing };
-  if (typeof patch.message === "string") {
-    next.message = patch.message;
-  }
-  if (typeof patch.model === "string") {
-    next.model = patch.model;
-  } else if (patch.model === null) {
-    delete next.model;
-  }
-  if (Array.isArray(patch.fallbacks)) {
-    next.fallbacks = patch.fallbacks;
-  } else if (patch.fallbacks === null) {
-    delete next.fallbacks;
-  }
   applyToolsAllowPatch(next, patch, existing);
-  if (typeof patch.thinking === "string") {
-    next.thinking = patch.thinking;
-  } else if (patch.thinking === null) {
-    delete next.thinking;
-  }
-  if (typeof patch.timeoutSeconds === "number") {
-    next.timeoutSeconds = patch.timeoutSeconds;
-  } else if (patch.timeoutSeconds === null) {
-    delete next.timeoutSeconds;
-  }
-  if (typeof patch.lightContext === "boolean") {
-    next.lightContext = patch.lightContext;
-  }
-  if (typeof patch.allowUnsafeExternalContent === "boolean") {
-    next.allowUnsafeExternalContent = patch.allowUnsafeExternalContent;
+  if ("timeoutSeconds" in patch && next.kind !== "systemEvent") {
+    if (typeof patch.timeoutSeconds === "number") {
+      next.timeoutSeconds = patch.timeoutSeconds;
+    } else if (patch.timeoutSeconds === null) {
+      delete next.timeoutSeconds;
+    }
   }
   return next;
 }

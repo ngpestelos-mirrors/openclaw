@@ -1722,7 +1722,6 @@ src/commands/doctor-session-transcripts.ts	1
 src/commands/doctor-skills.ts	1
 src/commands/doctor-sqlite-compact.ts	1
 src/commands/doctor-sqlite-maintenance-lock.ts	1
-src/commands/doctor-state-integrity.ts	1
 src/commands/doctor-telegram-general-topic-conversations.ts	2
 src/commands/doctor-tools-md-migration.ts	5
 src/commands/doctor-workspace.ts	2
