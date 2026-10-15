@@ -95,7 +95,6 @@ export function createChannelProgressDraftCompositor(params: ChannelProgressDraf
     planExplanationFormat,
   } = createProgressDraftSnapshotState(params);
   let progressSuppressed = false;
-  let renderGeneration = 0;
   let lastRenderedText = "";
   let lastRenderedStatusFormat: "plain" | undefined;
   let lastRenderedLines = lines;
@@ -194,7 +193,6 @@ export function createChannelProgressDraftCompositor(params: ChannelProgressDraf
     transferredStatus = undefined;
     transferredDiffStat = undefined;
     lines = [];
-    renderGeneration += 1;
     lastRenderedText = "";
     lastRenderedStatusFormat = undefined;
     lastRenderedLines = lines;
@@ -240,7 +238,6 @@ export function createChannelProgressDraftCompositor(params: ChannelProgressDraf
     ) {
       return false;
     }
-    const generation = renderGeneration;
     const observed = await settleProgressVisibilityCallbackResult(
       params.update(text, {
         ...options,
@@ -251,8 +248,8 @@ export function createChannelProgressDraftCompositor(params: ChannelProgressDraf
         },
       }),
     );
-    // A retired publication can finish after its replacement; it no longer owns dedupe state.
-    if (observed.visible && generation === renderGeneration) {
+    // Dedupe is best effort when a reset overlaps the transport update.
+    if (observed.visible) {
       lastRenderedText = text;
       lastRenderedStatusFormat = statusFormat;
       lastRenderedLines = lines;
@@ -339,7 +336,6 @@ export function createChannelProgressDraftCompositor(params: ChannelProgressDraf
       return lastRenderedText ? await publish() : false;
     }
     // Release the retiring baseline before an identical replacement can publish.
-    renderGeneration += 1;
     lastRenderedText = "";
     await params.deleteCurrent();
     return true;

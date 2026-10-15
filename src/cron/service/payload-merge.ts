@@ -41,7 +41,7 @@ function applyToolsAllowPatch(
 
 export function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch): CronPayload {
   if (patch.kind !== existing.kind) {
-    const next = buildPayloadFromPatch(patch);
+    const next = mergePayloadFields(buildPayloadFromPatch(patch), patch);
     // toolsAllow is shared security state. Kind changes must not silently
     // reopen a restricted trigger runtime; null remains the explicit clear.
     if (patch.toolsAllow === undefined && Array.isArray(existing.toolsAllow)) {
@@ -52,7 +52,10 @@ export function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch)
     }
     return next;
   }
+  return mergePayloadFields(existing, patch);
+}
 
+function mergePayloadFields(existing: CronPayload, patch: CronPayloadPatch): CronPayload {
   if (patch.kind === "systemEvent" && existing.kind === "systemEvent") {
     const text = typeof patch.text === "string" ? patch.text : existing.text;
     const next: Extract<CronPayload, { kind: "systemEvent" }> = { ...existing, text };
@@ -150,46 +153,21 @@ function buildPayloadFromPatch(patch: CronPayloadPatch): CronPayload {
     if (typeof patch.text !== "string" || patch.text.length === 0) {
       throw new Error('cron.update payload.kind="systemEvent" requires text');
     }
-    const next: Extract<CronPayload, { kind: "systemEvent" }> = {
-      kind: "systemEvent",
-      text: patch.text,
-    };
-    applyToolsAllowPatch(next, patch);
-    return next;
+    return { kind: "systemEvent", text: patch.text };
   }
 
   if (patch.kind === "command") {
     if (!Array.isArray(patch.argv) || patch.argv.length === 0) {
       throw new Error('cron.update payload.kind="command" requires argv');
     }
-    const next: Extract<CronPayload, { kind: "command" }> = {
-      kind: "command",
-      argv: patch.argv,
-      ...(patch.cwd !== undefined ? { cwd: patch.cwd } : {}),
-      ...(patch.env !== undefined ? { env: patch.env } : {}),
-      ...(patch.input !== undefined ? { input: patch.input } : {}),
-      ...(typeof patch.timeoutSeconds === "number" ? { timeoutSeconds: patch.timeoutSeconds } : {}),
-      ...(patch.noOutputTimeoutSeconds !== undefined
-        ? { noOutputTimeoutSeconds: patch.noOutputTimeoutSeconds }
-        : {}),
-      ...(patch.outputMaxBytes !== undefined ? { outputMaxBytes: patch.outputMaxBytes } : {}),
-    };
-    applyToolsAllowPatch(next, patch);
-    return next;
+    return { kind: "command", argv: patch.argv };
   }
 
   if (patch.kind === "script") {
     if (typeof patch.script !== "string" || patch.script.trim().length === 0) {
       throw new Error('cron.update payload.kind="script" requires script');
     }
-    const next: Extract<CronPayload, { kind: "script" }> = {
-      kind: "script",
-      script: patch.script,
-      ...(typeof patch.timeoutSeconds === "number" ? { timeoutSeconds: patch.timeoutSeconds } : {}),
-      ...(patch.toolBudget !== undefined ? { toolBudget: patch.toolBudget } : {}),
-    };
-    applyToolsAllowPatch(next, patch);
-    return next;
+    return { kind: "script", script: patch.script };
   }
 
   if (patch.kind !== "agentTurn") {
@@ -200,18 +178,5 @@ function buildPayloadFromPatch(patch: CronPayloadPatch): CronPayload {
     throw new Error('cron.update payload.kind="agentTurn" requires message');
   }
 
-  const next: CronAgentTurnPayload = {
-    kind: "agentTurn",
-    message: patch.message,
-    ...(typeof patch.model === "string" ? { model: patch.model } : {}),
-    ...(Array.isArray(patch.fallbacks) ? { fallbacks: patch.fallbacks } : {}),
-    ...(typeof patch.thinking === "string" ? { thinking: patch.thinking } : {}),
-    ...(typeof patch.timeoutSeconds === "number" ? { timeoutSeconds: patch.timeoutSeconds } : {}),
-    ...(patch.lightContext !== undefined ? { lightContext: patch.lightContext } : {}),
-    ...(patch.allowUnsafeExternalContent !== undefined
-      ? { allowUnsafeExternalContent: patch.allowUnsafeExternalContent }
-      : {}),
-  };
-  applyToolsAllowPatch(next, patch);
-  return next;
+  return { kind: "agentTurn", message: patch.message };
 }
