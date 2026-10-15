@@ -170,7 +170,12 @@ export function prepareSessionEntryMaintenanceInDatabase(
   const readPreserveKeys = () => {
     if (!preserveKeys) {
       const snapshot = readPreservation();
-      const keyProjection = readSessionMaintenanceKeyProjection(reader);
+      const keyProjection =
+        activeSessionKeys.length > 0 ||
+        snapshot.workIdentities.length > 0 ||
+        snapshot.lifecycleIdentities.length > 0
+          ? readSessionMaintenanceKeyProjection(reader)
+          : {};
       baseKeys = collectSqliteSessionMaintenanceBaseKeys(keyProjection, activeSessionKeys);
       preserveKeys = resolveSessionMaintenancePreserveKeys({
         snapshot,
@@ -187,11 +192,13 @@ export function prepareSessionEntryMaintenanceInDatabase(
       forceMaintenance: params.forceMaintenance,
       readPreserveKeys,
       log: false,
-      readAgeCandidates: (minimumAgeMs) =>
+      readAgeCandidates: (minimumAgeMs, modelRunPruneAfterMs) =>
         readSessionMaintenanceAgeCandidates({
           database: reader,
           minimumAgeMs,
           pruneAfterMs: maintenance.pruneAfterMs,
+          archiveDashboardAfterMs: maintenance.archiveDashboardAfterMs,
+          modelRunPruneAfterMs,
         }),
       readCapCandidates: (remainingEntryCount) => {
         const overflow = Math.max(0, remainingEntryCount - maintenance.maxEntries);

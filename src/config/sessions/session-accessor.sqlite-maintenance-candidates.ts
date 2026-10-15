@@ -96,26 +96,41 @@ export function readSessionMaintenanceAgeCandidates(params: {
   database: Pick<OpenClawAgentDatabase, "db">;
   minimumAgeMs: number | null;
   pruneAfterMs: number;
+  archiveDashboardAfterMs: number | null;
+  modelRunPruneAfterMs: number | null;
 }): Record<string, SessionEntry> {
   if (params.minimumAgeMs == null || params.minimumAgeMs <= 0) {
     return {};
   }
   const db = getSessionKysely(params.database.db);
   const store: Record<string, SessionEntry> = {};
+  const now = Date.now();
   for (const row of iterateSqliteQuerySync(
     params.database.db,
     db
       .selectFrom(maintenanceCandidates(params.database).as("candidates"))
       .selectAll()
-      .where("updated_at", "<", Date.now() - params.minimumAgeMs)
+      .where("updated_at", "<", now - params.minimumAgeMs)
       .where("archived_at", "is", null)
       .where((eb) =>
         eb.or([
-          ...(params.pruneAfterMs > 0
-            ? [eb("updated_at", "<", Date.now() - params.pruneAfterMs)]
+          ...(params.pruneAfterMs > 0 ? [eb("updated_at", "<", now - params.pruneAfterMs)] : []),
+          ...(params.archiveDashboardAfterMs != null && params.archiveDashboardAfterMs > 0
+            ? [
+                eb.and([
+                  eb("session_key", "like", "%dashboard:%"),
+                  eb("updated_at", "<", now - params.archiveDashboardAfterMs),
+                ]),
+              ]
             : []),
-          eb("session_key", "like", "%dashboard:%"),
-          eb("session_key", "like", "%model-run-%"),
+          ...(params.modelRunPruneAfterMs != null && params.modelRunPruneAfterMs > 0
+            ? [
+                eb.and([
+                  eb("session_key", "like", "%model-run-%"),
+                  eb("updated_at", "<", now - params.modelRunPruneAfterMs),
+                ]),
+              ]
+            : []),
         ]),
       )
       .orderBy("updated_at", "asc"),
