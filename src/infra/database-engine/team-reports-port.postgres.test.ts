@@ -35,7 +35,9 @@ describe.skipIf(!connection)("Team Reports database port and backup", () => {
       await client.query(`DROP SCHEMA IF EXISTS "${namespace}" CASCADE`);
     }
     await client.end();
-    if (directory) fs.rmSync(directory, { recursive: true, force: true });
+    if (directory) {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("round-trips every canonical table and restores an exact PostgreSQL backup", async () => {

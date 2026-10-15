@@ -1,12 +1,4 @@
 import type { AggregateDayOptions } from "./aggregate.js";
-export const TEAM_REPORTS_WRITES = new Set<string>([
-  "resetActivity",
-  "appendActivity",
-  "upsertPeriod",
-  "startRun",
-  "finishRun",
-  "prune",
-]);
 import type {
   ActivityEntry,
   DiscordMessage,
@@ -16,6 +8,15 @@ import type {
   ReportDocument,
   SummaryDocument,
 } from "./types.js";
+
+export const TEAM_REPORTS_WRITES = new Set<string>([
+  "resetActivity",
+  "appendActivity",
+  "upsertPeriod",
+  "startRun",
+  "finishRun",
+  "prune",
+]);
 
 export type ReportPerson = Pick<
   PersonReport,

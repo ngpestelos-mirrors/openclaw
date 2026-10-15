@@ -73,14 +73,20 @@ describe.skipIf(!connection)("Team Reports PostgreSQL runtime", () => {
     database = withEngineStoreAdmission(() => openTeamReportsDatabase(databasePath, input));
     using anchor = openNodeSqliteDatabase(databasePath);
     const row = anchor.prepare("SELECT schema FROM openclaw_engine_anchor").get();
-    if (typeof row?.schema !== "string") throw new Error("Missing PostgreSQL anchor");
+    if (typeof row?.schema !== "string") {
+      throw new Error("Missing PostgreSQL anchor");
+    }
     namespace = row.schema;
   });
   afterAll(async () => {
     database?.close();
-    if (namespace) await observer.query(`DROP SCHEMA IF EXISTS "${namespace}" CASCADE`);
+    if (namespace) {
+      await observer.query(`DROP SCHEMA IF EXISTS "${namespace}" CASCADE`);
+    }
     await observer.end();
-    if (directory) fs.rmSync(directory, { recursive: true, force: true });
+    if (directory) {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("matches SQLite runtime results, including all eight numeric JSON projections", async () => {

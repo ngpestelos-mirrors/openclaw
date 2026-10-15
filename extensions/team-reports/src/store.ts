@@ -127,12 +127,12 @@ export async function createTeamReportsStore(options: {
     input,
   );
   return new TeamReportsStore({
-    execute: (command, options) =>
+    execute: (command, operationOptions) =>
       runEngineStoreOperation(
         worker,
         input,
         TEAM_REPORTS_WRITES.has(command.type),
-        (scope) => scope.execute(command, options),
+        (scope) => scope.execute(command, operationOptions),
         undefined,
         databasePath,
       ),
