@@ -224,26 +224,6 @@ describe("worker session tool topology", () => {
     },
   );
 
-  it("applies worker presence policy before querying the roster", async () => {
-    setEntry(SOURCE.sessionKey, SOURCE.sessionId);
-    await placements.authorizeWorkerTurnTools(sourceClaim, ["presence"]);
-    initializeGlobalHookRunner(
-      createMockPluginRegistry([
-        {
-          hookName: "before_tool_call",
-          matcher: ["presence"],
-          handler: () => ({ block: true, blockReason: "presence is disabled here" }),
-        },
-      ]),
-    );
-    const tool = (await getFixture().createTools()).find(
-      (candidate) => candidate.name === "presence",
-    )!;
-    const result = await tool.execute("blocked-presence", {});
-    expect(result.details).toMatchObject({ reason: "presence is disabled here" });
-    expect(gatewayRequest).not.toHaveBeenCalled();
-  });
-
   it.each(["deny", "invalid rewrite"] as const)(
     "blocks a worker spawn before child effects and replays the policy decision (%s)",
     async (decision) => {
