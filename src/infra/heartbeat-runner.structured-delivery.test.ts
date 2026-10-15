@@ -118,6 +118,51 @@ describe("runHeartbeatOnce structured heartbeat delivery", () => {
     resetSystemEventsForTest();
   });
 
+  it.each(["disconnected", "throws", "no-target"])(
+    "checks readiness before the model and recovers: %s",
+    async (failure) =>
+      heartbeatCase(async ({ cfg, seed, replySpy, sendTelegram, run }) => {
+        let ready = false;
+        const checkReady = vi.fn(async () => {
+          if (!ready && failure === "throws") {
+            throw new Error("readiness unavailable");
+          }
+          return { ok: ready, reason: ready ? "ok" : "terminal-disconnect" };
+        });
+        setActivePluginRegistry(
+          createTestRegistry([
+            {
+              pluginId: "telegram",
+              source: "test",
+              plugin: { ...heartbeatRunnerTelegramPlugin, heartbeat: { checkReady } },
+            },
+          ]),
+        );
+        if (failure === "no-target") {
+          cfg.agents!.defaults!.heartbeat!.target = "none";
+        }
+        await seed();
+        replySpy.mockResolvedValue({ text: "Deployment needs attention." });
+        const result = await run();
+        if (failure === "no-target") {
+          expect(result.status).toBe("ran");
+          expect(replySpy).toHaveBeenCalledOnce();
+          expect(checkReady).not.toHaveBeenCalled();
+        } else {
+          expect(result).toEqual({ status: "skipped", reason: "channel-not-ready" });
+          expect(replySpy).not.toHaveBeenCalled();
+          expect(checkReady).toHaveBeenCalledOnce();
+        }
+        expect(sendTelegram).not.toHaveBeenCalled();
+        if (failure !== "no-target") {
+          ready = true;
+          expect((await run()).status).toBe("ran");
+          expect(replySpy).toHaveBeenCalledOnce();
+          expect(sendTelegram).toHaveBeenCalledOnce();
+        }
+      })(),
+  );
+
   it(
     "synthesizes and delivers a speech-only heartbeat without placeholder text",
     heartbeatCase(async ({ cfg, seed, replySpy, sendTelegram, run }) => {
@@ -292,7 +337,7 @@ describe("runHeartbeatOnce structured heartbeat delivery", () => {
               ...heartbeatRunnerTelegramPlugin,
               heartbeat: {
                 checkReady: async () => {
-                  if (failure === "readiness-throws") {
+                  if (failure === "readiness-throws" && replySpy.mock.calls.length > 0) {
                     throw new Error(reason);
                   }
                   return { ok: failure !== "readiness", reason };

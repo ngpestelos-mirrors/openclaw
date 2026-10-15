@@ -13,6 +13,7 @@ import {
   requestHeartbeatAndWait,
   setHeartbeatWakeHandler as setRuntimeHeartbeatWakeHandler,
 } from "./heartbeat-wake.js";
+import { markSessionEventWakeWorkStarted } from "./session-event-wake.js";
 
 describe("heartbeat-wake", () => {
   type HeartbeatWakeHandler = Parameters<typeof setRuntimeHeartbeatWakeHandler>[0];
@@ -116,6 +117,52 @@ describe("heartbeat-wake", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(handler).toHaveBeenCalledOnce();
     expect(handler).toHaveBeenCalledWith(wake("exec-event"));
+  });
+
+  it("backs off channel readiness to the heartbeat interval and resets after recovery", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const log = vi.spyOn(heartbeatLog, "info");
+    let ready = false;
+    const checks: number[] = [];
+    const handler = vi.fn(async () => {
+      markSessionEventWakeWorkStarted(5 * 60_000);
+      checks.push(Date.now());
+      return ready
+        ? { status: "ran" as const, durationMs: 1 }
+        : {
+            status: "skipped" as const,
+            reason: "channel-not-ready",
+            retryAtMs: Date.now() + 60_000,
+          };
+    });
+    setHeartbeatWakeHandler(handler);
+    const request = wake("interval", { agentId: "main", coalesceMs: 0 });
+    requestHeartbeat(request);
+    await vi.advanceTimersByTimeAsync(0);
+    for (const minutes of [1, 2, 4, 5, 5]) {
+      const count = checks.length;
+      // A new tick must not reset the retained occurrence's backoff.
+      requestHeartbeat(request);
+      await vi.advanceTimersByTimeAsync(minutes * 60_000 - 1);
+      expect(checks).toHaveLength(count);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(checks).toHaveLength(count + 1);
+    }
+    expect(checks).toEqual([0, 60_000, 180_000, 420_000, 720_000, 1_020_000]);
+    expect(log).toHaveBeenCalledOnce();
+    ready = true;
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(checks.at(-1)).toBe(1_320_000);
+    expect(log).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(checks).toHaveLength(7);
+
+    ready = false;
+    requestHeartbeat(request);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(checks.slice(-2)).toEqual([1_620_000, 1_680_000]);
   });
 
   it("coalesces a colliding scheduled wake into the task turn", async () => {

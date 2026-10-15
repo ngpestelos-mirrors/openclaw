@@ -52,6 +52,7 @@ type PendingWake = HeartbeatWakeRequest & {
   requestedAt: number;
   readyAt: number;
   notBefore: number;
+  channelRetryDelayMs?: number;
   settlements: Settlement[];
   retired?: true;
   /** Admission/preparation may have effects even before model dispatch. Never reset on retry. */
@@ -70,6 +71,7 @@ type WakeAttempt = {
   signal: AbortSignal;
   wake: PendingWake;
   terminalPollDisposition: boolean;
+  retryIntervalMs?: number;
 };
 type RequestOptions = Omit<HeartbeatWakeRequest, "retainedWork"> & { coalesceMs?: number };
 
@@ -133,6 +135,7 @@ function merge(previous: PendingWake, next: PendingWake): PendingWake {
         : preferred.requestedAt,
     readyAt: Math.min(previous.readyAt, next.readyAt),
     notBefore: bypass ? 0 : Math.max(previous.notBefore, next.notBefore),
+    channelRetryDelayMs: previous.channelRetryDelayMs ?? next.channelRetryDelayMs,
     heartbeat: preferred.heartbeat ?? other.heartbeat,
     scheduledEveryMs: preferred.scheduledEveryMs ?? other.scheduledEveryMs,
     tasks: tasks.size
@@ -343,7 +346,19 @@ function createSessionEventWakeRuntime() {
   function retry(
     wake: PendingWake,
     result?: Extract<HeartbeatRunResult, { status: "skipped" }>,
+    retryIntervalMs = wake.scheduledEveryMs ?? SESSION_EVENT_IDLE_RETRY_MS,
   ): void {
+    const channelNotReady = result?.reason === "channel-not-ready";
+    const channelRetryDelayMs = Math.min(
+      retryIntervalMs,
+      (wake.channelRetryDelayMs ?? SESSION_EVENT_IDLE_RETRY_MS / 2) * 2,
+    );
+    if (channelNotReady && wake.channelRetryDelayMs === undefined) {
+      heartbeatLog.info("heartbeat: channel not ready; backing off before the next turn", {
+        agentId: wake.agentId,
+        sessionKey: wake.sessionKey,
+      });
+    }
     const idleGrace =
       result &&
       (result.reason === "preempted" ||
@@ -351,8 +366,9 @@ function createSessionEventWakeRuntime() {
         ((result.reason === "requests-in-flight" || result.reason === "active-run") &&
           (wake.intent === "scheduled" || wake.intent === "task")));
     const guard = idleGrace || (result && GUARD_REASONS.has(result.reason));
-    const delay =
-      result?.retryAtMs !== undefined
+    const delay = channelNotReady
+      ? channelRetryDelayMs
+      : result?.retryAtMs !== undefined
         ? Math.max(0, result.retryAtMs - Date.now())
         : idleGrace
           ? SESSION_EVENT_IDLE_RETRY_MS
@@ -369,18 +385,13 @@ function createSessionEventWakeRuntime() {
     enqueue(
       {
         ...wake,
+        channelRetryDelayMs: channelNotReady ? channelRetryDelayMs : wake.channelRetryDelayMs,
         readyAt: performance.now(),
         notBefore: guard ? deadline : 0,
         retainedWork: guard ? true : wake.retainedWork,
       },
       guard ? 0 : deadline,
     );
-  }
-
-  function handOff(wakes: PendingWake[], start: number): void {
-    for (const wake of wakes.slice(start)) {
-      enqueue(wake);
-    }
   }
 
   async function dispatch(
@@ -398,7 +409,9 @@ function createSessionEventWakeRuntime() {
         // Busy backoff also owns wakes selected before the current attempt began.
         const blockedUntil = pending.get(key)?.blockedUntil ?? 0;
         if (run !== handler || blockedUntil > performance.now()) {
-          handOff(wakes, index);
+          for (const pendingWake of wakes.slice(index)) {
+            enqueue(pendingWake);
+          }
           return;
         }
         const attempt: WakeAttempt = { signal, wake, terminalPollDisposition: false };
@@ -449,8 +462,16 @@ function createSessionEventWakeRuntime() {
           !isTerminalPollAttempt(attempt) &&
           shouldRetain(wake, result)
         ) {
-          retry(wake, result);
+          retry(wake, result, attempt.retryIntervalMs);
         } else {
+          if (wake.channelRetryDelayMs !== undefined) {
+            heartbeatLog.info("heartbeat: channel readiness retry settled", {
+              agentId: wake.agentId,
+              sessionKey: wake.sessionKey,
+              status: result.status,
+              ...(result.status === "ran" ? {} : { reason: result.reason }),
+            });
+          }
           settle(wake, result);
         }
       }
@@ -568,8 +589,7 @@ function createSessionEventWakeRuntime() {
           }
         }
       }
-    }
-    if (!next) {
+    } else {
       for (const owner of active.values()) {
         owner.controller.abort();
       }
@@ -618,8 +638,7 @@ function createSessionEventWakeRuntime() {
           asPositiveSafeInteger(wake.scheduledEveryMs) !== undefined &&
           !wake.tasks?.length,
       };
-      const key = enqueue(pendingWake);
-      schedulePending(0, key);
+      schedulePending(0, enqueue(pendingWake));
     });
   }
 
@@ -671,11 +690,15 @@ function createSessionEventWakeRuntime() {
   }
 
   // These operations stay internal to the owner/runner, outside the SDK adapter.
-  function markSessionEventWakeWorkStarted(): void {
+  function markSessionEventWakeWorkStarted(retryIntervalMs?: number): void {
     const attempt = attempts.getStore();
     if (attempt) {
       attempt.signal.throwIfAborted();
       attempt.wake.workStarted = true;
+      // Broadcast attempts share a wake; its retry must fit every participating cadence.
+      if (retryIntervalMs !== undefined) {
+        attempt.retryIntervalMs = Math.min(attempt.retryIntervalMs ?? Infinity, retryIntervalMs);
+      }
       attempt.terminalPollDisposition = false;
     }
   }
