@@ -250,7 +250,7 @@ export function prepareSessionRowPublication(
           if (change.kind === "reset") {
             list.previousRows = list.rows = undefined;
           } else if (list.rows?.some((row) => row.key === change.key)) {
-            list.previousRows = list.rows;
+            list.previousRows = list.rows[0]?.rowMode === "sidebar" ? list.rows : undefined;
             list.rows = undefined;
           }
         }

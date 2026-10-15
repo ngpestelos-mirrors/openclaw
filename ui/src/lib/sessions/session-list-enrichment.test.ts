@@ -250,8 +250,9 @@ it("applies an empty-row reorder/removal delta without collapsing cross-agent ra
 
 it("keeps filtered pages independent and accepts full rows from a server that only understands revisions", async () => {
   const request = vi.fn(async (_method: string, raw?: unknown) => {
-    if (!Value.Check(SessionsListParamsSchema, raw))
+    if (!Value.Check(SessionsListParamsSchema, raw)) {
       throw new Error("Invalid closed sessions.list params");
+    }
     const id = `${raw.ownerId ?? (raw.involvingMe ? "personal" : "all")}-${raw.offset ?? 0}`;
     return {
       ...sessionsResult([{ key: `agent:main:${id}`, sessionId: id, kind: "direct" as const }], 1),

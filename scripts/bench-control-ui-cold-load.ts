@@ -7,6 +7,7 @@ import { chromium, type Browser } from "playwright";
 import { buildSandboxHostPath } from "../src/agents/sandbox-host.js";
 import { createSandboxHostHttpServer } from "../src/gateway/mcp-app-sandbox-http.js";
 import { shareSidebarSessionRows } from "../src/gateway/session-row-presentation.js";
+import { createColdLoadEventStream } from "../ui/src/test-helpers/control-ui-cold-load-event-stream.ts";
 import {
   createColdLoadFrameProbe,
   type ColdLoadProbeInput,
@@ -22,10 +23,8 @@ import {
   startProductionControlUiE2eServer,
   startBuiltControlUiE2eServer,
 } from "../ui/src/test-helpers/control-ui-e2e.ts";
-import {
-  createControlUiTeamScaleFixture,
-  createTeamScaleSidebarListOwner,
-} from "../ui/src/test-helpers/control-ui-team-scale-fixture.ts";
+import { createTeamScaleSidebarListOwner } from "../ui/src/test-helpers/control-ui-sidebar-list-fixture.ts";
+import { createControlUiTeamScaleFixture } from "../ui/src/test-helpers/control-ui-team-scale-fixture.ts";
 import {
   mapColdLoadCpuProfile,
   prepareColdLoadTraceEvent,
@@ -34,7 +33,7 @@ import {
 } from "./lib/control-ui-cold-load-trace.ts";
 
 function createColdLoadProbeInitScript(input: ColdLoadProbeInput): string {
-  return `(${installColdLoadProbes.toString()})(${JSON.stringify(input)}, ${createColdLoadFrameProbe.toString()});`;
+  return `(${installColdLoadProbes.toString()})(${JSON.stringify(input)}, ${createColdLoadFrameProbe.toString()}, ${createColdLoadEventStream.toString()});`;
 }
 
 function summarizeResponseTasks(raw: unknown[]) {
@@ -102,7 +101,9 @@ function requestedAtMs(rpc: LiveRpc) {
 }
 
 function sidebarWindow(params: Record<string, unknown>) {
-  if (params.rowMode !== "sidebar" || params.limit !== 200) return null;
+  if (params.rowMode !== "sidebar" || params.limit !== 200) {
+    return null;
+  }
   return params.ownerFirst === true
     ? "ownerFirst"
     : params.involvingMe === true
@@ -129,14 +130,15 @@ function summarizeSidebarWindows(
       }
       const samples = windowRpcs.map((rpc, index) => {
         const task = tasks.responses.find((response) => response.rpcIndex === rpc.rpcIndex);
-        if (!task) throw new Error(`Sidebar response ${rpc.rpcIndex} lacks a task measurement`);
-        return {
-          ...windowReads[index]!,
+        if (!task) {
+          throw new Error(`Sidebar response ${rpc.rpcIndex} lacks a task measurement`);
+        }
+        return Object.assign({}, windowReads[index]!, {
           requestedAtMs: requestedAtMs(rpc),
           responseAtMs: rpc.responseAtMs,
           wireBytes: rpc.responseBytes,
           responseTaskMs: task.taskMs,
-        };
+        });
       });
       const taskMs = samples.map((sample) => sample.responseTaskMs).toSorted((a, b) => a - b);
       const median = taskMs.length

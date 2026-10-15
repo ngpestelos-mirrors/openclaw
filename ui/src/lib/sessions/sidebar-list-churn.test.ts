@@ -2,10 +2,8 @@
 import { Value } from "typebox/value";
 import { expect, it, vi } from "vitest";
 import { SessionsListParamsSchema } from "../../../../packages/gateway-protocol/src/schema/sessions-list.js";
-import {
-  createControlUiTeamScaleFixture,
-  createTeamScaleSidebarListOwner,
-} from "../../test-helpers/control-ui-team-scale-fixture.ts";
+import { createTeamScaleSidebarListOwner } from "../../test-helpers/control-ui-sidebar-list-fixture.ts";
+import { createControlUiTeamScaleFixture } from "../../test-helpers/control-ui-team-scale-fixture.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import {
   createGatewayHarness,

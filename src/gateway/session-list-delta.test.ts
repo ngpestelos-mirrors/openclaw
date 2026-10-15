@@ -25,14 +25,26 @@ import type { GatewaySessionRow, SessionsListResult } from "./session-utils.type
 afterEach(() => vi.restoreAllMocks());
 
 it("encodes insertions, replacements, reorders and removals against an exact immutable base", () => {
-  const a: GatewaySessionRow = { key: "global", agentId: "main", kind: "global", label: "A" };
-  const b: GatewaySessionRow = { key: "global", agentId: "other", kind: "global", label: "B" };
-  const c: GatewaySessionRow = { key: "c", kind: "direct", label: "C" };
+  const a: GatewaySessionRow = {
+    key: "global",
+    agentId: "main",
+    kind: "global",
+    label: "A",
+    updatedAt: 1,
+  };
+  const b: GatewaySessionRow = {
+    key: "global",
+    agentId: "other",
+    kind: "global",
+    label: "B",
+    updatedAt: 1,
+  };
+  const c: GatewaySessionRow = { key: "c", kind: "direct", label: "C", updatedAt: 1 };
   const previous = [a, b, c];
   const first = shareSidebarSessionRows(previous);
   const revision = first.rowsRevision!;
   const changed = { ...a, label: "Changed" };
-  const inserted: GatewaySessionRow = { key: "d", kind: "direct", label: "Inserted" };
+  const inserted: GatewaySessionRow = { key: "d", kind: "direct", label: "Inserted", updatedAt: 1 };
   const rows = [b, changed, inserted];
   const delta = shareSidebarSessionRows(rows, `${SESSION_ROWS_DELTA_PREFIX}${revision}`, previous);
   expect(delta.rowsDelta).toEqual({ baseRevision: revision, order: [1, 3, 4] });
@@ -96,13 +108,16 @@ it("keeps deltas inside the authorized owner, personal and paginated list owners
         createdActor: creator,
         ...extra,
       });
-    for (const [index, id] of ["a", "b", "c", "d", "e"].entries()) write(id, now - index);
-    assignSessionOwner(scope("e"), { owner: { type: "human", id: viewer } });
-    for (const id of ["a", "c"])
+    for (const [index, id] of ["a", "b", "c", "d", "e"].entries()) {
+      write(id, now - index);
+    }
+    assignSessionOwner(scope("e"), { owner: { type: "human", id: viewer }, assignedBy: creator });
+    for (const id of ["a", "c"]) {
       recordSessionParticipant(scope(id), {
         identity: { type: "profile", id: viewer },
         promptedAt: now,
       });
+    }
     const primary = { agentId: "main", rowMode: "sidebar", limit: 2, ownerFirst: true } as const;
     const personal = { agentId: "main", rowMode: "sidebar", limit: 2, involvingMe: true } as const;
     const owned = { agentId: "main", rowMode: "sidebar", limit: 2, ownerId: viewer } as const;
@@ -169,7 +184,7 @@ it("keeps deltas inside the authorized owner, personal and paginated list owners
       expect(differentLimit.rowsDelta).toBeUndefined();
       expect(differentLimit.count).toBe(2);
 
-      assignSessionOwner(scope("a"), { owner: { type: "human", id: viewer } });
+      assignSessionOwner(scope("a"), { owner: { type: "human", id: viewer }, assignedBy: creator });
       const ownerChanged = await read(owned, initialOwned);
       expect(ownerChanged.rowsDelta).toEqual({
         baseRevision: initialOwned.rowsRevision,

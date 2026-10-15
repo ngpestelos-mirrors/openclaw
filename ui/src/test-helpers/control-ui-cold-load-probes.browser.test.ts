@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createColdLoadEventStream } from "./control-ui-cold-load-event-stream.ts";
 import { createColdLoadFrameProbe } from "./control-ui-cold-load-probe-init.ts";
 import { installColdLoadProbes } from "./control-ui-cold-load-probes.ts";
 
@@ -17,7 +18,7 @@ describe("serialized cold-load probes", () => {
         const NativeWeakMap = WeakMap;
         const nativeSet = NativeWeakMap.prototype.set;
         const nativeFrame = requestAnimationFrame;
-        (${installColdLoadProbes.toString()})({ latencyMs: 0, frameGapMs: 0, events: [] }, ${createColdLoadFrameProbe.toString()});
+        (${installColdLoadProbes.toString()})({ latencyMs: 0, frameGapMs: 0, events: [] }, ${createColdLoadFrameProbe.toString()}, ${createColdLoadEventStream.toString()});
         const nativeUntouched = NativeWeakMap.prototype.set === nativeSet;
         const map = new WeakMap([[{}, "iterable"]]);
         const sidebar = document.createElement("openclaw-app-sidebar");

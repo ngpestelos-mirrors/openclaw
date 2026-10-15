@@ -1,9 +1,11 @@
+import type { createColdLoadEventStream } from "./control-ui-cold-load-event-stream.ts";
 import type * as ProbeInit from "./control-ui-cold-load-probe-init.ts";
 
 /** Serialized after the mock Gateway, before application modules execute. */
 export function installColdLoadProbes(
   input: ProbeInit.ColdLoadProbeInput,
   createFrameProbe: typeof ProbeInit.createColdLoadFrameProbe,
+  createEventStream: typeof createColdLoadEventStream,
 ) {
   Reflect.set(Error, "stackTraceLimit", 40);
   const updates = new Map<string, { count: number; ms: number }>();
@@ -23,11 +25,8 @@ export function installColdLoadProbes(
   >();
   let lastActivity = performance.now();
   let queued = 0;
-  let sentEvents = 0;
   let nextFrameAt = 0;
-  let progressId: string | undefined;
-  let instanceId: string | undefined;
-  let eventsStarted = false;
+  const eventStream = createEventStream(input);
   const liveUpdates = new Map<string, Map<string, { count: number; ms: number }>>();
   const liveStacks = new Map<string, number>();
   const liveOrigins = new Map<string, number>();
@@ -374,9 +373,6 @@ export function installColdLoadProbes(
   let liveRpcOffset = 0;
   let liveFinishedAt = 0;
   let liveKind = "idle";
-  let emittingLiveEvent:
-    | { index: number; kind: string; event: string; plannedAtMs: number; queuedAtMs: number }
-    | undefined;
   const patchedRequests = new WeakSet<object>();
   const patched = new WeakSet<object>();
   const define = customElements.define.bind(customElements);
@@ -455,33 +451,7 @@ export function installColdLoadProbes(
               bytes: new TextEncoder().encode(data).length,
               at: performance.now(),
             });
-            if (frame.method === "connect") {
-              instanceId = frame.params?.client?.instanceId;
-            }
-            if (frame.method === "sessions.catalog.list") {
-              progressId = frame.params?.progressId;
-              if (!eventsStarted) {
-                eventsStarted = true;
-                input.events.forEach((item, index) => {
-                  queued++;
-                  window.setTimeout(
-                    () => {
-                      queued--;
-                      const payload = JSON.parse(JSON.stringify(item.payload), (key, value) =>
-                        key === "progressId"
-                          ? progressId
-                          : key === "instanceId" && value === "team-scale-self"
-                            ? instanceId
-                            : value,
-                      );
-                      Reflect.get(window, "openclawControlUiE2eGateway").emit(item.event, payload);
-                      sentEvents++;
-                    },
-                    input.latencyMs + (index + 1) * input.frameGapMs,
-                  );
-                });
-              }
-            }
+            eventStream.observeRequest(frame);
           }
         }
         send(data);
@@ -492,7 +462,7 @@ export function installColdLoadProbes(
         }
         const frame = JSON.parse(event.data);
         const responseBytes = new TextEncoder().encode(event.data).length;
-        const liveEvent = emittingLiveEvent;
+        const liveEvent = eventStream.emitting;
         // A single wire delivers one message task at a time, including concurrent RPC replies.
         nextFrameAt = Math.max(performance.now() + input.latencyMs, nextFrameAt + input.frameGapMs);
         queued++;
@@ -609,50 +579,7 @@ export function installColdLoadProbes(
         liveInvalidatorOwner = owner;
         originalLiveInvalidator = original;
       }
-      const history = input.liveHistory;
-      const gateway = Reflect.get(window, "openclawControlUiE2eGateway");
-      if (history) {
-        gateway.setRequestHandler(
-          "chat.history",
-          ({ respond }: { respond: (payload: unknown) => void }) =>
-            respond({
-              ...history,
-              messages: [...history.messages],
-              inFlightRun: { ...history.inFlightRun },
-            }),
-        );
-      }
-      for (const [index, item] of (input.liveEvents ?? []).entries()) {
-        window.setTimeout(async () => {
-          if (item.sessionMutation) {
-            await Reflect.get(window, "__teamScaleSidebarLists").apply(item.sessionMutation);
-          }
-          emittingLiveEvent = {
-            index: index + 1,
-            kind: item.kind,
-            event: item.event,
-            plannedAtMs: item.atMs,
-            queuedAtMs: performance.now() - liveStartedAt,
-          };
-          const payload = JSON.parse(JSON.stringify(item.payload), (key, value) =>
-            key === "progressId"
-              ? progressId
-              : key === "instanceId" && value === "team-scale-self"
-                ? instanceId
-                : value,
-          );
-          if (history && item.history) {
-            if (item.history.message !== undefined) {
-              history.messages.push(item.history.message);
-            }
-            if (item.history.text !== undefined) {
-              history.inFlightRun.text = item.history.text;
-            }
-          }
-          gateway.emit(item.event, payload);
-          emittingLiveEvent = undefined;
-        }, item.atMs);
-      }
+      eventStream.startLive(liveStartedAt);
     },
     finishLive() {
       liveFinishedAt = performance.now();
@@ -700,8 +627,8 @@ export function installColdLoadProbes(
         at: performance.now(),
         pending: pending.size,
         pendingMethods: [...pending.values()].map((request) => request.method),
-        queued,
-        sentEvents,
+        queued: queued + eventStream.queued,
+        sentEvents: eventStream.sentEvents,
         idleMs: performance.now() - lastActivity,
         updates: Object.fromEntries(updates),
         rpcs,
