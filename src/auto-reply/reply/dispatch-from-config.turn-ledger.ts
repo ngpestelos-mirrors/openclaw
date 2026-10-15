@@ -179,7 +179,6 @@ export function createReplyTurnLedger(dispatcher: ReplyDispatcher) {
     hasObservedDelivery: () => outcomes.has("delivered"),
     canAttemptFallback: () =>
       !mayHaveDelivered() && !pendingDelivery && !outcomes.has("recovery-owned"),
-    hasPendingDelivery: () => pendingDelivery,
     resolveTerminalDelivery: () => terminalDelivery,
   };
 }
