@@ -301,6 +301,7 @@ Quiet or collect-mode children do not suppress a timeout unless another
 continuation owns the reply; accepting a child alone does not promise delivery.
 Progress sends and messages to another conversation do not finish the current
 source reply. Deliberate yields retain their existing accepted-work semantics.
+Tool media stays in the result alongside the timeout; artifacts alone do not finish the reply.
 
 The model idle and provider HTTP rows describe the built-in OpenClaw model
 path. Codex owns its native stream deadlines and network retries. After exact

@@ -36,7 +36,8 @@ export function resolveEmbeddedRunTerminalTimeout(input: {
     terminalTimedOut &&
     timedOutDuringToolExecution &&
     input.terminalPrepared.replyDeliveryState === "missing" &&
-    !input.terminalPrepared.payloadsWithToolMedia?.some((payload) => {
+    // Tool artifacts are retained for delivery, but cannot complete the source reply.
+    !input.terminalPrepared.payloads?.some((payload) => {
       const metadata = getReplyPayloadMetadata(payload);
       return (
         !isHostNoticePayload(payload) &&

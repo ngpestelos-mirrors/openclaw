@@ -90,6 +90,7 @@ describe("tool timeout terminal bookkeeping", () => {
     "other conversation",
     "pre-tool commentary",
     "scheduled job",
+    "tool media",
   ])("reports an unfinished tool timeout without success bookkeeping (%s)", async (scenario) => {
     const toolWarning = scenario === "tool warning";
     const sourceProgress = scenario === "source progress";
@@ -98,6 +99,7 @@ describe("tool timeout terminal bookkeeping", () => {
       {
         lastToolError: toolWarning ? { toolName: "read", error: "Earlier read failed" } : undefined,
         successfulCronAdds: scenario === "scheduled job" ? 1 : undefined,
+        toolMediaUrls: scenario === "tool media" ? ["https://example.invalid/tool-output.png"] : [],
         ...(scenario === "quiet child"
           ? {
               acceptedSessionSpawns: [
@@ -144,7 +146,12 @@ describe("tool timeout terminal bookkeeping", () => {
     const messages = [...attempt.messagesSnapshot];
     const { input, result } = await resolveTerminal(attempt);
 
-    expect(result.payloads).toHaveLength(toolWarning || sourceProgress ? 2 : 1);
+    expect(result.payloads).toHaveLength(
+      toolWarning || sourceProgress || scenario === "tool media" ? 2 : 1,
+    );
+    if (scenario === "tool media") {
+      expect(result.payloads?.[0]?.mediaUrls).toEqual(attempt.toolMediaUrls);
+    }
     expect(result.payloads?.at(-1)).toEqual({
       text: expect.stringContaining("Request timed out"),
       isError: true,
