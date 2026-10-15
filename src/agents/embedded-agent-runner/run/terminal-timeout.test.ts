@@ -76,10 +76,15 @@ function toolAttempt(overrides: Partial<EmbeddedRunAttemptResult> = {}) {
 describe("tool timeout terminal bookkeeping", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it.each([false, true])(
-    "reports an unfinished tool timeout without success bookkeeping (compaction failure: %s)",
-    async (compactionFailure) => {
+  it.each([
+    { compactionFailure: false, toolWarning: false },
+    { compactionFailure: true, toolWarning: false },
+    { compactionFailure: false, toolWarning: true },
+  ])(
+    "reports an unfinished tool timeout without success bookkeeping (compaction failure: $compactionFailure, tool warning: $toolWarning)",
+    async ({ compactionFailure, toolWarning }) => {
       const attempt = toolAttempt({
+        lastToolError: toolWarning ? { toolName: "read", error: "Earlier read failed" } : undefined,
         terminal: {
           kind: "timeout",
           phase: "tool_execution",
@@ -93,9 +98,11 @@ describe("tool timeout terminal bookkeeping", () => {
       const messages = [...attempt.messagesSnapshot];
       const { input, result } = await resolveTerminal(attempt);
 
-      expect(result.payloads).toEqual([
-        { text: expect.stringContaining("Request timed out"), isError: true },
-      ]);
+      expect(result.payloads).toHaveLength(toolWarning ? 2 : 1);
+      expect(result.payloads?.at(-1)).toEqual({
+        text: expect.stringContaining("Request timed out"),
+        isError: true,
+      });
       expect(result.meta).toMatchObject({
         modelFallbackStopReason: "agent_run_terminal_timeout",
         livenessState: "blocked",

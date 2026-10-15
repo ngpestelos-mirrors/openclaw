@@ -296,6 +296,7 @@ replace that explanation or restart an already-final timed-out turn.
 This includes a timeout during tool execution when no final payload or accepted
 continuation remains. A compaction failure label does not turn that unfinished
 tool timeout into a paused run; completed tool results remain in the transcript.
+Earlier tool warnings and reasoning output do not count as a completed reply.
 
 The model idle and provider HTTP rows describe the built-in OpenClaw model
 path. Codex owns its native stream deadlines and network retries. After exact

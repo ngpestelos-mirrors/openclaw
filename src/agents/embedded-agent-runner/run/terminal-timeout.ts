@@ -30,7 +30,9 @@ export function resolveEmbeddedRunTerminalTimeout(input: {
   const unfinishedToolTimeout =
     terminalTimedOut &&
     timedOutDuringToolExecution &&
-    !input.terminalPrepared.payloadsWithToolMedia?.length &&
+    !input.terminalPrepared.payloadsWithToolMedia?.some(
+      (payload) => payload.isError !== true && payload.isReasoning !== true,
+    ) &&
     !hasYieldContinuationEvidence(input.attempt);
   if (
     (!input.terminalPrepared.timedOutDuringPrompt && !unfinishedToolTimeout) ||
@@ -52,9 +54,10 @@ export function resolveEmbeddedRunTerminalTimeout(input: {
   const livenessState =
     input.attempt.promptTimeoutOutcome?.livenessState ??
     resolveRunLivenessState({
-      payloadCount: input.terminalPrepared.hasPartialAssistantTextAfterPromptTimeout
-        ? 0
-        : (input.terminalPrepared.payloads?.length ?? 0),
+      payloadCount:
+        unfinishedToolTimeout || input.terminalPrepared.hasPartialAssistantTextAfterPromptTimeout
+          ? 0
+          : (input.terminalPrepared.payloads?.length ?? 0),
       aborted: false,
       timedOut: terminalTimedOut,
       attempt: input.attempt,
