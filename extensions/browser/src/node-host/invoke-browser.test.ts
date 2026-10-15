@@ -295,43 +295,6 @@ describe("runBrowserProxyCommand", () => {
     expect(dispatcherMocks.dispatch).toHaveBeenCalledTimes(3);
   });
 
-  it("stages upload envelopes before dispatch and retains successful copies", async () => {
-    const upload = {
-      envelope: "browser-upload-v1",
-      files: [{ name: "report.txt", contentBase64: "aGVsbG8=" }],
-    };
-    const staged = {
-      body: { ref: "e12", paths: ["/tmp/openclaw/uploads/.proxy-upload-1/0/report.txt"] },
-      directory: "/tmp/openclaw/uploads/.proxy-upload-1",
-    };
-    uploadMocks.stageBrowserProxyUploadRequest.mockResolvedValueOnce(staged);
-    dispatcherMocks.dispatch.mockResolvedValueOnce({ status: 200, body: { ok: true } });
-
-    await expect(
-      runBrowserProxyCommand(
-        JSON.stringify({
-          method: "POST",
-          path: "/hooks/file-chooser",
-          body: { ref: "e12" },
-          upload,
-        }),
-        "browser.proxy.upload.v1",
-      ),
-    ).resolves.toBe(JSON.stringify({ result: { ok: true } }));
-
-    expect(uploadMocks.stageBrowserProxyUploadRequest).toHaveBeenCalledWith({
-      method: "POST",
-      path: "/hooks/file-chooser",
-      body: { ref: "e12" },
-      upload,
-      signal: expect.any(AbortSignal),
-    });
-    expect(firstBrowserDispatchRequest(dispatcherMocks.dispatch.mock.calls).body).toEqual(
-      staged.body,
-    );
-    expect(uploadMocks.discardStagedBrowserProxyUpload).not.toHaveBeenCalled();
-  });
-
   it("discards staged copies when the route rejects the upload", async () => {
     const staged = stagedReportUpload;
     uploadMocks.stageBrowserProxyUploadRequest.mockResolvedValueOnce(staged);

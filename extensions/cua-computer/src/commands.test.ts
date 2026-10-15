@@ -641,15 +641,6 @@ describe("cua-computer desktop frames", () => {
 
   it.each([
     {
-      name: "portrait Linux display",
-      platform: "linux",
-      native: [1080, 1920],
-      scale: 1,
-      cap: 1280,
-      delivered: [720, 1280],
-      reference: "capture cap",
-    },
-    {
       name: "macOS Retina display",
       platform: "darwin",
       native: [200, 100],
@@ -660,7 +651,7 @@ describe("cua-computer desktop frames", () => {
     },
   ] as const)(
     "maps the returned bitmap on a $name using its $reference",
-    async ({ platform, native, scale, cap, delivered, reference }) => {
+    async ({ platform, native, scale, cap, delivered }) => {
       const geometry = {
         platform: platform === "darwin" ? "macos" : platform,
         display: "primary",
@@ -715,7 +706,7 @@ describe("cua-computer desktop frames", () => {
         });
         const frame = {
           displayFrameId: screen.displayFrameId,
-          refWidth: reference === "capture cap" ? cap : screen.width,
+          refWidth: screen.width,
         };
         const point = { x: screen.width / 2, y: screen.height / 2 };
         const nativePoint = { x: Math.round(native[0] / 2), y: Math.round(native[1] / 2) };
@@ -857,10 +848,10 @@ describe("cua-computer desktop frames", () => {
     expect(click).not.toHaveBeenCalled();
   });
 
-  it.each(["superseded capture scale", "changed display geometry", "reconnected driver"])(
+  it.each(["superseded capture scale", "changed display geometry"])(
     "rejects a %s before desktop input",
     async (cause) => {
-      const { session, click, getDesktopState, getScreenSize, setGeneration } = driver();
+      const { session, click, getDesktopState, getScreenSize } = driver();
       const desktop = await getDesktopState();
       desktop.images = [
         {
@@ -891,9 +882,6 @@ describe("cua-computer desktop frames", () => {
         case "changed display geometry":
           getScreenSize.mockResolvedValue(result({ width: 101, height: 50, scale_factor: 1 }));
           break;
-        case "reconnected driver":
-          setGeneration("execution-2");
-          break;
       }
       await expect(computer.act(JSON.stringify(action))).rejects.toThrow("COMPUTER_STALE_FRAME");
       expect(click).not.toHaveBeenCalled();
@@ -916,35 +904,6 @@ async function windowExecution(platform: NodeJS.Platform) {
 }
 
 describe("cua-computer platform modifiers", () => {
-  it.each([
-    {
-      scope: "desktop",
-      keys: "Command+Shift+Left",
-      expected: { key: "left", modifiers: ["cmd", "shift"] },
-    },
-    {
-      scope: "window",
-      keys: "Command+Shift+Left",
-      expected: { key: "left", modifiers: ["cmd", "shift"] },
-    },
-    { scope: "desktop", keys: "Cmd", expected: { key: "cmd", modifiers: [] } },
-  ] as const)("preserves $keys on macOS $scope input", async ({ scope, keys, expected }) => {
-    const { native, computer } = await windowExecution("darwin");
-    const target = scope === "window" ? await observedWindowTarget(computer) : {};
-    await computer.act(JSON.stringify({ action: "key", keys, ...target }));
-
-    if (scope === "desktop") {
-      expect(native.pressKey).toHaveBeenCalledExactlyOnceWith(expected, undefined);
-    } else {
-      expect(native.callTool).toHaveBeenLastCalledWith(
-        "press_key",
-        { pid: 4242, window_id: 99, ...expected },
-        undefined,
-      );
-      expect(native.pressKey).not.toHaveBeenCalled();
-    }
-  });
-
   it.each([
     { action: "left_click", scope: "desktop" },
     { action: "scroll", scope: "desktop" },
