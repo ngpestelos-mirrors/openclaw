@@ -2408,7 +2408,7 @@ src/plugins/runtime/runtime-llm-isolated.ts	2
 src/plugins/runtime/runtime-llm.runtime.ts	1
 src/plugins/schema-validator.ts	5
 src/plugins/session-catalog-history-import.ts	1
-src/plugins/setup-registry.ts	10
+src/plugins/setup-registry.ts	2
 src/plugins/slots.ts	1
 src/plugins/toggle-config.ts	2
 src/plugins/tools.ts	1
