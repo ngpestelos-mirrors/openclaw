@@ -913,9 +913,6 @@ export async function handleFeishuMessage(params: {
       }
     }
 
-    const inboundLabel = isGroup
-      ? `Feishu[${account.accountId}] message in group ${ctx.chatId}`
-      : `Feishu[${account.accountId}] DM from ${ctx.senderOpenId}`;
     const contextVisibilityMode = resolveChannelContextVisibilityMode({
       cfg: effectiveCfg,
       channel: "feishu",
@@ -930,8 +927,6 @@ export async function handleFeishuMessage(params: {
       allowFrom: effectiveGroupSenderAllowFrom,
       mode: contextVisibilityMode,
     };
-
-    log(`feishu[${account.accountId}]: ${inboundLabel} chars=${ctx.content.length}`);
 
     const mediaMaxBytes = (feishuCfg?.mediaMaxMb ?? 30) * 1024 * 1024;
     const mediaList = await resolveFeishuMediaList({
@@ -975,7 +970,9 @@ export async function handleFeishuMessage(params: {
           }))
         ) {
           quotedContent = quotedMessageInfo.content;
-          log(`feishu[${account.accountId}]: fetched quoted message chars=${quotedContent.length}`);
+          log(
+            `feishu[${account.accountId}]: fetched quoted message (${quotedContent.length} chars)`,
+          );
         } else if (quotedMessageInfo) {
           log(
             `feishu[${account.accountId}]: skipped quoted message from sender ${quotedMessageInfo.senderId ?? "unknown"} (mode=${contextVisibilityMode})`,

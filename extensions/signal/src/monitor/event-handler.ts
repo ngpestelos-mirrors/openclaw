@@ -862,13 +862,13 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     if (!preparedPayload) {
       try {
         payload = JSON.parse(event.data) as SignalReceivePayload;
-      } catch (err) {
-        deps.runtime.error?.(`failed to parse event: ${String(err)}`);
+      } catch {
+        deps.runtime.error?.("failed to parse event: invalid JSON");
         return;
       }
     }
     if (payload?.exception?.message) {
-      deps.runtime.error?.(`receive exception: ${payload.exception.message}`);
+      deps.runtime.error?.("receive exception");
     }
     const envelope = payload?.envelope;
     if (!envelope) {
@@ -1183,9 +1183,9 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
           } else {
             unavailableAttachmentCount += 1;
           }
-        } catch (err) {
+        } catch {
           unavailableAttachmentCount += 1;
-          deps.runtime.error?.(danger(`attachment fetch failed: ${String(err)}`));
+          deps.runtime.error?.(danger("attachment fetch failed"));
         }
       }
     }

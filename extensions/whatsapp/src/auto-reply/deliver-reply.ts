@@ -32,7 +32,6 @@ import {
 } from "../outbound-media-contract.js";
 import { buildQuotedMessageOptions, lookupInboundMessageMeta } from "../quoted-message.js";
 import { newConnectionId } from "../reconnect.js";
-import { formatError } from "../session.js";
 import { markdownToWhatsAppChunks } from "../targets-runtime.js";
 import { whatsappOutboundLog } from "./loggers.js";
 
@@ -265,8 +264,7 @@ async function deliverWebReplyInActivityScope(params: WhatsAppReplyDeliveryParam
       connectionId: connectionId ?? null,
       to: conversationId,
       from: transport.recipientJid,
-      textChars: text.length,
-      mediaUrl: null,
+      textLength: text.length,
       mediaSizeBytes: null,
       mediaKind: null,
       durationMs: Date.now() - replyStarted,
@@ -297,7 +295,7 @@ async function deliverWebReplyInActivityScope(params: WhatsAppReplyDeliveryParam
         logVerbose(
           `Web auto-reply media size: ${(media.buffer.length / (1024 * 1024)).toFixed(2)}MB`,
         );
-        logVerbose(`Web auto-reply media source: ${mediaUrl} (kind ${media.kind})`);
+        logVerbose(`Web auto-reply media kind: ${media.kind}`);
       }
       const quote = getQuote();
       const mediaContent =
@@ -328,8 +326,7 @@ async function deliverWebReplyInActivityScope(params: WhatsAppReplyDeliveryParam
           connectionId: connectionId ?? null,
           to: conversationId,
           from: transport.recipientJid,
-          textChars: caption?.length ?? 0,
-          mediaUrl,
+          textLength: caption?.length ?? 0,
           mediaSizeBytes: media.buffer.length,
           mediaKind: media.kind,
           durationMs: Date.now() - replyStarted,
@@ -342,10 +339,8 @@ async function deliverWebReplyInActivityScope(params: WhatsAppReplyDeliveryParam
         // Earlier accepted uploads do not make a genuinely rejected trailing upload successful.
         throw preserveAcceptedDeliveryError(error);
       }
-      whatsappOutboundLog.error(
-        `Failed sending web media to ${conversationId}: ${formatError(error)}`,
-      );
-      replyLogger.warn({ err: error, mediaUrl }, "failed to send web media reply");
+      whatsappOutboundLog.error(`Failed sending web media to ${conversationId}`);
+      replyLogger.warn({ to: conversationId }, "failed to send web media reply");
       // A failed trailing attachment needs its own warning after earlier accepted media.
       const fallbackText = isFirst
         ? [caption ?? "", "⚠️ Media failed."].filter(Boolean).join("\n")
