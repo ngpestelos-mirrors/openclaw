@@ -1,6 +1,6 @@
+/* @vitest-environment jsdom */
 import { afterEach, expect, it, vi } from "vitest";
 import { createPresenceActivityController } from "./presence-activity-controller.ts";
-/* @vitest-environment jsdom */
 import type { SolidController, SolidControllerHost } from "./solid-controller-host.ts";
 
 afterEach(() => {

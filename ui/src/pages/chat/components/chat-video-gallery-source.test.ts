@@ -1,22 +1,28 @@
 /* @vitest-environment jsdom */
+import { createComponent, createSignal, getOwner } from "solid-js";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
-import { mountSolid } from "../../../test-helpers/solid-render.tsx";
+import { mountSolid } from "../../../test-helpers/mount-solid.ts";
+import { flush } from "../../../test-helpers/solid-settle.ts";
 import { AssistantAttachments } from "./chat-message-attachments-solid.tsx";
-import { releaseChatMediaResourceSubscriber, type AttachmentItem } from "./chat-message-media.ts";
+import {
+  releaseChatMediaResourceSubscriber,
+  type AttachmentItem,
+  type ImageRenderOptions,
+} from "./chat-message-media.ts";
 
 let pause: ReturnType<typeof vi.spyOn>;
 let container: HTMLDivElement | undefined;
+let view: ReturnType<typeof mountSolid> | undefined;
 let disconnect: (() => void) | undefined;
 let update: (() => void) | undefined;
-let unmount: (() => void) | undefined;
 afterEach(() => {
   disconnect?.();
   disconnect = undefined;
+  view?.unmount();
+  view = undefined;
   releaseChatMediaResourceSubscriber(update);
   update = undefined;
-  unmount?.();
-  unmount = undefined;
   if (container) {
     container.remove();
   }
@@ -34,23 +40,31 @@ async function open(
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
   container = document.body.appendChild(document.createElement("div"));
   let opened: ImageLightboxItem | undefined;
-  const props = (): Parameters<typeof AssistantAttachments>[0] => ({
-    attachments: [attachment],
-    options: {
-      onRequestUpdate: update,
-      resolveArtifactDownload,
-      galleryVideos: () => ({ index: 0, items: gallery }),
-      onOpenImage: (item) => {
-        opened = item;
-      },
-    },
-  });
-  function rerender() {
-    view.update(props());
-  }
-  update = rerender;
-  const view = mountSolid(AssistantAttachments, props(), container);
-  unmount = view.dispose;
+  const [revision, setRevision] = createSignal(0, { ownedWrite: true });
+  update = () => {
+    setRevision((value) => value + 1);
+    if (!getOwner()) {
+      flush();
+    }
+  };
+  view = mountSolid(
+    () =>
+      createComponent(AssistantAttachments, {
+        attachments: [attachment],
+        get options(): ImageRenderOptions {
+          revision();
+          return {
+            onRequestUpdate: update,
+            resolveArtifactDownload,
+            galleryVideos: () => ({ index: 0, items: gallery }),
+            onOpenImage: (item) => {
+              opened = item;
+            },
+          };
+        },
+      }),
+    { container },
+  );
   await vi.waitFor(() =>
     expect(container?.querySelector("openclaw-chat-video-player")).not.toBeNull(),
   );
@@ -188,13 +202,10 @@ it("explicit retry clears a cached recoverable neighbor failure through its sour
   const opened = await open(first, resolve, [first, next]);
   const background = vi.fn();
   const backgroundContainer = document.body.appendChild(document.createElement("div"));
+  const options = { resolveArtifactDownload: resolve, onRequestUpdate: background };
   const backgroundView = mountSolid(
-    AssistantAttachments,
-    {
-      attachments: [next],
-      options: { resolveArtifactDownload: resolve, onRequestUpdate: background },
-    },
-    backgroundContainer,
+    () => createComponent(AssistantAttachments, { attachments: [next], options }),
+    { container: backgroundContainer },
   );
   try {
     await vi.waitFor(() => expect(background).toHaveBeenCalled());
@@ -209,7 +220,7 @@ it("explicit retry clears a cached recoverable neighbor failure through its sour
     await vi.waitFor(() => expect(media.src).toContain("mediaTicket=recovered"));
     expect(resolve).toHaveBeenCalledTimes(2);
   } finally {
-    backgroundView.dispose();
+    backgroundView.unmount();
     backgroundContainer.remove();
     releaseChatMediaResourceSubscriber(background);
   }

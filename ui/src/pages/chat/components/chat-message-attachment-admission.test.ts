@@ -1,11 +1,10 @@
 /* @vitest-environment jsdom */
 
+import { createComponent, createSignal, getOwner } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mountSolid } from "../../../test-helpers/solid-render.tsx";
-import {
-  MessageAttachment,
-  type MessageAttachmentProps,
-} from "./chat-message-attachments-solid.tsx";
+import { mountSolid } from "../../../test-helpers/mount-solid.ts";
+import { flush } from "../../../test-helpers/solid-settle.ts";
+import { MessageAttachment } from "./chat-message-attachments-solid.tsx";
 import {
   releaseChatMediaResourceSubscriber,
   type AttachmentItem,
@@ -15,7 +14,7 @@ import type { SidebarContent } from "./chat-sidebar-content-types.ts";
 
 const observations: Array<{ element: Element; show: () => void }> = [];
 const subscribers = new Set<() => void>();
-const views = new Map<HTMLElement, ReturnType<typeof mountSolid<MessageAttachmentProps>>>();
+const views = new Set<ReturnType<typeof mountSolid>>();
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -38,9 +37,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const [container, view] of views) {
-    view.dispose();
-    container.remove();
+  for (const view of views) {
+    view.unmount();
+    view.container.remove();
   }
   for (const subscriber of subscribers) {
     releaseChatMediaResourceSubscriber(subscriber);
@@ -66,21 +65,38 @@ function mount(
 ) {
   const container = document.body.appendChild(document.createElement("div"));
   let current = item;
-  const props = (): MessageAttachmentProps => ({
-    item: current,
-    options: { ...options, onRequestUpdate: update },
-    onOpenSidebar,
-    presentation,
-  });
-  function update() {
-    view.update(props());
-  }
+  let setProps: (props: { item: AttachmentItem; options: ImageRenderOptions }) => void;
+  const update = () => {
+    setProps({ item: current, options: { ...options, onRequestUpdate: update } });
+    if (!getOwner()) {
+      flush();
+    }
+  };
+  const view = mountSolid(
+    () => {
+      const [props, setCurrent] = createSignal<{
+        item: AttachmentItem;
+        options: ImageRenderOptions;
+      }>({ item: current, options: { ...options, onRequestUpdate: update } }, { ownedWrite: true });
+      setProps = setCurrent;
+      return createComponent(MessageAttachment, {
+        get item() {
+          return props().item;
+        },
+        get options() {
+          return props().options;
+        },
+        onOpenSidebar,
+        presentation,
+      });
+    },
+    { container },
+  );
+  views.add(view);
   subscribers.add(update);
-  const view = mountSolid(MessageAttachment, props(), container);
-  views.set(container, view);
   return {
     container,
-    unmount: view.dispose,
+    unmount: view.unmount,
     replace(next: AttachmentItem) {
       current = next;
       update();
