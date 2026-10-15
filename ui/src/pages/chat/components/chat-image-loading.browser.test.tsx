@@ -155,7 +155,7 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
         : svgResponse(400, 200);
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(renderMessageImages([{ url: source, alt: "Versioned preview" }]), container);
+    drawImages(container, { images: [{ url: source, alt: "Versioned preview" }] });
     const image = await admittedImage(container);
     await image.decode();
     expect(image.naturalWidth).toBe(400);
