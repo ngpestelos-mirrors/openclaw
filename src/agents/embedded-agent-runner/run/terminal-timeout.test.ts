@@ -142,7 +142,7 @@ describe("tool timeout terminal bookkeeping", () => {
         currentAttemptCompletedAssistant: assistant,
       }),
     );
-    expect(result.payloads).toEqual([{ text }]);
+    expect(result.payloads).toEqual([{ text, replyToTag: false }]);
     expect(result.meta.error).toBeUndefined();
     expect(result.meta.livenessState).toBe("working");
     expect(markEmbeddedRunAuthProfileSuccess).toHaveBeenCalledOnce();
