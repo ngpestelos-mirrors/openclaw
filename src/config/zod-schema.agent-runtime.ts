@@ -18,6 +18,7 @@ import {
   GroupChatSchema,
   HumanDelaySchema,
   IdentitySchema,
+  OptionalEnabledConfigSchema,
   SecretInputSchema,
   SsrFPolicyConfigSchema,
   ToolsLinksSchema,
@@ -422,13 +423,6 @@ const ToolFsSchema = z
   })
   .optional();
 
-const ToolLoopDetectionSchema = z
-  .strictObject({
-    /** Enable tool-loop protection (default: false). */
-    enabled: z.boolean().optional(),
-  })
-  .optional();
-
 const ToolSearchSchema = z
   .union([
     z.boolean(),
@@ -588,12 +582,8 @@ const MessageToolConfigSchema = z
         allow: z.array(z.string()).optional(),
       })
       .optional(),
-    broadcast: z
-      .strictObject({
-        /** Enable broadcast action (default: true). */
-        enabled: z.boolean().optional(),
-      })
-      .optional(),
+    /** Enable broadcast action (default: true). */
+    broadcast: OptionalEnabledConfigSchema,
   })
   .optional();
 
@@ -632,7 +622,8 @@ const AgentToolsSchema = z
       .optional(),
     /** Filesystem tool path guards. */
     fs: ToolFsSchema,
-    loopDetection: ToolLoopDetectionSchema,
+    /** Enable tool-loop protection (default: false). */
+    loopDetection: OptionalEnabledConfigSchema,
     /** Explicit outbound destinations; does not grant session reads or bypass global/sandbox policy. */
     agentToAgent: z
       .strictObject({
@@ -696,7 +687,8 @@ export const ToolsSchema = z
         allowThreadTargets: z.boolean().optional(),
       })
       .optional(),
-    loopDetection: ToolLoopDetectionSchema,
+    /** Enable tool-loop protection (default: false). */
+    loopDetection: OptionalEnabledConfigSchema,
     /** Compact large OpenClaw, MCP, and client tool catalogs behind search/call tools. */
     toolSearch: ToolSearchSchema,
     /** Global Code Mode defaults and limits; agent/model settings can override activation. */

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { OptionalEnabledConfigSchema } from "./zod-schema.core.js";
 import { LoggingLevelSchema } from "./zod-schema.root-support.js";
 
 // OpenTelemetry instrument names start with an ASCII letter and allow only these characters.
@@ -39,12 +40,8 @@ export const DiagnosticsConfigSchema = z
         captureContent: z.boolean().optional(),
       })
       .optional(),
-    cacheTrace: z
-      .strictObject({
-        /** Write prompt-cache trace artifacts for debugging deterministic cache input. */
-        enabled: z.boolean().optional(),
-      })
-      .optional(),
+    /** Write prompt-cache trace artifacts for debugging deterministic cache input. */
+    cacheTrace: OptionalEnabledConfigSchema,
   })
   .optional();
 

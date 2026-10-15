@@ -219,10 +219,10 @@ export function readExactSessionEntriesWithLifecycle(
   }
   const { readDatabase, snapshot, assertCanonicalRead } =
     createSessionEntryReadScope(capturedDatabase);
-  if (selectsChildEntries(request)) {
-    const { parentSessionKeys } = request.selection;
-    const result = readDatabase(
-      (database) => {
+  const result = readDatabase(
+    (database): SessionExactEntriesWorkerResult => {
+      if (selectsChildEntries(request)) {
+        const { parentSessionKeys } = request.selection;
         assertCanonicalRead(database, request.expectedIdentity);
         return {
           kind: "session-exact-entries" as const,
@@ -233,141 +233,100 @@ export function readExactSessionEntriesWithLifecycle(
           ),
           lifecycleTimestamps: {},
         };
-      },
-      { ...request.database, env: request.env },
-    );
-    if (!result.found && result.reason !== "database-missing") {
-      throw new SessionMetadataUnavailableError(result.reason);
-    }
-    return result.found
-      ? result.value
-      : { kind: "session-exact-entries", entries: [], lifecycleTimestamps: {} };
-  }
-  if (
-    !request.selection &&
-    (request.projection === undefined ||
-      request.projection === "full" ||
-      request.projection === "exact") &&
-    !request.manualCompact &&
-    !request.replyInitializationSessionKey &&
-    !request.transcript &&
-    request.sessionKeys.length <= MAX_SESSION_ROW_FACTS_KEYS
-  ) {
-    const result = readDatabase(
-      (database) => {
-        const read = () => {
-          const source = captureSessionEntryReadSource(database, request.expectedIdentity);
-          const identity = readOpenClawAgentDatabaseIdentity(database);
-          const facts = readExactSessionEntryFactsInDatabase(
-            database,
-            request.sessionKeys,
-            request.snapshotFields ?? "full",
-          );
-          return {
-            kind: "session-exact-entries" as const,
-            ...facts,
-            source,
-            databaseIdentity: { ...identity, identity: source.databaseIdentity },
-            lifecycleTimestamps: resolveSessionLifecycleTimestampsWithHeader({
-              entry: facts.entries.find(
-                ({ sessionKey }) => sessionKey === request.lifecycleSessionKey,
-              )?.entry,
-              agentId: database.agentId,
-              sessionKey: request.lifecycleSessionKey,
-              readHeader: ({ sessionId }) => readTranscriptHeaderFromDatabase(database, sessionId),
-            }),
-          };
-        };
-        // Lifecycle metadata uses the captured session ID. A replaced header may be newer
-        // than the entry; its own transcript snapshot suffices for this descriptive fallback.
-        return read();
-      },
-      { ...request.database, env: request.env },
-    );
-    if (result.found) {
-      return result.value;
-    }
-    if (result.reason !== "database-missing") {
-      throw new SessionMetadataUnavailableError(result.reason);
-    }
-    if (request.expectedIdentity?.key.startsWith("file:")) {
-      throw new Error("Session entry read lost its captured physical owner");
-    }
-    return { kind: "session-exact-entries", entries: [], lifecycleTimestamps: {} };
-  }
-  if (
-    (request.projection === "exact" || request.projection === "worktree") &&
-    !request.transcript
-  ) {
-    // Logical accessors validate only their candidates; unrelated rows are not listing admission.
-    let source: SessionExactEntriesWorkerResult["source"];
-    const read = readDatabase(
-      (database) => {
-        source = captureSessionEntryReadSource(database, request.expectedIdentity);
-        if (request.projection === "worktree" && !request.manualCompact) {
-          return {
-            entries: readSessionWorktreeOwnerFactsInDatabase(database, request.sessionKeys),
-          };
-        }
-        using sourceGuard = prepareSessionColdSourceGuard(
-          { ...request.database, env: request.env },
-          request.manualCompact?.sources,
+      }
+      if (
+        !request.selection &&
+        (request.projection === undefined ||
+          request.projection === "full" ||
+          request.projection === "exact") &&
+        !request.manualCompact &&
+        !request.replyInitializationSessionKey &&
+        !request.transcript &&
+        request.sessionKeys.length <= MAX_SESSION_ROW_FACTS_KEYS
+      ) {
+        const source = captureSessionEntryReadSource(database, request.expectedIdentity);
+        const identity = readOpenClawAgentDatabaseIdentity(database);
+        const facts = readExactSessionEntryFactsInDatabase(
+          database,
+          request.sessionKeys,
+          request.snapshotFields ?? "full",
         );
-        return snapshot(database, () => {
-          const entries =
-            request.projection === "worktree"
-              ? readSessionWorktreeOwnerFactsInDatabase(database, request.sessionKeys)
-              : request.sessionKeys.flatMap((sessionKey) => {
-                  const entry = readExactSessionEntryRow(
-                    database,
-                    sessionKey,
-                    request.snapshotFields ?? "full",
-                    "canonical",
-                  )?.entry;
-                  return entry ? [{ sessionKey, entry }] : [];
-                });
-          return {
-            entries,
-            ...(request.manualCompact
-              ? {
-                  manualCompact: {
-                    archive: readSessionColdTranscript(
-                      database.db,
-                      request.manualCompact.sessionId,
-                    ),
-                    refusedSource: sourceGuard.read(
+        return {
+          kind: "session-exact-entries" as const,
+          ...facts,
+          source,
+          databaseIdentity: { ...identity, identity: source.databaseIdentity },
+          lifecycleTimestamps: resolveSessionLifecycleTimestampsWithHeader({
+            entry: facts.entries.find(
+              ({ sessionKey }) => sessionKey === request.lifecycleSessionKey,
+            )?.entry,
+            agentId: database.agentId,
+            sessionKey: request.lifecycleSessionKey,
+            readHeader: ({ sessionId }) => readTranscriptHeaderFromDatabase(database, sessionId),
+          }),
+        };
+      }
+      if (
+        (request.projection === "exact" || request.projection === "worktree") &&
+        !request.transcript
+      ) {
+        // Logical accessors validate only their candidates; unrelated rows are not listing admission.
+        const source = captureSessionEntryReadSource(database, request.expectedIdentity);
+        const read = () => {
+          if (request.projection === "worktree" && !request.manualCompact) {
+            return {
+              entries: readSessionWorktreeOwnerFactsInDatabase(database, request.sessionKeys),
+            };
+          }
+          using sourceGuard = prepareSessionColdSourceGuard(
+            { ...request.database, env: request.env },
+            request.manualCompact?.sources,
+          );
+          return snapshot(database, () => {
+            const entries =
+              request.projection === "worktree"
+                ? readSessionWorktreeOwnerFactsInDatabase(database, request.sessionKeys)
+                : request.sessionKeys.flatMap((sessionKey) => {
+                    const entry = readExactSessionEntryRow(
                       database,
-                      new Map(
-                        request.sessionKeys.map((key) => [
-                          key,
-                          entries.find((row) => row.sessionKey === key)?.entry,
-                        ]),
+                      sessionKey,
+                      request.snapshotFields ?? "full",
+                      "canonical",
+                    )?.entry;
+                    return entry ? [{ sessionKey, entry }] : [];
+                  });
+            return {
+              entries,
+              ...(request.manualCompact
+                ? {
+                    manualCompact: {
+                      archive: readSessionColdTranscript(
+                        database.db,
+                        request.manualCompact.sessionId,
                       ),
-                    ).refusedSource,
-                  },
-                }
-              : {}),
-          };
-        });
-      },
-      { ...request.database, env: request.env },
-    );
-    if (!read.found && read.reason !== "database-missing") {
-      throw new SessionMetadataUnavailableError(read.reason);
-    }
-    if (!read.found && request.expectedIdentity?.key.startsWith("file:")) {
-      throw new Error("Session entry read lost its captured physical owner");
-    }
-    return {
-      kind: "session-exact-entries",
-      source,
-      ...(read.found ? read.value : { entries: [] }),
-      lifecycleTimestamps: {},
-    };
-  }
-  const result = readDatabase(
-    (database) =>
-      request.projection === "list"
+                      refusedSource: sourceGuard.read(
+                        database,
+                        new Map(
+                          request.sessionKeys.map((key) => [
+                            key,
+                            entries.find((row) => row.sessionKey === key)?.entry,
+                          ]),
+                        ),
+                      ).refusedSource,
+                    },
+                  }
+                : {}),
+            };
+          });
+        };
+        return {
+          kind: "session-exact-entries",
+          source,
+          ...read(),
+          lifecycleTimestamps: {},
+        };
+      }
+      return request.projection === "list"
         ? {
             kind: "session-exact-entries" as const,
             ...(request.expectedIdentity
@@ -591,7 +550,8 @@ export function readExactSessionEntriesWithLifecycle(
                 }),
               };
             }),
-          ),
+          );
+    },
     { ...request.database, env: request.env },
   );
   if (result.found) {
@@ -600,7 +560,7 @@ export function readExactSessionEntriesWithLifecycle(
   if (result.reason !== "database-missing") {
     throw new SessionMetadataUnavailableError(result.reason);
   }
-  if (request.expectedIdentity?.key.startsWith("file:")) {
+  if (!selectsChildEntries(request) && request.expectedIdentity?.key.startsWith("file:")) {
     throw new Error("Session entry read lost its captured physical owner");
   }
   return {

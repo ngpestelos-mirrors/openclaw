@@ -2,6 +2,7 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
 import { z } from "zod";
 import { ALL_THINKING_LEVELS } from "../auto-reply/thinking.shared.js";
 import { findEdgeAuthIssue } from "../shared/gateway-edge-auth-headers.js";
+import { OptionalEnabledConfigSchema } from "./zod-schema.core.js";
 import { McpServerSchema } from "./zod-schema.mcp-server.js";
 import { MemorySearchSchema } from "./zod-schema.memory-search.js";
 import { NodeHostAgentRunsSchema, NodeHostWorkerRunsSchema } from "./zod-schema.node-host.js";
@@ -320,11 +321,7 @@ export const McpConfigSchema = z
 
 export const NodeHostSchema = z
   .strictObject({
-    autoUpdate: z
-      .strictObject({
-        enabled: z.boolean().optional(),
-      })
-      .optional(),
+    autoUpdate: OptionalEnabledConfigSchema,
     agentRuns: NodeHostAgentRunsSchema,
     workerRuns: NodeHostWorkerRunsSchema,
     browserProxy: z
@@ -338,10 +335,6 @@ export const NodeHostSchema = z
         servers: createMcpServersSchema(NodeHostMcpServerNameSchema).optional(),
       })
       .optional(),
-    skills: z
-      .strictObject({
-        enabled: z.boolean().optional(),
-      })
-      .optional(),
+    skills: OptionalEnabledConfigSchema,
   })
   .optional();
