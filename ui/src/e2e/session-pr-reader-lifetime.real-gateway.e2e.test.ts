@@ -534,27 +534,14 @@ suite.define(() => {
             expect(await refreshFromBrowser(page)).toEqual(["operator.read"]);
             releaseProvider.resolve();
             const settled = await racePromiseWithAbortSignal(changedDelivery.promise, signal);
-            // PR delivery does not establish the browser roster's replacement incarnation.
-            const replacementRoster = await evaluateControlUiContext(
-              page,
-              async (context, key) => {
-                await context.sessions.refresh({ agentId: "main", force: true });
-                const rosterState = context.sessions.state;
-                return {
-                  sessionId: rosterState.result?.sessions.find((row) => row.key === key)?.sessionId,
-                  resultCached: rosterState.resultCached,
-                  error: rosterState.error,
-                };
-              },
-              sessionKey,
-            );
-            expect(replacementRoster).toEqual({
-              sessionId: "00000000-0000-4000-8000-000000000202",
-              resultCached: false,
-              error: null,
+            // PR delivery does not reconcile the pane after the fixture's direct database write.
+            await evaluateControlUiContext(page, async (context) => {
+              await context.sessions.refresh({ agentId: "main", force: true });
             });
-            // Finish the incarnation's rendered reset before reopening the floating Details pane.
-            await pane.locator('.chat-details[role="dialog"]').waitFor({ state: "hidden" });
+            await expect
+              .poll(() => pane.locator(".chat-pane__workspace-chip").getAttribute("title"))
+              .toBe(replacement.root);
+            // A new session incarnation resets the pane-local Details presentation.
             await openDetailsPullRequests(pane);
             await chip
               .locator(".chat-pr__number")
@@ -592,6 +579,13 @@ suite.define(() => {
                 branch: replacement.branch,
                 additions: replacement.additions,
               });
+              // A later roster read must not dismiss Details for the already adopted incarnation.
+              await evaluateControlUiContext(page, async (context) => {
+                await context.sessions.refresh({ agentId: "main", force: true });
+              });
+              await expect
+                .poll(() => pane.locator(".chat-pane__workspace-chip").getAttribute("title"))
+                .toBe(replacement.root);
               await chip.locator(".chat-pr__number").filter({ hasText: "#203" }).waitFor();
               await reader.request(SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD, {
                 sessionKeys: [sessionKey],
