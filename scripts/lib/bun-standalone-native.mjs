@@ -606,7 +606,7 @@ export function createStandaloneNativeAdapter({
           !bindings.isBound(callee) && callee.name === "require" ? filename : opaqueOrigin;
         if (origin) {
           const target = retainRuntimeReference(origin, node.arguments[0]?.value);
-          if (admitModules && opaqueOrigin && target && /\.[cm]?js$/.test(target)) {
+          if (admitModules && !resolveCall && opaqueOrigin && target && /\.[cm]?js$/.test(target)) {
             const entry = relative(target);
             if (!additionalModuleEntries.includes(entry)) {
               additionalModuleEntries.push(entry);

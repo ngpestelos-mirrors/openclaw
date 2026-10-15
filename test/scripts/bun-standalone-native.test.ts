@@ -348,6 +348,7 @@ console.log("full-ws loaded without node_modules");
       { main: "index.mjs", type: "commonjs" },
       { "index.mjs": "export default 'default-value'; export const named = 'named-value';" },
     );
+    const childCli = pkg("child-cli", { main: "cli.js" }, { "cli.js": "process.exit(0);" });
     pkg("metadata-only", { main: "binding.node" }, { "binding.node": "metadata-only" });
     pkg("shadowed", { main: "binding.node" }, { "binding.node": "shadowed" });
     write(path.join(root, "package.json"), JSON.stringify({ name: "openclaw" }));
@@ -356,7 +357,7 @@ console.log("full-ws loaded without node_modules");
       path.join(plugin, "package.json"),
       JSON.stringify({
         name: "example-plugin",
-        dependencies: { "runtime-library": "1", "esm-library": "1" },
+        dependencies: { "runtime-library": "1", "esm-library": "1", "child-cli": "1" },
         optionalDependencies: { "native-helper": "1", "metadata-only": "1", shadowed: "1" },
       }),
     );
@@ -371,6 +372,7 @@ console.log("full-ws loaded without node_modules");
       `import { r as load } from "./runtime.mjs";
       export const library = load("runtime-library");
       export const esmLibrary = load("esm-library");
+      export const childCli = load.resolve("child-cli");
       export const native = load.resolve("native-helper");
       export const metadata = load("metadata-only/package.json");
       export const shadowed = (load) => load("shadowed");`,
@@ -381,6 +383,9 @@ console.log("full-ws loaded without node_modules");
       path.relative(root, path.join(library, "index.js")),
     );
     expect(adapter.commonJsEntries).toContain(path.relative(root, path.join(library, "index.js")));
+    expect(adapter.additionalModuleEntries).not.toContain(
+      path.relative(root, path.join(childCli, "cli.js")),
+    );
     const image = fs.mkdtempSync(path.join(os.tmpdir(), "standalone-image-"));
     temporary.push(image);
     const imageEntry = path.join(image, "library.cjs");
