@@ -76,8 +76,8 @@ describe("plugin workspace package export aliases", () => {
       ["@openclaw/llm-core", "entry"],
       ["@openclaw/llm-core/renamed", "nested/import"],
       ["@openclaw/llm-core/string", "string-entry"],
-    ]) {
-      expect(fs.realpathSync(aliases[alias] ?? "")).toBe(fs.realpathSync(targets[stem]));
+    ] as const) {
+      expect(fs.realpathSync(aliases[alias] ?? "")).toBe(fs.realpathSync(targets[stem] ?? ""));
     }
     for (const subpath of ["require-only", "types-only", "missing", "../invalid"]) {
       expect(aliases[`@openclaw/llm-core/${subpath}`]).toBeUndefined();
