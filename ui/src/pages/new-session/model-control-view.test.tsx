@@ -50,7 +50,11 @@ it("keeps one mounted model view live without depending on draft revisions", asy
     });
     try {
       const result = first.context.sessions.state.result!;
-      result.sessions.push({ key: "agent:main:unrelated", label: "Background session" });
+      result.sessions.push({
+        key: "agent:main:unrelated",
+        kind: "direct",
+        label: "Background session",
+      });
       first.publish("sessions");
       invalidateModelCatalogCache(first.context.gateway.snapshot.client!, {
         agentId: "main",
