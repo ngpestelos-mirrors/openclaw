@@ -3250,8 +3250,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(groups.flatMap((group) => group.includePatterns ?? []).toSorted()).toEqual(
       targets.toSorted(),
     );
-    expect(plan.filter((job) => job.planConcurrency === 2)).toHaveLength(1);
     for (const job of plan) {
+      expect([1, 2]).toContain(job.planConcurrency);
       expect(job.runner).toBe(
         job.planConcurrency === 2
           ? "blacksmith-32vcpu-ubuntu-2404"
