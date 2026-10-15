@@ -299,6 +299,8 @@ tool timeout into a paused run; completed tool results remain in the transcript.
 Earlier tool warnings and reasoning output do not count as a completed reply.
 Quiet or collect-mode children do not suppress a timeout unless another
 continuation owns the reply; accepting a child alone does not promise delivery.
+Progress sends and messages to another conversation do not finish the current
+source reply. Deliberate yields retain their existing accepted-work semantics.
 
 The model idle and provider HTTP rows describe the built-in OpenClaw model
 path. Codex owns its native stream deadlines and network retries. After exact

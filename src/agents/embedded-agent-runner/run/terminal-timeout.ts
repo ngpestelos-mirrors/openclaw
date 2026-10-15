@@ -1,9 +1,14 @@
+import {
+  getReplyPayloadMetadata,
+  isHostNoticePayload,
+  isReplyPayloadTerminalContent,
+} from "../../../auto-reply/reply-payload.js";
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
 import { hasMessagingToolDeliveryEvidence } from "../delivery-evidence.js";
 import type { EmbeddedAgentRunResult } from "../types.js";
 import { copyAttemptDeliveryState } from "./attempt-delivery-state.js";
 import {
-  hasYieldContinuationEvidence,
+  hasRunContinuationEvidence,
   resolveRunLivenessState,
 } from "./incomplete-turn-resolution.js";
 import {
@@ -30,13 +35,21 @@ export function resolveEmbeddedRunTerminalTimeout(input: {
   const unfinishedToolTimeout =
     terminalTimedOut &&
     timedOutDuringToolExecution &&
-    !input.terminalPrepared.payloadsWithToolMedia?.some(
-      (payload) => payload.isError !== true && payload.isReasoning !== true,
-    ) &&
-    !hasYieldContinuationEvidence(input.attempt, { requireCompletionMessage: true });
+    input.terminalPrepared.replyDeliveryState === "missing" &&
+    !input.terminalPrepared.payloadsWithToolMedia?.some((payload) => {
+      const metadata = getReplyPayloadMetadata(payload);
+      return (
+        !isHostNoticePayload(payload) &&
+        isReplyPayloadTerminalContent(payload) &&
+        metadata?.sourceReplyFinal !== false &&
+        metadata?.precedingInputAnswer !== true
+      );
+    }) &&
+    !hasRunContinuationEvidence(input.attempt);
   if (
     (!input.terminalPrepared.timedOutDuringPrompt && !unfinishedToolTimeout) ||
-    (!timeoutFinal &&
+    (!unfinishedToolTimeout &&
+      !timeoutFinal &&
       (input.terminalPrepared.hasSuccessfulFinalAssistantAfterPromptTimeout ||
         hasMessagingToolDeliveryEvidence(input.attempt)))
   ) {

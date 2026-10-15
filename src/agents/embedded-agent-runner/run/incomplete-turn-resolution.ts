@@ -266,24 +266,27 @@ interface YieldContinuationAttempt {
   toolMetas?: readonly { asyncStarted?: boolean }[];
 }
 
-/** Continuation evidence for a yielded turn — sources that will produce future output. */
-export function hasYieldContinuationEvidence(
-  attempt: YieldContinuationAttempt,
-  options?: { requireCompletionMessage?: boolean },
-): boolean {
+/** Same-attempt work that can resume execution or deliver its completion. */
+export function hasRunContinuationEvidence(attempt: YieldContinuationAttempt): boolean {
   // Only same-attempt evidence is causal here. Session-wide active descendants may be
   // stale or unrelated and must not suppress the diagnostic for this yielded turn.
   return (
     (attempt.clientToolCalls?.length ?? 0) > 0 ||
     attempt.didSendDeterministicApprovalPrompt === true ||
-    hasCommittedMessagingToolDeliveryEvidence(attempt) ||
-    (options?.requireCompletionMessage
-      ? hasCompletionMessageSessionSpawn(attempt.acceptedSessionSpawns)
-      : hasAcceptedSessionSpawn(attempt.acceptedSessionSpawns)) ||
+    hasCompletionMessageSessionSpawn(attempt.acceptedSessionSpawns) ||
     attempt.runtimeContinuationStarted === true ||
     attempt.yieldMessageWaitRegistered === true ||
-    hasAsyncActivity(attempt.toolMetas) ||
-    (attempt.successfulCronAdds ?? 0) > 0
+    hasAsyncActivity(attempt.toolMetas)
+  );
+}
+
+/** A deliberate yield can also leave accepted work or already-sent output. */
+export function hasYieldContinuationEvidence(attempt: YieldContinuationAttempt): boolean {
+  return (
+    hasAcceptedSessionSpawn(attempt.acceptedSessionSpawns) ||
+    hasCommittedMessagingToolDeliveryEvidence(attempt) ||
+    (attempt.successfulCronAdds ?? 0) > 0 ||
+    hasRunContinuationEvidence(attempt)
   );
 }
 

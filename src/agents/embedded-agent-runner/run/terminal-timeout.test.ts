@@ -47,16 +47,20 @@ async function resolveTerminal(attempt: EmbeddedRunAttemptResult) {
   return { input, result: resolved.result };
 }
 
-function toolAttempt(overrides: Partial<EmbeddedRunAttemptResult> = {}) {
+function toolAttempt(overrides: Partial<EmbeddedRunAttemptResult> = {}, commentary?: string) {
   const assistant = buildEmbeddedRunnerAssistant({
     stopReason: "toolUse",
-    content: [{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "test.txt" } }],
+    content: [
+      ...(commentary ? [{ type: "text" as const, text: commentary }] : []),
+      { type: "toolCall", id: "read-1", name: "read", arguments: { path: "test.txt" } },
+    ],
   });
   return makeEmbeddedRunnerAttempt({
     terminal: { kind: "timeout", phase: "tool_execution", source: "runtime", aborted: true },
     lastAssistant: assistant,
     currentAttemptAssistant: assistant,
     currentAttemptCompletedAssistant: assistant,
+    assistantTexts: commentary ? [commentary] : [],
     messagesSnapshot: [
       assistant,
       {
@@ -78,16 +82,23 @@ describe("tool timeout terminal bookkeeping", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it.each([
-    { compactionFailure: false, toolWarning: false, quietChild: false },
-    { compactionFailure: true, toolWarning: false, quietChild: false },
-    { compactionFailure: false, toolWarning: true, quietChild: false },
-    { compactionFailure: false, toolWarning: false, quietChild: true },
-  ])(
-    "reports an unfinished tool timeout without success bookkeeping (compaction failure: $compactionFailure, tool warning: $toolWarning, quiet child: $quietChild)",
-    async ({ compactionFailure, toolWarning, quietChild }) => {
-      const attempt = toolAttempt({
+    "plain",
+    "compaction failure",
+    "tool warning",
+    "quiet child",
+    "source progress",
+    "other conversation",
+    "pre-tool commentary",
+    "scheduled job",
+  ])("reports an unfinished tool timeout without success bookkeeping (%s)", async (scenario) => {
+    const toolWarning = scenario === "tool warning";
+    const sourceProgress = scenario === "source progress";
+    const sentMessage = sourceProgress || scenario === "other conversation";
+    const attempt = toolAttempt(
+      {
         lastToolError: toolWarning ? { toolName: "read", error: "Earlier read failed" } : undefined,
-        ...(quietChild
+        successfulCronAdds: scenario === "scheduled job" ? 1 : undefined,
+        ...(scenario === "quiet child"
           ? {
               acceptedSessionSpawns: [
                 {
@@ -99,38 +110,96 @@ describe("tool timeout terminal bookkeeping", () => {
               replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
             }
           : {}),
+        ...(sentMessage
+          ? {
+              didSendViaMessagingTool: true,
+              didDeliverSourceReplyViaMessageTool: sourceProgress,
+              messagingToolSentTexts: ["I am checking."],
+              messagingToolSentTargets: [
+                {
+                  tool: "message",
+                  provider: "telegram",
+                  to: sourceProgress ? "source" : "another-conversation",
+                  text: "I am checking.",
+                  ...(sourceProgress ? { sourceReplyFinal: false } : {}),
+                },
+              ],
+              messagingToolSourceReplyPayloads: sourceProgress
+                ? [{ text: "I am checking.", sourceReplyFinal: false }]
+                : [],
+            }
+          : {}),
         terminal: {
           kind: "timeout",
           phase: "tool_execution",
           source: "runtime",
           aborted: true,
-          ...(compactionFailure
+          ...(scenario === "compaction failure"
             ? { failure: { source: "compaction" as const, error: "synthetic bridge interrupted" } }
             : {}),
         },
-      });
-      const messages = [...attempt.messagesSnapshot];
-      const { input, result } = await resolveTerminal(attempt);
+      },
+      scenario === "pre-tool commentary" ? "I'll read that." : undefined,
+    );
+    const messages = [...attempt.messagesSnapshot];
+    const { input, result } = await resolveTerminal(attempt);
 
-      expect(result.payloads).toHaveLength(toolWarning ? 2 : 1);
-      expect(result.payloads?.at(-1)).toEqual({
-        text: expect.stringContaining("Request timed out"),
-        isError: true,
-      });
-      expect(result.meta).toMatchObject({
-        modelFallbackStopReason: "agent_run_terminal_timeout",
-        livenessState: "blocked",
-        error: { kind: "incomplete_turn", fallbackSafe: false },
-      });
-      expect(result.meta.executionTrace?.attempts ?? []).not.toContainEqual(
-        expect.objectContaining({ result: "success" }),
+    expect(result.payloads).toHaveLength(toolWarning || sourceProgress ? 2 : 1);
+    expect(result.payloads?.at(-1)).toEqual({
+      text: expect.stringContaining("Request timed out"),
+      isError: true,
+    });
+    expect(result.meta).toMatchObject({
+      modelFallbackStopReason: "agent_run_terminal_timeout",
+      livenessState: "blocked",
+      error: { kind: "incomplete_turn", fallbackSafe: false },
+    });
+    expect(result.meta.executionTrace?.attempts ?? []).not.toContainEqual(
+      expect.objectContaining({ result: "success" }),
+    );
+    expect(input.setTerminalLifecycleMeta).toHaveBeenCalledWith(
+      expect.objectContaining({ livenessState: "blocked" }),
+    );
+    expect(markEmbeddedRunAuthProfileSuccess).not.toHaveBeenCalled();
+    expect(reportEmbeddedRunSuccessfulAuthBinding).not.toHaveBeenCalled();
+    expect(attempt.messagesSnapshot).toEqual(messages);
+    expect(result.messagingToolSentTargets).toEqual(attempt.messagingToolSentTargets);
+  });
+
+  it.each(["delivered", "pending"] as const)(
+    "preserves %s source-reply custody after a tool timeout",
+    async (sourceReplyDeliveryState) => {
+      const { result } = await resolveTerminal(toolAttempt({ sourceReplyDeliveryState }));
+      expect(result.meta.error).toBeUndefined();
+      expect(result.payloads ?? []).toEqual([]);
+      expect(markEmbeddedRunAuthProfileSuccess).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["quiet child", "scheduled job"])(
+    "preserves a deliberate successful yield with %s work",
+    async (work) => {
+      const { result } = await resolveTerminal(
+        toolAttempt({
+          terminal: { kind: "ok" },
+          yieldDetected: true,
+          successfulCronAdds: work === "scheduled job" ? 1 : undefined,
+          acceptedSessionSpawns:
+            work === "quiet child"
+              ? [
+                  {
+                    runId: "quiet-child",
+                    childSessionKey: "agent:main:subagent:quiet",
+                    expectsCompletionMessage: false,
+                  },
+                ]
+              : [],
+        }),
       );
-      expect(input.setTerminalLifecycleMeta).toHaveBeenCalledWith(
-        expect.objectContaining({ livenessState: "blocked" }),
-      );
-      expect(markEmbeddedRunAuthProfileSuccess).not.toHaveBeenCalled();
-      expect(reportEmbeddedRunSuccessfulAuthBinding).not.toHaveBeenCalled();
-      expect(attempt.messagesSnapshot).toEqual(messages);
+      expect(result.meta.error).toBeUndefined();
+      expect(result.meta.livenessState).toBe("paused");
+      expect(result.payloads ?? []).toEqual([]);
+      expect(markEmbeddedRunAuthProfileSuccess).toHaveBeenCalledOnce();
     },
   );
 
