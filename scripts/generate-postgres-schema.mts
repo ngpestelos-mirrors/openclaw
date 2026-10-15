@@ -7,11 +7,11 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { TEAM_REPORTS_SCHEMA_SQL } from "../extensions/team-reports/src/store-schema.ts";
 import {
   LOGBOOK_SCHEMA_VERSION,
   SCHEMA as LOGBOOK_SCHEMA_SQL,
 } from "../extensions/logbook/src/store-schema.ts";
+import { TEAM_REPORTS_SCHEMA_SQL } from "../extensions/team-reports/src/store-schema.ts";
 import {
   SCHEMA_VERSION,
   WORKBOARD_SCHEMA_SQL,
