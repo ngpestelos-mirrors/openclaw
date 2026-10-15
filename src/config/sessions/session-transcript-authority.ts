@@ -17,6 +17,7 @@ import {
   type SessionRowChange,
 } from "../../sessions/session-row-changes.js";
 import { advanceSessionTranscriptUpdateVersion } from "../../sessions/transcript-events.js";
+import { isSessionTranscriptTerminalModel } from "../../sessions/transcript-terminal-model.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
@@ -181,6 +182,7 @@ export function publishUnchangedSessionTranscriptReceipts(
     return;
   }
   if (
+    !parseSessionTranscriptAuthorityReceipts(receipts) ||
     receipts.some((receipt) =>
       [...receipt.facts.values()].some((fact) => fact.kind !== "unchanged"),
     )
@@ -222,12 +224,35 @@ function isTranscriptReceipt(value: unknown): value is SessionTranscriptAuthorit
   ) {
     return false;
   }
-  // The paired typed writer constructs postimages; only their receipt/key binding
-  // belongs to this transport boundary, not a second schema for every data field.
-  return [...value.facts].every(
-    ([key, fact]) =>
-      fact.kind !== "postimage" || (isRecord(fact.value) && fact.value.sessionKey === key),
-  );
+  const nullableNumber = (number: unknown) =>
+    number === null || (typeof number === "number" && Number.isSafeInteger(number));
+  for (const [key, fact] of value.facts) {
+    if (!isRecord(fact)) {
+      return false;
+    }
+    if (fact.kind !== "postimage") {
+      continue;
+    }
+    const row = fact.value;
+    if (
+      !isRecord(row) ||
+      row.sessionKey !== key ||
+      typeof row.sessionId !== "string" ||
+      (row.generation !== null && typeof row.generation !== "string") ||
+      (row.leafEventId !== null && typeof row.leafEventId !== "string") ||
+      ![row.rawSeq, row.updatedAt, row.indexedSeq, row.activeMessageCount].every(nullableNumber) ||
+      (row.needsRebuild !== null && row.needsRebuild !== 0 && row.needsRebuild !== 1) ||
+      (row.lastMessagePreview !== undefined &&
+        row.lastMessagePreview !== null &&
+        typeof row.lastMessagePreview !== "string") ||
+      (row.terminalModel !== undefined &&
+        row.terminalModel !== null &&
+        !isSessionTranscriptTerminalModel(row.terminalModel))
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** Only pending operations retain supersession state; committed facts use the session owner. */
@@ -241,6 +266,9 @@ export function retainSessionTranscriptWorkerPublication(params: {
   let stop: (() => void) | undefined;
   return {
     begin(value: readonly SessionTranscriptAuthorityReceipt[] | undefined) {
+      if (value && (!Array.isArray(value) || !value.every(isTranscriptReceipt))) {
+        throw new Error("Transcript worker omitted its authority postimage");
+      }
       receipts = value ?? [];
       superseded.clear();
       stop?.();
