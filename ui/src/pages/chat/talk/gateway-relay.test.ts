@@ -921,7 +921,7 @@ describe("GatewayRelayRealtimeTalkTransport", () => {
     const closeCalls = requestCallsFor(client, "talk.session.close");
     expect(appendCalls).toHaveLength(1);
     expect(closeCalls).toHaveLength(1);
-    expect(closeCalls[0]?.[1]).toEqual({ sessionId: "relay-1" });
+    expect(closeCalls[0]?.[1]).toEqual({ sessionId: "relay-1", disposition: "detach" });
   });
 
   it("treats relay close events as local shutdown", async () => {
