@@ -308,6 +308,9 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
     const selected = scope(params);
     return selected && { ok: true, path: selected.filename, rootRealPath: selected.rootDir, exists: true };
   };
+  globalThis.__openclawStandaloneModuleOpen = (params) =>
+    globalThis.__openclawStandaloneImageCheck({ rootDir: params.rootPath,
+      rootRealPath: params.rootRealPath, relativePath: path.relative(params.rootPath, params.filePath) });
   globalThis.__openclawStandaloneHookEntry = (params) => {
     if (params.source !== "openclaw-bundled" ||
         !/^dist(?:-runtime)?\\/bundled\\/[^/]+\\/(?:handler|index)\\.[cm]?js$/.test(relative(params.absolutePath))) return;
@@ -342,7 +345,7 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
       .toSorted(),
     transform({ filename, contents }) {
       if (
-        !/checkDistPluginSdkArtifact|fileContentMatches|pluginCache(?:Exists|Stat|Lstat|Realpath)Sync|readPluginCache(?:File|Directory)|checkPluginCacheEntry|collectBundledPluginPublicSurfaceArtifacts|resolveBundledPluginGeneratedPath|resolveManagedToolsMcpServerConfig|candidateDirsFromArgv1|resolveHostPackageRoot|loadHookFromDir|prepareInternalHooks|resolveNodeEntrypointArg|resolveMxcLauncherPath|resolveResolverScriptPath|resolveSqliteWorkerModuleUrl/.test(
+        !/checkDistPluginSdkArtifact|fileContentMatches|pluginCache(?:Exists|Stat|Lstat|Realpath)Sync|readPluginCache(?:File|Directory)|checkPluginCacheEntry|collectBundledPluginPublicSurfaceArtifacts|resolveBundledPluginGeneratedPath|resolveManagedToolsMcpServerConfig|candidateDirsFromArgv1|resolveHostPackageRoot|loadHookFromDir|prepareInternalHooks|resolveNodeEntrypointArg|resolveMxcLauncherPath|resolveResolverScriptPath|resolveSqliteWorkerModuleUrl|preparePluginModule/.test(
           contents,
         )
       ) {
@@ -372,6 +375,7 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
         return receiver?.type === "Identifier" && fsBindings.has(receiver.name);
       };
       const adaptedOwners = new Set();
+      const imageIdentityOwners = new Set();
       visit(ast, (node, owner) => {
         if (node.type === "CallExpression") {
           const ownerName = owner?.id?.name;
@@ -384,13 +388,18 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
           const isSecretEntrypoint =
             ownerName === "resolveNodeEntrypointArg" &&
             resolvesTo(node.callee, "openRootFileSync", ast, filename);
-          if (isHookDiscovery || isHookLoader || isSecretEntrypoint) {
+          const isModuleOpen =
+            ownerName === "preparePluginModule" &&
+            resolvesTo(node.callee, "openPluginRootFileSync", ast, filename);
+          if (isHookDiscovery || isHookLoader || isSecretEntrypoint || isModuleOpen) {
             const options = node.arguments[0];
             if (options?.type !== "ObjectExpression") {
               throw new Error(`Unsupported standalone admission owner: ${ownerName}`);
             }
             let fact;
-            if (isSecretEntrypoint) {
+            if (isModuleOpen) {
+              fact = `globalThis.__openclawStandaloneModuleOpen(${slice(options)})`;
+            } else if (isSecretEntrypoint) {
               fact = `globalThis.__openclawStandaloneSecretEntrypoint(${slice(options)})`;
             } else {
               const absolute = options.properties.find(
@@ -413,7 +422,9 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
             adaptedOwners.add(owner);
           }
           if (
-            ["prepareInternalHooks", "resolveNodeEntrypointArg"].includes(ownerName) &&
+            ["prepareInternalHooks", "resolveNodeEntrypointArg", "preparePluginModule"].includes(
+              ownerName,
+            ) &&
             node.callee.type === "MemberExpression" &&
             isFsMember(node.callee) &&
             node.callee.property.name === "closeSync" &&
@@ -425,6 +436,19 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
               node.end,
               `("fd" in ${slice(node.arguments[0].object)} && ${slice(node)})`,
             ]);
+          }
+          if (
+            ownerName === "preparePluginModule" &&
+            resolvesTo(node.callee, "sameFileIdentity", ast, filename) &&
+            node.arguments[0]?.type === "MemberExpression" &&
+            node.arguments[0].property.name === "exactIdentity"
+          ) {
+            edits.push([
+              node.start,
+              node.end,
+              `(!("fd" in ${slice(node.arguments[0].object)}) || ${slice(node)})`,
+            ]);
+            imageIdentityOwners.add(owner);
           }
           if (
             ownerName === "resolveResolverScriptPath" &&
@@ -650,10 +674,18 @@ export function createStandaloneMetadataAdapter({ runtimeRoot, embeddedPaths, pa
             "prepareInternalHooks",
             "resolveNodeEntrypointArg",
             "resolveSqliteWorkerModuleUrl",
+            "preparePluginModule",
           ].includes(node.id?.name) &&
           !adaptedOwners.has(node)
         ) {
           throw new Error(`Unsupported standalone metadata owner: ${node.id.name}`);
+        }
+        if (
+          node.type === "FunctionDeclaration" &&
+          node.id?.name === "preparePluginModule" &&
+          !imageIdentityOwners.has(node)
+        ) {
+          throw new Error("Unsupported standalone module identity check");
         }
       });
       let transformed = contents;

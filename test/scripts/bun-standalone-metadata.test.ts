@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import vm from "node:vm";
+import { sameFileIdentity } from "@openclaw/fs-safe/advanced";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { parse } from "acorn";
@@ -18,6 +19,7 @@ import {
   openRootFileSync,
   readFileDescriptorBoundedSync,
 } from "../../src/infra/boundary-file-read.js";
+import { shouldRejectHardlinkedPluginFiles } from "../../src/plugins/hardlink-policy.js";
 import { PUBLIC_SURFACE_SOURCE_EXTENSIONS } from "../../src/plugins/package-entrypoints.js";
 import { openPluginRootFileSync } from "../../src/plugins/path-safety.js";
 import { createPluginCacheSdk, getPluginSdkHostFacts } from "../../src/plugins/plugin-cache-sdk.js";
@@ -49,7 +51,11 @@ function ownerSource(relative: string, functionName?: string): string {
     .join("\n");
 }
 
-function fixture({ withPublicSurfaces = false, minifiedMetadata = false } = {}) {
+function fixture({
+  withPublicSurfaces = false,
+  withPublicSurface = false,
+  minifiedMetadata = false,
+} = {}) {
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-image-metadata-"));
   temporaryRoots.push(runtime);
   const plugin = path.join(runtime, "dist/extensions/example");
@@ -70,6 +76,7 @@ function fixture({ withPublicSurfaces = false, minifiedMetadata = false } = {}) 
   const vault = path.join(runtime, "dist/extensions/vault");
   const vaultResolver = path.join(vault, "vault-secret-ref-resolver.js");
   const sqliteWorker = path.join(runtime, "dist/state/openclaw-state.worker.js");
+  const providerPolicy = path.join(plugin, "provider-policy-api.js");
   const doctorBytes = Buffer.from("export const contract = { version: 1 };\n");
   fs.writeFileSync(entry, "export default {};\n");
   fs.writeFileSync(doctor, doctorBytes);
@@ -111,6 +118,9 @@ function fixture({ withPublicSurfaces = false, minifiedMetadata = false } = {}) 
     path.join(runtime, "node_modules/fixture/index.js"),
   ];
   const sourceFiles: string[] = [];
+  if (withPublicSurface) {
+    imageEntries.push(providerPolicy);
+  }
   if (withPublicSurfaces) {
     const sourcePlugin = path.join(runtime, "extensions/example");
     fs.mkdirSync(sourcePlugin, { recursive: true });
@@ -277,6 +287,7 @@ function fixture({ withPublicSurfaces = false, minifiedMetadata = false } = {}) 
     vault,
     vaultResolver,
     sqliteWorker,
+    providerPolicy,
     safeOpen,
     rootOpen,
     context,
@@ -285,6 +296,122 @@ function fixture({ withPublicSurfaces = false, minifiedMetadata = false } = {}) 
 }
 
 describe("standalone image metadata", () => {
+  it.each([false, true])(
+    "admits public surfaces through the secure loader (minified=%s)",
+    (minified) => {
+      const { runtime, plugin, providerPolicy, context, adapter } = fixture({
+        withPublicSurface: true,
+      });
+      const cache = {
+        sources: new Map(),
+        sourceAliases: new Map(),
+        roots: new Map(),
+        rootAliases: new Map(),
+      };
+      const open = vi.fn(openPluginRootFileSync);
+      const require = createRequire(import.meta.url);
+      const loadModule = vi.fn((filename: string) =>
+        filename === providerPolicy ? { marker: "embedded" } : require(filename),
+      );
+      Object.assign(context, {
+        getPluginCache: () => cache,
+        openPluginRootFileSync: open,
+        sameFileIdentity,
+        shouldRejectHardlinkedPluginFiles,
+        getPluginInstance: () => undefined,
+        resolvePluginRuntimeRecord: () => undefined,
+        getPluginRuntimeGatewayRequestScope: () => undefined,
+        getCachedPluginModuleLoader: () => loadModule,
+      });
+      for (const name of [
+        "getPluginCacheRoot",
+        "mergeRootFacts",
+        "bindPluginCacheRoot",
+        "getPluginCacheSource",
+      ]) {
+        vm.runInContext(ownerSource("src/plugins/plugin-cache.ts", name), context);
+      }
+      for (const [file, name] of [
+        ["src/plugins/plugin-module-loader-cache.ts", "resolvePublicSurfaceInstance"],
+        ["src/plugins/plugin-module-loader-cache.ts", "preparePluginModule"],
+        ["src/plugins/plugin-module-loader-cache.ts", "loadPluginPublicSurfaceModuleSync"],
+        ["src/plugin-sdk/facade-loader.ts", "loadFacadeModuleAtLocationSync"],
+        ["src/plugins/public-surface-loader.ts", "loadValidatedPublicSurfaceModule"],
+      ] as const) {
+        vm.runInContext(
+          ownerSource(file, name).replaceAll(
+            "import.meta.url",
+            JSON.stringify(pathToFileURL(path.join(runtime, "dist/loader.js")).href),
+          ),
+          context,
+        );
+      }
+      const params = {
+        modulePath: providerPolicy,
+        boundaryRoot: plugin,
+        origin: "bundled",
+        surfaceLabel: "bundled plugin public surface example/provider-policy-api.js",
+      };
+      expect(() => context.loadValidatedPublicSurfaceModule(params)).toThrow(
+        "Unable to open bundled plugin public surface",
+      );
+      expect(open).toHaveBeenCalled();
+      open.mockClear();
+      const source = ownerSource(
+        "src/plugins/plugin-module-loader-cache.ts",
+        "preparePluginModule",
+      );
+      const transformed = adapter.transform({
+        filename: path.join(runtime, "dist/plugin-module-loader-cache.js"),
+        contents: minified
+          ? transformSync(source, {
+              minifyIdentifiers: true,
+              minifySyntax: true,
+              minifyWhitespace: true,
+            }).code
+          : source,
+      });
+      vm.runInContext(transformed.contents, context);
+      const first = context.loadValidatedPublicSurfaceModule(params);
+      expect(first).toEqual({ marker: "embedded" });
+      expect(context.loadValidatedPublicSurfaceModule(params)).toBe(first);
+      expect(open).not.toHaveBeenCalled();
+      expect(loadModule).toHaveBeenCalledOnce();
+      expect(cache.sourceAliases.get(providerPolicy)).toBe(providerPolicy);
+      expect(
+        context.getPluginCacheSource(providerPolicy).validatedBoundaries.has(`${plugin}\0false`),
+      ).toBe(true);
+
+      const externalRoot = path.join(runtime, "external-public-surface");
+      fs.mkdirSync(externalRoot);
+      const external = path.join(externalRoot, "api.cjs");
+      fs.writeFileSync(external, 'module.exports = { marker: "external" };\n');
+      const externalParams = {
+        ...params,
+        modulePath: external,
+        boundaryRoot: externalRoot,
+        origin: "global",
+      };
+      expect(context.loadValidatedPublicSurfaceModule(externalParams)).toEqual({
+        marker: "external",
+      });
+      expect(open).toHaveBeenCalledWith(
+        expect.objectContaining({ filePath: external, rejectHardlinks: true }),
+      );
+      const escape = path.join(plugin, "escape.cjs");
+      fs.symlinkSync(external, escape);
+      expect(() =>
+        context.loadValidatedPublicSurfaceModule({ ...params, modulePath: escape }),
+      ).toThrow("Unable to open");
+      const hardlink = path.join(externalRoot, "hardlink.cjs");
+      fs.linkSync(external, hardlink);
+      expect(() =>
+        context.loadValidatedPublicSurfaceModule({ ...externalParams, modulePath: hardlink }),
+      ).toThrow("Unable to open");
+      expect(loadModule).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("retains metadata directories without retaining dependency namespaces", () => {
     const { adapter } = fixture({ withPublicSurfaces: true });
     expect(adapter.directories).toContain("dist/state");
