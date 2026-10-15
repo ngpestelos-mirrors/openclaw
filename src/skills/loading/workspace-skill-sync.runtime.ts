@@ -22,12 +22,7 @@ import {
 import { getSkillsSnapshotVersion, getSkillsResourceVersion } from "../runtime/refresh-state.js";
 import { resolveSkillSnapshotExecutionFileHost } from "../runtime/skill-snapshot-provenance.js";
 import { fingerprintSkillSnapshotConfig } from "../runtime/snapshot-config-fingerprint.js";
-import type {
-  SkillEligibilityContext,
-  SkillEntry,
-  SkillSnapshot,
-  SkillUsagePath,
-} from "../types.js";
+import type { SkillEligibilityContext, SkillSnapshot, SkillUsagePath } from "../types.js";
 import { resolveSkillKey } from "./frontmatter.js";
 import { ensureWritableSkillDirectories } from "./skill-directory-modes.js";
 import { shouldSyncSkillPath } from "./skill-paths.js";
@@ -223,8 +218,8 @@ export async function syncWorkspaceSkills(params: {
     assertCurrent?.();
     const manifest = parseSyncedSkillsManifest(await tryReadJson<unknown>(manifestPath));
     assertCurrent?.();
-    let sourceVersion = getSkillsResourceVersion(sourceWorkspace, sourceScope);
-    let skillsVersion = getSkillsSnapshotVersion(skillRoots?.agentWorkspaceDir ?? sourceDir);
+    const sourceVersion = getSkillsResourceVersion(sourceWorkspace, sourceScope);
+    const skillsVersion = getSkillsSnapshotVersion(sourceWorkspace);
     const expectedManifestKey =
       skillsSnapshot?.version === skillsVersion
         ? resolveSyncedSkillsManifestKey({
@@ -257,23 +252,12 @@ export async function syncWorkspaceSkills(params: {
       ...(skillsSnapshot?.skillFilter ? { skillFilter: skillsSnapshot.skillFilter } : {}),
       ...(skillsSnapshot?.skillOverrides ? { skillOverrides: skillsSnapshot.skillOverrides } : {}),
     };
-    let entries: SkillEntry[];
-    for (;;) {
-      sourceVersion = getSkillsResourceVersion(sourceWorkspace, sourceScope);
-      skillsVersion = getSkillsSnapshotVersion(skillRoots?.agentWorkspaceDir ?? sourceDir);
-      entries = await prepareWorkspaceSkills(skillRoots?.agentWorkspaceDir ?? sourceDir, {
-        ...loadOptions,
-        executionWorkspaceDir: skillRoots?.executionWorkspaceDir,
-        executionWorkspaceFileHost,
-      });
-      assertCurrent?.();
-      if (
-        getSkillsSnapshotVersion(sourceWorkspace) === skillsVersion &&
-        getSkillsResourceVersion(sourceWorkspace, sourceScope) === sourceVersion
-      ) {
-        break;
-      }
-    }
+    const entries = await prepareWorkspaceSkills(sourceWorkspace, {
+      ...loadOptions,
+      executionWorkspaceDir: skillRoots?.executionWorkspaceDir,
+      executionWorkspaceFileHost,
+    });
+    assertCurrent?.();
     if (skillsSnapshot?.librarySelections?.length) {
       const selectedNames = new Set(skillsSnapshot.skills.map((skill) => skill.name));
       const selectedEntries = await prepareSkillLibrarySelection(
