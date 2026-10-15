@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { sendDurableMessageBatchCore } from "../../channels/message/runtime.js";
+import { summarizeOutboundPayloadForTransport } from "../../infra/outbound/payloads.js";
 import { defaultRuntime } from "../../runtime.js";
 import * as participantRecording from "../../sessions/session-participant-recording.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
@@ -676,7 +677,7 @@ describe("gateway agent handler", () => {
     mocks.sendDurableMessageBatch.mockImplementation(
       async (params: Parameters<typeof sendDurableMessageBatchCore>[0]) => {
         for (const payload of params.payloads) {
-          params.onPayload?.(payload);
+          params.onPayload?.(summarizeOutboundPayloadForTransport(payload));
         }
         return { status: "sent", results: [], receipt: {} };
       },
