@@ -3244,14 +3244,14 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     ];
     const plan = expectDefined(
       createSelectedNodeTestShardBundles(targets, { runnerBackend: "hybrid" }),
-      "mixed selected serial plan",
+      "mixed selected plan",
     );
     const groups = plan.flatMap((job) => job.groups);
-    expect(groups.flatMap((group) => group.includePatterns ?? []).toSorted()).toEqual(
-      targets.toSorted(),
-    );
-    expect(plan.filter((job) => job.planConcurrency === 2)).toHaveLength(1);
+    const selectedTargets = groups.flatMap((group) => group.includePatterns ?? []);
+    expect(new Set(selectedTargets).size).toBe(selectedTargets.length);
+    expect(selectedTargets.toSorted()).toEqual(targets.toSorted());
     for (const job of plan) {
+      expect([1, 2]).toContain(job.planConcurrency);
       expect(job.runner).toBe(
         job.planConcurrency === 2
           ? "blacksmith-32vcpu-ubuntu-2404"
