@@ -151,7 +151,12 @@ describe("explicit all-test runtime trials", () => {
   });
 
   it("retains exact Node exceptions and selects broad target remainders on Bun", async () => {
-    for (const target of [nodeFile, `./${nodeFile}`, path.resolve(nodeFile)]) {
+    for (const target of [
+      nodeFile,
+      `./${nodeFile}`,
+      path.resolve(nodeFile),
+      "test/scripts/control-ui-cold-load-trace.test.ts",
+    ]) {
       expect(resolveCiTestRuntimeSelections({ targets: [target] }, "bun-all")).toEqual([
         { runtime: "node" },
       ]);
