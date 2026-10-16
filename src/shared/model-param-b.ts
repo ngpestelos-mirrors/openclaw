@@ -10,9 +10,9 @@ export function inferParamBFromIdOrName(text: string): number | null {
   );
   let best: number | null = null;
   for (const match of matches) {
-    // Expert-count tags such as 17b-128e advertise active parameters, not total size.
+    // Skip active-size expert tags, retaining any independently stated total size.
     if (match[2]) {
-      return null;
+      continue;
     }
     const numRaw = match[1];
     const value = Number(numRaw);

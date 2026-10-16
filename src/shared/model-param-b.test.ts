@@ -12,7 +12,8 @@ describe("shared/model-param-b", () => {
     [{ id: "model", parameterCount: 34_000_000_000 }, false],
     [{ id: "model-4b", parameterCount: 70_000_000_000 }, false],
     [{ id: "model-70b", parameterCount: 4_000_000_000 }, true],
-    [{ id: "llama4-maverick-17b-128e", name: "Llama 4 Maverick 17B" }, false],
+    [{ id: "llama4-maverick-17b-128e" }, false],
+    [{ id: "llama4-maverick-17b-128e", name: "Llama 4 Maverick 400B" }, false],
     [{ id: "qwen3-30b-a3b" }, true],
     [{ id: "qwen3-235b-a22b" }, false],
     [{ id: "model", name: "Unknown size" }, false],
@@ -44,6 +45,13 @@ describe("shared/model-param-b", () => {
   it("preserves total parameter counts when active counts are also present", () => {
     expect(inferParamBFromIdOrName("qwen3-30b-a3b")).toBe(30);
     expect(inferParamBFromIdOrName("qwen3-235b-a22b")).toBe(235);
+  });
+
+  it.each([
+    "llama4-maverick-17b-128e Llama 4 Maverick 400B",
+    "Llama 4 Maverick 400B llama4-maverick-17b-128e",
+  ])("preserves independent total size beside expert tags: %s", (text) => {
+    expect(inferParamBFromIdOrName(text)).toBe(400);
   });
 
   it("ignores malformed, zero, and non-delimited matches", () => {
