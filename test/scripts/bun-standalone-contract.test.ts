@@ -41,6 +41,29 @@ describe("standalone build interface", () => {
     expect(() => parseStandaloneArguments([])).toThrow("Usage:");
   });
 
+  it("accepts one plugin list independently of the compilation mode", () => {
+    for (const flags of [
+      ["--plugins", "codex, slack,codex", "--bytecode"],
+      ["--bytecode", "--plugins", "codex,slack"],
+    ]) {
+      expect(parseStandaloneArguments(["out", ...flags])).toEqual({
+        outputDirectory: "out",
+        mode: "bytecode",
+        compileFlags: ["--bytecode"],
+        pluginIds: ["codex", "slack"],
+      });
+    }
+    for (const flags of [
+      ["--plugins"],
+      ["--plugins", ""],
+      ["--plugins", "codex,"],
+      ["--plugins", "--bytecode"],
+      ["--plugins", "codex", "--plugins", "slack"],
+    ]) {
+      expect(() => parseStandaloneArguments(["out", ...flags])).toThrow("--plugins");
+    }
+  });
+
   it("refuses experimental AOT on a compiler without that capability", () => {
     expect(() =>
       assertStandaloneCompiler("aot", "--compile  Build an executable\n--bytecode  Cache bytecode"),
@@ -102,6 +125,7 @@ describe("standalone build interface", () => {
       bun: { version: "1.4.3", revision: "1.4.3+fixture", executableSha256: "a".repeat(64) },
       openclaw: { version: "2026.10.3", commit: "b".repeat(40) },
       embedded: { modules: 4, plugins: 1, workers: 2, inlineWorkers: 0 },
+      plugins: { embedded: ["slack", "codex"], omitted: ["signal", "matrix"] },
       sqlite: {
         source: "bun",
         version: "3.53.4",
@@ -138,6 +162,7 @@ describe("standalone build interface", () => {
         },
       },
       embedded: { modules: 4, plugins: 1, workers: 2, inlineWorkers: 0 },
+      plugins: { embedded: ["codex", "slack"], omitted: ["matrix", "signal"] },
     });
     expect(manifest.runtime.sha256).toBe(
       "c1763658d97365c3501098c7326f9a049ec6107223baaea9f96cdb19e7c6cf9a",

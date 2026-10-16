@@ -29,6 +29,11 @@ import { createStandaloneEntrySource } from "./lib/bun-standalone-entry.mjs";
 import { rewriteStandaloneImports } from "./lib/bun-standalone-imports.mjs";
 import { createStandaloneMetadataAdapter } from "./lib/bun-standalone-metadata.mjs";
 import { createStandaloneNativeAdapter } from "./lib/bun-standalone-native.mjs";
+import {
+  planStandalonePlugins,
+  pruneStandalonePluginDirectories,
+  selectStandalonePluginModules,
+} from "./lib/bun-standalone-plugins.mjs";
 import { createStandaloneRequireAdapter } from "./lib/bun-standalone-require.mjs";
 import {
   planStandaloneRuntime,
@@ -82,12 +87,14 @@ if (fs.existsSync(destinationRoot)) {
 if (!fs.existsSync(path.join(sourceRoot, "dist/cli-startup-metadata.json"))) {
   throw new Error("Run pnpm build before building a standalone executable.");
 }
+const plugins = planStandalonePlugins(sourceRoot, options.pluginIds);
 fs.mkdirSync(path.dirname(destinationRoot), { recursive: true });
 const outputRoot = fs.mkdtempSync(path.join(path.dirname(destinationRoot), ".standalone-build-"));
 const runtimeRoot = path.join(outputRoot, "runtime");
 console.log(`Building ${mode} standalone in ${outputRoot}`);
 
 copyStandaloneRuntime(sourceRoot, runtimeRoot);
+pruneStandalonePluginDirectories(runtimeRoot, plugins);
 const declaredPluginAssets = new Set(
   listPackagedStaticExtensionAssetOutputs({ rootDir: runtimeRoot }),
 );
@@ -151,7 +158,7 @@ function runtimeJavaScriptEntries(directory, relative = "") {
   return result;
 }
 // Public built entries are independently addressable. Shared chunks stay shared and lazy.
-const moduleEntries = runtimeJavaScriptEntries(path.join(runtimeRoot, "dist"))
+let moduleEntries = runtimeJavaScriptEntries(path.join(runtimeRoot, "dist"))
   .map((entry) => `dist/${entry}`)
   .toSorted();
 const workspaceEntries = [...WORKSPACE_PACKAGE_ALIAS_ENTRIES];
@@ -187,6 +194,7 @@ moduleEntries.push(
     .filter((entry) => entry.endsWith(".mjs"))
     .toSorted(),
 );
+moduleEntries = await selectStandalonePluginModules(runtimeRoot, moduleEntries, plugins);
 const workerEntries = discoverStandaloneWorkers({
   runtimeRoot,
   moduleEntries,
@@ -694,6 +702,7 @@ const manifest = await createStandaloneManifest({
     executableSha256: await sha256File(process.execPath),
   },
   openclaw: openclawIdentity,
+  plugins,
   embedded: {
     workers: workerEntries.length,
     plugins: new Set(
