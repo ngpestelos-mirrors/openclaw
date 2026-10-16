@@ -1,5 +1,5 @@
 /* @vitest-environment jsdom */
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
 import { GatewayBrowserClient } from "../../../api/gateway.ts";
 import type { CronJob } from "../../../api/types.ts";
@@ -8,6 +8,7 @@ import {
   type CiAutomationOption,
 } from "../../../lib/session-pr-automation-spec.ts";
 import {
+  createHello as hello,
   createGatewayHarness,
   flushSync,
 } from "../../../lib/session-pull-requests.test-support.ts";
@@ -16,11 +17,6 @@ import "./chat-ci-automation-control.ts";
 
 const sessionKey = "agent:main:dashboard:ci-test";
 const cronStatus = { enabled: true, triggersEnabled: true, jobs: 0 };
-const hello = (scopes = ["operator.admin"]) => ({
-  type: "hello-ok" as const,
-  protocol: 1,
-  auth: { role: "operator", scopes },
-});
 const pr = {
   owner: "example",
   repo: "project",
@@ -53,103 +49,88 @@ function job(sessionId: string, option: CiAutomationOption = "autoFix"): CronJob
   };
 }
 
-async function setup() {
-  const harness = createGatewayHarness();
-  const client = new GatewayBrowserClient({ url: "ws://example.test" });
-  const request = vi.spyOn(client, "request");
-  const respond = (
-    jobs: () => CronJob[] = () => [],
-    writes: Partial<Record<"cron.add" | "cron.update", Promise<unknown>>> = {},
-  ) =>
-    request.mockImplementation(async (method) => {
-      if (method === "cron.status") {
-        return { ...cronStatus, jobs: jobs().length };
-      }
-      if ((method === "cron.add" || method === "cron.update") && writes[method]) {
-        return writes[method];
-      }
-      return inventory(jobs());
-    });
-  respond();
-  harness.setSnapshot({
-    ...harness.gateway.snapshot,
-    client,
-    hello: hello(),
+type WriteReply = Promise<unknown> | ((params: unknown) => Promise<unknown>);
+class Fixture {
+  readonly harness = createGatewayHarness();
+  readonly client = new GatewayBrowserClient({ url: "ws://example.test" });
+  readonly root = document.createElement("details");
+  readonly element: ChatCiAutomationElement;
+  jobs: CronJob[] = [];
+  read?: Promise<ReturnType<typeof inventory>>;
+  writes: Partial<Record<"cron.add" | "cron.update", WriteReply>> = {};
+  readonly request = vi.spyOn(this.client, "request").mockImplementation(async (method, params) => {
+    if (method === "cron.status") {
+      return { ...cronStatus, jobs: this.jobs.length };
+    }
+    const write =
+      method === "cron.add" || method === "cron.update" ? this.writes[method] : undefined;
+    return typeof write === "function"
+      ? write(params)
+      : (write ?? this.read ?? inventory(this.jobs));
   });
-  const root = document.createElement("details");
-  root.className = "chat-pr__checks";
-  document.body.append(root);
-  onTestFinished(() => {
-    root.replaceChildren();
-    root.remove();
-    vi.restoreAllMocks();
-  });
-  root.append(document.createElement("openclaw-chat-ci-automation"));
-  const element = root.querySelector<ChatCiAutomationElement>("openclaw-chat-ci-automation")!;
-  Object.assign(element, { pullRequest: pr, gateway: harness.gateway, sessionKey });
-  const paint = async (sessionId: string) => {
-    element.sessionId = sessionId;
-    await element.updateComplete;
-    return element;
-  };
-  await paint("first");
-  const open = async () => {
-    root.open = true;
-    root.dispatchEvent(new Event("toggle"));
-    await element.updateComplete;
-  };
-  const settle = async () => {
-    await flushSync();
-    await element.updateComplete;
-    await flushSync();
-    await element.updateComplete;
-  };
-  const checkbox = (option: CiAutomationOption = "autoFix") =>
-    root.querySelector<HTMLInputElement>(`input[name="${option}"]`)!;
-  const ready = async () => {
-    await open();
-    await settle();
-  };
-  const calls = (method: string) => request.mock.calls.filter(([name]) => name === method);
-  const phase = (next: "reconnecting" | "connected") =>
-    harness.setSnapshot({ ...harness.gateway.snapshot, phase: next });
-  const auth = (scope: string) =>
-    harness.setSnapshot({ ...harness.gateway.snapshot, hello: hello([scope]) });
-  const toggles = (fix: boolean, merge: boolean) => {
-    expect([checkbox().checked, checkbox("autoMerge").checked]).toEqual([fix, merge]);
-  };
-  return {
-    ...harness,
-    root,
-    request,
-    element,
-    paint,
-    open,
-    settle,
-    checkbox,
-    respond,
-    ready,
-    calls,
-    toggles,
-    phase,
-    auth,
-  };
-}
 
+  constructor() {
+    this.snapshot({ client: this.client, hello: hello(["operator.admin"]) });
+    this.root.className = "chat-pr__checks";
+    document.body.append(this.root);
+    onTestFinished(() => {
+      this.root.replaceChildren();
+      this.root.remove();
+      vi.restoreAllMocks();
+    });
+    this.root.append(document.createElement("openclaw-chat-ci-automation"));
+    this.element = this.root.querySelector<ChatCiAutomationElement>("openclaw-chat-ci-automation")!;
+    Object.assign(this.element, { pullRequest: pr, gateway: this.harness.gateway, sessionKey });
+  }
+  async paint(sessionId: string) {
+    this.element.sessionId = sessionId;
+    await this.element.updateComplete;
+  }
+  async open(settled = true) {
+    this.root.open = true;
+    this.root.dispatchEvent(new Event("toggle"));
+    await this.element.updateComplete;
+    if (settled) {
+      await this.settle();
+    }
+  }
+  async settle() {
+    await flushSync();
+    await this.element.updateComplete;
+    await flushSync();
+    await this.element.updateComplete;
+  }
+  checkbox(option: CiAutomationOption = "autoFix") {
+    return this.root.querySelector<HTMLInputElement>(`input[name="${option}"]`)!;
+  }
+  calls(method: string) {
+    return this.request.mock.calls.filter(([name]) => name === method);
+  }
+  snapshot(patch: Partial<Fixture["harness"]["gateway"]["snapshot"]>) {
+    this.harness.setSnapshot({ ...this.harness.gateway.snapshot, ...patch });
+  }
+  toggles(fix: boolean, merge: boolean) {
+    expect([this.checkbox().checked, this.checkbox("autoMerge").checked]).toEqual([fix, merge]);
+  }
+}
 describe("CI automation popup scope", () => {
+  let h: Fixture;
+  beforeEach(async () => {
+    h = new Fixture();
+    await h.paint("first");
+  });
   it("keeps concurrent intents across stale inventory and out-of-order acknowledgements", async () => {
-    const h = await setup();
     const staleRead = createDeferred<ReturnType<typeof inventory>>();
     const fixWrite = createDeferred<CronJob>();
     const mergeWrite = createDeferred<{ job: CronJob }>();
     const fix = job("first");
     const merge = job("first", "autoMerge");
-    let stored = [fix];
-    h.respond(() => stored, { "cron.update": fixWrite.promise, "cron.add": mergeWrite.promise });
-    await h.ready();
+    h.jobs = [fix];
+    h.writes = { "cron.update": fixWrite.promise, "cron.add": mergeWrite.promise };
+    await h.open();
     const before = h.root.textContent;
     h.request.mockImplementationOnce(() => staleRead.promise);
-    h.emit({}, "cron");
+    h.harness.emit({}, "cron");
     await h.element.updateComplete;
     h.checkbox().click();
     expect(h.checkbox().checked).toBe(false);
@@ -166,17 +147,17 @@ describe("CI automation popup scope", () => {
     staleRead.resolve(inventory([job("first")]));
     await h.settle();
     h.toggles(false, true);
-    stored.push(merge);
+    h.jobs.push(merge);
     mergeWrite.resolve({ job: merge });
-    h.emit({}, "cron");
-    h.emit({}, "cron");
+    h.harness.emit({}, "cron");
+    h.harness.emit({}, "cron");
     await h.settle();
     expect(h.checkbox().checked).toBe(false);
     expect(h.checkbox().disabled).toBe(true);
     expect(h.checkbox("autoMerge").disabled).toBe(false);
     expect(h.calls("cron.list")).toHaveLength(2);
     const disabledFix = { ...fix, enabled: false, configRevision: "v2" };
-    stored = [disabledFix, merge];
+    h.jobs = [disabledFix, merge];
     fixWrite.resolve(disabledFix);
     await h.settle();
     expect(h.calls("cron.list")).toHaveLength(3);
@@ -186,28 +167,21 @@ describe("CI automation popup scope", () => {
   });
 
   it("retains a lost-ack error through sibling completion and reconciles without replay", async () => {
-    const h = await setup();
     const fixWrite = createDeferred<{ job: CronJob }>();
     const mergeWrite = createDeferred<{ job: CronJob }>();
-    h.request.mockImplementation(async (method, params) => {
-      if (method === "cron.status") {
-        return cronStatus;
-      }
-      if (method === "cron.add") {
-        return (params as { declarationKey: string }).declarationKey.endsWith(":autoFix")
-          ? fixWrite.promise
-          : mergeWrite.promise;
-      }
-      return inventory([]);
-    });
-    await h.ready();
+    h.writes["cron.add"] = (params) =>
+      (params as { declarationKey: string }).declarationKey.endsWith(":autoFix")
+        ? fixWrite.promise
+        : mergeWrite.promise;
+    await h.open();
     h.checkbox().click();
     h.checkbox("autoMerge").click();
-    h.emit({}, "cron");
+    h.harness.emit({}, "cron");
     fixWrite.reject(new Error("Lost acknowledgement"));
     await h.settle();
     h.toggles(false, true);
-    h.respond(() => [job("first"), job("first", "autoMerge")]);
+    h.jobs = [job("first"), job("first", "autoMerge")];
+    h.writes = {};
     mergeWrite.resolve({ job: job("first", "autoMerge") });
     await h.settle();
     expect(h.root.textContent).toContain("Lost acknowledgement");
@@ -221,16 +195,15 @@ describe("CI automation popup scope", () => {
   it.each(["identity", "connection", "read scope"])(
     "settles a visible popup without %s until its prerequisites change",
     async (missing) => {
-      const h = await setup();
       if (missing === "identity") {
         await h.paint("");
       } else if (missing === "connection") {
-        h.phase("reconnecting");
+        h.snapshot({ phase: "reconnecting" });
       } else {
-        h.auth("operator.sessions.read");
+        h.snapshot({ hello: hello(["operator.sessions.read"]) });
       }
       await h.element.updateComplete;
-      await h.open();
+      await h.open(false);
       await h.element.updateComplete;
       expect(await h.element.updateComplete).toBe(true);
       expect(h.request).not.toHaveBeenCalled();
@@ -239,16 +212,15 @@ describe("CI automation popup scope", () => {
   );
 
   it("ignores a delayed inventory after session replacement", async () => {
-    const h = await setup();
     const oldRead = createDeferred<ReturnType<typeof inventory>>();
-    h.request.mockImplementation(async (method) =>
-      method === "cron.status" ? { ...cronStatus, jobs: 1 } : oldRead.promise,
-    );
-    await h.open();
+    h.jobs = [job("first")];
+    h.read = oldRead.promise;
+    await h.open(false);
     expect(h.request.mock.calls.some(([method]) => method === "cron.list")).toBe(true);
     await h.paint("replacement");
-    h.respond();
-    await h.ready();
+    h.jobs = [];
+    h.read = undefined;
+    await h.open();
     oldRead.resolve(inventory([job("first")]));
     await h.settle();
     expect(h.checkbox().checked).toBe(false);
@@ -259,17 +231,16 @@ describe("CI automation popup scope", () => {
   it.each(["session", "auth", "gateway"])(
     "ignores a rejected write after %s replacement",
     async (change) => {
-      const h = await setup();
       const pending = createDeferred<{ job: CronJob }>();
-      h.respond(() => [], { "cron.add": pending.promise });
-      await h.ready();
+      h.writes["cron.add"] = pending.promise;
+      await h.open();
       h.checkbox().click();
       await h.element.updateComplete;
       if (change === "session") {
         await h.paint("replacement");
-        await h.open();
+        await h.open(false);
       } else if (change === "auth") {
-        h.auth("operator.read");
+        h.snapshot({ hello: hello(["operator.read"]) });
       } else {
         h.element.gateway = createGatewayHarness().gateway;
       }
@@ -283,19 +254,19 @@ describe("CI automation popup scope", () => {
   );
 
   it("does not apply an old write to a reconnected Gateway or replay it", async () => {
-    const h = await setup();
     const pending = createDeferred<CronJob>();
-    h.respond(() => [job("first")], { "cron.update": pending.promise });
-    await h.ready();
+    h.jobs = [job("first")];
+    h.writes["cron.update"] = pending.promise;
+    await h.open();
     expect(h.checkbox().checked).toBe(true);
     h.checkbox().checked = false;
     h.checkbox().dispatchEvent(new Event("change"));
     await h.element.updateComplete;
     expect(h.calls("cron.update")).toHaveLength(1);
-    h.phase("reconnecting");
+    h.snapshot({ phase: "reconnecting" });
     await h.element.updateComplete;
-    h.respond(() => [job("first")]);
-    h.phase("connected");
+    h.writes = {};
+    h.snapshot({ phase: "connected" });
     await h.settle();
     pending.resolve({ ...job("first"), enabled: false });
     await h.settle();

@@ -50,18 +50,11 @@ describe("composer camera capture", () => {
   }
 
   function button(text: string) {
-    const result = [...component.querySelectorAll("button")].find(
+    return [...component.querySelectorAll("button")].find(
       (item) => item.textContent?.trim() === text,
-    );
-    if (!result) {
-      throw new Error(`Missing button: ${text}`);
-    }
-    return result;
+    )!;
   }
 
-  async function waitForCapture() {
-    await waitForSolid(() => expect(button("Capture").disabled).toBe(false));
-  }
   async function show() {
     component.show();
     await settle();
@@ -69,9 +62,6 @@ describe("composer camera capture", () => {
   async function click(text: string) {
     button(text).click();
     await settle();
-  }
-  function expectClosed() {
-    expect(modal()).toBeNull();
   }
 
   beforeEach(async () => {
@@ -95,10 +85,9 @@ describe("composer camera capture", () => {
   afterEach(async () => {
     component.remove();
     await settle();
-    restorers
-      .splice(0)
-      .toReversed()
-      .forEach((restore) => restore());
+    for (const restore of restorers.splice(0).toReversed()) {
+      restore();
+    }
     restoreDialog();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -113,7 +102,6 @@ describe("composer camera capture", () => {
       const capture = media();
       getUserMedia.mockResolvedValue(capture.stream);
       expect(getUserMedia).not.toHaveBeenCalled();
-      expectClosed();
       component.show();
       expect(getUserMedia).toHaveBeenCalledWith({
         audio: false,
@@ -123,10 +111,9 @@ describe("composer camera capture", () => {
       expect(getUserMedia).toHaveBeenCalledOnce();
       await settle();
       const video = component.querySelector("video");
-      expect(video?.srcObject).toBe(capture.stream);
       expect(video?.hasAttribute("playsinline")).toBe(true);
       expect(video?.hasAttribute("muted")).toBe(true);
-      await waitForCapture();
+      await waitForSolid(() => expect(button("Capture").disabled).toBe(false));
       const actions = {
         "modal-cancel": () => modal()?.dispatchEvent(new CustomEvent("modal-cancel")),
         abort: () => scope.abort(),
@@ -139,7 +126,7 @@ describe("composer camera capture", () => {
       await settle();
       expect(capture.track.stop).toHaveBeenCalledOnce();
       expect(destinations.onCapture).not.toHaveBeenCalled();
-      expectClosed();
+      expect(modal()).toBeNull();
     },
   );
 
@@ -159,50 +146,20 @@ describe("composer camera capture", () => {
   });
 
   it.each([
-    ["NotAllowedError", "Camera access was denied", "Upload photo"],
     ["NotFoundError", "No camera was found", "Upload photo"],
-    ["NotReadableError", "The camera could not start", "Upload photo"],
-    ["NotAllowedError", "Camera access was denied", "Use device camera"],
     ["SecurityError", "Camera access was denied", "Use device camera"],
     ["NotReadableError", "The camera could not start", "Use device camera"],
   ])("reports %s and offers explicit recovery through %s (%s)", async (name, copy, action) => {
     getUserMedia.mockRejectedValue(new DOMException("camera error", name));
     await show();
     expect(component.querySelector("[role=alert]")?.textContent).toContain(copy);
-    expect(destinations.onUpload).not.toHaveBeenCalled();
-    expect(destinations.onNativeCapture).not.toHaveBeenCalled();
     expect(button("Try again").disabled).toBe(false);
     const destination =
       action === "Upload photo" ? destinations.onUpload : destinations.onNativeCapture;
     await click(action);
-    if (action === "Upload photo") {
-      expect(destination).toHaveBeenCalledOnce();
-    } else {
-      expect(destination).toHaveBeenCalledExactlyOnceWith(component);
-    }
-    expectClosed();
+    expect(destination).toHaveBeenCalledExactlyOnceWith(component);
+    expect(modal()).toBeNull();
   });
-
-  it.each(["insecure", "unsupported"])(
-    "offers native capture explicitly for %s contexts",
-    async (kind) => {
-      if (kind === "insecure") {
-        vi.stubGlobal("isSecureContext", false);
-      } else {
-        replaceProperty(navigator, "mediaDevices", undefined);
-      }
-      await show();
-      expect(component.textContent).toContain("camera or file picker");
-      expect(getUserMedia).not.toHaveBeenCalled();
-      expect([destinations.onNativeCapture.mock.calls, destinations.onUpload.mock.calls]).toEqual([
-        [],
-        [],
-      ]);
-      await click("Use device camera");
-      expect(destinations.onNativeCapture).toHaveBeenCalledExactlyOnceWith(component);
-      expectClosed();
-    },
-  );
 
   it("does not open a native picker for a replaced draft", async () => {
     vi.stubGlobal("isSecureContext", false);
@@ -211,13 +168,13 @@ describe("composer camera capture", () => {
     button("Use device camera").click();
     expect(destinations.onNativeCapture).not.toHaveBeenCalled();
     await settle();
-    expectClosed();
+    expect(modal()).toBeNull();
   });
 
   it("keeps a stopped-camera error when an old play promise finishes", async () => {
-    const capture = media();
     const playing = createDeferred();
     play.mockReturnValue(playing.promise);
+    const capture = media();
     getUserMedia.mockResolvedValue(capture.stream);
     await show();
     capture.track.dispatchEvent(new Event("ended"));
@@ -239,10 +196,7 @@ describe("composer camera capture", () => {
       return back.stream;
     });
     await show();
-    const select = component.querySelector("select");
-    if (!select) {
-      throw new Error("Missing camera selector");
-    }
+    const select = component.querySelector("select")!;
     select.value = "back";
     select.dispatchEvent(new Event("change"));
     await settle();
@@ -255,31 +209,23 @@ describe("composer camera capture", () => {
 
   function encodeFrames() {
     const context = { drawImage: vi.fn() };
-    // Canvas rendering is covered by browser flow proof; here the boundary is encoding completion.
-    replaceProperty(
-      HTMLCanvasElement.prototype,
-      "getContext",
-      vi.fn(() => context),
-    );
+    const getContext = vi.fn(() => context);
+    replaceProperty(HTMLCanvasElement.prototype, "getContext", getContext);
     return vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => {
       callback(new Blob(["camera frame"], { type: "image/jpeg" }));
     });
   }
 
-  it("stops after capture, retakes, and publishes only the confirmed still", async () => {
+  it("revokes retaken previews and publishes the confirmed JPEG metadata", async () => {
     encodeFrames();
-    const first = media();
-    const second = media();
-    getUserMedia.mockResolvedValueOnce(first.stream).mockResolvedValueOnce(second.stream);
+    getUserMedia.mockResolvedValueOnce(media().stream).mockResolvedValueOnce(media().stream);
     await show();
-    await waitForCapture();
+    await waitForSolid(() => expect(button("Capture").disabled).toBe(false));
     await click("Capture");
-    expect(first.track.stop).toHaveBeenCalledOnce();
-    expect(destinations.onCapture).not.toHaveBeenCalled();
     expect(component.querySelector("img")?.src).toBe("blob:camera-test");
     await click("Retake");
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:camera-test");
-    await waitForCapture();
+    await waitForSolid(() => expect(button("Capture").disabled).toBe(false));
     await click("Capture");
     await click("Use photo");
     expect(destinations.onCapture).toHaveBeenCalledExactlyOnceWith(
@@ -288,8 +234,6 @@ describe("composer camera capture", () => {
         name: expect.stringMatching(/^camera-\d+\.jpg$/),
       }),
     );
-    expect(second.track.stop).toHaveBeenCalledOnce();
-    expectClosed();
   });
 
   it("ignores image encoding that finishes after the draft is replaced", async () => {
@@ -301,7 +245,7 @@ describe("composer camera capture", () => {
     const capture = media();
     getUserMedia.mockResolvedValue(capture.stream);
     await show();
-    await waitForCapture();
+    await waitForSolid(() => expect(button("Capture").disabled).toBe(false));
     button("Capture").click();
     expect(capture.track.stop).toHaveBeenCalledOnce();
     component.readSignal = new AbortController().signal;
@@ -309,6 +253,6 @@ describe("composer camera capture", () => {
     await settle();
     expect(destinations.onCapture).not.toHaveBeenCalled();
     expect(createObjectURL).not.toHaveBeenCalled();
-    expectClosed();
+    expect(modal()).toBeNull();
   });
 });

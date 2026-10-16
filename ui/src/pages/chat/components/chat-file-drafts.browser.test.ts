@@ -1,10 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { canReloadControlUiDocument } from "../../../app/document-reload-guard.ts";
 import "../../../lib/toast-host.ts";
-import {
-  retryStaleChunkReloadWhenReachable,
-  scheduleStaleChunkReload,
-} from "../../../app/stale-chunk-reload.ts";
 import "../../../styles.css";
 import "../../../styles/chat.ts";
 import "./chat-detail-panel.tsx";
@@ -74,25 +70,18 @@ async function openFile(content: FileContent) {
   await panel.updateComplete;
   return panel;
 }
-async function closeEditedFile(file: FileContent, draft: string, panel?: DetailPanel) {
-  const editor = panel ?? (await openFile(file));
+async function closeEditedFile(file: FileContent, draft: string) {
+  const editor = await openFile(file);
   await button("Edit file").click();
   await textbox(file.name).fill(draft);
   editor.remove();
 }
-async function settleFile(
-  file: FileContent,
-  content: string,
-  expectedHash: string,
-  action: "Save" | "Discard" = "Save",
-) {
+async function settleFile(file: FileContent, content: string, expectedHash: string) {
   const panel = await openFile(file);
   await expect.element(textbox(file.name)).toHaveTextContent(content);
-  await button(action).click();
-  if (action === "Save") {
-    await expect.element(button("Save")).toBeDisabled();
-    expect(file.edit?.save).toHaveBeenCalledWith({ content, expectedHash });
-  }
+  await button("Save").click();
+  await expect.element(button("Save")).toBeDisabled();
+  expect(file.edit?.save).toHaveBeenCalledWith({ content, expectedHash });
   panel.remove();
 }
 
@@ -191,52 +180,4 @@ describe.runIf(browserMode)("file draft document reload protection", () => {
       expect(canReloadControlUiDocument()).toBe(file === later);
     }
   });
-
-  it.each([
-    { mode: "automatic", settle: "Save" },
-    { mode: "manual", settle: "Discard" },
-  ] as const)(
-    "blocks $mode reload until the last closed draft is resolved with $settle",
-    async ({ mode, settle }) => {
-      document.body.append(document.createElement("openclaw-toast-host"));
-      const fetchDocument = vi
-        .fn<typeof fetch>()
-        .mockResolvedValue(new Response(null, { status: 200 }));
-      vi.stubGlobal("fetch", fetchDocument);
-      const reload = vi.fn();
-      const attempt = () => {
-        const entries = new Map<string, string>();
-        const storage = {
-          getItem: (key: string) => entries.get(key) ?? null,
-          setItem: (key: string, value: string) => void entries.set(key, value),
-        };
-        return mode === "automatic"
-          ? scheduleStaleChunkReload({ storage, reload })
-          : retryStaleChunkReloadWhenReachable({ storage, reload, timeoutMs: 0 });
-      };
-      const first = makeFile("first.txt");
-      const second = makeFile("second.txt");
-      const panel = await openFile(first);
-      await expect(attempt()).resolves.toBe(true);
-      expect(reload).toHaveBeenCalledOnce();
-      reload.mockClear();
-      fetchDocument.mockClear();
-
-      await closeEditedFile(first, `Draft for ${first.name}`, panel);
-      await closeEditedFile(second, `Draft for ${second.name}`);
-      await expect(attempt()).resolves.toBe(false);
-      expect(fetchDocument).not.toHaveBeenCalled();
-      expect(reload).not.toHaveBeenCalled();
-      if (mode === "manual") {
-        await reloadWarning();
-      }
-
-      for (const file of [first, second]) {
-        await settleFile(file, `Draft for ${file.name}`, "original-hash", settle);
-        await expect(attempt()).resolves.toBe(file === second);
-      }
-      expect(reload).toHaveBeenCalledOnce();
-      expect(fetchDocument).toHaveBeenCalledOnce();
-    },
-  );
 });

@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
 
 import { expectDefined } from "@openclaw/normalization-core";
-import { createSignal, flush } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
 import type { ChatAttachment } from "../../../lib/chat/chat-types.ts";
 import type { SolidBridgeElement } from "../../../lit/solid-bridge.ts";
-import { mountSolid } from "../../../test-helpers/mount-solid.ts";
+import { mountSolid } from "../../../test-helpers/solid-render.tsx";
 import { waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import * as payloads from "../attachment-payload-store.ts";
 import "../../../lib/toast-host.ts";
@@ -22,25 +21,6 @@ import {
   handleChatAttachmentPaste,
 } from "./chat-attachments.ts";
 import { AttachmentPreview } from "./chat-attachments.tsx";
-
-function mountPreview(container: HTMLDivElement) {
-  let update!: (props: ChatAttachmentControlsProps) => void;
-  let revision = 0;
-  const mounted = mountSolid(
-    () => {
-      const [props, setProps] = createSignal<
-        ChatAttachmentControlsProps & { readRevision: number }
-      >({ readRevision: revision });
-      update = (next) => {
-        setProps({ ...next, readRevision: ++revision });
-        flush();
-      };
-      return <AttachmentPreview {...props()} />;
-    },
-    { container },
-  );
-  return { update, unmount: mounted.unmount };
-}
 
 it("memoizes each advertised policy and derives the default decoded frame budget", () => {
   const policy = {
@@ -193,8 +173,6 @@ function previewFixture(
   extra: ChatAttachmentControlsProps = {},
   withReads = false,
 ) {
-  const container = document.createElement("div");
-  const preview = mountPreview(container);
   const h = readFixture(initial, () => redraw());
   const props = {
     ...h.props,
@@ -202,10 +180,11 @@ function previewFixture(
     attachmentLimits: undefined,
     attachmentReads: withReads ? h.reads : undefined,
   };
-  const redraw = () => preview.update({ ...props, attachments: h.attachments });
-  onTestFinished(preview.unmount);
-  redraw();
-  return Object.assign(h, { container, previewProps: props });
+  const view = () => ({ ...props, attachments: h.attachments, readRevision: {} });
+  const preview = mountSolid(AttachmentPreview, view());
+  const redraw = () => preview.update(view());
+  onTestFinished(preview.dispose);
+  return Object.assign(h, { container: preview.container, previewProps: props });
 }
 
 function fakeTimers() {
@@ -302,8 +281,7 @@ describe("chat attachment read failures", () => {
 
       expect(payloads.getChatAttachmentDataUrl(attachment)).toBe("data:image/png;base64,aGk=");
       expect(payloads.getChatAttachmentBlob(attachment)).not.toBeNull();
-      expect(reads.pendingReads).toBe(0);
-      expect(h.attachments).toEqual([attachment]);
+      expect(h).toMatchObject({ reads: { pendingReads: 0 }, attachments: [attachment] });
       expect(create).toHaveBeenCalledTimes(presented ? 1 : 0);
       expect(revoke).not.toHaveBeenCalled();
       payloads.releaseChatAttachmentPayload(attachment.id);
@@ -339,12 +317,9 @@ describe("chat attachment read failures", () => {
       expect(
         tiles[1]?.querySelector('.chat-attachment-error[role="img"]')?.getAttribute("aria-label"),
       ).toContain("bad.png");
-      const tooltips = [...(tiles[1]?.querySelectorAll("openclaw-tooltip") ?? [])];
       expect(
-        tooltips.some(
-          (tooltip) => tooltip.content.includes("bad.png") && !tooltip.content.startsWith("Remove"),
-        ),
-      ).toBe(true);
+        tiles[1]?.querySelector(".chat-attachment-error")?.closest("openclaw-tooltip")?.content,
+      ).toContain("bad.png");
       expect(container.querySelector(".chat-attachment-failures")?.textContent).toContain(
         "Could not attach: bad.png",
       );
@@ -352,8 +327,9 @@ describe("chat attachment read failures", () => {
       expect(reads.pendingReads).toBe(1);
       await vi.advanceTimersByTimeAsync(15_001);
       expect(reads.pendingReads).toBe(0);
-      expect(container.querySelector(".chat-attachment-thumb--error")).not.toBeNull();
-      expect(container.querySelector(".chat-attachment-error")).not.toBeNull();
+      expect(
+        container.querySelector(".chat-attachment-thumb--error .chat-attachment-error"),
+      ).not.toBeNull();
       const removeButton = container.querySelector<HTMLButtonElement>(".chat-attachment-remove");
       expect(removeButton).not.toBeNull();
       removeButton?.click();
@@ -390,8 +366,7 @@ describe("chat attachment read failures", () => {
   ])("enforces admission: $mode", async ({ ready, limit, batches, admitted, names, rejected }) => {
     fakeTimers();
     const h = readFixture(ready);
-    const { props } = h;
-    props.attachmentLimits = { maxBytes: 8, maxImageBytes: 8, maxBatchBytes: limit };
+    h.props.attachmentLimits = { maxBytes: 8, maxImageBytes: 8, maxBatchBytes: limit };
     StubFileReader.heldNames = new Set(batches.flat().map((file) => file.name));
     for (const [index, files] of batches.entries()) {
       expect(h.append(files)).toBe(admitted[index]);
@@ -417,48 +392,44 @@ describe("chat attachment read failures", () => {
     await expectOverflowToast("overflow.txt");
   });
 
-  it("rejects oversized non-resizable images against hello policy before encoding", async () => {
-    const onAttachmentsChange = vi.fn();
-    const limits = { maxBytes: 8, maxImageBytes: 4, maxBatchBytes: 8 };
-    handleChatAttachmentPaste(
-      pasteEventWithFiles([
-        imageFile("small.png", "tiny"),
-        imageFile("huge.gif", "way-too-big", "image/gif"),
-      ]),
-      { attachmentLimits: limits, attachments: [], onAttachmentsChange },
-    );
-    await vi.waitFor(() => {
-      expect(onAttachmentsChange).toHaveBeenCalled();
-    });
-    await toastHost.updateComplete;
-    // Oversized file is named in a toast and never encoded; the small one attaches.
-    expect(toastHost.querySelector(".app-toast__message")?.textContent).toContain("huge.gif");
-    const attached = onAttachmentsChange.mock.calls[0]?.[0] as Array<{ fileName?: string }>;
-    expect(attached).toHaveLength(1);
-    expect(attached[0]?.fileName).toBe("small.png");
-  });
-
-  it.each<[string, File[], string, number | undefined]>([
-    ["huge.gif", [imageFile("huge.gif", "way-too-big", "image/gif")], "", 4],
+  it.each<[string, File[], string, number | undefined, string[]?, number?]>([
+    [
+      "huge.gif",
+      [imageFile("small.png", "tiny"), imageFile("huge.gif", "way-too-big", "image/gif")],
+      "",
+      4,
+      ["small.png"],
+      8,
+    ],
     ["empty.png", [new File([], "empty.png", { type: "image/png" })], "", undefined],
     ["pasted-text", [], "x".repeat(2048), 1024],
     ["pasted-image", [], `data:image/gif;base64,${btoa("p".repeat(64))}`, 16],
-  ])("rejects %s at intake without publishing it", async (name, files, text, imageLimit) => {
-    const onAttachmentsChange = vi.fn();
-    handleChatAttachmentPaste(pasteEventWithFiles(files, text), {
-      attachmentLimits:
-        imageLimit === undefined
-          ? undefined
-          : { maxBytes: 1024, maxImageBytes: imageLimit, maxBatchBytes: 1024 },
-      attachments: [],
-      onAttachmentsChange,
-    });
-    await toastHost.updateComplete;
-    await vi.waitFor(() => {
-      expect(toastHost.querySelector(".app-toast__message")?.textContent).toContain(name);
-    });
-    expect(onAttachmentsChange).not.toHaveBeenCalled();
-  });
+  ])(
+    "rejects %s at intake while preserving admitted siblings",
+    async (name, files, text, imageLimit, accepted, maxBytes = 1024) => {
+      const onAttachmentsChange = vi.fn<(attachments: ChatAttachment[]) => void>();
+      handleChatAttachmentPaste(pasteEventWithFiles(files, text), {
+        attachmentLimits:
+          imageLimit === undefined
+            ? undefined
+            : { maxBytes, maxImageBytes: imageLimit, maxBatchBytes: maxBytes },
+        attachments: [],
+        onAttachmentsChange,
+      });
+      await toastHost.updateComplete;
+      await vi.waitFor(() =>
+        expect(toastHost.querySelector(".app-toast__message")?.textContent).toContain(name),
+      );
+      if (accepted) {
+        await vi.waitFor(() => expect(onAttachmentsChange).toHaveBeenCalled());
+        expect(onAttachmentsChange.mock.calls[0]?.[0].map(({ fileName }) => fileName)).toEqual(
+          accepted,
+        );
+      } else {
+        expect(onAttachmentsChange).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it.each(["abort", "remove", "timeout"] as const)(
     "settles pending image preparation on %s and discards a late worker result",
