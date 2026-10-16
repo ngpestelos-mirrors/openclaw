@@ -43,6 +43,13 @@ describe("AppSidebar live narration", () => {
     sidebar.sessionOrganizer.setSessionsShowPreview(false);
     sidebar.connected = true;
     await sidebar.updateComplete;
+    expect(sessions.subscribeMessages).not.toHaveBeenCalled();
+    const row = () => sidebar.querySelector(`[data-session-key="${key}"]`);
+    expect(row()?.classList.contains("sidebar-recent-session--single-line")).toBe(true);
+    expect(row()?.querySelector(".sidebar-session-tool")).toBeNull();
+    expect(row()?.querySelector(".sidebar-recent-session__subtitle")).toBeNull();
+    sidebar.sessionOrganizer.setSessionsShowPreview(true);
+    await sidebar.updateComplete;
     await waitForFast(() => expect(sessions.subscribeMessages).toHaveBeenCalledTimes(1));
     gateway.publishEvent("session.tool", {
       sessionKey: key,
@@ -65,12 +72,6 @@ describe("AppSidebar live narration", () => {
       },
     });
     await sidebar.updateComplete;
-    const row = () => sidebar.querySelector(`[data-session-key="${key}"]`);
-    expect(row()?.classList.contains("sidebar-recent-session--single-line")).toBe(true);
-    expect(row()?.querySelector(".sidebar-session-tool")).toBeNull();
-    expect(row()?.querySelector(".sidebar-recent-session__subtitle")).toBeNull();
-    sidebar.sessionOrganizer.setSessionsShowPreview(true);
-    await sidebar.updateComplete;
     expect(row()?.querySelector(".sidebar-session-tool")?.getAttribute("aria-label")).toBe(
       "Tool: exec",
     );
@@ -86,9 +87,50 @@ describe("AppSidebar live narration", () => {
     ).not.toBeNull();
     sidebar.sessionOrganizer.setSessionsShowPreview(false);
     await sidebar.updateComplete;
+    expect(sessions.unsubscribeMessages).toHaveBeenCalledTimes(1);
     expect(row()?.querySelector(".sidebar-session-tool")).toBeNull();
     expect(row()?.querySelector(".sidebar-recent-session__subtitle")).toBeNull();
   });
+
+  it.each(["roster", "pages", "online", "collapsed", "hidden"] as const)(
+    "releases narration while %s hides its consumer and resumes visible previews",
+    async (hidden) => {
+      const key = "agent:main:visible-preview";
+      const gateway = createGatewayHarness({} as GatewayBrowserClient);
+      const sessions = createSessionsHarness("main", [key]);
+      sessions.publishList({ result: sessionsResult([runningRow(key, 5)]), agentId: "main" });
+      const { sidebar } = await mountSidebar(gateway.gateway, sessions.sessions);
+      sidebar.sessionOrganizer.setSessionsShowPreview(true);
+      sidebar.connected = true;
+      await sidebar.updateComplete;
+      await waitForFast(() => expect(sessions.subscribeMessages).toHaveBeenCalledTimes(1));
+
+      if (hidden === "roster") sidebar.sidebarAgentsMode = "roster";
+      else if (hidden === "collapsed") sidebar.navigationCollapsed = true;
+      else if (hidden === "hidden") sidebar.navigationVisible = false;
+      else sidebar.navigationView = hidden;
+      sidebar.requestUpdate();
+      await sidebar.updateComplete;
+      expect(sessions.unsubscribeMessages).toHaveBeenCalledTimes(1);
+
+      sidebar.sidebarAgentsMode = "chip";
+      sidebar.navigationCollapsed = false;
+      sidebar.navigationVisible = true;
+      sidebar.navigationView = "sessions";
+      sidebar.requestUpdate();
+      await sidebar.updateComplete;
+      await waitForFast(() => expect(sessions.subscribeMessages).toHaveBeenCalledTimes(2));
+      gateway.publishEvent("session.narration", {
+        sessionKey: key,
+        runId: "visible-run",
+        text: "Visible work resumed.",
+      });
+      await sidebar.updateComplete;
+      expect(sidebar.querySelector(".sidebar-recent-session__subtitle")?.textContent).toBe(
+        "Visible work resumed.",
+      );
+    },
+  );
 
   it("subscribes for a running row, renders prose, and cleans up when the run ends", async () => {
     const key = "agent:main:narrated";
@@ -207,7 +249,7 @@ describe("AppSidebar live narration", () => {
     sidebar.connected = true;
     await sidebar.updateComplete;
 
-    expect(sessions.subscribeMessages).toHaveBeenCalledTimes(6);
+    await waitForFast(() => expect(sessions.subscribeMessages).toHaveBeenCalledTimes(6));
     expect(sessions.subscribeMessages.mock.calls.map(([key]) => key)).toEqual(
       expect.arrayContaining(keys.slice(1)),
     );
