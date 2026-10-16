@@ -47,6 +47,14 @@ const DiscordIdSchema = z
 const DiscordIdListSchema = z.array(DiscordIdSchema);
 const DiscordSnowflakeStringSchema = z.string().regex(/^\d+$/, "Discord user ID must be numeric");
 
+const DiscordDmSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    groupEnabled: z.boolean().optional(),
+    groupChannels: DiscordIdListSchema.optional(),
+  })
+  .strict();
+
 const DiscordPresenceEventsSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -184,15 +192,10 @@ const DiscordVoiceSchema = z
   .strict()
   .optional();
 
-const { accountShape, rootPolicyShape, groupDmShape } = buildChannelAccountSchemaParts({
+const { accountShape, rootPolicyShape } = buildChannelAccountSchemaParts({
   omit: ["groupAllowFrom"],
   allowFrom: DiscordIdListSchema.optional(),
   streaming: ChannelPreviewStreamingConfigSchema.optional(),
-});
-
-const DiscordDmSchema = z.strictObject({
-  ...groupDmShape,
-  groupChannels: DiscordIdListSchema.optional(),
 });
 
 const DiscordAccountSchemaBase = z

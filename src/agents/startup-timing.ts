@@ -1,5 +1,10 @@
-import type { DiagnosticsTimelineOptions as AgentStartupTimingOptions } from "../infra/diagnostics-timeline.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { measureDiagnosticsTimelineSpan } from "../infra/diagnostics-timeline.js";
+
+type AgentStartupTimingOptions = {
+  config?: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
+};
 
 /** Measures local agent startup work before the canonical provider-preparation spans begin. */
 export function measureAgentStartup<T>(

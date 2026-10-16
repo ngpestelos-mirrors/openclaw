@@ -1,8 +1,11 @@
 import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
-import type { SchemaContract } from "../../../packages/gateway-protocol/src/schema-contract.js";
-import type { SessionToolOverrides as ProtocolSessionToolOverrides } from "../../../packages/gateway-protocol/src/schema/sessions-row.js";
 
-export type SessionToolOverrides = SchemaContract<ProtocolSessionToolOverrides>;
+export type SessionToolOverrides = {
+  mcpServers?: Record<string, boolean>;
+  mcpToolsDeny?: Record<string, string[]>;
+  skills?: Record<string, boolean>;
+  webSearch?: boolean;
+};
 
 export function normalizeMcpToolDenials(
   value?: Record<string, string[]>,

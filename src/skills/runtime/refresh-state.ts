@@ -1,5 +1,4 @@
 import { notifyListeners, registerListener } from "../../shared/listeners.js";
-import type { ExecutionSkillWorkspace } from "../loading/workspace-skill-roots.js";
 import { normalizeWorkspaceSkillRoots } from "../loading/workspace-skill-roots.js";
 
 type SkillsChangeEvent = {
@@ -16,7 +15,10 @@ type SkillsChangeEvent = {
   sourceScope?: SkillsSourceScope;
 };
 
-export type SkillsSourceScope = ExecutionSkillWorkspace;
+export type SkillsSourceScope = {
+  executionWorkspaceDir?: string;
+  executionWorkspaceFileHost?: "gateway";
+};
 
 const listeners = new Set<(event: SkillsChangeEvent) => void>();
 const workspaceVersions = new Map<string, number>();

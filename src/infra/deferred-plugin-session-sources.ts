@@ -38,7 +38,6 @@ import {
   listSessionSqliteMigrationManifestPaths,
   readSessionSqliteMigrationManifest,
   resolveSessionSqliteMigrationRunsDir,
-  type SessionSqliteMigrationTargetInput as SessionImportTarget,
 } from "./session-sqlite-migration-manifest.js";
 import type { EngineConnection } from "./sql-connection.js";
 import {
@@ -56,6 +55,7 @@ import {
 
 export type { DeferredPluginSessionImport } from "./state-migrations.deferred-session-import.js";
 
+type SessionImportTarget = { agentId: string; storePath: string; sqlitePath: string };
 export type SessionImportSource = {
   cfg: OpenClawConfig;
   target: LegacySessionStoreTarget;

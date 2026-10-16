@@ -19,7 +19,7 @@ import type {
   PluginStateObservation,
 } from "./plugin-state-store.types.js";
 
-type Key = Parameters<typeof pluginStateComparisonScope>[1];
+type Key = { pluginId: string; namespace: string; key: string };
 export type PluginStatePreparedComparison = Key & {
   comparison: string;
   conditions?: readonly PluginStateComparisonCondition[];

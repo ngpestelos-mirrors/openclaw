@@ -29,7 +29,6 @@ import {
   isGatewayProtocolResponseError,
 } from "./client.js";
 import { resolveGatewayDeviceAuthRoute } from "./connection-details.js";
-import type { ExplicitGatewayAuth } from "./credentials.js";
 import {
   gatewayEdgeAuthValueForTarget,
   normalizeEdgeAuthHeadersConfig,
@@ -39,7 +38,10 @@ import {
 import { isLoopbackHost } from "./net.js";
 import { ADMIN_SCOPE, READ_SCOPE, WRITE_SCOPE } from "./operator-scopes.js";
 
-export type GatewayProbeAuth = ExplicitGatewayAuth;
+export type GatewayProbeAuth = {
+  token?: string;
+  password?: string;
+};
 
 export type GatewayProbeClose = {
   code: number;

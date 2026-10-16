@@ -1,9 +1,11 @@
 import { hostname } from "node:os";
-import type { z } from "zod";
 import { getFileLockProcessStartTime, isPidDefinitelyDead } from "../shared/pid-alive.js";
-import type { UpdateRunDriverSchema } from "./update-run-driver-schema.js";
 
-export type UpdateRunDriver = z.infer<typeof UpdateRunDriverSchema>;
+export type UpdateRunDriver = {
+  host: string;
+  pid: number;
+  startIdentity: string;
+};
 
 export function sameUpdateRunDriver(left: UpdateRunDriver, right: UpdateRunDriver): boolean {
   return (

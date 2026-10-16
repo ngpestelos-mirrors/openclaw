@@ -164,9 +164,10 @@ type SessionLifecycleArtifactsCleanupParams = {
   nowMs?: number;
 };
 
-type SessionLifecycleArtifactsCleanupResult = Awaited<
-  ReturnType<typeof cleanupAccessorSessionLifecycleArtifacts>
->;
+type SessionLifecycleArtifactsCleanupResult = {
+  archivedTranscriptArtifacts: number;
+  removedEntries: number;
+};
 
 /** Resolves the configured session store path without selecting a row-operation agent. */
 export { resolveSessionStorePathCore as resolveStorePath } from "../config/sessions/paths.js";

@@ -1,14 +1,13 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { CacheRetention } from "../types.js";
 import { splitSystemPromptCacheBoundary } from "../utils/system-prompt-cache-boundary.js";
-import type { resolveAnthropicEphemeralCacheControl } from "./anthropic-payload-policy.js";
 import type { ResolvedOpenAICompletionsCompat } from "./openai-completions-compat.js";
 
 // Payload identity lasts only for one request. Wrappers must not reinterpret a
 // builder's already-shaped boundary or its transient-message exclusions.
 const shapedPayloads = new WeakSet<object>();
 
-type CacheControl = NonNullable<ReturnType<typeof resolveAnthropicEphemeralCacheControl>>;
+type CacheControl = { type: "ephemeral"; ttl?: "1h" | "5m" };
 
 export function resolveCompletionsCacheControl(
   compat: Pick<

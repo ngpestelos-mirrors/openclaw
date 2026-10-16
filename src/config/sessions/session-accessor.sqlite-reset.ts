@@ -38,7 +38,8 @@ import { parseSessionEntryJson } from "./session-accessor.sqlite-status.js";
 import { resolveSessionColdArchivePath } from "./session-cold-storage-codec.js";
 import { collectAdmissionProtectedSessionIds } from "./session-history-eviction.js";
 import { deleteSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
-import type { SessionStoreTarget as SessionStoreResetScope } from "./targets-collision.js";
+
+type SessionStoreResetScope = { agentId: string; storePath: string };
 
 function readResetInventory(database: OpenClawAgentReadOnlyDatabase) {
   const db = getSessionKysely(database.db);

@@ -11,12 +11,6 @@ import type { DeliveryPlacementEvidence } from "./delivery-placement-evidence.ty
 
 export type OutboundDeliveryQueuePolicy = "required" | "best_effort";
 
-export type OutboundDeliveryBatch = {
-  results: readonly OutboundDeliveryResult[];
-  payloadCount: number;
-  payloadOutcomes: readonly OutboundPayloadDeliveryOutcome[];
-};
-
 export type PlatformSendRoute = {
   replyToId?: string | null;
   threadId?: string | number | null;

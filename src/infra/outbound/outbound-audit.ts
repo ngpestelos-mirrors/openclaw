@@ -20,7 +20,6 @@ import {
 } from "./channel-target-prefix.js";
 import {
   countPhysicalOutboundSends,
-  type OutboundDeliveryBatch as OutboundAuditBatch,
   type OutboundAuditTerminal,
   type IndexedOutboundAuditTerminal,
   type OutboundDeliveryResult,
@@ -84,6 +83,12 @@ function projectRecordedOutboundAuditTerminal(
   }
   return undefined;
 }
+
+type OutboundAuditBatch = {
+  payloadCount: number;
+  results: readonly OutboundDeliveryResult[];
+  payloadOutcomes: readonly OutboundPayloadDeliveryOutcome[];
+};
 
 function projectOutboundAuditTerminals(
   params: OutboundAuditBatch,

@@ -48,7 +48,10 @@ export function resolveMcpAppRequesterId(
   );
 }
 
-export type McpAppActiveView = NonNullable<Awaited<ReturnType<typeof restoreMcpAppView>>>;
+export type McpAppActiveView = {
+  runtime: SessionMcpRuntime;
+  view: McpAppViewLease;
+};
 
 export class McpAppViewExpiredError extends Error {
   constructor() {

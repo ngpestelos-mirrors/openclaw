@@ -1,7 +1,6 @@
 import type { Server } from "node:http";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginHookToolRequesterContext } from "../../plugins/hook-types.js";
-import type { PluginJsonValue as JsonValue } from "../../plugins/host-hook-json.js";
 import type {
   BeforeToolCallFailureDisposition,
   DeferredPluginToolApproval,
@@ -21,7 +20,13 @@ type NativeHookRelayApprovalContext = Pick<
   | "turnSourceTo"
 >;
 
-export type { JsonValue };
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
 export const NATIVE_HOOK_RELAY_EVENTS = [
   "pre_tool_use",

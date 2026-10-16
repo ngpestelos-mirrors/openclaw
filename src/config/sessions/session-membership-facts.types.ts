@@ -1,7 +1,11 @@
 import type { SessionParticipantIdentity } from "../../../packages/gateway-protocol/src/schema/session-participant.js";
 import type { SessionEntry } from "./types.js";
 
-export type { SessionMember } from "../../../packages/gateway-protocol/src/schema/sessions-sharing.js";
+export type SessionMember = {
+  identityId: string;
+  addedBy: string;
+  addedAt: number;
+};
 
 export type SessionParticipantProjection = Pick<SessionEntry, "participants" | "participantCount">;
 

@@ -4,7 +4,6 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { filterStringEntries } from "@openclaw/normalization-core/string-normalization";
-import type { ChannelOutboundTargetRef as RouteNoticeTarget } from "../channels/plugins/outbound.types.js";
 import type {
   ChannelApprovalNativeDeliveryPlan,
   ChannelApprovalNativePlannedTarget,
@@ -69,6 +68,13 @@ type ApprovalRouteSelection = {
   ready: Promise<void>;
   verdicts: Map<string, ApprovalRouteSelectionVerdict>;
   cleanupTimeout: NodeJS.Timeout;
+};
+
+type RouteNoticeTarget = {
+  channel: string;
+  to: string;
+  accountId?: string | null;
+  threadId?: string | number | null;
 };
 
 type ApprovalNativeRouteCoordinatorState = {

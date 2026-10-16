@@ -16,7 +16,6 @@ import type { SessionGoal } from "../../../packages/gateway-protocol/src/schema/
 import type { SessionObserverDigest } from "../../../packages/gateway-protocol/src/schema/sessions.js";
 import type { SessionAgentStatus } from "../../../packages/gateway-protocol/src/session-agent-status.js";
 import type { SessionCommunicationPolicy } from "../../../packages/gateway-protocol/src/session-communication.js";
-import type { PreemptiveCompactionRoute as SessionContextBudgetStatusRoute } from "../../agents/embedded-agent-runner/run/preemptive-compaction.types.js";
 import type { ChatType } from "../../channels/chat-type.js";
 import type {
   CronScheduledToolCallerOrigin,
@@ -25,7 +24,6 @@ import type {
   CronToolsAllowExecTargetRequirement,
 } from "../../cron/scheduled-tool-policy.js";
 import type { ChannelRouteRef } from "../../plugin-sdk/channel-route.js";
-import type { PluginJsonValue as SessionPluginJsonValue } from "../../plugins/host-hook-json.js";
 import type { SessionBoardFace } from "../../shared/session-types.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import type { TtsAutoMode } from "../types.tts.js";
@@ -157,6 +155,12 @@ type AcpSessionBinding = {
   agentSessionId: string;
 };
 
+type SessionContextBudgetStatusRoute =
+  | "fits"
+  | "compact_only"
+  | "truncate_tool_results_only"
+  | "compact_then_truncate";
+
 export type SessionContextBudgetStatus = {
   schemaVersion: 1;
   source: "pre-prompt-estimate";
@@ -190,7 +194,13 @@ type SessionPluginDebugEntry = {
   lines: string[];
 };
 
-export type { SessionPluginJsonValue };
+export type SessionPluginJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | SessionPluginJsonValue[]
+  | { [key: string]: SessionPluginJsonValue };
 
 type SessionPluginNextTurnInjection = {
   id: string;

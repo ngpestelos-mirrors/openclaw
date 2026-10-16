@@ -1,9 +1,11 @@
-import type { SubagentCompletionDeliveryState } from "../registry/subagent-registry-read.types.js";
-
 type SubagentDeliveryPath = "steered" | "direct" | "queued" | "none";
-type SubagentAnnounceDeliveryDisposition = NonNullable<
-  SubagentCompletionDeliveryState["disposition"]
->;
+type SubagentAnnounceDeliveryDisposition =
+  | "delivered"
+  | "session_queued"
+  | "intentional_non_delivery"
+  | "retryable"
+  | "ambiguous"
+  | "permanent_failure";
 type SubagentAnnounceDeliveryFailureReason =
   | "completion_handoff_pending"
   | "completion_handoff_unavailable"

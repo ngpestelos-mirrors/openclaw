@@ -47,7 +47,7 @@ export type DegradedPlugin = {
   diagnostic: PluginVerificationDiagnostic;
 };
 
-export type PluginVerificationFailure = {
+type PluginVerificationFailure = {
   pluginId: string;
   installPath?: string;
   reason: PluginVerificationFailureReason;

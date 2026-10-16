@@ -1,4 +1,3 @@
-import type { Static } from "typebox";
 import type {
   SkillLibraryFile,
   SkillsLibraryReceipt,
@@ -6,7 +5,6 @@ import type {
   SkillsLibraryActivateResult,
   SkillsLibraryListResult,
 } from "../../../packages/gateway-protocol/src/schema/skill-library.js";
-import type { SkillLibraryWorkshopSchema } from "../../../packages/gateway-protocol/src/schema/worker-skill-workshop.js";
 import type { AdmittedRunContext } from "../../agents/admitted-run-context.js";
 import { SkillLibraryError } from "../skill-library-error.js";
 import { validateSkillLibraryPath } from "./bundle.js";
@@ -45,7 +43,17 @@ export function mergeSkillLibrarySupportFiles(
 }
 
 type SkillLibraryAuthoringInput = {
-  action: Static<typeof SkillLibraryWorkshopSchema>["action"];
+  action:
+    | "list"
+    | "read"
+    | "create"
+    | "update"
+    | "share"
+    | "unshare"
+    | "transfer"
+    | "activate"
+    | "remove"
+    | "rollback";
   skillId?: string;
   expectedRevision?: string;
   revision?: string;

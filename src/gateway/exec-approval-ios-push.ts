@@ -35,7 +35,7 @@ type GatewayLikeLogger = {
   error?: (message: string) => void;
 };
 
-export type ApprovalPushTarget = {
+type ApprovalPushTarget = {
   deviceId: string;
   scopes: readonly string[];
 };

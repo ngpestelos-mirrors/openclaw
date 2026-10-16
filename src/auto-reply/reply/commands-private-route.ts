@@ -9,7 +9,6 @@ import {
   listChannelPlugins,
   resolveChannelApprovalAdapter,
 } from "../../channels/plugins/index.js";
-import type { ChannelOutboundTargetRef } from "../../channels/plugins/outbound.types.js";
 import type { ExecApprovalRequest } from "../../infra/exec-approvals.js";
 import { dedupeByKey } from "../../shared/dedupe-by-key.js";
 import type { OriginatingChannelType } from "../templating.js";
@@ -17,7 +16,12 @@ import type { ReplyPayload } from "../types.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 import { routeReply } from "./route-reply.js";
 
-export type PrivateCommandRouteTarget = ChannelOutboundTargetRef;
+export type PrivateCommandRouteTarget = {
+  channel: string;
+  to: string;
+  accountId?: string | null;
+  threadId?: string | number | null;
+};
 
 const PRIVATE_COMMAND_APPROVAL_ROUTE_TTL_MS = 5 * 60_000;
 const EXPIRED_PRIVATE_COMMAND_APPROVAL_ROUTE_EXPIRES_AT_MS = 0;

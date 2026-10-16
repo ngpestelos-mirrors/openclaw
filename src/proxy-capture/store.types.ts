@@ -11,19 +11,6 @@ import type {
 
 type CaptureDeleteResult = CaptureWorkerOperations["capture.purgeAll"]["output"];
 
-export type DebugProxyCliStore = Pick<
-  AsyncDebugProxyCaptureStore,
-  | "dbPath"
-  | "upsertSession"
-  | "endSession"
-  | "recordEvent"
-  | "recordEventWithPayload"
-  | "listSessions"
-  | "readBlob"
-  | "queryPreset"
-  | "purgeAll"
->;
-
 export type AsyncDebugProxyCaptureStore = {
   readonly dbPath: string;
   readonly isClosed: boolean;

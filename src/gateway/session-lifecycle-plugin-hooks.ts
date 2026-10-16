@@ -11,7 +11,6 @@ import {
   isSessionAutoResetReason,
 } from "../hooks/session-auto-reset.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
-import type { PluginHookSessionEndReason } from "../plugins/hook-types.js";
 import type { SessionEndTranscriptSource } from "../plugins/session-end-transcript.js";
 import { runWithGatewayDetachedWorkContinuation } from "../process/gateway-work-admission.js";
 import {
@@ -33,7 +32,16 @@ export function emitGatewaySessionEndPluginHook(params: {
   sessionFile?: string;
   agentId: string;
   workspaceDir?: string;
-  reason: PluginHookSessionEndReason;
+  reason:
+    | "new"
+    | "reset"
+    | "idle"
+    | "daily"
+    | "compaction"
+    | "deleted"
+    | "shutdown"
+    | "restart"
+    | "unknown";
   archivedTranscripts?: ArchivedSessionTranscript[];
   nextSessionId?: string;
   nextSessionKey?: string;

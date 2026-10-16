@@ -1,10 +1,12 @@
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type { SessionAbortTargetCutoff } from "../../config/sessions/session-accessor.types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { MsgContext } from "../templating.js";
 
-export type AbortCutoff = SessionAbortTargetCutoff;
+export type AbortCutoff = {
+  messageSid?: string;
+  timestamp?: number;
+};
 
 type SessionAbortCutoffEntry = Pick<SessionEntry, "abortCutoffMessageSid" | "abortCutoffTimestamp">;
 

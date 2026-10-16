@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import path from "node:path";
-import type { AcpRuntimeTurnAttachment as AcpInlineImageAttachment } from "@openclaw/acp-core/runtime/types";
 import { resolveNonNegativeIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -43,6 +42,11 @@ function decodeStrictBase64(value: string, maxDecodedBytes: number): Buffer | nu
 }
 
 type SubagentInlineAttachment = NonNullable<SpawnSubagentParams["attachments"]>[number];
+
+type AcpInlineImageAttachment = {
+  mediaType: string;
+  data: string;
+};
 
 type AttachmentLimits = {
   enabled: boolean;
