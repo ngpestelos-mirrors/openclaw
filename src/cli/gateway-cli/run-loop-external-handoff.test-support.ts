@@ -8,7 +8,6 @@ import {
   expectStopCloseCall,
   expectUncalled,
   waitForLoopCondition,
-  withIsolatedSignals,
   type UpdateRespawnFixtures,
 } from "./run-loop.test-support.js";
 
@@ -16,7 +15,7 @@ export function registerExternalHandoffShutdownTests({
   consumeGatewaySuspendHandoff,
   consumeGatewayRestartIntentPayload,
   acquireGatewayLock,
-  createSignaledLoopHarness,
+  withRunningGateway,
   waitForGatewayActiveWork,
   restartGatewayProcessWithFreshPid,
   respawnGatewayProcessForUpdate,
@@ -34,75 +33,67 @@ export function registerExternalHandoffShutdownTests({
     });
     return gate;
   };
-  const supervise = (
-    marker = "OPENCLAW_SUPERVISOR_MODE",
-    value = "external",
-    exitCode?: number,
-  ) => {
-    process.env[marker] = value;
-    restartGatewayProcessWithFreshPid.mockReturnValueOnce({ mode: "supervised", exitCode });
+  const supervise = (code?: number, key = "OPENCLAW_SUPERVISOR_MODE", value = "external") => {
+    process.env[key] = value;
+    restartGatewayProcessWithFreshPid.mockReturnValueOnce({ mode: "supervised", exitCode: code });
   };
   it.each([
     { fails: true, trigger: "signal" },
     { fails: false, trigger: "commit" },
     { fails: false, trigger: "persisted-intent" },
-  ])(
-    "joins external restart cleanup without a successor ($trigger, close failure: $fails)",
-    async ({ fails, trigger }) => {
-      await withIsolatedSignals(async ({ captureSignal }) => {
-        const { close, start, runtime, exited } = await createSignaledLoopHarness(undefined, true);
-        const host = start.mock.calls[0]?.[0]?.hostLifecycle;
-        const cleanup = createLifecycleGate();
-        close.mockImplementationOnce(cleanup.wait);
-        consumeGatewaySuspendHandoff.mockImplementationOnce((owner) => {
-          expect(owner).toBe(host?.externalRestart);
-          expect(owner?.isCurrent()).toBe(true);
-          expect(isGatewayWorkAdmissionClosed()).toBe(false);
-          return { ok: true, value: true };
-        });
-        try {
-          const sigterm = captureSignal("SIGTERM");
-          if (trigger === "persisted-intent") {
-            consumeGatewayRestartIntentPayload.mockResolvedValueOnce({
-              reason: "gateway.restart",
-              force: true,
-              waitMs: 30_000,
-            });
-          }
-          if (trigger === "commit") {
-            if (!host?.externalRestart?.commitStop) {
-              throw new Error("Missing committed stop capability");
-            }
-            host.externalRestart.commitStop();
-            expect(isGatewayWorkAdmissionClosed()).toBe(true);
-          } else {
-            sigterm();
-          }
-          await cleanup.entered;
-          expect(close).toHaveBeenCalledOnce();
-          sigterm();
-          expect(host?.externalRestart?.isCurrent()).toBe(false);
-          expectRestartCloseCall(close, 0);
-          expectUncalled(waitForGatewayActiveWork, runtime.exit, cancelShutdownHardExitWatchdog);
-        } finally {
-          if (fails) {
-            cleanup.reject(new Error("external cleanup failed"));
-          } else {
-            cleanup.release();
-          }
-        }
-        await expect(exited).resolves.toBe(fails ? 1 : 0);
-        expect(consumeGatewaySuspendHandoff).toHaveBeenCalledOnce();
-        expect(start).toHaveBeenCalledOnce();
-        expectUncalled(
-          restartGatewayProcessWithFreshPid,
-          respawnGatewayProcessForUpdate,
-          writeGatewayRestartHandoff,
-        );
-        expect(cancelShutdownHardExitWatchdog).toHaveBeenCalledOnce();
+  ])("joins external cleanup ($trigger, failed=$fails)", async ({ fails, trigger }) => {
+    await withRunningGateway(async ({ captureSignal, close, start, runtime, exited }) => {
+      const host = start.mock.calls[0]?.[0]?.hostLifecycle;
+      const cleanup = createLifecycleGate();
+      close.mockImplementationOnce(cleanup.wait);
+      consumeGatewaySuspendHandoff.mockImplementationOnce((owner) => {
+        expect(owner).toBe(host?.externalRestart);
+        expect(owner?.isCurrent()).toBe(true);
+        expect(isGatewayWorkAdmissionClosed()).toBe(false);
+        return { ok: true, value: true };
       });
-    },
-  );
+      try {
+        const sigterm = captureSignal("SIGTERM");
+        if (trigger === "persisted-intent") {
+          consumeGatewayRestartIntentPayload.mockResolvedValueOnce({
+            reason: "gateway.restart",
+            force: true,
+            waitMs: 30_000,
+          });
+        }
+        if (trigger === "commit") {
+          if (!host?.externalRestart?.commitStop) {
+            throw new Error("Missing committed stop capability");
+          }
+          host.externalRestart.commitStop();
+          expect(isGatewayWorkAdmissionClosed()).toBe(true);
+        } else {
+          sigterm();
+        }
+        await cleanup.entered;
+        expect(close).toHaveBeenCalledOnce();
+        sigterm();
+        expect(host?.externalRestart?.isCurrent()).toBe(false);
+        expectRestartCloseCall(close, 0);
+        expectUncalled(waitForGatewayActiveWork, runtime.exit, cancelShutdownHardExitWatchdog);
+      } finally {
+        if (fails) {
+          cleanup.reject(new Error("external cleanup failed"));
+        } else {
+          cleanup.release();
+        }
+      }
+      await expect(exited).resolves.toBe(fails ? 1 : 0);
+      expect(consumeGatewaySuspendHandoff).toHaveBeenCalledOnce();
+      expect(start).toHaveBeenCalledOnce();
+      expectUncalled(
+        restartGatewayProcessWithFreshPid,
+        respawnGatewayProcessForUpdate,
+        writeGatewayRestartHandoff,
+      );
+      expect(cancelShutdownHardExitWatchdog).toHaveBeenCalledOnce();
+    }, true);
+  });
 
   it.each([
     { marker: "OPENCLAW_SUPERVISOR_MODE", value: "external", exitCode: undefined },
@@ -110,16 +101,12 @@ export function registerExternalHandoffShutdownTests({
   ])(
     "releases the lock before supervised restart exit $exitCode",
     async ({ marker, value, exitCode }) => {
-      supervise(marker, value, exitCode);
-      await withEnvAsync({ OPENCLAW_GATEWAY_RESTART_TRACE: "1" }, async () => {
-        await withIsolatedSignals(async ({ captureSignal }) => {
-          const exitCallOrder: string[] = [];
-          const lockRelease = vi.fn(async () => {
-            exitCallOrder.push("lockRelease");
-          });
-          acquireGatewayLock.mockResolvedValueOnce({ release: lockRelease });
-          const handoffGate = holdHandoff();
-          const { runtime, exited } = await createSignaledLoopHarness(exitCallOrder);
+      supervise(exitCode, marker, value);
+      const lockRelease = vi.fn(async () => {});
+      acquireGatewayLock.mockResolvedValueOnce({ release: lockRelease });
+      const handoffGate = holdHandoff();
+      await withEnvAsync({ OPENCLAW_GATEWAY_RESTART_TRACE: "1" }, () =>
+        withRunningGateway(async ({ captureSignal, runtime, exited }) => {
           captureSignal("SIGUSR2")();
           await handoffGate.entered;
           try {
@@ -128,24 +115,24 @@ export function registerExternalHandoffShutdownTests({
             handoffGate.release();
           }
           await expect(exited).resolves.toBe(exitCode ?? 0);
-          expect(runtime.exit).toHaveBeenCalledWith(exitCode ?? 0);
-          expect(exitCallOrder).toEqual(["lockRelease", "exit"]);
+          expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(exitCode ?? 0);
+          expect(lockRelease).toHaveBeenCalledOnce();
+          expect(lockRelease).toHaveBeenCalledBefore(runtime.exit);
           const [respawnOpts] = restartGatewayProcessWithFreshPid.mock.calls[0] ?? [];
           expect(respawnOpts?.env).toMatchObject({
             OPENCLAW_GATEWAY_RESTART_TRACE_STARTED_AT_MS: expect.stringMatching(/^\d/u),
             OPENCLAW_GATEWAY_RESTART_TRACE_LAST_AT_MS: expect.stringMatching(/^\d/u),
           });
           expect(writeGatewayRestartHandoff).toHaveBeenCalledOnce();
-        });
-      });
+        }),
+      );
     },
   );
 
   it("falls back in-process when an external restart handoff cannot be persisted", async () => {
     writeGatewayRestartHandoff.mockResolvedValueOnce(null);
     supervise();
-    await withIsolatedSignals(async ({ captureSignal }) => {
-      const { start, runtime, exited } = await createSignaledLoopHarness();
+    await withRunningGateway(async ({ captureSignal, start, runtime, exited }) => {
       const sigint = captureSignal("SIGINT");
       captureSignal("SIGUSR2")();
       await waitForLoopCondition(
@@ -165,30 +152,18 @@ export function registerExternalHandoffShutdownTests({
   it("publishes the handoff after server close and before shared-state cleanup", async () => {
     const closeGate = createLifecycleGate();
     const handoffGate = holdHandoff();
-    const sharedState = resolveGlobalMap<string, boolean>(
-      Symbol("restart-handoff-shared-state"),
-      "shared-state",
-    );
+    const sharedState = resolveGlobalMap<string, boolean>(Symbol("handoff"), "shared-state");
     sharedState.set("live", true);
     supervise();
-    await withIsolatedSignals(async ({ captureSignal }) => {
-      const { close, runtime, exited, loopPromise } = await createSignaledLoopHarness();
+    await withRunningGateway(async ({ captureSignal, close, runtime, exited, loopPromise }) => {
       close.mockImplementationOnce(closeGate.wait);
       captureSignal("SIGUSR2")();
       try {
-        await awaitGateBeforeSettlement(
-          closeGate.entered,
-          loopPromise,
-          "Gateway exited before server close",
-        );
+        await awaitGateBeforeSettlement(closeGate.entered, loopPromise, "exit before close");
         expect(close).toHaveBeenCalledWith(expect.objectContaining({ retainSharedState: true }));
         expect(writeGatewayRestartHandoff).not.toHaveBeenCalled();
         closeGate.release();
-        await awaitGateBeforeSettlement(
-          handoffGate.entered,
-          loopPromise,
-          "Gateway exited before publishing its restart handoff",
-        );
+        await awaitGateBeforeSettlement(handoffGate.entered, loopPromise, "exit before handoff");
         expect(sharedState.get("live")).toBe(true);
         expect(runtime.exit).not.toHaveBeenCalled();
       } finally {
@@ -203,19 +178,14 @@ export function registerExternalHandoffShutdownTests({
   });
 
   it("keeps the ordinary drain when a handoff refuses late terminal persistence", async () => {
-    await withIsolatedSignals(async ({ captureSignal }) => {
-      const { close, exited } = await createSignaledLoopHarness(undefined, true);
-      consumeGatewaySuspendHandoff.mockReturnValueOnce({
-        ok: false,
-        error: "gateway terminal persistence is still pending",
-      });
+    await withRunningGateway(async ({ captureSignal, close, exited }) => {
+      const error = "gateway terminal persistence is still pending";
+      consumeGatewaySuspendHandoff.mockReturnValueOnce({ ok: false, error });
       captureSignal("SIGTERM")();
       await expect(exited).resolves.toBe(0);
       expect(waitForGatewayActiveWork).toHaveBeenCalledWith(20_000, expect.any(Object));
       expectStopCloseCall(close);
-      expect(gatewayLog.warn).toHaveBeenCalledWith(
-        "external restart handoff refused: gateway terminal persistence is still pending",
-      );
-    });
+      expect(gatewayLog.warn).toHaveBeenCalledWith(`external restart handoff refused: ${error}`);
+    }, true);
   });
 }

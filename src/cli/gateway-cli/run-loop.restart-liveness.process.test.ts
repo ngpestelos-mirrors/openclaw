@@ -20,8 +20,7 @@ const childScript = `
   import { runGatewayLoop } from ${moduleUrl(gatewayDirectStopEntrypoints.runLoop)};
   import { setGatewayRestartPolicy } from ${moduleUrl(gatewayDirectStopEntrypoints.restartPolicy)};
   import { fileLogTransport } from ${moduleUrl(gatewayDirectStopEntrypoints.fileLogTransport)};
-  const faultPath = process.argv[1];
-  const closeFailure = process.argv[2];
+  const [faultPath, closeFailure] = process.argv.slice(1);
   setGatewayRestartPolicy({ allowExternal: true });
   let starts = 0;
   try {
@@ -62,7 +61,6 @@ const childScript = `
               error.stack = "TypeError: fixture close owner failed\\n    at closeOwner (fixture.js:12:3)";
               throw error;
             }
-            process.stdout.write("closed:" + attempt + "\\n");
           },
         };
       },
@@ -92,32 +90,22 @@ function startFixture(initialFailure = false, closeFailure = "", executable = pr
   const faultPath = path.join(directory, "startup-fault");
   const logFile = path.join(directory, "gateway.jsonl");
   const stateDir = path.join(directory, "state");
-  fs.writeFileSync(
-    path.join(directory, "openclaw.json"),
-    JSON.stringify({ logging: { level: "info", file: logFile } }),
-  );
+  const configPath = path.join(directory, "openclaw.json");
+  fs.writeFileSync(configPath, JSON.stringify({ logging: { level: "info", file: logFile } }));
   if (initialFailure) {
     fs.writeFileSync(faultPath, "refuse");
   }
+  const moduleArgs = ["--import", "tsx", "--input-type=module", "--eval"];
   const child = spawn(
     executable,
-    [
-      "--inspect-port=127.0.0.1:0",
-      "--import",
-      "tsx",
-      "--input-type=module",
-      "--eval",
-      childScript,
-      faultPath,
-      closeFailure,
-    ],
+    ["--inspect-port=127.0.0.1:0", ...moduleArgs, childScript, faultPath, closeFailure],
     {
       env: {
         PATH: pendingClose ? `${bin}${path.delimiter}${process.env.PATH ?? ""}` : process.env.PATH,
         HOME: home,
         TMPDIR: directory,
         OPENCLAW_STATE_DIR: stateDir,
-        OPENCLAW_CONFIG_PATH: path.join(directory, "openclaw.json"),
+        OPENCLAW_CONFIG_PATH: configPath,
         OPENCLAW_NO_RESPAWN: "1",
         ...(pendingClose ? { OPENCLAW_LAUNCHD_LABEL: "ai.openclaw.gateway.test" } : {}),
         NODE_DISABLE_COMPILE_CACHE: "1",
@@ -138,21 +126,15 @@ function startFixture(initialFailure = false, closeFailure = "", executable = pr
   return { ...tracked, faultPath, logFile, stateDir, waitForOutput, output };
 }
 
-async function expectFailedRestartWaiting(
-  fixture: ReturnType<typeof startFixture>,
-  attempt: number,
-) {
+async function expectRestartWaiting(fixture: ReturnType<typeof startFixture>, attempt: number) {
   expect(fixture.child.kill("SIGUSR2")).toBe(true);
   await fixture.waitForOutput(`waiting:${attempt}`);
   // Only the parent observes an idle interval. A child timer or IPC channel
   // would hide the lost-process regression after its real listener closes.
-  expect(
-    await Promise.race([
-      fixture.closed.then((exit) => ({ exit })),
-      delay(750).then(() => "waiting"),
-    ]),
-    fixture.output(),
-  ).toBe("waiting");
+  const exited = fixture.closed.then((exit) => ({ exit }));
+  expect(await Promise.race([exited, delay(750).then(() => "waiting")]), fixture.output()).toBe(
+    "waiting",
+  );
 }
 
 function readStabilityBundle(fixture: ReturnType<typeof startFixture>) {
@@ -177,11 +159,7 @@ describe("runGatewayLoop failed-restart process lifetime", { timeout: 60_000 }, 
       await once(debuggerSocket, "open");
       const reply = once(debuggerSocket, "message");
       debuggerSocket.send(
-        JSON.stringify({
-          id: 1,
-          method: "Runtime.evaluate",
-          params: { expression: "process.pid" },
-        }),
+        '{"id":1,"method":"Runtime.evaluate","params":{"expression":"process.pid"}}',
       );
       const [data] = await reply;
       expect(JSON.parse(String(data))).toMatchObject({
@@ -212,15 +190,17 @@ describe("runGatewayLoop failed-restart process lifetime", { timeout: 60_000 }, 
       expect(fixture.output()).not.toContain("natural-exit");
       expect(fixture.output()).not.toContain("loop-returned:");
       expect(fixture.output()).toContain("append:pending");
-      expect(readStabilityBundle(fixture)).toMatchObject({
-        reason: "gateway.stop_shutdown_timeout",
-      });
+      expect(readStabilityBundle(fixture).reason).toBe("gateway.stop_shutdown_timeout");
     },
   );
 
   posixIt("naturally exits nonzero when native close rejects", async () => {
     const fixture = startFixture(false, "rejected");
     const error = { name: "TypeError", message: "fixture close owner failed" };
+    const shutdownError = {
+      ...error,
+      stack: "TypeError: fixture close owner failed\n    at closeOwner (fixture.js:12:3)",
+    };
     await fixture.waitForOutput("ready:1");
     expect(fixture.child.kill("SIGUSR2")).toBe(true);
     expect(await fixture.closed, fixture.output()).toEqual([1, null]);
@@ -228,20 +208,11 @@ describe("runGatewayLoop failed-restart process lifetime", { timeout: 60_000 }, 
     expect(fixture.output()).toContain("loop-returned:1");
     expect(fixture.output()).toContain("natural-exit");
     expect(fixture.output()).not.toContain("shutdown deadline reached");
-    expect(readStabilityBundle(fixture)).toMatchObject({
-      reason: "gateway.restart_close_failed",
-      error,
-      evidence: {
-        shutdown: {
-          step: "gateway-server-close",
-          errors: [
-            {
-              ...error,
-              stack: "TypeError: fixture close owner failed\n    at closeOwner (fixture.js:12:3)",
-            },
-          ],
-        },
-      },
+    const bundle = readStabilityBundle(fixture);
+    expect(bundle).toMatchObject({ reason: "gateway.restart_close_failed", error });
+    expect(bundle.evidence.shutdown).toMatchObject({
+      step: "gateway-server-close",
+      errors: [shutdownError],
     });
     expect(fs.readFileSync(fixture.logFile, "utf8")).toContain(
       "shutdown step failed (gateway server close): fixture close owner failed",
@@ -249,27 +220,22 @@ describe("runGatewayLoop failed-restart process lifetime", { timeout: 60_000 }, 
     expect(fixture.output()).not.toContain("start:2");
   });
 
-  posixIt("recovers in-process after repeated failed restarts", async () => {
+  posixIt.each([true, false])("holds failed-restart ownership: recovery=%s", async (recover) => {
     const fixture = startFixture();
     await fixture.waitForOutput("ready:1");
     fs.writeFileSync(fixture.faultPath, "refuse");
-    await expectFailedRestartWaiting(fixture, 2);
-    await expectFailedRestartWaiting(fixture, 3);
-    fs.unlinkSync(fixture.faultPath);
-    expect(fixture.child.kill("SIGUSR2")).toBe(true);
-    await fixture.waitForOutput("ready:4");
+    await expectRestartWaiting(fixture, 2);
+    if (recover) {
+      await expectRestartWaiting(fixture, 3);
+      fs.unlinkSync(fixture.faultPath);
+      expect(fixture.child.kill("SIGUSR2")).toBe(true);
+      await fixture.waitForOutput("ready:4");
+    }
     expect(fixture.child.kill("SIGTERM")).toBe(true);
     expect(await fixture.closed, fixture.output()).toEqual([0, null]);
-  });
-
-  posixIt("exits cleanly on SIGTERM while waiting after a failed restart", async () => {
-    const fixture = startFixture();
-    await fixture.waitForOutput("ready:1");
-    fs.writeFileSync(fixture.faultPath, "refuse");
-    await expectFailedRestartWaiting(fixture, 2);
-    expect(fixture.child.kill("SIGTERM")).toBe(true);
-    expect(await fixture.closed, fixture.output()).toEqual([0, null]);
-    expect(fixture.output()).not.toContain("start:3");
+    if (!recover) {
+      expect(fixture.output()).not.toContain("start:3");
+    }
   });
 
   posixIt("releases process ownership when initial startup rejects", async () => {

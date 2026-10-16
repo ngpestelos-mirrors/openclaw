@@ -13,6 +13,7 @@ import {
 
 export function registerGatewayForcedRestartTests({
   createSignaledLoopHarness,
+  withRunningGateway,
   createGatewayActiveWorkSnapshot,
   abortActiveCronTaskRuns,
   waitForGatewayActiveWork,
@@ -29,8 +30,7 @@ export function registerGatewayForcedRestartTests({
     const drain = createDeferredCore<{ drained: boolean; snapshot: typeof active }>();
     waitForGatewayActiveWork.mockImplementationOnce(() => drain.promise);
 
-    await withIsolatedSignals(async ({ captureSignal }) => {
-      const { close, start, runtime, exited } = await createSignaledLoopHarness();
+    await withRunningGateway(async ({ captureSignal, close, start, runtime, exited }) => {
       const restartSignal = captureSignal("SIGUSR2");
       const restart =
         await vi.importActual<typeof import("../../infra/restart.js")>("../../infra/restart.js");
