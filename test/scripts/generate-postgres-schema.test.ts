@@ -12,6 +12,7 @@ import {
 import { catalog as readCatalog, portTables } from "../../scripts/lib/postgres-schema-catalog.mts";
 import { generateSqliteSchemaCatalogs } from "../../scripts/lib/sqlite-schema-generation.mts";
 import { listOpenClawStateFeatureSchemas } from "../../src/state/openclaw-state-feature-schema.js";
+import type statePortMetadata from "../../src/state/postgres-schema.generated/state-port.json";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -37,6 +38,23 @@ function verifiedFixture(sql: string, verify: (db: DatabaseSync) => void) {
 }
 
 describe("PostgreSQL schema generation", () => {
+  it("generates state port metadata from every canonical table and optional fragment", async () => {
+    const { files, report } = await generatePostgresSchemas(root);
+    const metadata: typeof statePortMetadata = JSON.parse(files["state-port.json"]!);
+    const schemas = [metadata, ...metadata.fragments];
+    expect(
+      schemas.flatMap((schema) => schema.tables.map((table) => table.name)).toSorted(),
+    ).toEqual(report.catalogs.state!.tables.map((table) => table.name).toSorted());
+    expect(
+      metadata.fragments.find((fragment) => fragment.id === "agent_deletion_journal"),
+    ).toBeDefined();
+    expect(Buffer.byteLength(files["state-port.json"]!)).toBeLessThan(60_000);
+    expect(schemas.some((schema) => "sqlite" in schema || "objects" in schema)).toBe(false);
+    expect(schemas.flatMap((schema) => schema.tables).some((table) => "columns" in table)).toBe(
+      false,
+    );
+  });
+
   it("preserves all agent relational objects and declares search separately", async () => {
     const { files, report } = await generatePostgresSchemas(root);
     const agent = report.catalogs.agent!;
@@ -212,6 +230,7 @@ describe("PostgreSQL schema generation", () => {
         "sqlite-agent-catalogs.json",
         "sqlite-daemon-catalogs.ts",
         "sqlite-daemon-catalogs.json",
+        "state-port.json",
       ].toSorted(),
     );
     expect(
