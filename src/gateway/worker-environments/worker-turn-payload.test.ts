@@ -99,7 +99,7 @@ function buildDescriptor(messages: Messages, token = runtimeIdentityToken.value)
   return plan;
 }
 
-function launchInput(plan: WorkerLaunchPlan) {
+function launchInput(plan: WorkerLaunchPlan): Parameters<typeof measureNodeWorkerLaunchBytes>[1] {
   return {
     environmentSession: 1,
     launchId: plan.assignment.turnId,

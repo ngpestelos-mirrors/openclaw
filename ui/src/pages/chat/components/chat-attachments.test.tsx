@@ -189,7 +189,9 @@ function previewFixture(
 
 function fakeTimers() {
   vi.useFakeTimers();
-  onTestFinished(() => vi.useRealTimers());
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
 }
 
 function imageFile(name: string, bytes: string, type = "image/png") {

@@ -1,7 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { afterEach } from "vitest";
-import { withTestTimeout } from "../../../test/helpers/promise.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 
 export function createProcessFixtures(cleanupError: string, cleanupTimeoutMs?: number) {
@@ -14,14 +13,7 @@ export function createProcessFixtures(cleanupError: string, cleanupTimeoutMs?: n
       }
     }
     // Close, not exit, joins both output streams before fixture directories disappear.
-    const closing = Promise.allSettled(children.values());
-    const results = await (cleanupTimeoutMs === undefined
-      ? closing
-      : withTestTimeout(
-          closing,
-          cleanupTimeoutMs,
-          `${cleanupError}; retaining fixture directories`,
-        ));
+    const results = await Promise.allSettled(children.values());
     const errors = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
     );
@@ -31,9 +23,9 @@ export function createProcessFixtures(cleanupError: string, cleanupTimeoutMs?: n
     children.clear();
     directories.cleanup();
   }
-  afterEach(cleanup);
+  afterEach(cleanup, cleanupTimeoutMs);
   return {
-    make: directories.make,
+    make: (prefix: string) => directories.make(prefix),
     cleanup,
     ownChild(child: ChildProcess) {
       const closed = once(child, "close");

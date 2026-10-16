@@ -180,13 +180,16 @@ async function waitForActiveWork(
 function forward<A extends unknown[], R>(get: () => (...args: A) => R) {
   return (...args: A) => get()(...args);
 }
+// mock-isolation: Supervisor policy must come from the fixture, not the runner's systemd.
 vi.mock("../../daemon/systemd-exec.js", () => ({
   execSystemctl: () => m.systemctl(),
   execSystemctlUser: () => m.systemctl(),
 }));
+// mock-isolation: Do not query the runner's launchd domains for fixture stop deadlines.
 vi.mock("../../infra/launchd-stop-timeout.js", () => ({
   readLaunchdStopTimeout: forward(() => m.readLaunchdStopTimeout),
 }));
+// mock-isolation: Hosted stop requests must not control the runner's native service.
 vi.mock("../../daemon/hosted-stop.js", () => ({
   prepareHostedGatewayStop: forward(() => m.hostedStopPrepare),
 }));
@@ -220,6 +223,7 @@ vi.mock("../../infra/restart-intent.js", async (original) => ({
   ...(await original<typeof import("../../infra/restart-intent.js")>()),
   prepareGatewayRestartIntentConsumption: () => m.consumeGatewayRestartIntentPayload,
 }));
+// mock-isolation: Fixtures own handoff claims without reading or mutating live update state.
 vi.mock("../../infra/update-managed-service-handoff.js", () => ({
   waitForSystemServiceUpdateHandoffs: () => m.waitForSystemServiceUpdateHandoffs(),
   captureForegroundUpdateHandoffStop: forward(() => m.captureForegroundUpdateHandoffStop),
@@ -235,6 +239,7 @@ vi.mock("../../infra/update-managed-service-handoff.js", () => ({
     outcome?: "update" | "restore",
   ) => m.commitManagedServiceUpdateHandoff(identity, outcome),
 }));
+// mock-isolation: Suspend ownership belongs to each fixture, not the process singleton.
 vi.mock("../../infra/gateway-suspend-coordinator.js", () => ({
   consumeGatewaySuspendHandoff: forward(() => m.consumeGatewaySuspendHandoff),
   disarmGatewaySuspendHandoff: forward(() => m.disarmGatewaySuspendHandoff),
@@ -248,6 +253,7 @@ vi.mock("../../infra/process-respawn.js", async (original) => ({
   restartGatewayProcessWithFreshPid: (opts?: { env?: NodeJS.ProcessEnv }) =>
     m.restartGatewayProcessWithFreshPid(opts),
 }));
+// mock-isolation: Restart sentinel receipts must not read or write the runner's state.
 vi.mock("../../infra/restart-sentinel.js", () => ({
   readRestartSentinelReadOnly: () => m.readRestartSentinelReadOnly(),
   markUpdateRestartSentinelFailure: forward(() => m.markUpdateRestartSentinelFailure),
@@ -257,6 +263,7 @@ vi.mock("../../infra/restart-handoff.js", async (original) => ({
   ...(await original<typeof import("../../infra/restart-handoff.js")>()),
   writeGatewayRestartHandoff: forward(() => m.writeGatewayRestartHandoff),
 }));
+// mock-isolation: Drain scenarios own their active-work snapshots and completion gates.
 vi.mock("../../infra/gateway-active-work.js", () => ({
   createGatewayActiveWorkSnapshot: () => m.createGatewayActiveWorkSnapshot(),
   waitForGatewayActiveWork: (
@@ -264,11 +271,13 @@ vi.mock("../../infra/gateway-active-work.js", () => ({
     options?: { onSnapshot?: (snapshot: GatewayActiveWorkSnapshot) => void },
   ) => m.waitForGatewayActiveWork(timeoutMs, options),
 }));
+// mock-isolation: Run-loop retirement must not reset process-global cron job tracking.
 vi.mock("../../cron/active-jobs.js", () => ({
   advanceCronActiveJobGeneration: () => m.advanceCronActiveJobGeneration(),
   resetCronActiveJobs: () => m.resetCronActiveJobs(),
   waitForActiveCronJobs: forward(() => m.waitForActiveCronJobs),
 }));
+// mock-isolation: Cancellation and drain gates must not touch real cron task runs.
 vi.mock("../../cron/service/active-run-cancellation.js", () => ({
   abortActiveCronTaskRuns: (reason?: string) => m.abortActiveCronTaskRuns(reason),
   retireActiveCronTaskRunTracking: () => m.retireActiveCronTaskRunTracking(),
@@ -281,24 +290,31 @@ vi.mock("../../config/runtime-snapshot.js", () => ({
   getRuntimeConfigSourceSnapshot: () => null,
   registerRuntimeConfigSnapshotPreparer: vi.fn(),
 }));
+// mock-isolation: Shutdown assertions must not abort unrelated process-global agent runs.
 vi.mock("../../agents/embedded-agent-runner/runs.js", () => ({
   abortEmbeddedAgentRun: (
     sessionId?: string,
     opts?: { mode?: "all" | "compacting"; reason?: "restart" },
   ) => m.abortEmbeddedAgentRun(sessionId, opts),
 }));
+// mock-isolation: Capture lifecycle diagnostics without initializing real log transports.
 vi.mock("../../logging/subsystem.js", () => ({ createSubsystemLogger: () => gatewayLog }));
+// mock-isolation: Each fixture controls logger settlement without flushing unrelated logs.
 vi.mock("../../logging/logger.js", () => ({ flushLogger: () => m.flushLogger() }));
+// mock-isolation: Failure assertions must not write real diagnostic bundles.
 vi.mock("../../logging/diagnostic-stability-bundle.js", () => ({
   writeDiagnosticStabilityBundleForFailureSync: m.writeDiagnosticStabilityBundleForFailureSync,
 }));
+// mock-isolation: Fixture shutdown must not stop real managed provider processes.
 vi.mock("../../agents/provider-runtime-lifecycle.js", () => ({
   stopActiveManagedProviderLocalServices: async () =>
     m.hasManagedProviderLocalServices() ? m.stopManagedProviderLocalServices() : undefined,
 }));
+// mock-isolation: Retiring the fixture must not cancel unrelated channel reloads.
 vi.mock("../../gateway/server-reload-generation.js", () => ({
   abortPendingChannelReloads: () => m.abortPendingChannelReloads(),
 }));
+// mock-isolation: Fixture watchdogs record cancellation instead of terminating Vitest.
 vi.mock("./shutdown-hard-exit.js", () => ({
   armShutdownHardExitWatchdog: forward(() => m.armShutdownHardExitWatchdog),
 }));

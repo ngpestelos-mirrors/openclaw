@@ -612,12 +612,14 @@ describe("cloud turn media boundary", () => {
     const rig = await harness();
     const unavailable = { path: path.join(root, "missing.png"), contentType: "image/png" };
     const manager = await openSessionManager();
-    await appendInput({ text: "old", media: [unavailable] });
+    const append = (input: Input) =>
+      manager.appendMessageAsync(buildPersistedUserTurnMessage(input));
+    await append({ text: "old", media: [unavailable] });
     for (let index = 0; index < 4; index++) {
       await manager.appendMessageAsync(
         makeAgentAssistantMessage({ content: [{ type: "text", text: "processed" }] }),
       );
-      await appendInput({ text: "next" });
+      await append({ text: "next" });
     }
     const png = createSolidPngBuffer(2, 2, { r: 0, g: 255, b: 0 });
     const saved = await save(png);

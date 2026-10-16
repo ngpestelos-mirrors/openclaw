@@ -295,9 +295,11 @@ export function registerNaturalExitTests(waitForLoopTurn: () => Promise<void>) {
         close.mockImplementationOnce(phaseGate.wait);
       }
       const initial = createSignaledStart(close);
-      const start = vi.fn(initial.start);
+      const start = initial.start;
       if (phase === "restart-startup") {
-        start.mockImplementationOnce(initial.start).mockImplementationOnce(async () => {
+        // Vitest reuses existing mocks; queue the implementation, not the mock itself.
+        const initialStart = start.getMockImplementation()!;
+        start.mockImplementationOnce(initialStart).mockImplementationOnce(async () => {
           await phaseGate.wait();
           return createGatewayServer(close);
         });

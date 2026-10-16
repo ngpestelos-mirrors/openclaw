@@ -126,7 +126,7 @@ export async function withIsolatedSignals(
     if (!listener) {
       throw new Error(`expected new ${signal} listener`);
     }
-    return () => listener();
+    return () => listener(signal);
   };
   try {
     await run({ captureSignal });
