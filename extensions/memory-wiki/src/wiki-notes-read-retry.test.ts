@@ -108,6 +108,31 @@ async function createChatGptImportFixture(prefix: string) {
 }
 
 describe("memory-wiki existing-page read retry", () => {
+  it.each(["opening", "closing", "both"])(
+    "refuses ChatGPT re-import when handwritten Notes are missing the %s marker",
+    async (missing) => {
+      const { config, exportDir, pagePath } = await createChatGptImportFixture(
+        "memory-wiki-chatgpt-missing-marker-",
+      );
+      let page = (await fs.readFile(pagePath, "utf8")).replace(
+        "<!-- openclaw:human:end -->",
+        "Keep this handwritten note.\n<!-- openclaw:human:end -->",
+      );
+      if (missing !== "closing") {
+        page = page.replace("<!-- openclaw:human:start -->", "");
+      }
+      if (missing !== "opening") {
+        page = page.replace("<!-- openclaw:human:end -->", "");
+      }
+      await fs.writeFile(pagePath, page);
+
+      await expect(importChatGptConversations({ config, exportPath: exportDir })).rejects.toThrow(
+        /human Notes are missing/,
+      );
+      expect(await fs.readFile(pagePath, "utf8")).toBe(page);
+    },
+  );
+
   it.each(["ingest", "source-sync", "chatgpt"] as const)(
     "refuses %s updates when existing human notes contain malformed UTF-8",
     async (kind) => {
@@ -482,11 +507,15 @@ describe("memory-wiki existing-page read retry", () => {
     await expect(fs.readFile(pagePath, "utf8")).resolves.toBe(before);
   });
 
-  it("preserves chatgpt conversation notes containing replacement-pattern dollar sequences", async () => {
+  it("preserves chatgpt conversation notes containing dollar sequences and marker examples", async () => {
     const { config, exportDir, pagePath } = await createChatGptImportFixture(
       "memory-wiki-chatgpt-dollar-notes-",
     );
-    const userNote = "Energy identity $$E=mc^2$$ and match $& and prefix $` and suffix $' end.";
+    const userNote = [
+      "Energy identity $$E=mc^2$$ and match $& and prefix $` and suffix $' end.",
+      "Example marker: <!-- openclaw:human:end -->",
+      "Keep this trailing handwritten note.",
+    ].join("\n");
     const noteBlock = [
       "<!-- openclaw:human:start -->",
       userNote,
