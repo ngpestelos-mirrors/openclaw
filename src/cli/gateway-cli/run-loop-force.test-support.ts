@@ -1,11 +1,13 @@
-import { performance } from "node:perf_hooks";
 import { expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
+  advanceWithoutCalls,
   createActiveWorkSnapshot,
   expectRestartCloseCall,
+  expectUncalled,
   systemdReply,
   withIsolatedSignals,
+  withLifecycleClock,
   type UpdateRespawnFixtures,
 } from "./run-loop.test-support.js";
 
@@ -34,61 +36,52 @@ export function registerGatewayForcedRestartTests({
         await vi.importActual<typeof import("../../infra/restart.js")>("../../infra/restart.js");
       const closing = createDeferredCore();
       close.mockImplementationOnce(() => closing.promise);
-      vi.useFakeTimers();
-      const clock = vi.spyOn(performance, "now").mockImplementation(() => Date.now());
-      const deferral = restart.deferGatewayRestartUntilIdle({
-        getPendingCount: () => 1,
-        maxWaitMs: 300_000,
-        timeoutIntent: { force: true, reason: "config reload forced restart" },
-        emitHooks: {
-          emitRestart: (_reason, intent) => {
-            consumeGatewayRestartIntent.mockReturnValueOnce(intent ?? null);
-            restartSignal();
-            return { status: "emitted" };
+      await withLifecycleClock(async () => {
+        const deferral = restart.deferGatewayRestartUntilIdle({
+          getPendingCount: () => 1,
+          maxWaitMs: 300_000,
+          timeoutIntent: { force: true, reason: "config reload forced restart" },
+          emitHooks: {
+            emitRestart: (_reason, intent) => {
+              consumeGatewayRestartIntent.mockReturnValueOnce(intent ?? null);
+              restartSignal();
+              return { status: "emitted" };
+            },
           },
-        },
-      });
-      try {
-        await vi.advanceTimersByTimeAsync(300_000);
-        expect(waitForGatewayActiveWork).toHaveBeenCalledExactlyOnceWith(
-          75_000,
-          expect.any(Object),
-        );
-        expect(close).not.toHaveBeenCalled();
-        expect(abortActiveCronTaskRuns).not.toHaveBeenCalled();
-        expect(runtime.exit).not.toHaveBeenCalled();
-        captureSignal("SIGINT")();
-        expect(waitForGatewayActiveWork).toHaveBeenCalledOnce();
-
-        await vi.advanceTimersByTimeAsync(75_000);
-        expect(close).not.toHaveBeenCalled();
-        expect(abortActiveCronTaskRuns).not.toHaveBeenCalled();
-        drain.resolve({ drained: false, snapshot: active });
-        await vi.advanceTimersByTimeAsync(0);
-        expectRestartCloseCall(close, 0);
-        expect(abortActiveCronTaskRuns).toHaveBeenCalledWith(undefined);
-        await vi.advanceTimersByTimeAsync(9_999);
-        expect(runtime.exit).not.toHaveBeenCalled();
-        await vi.advanceTimersByTimeAsync(1);
-        expect(runtime.exit).not.toHaveBeenCalled();
-        closing.resolve();
-        await vi.advanceTimersByTimeAsync(0);
-        expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);
-        expect(start).toHaveBeenCalledOnce();
-      } finally {
-        deferral.cancel();
-        restart.resetGatewayRestartStateForInProcessRestart();
-        drain.resolve({ drained: true, snapshot: idleActiveWorkSnapshot });
-        closing.resolve();
-        await vi.advanceTimersByTimeAsync(0);
-        if (runtime.exit.mock.calls.length === 0) {
+        });
+        try {
+          await advanceWithoutCalls(300_000, close, abortActiveCronTaskRuns, runtime.exit);
+          expect(waitForGatewayActiveWork).toHaveBeenCalledExactlyOnceWith(
+            75_000,
+            expect.any(Object),
+          );
           captureSignal("SIGINT")();
+          expect(waitForGatewayActiveWork).toHaveBeenCalledOnce();
+
+          await advanceWithoutCalls(75_000, close, abortActiveCronTaskRuns);
+          drain.resolve({ drained: false, snapshot: active });
           await vi.advanceTimersByTimeAsync(0);
+          expectRestartCloseCall(close, 0);
+          expect(abortActiveCronTaskRuns).toHaveBeenCalledWith(undefined);
+          await advanceWithoutCalls(9_999, runtime.exit);
+          await advanceWithoutCalls(1, runtime.exit);
+          closing.resolve();
+          await vi.advanceTimersByTimeAsync(0);
+          expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);
+          expect(start).toHaveBeenCalledOnce();
+        } finally {
+          deferral.cancel();
+          restart.resetGatewayRestartStateForInProcessRestart();
+          drain.resolve({ drained: true, snapshot: idleActiveWorkSnapshot });
+          closing.resolve();
+          await vi.advanceTimersByTimeAsync(0);
+          if (runtime.exit.mock.calls.length === 0) {
+            captureSignal("SIGINT")();
+            await vi.advanceTimersByTimeAsync(0);
+          }
+          await exited;
         }
-        await exited;
-        clock.mockRestore();
-        vi.useRealTimers();
-      }
+      });
     });
   });
 
@@ -116,53 +109,44 @@ export function registerGatewayForcedRestartTests({
         completeBoot,
       });
       close.mockImplementationOnce(() => closing.promise);
-      vi.useFakeTimers();
-      const clock = vi.spyOn(performance, "now").mockImplementation(() => Date.now());
-      systemctl.mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            setTimeout(() => resolve(nativeReply), refreshMs);
-          }),
-      );
-      try {
-        captureSignal("SIGUSR2")();
-        await vi.advanceTimersByTimeAsync(budget - 1);
-        expect(close).not.toHaveBeenCalled();
-        expect(abortActiveCronTaskRuns).not.toHaveBeenCalled();
-        expect(completeBoot).not.toHaveBeenCalled();
-        await vi.advanceTimersByTimeAsync(1);
-        expect(abortActiveCronTaskRuns).toHaveBeenCalledWith(undefined);
-        expectRestartCloseCall(close, 0);
-        const warning = `restart drain budget ${budget - refreshMs}ms exhausted; cutting short cronRuns=1 agentRuns=1`;
-        expect(start).toHaveBeenCalledOnce();
-        expect(completeBoot).not.toHaveBeenCalled();
-        expect(runtime.exit).not.toHaveBeenCalled();
-        await vi.advanceTimersByTimeAsync(9_999);
-        expect(completeBoot).not.toHaveBeenCalled();
-        expect(runtime.exit).not.toHaveBeenCalled();
-        await vi.advanceTimersByTimeAsync(1);
-        expect(runtime.exit).not.toHaveBeenCalled();
-        closing.resolve();
-        await vi.advanceTimersByTimeAsync(0);
-        expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);
-        expect(completeBoot).toHaveBeenCalledExactlyOnceWith({
-          outcome: "forced_stop",
-          reason: `${warning}; gateway.restart_shutdown_timeout`,
-        });
-        expect(start).toHaveBeenCalledOnce();
-      } finally {
-        clearTimeout(deadline);
-        drain.resolve({ drained: true, snapshot: idleActiveWorkSnapshot });
-        closing.resolve();
-        await vi.advanceTimersByTimeAsync(0);
-        if (runtime.exit.mock.calls.length === 0) {
-          captureSignal("SIGINT")();
+      await withLifecycleClock(async () => {
+        systemctl.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              setTimeout(() => resolve(nativeReply), refreshMs);
+            }),
+        );
+        try {
+          captureSignal("SIGUSR2")();
+          await advanceWithoutCalls(budget - 1, close, abortActiveCronTaskRuns, completeBoot);
+          await vi.advanceTimersByTimeAsync(1);
+          expect(abortActiveCronTaskRuns).toHaveBeenCalledWith(undefined);
+          expectRestartCloseCall(close, 0);
+          const warning = `restart drain budget ${budget - refreshMs}ms exhausted; cutting short cronRuns=1 agentRuns=1`;
+          expect(start).toHaveBeenCalledOnce();
+          expectUncalled(completeBoot, runtime.exit);
+          await advanceWithoutCalls(9_999, completeBoot, runtime.exit);
+          await advanceWithoutCalls(1, runtime.exit);
+          closing.resolve();
           await vi.advanceTimersByTimeAsync(0);
+          expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);
+          expect(completeBoot).toHaveBeenCalledExactlyOnceWith({
+            outcome: "forced_stop",
+            reason: `${warning}; gateway.restart_shutdown_timeout`,
+          });
+          expect(start).toHaveBeenCalledOnce();
+        } finally {
+          clearTimeout(deadline);
+          drain.resolve({ drained: true, snapshot: idleActiveWorkSnapshot });
+          closing.resolve();
+          await vi.advanceTimersByTimeAsync(0);
+          if (runtime.exit.mock.calls.length === 0) {
+            captureSignal("SIGINT")();
+            await vi.advanceTimersByTimeAsync(0);
+          }
+          await exited;
         }
-        await exited;
-        clock.mockRestore();
-        vi.useRealTimers();
-      }
+      });
     });
   });
 }

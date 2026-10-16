@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import { expect, it, vi, type Mock } from "vitest";
+import { performance } from "node:perf_hooks";
+import { expect, it, vi, type Mock, type MockInstance } from "vitest";
 import type { GatewayServer } from "../../gateway/server-public.js";
 import type { GatewayActiveWorkSnapshot } from "../../infra/gateway-active-work.js";
 import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
@@ -175,6 +176,28 @@ export function createLifecycleGate() {
     await release.promise;
   };
   return { entered: entered.promise, release: release.resolve, reject: release.reject, wait };
+}
+
+export async function withLifecycleClock(run: () => Promise<void>) {
+  vi.useFakeTimers();
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+  try {
+    await run();
+  } finally {
+    clock.mockRestore();
+    vi.useRealTimers();
+  }
+}
+
+export function expectUncalled(...mocks: MockInstance[]) {
+  for (const mock of mocks) {
+    expect(mock).not.toHaveBeenCalled();
+  }
+}
+
+export async function advanceWithoutCalls(ms: number, ...mocks: MockInstance[]) {
+  await vi.advanceTimersByTimeAsync(ms);
+  expectUncalled(...mocks);
 }
 
 export function systemdReply(timeout = "30s") {
