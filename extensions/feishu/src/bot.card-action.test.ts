@@ -58,7 +58,7 @@ describe("Feishu Card Action Handler", () => {
     operator: { open_id: "u123", user_id: "uid1", union_id: "un1" },
     token: "callback-token",
     action: { value, tag: "button" },
-    context: { open_id: "u123", user_id: "uid1", chat_id: "chat1" },
+    context: { chat_id: "chat1" },
     ...overrides,
   });
   const dispatch = (
@@ -80,11 +80,8 @@ describe("Feishu Card Action Handler", () => {
   });
 
   it("handles card action with JSON object payload", async () => {
-    await dispatch(cardEvent({ key: "val" }, { context: { chat_id: "" } }));
-    expect(message()).toMatchObject({
-      content: '{"text":"{\\"key\\":\\"val\\"}"}',
-      chat_id: "u123",
-    });
+    await dispatch(cardEvent({ a: "b" }, { context: { chat_id: "" } }));
+    expect(message()).toMatchObject({ content: '{"text":"{\\"a\\":\\"b\\"}"}', chat_id: "u123" });
   });
 
   it("opens approval cards with resolved DM type and preserved interaction context", async () => {
@@ -92,21 +89,14 @@ describe("Feishu Card Action Handler", () => {
     await dispatch(cardEvent(approvalAction()), { accountId: "main" });
     const containing = expect.objectContaining;
     const expected = { u: "u123", h: "chat1", t: "p2p", s: "session", e: expect.any(Number) };
-    expect(sendCard.mock.calls[0]?.[0]).toMatchObject({
-      to: "chat:chat1",
-      accountId: "main",
-      card: {
-        header: { title: { content: "Confirm action" } },
-        body: {
-          elements: expect.arrayContaining([
-            {
-              tag: "action",
-              actions: [containing({ value: containing({ c: expected }) }), expect.anything()],
-            },
-          ]),
-        },
-      },
-    });
+    const button = containing({ value: containing({ c: expected }) });
+    const actions = { tag: "action", actions: [button, expect.anything()] };
+    const card = {
+      header: { title: { content: "Confirm action" } },
+      body: { elements: expect.arrayContaining([actions]) },
+    };
+    const sent = sendCard.mock.calls[0]?.[0];
+    expect(sent).toMatchObject({ to: "chat:chat1", accountId: "main", card });
     expectFirstSentCardUsesFillWidthOnly(sendCard);
     expect(createClient).toHaveBeenCalledTimes(1);
     expect(handleFeishuMessage).not.toHaveBeenCalled();
@@ -121,23 +111,18 @@ describe("Feishu Card Action Handler", () => {
 
   it("marks synthetic group card callbacks as mentioning the bot", async () => {
     await dispatch(
-      cardEvent(quickAction({ a: CONFIRM, q: "/new" }), {
-        open_message_id: "om_card_message",
-      }),
+      cardEvent(quickAction({ a: CONFIRM, q: "/new" }), { open_message_id: "om_card" }),
       { botOpenId: "ou_bot" },
     );
     expect(message()).toMatchObject({
       chat_id: "chat1",
       chat_type: "group",
-      reply_target_message_id: "om_card_message",
-      typing_target_message_id: "om_card_message",
+      reply_target_message_id: "om_card",
+      typing_target_message_id: "om_card",
       content: '{"text":"/new"}',
     });
-    expect(inbound()?.sender.sender_id).toEqual({
-      open_id: "u123",
-      user_id: "uid1",
-      union_id: "un1",
-    });
+    const sender = inbound()?.sender.sender_id;
+    expect(sender).toEqual({ open_id: "u123", user_id: "uid1", union_id: "un1" });
     expect(message()?.mentions).toEqual([
       { key: "mention_bot", id: { open_id: "ou_bot" }, name: "bot" },
     ]);
@@ -158,24 +143,23 @@ describe("Feishu Card Action Handler", () => {
   });
 
   it("preserves p2p callbacks for DM quick actions", async () => {
-    const event = cardEvent(quickAction({ c: { ...context(), h: "p2p-chat-1", t: "p2p" } }), {
-      context: { chat_id: "p2p-chat-1" },
+    await dispatch(cardEvent(quickAction({ c: { ...context(), t: "p2p" } })), {
+      botOpenId: "ou_bot",
     });
-    await dispatch(event, { botOpenId: "ou_bot" });
-    expect(message()).toMatchObject({ chat_id: "p2p-chat-1", chat_type: "p2p" });
+    expect(message()).toMatchObject({ chat_id: "chat1", chat_type: "p2p" });
     expect(message()?.mentions).toBeUndefined();
   });
 
   it("does not cache chat types or callback tokens when expiry would exceed a valid Date", async () => {
     vi.useFakeTimers({ now: maxDate });
     getChat.mockResolvedValue({ code: 0, data: { chat_type: "p2p" } });
-    const event = cardEvent({ text: "/help" }, { context: { chat_id: "oc_dm_chat_boundary" } });
+    const event = cardEvent({ text: "/help" });
     await dispatch(event);
     await dispatch(event);
     expect(getChat).toHaveBeenCalledTimes(2);
     expect(createClient).toHaveBeenCalledTimes(2);
     expect(handleFeishuMessage).toHaveBeenCalledTimes(2);
-    expect(message()).toMatchObject({ chat_id: "oc_dm_chat_boundary", chat_type: "p2p" });
+    expect(message()).toMatchObject({ chat_id: "chat1", chat_type: "p2p" });
   });
 
   it("keeps Feishu chat lookup error logs UTF-16 safe at the truncation boundary", async () => {

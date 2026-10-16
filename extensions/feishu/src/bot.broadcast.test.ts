@@ -192,11 +192,7 @@ describe("broadcast dispatch", () => {
       counts: { final: 0 },
       noVisibleReplyFallbackEligible: true,
     });
-    mockActiveDispatcher(
-      vi.fn(async () => {
-        throw new Error("fallback send failed");
-      }),
-    );
+    mockActiveDispatcher(vi.fn().mockRejectedValue(new Error("fallback send failed")));
     const transport = createIngressLifecycle();
 
     await expect(
