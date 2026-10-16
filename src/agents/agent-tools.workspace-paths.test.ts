@@ -25,14 +25,22 @@ vi.mock("../infra/shell-env.js", async () => {
     await vi.importActual<typeof import("../infra/shell-env.js")>("../infra/shell-env.js");
   return { ...mod, getShellPathFromLoginShell: () => null };
 });
-function workspaceTools(workspaceDir: string) {
+function workspaceTools(
+  workspaceDir: string,
+  options: Parameters<typeof createOpenClawCodingTools>[0] = {},
+) {
   return expectReadWriteEditTools(
     createOpenClawCodingTools({
+      ...options,
       workspaceDir,
       config: { tools: { fs: { workspaceOnly: true } } },
     }),
   );
 }
+const readText = async (tool: AnyAgentTool, id: string, filePath: string) =>
+  getTextContent(await tool.execute(id, { path: filePath }));
+const expectFile = (filePath: string, content: string) =>
+  expect(fs.readFile(filePath, "utf8")).resolves.toBe(content);
 
 async function withSkillWorkspace(
   run: (fixture: {
@@ -49,25 +57,21 @@ async function withSkillWorkspace(
     await fs.mkdir(workspaceDir);
     await fs.mkdir(skillDir, { recursive: true });
     await fs.writeFile(skillFile, "# Demo skill\noriginal skill\n");
-    const tools = expectReadWriteEditTools(
-      createOpenClawCodingTools({
-        workspaceDir,
-        config: { tools: { fs: { workspaceOnly: true } } },
-        skillsSnapshot: {
-          prompt: "",
-          skills: [{ name: "demo" }],
-          resolvedSkills: [
-            createCanonicalFixtureSkill({
-              name: "demo",
-              description: "Demo skill",
-              filePath: skillFile,
-              baseDir: skillDir,
-              source: "test",
-            }),
-          ],
-        },
-      }),
-    );
+    const tools = workspaceTools(workspaceDir, {
+      skillsSnapshot: {
+        prompt: "",
+        skills: [{ name: "demo" }],
+        resolvedSkills: [
+          createCanonicalFixtureSkill({
+            name: "demo",
+            description: "Demo skill",
+            filePath: skillFile,
+            baseDir: skillDir,
+            source: "test",
+          }),
+        ],
+      },
+    });
     await run({ rootDir, skillDir, skillFile, tools });
   });
 }
@@ -80,11 +84,10 @@ describe("workspace path resolution", () => {
         const { readTool, writeTool } = expectReadWriteEditTools(tools);
 
         await fs.writeFile(path.join(cwd, "task.txt"), "task cwd read ok", "utf8");
-        const readResult = await readTool.execute("cwd-read", { path: "task.txt" });
-        expect(getTextContent(readResult)).toContain("task cwd read ok");
+        expect(await readText(readTool, "cwd-read", "task.txt")).toContain("task cwd read ok");
 
         await writeTool.execute("cwd-write", { path: "created.txt", content: "task cwd write ok" });
-        expect(await fs.readFile(path.join(cwd, "created.txt"), "utf8")).toBe("task cwd write ok");
+        await expectFile(path.join(cwd, "created.txt"), "task cwd write ok");
         await expect(fs.access(path.join(workspaceDir, "created.txt"))).rejects.toThrow();
       });
     });
@@ -161,16 +164,14 @@ describe("workspace path resolution", () => {
       });
       const insideUrl = pathToFileURL(inside).href;
 
-      expect(getTextContent(await read.execute("inside-url", { path: insideUrl }))).toContain(
-        "URL_INSIDE_MARKER",
-      );
+      expect(await readText(read, "inside-url", insideUrl)).toContain("URL_INSIDE_MARKER");
       expect(execute).toHaveBeenCalledWith("inside-url", { path: insideUrl }, undefined, undefined);
       await expect(
         read.execute("outside-url", { path: pathToFileURL(outside).href }),
       ).rejects.toThrow(/Path escapes sandbox root/i);
       expect(execute).toHaveBeenCalledTimes(1);
-      expect(await fs.readFile(inside, "utf8")).toBe("URL_INSIDE_MARKER");
-      expect(await fs.readFile(outside, "utf8")).toBe("URL_OUTSIDE_MARKER");
+      await expectFile(inside, "URL_INSIDE_MARKER");
+      await expectFile(outside, "URL_OUTSIDE_MARKER");
     });
   });
 
@@ -188,7 +189,7 @@ describe("workspace path resolution", () => {
       await expect(
         writeTool.execute("write", { path: "linked.txt", content: "pwned" }),
       ).rejects.toThrow(/hardlink|sandbox/i);
-      expect(await fs.readFile(outside, "utf8")).toBe("top-secret");
+      await expectFile(outside, "top-secret");
     });
   });
 
@@ -210,7 +211,7 @@ describe("workspace path resolution", () => {
             edits: [{ oldText: "old", newText: "new" }],
           });
         }
-        await expect(fs.readFile(target, "utf8")).resolves.toBe("new memory\n");
+        await expectFile(target, "new memory\n");
       });
     },
   );
@@ -258,7 +259,7 @@ describe("workspace path resolution", () => {
             content: "pwned\n",
           }),
         ).rejects.toThrow(/symlink|not-file|directory component/i);
-        await expect(fs.readFile(targetPath, "utf8")).resolves.toBe("original\n");
+        await expectFile(targetPath, "original\n");
       });
     },
   );
@@ -274,12 +275,8 @@ describe("workspace path resolution", () => {
         await fs.writeFile(siblingFile, "sibling skill");
         await fs.writeFile(outsideFile, "outside secret");
 
-        expect(getTextContent(await readTool.execute("read-skill", { path: skillFile }))).toContain(
-          "original skill",
-        );
-        expect(
-          getTextContent(await readTool.execute("read-skill-guide", { path: guideFile })),
-        ).toContain("skill guide");
+        expect(await readText(readTool, "read-skill", skillFile)).toContain("original skill");
+        expect(await readText(readTool, "read-skill-guide", guideFile)).toContain("skill guide");
         await expect(readTool.execute("read-sibling", { path: siblingFile })).rejects.toThrow(
           /Path escapes sandbox root/i,
         );
@@ -331,18 +328,11 @@ describe("sandboxed workspace paths", () => {
       const outside = path.join(agentRoot, "outside.txt");
       await fs.writeFile(inside, "LEGACY_URL_INSIDE_MARKER");
       await fs.writeFile(outside, "LEGACY_URL_OUTSIDE_MARKER");
-      const tools = createOpenClawCodingTools({
-        workspaceDir: sandboxRoot,
-        sandbox,
-        config: { tools: { fs: { workspaceOnly: true } } },
-      });
-      const { readTool } = expectReadWriteEditTools(tools);
+      const { readTool } = workspaceTools(sandboxRoot, { sandbox });
 
-      expect(
-        getTextContent(
-          await readTool.execute("legacy-inside-url", { path: pathToFileURL(inside).href }),
-        ),
-      ).toContain("LEGACY_URL_INSIDE_MARKER");
+      expect(await readText(readTool, "legacy-inside-url", pathToFileURL(inside).href)).toContain(
+        "LEGACY_URL_INSIDE_MARKER",
+      );
       const readsBefore = readFile.mock.calls.length;
       const statsBefore = stat.mock.calls.length;
       expect(readsBefore).toBeGreaterThan(0);
@@ -352,8 +342,8 @@ describe("sandboxed workspace paths", () => {
       ).rejects.toThrow(/Path escapes sandbox root/i);
       expect(readFile).toHaveBeenCalledTimes(readsBefore);
       expect(stat).toHaveBeenCalledTimes(statsBefore);
-      expect(await fs.readFile(inside, "utf8")).toBe("LEGACY_URL_INSIDE_MARKER");
-      expect(await fs.readFile(outside, "utf8")).toBe("LEGACY_URL_OUTSIDE_MARKER");
+      await expectFile(inside, "LEGACY_URL_INSIDE_MARKER");
+      await expectFile(outside, "LEGACY_URL_OUTSIDE_MARKER");
     });
   });
 
@@ -382,15 +372,13 @@ describe("sandboxed workspace paths", () => {
           path: "new.txt",
           content: "sandbox write",
         });
-        const written = await fs.readFile(path.join(sandboxDir, "new.txt"), "utf8");
-        expect(written).toBe("sandbox write");
+        await expectFile(path.join(sandboxDir, "new.txt"), "sandbox write");
 
         await editTool?.execute("sbx-edit", {
           path: "new.txt",
           edits: [{ oldText: "write", newText: "edit" }],
         });
-        const edited = await fs.readFile(path.join(sandboxDir, "new.txt"), "utf8");
-        expect(edited).toBe("sandbox edit");
+        await expectFile(path.join(sandboxDir, "new.txt"), "sandbox edit");
       });
     });
   });
@@ -429,7 +417,7 @@ describe("tools.fs.workspaceOnly", () => {
         getTextContent(await readTool.execute("read", { path: "/agent/secret.txt" })),
       ).toContain("shh");
       await writeTool.execute("write", { path: "/agent/owned.txt", content: "x" });
-      expect(await fs.readFile(path.join(agentRoot, "owned.txt"), "utf8")).toBe("x");
+      await expectFile(path.join(agentRoot, "owned.txt"), "x");
     });
   });
 
@@ -451,18 +439,13 @@ describe("tools.fs.workspaceOnly", () => {
           "utf8",
         );
 
-        const tools = createOpenClawCodingTools({
-          workspaceDir: sandbox.workspaceDir,
-          sandbox,
-          config: { tools: { fs: { workspaceOnly: true } } },
-        });
-        const { readTool } = expectReadWriteEditTools(tools);
+        const { readTool } = workspaceTools(sandbox.workspaceDir, { sandbox });
         for (const filePath of [
           "/workspace/.openclaw/sandbox-skills/skills/demo/SKILL.md",
           ".openclaw/sandbox-skills/skills/demo/SKILL.md",
           "file:///workspace/.openclaw/sandbox-skills/skills/demo/SKILL.md",
         ]) {
-          const text = getTextContent(await readTool.execute("skill", { path: filePath }));
+          const text = await readText(readTool, "skill", filePath);
           expect(text).toContain("materialized");
           expect(text).not.toContain("user-owned shadow");
         }
@@ -484,10 +467,9 @@ describe("tools.fs.workspaceOnly", () => {
       await expect(applyPatchTool.execute("t1", { input: APPLY_PATCH_PAYLOAD })).rejects.toThrow(
         /Path escapes sandbox root/i,
       );
-      const missingPatchedFile = await fs
-        .stat(path.join(agentRoot, "pwned.txt"))
-        .catch((error: unknown) => error);
-      expect((missingPatchedFile as NodeJS.ErrnoException).code).toBe("ENOENT");
+      await expect(fs.stat(path.join(agentRoot, "pwned.txt"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
     });
   });
 });

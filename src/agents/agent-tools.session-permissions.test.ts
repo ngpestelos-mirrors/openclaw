@@ -32,10 +32,21 @@ function args(name: (typeof fileTools)[number], target: string) {
   return name === "write" ? { path: target, content: "changed\n" } : { path: target };
 }
 function tool(name: string, options: Parameters<typeof createOpenClawCodingTools>[0]) {
-  return expectDefined(
-    createOpenClawCodingTools(options).find((entry) => entry.name === name),
+  return findTool(createOpenClawCodingTools(options), name);
+}
+const findTool = (tools: ReturnType<typeof createOpenClawCodingTools>, name: string) =>
+  expectDefined(
+    tools.find((entry) => entry.name === name),
     name,
   );
+const expectFile = (target: string, content = "original\n") =>
+  expect(fs.readFile(target, "utf8")).resolves.toBe(content);
+function aliasTools(root: string, alias: string, mode: "guarded" | "read-only" = "guarded") {
+  return createOpenClawCodingTools({
+    workspaceDir: alias,
+    cwd: alias,
+    sessionPermissionPolicy: { root, mode },
+  });
 }
 async function workspace(
   run: (paths: { parent: string; root: string; outside: string }) => Promise<void>,
@@ -90,7 +101,7 @@ describe("session permission filesystem tools", () => {
           tool: "apply_patch",
           error: `Path escapes sandbox root (${root}): ${outside}`,
         });
-        await expect(fs.readFile(outside, "utf8")).resolves.toBe("original\n");
+        await expectFile(outside);
       } finally {
         logError.mockRestore();
       }
@@ -116,9 +127,7 @@ describe("session permission filesystem tools", () => {
           if (name === "read") {
             expect(getTextContent(result)).toBe("original\n");
           }
-          await expect(fs.readFile(target, "utf8")).resolves.toBe(
-            name === "read" ? "original\n" : "changed\n",
-          );
+          await expectFile(target, name === "read" ? "original\n" : "changed\n");
         });
       },
     );
@@ -126,20 +135,13 @@ describe("session permission filesystem tools", () => {
     it("allows read-only alias reads while excluding mutations and outside files", async () => {
       await aliasedWorkspace(async ({ root, alias, outside }) => {
         await fs.writeFile(path.join(root, "proof.txt"), "original\n");
-        const tools = createOpenClawCodingTools({
-          workspaceDir: alias,
-          cwd: alias,
-          sessionPermissionPolicy: { root, mode: "read-only" },
-        });
+        const tools = aliasTools(root, alias, "read-only");
         const names = tools.map((entry) => entry.name);
         expect(names).toContain("exec");
         for (const name of ["write", "edit", "apply_patch"]) {
           expect(names).not.toContain(name);
         }
-        const read = expectDefined(
-          tools.find((entry) => entry.name === "read"),
-          "read",
-        );
+        const read = findTool(tools, "read");
         expect(getTextContent(await read.execute("inside", { path: "proof.txt" }))).toBe(
           "original\n",
         );
@@ -151,24 +153,17 @@ describe("session permission filesystem tools", () => {
       await aliasedWorkspace(async ({ parent, root, alias }) => {
         const inside = path.join(root, "proof.txt");
         await fs.writeFile(inside, "original\n");
-        const tools = createOpenClawCodingTools({
-          workspaceDir: alias,
-          cwd: alias,
-          sessionPermissionPolicy: { root, mode: "guarded" },
-        });
+        const tools = aliasTools(root, alias);
         for (const untrusted of [path.join(parent, "external-alias"), `${alias}-untrusted`]) {
           await fs.symlink(root, untrusted, "dir");
           const target = path.join(untrusted, "proof.txt");
           await expect(fs.realpath(target)).resolves.toBe(inside);
           for (const name of fileTools) {
-            const operation = expectDefined(
-              tools.find((entry) => entry.name === name),
-              name,
-            );
+            const operation = findTool(tools, name);
             await expect(operation.execute("inward", args(name, target))).rejects.toThrow(
               /escapes sandbox root/i,
             );
-            await expect(fs.readFile(inside, "utf8")).resolves.toBe("original\n");
+            await expectFile(inside);
           }
         }
       });
@@ -227,22 +222,15 @@ describe("session permission filesystem tools", () => {
           // Preserve raw '..' bytes: native traversal escapes while normalization hits the decoy.
           const canonicalInput = `${root}/${relativeEscape}`;
           await expect(fs.realpath(canonicalInput)).resolves.toBe(outside);
-          const tools = createOpenClawCodingTools({
-            workspaceDir: alias,
-            cwd: alias,
-            sessionPermissionPolicy: { root, mode: "guarded" },
-          });
+          const tools = aliasTools(root, alias);
           for (const name of fileTools) {
-            const operation = expectDefined(
-              tools.find((entry) => entry.name === name),
-              name,
-            );
+            const operation = findTool(tools, name);
             for (const input of [canonicalInput, relativeEscape]) {
               await expect(operation.execute("escape", args(name, input))).rejects.toThrow(
                 /(?:escapes|outside) sandbox root/i,
               );
-              await expect(fs.readFile(outside, "utf8")).resolves.toBe("original\n");
-              await expect(fs.readFile(decoy, "utf8")).resolves.toBe("original\n");
+              await expectFile(outside);
+              await expectFile(decoy);
             }
           }
           await expect(fs.readlink(path.join(root, "escape.txt"))).resolves.toBe(outside);
@@ -258,26 +246,17 @@ describe("session permission filesystem tools", () => {
         cwd: path.join(root, "packages/app"),
         sessionPermissionPolicy: { root, mode: "workspace" },
       });
-      const read = expectDefined(
-        tools.find((entry) => entry.name === "read"),
-        "read",
-      );
-      const write = expectDefined(
-        tools.find((entry) => entry.name === "write"),
-        "write",
-      );
-      const patch = expectDefined(
-        tools.find((entry) => entry.name === "apply_patch"),
-        "patch",
-      );
+      const read = findTool(tools, "read");
+      const write = findTool(tools, "write");
+      const patch = findTool(tools, "apply_patch");
       await fs.writeFile(path.join(root, "shared.txt"), "original\n");
       expect(getTextContent(await read.execute("nested", { path: "../../shared.txt" }))).toBe(
         "original\n",
       );
       await write.execute("nested", { path: "../../created.txt", content: "created" });
-      await expect(fs.readFile(path.join(root, "created.txt"), "utf8")).resolves.toBe("created");
+      await expectFile(path.join(root, "created.txt"), "created");
       await patch.execute("nested", args("apply_patch", "../../shared.txt"));
-      await expect(fs.readFile(path.join(root, "shared.txt"), "utf8")).resolves.toBe("changed\n");
+      await expectFile(path.join(root, "shared.txt"), "changed\n");
       await expect(read.execute("outside", { path: outside })).rejects.toThrow(/sandbox root/i);
     });
   });
@@ -332,15 +311,15 @@ describe("session permission filesystem tools", () => {
           sessionPermissionPolicy: { root, mode: "full" },
         });
         await operation.execute("inside", args(name, inside));
-        await expect(fs.readFile(inside, "utf8")).resolves.toBe("changed\n");
+        await expectFile(inside, "changed\n");
         if (required) {
           await expect(operation.execute("outside", args(name, outside))).rejects.toThrow(
             /sandbox root/i,
           );
-          await expect(fs.readFile(outside, "utf8")).resolves.toBe("original\n");
+          await expectFile(outside);
         } else {
           await operation.execute("outside", args(name, outside));
-          await expect(fs.readFile(outside, "utf8")).resolves.toBe("changed\n");
+          await expectFile(outside, "changed\n");
         }
       });
     },

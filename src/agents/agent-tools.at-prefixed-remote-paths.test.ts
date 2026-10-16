@@ -102,6 +102,16 @@ describe.each(["portable", "Linux shell"] as const)("leading-@ remote paths (%s)
       const readTool = guard(createSandboxedReadTool({ root: hostRoot, bridge }));
       const writeTool = guard(createSandboxedWriteTool({ root: hostRoot, bridge }));
       const editTool = guard(createSandboxedEditTool({ root: hostRoot, bridge }));
+      const expectRead = (callId: string, filePath: string, text: string) =>
+        expect(readTool.execute(callId, { path: filePath })).resolves.toEqual(
+          expect.objectContaining({
+            content: expect.arrayContaining([expect.objectContaining({ type: "text", text })]),
+          }),
+        );
+      const write = (callId: string, filePath: string, content: string) =>
+        writeTool.execute(callId, { path: filePath, content });
+      const edit = (callId: string, filePath: string, oldText: string, newText: string) =>
+        editTool.execute(callId, { path: filePath, edits: [{ oldText, newText }] });
 
       const statError = new Error("remote stat unavailable");
       const stat = bridge.stat.bind(bridge);
@@ -125,49 +135,15 @@ describe.each(["portable", "Linux shell"] as const)("leading-@ remote paths (%s)
         statFailure.mockRestore();
       }
 
-      await expect(readTool.execute("remote-at-read", { path: "@notes.md" })).resolves.toEqual(
-        expect.objectContaining({
-          content: expect.arrayContaining([
-            expect.objectContaining({ type: "text", text: "literal original" }),
-          ]),
-        }),
-      );
-      await expect(
-        readTool.execute("remote-at-reference", { path: "@reference.md" }),
-      ).resolves.toEqual(
-        expect.objectContaining({
-          content: expect.arrayContaining([
-            expect.objectContaining({ type: "text", text: "reference" }),
-          ]),
-        }),
-      );
-      await writeTool.execute("remote-at-write", {
-        path: "@notes.md",
-        content: "literal updated",
-      });
-      await editTool.execute("remote-at-edit", {
-        path: "@notes.md",
-        edits: [{ oldText: "updated", newText: "edited" }],
-      });
+      await expectRead("remote-at-read", "@notes.md", "literal original");
+      await expectRead("remote-at-reference", "@reference.md", "reference");
+      await write("remote-at-write", "@notes.md", "literal updated");
+      await edit("remote-at-edit", "@notes.md", "updated", "edited");
       await expectFile("@notes.md", "literal edited");
       await expectFile("notes.md", "sibling original");
-      await expect(
-        readTool.execute("remote-reference-literal-read", { path: "@@notes.md" }),
-      ).resolves.toEqual(
-        expect.objectContaining({
-          content: expect.arrayContaining([
-            expect.objectContaining({ type: "text", text: "literal edited" }),
-          ]),
-        }),
-      );
-      await writeTool.execute("remote-reference-literal-write", {
-        path: "@@notes.md",
-        content: "referenced original",
-      });
-      await editTool.execute("remote-reference-literal-edit", {
-        path: "@@notes.md",
-        edits: [{ oldText: "original", newText: "edited" }],
-      });
+      await expectRead("remote-reference-literal-read", "@@notes.md", "literal edited");
+      await write("remote-reference-literal-write", "@@notes.md", "referenced original");
+      await edit("remote-reference-literal-edit", "@@notes.md", "original", "edited");
       const referencedPatch = [
         "*** Begin Patch",
         "*** Update File: @@notes.md",
@@ -184,10 +160,7 @@ describe.each(["portable", "Linux shell"] as const)("leading-@ remote paths (%s)
       });
       await expectFile("@notes.md", "referenced patched");
       await expectFile("notes.md", "sibling original");
-      await writeTool.execute("remote-at-parent-write", {
-        path: "@projects/new.md",
-        content: "literal child",
-      });
+      await write("remote-at-parent-write", "@projects/new.md", "literal child");
       await expectFile("@projects/new.md", "literal child");
       await expectFile("projects/new.md", "sibling child");
 
