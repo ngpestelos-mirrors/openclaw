@@ -1066,7 +1066,7 @@ describe("ollama plugin", () => {
         expect.objectContaining({
           id: "glm-5.2",
           contextWindow: 1_000_000,
-          maxTokens: 8192,
+          maxTokens: 131_072,
           reasoning: true,
         }),
       );
@@ -1085,7 +1085,7 @@ describe("ollama plugin", () => {
       provider: "ollama-cloud",
       id: "glm-5.2",
       contextWindow: 1_000_000,
-      maxTokens: 8192,
+      maxTokens: 131_072,
       reasoning: true,
     });
     expect(model?.contextTokens).toBeUndefined();

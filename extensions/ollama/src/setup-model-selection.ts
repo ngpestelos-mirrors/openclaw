@@ -101,7 +101,7 @@ export function buildOllamaModelsConfig(
       name,
       discovered?.contextWindow,
       discovered?.capabilities,
-      discovered,
+      discovered ? { ...discovered, remote: isOllamaRemoteModel(discovered) } : undefined,
     );
     return [model];
   });

@@ -22,6 +22,23 @@ function pendingAbortableResponse(signal: AbortSignal | null | undefined): Promi
 }
 
 describe("Ollama onboarding model selection", () => {
+  it.each([{ remote_host: "https://ollama.com" }, { remote_model: "upstream-cloud-model" }])(
+    "keeps a remote alias output budget during setup: %j",
+    (remote) => {
+      const models = buildOllamaModelsConfig(
+        ["private-alias", "local-model"],
+        new Map([
+          ["private-alias", { name: "private-alias", contextWindow: 262_144, ...remote }],
+          ["local-model", { name: "local-model", contextWindow: 262_144 }],
+        ]),
+      );
+      expect(models.map(({ id, maxTokens }) => ({ id, maxTokens }))).toEqual([
+        { id: "private-alias", maxTokens: 262_144 },
+        { id: "local-model", maxTokens: 8192 },
+      ]);
+    },
+  );
+
   it("keeps discovery-only parameter metadata out of user config", () => {
     const models = buildOllamaModelsConfig(
       ["model"],
