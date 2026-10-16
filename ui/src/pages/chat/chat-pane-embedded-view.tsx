@@ -269,9 +269,7 @@ export function ClearCompanion(props: Props) {
 }
 
 function DetailPanel(props: SidebarPanelData) {
-  const presented = usePanePresentation(() =>
-    props.state.sidebarContent ? (props.panePresentation ?? true) : true,
-  );
+  const presented = usePanePresentation(() => props.detailPresentation);
   return (
     <Show when={presented()}>
       <ChatDetailSlot {...props.detail} content={props.detailContent!} />

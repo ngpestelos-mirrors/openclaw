@@ -80,6 +80,7 @@ export function sidebarPanelDefinitions(
     ...params,
     workspaceState: getSessionWorkspace(params.state),
     detailContent: params.state.sidebarContent ?? resolveSessionDiffSidebarContent(params.state),
+    detailPresentation: params.state.sidebarContent ? (params.panePresentation ?? true) : true,
   };
   const pluginPanels = new Map<SidebarSlotId, ControlUiRegistration<ControlUiPanel> | undefined>(
     (params?.pluginPanels ?? []).map((entry) => [`plugin:${entry.key}`, entry]),

@@ -95,4 +95,5 @@ export type SidebarPanelDefinitionParams = {
 export type SidebarPanelData = SidebarPanelDefinitionParams & {
   workspaceState: SessionWorkspaceState;
   detailContent: SidebarSelection | null;
+  detailPresentation: PresentationValue;
 };

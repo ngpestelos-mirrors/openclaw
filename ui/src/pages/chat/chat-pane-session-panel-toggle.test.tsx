@@ -18,7 +18,7 @@ import {
   type SessionPanelToggleSlot,
 } from "../../components/session-panel-toggle-buffer.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
-import { flush } from "../../test-helpers/solid-settle.ts";
+import { flush as flushSolid } from "../../test-helpers/solid-settle.ts";
 import { sidebarPanelDefinitions } from "./chat-pane-embedded-panels.ts";
 import {
   createChatPaneSessionPanelToggles,
@@ -391,7 +391,7 @@ it("delivers a browser card after the pane's scheduled render commits", async ()
       },
       { container: pane },
     );
-    flush();
+    flushSolid();
   }
   function requestUpdate() {
     // Expose the new commit promise before the browser card can mount.

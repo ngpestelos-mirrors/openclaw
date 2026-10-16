@@ -2,6 +2,7 @@ import { onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { SessionWorkspaceGetResult, SessionWorkspaceListResult } from "../api/types.ts";
 import { sidebarPanelDefinitions } from "../pages/chat/chat-pane-embedded-panels.ts";
+import type { SidebarPanelDefinitionParams } from "../pages/chat/chat-pane-embedded-types.ts";
 import { createChatPaneRails } from "../pages/chat/chat-pane-rails.ts";
 import { renderSidebarRegion } from "../pages/chat/chat-pane-sidebar-layout.ts";
 import { SidebarRegionView } from "../pages/chat/chat-pane-sidebar-view.tsx";
@@ -10,12 +11,12 @@ import {
   createInitializationContext,
   createSessionCapabilityFixture,
 } from "../pages/chat/chat-pane.test-support.ts";
+import type { ChatPageHost } from "../pages/chat/chat-state-host.ts";
 import { createPageState } from "../pages/chat/chat-state-page.ts";
-import type { ChatProps } from "../pages/chat/chat-view.tsx";
 import "../pages/chat/components/chat-detail-panel.tsx";
-import { createSessionWorkspaceProps } from "../pages/chat/components/chat-session-workspace.ts";
+import { createChatProps } from "../pages/chat/chat-view.test-helpers.ts";
 import "../pages/chat/components/chat-sidebar-region.runtime.tsx";
-import { threadProps } from "../pages/chat/components/chat-transcript.test-support.ts";
+import { createSessionWorkspaceProps } from "../pages/chat/components/chat-session-workspace.ts";
 import type { SidebarLayout, SidebarSlotId } from "../pages/chat/sidebar-layout.ts";
 import { mountSolid } from "./solid-render.tsx";
 
@@ -76,6 +77,57 @@ export async function renderPanelFixture(
   await mount.querySelector("openclaw-panel-loading-skeleton")?.updateComplete;
 }
 
+export function sidebarPanelFixtureParams(
+  state: ChatPageHost,
+  overrides: Partial<SidebarPanelDefinitionParams> = {},
+): SidebarPanelDefinitionParams {
+  return {
+    state,
+    paneId: "review-intent",
+    panePresentationId: "review-intent",
+    subagentsInputRegion: "page",
+    subagentsPresented: false,
+    subagentsAvailable: false,
+    onSubagentSessionSelect: vi.fn(),
+    themeMode: "dark",
+    agentId: "main",
+    browserPresented: false,
+    browserTabsInHeader: true,
+    terminalTabsInHeader: true,
+    browserRefreshOnPresentation: false,
+    desktopPresented: false,
+    desktopRefreshOnPresentation: false,
+    desktopAvailable: false,
+    desktopSource: null,
+    desktopFocusHref: "",
+    onDesktopFocusTargetChange: vi.fn(),
+    dashboard: null,
+    digest: null,
+    activeRunId: null,
+    pullRequests: [],
+    companion: { turns: [], loading: false, draft: "" },
+    companionPresented: false,
+    companionFocusRequest: undefined,
+    onCompanionSubmit: vi.fn(),
+    onCompanionDraftChange: vi.fn(),
+    connected: true,
+    onClearCompanion: vi.fn(),
+    discussion: null,
+    discussionAvailable: false,
+    discussionOpenUrl: null,
+    discussionSourceGeneration: 0,
+    pluginPanels: [],
+    isPluginPanelPresented: () => false,
+    detail: {
+      chat: createChatProps({ sessionKey: state.sessionKey }),
+      host: state,
+      requestUpdate: vi.fn(),
+    },
+    workspace: createSessionWorkspaceProps(state),
+    ...overrides,
+  };
+}
+
 export function createReviewFixture() {
   const file = createDeferred<SessionWorkspaceGetResult | null>();
   const list = createDeferred<SessionWorkspaceListResult | null>();
@@ -127,50 +179,7 @@ export function createReviewFixture() {
   });
   const renderPanels = async () => {
     const { closePanelSlot } = rails();
-    const definitions = sidebarPanelDefinitions({
-      state,
-      paneId: "review-intent",
-      panePresentationId: "review-intent",
-      subagentsInputRegion: "page",
-      subagentsPresented: false,
-      subagentsAvailable: false,
-      onSubagentSessionSelect: vi.fn(),
-      themeMode: "dark",
-      agentId: "main",
-      browserPresented: false,
-      browserTabsInHeader: true,
-      terminalTabsInHeader: true,
-      browserRefreshOnPresentation: false,
-      desktopPresented: false,
-      desktopRefreshOnPresentation: false,
-      desktopAvailable: false,
-      desktopSource: null,
-      desktopFocusHref: "",
-      onDesktopFocusTargetChange: vi.fn(),
-      dashboard: null,
-      digest: null,
-      activeRunId: null,
-      pullRequests: [],
-      companion: { turns: [], loading: false, draft: "" },
-      companionPresented: false,
-      companionFocusRequest: undefined,
-      onCompanionSubmit: vi.fn(),
-      onCompanionDraftChange: vi.fn(),
-      connected: true,
-      onClearCompanion: vi.fn(),
-      discussion: null,
-      discussionAvailable: false,
-      discussionOpenUrl: null,
-      discussionSourceGeneration: 0,
-      pluginPanels: [],
-      isPluginPanelPresented: () => false,
-      detail: {
-        chat: threadProps("review-intent", state.sessionKey) as ChatProps,
-        host: state,
-        requestUpdate: vi.fn(),
-      },
-      workspace: createSessionWorkspaceProps(state),
-    });
+    const definitions = sidebarPanelDefinitions(sidebarPanelFixtureParams(state));
     await renderPanelFixture(mount, state.sidebarLayout, definitions, closePanelSlot);
   };
   return { context, file, list, mount, preview, rails, renderPanels, sessions, state };

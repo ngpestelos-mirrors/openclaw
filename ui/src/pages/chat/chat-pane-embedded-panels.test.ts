@@ -15,6 +15,7 @@ import { PRESENTATION_CHANGED_EVENT } from "../../lit/presentation-binding.ts";
 import {
   createReviewFixture as createUnboundReviewFixture,
   renderPanelFixture,
+  sidebarPanelFixtureParams,
 } from "../../test-helpers/chat-pane-embedded-panels.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
@@ -28,10 +29,10 @@ import {
   createInitializationContext,
 } from "./chat-pane.test-support.ts";
 import { createPageState } from "./chat-state-page.ts";
-import { createChatProps, createTestTranscript } from "./chat-view.test-helpers.ts";
+import { createTestTranscript } from "./chat-view.test-helpers.ts";
 import type { ChatProps } from "./chat-view.tsx";
 import { ChatDetailSlot } from "./components/chat-detail-slot-view.tsx";
-import { renderAssistantAttachments } from "./components/chat-message-attachments.ts";
+import { AssistantAttachments } from "./components/chat-message-attachments-solid.tsx";
 import {
   releaseChatMediaResourceSubscriber,
   type AttachmentItem,
@@ -77,10 +78,10 @@ function createReviewFixture() {
 
 function discussionSlots(discussionAvailable: boolean) {
   const discussion = {} as SessionDiscussionPanelConfig;
-  const definitions = sidebarPanelDefinitions({
-    discussion,
-    discussionAvailable,
-  } as Parameters<typeof sidebarPanelDefinitions>[0]);
+  const { state } = createReviewFixture();
+  const definitions = sidebarPanelDefinitions(
+    sidebarPanelFixtureParams(state, { discussion, discussionAvailable }),
+  );
   return definitions
     .filter((definition) => definition.available)
     .map((definition) => definition.slot);
@@ -295,25 +296,30 @@ describe("chat pane embedded panels", () => {
           artifactId: `artifact_${attachmentId}`,
         },
       };
-      const rerender = () =>
-        renderPaneLegacyContent(
-          renderAssistantAttachments(
-            [attachment],
-            {
-              connectionEpoch: 1,
-              onRequestUpdate: rerender,
-              resolveArtifactDownload: firstResolver,
+      let rerender = () => {};
+      mountSolid(
+        () => {
+          const [revision, setRevision] = createSignal(0);
+          rerender = () => setRevision((value) => value + 1);
+          return createComponent(AssistantAttachments, {
+            attachments: [attachment],
+            get options() {
+              revision();
+              return {
+                connectionEpoch: 1,
+                onRequestUpdate: rerender,
+                resolveArtifactDownload: firstResolver,
+              };
             },
-            (content) => {
+            onOpenSidebar: (content) => {
               sidebarContent = content;
             },
-            undefined,
-            false,
-          ),
-          container,
-        );
+            inlinePlayback: false,
+          });
+        },
+        { container },
+      );
       onTestFinished(() => releaseChatMediaResourceSubscriber(rerender));
-      rerender();
       const open = await vi.waitFor(() =>
         expectDefined(
           container.querySelector<HTMLButtonElement>(".chat-assistant-attachment-card__expand"),
@@ -710,16 +716,11 @@ describe("chat pane embedded panels", () => {
     const owner = new EventTarget();
     const renderPanels = async (layout: SidebarLayout) => {
       state.sidebarLayout = layout;
-      const definitions = sidebarPanelDefinitions({
-        state,
-        panePresentation: { owner, isPresented: () => presented },
-        detail: {
-          chat: createChatProps({ sessionKey: state.sessionKey }),
-          host: state,
-          requestUpdate: vi.fn(),
-        },
-        workspace: createSessionWorkspaceProps(state),
-      } as Parameters<typeof sidebarPanelDefinitions>[0]);
+      const definitions = sidebarPanelDefinitions(
+        sidebarPanelFixtureParams(state, {
+          panePresentation: { owner, isPresented: () => presented },
+        }),
+      );
       await renderPanelFixture(mount, layout, definitions);
     };
     const review = openSlot({ columns: [] }, "detail");

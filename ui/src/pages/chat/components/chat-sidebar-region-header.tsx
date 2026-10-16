@@ -306,9 +306,7 @@ export function SidebarRegionHeader(props: SidebarRegionHeaderProps) {
         <TypeMenu {...props} />
       </div>
       <Show when={hostedActions()}>
-        <div class="rail-header__actions side-panel__actions">
-          {hostedActions()}
-        </div>
+        <div class="rail-header__actions side-panel__actions">{hostedActions()}</div>
       </Show>
     </header>
   );
