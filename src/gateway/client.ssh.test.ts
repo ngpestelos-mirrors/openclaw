@@ -8,7 +8,6 @@ import { GatewayClient, type GatewayClientOptions } from "./client.js";
 type CapturedClient = {
   options: BaseGatewayClientOptions;
   start: ReturnType<typeof vi.fn>;
-  stop: ReturnType<typeof vi.fn>;
   connected: boolean;
 };
 
@@ -37,10 +36,10 @@ vi.mock("../../packages/gateway-client/src/client.js", () => ({
       fixture.onStart?.(this);
     });
 
-    stop = vi.fn(() => {
+    stop() {
       this.connected = false;
       fixture.onStop?.();
-    });
+    }
 
     async stopAndWait() {
       this.stop();
@@ -65,14 +64,12 @@ vi.mock("../infra/net/proxy/proxy-lifecycle.js", () => ({
   registerManagedProxyGatewayLoopbackBypass: vi.fn(),
 }));
 
+const { startSsh, loadOrigin, storeOrigin, clearOrigin } = fixture;
+
 beforeEach(() => {
   fixture.clients.length = 0;
-  fixture.startSsh.mockReset();
-  fixture.loadOrigin.mockReset();
-  fixture.storeOrigin.mockReset();
-  fixture.clearOrigin.mockReset();
-  fixture.onStart = undefined;
-  fixture.onStop = undefined;
+  [startSsh, loadOrigin, storeOrigin, clearOrigin].forEach((mock) => mock.mockReset());
+  Object.assign(fixture, { onStart: undefined, onStop: undefined });
 });
 
 function controlledTunnel(localPort: number, waitForExitOnStop = false) {
@@ -122,94 +119,83 @@ async function startClient(client: GatewayClient) {
   return started.promise;
 }
 
-it("keeps route-bound credentials and TLS identity when the local listener changes", async () => {
-  const entry = {
-    token: "fixture-route-token",
-    role: "operator",
-    scopes: ["operator.read"],
-    updatedAtMs: 1,
-  };
-  fixture.loadOrigin.mockResolvedValue(entry);
-  const device = { deviceId: "fixture-device", role: "operator" };
+it.each([
+  [40101, "/fixture/old-key", "localhost", "localhost"],
+  [40102, "/fixture/new-key", "127.0.0.1", "127.0.0.1"],
+  [40103, "/fixture/new-key", "[::1]", "::1"],
+] as const)(
+  "keeps route-bound credentials and TLS identity on port %s",
+  async (localPort, identity, host, tlsServerName) => {
+    const entry = { token: "fixture-route-token" };
+    loadOrigin.mockResolvedValue(entry);
+    const device = { deviceId: "fixture-device", role: "operator" };
 
-  for (const [localPort, identity, host, tlsServerName] of [
-    [40101, "/fixture/old-key", "localhost", "localhost"],
-    [40102, "/fixture/new-key", "127.0.0.1", "127.0.0.1"],
-    [40103, "/fixture/new-key", "[::1]", "::1"],
-  ] as const) {
     const owned = controlledTunnel(localPort);
-    fixture.startSsh.mockResolvedValueOnce(owned.tunnel);
+    startSsh.mockResolvedValueOnce(owned.tunnel);
     const client = createClient({
       url: `wss://${host}:18789/gateway/ws?profile=work`,
       sshTunnel: { ...route, identity },
     });
 
     const base = await startClient(client);
-    expect(fixture.startSsh).toHaveBeenLastCalledWith(
-      expect.objectContaining({ ...route, identity }),
-    );
+    expect(startSsh).toHaveBeenLastCalledWith(expect.objectContaining({ ...route, identity }));
     try {
-      expect(base.options.url).toBe(`wss://127.0.0.1:${localPort}/gateway/ws?profile=work`);
-      expect(base.options.tlsServerName).toBe(tlsServerName);
+      expect(base.options).toMatchObject({
+        url: `wss://127.0.0.1:${localPort}/gateway/ws?profile=work`,
+        tlsServerName,
+      });
       const deps = base.options.hostDeps;
       assert(deps?.loadDeviceAuthToken && deps.storeDeviceAuthToken && deps.clearDeviceAuthToken);
       expect(await deps.loadDeviceAuthToken(device)).toEqual(entry);
-      expect(fixture.loadOrigin).toHaveBeenLastCalledWith(
-        expect.objectContaining({ ...device, gatewayScope: deviceAuthScope }),
-      );
       await deps.storeDeviceAuthToken({ ...device, token: "fixture-issued", scopes: [] });
-      expect(fixture.storeOrigin).toHaveBeenLastCalledWith(
-        expect.objectContaining({ ...device, gatewayScope: deviceAuthScope }),
-      );
       await deps.clearDeviceAuthToken({ ...device, expectedToken: "fixture-issued" });
-      expect(fixture.clearOrigin).toHaveBeenLastCalledWith(
-        expect.objectContaining({ ...device, gatewayScope: deviceAuthScope }),
-      );
+      for (const mock of [loadOrigin, storeOrigin, clearOrigin]) {
+        expect(mock).toHaveBeenLastCalledWith(
+          expect.objectContaining({ ...device, gatewayScope: deviceAuthScope }),
+        );
+      }
     } finally {
       await client.stopAndWait();
     }
     expect(owned.stop).toHaveBeenCalled();
-  }
-});
+  },
+);
 
 it("joins a canceled pending tunnel before stopping without opening the Gateway transport", async () => {
   const pending = createDeferred<SshTunnel>();
   const owned = controlledTunnel(40103, true);
-  fixture.startSsh.mockReturnValueOnce(pending.promise);
+  startSsh.mockReturnValueOnce(pending.promise);
   const onConnectError = vi.fn();
   const client = createClient({ onConnectError });
 
   client.start();
   await vi.dynamicImportSettled();
-  expect(fixture.startSsh).toHaveBeenCalledOnce();
+  expect(startSsh).toHaveBeenCalledOnce();
   expect(fixture.clients).toHaveLength(0);
-  let stopped = false;
-  const stopping = client.stopAndWait().then(() => {
-    stopped = true;
-  });
-  expect(fixture.startSsh.mock.calls[0]?.[0].signal?.aborted).toBe(true);
+  const settled = vi.fn();
+  const stopping = client.stopAndWait().then(settled);
+  expect(startSsh.mock.calls[0]?.[0].signal?.aborted).toBe(true);
   pending.resolve(owned.tunnel);
   await owned.stopRequested;
-  expect(stopped).toBe(false);
+  expect(settled).not.toHaveBeenCalled();
   expect(fixture.clients).toHaveLength(0);
   owned.close();
   await stopping;
-  expect(stopped).toBe(true);
+  expect(settled).toHaveBeenCalledOnce();
   expect(onConnectError).not.toHaveBeenCalled();
 });
 
 it("rejects a reconnect as soon as the SSH child exits and never reuses its released port", async () => {
   const owned = controlledTunnel(40104);
-  fixture.startSsh.mockResolvedValueOnce(owned.tunnel);
+  startSsh.mockResolvedValueOnce(owned.tunnel);
   const stopped = createDeferred();
   fixture.onStop = stopped.resolve;
   const beforeConnect = vi.fn();
   const client = createClient({ hostDeps: { beforeConnect } });
   const base = await startClient(client);
-  expect(fixture.startSsh).toHaveBeenCalledOnce();
+  expect(startSsh).toHaveBeenCalledOnce();
   expect(beforeConnect).toHaveBeenCalledOnce();
   expect(client.connected).toBe(true);
-  assert(base.options.hostDeps?.beforeConnect);
   owned.close();
   // The child is already dead even before its promise observer can stop the client.
   expect(() => base.options.hostDeps?.beforeConnect?.()).toThrow(/SSH|tunnel/i);
@@ -217,24 +203,21 @@ it("rejects a reconnect as soon as the SSH child exits and never reuses its rele
   expect(client.connected).toBe(false);
   client.start();
   await client.stopAndWait();
-  expect(fixture.startSsh).toHaveBeenCalledOnce();
+  expect(startSsh).toHaveBeenCalledOnce();
   expect(fixture.clients).toHaveLength(1);
   expect(base.start).toHaveBeenCalledOnce();
 });
 
 it("settles SSH teardown and close notification even when the error callback throws", async () => {
   const owned = controlledTunnel(40105);
-  fixture.startSsh.mockResolvedValueOnce(owned.tunnel);
+  startSsh.mockResolvedValueOnce(owned.tunnel);
   const closed = createDeferred();
+  const fail = () => {
+    throw new Error("synthetic failure");
+  };
   const client = createClient({
-    hostDeps: {
-      beforeConnect: () => {
-        throw new Error("synthetic start failure");
-      },
-    },
-    onConnectError: () => {
-      throw new Error("synthetic callback failure");
-    },
+    hostDeps: { beforeConnect: fail },
+    onConnectError: fail,
     onClose: () => closed.resolve(),
   });
   client.start();
