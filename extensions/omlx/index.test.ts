@@ -3,7 +3,10 @@ import type { OpenClawConfig, ProviderRuntimeModel } from "openclaw/plugin-sdk/p
 import { capturePluginRegistration } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { CUSTOM_LOCAL_AUTH_MARKER } from "openclaw/plugin-sdk/provider-auth";
 import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runtime";
-import { resolveProviderRequestHeaders } from "openclaw/plugin-sdk/provider-http";
+import {
+  resolveProviderRequestHeaders,
+  type ProviderRequestTransportOverrides,
+} from "openclaw/plugin-sdk/provider-http";
 import type { ModelProviderConfig } from "openclaw/plugin-sdk/provider-model-shared";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -688,7 +691,7 @@ it.each<{
 it.each<{
   name: string;
   providerRequest: NonNullable<ModelProviderConfig["request"]>;
-  modelRequest: NonNullable<ModelProviderConfig["request"]>;
+  modelRequest: ProviderRequestTransportOverrides;
   expectedAuth: { apiKey: string } | undefined;
 }>([
   {
@@ -714,11 +717,12 @@ it.each<{
 ])("honors effective model auth over $name", async (scenario) => {
   const provider = capturePluginRegistration(plugin).providers[0];
   const baseModel = chatModel("https://omlx.example.test/v1");
+  const providerHeaders = { Authorization: "Bearer fixture-stale-header" };
   const providerConfig: ModelProviderConfig = {
     baseUrl: baseModel.baseUrl,
     api: "openai-completions",
     apiKey: "omlx:profile",
-    headers: { Authorization: "Bearer fixture-stale-header" },
+    headers: providerHeaders,
     request: scenario.providerRequest,
     models: [],
   };
@@ -729,7 +733,7 @@ it.each<{
         provider: "omlx",
         api: baseModel.api,
         baseUrl: baseModel.baseUrl,
-        defaultHeaders: providerConfig.headers,
+        defaultHeaders: providerHeaders,
         request: scenario.modelRequest,
       }),
     },
