@@ -230,7 +230,7 @@ it.each([
     gatewayUrl: source === "cli --url" ? url : undefined,
   });
   expect(result.tlsFingerprint).toBe(pin);
-  expectCertificateInspection(Boolean(inspect));
+  expectCertificateInspection(inspect);
   if (scope) {
     expect(result.deviceAuthScope).toBe(scope);
     expect(result.sshTunnel).toBeUndefined();

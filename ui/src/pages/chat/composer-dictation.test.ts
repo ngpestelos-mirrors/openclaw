@@ -25,7 +25,7 @@ let speechStarted = createDeferred();
 let request: ReturnType<
   typeof vi.fn<(method: string, params: Record<string, unknown>) => Promise<unknown>>
 >;
-let getUserMedia: ReturnType<typeof vi.fn>;
+let getUserMedia: ReturnType<typeof vi.fn<() => Promise<ReturnType<typeof microphone>>>>;
 
 class MockAudio extends EventTarget {
   readonly pause = vi.fn();
