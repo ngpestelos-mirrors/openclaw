@@ -23,8 +23,6 @@ final class VoiceSessionCoordinator {
         self.didDismiss = didDismiss
     }
 
-    enum Source: String { case wakeWord, pushToTalk }
-
     struct Session {
         let token: UUID
         var text: String
@@ -37,7 +35,6 @@ final class VoiceSessionCoordinator {
     // MARK: - API
 
     func startSession(
-        source: Source,
         text: String,
         attributed: NSAttributedString? = nil,
         forwardEnabled: Bool = false,
@@ -51,7 +48,6 @@ final class VoiceSessionCoordinator {
             voiceWakeTrigger: voiceWakeTrigger)
         self.overlay.startSession(
             token: token,
-            source: source,
             transcript: text,
             attributed: attributed,
             forwardEnabled: forwardEnabled,
@@ -90,7 +86,7 @@ final class VoiceSessionCoordinator {
             autoSendAfter: autoSendAfter)
     }
 
-    func sendNow(token: UUID, reason: String = "explicit") {
+    func sendNow(token: UUID) {
         guard let session, session.token == token else { return }
         let text = session.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let voiceWakeTrigger = session.voiceWakeTrigger

@@ -5,7 +5,6 @@ extension VoiceWakeOverlayController {
     @discardableResult
     func startSession(
         token: UUID = UUID(),
-        source: VoiceSessionCoordinator.Source,
         transcript: String,
         attributed: NSAttributedString? = nil,
         forwardEnabled: Bool = false,
@@ -49,7 +48,7 @@ extension VoiceWakeOverlayController {
         self.present()
         if let delay {
             if delay <= 0 {
-                self.actions()?.send(token, "autoSendImmediate")
+                self.actions()?.send(token)
             } else {
                 self.scheduleAutoSend(token: token, after: delay)
             }
@@ -115,10 +114,10 @@ extension VoiceWakeOverlayController {
         }
     }
 
-    func requestSend(token: UUID? = nil, reason: String = "overlay_request") {
+    func requestSend(token: UUID? = nil) {
         guard self.guardToken(token) else { return }
         guard let active = token ?? self.activeToken else { return }
-        self.actions()?.send(active, reason)
+        self.actions()?.send(active)
     }
 
     func dismiss(token: UUID? = nil, reason: DismissReason = .explicit, outcome: SendOutcome = .empty) {
@@ -184,7 +183,7 @@ extension VoiceWakeOverlayController {
     func scheduleAutoSend(token: UUID, after delay: TimeInterval) {
         SimpleTaskSupport.schedule(task: &self.autoSendTask, delay: max(0, delay)) { [weak self] in
             guard let self, self.guardToken(token) else { return }
-            self.actions()?.send(token, "autoSendDelay")
+            self.actions()?.send(token)
             self.autoSendTask = nil
         }
     }

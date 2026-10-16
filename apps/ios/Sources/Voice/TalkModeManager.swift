@@ -2382,7 +2382,6 @@ final class TalkModeManager {
     }
 
     func prefetchRealtimeSessionIfReady(
-        reason: String,
         shouldApply: @escaping @MainActor @Sendable () -> Bool = { true }) async
     {
         guard self.gatewayConnected,

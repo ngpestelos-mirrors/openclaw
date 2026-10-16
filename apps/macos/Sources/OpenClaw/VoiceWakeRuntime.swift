@@ -626,7 +626,6 @@ actor VoiceWakeRuntime {
         self.overlayToken = await MainActor.run {
             guard self.state() != nil else { return nil as UUID? }
             return self.sessions.startSession(
-                source: .wakeWord,
                 text: snapshot,
                 attributed: attributed,
                 forwardEnabled: true,
