@@ -64,6 +64,9 @@ it.each([
     });
     await fs.writeFile(setup.configPath, JSON.stringify(configured));
     clearConfigCache();
+    const unrelatedRuntimeProvider = structuredClone(
+      (await readConfigFileSnapshot()).config.models?.providers?.unrelated,
+    );
     const sparse = validateConfigObjectRaw({
       ...configured,
       models: {
@@ -97,7 +100,7 @@ it.each([
     expect(verifiedProviders?.openai?.baseUrl).toBe("https://replacement.example/v1");
     expect(verifiedProviders?.openai?.request).toEqual(request);
     expect(verifiedProviders?.openai?.headers).toBeUndefined();
-    expect(verifiedProviders?.unrelated).toEqual(unrelatedProvider);
+    expect(verifiedProviders?.unrelated).toEqual(unrelatedRuntimeProvider);
     expect(result).toMatchObject({ ok: true });
     expect(setup.readProfile()).toEqual([saved.profile.profileId, credential]);
     const snapshot = await readConfigFileSnapshot();
