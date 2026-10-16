@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
-import type { ChatGoalDraftMode, ChatReplyTarget } from "../../lib/chat/chat-types.ts";
+import type { ChatGoalDraftMode } from "../../lib/chat/chat-types.ts";
 import * as draftStore from "../../lib/chat/composer-draft-store.runtime.ts";
 import { nextDraftRevision } from "../../lib/chat/outbox-store-draft-state.ts";
 import {
@@ -20,37 +20,32 @@ import * as durableComposer from "./durable-composer-persistence.ts";
 type ReadResult = Awaited<ReturnType<typeof draftStore.readDurableComposerDraft>>;
 type FoundDraft = Extract<ReadResult, { status: "found" }>["draft"];
 let write = draftStore.writeDurableComposerDraft;
-function foundDraft(text: string, writeId: string, fields: Partial<FoundDraft> = {}): ReadResult {
-  return { status: "found", draft: { revision: 1, text, attachments: [], writeId, ...fields } };
-}
+const retireDraft = () =>
+  vi.spyOn(draftStore, "retireDurableComposerDraft").mockResolvedValue({ status: "persisted" });
+const draftRead = () => vi.spyOn(draftStore, "readDurableComposerDraft");
+const missing: ReadResult = { status: "not-found", revision: 0 };
+const foundDraft = (text: string, fields: Partial<FoundDraft> = {}): ReadResult => ({
+  status: "found",
+  draft: { revision: 1, text, attachments: [], writeId: "stored", ...fields },
+});
 type State = NonNullable<ReturnType<ConstructorParameters<typeof ChatComposerPersistence>[0]>>;
-const cleanups: (() => void | Promise<void>)[] = [];
+const cleanups: (() => void)[] = [];
 function persistenceFor(state: State, keepOwner = false, release = () => {}) {
   let owner: State | undefined = state;
   const persistence = new ChatComposerPersistence(() => owner);
-  cleanups.push(async () => {
-    if (!keepOwner) {
-      owner = undefined;
-    }
+  cleanups.push(() => {
+    owner = keepOwner ? owner : undefined;
     persistence.stop();
     release();
-    await settleStorage();
   });
   persistence.start();
   return persistence;
 }
 function pendingRestore(state: State) {
   const pending = createDeferred<ReadResult>();
-  const read = vi.spyOn(draftStore, "readDurableComposerDraft").mockReturnValue(pending.promise);
-  const persistence = persistenceFor(state, false, () =>
-    pending.resolve({ status: "not-found", revision: 0 }),
-  );
+  const read = draftRead().mockReturnValue(pending.promise);
+  const persistence = persistenceFor(state, false, () => pending.resolve(missing));
   return { pending, read, persistence };
-}
-function retireDraft() {
-  return vi
-    .spyOn(draftStore, "retireDurableComposerDraft")
-    .mockResolvedValue({ status: "persisted" });
 }
 function expectWrite(
   scope: unknown,
@@ -59,28 +54,20 @@ function expectWrite(
 ) {
   expect(write).toHaveBeenCalledWith(scope, expect.objectContaining(draft), options);
 }
-function offlineSelection() {
-  return {
-    ...createState(),
-    client: null,
-    connected: false,
-    chatGoalDraftMode: null as ChatGoalDraftMode | null,
-    chatReplyTarget: null as ChatReplyTarget | null,
-  };
-}
-
-function createState() {
-  return {
-    settings: { gatewayUrl: "ws://gateway.test/control" },
-    sessionKey: "agent:main:restore",
-    chatMessage: "",
-    chatAttachments: [],
-    chatQueue: [],
-    client: { recoveryScope: "test-owner", recoveryScopeReady: true },
-    connected: true,
-    selectedChatSessionIncognito: false,
-  };
-}
+const ownerScope = expect.objectContaining({ recoveryScope: "test-owner" });
+const createState = (overrides: Partial<State> = {}): State => ({
+  settings: { gatewayUrl: "ws://gateway.test/control" },
+  sessionKey: "agent:main:restore",
+  chatMessage: "",
+  chatAttachments: [],
+  chatQueue: [],
+  chatGoalDraftMode: null,
+  chatReplyTarget: null,
+  client: { recoveryScope: "test-owner", recoveryScopeReady: true },
+  connected: true,
+  selectedChatSessionIncognito: false,
+  ...overrides,
+});
 
 // Storage uses controlled promises; drain their restore/write continuations before assertions.
 const settleStorage = () =>
@@ -102,8 +89,9 @@ beforeEach(() => {
 afterEach(async () => {
   try {
     for (const cleanup of cleanups.splice(0).toReversed()) {
-      await cleanup();
+      cleanup();
     }
+    await settleStorage();
   } finally {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -116,18 +104,16 @@ it.each([
   { boundary: "gateway", privateSource: true },
   { boundary: "credential", privateSource: true },
 ])("captures $boundary ownership (private=$privateSource)", async ({ boundary, privateSource }) => {
-  vi.spyOn(draftStore, "readDurableComposerDraft").mockResolvedValue({
-    status: "not-found",
-    revision: 0,
-  });
+  draftRead().mockResolvedValue(missing);
   const retire = retireDraft();
-  const state = createState();
-  state.selectedChatSessionIncognito = privateSource;
-  state.chatMessage = "Source initial input";
+  const state = createState({
+    selectedChatSessionIncognito: privateSource,
+    chatMessage: "initial",
+  });
   const persistence = persistenceFor(state);
   await settleStorage();
   const sourceScope = persistence.durableScope;
-  state.chatMessage = "Captured source input";
+  state.chatMessage = "captured";
   persistence.schedule();
   if (boundary === "gateway") {
     state.settings = { gatewayUrl: "ws://destination.test/control" };
@@ -135,7 +121,7 @@ it.each([
     state.client = { recoveryScope: "destination-owner", recoveryScopeReady: true };
   }
   state.selectedChatSessionIncognito = !privateSource;
-  state.chatMessage = "Destination input";
+  state.chatMessage = "destination";
   if (privateSource) {
     expect(persist(state)).toBe(true);
   }
@@ -149,17 +135,15 @@ it.each([
   expect(sessionStorage.getItem(destinationKey)).toBe(destinationMetadata);
   if (privateSource) {
     expect(write).not.toHaveBeenCalled();
-    expect(load(state, state.sessionKey).snapshot?.draft).toBe("Destination input");
+    expect(load(state, state.sessionKey).snapshot?.draft).toBe("destination");
   } else {
-    expectWrite(sourceScope, { text: "Captured source input" });
+    expectWrite(sourceScope, { text: "captured" });
   }
-  expect(state.chatMessage).toBe("Destination input");
+  expect(state.chatMessage).toBe("destination");
 });
 
 it("retires the durable draft when a write notification reveals Incognito metadata", async () => {
-  vi.spyOn(draftStore, "readDurableComposerDraft").mockResolvedValue(
-    foundDraft("Previously stored input", "previous"),
-  );
+  draftRead().mockResolvedValue(foundDraft("previous"));
   const retire = retireDraft();
   const state = createState();
   const persistence = persistenceFor(state, true);
@@ -176,32 +160,28 @@ it("retires the durable draft when a write notification reveals Incognito metada
   persistence.schedule();
   persistence.persistNow();
   await settleStorage();
-  expect(state.selectedChatSessionIncognito).toBe(true);
+  expect(state).toMatchObject({ selectedChatSessionIncognito: true, chatMessage: "" });
   expect(retire).toHaveBeenCalledWith(capturedScope, expect.any(Number));
   expect(write).not.toHaveBeenCalled();
-  expect(state.chatMessage).toBe("");
 });
 
 it("retires private tab input when a pending snapshot predates the authenticated owner", async () => {
   const retire = retireDraft();
-  const state = createState();
-  state.connected = false;
-  state.client = { recoveryScope: "", recoveryScopeReady: false };
-  state.chatMessage = "Previously persisted private input";
+  const client = { recoveryScope: "", recoveryScopeReady: false };
+  const state = createState({ connected: false, client, chatMessage: "old private" });
   expect(persist(state)).toBe(false);
   const persistence = persistenceFor(state);
-  state.chatMessage = "Current private input";
+  state.chatMessage = "current private";
   persistence.schedule();
   state.connected = true;
-  state.client.recoveryScope = "authenticated-owner";
-  state.client.recoveryScopeReady = true;
+  Object.assign(client, { recoveryScope: "authenticated-owner", recoveryScopeReady: true });
   state.selectedChatSessionIncognito = true;
   persistence.persistChangedState();
   await settleStorage();
   const stored = sessionStorage.getItem(storageTargetForComposer(state).key);
-  expect(stored ?? "").not.toContain("Previously persisted private input");
-  expect(stored ?? "").not.toContain("Current private input");
-  expect(state.chatMessage).toBe("Current private input");
+  expect(stored ?? "").not.toContain("old private");
+  expect(stored ?? "").not.toContain("current private");
+  expect(state.chatMessage).toBe("current private");
   expect(retire).toHaveBeenCalledWith(
     expect.objectContaining({ recoveryScope: "authenticated-owner" }),
     expect.any(Number),
@@ -209,36 +189,32 @@ it("retires private tab input when a pending snapshot predates the authenticated
 });
 
 it.each([false, true])(
-  "restores metadata without replacing a pre-auth edit (%s)",
+  "restores metadata without replacing pre-auth edits (%s)",
   async (edited) => {
     const goalMode: ChatGoalDraftMode = { action: "start", sessionId: "saved-session" };
-    vi.spyOn(draftStore, "readDurableComposerDraft").mockResolvedValue(
-      foundDraft("Saved draft", "saved-draft", { goalMode }),
-    );
-    const state = {
-      ...createState(),
-      connected: false,
-      client: { recoveryScope: "", recoveryScopeReady: false, offlineRecoveryScope: "test-owner" },
-      chatMessage: "Saved draft",
-      chatGoalDraftMode: null as ChatGoalDraftMode | null,
+    draftRead().mockResolvedValue(foundDraft("saved", { goalMode }));
+    const client = {
+      recoveryScope: "",
+      recoveryScopeReady: false,
+      offlineRecoveryScope: "test-owner",
     };
+    const state = createState({ connected: false, client, chatMessage: "saved" });
     expect(persist(state, state.sessionKey, { draftRevision: 1 })).toBe(true);
     const persistence = persistenceFor(state);
     if (edited) {
-      state.chatMessage = "New edit before authentication";
+      state.chatMessage = "pre-auth edit";
       persistence.schedule();
     }
     state.connected = true;
-    state.client.recoveryScope = "test-owner";
-    state.client.recoveryScopeReady = true;
+    Object.assign(client, { recoveryScope: "test-owner", recoveryScopeReady: true });
     persistence.persistChangedState();
     await settleStorage();
-    expect(state.chatMessage).toBe(edited ? "New edit before authentication" : "Saved draft");
-    expect(state.chatGoalDraftMode).toEqual(edited ? null : goalMode);
+    expect(state).toMatchObject({
+      chatMessage: edited ? "pre-auth edit" : "saved",
+      chatGoalDraftMode: edited ? null : goalMode,
+    });
     if (edited) {
-      expectWrite(expect.objectContaining({ recoveryScope: "test-owner" }), {
-        text: "New edit before authentication",
-      });
+      expectWrite(ownerScope, { text: "pre-auth edit" });
     } else {
       expect(write).not.toHaveBeenCalled();
     }
@@ -247,8 +223,7 @@ it.each([false, true])(
 
 it("captures once per restore admission while pending, settled, reset, and switching scope", async () => {
   const capture = vi.spyOn(durableComposer, "captureDurableChatAttachments");
-  const state = createState();
-  state.chatMessage = "Saved draft";
+  const state = createState({ chatMessage: "Saved draft" });
   expect(persist(state, state.sessionKey, { draftRevision: 1 })).toBe(true);
   const { pending, read, persistence } = pendingRestore(state);
   const expectUncaptured = (repeat = 1) => {
@@ -263,10 +238,10 @@ it("captures once per restore admission while pending, settled, reset, and switc
   await settleStorage();
   expect(read).toHaveBeenCalledOnce();
 
-  pending.resolve({ status: "not-found", revision: 0 });
+  pending.resolve(missing);
   await settleStorage();
   expectWrite(
-    expect.objectContaining({ recoveryScope: "test-owner" }),
+    ownerScope,
     { revision: 1, text: "Saved draft", attachments: [] },
     expect.objectContaining({ expectedRevision: 0 }),
   );
@@ -297,10 +272,7 @@ it("keeps a synchronous reply cancellation when an older stored draft has a high
   vi.spyOn(Date, "now").mockReturnValue(1_000);
   const storedRevision = nextDraftRevision() + 100;
   const previousReply = { messageId: "previous", text: "Previous selection" };
-  const state: ReturnType<typeof createState> & { chatReplyTarget: ChatReplyTarget | null } = {
-    ...createState(),
-    chatReplyTarget: previousReply,
-  };
+  const state = createState({ chatReplyTarget: previousReply });
   expect(persist(state, state.sessionKey, { draftRevision: 1 })).toBe(true);
   const { pending, read, persistence } = pendingRestore(state);
   state.chatReplyTarget = null;
@@ -308,7 +280,7 @@ it("keeps a synchronous reply cancellation when an older stored draft has a high
   await settleStorage();
   expect(read).toHaveBeenCalledOnce();
   pending.resolve(
-    foundDraft("Older saved draft", "stored-draft", {
+    foundDraft("Older saved draft", {
       revision: storedRevision,
       replyTarget: previousReply,
     }),
@@ -318,17 +290,19 @@ it("keeps a synchronous reply cancellation when an older stored draft has a high
 });
 
 it("persists empty goal selection and versions cancellation", () => {
-  const state = offlineSelection();
+  const state = createState({ client: null, connected: false });
   const persistence = new ChatComposerPersistence(() => state);
   persistence.start();
   state.chatGoalDraftMode = { action: "start", sessionId: "session-a" };
   persistence.schedule();
   persistence.persistNow();
   const revision = load(state, state.sessionKey).revisions.latestAttempt;
-  const restored = offlineSelection();
+  const restored = createState({ client: null, connected: false });
   expect(restore(restored)).toBe(true);
-  expect(restored.chatGoalDraftMode ?? null).toEqual(state.chatGoalDraftMode ?? null);
-  expect(restored.chatReplyTarget ?? null).toEqual(state.chatReplyTarget ?? null);
+  expect(restored).toMatchObject({
+    chatGoalDraftMode: state.chatGoalDraftMode,
+    chatReplyTarget: state.chatReplyTarget,
+  });
   state.chatGoalDraftMode = null;
   state.chatReplyTarget = null;
   persistence.schedule();

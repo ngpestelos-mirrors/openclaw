@@ -1,12 +1,12 @@
 // @vitest-environment node
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ChatQueueItem } from "../../lib/chat/chat-types.ts";
-import { outboxStorageScope } from "../../lib/chat/outbox-payload-store.runtime.ts";
+import { outboxStorageScope as scopeFor } from "../../lib/chat/outbox-payload-store.runtime.ts";
 import {
-  captureChatOutboxRecoveryDestination,
-  readChatOutboxRecovery,
-  restoreChatOutboxRecovery,
+  captureChatOutboxRecoveryDestination as recoveryDestination,
+  readChatOutboxRecovery as readRecovery,
+  restoreChatOutboxRecovery as restoreRecovery,
 } from "../../lib/chat/outbox-recovery.ts";
 import { createStoredChatOutboxReader } from "../../lib/chat/outbox-store-projection.ts";
 import {
@@ -15,10 +15,10 @@ import {
   storageTargetForGateway,
   subscribeStoredChatOutboxChanges,
 } from "../../lib/chat/outbox-store.ts";
-import { resolveUiConversationIdentity } from "../../lib/sessions/session-key.ts";
+import { resolveUiConversationIdentity as resolveIdentity } from "../../lib/sessions/session-key.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import {
-  legacyStorageKeyForGateway,
+  legacyStorageKeyForGateway as legacyKey,
   createState,
   reconnectItem,
   legacyReconnectItem,
@@ -32,8 +32,8 @@ import {
 import {
   type ChatComposerPersistence,
   admitStoredChatComposerQueueItem,
-  listStoredChatOutboxes,
-  loadChatComposerState,
+  listStoredChatOutboxes as listOutboxes,
+  loadChatComposerState as load,
   persistChatComposerState as persist,
   removeStoredChatComposerQueueItem as removeItem,
   restoreChatComposerState as restore,
@@ -51,14 +51,12 @@ function savedState(overrides: Partial<ComposerState> = {}) {
   expect(persist(state)).toBe(true);
   return state;
 }
-function replaceItem(
+const replaceItem = (
   state: ComposerState,
   expected: ChatQueueItem,
   next: ChatQueueItem,
   agentId?: string,
-) {
-  return updateItems(state, state.sessionKey, [{ expected, next }], agentId);
-}
+) => updateItems(state, state.sessionKey, [{ expected, next }], agentId);
 function seedSessions(
   sessions: Record<string, unknown>,
   version = 1,
@@ -69,61 +67,75 @@ function seedSessions(
       ? storageTargetForComposer(createState({ settings: { gatewayUrl } }))
       : storageTargetForGateway(gatewayUrl);
   const key = version === 1 ? target.legacyKey : target.key.replace(".v4:", `.v${version}:`);
-  sessionStorage.setItem(
-    key,
-    JSON.stringify({
-      version,
-      ...(version === 1 ? {} : { gatewayOwner: gatewayUrl, recovery: {} }),
-      sessions,
-    }),
-  );
+  const owner = version === 1 ? {} : { gatewayOwner: gatewayUrl, recovery: {} };
+  sessionStorage.setItem(key, JSON.stringify({ version, ...owner, sessions }));
 }
 
-function seedSession(session: Record<string, unknown>, version: number) {
-  seedSessions({ "agent:lily:main\u0000agent:lily": session }, version);
+function seedSession(session: Record<string, unknown>, version = 1, key = "agent:lily:main") {
+  seedSessions({ [`${key}\u0000agent:lily`]: { updatedAt: 1, ...session } }, version);
 }
 
-function snapshot(state: ComposerState, sessionKey = state.sessionKey) {
-  return loadChatComposerState(state, sessionKey).snapshot;
-}
+const snapshot = (state: ComposerState, key = state.sessionKey) => load(state, key).snapshot;
+const revision = (state: ComposerState) => load(state, state.sessionKey).revisions.latestAttempt;
 
-function revision(state: ComposerState) {
-  return loadChatComposerState(state, state.sessionKey).revisions.latestAttempt;
-}
-
-function readStored(state: ComposerState) {
-  return JSON.parse(sessionStorage.getItem(storageTargetForComposer(state).key)!);
-}
-function storedRow(state: ComposerState) {
-  return readStored(state).sessions[`${state.sessionKey}\u0000agent:lily`];
-}
+const readStored = (state: ComposerState) =>
+  JSON.parse(sessionStorage.getItem(storageTargetForComposer(state).key)!);
+const storedRow = (state: ComposerState) =>
+  readStored(state).sessions[`${state.sessionKey}\u0000agent:lily`];
 function quotaFailure() {
   throw new DOMException("quota exceeded", "QuotaExceededError");
 }
 
-function expectPersisted(persistence: ChatComposerPersistence) {
+const expectPersisted = (persistence: ChatComposerPersistence) =>
   expect(persistence.persistForRouteSwitchResult()).toEqual({ status: "persisted" });
-}
 
 function edit(state: ComposerState, persistence: ChatComposerPersistence, text: string) {
   state.chatMessage = text;
   persistence.schedule();
 }
 
-function expectDraft(state: ComposerState, draft: string, queue: ChatQueueItem[] = []) {
+const expectDraft = (state: ComposerState, draft: string, queue: ChatQueueItem[] = []) =>
   expect(snapshot(state)).toEqual({ draft, queue });
+function roundtripQueue(state: ComposerState, id: string) {
+  const queued = reconnectItem(id, 1);
+  expect(admitItem(state, queued)).toBe(true);
+  expect(removeItem(state, state.sessionKey, queued.id)).toBe(true);
 }
 
-function outbox(item: ChatQueueItem, sessionKey: string, agentId?: string) {
+function outbox(items: ChatQueueItem | ChatQueueItem[], sessionKey: string, agentId?: string) {
   const scope = { sessionKey, ...(agentId ? { agentId } : {}) };
-  return { ...scope, queue: [{ ...item, ...scope }] };
+  const queue = Array.isArray(items) ? items : [items];
+  return { ...scope, queue: queue.map((item) => Object.assign({}, item, scope)) };
 }
+function heldItem(state: ComposerState, fields: Partial<ChatQueueItem> = {}): ChatQueueItem {
+  return {
+    id: "submitted",
+    storageScope: scopeFor(state),
+    text: "Submitted private message",
+    createdAt: 1,
+    sendState: "held",
+    ...fields,
+  };
+}
+const privateMentions = [{ profileId: "alex", start: 0, end: 5 }];
+const privateGoal = { action: "start" as const, sessionId: "private-session" };
+const recoveredError =
+  "Recovered message. Review this destination and retry only if it did not arrive.";
+function reviewed(state: ComposerState, item: ChatQueueItem, sendError = recoveredError) {
+  return { ...item, storageScope: scopeFor(state), sendState: "failed" as const, sendError };
+}
+const workAgents = { defaultId: "work", mainKey: "main", scope: "global" };
+const workState = (fields: Partial<ComposerState> = {}) =>
+  createState({
+    agentsList: workAgents,
+    assistantAgentId: "work",
+    sessionKey: "global",
+    ...fields,
+  });
 
 function fillDrafts(prefix: string, count: number, chatMessage: string) {
   for (let index = 0; index < count; index += 1) {
-    expect(
-      persist(createState({ sessionKey: `agent:${prefix}-${index}:thread`, chatMessage })),
-    ).toBe(true);
+    savedState({ sessionKey: `agent:${prefix}-${index}:thread`, chatMessage });
   }
 }
 
@@ -174,9 +186,7 @@ it("restores selected recipients and gives same-text recipient changes their own
   const second = [{ profileId: "alex-two", start: 0, end: 5 }];
   const state = createState({ chatMessage: "@Alex", chatMentions: first });
   expect(persist(state, state.sessionKey, { draftRevision: 10 })).toBe(true);
-  const queued = reconnectItem("keep-draft-mentions", 1);
-  expect(admitItem(state, queued)).toBe(true);
-  expect(removeItem(state, state.sessionKey, queued.id)).toBe(true);
+  roundtripQueue(state, "keep-draft-mentions");
   const restored = createState();
   expect(restore(restored)).toBe(true);
   expect(restored.chatMentions).toEqual(first);
@@ -210,15 +220,13 @@ it("restores objective-edit mode with its literal draft and exact target", () =>
   expect(restore(restored)).toBe(true);
   expect(restored).toMatchObject({ chatMessage: state.chatMessage, chatGoalDraftMode: goalMode });
   expect(snapshot(state, "agent:lily:other")).toBeNull();
-  const queued = reconnectItem("other-message", 1);
-  expect(admitItem(state, queued)).toBe(true);
-  expect(removeItem(state, state.sessionKey, queued.id)).toBe(true);
+  roundtripQueue(state, "other-message");
   expect(snapshot(state)?.goalMode).toEqual(goalMode);
 });
 
 it("normalizes an existing whitespace-only stored draft during restore", () => {
   const state = createState();
-  seedSession({ draft: "  \n  ", draftRevision: 1, updatedAt: 1 }, 4);
+  seedSession({ draft: "  \n  ", draftRevision: 1 }, 4);
 
   expect(restore(state)).toBe(false);
   expect(state.chatMessage).toBe("");
@@ -227,26 +235,19 @@ it("normalizes an existing whitespace-only stored draft during restore", () => {
 it("reviews legacy steer rows as generic mode-bearing sends and never rewrites old fields", () => {
   const state = createState({ agentsList: { defaultId: "lily", mainKey: "main" } });
   const storageKey = storageTargetForComposer(state).key;
-  seedSession(
-    {
-      queue: [
-        {
-          ...legacyReconnectItem("steer-reload", 1),
-          kind: "steered",
-          sendRunId: "steer-request",
-          sendState: "steering",
-          steerTargetRunId: "active-run",
-        },
-      ],
-      updatedAt: 1,
-    },
-    2,
-  );
+  const legacy = {
+    ...legacyReconnectItem("steer-reload", 1),
+    kind: "steered",
+    sendRunId: "steer-request",
+    sendState: "steering",
+    steerTargetRunId: "active-run",
+  };
+  seedSession({ queue: [legacy] }, 2);
 
   const restored = reviewLegacyItem(state, "steer-reload");
   expect(restored).toMatchObject({
     id: "steer-reload",
-    storageScope: outboxStorageScope(state),
+    storageScope: scopeFor(state),
     queueMode: "steer",
     sendRunId: "steer-request",
     sendState: "unconfirmed",
@@ -259,9 +260,7 @@ it("reviews legacy steer rows as generic mode-bearing sends and never rewrites o
   );
   const written = sessionStorage.getItem(storageKey) ?? "";
   expect(written).toContain('"queueMode":"steer"');
-  expect(written).not.toContain('"kind":"steered"');
-  expect(written).not.toContain("steerTargetRunId");
-  expect(written).not.toContain('"sendState":"steering"');
+  expect(written).not.toMatch(/"kind":"steered"|steerTargetRunId|"sendState":"steering"/);
 });
 
 it("does not erase another split pane draft when its own draft is unchanged", () => {
@@ -324,9 +323,9 @@ it("persists a delayed global draft to the agent scope captured when typed", () 
   expectPersisted(persistence);
   expect(persistence.scopeForRouteSwitch()).toEqual({ sessionKey: "global", agentId: "alpha" });
   expectPersisted(persistence);
-  expect(
-    loadChatComposerState({ ...state, assistantAgentId: "alpha" }, "global").snapshot?.draft,
-  ).toBe("alpha draft");
+  expect(load({ ...state, assistantAgentId: "alpha" }, "global").snapshot?.draft).toBe(
+    "alpha draft",
+  );
   expect(snapshot(beta, "global")?.draft).toBe("beta draft");
 });
 
@@ -368,34 +367,30 @@ it("keeps unresolved bare main and raw global independent until their owners res
   const globalItem = reconnectItem("unresolved-global", 2);
   expect(admitItem(offlineMain, mainItem)).toBe(true);
   expect(admitItem(offlineGlobal, globalItem)).toBe(true);
-  expect(listStoredChatOutboxes(offlineMain)).toEqual([
+  expect(listOutboxes(offlineMain)).toEqual([
     outbox(mainItem, "main"),
     outbox(globalItem, "global"),
   ]);
-  const resolved = createState({
-    agentsList: { defaultId: "work", mainKey: "main", scope: "global" },
-    assistantAgentId: "alpha",
-    sessionKey: "global",
-  });
+  const resolved = workState({ assistantAgentId: "alpha" });
   const mainBox = outbox(mainItem, "global", "work");
   const globalBox = outbox(globalItem, "global", "alpha");
-  expect(listStoredChatOutboxes(resolved)).toEqual([mainBox, globalBox]);
+  expect(listOutboxes(resolved)).toEqual([mainBox, globalBox]);
   const attemptedMain = { ...mainBox.queue[0]!, sendAttempts: 1 };
   const attemptedGlobal = { ...globalBox.queue[0]!, sendAttempts: 1 };
   expect(replaceItem(resolved, mainBox.queue[0]!, attemptedMain)).toBe(true);
   expect(replaceItem(resolved, globalBox.queue[0]!, attemptedGlobal)).toBe(true);
   expect(removeItem(resolved, "global", mainItem.id, attemptedMain)).toBe(true);
-  expect(listStoredChatOutboxes(resolved)).toEqual([outbox(attemptedGlobal, "global", "alpha")]);
+  expect(listOutboxes(resolved)).toEqual([outbox(attemptedGlobal, "global", "alpha")]);
   expect(removeItem(resolved, "global", globalItem.id, attemptedGlobal)).toBe(true);
-  expect(listStoredChatOutboxes(resolved)).toEqual([]);
+  expect(listOutboxes(resolved)).toEqual([]);
 });
 
 it("retains ambiguous shipped main rows for explicit destination confirmation", () => {
   const item = legacyReconnectItem("legacy-main", 1);
   seedSessions({ "main\u0000agent:previous": { queue: [item], updatedAt: 1 } });
   const state = createState({ agentsList: { defaultId: "work", mainKey: "main" } });
-  expect(listStoredChatOutboxes(state)).toEqual([]);
-  expect(readChatOutboxRecovery(state).entries[0]?.session.queue).toEqual([item]);
+  expect(listOutboxes(state)).toEqual([]);
+  expect(readRecovery(state).entries[0]?.session.queue).toEqual([item]);
 });
 
 it("reviews shipped selected-agent opaque rows without passively adopting either draft", () => {
@@ -412,24 +407,17 @@ it("reviews shipped selected-agent opaque rows without passively adopting either
     agentsList: { defaultId: "alpha", mainKey: "main" },
   });
   const restored = reviewLegacyItem(state, first.id);
-  const expected = {
-    ...first,
-    storageScope: outboxStorageScope(state),
-    sendState: "failed" as const,
-    sendError: "Recovered message. Review this destination and retry only if it did not arrive.",
-  };
-  expect(listStoredChatOutboxes(state)).toEqual([outbox(expected, sessionKey)]);
+  const expected = reviewed(state, first);
+  expect(listOutboxes(state)).toEqual([outbox(expected, sessionKey)]);
   expectDraft(state, "older draft", outbox(expected, sessionKey).queue);
 
   const attempted = { ...restored, sendAttempts: 1 };
   expect(replaceItem(state, restored, attempted)).toBe(true);
   expect(removeItem(state, sessionKey, first.id, attempted)).toBe(true);
   expectDraft(state, "older draft");
-  expect(readChatOutboxRecovery(state).entries).toHaveLength(1);
-  expect(readChatOutboxRecovery(state).entries[0]?.session).toMatchObject({
-    draft: "newer draft",
-    queue: [second],
-  });
+  expect(readRecovery(state).entries.map((entry) => entry.session)).toMatchObject([
+    { draft: "newer draft", queue: [second] },
+  ]);
   const stored = readStored(state);
   expect(Object.keys(stored.sessions)).toEqual([sessionKey + "\u0000agent:main"]);
 });
@@ -440,11 +428,7 @@ it("keeps readable migrated composer state when the migration write fails", () =
   expect(admitItem(unresolved, item, "main")).toBe(true);
   vi.spyOn(sessionStorage, "setItem").mockImplementation(quotaFailure);
 
-  const resolved = createState({
-    agentsList: { defaultId: "work", mainKey: "main", scope: "global" },
-    assistantAgentId: "work",
-    sessionKey: "global",
-  });
+  const resolved = workState();
   expectDraft(resolved, "unresolved draft", outbox(item, "global", "work").queue);
 });
 
@@ -483,64 +467,44 @@ it("reviews full v1 main and global queues while consuming legacy tombstones", (
   for (const sessionKey of ["global", mainKey, "agent:work:notes"]) {
     expect(snapshot(state, sessionKey)).toBeNull();
   }
-  expect(listStoredChatOutboxes(state)).toEqual([]);
-  const entries = readChatOutboxRecovery(state).entries;
+  expect(listOutboxes(state)).toEqual([]);
+  const entries = readRecovery(state).entries;
   expect(entries).toHaveLength(3);
   expect(sessionStorage.getItem(storageTargetForComposer(state).key)).toBeNull();
   for (const [sessionKey, queue] of [
     ["global", globalQueue],
     [mainKey, mainQueue],
+    ["agent:work:notes", undefined],
   ] as const) {
-    const expectedQueue = queue.map((item) =>
-      Object.assign({}, item, { sessionKey, agentId: "work" }),
-    );
-    expect(
-      entries.find((entry) => entry.sourceScopeKey === sessionKey + "\u0000agent:work")?.session
-        .queue,
-    ).toEqual(expectedQueue);
-  }
-  for (const sessionKey of ["global", mainKey, "agent:work:notes"]) {
     const entry = entries.find(
       (candidate) => candidate.sourceScopeKey === sessionKey + "\u0000agent:work",
     );
     expect(entry).toBeDefined();
-    const destination = captureChatOutboxRecoveryDestination(
-      state,
-      resolveUiConversationIdentity(state, sessionKey, "work"),
-    );
+    if (queue) {
+      expect(entry?.session.queue).toEqual(outbox(queue, sessionKey, "work").queue);
+    }
+    const destination = recoveryDestination(state, resolveIdentity(state, sessionKey, "work"));
     expect(destination).not.toBeNull();
-    expect(restoreChatOutboxRecovery(state, entry!, destination!)).toBe("restored");
+    expect(restoreRecovery(state, entry!, destination!)).toBe("restored");
   }
-  const reviewedItem = (item: ChatQueueItem) => ({
-    ...item,
-    storageScope: outboxStorageScope(state),
-    sendState: "failed" as const,
-    sendError:
-      item.id === "main-0"
-        ? "RangeError: Maximum call stack size exceeded"
-        : "Recovered message. Review this destination and retry only if it did not arrive.",
-  });
+  const reviewedItem = (item: ChatQueueItem) => reviewed(state, item, item.sendError);
   expect(snapshot(state, "agent:work:notes")?.draft).toBe("draft only");
-  expectDraft(
-    state,
-    "legacy draft",
-    mainQueue.map((item) => ({ ...reviewedItem(item), sessionKey: mainKey, agentId: "work" })),
-  );
+  expectDraft(state, "legacy draft", outbox(mainQueue.map(reviewedItem), mainKey, "work").queue);
   expect(snapshot(state, "global")?.queue).toEqual(
-    globalQueue.map((item) => ({ ...reviewedItem(item), sessionKey: "global", agentId: "work" })),
+    outbox(globalQueue.map(reviewedItem), "global", "work").queue,
   );
   expect(
-    listStoredChatOutboxes(state)
+    listOutboxes(state)
       .flatMap((box) => box.queue)
       .map((item) => item.id),
   ).toEqual([...globalQueue, ...mainQueue].map((item) => item.id));
-  expect(readChatOutboxRecovery(state).entries).toEqual([]);
+  expect(readRecovery(state).entries).toEqual([]);
   state.chatMessage = "updated draft";
   expect(persist(state)).toBe(true);
   expect(sessionStorage.getItem(storageTargetForComposer(state).key)).not.toContain(
     "removedQueueItemIds",
   );
-  expect(sessionStorage.getItem(legacyStorageKeyForGateway(state.settings?.gatewayUrl))).toBeNull();
+  expect(sessionStorage.getItem(legacyKey(state.settings?.gatewayUrl))).toBeNull();
 });
 
 it.each([
@@ -561,7 +525,7 @@ it.each([
       ...(sendError ? { sendError } : {}),
     };
     expect(admitItem(state, item)).toBe(true);
-    expect(loadChatComposerState(state, state.sessionKey).snapshot?.queue).toEqual(
+    expect(load(state, state.sessionKey).snapshot?.queue).toEqual(
       outbox(
         {
           ...item,
@@ -584,8 +548,8 @@ it("isolates long same-prefix gateways in owner-tagged v4 buckets", () => {
     });
     return { route, state, item: reconnectItem(`${route}-long-gateway`, index + 1, state) };
   });
-  expect(legacyStorageKeyForGateway(gateways[0]!.state.settings?.gatewayUrl)).toBe(
-    legacyStorageKeyForGateway(gateways[1]!.state.settings?.gatewayUrl),
+  expect(legacyKey(gateways[0]!.state.settings?.gatewayUrl)).toBe(
+    legacyKey(gateways[1]!.state.settings?.gatewayUrl),
   );
   expect(storageTargetForComposer(gateways[0]!.state).key).not.toBe(
     storageTargetForComposer(gateways[1]!.state).key,
@@ -596,8 +560,10 @@ it("isolates long same-prefix gateways in owner-tagged v4 buckets", () => {
   }
   for (const { route, state, item } of gateways) {
     expectDraft(state, `${route} gateway draft`, outbox(item, state.sessionKey, "lily").queue);
-    const stored = JSON.parse(sessionStorage.getItem(storageTargetForComposer(state).key) ?? "{}");
-    expect(stored).toMatchObject({ gatewayOwner: state.settings?.gatewayUrl, version: 4 });
+    expect(readStored(state)).toMatchObject({
+      gatewayOwner: state.settings?.gatewayUrl,
+      version: 4,
+    });
   }
 });
 
@@ -606,9 +572,7 @@ it("does not replay an exact-240 legacy key to a longer same-prefix gateway", ()
   const exactGatewayUrl = `${prefix}${"a".repeat(240 - encodeURIComponent(prefix).length)}`;
   const longerGatewayUrl = `${exactGatewayUrl}b`;
   expect(encodeURIComponent(exactGatewayUrl)).toHaveLength(240);
-  expect(legacyStorageKeyForGateway(exactGatewayUrl)).toBe(
-    legacyStorageKeyForGateway(longerGatewayUrl),
-  );
+  expect(legacyKey(exactGatewayUrl)).toBe(legacyKey(longerGatewayUrl));
   const item = legacyReconnectItem("ambiguous-legacy-owner", 1);
   seedSessions(
     { "agent:lily:main\u0000agent:lily": { queue: [item], updatedAt: 1 } },
@@ -619,10 +583,10 @@ it("does not replay an exact-240 legacy key to a longer same-prefix gateway", ()
   for (const gatewayUrl of [exactGatewayUrl, longerGatewayUrl]) {
     const state = createState({ settings: { gatewayUrl } });
     expect(snapshot(state)).toBeNull();
-    expect(listStoredChatOutboxes(state)).toEqual([]);
+    expect(listOutboxes(state)).toEqual([]);
     expect(sessionStorage.getItem(storageTargetForComposer(state).key)).toBeNull();
-    expect(readChatOutboxRecovery(state).entries).toEqual([]);
-    expect(sessionStorage.getItem(legacyStorageKeyForGateway(gatewayUrl))).toContain(item.id);
+    expect(readRecovery(state).entries).toEqual([]);
+    expect(sessionStorage.getItem(legacyKey(gatewayUrl))).toContain(item.id);
   }
 });
 
@@ -637,8 +601,8 @@ it("evicts draft-only sessions before rejecting an outbox session overflow", () 
   expect(
     admitItem(createState({ sessionKey: twentiethSessionKey }), reconnectItem("queued-19", 19)),
   ).toBe(true);
-  expect(loadChatComposerState(createState(), draftSessionKey).snapshot).toBeNull();
-  expect(listStoredChatOutboxes(createState())).toHaveLength(20);
+  expect(load(createState(), draftSessionKey).snapshot).toBeNull();
+  expect(listOutboxes(createState())).toHaveLength(20);
 
   const rejectedDraft = createState({ sessionKey: "agent:lily:rejected-draft" });
   const rejectedPersistence = startPersistence(rejectedDraft);
@@ -650,7 +614,7 @@ it("evicts draft-only sessions before rejecting an outbox session overflow", () 
   expect(
     admitItem(createState({ sessionKey: overflowSessionKey }), reconnectItem("queued-20", 20)),
   ).toBe(false);
-  const outboxes = listStoredChatOutboxes(createState());
+  const outboxes = listOutboxes(createState());
   expect(outboxes).toHaveLength(20);
   expect(outboxes.some((box) => box.sessionKey === overflowSessionKey)).toBe(false);
   expect(outboxes.some((box) => box.sessionKey === "agent:lily:queued:0")).toBe(true);
@@ -675,21 +639,17 @@ it("retains an unresolved custom-main clear through draft and outbox capacity pr
   fillDrafts("newer-draft", 21, "newer ordinary draft");
 
   fillOutboxes("clear-capacity", 19);
-  expect(listStoredChatOutboxes(offline)).toHaveLength(20);
+  expect(listOutboxes(offline)).toHaveLength(20);
 
   fillDrafts("newer-clear", 25, "");
   reloadStorage(offline);
 
-  expect(
-    loadChatComposerState(createState({ sessionKey: "workspace" }), "workspace").snapshot,
-  ).toBeNull();
-  const reconnected = createState({
+  expect(load(createState({ sessionKey: "workspace" }), "workspace").snapshot).toBeNull();
+  const reconnected = workState({
     agentsList: { defaultId: "work", mainKey: "workspace", scope: "global" },
-    assistantAgentId: "work",
-    sessionKey: "global",
   });
   expectDraft(reconnected, "", outbox(queued, "global", "work").queue);
-  expect(listStoredChatOutboxes(reconnected)).toHaveLength(20);
+  expect(listOutboxes(reconnected)).toHaveLength(20);
 });
 
 it("restores an evicted live draft into a same-scope queue-only row", () => {
@@ -709,49 +669,35 @@ it("restores an evicted live draft into a same-scope queue-only row", () => {
   expectDraft(state, "merge this live draft", outbox(sameScope, state.sessionKey, "lily").queue);
 });
 
-it("lets only the newest failed split-pane draft retry after capacity recovers", () => {
+it.each([false, true])("fences an evicted pane (older attempt=%s)", (attempted) => {
   const baseline = savedState();
   const baselineRevision = revision(baseline);
   const [olderPane, olderPersistence] = pane(baseline.chatMessage);
-
+  const earlyPane = attempted ? undefined : pane(baseline.chatMessage);
   const outboxes = fillOutboxes("failed-fence");
   expect(snapshot(baseline)).toBeNull();
-
-  edit(olderPane, olderPersistence, "older failed draft");
-  const olderResult = failedWrite(olderPersistence, baselineRevision);
-
-  // A pane mounted after the failed attempt must issue after it without
-  // treating that uncommitted attempt as the persisted CAS baseline.
-  const [newerPane, newerPersistence] = pane(baseline.chatMessage);
-  edit(newerPane, newerPersistence, "newer late-pane draft");
-  const newerResult = failedWrite(newerPersistence, baselineRevision);
-  expect(olderResult.draftRevision).toBeLessThan(newerResult.draftRevision);
-
-  releaseOutbox(outboxes[0]!);
-  expect(retryDraft(olderPane, olderResult)).toBe(false);
-  expect(retryDraft(newerPane, newerResult)).toBe(true);
-  expectDraft(newerPane, "newer late-pane draft");
-  expect(revision(newerPane)).toBe(newerResult.draftRevision);
-});
-
-it("does not let an untouched evicted pane fence out a newer failed edit", () => {
-  const baseline = savedState();
-  const baselineRevision = revision(baseline);
-  const [stalePane, stalePersistence] = pane(baseline.chatMessage);
-  const [newerPane, newerPersistence] = pane(baseline.chatMessage);
-
-  const outboxes = fillOutboxes("stale-fence");
-  expect(snapshot(baseline)).toBeNull();
-
+  let olderResult: ReturnType<typeof failedWrite> | undefined;
+  if (attempted) {
+    edit(olderPane, olderPersistence, "older failed draft");
+    olderResult = failedWrite(olderPersistence, baselineRevision);
+  }
+  // A late mount must use the committed CAS baseline, not the failed attempt.
+  const [newerPane, newerPersistence] = earlyPane ?? pane(baseline.chatMessage);
   edit(newerPane, newerPersistence, "newer failed draft");
   const newerResult = failedWrite(newerPersistence, baselineRevision);
-
-  expect(stalePersistence.persistForRouteSwitchResult()).toEqual({ status: "conflict" });
-  expect(revision(stalePane)).toBe(newerResult.draftRevision);
-
+  if (olderResult) {
+    expect(olderResult.draftRevision).toBeLessThan(newerResult.draftRevision);
+  } else {
+    expect(olderPersistence.persistForRouteSwitchResult()).toEqual({ status: "conflict" });
+    expect(revision(olderPane)).toBe(newerResult.draftRevision);
+  }
   releaseOutbox(outboxes[0]!);
+  if (olderResult) {
+    expect(retryDraft(olderPane, olderResult)).toBe(false);
+  }
   expect(retryDraft(newerPane, newerResult)).toBe(true);
   expectDraft(newerPane, "newer failed draft");
+  expect(revision(newerPane)).toBe(newerResult.draftRevision);
 });
 
 it("persists a revert after an intermediate draft attempt fails", () => {
@@ -808,7 +754,7 @@ it("keeps failed attachment sends durable and retryable, including stack-overflo
       failed,
     ),
   ).toBe(true);
-  expect(loadChatComposerState(state, state.sessionKey).snapshot?.queue).toMatchObject([
+  expect(load(state, state.sessionKey).snapshot?.queue).toMatchObject([
     {
       id: "overflow-attachment",
       sendState: "failed",
@@ -818,145 +764,124 @@ it("keeps failed attachment sends durable and retryable, including stack-overflo
   ]);
 });
 
-describe("Incognito composer persistence", () => {
-  it.each(["canonical key", "arriving metadata"] as const)(
-    "retires %s private storage, preserving live input and queues",
-    (source) => {
-      const state = createState({
-        sessionKey:
-          source === "canonical key" ? "agent:lily:dashboard:incognito-private" : "agent:lily:main",
-        chatMessage: "@Alex private objective",
-        chatMentions: [{ profileId: "alex", start: 0, end: 5 }],
-        chatGoalDraftMode: { action: "start", sessionId: "private-session" },
-        chatReplyTarget: { messageId: "private-reply", text: "Private quote" },
-      });
-      const queued: ChatQueueItem = {
-        id: "submitted",
-        storageScope: outboxStorageScope(state),
-        text: "Submitted private message",
-        createdAt: 1,
-        sendState: "held",
-      };
-      if (source === "arriving metadata") {
-        expect(persist(state)).toBe(true);
-      }
-      expect(admitItem(state, queued)).toBe(true);
-      const storageKey = storageTargetForComposer(state).key;
-      if (source === "canonical key") {
-        const legacy = JSON.parse(sessionStorage.getItem(storageKey)!);
-        Object.assign(legacy.sessions[`${state.sessionKey}\u0000agent:lily`], {
-          draft: state.chatMessage,
-          draftMentions: state.chatMentions,
-          goalMode: state.chatGoalDraftMode,
-          replyTarget: state.chatReplyTarget,
-        });
-        sessionStorage.setItem(storageKey, JSON.stringify(legacy));
-      }
-      const persistence = startPersistence(state);
-      if (source === "arriving metadata") {
-        state.selectedChatSessionIncognito = true;
-        persistence.persistChangedState();
-      }
-      expect(persistence.durableScope).toBeNull();
-      expect(sessionStorage.getItem(storageKey)).not.toContain("private objective");
+it.each(["canonical key", "arriving metadata"] as const)(
+  "retires %s private storage, preserving live input and queues",
+  (source) => {
+    const state = createState({
+      sessionKey:
+        source === "canonical key" ? "agent:lily:dashboard:incognito-private" : "agent:lily:main",
+      chatMessage: "@Alex private objective",
+      chatMentions: privateMentions,
+      chatGoalDraftMode: privateGoal,
+      chatReplyTarget: { messageId: "private-reply", text: "Private quote" },
+    });
+    const queued = heldItem(state);
+    if (source === "arriving metadata") {
       expect(persist(state)).toBe(true);
-      const row = storedRow(state);
-      expect(row).toMatchObject({ queue: [queued] });
-      expect([row.draft, row.draftMentions, row.goalMode, row.replyTarget]).toEqual(
-        Array(4).fill(undefined),
-      );
-      expect(restore(state)).toBe(true);
-      expect(state).toMatchObject({
-        chatMessage: "@Alex private objective",
-        chatMentions: [expect.anything()],
-        chatGoalDraftMode: { action: "start" },
+    }
+    expect(admitItem(state, queued)).toBe(true);
+    const storageKey = storageTargetForComposer(state).key;
+    if (source === "canonical key") {
+      const legacy = JSON.parse(sessionStorage.getItem(storageKey)!);
+      Object.assign(legacy.sessions[`${state.sessionKey}\u0000agent:lily`], {
+        draft: state.chatMessage,
+        draftMentions: state.chatMentions,
+        goalMode: state.chatGoalDraftMode,
+        replyTarget: state.chatReplyTarget,
       });
-      reloadStorage(state);
-      const restored = createState({ sessionKey: state.sessionKey });
-      expect(restore(restored)).toBe(true);
-      expect(restored).toMatchObject({ chatMessage: "", chatQueue: [queued] });
-      persistence.stop();
-    },
-  );
-
-  it("retires legacy private input during a queue update", () => {
-    const state = createState({ sessionKey: "agent:lily:dashboard:incognito-queue" });
-    const queued: ChatQueueItem = {
-      id: "submitted",
-      storageScope: outboxStorageScope(state),
-      sessionKey: state.sessionKey,
-      agentId: "lily",
-      text: "Submitted private message",
-      createdAt: 1,
-      sendState: "held",
-    };
-    seedSessions(
-      {
-        [`${state.sessionKey}\u0000agent:lily`]: {
-          draft: "@Alex private legacy input",
-          draftMentions: [{ profileId: "alex", start: 0, end: 5 }],
-          goalMode: { action: "start", sessionId: "private-session" },
-          draftRevision: 7,
-          queue: [queued],
-          updatedAt: 1,
-        },
-      },
-      4,
-    );
-    expect(replaceItem(state, queued, { ...queued, text: "Edited submitted message" })).toBe(true);
-    const row = storedRow(state);
-    expect([row.draft, row.draftMentions, row.goalMode]).toEqual(Array(3).fill(undefined));
-    expect(row.draftRevision).toBe(7);
-    expect(row.queue?.map((item: ChatQueueItem) => item.text) ?? []).toEqual([
-      "Edited submitted message",
-    ]);
-  });
-
-  it("retires a draft when its write notification reveals Incognito metadata", () => {
-    const state = createState();
+      sessionStorage.setItem(storageKey, JSON.stringify(legacy));
+    }
     const persistence = startPersistence(state);
-    const reader = createStoredChatOutboxReader();
-    const stopReader = reader.subscribe(() =>
-      reader.read({ ...state, client: state.client ?? null, connected: state.connected ?? false }),
-    );
-    const unsubscribe = subscribeStoredChatOutboxChanges(() => {
+    if (source === "arriving metadata") {
       state.selectedChatSessionIncognito = true;
       persistence.persistChangedState();
-    });
-    try {
-      state.chatMessage = "private notification draft";
-      persistence.schedule();
-      persistence.persistNow();
-      expect(sessionStorage.getItem(storageTargetForComposer(state).key)).not.toContain(
-        "private notification draft",
-      );
-      expect(state.chatMessage).toBe("private notification draft");
-      expect(
-        reader
-          .read({ ...state, client: state.client ?? null, connected: state.connected ?? false })
-          .hasSessionDraft(state.sessionKey),
-      ).toBe(false);
-    } finally {
-      stopReader();
-      unsubscribe();
-      persistence.stop();
     }
-  });
-
-  it.each([true, false])("binds delayed drafts to captured privacy (%s)", (incognito) => {
-    const state = createState({ selectedChatSessionIncognito: incognito });
-    const sourceKey = state.sessionKey;
-    const persistence = startPersistence(state);
-    state.chatMessage = "captured draft";
-    persistence.schedule();
-    state.sessionKey = "agent:lily:destination";
-    state.selectedChatSessionIncognito = !incognito;
-    state.chatMessage = "destination input";
-    persistence.persistNow();
-    expect(snapshot(createState(), sourceKey)?.draft ?? "").toBe(incognito ? "" : "captured draft");
-    expect(snapshot(state)).toBeNull();
+    expect(persistence.durableScope).toBeNull();
+    expect(sessionStorage.getItem(storageKey)).not.toContain("private objective");
+    expect(persist(state)).toBe(true);
+    const row = storedRow(state);
+    expect(row).toMatchObject({ queue: [queued] });
+    expect([row.draft, row.draftMentions, row.goalMode, row.replyTarget]).toEqual(
+      Array(4).fill(undefined),
+    );
+    expect(restore(state)).toBe(true);
+    expect(state).toMatchObject({
+      chatMessage: "@Alex private objective",
+      chatMentions: [expect.anything()],
+      chatGoalDraftMode: { action: "start" },
+    });
+    reloadStorage(state);
+    const restored = createState({ sessionKey: state.sessionKey });
+    expect(restore(restored)).toBe(true);
+    expect(restored).toMatchObject({ chatMessage: "", chatQueue: [queued] });
     persistence.stop();
+  },
+);
+
+it("retires legacy private input during a queue update", () => {
+  const state = createState({ sessionKey: "agent:lily:dashboard:incognito-queue" });
+  const queued = heldItem(state, { sessionKey: state.sessionKey, agentId: "lily" });
+  seedSession(
+    {
+      draft: "@Alex private legacy input",
+      draftMentions: privateMentions,
+      goalMode: privateGoal,
+      draftRevision: 7,
+      queue: [queued],
+    },
+    4,
+    state.sessionKey,
+  );
+  expect(replaceItem(state, queued, { ...queued, text: "Edited submitted message" })).toBe(true);
+  const row = storedRow(state);
+  expect([row.draft, row.draftMentions, row.goalMode]).toEqual(Array(3).fill(undefined));
+  expect(row).toMatchObject({ draftRevision: 7, queue: [{ text: "Edited submitted message" }] });
+});
+
+it("retires a draft when its write notification reveals Incognito metadata", () => {
+  const state = createState();
+  const persistence = startPersistence(state);
+  const reader = createStoredChatOutboxReader();
+  const stopReader = reader.subscribe(() =>
+    reader.read({ ...state, client: state.client ?? null, connected: state.connected ?? false }),
+  );
+  const unsubscribe = subscribeStoredChatOutboxChanges(() => {
+    state.selectedChatSessionIncognito = true;
+    persistence.persistChangedState();
   });
+  try {
+    state.chatMessage = "private notification draft";
+    persistence.schedule();
+    persistence.persistNow();
+    expect(sessionStorage.getItem(storageTargetForComposer(state).key)).not.toContain(
+      "private notification draft",
+    );
+    expect(state.chatMessage).toBe("private notification draft");
+    expect(
+      reader
+        .read({ ...state, client: state.client ?? null, connected: state.connected ?? false })
+        .hasSessionDraft(state.sessionKey),
+    ).toBe(false);
+  } finally {
+    stopReader();
+    unsubscribe();
+    persistence.stop();
+  }
+});
+
+it.each([true, false])("binds delayed drafts to captured privacy (%s)", (incognito) => {
+  const state = createState({ selectedChatSessionIncognito: incognito });
+  const sourceKey = state.sessionKey;
+  const persistence = startPersistence(state);
+  state.chatMessage = "captured draft";
+  persistence.schedule();
+  state.sessionKey = "agent:lily:destination";
+  state.selectedChatSessionIncognito = !incognito;
+  state.chatMessage = "destination input";
+  persistence.persistNow();
+  expect(snapshot(createState(), sourceKey)?.draft ?? "").toBe(incognito ? "" : "captured draft");
+  expect(snapshot(state)).toBeNull();
+  persistence.stop();
 });
 
 describe("chat composer draft presence notifications", () => {

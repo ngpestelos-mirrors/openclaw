@@ -108,6 +108,22 @@ function sessionResult(sessionId = "dictation-1") {
   };
 }
 
+function recordRequests(create = async () => sessionResult()) {
+  const order: string[] = [];
+  request.mockImplementation(async (method, params) => {
+    order.push(method);
+    return method === "talk.session.create" ? create() : params;
+  });
+  return order;
+}
+
+function expectAppended(sessionId = "dictation-1") {
+  expect(request).toHaveBeenCalledWith("talk.session.appendAudio", {
+    sessionId,
+    audioBase64: "/4AA",
+  });
+}
+
 function expectClosed(sessionId = "dictation-1", discard = false) {
   expect(request).toHaveBeenCalledWith(
     "talk.session.close",
@@ -454,10 +470,7 @@ describe("ComposerDictationController", () => {
     const finishing = h.controller.finishActive();
     releaseCreate.resolve();
     await closeStarted.promise;
-    expect(request).toHaveBeenCalledWith("talk.session.appendAudio", {
-      sessionId: "dictation-1",
-      audioBase64: "/4AA",
-    });
+    expectAppended();
     try {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       await vi.advanceTimersByTimeAsync(0);
@@ -589,29 +602,17 @@ describe("ComposerDictationController", () => {
   });
 
   it("streams g711_ulaw audio and commits final transcript from latched Stop", async () => {
-    const order: string[] = [];
+    const order = recordRequests();
     getUserMedia.mockImplementation(async () => {
       order.push("microphone");
       return microphone();
-    });
-    request = vi.fn(async (method: string, params: unknown) => {
-      order.push(method);
-      if (method === "talk.session.create") {
-        return sessionResult();
-      }
-      return params;
     });
     const { controller, onCommit, target } = createHarness();
 
     await startHold(target);
     expect(order.slice(0, 2)).toEqual(["microphone", "talk.session.create"]);
     captureAudio();
-    await waitForFast(() =>
-      expect(request).toHaveBeenCalledWith("talk.session.appendAudio", {
-        sessionId: "dictation-1",
-        audioBase64: "/4AA",
-      }),
-    );
+    await waitForFast(() => expectAppended());
     emit({ type: "partial", text: "hello wor" });
     expect(controller.transcript).toBe("hello wor");
     transcript("hello world");
@@ -635,16 +636,9 @@ describe("ComposerDictationController", () => {
   });
 
   it("buffers microphone audio while the transcription session is being created", async () => {
-    const order: string[] = [];
     const { promise: createResult, resolve: resolveCreate } =
       createDeferred<ReturnType<typeof sessionResult>>();
-    request = vi.fn(async (method: string, params: unknown) => {
-      order.push(method);
-      if (method === "talk.session.create") {
-        return createResult;
-      }
-      return params;
-    });
+    const order = recordRequests(() => createResult);
     const { controller, onCommit, target } = createHarness();
     await startHold(target);
     captureAudio();
@@ -653,12 +647,7 @@ describe("ComposerDictationController", () => {
     await commitLatched(controller, target);
     resolveCreate(sessionResult("late-session"));
 
-    await waitForFast(() =>
-      expect(request).toHaveBeenCalledWith("talk.session.appendAudio", {
-        sessionId: "late-session",
-        audioBase64: "/4AA",
-      }),
-    );
+    await waitForFast(() => expectAppended("late-session"));
     await waitForFast(() => expectClosed("late-session"));
     expect(order.indexOf("talk.session.appendAudio")).toBeLessThan(
       order.indexOf("talk.session.close"),
