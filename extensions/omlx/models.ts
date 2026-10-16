@@ -48,7 +48,10 @@ export async function listOmlxModels(params: {
         ? await resolveOmlxSecret(params, existing?.apiKey, "models.providers.omlx.apiKey")
         : undefined;
     const profileKey =
-      configuredKey === OMLX_API_KEY_ENV_VAR && !params.env[OMLX_API_KEY_ENV_VAR]
+      configuredKey &&
+      configuredKey !== OMLX_LOCAL_API_KEY &&
+      typeof existing?.apiKey === "string" &&
+      (configuredKey !== OMLX_API_KEY_ENV_VAR || !params.env[OMLX_API_KEY_ENV_VAR])
         ? (
             await (
               await import("openclaw/plugin-sdk/provider-auth-runtime")

@@ -13,6 +13,7 @@ import type {
   ProviderAuthMethodNonInteractiveContext,
   ProviderCatalogContext,
 } from "openclaw/plugin-sdk/provider-setup";
+import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
 import {
@@ -94,6 +95,38 @@ afterEach(() => {
 });
 
 describe("oMLX setup through the inference catalog", () => {
+  it("discovers with the selected profile credential instead of its identifier", async () => {
+    const fetchMock = fixture();
+    await withOpenClawTestState({ label: "omlx-setup-profile" }, async (state) => {
+      await state.writeAuthProfiles({
+        version: 1,
+        profiles: {
+          "omlx:selected": { type: "api_key", provider: "omlx", key: "selected-key" },
+        },
+      });
+      await expect(
+        detectOmlxAvailability({
+          env: {},
+          agentDir: state.agentDir(),
+          config: {
+            models: {
+              providers: {
+                omlx: {
+                  baseUrl: "http://127.0.0.1:8000/v1",
+                  apiKey: "omlx:selected",
+                  models: [],
+                },
+              },
+            },
+          },
+        }),
+      ).resolves.toBe(true);
+      expect(new Headers(fetchMock.mock.lastCall?.[1]?.headers).get("authorization")).toBe(
+        "Bearer selected-key",
+      );
+    });
+  });
+
   it("discovers chat models and prepares a keyless model with server context", async () => {
     const fetchMock = fixture();
     const ctx = guidedContext();
