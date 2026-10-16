@@ -107,7 +107,6 @@ describe("oMLX setup through the inference catalog", () => {
       await expect(
         detectOmlxAvailability({
           env: {},
-          agentDir: state.agentDir(),
           config: {
             models: {
               providers: {
