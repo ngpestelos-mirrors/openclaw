@@ -72,8 +72,7 @@ function registerVisitorPlugin(api: OpenClawPluginApi): void {
   let sweeping: Promise<void> | undefined;
   let starting: Promise<void> | undefined;
   const sweep = () => {
-    sweeping ??= api.lifecycle
-      .runInBackgroundContext(() => service.sweep())
+    sweeping ??= (api.lifecycle.runInBackgroundContext?.(() => service.sweep()) ?? service.sweep())
       .catch((error: unknown) => {
         if (!lifetime.signal.aborted) {
           api.logger.error(
