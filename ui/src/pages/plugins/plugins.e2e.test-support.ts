@@ -6,8 +6,9 @@ import {
   type BrowserContext,
   type BrowserContextOptions,
   type Page,
+  type Locator,
 } from "playwright";
-import { describe } from "vitest";
+import { describe, onTestFinished } from "vitest";
 import type { PluginsSearchResult } from "../../../../packages/gateway-protocol/src/schema/plugins.ts";
 import { PROTOCOL_VERSION } from "../../../../packages/gateway-protocol/src/version.js";
 import type {
@@ -24,6 +25,7 @@ import {
   resolvePlaywrightChromiumExecutablePath,
   startControlUiE2eServer,
   type ControlUiE2eServer,
+  type ControlUiMockGatewayScenario,
 } from "../../test-helpers/control-ui-e2e.ts";
 import {
   discoveryCategories,
@@ -381,42 +383,29 @@ const matrixEnabled = {
   state: "enabled",
 } satisfies PluginCatalogItem;
 
+function objectSchema<T>(properties: T) {
+  return { type: "object", properties };
+}
+
 const matrixConfigSchema = {
   generatedAt: "2026-09-03T00:00:00.000Z",
-  schema: {
-    type: "object",
-    properties: {
-      plugins: {
-        type: "object",
-        properties: {
-          entries: {
-            type: "object",
-            properties: {
-              matrix: {
-                type: "object",
-                properties: {
-                  enabled: { type: "boolean", title: "Enabled" },
-                  config: {
-                    type: "object",
-                    properties: {
-                      homeserver: { type: "string", title: "Homeserver" },
-                      accessToken: { type: "string", title: "Access token" },
-                      mode: {
-                        type: ["string", "null"],
-                        enum: ["auto", null],
-                        title: "Mode",
-                      },
-                    },
-                    required: ["homeserver", "accessToken"],
-                  },
-                },
-              },
-            },
+  schema: objectSchema({
+    plugins: objectSchema({
+      entries: objectSchema({
+        matrix: objectSchema({
+          enabled: { type: "boolean", title: "Enabled" },
+          config: {
+            ...objectSchema({
+              homeserver: { type: "string", title: "Homeserver" },
+              accessToken: { type: "string", title: "Access token" },
+              mode: { type: ["string", "null"], enum: ["auto", null], title: "Mode" },
+            }),
+            required: ["homeserver", "accessToken"],
           },
-        },
-      },
-    },
-  },
+        }),
+      }),
+    }),
+  }),
   uiHints: {
     "plugins.entries.matrix.config.homeserver": { advanced: false },
     "plugins.entries.matrix.config.accessToken": { advanced: false, sensitive: true },
@@ -555,106 +544,108 @@ async function newContext(
   });
 }
 
+export function button(scope: Page | Locator, name: string) {
+  return scope.getByRole("button", { name, exact: true });
+}
+
+export async function openPluginTest(
+  responses: ControlUiMockGatewayScenario["methodResponses"] = {},
+  {
+    viewport = desktopViewport,
+    nativeAuth = false,
+    heldMethods = [],
+  }: {
+    viewport?: { width: number; height: number };
+    nativeAuth?: boolean;
+    heldMethods?: string[];
+  } = {},
+) {
+  const context = await newContext(viewport);
+  onTestFinished(() => context.close());
+  const page = await context.newPage();
+  if (nativeAuth) {
+    await page.addInitScript(
+      (gatewayUrl) => {
+        window["__OPENCLAW_NATIVE_CONTROL_AUTH__"] = { gatewayUrl };
+      },
+      server.baseUrl.replace(/^http/u, "ws"),
+    );
+  }
+  const gateway = await installMockGateway(page, {
+    featureMethods: pluginMethods,
+    methodResponses: { ...pluginMethodResponses(), ...responses },
+    heldMethods,
+  });
+  return { page, gateway };
+}
+
+export async function completeInstall(
+  gateway: Awaited<ReturnType<typeof installMockGateway>>,
+  plugin: PluginCatalogItem,
+) {
+  await gateway.setMethodResponse("plugins.list", inventory([...initialInventory.plugins, plugin]));
+  await gateway.resolveDeferred("plugins.install", { ok: true, plugin, restartRequired: false });
+}
+
+function responseCases(entries: Array<[Record<string, unknown>, unknown]>) {
+  return { cases: entries.map(([match, response]) => ({ match, response })) };
+}
+
 function pluginMethodResponses() {
   return {
     "plugins.controlUi.list": { revision: "empty", plugins: [], diagnostics: [] },
     "config.get": configSnapshot(false),
     "plugins.list": initialInventory,
-    "plugins.inspect": {
-      cases: [
-        { match: { pluginId: "workboard" }, response: workboardInspection },
-        { match: { pluginId: "lobster" }, response: lobsterInspection },
-        { match: { pluginId: "calendar-plus" }, response: calendarInspection },
-        {
-          match: { pluginId: "local-calendar" },
-          response: {
+    "plugins.inspect": responseCases([
+      [{ pluginId: "workboard" }, workboardInspection],
+      [{ pluginId: "lobster" }, lobsterInspection],
+      [{ pluginId: "calendar-plus" }, calendarInspection],
+      ...[localCalendarDisabled, matrixEnabled].map(
+        (plugin): [Record<string, unknown>, PluginsInspectResult] => [
+          { pluginId: plugin.id },
+          {
             ...workboardInspection,
-            plugin: localCalendarDisabled,
-            source: { kind: "npm", packageName: localCalendarDisabled.packageName },
-          } satisfies PluginsInspectResult,
-        },
-        {
-          match: { pluginId: "matrix" },
-          response: {
-            ...workboardInspection,
-            plugin: matrixEnabled,
-            source: { kind: "npm", packageName: matrixEnabled.packageName },
-          } satisfies PluginsInspectResult,
-        },
-      ],
-    },
-    "plugins.search": {
-      cases: [
-        {
-          match: { query: "calendar", limit: 20 },
-          response: calendarSearchResponse,
-        },
-      ],
-    },
-    "plugins.catalog.browse": {
-      cases: [
-        {
-          match: { intent: "all", cursor: "catalog-page-2", pageSize: 100 },
-          response: {
-            items: secondDiscoveryPageItems,
-            nextCursor: "catalog-page-3",
+            plugin,
+            source: { kind: "npm", packageName: plugin.packageName },
           },
-        },
-        {
-          match: { intent: "all", cursor: "catalog-page-3", pageSize: 100 },
-          response: { items: finalDiscoveryPageItems },
-        },
-        {
-          match: { intent: "official", pageSize: 100 },
-          response: { items: [matrixDiscoveryPlugin] },
-        },
-        {
-          match: { intent: "all", category: "channels", pageSize: 100 },
-          response: { items: [matrixDiscoveryPlugin] },
-        },
-        {
-          match: { intent: "all", query: "matrix", pageSize: 100 },
-          response: { items: [matrixDiscoveryPlugin] },
-        },
-        { match: { intent: "all", pageSize: 100 }, response: discoveryResult },
+        ],
+      ),
+    ]),
+    "plugins.search": responseCases([[{ query: "calendar", limit: 20 }, calendarSearchResponse]]),
+    "plugins.catalog.browse": responseCases([
+      [
+        { intent: "all", cursor: "catalog-page-2", pageSize: 100 },
+        { items: secondDiscoveryPageItems, nextCursor: "catalog-page-3" },
       ],
-    },
+      [
+        { intent: "all", cursor: "catalog-page-3", pageSize: 100 },
+        { items: finalDiscoveryPageItems },
+      ],
+      [{ intent: "official", pageSize: 100 }, { items: [matrixDiscoveryPlugin] }],
+      [{ intent: "all", category: "channels", pageSize: 100 }, { items: [matrixDiscoveryPlugin] }],
+      [{ intent: "all", query: "matrix", pageSize: 100 }, { items: [matrixDiscoveryPlugin] }],
+      [{ intent: "all", pageSize: 100 }, discoveryResult],
+    ]),
     "plugins.catalog.categories": discoveryCategories,
-    "plugins.catalog.get": {
-      cases: [
-        { match: { id: matrixDiscoveryPlugin.id }, response: matrixDetail },
-        { match: { id: calendarDiscoveryPlugin.id }, response: calendarDetail },
-        { match: { id: localOnlyDiscoveryPlugin.id }, response: localOnlyDetail },
-      ],
-    },
-    "plugins.install": {
-      cases: [
+    "plugins.catalog.get": responseCases([
+      [{ id: matrixDiscoveryPlugin.id }, matrixDetail],
+      [{ id: calendarDiscoveryPlugin.id }, calendarDetail],
+      [{ id: localOnlyDiscoveryPlugin.id }, localOnlyDetail],
+    ]),
+    "plugins.install": responseCases([
+      [
         {
-          match: {
-            source: "clawhub",
-            packageName: "calendar-plus",
-            acknowledgeCapabilities: { reviewToken: calendarInspection.reviewToken },
-          },
-          response: installResult,
+          source: "clawhub",
+          packageName: "calendar-plus",
+          acknowledgeCapabilities: { reviewToken: calendarInspection.reviewToken },
         },
+        installResult,
       ],
-    },
-    "plugins.setEnabled": {
-      cases: [
-        {
-          match: { pluginId: "workboard", enabled: true },
-          response: enableWorkboardResult,
-        },
-      ],
-    },
-    "plugins.uninstall": {
-      cases: [
-        {
-          match: { pluginId: "calendar-plus" },
-          response: uninstallResult,
-        },
-      ],
-    },
+    ]),
+    "plugins.setEnabled": responseCases([
+      [{ pluginId: "workboard", enabled: true }, enableWorkboardResult],
+    ]),
+    "plugins.uninstall": responseCases([[{ pluginId: "calendar-plus" }, uninstallResult]]),
   };
 }
 

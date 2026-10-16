@@ -300,41 +300,21 @@ it("revokes before invalidation publication and publishes both empty resets", as
 
 it("keeps a pending detail icon on its skeleton until the image loads", async () => {
   vi.useFakeTimers();
-  vi.stubGlobal(
-    "URL",
-    class extends URL {
-      static override createObjectURL = vi.fn(() => "blob:loaded-icon");
-      static override revokeObjectURL = vi.fn();
-    },
-  );
+  stubUrls(() => "blob:loaded-icon");
   const response = deferred<Response>();
   const fetchMock = vi.fn(() => response.promise);
   vi.stubGlobal("fetch", fetchMock);
-  const plugin = createPlugin({ hasIcon: true });
-  const result = createResult(plugin);
-  const { client } = createClient(async (method) =>
+  const result = createResult(createPlugin({ hasIcon: true }));
+  const { gateway } = iconGateway(async (method) =>
     method === "plugins.inspect" ? createInspectResult() : result,
   );
-  const harness = createGateway(client);
-  harness.gateway.connection.gatewayUrl = window.location.origin.replace(/^http/u, "ws");
-  const { page } = await mountPage(
-    createContext(harness.gateway),
-    createPluginsRouteData(
-      harness.gateway,
-      result,
-      createPluginsRouteLocation("/settings/plugins/workboard"),
-    ),
-  );
+  const { page } = await mountIcons(gateway, result, "/settings/plugins/workboard");
   await vi.advanceTimersByTimeAsync(0);
   const icon = () => page.querySelector(".plugin-catalog-detail__hero .plugins-tile");
   expect(fetchMock).toHaveBeenCalledOnce();
   expect(icon()?.classList.contains("skeleton")).toBe(true);
   expect(icon()?.classList.contains("plugins-tile--fallback")).toBe(false);
-  response.resolve(
-    new Response("image", {
-      headers: { "content-type": "image/png" },
-    }),
-  );
+  response.resolve(iconResponse());
   await vi.advanceTimersByTimeAsync(0);
   const image = icon()?.querySelector("img");
   expect(image?.getAttribute("src")).toBe("blob:loaded-icon");
@@ -346,47 +326,26 @@ it("keeps a pending detail icon on its skeleton until the image loads", async ()
 
 it("reuses installed artwork across navigation and retires it on a new plugin generation", async () => {
   vi.useFakeTimers();
-  const revokeObjectURL = vi.fn();
   let sequence = 0;
-  vi.stubGlobal(
-    "URL",
-    class extends URL {
-      static override createObjectURL = vi.fn(() => `blob:icon-${++sequence}`);
-      static override revokeObjectURL = revokeObjectURL;
-    },
-  );
-  const fetchMock = vi.fn(
-    async () =>
-      new Response("image", {
-        headers: { "content-type": "image/png" },
-      }),
-  );
+  const { revoke: revokeObjectURL } = stubUrls(() => `blob:icon-${++sequence}`);
+  const fetchMock = vi.fn(async () => iconResponse());
   vi.stubGlobal("fetch", fetchMock);
   const result = { ...createResult(createPlugin({ hasIcon: true })), generation: 1 };
-  const { client } = createClient(async (method) =>
+  const { gateway } = iconGateway(async (method) =>
     method === "plugins.inspect" ? createInspectResult() : result,
   );
-  const harness = createGateway(client);
-  harness.gateway.connection.gatewayUrl = window.location.origin.replace(/^http/u, "ws");
-  const { page } = await mountPage(
-    createContext(harness.gateway),
-    createPluginsRouteData(harness.gateway, result),
-  );
+  const { page } = await mountIcons(gateway, result);
   await vi.advanceTimersByTimeAsync(0);
   expect(page.querySelector("img.plugins-icon")?.getAttribute("src")).toBe("blob:icon-1");
   const detailRoute = createPluginsRouteLocation("/settings/plugins/workboard");
-  page.routeData = createPluginsRouteData(harness.gateway, result, detailRoute);
+  page.routeData = createPluginsRouteData(gateway, result, detailRoute);
   await vi.advanceTimersByTimeAsync(0);
   expect(revokeObjectURL).not.toHaveBeenCalled();
   expect(fetchMock).toHaveBeenCalledOnce();
   expect(page.querySelector(".plugin-catalog-detail__hero img")?.getAttribute("src")).toBe(
     "blob:icon-1",
   );
-  page.routeData = createPluginsRouteData(
-    harness.gateway,
-    { ...result, generation: 2 },
-    detailRoute,
-  );
+  page.routeData = createPluginsRouteData(gateway, { ...result, generation: 2 }, detailRoute);
   await vi.advanceTimersByTimeAsync(0);
   expect(revokeObjectURL).toHaveBeenCalledWith("blob:icon-1");
   expect(fetchMock).toHaveBeenCalledTimes(2);
