@@ -31,6 +31,7 @@ vi.mock("../config/sessions/session-accessor.js", () => ({
   appendSessionTranscriptReport: vi.fn(async () => ({ ok: true, value: undefined })),
 }));
 
+// mock-isolation: Exercise the lifecycle reducer without opening the session database.
 vi.mock("../config/sessions/session-accessor.sqlite-entry.js", () => ({
   applySessionEntryTargetOperation: persistenceMocks.updateSessionEntry,
 }));

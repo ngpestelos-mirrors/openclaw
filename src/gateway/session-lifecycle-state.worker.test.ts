@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { createSessionCompoundWorkerFixture } from "../config/sessions/session-compound-worker.test-support.js";
 import { getSessionEntryPatchDelivery } from "../config/sessions/session-entry-patch-delivery.test-support.js";
@@ -8,7 +9,7 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { persistGatewaySessionLifecycleEvent } from "./session-lifecycle-state.js";
 
 const routing = vi.hoisted(() => ({ load: vi.fn() }));
-// Only routing is fixed; lifecycle projection, worker commit, and failure appends are real.
+// mock-isolation: Fix routing while lifecycle projection, worker commit, and failure appends stay real.
 vi.mock("./session-utils-store-worker.js", () => ({
   loadGatewaySessionEntryReadOnlyInWorker: async () => routing.load(),
 }));
@@ -17,6 +18,7 @@ it.each(["resumed goal", "another recovery owner"] as const)(
   "commits lifecycle in one request while preserving a queued in-process %s update",
   async (change) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      setRuntimeConfigSnapshot({});
       const f = createSessionCompoundWorkerFixture();
       const delivery = getSessionEntryPatchDelivery();
       const generation = getAgentEventLifecycleGeneration();

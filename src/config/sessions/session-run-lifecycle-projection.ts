@@ -173,7 +173,7 @@ export function resolveSessionLifecycleTerminal(event: LifecycleEventLike) {
   const terminal = resolveSettledLifecycleTerminalOutcome(event);
   const interruptedForRestart =
     terminal?.reason === "cancelled" && terminal.stopReason === "restart";
-  const status = interruptedForRestart
+  const status: SessionEntry["status"] = interruptedForRestart
     ? "interrupted"
     : terminal
       ? SESSION_STATUS_BY_TERMINAL_CLASSIFICATION[classifyAgentRunTerminalOutcome(terminal)]

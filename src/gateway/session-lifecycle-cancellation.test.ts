@@ -3,12 +3,12 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { prepareSystemAgentRunAdmission } from "../agents/admitted-run-context.js";
 import { createAgentRunRestartAbortError } from "../agents/run-termination.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
-import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import {
   loadSessionEntry,
   loadTranscriptEvents,
   replaceSessionEntry,
 } from "../config/sessions/session-accessor.js";
+import * as sessionAccessor from "../config/sessions/session-accessor.sqlite-entry.js";
 import { emitAgentEvent, getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import {
   getAgentRunContext,
