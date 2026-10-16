@@ -18,7 +18,7 @@ import {
 } from "../panel-toggle-contract.ts";
 import { SolidPanelController } from "../solid-panel-controller.ts";
 import { DesktopAppLauncher } from "./desktop-app-launcher.ts";
-import { DesktopAudio } from "./desktop-audio.ts";
+import type { DesktopAudio } from "./desktop-audio.ts";
 import * as desktopTransport from "./desktop-client.ts";
 import { DesktopMobileKeyboard } from "./desktop-mobile-keyboard.ts";
 import {
@@ -61,6 +61,7 @@ export class DesktopPanelController extends SolidPanelController {
     | ((target: Extract<ControlUiFocusBuildTarget, { kind: "desktop" }>) => void)
     | null = null;
   fullscreenMode!: DesktopFullscreen;
+  audio!: DesktopAudio;
 
   /** Browser tests replace the transport without opening a real RFB socket. */
   desktopClientFactory: () => Pick<desktopTransport.DesktopClient, "connect"> = () =>
@@ -80,11 +81,6 @@ export class DesktopPanelController extends SolidPanelController {
   private canResize = false;
 
   private readonly connection = new DesktopConnectionHandoff();
-  private readonly audio = new DesktopAudio(
-    this,
-    () => this.state === "connected",
-    () => void this.connectEnvironment(this.environmentId, this.controlling),
-  );
   private readonly launcher = new DesktopAppLauncher(this, () => ({
     client: this.client,
     source: this.source,
@@ -151,6 +147,13 @@ export class DesktopPanelController extends SolidPanelController {
     isAvailable: () => this.available,
     isFullscreen: () => this.fullscreenMode?.ownsFullscreen() ?? false,
   });
+
+  get audioTarget() {
+    return {
+      connected: this.state === "connected",
+      reconnect: () => void this.connectEnvironment(this.environmentId, this.controlling),
+    };
+  }
 
   override connectedCallback(): void {
     if (!this.embedded) {
