@@ -1,4 +1,5 @@
 import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
+import { createDeferred as deferred } from "openclaw/plugin-sdk/extension-shared";
 import type { RealtimeVoiceGatewayControl } from "openclaw/plugin-sdk/realtime-voice";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenAIQuicksilverDelegationController } from "./realtime-quicksilver-delegation-controller.js";
@@ -10,12 +11,16 @@ import {
   type ConsultRunner,
 } from "./realtime-quicksilver.test-helpers.js";
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
+function parseEvent(event: unknown) {
+  return parseOpenAIQuicksilverEvent(JSON.stringify(event));
+}
+
+function contextAppend(text: string) {
+  return {
+    type: "session.context.append",
+    channel: "speakable",
+    content: [{ type: "input_text", text }],
+  };
 }
 
 function delegate(
@@ -42,10 +47,7 @@ afterEach(() => {
 
 describe("GPT-Live sideband protocol", () => {
   it("targets the control delegation without consuming transcript context or cancelling the task", async () => {
-    let finish!: (result: { text: string }) => void;
-    const pending = new Promise<{ text: string }>((resolve) => {
-      finish = resolve;
-    });
+    const { promise: pending, resolve: finish } = deferred<{ text: string }>();
     const runAgentConsult = vi.fn<ConsultRunner>(async () => await pending);
     const { controller, socket } = createDelegationHarness({
       runAgentConsult,
@@ -150,10 +152,7 @@ describe("GPT-Live sideband protocol", () => {
   });
 
   it("keeps standalone speech at session scope while a delegation owns its result", async () => {
-    let finish!: (result: { text: string }) => void;
-    const result = new Promise<{ text: string }>((resolve) => {
-      finish = resolve;
-    });
+    const { promise: result, resolve: finish } = deferred<{ text: string }>();
     const { controller, socket } = createDelegationHarness({
       runAgentConsult: async () => await result,
     });
@@ -164,16 +163,8 @@ describe("GPT-Live sideband protocol", () => {
       finish({ text: "Finished checking" });
       await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
       expect(parseSent(socket)).toEqual([
-        {
-          type: "session.context.append",
-          channel: "speakable",
-          content: [{ type: "input_text", text: "Ready" }],
-        },
-        {
-          type: "session.context.append",
-          channel: "speakable",
-          content: [{ type: "input_text", text: "Still checking" }],
-        },
+        contextAppend("Ready"),
+        contextAppend("Still checking"),
         delegationAppend("work", "Finished checking"),
       ]);
       controller.detach();
@@ -186,26 +177,25 @@ describe("GPT-Live sideband protocol", () => {
   });
 
   it("parses session expiry and transcript events", () => {
-    expect(
-      parseOpenAIQuicksilverEvent(
-        JSON.stringify({ type: "session.started", session: { expires_at: 123 } }),
-      ),
-    ).toEqual({ kind: "session-started", expiresAt: 123 });
-    expect(
-      parseOpenAIQuicksilverEvent(
-        JSON.stringify({ type: "input_transcript.added", item: { text: "hel" } }),
-      ),
-    ).toEqual({ kind: "transcript-delta", role: "user", text: "hel" });
-    expect(
-      parseOpenAIQuicksilverEvent(
-        JSON.stringify({ type: "output_transcript.added", item: { text: "wor" } }),
-      ),
-    ).toEqual({ kind: "transcript-delta", role: "assistant", text: "wor" });
-    expect(
-      parseOpenAIQuicksilverEvent(
-        JSON.stringify({ type: "turn.done", turn: { role: "user", transcript: "hello" } }),
-      ),
-    ).toEqual({ kind: "transcript-done", role: "user", text: "hello" });
+    expect(parseEvent({ type: "session.started", session: { expires_at: 123 } })).toEqual({
+      kind: "session-started",
+      expiresAt: 123,
+    });
+    expect(parseEvent({ type: "input_transcript.added", item: { text: "hel" } })).toEqual({
+      kind: "transcript-delta",
+      role: "user",
+      text: "hel",
+    });
+    expect(parseEvent({ type: "output_transcript.added", item: { text: "wor" } })).toEqual({
+      kind: "transcript-delta",
+      role: "assistant",
+      text: "wor",
+    });
+    expect(parseEvent({ type: "turn.done", turn: { role: "user", transcript: "hello" } })).toEqual({
+      kind: "transcript-done",
+      role: "user",
+      text: "hello",
+    });
   });
 
   it("forwards only classified sideband event types", () => {
@@ -227,47 +217,38 @@ describe("GPT-Live sideband protocol", () => {
 
   it("parses client delegations and ignores non-client targets", () => {
     expect(
-      parseOpenAIQuicksilverEvent(
-        JSON.stringify({
-          type: "delegation.created",
-          item: {
-            type: "delegation",
-            target: "client",
-            id: "delegation-1",
-            content: [
-              { type: "input_text", text: "curl https://exa" },
-              { type: "output_text", text: "ignored" },
-              { type: "input_text", text: "mple.com" },
-            ],
-          },
-        }),
-      ),
+      parseEvent({
+        type: "delegation.created",
+        item: {
+          type: "delegation",
+          target: "client",
+          id: "delegation-1",
+          content: [
+            { type: "input_text", text: "curl https://exa" },
+            { type: "output_text", text: "ignored" },
+            { type: "input_text", text: "mple.com" },
+          ],
+        },
+      }),
     ).toEqual({ kind: "delegation", id: "delegation-1", prompt: "curl https://example.com" });
     expect(
-      parseOpenAIQuicksilverEvent(
-        JSON.stringify({
-          type: "delegation.created",
-          item: { type: "delegation", target: "server", id: "delegation-2", content: [] },
-        }),
-      ),
+      parseEvent({
+        type: "delegation.created",
+        item: { type: "delegation", target: "server", id: "delegation-2", content: [] },
+      }),
     ).toEqual({ kind: "ignored", eventType: "delegation.created" });
   });
 
   it("parses errors, reports unknown events, and rejects malformed JSON", () => {
-    expect(
-      parseOpenAIQuicksilverEvent(
-        JSON.stringify({ type: "error", error: { message: "call failed" } }),
-      ),
-    ).toEqual({ kind: "error", fatalAuth: false });
-    expect(
-      parseOpenAIQuicksilverEvent(
-        JSON.stringify({ type: "error", error: { code: "invalid_token" } }),
-      ),
-    ).toEqual({
+    expect(parseEvent({ type: "error", error: { message: "call failed" } })).toEqual({
+      kind: "error",
+      fatalAuth: false,
+    });
+    expect(parseEvent({ type: "error", error: { code: "invalid_token" } })).toEqual({
       kind: "error",
       fatalAuth: true,
     });
-    expect(parseOpenAIQuicksilverEvent(JSON.stringify({ type: "future.event" }))).toEqual({
+    expect(parseEvent({ type: "future.event" })).toEqual({
       kind: "unknown",
       eventType: "future.event",
     });
@@ -571,10 +552,7 @@ describe("GPT-Live sideband protocol", () => {
   });
 
   it("drops pending receipts and late results when detached before settlement", async () => {
-    let finish!: (result: { text: string }) => void;
-    const result = new Promise<{ text: string }>((resolve) => {
-      finish = resolve;
-    });
+    const { promise: result, resolve: finish } = deferred<{ text: string }>();
     const runAgentConsult = vi.fn<ConsultRunner>(async () => await result);
     const { controller, socket } = createDelegationHarness({
       runAgentConsult,

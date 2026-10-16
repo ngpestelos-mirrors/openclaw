@@ -43,6 +43,20 @@ async function reserveSession(
   return reservation;
 }
 
+function handleOffer(fixture: ReturnType<typeof createBroker>, token: string, body = SDP) {
+  const response = createResponseHarness();
+  const handling = fixture.realtime.handler(createRequest({ token, body }), response.res);
+  return { response, handling };
+}
+
+async function answerOffer(fixture: ReturnType<typeof createBroker>, token: string, body = SDP) {
+  const { response, handling } = handleOffer(fixture, token, body);
+  await handling;
+  return response;
+}
+
+const EMPTY_COUNTS = { pending: 0, inFlight: 0, active: 0, reservations: 0 };
+
 describe("public GPT-Live WebRTC broker", () => {
   it.each([
     { reason: "expired", outcome: "completed" },
@@ -59,11 +73,7 @@ describe("public GPT-Live WebRTC broker", () => {
       const onError = vi.fn();
       try {
         const reservation = await reserveSession(fixture, { onClose, onError });
-        const response = createResponseHarness();
-        await fixture.realtime.handler(
-          createRequest({ token: reservation.clientSecret, body: SDP }),
-          response.res,
-        );
+        const response = await answerOffer(fixture, reservation.clientSecret, SDP);
         expect(response.res.statusCode).toBe(200);
         emitSideband(fixture.sockets[0]!, {
           type: "session.closed",
@@ -74,12 +84,7 @@ describe("public GPT-Live WebRTC broker", () => {
         expect(fixture.sockets[0]?.closed).toBe(true);
         expect(onClose).toHaveBeenCalledExactlyOnceWith(outcome);
         expect(onError).toHaveBeenCalledTimes(outcome === "error" ? 1 : 0);
-        expect(fixture.realtime.getSessionCounts()).toEqual({
-          pending: 0,
-          inFlight: 0,
-          active: 0,
-          reservations: 0,
-        });
+        expect(fixture.realtime.getSessionCounts()).toEqual(EMPTY_COUNTS);
       } finally {
         fetchImpl.mockImplementation(async () => new Response(null, { status: 204 }));
         await fixture.realtime.cleanup();
@@ -104,11 +109,7 @@ describe("public GPT-Live WebRTC broker", () => {
       });
       expect(reservation.voice).toBe("marin");
       expect(JSON.stringify(reservation)).not.toContain("platform-key");
-      const response = createResponseHarness();
-      await realtime.handler(
-        createRequest({ token: reservation.clientSecret, body: offeredSdp }),
-        response.res,
-      );
+      const response = await answerOffer(fixture, reservation.clientSecret, offeredSdp);
 
       expect(response.res.statusCode).toBe(200);
       expect(response.readBody()).toBe(SDP);
@@ -231,11 +232,7 @@ describe("public GPT-Live WebRTC broker", () => {
       const onClose = vi.fn();
       try {
         const reservation = await reserveSession(fixture, { onTranscript, onClose });
-        const response = createResponseHarness();
-        await fixture.realtime.handler(
-          createRequest({ token: reservation.clientSecret, body: SDP }),
-          response.res,
-        );
+        await answerOffer(fixture, reservation.clientSecret);
         const socket = fixture.sockets[0]!;
         vi.useFakeTimers();
         const closing = Promise.resolve(fixture.realtime.broker.cancelBrowserSession(reservation));
@@ -298,22 +295,13 @@ describe("public GPT-Live WebRTC broker", () => {
       });
       try {
         const reservation = await reserveSession(fixture);
-        const response = createResponseHarness();
-        await fixture.realtime.handler(
-          createRequest({ token: reservation.clientSecret, body: SDP }),
-          response.res,
-        );
+        const response = await answerOffer(fixture, reservation.clientSecret, SDP);
         expect(response.res.statusCode).toBe(502);
         expect(response.readBody()).not.toContain(SDP);
         expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([LIVE_URL, HANGUP_URL]);
         expect(fixture.sockets).toHaveLength(failure === "malformed answer" ? 0 : 1);
         expect(fixture.sockets.every((socket) => socket.closed)).toBe(true);
-        expect(fixture.realtime.getSessionCounts()).toEqual({
-          pending: 0,
-          inFlight: 0,
-          active: 0,
-          reservations: 0,
-        });
+        expect(fixture.realtime.getSessionCounts()).toEqual(EMPTY_COUNTS);
       } finally {
         await fixture.realtime.cleanup();
       }
@@ -328,11 +316,7 @@ describe("public GPT-Live WebRTC broker", () => {
     const fixture = createBroker({ fetchImpl });
     try {
       const reservation = await reserveSession(fixture);
-      const response = createResponseHarness();
-      const handling = fixture.realtime.handler(
-        createRequest({ token: reservation.clientSecret, body: SDP }),
-        response.res,
-      );
+      const { response, handling } = handleOffer(fixture, reservation.clientSecret);
       await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
       const canceling = fixture.realtime.broker.cancelBrowserSession(reservation);
       expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
@@ -345,12 +329,7 @@ describe("public GPT-Live WebRTC broker", () => {
       expect(new Headers(fetchImpl.mock.calls[1]?.[1]?.headers).get("authorization")).toBe(
         "Bearer platform-key",
       );
-      expect(fixture.realtime.getSessionCounts()).toEqual({
-        pending: 0,
-        inFlight: 0,
-        active: 0,
-        reservations: 0,
-      });
+      expect(fixture.realtime.getSessionCounts()).toEqual(EMPTY_COUNTS);
     } finally {
       creation.resolve(liveResponse());
       await fixture.realtime.cleanup();
