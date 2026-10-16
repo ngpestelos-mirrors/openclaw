@@ -5,6 +5,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, expect, vi } from "vitest";
 import type { MemoryWorkspaceMaintenance } from "../../../packages/memory-host-sdk/src/host/workspace-files.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { expectObjectFields as expectRecordFields } from "../../test-utils/mock-call-assertions.js";
 
 const getRuntimeConfig = vi.hoisted(() => vi.fn(() => ({}) as OpenClawConfig));
 const listAgentIds = vi.hoisted(() => vi.fn(() => ["main", "research-analyst", "alpha"]));
@@ -144,17 +145,6 @@ const invokeDoctorMemory = async (
     isWebchatConnect: () => false,
   });
 };
-
-function expectRecordFields(record: unknown, expected: Record<string, unknown>) {
-  if (!record || typeof record !== "object") {
-    throw new Error("Expected record");
-  }
-  const actual = record as Record<string, unknown>;
-  for (const [key, value] of Object.entries(expected)) {
-    expect(actual[key]).toEqual(value);
-  }
-  return actual;
-}
 
 function respondPayload(respond: ReturnType<typeof vi.fn>, callIndex = 0): Record<string, unknown> {
   const call = respond.mock.calls[callIndex];
