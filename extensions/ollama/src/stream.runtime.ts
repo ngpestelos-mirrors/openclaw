@@ -142,8 +142,15 @@ const OLLAMA_TOP_LEVEL_PARAM_KEYS = new Set(["format", "keep_alive", "truncate",
  * advertised `contextWindow`; only an explicit runtime cap or operator override is forwarded.
  */
 function resolveOllamaNativeNumCtx(model: ProviderRuntimeModel): number | undefined {
-  const effective = asNonNegativeFiniteNumber(model.contextTokens);
-  return resolveOllamaConfiguredNumCtx(model) ?? (effective ? Math.floor(effective) : undefined);
+  const configured = resolveOllamaConfiguredNumCtx(model);
+  if (configured !== undefined) {
+    return configured;
+  }
+  const effective = model.contextTokens;
+  if (effective === undefined || effective <= 0) {
+    return undefined;
+  }
+  return Math.floor(effective);
 }
 
 function resolveOllamaModelOptions(model: ProviderRuntimeModel): Record<string, unknown> {
@@ -461,7 +468,7 @@ function createRawOllamaStreamFn(
           ? { availableToolNames }
           : {};
         const ollamaMessages = convertToOllamaMessages(
-          transformMessages(context.messages ?? [], model),
+          transformMessages(context.messages, model),
           context.systemPrompt,
           toolCallNameOptions,
         );
