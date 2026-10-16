@@ -11,6 +11,7 @@ import {
   user,
 } from "./agent-loop.test-support.js";
 import { createAssistantMessageEventStream, type AssistantMessage, type Message } from "./llm.js";
+import { variedRows } from "./repetition-guard.test-fixtures.js";
 import type { AgentEvent, AgentToolCall, StreamFn } from "./types.js";
 
 const loop = "Please provide more input. ".repeat(800);
@@ -20,6 +21,7 @@ async function runResponse(
   content: AssistantMessage["content"],
   enabled = true,
   terminalOnly = false,
+  initialText?: string,
 ) {
   const events: AgentEvent[] = [];
   let aborted = false;
@@ -44,8 +46,18 @@ async function runResponse(
       model: message.model,
     };
     queueMicrotask(() => {
-      if (!terminalOnly) {
+      if (!terminalOnly || initialText !== undefined) {
         response.push({ type: "start", partial: makeAssistantMessage([]) });
+      }
+      if (initialText !== undefined) {
+        response.push({
+          type: "text_delta",
+          contentIndex: 0,
+          delta: initialText,
+          partial: makeAssistantMessage([{ type: "text", text: initialText }]),
+        });
+      }
+      if (!terminalOnly) {
         content.forEach((block, contentIndex) => {
           if (block.type === "text") {
             response.push({
@@ -121,6 +133,29 @@ describe("repetition stop at the stream owner", () => {
     const content: AssistantMessage["content"] = [{ type: "text", text: loop }];
     const { result } = await runResponse(content, false);
     expect(result.at(-1)).toMatchObject({ stopReason: "stop", content });
+  });
+
+  it.each([
+    { kind: "shorter final", initialLength: loop.length + 1, terminalOnly: true },
+    { kind: "same-length final", initialLength: loop.length, terminalOnly: true },
+    { kind: "longer final", initialLength: 16_000, terminalOnly: true },
+    { kind: "streamed", initialLength: loop.length, terminalOnly: false },
+  ])("checks a $kind replacement snapshot", async ({ initialLength, terminalOnly }) => {
+    const { result, events, requests } = await runResponse(
+      [{ type: "text", text: loop }],
+      true,
+      terminalOnly,
+      variedRows.slice(0, initialLength),
+    );
+    expect(result.at(-1)).toMatchObject({
+      stopReason: "error",
+      errorCode: "openclaw_repetitive_output",
+      content: [{ type: "text", text: marker }],
+    });
+    expect(events.findLast((event) => event.type === "message_end")).toMatchObject({
+      message: { content: [{ type: "text", text: marker }], providerReplay: undefined },
+    });
+    expect(requests).toBe(1);
   });
 
   it("checks snapshot-only text before persisting and admitting an async tool", async () => {

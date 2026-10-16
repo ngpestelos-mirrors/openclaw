@@ -4,7 +4,7 @@ import { RepetitionWatch } from "./repetition-guard.js";
 
 /** Tracks each text/reasoning block once, including providers that only emit final snapshots. */
 export class AssistantRepetitionGuard {
-  private blocks = new Map<number, { watch: RepetitionWatch; length: number }>();
+  private blocks = new Map<number, { watch: RepetitionWatch; text: string }>();
 
   check(
     message: AssistantMessage,
@@ -24,12 +24,12 @@ export class AssistantRepetitionGuard {
         continue;
       }
       let state = this.blocks.get(index);
-      if (!state) {
-        state = { watch: new RepetitionWatch(), length: 0 };
+      if (!state || !text.startsWith(state.text)) {
+        state = { watch: new RepetitionWatch(), text: "" };
         this.blocks.set(index, state);
       }
-      const stopped = state.watch.feed(text.slice(state.length));
-      state.length = text.length;
+      const stopped = state.watch.feed(text.slice(state.text.length));
+      state.text = text;
       if (stopped) {
         // A server-side checkpoint could replay the discarded block even with clean visible text.
         return {
