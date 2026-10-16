@@ -64,7 +64,9 @@ export async function renderPanelFixture(
   } else {
     const view = mountSolid(SidebarRegionView, props, mount);
     panelViews.set(mount, { primary, update: (next) => view.update(next) });
-    onTestFinished(() => panelViews.delete(mount));
+    onTestFinished(() => {
+      panelViews.delete(mount);
+    });
   }
   await mount.querySelector("openclaw-chat-sidebar-region")?.updateComplete;
   await mount.querySelector("openclaw-chat-files-panel")?.updateComplete;
@@ -127,13 +129,48 @@ export function createReviewFixture() {
     const { closePanelSlot } = rails();
     const definitions = sidebarPanelDefinitions({
       state,
+      paneId: "review-intent",
+      panePresentationId: "review-intent",
+      subagentsInputRegion: "page",
+      subagentsPresented: false,
+      subagentsAvailable: false,
+      onSubagentSessionSelect: vi.fn(),
+      themeMode: "dark",
+      agentId: "main",
+      browserPresented: false,
+      browserTabsInHeader: true,
+      terminalTabsInHeader: true,
+      browserRefreshOnPresentation: false,
+      desktopPresented: false,
+      desktopRefreshOnPresentation: false,
+      desktopAvailable: false,
+      desktopSource: null,
+      desktopFocusHref: "",
+      onDesktopFocusTargetChange: vi.fn(),
+      dashboard: null,
+      digest: null,
+      activeRunId: null,
+      pullRequests: [],
+      companion: { turns: [], loading: false, draft: "" },
+      companionPresented: false,
+      companionFocusRequest: undefined,
+      onCompanionSubmit: vi.fn(),
+      onCompanionDraftChange: vi.fn(),
+      connected: true,
+      onClearCompanion: vi.fn(),
+      discussion: null,
+      discussionAvailable: false,
+      discussionOpenUrl: null,
+      discussionSourceGeneration: 0,
+      pluginPanels: [],
+      isPluginPanelPresented: () => false,
       detail: {
         chat: threadProps("review-intent", state.sessionKey) as ChatProps,
         host: state,
         requestUpdate: vi.fn(),
       },
       workspace: createSessionWorkspaceProps(state),
-    } as Parameters<typeof sidebarPanelDefinitions>[0]);
+    });
     await renderPanelFixture(mount, state.sidebarLayout, definitions, closePanelSlot);
   };
   return { context, file, list, mount, preview, rails, renderPanels, sessions, state };

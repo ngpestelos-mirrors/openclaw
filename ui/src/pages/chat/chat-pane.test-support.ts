@@ -1,4 +1,4 @@
-import { type Accessor, createComponent, createSignal, flush, merge, Show } from "solid-js";
+import { createComponent, createSignal, flush, merge, Show } from "solid-js";
 import { onTestFinished, vi } from "vitest";
 import type {
   SessionSuggestion,
@@ -109,12 +109,11 @@ export function mountBoardPanel(
   const [content, setContent] = createSignal<BoardPanelProps | null>(null);
   const view = mountSolidRoot(
     () =>
-      createComponent(Show, {
+      Show({
         get when() {
           return content();
         },
-        children: (current: Accessor<BoardPanelProps>) =>
-          createComponent(ChatBoardPanel, merge(current)),
+        children: (current) => createComponent(ChatBoardPanel, merge(current)),
       }),
     { container },
   );

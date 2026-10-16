@@ -6,47 +6,16 @@ import { SessionBackgroundView } from "../../components/session-background-view.
 import { Icon } from "../../components/solid/icon.tsx";
 import { t } from "../../lib/reactive/i18n.ts";
 import type { PresentationValue } from "../../lit/presentation-binding.ts";
-import { LitContent } from "../../lit/solid-content.tsx";
-import type { ElementProperties } from "../../types/solid-elements.d.ts";
 import { usePanePresentation } from "./chat-pane-embedded-view.tsx";
-import { PaneDetails, type PaneDetailsProps } from "./chat-pane-header-view.tsx";
+import { PaneDetails, PaneSubagentStop, type PaneDetailsProps } from "./chat-pane-header-view.tsx";
 import { SidebarRegionView, type SidebarRegionViewProps } from "./chat-pane-sidebar-view.tsx";
 import { ChatBoardResetConfirmation } from "./chat-pane-surfaces.tsx";
-import type { ChatPageHost } from "./chat-state-host.ts";
 import { renderChatTopbarNotices } from "./chat-view-notices.tsx";
 import { ChatView, type ChatProps } from "./chat-view.tsx";
 import { ChatImageLightbox } from "./components/chat-image-lightbox-view.tsx";
+import { PaneHeaderView, type ChatPaneHeaderPresentation } from "./components/chat-pane-header.tsx";
 
-export function PaneOutboxRecovery(props: {
-  state: ChatPageHost;
-  identity: string;
-  onRestored: () => void;
-}) {
-  return (
-    <openclaw-chat-outbox-recovery
-      prop:host={props.state}
-      prop:messages={props.state.chatMessages}
-      prop:identity={props.identity}
-      onOutbox-restored={() => props.onRestored()}
-    />
-  );
-}
-
-export function PaneSubagentStop(props: { onAbort: () => void }) {
-  return (
-    <button
-      class="chat-subagent-detail__stop"
-      type="button"
-      aria-label={t("chat.runControls.stopGenerating")}
-      onClick={() => props.onAbort()}
-    >
-      <Icon name="stop" />
-      <span>{t("chat.runControls.stop")}</span>
-    </button>
-  );
-}
-
-export function PaneSubagentHeader(props: {
+function PaneSubagentHeader(props: {
   title: string;
   onBack: () => void;
   stop: Parameters<typeof PaneSubagentStop>[0] | undefined;
@@ -69,8 +38,8 @@ export function PaneSubagentHeader(props: {
   );
 }
 
-export function PaneHeaderContent(props: {
-  header: unknown;
+function PaneHeaderContent(props: {
+  header: ChatPaneHeaderPresentation;
   notice?: Parameters<typeof renderChatTopbarNotices>[0];
   sessionKey: string;
   agentId: string;
@@ -79,7 +48,7 @@ export function PaneHeaderContent(props: {
   const presented = usePanePresentation(() => props.presentation);
   return (
     <>
-      <LitContent value={props.header} />
+      <PaneHeaderView {...props.header} />
       {props.notice ? renderChatTopbarNotices(props.notice) : undefined}
       <openclaw-plugin-contributions
         prop:kind="session-header"
@@ -159,22 +128,4 @@ export function PaneLayout(props: { layout: PaneLayoutData | null }): SolidJSX.E
       )}
     </Show>
   );
-}
-
-declare module "@solidjs/web" {
-  namespace JSX {
-    interface IntrinsicElements {
-      "openclaw-chat-outbox-recovery": HTMLAttributes<
-        HTMLElementTagNameMap["openclaw-chat-outbox-recovery"]
-      > &
-        ElementProperties<
-          Pick<
-            HTMLElementTagNameMap["openclaw-chat-outbox-recovery"],
-            "host" | "identity" | "messages"
-          >
-        > & {
-          "onOutbox-restored"?: () => void;
-        };
-    }
-  }
 }

@@ -52,7 +52,7 @@ export function usePanePresentation(source: () => PresentationValue) {
 
 type Props = SidebarPanelDefinitionParams;
 
-export function TerminalPanel(props: Props) {
+function TerminalPanel(props: Props) {
   return (
     <openclaw-terminal-panel
       data-sidebar-panel-host
@@ -69,7 +69,7 @@ export function TerminalPanel(props: Props) {
   );
 }
 
-export function BrowserPanel(props: Props) {
+function BrowserPanel(props: Props) {
   const presented = usePanePresentation(() => props.browserPresented);
   return (
     <openclaw-browser-panel
@@ -94,7 +94,7 @@ export function BrowserPanel(props: Props) {
   );
 }
 
-export function CompanionPanel(props: Props) {
+function CompanionPanel(props: Props) {
   const presented = usePanePresentation(() => props.companionPresented);
   return (
     <openclaw-chat-session-rail
@@ -118,7 +118,7 @@ export function CompanionPanel(props: Props) {
   );
 }
 
-export function DesktopPanel(props: Props) {
+function DesktopPanel(props: Props) {
   const presented = usePanePresentation(() => props.desktopPresented);
   return (
     <openclaw-desktop-panel
@@ -136,7 +136,7 @@ export function DesktopPanel(props: Props) {
   );
 }
 
-export function DiscussionPanel(props: Props) {
+function DiscussionPanel(props: Props) {
   return (
     <openclaw-session-discussion
       data-sidebar-panel-host
@@ -150,7 +150,7 @@ export function DiscussionPanel(props: Props) {
   );
 }
 
-export function PortalPanel(props: Props) {
+function PortalPanel(props: Props) {
   const presented = usePanePresentation(() => props.portalPresented ?? false);
   const portal = () =>
     props.state.sidebarLayout.columns
@@ -167,7 +167,7 @@ export function PortalPanel(props: Props) {
   );
 }
 
-export function WorkspacePanel(props: Props & { workspaceState: SessionWorkspaceState }) {
+function WorkspacePanel(props: Props & { workspaceState: SessionWorkspaceState }) {
   const browser = <SessionWorkspaceRail workspace={props.workspace} />;
   const Detail = (detail: { content: SidebarContent }) => (
     <ChatDetailSlot {...props.detail} content={detail.content} />
@@ -187,7 +187,7 @@ export function WorkspacePanel(props: Props & { workspaceState: SessionWorkspace
   );
 }
 
-export function SubagentsPanel(props: Props) {
+function SubagentsPanel(props: Props) {
   const presented = usePanePresentation(() => props.subagentsPresented);
   return (
     <openclaw-chat-subagents-panel
@@ -204,7 +204,7 @@ export function SubagentsPanel(props: Props) {
   );
 }
 
-export function ProcessesPanel(props: Props) {
+function ProcessesPanel(props: Props) {
   const presented = usePanePresentation(() => props.processesPresented ?? false);
   return (
     <openclaw-chat-processes-panel
@@ -216,7 +216,7 @@ export function ProcessesPanel(props: Props) {
   );
 }
 
-export function LinkReaderPanel(props: Props) {
+function LinkReaderPanel(props: Props) {
   const presented = usePanePresentation(() => props.linkReaderPresented ?? false);
   return (
     <openclaw-link-reader-panel
