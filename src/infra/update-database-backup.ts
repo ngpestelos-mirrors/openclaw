@@ -435,8 +435,25 @@ export async function createUpdateDatabaseBackup({
   const controller = new AbortController();
   const { discoverBackupDatabasePaths, readBackupEngine } =
     await prepareUpdateDatabaseBackupRuntime();
-  const postgresPaths = (await discoverBackupDatabasePaths(input)).filter(
-    (file) => readBackupEngine(file).engine === "postgres",
+  const sharedSource = await fs
+    .realpath(path.join(input.stateDir, "state", "openclaw.sqlite"))
+    .catch((error: unknown) => {
+      if (!hasNodeErrorCode(error, "ENOENT")) {
+        throw error;
+      }
+      return undefined;
+    });
+  const sharedEngine = sharedSource ? readBackupEngine(sharedSource) : undefined;
+  // SQLite recovery reads raw registrations from its private snapshot before schema admission.
+  // PostgreSQL anchors need the live registry to discover retained external agents.
+  const postgresPaths = (
+    await discoverBackupDatabasePaths({
+      ...input,
+      agentRegistry: sharedEngine?.engine === "postgres" ? undefined : [],
+    })
+  ).filter(
+    (file) =>
+      (file === sharedSource ? sharedEngine : readBackupEngine(file))?.engine === "postgres",
   );
   const additionalPaths = [...(input.additionalPaths ?? []), ...postgresPaths].map((file) =>
     path.resolve(file),
