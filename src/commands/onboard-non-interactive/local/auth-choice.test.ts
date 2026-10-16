@@ -374,15 +374,26 @@ describe("applyNonInteractiveAuthChoice", () => {
     });
   });
 
-  it.each([true, false])(
-    "honors configured profile endpoint compatibility (%s)",
-    async (sameEndpoint) => {
+  it.each([
+    { name: "shared endpoint", profileProvider: "shared", sameEndpoint: true },
+    { name: "different endpoint", profileProvider: "shared", sameEndpoint: false },
+    { name: "same provider", profileProvider: "local", sameEndpoint: true },
+  ])(
+    "honors configured profile endpoint compatibility ($name)",
+    async ({ profileProvider, sameEndpoint }) => {
+      const profileId = `${profileProvider}:bound`;
+      resolveNonInteractiveApiKey.mockImplementation(
+        async ({ allowProfile }: { allowProfile?: boolean }) =>
+          profileProvider === "local" && allowProfile !== false
+            ? { key: "fixture-bound-key", source: "profile" }
+            : null,
+      );
       vi.spyOn(
         authProfileStore,
         "loadAuthProfileStoreWithoutExternalProfilesAsync",
       ).mockResolvedValue(
         createAuthProfileStoreFixture({
-          "shared:bound": createApiKeyCredential("shared", "fixture-bound-key"),
+          [profileId]: createApiKeyCredential(profileProvider, "fixture-bound-key"),
         }),
       );
       const request = vi
@@ -401,7 +412,7 @@ describe("applyNonInteractiveAuthChoice", () => {
             providers: {
               local: {
                 baseUrl: "https://models.custom.local/v1",
-                apiKey: "shared:bound",
+                apiKey: profileId,
                 models: [],
               },
               shared: {
@@ -417,7 +428,7 @@ describe("applyNonInteractiveAuthChoice", () => {
         expect(result?.models?.providers?.local?.models).toEqual([
           expect.objectContaining({ id: "discovered-chat" }),
         ]);
-        expect(result?.models?.providers?.local?.apiKey).toBe("shared:bound");
+        expect(result?.models?.providers?.local?.apiKey).toBe(profileId);
       } else {
         expect(result).toBeNull();
         expect(request).not.toHaveBeenCalled();
@@ -425,6 +436,24 @@ describe("applyNonInteractiveAuthChoice", () => {
       expect(JSON.stringify(runtime.log.mock.calls)).not.toContain("fixture-bound-key");
     },
   );
+
+  it("does not select a saved profile again after reset discovery", async () => {
+    resolveNonInteractiveApiKey.mockImplementation(
+      async ({ allowProfile }: { allowProfile?: boolean }) =>
+        allowProfile === false ? null : { key: "fixture-old-profile-key", source: "profile" },
+    );
+    const result = await applyChoice({
+      opts: {
+        customBaseUrl: "https://replacement.example.com/v1",
+        customProviderId: "local-2",
+        customModelIds: ["prepared-chat"],
+      },
+    });
+    expect(result?.models?.providers?.["local-2"]?.apiKey).toBeUndefined();
+    expect(result?.models?.providers?.["local-2"]?.models).toEqual([
+      expect.objectContaining({ id: "prepared-chat" }),
+    ]);
+  });
 
   it.each([
     { name: "first advertised", modelIds: ["chat-prod", "new-chat"], customImageInput: undefined },

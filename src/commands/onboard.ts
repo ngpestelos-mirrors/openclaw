@@ -9,7 +9,7 @@ import { formatCliCommand } from "../cli/command-format.js";
 import { readConfigFileSnapshot, resolveGatewayPort } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { isValidEnvSecretRefId } from "../config/types.secrets.js";
+import { hasConfiguredSecretInput, isValidEnvSecretRefId } from "../config/types.secrets.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { assertSupportedRuntime } from "../infra/runtime-guard.js";
 import { resolveProviderMatch } from "../plugins/provider-auth-choice-helpers.js";
@@ -290,7 +290,7 @@ async function validateResetAuthChoice(params: {
         supportsImageInput: params.opts.customImageInput,
       });
       const customProviderId = resolveCustomProviderId({
-        config: params.baseConfig,
+        config: params.discoveryConfig,
         baseUrl: custom.baseUrl,
         providerId: custom.providerId,
       }).providerId;
@@ -303,7 +303,11 @@ async function validateResetAuthChoice(params: {
         runtime: params.runtime,
         agentDir: target.agentDir,
         workspaceDir: params.workspaceDir,
-        allowProfile: params.resetScope === "config",
+        allowProfile:
+          params.resetScope === "config" &&
+          !hasConfiguredSecretInput(
+            params.discoveryConfig.models?.providers?.[customProviderId]?.apiKey,
+          ),
         required: false,
         secretInputMode: params.opts.secretInputMode,
         json: params.opts.json,
@@ -324,6 +328,7 @@ async function validateResetAuthChoice(params: {
         apiKey: undefined,
       });
       params.opts.customModelIds = modelIds;
+      params.opts.customProviderId = customProviderId;
     } catch (error) {
       const message =
         error instanceof CustomApiError &&

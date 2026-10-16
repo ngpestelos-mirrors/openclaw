@@ -43,30 +43,53 @@ export function registerOnboardResetDiscoveryTests({
     );
   });
 
-  it("carries discovered model ids through reset without another request", async () => {
-    vi.spyOn(nonInteractiveApiKeys, "resolveNonInteractiveApiKey").mockResolvedValue(null);
-    const request = vi.spyOn(fetchGuard, "fetchWithSsrFGuard").mockResolvedValue({
-      response: Response.json({ data: [{ id: "first" }, { id: "second" }] }),
-      finalUrl: "https://example.com/v1/models",
-      release: async () => {},
-    });
-    const runtime = makeRuntime();
-    await setupWizardCommand(
-      {
-        reset: true,
-        nonInteractive: true,
-        acceptRisk: true,
-        customBaseUrl: "https://example.com/v1",
-      },
-      runtime,
-    );
-    expect(mocks.handleReset).toHaveBeenCalledOnce();
-    expect(mocks.runNonInteractiveSetup).toHaveBeenCalledWith(
-      expect.objectContaining({ customModelIds: ["first", "second"] }),
-      runtime,
-    );
-    expect(request).toHaveBeenCalledOnce();
-  });
+  it.each([false, true])(
+    "carries discovery identity through reset (replacement %s)",
+    async (replacement) => {
+      if (replacement) {
+        const config: OpenClawConfig = {
+          models: {
+            providers: {
+              local: { baseUrl: "https://previous.example.com/v1", models: [] },
+            },
+          },
+        };
+        mocks.readConfigFileSnapshot.mockResolvedValue({
+          exists: true,
+          valid: true,
+          config,
+          sourceConfig: config,
+        });
+      }
+      vi.spyOn(nonInteractiveApiKeys, "resolveNonInteractiveApiKey").mockResolvedValue(null);
+      const request = vi.spyOn(fetchGuard, "fetchWithSsrFGuard").mockResolvedValue({
+        response: Response.json({ data: [{ id: "first" }, { id: "second" }] }),
+        finalUrl: "https://example.com/v1/models",
+        release: async () => {},
+      });
+      const runtime = makeRuntime();
+      await setupWizardCommand(
+        {
+          reset: true,
+          resetScope: "config",
+          nonInteractive: true,
+          acceptRisk: true,
+          customBaseUrl: "https://example.com/v1",
+          customProviderId: "local",
+        },
+        runtime,
+      );
+      expect(mocks.handleReset).toHaveBeenCalledOnce();
+      expect(mocks.runNonInteractiveSetup).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customProviderId: replacement ? "local-2" : "local",
+          customModelIds: ["first", "second"],
+        }),
+        runtime,
+      );
+      expect(request).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     {
@@ -165,47 +188,56 @@ export function registerOnboardResetDiscoveryTests({
     }
   });
 
-  it("does not send a different endpoint's configured credential during reset preflight", async () => {
-    const config: OpenClawConfig = {
-      models: {
-        providers: {
-          local: {
-            baseUrl: "https://previous.example.com/v1",
-            apiKey: "fixture-previous-endpoint-key",
-            models: [],
+  it.each(["inline", "profile"] as const)(
+    "does not send a different endpoint's %s credential during reset preflight",
+    async (source) => {
+      const config: OpenClawConfig = {
+        models: {
+          providers: {
+            local: {
+              baseUrl: "https://previous.example.com/v1",
+              apiKey: source === "profile" ? "local:bound" : "fixture-previous-endpoint-key",
+              models: [],
+            },
           },
         },
-      },
-    };
-    const authoredConfig = structuredClone(config);
-    mocks.readConfigFileSnapshot.mockResolvedValue({
-      exists: true,
-      valid: true,
-      config,
-      sourceConfig: config,
-    });
-    vi.spyOn(nonInteractiveApiKeys, "resolveNonInteractiveApiKey").mockResolvedValue(null);
-    const authorizationHeaders: Array<string | null> = [];
-    vi.spyOn(fetchGuard, "fetchWithSsrFGuard").mockImplementation(async (params) => {
-      authorizationHeaders.push(new Headers(params.init?.headers).get("authorization"));
-      return {
-        response: new Response(null, { status: 401 }),
-        finalUrl: params.url,
-        release: async () => {},
       };
-    });
+      const authoredConfig = structuredClone(config);
+      mocks.readConfigFileSnapshot.mockResolvedValue({
+        exists: true,
+        valid: true,
+        config,
+        sourceConfig: config,
+      });
+      vi.spyOn(nonInteractiveApiKeys, "resolveNonInteractiveApiKey").mockImplementation(
+        async ({ provider, allowProfile }) =>
+          source === "profile" && provider === "local" && allowProfile !== false
+            ? { key: "fixture-previous-endpoint-key", source: "profile" }
+            : null,
+      );
+      const authorizationHeaders: Array<string | null> = [];
+      vi.spyOn(fetchGuard, "fetchWithSsrFGuard").mockImplementation(async (params) => {
+        authorizationHeaders.push(new Headers(params.init?.headers).get("authorization"));
+        return {
+          response: new Response(null, { status: 401 }),
+          finalUrl: params.url,
+          release: async () => {},
+        };
+      });
 
-    await expectAuthPreflightError(
-      {
-        authChoice: "custom-api-key",
-        customBaseUrl: "https://replacement.example.com/v1",
-        customProviderId: "local",
-      },
-      () =>
-        "No models could be discovered from the custom provider. Check the base URL and credentials, or pass --custom-model-id explicitly.",
-    );
+      await expectAuthPreflightError(
+        {
+          authChoice: "custom-api-key",
+          customBaseUrl: "https://replacement.example.com/v1",
+          customProviderId: "local",
+          resetScope: "config",
+        },
+        () =>
+          "No models could be discovered from the custom provider. Check the base URL and credentials, or pass --custom-model-id explicitly.",
+      );
 
-    expect(authorizationHeaders).toEqual([null]);
-    expect(config).toEqual(authoredConfig);
-  });
+      expect(authorizationHeaders).toEqual([null]);
+      expect(config).toEqual(authoredConfig);
+    },
+  );
 }

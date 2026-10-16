@@ -2,7 +2,7 @@ import type { ApiKeyCredential } from "../../../agents/auth-profiles/types.js";
 import { formatCliCommand } from "../../../cli/command-format.js";
 import { quoteCliArg } from "../../../cli/quote-cli-arg.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
-import type { SecretInput } from "../../../config/types.secrets.js";
+import { hasConfiguredSecretInput, type SecretInput } from "../../../config/types.secrets.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { resolveManifestDeprecatedProviderAuthChoice } from "../../../plugins/provider-auth-choices.js";
 import type {
@@ -191,6 +191,11 @@ export async function applyNonInteractiveAuthChoice(params: {
         flagName: "--custom-api-key",
         envVar: "CUSTOM_API_KEY",
         envVarName: "CUSTOM_API_KEY",
+        allowProfile:
+          !opts.customModelIds &&
+          !hasConfiguredSecretInput(
+            nextConfig.models?.providers?.[resolvedProviderId.providerId]?.apiKey,
+          ),
         required: false,
       });
       let customApiKeyInput: SecretInput | undefined;
