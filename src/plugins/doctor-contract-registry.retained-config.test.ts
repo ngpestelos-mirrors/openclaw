@@ -111,49 +111,20 @@ describe("retained channel config repairs", () => {
 
 describe("retained plugin state checks", () => {
   it.each([
-    {
-      name: "selected official owner",
-      trusted: true,
-      declared: true,
-      enabled: true,
-      packageName: "@openclaw/demo",
-      refuses: true,
-    },
-    {
-      name: "external shadow",
-      trusted: false,
-      declared: true,
-      enabled: true,
-      packageName: "@openclaw/demo",
-      refuses: false,
-    },
-    {
-      name: "different package",
-      trusted: true,
-      declared: true,
-      enabled: true,
-      packageName: "@other/demo",
-      refuses: false,
-    },
-    {
-      name: "different migration",
-      trusted: true,
-      declared: false,
-      enabled: true,
-      packageName: "@openclaw/demo",
-      refuses: false,
-    },
-    {
-      name: "disabled owner",
-      trusted: true,
-      declared: true,
-      enabled: false,
-      packageName: "@openclaw/demo",
-      refuses: false,
-    },
+    { name: "selected official owner", refuses: true },
+    { name: "external shadow", trusted: false },
+    { name: "different package", packageName: "@other/demo" },
+    { name: "different migration", declared: false },
+    { name: "disabled owner", enabled: false },
   ])(
     "checks only the matching $name",
-    async ({ trusted, declared, enabled, packageName, refuses }) => {
+    async ({
+      trusted = true,
+      declared = true,
+      enabled = true,
+      packageName = "@openclaw/demo",
+      refuses = false,
+    }) => {
       const stateDir = makeTempDir();
       const source = path.join(stateDir, "custom-history.jsonl");
       fs.writeFileSync(source, "opaque historical bytes\n");

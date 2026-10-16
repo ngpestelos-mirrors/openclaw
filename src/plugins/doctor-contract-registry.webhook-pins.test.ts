@@ -84,18 +84,26 @@ function channelConfig(accounts: Record<string, Record<string, unknown>>): OpenC
   return { channels: { "nextcloud-talk": { accounts } } };
 }
 
+function rehearsalEnv(env: NodeJS.ProcessEnv, configPath: string) {
+  return {
+    ...env,
+    ...buildUpdateRehearsalPathEnv(path.dirname(configPath)),
+    ...buildUpdateDoctorEnv({
+      allowGatewayServiceRepair: false,
+      allowGatewayActivation: false,
+      serviceRepairPolicy: "external",
+    }),
+  };
+}
+
+const workChannel = (legacyWebhook?: typeof endpoint) => ({
+  accounts: { work: { enabled: true, ...(legacyWebhook ? { legacyWebhook } : {}) } },
+});
+
 describe("Doctor historical webhook pins", () => {
   it("shares one completion read and preserves each rehearsal write across plugins", async () => {
     const { configPath, env } = await fixture([]);
-    const rehearsalEnv = {
-      ...env,
-      ...buildUpdateRehearsalPathEnv(path.dirname(configPath)),
-      ...buildUpdateDoctorEnv({
-        allowGatewayServiceRepair: false,
-        allowGatewayActivation: false,
-        serviceRepairPolicy: "external",
-      }),
-    };
+    const migrationEnv = rehearsalEnv(env, configPath);
     let accountIds: string[] = [];
     const entries = ["nextcloud-talk", "msteams"].map((pluginId) => ({
       pluginId,
@@ -110,11 +118,11 @@ describe("Doctor historical webhook pins", () => {
     }));
     const migrate = (config: OpenClawConfig) =>
       applyResolvedPluginDoctorCompatibilityMigrations(config, entries, {
-        env: rehearsalEnv,
+        env: migrationEnv,
         historicalWebhookListeners: true,
         isDeferred: () => false,
       });
-    openOpenClawStateDatabase({ env: rehearsalEnv });
+    openOpenClawStateDatabase({ env: migrationEnv });
     const sql = observeSqliteReadSql(requireNodeSqlite().StatementSync.prototype);
     try {
       expect(migrate({})).toEqual({ config: {}, changes: [] });
@@ -124,7 +132,7 @@ describe("Doctor historical webhook pins", () => {
     } finally {
       sql.restore();
     }
-    expect(readConfigMachineState(`webhookListeners:${configPath}`, { env: rehearsalEnv })).toEqual(
+    expect(readConfigMachineState(`webhookListeners:${configPath}`, { env: migrationEnv })).toEqual(
       {
         "nextcloud-talk": [],
         msteams: [],
@@ -141,24 +149,14 @@ describe("Doctor historical webhook pins", () => {
     "keeps real rehearsal webhook pins and records no-op completion in state: $accountIds",
     async ({ accountIds }) => {
       const { configPath, env, migrate } = await fixture(accountIds);
-      const rehearsalEnv = {
-        ...env,
-        ...buildUpdateRehearsalPathEnv(path.dirname(configPath)),
-        ...buildUpdateDoctorEnv({
-          allowGatewayServiceRepair: false,
-          allowGatewayActivation: false,
-          serviceRepairPolicy: "external",
-        }),
-      };
+      const migrationEnv = rehearsalEnv(env, configPath);
       const config = channelConfig({ work: { enabled: true } });
-      const result = migrate(config, rehearsalEnv);
+      const result = migrate(config, migrationEnv);
       if (accountIds.length === 0) {
         expect(result).toEqual({ config, changes: [] });
-        expect(migrate(config, rehearsalEnv)).toEqual({ config, changes: [] });
+        expect(migrate(config, migrationEnv)).toEqual({ config, changes: [] });
       } else {
-        expect(result.config.channels?.["nextcloud-talk"]).toEqual({
-          accounts: { work: { enabled: true, legacyWebhook: endpoint } },
-        });
+        expect(result.config.channels?.["nextcloud-talk"]).toEqual(workChannel(endpoint));
         expect(result.config.meta?.migrations?.webhookListeners).toEqual({
           "nextcloud-talk": [["channels", "nextcloud-talk", "accounts", "work", "legacyWebhook"]],
         });
@@ -167,33 +165,15 @@ describe("Doctor historical webhook pins", () => {
   );
 
   it.each([
-    {
-      name: "reported installed repair",
-      reported: true,
-      trusted: true,
-      policy: "enabled",
-      pin: true,
-    },
-    {
-      name: "unreported installed edit",
-      reported: false,
-      trusted: true,
-      policy: "enabled",
-      pin: false,
-    },
-    { name: "untrusted owner", reported: true, trusted: false, policy: "enabled", pin: false },
-    { name: "disabled plugins", reported: true, trusted: true, policy: "disabled", pin: false },
-    {
-      name: "restrictive allowlist",
-      reported: true,
-      trusted: true,
-      policy: "allowlist",
-      pin: false,
-    },
-    { name: "denied owner", reported: true, trusted: true, policy: "deny", pin: false },
+    { name: "reported installed repair", pin: true },
+    { name: "unreported installed edit", reported: false },
+    { name: "untrusted owner", trusted: false },
+    { name: "disabled plugins", policy: "disabled" },
+    { name: "restrictive allowlist", policy: "allowlist" },
+    { name: "denied owner", policy: "deny" },
   ])(
     "supplements historical facts without replacing $name",
-    async ({ reported, trusted, policy, pin }) => {
+    async ({ reported = true, trusted = true, policy = "enabled", pin = false }) => {
       const { configPath, env, migrate, manifestRegistry } = await fixture();
       const installed = manifestRegistry.plugins[0];
       if (!installed) {
@@ -265,9 +245,7 @@ describe("Doctor historical webhook pins", () => {
     expect(result.warnings).toBeUndefined();
     expect(config).toEqual(channelConfig({ work: { enabled: true } }));
     expect(result.config).not.toHaveProperty("gateway");
-    expect(result.config.channels?.["nextcloud-talk"]).toEqual({
-      accounts: { work: { enabled: true, legacyWebhook: endpoint } },
-    });
+    expect(result.config.channels?.["nextcloud-talk"]).toEqual(workChannel(endpoint));
   });
 
   it.each(["previous boot", "published updater"])(
@@ -310,9 +288,7 @@ describe("Doctor historical webhook pins", () => {
       });
       expect(await fs.readFile(`${configPath}.bak`, "utf8")).toBe(original);
       const saved = await io.readConfigFileSnapshot({ observe: false });
-      expect(saved.sourceConfig.channels?.["nextcloud-talk"]).toEqual({
-        accounts: { work: { enabled: true, legacyWebhook: endpoint } },
-      });
+      expect(saved.sourceConfig.channels?.["nextcloud-talk"]).toEqual(workChannel(endpoint));
       expect(saved.sourceConfig.meta?.migrations?.webhookListeners).toMatchObject({
         "nextcloud-talk": expect.any(Array),
       });
@@ -333,9 +309,7 @@ describe("Doctor historical webhook pins", () => {
         changes: [],
       });
       expect(await fs.readFile(configPath, "utf8")).toBe(removedBytes);
-      expect(reloaded.sourceConfig.channels?.["nextcloud-talk"]).toEqual({
-        accounts: { work: { enabled: true } },
-      });
+      expect(reloaded.sourceConfig.channels?.["nextcloud-talk"]).toEqual(workChannel());
     },
   );
 

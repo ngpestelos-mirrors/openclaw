@@ -74,6 +74,37 @@ function makeTempDir(): string {
   return makeTrackedTempDir("openclaw-doctor-contract-registry", tempDirs);
 }
 
+function writeContract(source = "export {};\n", name = "doctor-contract-api.ts") {
+  const root = makeTempDir();
+  fs.writeFileSync(path.join(root, name), source, "utf-8");
+  return root;
+}
+
+function mockExternalShadow(enabledByDefault = false) {
+  const bundledRecord = createPluginManifestRecordFixture({
+    id: "matrix",
+    rootDir: makeTempDir(),
+    origin: "bundled",
+    channels: [],
+    providers: [],
+    doctorContract: { stateMigrations: [{ id: "matrix-inbound-dedupe-to-claimable-dedupe" }] },
+  });
+  mocks.loadPluginManifestRegistry
+    .mockReturnValueOnce({ plugins: [bundledRecord], diagnostics: [] })
+    .mockReturnValueOnce({
+      plugins: [
+        createPluginManifestRecordFixture({
+          id: bundledRecord.id,
+          rootDir: makeTempDir(),
+          origin: "global",
+          doctorContract: bundledRecord.doctorContract,
+          ...(enabledByDefault ? { enabledByDefault } : {}),
+        }),
+      ],
+      diagnostics: [],
+    });
+}
+
 function requireFirstCreateJitiCall(): [string, { tryNative?: boolean }] {
   const call = mocks.createJiti.mock.calls[0];
   if (!call) {
@@ -140,27 +171,15 @@ describe("doctor-contract-registry module loader", () => {
   });
 
   it.each([
-    {
-      name: "declared false skips loading",
-      doctorContract: { configRepair: false },
-      expectedRuleCount: 0,
-      expectedLoadCount: 0,
-    },
-    {
-      name: "absent declaration preserves loading",
-      doctorContract: undefined,
-      expectedRuleCount: 1,
-      expectedLoadCount: 1,
-    },
+    { name: "declared false skips loading", doctorContract: { configRepair: false }, count: 0 },
+    { name: "absent declaration preserves loading", doctorContract: undefined, count: 1 },
     {
       name: "declared true loads the authoritative module",
       doctorContract: { configRepair: true },
-      expectedRuleCount: 1,
-      expectedLoadCount: 1,
+      count: 1,
     },
   ])("gates config-repair artifacts: $name", (testCase) => {
-    const pluginRoot = makeTempDir();
-    fs.writeFileSync(path.join(pluginRoot, "doctor-contract-api.ts"), "export {};\n", "utf-8");
+    const pluginRoot = writeContract();
     mocks.createJiti.mockImplementation(() => () => ({
       legacyConfigRules: [{ path: ["plugins", "entries", "demo"], message: "demo rule" }],
       providerRenames: [{ from: "old", to: "new", baseUrl: "https://models.example" }],
@@ -173,17 +192,16 @@ describe("doctor-contract-registry module loader", () => {
     });
 
     expect(listPluginDoctorLegacyConfigRules({ workspaceDir: pluginRoot, env: {} })).toHaveLength(
-      testCase.expectedRuleCount,
+      testCase.count,
     );
     expect(resolvePluginDoctorProviderRenames({ pluginIds: ["old"], env: {} })).toHaveLength(
-      testCase.expectedRuleCount,
+      testCase.count,
     );
-    expect(mocks.createJiti).toHaveBeenCalledTimes(testCase.expectedLoadCount);
+    expect(mocks.createJiti).toHaveBeenCalledTimes(testCase.count);
   });
 
   it("rejects provider renames outside the plugin's declared providers", () => {
-    const root = makeTempDir();
-    fs.writeFileSync(path.join(root, "doctor-contract-api.ts"), "export {};\n", "utf-8");
+    const root = writeContract();
     mocks.createJiti.mockImplementation(() => () => ({
       providerRenames: [{ from: "old", to: "new", baseUrl: "https://models.example" }],
     }));
@@ -202,8 +220,7 @@ describe("doctor-contract-registry module loader", () => {
   });
 
   it("defers declared provider renames during compatibility preflight", () => {
-    const root = makeTempDir();
-    fs.writeFileSync(path.join(root, "doctor-contract-api.ts"), "export {};\n", "utf-8");
+    const root = writeContract();
     mocks.createJiti.mockImplementation(() => () => ({
       providerRenames: [{ from: "old", to: "new", baseUrl: "https://models.example" }],
     }));
@@ -238,8 +255,7 @@ describe("doctor-contract-registry module loader", () => {
   });
 
   it.each([false, true])("isolates a normalizer-only config repair (throws=%s)", (throws) => {
-    const pluginRoot = makeTempDir();
-    fs.writeFileSync(path.join(pluginRoot, "doctor-contract-api.ts"), "export {};\n", "utf-8");
+    const pluginRoot = writeContract();
     mocks.createJiti.mockImplementation(() => () => ({
       normalizeCompatibilityConfig: ({ cfg }: { cfg: Record<string, unknown> }) => {
         cfg.repaired = true;
@@ -275,8 +291,7 @@ describe("doctor-contract-registry module loader", () => {
   });
 
   it("retains warning-only repairs without publishing their candidate", () => {
-    const pluginRoot = makeTempDir();
-    fs.writeFileSync(path.join(pluginRoot, "doctor-contract-api.ts"), "export {};\n", "utf-8");
+    const pluginRoot = writeContract();
     mocks.createJiti.mockImplementation(() => () => ({
       normalizeCompatibilityConfig: ({ cfg }: { cfg: Record<string, unknown> }) => {
         cfg.unreported = true;
@@ -450,31 +465,7 @@ describe("doctor-contract-registry module loader", () => {
   it.each([true, false])(
     "does not grant bundled migration descriptors to a selected external shadow (enabled: %s)",
     (enabled) => {
-      const bundledRoot = makeTempDir();
-      const externalRoot = makeTempDir();
-      const bundledRecord = createPluginManifestRecordFixture({
-        id: "matrix",
-        rootDir: bundledRoot,
-        origin: "bundled" as const,
-        channels: [],
-        providers: [],
-        doctorContract: {
-          stateMigrations: [{ id: "matrix-inbound-dedupe-to-claimable-dedupe" }],
-        },
-      });
-      mocks.loadPluginManifestRegistry
-        .mockReturnValueOnce({ plugins: [bundledRecord], diagnostics: [] })
-        .mockReturnValueOnce({
-          plugins: [
-            createPluginManifestRecordFixture({
-              id: bundledRecord.id,
-              rootDir: externalRoot,
-              origin: "global",
-              doctorContract: bundledRecord.doctorContract,
-            }),
-          ],
-          diagnostics: [],
-        });
+      mockExternalShadow();
       const config = {
         plugins: { entries: { matrix: { enabled } } },
       };
@@ -489,32 +480,7 @@ describe("doctor-contract-registry module loader", () => {
   );
 
   it("does not grant bundled migration descriptors to an implicitly selected external shadow", () => {
-    const bundledRoot = makeTempDir();
-    const externalRoot = makeTempDir();
-    const bundledRecord = createPluginManifestRecordFixture({
-      id: "matrix",
-      rootDir: bundledRoot,
-      origin: "bundled" as const,
-      channels: [],
-      providers: [],
-      doctorContract: {
-        stateMigrations: [{ id: "matrix-inbound-dedupe-to-claimable-dedupe" }],
-      },
-    });
-    mocks.loadPluginManifestRegistry
-      .mockReturnValueOnce({ plugins: [bundledRecord], diagnostics: [] })
-      .mockReturnValueOnce({
-        plugins: [
-          createPluginManifestRecordFixture({
-            id: bundledRecord.id,
-            rootDir: externalRoot,
-            origin: "global",
-            doctorContract: bundledRecord.doctorContract,
-            enabledByDefault: true,
-          }),
-        ],
-        diagnostics: [],
-      });
+    mockExternalShadow(true);
 
     expect(resolvePluginDoctorStateMigrationInventory({ config: {}, env: {} })).toEqual({
       knownPluginIds: [],

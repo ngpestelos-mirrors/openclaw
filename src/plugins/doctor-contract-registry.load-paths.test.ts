@@ -53,11 +53,6 @@ function writeDoctorPlugin(pluginRoot: string, pluginId: string): void {
     "index.cjs": "module.exports = {};\n",
     "doctor-contract-api.cjs": `
 const pluginId = ${JSON.stringify(pluginId)};
-
-function isRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 module.exports = {
   legacyConfigRules: [
     {
@@ -66,25 +61,10 @@ module.exports = {
     },
   ],
   normalizeCompatibilityConfig({ cfg }) {
-    const root = isRecord(cfg) ? { ...cfg } : {};
-    const plugins = isRecord(root.plugins) ? { ...root.plugins } : {};
-    const entries = isRecord(plugins.entries) ? { ...plugins.entries } : {};
-    const entry = isRecord(entries[pluginId]) ? { ...entries[pluginId] } : {};
-    const llm = isRecord(entry.llm) ? { ...entry.llm } : {};
-    const allowedModels = Array.isArray(llm.allowedModels) ? [...llm.allowedModels] : [];
-    if (!allowedModels.includes("openai/gpt-5.4-mini")) {
-      allowedModels.push("openai/gpt-5.4-mini");
-    }
-    root.plugins = plugins;
-    plugins.entries = entries;
-    entries[pluginId] = entry;
-    entry.llm = {
-      ...llm,
-      allowModelOverride: true,
-      allowedModels,
-    };
+    const entry = cfg.plugins.entries[pluginId];
+    entry.llm = { allowModelOverride: true, allowedModels: ["openai/gpt-5.4-mini"] };
     return {
-      config: root,
+      config: cfg,
       changes: ["configured load-path doctor contract LLM policy"],
     };
   },
@@ -312,23 +292,22 @@ function createDoctorPluginConfig(pluginRoot: string, pluginId: string): OpenCla
   return {
     plugins: {
       load: { paths: [pluginRoot] },
-      entries: {
-        [pluginId]: {
-          enabled: true,
-          config: {
-            summaryModel: "gpt-5.4-mini",
-          },
-        },
-      },
+      entries: { [pluginId]: { enabled: true, config: { summaryModel: "gpt-5.4-mini" } } },
     },
   };
 }
 
-function readPluginLlmPolicy(config: OpenClawConfig, pluginId: string): Record<string, unknown> {
-  const entry = config.plugins?.entries?.[pluginId] as { llm?: unknown } | undefined;
-  return entry?.llm && typeof entry.llm === "object" && !Array.isArray(entry.llm)
-    ? (entry.llm as Record<string, unknown>)
-    : {};
+function fixture(pluginId: string, write: (root: string, id: string) => void) {
+  const stateDir = tempDirs.make("openclaw-doctor-contract-load-paths-");
+  const pluginRoot = tempDirs.make("openclaw-doctor-contract-load-paths-");
+  write(pluginRoot, pluginId);
+  return {
+    stateDir,
+    pluginRoot,
+    config: createDoctorPluginConfig(pluginRoot, pluginId),
+    env: makeHermeticDoctorEnv(stateDir),
+    pluginIds: [pluginId],
+  };
 }
 
 beforeEach(() => {
@@ -477,24 +456,16 @@ describe("doctor contract registry load-path plugins", () => {
   });
 
   it("discovers doctor warning rules from plugins.load.paths", () => {
-    const stateDir = tempDirs.make("openclaw-doctor-contract-load-paths-");
-    const pluginRoot = tempDirs.make("openclaw-doctor-contract-load-paths-");
     const pluginId = "load-path-doctor";
-    writeDoctorPlugin(pluginRoot, pluginId);
-    const config = createDoctorPluginConfig(pluginRoot, pluginId);
-
-    const rules = listPluginDoctorLegacyConfigRules({
-      config,
-      env: makeHermeticDoctorEnv(stateDir),
-      pluginIds: [pluginId],
-    });
+    const input = fixture(pluginId, writeDoctorPlugin);
+    const rules = listPluginDoctorLegacyConfigRules(input);
     expect(rules).toEqual([
       {
         path: ["plugins", "entries", pluginId, "config", "summaryModel"],
         message: "load-path doctor contract warning",
       },
     ]);
-    expect(findLegacyConfigIssues(config, config, rules)).toEqual([
+    expect(findLegacyConfigIssues(input.config, input.config, rules)).toEqual([
       {
         path: `plugins.entries.${pluginId}.config.summaryModel`,
         message: "load-path doctor contract warning",
@@ -503,17 +474,8 @@ describe("doctor contract registry load-path plugins", () => {
   });
 
   it("discovers doctor warning rules from package dist contracts", () => {
-    const stateDir = tempDirs.make("openclaw-doctor-contract-load-paths-");
-    const pluginRoot = tempDirs.make("openclaw-doctor-contract-load-paths-");
     const pluginId = "dist-doctor";
-    writeDistDoctorPlugin(pluginRoot, pluginId);
-    const config = createDoctorPluginConfig(pluginRoot, pluginId);
-
-    const rules = listPluginDoctorLegacyConfigRules({
-      config,
-      env: makeHermeticDoctorEnv(stateDir),
-      pluginIds: [pluginId],
-    });
+    const rules = listPluginDoctorLegacyConfigRules(fixture(pluginId, writeDistDoctorPlugin));
     expect(rules).toEqual([
       {
         path: ["plugins", "entries", pluginId, "config", "distOnly"],
@@ -541,18 +503,11 @@ describe("doctor contract registry load-path plugins", () => {
       ],
     },
   ])("loads the preserved $pluginId package contract", ({ pluginId, importedSymbols }) => {
-    const stateDir = tempDirs.make("openclaw-doctor-contract-legacy-package-");
-    const pluginRoot = tempDirs.make("openclaw-doctor-contract-legacy-package-");
-    writeLegacyRuntimeDoctorPlugin({ pluginRoot, pluginId, importedSymbols });
-    const config = createDoctorPluginConfig(pluginRoot, pluginId);
+    const input = fixture(pluginId, (pluginRoot) =>
+      writeLegacyRuntimeDoctorPlugin({ pluginRoot, pluginId, importedSymbols }),
+    );
 
-    expect(
-      listPluginDoctorLegacyConfigRules({
-        config,
-        env: makeHermeticDoctorEnv(stateDir),
-        pluginIds: [pluginId],
-      }),
-    ).toEqual([
+    expect(listPluginDoctorLegacyConfigRules(input)).toEqual([
       {
         path: ["plugins", "entries", pluginId, "config", "legacyDoctor"],
         message: `${pluginId} legacy doctor contract loaded`,
@@ -561,39 +516,22 @@ describe("doctor contract registry load-path plugins", () => {
   });
 
   it("applies compatibility normalizers from plugins.load.paths", () => {
-    const stateDir = tempDirs.make("openclaw-doctor-contract-load-paths-");
-    const pluginRoot = tempDirs.make("openclaw-doctor-contract-load-paths-");
     const pluginId = "load-path-doctor";
-    writeDoctorPlugin(pluginRoot, pluginId);
-    const config = createDoctorPluginConfig(pluginRoot, pluginId);
-
-    const result = applyPluginDoctorCompatibilityMigrations(config, {
-      config,
-      env: makeHermeticDoctorEnv(stateDir),
-      pluginIds: [pluginId],
-    });
-    const llm = readPluginLlmPolicy(result.config, pluginId);
+    const input = fixture(pluginId, writeDoctorPlugin);
+    const result = applyPluginDoctorCompatibilityMigrations(input.config, input);
 
     expect(result.changes).toEqual(["configured load-path doctor contract LLM policy"]);
-    expect(llm).toEqual({
+    expect(result.config.plugins?.entries?.[pluginId]).toHaveProperty("llm", {
       allowModelOverride: true,
       allowedModels: ["openai/gpt-5.4-mini"],
     });
   });
 
   it("discovers session route-state owners from plugins.load.paths", () => {
-    const stateDir = tempDirs.make("openclaw-doctor-contract-load-paths-");
-    const pluginRoot = tempDirs.make("openclaw-doctor-contract-load-paths-");
     const pluginId = "load-path-session-owner";
-    writeDoctorSessionOwnerPlugin(pluginRoot, pluginId);
-    const config = createDoctorPluginConfig(pluginRoot, pluginId);
+    const { config, env } = fixture(pluginId, writeDoctorSessionOwnerPlugin);
 
-    expect(
-      listPluginDoctorSessionRouteStateOwners({
-        config,
-        env: makeHermeticDoctorEnv(stateDir),
-      }),
-    ).toEqual([
+    expect(listPluginDoctorSessionRouteStateOwners({ config, env })).toEqual([
       {
         id: "load-path-session-owner",
         label: "Load Path Session Owner",
@@ -606,18 +544,10 @@ describe("doctor contract registry load-path plugins", () => {
   });
 
   it("keeps the deprecated module owner route for external load-path plugins", () => {
-    const stateDir = tempDirs.make("openclaw-doctor-contract-load-paths-");
-    const pluginRoot = tempDirs.make("openclaw-doctor-contract-load-paths-");
     const pluginId = "legacy-load-path-owner";
-    writeLegacyDoctorSessionOwnerPlugin(pluginRoot, pluginId);
-    const config = createDoctorPluginConfig(pluginRoot, pluginId);
+    const { config, env } = fixture(pluginId, writeLegacyDoctorSessionOwnerPlugin);
 
-    expect(
-      listPluginDoctorSessionRouteStateOwners({
-        config,
-        env: makeHermeticDoctorEnv(stateDir),
-      }),
-    ).toEqual([
+    expect(listPluginDoctorSessionRouteStateOwners({ config, env })).toEqual([
       {
         id: "legacy-load-path-owner",
         label: "Legacy Load Path Owner",
@@ -630,12 +560,8 @@ describe("doctor contract registry load-path plugins", () => {
   });
 
   it("validates frozen live post-session actions without applying candidate-only refusal", async () => {
-    const stateDir = tempDirs.make("openclaw-doctor-contract-post-session-");
-    const pluginRoot = tempDirs.make("openclaw-doctor-contract-post-session-");
     const pluginId = "legacy-post-session-owner";
-    writeLegacyPostSessionMigrationPlugin(pluginRoot, pluginId);
-    const config = createDoctorPluginConfig(pluginRoot, pluginId);
-    const env = makeHermeticDoctorEnv(stateDir);
+    const { config, env } = fixture(pluginId, writeLegacyPostSessionMigrationPlugin);
 
     const unplanned = await runPostSessionPluginDoctorStateRepairs({ config, env });
     expect(unplanned.warnings).toContain("legacy external post-session state is pending");

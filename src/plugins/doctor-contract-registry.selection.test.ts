@@ -90,47 +90,15 @@ describe("doctor-contract-registry module loader", () => {
   });
 
   it.each([
-    {
-      name: "missing official plugin",
-      ownerId: undefined,
-      warning: undefined,
-      explicit: false,
-      pins: true,
-    },
-    {
-      name: "authored listener endpoints",
-      ownerId: undefined,
-      warning: undefined,
-      explicit: true,
-      pins: true,
-    },
-    {
-      name: "unresolved host facts",
-      ownerId: undefined,
-      warning: "Resolve account ambiguity",
-      explicit: false,
-      pins: false,
-    },
-    {
-      name: "deferred installed owner",
-      ownerId: "feishu",
-      warning: undefined,
-      explicit: false,
-      pins: false,
-    },
-    {
-      name: "deferred trusted official owner",
-      ownerId: "feishu",
-      trusted: true,
-      warning: undefined,
-      explicit: false,
-      pins: true,
-    },
+    { name: "missing official plugin", pins: true },
+    { name: "authored listener endpoints", explicit: true, pins: true },
+    { name: "unresolved host facts", warning: "Resolve account ambiguity", pins: false },
+    { name: "deferred installed owner", ownerId: "feishu", pins: false },
+    { name: "deferred trusted official owner", ownerId: "feishu", trusted: true, pins: true },
     {
       name: "deferred trusted owner with authored endpoints",
       ownerId: "feishu",
       trusted: true,
-      warning: undefined,
       explicit: true,
       pins: true,
     },
@@ -139,19 +107,15 @@ describe("doctor-contract-registry module loader", () => {
       ownerId: "feishu",
       trusted: true,
       restricted: true,
-      warning: undefined,
-      explicit: false,
       pins: false,
     },
     {
       name: "deferred replacement owner",
       ownerId: "custom-feishu",
-      warning: undefined,
-      explicit: false,
       pins: false,
     },
   ])("preserves historical webhook ownership for $name", (scenario) => {
-    const { ownerId, trusted, restricted, warning, explicit, pins } = scenario;
+    const { ownerId, trusted, restricted, warning, explicit = false, pins } = scenario;
     const config: OpenClawConfig = {
       meta: { migrations: { webhookListeners: { telegram: [] } } },
       gateway: { port: 18789 },
