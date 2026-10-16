@@ -4,6 +4,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { toAgentEntriesRecord } from "../agents/agent-scope-config.js";
 import type { AuthProfileCredential } from "../agents/auth-profiles/types.js";
 import { resolveModelRuntimePolicy } from "../agents/model-runtime-policy.js";
+import { applyMergePatch } from "../config/merge-patch.js";
 import { mergeAgentModelEntryForConfig } from "../config/model-input.js";
 import { materializeModelPolicyAllowlist } from "../config/model-policy-allowlist-migration.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -217,6 +218,23 @@ export function prepareSetupModelRuntime(params: {
       },
     },
   };
+}
+
+export function mergeSavedSetupInferenceConfig(base: OpenClawConfig, saved: unknown): unknown {
+  const savedProviders =
+    isRecord(saved) && isRecord(saved.models) ? saved.models.providers : undefined;
+  if (!isRecord(savedProviders)) {
+    return applyMergePatch(base, saved);
+  }
+  const providers = { ...base.models?.providers };
+  // Saved provider entries are complete snapshots; merging would revive omitted credentials.
+  for (const provider of Object.keys(savedProviders)) {
+    const currentKey = findNormalizedProviderKey(providers, provider);
+    if (currentKey) {
+      delete providers[currentKey];
+    }
+  }
+  return applyMergePatch({ ...base, models: { ...base.models, providers } }, saved);
 }
 
 export function projectSetupInferenceConfig(params: {
