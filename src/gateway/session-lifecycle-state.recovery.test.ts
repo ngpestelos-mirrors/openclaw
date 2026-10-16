@@ -24,8 +24,11 @@ vi.mock("../plugins/loader-runtime-load.js", () => {
 
 // mock-isolation: Exercise recovery reducers without native persistence or transcript writes.
 vi.mock("../config/sessions/session-accessor.js", () => ({
-  patchSessionEntryTarget: persistenceMocks.updateSessionEntry,
   appendSessionTranscriptReport: vi.fn(async () => ({ ok: true, value: undefined })),
+}));
+
+vi.mock("../config/sessions/session-accessor.sqlite-entry.js", () => ({
+  applySessionEntryTargetOperation: persistenceMocks.updateSessionEntry,
 }));
 
 // mock-isolation: Controlled entries isolate recovery projection from database admission.

@@ -64,9 +64,9 @@ it.each([
       });
       const writePrepared = createDeferred();
       const releaseWrite = createDeferred();
-      const patch = sessionAccessor.patchSessionEntryTarget;
+      const patch = sessionAccessor.applySessionEntryTargetOperation;
       const spy = vi
-        .spyOn(sessionAccessor, "patchSessionEntryTarget")
+        .spyOn(sessionAccessor, "applySessionEntryTargetOperation")
         .mockImplementation(async (...args) => {
           if (args[0].target.canonicalKey === target.sessionKey) {
             writePrepared.resolve();
