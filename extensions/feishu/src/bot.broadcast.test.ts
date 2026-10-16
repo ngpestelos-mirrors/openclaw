@@ -18,22 +18,14 @@ const failedFinalReceipt = {
 };
 
 function createIngressLifecycle() {
-  const calls = {
-    adopted: vi.fn(async () => {}),
-    deferred: vi.fn(),
-    deferredHeartbeat: vi.fn(),
-    finalizing: vi.fn(),
-    abandoned: vi.fn(async () => {}),
-  };
-  const lifecycle: FeishuIngressLifecycle = {
+  return {
     abortSignal: new AbortController().signal,
-    onAdopted: calls.adopted,
-    onDeferred: calls.deferred,
-    onDeferredHeartbeat: calls.deferredHeartbeat,
-    onAdoptionFinalizing: calls.finalizing,
-    onAbandoned: calls.abandoned,
-  };
-  return { calls, lifecycle };
+    onAdopted: vi.fn(async () => {}),
+    onDeferred: vi.fn(),
+    onDeferredHeartbeat: vi.fn(),
+    onAdoptionFinalizing: vi.fn(),
+    onAbandoned: vi.fn(async () => {}),
+  } satisfies FeishuIngressLifecycle;
 }
 
 function createReplayClaim(key: string): FeishuMessageProcessingClaim {
@@ -42,6 +34,11 @@ function createReplayClaim(key: string): FeishuMessageProcessingClaim {
     commit: vi.fn(async () => true),
     release: vi.fn(),
   };
+}
+
+function expectClaim(claim: FeishuMessageProcessingClaim, committed: boolean) {
+  expect(claim.commit).toHaveBeenCalledTimes(committed ? 1 : 0);
+  expect(claim.release).toHaveBeenCalledTimes(committed ? 0 : 1);
 }
 
 function mockBroadcastClaims(key: string) {
@@ -62,7 +59,6 @@ function mockBroadcastClaims(key: string) {
 
 describe("broadcast dispatch", () => {
   const {
-    builtInboundContextCalls,
     createBroadcastConfig,
     createBroadcastEvent,
     handleFeishuMessage,
@@ -73,9 +69,20 @@ describe("broadcast dispatch", () => {
     resolvedTurnCalls,
   } = setupFeishuBroadcastTestHarness();
 
+  function mockActiveDispatcher(ensureNoVisibleReplyFallback = vi.fn()) {
+    const deliver = vi.fn(async () => undefined);
+    mockCreateFeishuReplyDispatcher.mockReturnValueOnce({
+      dispatcherOptions: {},
+      delivery: { deliver },
+      replyOptions: {},
+      ensureNoVisibleReplyFallback,
+    });
+    return { deliver, ensureNoVisibleReplyFallback };
+  }
+
   function dispatchBroadcast(
     messageId: string,
-    options: { turnAdoptionLifecycle?: FeishuIngressLifecycle } = {},
+    options: Partial<Parameters<typeof handleFeishuMessage>[0]> = {},
   ) {
     return handleFeishuMessage({
       cfg: createBroadcastConfig(),
@@ -96,14 +103,7 @@ describe("broadcast dispatch", () => {
           }
         : { queuedFinal: false, counts: { final: 1 } },
     );
-    const ensureNoVisibleReplyFallback = vi.fn();
-    const activeDeliver = vi.fn(async () => undefined);
-    mockCreateFeishuReplyDispatcher.mockReturnValueOnce({
-      dispatcherOptions: {},
-      delivery: { deliver: activeDeliver },
-      replyOptions: {},
-      ensureNoVisibleReplyFallback,
-    });
+    const { deliver: activeDeliver, ensureNoVisibleReplyFallback } = mockActiveDispatcher();
     await dispatchBroadcast("msg-broadcast-final-failed");
 
     expect(ensureNoVisibleReplyFallback).toHaveBeenCalledWith(
@@ -131,13 +131,7 @@ describe("broadcast dispatch", () => {
           }
         : { queuedFinal: false, counts: { final: 1 } },
     );
-    const ensureNoVisibleReplyFallback = vi.fn();
-    mockCreateFeishuReplyDispatcher.mockReturnValueOnce({
-      dispatcherOptions: {},
-      delivery: { deliver: vi.fn(async () => undefined) },
-      replyOptions: {},
-      ensureNoVisibleReplyFallback,
-    });
+    const { ensureNoVisibleReplyFallback } = mockActiveDispatcher();
     await dispatchBroadcast("msg-broadcast-source-suppressed");
 
     expect(ensureNoVisibleReplyFallback).not.toHaveBeenCalled();
@@ -153,24 +147,14 @@ describe("broadcast dispatch", () => {
     };
     const event = createBroadcastEvent({ messageId: "msg-multi-account-dedup", text: "hello" });
 
-    await handleFeishuMessage({
-      cfg,
-      event,
-      runtime: createRuntimeEnv(),
-      accountId: "account-A",
-    });
+    const params = { cfg, event, botOpenId: undefined };
+    await dispatchBroadcast("msg-multi-account-dedup", { ...params, accountId: "account-A" });
     expect(mockDispatchReply).toHaveBeenCalledTimes(2);
 
     mockDispatchReply.mockClear();
     mockGetChatInfo.mockClear();
-    builtInboundContextCalls.length = 0;
 
-    await handleFeishuMessage({
-      cfg,
-      event,
-      runtime: createRuntimeEnv(),
-      accountId: "account-B",
-    });
+    await dispatchBroadcast("msg-multi-account-dedup", { ...params, accountId: "account-B" });
     expect(mockDispatchReply).not.toHaveBeenCalled();
     expect(mockGetChatInfo).not.toHaveBeenCalled();
   });
@@ -207,43 +191,34 @@ describe("broadcast dispatch", () => {
     cfg.broadcast = { ...cfg.broadcast, strategy: "sequential" };
 
     await expect(
-      handleFeishuMessage({
+      dispatchBroadcast("msg-broadcast-redelivery", {
         cfg,
         event,
-        botOpenId: "bot-open-id",
-        runtime: createRuntimeEnv(),
-        turnAdoptionLifecycle: firstTransport.lifecycle,
+        turnAdoptionLifecycle: firstTransport,
       }),
     ).rejects.toThrow("observer dispatch failed");
 
     expect(mockDispatchReply).toHaveBeenCalledTimes(2);
-    expect(firstClaim.commit).not.toHaveBeenCalled();
-    expect(firstClaim.release).toHaveBeenCalledTimes(1);
-    expect(firstSusanClaim.commit).not.toHaveBeenCalled();
-    expect(firstSusanClaim.release).toHaveBeenCalledTimes(1);
-    expect(mainClaim.commit).toHaveBeenCalledTimes(1);
-    expect(mainClaim.release).not.toHaveBeenCalled();
-    expect(firstTransport.calls.adopted).not.toHaveBeenCalled();
-    expect(firstTransport.calls.abandoned).toHaveBeenCalledTimes(1);
+    expectClaim(firstClaim, false);
+    expectClaim(firstSusanClaim, false);
+    expectClaim(mainClaim, true);
+    expect(firstTransport.onAdopted).not.toHaveBeenCalled();
+    expect(firstTransport.onAbandoned).toHaveBeenCalledTimes(1);
 
     mockDispatchReply.mockClear();
     const retryTransport = createIngressLifecycle();
-    await handleFeishuMessage({
+    await dispatchBroadcast("msg-broadcast-redelivery", {
       cfg,
       event,
-      botOpenId: "bot-open-id",
-      runtime: createRuntimeEnv(),
-      turnAdoptionLifecycle: retryTransport.lifecycle,
+      turnAdoptionLifecycle: retryTransport,
     });
 
     // The adopted main lane stays committed; only failed Susan re-dispatches.
     expect(mockDispatchReply).toHaveBeenCalledTimes(1);
-    expect(retryTransport.calls.adopted).toHaveBeenCalledTimes(1);
-    expect(retryTransport.calls.abandoned).not.toHaveBeenCalled();
-    expect(retryClaim.release).not.toHaveBeenCalled();
-    expect(retryClaim.commit).toHaveBeenCalledTimes(1);
-    expect(retrySusanClaim.commit).toHaveBeenCalledTimes(1);
-    expect(retrySusanClaim.release).not.toHaveBeenCalled();
+    expect(retryTransport.onAdopted).toHaveBeenCalledTimes(1);
+    expect(retryTransport.onAbandoned).not.toHaveBeenCalled();
+    expectClaim(retryClaim, true);
+    expectClaim(retrySusanClaim, true);
   });
 
   it("keeps an adopted active lane committed when its no-visible fallback fails", async () => {
@@ -259,28 +234,23 @@ describe("broadcast dispatch", () => {
           }
         : { queuedFinal: false, counts: { final: 1 } },
     );
-    mockCreateFeishuReplyDispatcher.mockReturnValueOnce({
-      dispatcherOptions: {},
-      delivery: { deliver: vi.fn(async () => undefined) },
-      replyOptions: {},
-      ensureNoVisibleReplyFallback: vi.fn(async () => {
+    mockActiveDispatcher(
+      vi.fn(async () => {
         throw new Error("fallback send failed");
       }),
-    });
+    );
     const transport = createIngressLifecycle();
 
     await expect(
       dispatchBroadcast("msg-broadcast-fallback-failure", {
-        turnAdoptionLifecycle: transport.lifecycle,
+        turnAdoptionLifecycle: transport,
       }),
     ).rejects.toThrow("fallback send failed");
 
     expect(susanClaim.commit).toHaveBeenCalledTimes(1);
-    expect(mainClaim.commit).toHaveBeenCalledTimes(1);
-    expect(mainClaim.release).not.toHaveBeenCalled();
-    expect(broadcastClaim.commit).not.toHaveBeenCalled();
-    expect(broadcastClaim.release).toHaveBeenCalledTimes(1);
-    expect(transport.calls.abandoned).toHaveBeenCalledTimes(1);
+    expectClaim(mainClaim, true);
+    expectClaim(broadcastClaim, false);
+    expect(transport.onAbandoned).toHaveBeenCalledTimes(1);
   });
 
   it("releases an agent claim when broadcast lane setup fails", async () => {
@@ -297,24 +267,16 @@ describe("broadcast dispatch", () => {
     const transport = createIngressLifecycle();
 
     await expect(
-      handleFeishuMessage({
+      dispatchBroadcast("msg-broadcast-setup-failure", {
         cfg,
-        event: createBroadcastEvent({
-          messageId: "msg-broadcast-setup-failure",
-          text: "setup must release",
-          botMentioned: true,
-        }),
-        botOpenId: "bot-open-id",
-        runtime: createRuntimeEnv(),
-        turnAdoptionLifecycle: transport.lifecycle,
+        turnAdoptionLifecycle: transport,
       }),
     ).rejects.toThrow("session path failed");
 
-    expect(susanClaim.commit).not.toHaveBeenCalled();
-    expect(susanClaim.release).toHaveBeenCalledTimes(1);
+    expectClaim(susanClaim, false);
     expect(mainClaim.commit).toHaveBeenCalledTimes(1);
     expect(broadcastClaim.release).toHaveBeenCalledTimes(1);
-    expect(transport.calls.abandoned).toHaveBeenCalledTimes(1);
+    expect(transport.onAbandoned).toHaveBeenCalledTimes(1);
   });
 
   it("abandons the shared claim when an agent lane is not dispatched", async () => {
@@ -327,16 +289,14 @@ describe("broadcast dispatch", () => {
     const transport = createIngressLifecycle();
 
     await dispatchBroadcast("msg-broadcast-undispatched", {
-      turnAdoptionLifecycle: transport.lifecycle,
+      turnAdoptionLifecycle: transport,
     });
 
-    expect(susanClaim.commit).not.toHaveBeenCalled();
-    expect(susanClaim.release).toHaveBeenCalledTimes(1);
+    expectClaim(susanClaim, false);
     expect(mainClaim.commit).toHaveBeenCalledTimes(1);
-    expect(broadcastClaim.commit).not.toHaveBeenCalled();
-    expect(broadcastClaim.release).toHaveBeenCalledTimes(1);
-    expect(transport.calls.adopted).not.toHaveBeenCalled();
-    expect(transport.calls.abandoned).toHaveBeenCalledTimes(1);
+    expectClaim(broadcastClaim, false);
+    expect(transport.onAdopted).not.toHaveBeenCalled();
+    expect(transport.onAbandoned).toHaveBeenCalledTimes(1);
   });
 
   it("commits the shared broadcast claim only after transport adoption", async () => {
@@ -346,18 +306,18 @@ describe("broadcast dispatch", () => {
     const transport = createIngressLifecycle();
     const adoptionStarted = createDeferred<void>();
     const adoptionGate = createDeferred<void>();
-    transport.calls.adopted.mockImplementationOnce(async () => {
+    transport.onAdopted.mockImplementationOnce(async () => {
       adoptionStarted.resolve();
       await adoptionGate.promise;
     });
 
     const handling = dispatchBroadcast("msg-broadcast-adoption-order", {
-      turnAdoptionLifecycle: transport.lifecycle,
+      turnAdoptionLifecycle: transport,
     });
 
     await adoptionStarted.promise;
-    expect(transport.calls.adopted).toHaveBeenCalledTimes(1);
-    expect(transport.calls.finalizing).toHaveBeenCalledTimes(1);
+    expect(transport.onAdopted).toHaveBeenCalledTimes(1);
+    expect(transport.onAdoptionFinalizing).toHaveBeenCalledTimes(1);
     expect(broadcastClaim.commit).not.toHaveBeenCalled();
     expect(susanClaim.commit).toHaveBeenCalledTimes(1);
     expect(mainClaim.commit).toHaveBeenCalledTimes(1);
@@ -366,7 +326,7 @@ describe("broadcast dispatch", () => {
     await handling;
 
     expect(broadcastClaim.commit).toHaveBeenCalledTimes(1);
-    expect(transport.calls.adopted.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(transport.onAdopted.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(broadcastClaim.commit).mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
     expect(broadcastClaim.release).not.toHaveBeenCalled();
@@ -391,13 +351,13 @@ describe("broadcast dispatch", () => {
     const transport = createIngressLifecycle();
 
     await dispatchBroadcast("msg-broadcast-deferred", {
-      turnAdoptionLifecycle: transport.lifecycle,
+      turnAdoptionLifecycle: transport,
     });
 
-    expect(transport.calls.deferred).toHaveBeenCalledTimes(1);
-    expect(transport.calls.adopted).not.toHaveBeenCalled();
+    expect(transport.onDeferred).toHaveBeenCalledTimes(1);
+    expect(transport.onAdopted).not.toHaveBeenCalled();
     deferredLifecycle?.onDeferredHeartbeat?.();
-    expect(transport.calls.deferredHeartbeat).toHaveBeenCalledOnce();
+    expect(transport.onDeferredHeartbeat).toHaveBeenCalledOnce();
     expect(broadcastClaim.commit).not.toHaveBeenCalled();
     expect(mainClaim.commit).toHaveBeenCalledTimes(1);
     expect(susanClaim.commit).not.toHaveBeenCalled();
@@ -405,7 +365,7 @@ describe("broadcast dispatch", () => {
     await deferredLifecycle?.onAdopted();
 
     expect(susanClaim.commit).toHaveBeenCalledTimes(1);
-    expect(transport.calls.adopted).toHaveBeenCalledTimes(1);
+    expect(transport.onAdopted).toHaveBeenCalledTimes(1);
     expect(broadcastClaim.commit).toHaveBeenCalledTimes(1);
   });
 });

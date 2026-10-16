@@ -9,30 +9,37 @@ import { handleFeishuMessage as handleFeishuMessageImpl } from "./bot.js";
 import { feishuDedupeState } from "./dedup-state.js";
 import { setFeishuRuntime } from "./runtime.js";
 
+export { createRuntimeEnv } from "openclaw/plugin-sdk/plugin-test-runtime";
+
 const {
   builtInboundContextCalls,
+  createReplyDispatcher,
   mockCreateFeishuReplyDispatcher,
   mockCreateFeishuClient,
   mockDispatchReply,
   mockRecordInboundSession,
   mockResolveAgentRoute,
   mockResolveStorePath,
-} = vi.hoisted(() => ({
-  builtInboundContextCalls: [] as Array<Record<string, unknown>>,
-  mockCreateFeishuReplyDispatcher: vi.fn((_params?: unknown) => ({
+} = vi.hoisted(() => {
+  const makeReplyDispatcher = () => ({
     dispatcherOptions: {},
     delivery: { deliver: vi.fn(async () => undefined) },
     replyOptions: {},
     ensureNoVisibleReplyFallback: vi.fn(),
-  })),
-  mockCreateFeishuClient: vi.fn(),
-  mockDispatchReply: vi.fn().mockResolvedValue({ queuedFinal: false, counts: { final: 1 } }),
-  mockRecordInboundSession: vi.fn().mockResolvedValue(undefined),
-  mockResolveAgentRoute: vi.fn(),
-  mockResolveStorePath: vi.fn(
-    (_store?: unknown, _options?: { agentId?: string }) => "/tmp/feishu-session-store.json",
-  ),
-}));
+  });
+  return {
+    builtInboundContextCalls: [] as Array<Record<string, unknown>>,
+    createReplyDispatcher: makeReplyDispatcher,
+    mockCreateFeishuReplyDispatcher: vi.fn((_params?: unknown) => makeReplyDispatcher()),
+    mockCreateFeishuClient: vi.fn(),
+    mockDispatchReply: vi.fn().mockResolvedValue({ queuedFinal: false, counts: { final: 1 } }),
+    mockRecordInboundSession: vi.fn().mockResolvedValue(undefined),
+    mockResolveAgentRoute: vi.fn(),
+    mockResolveStorePath: vi.fn(
+      (_store?: unknown, _options?: { agentId?: string }) => "/tmp/feishu-session-store.json",
+    ),
+  };
+});
 
 vi.mock("openclaw/plugin-sdk/channel-inbound", async () => {
   const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/channel-inbound")>(
@@ -68,38 +75,20 @@ vi.mock("./client.js", () => ({
   createFeishuClient: mockCreateFeishuClient,
 }));
 
-export function createRuntimeEnv() {
-  return {
-    log: vi.fn(),
-    error: vi.fn(),
-    writeStdout: vi.fn(),
-    writeJson: vi.fn(),
-    exit: vi.fn((code: number): never => {
-      throw new Error(`exit ${code}`);
-    }),
-  };
-}
-
 export function setupFeishuBroadcastTestHarness() {
   const mockGetChatInfo = vi.fn();
   const mockShouldComputeCommandAuthorized = vi.fn(() => false);
   const resolvedTurnCalls: Array<Record<string, unknown>> = [];
   const mockCurrentConfig = vi.fn(() => createBroadcastConfig());
   const runtimeStub = {
-    config: {
-      current: mockCurrentConfig,
-    },
+    config: { current: mockCurrentConfig },
     channel: {
-      routing: {
-        resolveAgentRoute: (params: unknown) => mockResolveAgentRoute(params),
-      },
+      routing: { resolveAgentRoute: mockResolveAgentRoute },
       session: {
         resolveStorePath: mockResolveStorePath,
         recordInboundSession: mockRecordInboundSession,
       },
-      commands: {
-        shouldComputeCommandAuthorized: mockShouldComputeCommandAuthorized,
-      },
+      commands: { shouldComputeCommandAuthorized: mockShouldComputeCommandAuthorized },
       inbound: {
         ingress: createPluginRuntimeMock().channel.inbound.ingress,
         buildContext: buildChannelInboundEventContext,
@@ -111,10 +100,7 @@ export function setupFeishuBroadcastTestHarness() {
               dispatched: false,
             };
           }
-          const eventClass = {
-            kind: "message" as const,
-            canStartAgentTurn: true,
-          };
+          const eventClass = { kind: "message" as const, canStartAgentTurn: true };
           const turn = await params.adapter.resolveTurn(input, eventClass, {});
           if (!("route" in turn) || !("delivery" in turn)) {
             throw new Error("expected assembled Feishu channel turn plan");
@@ -174,11 +160,7 @@ export function setupFeishuBroadcastTestHarness() {
         feishu: {
           appId: "cli_test",
           appSecret: "sec_test", // pragma: allowlist secret
-          groups: {
-            "oc-broadcast-group": {
-              requireMention: true,
-            },
-          },
+          groups: { "oc-broadcast-group": { requireMention: true } },
         },
       },
     };
@@ -216,10 +198,7 @@ export function setupFeishuBroadcastTestHarness() {
   beforeEach(() => {
     vi.clearAllMocks();
     feishuDedupeState.reset();
-    mockDispatchReply.mockReset().mockResolvedValue({
-      queuedFinal: false,
-      counts: { final: 1 },
-    });
+    mockDispatchReply.mockReset().mockResolvedValue({ queuedFinal: false, counts: { final: 1 } });
     mockResolveStorePath.mockReset().mockReturnValue("/tmp/feishu-session-store.json");
     feishuGroupNameCache.clear();
     builtInboundContextCalls.length = 0;
@@ -233,24 +212,12 @@ export function setupFeishuBroadcastTestHarness() {
       lastRoutePolicy: "session",
       matchedBy: "default",
     });
-    mockCreateFeishuReplyDispatcher.mockReturnValue({
-      dispatcherOptions: {},
-      delivery: { deliver: vi.fn(async () => undefined) },
-      replyOptions: {},
-      ensureNoVisibleReplyFallback: vi.fn(),
-    });
+    mockCreateFeishuReplyDispatcher.mockReturnValue(createReplyDispatcher());
     mockCreateFeishuClient.mockReturnValue({
-      contact: {
-        user: {
-          get: vi.fn().mockResolvedValue({ data: { user: { name: "Sender" } } }),
-        },
-      },
+      contact: { user: { get: vi.fn().mockResolvedValue({ data: { user: { name: "Sender" } } }) } },
       im: {
         chat: {
-          get: mockGetChatInfo.mockResolvedValue({
-            code: 0,
-            data: { name: "Broadcast Team" },
-          }),
+          get: mockGetChatInfo.mockResolvedValue({ code: 0, data: { name: "Broadcast Team" } }),
         },
       },
     });
