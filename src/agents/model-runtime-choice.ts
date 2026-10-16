@@ -3,7 +3,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
 import { createLazyPromise } from "../shared/lazy-promise.js";
-import { CLAUDE_CLI_SETUP_GUIDANCE, resolveModelRuntimeRoute } from "../shared/model-runtime-route.js";
+import {
+  CLAUDE_CLI_SETUP_GUIDANCE,
+  resolveModelRuntimeRoute,
+} from "../shared/model-runtime-route.js";
 import { FailoverError } from "./failover/error.js";
 import { resolveAgentHarnessPolicy } from "./harness/policy.js";
 import type { AgentHarness } from "./harness/types.js";
