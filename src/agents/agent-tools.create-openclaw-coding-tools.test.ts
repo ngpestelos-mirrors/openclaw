@@ -97,12 +97,20 @@ function sandboxReadTool(root: string) {
 }
 const provenance = (workspaceDir: string, relativePath: string) =>
   expect(readMemoryArtifactProvenance({ workspaceDir, relativePath })).resolves;
+const addPatch = (file: string, content: string) => ({
+  input: `*** Begin Patch\n*** Add File: ${file}\n+${content}\n*** End Patch`,
+});
 async function fileFixture(relativePath: string, content: string | Uint8Array) {
   const root = tempDirs.make("openclaw-tool-file-");
   const filePath = path.join(root, relativePath);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, content);
   return { root, filePath };
+}
+
+async function sandboxReadFixture(file: string, content: string | Uint8Array) {
+  const fixture = await fileFixture(file, content);
+  return { ...fixture, read: sandboxReadTool(fixture.root) };
 }
 
 async function writeSessionStore(
@@ -123,6 +131,35 @@ function createToolsForStoredSession(storeTemplate: string, sessionKey: string) 
       session: { store: storeTemplate },
       agents: { defaults: { subagents: { maxSpawnDepth: 2 } } },
     },
+  });
+}
+
+function sessionEntry(sessionId: string, fields: Partial<SessionEntry> = {}): SessionEntry {
+  return { sessionId, updatedAt: Date.now(), ...fields };
+}
+
+function sessionStoreTemplate() {
+  return path.join(sessionDirs.make(), "{agentId}", "sessions.json");
+}
+
+function beforeToolHook() {
+  const handler = vi.fn();
+  initializeGlobalHookRunner(createMockPluginRegistry([{ hookName: "before_tool_call", handler }]));
+  return handler;
+}
+
+type CronResolver = Parameters<typeof runWithCronCreatorAuthorityCapabilityResolver>[0];
+function cronTools(
+  capability: CronResolver["capability"],
+  runId: string,
+  resolve: CronResolver["resolve"],
+  toolRunId = runId,
+) {
+  return runWithCronCreatorAuthorityCapabilityResolver({
+    capability,
+    runId,
+    resolve,
+    run: () => createOpenClawCodingTools({ runId: toolRunId, senderIsOwner: false }),
   });
 }
 
@@ -162,37 +199,20 @@ function requireTool(tools: OpenClawCodingTool[], name: string): OpenClawCodingT
   );
 }
 
-function latestCreateOpenClawToolsOptions(): OpenClawToolsOptions {
+function lastCoreOptions(): OpenClawToolsOptions {
   return expectDefined(
     vi.mocked(createOpenClawTools).mock.lastCall?.[0],
     "createOpenClawTools options",
   );
 }
 
-function expectListIncludes(
-  list: readonly string[] | undefined,
-  expected: readonly string[],
-): void {
-  expect(list).toEqual(expect.arrayContaining([...expected]));
-}
-
 describe("createOpenClawCodingTools", () => {
   it.each([
-    {
-      name: "multi-page node",
-      backend: "node",
-      content: `${"ok\n".repeat(2_100)}done`,
-      oversized: false,
-    },
-    {
-      name: "oversized local",
-      backend: "local",
-      content: `# Pond\n${"x".repeat(33 * 1024)}`,
-      oversized: true,
-    },
-  ])(
-    "serves $name skill instructions whole or refuses them",
-    async ({ backend, content, oversized }) => {
+    ["multi-page node", "node", `${"ok\n".repeat(2_100)}done`, false],
+    ["oversized local", "local", `# Pond\n${"x".repeat(33 * 1024)}`, true],
+  ] as const)(
+    "serves %s skill instructions whole or refuses them",
+    async (_name, backend, content, oversized) => {
       const virtual = backend === "node";
       const baseDir = virtual
         ? "node://node-1/skills/pond"
@@ -250,10 +270,7 @@ describe("createOpenClawCodingTools", () => {
   });
 
   it("passes explicit channel and requester facts to wrapped tool hooks", async () => {
-    const beforeToolCall = vi.fn();
-    initializeGlobalHookRunner(
-      createMockPluginRegistry([{ hookName: "before_tool_call", handler: beforeToolCall }]),
-    );
+    const beforeToolCall = beforeToolHook();
     const { root: tmpDir } = await fileFixture("note.txt", "hello");
     const memberRoleIds = ["maintainer-role"];
     const tools = createOpenClawCodingTools({
@@ -299,28 +316,22 @@ describe("createOpenClawCodingTools", () => {
       capability: ReturnType<typeof createCronCreatorAuthorityCapability>,
       runId: string,
       toolRunId = runId,
-    ) =>
-      runWithCronCreatorAuthorityCapabilityResolver({
-        capability,
-        runId,
-        resolve,
-        run: () => createOpenClawCodingTools({ runId: toolRunId, senderIsOwner: false }),
-      });
+    ) => cronTools(capability, runId, resolve, toolRunId);
 
     vi.mocked(createOpenClawTools).mockClear();
     const forgedTools = buildTools(undefined, "forged-run");
     expect(toolNameList(forgedTools)).not.toContain("automations");
-    expect(latestCreateOpenClawToolsOptions().resolveCronCreatorToolAuthority).toBeUndefined();
+    expect(lastCoreOptions().resolveCronCreatorToolAuthority).toBeUndefined();
 
     const capability = createCronCreatorAuthorityCapability("admitted-run")!;
     const activeRun = runWithCronCreatorAuthorityCapability(capability, async () => {
       const wrongRunTools = buildTools(capability, "other-run", "admitted-run");
       expect(toolNameList(wrongRunTools)).not.toContain("automations");
-      expect(latestCreateOpenClawToolsOptions().resolveCronCreatorToolAuthority).toBeUndefined();
+      expect(lastCoreOptions().resolveCronCreatorToolAuthority).toBeUndefined();
 
       const admittedTools = buildTools(capability, "admitted-run");
       expectToolNames(admittedTools, ["automations"], ["gateway", "nodes", "openclaw"]);
-      retainedResolver = latestCreateOpenClawToolsOptions().resolveCronCreatorToolAuthority;
+      retainedResolver = lastCoreOptions().resolveCronCreatorToolAuthority;
       expect(retainedResolver).toEqual(expect.any(Function));
       await expect(retainedResolver!()).resolves.toMatchObject({
         provenance: { source: "final-executable-surface" },
@@ -344,13 +355,8 @@ describe("createOpenClawCodingTools", () => {
       tools: ["read"],
       provenance: { version: 1 as const, source: "final-executable-surface" as const },
     });
-    const buildTools = (capability: ReturnType<typeof createCronCreatorAuthorityCapability>) =>
-      runWithCronCreatorAuthorityCapabilityResolver({
-        capability,
-        runId: "lifecycle-run",
-        resolve,
-        run: () => createOpenClawCodingTools({ runId: "lifecycle-run", senderIsOwner: false }),
-      });
+    const buildTools = (capability: CronResolver["capability"]) =>
+      cronTools(capability, "lifecycle-run", resolve);
 
     const abortController = new AbortController();
     const abortedCapability = createCronCreatorAuthorityCapability("lifecycle-run")!;
@@ -379,16 +385,12 @@ describe("createOpenClawCodingTools", () => {
   });
 
   it("re-wraps existing before_tool_call hooks once with the current context", async () => {
-    const beforeToolCall = vi.fn();
-    initializeGlobalHookRunner(
-      createMockPluginRegistry([{ hookName: "before_tool_call", handler: beforeToolCall }]),
-    );
+    const beforeToolCall = beforeToolHook();
     const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
     const wrapped = wrapToolWithBeforeToolCallHook(
       {
-        name: "already_wrapped",
+        ...stubTool("already_wrapped"),
         label: "Already wrapped",
-        description: "Already wrapped tool",
         parameters: {},
         execute,
       },
@@ -401,28 +403,23 @@ describe("createOpenClawCodingTools", () => {
     await tool.execute("call-wrapped", {});
 
     expect(beforeToolCall).toHaveBeenCalledTimes(1);
-    expect(beforeToolCall.mock.calls[0]?.[1]).toEqual(
-      expect.objectContaining({ agentId: "main", sessionId: "session-new" }),
-    );
+    expect(beforeToolCall.mock.calls[0]?.[1]).toMatchObject({
+      agentId: "main",
+      sessionId: "session-new",
+    });
     expect(execute).toHaveBeenCalledTimes(1);
     expect(tool.parameters).toEqual({ type: "object", properties: {} });
   });
 
-  it.each(["tool_call"])("honors the shipped dispatcher deny %s", (name) => {
-    const tools = createOpenClawCodingTools({
-      includeToolSearchControls: true,
-      config: {
-        tools: {
-          profile: "coding",
-          deny: [name],
-          toolSearch: true,
-        },
+  it("honors the shipped dispatcher deny tool_call", () => {
+    expectToolSurface(
+      {
+        includeToolSearchControls: true,
+        config: { tools: { profile: "coding", deny: ["tool_call"], toolSearch: true } },
       },
-    });
-    const names = new Set(tools.map((tool) => tool.name));
-
-    expect(names.has("dispatch_action")).toBe(false);
-    expect(names.has("read")).toBe(true);
+      ["read"],
+      ["dispatch_action"],
+    );
   });
 
   it("keeps Tool Search controls when core OpenClaw tools are not materialized", () => {
@@ -433,11 +430,7 @@ describe("createOpenClawCodingTools", () => {
       includeCoreTools: false,
       includeToolSearchControls: true,
       toolConstructionPlan: pluginOnlyPlan,
-      config: {
-        tools: {
-          toolSearch: true,
-        },
-      },
+      config: { tools: { toolSearch: true } },
     });
     expect(createOpenClawToolsMock).not.toHaveBeenCalled();
     expectToolNames(
@@ -455,10 +448,8 @@ describe("createOpenClawCodingTools", () => {
       execute: async () => ({ content: [], details: {} }),
     };
     const duplicateTool = {
-      ...stubTool("openclaw"),
-      label: "OpenClaw",
+      ...injectedTool,
       description: "duplicate plugin tool",
-      execute: async () => ({ content: [], details: {} }),
     };
     vi.mocked(createOpenClawTools).mockReturnValueOnce([duplicateTool]);
 
@@ -485,136 +476,121 @@ describe("createOpenClawCodingTools", () => {
     });
 
     expect(createOpenClawToolsMock).toHaveBeenCalledTimes(1);
-    const inheritedAllow = latestCreateOpenClawToolsOptions().inheritedToolAllowlist;
-    expectListIncludes(inheritedAllow, ["sessions_spawn"]);
+    const inheritedAllow = lastCoreOptions().inheritedToolAllowlist;
+    expect(inheritedAllow).toContain("sessions_spawn");
     expect(inheritedAllow?.includes("exec")).toBe(false);
   });
 
   it("preserves configured media tools through local model lean filtering", () => {
-    const tools = createOpenClawCodingTools({
-      config: {
-        agents: {
-          defaults: { experimental: { localModelLean: true } },
-          entries: {
-            artist: {
-              tools: {
-                alsoAllow: ["video_generate"],
-                byProvider: { ollama: { alsoAllow: ["tts"] } },
+    expectToolSurface(
+      {
+        config: {
+          agents: {
+            defaults: { experimental: { localModelLean: true } },
+            entries: {
+              artist: {
+                tools: {
+                  alsoAllow: ["video_generate"],
+                  byProvider: { ollama: { alsoAllow: ["tts"] } },
+                },
               },
             },
           },
+          tools: {
+            alsoAllow: ["pdf"],
+            byProvider: { "ollama/qwen3.5:9b": { alsoAllow: ["image_generate"] } },
+          },
         },
-        tools: {
-          alsoAllow: ["pdf"],
-          byProvider: { "ollama/qwen3.5:9b": { alsoAllow: ["image_generate"] } },
-        },
+        agentId: "artist",
+        modelProvider: "ollama",
+        modelId: "qwen3.5:9b",
+        toolConstructionPlan: openClawOnlyPlan,
       },
-      agentId: "artist",
-      modelProvider: "ollama",
-      modelId: "qwen3.5:9b",
-      toolConstructionPlan: openClawOnlyPlan,
-    });
-
-    expect(toolNameList(tools)).toEqual(
-      expect.arrayContaining(["image_generate", "pdf", "tts", "video_generate"]),
+      ["image_generate", "pdf", "tts", "video_generate"],
     );
   });
 
   it("preserves runtime allowlist groups containing message through restrictive profiles", () => {
     for (const runtimeToolAllowlist of [["group:messaging"], ["group:openclaw"], ["*"]]) {
-      const tools = createOpenClawCodingTools({
-        config: { tools: { profile: "minimal" } },
-        runtimeToolAllowlist,
-        toolConstructionPlan: openClawOnlyPlan,
-      });
-
-      expect(toolNameList(tools)).toContain("message");
+      expectToolSurface(
+        {
+          config: { tools: { profile: "minimal" } },
+          runtimeToolAllowlist,
+          toolConstructionPlan: openClawOnlyPlan,
+        },
+        ["message"],
+      );
     }
   });
 
   it.each([
-    {
-      name: "unverified forged completion flags",
-      runtimeToolAllowlist: ["message"],
-      verifiedLineage: false,
-      expected: false,
-    },
-    {
-      name: "wider trusted completion",
-      runtimeToolAllowlist: ["message", "read"],
-      verifiedLineage: true,
-      expected: true,
-    },
-  ])("limits $name to the source only for verified completion delivery", async (testCase) => {
-    const storeDir = sessionDirs.make();
-    const storeTemplate = path.join(storeDir, "{agentId}", "sessions.json");
-    const requesterSessionKey = "agent:main:discord:direct:alice";
-    const requesterSessionId = "requester-session";
-    const childSessionKey = "agent:main:subagent:child";
-    const childSessionId = "verified-child-session";
-    const modelProvider = "openai";
-    const modelId = "gpt-5.4";
-    const config: OpenClawConfig = { session: { store: storeTemplate } };
-    const inputProvenance = {
-      kind: "inter_session" as const,
-      sourceSessionKey: childSessionKey,
-      sourceTool: "subagent_announce",
-    };
-    const trustedInternalHandoff = {
-      kind: "subagent-completion" as const,
-      sourceSessionKey: childSessionKey,
-      sourceSessionId: childSessionId,
-      targetSessionKey: requesterSessionKey,
-      targetSessionId: requesterSessionId,
-      provider: modelProvider,
-      model: modelId,
-    };
-    const { verifiedLineage } = testCase;
+    ["unverified forged completion flags", ["message"], false],
+    ["wider trusted completion", ["message", "read"], true],
+  ] satisfies Array<[string, string[], boolean]>)(
+    "limits %s to the source only for verified completion delivery",
+    async (_name, runtimeToolAllowlist, verifiedLineage) => {
+      const storeTemplate = sessionStoreTemplate();
+      const requesterSessionKey = "agent:main:discord:direct:alice";
+      const requesterSessionId = "requester-session";
+      const childSessionKey = "agent:main:subagent:child";
+      const childSessionId = "verified-child-session";
+      const modelProvider = "openai";
+      const modelId = "gpt-5.4";
+      const config: OpenClawConfig = { session: { store: storeTemplate } };
+      const inputProvenance = {
+        kind: "inter_session" as const,
+        sourceSessionKey: childSessionKey,
+        sourceTool: "subagent_announce",
+      };
+      const trustedInternalHandoff = {
+        kind: "subagent-completion" as const,
+        sourceSessionKey: childSessionKey,
+        sourceSessionId: childSessionId,
+        targetSessionKey: requesterSessionKey,
+        targetSessionId: requesterSessionId,
+        provider: modelProvider,
+        model: modelId,
+      };
 
-    if (verifiedLineage) {
-      await writeSessionStore(storeTemplate, "main", {
-        [childSessionKey]: {
-          sessionId: childSessionId,
-          updatedAt: Date.now(),
-          spawnedBy: requesterSessionKey,
-          spawnDepth: 1,
-          subagentRole: "orchestrator",
-          subagentControlScope: "children",
-          inheritedToolPolicyVersion: 1,
-        },
+      if (verifiedLineage) {
+        await writeSessionStore(storeTemplate, "main", {
+          [childSessionKey]: sessionEntry(childSessionId, {
+            spawnedBy: requesterSessionKey,
+            spawnDepth: 1,
+            subagentRole: "orchestrator",
+            subagentControlScope: "children",
+            inheritedToolPolicyVersion: 1,
+          }),
+        });
+      }
+      const request = {
+        config,
+        agentId: "main",
+        sessionKey: requesterSessionKey,
+        sessionId: requesterSessionId,
+        modelProvider,
+        modelId,
+        runtimeToolAllowlist,
+        inputProvenance,
+        trustedInternalHandoff,
+      };
+      const conversationCapabilityProfile = await prepareConversationCapabilityProfile(request);
+      expect(conversationCapabilityProfile.policy.requesterPolicySource).toBe(
+        verifiedLineage ? "completion-handoff" : "current-request",
+      );
+
+      vi.mocked(createOpenClawTools).mockClear();
+      createOpenClawCodingTools({
+        ...request,
+        conversationCapabilityProfile,
+        sourceReplyDeliveryMode: "message_tool_only",
+        inputProvenance: verifiedLineage ? undefined : inputProvenance,
+        trustedInternalHandoff: verifiedLineage ? undefined : trustedInternalHandoff,
       });
-    }
-    const conversationCapabilityProfile = await prepareConversationCapabilityProfile({
-      config,
-      agentId: "main",
-      sessionKey: requesterSessionKey,
-      sessionId: requesterSessionId,
-      modelProvider,
-      modelId,
-      runtimeToolAllowlist: testCase.runtimeToolAllowlist,
-      inputProvenance,
-      trustedInternalHandoff,
-    });
-    expect(conversationCapabilityProfile.policy.requesterPolicySource).toBe(
-      verifiedLineage ? "completion-handoff" : "current-request",
-    );
 
-    vi.mocked(createOpenClawTools).mockClear();
-    createOpenClawCodingTools({
-      config,
-      agentId: "main",
-      sessionKey: requesterSessionKey,
-      sessionId: requesterSessionId,
-      modelProvider,
-      modelId,
-      conversationCapabilityProfile,
-      sourceReplyDeliveryMode: "message_tool_only",
-      runtimeToolAllowlist: testCase.runtimeToolAllowlist,
-      ...(!verifiedLineage ? { inputProvenance, trustedInternalHandoff } : {}),
-    });
-
-    expect(latestCreateOpenClawToolsOptions().sourceReplyOnly).toBe(testCase.expected);
-  });
+      expect(lastCoreOptions().sourceReplyOnly).toBe(verifiedLineage);
+    },
+  );
 
   it("allows workspace-only reads from declared sandbox bind mounts", async () => {
     const workspaceDir = tempDirs.make("openclaw-sandbox-workspace-");
@@ -671,9 +647,7 @@ describe("createOpenClawCodingTools", () => {
       workspaceDir,
       toolConstructionPlan: baseOnlyPlan,
     });
-    const names = new Set(tools.map((tool) => tool.name));
-    expect(names.has("exec")).toBe(false);
-    expect(names.has("process")).toBe(false);
+    expectToolNames(tools, [], ["exec", "process"]);
     const read = requireTool(tools, "read");
     expect(read.description).not.toMatch(/\b(?:bash|sed|head)\b/);
 
@@ -740,12 +714,7 @@ describe("createOpenClawCodingTools", () => {
   it("materializes additive runtime tools while preserving normal deny policy", async () => {
     const createOpenClawToolsMock = vi.mocked(createOpenClawTools);
     createOpenClawToolsMock.mockClear();
-    const config: OpenClawConfig = {
-      tools: {
-        profile: "coding",
-        deny: ["workboard_block"],
-      },
-    };
+    const config: OpenClawConfig = { tools: { profile: "coding", deny: ["workboard_block"] } };
 
     createOpenClawCodingTools({
       config,
@@ -759,39 +728,31 @@ describe("createOpenClawCodingTools", () => {
     });
 
     expect(createOpenClawToolsMock).toHaveBeenCalledTimes(1);
-    expect(latestCreateOpenClawToolsOptions().pluginToolAllowlist).not.toContain(
-      "workboard_heartbeat",
-    );
+    const options = lastCoreOptions();
+    expect(options.pluginToolAllowlist).not.toContain("workboard_heartbeat");
     expect(
-      createPluginToolAllowlist(latestCreateOpenClawToolsOptions().pluginToolAllowlist).allowsTool(
+      createPluginToolAllowlist(options.pluginToolAllowlist).allowsTool(
         "workboard",
         "workboard_heartbeat",
       ),
     ).toBe(true);
-    expect(latestCreateOpenClawToolsOptions()).not.toHaveProperty("runtimePluginToolGrant");
-    expectListIncludes(latestCreateOpenClawToolsOptions().pluginToolDenylist, ["workboard_block"]);
+    expect(options).not.toHaveProperty("runtimePluginToolGrant");
+    expect(options.pluginToolDenylist).toContain("workboard_block");
   });
 
   it("removes message from persisted visible child sessions on every turn", async () => {
-    const storeDir = sessionDirs.make();
-    const storeTemplate = path.join(storeDir, "{agentId}", "sessions.json");
+    const storeTemplate = sessionStoreTemplate();
     const agentId = "visible-subagent-message";
     const childSessionKey = `agent:${agentId}:dashboard:child`;
     const rootSessionKey = `agent:${agentId}:dashboard:root`;
     await writeSessionStore(storeTemplate, agentId, {
-      [childSessionKey]: {
-        sessionId: "visible-child",
-        updatedAt: Date.now(),
+      [childSessionKey]: sessionEntry("visible-child", {
         spawnDepth: 1,
         spawnedBy: `agent:${agentId}:main`,
         subagentRole: "leaf",
         subagentControlScope: "none",
-      },
-      [rootSessionKey]: {
-        sessionId: "root-dashboard",
-        updatedAt: Date.now(),
-        spawnDepth: 0,
-      },
+      }),
+      [rootSessionKey]: sessionEntry("root-dashboard", { spawnDepth: 0 }),
     });
 
     const firstChildTurn = createToolsForStoredSession(storeTemplate, childSessionKey);
@@ -806,27 +767,19 @@ describe("createOpenClawCodingTools", () => {
   it("enforces apply_patch availability and canonical names across model/provider constraints", () => {
     expectToolSurface({ config: testConfig }, ["exec", "process", "apply_patch"]);
     const model = { config: testConfig, modelProvider: "openai", modelId: "gpt-5.4" };
-    expectToolSurface(model, ["apply_patch"]);
-    const disabledConfig: OpenClawConfig = { tools: { exec: { applyPatch: { enabled: false } } } };
-    expectToolSurface({ ...model, config: disabledConfig }, [], ["apply_patch"]);
-    expectToolSurface(
-      {
-        config: disabledConfig,
-        modelProvider: "anthropic",
-        modelId: "claude-opus-4-6",
-      },
-      [],
-      ["apply_patch"],
-    );
-    const allowModelsConfig: OpenClawConfig = {
+    const disabled: OpenClawConfig = { tools: { exec: { applyPatch: { enabled: false } } } };
+    const allowModels: OpenClawConfig = {
       tools: { exec: { applyPatch: { allowModels: ["gpt-5.4"] } } },
     };
-    expectToolSurface({ ...model, config: allowModelsConfig }, ["apply_patch"]);
-    expectToolSurface(
-      { ...model, config: allowModelsConfig, modelId: "gpt-5.4-mini" },
-      [],
-      ["apply_patch"],
-    );
+    for (const [options, enabled] of [
+      [model, true],
+      [{ ...model, config: disabled }, false],
+      [{ config: disabled, modelProvider: "anthropic", modelId: "claude-opus-4-6" }, false],
+      [{ ...model, config: allowModels }, true],
+      [{ ...model, config: allowModels, modelId: "gpt-5.4-mini" }, false],
+    ] satisfies Array<[Parameters<typeof createOpenClawCodingTools>[0], boolean]>) {
+      expectToolSurface(options, enabled ? ["apply_patch"] : [], enabled ? [] : ["apply_patch"]);
+    }
     expectToolSurface(
       {
         config: testConfig,
@@ -846,42 +799,30 @@ describe("createOpenClawCodingTools", () => {
       toolPolicyMessageProvider: "discord-voice",
       senderId: "speaker-1",
     });
-    const names = new Set(tools.map((tool) => tool.name));
-
-    expect(names.has("exec")).toBe(false);
-    expect(names.has("tts")).toBe(false);
-    expect(latestCreateOpenClawToolsOptions().agentChannel).toBe("discord");
+    expectToolNames(tools, [], ["exec", "tts"]);
+    expect(lastCoreOptions().agentChannel).toBe("discord");
   });
 
   it("applies subagent tool policy to ACP children spawned under a subagent envelope", async () => {
-    const tmpDir = sessionDirs.make();
-    const storeTemplate = path.join(tmpDir, "sessions-{agentId}.json");
+    const storeTemplate = path.join(sessionDirs.make(), "sessions-{agentId}.json");
     await writeSessionStore(storeTemplate, "main", {
-      "agent:main:acp:child": {
-        sessionId: "session-acp-child",
-        updatedAt: Date.now(),
+      "agent:main:acp:child": sessionEntry("session-acp-child", {
         spawnedBy: "agent:main:subagent:parent",
         spawnDepth: 2,
         subagentRole: "leaf",
         subagentControlScope: "none",
-      },
-      "agent:main:acp:plain": {
-        sessionId: "session-acp-plain",
-        updatedAt: Date.now(),
+      }),
+      "agent:main:acp:plain": sessionEntry("session-acp-plain", {
         spawnedBy: "agent:main:main",
-      },
-      "agent:main:acp:parent": {
-        sessionId: "session-acp-parent",
-        updatedAt: Date.now(),
+      }),
+      "agent:main:acp:parent": sessionEntry("session-acp-parent", {
         spawnedBy: "agent:main:subagent:parent",
-      },
+      }),
     });
     await writeSessionStore(storeTemplate, "writer", {
-      "agent:writer:acp:child": {
-        sessionId: "session-acp-cross-agent-child",
-        updatedAt: Date.now(),
+      "agent:writer:acp:child": sessionEntry("session-acp-cross-agent-child", {
         spawnedBy: "agent:main:acp:parent",
-      },
+      }),
     });
 
     const persistedEnvelopeTools = createToolsForStoredSession(
@@ -917,15 +858,13 @@ describe("createOpenClawCodingTools", () => {
   });
 
   it("enables heartbeat response when visible replies are message-tool-only", () => {
-    const tools = createOpenClawCodingTools({
-      config: {
-        messages: { visibleReplies: "message_tool" },
-        tools: { profile: "coding" },
-      } as OpenClawConfig,
-      trigger: "heartbeat",
-    });
-
-    expect(toolNameList(tools)).toContain("heartbeat_respond");
+    expectToolSurface(
+      {
+        config: { messages: { visibleReplies: "message_tool" }, tools: { profile: "coding" } },
+        trigger: "heartbeat",
+      },
+      ["heartbeat_respond"],
+    );
   });
 
   it("can keep message available when a cron route needs it under a provider coding profile", () => {
@@ -955,8 +894,8 @@ describe("createOpenClawCodingTools", () => {
       .map((block) => block.text)
       .join("\n");
     expect(imageText).toContain("Read image file [image/png]");
-    if ((imageBlocks?.length ?? 0) > 0) {
-      expect(imageBlocks?.every((block) => block.mimeType === "image/png")).toBe(true);
+    if (imageBlocks.length > 0) {
+      expect(imageBlocks.every((block) => block.mimeType === "image/png")).toBe(true);
     } else {
       expect(imageText).toContain("[Image omitted:");
     }
@@ -1044,42 +983,17 @@ describe("createOpenClawCodingTools", () => {
       path: "memory/2026-07-29.md",
       edits: [{ oldText: "note", newText: "network-derived note" }],
     });
-    await applyPatch("patch-memory", {
-      input: [
-        "*** Begin Patch",
-        "*** Add File: memory/project.md",
-        "+network project note",
-        "*** End Patch",
-      ].join("\n"),
-    });
+    await applyPatch("patch-memory", addPatch("memory/project.md", "network project note"));
 
-    await expect(
-      Promise.all(
-        ["memory/2026-07-29.md", "memory/project.md"].map((relativePath) =>
-          readMemoryArtifactProvenance({ workspaceDir, relativePath }),
-        ),
-      ),
-    ).resolves.toEqual([
-      expect.objectContaining({
+    for (const relativePath of ["memory/2026-07-29.md", "memory/project.md"]) {
+      await provenance(workspaceDir, relativePath).toMatchObject({
         originClass: "untrusted",
         sessionId: "source-session",
         sessionKey: "agent:main:durable-session",
-      }),
-      expect.objectContaining({
-        originClass: "untrusted",
-        sessionId: "source-session",
-        sessionKey: "agent:main:durable-session",
-      }),
-    ]);
+      });
+    }
     await expect(
-      applyPatch("patch-existing-memory", {
-        input: [
-          "*** Begin Patch",
-          "*** Add File: memory/project.md",
-          "+replacement",
-          "*** End Patch",
-        ].join("\n"),
-      }),
+      applyPatch("patch-existing-memory", addPatch("memory/project.md", "replacement")),
     ).rejects.toThrow(/file already exists/i);
     await provenance(workspaceDir, "memory/project.md").toMatchObject({ originClass: "untrusted" });
     await expect(fs.readFile(path.join(workspaceDir, "memory/project.md"), "utf8")).resolves.toBe(
@@ -1100,9 +1014,7 @@ describe("createOpenClawCodingTools", () => {
     await applyPatch("delete-memory", {
       input: "*** Begin Patch\n*** Delete File: memory/recreated.md\n*** End Patch",
     });
-    await applyPatch("recreate-memory", {
-      input: "*** Begin Patch\n*** Add File: memory/recreated.md\n+recreated\n*** End Patch",
-    });
+    await applyPatch("recreate-memory", addPatch("memory/recreated.md", "recreated"));
     await provenance(workspaceDir, "memory/recreated.md").toMatchObject({ originClass: "agent" });
   });
 
@@ -1137,16 +1049,13 @@ describe("createOpenClawCodingTools", () => {
       path: "memory/2026-07-29.md",
       content: "sandbox network note\n",
     });
-    await requireTool(tools, "apply_patch").execute("sandbox-patch", {
-      input:
-        "*** Begin Patch\n*** Add File: memory/nested/project.md\n+project note\n*** End Patch",
-    });
-    await provenance(sandboxRoot, "memory/nested/project.md").toMatchObject({
-      originClass: "untrusted",
-    });
-    await provenance(sandboxRoot, "memory/2026-07-29.md").toMatchObject({
-      originClass: "untrusted",
-    });
+    await requireTool(tools, "apply_patch").execute(
+      "sandbox-patch",
+      addPatch("memory/nested/project.md", "project note"),
+    );
+    for (const file of ["memory/nested/project.md", "memory/2026-07-29.md"]) {
+      await provenance(sandboxRoot, file).toMatchObject({ originClass: "untrusted" });
+    }
     await provenance(workspaceDir, "memory/2026-07-29.md").toBeUndefined();
   });
   it("rejects legacy alias parameters", async () => {
@@ -1311,16 +1220,21 @@ describe("createOpenClawCodingTools read behavior", () => {
   });
 
   it("resolves Unicode-equivalent filenames through sandbox operations", async () => {
-    const storedName = "re\u0301sume\u0301 3.04\u202fPM d\u2019accord.txt";
-    const { root: tmpDir } = await fileFixture(storedName, "sandbox match");
-    const readTool = sandboxReadTool(tmpDir);
-
-    const result = await readTool.execute("sandbox-unicode", {
+    const { read } = await sandboxReadFixture(
+      "re\u0301sume\u0301 3.04\u202fPM d\u2019accord.txt",
+      "sandbox match",
+    );
+    const result = await read.execute("sandbox-unicode", {
       path: "r\u00e9sum\u00e9 3.04 PM d'accord.txt",
     });
-
     expect(extractToolText(result)).toContain("Resolved filename");
     expect(extractToolText(result)).toContain("sandbox match");
+  });
+
+  it("maps inbound media refs to sandbox-staged media for reads", async () => {
+    const { read } = await sandboxReadFixture("media/inbound/upload.txt", "sandbox media");
+    const result = await read.execute("read-media-sbx", { path: "media://inbound/upload.txt" });
+    expect(extractToolText(result)).toContain("sandbox media");
   });
 
   it("classifies sandbox AVIF reads from the already-read buffer", async () => {
@@ -1357,20 +1271,9 @@ describe("createOpenClawCodingTools read behavior", () => {
     expect(text).not.toMatch(/Use offset=\d+ to continue\.\]$/);
   });
 
-  it("maps inbound media refs to sandbox-staged media for reads", async () => {
-    const mediaId = "webchat-upload.txt";
-    const { root: tmpDir } = await fileFixture(`media/inbound/${mediaId}`, "sandbox media");
-    const readTool = sandboxReadTool(tmpDir);
-    const result = await readTool.execute("read-media-sbx", {
-      path: `media://inbound/${mediaId}`,
-    });
-    expect(extractToolText(result)).toContain("sandbox media");
-  });
-
   it("caps the first read page including its notice with an explicit line limit", async () => {
     const original = "é🦞".repeat(9 * 1024);
-    const { root } = await fileFixture("unicode.txt", original);
-    const read = createSandboxedReadTool({ root, bridge: createHostSandboxFsBridge(root) });
+    const { read } = await sandboxReadFixture("unicode.txt", original);
 
     const result = await read.execute("read-first-page-cap", { path: "unicode.txt", limit: 1 });
     const text = extractToolText(result);
@@ -1387,9 +1290,8 @@ describe("createOpenClawCodingTools read behavior", () => {
   });
 
   it("ignores a trailing newline when describing offsets beyond EOF", async () => {
-    const { root: tmpDir } = await fileFixture("notes.txt", "one\ntwo\nthree\n");
-    const readTool = sandboxReadTool(tmpDir);
-    const result = await readTool.execute("read-offset-adaptive", {
+    const { read } = await sandboxReadFixture("notes.txt", "one\ntwo\nthree\n");
+    const result = await read.execute("read-offset-adaptive", {
       path: "notes.txt",
       offset: 99,
     });

@@ -1,6 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GatewayMethodOwner } from "../gateway/methods/descriptor.js";
 import { createGatewayMethodRegistry } from "../gateway/methods/registry.js";
@@ -10,14 +9,14 @@ import {
   createOperatorClient,
 } from "../gateway/server-plugin-in-process-dispatch.test-support.js";
 import { bindSessionRowProjection } from "../gateway/session-row-projection-access.js";
-import type { SessionRowProjection } from "../gateway/session-row-projection.js";
+import { createSessionRowProjectionFixture } from "../gateway/session-row-projection.test-support.js";
 import { setGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { clearCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import { resolveInstalledPluginIndexPolicyHash } from "../plugins/installed-plugin-index-policy.js";
 import { runPluginRegisterSyncInRegistry } from "../plugins/loader-module-runtime.js";
-import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
 import { createEmptyPluginMetadataSnapshot } from "../plugins/plugin-metadata-empty.test-support.js";
 import { buildPluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import { createPluginManifestRecordFixture } from "../plugins/plugin-metadata.test-support.js";
 import { bindPluginRuntimeArtifactSelection } from "../plugins/plugin-runtime-artifact-binding.js";
 import { createRuntimeTestRegistry } from "../plugins/registry-runtime.test-helpers.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
@@ -31,12 +30,9 @@ import type { OpenClawPluginDefinition } from "../plugins/types.js";
 import * as profileAuthority from "../state/user-channel-identity-operations.js";
 import * as profileReader from "../state/user-profile-list.js";
 import { loadBundledPluginFacade } from "../test-utils/bundled-plugin-public-surface.js";
-import {
-  createOperationalRunInstanceRef,
-  prepareAgentRunAdmission,
-} from "./admitted-run-context.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
 import { resolveConversationCapabilityProfile } from "./conversation-capability-profile.js";
+import { createModelRoutingTestAdmission } from "./test-helpers/model-routing-decision-e2e-fixtures.js";
 import { createToolSearchCatalogRef, registerHeadlessToolSearchCatalog } from "./tool-search.js";
 import { jsonResult, type AnyAgentTool } from "./tools/common.js";
 import {
@@ -62,17 +58,13 @@ const pluginOnlyPlan = {
 
 function requireTool(tools: AnyAgentTool[], name: string) {
   return expectDefined(
-    tools.find((candidate) => candidate.name === name),
+    tools.find((tool) => tool.name === name),
     name,
   );
 }
 
 function assertCapturedPolicy(name: string) {
-  const assertToolAllowed = expectDefined(
-    getGatewayToolCallerIdentity()?.assertToolAllowed,
-    "captured policy",
-  );
-  assertToolAllowed(name);
+  expectDefined(getGatewayToolCallerIdentity()?.assertToolAllowed, "captured policy")(name);
   return jsonResult({ allowed: name });
 }
 
@@ -83,23 +75,19 @@ function assemble(allow: string[], deny: string[] = []) {
   };
   const registry = createRuntimeTestRegistry(createPluginRuntime());
   registries.push(registry.registry);
-  const manifests: PluginManifestRecord[] = [
+  const manifests = [
     { id: "browser", toolName: "browser" },
     { id: "fixture-reader", toolName: "Read_Public_Item" },
-  ].map(({ id, toolName }) => ({
-    id,
-    origin: "bundled",
-    enabledByDefault: true,
-    rootDir: `/plugins/${id}`,
-    source: `/plugins/${id}/index.js`,
-    manifestPath: `/plugins/${id}/openclaw.plugin.json`,
-    channels: [],
-    providers: [],
-    cliBackends: [],
-    hooks: [],
-    skills: [],
-    contracts: { tools: id === "fixture-reader" ? ["select_public_item", toolName] : [toolName] },
-  }));
+  ].map(({ id, toolName }) =>
+    createPluginManifestRecordFixture({
+      id,
+      enabledByDefault: true,
+      rootDir: `/plugins/${id}`,
+      source: `/plugins/${id}/index.js`,
+      manifestPath: `/plugins/${id}/openclaw.plugin.json`,
+      contracts: { tools: id === "fixture-reader" ? ["select_public_item", toolName] : [toolName] },
+    }),
+  );
   for (const manifest of manifests) {
     const { id, source, rootDir, origin, contracts } = manifest;
     const record = createPluginRecord({ id, source, rootDir, origin, contracts });
@@ -155,20 +143,17 @@ function assemble(allow: string[], deny: string[] = []) {
   }
   const emptySnapshot = createEmptyPluginMetadataSnapshot("/tmp");
   const index = { ...emptySnapshot.index, policyHash: "test" };
-  const snapshot = {
-    ...buildPluginMetadataSnapshot(
-      {
-        ...emptySnapshot,
-        policyHash: resolveInstalledPluginIndexPolicyHash(config),
-        index,
-        registryIndex: { ...index },
-        manifestRegistry: { plugins: manifests, diagnostics: [] },
-        metrics: { ...emptySnapshot.metrics, manifestPluginCount: 2 },
-      },
-      { config, env: process.env },
-    ),
-    normalizePluginId: (id: string) => id,
-  };
+  const snapshot = buildPluginMetadataSnapshot(
+    {
+      ...emptySnapshot,
+      policyHash: resolveInstalledPluginIndexPolicyHash(config),
+      index,
+      registryIndex: { ...index },
+      manifestRegistry: { plugins: manifests, diagnostics: [] },
+      metrics: { ...emptySnapshot.metrics, manifestPluginCount: 2 },
+    },
+    { config, env: process.env },
+  );
   setGatewayPluginMetadataSnapshot(snapshot, { config, workspaceDir: "/tmp", env: process.env });
   setPluginRuntimeLoadContext(registry.registry, {
     rawConfig: config,
@@ -211,61 +196,50 @@ async function prepareResourceFixture(
   } = {},
 ) {
   const toolName = options.toolName ?? "browser";
-  const assembled = assemble(options.allow ?? ["group:plugins"]);
-  let config = assembled.config;
-  const entry: SessionEntry = {
-    sessionId: "plugin-policy-session",
-    lifecycleRevision: "plugin-policy-incarnation",
-    updatedAt: 1,
-    createdActor: { type: "human", source: "profile", id: "alice" },
-    visibility: "shared",
-  };
-  const target = {
-    agentId: "main",
-    canonicalKey: sessionKey,
-    entry,
-    generation: Symbol("session-database"),
+  const { tools, registry, config: initialConfig } = assemble(options.allow ?? ["group:plugins"]);
+  let config = initialConfig;
+  const projection = createSessionRowProjectionFixture({
+    cfg: config,
     storePath: "/test/sessions",
-    storeKey: sessionKey,
-    storeKeys: [sessionKey],
-  };
-  const projection = {
-    prepareMembership: async () => {},
-    sharingTarget: () => target,
-    sharingTargetState: () => ({ status: "ready", target }),
-    hasMembership: () => false,
-  } as unknown as SessionRowProjection;
+    store: {
+      [sessionKey]: {
+        sessionId: "plugin-policy-session",
+        lifecycleRevision: "plugin-policy-incarnation",
+        updatedAt: 1,
+        createdActor: { type: "human", source: "profile", id: "alice" },
+        visibility: "shared",
+      },
+    },
+  });
+  releases.push(projection.dispose);
   const context = bindSessionRowProjection(createContext(), () => projection);
   context.getRuntimeConfig = () => config;
   const emptyRegistry = createRuntimeTestRegistry(createPluginRuntime()).registry;
   registries.push(emptyRegistry);
   const methodRegistry = createGatewayMethodRegistry(
-    assembled.registry.gatewayMethodDescriptors.map((descriptor) =>
+    registry.gatewayMethodDescriptors.map((descriptor) =>
       options.methodOwner ? { ...descriptor, owner: options.methodOwner } : descriptor,
     ),
-    options.missingSelectedRegistration ? emptyRegistry : assembled.registry,
+    options.missingSelectedRegistration ? emptyRegistry : registry,
   );
   context.getGatewayMethodRegistry = () => methodRegistry;
   const client = createOperatorClient({ profileId: "alice", scopes: ["operator.sessions.write"] });
   client.internal = { syntheticClient: true };
-  const admission = prepareAgentRunAdmission({
+  const admission = createModelRoutingTestAdmission({
     cfg: config,
-    facts: {
-      runId: "plugin-policy-run",
-      agentId: "main",
-      ingress: { kind: "system", boundary: "plugin-policy-test", state: "present" },
-    },
-    operationalRunInstance: createOperationalRunInstanceRef("plugin-policy-run"),
+    runId: "plugin-policy-run",
+    agentId: "main",
+    boundary: "plugin-policy-test",
   });
   releases.push(admission.close);
-  const caller = createAdmittedGatewayToolCallerIdentity({
-    admittedRunContext: await admission.admit("plugin-harness", "plugin-policy-harness"),
-    agentId: "main",
-    sessionKey,
-  });
-  if (!caller) {
-    throw new Error("Admitted resource caller is missing");
-  }
+  const caller = expectDefined(
+    createAdmittedGatewayToolCallerIdentity({
+      admittedRunContext: await admission.admit("plugin-harness", "plugin-policy-harness"),
+      agentId: "main",
+      sessionKey,
+    }),
+    "admitted resource caller",
+  );
   const methodName = toolName === "browser" ? "browser.dashboard.request" : "fixture-reader.read";
   expectDefined(
     methodRegistry.descriptors().find((method) => method.name === methodName)?.sessionAccess,
@@ -276,7 +250,7 @@ async function prepareResourceFixture(
   const execute = toolName === "browser" ? browserRuntime.execute : readPublicItem;
   execute.mockImplementation(async () => {
     const authorization = await withPluginRuntimeRegistryScope(
-      options.unrelatedAmbientRegistry ? emptyRegistry : assembled.registry,
+      options.unrelatedAmbientRegistry ? emptyRegistry : registry,
       () =>
         authorizeGatewayRequestPreDispatch({
           method: methodName,
@@ -289,10 +263,10 @@ async function prepareResourceFixture(
     if (authorization.error) {
       throw new Error(authorization.error.message);
     }
-    const authority = authorization.sessionAccessAuthority;
-    if (!authority) {
-      throw new Error("Session access authority is missing");
-    }
+    const authority = expectDefined(
+      authorization.sessionAccessAuthority,
+      "session access authority",
+    );
     try {
       beforeEffect();
       authority.assertCurrent();
@@ -303,7 +277,7 @@ async function prepareResourceFixture(
     }
   });
   return {
-    tools: assembled.tools,
+    tools,
     effect,
     beforeEffect(callback: () => void) {
       beforeEffect = callback;
@@ -313,9 +287,9 @@ async function prepareResourceFixture(
     },
     execute(route: "direct" | "dispatch_action", assertToolAllowed?: (name: string) => void) {
       const args = toolName === "browser" ? { action: "status" } : {};
-      return withPluginRuntimeRegistryScope(assembled.registry, () =>
+      return withPluginRuntimeRegistryScope(registry, () =>
         withGatewayToolCallerIdentity({ ...caller, assertToolAllowed }, () =>
-          requireTool(assembled.tools, route === "direct" ? toolName : route).execute(
+          requireTool(tools, route === "direct" ? toolName : route).execute(
             "browser-policy",
             route === "direct" ? args : { id: toolName, args },
           ),
@@ -436,23 +410,20 @@ describe("captured registered plugin tool policy", () => {
   });
 
   it.each([
-    { toolName: "browser", deny: "browser" },
-    { toolName: "browser", deny: "group:plugins" },
-    { toolName: "Read_Public_Item", deny: "fixture-reader" },
-    { toolName: "Read_Public_Item", deny: "group:plugins" },
-  ] as const)(
-    "rechecks current $deny denial before $toolName effects",
-    async ({ toolName, deny }) => {
-      const fixture = await prepareResourceFixture({
-        toolName,
-        allow: toolName === "browser" ? [toolName] : [toolName, "select_public_item"],
-        unrelatedAmbientRegistry: true,
-      });
-      fixture.beforeEffect(() => fixture.denyTool(deny));
-      await expect(fixture.execute("direct")).rejects.toThrow("current tool policy does not allow");
-      expect(fixture.effect).not.toHaveBeenCalled();
-    },
-  );
+    ["browser", "browser"],
+    ["browser", "group:plugins"],
+    ["Read_Public_Item", "fixture-reader"],
+    ["Read_Public_Item", "group:plugins"],
+  ] as const)("rechecks %s current %s denial before effects", async (toolName, deny) => {
+    const fixture = await prepareResourceFixture({
+      toolName,
+      allow: toolName === "browser" ? [toolName] : [toolName, "select_public_item"],
+      unrelatedAmbientRegistry: true,
+    });
+    fixture.beforeEffect(() => fixture.denyTool(deny));
+    await expect(fixture.execute("direct")).rejects.toThrow("current tool policy does not allow");
+    expect(fixture.effect).not.toHaveBeenCalled();
+  });
 
   it.each<NonNullable<Parameters<typeof prepareResourceFixture>[0]>>([
     { missingSelectedRegistration: true },
