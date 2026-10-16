@@ -5,9 +5,15 @@ export function inferParamBFromIdOrName(text: string): number | null {
   const raw = normalizeLowercaseStringOrEmpty(text);
   // Trailing boundary is a lookahead so two adjacent `<num>b` tokens sharing one delimiter (e.g.
   // "8b 70b" / "8b-70b") both match; a consuming boundary ate the delimiter and skipped the second.
-  const matches = raw.matchAll(/(?:^|[^a-z0-9])[a-z]?(\d+(?:\.\d+)?)b(?=[^a-z0-9]|$)/g);
+  const matches = raw.matchAll(
+    /(?:^|[^a-z0-9])[a-z]?(\d+(?:\.\d+)?)b(?:[-_\s]+(\d+)e)?(?=[^a-z0-9]|$)/g,
+  );
   let best: number | null = null;
   for (const match of matches) {
+    // Expert-count tags such as 17b-128e advertise active parameters, not total size.
+    if (match[2]) {
+      return null;
+    }
     const numRaw = match[1];
     const value = Number(numRaw);
     if (!Number.isFinite(value) || value <= 0) {
@@ -20,7 +26,7 @@ export function inferParamBFromIdOrName(text: string): number | null {
   return best;
 }
 
-/** Restricts live repetition detection to models with a known total size of at most 32B. */
+/** Restricts live repetition detection to the 32B class (allowing rounded metadata). */
 export function isSmallModel(model: {
   id: string;
   name?: string;
@@ -30,5 +36,5 @@ export function isSmallModel(model: {
     model.parameterCount === undefined
       ? inferParamBFromIdOrName(`${model.id} ${model.name ?? ""}`)
       : model.parameterCount / 1_000_000_000;
-  return paramB !== null && paramB > 0 && paramB <= 32;
+  return paramB !== null && paramB > 0 && paramB < 34;
 }

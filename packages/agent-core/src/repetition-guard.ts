@@ -22,7 +22,7 @@ function isRepetitionDominated(text: string): boolean {
   let repeatedLineChars = 0;
   for (const [line, count] of counts) {
     if (count >= MIN_REPEATS) {
-      repeatedLineChars += line.length * count;
+      repeatedLineChars = Math.max(repeatedLineChars, line.length * count);
     }
   }
   if (repeatedLineChars >= dominantChars) {

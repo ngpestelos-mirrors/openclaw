@@ -11,7 +11,7 @@ import {
   user,
 } from "./agent-loop.test-support.js";
 import { createAssistantMessageEventStream, type AssistantMessage, type Message } from "./llm.js";
-import { variedRows } from "./repetition-guard.test-fixtures.js";
+import { distinctRecordOutputs, variedRows } from "./repetition-guard.test-fixtures.js";
 import type { AgentEvent, AgentToolCall, StreamFn } from "./types.js";
 
 const loop = "Please provide more input. ".repeat(800);
@@ -96,6 +96,17 @@ async function runResponse(
 }
 
 describe("repetition stop at the stream owner", () => {
+  it.each(distinctRecordOutputs)("delivers $name without truncation", async ({ text }) => {
+    const content: AssistantMessage["content"] = [{ type: "text", text }];
+    const { result, events, aborted, requests } = await runResponse(content);
+    expect(aborted).toBe(false);
+    expect(requests).toBe(1);
+    expect(result.at(-1)).toMatchObject({ stopReason: "stop", content });
+    expect(events.findLast((event) => event.type === "message_end")).toMatchObject({
+      message: { content },
+    });
+  });
+
   it.each(["text", "thinking", "terminal"])(
     "quarantines a repetitive %s block before persistence and replay",
     async (kind) => {

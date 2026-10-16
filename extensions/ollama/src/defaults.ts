@@ -24,21 +24,28 @@ export const OLLAMA_CLOUD_DEFAULT_MODELS = [
   {
     id: "minimax-m2.7",
     contextWindow: 196_608,
+    // https://platform.minimax.io/docs/api-reference/text-chat
+    maxTokens: 204_800,
     capabilities: ["completion", "thinking", "tools"],
   },
   {
     id: "minimax-m3",
     contextWindow: 524_288,
+    maxTokens: 524_288,
     capabilities: ["completion", "thinking", "tools", "vision"],
   },
   {
     id: "kimi-k3",
     contextWindow: 1_048_576,
+    // No separate output limit: https://ollama.com/library/kimi-k3
+    maxTokens: 1_048_576,
     capabilities: ["completion", "thinking", "tools", "vision"],
   },
   {
     id: OLLAMA_GLM52_CLOUD_MODEL_ID,
     contextWindow: 1_000_000,
+    // https://docs.z.ai/guides/llm/glm-5.2
+    maxTokens: 131_072,
     capabilities: ["completion", "thinking", "tools"],
   },
 ] as const;

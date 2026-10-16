@@ -147,10 +147,7 @@ function resolveOllamaNativeNumCtx(model: ProviderRuntimeModel): number | undefi
     return configured;
   }
   const effective = model.contextTokens;
-  if (effective === undefined || effective <= 0) {
-    return undefined;
-  }
-  return Math.floor(effective);
+  return effective !== undefined && effective > 0 ? Math.floor(effective) : undefined;
 }
 
 function resolveOllamaModelOptions(model: ProviderRuntimeModel): Record<string, unknown> {
@@ -189,12 +186,9 @@ function normalizeOllamaGreedySamplingOptions(options: Record<string, unknown>):
 }
 
 function resolveStreamingTextDelta(previousText: string, nextText: string): string {
-  if (nextText.startsWith(previousText)) {
-    return nextText.slice(previousText.length);
-  }
   // Sanitizers may rewrite previously accumulated content. Fall back to
   // re-emitting the latest complete text so downstream partial state converges.
-  return nextText;
+  return nextText.startsWith(previousText) ? nextText.slice(previousText.length) : nextText;
 }
 
 export function buildOllamaChatRequest(params: {

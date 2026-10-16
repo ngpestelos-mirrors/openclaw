@@ -33,6 +33,7 @@ import {
 import { createOllamaCloudAuthMethod } from "./src/cloud-auth.js";
 import {
   DEFAULT_OLLAMA_EMBEDDING_MODEL,
+  isHostedOllamaCloud,
   OLLAMA_CLOUD_BASE_URL,
   OLLAMA_CLOUD_DEFAULT_MODELS,
   OLLAMA_CLOUD_PROVIDER_ID,
@@ -238,8 +239,7 @@ async function discoverAppGuidedOllamaModel(
     );
     const contextWindow = showInfo.contextWindow ?? configuredCloudModel?.contextWindow;
     const supportsTools =
-      showInfo.capabilities?.includes("tools") ??
-      configuredCloudModel?.compat?.supportsTools === true;
+      showInfo.capabilities?.includes("tools") ?? configuredCloudModel?.compat?.supportsTools;
     const supportsCompletion =
       showInfo.capabilities?.includes("completion") ?? Boolean(configuredCloudModel);
     if (
@@ -252,7 +252,10 @@ async function discoverAppGuidedOllamaModel(
     }
     const definition =
       configuredCloudModel ??
-      buildOllamaModelDefinition(candidateId, contextWindow, showInfo.capabilities, showInfo);
+      buildOllamaModelDefinition(candidateId, contextWindow, showInfo.capabilities, {
+        ...showInfo,
+        remote: isHostedOllamaCloud(connection.baseUrl),
+      });
     model = capLocalOllamaModelContext(
       {
         ...definition,
@@ -499,7 +502,7 @@ async function buildOllamaCloudProvider(apiKey?: string): Promise<ModelProviderC
         defaultModel.id,
         showInfo.contextWindow ?? defaultModel.contextWindow,
         showInfo.capabilities ?? [...defaultModel.capabilities],
-        showInfo,
+        { ...showInfo, remote: true },
       ),
     ],
   };
@@ -523,7 +526,7 @@ async function resolveRequestedDynamicOllamaModel(params: {
     params.modelId,
     showInfo.contextWindow,
     showInfo.capabilities,
-    showInfo,
+    { ...showInfo, remote: isHostedOllamaCloud(showBaseUrl) },
   );
   const model = params.capContextTokens
     ? capLocalOllamaModelContext(definition, showBaseUrl)

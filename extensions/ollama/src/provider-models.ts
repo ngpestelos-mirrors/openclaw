@@ -452,8 +452,11 @@ export function buildOllamaModelDefinition(
   modelId: string,
   contextWindow?: number,
   capabilities?: string[],
-  opts?: OllamaModelShowInfo,
+  opts?: OllamaModelShowInfo & { remote?: boolean },
 ): ModelDefinitionConfig {
+  const cloudModel = resolveOllamaCloudDefaultModel(modelId);
+  const resolvedContext =
+    contextWindow ?? cloudModel?.contextWindow ?? OLLAMA_DEFAULT_CONTEXT_WINDOW;
   return {
     id: modelId,
     name: modelId,
@@ -467,11 +470,10 @@ export function buildOllamaModelDefinition(
           : capabilities.includes("thinking")),
     input: capabilities?.includes("vision") ? ["text", "image"] : ["text"],
     cost: OLLAMA_DEFAULT_COST,
-    contextWindow:
-      contextWindow ??
-      resolveOllamaCloudDefaultModel(modelId)?.contextWindow ??
-      OLLAMA_DEFAULT_CONTEXT_WINDOW,
-    maxTokens: OLLAMA_DEFAULT_MAX_TOKENS,
+    contextWindow: resolvedContext,
+    maxTokens:
+      cloudModel?.maxTokens ??
+      (opts?.remote || isOllamaCloudModel(modelId) ? resolvedContext : OLLAMA_DEFAULT_MAX_TOKENS),
     ...(opts?.parameterCount !== undefined ? { parameterCount: opts.parameterCount } : {}),
     ...(opts?.thinkingLevelMap ? { thinkingLevelMap: opts.thinkingLevelMap } : {}),
     compat: {
@@ -503,6 +505,8 @@ export function toDynamicOllamaModel(params: {
     (value): value is "text" | "image" => value === "text" || value === "image",
   );
   const api = params.providerConfig.api ?? "ollama";
+  const cloudModel = resolveOllamaCloudDefaultModel(params.model.id);
+  const contextWindow = params.model.contextWindow ?? cloudModel?.contextWindow ?? 8192;
   return {
     id: params.model.id,
     name: params.model.name ?? params.model.id,
@@ -512,11 +516,16 @@ export function toDynamicOllamaModel(params: {
     reasoning: params.model.reasoning ?? false,
     input: input.length > 0 ? input : ["text"],
     cost: params.model.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: params.model.contextWindow ?? 8192,
+    contextWindow,
     ...(params.model.contextTokens !== undefined
       ? { contextTokens: params.model.contextTokens }
       : {}),
-    maxTokens: params.model.maxTokens ?? 8192,
+    maxTokens:
+      params.model.maxTokens ??
+      cloudModel?.maxTokens ??
+      (isHostedOllamaCloud(params.providerConfig.baseUrl) || isOllamaCloudModel(params.model.id)
+        ? contextWindow
+        : OLLAMA_DEFAULT_MAX_TOKENS),
     ...(params.model.parameterCount !== undefined
       ? { parameterCount: params.model.parameterCount }
       : {}),
@@ -662,7 +671,10 @@ export async function buildOllamaProvider(
     baseUrl: apiBase,
     api: "ollama",
     models: discovered.map((model) =>
-      buildOllamaModelDefinition(model.name, model.contextWindow, model.capabilities, model),
+      buildOllamaModelDefinition(model.name, model.contextWindow, model.capabilities, {
+        ...model,
+        remote: isHostedOllamaCloud(apiBase) || isOllamaRemoteModel(model),
+      }),
     ),
   };
 }

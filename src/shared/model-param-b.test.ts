@@ -1,4 +1,3 @@
-// Model parameter B tests cover reasoning budget normalization and aliases.
 import { describe, expect, it } from "vitest";
 import { inferParamBFromIdOrName, isSmallModel } from "./model-param-b.js";
 
@@ -8,9 +7,13 @@ describe("shared/model-param-b", () => {
     [{ id: "qwen3:4b" }, true],
     [{ id: "model", name: "Dense 32B" }, true],
     [{ id: "model", parameterCount: 32_000_000_000 }, true],
-    [{ id: "model", parameterCount: 32_000_000_001 }, false],
+    [{ id: "qwen:32b", parameterCount: 32_800_000_000 }, true],
+    [{ id: "model", parameterCount: 33_999_999_999 }, true],
+    [{ id: "model", parameterCount: 34_000_000_000 }, false],
     [{ id: "model-4b", parameterCount: 70_000_000_000 }, false],
     [{ id: "model-70b", parameterCount: 4_000_000_000 }, true],
+    [{ id: "llama4-maverick-17b-128e", name: "Llama 4 Maverick 17B" }, false],
+    [{ id: "qwen3-30b-a3b" }, true],
     [{ id: "qwen3-235b-a22b" }, false],
     [{ id: "model", name: "Unknown size" }, false],
   ] as const)("classifies total model size for %j", (model, expected) => {
@@ -28,6 +31,19 @@ describe("shared/model-param-b", () => {
     expect(inferParamBFromIdOrName("8b 70b")).toBe(70);
     expect(inferParamBFromIdOrName("8b-70b")).toBe(70);
     expect(inferParamBFromIdOrName("7b-13b")).toBe(13);
+  });
+
+  it.each([
+    "llama4-maverick-17b-128e",
+    "llama4-scout-17b-16e-instruct",
+    "Llama 4 Maverick 17B 128E",
+  ])("does not infer total parameters from an active-size expert tag: %s", (id) => {
+    expect(inferParamBFromIdOrName(id)).toBeNull();
+  });
+
+  it("preserves total parameter counts when active counts are also present", () => {
+    expect(inferParamBFromIdOrName("qwen3-30b-a3b")).toBe(30);
+    expect(inferParamBFromIdOrName("qwen3-235b-a22b")).toBe(235);
   });
 
   it("ignores malformed, zero, and non-delimited matches", () => {
