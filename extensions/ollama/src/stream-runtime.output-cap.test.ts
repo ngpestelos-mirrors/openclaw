@@ -1,5 +1,6 @@
 import type { Model } from "openclaw/plugin-sdk/llm";
 import type { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+import { requestBodyText } from "openclaw/plugin-sdk/test-env";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { fetchMock } = vi.hoisted(() => ({ fetchMock: vi.fn<typeof fetchWithSsrFGuard>() }));
@@ -79,7 +80,7 @@ describe("native Ollama output guards", () => {
     await expect(stream.result()).resolves.toMatchObject({ stopReason: "stop" });
     const request = fetchMock.mock.calls[0]?.[0];
     expect(request?.url).toBe("http://127.0.0.1:11434/api/chat");
-    expect(JSON.parse(String(request?.init?.body))).toMatchObject({
+    expect(JSON.parse(requestBodyText(request?.init?.body))).toMatchObject({
       options: { num_predict: expected },
     });
   });
@@ -113,7 +114,7 @@ describe("native Ollama output guards", () => {
       ],
     });
     await stream.result();
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[0].init?.body)).messages).toEqual([
+    expect(JSON.parse(requestBodyText(fetchMock.mock.calls[0]?.[0].init?.body)).messages).toEqual([
       { role: "user", content: "start" },
       { role: "assistant", content: "Earlier answer stays intact.[Repetitive output stopped]" },
       { role: "user", content: "next" },
