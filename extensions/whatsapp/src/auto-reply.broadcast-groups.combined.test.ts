@@ -1,4 +1,3 @@
-// Whatsapp tests cover auto reply.broadcast groups.combined plugin behavior.
 import "./test-helpers.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
@@ -20,6 +19,23 @@ import { maybeBroadcastMessage } from "./auto-reply/monitor/broadcast.js";
 import { createTestWebAudioInboundMessage } from "./inbound/test-message.test-helper.js";
 
 installWebAutoReplyTestHomeHooks();
+
+function broadcastConfig(
+  broadcast?: OpenClawConfig["broadcast"],
+  accountId = "default",
+): OpenClawConfig {
+  return {
+    channels: {
+      whatsapp: {
+        allowFrom: ["*"],
+        ...(accountId !== "default" ? { accounts: { [accountId]: { allowFrom: ["*"] } } } : {}),
+      },
+    },
+    agents: { defaults: { maxConcurrent: 10 }, entries: { alfred: {}, baerbel: {} } },
+    bindings: [{ agentId: "alfred", match: { channel: "whatsapp", accountId } }],
+    broadcast,
+  };
+}
 
 describe("broadcast groups", () => {
   installWebAutoReplyUnitTestHooks();
@@ -79,14 +95,7 @@ describe("broadcast groups", () => {
   });
 
   it("applies recipient and strategy changes on the same active listener", async () => {
-    const base = {
-      channels: { whatsapp: { allowFrom: ["*"] } },
-      agents: {
-        defaults: { maxConcurrent: 10 },
-        entries: { alfred: {}, baerbel: {} },
-      },
-      bindings: [{ agentId: "alfred", match: { channel: "whatsapp", accountId: "default" } }],
-    } satisfies OpenClawConfig;
+    const base = broadcastConfig();
     const phases = [
       { strategy: "sequential", recipients: ["alfred"] },
       { strategy: "parallel", recipients: ["alfred", "baerbel"] },
@@ -159,44 +168,32 @@ describe("broadcast groups", () => {
   });
 
   it("shares group history across broadcast agents and clears after replying", async () => {
-    setLoadConfigMock({
-      channels: { whatsapp: { allowFrom: ["*"] } },
-      agents: {
-        defaults: { maxConcurrent: 10 },
-        entries: { alfred: {}, baerbel: {} },
-      },
-      bindings: [{ agentId: "alfred", match: { channel: "whatsapp", accountId: "default" } }],
-      broadcast: {
-        strategy: "sequential",
-        "123@g.us": ["alfred", "baerbel"],
-      },
-    } satisfies OpenClawConfig);
+    setLoadConfigMock(
+      broadcastConfig({ strategy: "sequential", "123@g.us": ["alfred", "baerbel"] }),
+    );
 
     const resolver = vi.fn().mockResolvedValue({ text: "ok" });
 
     const { spies, onMessage } = await monitorWebChannelWithCapture(resolver);
+    const group = { spies, onMessage, selfE164: "+999" };
 
     await sendWebGroupInboundMessage({
-      onMessage,
-      spies,
+      ...group,
       body: "hello group",
       id: "g1",
       senderE164: "+111",
       senderName: "Alice",
-      selfE164: "+999",
     });
 
     expect(resolver).not.toHaveBeenCalled();
 
     await sendWebGroupInboundMessage({
-      onMessage,
-      spies,
+      ...group,
       body: "@bot ping",
       id: "g2",
       senderE164: "+222",
       senderName: "Bob",
       mentionedJids: ["999@s.whatsapp.net"],
-      selfE164: "+999",
       selfJid: "999@s.whatsapp.net",
     });
 
@@ -212,20 +209,16 @@ describe("broadcast groups", () => {
       expect(payload.Body).toContain("Alice (+111): hello group");
       expect(payload.Body).not.toContain("[message_id:");
       expect(payload.Body).toContain("@bot ping");
-      expect(payload.SenderName).toBe("Bob");
-      expect(payload.SenderE164).toBe("+222");
-      expect(payload.SenderId).toBe("+222");
+      expect(payload).toMatchObject({ SenderName: "Bob", SenderE164: "+222", SenderId: "+222" });
     }
 
     await sendWebGroupInboundMessage({
-      onMessage,
-      spies,
+      ...group,
       body: "@bot ping 2",
       id: "g3",
       senderE164: "+333",
       senderName: "Clara",
       mentionedJids: ["999@s.whatsapp.net"],
-      selfE164: "+999",
       selfJid: "999@s.whatsapp.net",
     });
 
@@ -240,27 +233,9 @@ describe("broadcast groups", () => {
   });
 
   it("keeps named-account group broadcast routes on the scoped session key", async () => {
-    setLoadConfigMock({
-      channels: {
-        whatsapp: {
-          allowFrom: ["*"],
-          accounts: {
-            work: {
-              allowFrom: ["*"],
-            },
-          },
-        },
-      },
-      agents: {
-        defaults: { maxConcurrent: 10 },
-        entries: { alfred: {}, baerbel: {} },
-      },
-      bindings: [{ agentId: "alfred", match: { channel: "whatsapp", accountId: "work" } }],
-      broadcast: {
-        strategy: "sequential",
-        "123@g.us": ["alfred", "baerbel"],
-      },
-    } satisfies OpenClawConfig);
+    setLoadConfigMock(
+      broadcastConfig({ strategy: "sequential", "123@g.us": ["alfred", "baerbel"] }, "work"),
+    );
 
     const seen: string[] = [];
     const resolver = vi.fn(async (ctx: { SessionKey?: unknown }) => {
@@ -273,12 +248,12 @@ describe("broadcast groups", () => {
     await sendWebGroupInboundMessage({
       onMessage,
       spies,
+      selfE164: "+999",
       body: "@bot ping",
       id: "g-work-1",
       senderE164: "+111",
       senderName: "Alice",
       mentionedJids: ["999@s.whatsapp.net"],
-      selfE164: "+999",
       selfJid: "999@s.whatsapp.net",
       accountId: "work",
     });
