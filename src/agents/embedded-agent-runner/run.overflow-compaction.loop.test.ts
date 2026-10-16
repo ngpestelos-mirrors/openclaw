@@ -53,7 +53,7 @@ vi.mock("../../gateway/github-publication-discovery.js", () => ({
 }));
 
 vi.mock("../delegation-capability.js", () => ({
-  resolveDelegationCapability: vi.fn(() => undefined),
+  prepareDelegationCapability: vi.fn(() => undefined),
 }));
 
 // mock-isolation: Dispatch fixtures provide an empty auth store and no credential database.

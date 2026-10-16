@@ -5,9 +5,12 @@ import {
   setActiveEmbeddedRun,
 } from "../agents/embedded-agent-runner/runs.js";
 import type { runEmbeddedAgent as executeEmbeddedAgent } from "../agents/embedded-agent.js";
+import { FailoverError } from "../agents/failover-error.js";
+import { clearConfigCache } from "../config/config.js";
 import { loadSessionEntry, patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { waitForGatewayActiveWork } from "../infra/gateway-active-work.js";
 import type { RespondFn } from "./server-methods/types.js";
+import { prepareGatewayReplyRuntimeForTest, testState } from "./test-helpers.js";
 
 /** Reuse the suite's admission, queue and reply owners; only provider execution is simulated. */
 export function registerGoalAutomaticContinuationCases(
@@ -20,6 +23,74 @@ export function registerGoalAutomaticContinuationCases(
   goalStart: (message: string) => Record<string, unknown>,
   userMessages: () => readonly unknown[],
 ) {
+  it.each([
+    { provider: "anthropic", model: "claude-haiku-4-5" },
+    { provider: "openai", model: "gpt-4.1-mini" },
+  ])(
+    "keeps successive goal turns active after rate-limit fallback to $provider/$model",
+    async ({ provider: fallbackProvider, model: fallbackModel }) => {
+      const fallback = `${fallbackProvider}/${fallbackModel}`;
+      testState.agentConfig = {
+        model: { primary: "openai/gpt-4.1", fallbacks: [fallback] },
+      };
+      clearConfigCache();
+      await prepareGatewayReplyRuntimeForTest({ force: true });
+      const objective = "Finish the fallback checklist";
+      let successes = 0;
+      runEmbeddedAgent.mockImplementation(async (params) => {
+        expect(loadSessionEntry(scope())?.goal).toMatchObject({ objective, status: "active" });
+        expect(params.currentInboundContext?.text).toContain(objective);
+        if (params.model === "gpt-4.1") {
+          throw new FailoverError("Rate limit exceeded", {
+            provider: params.provider,
+            model: params.model,
+            reason: "rate_limit",
+            status: 429,
+          });
+        }
+        expect(params.provider).toBe(fallbackProvider);
+        expect(params.model).toBe(fallbackModel);
+        successes += 1;
+        if (successes === 3) {
+          await patchSessionEntryCore(scope(), (entry) => ({
+            goal: entry.goal ? { ...entry.goal, status: "complete" } : undefined,
+          }));
+        }
+        return {
+          payloads: [{ text: successes === 3 ? "Verified the checklist." : "More work remains." }],
+          meta: {
+            durationMs: 0,
+            stopReason: "end_turn",
+            agentMeta: {
+              sessionId: params.sessionId,
+              provider: fallbackProvider,
+              model: fallbackModel,
+              agentHarnessId: "openclaw",
+              usage: { input: 1, output: 1 },
+            },
+          },
+        };
+      });
+      const started = await rpc("chat.send", goalStart(objective));
+      expect(started.mock.calls[0]?.[0]).toBe(true);
+      const drained = await waitForGatewayActiveWork(30_000);
+      expect(drained.drained).toBe(true);
+      expect(successes).toBe(3);
+      expect(
+        runEmbeddedAgent.mock.calls.map(([params]) => `${params.provider}/${params.model}`),
+      ).toEqual([
+        "openai/gpt-4.1",
+        fallback,
+        "openai/gpt-4.1",
+        fallback,
+        "openai/gpt-4.1",
+        fallback,
+      ]);
+      expect(userMessages()).toHaveLength(1);
+      expect(loadSessionEntry(scope())?.goal).toMatchObject({ objective, status: "complete" });
+    },
+  );
+
   it("nudges consecutive normal final turns until the same Goal is complete", async () => {
     const completed = createDeferred();
     runEmbeddedAgent.mockImplementation(async (params) => {

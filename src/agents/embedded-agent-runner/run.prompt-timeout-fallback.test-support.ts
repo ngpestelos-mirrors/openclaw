@@ -1,5 +1,9 @@
 // Full-entry coverage for prompt timeout continuation and model fallback ownership.
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  consumeSubagentCompletionToolHandoff,
+  registerSubagentCompletionToolHandoff,
+} from "../../gateway/subagent-completion-tool-handoff.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { applyDelegationCapability } from "../delegation-capability.js";
 import { createModelFallbackConfig } from "../test-helpers/model-fallback-config-fixture.js";
@@ -97,6 +101,81 @@ describe("runEmbeddedAgent prompt timeout fallback handoff", () => {
           authorizedTools,
         );
       }
+    },
+  );
+
+  it.each(["openclaw", "codex"] as const)(
+    "retains the verified requester settle capability on a rate-limit fallback under %s",
+    async (harness) => {
+      const run = createOverflowRunParams(state);
+      if (harness === "codex") {
+        const { getRegisteredAgentHarness, registerAgentHarness } =
+          await import("../harness/registry.js");
+        const native = getRegisteredAgentHarness(harness);
+        if (!native) {
+          throw new Error("Missing fixture harness");
+        }
+        // Match extensions/codex/harness.ts while replacing only native model I/O.
+        registerAgentHarness({ ...native.harness, conversationToolPolicySupport: "exact" });
+      }
+      const config = {
+        session: { store: state.statePath("agents", "main", "sessions", "sessions.json") },
+      };
+      // The shared harness resets modules before loading the runner. Use its
+      // current session/config owners rather than a pre-reset static accessor.
+      const { replaceSessionEntry } = await import("../../config/sessions/session-accessor.js");
+      const { setRuntimeConfigSnapshot } = await import("../../config/runtime-snapshot.js");
+      setRuntimeConfigSnapshot(config);
+      const sourceSessionKey = "agent:main:subagent:finished-child";
+      await replaceSessionEntry(
+        { agentId: "main", sessionKey: sourceSessionKey },
+        {
+          sessionId: "finished-child-id",
+          updatedAt: 1,
+          spawnedBy: run.sessionKey,
+          spawnDepth: 1,
+          inheritedToolPolicyVersion: 1,
+          inheritedToolAllow: ["sessions_send", "sessions_spawn"],
+          inheritedToolDeny: [],
+        },
+      );
+      const registration = {
+        sourceSessionKey,
+        targetSessionKey: run.sessionKey,
+        targetSessionId: run.sessionId,
+        idempotencyKey: run.runId,
+        settleBatch: { sourceSessionKeys: [sourceSessionKey], isCurrent: () => true },
+      };
+      const trustedInternalHandoff = consumeSubagentCompletionToolHandoff({
+        ...registration,
+        handoffId: registerSubagentCompletionToolHandoff(registration),
+        sourceTool: "subagent_settle",
+        provider: "openai",
+        model: "gpt-5.4",
+      });
+      mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+        makeAttemptResult({ assistantTexts: ["Continue the authorized work."] }),
+      );
+      await runEmbeddedAgent({
+        ...run,
+        config,
+        provider: "openai",
+        model: "gpt-5.4",
+        agentHarnessRuntimeOverride: harness,
+        inputProvenance: { kind: "inter_session", sourceTool: "subagent_settle", sourceSessionKey },
+        trustedInternalHandoff,
+        modelRoutingProvenance: {
+          stage: "fallback",
+          requestedProvider: "openai",
+          requestedModel: "gpt-4.1",
+          fallbackReason: "rate_limit",
+        },
+      });
+      expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+      expect(mockedRunEmbeddedAttempt.mock.calls[0]?.[0]).toMatchObject({
+        fallbackActive: true,
+        delegationCapability: "full",
+      });
     },
   );
 
