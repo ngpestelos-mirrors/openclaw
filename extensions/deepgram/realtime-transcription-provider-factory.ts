@@ -13,6 +13,7 @@ import {
   parseBooleanValue as readBoolean,
   parseFiniteNumber as readFiniteNumber,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { collapseWhitespace } from "openclaw/plugin-sdk/string-normalization-runtime";
 import { DEFAULT_DEEPGRAM_AUDIO_BASE_URL, DEFAULT_DEEPGRAM_AUDIO_MODEL } from "./audio.js";
 
 type DeepgramRealtimeTranscriptionEncoding = "linear16" | "mulaw" | "alaw";
@@ -157,8 +158,6 @@ function createDeepgramRealtimeTranscriptionSession(
   let finalizeFallbackFired = false;
   let finalizeFallbackTimer: ReturnType<typeof setTimeout> | undefined;
   let openedOnce = false;
-
-  const collapseWhitespace = (value: string) => value.replace(/\s+/g, " ").trim();
 
   const joinTranscript = (left: string, right: string) =>
     collapseWhitespace(left && right ? `${left} ${right}` : left || right);
