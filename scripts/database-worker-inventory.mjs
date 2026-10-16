@@ -26,6 +26,18 @@ const testSuites = new Set([
 ]);
 const reviewed = new Map([
   [
+    "src/daemon/runtime-pin-store.ts",
+    { tier: "T3", evidence: "CLI service owner / Doctor migration; no Gateway runtime." },
+  ],
+  [
+    "src/daemon/runtime-pin-state.ts",
+    { tier: "T3", evidence: "CLI service locks; CLI status and Doctor audits; no Gateway caller." },
+  ],
+  [
+    "src/infra/state-migrations.daemon-runtime-pins.ts",
+    { tier: "T3", evidence: "Doctor config-machine-state / pin fence; exclusive migration lock." },
+  ],
+  [
     "src/config/sessions/goals-operations.ts",
     {
       priority: 99,
