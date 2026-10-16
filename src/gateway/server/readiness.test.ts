@@ -8,7 +8,7 @@ import {
 } from "../../state/agent-database-admission.js";
 import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js";
 import type { ChannelManager } from "../server-channels.js";
-import type { GatewayPluginReloadStatus } from "../server-plugin-runtime-generation.js";
+import type { GatewayPluginReloadStatus } from "../server-plugin-runtime-state.js";
 import { createReadinessChecker } from "./readiness.js";
 
 /**
