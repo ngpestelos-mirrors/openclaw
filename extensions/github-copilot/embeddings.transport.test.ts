@@ -1,5 +1,3 @@
-// Exercise discovery and embeddings over real sockets, including request
-// cancellation and redaction without relying on fetch or SSRF mocks.
 import { channel } from "node:diagnostics_channel";
 import fs from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -192,86 +190,68 @@ describe("githubCopilotMemoryEmbeddingProviderAdapter real transport", () => {
     20_000,
   );
 
-  it("redacts credential-shaped text in model discovery errors over real transport", async () => {
-    const server = await startCopilotServer({
-      models: {
-        status: 401,
-        body: '{"error":{"message":"authentication failed"},"access_token":"ghu_AAAAUNIQUESECRETXXXX111122223333"}',
-      },
-    });
-    pointTokenAt(server.baseUrl);
-
-    let caught: Error | undefined;
-    try {
-      await githubCopilotMemoryEmbeddingProviderAdapter.create(defaultCreateOptions());
-    } catch (error) {
-      caught = error as Error;
-    }
-
-    expect(server.requests).toEqual([{ method: "GET", url: "/models" }]);
-    expect(caught?.message).toContain("GitHub Copilot model discovery HTTP 401");
-    expect(caught?.message).toContain("authentication failed");
-    expect(caught?.message).not.toContain("ghu_AAAAUNIQUESECRETXXXX111122223333");
-    expect(caught?.message).not.toContain("UNIQUESECRET");
-  });
-
-  it("redacts credential-shaped text in embeddings errors over real transport", async () => {
-    const server = await startCopilotServer({
-      models: { status: 200, body: DISCOVERY_MODELS_BODY },
-      embeddings: {
-        status: 429,
-        body: '{"error":{"message":"rate limit exceeded"},"access_token":"gho_BBBBUNIQUEEMBSECRETYYYY444455556666"}',
-      },
-    });
-    pointTokenAt(server.baseUrl);
-
-    const result = await githubCopilotMemoryEmbeddingProviderAdapter.create(defaultCreateOptions());
-
-    let caught: Error | undefined;
-    try {
-      await result.provider?.embed("hello", { inputType: "query" });
-    } catch (error) {
-      caught = error as Error;
-    }
-
-    expect(server.requests).toEqual([
-      { method: "GET", url: "/models" },
-      { method: "POST", url: "/embeddings" },
-    ]);
-    expect(caught?.message).toContain("GitHub Copilot embeddings HTTP 429");
-    expect(caught?.message).toContain("rate limit exceeded");
-    expect(caught?.message).not.toContain("gho_BBBBUNIQUEEMBSECRETYYYY444455556666");
-    expect(caught?.message).not.toContain("UNIQUEEMBSECRET");
-  });
-
-  it("still redacts when logging.redactSensitive is off", async () => {
-    const restoreConfig = withRedactionDisabledConfig();
-    try {
-      const server = await startCopilotServer({
-        models: {
-          status: 403,
-          body: '{"error":{"message":"forbidden"},"access_token":"ghu_CCCCUNIQUEOFFSECRETZZZZ777788889999"}',
-        },
-      });
-      pointTokenAt(server.baseUrl);
-
-      let caught: Error | undefined;
+  it.each([
+    {
+      stage: "model discovery",
+      status: 401,
+      message: "authentication failed",
+      secret: "ghu_AAAAUNIQUESECRETXXXX111122223333",
+      fragment: "UNIQUESECRET",
+      redactOff: false,
+    },
+    {
+      stage: "embeddings",
+      status: 429,
+      message: "rate limit exceeded",
+      secret: "gho_BBBBUNIQUEEMBSECRETYYYY444455556666",
+      fragment: "UNIQUEEMBSECRET",
+      redactOff: false,
+    },
+    {
+      stage: "model discovery",
+      status: 403,
+      message: "forbidden",
+      secret: "ghu_CCCCUNIQUEOFFSECRETZZZZ777788889999",
+      fragment: "UNIQUEOFFSECRET",
+      redactOff: true,
+    },
+  ])(
+    "redacts $stage HTTP $status over real transport (redaction off: $redactOff)",
+    async ({ stage, status, message, secret, fragment, redactOff }) => {
+      const restoreConfig = redactOff ? withRedactionDisabledConfig() : undefined;
       try {
-        await githubCopilotMemoryEmbeddingProviderAdapter.create(defaultCreateOptions());
-      } catch (error) {
-        caught = error as Error;
+        const failure = {
+          status,
+          body: JSON.stringify({ error: { message }, access_token: secret }),
+        };
+        const server = await startCopilotServer({
+          models: stage === "embeddings" ? { status: 200, body: DISCOVERY_MODELS_BODY } : failure,
+          ...(stage === "embeddings" ? { embeddings: failure } : {}),
+        });
+        pointTokenAt(server.baseUrl);
+        let caught: Error | undefined;
+        try {
+          const result =
+            await githubCopilotMemoryEmbeddingProviderAdapter.create(defaultCreateOptions());
+          if (stage === "embeddings") {
+            await result.provider?.embed("hello", { inputType: "query" });
+          }
+        } catch (error) {
+          caught = error as Error;
+        }
+        expect(server.requests).toEqual([
+          { method: "GET", url: "/models" },
+          ...(stage === "embeddings" ? [{ method: "POST", url: "/embeddings" }] : []),
+        ]);
+        expect(caught?.message).toContain(`GitHub Copilot ${stage} HTTP ${status}`);
+        expect(caught?.message).toContain(message);
+        expect(caught?.message).not.toContain(secret);
+        expect(caught?.message).not.toContain(fragment);
+      } finally {
+        restoreConfig?.();
       }
-
-      expect(caught?.message).toContain("GitHub Copilot model discovery HTTP 403");
-      expect(caught?.message).toContain("forbidden");
-      // Forced `tools` mode must mask the token even though on-disk config
-      // disables general log redaction; a config-honoring call would leak it.
-      expect(caught?.message).not.toContain("ghu_CCCCUNIQUEOFFSECRETZZZZ777788889999");
-      expect(caught?.message).not.toContain("UNIQUEOFFSECRET");
-    } finally {
-      restoreConfig();
-    }
-  });
+    },
+  );
 
   it.each(["profile", "custom"])(
     "preserves %s authentication and embedding wire requests",

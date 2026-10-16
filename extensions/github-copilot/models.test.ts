@@ -1,6 +1,5 @@
 import { streamSimpleAnthropic } from "@openclaw/ai/internal/anthropic";
 import { streamSimpleOpenAIResponses } from "@openclaw/ai/internal/openai";
-// Github Copilot tests cover models plugin behavior.
 import { expectDefined } from "@openclaw/normalization-core";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import { makeResponse } from "openclaw/plugin-sdk/test-env";
@@ -246,113 +245,57 @@ describe("fetchCopilotModelCatalog", () => {
   function fetchCatalogWithFetch({
     fetchImpl,
     ...params
-  }: Parameters<typeof fetchCopilotModelCatalog>[0] & { fetchImpl: typeof fetch }) {
+  }: Partial<Parameters<typeof fetchCopilotModelCatalog>[0]> & { fetchImpl: typeof fetch }) {
     vi.stubGlobal("fetch", fetchImpl);
-    return fetchCopilotModelCatalog(params);
+    return fetchCopilotModelCatalog({
+      copilotApiToken: "tid=test",
+      baseUrl: "https://api.githubcopilot.com",
+      ...params,
+    });
   }
 
-  // Trimmed sample of the real Copilot /models response shape captured against
-  // api.githubcopilot.com against an Individual Copilot subscription. Includes
-  // a chat model, a router (must be filtered), an embedding (must be filtered),
-  // an internal 1M-context Claude variant (must be kept), and a vision-disabled
-  // codex model.
+  function chatModel(
+    id: string,
+    name: string,
+    [context, output, prompt]: [number, number, number?],
+    supports: Record<string, unknown>,
+  ) {
+    return {
+      id,
+      name,
+      capabilities: {
+        type: "chat",
+        limits: {
+          max_context_window_tokens: context,
+          max_output_tokens: output,
+          ...(prompt === undefined ? {} : { max_prompt_tokens: prompt }),
+        },
+        supports,
+      },
+    };
+  }
+
+  const reasoning_effort = ["low", "medium", "high"];
   const sampleApiResponse = {
     data: [
-      {
-        id: "gpt-5.5",
-        name: "GPT-5.5",
-        object: "model",
-        vendor: "OpenAI",
-        capabilities: {
-          type: "chat",
-          family: "gpt-5.5",
-          limits: {
-            max_context_window_tokens: 400000,
-            max_output_tokens: 128000,
-            max_prompt_tokens: 272000,
-          },
-          supports: {
-            vision: true,
-            tool_calls: true,
-            streaming: true,
-            structured_outputs: true,
-            reasoning_effort: ["low", "medium", "high"],
-          },
-        },
-      },
-      {
-        id: "gpt-5.3-codex",
-        name: "GPT-5.3-Codex",
-        object: "model",
-        vendor: "OpenAI",
-        capabilities: {
-          type: "chat",
-          family: "gpt-5.3-codex",
-          limits: {
-            max_context_window_tokens: 400000,
-            max_output_tokens: 128000,
-          },
-          supports: {
-            vision: false,
-            tool_calls: true,
-            reasoning_effort: ["low", "medium", "high"],
-          },
-        },
-      },
-      {
-        id: "gemini-3.1-pro-preview",
-        name: "Gemini 3.1 Pro Preview",
-        object: "model",
-        vendor: "Google",
-        capabilities: {
-          type: "chat",
-          limits: {
-            max_context_window_tokens: 1_000_000,
-            max_output_tokens: 65_536,
-          },
-          supports: {
-            vision: true,
-            tool_calls: true,
-            streaming: true,
-          },
-        },
-      },
-      {
-        id: "claude-opus-4.7-1m-internal",
-        name: "Claude Opus 4.7 (1M context)(Internal only)",
-        object: "model",
-        vendor: "Anthropic",
-        capabilities: {
-          type: "chat",
-          limits: {
-            max_context_window_tokens: 1000000,
-            max_output_tokens: 64000,
-          },
-          supports: {
-            vision: true,
-            tool_calls: true,
-            reasoning_effort: ["low", "medium", "high", "xhigh"],
-          },
-        },
-      },
-      {
-        id: "claude-opus-4-5",
-        name: "Claude Opus 4.5",
-        object: "model",
-        vendor: "Anthropic",
-        capabilities: {
-          type: "chat",
-          limits: {
-            max_context_window_tokens: 200000,
-            max_output_tokens: 64000,
-          },
-          supports: {
-            vision: true,
-            tool_calls: true,
-            reasoning_effort: ["low", "medium", "high", "max"],
-          },
-        },
-      },
+      chatModel("gpt-5.5", "GPT-5.5", [400000, 128000, 272000], { vision: true, reasoning_effort }),
+      chatModel("gpt-5.3-codex", "GPT-5.3-Codex", [400000, 128000], {
+        vision: false,
+        reasoning_effort,
+      }),
+      chatModel("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview", [1_000_000, 65_536], {
+        vision: true,
+      }),
+      chatModel(
+        "claude-opus-4.7-1m-internal",
+        "Claude Opus 4.7 (1M context)(Internal only)",
+        [1000000, 64000],
+        { vision: true, reasoning_effort: [...reasoning_effort, "xhigh"] },
+      ),
+      chatModel("claude-opus-4-5", "Claude Opus 4.5", [200000, 64000], {
+        vision: true,
+        reasoning_effort: [...reasoning_effort, "max"],
+      }),
       {
         // Internal router — must be filtered out (id starts with "accounts/").
         id: "accounts/msft/routers/abc123",
@@ -408,8 +351,6 @@ describe("fetchCopilotModelCatalog", () => {
 
   async function fetchSelectionFixture(data: unknown[]) {
     return await fetchCatalogWithFetch({
-      copilotApiToken: "tid=test",
-      baseUrl: "https://api.githubcopilot.com",
       fetchImpl: vi.fn().mockResolvedValue(makeResponse(200, { data })) as unknown as typeof fetch,
     });
   }
@@ -504,8 +445,6 @@ describe("fetchCopilotModelCatalog", () => {
     const fetchImpl = vi.fn().mockResolvedValue(makeResponse(200, sampleApiResponse));
 
     const out = await fetchCatalogWithFetch({
-      copilotApiToken: "tid=test",
-      baseUrl: "https://api.githubcopilot.com",
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
 
@@ -519,13 +458,13 @@ describe("fetchCopilotModelCatalog", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [calledUrl, calledInit] = fetchImpl.mock.calls[0] ?? [];
     expect(calledUrl).toBe("https://api.githubcopilot.com/models");
-    expect((calledInit as RequestInit).method).toBe("GET");
-    expect(((calledInit as RequestInit).headers as Record<string, string>).Authorization).toBe(
-      "Bearer tid=test",
-    );
-    expect(((calledInit as RequestInit).headers as Record<string, string>)["Accept-Encoding"]).toBe(
-      "identity",
-    );
+    expect(calledInit).toMatchObject({
+      method: "GET",
+      headers: {
+        Authorization: "Bearer tid=test",
+        "Accept-Encoding": "identity",
+      },
+    });
 
     expect(out.map((m) => m.id)).toEqual([
       "gpt-5.5",
@@ -551,13 +490,11 @@ describe("fetchCopilotModelCatalog", () => {
     });
 
     const codex = out.find((m) => m.id === "gpt-5.3-codex");
-    expect(codex?.input).toEqual(["text"]);
-    expect(codex?.reasoning).toBe(true);
-    expect(codex?.contextWindow).toBe(400000);
+    expect(codex).toMatchObject({ input: ["text"], reasoning: true, contextWindow: 400000 });
     expect(codex?.contextTokens).toBeUndefined();
 
     const gemini = out.find((m) => m.id === "gemini-3.1-pro-preview");
-    expect(gemini?.api).toBe("openai-completions");
+    expect(gemini).toMatchObject({ api: "openai-completions" });
     expect(gemini?.compat).toEqual({
       supportsStore: false,
       supportsDeveloperRole: false,
@@ -714,8 +651,6 @@ describe("fetchCopilotModelCatalog", () => {
       }
       await expect(
         fetchCatalogWithFetch({
-          copilotApiToken: "tid=test",
-          baseUrl: "https://api.githubcopilot.com",
           fetchImpl,
         }),
       ).rejects.toThrow(/blocked|private|metadata/i);
@@ -746,8 +681,6 @@ describe("fetchCopilotModelCatalog", () => {
         });
       });
       const pending = fetchCatalogWithFetch({
-        copilotApiToken: "tid=test",
-        baseUrl: "https://api.githubcopilot.com",
         ...(source === "caller" ? { signal: controller.signal } : {}),
         fetchImpl,
       });
@@ -780,7 +713,6 @@ describe("fetchCopilotModelCatalog", () => {
     await expect(
       fetchCatalogWithFetch({
         copilotApiToken: "tid=bad",
-        baseUrl: "https://api.githubcopilot.com",
         fetchImpl: fetchImpl as unknown as typeof fetch,
       }),
     ).rejects.toThrow(/HTTP 401/);
@@ -794,8 +726,6 @@ describe("fetchCopilotModelCatalog", () => {
 
       await expect(
         fetchCatalogWithFetch({
-          copilotApiToken: "tid=test",
-          baseUrl: "https://api.githubcopilot.com",
           fetchImpl: fetchImpl as unknown as typeof fetch,
         }),
       ).rejects.toThrow("Copilot /models: malformed JSON response");
@@ -806,8 +736,6 @@ describe("fetchCopilotModelCatalog", () => {
     const fetchImpl = vi.fn<typeof fetch>();
     await expect(
       fetchCatalogWithFetch({
-        copilotApiToken: "tid=test",
-        baseUrl: "https://api.githubcopilot.com",
         [field]: "",
         fetchImpl,
       }),
