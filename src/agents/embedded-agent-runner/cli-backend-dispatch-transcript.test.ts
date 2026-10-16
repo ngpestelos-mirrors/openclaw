@@ -159,10 +159,7 @@ it("survives append failures without failing the run or later appends", async ()
   const recorder = createRecorder();
   recorder.noteToolEvent({ phase: "result", toolName: "memory_search", isError: false });
   await expect(recorder.finalize("text")).resolves.toBeUndefined();
-  expect(messages()).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ role: "toolResult" }),
-      expect.objectContaining({ role: "assistant" }),
-    ]),
+  expect(messages().map(({ role }) => role)).toEqual(
+    expect.arrayContaining(["toolResult", "assistant"]),
   );
 });
