@@ -214,6 +214,8 @@ Installed TypeScript plugins use the embedded Jiti loader and Babel transformer.
 Plugin installation uses a packaged npm child entrypoint with the commands used
 by OpenClaw's install owners: `config`, `install`, `pack`, `prune`, `uninstall`, and
 `view`. Interactive npm project tooling is not part of this private entrypoint.
+Installed plugins resolve host SDK imports to the embedded image through the
+existing native plugin resolvers; host SDK JavaScript is not restored on disk.
 The builder captures constant conditional-export resolutions before compilation;
 these modules remain lazy and do not require JavaScript in the sidecar.
 

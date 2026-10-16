@@ -84,4 +84,39 @@ describe("standalone import relocation", () => {
       "Missing embedded standalone import: node_modules/ws/index.js",
     );
   });
+
+  it.each([
+    ["installResolver", "openclaw-plugin-sdk-alias"],
+    ["installCapturedPluginModuleResolver", "openclaw-plugin-source-capture"],
+    ["minified", "openclaw-plugin-sdk-alias"],
+  ])("keeps %s hook results inside the image for embedded SDK modules", (owner, name) => {
+    const source = `function ${owner}() {
+      Bun.plugin({ name: \`${name}\`, setup(builder) {
+        builder.onResolve({ filter: /.*/ }, ({ path: t }) =>
+          t ? { path: t, namespace: \`file\` } : undefined);
+      }});
+    }
+    ${owner}();`;
+    let resolve: (args: { path: string }) => { path: string; namespace: string };
+    const sdk = "/relocated-app/runtime/dist/plugin-sdk/plugin-entry.js";
+    const image = "/$bunfs/root/runtime/dist/plugin-sdk/plugin-entry.js";
+    vm.runInNewContext(rewrite(source), {
+      Bun: {
+        plugin: ({ setup }: { setup: (builder: unknown) => void }) =>
+          setup({
+            onResolve: (_options: unknown, callback: typeof resolve) => (resolve = callback),
+          }),
+      },
+      __openclawStandaloneEmbeddedPath: (target: string) => (target === sdk ? image : undefined),
+    });
+    expect(resolve!({ path: sdk })).toEqual({ path: image, namespace: "file" });
+    const installed = "/profile/plugins/matrix/entry.js";
+    expect(resolve!({ path: installed })).toEqual({ path: installed, namespace: "file" });
+  });
+
+  it("rejects a changed native plugin resolver contract", () => {
+    expect(() =>
+      rewrite('function installResolver() { return "openclaw-plugin-sdk-alias"; }'),
+    ).toThrow("Unsupported standalone plugin resolver: openclaw-plugin-sdk-alias");
+  });
 });
