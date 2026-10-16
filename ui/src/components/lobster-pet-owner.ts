@@ -171,7 +171,9 @@ export class LobsterPetOwner {
   }
 
   private publish() {
-    for (const listener of this.listeners) listener();
+    for (const listener of this.listeners) {
+      listener();
+    }
   }
 
   update(props: contract.LobsterPetProps) {
