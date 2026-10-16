@@ -194,90 +194,97 @@ describe("repetition stop at the stream owner", () => {
     expect(JSON.stringify(result)).not.toContain("Please provide more input.");
   });
 
-  it("aborts the request, settles an admitted tool once, and never admits a tail call or retries", async () => {
-    const response = createAssistantMessageEventStream();
-    const started = createDeferred();
-    const finish = createDeferred();
-    const toolFinished = createDeferred();
-    let requestAborted = false;
-    let requests = 0;
-    let toolAborted = false;
-    const executed: string[] = [];
-    const kept: AgentToolCall = { ...makeCall("kept"), async: true };
-    const discarded = makeCall("discarded");
-    const streamFn: StreamFn = (_model, _context, options) => {
-      requests++;
-      if (requests > 1) {
-        return reply(makeAssistantMessage([{ type: "text", text: "Unexpected retry." }]));
-      }
-      options?.signal?.addEventListener(
-        "abort",
-        () => {
-          requestAborted = true;
-          finish.resolve();
-        },
-        { once: true },
-      );
-      return response;
-    };
-    const run = runAgentLoop(
-      [user()],
-      {
-        systemPrompt: "",
-        messages: [],
-        tools: [
-          {
-            ...makeTool("kept"),
-            execute: async (_id, _args, signal) => {
-              executed.push("kept");
-              started.resolve();
-              await finish.promise;
-              toolAborted = signal?.aborted ?? false;
-              toolFinished.resolve();
-              return { content: [{ type: "text", text: "Saved." }], details: {} };
-            },
-          },
-          makeTool("discarded", executed),
-        ],
-      },
-      { ...config, repetitionGuard: () => true },
-      (event) => {
-        if (
-          event.type === "message_end" &&
-          event.message.role === "assistant" &&
-          event.message.content.some((item) => item.type === "text")
-        ) {
-          finish.resolve();
+  it.each(["delta", "error snapshot"])(
+    "settles an admitted tool once without tail admission or retries after a repetitive %s",
+    async (source) => {
+      const response = createAssistantMessageEventStream();
+      const started = createDeferred();
+      const finish = createDeferred();
+      const toolFinished = createDeferred();
+      let requestAborted = false;
+      let requests = 0;
+      let toolAborted = false;
+      const executed: string[] = [];
+      const kept: AgentToolCall = { ...makeCall("kept"), async: true };
+      const discarded = makeCall("discarded");
+      const streamFn: StreamFn = (_model, _context, options) => {
+        requests++;
+        if (requests > 1) {
+          return reply(makeAssistantMessage([{ type: "text", text: "Unexpected retry." }]));
         }
-      },
-      undefined,
-      streamFn,
-    );
-    response.push({ type: "start", partial: makeAssistantMessage([]) });
-    response.push({
-      type: "toolcall_end",
-      contentIndex: 0,
-      toolCall: kept,
-      partial: makeAssistantMessage([kept]),
-    });
-    await started.promise;
-    const bad = makeAssistantMessage([kept, { type: "text", text: loop }, discarded]);
-    response.push({ type: "text_delta", contentIndex: 1, delta: loop, partial: bad });
-    response.push({ type: "done", reason: "toolUse", message: bad });
-    response.end();
-    const result = await run;
-    expect(requests).toBe(1);
-    expect(requestAborted).toBe(true);
-    expect(toolAborted).toBe(false);
-    await toolFinished.promise;
-    expect(executed).toEqual(["kept"]);
-    expect(result.filter((message) => message.role === "toolResult")).toMatchObject([
-      { toolCallId: "kept", content: [{ type: "text", text: "Saved." }] },
-    ]);
-    expect(result.filter((message) => message.role === "assistant")).toMatchObject([
-      { content: [kept], stopReason: "toolUse" },
-      { content: [{ type: "text", text: marker }], stopReason: "error" },
-    ]);
-    expect(JSON.stringify(result)).not.toContain("Please provide more input.");
-  });
+        options?.signal?.addEventListener(
+          "abort",
+          () => {
+            requestAborted = true;
+            finish.resolve();
+          },
+          { once: true },
+        );
+        return response;
+      };
+      const run = runAgentLoop(
+        [user()],
+        {
+          systemPrompt: "",
+          messages: [],
+          tools: [
+            {
+              ...makeTool("kept"),
+              execute: async (_id, _args, signal) => {
+                executed.push("kept");
+                started.resolve();
+                await finish.promise;
+                toolAborted = signal?.aborted ?? false;
+                toolFinished.resolve();
+                return { content: [{ type: "text", text: "Saved." }], details: {} };
+              },
+            },
+            makeTool("discarded", executed),
+          ],
+        },
+        { ...config, repetitionGuard: () => true },
+        (event) => {
+          if (
+            event.type === "message_end" &&
+            event.message.role === "assistant" &&
+            event.message.content.some((item) => item.type === "text")
+          ) {
+            finish.resolve();
+          }
+        },
+        undefined,
+        streamFn,
+      );
+      response.push({ type: "start", partial: makeAssistantMessage([]) });
+      response.push({
+        type: "toolcall_end",
+        contentIndex: 0,
+        toolCall: kept,
+        partial: makeAssistantMessage([kept]),
+      });
+      await started.promise;
+      const bad = makeAssistantMessage([kept, { type: "text", text: loop }, discarded]);
+      if (source === "delta") {
+        response.push({ type: "text_delta", contentIndex: 1, delta: loop, partial: bad });
+        response.push({ type: "done", reason: "toolUse", message: bad });
+      } else {
+        response.push({ type: "error", reason: "error", error: { ...bad, stopReason: "error" } });
+      }
+      response.end();
+      const result = await run;
+      expect(requests).toBe(1);
+      expect(requestAborted).toBe(true);
+      expect(toolAborted).toBe(false);
+      await toolFinished.promise;
+      expect(executed).toEqual(["kept"]);
+      expect(result.filter((message) => message.role === "toolResult")).toMatchObject([
+        { toolCallId: "kept", content: [{ type: "text", text: "Saved." }] },
+      ]);
+      expect(result.filter((message) => message.role === "assistant")).toMatchObject([
+        { content: [kept], stopReason: "toolUse" },
+        { content: [{ type: "text", text: marker }], stopReason: "error" },
+      ]);
+      expect(JSON.stringify(result)).not.toContain("Please provide more input.");
+    },
+  );
 });

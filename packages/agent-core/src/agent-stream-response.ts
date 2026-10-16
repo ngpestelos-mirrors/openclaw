@@ -410,13 +410,18 @@ export async function streamAgentResponse(
         return await finalizeAssistantMessage();
 
         async function finalizeAssistantMessage(terminal?: AssistantMessage) {
-          // Output limits and repetition stops drain admitted tools; other failures fence starts.
-          abortFailedResponse(terminal);
-          const providerResult = await response.result();
-          const stopped =
+          const stoppedTerminal =
             terminal?.errorCode === REPETITIVE_OUTPUT_ERROR_CODE
               ? terminal
-              : repetitionGuard?.check(providerResult, committedContentCount);
+              : terminal && repetitionGuard?.check(terminal, committedContentCount);
+          if (stoppedTerminal) {
+            modelAbort.abort(new Error(REPETITIVE_OUTPUT_ERROR_MESSAGE));
+          }
+          // Classify first: repetition drains admitted tools even in a provider error snapshot.
+          abortFailedResponse(stoppedTerminal ?? terminal);
+          const providerResult = await response.result();
+          const stopped =
+            stoppedTerminal ?? repetitionGuard?.check(providerResult, committedContentCount);
           if (stopped) {
             modelAbort.abort(new Error(REPETITIVE_OUTPUT_ERROR_MESSAGE));
           }
