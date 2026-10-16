@@ -63,6 +63,32 @@ const failure: RestartSentinelPayload = {
   },
 };
 
+const preparedReport = {
+  attemptId: "handoff-failed",
+  body: "sanitized body",
+  previewDigest: "a".repeat(64),
+  savedReportPath: "/tmp/report.md",
+  title: "Update failure",
+  url: "https://github.com/openclaw/openclaw/issues/new",
+};
+const previewParams = { action: "preview", attemptId: "handoff-failed" };
+const submitParams = {
+  ...previewParams,
+  action: "submit",
+  previewDigest: preparedReport.previewDigest,
+};
+
+function expectInvalid(respond: unknown, message?: string) {
+  expect(respond).toHaveBeenCalledWith(
+    false,
+    undefined,
+    expect.objectContaining({
+      code: "INVALID_REQUEST",
+      ...(message ? { message: expect.stringContaining(message) } : {}),
+    }),
+  );
+}
+
 async function invoke(
   params: Record<string, unknown>,
   hasCurrentClientAuthority: (() => boolean) | null = () => true,
@@ -87,35 +113,8 @@ describe("update.report", () => {
     vi.clearAllMocks();
     mocks.getLatest.mockReturnValue(failure);
     mocks.refreshLatest.mockResolvedValue(failure);
-    mocks.prepare.mockResolvedValue({
-      attemptId: "handoff-failed",
-      body: "sanitized body",
-      previewDigest: "a".repeat(64),
-      savedReportPath: "/tmp/report.md",
-      title: "Update failure",
-      url: "https://github.com/openclaw/openclaw/issues/new",
-    });
-    mocks.submit.mockImplementation(async (...args: unknown[]) => {
-      const options = args[2] as {
-        hasCurrentAuthority?: () => boolean;
-        validateCurrentAttempt?: () => boolean | Promise<boolean>;
-      };
-      if (options.hasCurrentAuthority && !options.hasCurrentAuthority()) {
-        throw new Error("client authority is stale");
-      }
-      if (options.validateCurrentAttempt && !(await options.validateCurrentAttempt())) {
-        return {
-          message: "This failed update attempt is stale or unavailable.",
-          savedReportPath: "/tmp/report.md",
-          status: "stale",
-        };
-      }
-      return {
-        savedReportPath: "/tmp/report.md",
-        status: "created",
-        url: "https://github.com/openclaw/openclaw/issues/123",
-      };
-    });
+    mocks.prepare.mockResolvedValue(preparedReport);
+    mocks.submit.mockReset();
   });
 
   it.each([
@@ -237,56 +236,28 @@ describe("update.report", () => {
     let authorityCurrent = true;
     mocks.prepare.mockImplementation(async () => {
       authorityCurrent = false;
-      return {
-        attemptId: "handoff-failed",
-        body: "sanitized body",
-        previewDigest: "a".repeat(64),
-        savedReportPath: "/tmp/report.md",
-        title: "Update failure",
-        url: "https://github.com/openclaw/openclaw/issues/new",
-      };
+      return preparedReport;
     });
 
-    const respond = await invoke(
-      {
-        action: "submit",
-        attemptId: "handoff-failed",
-        previewDigest: "a".repeat(64),
-      },
-      () => authorityCurrent,
-    );
+    const respond = await invoke(submitParams, () => authorityCurrent);
 
     expect(mocks.submit).not.toHaveBeenCalled();
     expect(respond).not.toHaveBeenCalled();
   });
 
   it("refuses submission without a live authenticated-client guard", async () => {
-    const respond = await invoke(
-      { action: "submit", attemptId: "handoff-failed", previewDigest: "a".repeat(64) },
-      null,
-    );
+    const respond = await invoke(submitParams, null);
 
     expect(mocks.submit).not.toHaveBeenCalled();
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({
-        code: "INVALID_REQUEST",
-        message: expect.stringContaining("authenticated client"),
-      }),
-    );
+    expectInvalid(respond, "authenticated client");
   });
 
   it("rejects successful and non-update sentinels", async () => {
     mocks.refreshLatest.mockResolvedValue({ ...failure, status: "ok" });
-    const respond = await invoke({ action: "preview", attemptId: "handoff-failed" });
+    const respond = await invoke(previewParams);
 
     expect(mocks.prepare).not.toHaveBeenCalled();
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({ code: "INVALID_REQUEST" }),
-    );
+    expectInvalid(respond);
   });
 
   it("rejects a classified skipped no-op but allows a skipped terminal failure", async () => {
@@ -295,23 +266,16 @@ describe("update.report", () => {
       status: "skipped",
       stats: { ...failure.stats, reason: "already-current" },
     });
-    const noop = await invoke({ action: "preview", attemptId: "handoff-failed" });
+    const noop = await invoke(previewParams);
     expect(mocks.prepare).not.toHaveBeenCalled();
-    expect(noop).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({ code: "INVALID_REQUEST" }),
-    );
+    expectInvalid(noop);
 
     mocks.refreshLatest.mockResolvedValue({
       ...failure,
       status: "skipped",
       stats: { ...failure.stats, reason: "not-git-install" },
     });
-    const failureResponse = await invoke({
-      action: "preview",
-      attemptId: "handoff-failed",
-    });
+    const failureResponse = await invoke(previewParams);
     expect(mocks.prepare).toHaveBeenCalledOnce();
     expect(failureResponse).toHaveBeenCalledWith(
       true,

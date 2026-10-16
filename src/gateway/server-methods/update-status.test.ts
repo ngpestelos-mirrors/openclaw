@@ -63,6 +63,22 @@ const logGateway: GatewayRequestContext["logGateway"] = {
   warn,
 };
 
+function expectPartialReply(respond: unknown, payload: Record<string, unknown>) {
+  expect(respond).toHaveBeenCalledWith(true, expect.objectContaining(payload));
+}
+
+function expectReply(respond: unknown, payload: unknown) {
+  expect(respond).toHaveBeenCalledWith(true, payload);
+}
+
+function expectError(respond: unknown, error: Record<string, unknown>) {
+  expect(respond).toHaveBeenCalledWith(false, undefined, expect.objectContaining(error));
+}
+const emptyStatus = { sentinel: null, updateAvailable: null, effectiveChannel: "stable" };
+async function expectStatus(runs: Record<string, unknown> = {}) {
+  expectReply(await requestUpdateRead("update.status"), { ...emptyStatus, ...runs });
+}
+
 async function requestUpdateRead(method: UpdateReadMethod, params: Record<string, unknown> = {}) {
   const respond = vi.fn<RespondFn>();
   await expectDefined(
@@ -144,34 +160,28 @@ describe("update history RPCs", () => {
         vi.spyOn(ledger, "getUpdateRunAsync").mockRejectedValueOnce(
           new Error("ledger read failed"),
         );
-        expect(await requestUpdateRead("update.status")).toHaveBeenCalledWith(
-          true,
-          expect.objectContaining({
-            lastRun: expect.objectContaining({ runId: newer.runId }),
-            schedule: { channel: "stable", autoEnabled: true, campaign },
-          }),
-        );
+        expectPartialReply(await requestUpdateRead("update.status"), {
+          lastRun: expect.objectContaining({ runId: newer.runId }),
+          schedule: { channel: "stable", autoEnabled: true, campaign },
+        });
         expect(campaignOwner.getState()).toEqual(campaign);
         expect(warn).toHaveBeenCalledWith(
           "update.status campaign run lookup failed: ledger read failed",
         );
       }
-      expect(await requestUpdateRead("update.status")).toHaveBeenCalledWith(
-        true,
-        expect.objectContaining({
-          lastRun: expect.objectContaining({
-            runId: lastRunId,
-            ...(kind === "hidden-run retry"
-              ? {}
-              : { status: kind === "unrelated" ? "failed" : kind }),
-          }),
-          schedule: {
-            channel: "stable",
-            autoEnabled: true,
-            ...(keepCampaign ? { campaign } : {}),
-          },
+      expectPartialReply(await requestUpdateRead("update.status"), {
+        lastRun: expect.objectContaining({
+          runId: lastRunId,
+          ...(kind === "hidden-run retry"
+            ? {}
+            : { status: kind === "unrelated" ? "failed" : kind }),
         }),
-      );
+        schedule: {
+          channel: "stable",
+          autoEnabled: true,
+          ...(keepCampaign ? { campaign } : {}),
+        },
+      });
       expect(campaignOwner.getState()).toEqual(keepCampaign ? campaign : undefined);
     },
   );
@@ -193,12 +203,9 @@ describe("update history RPCs", () => {
     const replacement = campaignOwner.getState();
     expect(replacement).toMatchObject({ state: "applying" });
     expect(replacement?.id).not.toBe(original.id);
-    expect(respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({
-        schedule: { channel: "stable", autoEnabled: true, campaign: replacement },
-      }),
-    );
+    expectPartialReply(respond, {
+      schedule: { channel: "stable", autoEnabled: true, campaign: replacement },
+    });
   });
 
   it("keeps private recovery receipts durable while status and history stay public", async () => {
@@ -219,25 +226,17 @@ describe("update history RPCs", () => {
     const status = await readUpdateRunStatus();
     expect(status).toMatchObject({ activeRun: publicRun, lastRun: publicRun });
     expect(JSON.stringify(status)).not.toContain("updateRecoveryCapture");
-    expect(await requestUpdateRead("update.status")).toHaveBeenCalledWith(true, {
-      sentinel: null,
-      activeRun: publicRun,
-      lastRun: publicRun,
-      updateAvailable: null,
-      effectiveChannel: "stable",
+    await expectStatus({ activeRun: publicRun, lastRun: publicRun });
+    expectReply(await requestUpdateRead("update.runs.get", { runId: run.runId }), {
+      run: publicRun,
     });
-    expect(await requestUpdateRead("update.runs.get", { runId: run.runId })).toHaveBeenCalledWith(
-      true,
-      { run: publicRun },
-    );
-    expect(await requestUpdateRead("update.runs.list")).toHaveBeenCalledWith(true, {
+    expectReply(await requestUpdateRead("update.runs.list"), {
       runs: [publicRun],
     });
     markGatewayRestartDraining();
-    expect(await requestUpdateRead("update.runs.get", { runId: run.runId })).toHaveBeenCalledWith(
-      true,
-      { run: publicRun },
-    );
+    expectReply(await requestUpdateRead("update.runs.get", { runId: run.runId }), {
+      run: publicRun,
+    });
     expect(getUpdateRun(run.runId)?.origin.updateRecoveryCapture).toEqual(capture);
     expect(run.origin.updateRecoveryCapture).toEqual(capture);
     expect(warn).not.toHaveBeenCalled();
@@ -297,18 +296,14 @@ describe("update history RPCs", () => {
         prepared.resolve();
         await request;
         expect(reconcile).not.toHaveBeenCalled();
-        expect(respond).toHaveBeenCalledWith(
-          false,
-          undefined,
-          expect.objectContaining({ code: "UNAVAILABLE" }),
-        );
+        expectError(respond, { code: "UNAVAILABLE" });
       } else {
         prepared.resolve();
         await reconciling.promise;
         expect(getActiveGatewayRootWorkCount()).toBe(1);
         reconciled.resolve();
         await request;
-        expect(respond).toHaveBeenCalledWith(true, { run: null });
+        expectReply(respond, { run: null });
       }
       expect(getActiveGatewayRootWorkCount()).toBe(0);
     },
@@ -328,13 +323,9 @@ describe("update history RPCs", () => {
       }
       const response = await requestUpdateRead("update.runs.get", { runId: run.runId });
       if (phase === "signal") {
-        expect(response).toHaveBeenCalledWith(
-          false,
-          undefined,
-          expect.objectContaining({ code: "UNAVAILABLE" }),
-        );
+        expectError(response, { code: "UNAVAILABLE" });
       } else {
-        expect(response).toHaveBeenCalledWith(true, { run });
+        expectReply(response, { run });
       }
       expect(getUpdateRun(run.runId)).toEqual(run);
       expect(warn).not.toHaveBeenCalled();
@@ -358,10 +349,7 @@ describe("update history RPCs", () => {
         requestUpdateRead("update.status"),
         requestUpdateRead("update.status"),
       ])) {
-        expect(respond).toHaveBeenCalledWith(
-          true,
-          expect.objectContaining({ activeRun: run, lastRun: run }),
-        );
+        expectPartialReply(respond, { activeRun: run, lastRun: run });
       }
       expect(sql.count()).toBe(0);
     } finally {
@@ -369,12 +357,7 @@ describe("update history RPCs", () => {
     }
     const completed = finishUpdateRun(run.runId, { status: "succeeded" });
     const respond = await requestUpdateRead("update.status");
-    expect(respond).toHaveBeenCalledWith(true, {
-      sentinel: null,
-      lastRun: completed,
-      updateAvailable: null,
-      effectiveChannel: "stable",
-    });
+    expectReply(respond, { ...emptyStatus, lastRun: completed });
     expect(backup).not.toHaveBeenCalled();
   });
 
@@ -414,11 +397,9 @@ describe("update history RPCs", () => {
       method === "update.runs.get" ? { runId: run.runId } : {},
     );
     if (kind === "refused") {
-      expect(respond).toHaveBeenCalledWith(
-        true,
-        expect.objectContaining(
-          method === "update.runs.get" ? { run } : { activeRun: run, lastRun: run },
-        ),
+      expectPartialReply(
+        respond,
+        method === "update.runs.get" ? { run } : { activeRun: run, lastRun: run },
       );
       expect(warn).toHaveBeenCalledWith(
         expect.stringMatching(/reconciliation failed:.*externally supervised/u),
@@ -434,23 +415,16 @@ describe("update history RPCs", () => {
         ...(kind === "expired legacy" ? { phase: "finished" } : {}),
       });
       if (kind === "expired legacy") {
-        expect(respond).toHaveBeenCalledWith(
-          true,
-          expect.objectContaining({
-            [method === "update.status" ? "lastRun" : "run"]: expect.objectContaining(result),
-          }),
-        );
+        expectPartialReply(respond, {
+          [method === "update.status" ? "lastRun" : "run"]: expect.objectContaining(result),
+        });
       }
     }
   });
 
   it("projects distinct active and latest runs and reads persisted history in creation order", async () => {
-    expect(await requestUpdateRead("update.status")).toHaveBeenCalledWith(true, {
-      sentinel: null,
-      updateAvailable: null,
-      effectiveChannel: "stable",
-    });
-    expect(await requestUpdateRead("update.runs.list")).toHaveBeenCalledWith(true, { runs: [] });
+    await expectStatus();
+    expectReply(await requestUpdateRead("update.runs.list"), { runs: [] });
 
     const currentTime = Date.now();
     const now = vi.spyOn(Date, "now").mockReturnValue(currentTime - 2_000);
@@ -460,33 +434,20 @@ describe("update history RPCs", () => {
       status: "skipped",
       reason: "dry-run",
     });
-    expect(await requestUpdateRead("update.status")).toHaveBeenCalledWith(true, {
-      sentinel: null,
-      activeRun: active,
-      lastRun: latest,
-      updateAvailable: null,
-      effectiveChannel: "stable",
+    await expectStatus({ activeRun: active, lastRun: latest });
+    expectReply(await requestUpdateRead("update.runs.get", { runId: active.runId }), {
+      run: active,
     });
-    expect(
-      await requestUpdateRead("update.runs.get", { runId: active.runId }),
-    ).toHaveBeenCalledWith(true, { run: active });
-    expect(
-      await requestUpdateRead("update.runs.get", { runId: randomUUID() }),
-    ).toHaveBeenCalledWith(true, { run: null });
+    expectReply(await requestUpdateRead("update.runs.get", { runId: randomUUID() }), { run: null });
 
     now.mockReturnValue(currentTime);
     const completed = finishUpdateRun(active.runId, { status: "succeeded" });
-    expect(await requestUpdateRead("update.status")).toHaveBeenCalledWith(true, {
-      sentinel: null,
-      lastRun: latest,
-      updateAvailable: null,
-      effectiveChannel: "stable",
-    });
+    await expectStatus({ lastRun: latest });
     const nativeCalls = observeMainThreadSql();
-    expect(await requestUpdateRead("update.runs.list")).toHaveBeenCalledWith(true, {
+    expectReply(await requestUpdateRead("update.runs.list"), {
       runs: [latest, completed],
     });
-    expect(await requestUpdateRead("update.runs.list", { limit: 1 })).toHaveBeenCalledWith(true, {
+    expectReply(await requestUpdateRead("update.runs.list", { limit: 1 }), {
       runs: [latest],
     });
     nativeCalls.expectIdle();

@@ -8,6 +8,7 @@ import {
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { StartupInstallStatus } from "../../infra/update-install-status.types.js";
 import { getUpdateRun, listUpdateRuns } from "../../infra/update-run-ledger.js";
 import { createPluginCache, withPluginCache } from "../../plugins/plugin-cache.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -20,7 +21,6 @@ import {
   isRestartEnabledMock,
   mockGlobalInstallSurface,
   readGatewayOwnerLeaseMock,
-  resolveUpdateInstallSurfaceMock,
   resolveStartupInstallStatusMock,
   scheduleGatewayRestartMock,
   sendGatewayLifecycleNoticeMock,
@@ -31,6 +31,21 @@ import {
 } from "./update.test-harness.js";
 
 const host = vi.hoisted(() => ({ context: undefined as GatewayRequestContext | undefined }));
+const ownerTool = () => createGatewayTool({ senderIsOwner: true, requesterSenderId: "owner" });
+const gitInstall = {
+  root: "/tmp/openclaw",
+  status: { root: "/tmp/openclaw", installKind: "git", packageManager: "pnpm" },
+  installReceipt: null,
+} satisfies StartupInstallStatus;
+function expectNoHandoff() {
+  expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
+  expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
+  expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
+}
+function expectNoUpdate() {
+  expectNoHandoff();
+  expect(sentinelState.capturedPayload).toBeUndefined();
+}
 vi.mock("../../agents/tools/gateway.js", () => ({
   callGatewayTool: vi.fn(),
   readGatewayCallOptions: vi.fn(),
@@ -126,7 +141,7 @@ describe("update.run current owner authority", () => {
   it.each(["revoked", "reassigned", "unchanged", "webchat", "channel-less"])(
     "%s owner after tool construction uses current config",
     async (change) => {
-      const tool = createGatewayTool({ senderIsOwner: true, requesterSenderId: "owner" });
+      const tool = ownerTool();
       config = {
         commands: {
           ownerAllowFrom:
@@ -165,10 +180,7 @@ describe("update.run current owner authority", () => {
         ]);
         expect(adoptUpdateCampaignMock).not.toHaveBeenCalled();
         expect(sendGatewayLifecycleNoticeMock).not.toHaveBeenCalled();
-        expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-        expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-        expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
-        expect(sentinelState.capturedPayload).toBeUndefined();
+        expectNoUpdate();
       }
     },
   );
@@ -217,24 +229,17 @@ describe("update.run current owner authority", () => {
           startManagedServiceUpdateHandoffMock.mock.calls[0]?.[0],
           "prepared update handoff",
         );
-        expect(handoff).toMatchObject({
-          supervisor,
-          requester: {
-            channel,
-            accountId: "primary",
-            senderId: "owner",
-            authorizationSource: "configured-owner",
-          },
-        });
+        const requester = {
+          channel,
+          accountId: "primary",
+          senderId: "owner",
+          authorizationSource: "configured-owner",
+        };
+        expect(handoff).toMatchObject({ supervisor, requester });
         expect(listUpdateRuns()).toEqual([
           expect.objectContaining({
             origin: expect.objectContaining({
-              requester: {
-                channel,
-                accountId: "primary",
-                senderId: "owner",
-                authorizationSource: "configured-owner",
-              },
+              requester,
             }),
           }),
         ]);
@@ -305,17 +310,11 @@ describe("update.run current owner authority", () => {
       } else {
         resolveStartupInstallStatusMock.mockImplementationOnce(async () => {
           revoke();
-          return {
-            root: "/tmp/openclaw",
-            status: { root: "/tmp/openclaw", installKind: "git", packageManager: "pnpm" },
-            installReceipt: null,
-          };
+          return gitInstall;
         });
       }
 
-      const result = await runOwnerTool(
-        createGatewayTool({ senderIsOwner: true, requesterSenderId: "owner" }),
-      );
+      const result = await runOwnerTool(ownerTool());
 
       expect(result.details).toMatchObject({
         ok: false,
@@ -329,10 +328,7 @@ describe("update.run current owner authority", () => {
         expect.objectContaining({ phase: "finished", status: "failed", reason: "owner_required" }),
       ]);
       expect(sendGatewayLifecycleNoticeMock).toHaveBeenCalledTimes(acknowledged ? 1 : 0);
-      expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-      expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-      expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
-      expect(sentinelState.capturedPayload).toBeUndefined();
+      expectNoUpdate();
     },
   );
 
@@ -340,11 +336,7 @@ describe("update.run current owner authority", () => {
     let active = true;
     resolveStartupInstallStatusMock.mockImplementationOnce(async () => {
       active = false;
-      return {
-        root: "/tmp/openclaw",
-        status: { root: "/tmp/openclaw", installKind: "git", packageManager: "pnpm" },
-        installReceipt: null,
-      };
+      return gitInstall;
     });
     const { updateHandlers } = await import("./update.js");
     const respond = vi.fn();
@@ -376,9 +368,7 @@ describe("update.run current owner authority", () => {
         origin: expect.objectContaining({ nextAction: summary.message }),
       }),
     ]);
-    expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-    expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
+    expectNoHandoff();
   });
 });
 
@@ -422,17 +412,7 @@ describe("update.run chat restart permission", () => {
 
   function prepareGlobalInstall(supervisor: "launchd" | "systemd") {
     detectRespawnSupervisorMock.mockReturnValue(supervisor);
-    resolveStartupInstallStatusMock.mockResolvedValue({
-      root: "/tmp/openclaw-global",
-      status: { root: "/tmp/openclaw-global", installKind: "package", packageManager: "npm" },
-      installReceipt: null,
-    });
-    resolveUpdateInstallSurfaceMock.mockResolvedValue({
-      kind: "global",
-      mode: "npm",
-      root: "/tmp/openclaw-global",
-      packageRoot: "/tmp/openclaw-global",
-    });
+    mockGlobalInstallSurface();
   }
 
   function expectDisabledUpdate(payload: UpdateRunPayload) {
@@ -447,10 +427,7 @@ describe("update.run chat restart permission", () => {
       status: "skipped",
       reason: "restart-disabled",
     });
-    expect(startManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-    expect(transferManagedServiceUpdateHandoffMock).not.toHaveBeenCalled();
-    expect(scheduleGatewayRestartMock).not.toHaveBeenCalled();
-    expect(sentinelState.capturedPayload).toBeUndefined();
+    expectNoUpdate();
   }
 
   it.each([

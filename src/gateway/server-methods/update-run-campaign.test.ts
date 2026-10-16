@@ -35,11 +35,7 @@ const versionMock = vi.hoisted(() => ({ value: "1.0.0" }));
 const sentinelAdmission = vi.hoisted((): { beforeGrant?: (stage: string) => void } => ({}));
 type UpdateCampaignAdoption = ReturnType<UpdateCampaignController["adopt"]>;
 
-const adoptCampaignMock = vi.fn<() => UpdateCampaignAdoption>(() => ({
-  status: "adopted",
-  campaignId: "campaign-1",
-  target: { kind: "package", version: "2.0.0" },
-}));
+const adoptCampaignMock = vi.fn<() => UpdateCampaignAdoption>();
 const clearCampaignMock = vi.fn();
 const getCampaignStateMock = vi.fn(() =>
   currentCampaignId
@@ -60,22 +56,18 @@ const resolveUpdateInstallSurfaceMock =
 const resolveStartupInstallStatusMock =
   vi.fn<typeof import("../../infra/update-install-status.js").resolveStartupInstallStatus>();
 const detectRespawnSupervisorMock = vi.fn<() => RespawnSupervisor | null>();
-const startManagedServiceUpdateHandoffMock = vi.fn<
-  typeof import("../../infra/update-managed-service-handoff.js").startManagedServiceUpdateHandoff
->(async () => ({
-  status: "started" as const,
-  pid: 12345,
-  command: "openclaw update --yes --timeout 1800",
-  logPath: "/tmp/openclaw-update-run-handoff/handoff.log",
-  handoffId: "handoff-1",
-  installRoot: "/tmp/openclaw",
-}));
-const transferManagedServiceUpdateHandoffMock = vi.fn<
-  typeof import("../../infra/update-managed-service-handoff.js").transferManagedServiceUpdateHandoff
->(async () => true);
-const cancelManagedServiceUpdateHandoffMock = vi.fn<
-  typeof import("../../infra/update-managed-service-handoff.js").cancelManagedServiceUpdateHandoff
->(async () => "restored-in-process");
+const startManagedServiceUpdateHandoffMock =
+  vi.fn<
+    typeof import("../../infra/update-managed-service-handoff.js").startManagedServiceUpdateHandoff
+  >();
+const transferManagedServiceUpdateHandoffMock =
+  vi.fn<
+    typeof import("../../infra/update-managed-service-handoff.js").transferManagedServiceUpdateHandoff
+  >();
+const cancelManagedServiceUpdateHandoffMock =
+  vi.fn<
+    typeof import("../../infra/update-managed-service-handoff.js").cancelManagedServiceUpdateHandoff
+  >();
 const scheduleGatewayRestartMock = vi.fn(() => ({ scheduled: true }));
 const logGatewayInfoMock = vi.fn();
 const writeRestartSentinelMock = vi.fn<
@@ -275,26 +267,22 @@ beforeEach(() => {
 
 function setDevCampaignSchedule(upstreamSha = "frozen-upstream-sha"): void {
   updateChannel = "dev";
+  const target = {
+    kind: "git" as const,
+    upstreamRef: "origin/main",
+    upstreamSha,
+    commitsBehind: 3,
+  };
   adoptCampaignMock.mockReturnValue({
     status: "adopted",
     campaignId: "campaign-1",
-    target: {
-      kind: "git",
-      upstreamRef: "origin/main",
-      upstreamSha,
-      commitsBehind: 3,
-    },
+    target,
   });
   updateSchedule = {
     channel: "dev",
     autoEnabled: true,
     install: { kind: "git" },
-    target: {
-      kind: "git",
-      upstreamRef: "origin/main",
-      upstreamSha,
-      commitsBehind: 3,
-    },
+    target,
     campaign: {
       id: "campaign-1",
       state: "waiting-for-idle",
