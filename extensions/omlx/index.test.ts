@@ -1,7 +1,9 @@
+import { attachModelProviderRequestTransport } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { OpenClawConfig, ProviderRuntimeModel } from "openclaw/plugin-sdk/plugin-entry";
 import { capturePluginRegistration } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { CUSTOM_LOCAL_AUTH_MARKER } from "openclaw/plugin-sdk/provider-auth";
 import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runtime";
+import { resolveProviderRequestHeaders } from "openclaw/plugin-sdk/provider-http";
 import type { ModelProviderConfig } from "openclaw/plugin-sdk/provider-model-shared";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -681,6 +683,70 @@ it.each<{
       authMode: "api-key",
     }),
   ).toEqual({ apiKey: scenario.runtimeApiKey });
+});
+
+it.each<{
+  name: string;
+  providerRequest: NonNullable<ModelProviderConfig["request"]>;
+  modelRequest: NonNullable<ModelProviderConfig["request"]>;
+  expectedAuth: { apiKey: string } | undefined;
+}>([
+  {
+    name: "provider custom header with model bearer",
+    providerRequest: {
+      auth: { mode: "header", headerName: "X-oMLX-Key", value: "fixture-provider-key" },
+    },
+    modelRequest: {
+      auth: { mode: "authorization-bearer", token: "fixture-model-key" },
+    },
+    expectedAuth: undefined,
+  },
+  {
+    name: "provider bearer with model custom header",
+    providerRequest: {
+      auth: { mode: "authorization-bearer", token: "fixture-provider-key" },
+    },
+    modelRequest: {
+      auth: { mode: "header", headerName: "X-oMLX-Key", value: "fixture-model-key" },
+    },
+    expectedAuth: { apiKey: CUSTOM_LOCAL_AUTH_MARKER },
+  },
+])("honors effective model auth over $name", async (scenario) => {
+  const provider = capturePluginRegistration(plugin).providers[0];
+  const baseModel = chatModel("https://omlx.example.test/v1");
+  const providerConfig: ModelProviderConfig = {
+    baseUrl: baseModel.baseUrl,
+    api: "openai-completions",
+    apiKey: "omlx:profile",
+    headers: { Authorization: "Bearer fixture-stale-header" },
+    request: scenario.providerRequest,
+    models: [],
+  };
+  const model = attachModelProviderRequestTransport(
+    {
+      ...baseModel,
+      headers: resolveProviderRequestHeaders({
+        provider: "omlx",
+        api: baseModel.api,
+        baseUrl: baseModel.baseUrl,
+        defaultHeaders: providerConfig.headers,
+        request: scenario.modelRequest,
+      }),
+    },
+    scenario.modelRequest,
+  );
+
+  await expect(
+    provider?.prepareRuntimeAuth?.({
+      config: { models: { providers: { omlx: providerConfig } } },
+      env: {},
+      provider: "omlx",
+      modelId: model.id,
+      model,
+      apiKey: "fixture-profile-key",
+      authMode: "api-key",
+    }),
+  ).resolves.toEqual(scenario.expectedAuth);
 });
 
 it("lets custom request auth override a configured profile credential", async () => {

@@ -6,9 +6,10 @@ import { OMLX_API_KEY_ENV_VAR, OMLX_LOCAL_API_KEY, OMLX_PROVIDER_ID } from "./de
 
 function hasOmlxAuthorization(
   providerConfig: ModelProviderConfig | undefined,
-  modelHeaders?: Record<string, string>,
+  modelHeaders: Record<string, string> | undefined,
+  request: ModelProviderConfig["request"],
 ): boolean {
-  const auth = providerConfig?.request?.auth;
+  const auth = request?.auth;
   if (auth?.mode === "authorization-bearer") {
     return true;
   }
@@ -16,7 +17,7 @@ function hasOmlxAuthorization(
     // Request auth replaces earlier Authorization headers, including with a custom header.
     return auth.headerName.trim().toLowerCase() === "authorization";
   }
-  return [providerConfig?.headers, providerConfig?.request?.headers, modelHeaders].some((headers) =>
+  return [providerConfig?.headers, request?.headers, modelHeaders].some((headers) =>
     Object.entries(headers ?? {}).some(
       ([name, value]) =>
         name.trim().toLowerCase() === "authorization" &&
@@ -49,17 +50,23 @@ export default {
     };
   },
   prepareRuntimeAuth: async ({ config, provider, model, apiKey }) => {
-    const { CUSTOM_LOCAL_AUTH_MARKER, findNormalizedProviderValue } =
-      await import("openclaw/plugin-sdk/provider-auth");
+    const [
+      { CUSTOM_LOCAL_AUTH_MARKER, findNormalizedProviderValue },
+      { getModelProviderRequestTransport },
+    ] = await Promise.all([
+      import("openclaw/plugin-sdk/provider-auth"),
+      import("openclaw/plugin-sdk/agent-harness-runtime"),
+    ]);
     const providerConfig = findNormalizedProviderValue(config?.models?.providers, provider);
+    const request = getModelProviderRequestTransport(model) ?? providerConfig?.request;
     if (
       providerConfig?.apiKey &&
       providerConfig.apiKey !== OMLX_LOCAL_API_KEY &&
-      providerConfig.request?.auth?.mode !== "header"
+      request?.auth?.mode !== "header"
     ) {
       return undefined;
     }
-    if (hasOmlxAuthorization(providerConfig, model.headers)) {
+    if (hasOmlxAuthorization(providerConfig, model.headers, request)) {
       // The generic marker clears Authorization downstream, including explicit headers.
       return { apiKey: OMLX_LOCAL_API_KEY };
     }
@@ -67,7 +74,7 @@ export default {
       providerConfig?.apiKey === OMLX_LOCAL_API_KEY ||
       apiKey === OMLX_LOCAL_API_KEY ||
       apiKey === CUSTOM_LOCAL_AUTH_MARKER ||
-      providerConfig?.request?.auth?.mode === "header"
+      request?.auth?.mode === "header"
     ) {
       // Explicit keyless or header auth must not inherit a stored bearer credential.
       return { apiKey: CUSTOM_LOCAL_AUTH_MARKER };
