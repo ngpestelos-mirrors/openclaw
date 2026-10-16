@@ -15,7 +15,7 @@ import {
   formatGatewayCrashLoopManualChannelStartHint,
   inspectGatewayCrashLoopBreaker,
   inspectGatewayCrashLoopBreakerAsync,
-  readGatewayLastInstallationReplacement,
+  readGatewayLastInstallationReplacementAsync,
   readGatewayLastShutdown,
   recordGatewayBootStart,
   recordGatewayCrashLoopRecovery,
@@ -117,7 +117,7 @@ describe("gateway crash-loop breaker", () => {
 
   it("projects replacement history only while it is the latest shutdown", async () => {
     const lifecycle = createLifecycleDb();
-    expect(readGatewayLastInstallationReplacement(lifecycle.env)).toBeUndefined();
+    expect(await readGatewayLastInstallationReplacementAsync(lifecycle.env)).toBeUndefined();
     const reason = "gateway.installation_replaced: on-disk 2026.9.5 differs from running 2026.9.4";
     const replacedBoot = recordGatewayBootStart(lifecycle.env, 1_000);
     await completeGatewayBootLifecycle(
@@ -127,7 +127,7 @@ describe("gateway crash-loop breaker", () => {
       2_000,
     );
     const successor = recordGatewayBootStart(lifecycle.env, 3_000);
-    expect(readGatewayLastInstallationReplacement(lifecycle.env)).toEqual({
+    expect(await readGatewayLastInstallationReplacementAsync(lifecycle.env)).toEqual({
       reason,
       completedAtMs: 2_000,
     });
@@ -137,7 +137,7 @@ describe("gateway crash-loop breaker", () => {
       lifecycle.env,
       4_000,
     );
-    expect(readGatewayLastInstallationReplacement(lifecycle.env)).toBeUndefined();
+    expect(await readGatewayLastInstallationReplacementAsync(lifecycle.env)).toBeUndefined();
   });
 
   it.each(["SIGTERM", "SIGINT"])(

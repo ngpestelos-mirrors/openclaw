@@ -6,10 +6,11 @@ import {
   type SqliteDatabaseAdmissions,
 } from "./sqlite-database-admission-record.js";
 import { currentSqliteOperationTiming } from "./sqlite-reader-lifecycle.js";
-import { SqliteWorkerError } from "./sqlite-worker-contract.js";
+import { readSqliteWorkerMonotonicNs, SqliteWorkerError } from "./sqlite-worker-contract.js";
 
 const REQUESTED = 0;
 const GRANTED = 1;
+const ADMISSION_TIMEOUT_MS = 30_000;
 export const SQLITE_COLD_ADMISSION_PENDING = 4;
 
 const admissionUpstream = resolveGlobalSingleton<{
@@ -58,6 +59,7 @@ export function exchangeDatabaseAdmissions(
   const decision = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
   const timing = currentSqliteOperationTiming();
   const startedAt = Date.now();
+  const deadlineNs = readSqliteWorkerMonotonicNs() + BigInt(ADMISSION_TIMEOUT_MS) * 1_000_000n;
   try {
     port.postMessage(
       {
@@ -71,7 +73,15 @@ export function exchangeDatabaseAdmissions(
       [port2],
     );
     while (Atomics.load(decision, 0) === REQUESTED) {
-      Atomics.wait(decision, 0, REQUESTED);
+      const remainingMs = Number(deadlineNs - readSqliteWorkerMonotonicNs()) / 1e6;
+      if (remainingMs <= 0) {
+        throw new SqliteWorkerError(
+          "SQLite admission facts exchange timed out after 30 seconds; the host did not reply",
+          "unavailable",
+        );
+      }
+      // A vanished peer cannot notify this flag, and its close event cannot run during this wait.
+      Atomics.wait(decision, 0, REQUESTED, remainingMs);
     }
     const outcome = Atomics.load(decision, 0);
     if (outcome === SQLITE_COLD_ADMISSION_PENDING && location && create === true) {
