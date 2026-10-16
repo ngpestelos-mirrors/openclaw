@@ -17,9 +17,9 @@ import {
   OLLAMA_DEFAULT_BASE_URL,
   OLLAMA_DEFAULT_CONTEXT_WINDOW,
   OLLAMA_DEFAULT_COST,
-  OLLAMA_DEFAULT_MAX_TOKENS,
   OLLAMA_LOCAL_CONTEXT_TOKENS,
-  normalizeOllamaCloudModelId,
+  resolveOllamaCloudDefaultModel,
+  resolveOllamaOutputBudget,
 } from "./defaults.js";
 import {
   buildOllamaThinkingLevelMap,
@@ -432,18 +432,6 @@ export function isOllamaRemoteModel(model: OllamaTagModel): boolean {
   );
 }
 
-/**
- * Cloud models are referenced both bare (`kimi-k3`) and suffixed (`kimi-k3:cloud`).
- * Both spellings must reach the same known context window, or a suffixed ref silently
- * falls back to the generic default whenever live inspection is unavailable.
- */
-function resolveOllamaCloudDefaultModel(
-  modelId: string,
-): (typeof OLLAMA_CLOUD_DEFAULT_MODELS)[number] | undefined {
-  const normalized = normalizeOllamaCloudModelId(modelId);
-  return OLLAMA_CLOUD_DEFAULT_MODELS.find((model) => model.id === normalized);
-}
-
 export function isReasoningModelHeuristic(modelId: string): boolean {
   return /r1|reasoning|think|reason/i.test(modelId);
 }
@@ -471,9 +459,11 @@ export function buildOllamaModelDefinition(
     input: capabilities?.includes("vision") ? ["text", "image"] : ["text"],
     cost: OLLAMA_DEFAULT_COST,
     contextWindow: resolvedContext,
-    maxTokens:
-      cloudModel?.maxTokens ??
-      (opts?.remote || isOllamaCloudModel(modelId) ? resolvedContext : OLLAMA_DEFAULT_MAX_TOKENS),
+    maxTokens: resolveOllamaOutputBudget({
+      modelId,
+      contextWindow: resolvedContext,
+      remote: opts?.remote,
+    }),
     ...(opts?.parameterCount !== undefined ? { parameterCount: opts.parameterCount } : {}),
     ...(opts?.thinkingLevelMap ? { thinkingLevelMap: opts.thinkingLevelMap } : {}),
     compat: {
@@ -522,10 +512,11 @@ export function toDynamicOllamaModel(params: {
       : {}),
     maxTokens:
       params.model.maxTokens ??
-      cloudModel?.maxTokens ??
-      (isHostedOllamaCloud(params.providerConfig.baseUrl) || isOllamaCloudModel(params.model.id)
-        ? contextWindow
-        : OLLAMA_DEFAULT_MAX_TOKENS),
+      resolveOllamaOutputBudget({
+        modelId: params.model.id,
+        contextWindow,
+        remote: isHostedOllamaCloud(params.providerConfig.baseUrl),
+      }),
     ...(params.model.parameterCount !== undefined
       ? { parameterCount: params.model.parameterCount }
       : {}),

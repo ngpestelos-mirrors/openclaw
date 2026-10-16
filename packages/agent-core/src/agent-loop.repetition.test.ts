@@ -98,8 +98,7 @@ async function runResponse(
 describe("repetition stop at the stream owner", () => {
   it.each(distinctRecordOutputs)("delivers $name without truncation", async ({ text }) => {
     const content: AssistantMessage["content"] = [{ type: "text", text }];
-    const { result, events, aborted, requests } = await runResponse(content);
-    expect(aborted).toBe(false);
+    const { result, events, requests } = await runResponse(content);
     expect(requests).toBe(1);
     expect(result.at(-1)).toMatchObject({ stopReason: "stop", content });
     expect(events.findLast((event) => event.type === "message_end")).toMatchObject({

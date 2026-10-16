@@ -14,8 +14,12 @@ import type {
 } from "openclaw/plugin-sdk/provider-model-types";
 import {
   OLLAMA_CLOUD_PROVIDER_ID,
+  OLLAMA_CLOUD_BASE_URL,
   isOllamaCloudOrigin,
+  isHostedOllamaCloud,
   OLLAMA_DEFAULT_BASE_URL,
+  resolveOllamaCloudDefaultModel,
+  resolveOllamaOutputBudget,
 } from "./src/defaults.js";
 import { supportsOllamaCloudFullThinkingEffort } from "./src/model-reasoning.js";
 import { readProviderBaseUrl, resolveOllamaBaseUrlForRun } from "./src/provider-base-url.js";
@@ -90,14 +94,40 @@ export function normalizeConfig({
   providerConfig: OllamaProviderConfigDraft;
 }): OllamaProviderConfigDraft {
   const normalizedProviderId = provider.trim().toLowerCase();
-  if (normalizedProviderId !== "ollama") {
+  if (normalizedProviderId !== "ollama" && normalizedProviderId !== OLLAMA_CLOUD_PROVIDER_ID) {
     return providerConfig;
   }
-
+  const baseUrl = providerConfig.baseUrl?.trim()
+    ? providerConfig.baseUrl
+    : normalizedProviderId === OLLAMA_CLOUD_PROVIDER_ID
+      ? OLLAMA_CLOUD_BASE_URL
+      : OLLAMA_DEFAULT_BASE_URL;
   return {
     ...providerConfig,
-    baseUrl: providerConfig.baseUrl?.trim() ? providerConfig.baseUrl : OLLAMA_DEFAULT_BASE_URL,
-    models: providerConfig.models ?? [],
+    baseUrl,
+    models: (providerConfig.models ?? []).map((model) => {
+      const cloudModel = resolveOllamaCloudDefaultModel(model.id);
+      const remote =
+        isHostedOllamaCloud(model.baseUrl ?? baseUrl) ||
+        normalizedProviderId === OLLAMA_CLOUD_PROVIDER_ID;
+      if (
+        model.maxTokens !== undefined ||
+        (model.contextWindow === undefined && !cloudModel) ||
+        (!remote && !isCloudModelRef(model.id) && !cloudModel)
+      ) {
+        return model;
+      }
+      return {
+        ...model,
+        maxTokens:
+          providerConfig.maxTokens ??
+          resolveOllamaOutputBudget({
+            modelId: model.id,
+            contextWindow: model.contextWindow,
+            remote,
+          }),
+      };
+    }),
   };
 }
 

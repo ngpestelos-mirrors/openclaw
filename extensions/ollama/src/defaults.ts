@@ -1,3 +1,5 @@
+import { isCloudModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
+
 export const OLLAMA_DEFAULT_BASE_URL = "http://127.0.0.1:11434";
 export const OLLAMA_DEFAULT_API_KEY = "ollama-local";
 const OLLAMA_DOCKER_HOST_BASE_URL = "http://host.docker.internal:11434";
@@ -56,6 +58,24 @@ export function normalizeOllamaCloudModelId(modelId: string): string {
     .trim()
     .toLowerCase()
     .replace(/(?::cloud|-cloud)$/, "");
+}
+
+export function resolveOllamaCloudDefaultModel(modelId: string) {
+  const normalized = normalizeOllamaCloudModelId(modelId);
+  return OLLAMA_CLOUD_DEFAULT_MODELS.find((model) => model.id === normalized);
+}
+
+export function resolveOllamaOutputBudget(params: {
+  modelId: string;
+  contextWindow?: number;
+  remote?: boolean;
+}): number {
+  return (
+    resolveOllamaCloudDefaultModel(params.modelId)?.maxTokens ??
+    (params.remote || isCloudModelRef(params.modelId)
+      ? (params.contextWindow ?? OLLAMA_DEFAULT_CONTEXT_WINDOW)
+      : OLLAMA_DEFAULT_MAX_TOKENS)
+  );
 }
 
 export const OLLAMA_DEFAULT_CONTEXT_WINDOW = 128000;

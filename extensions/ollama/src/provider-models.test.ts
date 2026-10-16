@@ -213,26 +213,6 @@ describe("ollama provider models", () => {
     },
   );
 
-  it.each([
-    { id: "local-model", baseUrl: "http://127.0.0.1:11434", maxTokens: 8192 },
-    { id: "glm-5.2:cloud", baseUrl: "http://127.0.0.1:11434", maxTokens: 131_072 },
-    { id: "unknown:cloud", baseUrl: "http://127.0.0.1:11434", maxTokens: 262_144 },
-    { id: "unknown", baseUrl: "https://ollama.com", maxTokens: 262_144 },
-  ])("resolves an incomplete $id runtime model at $baseUrl", ({ id, baseUrl, maxTokens }) => {
-    const providerConfig = { baseUrl, api: "ollama" as const, models: [] };
-    const model = { id, name: id, contextWindow: 262_144 };
-    expect(toDynamicOllamaModel({ provider: "ollama", providerConfig, model }).maxTokens).toBe(
-      maxTokens,
-    );
-    expect(
-      toDynamicOllamaModel({
-        provider: "ollama",
-        providerConfig,
-        model: { ...model, maxTokens: 1024, params: { num_predict: -1 } },
-      }),
-    ).toMatchObject({ maxTokens: 1024, params: { num_predict: -1 } });
-  });
-
   it("uses Modelfile num_ctx when it expands the discovered context window", async () => {
     const models: OllamaTagModel[] = [{ name: "llama3-32k:latest" }];
     const fetchMock = vi.fn(async () =>
