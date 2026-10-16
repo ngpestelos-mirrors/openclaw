@@ -17,7 +17,7 @@ import {
   type DesktopPanelToggleDetail,
 } from "../panel-toggle-contract.ts";
 import { SolidPanelController } from "../solid-panel-controller.ts";
-import { DesktopAppLauncher } from "./desktop-app-launcher.ts";
+import type { DesktopAppLauncher } from "./desktop-app-launcher.ts";
 import type { DesktopAudio } from "./desktop-audio.ts";
 import * as desktopTransport from "./desktop-client.ts";
 import { DesktopMobileKeyboard } from "./desktop-mobile-keyboard.ts";
@@ -31,7 +31,7 @@ import {
 import * as desktopAuth from "./desktop-panel-credentials.ts";
 import { desktopPanelLayout } from "./desktop-panel-layout.ts";
 import type { DesktopPanelState } from "./desktop-panel-state.ts";
-import { DesktopPictureInPicture } from "./desktop-picture-in-picture.ts";
+import type { DesktopPictureInPicture } from "./desktop-picture-in-picture.ts";
 import { DesktopSessionController } from "./desktop-session-controller.ts";
 import { desktopSourceForEnvironment } from "./desktop-source.ts";
 
@@ -62,6 +62,8 @@ export class DesktopPanelController extends SolidPanelController {
     | null = null;
   fullscreenMode!: DesktopFullscreen;
   audio!: DesktopAudio;
+  pictureInPicture!: DesktopPictureInPicture;
+  launcher!: DesktopAppLauncher;
 
   /** Browser tests replace the transport without opening a real RFB socket. */
   desktopClientFactory: () => Pick<desktopTransport.DesktopClient, "connect"> = () =>
@@ -81,15 +83,6 @@ export class DesktopPanelController extends SolidPanelController {
   private canResize = false;
 
   private readonly connection = new DesktopConnectionHandoff();
-  private readonly launcher = new DesktopAppLauncher(this, () => ({
-    client: this.client,
-    source: this.source,
-    presented: !this.embedded || this.presented,
-    state: this.state,
-    apps: this.desktopApps,
-  }));
-
-  private readonly pictureInPicture = new DesktopPictureInPicture(this, () => this.state);
   private credentials: DesktopCredentials | undefined;
   private credentialAuth: "vnc-password" | "ard-account" | undefined;
   private pendingConnection: PendingDesktopConnection | null = null;
@@ -141,17 +134,25 @@ export class DesktopPanelController extends SolidPanelController {
     controlling: () => this.controlling,
     input: () => this.renderRoot.querySelector<HTMLTextAreaElement>(".desktop-keyboard-input"),
   });
-  private readonly dockLayout = new DockLayoutController(this, {
+  readonly dockLayout = new DockLayoutController(this, {
     layout: desktopPanelLayout,
     reservationPrefix: "desktop",
     isAvailable: () => this.available,
     isFullscreen: () => this.fullscreenMode?.ownsFullscreen() ?? false,
   });
 
-  get audioTarget() {
+  readonly audioTarget = () => ({
+    connected: this.state === "connected",
+    reconnect: () => void this.connectEnvironment(this.environmentId, this.controlling),
+  });
+
+  get launchTarget() {
     return {
-      connected: this.state === "connected",
-      reconnect: () => void this.connectEnvironment(this.environmentId, this.controlling),
+      client: this.client,
+      source: this.source,
+      presented: !this.embedded || this.presented,
+      state: this.state,
+      apps: this.desktopApps,
     };
   }
 
@@ -315,8 +316,11 @@ export class DesktopPanelController extends SolidPanelController {
   }
 
   private disconnectConnection(retainViewer = false): void {
-    this.audio.close();
-    this.pictureInPicture.close();
+    // Native close can precede Solid mounting; each Solid owner handles its disposal.
+    if (this.isConnected) {
+      this.audio.close();
+      this.pictureInPicture.close();
+    }
     this.operationId += 1;
     this.pendingConnection = null;
     this.connection.begin(retainViewer);
@@ -324,7 +328,9 @@ export class DesktopPanelController extends SolidPanelController {
     if (!retainViewer) {
       this.sessionSource.invalidate();
       this.loading = false;
-      this.launcher.clear();
+      if (this.isConnected) {
+        this.launcher.clear();
+      }
     }
   }
 
@@ -654,7 +660,7 @@ export class DesktopPanelController extends SolidPanelController {
         loading: this.loading,
         automaticSource: this.usesAutomaticSource,
         hasTarget: this.sessionKey !== null || this.requestedSource !== null,
-        errorText: this.launcher.error ?? this.errorText,
+        errorText: this.launcher.feedback().error ?? this.errorText,
         noticeText: this.noticeText,
         availability: this.sessionSource.desktopAvailability,
         picker: {
@@ -678,7 +684,6 @@ export class DesktopPanelController extends SolidPanelController {
             if ((this.state === "inventory-error" && this.documentMode) || !this.environmentId) {
               if (this.sourceSelection !== "picker") {
                 this.sourceSelection = "pending";
-                this.invalidate();
               }
               this.state = "picker";
               this.invalidate();
@@ -695,7 +700,7 @@ export class DesktopPanelController extends SolidPanelController {
       },
       controlling: this.controlling,
       desktopApps: this.desktopApps,
-      launchingApp: this.launcher.app,
+      launchingApp: this.launcher.feedback().app ?? null,
       startup: this.sessionSource.startupEnvironment,
       sizing: {
         mode: this.sizingMode,
