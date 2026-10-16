@@ -97,7 +97,7 @@ describe("AppSidebar live narration", () => {
       const key = "agent:main:visible-preview";
       const gateway = createGatewayHarness({} as GatewayBrowserClient);
       const sessions = createSessionsHarness("main", [key]);
-      let acquired = createDeferred<void>();
+      let acquired = createDeferred();
       sessions.subscribeMessages.mockImplementation((key) => {
         acquired.resolve();
         return Promise.resolve({ key, agentId: null });
@@ -123,7 +123,7 @@ describe("AppSidebar live narration", () => {
       await sidebar.updateComplete;
       expect(sessions.unsubscribeMessages).toHaveBeenCalledTimes(1);
 
-      acquired = createDeferred<void>();
+      acquired = createDeferred();
       sidebar.sidebarAgentsMode = "chip";
       sidebar.navigationCollapsed = false;
       sidebar.navigationVisible = true;
