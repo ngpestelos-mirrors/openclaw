@@ -1,5 +1,5 @@
 import { dynamic, type JSX as SolidJSX } from "@solidjs/web";
-import { createMemo, createRenderEffect, createSignal, Match, Show, Switch } from "solid-js";
+import { Match, Show, Switch } from "solid-js";
 import { resolveControlUiAuthToken } from "../../app/control-ui-auth.ts";
 import { isBrowserPanelAvailable } from "../../app/panel-availability.ts";
 import { EMPTY_LINK_READERS } from "../../components/link-reader-target.ts";
@@ -7,13 +7,10 @@ import { Icon } from "../../components/solid/icon.tsx";
 import { LazyViewError } from "../../components/solid/lazy-view-error.tsx";
 import { PanelLoadingSkeleton } from "../../components/solid/panel-loading-skeleton.tsx";
 import { t } from "../../lib/reactive/i18n.ts";
-import {
-  PRESENTATION_CHANGED_EVENT,
-  type PresentationValue,
-} from "../../lit/presentation-binding.ts";
 import { PluginContribution } from "../../plugins/control-ui-view.solid.tsx";
 import type { ElementProperties } from "../../types/solid-elements.d.ts";
 import type { SidebarPanelDefinitionParams, SidebarPanelData } from "./chat-pane-embedded-types.ts";
+import { usePanePresentation } from "./chat-pane-presentation.ts";
 import { ChatBoardPanel } from "./chat-pane-surfaces.tsx";
 import { resolveChatAttachmentLimits } from "./components/chat-attachment-admission.ts";
 import { ChatDetailSlot } from "./components/chat-detail-slot-view.tsx";
@@ -27,28 +24,6 @@ import type { SidebarContent } from "./components/chat-sidebar-content-types.ts"
 import type { SidebarPanelDefinition } from "./components/chat-sidebar-region-types.ts";
 import type { SidebarSlotId } from "./sidebar-layout-types.ts";
 import { sidebarMainPanel } from "./sidebar-layout.ts";
-
-/** Park immediately; reveal alongside the parent's next props unless explicitly previewing. */
-export function usePanePresentation(source: () => PresentationValue) {
-  const [revision, setRevision] = createSignal(0, { ownedWrite: true });
-  createRenderEffect(source, (binding) => {
-    if (typeof binding === "boolean") {
-      return undefined;
-    }
-    const changed = () => {
-      if (!binding.isPresented() || binding.preview?.()) {
-        setRevision((value) => value + 1);
-      }
-    };
-    binding.owner.addEventListener(PRESENTATION_CHANGED_EVENT, changed);
-    return () => binding.owner.removeEventListener(PRESENTATION_CHANGED_EVENT, changed);
-  });
-  return createMemo(() => {
-    revision();
-    const binding = source();
-    return typeof binding === "boolean" ? binding : binding.isPresented();
-  });
-}
 
 type Props = SidebarPanelDefinitionParams;
 

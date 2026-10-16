@@ -2,14 +2,11 @@
 
 import { createSignal, Show } from "solid-js";
 import { afterEach, expect, it } from "vitest";
-import {
-  PRESENTATION_CHANGED_EVENT,
-  type PresentationBinding,
-} from "../../lit/presentation-binding.ts";
+import { PRESENTATION_CHANGED_EVENT, type PresentationBinding } from "../../lib/presentation.ts";
 import { cleanupSolid, mountSolid } from "../../test-helpers/mount-solid.ts";
 import { flush } from "../../test-helpers/solid-settle.ts";
 import { sidebarPanelDefinitions } from "./chat-pane-embedded-panels.ts";
-import { usePanePresentation } from "./chat-pane-embedded-view.tsx";
+import { usePanePresentation } from "./chat-pane-presentation.ts";
 import { SidebarRegionView } from "./chat-pane-sidebar-view.tsx";
 import { openSlot, setSidebarOpen } from "./sidebar-layout.ts";
 
