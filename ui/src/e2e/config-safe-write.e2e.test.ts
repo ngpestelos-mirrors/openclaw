@@ -7,6 +7,7 @@ import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-
 import { installMockGateway, type MockGatewayRequest } from "../test-helpers/control-ui-e2e.ts";
 import {
   objectSchema,
+  configSchema,
   pageRunner,
   configProof,
   settingsRow,
@@ -31,21 +32,15 @@ function configResponse(config: Record<string, unknown>, hash: string, appliedCo
 }
 
 function configSchemaResponse() {
-  return {
-    generatedAt: "2026-08-03T00:00:00.000Z",
-    schema: objectSchema("", {
+  return configSchema(
+    objectSchema("", {
       laboratory: objectSchema("Safe writes", {
         endpoint: {
           type: "string",
           title: "Endpoint",
           description: "Endpoint selected by the operator.",
         },
-        retryBudget: {
-          type: "integer",
-          title: "Retry budget",
-          minimum: 0,
-          maximum: 10,
-        },
+        retryBudget: { type: "integer", title: "Retry budget", minimum: 0, maximum: 10 },
       }),
       tools: objectSchema(
         "Tools",
@@ -55,9 +50,7 @@ function configSchemaResponse() {
               type: "object",
               additionalProperties: {
                 type: "array",
-                items: {
-                  anyOf: [{ type: "string", pattern: "^[0-9]+$" }, { type: "number" }],
-                },
+                items: { anyOf: [{ type: "string", pattern: "^[0-9]+$" }, { type: "number" }] },
               },
             },
           }),
@@ -65,12 +58,8 @@ function configSchemaResponse() {
         { additionalProperties: true },
       ),
     }),
-    uiHints: {
-      "laboratory.endpoint": { advanced: false },
-      "laboratory.retryBudget": { advanced: false },
-    },
-    version: "e2e",
-  };
+    { "laboratory.endpoint": { advanced: false }, "laboratory.retryBudget": { advanced: false } },
+  );
 }
 
 function laboratoryConfig(endpoint: string, retryBudget = 2) {

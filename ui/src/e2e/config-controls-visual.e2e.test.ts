@@ -1,9 +1,9 @@
-// Control UI tests cover shared Settings control styling through the mocked Gateway.
 import { Buffer } from "node:buffer";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
+import { createEmptyCostUsageTotals } from "../../../src/infra/session-cost-usage-totals.ts";
 import {
   takeControlUiElementScreenshot,
   waitForControlUiProofSurface,
@@ -12,15 +12,47 @@ import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import {
   configSnapshot,
   objectSchema,
+  configSchema,
   pageRunner,
   configProof,
   settingsPageOptions,
   createConfigSuite,
+  computedStyles,
 } from "./config-composer-fixtures.test-support.ts";
 
 const suite = createConfigSuite("Control UI Settings controls mocked Gateway E2E");
 
 const proof = configProof("settings-controls");
+
+type NativeLinkWindow = Window & {
+  openclawNativeLinkMessages?: unknown[];
+  webkit?: { messageHandlers?: { openclawLink?: { postMessage: (message: unknown) => void } } };
+};
+
+function browserCase(method: string, requestPath: string, response: unknown) {
+  return { match: { method, path: requestPath }, response };
+}
+
+async function addProofLink(page: Page, handled: boolean) {
+  await page.evaluate((isHandled) => {
+    const link = document.createElement("a");
+    link.href = `https://example.com/${isHandled ? "application-handled" : "control-ui-proof"}`;
+    link.textContent = isHandled ? "Application-handled link" : "Open proof link";
+    link.dataset[isHandled ? "controlUiBrowserHandled" : "controlUiBrowserProof"] = "true";
+    if (isHandled) {
+      link.addEventListener("click", (event) => event.preventDefault());
+    }
+    Object.assign(link.style, {
+      background: "white",
+      left: "16px",
+      padding: "8px",
+      position: "fixed",
+      top: "16px",
+      zIndex: "99999",
+    });
+    document.body.append(link);
+  }, handled);
+}
 
 async function resolvedBackground(page: Page, value: string): Promise<string> {
   return page.evaluate((background) => {
@@ -48,19 +80,13 @@ function browserConfigMocks() {
   const config = { browser: { enabled: true } };
   return {
     "config.get": configSnapshot(config, "hash-1"),
-    "config.schema": {
-      generatedAt: "2026-08-14T00:00:00.000Z",
-      schema: objectSchema("", {
+    "config.schema": configSchema(
+      objectSchema("", {
         browser: objectSchema("Browser", {
-          enabled: {
-            type: "boolean",
-            title: "Browser Enabled",
-          },
+          enabled: { type: "boolean", title: "Browser Enabled" },
         }),
       }),
-      uiHints: {},
-      version: "e2e",
-    },
+    ),
   };
 }
 
@@ -112,19 +138,6 @@ suite.define(() => {
     async (colorScheme) => {
       await withPage(
         async ({ page }) => {
-          const totals = {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            totalTokens: 0,
-            totalCost: 0,
-            inputCost: 0,
-            outputCost: 0,
-            cacheReadCost: 0,
-            cacheWriteCost: 0,
-            missingCostEntries: 0,
-          };
           const gateway = await installMockGateway(page, {
             methodResponses: {
               "sessions.usage": {
@@ -132,7 +145,7 @@ suite.define(() => {
                 startDate: "2026-09-01",
                 endDate: "2026-09-07",
                 sessions: [],
-                totals,
+                totals: createEmptyCostUsageTotals(),
                 aggregates: {
                   messages: {
                     total: 0,
@@ -209,12 +222,8 @@ suite.define(() => {
             featureMethods: scenario.featureMethods,
             methodResponses: {
               "config.get": {
-                config: scenario.config,
-                hash: `forced-colors-${scenario.route}`,
-                issues: [],
-                raw: JSON.stringify(scenario.config),
+                ...configSnapshot(scenario.config, `forced-colors-${scenario.route}`),
                 runtimeConfig: scenario.config,
-                valid: true,
               },
             },
             operatorScopes: ["operator.read", "operator.admin"],
@@ -240,39 +249,31 @@ suite.define(() => {
             `segmented-forced-colors-${scenario.colorScheme}.png`,
           );
           expect(
-            await selectedLabel.evaluate((element) => {
-              const style = getComputedStyle(element);
-              return {
-                textDecorationLine: style.textDecorationLine,
-                textDecorationThickness: style.textDecorationThickness,
-              };
-            }),
-          ).toEqual({ textDecorationLine: "underline", textDecorationThickness: "2px" });
-          expect(
-            await unselectedLabel.evaluate(
-              (element) => getComputedStyle(element).textDecorationLine,
-            ),
-          ).toBe("none");
+            await computedStyles(selectedLabel, [
+              "text-decoration-line",
+              "text-decoration-thickness",
+            ]),
+          ).toEqual({ "text-decoration-line": "underline", "text-decoration-thickness": "2px" });
+          expect(await computedStyles(unselectedLabel, ["text-decoration-line"])).toEqual({
+            "text-decoration-line": "none",
+          });
 
           await selected.focus();
           expect(await selected.evaluate((element) => element.matches(":focus-visible"))).toBe(
             true,
           );
           expect(
-            await selectedLabel.evaluate((element) => {
-              const style = getComputedStyle(element);
-              return {
-                outlineOffset: style.outlineOffset,
-                outlineStyle: style.outlineStyle,
-                outlineWidth: style.outlineWidth,
-                textDecorationLine: style.textDecorationLine,
-              };
-            }),
+            await computedStyles(selectedLabel, [
+              "outline-offset",
+              "outline-style",
+              "outline-width",
+              "text-decoration-line",
+            ]),
           ).toEqual({
-            outlineOffset: "2px",
-            outlineStyle: "solid",
-            outlineWidth: "2px",
-            textDecorationLine: "underline",
+            "outline-offset": "2px",
+            "outline-style": "solid",
+            "outline-width": "2px",
+            "text-decoration-line": "underline",
           });
         },
         { colorScheme: scenario.colorScheme, forcedColors: "active" },
@@ -304,19 +305,8 @@ suite.define(() => {
         await browserSwitchControl.evaluate((element) => getComputedStyle(element).backgroundColor),
       ).toBe(await resolvedBackground(page, "var(--accent)"));
 
-      if (proof.enabled) {
-        await page.locator(".content-header").screenshot({
-          animations: "disabled",
-          path: path.join(proof.directory(), "01-settings-view.png"),
-        });
-        await overview
-          .locator(".settings-section")
-          .first()
-          .screenshot({
-            animations: "disabled",
-            path: path.join(proof.directory(), "02-security-controls.png"),
-          });
-      }
+      await capture(page.locator(".content-header"), "01-settings-view.png");
+      await capture(overview.locator(".settings-section").first(), "02-security-controls.png");
 
       await browserSwitchRole.click();
       await expect.poll(() => browserSwitchRole.isChecked()).toBe(false);
@@ -332,10 +322,7 @@ suite.define(() => {
         await expect
           .poll(() =>
             section
-              .getByRole("switch", {
-                name: "Open links in Control UI browser",
-                exact: true,
-              })
+              .getByRole("switch", { name: "Open links in Control UI browser", exact: true })
               .count(),
           )
           .toBe(0);
@@ -353,14 +340,7 @@ suite.define(() => {
           if (host === "app") {
             await page.context().addInitScript(() => {
               const messages: unknown[] = [];
-              const appWindow = window as Window & {
-                openclawNativeLinkMessages?: unknown[];
-                webkit?: {
-                  messageHandlers?: {
-                    openclawLink?: { postMessage: (message: unknown) => void };
-                  };
-                };
-              };
+              const appWindow = window as NativeLinkWindow;
               appWindow.openclawNativeLinkMessages = messages;
               appWindow.webkit = {
                 messageHandlers: {
@@ -369,6 +349,12 @@ suite.define(() => {
               };
             });
           }
+          const tab = {
+            tabId: "tab-1",
+            targetId: "target-1",
+            title: "Example",
+            url: "https://example.com/control-ui-proof",
+          };
           const gateway = await installMockGateway(page, {
             featureMethods: [
               "browser.request",
@@ -383,48 +369,16 @@ suite.define(() => {
               ...browserConfigMocks(),
               "browser.request": {
                 cases: [
-                  {
-                    match: { method: "POST", path: "/tabs/open" },
-                    response: {
-                      tabId: "tab-1",
-                      targetId: "target-1",
-                      title: "Example",
-                      url: "https://example.com/control-ui-proof",
-                    },
-                  },
-                  {
-                    match: { method: "GET", path: "/tabs" },
-                    response: {
-                      running: true,
-                      tabs: [
-                        {
-                          tabId: "tab-1",
-                          targetId: "target-1",
-                          title: "Example",
-                          url: "https://example.com/control-ui-proof",
-                        },
-                      ],
-                    },
-                  },
-                  {
-                    match: { method: "POST", path: "/screenshot" },
-                    response: {
-                      path: "/proof.png",
-                      targetId: "target-1",
-                      url: "https://example.com/control-ui-proof",
-                    },
-                  },
-                  {
-                    match: { method: "POST", path: "/act" },
-                    response: {
-                      result: {
-                        cssHeight: 720,
-                        cssWidth: 1280,
-                        title: "Example",
-                        url: "https://example.com/control-ui-proof",
-                      },
-                    },
-                  },
+                  browserCase("POST", "/tabs/open", tab),
+                  browserCase("GET", "/tabs", { running: true, tabs: [tab] }),
+                  browserCase("POST", "/screenshot", {
+                    path: "/proof.png",
+                    targetId: tab.targetId,
+                    url: tab.url,
+                  }),
+                  browserCase("POST", "/act", {
+                    result: { cssHeight: 720, cssWidth: 1280, title: tab.title, url: tab.url },
+                  }),
                 ],
               },
             },
@@ -450,12 +404,8 @@ suite.define(() => {
           await preference.click();
           await expect.poll(() => preference.isChecked()).toBe(true);
           await page.reload();
-          const persistedPreference = page.getByRole("switch", {
-            name: "Open links in Control UI browser",
-            exact: true,
-          });
-          await persistedPreference.waitFor();
-          expect(await persistedPreference.isChecked()).toBe(true);
+          await preference.waitFor();
+          expect(await preference.isChecked()).toBe(true);
 
           if (host === "browser") {
             await captureBrowserSettingProof(
@@ -466,49 +416,16 @@ suite.define(() => {
           }
 
           await page.goto(`${suite.server.baseUrl}chat`);
-          await page.evaluate(() => {
-            const link = document.createElement("a");
-            link.href = "https://example.com/application-handled";
-            link.textContent = "Application-handled link";
-            link.dataset.controlUiBrowserHandled = "true";
-            link.addEventListener("click", (event) => event.preventDefault());
-            Object.assign(link.style, {
-              background: "white",
-              left: "16px",
-              padding: "8px",
-              position: "fixed",
-              top: "16px",
-              zIndex: "99999",
-            });
-            document.body.append(link);
-          });
+          await addProofLink(page, true);
           await page.locator("[data-control-ui-browser-handled]").click();
           expect(await gateway.getRequests("browser.request")).toEqual([]);
           if (host === "app") {
             expect(
-              await page.evaluate(
-                () =>
-                  (window as Window & { openclawNativeLinkMessages?: unknown[] })
-                    .openclawNativeLinkMessages,
-              ),
+              await page.evaluate(() => (window as NativeLinkWindow).openclawNativeLinkMessages),
             ).toEqual([]);
           }
           await page.locator("[data-control-ui-browser-handled]").evaluate((link) => link.remove());
-          await page.evaluate(() => {
-            const link = document.createElement("a");
-            link.href = "https://example.com/control-ui-proof";
-            link.textContent = "Open proof link";
-            link.dataset.controlUiBrowserProof = "true";
-            Object.assign(link.style, {
-              background: "white",
-              left: "16px",
-              padding: "8px",
-              position: "fixed",
-              top: "16px",
-              zIndex: "99999",
-            });
-            document.body.append(link);
-          });
+          await addProofLink(page, false);
           await page.locator("[data-control-ui-browser-proof]").click();
           await expect.poll(() => gateway.getRequests("browser.request")).not.toHaveLength(0);
           expect(
@@ -541,11 +458,7 @@ suite.define(() => {
 
           if (host === "app") {
             expect(
-              await page.evaluate(
-                () =>
-                  (window as Window & { openclawNativeLinkMessages?: unknown[] })
-                    .openclawNativeLinkMessages,
-              ),
+              await page.evaluate(() => (window as NativeLinkWindow).openclawNativeLinkMessages),
             ).toEqual([]);
           }
           expect(pageErrors).toEqual([]);

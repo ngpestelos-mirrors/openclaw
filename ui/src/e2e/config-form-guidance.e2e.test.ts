@@ -5,6 +5,7 @@ import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import {
   configSnapshot,
   objectSchema,
+  configSchema,
   pageRunner,
   configProof,
   settingsPageOptions,
@@ -19,16 +20,14 @@ function notificationStatusConfigMocks() {
   const config = { ui: { prefs: { theme: "claw" } } };
   return {
     "config.get": configSnapshot(config, "notification-status-e2e", true),
-    "config.schema": {
-      generatedAt: "2026-07-28T00:00:00.000Z",
-      schema: objectSchema("", {
+    "config.schema": configSchema(
+      objectSchema("", {
         ui: objectSchema("UI", {
           prefs: objectSchema("Prefs", { theme: { type: "string", title: "Theme" } }),
         }),
       }),
-      uiHints: { "ui.prefs.theme": { advanced: false } },
-      version: "e2e",
-    },
+      { "ui.prefs.theme": { advanced: false } },
+    ),
   };
 }
 
@@ -43,9 +42,8 @@ suite.define(() => {
       await installMockGateway(page, {
         methodResponses: {
           "config.get": configSnapshot(config, "config-form-guidance-e2e"),
-          "config.schema": {
-            generatedAt: "2026-07-14T00:00:00.000Z",
-            schema: objectSchema("", {
+          "config.schema": configSchema(
+            objectSchema("", {
               meta: objectSchema("Meta", {
                 groupPolicy: {
                   title: "Group policy",
@@ -56,9 +54,7 @@ suite.define(() => {
                 },
               }),
             }),
-            uiHints: {},
-            version: "e2e",
-          },
+          ),
         },
       });
 
@@ -97,9 +93,8 @@ suite.define(() => {
       const gateway = await installMockGateway(page, {
         methodResponses: {
           "config.get": configSnapshot(config, "advanced-disclosure-e2e", true),
-          "config.schema": {
-            generatedAt: "2026-07-27T00:00:00.000Z",
-            schema: objectSchema("", {
+          "config.schema": configSchema(
+            objectSchema("", {
               ui: objectSchema("UI", {
                 seamColor: { type: "string", title: "Accent Color" },
                 prefs: objectSchema("Prefs", {
@@ -112,13 +107,12 @@ suite.define(() => {
                 }),
               }),
             }),
-            uiHints: {
+            {
               "ui.prefs.theme": { advanced: false },
               "ui.prefs.sidebarEntries": { advanced: true },
               "ui.seamColor": { advanced: true },
             },
-            version: "e2e",
-          },
+          ),
         },
       });
 

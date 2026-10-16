@@ -6,6 +6,7 @@ import {
   pageRunner,
   configSnapshot,
   objectSchema,
+  configSchema,
   configProof,
   settingsRow,
   settingsPageOptions,
@@ -96,9 +97,8 @@ suite.define(() => {
       const gateway = await installMockGateway(page, {
         methodResponses: {
           "config.get": configSnapshot(config, "config-form-defaults-e2e"),
-          "config.schema": {
-            generatedAt: "2026-07-31T00:00:00.000Z",
-            schema: objectSchema("", {
+          "config.schema": configSchema(
+            objectSchema("", {
               runtime: objectSchema("Runtime defaults", {
                 enabled: {
                   type: "boolean",
@@ -135,11 +135,10 @@ suite.define(() => {
                 },
               }),
             }),
-            uiHints: Object.fromEntries(
+            Object.fromEntries(
               Object.keys(config.runtime).map((key) => [`runtime.${key}`, { advanced: false }]),
             ),
-            version: "e2e",
-          },
+          ),
         },
       });
 
