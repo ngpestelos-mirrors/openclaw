@@ -12,6 +12,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSecretRef, type SecretInput } from "../config/types.secrets.js";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
 import { applyPrimaryModel } from "../plugins/provider-model-primary.js";
+import { materializeSecretInput } from "../secrets/resolve-secret-input-string.js";
 import { normalizeOptionalSecretInput } from "../utils/normalize-secret-input.js";
 import { normalizeAlias } from "./models/alias-name.js";
 import { applyAgentModelDefaults, type OnboardingAgentTarget } from "./onboard-agent-target.js";
@@ -430,14 +431,55 @@ export async function discoverCustomApiModelIds(params: {
 }
 
 export async function resolveNonInteractiveCustomApiModelIds(params: {
+  config: OpenClawConfig;
   baseUrl: string;
+  providerId?: string;
   modelId: string;
   apiKey?: string;
+  agentDir?: string;
   modelIds?: string[];
 }): Promise<string[]> {
-  const modelIds = params.modelId
-    ? [params.modelId]
-    : (params.modelIds ?? (await discoverCustomApiModelIds(params)));
+  let modelIds = params.modelId ? [params.modelId] : params.modelIds;
+  if (!modelIds) {
+    const { providerId } = resolveCustomProviderId(params);
+    let configuredKey = params.config.models?.providers?.[providerId]?.apiKey;
+    const credentialError = () =>
+      new CustomApiError(
+        "missing_required",
+        "Could not resolve the configured custom provider credential. Check its secret reference or profile, or pass --custom-api-key or --custom-model-id explicitly.",
+      );
+    if (!params.apiKey && typeof configuredKey === "string") {
+      const [
+        { loadAuthProfileStoreWithoutExternalProfilesAsync },
+        { resolveProviderEntryApiKeyBinding },
+      ] = await Promise.all([
+        import("../agents/auth-profiles/store-runtime.js"),
+        import("../agents/model-auth-provider-config.js"),
+      ]);
+      const binding = await resolveProviderEntryApiKeyBinding({
+        cfg: params.config,
+        provider: providerId,
+        store: await loadAuthProfileStoreWithoutExternalProfilesAsync(params.agentDir),
+        agentDir: params.agentDir,
+      });
+      if (binding.kind === "profile-resolved") {
+        configuredKey = binding.auth.apiKey;
+      } else if (binding.kind === "profile-incompatible" || binding.kind === "profile-unresolved") {
+        throw credentialError();
+      }
+    }
+    const apiKey =
+      params.apiKey ??
+      (await materializeSecretInput({
+        config: params.config,
+        value: configuredKey,
+        env: process.env,
+        onResolveRefError: () => {
+          throw credentialError();
+        },
+      }));
+    modelIds = await discoverCustomApiModelIds({ ...params, apiKey });
+  }
   if (!modelIds.length) {
     throw new CustomApiError(
       "missing_required",

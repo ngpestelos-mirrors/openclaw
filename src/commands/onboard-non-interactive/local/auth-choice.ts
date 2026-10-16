@@ -212,7 +212,9 @@ export async function applyNonInteractiveAuthChoice(params: {
       }
       const modelIds = await resolveNonInteractiveCustomApiModelIds({
         ...customAuth,
+        config: nextConfig,
         apiKey: resolvedCustomApiKey?.key,
+        agentDir: params.target.agentDir,
         modelIds: opts.customModelIds,
       });
       // Apply the advertised first model last so every model joins the allowlist.

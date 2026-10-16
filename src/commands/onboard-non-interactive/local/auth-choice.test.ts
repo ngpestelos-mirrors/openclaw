@@ -1,10 +1,18 @@
 // Non-interactive auth-choice tests cover built-in, custom, deprecated, and plugin provider dispatch.
+import fs from "node:fs/promises";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createApiKeyCredential,
+  createAuthProfileStoreFixture,
+} from "../../../agents/auth-profiles/credential-fixtures.test-support.js";
+import * as authProfileStore from "../../../agents/auth-profiles/store-runtime.js";
 import type { OpenClawConfig } from "../../../config/config.js";
 import { resolveAgentModelPrimaryValue } from "../../../config/model-input.js";
 import type { ModelDefinitionConfig } from "../../../config/types.models.js";
 import * as fetchGuard from "../../../infra/net/fetch-guard.js";
 import { ExitError } from "../../../runtime.js";
+import { withTempDir } from "../../../test-utils/temp-dir.js";
 import * as apiProviderAuthChoices from "../../auth-choice.apply.api-providers.js";
 import { commitNonInteractiveOnboardConfig } from "../config-write.js";
 import { applyNonInteractiveAuthChoice } from "./auth-choice.js";
@@ -48,6 +56,9 @@ vi.mock("../../../plugins/provider-install-catalog.js", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.spyOn(authProfileStore, "loadAuthProfileStoreWithoutExternalProfilesAsync").mockResolvedValue(
+    createAuthProfileStoreFixture({}),
+  );
   runtime = createRuntime();
   nextConfig = { agents: { defaults: {} } };
   applyNonInteractivePluginProviderChoice.mockReset();
@@ -62,12 +73,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
 const azureBaseUrl = "https://fixture.openai.azure.com/openai/v1";
 
 function createAzureCatalogConfig() {
+  vi.stubEnv("AZURE_DISCOVERY_TEST_KEY", "fixture-azure-key");
   const model: ModelDefinitionConfig = {
     id: "chat-prod",
     name: "Production chat",
@@ -288,6 +301,132 @@ describe("applyNonInteractiveAuthChoice", () => {
   );
 
   it.each([
+    { name: "inline", apiKey: "fixture-configured-key" },
+    {
+      name: "environment SecretRef",
+      apiKey: { source: "env", provider: "default", id: "DISCOVERY_CONFIGURED_KEY" },
+    },
+  ] as const)(
+    "uses the configured $name key for discovery without rewriting it",
+    async ({ apiKey }) => {
+      vi.stubEnv("DISCOVERY_CONFIGURED_KEY", "fixture-configured-key");
+      const request = vi
+        .spyOn(fetchGuard, "fetchWithSsrFGuard")
+        .mockImplementation(async (input) => ({
+          response:
+            new Headers(input.init?.headers).get("Authorization") ===
+            "Bearer fixture-configured-key"
+              ? Response.json({ data: [{ id: "discovered-chat" }] })
+              : new Response(null, { status: 401 }),
+          finalUrl: input.url,
+          release: async () => {},
+        }));
+      const config: OpenClawConfig = {
+        models: {
+          providers: { local: { baseUrl: "https://models.custom.local/v1", apiKey, models: [] } },
+        },
+      };
+      const result = await applyChoice({
+        nextConfig: config,
+        opts: { customBaseUrl: "https://models.custom.local/v1", customProviderId: "local" },
+      });
+      expect(result?.models?.providers?.local?.models).toEqual([
+        expect.objectContaining({ id: "discovered-chat" }),
+      ]);
+      expect(result?.models?.providers?.local?.apiKey).toEqual(apiKey);
+      expect(request).toHaveBeenCalledOnce();
+      expect(runtime.error).not.toHaveBeenCalled();
+      expect(JSON.stringify(runtime.log.mock.calls)).not.toContain("fixture-configured-key");
+    },
+  );
+
+  it("resolves a configured file SecretRef through the secret owner for discovery", async () => {
+    await withTempDir("openclaw-discovery-key-", async (dir) => {
+      const secretPath = path.join(dir, "key");
+      await fs.writeFile(secretPath, "fixture-file-key", { mode: 0o600 });
+      const apiKey = { source: "file", provider: "discovery", id: "value" } as const;
+      const config: OpenClawConfig = {
+        secrets: {
+          providers: { discovery: { source: "file", path: secretPath, mode: "singleValue" } },
+        },
+        models: {
+          providers: { local: { baseUrl: "https://models.custom.local/v1", apiKey, models: [] } },
+        },
+      };
+      vi.spyOn(fetchGuard, "fetchWithSsrFGuard").mockImplementation(async (input) => ({
+        response:
+          new Headers(input.init?.headers).get("Authorization") === "Bearer fixture-file-key"
+            ? Response.json({ data: [{ id: "discovered-chat" }] })
+            : new Response(null, { status: 401 }),
+        finalUrl: input.url,
+        release: async () => {},
+      }));
+      const result = await applyChoice({
+        nextConfig: config,
+        opts: { customBaseUrl: "https://models.custom.local/v1", customProviderId: "local" },
+      });
+      expect(result?.models?.providers?.local?.models).toEqual([
+        expect.objectContaining({ id: "discovered-chat" }),
+      ]);
+      expect(result?.models?.providers?.local?.apiKey).toEqual(apiKey);
+      expect(runtime.error).not.toHaveBeenCalled();
+      expect(JSON.stringify(runtime.log.mock.calls)).not.toContain("fixture-file-key");
+    });
+  });
+
+  it.each([true, false])(
+    "honors configured profile endpoint compatibility (%s)",
+    async (sameEndpoint) => {
+      vi.spyOn(
+        authProfileStore,
+        "loadAuthProfileStoreWithoutExternalProfilesAsync",
+      ).mockResolvedValue(
+        createAuthProfileStoreFixture({
+          "shared:bound": createApiKeyCredential("shared", "fixture-bound-key"),
+        }),
+      );
+      const request = vi
+        .spyOn(fetchGuard, "fetchWithSsrFGuard")
+        .mockImplementation(async (input) => ({
+          response:
+            new Headers(input.init?.headers).get("Authorization") === "Bearer fixture-bound-key"
+              ? Response.json({ data: [{ id: "discovered-chat" }] })
+              : new Response(null, { status: 401 }),
+          finalUrl: input.url,
+          release: async () => {},
+        }));
+      const result = await applyChoice({
+        nextConfig: {
+          models: {
+            providers: {
+              local: {
+                baseUrl: "https://models.custom.local/v1",
+                apiKey: "shared:bound",
+                models: [],
+              },
+              shared: {
+                baseUrl: sameEndpoint ? "https://models.custom.local/v1" : "https://other.local/v1",
+                models: [],
+              },
+            },
+          },
+        },
+        opts: { customBaseUrl: "https://models.custom.local/v1", customProviderId: "local" },
+      });
+      if (sameEndpoint) {
+        expect(result?.models?.providers?.local?.models).toEqual([
+          expect.objectContaining({ id: "discovered-chat" }),
+        ]);
+        expect(result?.models?.providers?.local?.apiKey).toBe("shared:bound");
+      } else {
+        expect(result).toBeNull();
+        expect(request).not.toHaveBeenCalled();
+      }
+      expect(JSON.stringify(runtime.log.mock.calls)).not.toContain("fixture-bound-key");
+    },
+  );
+
+  it.each([
     { name: "first advertised", modelIds: ["chat-prod", "new-chat"], customImageInput: undefined },
     { name: "last advertised", modelIds: ["new-chat", "chat-prod"], customImageInput: undefined },
     {
@@ -395,7 +534,7 @@ describe("applyNonInteractiveAuthChoice", () => {
   });
 
   it("keeps discovered models together when a provider id collides", async () => {
-    vi.spyOn(fetchGuard, "fetchWithSsrFGuard").mockResolvedValue({
+    const request = vi.spyOn(fetchGuard, "fetchWithSsrFGuard").mockResolvedValue({
       response: Response.json({ data: [{ id: "first" }, { id: "second" }] }),
       finalUrl: "https://models.custom.local/v1/models",
       release: async () => {},
@@ -406,6 +545,7 @@ describe("applyNonInteractiveAuthChoice", () => {
           providers: {
             local: {
               baseUrl: "https://other.example/v1",
+              apiKey: "other-endpoint-key",
               models: [],
             },
           },
@@ -414,6 +554,7 @@ describe("applyNonInteractiveAuthChoice", () => {
       opts: { customBaseUrl: "https://models.custom.local/v1", customProviderId: "local" },
     });
     expect(Object.keys(result?.models?.providers ?? {})).toEqual(["local", "local-2"]);
+    expect(new Headers(request.mock.calls[0]?.[0].init?.headers).has("Authorization")).toBe(false);
     expect(result?.models?.providers?.["local-2"]?.models.map((model) => model.id)).toEqual([
       "second",
       "first",

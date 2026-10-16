@@ -157,6 +157,7 @@ async function validateResetAuthChoice(params: {
   opts: OnboardOptions;
   runtime: RuntimeEnv;
   baseConfig: OpenClawConfig;
+  discoveryConfig: OpenClawConfig;
   workspaceDir: string;
   resetScope: ResetScope;
 }): Promise<boolean> {
@@ -312,7 +313,9 @@ async function validateResetAuthChoice(params: {
       }
       const modelIds = await resolveNonInteractiveCustomApiModelIds({
         ...custom,
+        config: params.discoveryConfig,
         apiKey: customCredential?.key,
+        agentDir: target.agentDir,
       });
       applyCustomApiConfig({
         ...custom,
@@ -598,6 +601,7 @@ export async function setupWizardCommand(
           opts: normalizedOpts,
           runtime,
           baseConfig: setupBaseConfig,
+          discoveryConfig: baseConfig,
           workspaceDir: setupWorkspaceDir,
           resetScope,
         }))

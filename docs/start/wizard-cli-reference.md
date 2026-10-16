@@ -367,6 +367,8 @@ on a different release.
 
     Without `--custom-model-id`, non-interactive OpenAI-compatible setup saves the discovered list and selects its first model as the default. An explicit ID skips discovery. If discovery fails or returns no usable models, rerun with an explicit ID.
 
+    When reusing a provider ID and endpoint, discovery can use the provider's configured API key or secret reference without changing how it is stored. Reset preflight can use that credential before removing the old configuration; reset still clears the configuration as requested.
+
   </Accordion>
   <Accordion title="Skip">
     Leaves auth unconfigured.
