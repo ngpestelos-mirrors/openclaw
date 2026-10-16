@@ -21,8 +21,10 @@ it.each([
     `import { readGeneratedSqliteFingerprint, readGeneratedSqliteCatalog } from ${JSON.stringify(path.resolve("src/state/postgres-schema.generated/sqlite-catalogs.ts"))};
 import { OPENCLAW_STATE_SCHEMA_SQL } from ${JSON.stringify(path.resolve("src/state/openclaw-state-schema.ts"))};
 import { OPENCLAW_AGENT_SCHEMA_SQL } from ${JSON.stringify(path.resolve("src/state/openclaw-agent-schema.ts"))};
-export const fingerprints = () => [OPENCLAW_STATE_SCHEMA_SQL, OPENCLAW_AGENT_SCHEMA_SQL].map(readGeneratedSqliteFingerprint);
-export const catalogs = () => [OPENCLAW_STATE_SCHEMA_SQL, OPENCLAW_AGENT_SCHEMA_SQL].map(readGeneratedSqliteCatalog);
+import { DAEMON_RUNTIME_PIN_SCHEMA_SQL } from ${JSON.stringify(path.resolve("src/daemon/runtime-pin-schema.ts"))};
+const schemas = [OPENCLAW_STATE_SCHEMA_SQL, OPENCLAW_AGENT_SCHEMA_SQL, DAEMON_RUNTIME_PIN_SCHEMA_SQL];
+export const fingerprints = () => schemas.map(readGeneratedSqliteFingerprint);
+export const catalogs = () => schemas.map(readGeneratedSqliteCatalog);
 `,
   );
   const outDir = path.join(root, "build");
@@ -76,7 +78,7 @@ console.log(JSON.stringify(fingerprints.map((fingerprint, index) => ({
       tables: string[];
       expected: string[];
     }[];
-    expect(observed).toHaveLength(2);
+    expect(observed).toHaveLength(3);
     for (const store of observed) {
       expect(store.fingerprint).toMatch(/^[a-f0-9]{64}$/u);
       expect(store.tables).toEqual(store.expected);

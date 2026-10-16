@@ -210,6 +210,8 @@ describe("PostgreSQL schema generation", () => {
         "sqlite-state-catalogs.json",
         "sqlite-agent-catalogs.ts",
         "sqlite-agent-catalogs.json",
+        "sqlite-daemon-catalogs.ts",
+        "sqlite-daemon-catalogs.json",
       ].toSorted(),
     );
     expect(

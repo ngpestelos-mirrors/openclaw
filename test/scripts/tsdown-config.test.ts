@@ -851,6 +851,7 @@ console.log("relocated session card renders with bundled fonts");
             `dist/${relay}.${extension}`,
             `dist/${anchor}.${extension}`,
             "dist/assets/sqlite-schema/sqlite-agent-catalogs.json",
+            "dist/assets/sqlite-schema/sqlite-daemon-catalogs.json",
             "dist/assets/sqlite-schema/sqlite-state-catalogs.json",
           ].toSorted(),
         );

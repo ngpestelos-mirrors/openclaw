@@ -3,16 +3,23 @@ import { createHash } from "node:crypto";
 import type { SqliteSchemaCatalog } from "../../infra/sqlite-schema-catalog-types.js";
 import type { GeneratedSqliteFingerprint } from "../../infra/sqlite-schema-fingerprint.js";
 import { readSqliteAgentCatalog, readSqliteAgentFingerprint } from "./sqlite-agent-catalogs.js";
+import { readSqliteDaemonCatalog, readSqliteDaemonFingerprint } from "./sqlite-daemon-catalogs.js";
 import { readSqliteStateCatalog, readSqliteStateFingerprint } from "./sqlite-state-catalogs.js";
 
 export function readGeneratedSqliteFingerprint(
   schemaSql: string,
 ): GeneratedSqliteFingerprint | undefined {
   const hash = createHash("sha256").update(schemaSql).digest("hex");
-  return readSqliteStateFingerprint(hash) ?? readSqliteAgentFingerprint(hash);
+  return (
+    readSqliteStateFingerprint(hash) ??
+    readSqliteAgentFingerprint(hash) ??
+    readSqliteDaemonFingerprint(hash)
+  );
 }
 
 export function readGeneratedSqliteCatalog(schemaSql: string): SqliteSchemaCatalog | undefined {
   const hash = createHash("sha256").update(schemaSql).digest("hex");
-  return readSqliteStateCatalog(hash) ?? readSqliteAgentCatalog(hash);
+  return (
+    readSqliteStateCatalog(hash) ?? readSqliteAgentCatalog(hash) ?? readSqliteDaemonCatalog(hash)
+  );
 }

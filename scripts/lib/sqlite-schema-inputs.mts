@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { DAEMON_RUNTIME_PIN_SCHEMA_SQL } from "../../src/daemon/runtime-pin-schema.js";
 import { extractSqliteTableSchema } from "../../src/infra/sqlite-schema-sql.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../../src/state/openclaw-agent-db-contract.js";
 import {
@@ -33,7 +34,7 @@ export type SqliteSchemaInput = {
   prepare?: (database: DatabaseSync) => void | Promise<void>;
 };
 
-/** Exact source strings accepted by state and agent expected-schema inspection. */
+/** Exact source strings accepted by each owner's expected-schema inspection. */
 export function listSqliteSchemaInputs(): SqliteSchemaInput[] {
   const inputs: SqliteSchemaInput[] = [];
   const add = (id: string, store: SqliteSchemaInput["store"], sql: string) => {
@@ -41,6 +42,7 @@ export function listSqliteSchemaInputs(): SqliteSchemaInput[] {
   };
   add("state", "state", OPENCLAW_STATE_SCHEMA_SQL);
   add("agent", "agent", OPENCLAW_AGENT_SCHEMA_SQL);
+  add("daemon-runtime-pins-v1", "daemon", DAEMON_RUNTIME_PIN_SCHEMA_SQL);
 
   for (const feature of listOpenClawStateFeatureSchemas()) {
     add(`fragment-${feature.id}`, "state", feature.sql());
