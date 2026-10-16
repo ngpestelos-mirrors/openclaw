@@ -164,6 +164,21 @@ sidebarTitle: "Troubleshooting"
 
   </Accordion>
 
+  <Accordion title="Repetitive output stopped">
+    OpenClaw stopped a long repetition-dominated response from a model with a
+    known size of 32B parameters or less. It replaced the affected unfinished
+    block in session history with `[Repetitive output stopped]`. Earlier blocks
+    and completed tool work remain; side effects are not retried automatically.
+
+    Try a stronger model, request less output, or split the task into smaller
+    turns. Native Ollama requests also send the resolved model output cap as
+    `num_predict`; lower the model's `maxTokens` if generation runs too long.
+    The detector starts around 16,000 characters and can also stop intentionally
+    identical long output. It stays off when model size is unknown or above 32B.
+    See [Output budgets and repetition stops](/gateway/local-models#output-budgets-and-repetition-stops).
+
+  </Accordion>
+
   <Accordion title="Kimi or GLM returns garbled symbols">
     Hosted Kimi/GLM responses that are long, non-linguistic symbol runs are
     treated as a failed provider call rather than a successful reply, so

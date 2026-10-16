@@ -39,6 +39,7 @@ import {
   isOllamaCloudOrigin,
   OLLAMA_CLOUD_PROVIDER_ID,
   OLLAMA_DEFAULT_BASE_URL,
+  OLLAMA_DEFAULT_MAX_TOKENS,
 } from "./defaults.js";
 import { normalizeOllamaWireModelId } from "./model-id.js";
 import { applyOllamaThinkingFloor } from "./model-reasoning.js";
@@ -141,24 +142,22 @@ const OLLAMA_TOP_LEVEL_PARAM_KEYS = new Set(["format", "keep_alive", "truncate",
  * advertised `contextWindow`; only an explicit runtime cap or operator override is forwarded.
  */
 function resolveOllamaNativeNumCtx(model: ProviderRuntimeModel): number | undefined {
-  const configured = resolveOllamaConfiguredNumCtx(model);
-  if (configured !== undefined) {
-    return configured;
-  }
-  const effective = model.contextTokens;
-  if (typeof effective !== "number" || !Number.isFinite(effective) || effective <= 0) {
-    return undefined;
-  }
-  return Math.floor(effective);
+  const effective = asNonNegativeFiniteNumber(model.contextTokens);
+  return resolveOllamaConfiguredNumCtx(model) ?? (effective ? Math.floor(effective) : undefined);
 }
 
 function resolveOllamaModelOptions(model: ProviderRuntimeModel): Record<string, unknown> {
-  const options = pickOllamaParams(model.params, OLLAMA_OPTION_PARAM_KEYS);
   const numCtx = resolveOllamaNativeNumCtx(model);
-  if (numCtx !== undefined) {
-    options.num_ctx = numCtx;
-  }
-  return options;
+  return {
+    num_predict:
+      model.maxTokens ??
+      Math.min(
+        OLLAMA_DEFAULT_MAX_TOKENS,
+        model.contextTokens ?? model.contextWindow ?? OLLAMA_DEFAULT_MAX_TOKENS,
+      ),
+    ...pickOllamaParams(model.params, OLLAMA_OPTION_PARAM_KEYS),
+    ...(numCtx !== undefined ? { num_ctx: numCtx } : {}),
+  };
 }
 
 function pickOllamaParams(

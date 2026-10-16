@@ -3,6 +3,7 @@ import type { WizardPrompter } from "openclaw/plugin-sdk/setup";
 import { requestBodyText, requestUrl } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  buildOllamaModelsConfig,
   discoverOllamaModelsForSetup,
   selectAppGuidedOllamaModelFromDiscovery,
 } from "./setup-model-selection.js";
@@ -21,6 +22,14 @@ function pendingAbortableResponse(signal: AbortSignal | null | undefined): Promi
 }
 
 describe("Ollama onboarding model selection", () => {
+  it("keeps discovery-only parameter metadata out of user config", () => {
+    const models = buildOllamaModelsConfig(
+      ["model"],
+      new Map([["model", { name: "model", parameterCount: 4_000_000_000 }]]),
+    );
+    expect(models[0]).not.toHaveProperty("parameterCount");
+  });
+
   it("selects a deterministic tools-capable model with enough context", () => {
     expect(
       selectAppGuidedOllamaModelFromDiscovery([

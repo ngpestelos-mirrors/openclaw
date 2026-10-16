@@ -97,14 +97,13 @@ export function buildOllamaModelsConfig(
     if (discovered && isOllamaEmbeddingOnlyModel(discovered)) {
       return [];
     }
-    return [
-      buildOllamaModelDefinition(
-        name,
-        discovered?.contextWindow,
-        discovered?.capabilities,
-        discovered,
-      ),
-    ];
+    const { parameterCount: _parameterCount, ...model } = buildOllamaModelDefinition(
+      name,
+      discovered?.contextWindow,
+      discovered?.capabilities,
+      discovered,
+    );
+    return [model];
   });
 }
 

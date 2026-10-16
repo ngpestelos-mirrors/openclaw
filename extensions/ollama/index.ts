@@ -66,6 +66,7 @@ import {
   capLocalOllamaProviderContext,
   fetchOllamaModels,
   fetchLoadedOllamaModelNames,
+  hasOllamaModelShowInfo,
   isOllamaCloudModel,
   queryOllamaModelShowInfo,
   resolveOllamaApiBase,
@@ -298,7 +299,8 @@ function needsOllamaCatalogMetadata(entry: ProviderAugmentModelCatalogContext["e
     !hasContextLimit ||
     entry.reasoning === undefined ||
     entry.input === undefined ||
-    entry.compat === undefined
+    entry.compat === undefined ||
+    entry.parameterCount === undefined
   );
 }
 
@@ -480,11 +482,7 @@ async function buildOllamaCloudProvider(apiKey?: string): Promise<ModelProviderC
     OLLAMA_GLM52_CLOUD_MODEL_ID,
     { apiKey },
   );
-  if (
-    typeof showInfo.contextWindow !== "number" &&
-    (showInfo.capabilities?.length ?? 0) === 0 &&
-    !showInfo.thinkingLevelMap
-  ) {
+  if (!hasOllamaModelShowInfo(showInfo)) {
     return discovered;
   }
   const defaultModel = OLLAMA_CLOUD_DEFAULT_MODELS.find(
@@ -518,11 +516,7 @@ async function resolveRequestedDynamicOllamaModel(params: {
   const showInfo = params.showApiKey
     ? await queryOllamaModelShowInfo(showBaseUrl, params.modelId, { apiKey: params.showApiKey })
     : await queryOllamaModelShowInfo(showBaseUrl, params.modelId);
-  if (
-    typeof showInfo.contextWindow !== "number" &&
-    (showInfo.capabilities?.length ?? 0) === 0 &&
-    !showInfo.thinkingLevelMap
-  ) {
+  if (!hasOllamaModelShowInfo(showInfo)) {
     return undefined;
   }
   const definition = buildOllamaModelDefinition(
@@ -602,6 +596,7 @@ async function augmentConfiguredOllamaCatalogModels(params: {
               input: requested.input,
               contextWindow: requested.contextWindow,
               contextTokens: requested.contextTokens,
+              parameterCount: requested.parameterCount,
               thinkingLevelMap: requested.thinkingLevelMap,
               compat: requested.compat,
             }
@@ -793,7 +788,9 @@ export default definePluginEntry({
                         ...discovered.existing,
                         ...discovered.provider,
                         ...(discovered.ownerValue ? { apiKey: discovered.ownerValue } : {}),
-                        models: discovered.provider.models,
+                        models: discovered.provider.models.map(
+                          ({ parameterCount: _parameterCount, ...model }) => model,
+                        ),
                       },
                     },
                   },

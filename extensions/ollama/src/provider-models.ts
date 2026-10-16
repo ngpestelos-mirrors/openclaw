@@ -98,6 +98,7 @@ export type OllamaModelShowInfo = {
   contextWindow?: number;
   capabilities?: string[];
   thinkingLevelMap?: ModelDefinitionConfig["thinkingLevelMap"];
+  parameterCount?: number;
   /** Distinguishes a failed request from a successful response that omitted capabilities. */
   showInspectionFailed?: boolean;
 };
@@ -111,9 +112,14 @@ export const mergeOllamaModelShowInfo = (
     model.capabilities !== undefined &&
     isOllamaRemoteModel(model) &&
     !isOllamaEmbeddingOnlyModel(model);
+  const parameterCount =
+    info.parameterCount ??
+    model.parameterCount ??
+    parseOllamaParameterSize(model.details?.parameter_size);
   return {
     ...model,
     ...info,
+    ...(parameterCount !== undefined ? { parameterCount } : {}),
     contextWindow: info.contextWindow ?? model.contextWindow ?? model.details?.context_length,
     capabilities: incomplete
       ? [
@@ -167,12 +173,26 @@ function setOllamaModelShowCacheEntry(key: string, value: Promise<OllamaModelSho
   ollamaModelShowInfoCache.set(key, value);
 }
 
-function hasCachedOllamaModelShowInfo(info: OllamaModelShowInfo): boolean {
+export function hasOllamaModelShowInfo(info: OllamaModelShowInfo): boolean {
   return (
+    info.parameterCount !== undefined ||
     info.contextWindow !== undefined ||
     (info.capabilities?.length ?? 0) > 0 ||
     info.thinkingLevelMap !== undefined
   );
+}
+
+function parseOllamaParameterSize(value: unknown): number | undefined {
+  const match =
+    typeof value === "string" ? value.trim().match(/^(\d+(?:\.\d+)?)\s*([KMBT])$/i) : undefined;
+  const magnitude = match?.[1];
+  const unit = match?.[2];
+  if (!magnitude || !unit) {
+    return undefined;
+  }
+  const exponent = "KMBT".indexOf(unit.toUpperCase()) + 1;
+  const count = Math.round(Number(magnitude) * 1000 ** exponent);
+  return Number.isSafeInteger(count) && count > 0 ? count : undefined;
 }
 
 function parseOllamaNumCtxParameter(parameters: unknown): number | undefined {
@@ -231,6 +251,7 @@ export async function readOllamaModelShowInfo(
     }
     const data = await readProviderJsonResponse<{
       model_info?: Record<string, unknown>;
+      details?: OllamaTagModel["details"];
       capabilities?: unknown;
       parameters?: unknown;
       thinking?: unknown;
@@ -264,8 +285,20 @@ export async function readOllamaModelShowInfo(
         )
       : undefined;
 
+    const rawParameterCount = data.model_info?.["general.parameter_count"];
+    const parameterCount =
+      typeof rawParameterCount === "number" &&
+      Number.isSafeInteger(rawParameterCount) &&
+      rawParameterCount > 0
+        ? rawParameterCount
+        : parseOllamaParameterSize(data.details?.parameter_size);
     const thinkingLevelMap = await buildOllamaThinkingLevelMap(modelName, data.thinking);
-    return { contextWindow, capabilities, ...(thinkingLevelMap ? { thinkingLevelMap } : {}) };
+    return {
+      contextWindow,
+      capabilities,
+      ...(parameterCount !== undefined ? { parameterCount } : {}),
+      ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+    };
   } finally {
     await release();
   }
@@ -302,7 +335,7 @@ async function queryOllamaModelShowInfoCached(
   }
 
   const pending = queryOllamaModelShowInfo(normalizedApiBase, model.name, opts).then((result) => {
-    if (!hasCachedOllamaModelShowInfo(result)) {
+    if (!hasOllamaModelShowInfo(result)) {
       ollamaModelShowInfoCache.delete(cacheKey);
     }
     return result;
@@ -439,6 +472,7 @@ export function buildOllamaModelDefinition(
       resolveOllamaCloudDefaultModel(modelId)?.contextWindow ??
       OLLAMA_DEFAULT_CONTEXT_WINDOW,
     maxTokens: OLLAMA_DEFAULT_MAX_TOKENS,
+    ...(opts?.parameterCount !== undefined ? { parameterCount: opts.parameterCount } : {}),
     ...(opts?.thinkingLevelMap ? { thinkingLevelMap: opts.thinkingLevelMap } : {}),
     compat: {
       supportsTools: capabilities?.includes("tools") ?? opts?.showInspectionFailed !== true,
@@ -483,6 +517,9 @@ export function toDynamicOllamaModel(params: {
       ? { contextTokens: params.model.contextTokens }
       : {}),
     maxTokens: params.model.maxTokens ?? 8192,
+    ...(params.model.parameterCount !== undefined
+      ? { parameterCount: params.model.parameterCount }
+      : {}),
     ...(api === "ollama" && params.model.thinkingLevelMap
       ? { thinkingLevelMap: params.model.thinkingLevelMap }
       : {}),

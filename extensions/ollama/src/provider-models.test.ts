@@ -14,10 +14,45 @@ import {
   fetchLoadedOllamaModelNames,
   fetchOllamaModels,
   queryOllamaModelShowInfo,
+  toDynamicOllamaModel,
   type OllamaTagModel,
 } from "./provider-models.js";
 
 describe("ollama provider models", () => {
+  it.each([
+    { tagSize: "1.5B", expected: 1_500_000_000 },
+    { tagSize: "494M", expected: 494_000_000 },
+    { tagSize: "1.2T", expected: 1_200_000_000_000 },
+    { tagSize: "4B", showCount: 70_000_000_000, expected: 70_000_000_000 },
+    { showSize: "32.8B", expected: 32_800_000_000 },
+    { tagSize: "unknown", expected: undefined },
+  ])(
+    "keeps total parameter metadata through discovery: %j",
+    async ({ tagSize, showCount, showSize, expected }) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: string | URL | Request) =>
+          requestUrl(input).endsWith("/api/tags")
+            ? jsonResponse({
+                models: [{ name: "custom-model", details: { parameter_size: tagSize } }],
+              })
+            : jsonResponse({
+                capabilities: ["completion"],
+                model_info: { "general.parameter_count": showCount },
+                details: { parameter_size: showSize },
+              }),
+        ),
+      );
+      const provider = await buildOllamaProvider("http://127.0.0.1:11434");
+      const model = expectDefined(provider.models[0], "discovered model");
+      expect(model.parameterCount).toBe(expected);
+      expect(
+        toDynamicOllamaModel({ provider: "ollama", providerConfig: provider, model })
+          .parameterCount,
+      ).toBe(expected);
+    },
+  );
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });

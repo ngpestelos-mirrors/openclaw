@@ -19,3 +19,16 @@ export function inferParamBFromIdOrName(text: string): number | null {
   }
   return best;
 }
+
+/** Restricts live repetition detection to models with a known total size of at most 32B. */
+export function isSmallModel(model: {
+  id: string;
+  name?: string;
+  parameterCount?: number;
+}): boolean {
+  const paramB =
+    model.parameterCount === undefined
+      ? inferParamBFromIdOrName(`${model.id} ${model.name ?? ""}`)
+      : model.parameterCount / 1_000_000_000;
+  return paramB !== null && paramB > 0 && paramB <= 32;
+}
