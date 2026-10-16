@@ -16,7 +16,7 @@ afterEach(() => {
   }
 });
 
-it("dispatches npm's computed command through the embedded child contract without disk CLI discovery", () => {
+it("dispatches npm installer commands without embedding interactive project tooling", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "standalone-npm-"));
   roots.push(root);
   const runtimeRoot = path.join(root, "runtime");
@@ -41,6 +41,10 @@ module.exports = process => require(entry)(process);`,
     `module.exports = async process => console.log(JSON.stringify(process.argv.slice(2)));`,
   );
   write("node_modules/npm/bin/npm-cli.js", "throw new Error('Disk CLI must not run');");
+  write(
+    "node_modules/npm/lib/commands/init.js",
+    "throw new Error('Interactive init must not run');",
+  );
   const npm = prepareStandaloneNpm({ runtimeRoot, parse });
   expect(npm.moduleEntries).toEqual([
     "standalone-npm-cli.mjs",

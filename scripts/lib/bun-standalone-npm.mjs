@@ -2,10 +2,14 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
-/** npm computes its CLI and command filenames; retain those lazy modules as image entries. */
+// The private child serves OpenClaw's install owners, not npm's interactive project tooling.
+const INSTALLER_COMMANDS = new Set(["config", "install", "pack", "prune", "uninstall", "view"]);
+
+/** npm computes its CLI and command filenames; retain the install surface as image entries. */
 export function prepareStandaloneNpm({ runtimeRoot, parse }) {
   const require = createRequire(path.join(runtimeRoot, "package.json"));
   const npmRoot = path.dirname(require.resolve("npm/package.json"));
+  const commandsRoot = path.join(npmRoot, "lib/commands");
   const relative = (filename) => path.relative(runtimeRoot, filename).split(path.sep).join("/");
   const commonJsEntries = [];
   function collect(directory) {
@@ -14,6 +18,9 @@ export function prepareStandaloneNpm({ runtimeRoot, parse }) {
       if (entry.isDirectory()) {
         collect(filename);
       } else if (entry.isFile() && entry.name.endsWith(".js")) {
+        if (directory === commandsRoot && !INSTALLER_COMMANDS.has(entry.name.slice(0, -3))) {
+          continue;
+        }
         commonJsEntries.push(relative(filename));
       }
     }

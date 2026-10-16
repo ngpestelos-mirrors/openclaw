@@ -211,8 +211,9 @@ hashes. Installed plugins keep their normal filesystem admission and loading
 rules and live in the configured state directory.
 
 Installed TypeScript plugins use the embedded Jiti loader and Babel transformer.
-Plugin installation uses the packaged npm CLI as an embedded child entrypoint;
-its computed command modules are included in the image too.
+Plugin installation uses a packaged npm child entrypoint with the commands used
+by OpenClaw's install owners: `config`, `install`, `pack`, `prune`, `uninstall`, and
+`view`. Interactive npm project tooling is not part of this private entrypoint.
 The builder captures constant conditional-export resolutions before compilation;
 these modules remain lazy and do not require JavaScript in the sidecar.
 
