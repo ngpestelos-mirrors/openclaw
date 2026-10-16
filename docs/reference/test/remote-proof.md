@@ -500,14 +500,15 @@ completed disposal records retain their separate slot-locked workflow.
 the initial volume lookup. This scan does not hash payloads, search Git history, or
 query a provider. Use `staging inspect --after <nextCursor>` to page the local report
 with its returned cursor. Inspection reports incomplete scans and elapsed time;
-bulk verification is separately bounded and can take longer.
+per-ID recovery verification is separately bounded and can take longer.
 
 Use `staging inspect` to find retained staging, then `staging recover <id>` for one
-selected candidate. Abandoned staging and interrupted disposal require explicit
-recovery. Ordinary commands clean up their own successful or dirty-source staging
-without an independent recovery witness. Unsupported filesystem durability,
-including native Windows directory flushes, prevents orphan recovery while
-preserving ordinary operation.
+selected candidate. Ordinary commands do not scan or recover unrelated abandoned
+staging. Mirror allocation retains slot-locked eviction, including resuming
+eligible recorded disposals. Ordinary commands clean up their own successful or
+dirty-source staging without an independent recovery witness. Unsupported
+filesystem durability, including native Windows directory flushes, prevents orphan
+recovery while preserving ordinary operation.
 
 These are local artifacts, not published or fully sanitized proof. Blacksmith's
 native failure bundle contains captured stdout/stderr and diagnostic metadata;
