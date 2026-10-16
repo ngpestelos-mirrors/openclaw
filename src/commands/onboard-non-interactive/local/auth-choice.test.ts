@@ -303,6 +303,7 @@ describe("applyNonInteractiveAuthChoice", () => {
 
   it.each([
     { name: "inline", apiKey: "fixture-configured-key" },
+    { name: "environment marker", apiKey: "OPENAI_API_KEY" },
     {
       name: "environment SecretRef",
       apiKey: { source: "env", provider: "default", id: "DISCOVERY_CONFIGURED_KEY" },
@@ -311,6 +312,8 @@ describe("applyNonInteractiveAuthChoice", () => {
     "uses the configured $name key for discovery without rewriting it",
     async ({ apiKey }) => {
       vi.stubEnv("DISCOVERY_CONFIGURED_KEY", "fixture-configured-key");
+      vi.stubEnv("OPENAI_API_KEY", "fixture-configured-key");
+      vi.stubEnv("CUSTOM_API_KEY", undefined);
       const request = vi
         .spyOn(fetchGuard, "fetchWithSsrFGuard")
         .mockImplementation(async (input) => ({

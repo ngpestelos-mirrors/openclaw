@@ -491,7 +491,7 @@ export async function resolveNonInteractiveCustomApiModelIds(params: {
     if (!params.apiKey && typeof configuredKey === "string") {
       const [
         { loadAuthProfileStoreWithoutExternalProfilesAsync },
-        { resolveProviderEntryApiKeyBinding },
+        { resolveProviderEntryApiKeyBinding, resolveUsableCustomProviderApiKey },
       ] = await Promise.all([
         import("../agents/auth-profiles/store-runtime.js"),
         import("../agents/model-auth-provider-config.js"),
@@ -506,6 +506,10 @@ export async function resolveNonInteractiveCustomApiModelIds(params: {
         configuredKey = binding.auth.apiKey;
       } else if (binding.kind === "profile-incompatible" || binding.kind === "profile-unresolved") {
         throw credentialError();
+      } else {
+        configuredKey =
+          resolveUsableCustomProviderApiKey({ cfg: params.config, provider: providerId })?.apiKey ??
+          configuredKey;
       }
     }
     const apiKey = noAuth
