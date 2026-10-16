@@ -53,10 +53,7 @@ function copyGeneratedPublisherFixture(root: string, workspaceName: string) {
     cpSync(
       path.join(generatedPublisherTemplate, name),
       path.join(root, name === "worktree" ? workspaceName : name),
-      {
-        recursive: true,
-        mode: fsConstants.COPYFILE_FICLONE,
-      },
+      { recursive: true, mode: fsConstants.COPYFILE_FICLONE },
     );
   }
 }
@@ -272,28 +269,20 @@ export function prepareGeneratedPublisherFixture(
       }
 
       const branchRef = "refs/heads/automation/locale";
+      const originGit = (...args: string[]) => runGit(root, ["--git-dir", origin, ...args]);
       const branchExists =
         spawnSync("git", ["--git-dir", origin, "show-ref", "--verify", branchRef]).status === 0;
-      const branchHead = branchExists
-        ? runGit(root, ["--git-dir", origin, "rev-parse", branchRef])
-        : "";
+      const branchHead = branchExists ? originGit("rev-parse", branchRef) : "";
+      const generated = (file: string) =>
+        branchExists ? originGit("show", `${branchRef}:generated/${file}.txt`) : "";
       return {
         branchExists,
         branchHead,
         initialBranch,
-        generatedA: branchExists
-          ? runGit(root, ["--git-dir", origin, "show", `${branchRef}:generated/a.txt`])
-          : "",
-        generatedB: branchExists
-          ? runGit(root, ["--git-dir", origin, "show", `${branchRef}:generated/b.txt`])
-          : "",
-        mainGeneratedA: runGit(root, [
-          "--git-dir",
-          origin,
-          "show",
-          "refs/heads/main:generated/a.txt",
-        ]),
-        mainHead: runGit(root, ["--git-dir", origin, "rev-parse", "refs/heads/main"]),
+        generatedA: generated("a"),
+        generatedB: generated("b"),
+        mainGeneratedA: originGit("show", "refs/heads/main:generated/a.txt"),
+        mainHead: originGit("rev-parse", "refs/heads/main"),
         mergeCalls: existsSync(mergeCalls) ? readFileSync(mergeCalls, "utf8") : "",
         publishOutput,
         summary: readFileSync(summary, "utf8"),

@@ -16,6 +16,18 @@ import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const readRoot = (file: string) => fs.readFileSync(path.join(root, file), "utf8");
+const reportOnly = (directory: string) =>
+  generatePostgresSchemas(directory, "openclaw", { reportOnly: true });
+
+function withDatabase<T>(run: (db: DatabaseSync) => T): T {
+  const db = new DatabaseSync(":memory:");
+  try {
+    return run(db);
+  } finally {
+    db.close();
+  }
+}
 
 function fixture(sql: string) {
   const directory = tempDirs.make("postgres-schema-");
@@ -26,13 +38,10 @@ function fixture(sql: string) {
 }
 
 function verifiedFixture(sql: string, verify: (db: DatabaseSync) => void) {
-  const db = new DatabaseSync(":memory:");
-  try {
+  withDatabase((db) => {
     db.exec(`PRAGMA foreign_keys = ON; ${sql}`);
     verify(db);
-  } finally {
-    db.close();
-  }
+  });
   return fixture(sql);
 }
 
@@ -72,16 +81,9 @@ describe("PostgreSQL schema generation", () => {
     expect(agent.objects.filter((item) => item.kind === "trigger" && item.sql)).toHaveLength(10);
     expect(agent.objects.filter((item) => item.kind === "triggerFunction")).toHaveLength(4);
     expect(agent.objects.filter((item) => item.kind === "check" && item.sql)).toHaveLength(66);
-    expect(
-      report.pendingCapabilities.filter(
-        (item) => item.database === "agent" && item.kind === "trigger",
-      ),
-    ).toHaveLength(4);
-    expect(
-      report.pendingCapabilities.filter(
-        (item) => item.database === "agent" && item.kind === "virtualTable",
-      ),
-    ).toHaveLength(2);
+    const pending = report.pendingCapabilities.filter((item) => item.database === "agent");
+    expect(pending.filter((item) => item.kind === "trigger")).toHaveLength(4);
+    expect(pending.filter((item) => item.kind === "virtualTable")).toHaveLength(2);
     expect(JSON.parse(files["manifest.json"]!).pendingCapabilities).toEqual(
       report.pendingCapabilities,
     );
@@ -105,21 +107,17 @@ describe("PostgreSQL schema generation", () => {
     );
     fs.writeFileSync(
       file,
-      fs
-        .readFileSync(path.join(root, "src/state/openclaw-agent-schema.sql"), "utf8")
-        .replace("snapshot_revision + 1", "snapshot_revision + 2"),
+      readRoot("src/state/openclaw-agent-schema.sql").replace(
+        "snapshot_revision + 1",
+        "snapshot_revision + 2",
+      ),
     );
     await expect(generatePostgresSchemas(directory)).rejects.toThrow(/Unsupported trigger update/);
   });
 
   it("keeps the complete workboard artifact current and uses the admitted search path", async () => {
     const { sql, catalog, portMetadata } = await generateWorkboardPostgresSchema();
-    expect(sql).toBe(
-      fs.readFileSync(
-        path.join(root, "extensions/workboard/src/workboard-schema.postgres.sql"),
-        "utf8",
-      ),
-    );
+    expect(sql).toBe(readRoot("extensions/workboard/src/workboard-schema.postgres.sql"));
     expect(catalog.objects.filter((item) => item.sql === null)).toEqual([]);
     expect(sql).toContain('CREATE TABLE "workboard_cards" (');
     expect(sql).toContain('"content" bytea NOT NULL');
@@ -130,12 +128,7 @@ describe("PostgreSQL schema generation", () => {
     expect(sql).not.toMatch(/\b(?:BEGIN|COMMIT|CREATE SCHEMA)\b/);
     expect(sql).toMatch(/[^\n]\n$/);
     expect(portMetadata).toEqual(
-      JSON.parse(
-        fs.readFileSync(
-          path.join(root, "src/infra/database-engine/workboard-port.generated.json"),
-          "utf8",
-        ),
-      ),
+      JSON.parse(readRoot("src/infra/database-engine/workboard-port.generated.json")),
     );
     const preData = sql.slice(portMetadata.preData[0], portMetadata.preData[1]);
     const postData = sql.slice(portMetadata.postData[0], portMetadata.postData[1]);
@@ -149,19 +142,9 @@ describe("PostgreSQL schema generation", () => {
 
   it("keeps Logbook DDL and port allocation metadata current", async () => {
     const { sql, portMetadata } = await generateLogbookPostgresSchema();
-    expect(sql).toBe(
-      fs.readFileSync(
-        path.join(root, "extensions/logbook/src/logbook-schema.postgres.sql"),
-        "utf8",
-      ),
-    );
+    expect(sql).toBe(readRoot("extensions/logbook/src/logbook-schema.postgres.sql"));
     expect(portMetadata).toEqual(
-      JSON.parse(
-        fs.readFileSync(
-          path.join(root, "src/infra/database-engine/logbook-port.generated.json"),
-          "utf8",
-        ),
-      ),
+      JSON.parse(readRoot("src/infra/database-engine/logbook-port.generated.json")),
     );
     expect(portMetadata.tables.flatMap((table) => table.identities)).toEqual(
       Array.from({ length: 4 }, () => ({ column: "id", autoIncrement: true })),
@@ -171,8 +154,7 @@ describe("PostgreSQL schema generation", () => {
   });
 
   it("derives identity allocation semantics and composite keys from canonical SQLite", () => {
-    const db = new DatabaseSync(":memory:");
-    try {
+    withDatabase((db) => {
       db.exec(`
         CREATE TABLE allocated (id INTEGER PRIMARY KEY AUTOINCREMENT) STRICT;
         CREATE TABLE reused (id INTEGER PRIMARY KEY, note TEXT DEFAULT 'AUTOINCREMENT') STRICT;
@@ -184,9 +166,7 @@ describe("PostgreSQL schema generation", () => {
         { name: "paired", pk: ["left_id", "right_id"], identities: [] },
         { name: "reused", pk: ["id"], identities: [{ column: "id", autoIncrement: false }] },
       ]);
-    } finally {
-      db.close();
-    }
+    });
   });
 
   it("renders eager and lazy state DDL inside the connection owner's namespace and transaction", async () => {
@@ -246,9 +226,8 @@ describe("PostgreSQL schema generation", () => {
     const exported = await generatePostgresSchemas(root, "openclaw", { includeJsonReport: true });
     expect(JSON.parse(exported.files["portability-report.json"]!)).toEqual(generated.report);
     for (const name of ["state", "agent"]) {
-      const db = new DatabaseSync(":memory:");
-      try {
-        db.exec(fs.readFileSync(path.join(root, `src/state/openclaw-${name}-schema.sql`), "utf8"));
+      withDatabase((db) => {
+        db.exec(readRoot(`src/state/openclaw-${name}-schema.sql`));
         if (name === "state") {
           for (const fragment of listOpenClawStateFeatureSchemas()) {
             db.exec(fragment.sql());
@@ -330,9 +309,7 @@ describe("PostgreSQL schema generation", () => {
             ).toContain(item.sql);
           }
         }
-      } finally {
-        db.close();
-      }
+      });
     }
   });
 
@@ -425,9 +402,7 @@ describe("PostgreSQL schema generation", () => {
     await expect(generatePostgresSchemas(directory)).rejects.toThrow(
       /Unsupported shared-state default records.unsupported_default.*abs/,
     );
-    const { files, report } = await generatePostgresSchemas(directory, "openclaw", {
-      reportOnly: true,
-    });
+    const { files, report } = await reportOnly(directory);
     const objects = report.catalogs.state!.objects;
     const checks = objects.filter((item) => item.kind === "check");
     expect(checks).toHaveLength(accepted.length + refused.length);
@@ -462,9 +437,7 @@ describe("PostgreSQL schema generation", () => {
       CREATE TABLE dependent (id INTEGER PRIMARY KEY, target TEXT REFERENCES mixed(id)) STRICT;
       CREATE VIEW projection AS SELECT id FROM mixed;
     `);
-    const { files, report } = await generatePostgresSchemas(directory, "openclaw", {
-      reportOnly: true,
-    });
+    const { files, report } = await reportOnly(directory);
     const objects = report.catalogs.state!.objects;
     expect(objects.find((item) => item.kind === "table" && item.name === "mixed")).toMatchObject({
       sql: null,
@@ -522,9 +495,7 @@ describe("PostgreSQL schema generation", () => {
         expect(() => db.exec("INSERT INTO child VALUES (2)")).toThrow(/FOREIGN KEY/);
       },
     );
-    const { files, report } = await generatePostgresSchemas(directory, "openclaw", {
-      reportOnly: true,
-    });
+    const { files, report } = await reportOnly(directory);
     const catalog = report.catalogs.state!;
     const foreignKey = catalog.objects.find((item) => item.kind === "foreignKey");
     expect(foreignKey).toMatchObject({ sql: null });
@@ -547,7 +518,7 @@ describe("PostgreSQL schema generation", () => {
           expect(db.prepare("SELECT COUNT(*) AS count FROM records").get()?.count).toBe(1);
         },
       );
-      const { report } = await generatePostgresSchemas(directory, "openclaw", { reportOnly: true });
+      const { report } = await reportOnly(directory);
       const objects = report.catalogs.state!.objects;
       expect(
         objects.some(
@@ -572,9 +543,7 @@ describe("PostgreSQL schema generation", () => {
         db.prepare("SELECT COUNT(*) AS count FROM nullable_key WHERE id IS NULL").get()?.count,
       ).toBe(2);
     });
-    const { files, report } = await generatePostgresSchemas(directory, "openclaw", {
-      reportOnly: true,
-    });
+    const { files, report } = await reportOnly(directory);
     expect(report.catalogs.state!.objects.find((item) => item.kind === "table")).toMatchObject({
       sql: null,
       reason: expect.stringMatching(/nullable.*primary|primary.*nullable/i),
@@ -593,9 +562,7 @@ describe("PostgreSQL schema generation", () => {
         });
       },
     );
-    const { files, report } = await generatePostgresSchemas(directory, "openclaw", {
-      reportOnly: true,
-    });
+    const { files, report } = await reportOnly(directory);
     expect(report.catalogs.state!.objects.find((item) => item.kind === "default")).toMatchObject({
       sql: null,
       reason: expect.stringMatching(/type|bigint|boolean/i),
@@ -617,13 +584,10 @@ describe("PostgreSQL schema generation", () => {
     expect(expression).not.toBeNull();
     expect(expression).not.toContain("--");
     expect(files["state.postgres.sql"]).toContain(`CHECK (${expression})`);
-    const db = new DatabaseSync(":memory:");
-    try {
+    withDatabase((db) => {
       const predicate = db.prepare(`SELECT ${expression} AS accepted FROM (SELECT ? AS value)`);
       expect(predicate.get(0)?.accepted).toBe(0);
       expect(predicate.get(1)?.accepted).toBe(1);
-    } finally {
-      db.close();
-    }
+    });
   });
 });

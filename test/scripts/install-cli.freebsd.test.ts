@@ -218,28 +218,14 @@ describe("FreeBSD source-install admission", () => {
     expect(result.stdout.trim()).toBe(`selected:${os}:${args === "--git" ? "git" : "npm"}`);
   });
 
-  it.each([
-    {
-      command: "main --node-only --git",
-      version: "",
-      message: "Private Node.js recovery is unavailable on FreeBSD",
-      forbidden: "Source/git",
-    },
-    {
-      command: "install_openclaw",
-      version: "main",
-      message: "--install-method npm",
-      forbidden: "--install-method git",
-    },
-    {
-      command: "install_openclaw",
-      version: "github:openclaw/openclaw#main",
-      message: "--install-method npm",
-      forbidden: "--install-method git",
-    },
-  ])(
-    "explains the FreeBSD refusal for $command $version",
-    ({ command, version, message, forbidden }) => {
+  it.each(["", "main", "github:openclaw/openclaw#main"])(
+    "explains the FreeBSD refusal for version %j",
+    (version) => {
+      const command = version ? "install_openclaw" : "main --node-only --git";
+      const message = version
+        ? "--install-method npm"
+        : "Private Node.js recovery is unavailable on FreeBSD";
+      const forbidden = version ? "--install-method git" : "Source/git";
       const { root, prefix } = fixture();
       const result = run(
         `
