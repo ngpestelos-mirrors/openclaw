@@ -156,6 +156,8 @@ describe("explicit all-test runtime trials", () => {
       `./${nodeFile}`,
       path.resolve(nodeFile),
       "test/scripts/control-ui-cold-load-trace.test.ts",
+      "test/talk-browser-defaults.test.ts",
+      "src/gateway/artifact-downloads.test.ts",
     ]) {
       expect(resolveCiTestRuntimeSelections({ targets: [target] }, "bun-all")).toEqual([
         { runtime: "node" },

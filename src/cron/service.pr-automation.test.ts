@@ -259,7 +259,6 @@ it.each([false, true])(
     const fixture = await createFixture("autoArchive");
     const respond = vi.fn();
     const releaseCore = createDeferredCore();
-    let archiveRequest: Promise<void> | undefined;
     runEmbeddedAgentMock.mockImplementation(async (params: RunEmbeddedAgentParams) => {
       const target = readRecipeTarget(params.prompt);
       const patch = {
@@ -269,20 +268,17 @@ it.each([false, true])(
       };
       // Synthetic model decision; the native archive handler and its exact-ID
       // precondition are real. No GitHub lookup or merge is performed.
-      archiveRequest = Promise.resolve(
-        expectDefined(
-          sessionMutationHandlers["sessions.patch"],
-          "sessions.patch",
-        )({
-          req: { type: "req", id: "recipe-archive", method: "sessions.patch", params: patch },
-          params: patch,
-          respond,
-          context: fixture.creator.context,
-          client: fixture.client,
-          isWebchatConnect: () => false,
-        }),
-      );
-      await archiveRequest;
+      await expectDefined(
+        sessionMutationHandlers["sessions.patch"],
+        "sessions.patch",
+      )({
+        req: { type: "req", id: "recipe-archive", method: "sessions.patch", params: patch },
+        params: patch,
+        respond,
+        context: fixture.creator.context,
+        client: fixture.client,
+        isWebchatConnect: () => false,
+      });
       if (!replaced) {
         await releaseCore.promise;
       }
@@ -294,8 +290,6 @@ it.each([false, true])(
       }
       await fixture.execution.update(fixture.selected.id, { enabled: true });
       const event = await fixture.tick();
-      // Cancellation can finish the scheduler occurrence before the archive RPC responds.
-      await expectDefined(archiveRequest, "archive request");
       // Successful archive disables bound jobs through the native cleanup owner,
       // cancelling this occurrence after the archive commits. A scheduler
       // cancellation is not evidence that the archive failed.
