@@ -32,7 +32,6 @@ final class VoiceSessionCoordinator {
         var voiceWakeTrigger: String?
     }
 
-    private let logger = Logger(subsystem: "ai.openclaw", category: "voicewake.coordinator")
     private var session: Session?
 
     // MARK: - API
@@ -45,7 +44,6 @@ final class VoiceSessionCoordinator {
         voiceWakeTrigger: String? = nil) -> UUID
     {
         let token = UUID()
-        self.logger.info("coordinator start token=\(token.uuidString) source=\(source.rawValue) len=\(text.count)")
         self.session = Session(
             token: token,
             text: text,
@@ -80,9 +78,6 @@ final class VoiceSessionCoordinator {
         voiceWakeTrigger: String? = nil)
     {
         guard let session, session.token == token else { return }
-        self.logger
-            .info(
-                "coordinator finalize token=\(token.uuidString) len=\(text.count) autoSendAfter=\(autoSendAfter ?? -1)")
         self.session?.text = text
         self.session?.sendChime = sendChime
         if let voiceWakeTrigger {
@@ -100,7 +95,6 @@ final class VoiceSessionCoordinator {
         let text = session.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let voiceWakeTrigger = session.voiceWakeTrigger
         guard !text.isEmpty else {
-            self.logger.info("coordinator sendNow \(reason) empty -> dismiss")
             self.overlay.dismiss(token: token, reason: .empty, outcome: .empty)
             self.session = nil
             return
