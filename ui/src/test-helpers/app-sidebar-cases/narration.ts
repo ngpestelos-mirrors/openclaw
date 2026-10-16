@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
 import { createGatewayHarness, createSessionsHarness, mountSidebar } from "../app-sidebar.ts";
@@ -96,12 +97,18 @@ describe("AppSidebar live narration", () => {
       const key = "agent:main:visible-preview";
       const gateway = createGatewayHarness({} as GatewayBrowserClient);
       const sessions = createSessionsHarness("main", [key]);
+      let acquired = createDeferred<void>();
+      sessions.subscribeMessages.mockImplementation((key) => {
+        acquired.resolve();
+        return Promise.resolve({ key, agentId: null });
+      });
       sessions.publishList({ result: sessionsResult([runningRow(key, 5)]), agentId: "main" });
       const { sidebar } = await mountSidebar(gateway.gateway, sessions.sessions);
       sidebar.sessionOrganizer.setSessionsShowPreview(true);
       sidebar.connected = true;
       await sidebar.updateComplete;
-      await waitForFast(() => expect(sessions.subscribeMessages).toHaveBeenCalledTimes(1));
+      await acquired.promise;
+      expect(sessions.subscribeMessages).toHaveBeenCalledTimes(1);
 
       if (hidden === "roster") {
         sidebar.sidebarAgentsMode = "roster";
@@ -116,13 +123,15 @@ describe("AppSidebar live narration", () => {
       await sidebar.updateComplete;
       expect(sessions.unsubscribeMessages).toHaveBeenCalledTimes(1);
 
+      acquired = createDeferred<void>();
       sidebar.sidebarAgentsMode = "chip";
       sidebar.navigationCollapsed = false;
       sidebar.navigationVisible = true;
       sidebar.navigationView = "sessions";
       sidebar.requestUpdate();
       await sidebar.updateComplete;
-      await waitForFast(() => expect(sessions.subscribeMessages).toHaveBeenCalledTimes(2));
+      await acquired.promise;
+      expect(sessions.subscribeMessages).toHaveBeenCalledTimes(2);
       gateway.publishEvent("session.narration", {
         sessionKey: key,
         runId: "visible-run",
@@ -252,7 +261,7 @@ describe("AppSidebar live narration", () => {
     sidebar.connected = true;
     await sidebar.updateComplete;
 
-    await waitForFast(() => expect(sessions.subscribeMessages).toHaveBeenCalledTimes(6));
+    expect(sessions.subscribeMessages).toHaveBeenCalledTimes(6);
     expect(sessions.subscribeMessages.mock.calls.map(([key]) => key)).toEqual(
       expect.arrayContaining(keys.slice(1)),
     );
