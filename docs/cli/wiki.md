@@ -103,6 +103,8 @@ Create the wiki vault layout and starter pages, including top-level indexes and 
 
 Import a local markdown or text file into the wiki `sources/` folder as a source page. `<path>` must be a local file path; there is no URL ingest today. Rejects binary files.
 
+Source files must be valid UTF-8. Malformed input is rejected without replacing an existing source page. Save the source as valid UTF-8 and retry the ingest.
+
 Imported source pages carry provenance frontmatter (`sourceType: local-file`, `sourcePath`, `ingestedAt`). Ingest always recompiles the vault afterward.
 
 Flags: `--title <title>` overrides the source title (default: derived from the filename).

@@ -1,3 +1,4 @@
+import { isUtf8 } from "node:buffer";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathExists } from "openclaw/plugin-sdk/security-runtime";
@@ -31,6 +32,11 @@ export async function ingestMemoryWikiSource(params: {
     params.signal?.throwIfAborted();
     if (buffer.subarray(0, 4096).includes(0)) {
       throw new Error(`Cannot ingest binary file as markdown source: ${sourcePath}`);
+    }
+    if (!isUtf8(buffer)) {
+      throw new Error(
+        `Source file must be valid UTF-8: ${sourcePath}. Save the source as valid UTF-8 and retry the ingest.`,
+      );
     }
     const title =
       params.title?.trim() ||
