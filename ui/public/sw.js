@@ -105,18 +105,22 @@ async function retireOldCaches() {
   );
 }
 
-async function matchOfflineShell() {
-  const current = await caches.match(OFFLINE_SHELL_URL, { cacheName: CACHE_NAME });
-  if (current) {
-    return current;
-  }
-  for (const name of await completeCacheNames()) {
-    const response = await caches.match(OFFLINE_SHELL_URL, { cacheName: name });
-    if (response) {
-      return response;
+async function matchOfflineShell(fallback = Response.error()) {
+  try {
+    const current = await caches.match(OFFLINE_SHELL_URL, { cacheName: CACHE_NAME });
+    if (current) {
+      return current;
     }
+    for (const name of await completeCacheNames()) {
+      const response = await caches.match(OFFLINE_SHELL_URL, { cacheName: name });
+      if (response) {
+        return response;
+      }
+    }
+  } catch {
+    // Storage denial must not discard an available Gateway response.
   }
-  return Response.error();
+  return fallback;
 }
 
 async function isCachedBootAsset(response, integrity) {
@@ -322,6 +326,9 @@ async function fetchNavigation(request, url, sessionEntry) {
       // back to an unhandled navigation; the document removes this one-shot hint.
       url.searchParams.set(NATIVE_AUTH_PARAM, "1");
       return Response.redirect(url.href);
+    }
+    if (response.status >= 500) {
+      return matchOfflineShell(response);
     }
     return response;
   } catch {

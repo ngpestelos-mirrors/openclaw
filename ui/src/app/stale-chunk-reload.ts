@@ -199,13 +199,14 @@ export async function scheduleStaleChunkReload(deps: StaleChunkReloadDeps = {}):
     const controller = new AbortController();
     const target: RecoveryState = { buildId, attemptedAt: now, controller };
     recoveryByStorage.set(storageIdentity, target);
+    // Reachability is shared by build, not owned by the first caller's connection.
+    // Each caller checks its current authority at the reload below.
     const wait = () =>
       waitForReachableControlUiDocument(
         { timeoutMs: deps.buildId === undefined ? Infinity : undefined },
         () =>
           recoveryByStorage.get(storageIdentity) === target &&
           target.buildId === buildId &&
-          deps.canReload?.() !== false &&
           canReloadControlUiDocument(),
         controller.signal,
       );

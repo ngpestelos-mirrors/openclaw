@@ -439,6 +439,29 @@ describe("Control UI offline app shell", () => {
     expect(await forbidden?.text()).toBe("Forbidden");
   });
 
+  it.each([500, 502, 503, 504])(
+    "uses the cached shell for an online %i navigation, or preserves the server error without a shell",
+    async (status) => {
+      const worker = createFetchServiceWorker();
+      const request = { url: worker.scope + "settings/connection", mode: "navigate" as const };
+      const unavailable = new Response("Gateway unavailable", {
+        status,
+        headers: { "Content-Type": "text/html", "Retry-After": "10" },
+      });
+      worker.fetch.mockResolvedValue(unavailable);
+      expect(await worker.dispatch(request)).toBe(unavailable);
+
+      worker.cache.set(worker.scope + "__offline_shell__", new Response("shell"));
+      const recovered = await worker.dispatch(request);
+      expect(recovered?.status).toBe(200);
+      expect(await recovered?.text()).toBe("shell");
+      worker.cacheMatch.mockRejectedValueOnce(new Error("storage denied"));
+      expect(await worker.dispatch(request)).toBe(unavailable);
+      expect(worker.fetch).toHaveBeenCalledTimes(3);
+      expect(worker.cachePut).not.toHaveBeenCalled();
+    },
+  );
+
   it("keeps a complete previous generation on failed preparation, then retires only older generations", async () => {
     const worker = createFetchServiceWorker();
     worker.priorCache.set(worker.scope + "__offline_shell__", new Response("previous shell"));
