@@ -10,12 +10,13 @@ import {
   installMissingStylesheetRecovery,
   installStaleChunkReloadListener,
   isStaleChunkImportError,
+  retryControlUiImport,
   retryStaleChunkReloadWhenReachable,
   scheduleStaleChunkReload,
 } from "./stale-chunk-reload.ts";
 
 const GUARD_KEY = "openclaw.controlUi.staleChunkReloadBuildId";
-const PROBE_TIMEOUT_MS = 3_000;
+const PROBE_TIMEOUT_MS = 10_000;
 
 function guard(buildId: string, at = Date.now()) {
   return JSON.stringify({ buildId, at });
@@ -98,6 +99,59 @@ afterEach(async () => {
 });
 
 describe("isStaleChunkImportError", () => {
+  it("does not reload an unreachable import; persistent failure reaches guarded recovery only after reconnect", async () => {
+    const reload = vi.fn();
+    const probe = vi.fn().mockRejectedValue(new TypeError("offline"));
+    vi.stubGlobal("fetch", probe);
+    const failure = new TypeError("Failed to fetch dynamically imported module");
+    const load = vi.fn().mockRejectedValue(failure);
+    const completion = retryControlUiImport(load).catch(async (error) => {
+      expect(error).toBe(failure);
+      return scheduleStaleChunkReload({ reload, storage: memoryStorage() });
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(reload).not.toHaveBeenCalled();
+    expect(load).toHaveBeenCalledOnce();
+    probe.mockResolvedValue(new Response(null, { status: 200 }));
+    window.dispatchEvent(new Event("online"));
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(completion).resolves.toBe(true);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(reload).toHaveBeenCalledOnce();
+  });
+  it("does not retry a failed CSS preload without its styles after reachability returns", async () => {
+    const probe = vi.fn().mockRejectedValue(new TypeError("offline"));
+    vi.stubGlobal("fetch", probe);
+    const failure = new Error("Unable to preload CSS for /assets/route-AbCd1234.css");
+    const load = vi.fn().mockRejectedValue(failure);
+    const pending = retryControlUiImport(load);
+    const rejected = expect(pending).rejects.toBe(failure);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(load).toHaveBeenCalledOnce();
+    probe.mockResolvedValue(new Response(null, { status: 200 }));
+    window.dispatchEvent(new Event("online"));
+    await vi.advanceTimersByTimeAsync(0);
+    await rejected;
+    expect(load).toHaveBeenCalledOnce();
+  });
+
+  it("does not rerun a retired route loader after reconnect", async () => {
+    const probe = vi.fn().mockRejectedValue(new TypeError("offline"));
+    vi.stubGlobal("fetch", probe);
+    const controller = new AbortController();
+    const load = vi
+      .fn()
+      .mockRejectedValue(new TypeError("Failed to fetch dynamically imported module"));
+    const pending = retryControlUiImport(load, controller.signal);
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    probe.mockResolvedValue(new Response(null, { status: 200 }));
+    window.dispatchEvent(new Event("online"));
+    await vi.advanceTimersByTimeAsync(0);
+    await rejected;
+    expect(load).toHaveBeenCalledOnce();
+  });
   it("ignores unrelated errors and non-error values", () => {
     expect(isStaleChunkImportError(new Error("request failed"))).toBe(false);
     expect(isStaleChunkImportError("Importing a module script failed.")).toBe(false);
@@ -734,8 +788,8 @@ describe("retryStaleChunkReloadWhenReachable", () => {
 
 describe("installStaleChunkReloadListener", () => {
   function dispatchPreloadError(payload: unknown) {
-    const event = new Event("vite:preloadError", { cancelable: true });
-    (event as Event & { payload?: unknown }).payload = payload;
+    const event = new Event("unhandledrejection", { cancelable: true });
+    Object.defineProperty(event, "reason", { value: payload });
     window.dispatchEvent(event);
   }
 
@@ -761,13 +815,33 @@ describe("installMissingStylesheetRecovery", () => {
     return vi.spyOn(document, "readyState", "get").mockReturnValue(readyState);
   }
 
-  function dispatchStylesheetError() {
+  function dispatchStylesheetError(href = "/assets/index-AbCd1234.css") {
     const link = document.createElement("link");
     link.rel = "stylesheet";
+    link.href = href;
     document.head.append(link);
     link.dispatchEvent(new Event("error"));
     link.remove();
   }
+
+  it.each(["/fonts/geist.css", "/themes/claw.css", "/plugins/example/style.css"])(
+    "ignores optional stylesheet failure: %s",
+    async (href) => {
+      const replace = stubDocumentNavigation();
+      setReadyState("loading");
+      const probe = stubDocumentFetch();
+      const uninstall = installMissingStylesheetRecovery();
+      try {
+        dispatchStylesheetError(href);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(probe).not.toHaveBeenCalled();
+        expect(replace).not.toHaveBeenCalled();
+        expect(document.querySelector('[role="alert"]')).toBeNull();
+      } finally {
+        uninstall();
+      }
+    },
+  );
 
   it("does nothing when the stylesheet sentinel is present and removes listeners", () => {
     stubDocumentNavigation();
