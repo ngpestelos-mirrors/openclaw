@@ -117,7 +117,10 @@ export async function discoverOmlxProvider(ctx: ProviderCatalogContext) {
   if (!ctx.providerIds && !ctx.config.models?.providers?.omlx && !ctx.env[OMLX_API_KEY_ENV_VAR]) {
     return null;
   }
-  const auth = ctx.resolveProviderApiKey(OMLX_PROVIDER_ID);
+  const auth =
+    ctx.config.models?.providers?.omlx?.apiKey === OMLX_LOCAL_API_KEY
+      ? { apiKey: OMLX_LOCAL_API_KEY }
+      : ctx.resolveProviderApiKey(OMLX_PROVIDER_ID);
   const result = await runLiveProviderCatalog({
     providerId: OMLX_PROVIDER_ID,
     run: async () => {

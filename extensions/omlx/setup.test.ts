@@ -95,8 +95,32 @@ afterEach(() => {
 });
 
 describe("oMLX setup through the inference catalog", () => {
+  it("keeps an explicitly keyless catalog free of ambient credentials", async () => {
+    const fetchMock = fixture();
+    const ctx = catalogContext();
+    ctx.env = { OMLX_API_KEY: "old-endpoint-key" };
+    ctx.resolveProviderApiKey = () => ({
+      apiKey: "OMLX_API_KEY",
+      discoveryApiKey: "old-endpoint-key",
+    });
+    ctx.config = {
+      models: {
+        providers: {
+          omlx: {
+            baseUrl: "http://127.0.0.1:8000/v1",
+            apiKey: "omlx-local",
+            models: [],
+          },
+        },
+      },
+    };
+    await expect(discoverOmlxProvider(ctx)).resolves.toBeTruthy();
+    expect(new Headers(fetchMock.mock.lastCall?.[1]?.headers).get("authorization")).toBeNull();
+  });
+
   it("discovers with the selected profile credential instead of its identifier", async () => {
     const fetchMock = fixture();
+    vi.stubEnv("OMLX_API_KEY", "old-endpoint-key");
     await withOpenClawTestState({ label: "omlx-setup-profile" }, async (state) => {
       await state.writeAuthProfiles({
         version: 1,
@@ -106,7 +130,7 @@ describe("oMLX setup through the inference catalog", () => {
       });
       await expect(
         detectOmlxAvailability({
-          env: {},
+          env: { OMLX_API_KEY: "old-endpoint-key" },
           config: {
             models: {
               providers: {

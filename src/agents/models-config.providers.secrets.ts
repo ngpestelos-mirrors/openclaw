@@ -363,6 +363,10 @@ function resolveDirectCatalogAuth(
     lookupCaches: ProviderAuthLookupCaches;
   },
 ) {
+  const binding = resolveCatalogProviderEntryAuth(params);
+  if (binding) {
+    return binding;
+  }
   const envVar = resolveEnvApiKeyVarName(params.provider, params.env, {
     aliasMap: params.lookupCaches.aliasMap,
     candidateMap: params.lookupCaches.envCandidateMap,
@@ -424,13 +428,6 @@ function resolveConfigBackedProviderAuth(params: {
       discoveryApiKey,
       mode,
     };
-  }
-  const binding = resolveCatalogProviderEntryAuth({
-    ...params,
-    env: params.env ?? process.env,
-  });
-  if (binding) {
-    return binding;
   }
   const synthetic = resolveProviderSyntheticAuthWithPlugin({
     provider: authProvider,
