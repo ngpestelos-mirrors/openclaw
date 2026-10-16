@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createScriptTestHarness } from "./test-helpers.ts";
@@ -59,25 +59,21 @@ body=$(jq -cn --argjson fixture "$FIXTURE" --slurpfile requests "$REQUEST_LOG" -
       }}}}
   else null | halt_error(64) end
 ' -- "$@" 2>/dev/null) || exit "$?"
-jq_filter="."
-previous=""
-for arg in "$@"; do
-  if [[ "$previous" == "--jq" ]]; then jq_filter="$arg"; fi
-  previous="$arg"
+while [[ $# -gt 0 && "$1" != "--jq" ]]; do
+  shift
 done
-printf '%s\\n' "$body" | jq -cr "$jq_filter"
+printf '%s\\n' "$body" | jq -cr "\${2:-.}"
 `,
     { mode: 0o755 },
   );
   writeFileSync(bypassPath, readFileSync(ghPath), { mode: 0o755 });
-  const output = openSync(outputPath, "w");
-  let result;
-  try {
-    result = spawnSync("bash", [helperPath, ...args], {
+  const result = spawnSync(
+    "bash",
+    ["-c", 'exec bash "$@" > "$OUTPUT"', "activity-test", helperPath, ...args],
+    {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 5000,
-      stdio: ["ignore", output, "pipe"],
       // Only CLI fixtures and command lookup cross this boundary; no live auth/config.
       env: {
         PATH: `${dir}:${process.env.PATH ?? ""}`,
@@ -88,10 +84,8 @@ printf '%s\\n' "$body" | jq -cr "$jq_filter"
         REQUEST_LOG: logPath,
         OUTPUT: outputPath,
       },
-    });
-  } finally {
-    closeSync(output);
-  }
+    },
+  );
   const requests = readFileSync(logPath, "utf8")
     .trim()
     .split("\n")
@@ -116,8 +110,7 @@ describe("openclaw-pr-maintainer github activity helper", () => {
     expect(stdout).toContain("2345 PRs, 0 issues, 9876 commits");
     expect(requests.every((request) => request.route === "gh")).toBe(true);
     const searches = requests.slice(1).map(({ args }) => {
-      expect(args[0]).toBe("api");
-      expect(args.filter((arg) => ["--paginate", "-f", "-F"].includes(arg))).toEqual([]);
+      expect(args).toEqual(["api", expect.any(String), "--cache", "1h"]);
       const url = new URL(args[1] ?? "", "https://api.github.test/");
       expect(url.searchParams.get("per_page")).toBe("1");
       expect(url.searchParams.get("q")).toContain("repo:openclaw/openclaw author:Canonical");

@@ -29,20 +29,18 @@ function withDatabase<T>(run: (db: DatabaseSync) => T): T {
   }
 }
 
-function fixture(sql: string) {
+function fixture(sql: string, verify?: (db: DatabaseSync) => void) {
+  if (verify) {
+    withDatabase((db) => {
+      db.exec(`PRAGMA foreign_keys = ON; ${sql}`);
+      verify(db);
+    });
+  }
   const directory = tempDirs.make("postgres-schema-");
   fs.mkdirSync(path.join(directory, "src/state"), { recursive: true });
   fs.writeFileSync(path.join(directory, "src/state/openclaw-state-schema.sql"), sql);
   fs.writeFileSync(path.join(directory, "src/state/openclaw-agent-schema.sql"), "");
   return directory;
-}
-
-function verifiedFixture(sql: string, verify: (db: DatabaseSync) => void) {
-  withDatabase((db) => {
-    db.exec(`PRAGMA foreign_keys = ON; ${sql}`);
-    verify(db);
-  });
-  return fixture(sql);
 }
 
 describe("PostgreSQL schema generation", () => {
@@ -87,12 +85,12 @@ describe("PostgreSQL schema generation", () => {
     expect(JSON.parse(files["manifest.json"]!).pendingCapabilities).toEqual(
       report.pendingCapabilities,
     );
-    expect(files["agent.postgres.sql"]).toContain(
+    for (const fragment of [
       "NEW.session_key IS DISTINCT FROM OLD.session_key",
-    );
-    expect(files["agent.postgres.sql"]).toContain(
       "NEW.route_context_json IS NOT DISTINCT FROM OLD.route_context_json",
-    );
+    ]) {
+      expect(files["agent.postgres.sql"]).toContain(fragment);
+    }
     expect(files["portability-report.md"]).toContain(
       "Duplicate-key JSON is unreachable from writers",
     );
@@ -193,15 +191,15 @@ describe("PostgreSQL schema generation", () => {
   });
 
   it("accounts for every canonical SQLite object and generates identical bytes twice", async () => {
-    const generated = await generatePostgresSchemas(root);
-    expect((await generatePostgresSchemas(root)).files).toEqual(generated.files);
-    expect(Object.keys(generated.files).toSorted()).toEqual(
+    const { files, report } = await generatePostgresSchemas(root);
+    expect((await generatePostgresSchemas(root)).files).toEqual(files);
+    expect(Object.keys(files).toSorted()).toEqual(
       [
         "agent-runtime.ts",
         "agent.postgres.sql",
         "agent-search-runtime.ts",
         "agent-search.postgres.sql",
-        ...generated.report.fragments.map((fragment) => fragment.file),
+        ...report.fragments.map((fragment) => fragment.file),
         "manifest.json",
         "portability-report.md",
         "state.postgres.sql",
@@ -212,19 +210,19 @@ describe("PostgreSQL schema generation", () => {
       ].toSorted(),
     );
     expect(
-      generated.report.catalogs
+      report.catalogs
         .state!.objects.filter((item) => item.sql === null && item.kind === "index")
         .map((item) => item.name)
         .toSorted(),
     ).toEqual(pendingPromotion.map((item) => item.name).toSorted());
-    for (const fragment of generated.report.fragments) {
+    for (const fragment of report.fragments) {
       for (const table of fragment.tables) {
-        expect(generated.files["state.postgres.sql"]).not.toContain(`CREATE TABLE "${table}"`);
-        expect(generated.files[fragment.file]).toContain(`CREATE TABLE "${table}"`);
+        expect(files["state.postgres.sql"]).not.toContain(`CREATE TABLE "${table}"`);
+        expect(files[fragment.file]).toContain(`CREATE TABLE "${table}"`);
       }
     }
     const exported = await generatePostgresSchemas(root, "openclaw", { includeJsonReport: true });
-    expect(JSON.parse(exported.files["portability-report.json"]!)).toEqual(generated.report);
+    expect(JSON.parse(exported.files["portability-report.json"]!)).toEqual(report);
     for (const name of ["state", "agent"]) {
       withDatabase((db) => {
         db.exec(readRoot(`src/state/openclaw-${name}-schema.sql`));
@@ -236,7 +234,9 @@ describe("PostgreSQL schema generation", () => {
         const expected: string[] = [];
         const add = (kind: string, table: unknown, item: unknown) =>
           expected.push(JSON.stringify([kind, table, item]));
-        const rows = db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema").all();
+        const rows = db
+          .prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE type != 'index'")
+          .all();
         const tableKinds = new Map(
           db
             .prepare("PRAGMA table_list")
@@ -244,9 +244,6 @@ describe("PostgreSQL schema generation", () => {
             .map((row) => [row.name, row.type]),
         );
         for (const row of rows) {
-          if (row.type === "index") {
-            continue;
-          }
           if (row.type !== "table") {
             add(String(row.type), row.tbl_name, row.name);
             continue;
@@ -273,7 +270,7 @@ describe("PostgreSQL schema generation", () => {
             checks.forEach((_, index) => add("check", row.name, String(index)));
           }
         }
-        const catalog = generated.report.catalogs[name]!;
+        const catalog = report.catalogs[name]!;
         const inventoryKinds = new Set([
           "table",
           "column",
@@ -294,12 +291,10 @@ describe("PostgreSQL schema generation", () => {
         for (const item of catalog.objects) {
           if (item.sql === null) {
             expect(item.reason, `${name}: ${item.kind} ${item.table}.${item.name}`).toBeTruthy();
-            expect(generated.files["portability-report.md"]).toContain(
-              `\`${item.table}.${item.name}\``,
-            );
+            expect(files["portability-report.md"]).toContain(`\`${item.table}.${item.name}\``);
           } else {
             expect(
-              Object.values(generated.files).join("\n"),
+              Object.values(files).join("\n"),
               `${item.kind} ${item.table}.${item.name}`,
             ).toContain(item.sql);
           }
@@ -434,77 +429,61 @@ describe("PostgreSQL schema generation", () => {
     `);
     const { files, report } = await reportOnly(directory);
     const objects = report.catalogs.state!.objects;
-    expect(objects.find((item) => item.kind === "table" && item.name === "mixed")).toMatchObject({
-      sql: null,
-      reason: expect.stringContaining("ANY"),
-    });
-    expect(
-      objects.find((item) => item.kind === "foreignKey" && item.table === "dependent"),
-    ).toMatchObject({
-      sql: null,
-      reason: expect.any(String),
-    });
-    expect(objects.find((item) => item.kind === "view")).toMatchObject({
-      sql: null,
-      reason: expect.any(String),
-    });
+    for (const [kind, table, reason] of [
+      ["table", "mixed", expect.stringContaining("ANY")],
+      ["foreignKey", "dependent", expect.any(String)],
+      ["view", "projection", expect.any(String)],
+    ]) {
+      expect(objects.find((item) => item.kind === kind && item.table === table)).toMatchObject({
+        sql: null,
+        reason,
+      });
+    }
     expect(files["state.postgres.sql"]).not.toContain('REFERENCES "mixed"');
     expect(report.catalogs.state!.tables.map((table) => table.name)).toEqual(["dependent"]);
   });
 
-  it("creates standalone unique indexes before foreign keys that depend on them", async () => {
-    const directory = verifiedFixture(
-      `
-      CREATE TABLE parent (id INTEGER);
-      CREATE UNIQUE INDEX parent_id ON parent(id);
-      CREATE TABLE child (parent_id INTEGER REFERENCES parent(id));
-    `,
-      (db) => {
-        db.exec("INSERT INTO parent VALUES (1); INSERT INTO child VALUES (1);");
-        expect(() => db.exec("INSERT INTO child VALUES (2)")).toThrow(/FOREIGN KEY/);
-      },
-    );
-    const { files } = await generatePostgresSchemas(directory);
-    const sql = files["state.postgres.sql"]!;
-    expect(sql).toContain('CREATE UNIQUE INDEX "parent_id"');
-    expect(sql).toContain('ADD FOREIGN KEY ("parent_id")');
-    expect(sql.indexOf('CREATE UNIQUE INDEX "parent_id"')).toBeLessThan(
-      sql.indexOf("ADD FOREIGN KEY"),
-    );
-  });
-
   it.each([
-    {
-      name: "an omitted parent unique constraint",
-      parent: "TEXT COLLATE NOCASE UNIQUE",
-      child: "TEXT",
-    },
-    { name: "incompatible mapped column types", parent: "TEXT PRIMARY KEY", child: "INTEGER" },
-  ])("reports foreign keys with $name while retaining both tables", async ({ parent, child }) => {
-    const directory = verifiedFixture(
-      `CREATE TABLE parent (id ${parent}) STRICT;
-       CREATE TABLE child (id ${child} REFERENCES parent(id)) STRICT;`,
+    ["standalone unique index", "INTEGER", "INTEGER", false],
+    ["omitted parent unique constraint", "TEXT COLLATE NOCASE UNIQUE", "TEXT", true],
+    ["incompatible mapped column types", "TEXT PRIMARY KEY", "INTEGER", true],
+  ] as const)("ports or reports a foreign key with %s", async (_, parent, child, omitted) => {
+    const directory = fixture(
+      `CREATE TABLE parent (id ${parent}) ${omitted ? "STRICT" : ""};
+       ${omitted ? "" : "CREATE UNIQUE INDEX parent_id ON parent(id);"}
+       CREATE TABLE child (parent_id ${child} REFERENCES parent(id)) ${omitted ? "STRICT" : ""};`,
       (db) => {
         db.exec("INSERT INTO parent VALUES ('1'); INSERT INTO child VALUES (1);");
         expect(db.prepare("SELECT COUNT(*) AS count FROM child").get()?.count).toBe(1);
         expect(() => db.exec("INSERT INTO child VALUES (2)")).toThrow(/FOREIGN KEY/);
       },
     );
-    const { files, report } = await reportOnly(directory);
+    const { files, report } = await generatePostgresSchemas(directory, "openclaw", {
+      reportOnly: omitted,
+    });
+    const sql = files["state.postgres.sql"]!;
     const catalog = report.catalogs.state!;
-    const foreignKey = catalog.objects.find((item) => item.kind === "foreignKey");
-    expect(foreignKey).toMatchObject({ sql: null });
-    expect(foreignKey?.reason).toBeTruthy();
     expect(catalog.tables.map((table) => table.name).toSorted()).toEqual(["child", "parent"]);
-    expect(files["state.postgres.sql"]).toContain('CREATE TABLE "parent"');
-    expect(files["state.postgres.sql"]).toContain('CREATE TABLE "child"');
-    expect(files["state.postgres.sql"]).not.toContain("ADD FOREIGN KEY");
+    expect(sql).toContain('CREATE TABLE "parent"');
+    expect(sql).toContain('CREATE TABLE "child"');
+    if (omitted) {
+      const foreignKey = catalog.objects.find((item) => item.kind === "foreignKey");
+      expect(foreignKey).toMatchObject({ sql: null });
+      expect(foreignKey?.reason).toBeTruthy();
+      expect(sql).not.toContain("ADD FOREIGN KEY");
+    } else {
+      expect(sql).toContain('CREATE UNIQUE INDEX "parent_id"');
+      expect(sql).toContain('ADD FOREIGN KEY ("parent_id")');
+      expect(sql.indexOf('CREATE UNIQUE INDEX "parent_id"')).toBeLessThan(
+        sql.indexOf("ADD FOREIGN KEY"),
+      );
+    }
   });
 
   it.each(["PRIMARY KEY", "UNIQUE", "NOT NULL"])(
     "reports the discarded %s conflict policy",
     async (constraint) => {
-      const directory = verifiedFixture(
+      const directory = fixture(
         `CREATE TABLE records (value TEXT ${constraint} ON CONFLICT IGNORE) STRICT;`,
         (db) => {
           const insert = db.prepare("INSERT INTO records VALUES (?)");
@@ -532,7 +511,7 @@ describe("PostgreSQL schema generation", () => {
   );
 
   it("reports nullable non-STRICT primary keys instead of forbidding valid NULL rows", async () => {
-    const directory = verifiedFixture("CREATE TABLE nullable_key (id TEXT PRIMARY KEY);", (db) => {
+    const directory = fixture("CREATE TABLE nullable_key (id TEXT PRIMARY KEY);", (db) => {
       db.exec("INSERT INTO nullable_key VALUES (NULL), (NULL)");
       expect(
         db.prepare("SELECT COUNT(*) AS count FROM nullable_key WHERE id IS NULL").get()?.count,
@@ -547,7 +526,7 @@ describe("PostgreSQL schema generation", () => {
   });
 
   it("reports a translated boolean default that is incompatible with its bigint column", async () => {
-    const directory = verifiedFixture(
+    const directory = fixture(
       "CREATE TABLE defaults (flag INTEGER DEFAULT (1 = 1)) STRICT;",
       (db) => {
         db.exec("INSERT INTO defaults DEFAULT VALUES");
@@ -567,7 +546,7 @@ describe("PostgreSQL schema generation", () => {
   });
 
   it("preserves nested unary operators as executable expression tokens", async () => {
-    const directory = verifiedFixture(
+    const directory = fixture(
       "CREATE TABLE records (value INTEGER CHECK (value >= - -1)) STRICT;",
       (db) => {
         db.exec("INSERT INTO records VALUES (1)");
