@@ -335,12 +335,18 @@ class ProgressDisclosureController {
     const chosen = this.chosen();
     const partial = typeof chosen === "number";
     const extent = partial ? Math.min(chosen, this.limit()) : 0;
-    this.element.open = partial ? extent > 0 : chosen;
+    const open = partial ? extent > 0 : chosen;
+    if (this.element.open !== open) {
+      this.element.open = open;
+    }
     if (this.body) {
       this.body.style.height = partial ? extent + "px" : "";
       this.body.style.minHeight = partial ? extent + "px" : "";
     }
-    this.element.dataset.reveal = partial ? "partial" : chosen ? "open" : "closed";
+    const reveal = partial ? "partial" : chosen ? "open" : "closed";
+    if (this.element.dataset.reveal !== reveal) {
+      this.element.dataset.reveal = reveal;
+    }
   }
 
   private readonly clampExtent = () => {

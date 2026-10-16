@@ -15,7 +15,12 @@ import { KeyboardShortcut } from "../../../components/solid/kbd.tsx";
 import { Menu, type MenuItem } from "../../../components/solid/menu.tsx";
 import "../../../components/tooltip.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
-import { LitContent, emptyLegacyContent } from "../../../lit/solid-content.tsx";
+import {
+  LitContent,
+  emptyLegacyContent,
+  type LegacyTemplateResult,
+  type LegacyDirectiveResult,
+} from "../../../lit/solid-content.tsx";
 import { readLinkFavicon } from "../link-favicon-cache.ts";
 import {
   sidebarActivePanel,
@@ -33,6 +38,12 @@ type SidebarRegionHeaderProps = RegionProps & {
   host: RegionElement;
   hostedRevision: () => number;
   refreshHostedTabs: () => void;
+};
+
+type RegionTab = SolidPanelTabStripTab & {
+  contentId: string;
+  hostedTab?: PanelHostedTab;
+  legacyIcon?: LegacyTemplateResult | LegacyDirectiveResult;
 };
 
 export function readRegionPanelHost(host: HTMLElement, slot: SidebarSlotId): Element | null {
@@ -173,7 +184,7 @@ export function SidebarRegionHeader(props: SidebarRegionHeaderProps) {
       }
       return null;
     };
-    const tabs = panels.flatMap((panel): (SolidPanelTabStripTab & { contentId: string })[] => {
+    const tabs = panels.flatMap((panel): RegionTab[] => {
       const contentId = `${props.panelIdPrefix}-${encodeURIComponent(panel.slot)}`;
       const canRestore =
         props.layout.expanded &&
@@ -189,7 +200,7 @@ export function SidebarRegionHeader(props: SidebarRegionHeaderProps) {
           label: tab.label,
           labelTooltip: tab.label,
           title: tab.title,
-          icon: <HostedIcon {...props} tab={tab} />,
+          hostedTab: tab,
           statusLabel: tab.statusLabel,
           badge: tab.badge,
           className: tab.className,
@@ -229,7 +240,7 @@ export function SidebarRegionHeader(props: SidebarRegionHeaderProps) {
             panel.slot === "dashboard" || canRestore
               ? () => props.callbacks?.togglePanelExpanded(panel.id)
               : undefined,
-          icon: <LitContent value={tab.icon} />,
+          legacyIcon: tab.icon,
           closeLabel: t("chat.sidebarColumns.close", { panel: type.label }),
         },
       ];
@@ -252,6 +263,11 @@ export function SidebarRegionHeader(props: SidebarRegionHeaderProps) {
     >
       <div class="side-panel__header-tabs">
         <PanelTabStrip
+          renderIcon={(tab) => (
+            <Show when={tab().hostedTab} fallback={<LitContent value={tab().legacyIcon} />}>
+              {(hosted) => <HostedIcon {...props} tab={hosted()} />}
+            </Show>
+          )}
           tabs={state().tabs}
           activeId={state().activeId}
           ariaControls={(tab) => tab.contentId}

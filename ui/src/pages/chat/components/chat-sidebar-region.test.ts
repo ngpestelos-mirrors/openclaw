@@ -143,6 +143,10 @@ describe("chat sidebar region", () => {
     });
     await region.updateComplete;
     expect(label()?.textContent).toBe("Research assistant");
+    const icon = root(region).querySelector(".tabstrip-tab__icon [data-agent-avatar]");
+    region.layout = { ...region.layout, columns: [...region.layout.columns] };
+    await region.updateComplete;
+    expect(root(region).querySelector(".tabstrip-tab__icon [data-agent-avatar]")).toBe(icon);
     expect(
       root(region).querySelector(
         '.tabstrip-tab[data-tab-value="conversation"] [data-agent-avatar]',
