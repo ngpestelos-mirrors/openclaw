@@ -35,11 +35,10 @@ const envRef = (provider = "default") => ({
   id: FEISHU_SELECTED_SECRET_ENV,
 });
 
-describe("resolveDefaultFeishuAccountId", () => {
+describe("Feishu account resolution", () => {
   it("preserves top-level default account when named accounts are configured", () => {
     const cfg = createFeishuTestConfig({
-      appId: "cli_default",
-      appSecret: "secret_default",
+      ...credentials,
       accounts: { work: { enabled: false } },
     });
 
@@ -47,22 +46,15 @@ describe("resolveDefaultFeishuAccountId", () => {
     expect(resolveDefaultFeishuAccountId(cfg)).toBe("default");
   });
 
-  it("reports selection source for configured defaults and mapped defaults", () => {
-    const selection = (config: Partial<FeishuConfig>) =>
-      resolveDefaultFeishuAccountSelection(createFeishuTestConfig(config));
-    expect(selection({ defaultAccount: "router-d", accounts: {} })).toEqual({
-      accountId: "router-d",
-      source: "explicit-default",
-    });
-
-    expect(selection({ accounts: { default: credentials } })).toEqual({
-      accountId: "default",
-      source: "mapped-default",
+  it.each([
+    [{ defaultAccount: "router-d", accounts: {} }, "router-d", "explicit-default"],
+    [{ accounts: { default: credentials } }, "default", "mapped-default"],
+  ] as const)("reports selection source for %j", (config, accountId, source) => {
+    expect(resolveDefaultFeishuAccountSelection(createFeishuTestConfig(config))).toEqual({
+      accountId,
+      source,
     });
   });
-});
-
-describe("resolveFeishuCredentials", () => {
   it("resolves env SecretRef objects in inspect mode", () => {
     withEnv({ [FEISHU_SELECTED_SECRET_ENV]: " secret_from_env " }, () => {
       const cfg = asConfig({ ...credentials, appSecret: envRef() as never });
@@ -81,9 +73,6 @@ describe("resolveFeishuCredentials", () => {
     });
     expect(resolveFeishuCredentials(cfg)).toEqual(resolvedCredentials);
   });
-});
-
-describe("resolveFeishuAccount", () => {
   it("normalizes only the scheme after account inheritance and selection", () => {
     const rootDomain = "HtTpS://Root.Example:8443/Root%2FPath/?tenant=Keep#Fragment";
     const accountDomain = "HtTpS://fixture-user@Account.Example:9443/Account%2FPath/";
@@ -120,19 +109,17 @@ describe("resolveFeishuAccount", () => {
     "inspects webhook %s through the selected env collision without weakening strict mode",
     (field) => {
       withEnv({ [FEISHU_SELECTED_SECRET_ENV]: "event-secret" }, () => {
+        const secrets = {
+          defaults: { env: "selected" },
+          providers: { selected: { source: "exec" as const, command: "/unused" } },
+        };
         const cfg = createFeishuTestConfig(
           {
+            ...credentials,
             connectionMode: "webhook",
-            appId: "app",
-            appSecret: "app-secret",
             [field]: envRef("selected"),
           },
-          {
-            secrets: {
-              defaults: { env: "selected" },
-              providers: { selected: { source: "exec", command: "/unused" } },
-            },
-          },
+          { secrets },
         );
         expect(() => resolveFeishuRuntimeAccount({ cfg }, { requireEventSecrets: true })).toThrow(
           FeishuSecretRefUnavailableError,
@@ -153,41 +140,32 @@ describe("resolveFeishuAccount", () => {
       ].includes(name),
     ),
   )("enforces read-only provider policy for $name", (testCase) => {
-    withEnv(
-      {
-        [FEISHU_SELECTED_SECRET_ENV]: " selected-secret ",
-        [FEISHU_SIBLING_SECRET_ENV]: "sibling-secret",
-      },
-      () => {
-        const account = resolveFeishuAccount({
-          cfg: createFeishuSecretRefPolicyConfig(testCase),
-          accountId: "selected",
-        });
+    const env = {
+      [FEISHU_SELECTED_SECRET_ENV]: " selected-secret ",
+      [FEISHU_SIBLING_SECRET_ENV]: "sibling-secret",
+    };
+    withEnv(env, () => {
+      const account = resolveFeishuAccount({
+        cfg: createFeishuSecretRefPolicyConfig(testCase),
+        accountId: "selected",
+      });
 
-        expect(account).toMatchObject({
-          accountId: "selected",
-          configured: testCase.configured,
-          appId: testCase.configured ? "selected-app" : undefined,
-          appSecret: testCase.configured ? "selected-secret" : undefined,
-        });
-      },
-    );
+      expect(account).toMatchObject({
+        accountId: "selected",
+        configured: testCase.configured,
+        appId: testCase.configured ? "selected-app" : undefined,
+        appSecret: testCase.configured ? "selected-secret" : undefined,
+      });
+    });
   });
 
   it("keeps account configured when optional event SecretRefs are unresolved in inspect mode", () => {
-    const account = resolveFeishuAccount({
-      cfg: createFeishuTestConfig({
-        accounts: {
-          main: {
-            ...credentials,
-            verificationToken: { source: "file", provider: "default", id: "path/to/token" },
-          } as never,
-        },
-      }),
-      accountId: "main",
-    });
-
-    expect(account).toMatchObject({
+    const main = {
+      ...credentials,
+      verificationToken: { source: "file", provider: "default", id: "path/to/token" },
+    } as never;
+    const cfg = createFeishuTestConfig({ accounts: { main } });
+    expect(resolveFeishuAccount({ cfg, accountId: "main" })).toMatchObject({
       configured: true,
       appSecret: "secret_456",
       verificationToken: undefined,

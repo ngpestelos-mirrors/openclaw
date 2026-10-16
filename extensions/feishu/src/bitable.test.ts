@@ -1,6 +1,6 @@
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import type { AgentToolResult } from "openclaw/plugin-sdk/tool-results";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { createFeishuTestConfig } from "./bot.test-support.js";
 import { createToolFactoryHarness } from "./tool-factory-test-harness.js";
 
@@ -11,11 +11,6 @@ vi.mock("./client.js", () => ({
 }));
 
 import { registerFeishuBitableTools } from "./bitable.js";
-
-type MockRecord = {
-  record_id?: string;
-  fields?: Record<string, unknown>;
-};
 
 function createHarness() {
   const harness = createToolFactoryHarness(
@@ -34,14 +29,14 @@ const app = {
   url: "https://example.feishu.cn/base/app_token",
 };
 const tablePath = { app_token: "app_token", table_id: "tbl_main" };
-const record = (record_id: string, fields?: MockRecord["fields"]): MockRecord => ({
+const record = (record_id: string, fields?: Record<string, unknown>) => ({
   record_id,
   fields,
 });
 const success = () => vi.fn(async () => ({ code: 0 }));
 const response = <T>(data: T) => vi.fn(async () => ({ code: 0, data }));
 
-function createBitableClient(records: MockRecord[]) {
+function createBitableClient(records: ReturnType<typeof record>[]) {
   const batchDelete = success();
   const client = {
     bitable: {
@@ -61,7 +56,10 @@ function createBitableClient(records: MockRecord[]) {
   } as unknown as Lark.Client;
 
   createFeishuClientMock.mockReturnValue(client);
-  return { batchDelete, client, ...createHarness() };
+  const harness = createHarness();
+  const createApp = () =>
+    harness.resolveTool("feishu_bitable_create_app").execute("create", { name: "Project Tracker" });
+  return { batchDelete, client, createApp, ...harness };
 }
 
 describe("feishu bitable create app cleanup", () => {
@@ -70,23 +68,16 @@ describe("feishu bitable create app cleanup", () => {
     vi.resetModules();
   });
 
-  beforeEach(() => {
-    createFeishuClientMock.mockReset();
-  });
-
   it("deletes placeholder rows whose fields contain only default empty values", async () => {
-    const { batchDelete, resolveTool } = createBitableClient([
+    const emptyRecords = [
       record("rec_missing_fields"),
       record("rec_empty_fields", {}),
-      record("rec_empty_defaults", {
-        Name: "",
-        Status: [],
-        Attachments: [],
-        Started: null,
-        EmptyObject: {},
-      }),
+      record("rec_empty_defaults", { text: "", select: [], files: [], date: null, object: {} }),
       record("rec_empty_rich_text", { Notes: [{ type: "text", text: "" }] }),
       record("rec_empty_nested", { Notes: { value: "", segments: [{ type: "text", text: "" }] } }),
+    ];
+    const { batchDelete, createApp } = createBitableClient([
+      ...emptyRecords,
       record("rec_text", { Name: "Milestone" }),
       record("rec_number", { Estimate: 0 }),
       record("rec_boolean", { Done: false }),
@@ -96,48 +87,36 @@ describe("feishu bitable create app cleanup", () => {
       record("rec_location", { Location: { name: "", location: "116,39" } }),
     ]);
 
-    const result = await resolveTool("feishu_bitable_create_app").execute("call", {
-      name: "Project Tracker",
-    });
+    const result = await createApp();
 
     expect(result.details.cleaned_placeholder_rows).toBe(5);
     expect(batchDelete).toHaveBeenCalledWith({
       path: tablePath,
-      data: {
-        records: [
-          "rec_missing_fields",
-          "rec_empty_fields",
-          "rec_empty_defaults",
-          "rec_empty_rich_text",
-          "rec_empty_nested",
-        ],
-      },
+      data: { records: emptyRecords.map(({ record_id }) => record_id) },
     });
   });
 
   it("counts only accepted cleanup mutations and falls back after a rejected batch response", async () => {
-    const { batchDelete, client, resolveTool } = createBitableClient([
+    const { batchDelete, client, createApp } = createBitableClient([
       record("rec_rejected", {}),
       record("rec_deleted", {}),
     ]);
+    const items = [
+      { field_id: "fld_name", field_name: "Name", type: 1, is_primary: true },
+      { field_id: "fld_rejected", field_name: "Status", type: 3 },
+      { field_id: "fld_deleted", field_name: "Date", type: 5 },
+    ];
     vi.mocked(client.bitable.appTableField.list).mockResolvedValueOnce({
       code: 0,
-      data: {
-        items: [
-          { field_id: "fld_name", field_name: "Name", type: 1, is_primary: true },
-          { field_id: "fld_rejected", field_name: "Status", type: 3 },
-          { field_id: "fld_deleted", field_name: "Date", type: 5 },
-        ],
-      },
+      data: { items },
     });
-    vi.mocked(client.bitable.appTableField.update).mockResolvedValueOnce({ code: 1254302 });
-    vi.mocked(client.bitable.appTableField.delete).mockResolvedValueOnce({ code: 1254302 });
-    batchDelete.mockResolvedValueOnce({ code: 1254302 });
-    vi.mocked(client.bitable.appTableRecord.delete).mockResolvedValueOnce({ code: 1254302 });
+    const rejected = { code: 1254302 };
+    vi.mocked(client.bitable.appTableField.update).mockResolvedValueOnce(rejected);
+    vi.mocked(client.bitable.appTableField.delete).mockResolvedValueOnce(rejected);
+    batchDelete.mockResolvedValueOnce(rejected);
+    vi.mocked(client.bitable.appTableRecord.delete).mockResolvedValueOnce(rejected);
 
-    const result = await resolveTool("feishu_bitable_create_app").execute("create", {
-      name: "Project Tracker",
-    });
+    const result = await createApp();
 
     expect(result.details).toMatchObject({
       app_token: "app_token",
@@ -149,13 +128,11 @@ describe("feishu bitable create app cleanup", () => {
   });
 
   it("keeps creation identifiers without recommending unavailable metadata lookup after table-list failure", async () => {
-    const { client, resolveTool } = createBitableClient([]);
+    const { client, createApp } = createBitableClient([]);
     vi.mocked(client.bitable.appTable.list).mockRejectedValueOnce(
       new Error("metadata unavailable"),
     );
-    const result = await resolveTool("feishu_bitable_create_app").execute("create", {
-      name: "Project Tracker",
-    });
+    const result = await createApp();
     expect(result.details).toMatchObject({
       app_token: "app_token",
       name: "Project Tracker",
@@ -186,13 +163,8 @@ describe("feishu bitable create app cleanup", () => {
       expect(factory({}).resultContentSource).toBe("network");
     }
     const tool = resolveTool("feishu_bitable_list_records");
-    const parameters = tool as unknown as {
-      parameters?: { properties?: { page_size?: Record<string, unknown> } };
-    };
-    expect(parameters.parameters?.properties?.page_size).toMatchObject({
-      type: "integer",
-      minimum: 1,
-      maximum: 500,
+    expect(tool.parameters).toMatchObject({
+      properties: { page_size: { type: "integer", minimum: 1, maximum: 500 } },
     });
 
     const result = await tool.execute("call_list_records", {
@@ -203,11 +175,10 @@ describe("feishu bitable create app cleanup", () => {
     if (content?.type !== "text") {
       throw new Error("Expected a model-visible text result from the Bitable tool");
     }
-    const text = content.text;
     expect(result.details).toMatchObject({ records: [{ fields: { Name: hostile } }] });
-    expect(text).toContain("EXTERNAL_UNTRUSTED_CONTENT");
-    expect(text).not.toContain("<|im_start|>");
-    expect(text).not.toContain("<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>");
+    expect(content.text).toContain("EXTERNAL_UNTRUSTED_CONTENT");
+    expect(content.text).not.toContain("<|im_start|>");
+    expect(content.text).not.toContain("<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>");
     expect(client.bitable.appTableRecord.list).toHaveBeenLastCalledWith({
       path: tablePath,
       params: { page_size: 25 },
@@ -224,23 +195,14 @@ describe("feishu bitable create app cleanup", () => {
   });
 });
 
-describe("feishu bitable write tool schemas (#94547)", () => {
-  it("emits a non-empty value schema for create_record fields (#94547)", () => {
-    const { resolveTool } = createHarness();
+it("emits a non-empty value schema for create_record fields (#94547)", () => {
+  const { resolveTool } = createHarness();
 
-    const tool = resolveTool("feishu_bitable_create_record") as unknown as {
-      parameters?: {
-        properties?: Record<
-          string,
-          { patternProperties?: Record<string, Record<string, unknown>> }
-        >;
-      };
-    };
-    const patternSchemas = Object.values(
-      tool.parameters?.properties?.fields?.patternProperties ?? {},
-    );
-    expect(patternSchemas).toEqual([
-      { type: ["string", "number", "boolean", "object", "array", "null"] },
-    ]);
-  });
+  const schema = resolveTool("feishu_bitable_create_record").parameters as {
+    properties: { fields: { patternProperties: Record<string, unknown> } };
+  };
+  const patternSchemas = Object.values(schema.properties.fields.patternProperties);
+  expect(patternSchemas).toEqual([
+    { type: ["string", "number", "boolean", "object", "array", "null"] },
+  ]);
 });

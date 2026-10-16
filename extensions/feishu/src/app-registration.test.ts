@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { MAX_TIMER_TIMEOUT_MS } from "openclaw/plugin-sdk/number-runtime";
 import * as ssrfRuntime from "openclaw/plugin-sdk/ssrf-runtime";
@@ -19,14 +20,14 @@ vi.mock("openclaw/plugin-sdk/media-runtime", () => ({
 
 type RegistrationFetchOptions = {
   fetchImpl: typeof fetch;
-  lookupFn: LookupFn;
+  timeoutMs?: number;
 };
 
 const fetchWithSsrFGuard = ssrfRuntime.fetchWithSsrFGuard;
 
-function mockRegistrationFetch(options: RegistrationFetchOptions & { timeoutMs?: number }): void {
+function mockRegistrationFetch(options: RegistrationFetchOptions): void {
   vi.spyOn(ssrfRuntime, "fetchWithSsrFGuard").mockImplementation((params) =>
-    fetchWithSsrFGuard({ ...params, ...options }),
+    fetchWithSsrFGuard({ ...params, lookupFn: hermeticPublicLookup, ...options }),
   );
 }
 
@@ -37,28 +38,23 @@ async function withRegistrationServer<T>(
   run: (options: RegistrationFetchOptions) => Promise<T>,
 ): Promise<T> {
   const server = createServer(handler);
-  const port = await new Promise<number>((resolve, reject) => {
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      if (!addr || typeof addr === "string") {
-        reject(new Error("local test server did not expose a TCP port"));
-        return;
-      }
-      resolve(addr.port);
-    });
-  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const addr = server.address();
+  if (!addr || typeof addr === "string") {
+    throw new Error("local test server did not expose a TCP port");
+  }
   const realFetch = globalThis.fetch.bind(globalThis);
   const fetchImpl = withFetchPreconnect(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
     if (url.hostname === "accounts.feishu.cn" || url.hostname === "accounts.larksuite.com") {
-      const loopback = new URL(`${url.pathname}${url.search}`, `http://127.0.0.1:${port}`);
+      const loopback = new URL(`${url.pathname}${url.search}`, `http://127.0.0.1:${addr.port}`);
       return await realFetch(loopback, stripDispatcher(init));
     }
     return await realFetch(input, init);
   });
   try {
-    const options = { fetchImpl, lookupFn: hermeticPublicLookup };
+    const options = { fetchImpl };
     mockRegistrationFetch(options);
     return await run(options);
   } finally {
@@ -69,12 +65,14 @@ async function withRegistrationServer<T>(
 }
 
 const beginPayload = {
-  device_code: "device-code",
+  device_code: "dev",
   verification_uri_complete: "https://accounts.feishu.cn/verify?x=1",
-  user_code: "user-code",
+  user_code: "user",
   interval: 5,
   expire_in: 300,
 };
+const beginResult = { deviceCode: "dev", userCode: "user", interval: 5, expireIn: 300 };
+const pollParams = { deviceCode: "dev", interval: 30, expireIn: 600 };
 
 function beginRegistrationJson<T>(
   overrides: Record<string, unknown>,
@@ -108,9 +106,7 @@ describe("Feishu app registration", () => {
       },
       async () => {
         await expect(beginAppRegistration("feishu")).resolves.toMatchObject({
-          deviceCode: "device-code",
-          userCode: "user-code",
-          interval: 5,
+          ...beginResult,
           expireIn: 600,
         });
       },
@@ -126,12 +122,8 @@ describe("Feishu app registration", () => {
       }),
     );
 
-    mockRegistrationFetch({ fetchImpl, lookupFn: hermeticPublicLookup });
-    const poll = pollAppRegistration({
-      deviceCode: "device-code",
-      interval: 10_000_000,
-      expireIn: 10_000_000,
-    });
+    mockRegistrationFetch({ fetchImpl });
+    const poll = pollAppRegistration({ ...pollParams, interval: 10_000_000, expireIn: 10_000_000 });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), MAX_TIMER_TIMEOUT_MS);
@@ -147,12 +139,9 @@ describe("Feishu app registration", () => {
     let outcome: Awaited<ReturnType<typeof pollAppRegistration>> | undefined;
     mockRegistrationFetch({
       fetchImpl: withFetchPreconnect(fetchMock),
-      lookupFn: hermeticPublicLookup,
     });
     const poll = pollAppRegistration({
-      deviceCode: "device-code",
-      interval: 30,
-      expireIn: 600,
+      ...pollParams,
       abortSignal: controller.signal,
     }).then((result) => {
       outcome = result;
@@ -178,13 +167,9 @@ describe("Feishu app registration", () => {
 
   it("prints scan-to-create QR codes with compact terminal rendering", async () => {
     const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-    await printQrCode("https://accounts.feishu.cn/verify?device_code=long-device-code");
-
-    expect(renderQrTerminalMock).toHaveBeenCalledWith(
-      "https://accounts.feishu.cn/verify?device_code=long-device-code",
-      { small: true },
-    );
+    const url = "https://accounts.feishu.cn/verify?device_code=long-device-code";
+    await printQrCode(url);
+    expect(renderQrTerminalMock).toHaveBeenCalledWith(url, { small: true });
     expect(writeSpy).toHaveBeenCalledWith("terminal-qr\n");
   });
 
@@ -236,12 +221,7 @@ describe("Feishu app registration", () => {
       });
 
       mockRegistrationFetch({ ...options, fetchImpl: recordingFetch });
-      await expect(beginAppRegistration("feishu")).resolves.toMatchObject({
-        deviceCode: "device-code",
-        userCode: "user-code",
-        interval: 5,
-        expireIn: 300,
-      });
+      await expect(beginAppRegistration("feishu")).resolves.toMatchObject(beginResult);
     });
 
     expect(fetchCalls).toEqual(["https://accounts.feishu.cn/oauth/v1/app/registration"]);
