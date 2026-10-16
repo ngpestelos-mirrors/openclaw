@@ -38,6 +38,18 @@ function write(cwd: string, file: string, contents: string) {
   writeFileSync(target, contents);
 }
 
+const emptySelection = {
+  files: [],
+  coreStripes: [],
+  extensionStripes: [],
+  groups: [],
+  central: false,
+};
+function expectUnscoped(args: string[]) {
+  expect(args).not.toContain("--files-json");
+  expect(args).not.toContain("--extension-roots-json");
+}
+
 describe("CI extension package lint payload", () => {
   it("keeps package ownership in its canonical stripes", () => {
     const total = 3;
@@ -123,15 +135,7 @@ describe("CI extension package lint payload", () => {
     expect(
       selectedCommands({ ...rootSelection, files: ["src/changed.ts"], groups: ["extensions"] }),
     ).toHaveLength(1);
-    expect(
-      selectedCommands({
-        files: [],
-        coreStripes: [],
-        extensionStripes: [],
-        groups: [],
-        central: false,
-      }),
-    ).toEqual([]);
+    expect(selectedCommands(emptySelection)).toEqual([]);
   });
 
   it("preserves full other owners and wrapper guards without aggregate lint duplication", () => {
@@ -150,61 +154,41 @@ describe("CI extension package lint payload", () => {
     expect(commands.some(({ args }) => args[0] === "lint:ui:i18n")).toBe(true);
     expect(commands.some(({ args }) => args.includes("scripts/run-stylelint.mts"))).toBe(true);
     for (const name of ["lint full core stripe 2", "lint full remaining groups"]) {
-      const command = commands.find((entry) => entry.name === name)!;
-      expect(command.args).not.toContain("--files-json");
-      expect(command.args).not.toContain("--extension-roots-json");
+      expectUnscoped(commands.find((entry) => entry.name === name)!.args);
     }
     const full = selectedCommands({
-      files: [],
-      coreStripes: [],
-      extensionStripes: [],
-      groups: [],
-      central: false,
+      ...emptySelection,
       fullExtensionStripes: [1],
       extensionStripeCount: 1,
     });
     expect(full).toHaveLength(1);
     expect(full[0]!.args).toContain("--extension-stripe=1/1");
-    expect(full[0]!.args).not.toContain("--extension-roots-json");
-    expect(full[0]!.args).not.toContain("--files-json");
+    expectUnscoped(full[0]!.args);
   });
 
   it("retains native imported and ambient types while reporting only the selected package", () => {
     const cwd = tempDirs.make("extension-lint-native-report-");
-    write(cwd, "package.json", '{"type":"module"}');
-    write(
-      cwd,
-      "tsconfig.json",
-      JSON.stringify({
+    const files = {
+      "package.json": '{"type":"module"}',
+      "tsconfig.json": JSON.stringify({
         compilerOptions: { strict: true, module: "nodenext", target: "es2022", types: [] },
         include: ["extensions/**/*"],
       }),
-    );
-    write(cwd, "extensions/tsconfig.json", '{"extends":"../tsconfig.json","include":["**/*"]}');
-    write(
-      cwd,
-      ".oxlintrc.json",
-      JSON.stringify({
+      "extensions/tsconfig.json": '{"extends":"../tsconfig.json","include":["**/*"]}',
+      ".oxlintrc.json": JSON.stringify({
         plugins: ["typescript"],
         rules: { "typescript/no-floating-promises": "error" },
       }),
-    );
-    write(
-      cwd,
-      "extensions/provider/api.ts",
-      "export function work(): Promise<void> { return Promise.resolve(); }\n",
-    );
-    write(
-      cwd,
-      "extensions/unrelated/globals.d.ts",
-      "declare function ambientWork(): Promise<void>;\n",
-    );
-    write(cwd, "extensions/unrelated/unreported.ts", "Promise.resolve();\n");
-    write(
-      cwd,
-      "extensions/selected/consumer.ts",
-      'import { work } from "../provider/api.js"; work(); ambientWork();\n',
-    );
+      "extensions/provider/api.ts":
+        "export function work(): Promise<void> { return Promise.resolve(); }\n",
+      "extensions/unrelated/globals.d.ts": "declare function ambientWork(): Promise<void>;\n",
+      "extensions/unrelated/unreported.ts": "Promise.resolve();\n",
+      "extensions/selected/consumer.ts":
+        'import { work } from "../provider/api.js"; work(); ambientWork();\n',
+    };
+    for (const [file, contents] of Object.entries(files)) {
+      write(cwd, file, contents);
+    }
     const scope = createOxlintExtensionRootScope(["extensions/selected"], cwd);
     const [shard] = scope.selectShards(createExtensionOxlintShards({ cwd, platform: "linux" }));
     const result = spawnSync(

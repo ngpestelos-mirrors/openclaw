@@ -38,28 +38,43 @@ vi.mock("../../scripts/lib/ci-extension-lint-plan.mts", () => ({
   resolveCiExtensionLintSelection: vi.fn(),
 }));
 
-function createPlan(overrides: Partial<CiCheckPlanInput>) {
-  return createCiCheckPlan({
+const stripeMatrix = (count: number) => ({
+  include: Array.from({ length: count }, (_, i) => ({ stripe: i + 1 })),
+});
+const checks = (...tasks: string[]) => ({
+  include: tasks.map((task) => ({ check_name: `check-${task}`, task, runner: "unused" })),
+});
+function selectLint(mode: "affected" | "none" | "full" = "none") {
+  const roots = mode === "affected" ? ["extensions/discord"] : [];
+  vi.mocked(resolveCiExtensionLintSelection).mockResolvedValue({
+    mode: mode === "full" ? "full" : "selected",
+    extensionRoots: roots,
+    reasons: Object.fromEntries(roots.map((root) => [root, ["changed owner"]])),
+    fullReasons: mode === "full" ? ["OPENCLAW_CI_EXTENSION_LINT_FULL"] : [],
+  });
+  return roots;
+}
+function planInput(overrides: Partial<CiCheckPlanInput>): CiCheckPlanInput {
+  return {
     typeGraphBoundaryOwner: "check-plan",
     changedPaths: ["src/shared.ts"],
     changedCoreTestPaths: null,
     runnerProfile: "hybrid",
-    checkMatrix: {
-      include: [{ check_name: "check-test-types", task: "test-types", runner: "unused" }],
-    },
-    coreTypeMatrix: { include: [1, 2, 3, 4, 5].map((stripe) => ({ stripe })) },
-    lintCoreMatrix: { include: [] },
-    lintExtensionMatrix: { include: [] },
+    checkMatrix: checks("test-types"),
+    coreTypeMatrix: stripeMatrix(5),
+    lintCoreMatrix: stripeMatrix(0),
+    lintExtensionMatrix: stripeMatrix(0),
     ...overrides,
-  });
+  };
 }
+const createPlan = (overrides: Partial<CiCheckPlanInput>) =>
+  createCiCheckPlan(planInput(overrides));
 
 function materializePlan(runnerProfile: string, rows: number, changedBaseRef?: string) {
-  const input: CiCheckPlanInput = {
+  const input = planInput({
     ...(changedBaseRef !== undefined ? { changedBaseRef } : {}),
     typeGraphBoundaryOwner: "",
     changedPaths: ["docs/ci.md"],
-    changedCoreTestPaths: null,
     runnerProfile,
     checkMatrix: {
       include: Array.from({ length: rows }, (_, index) => ({
@@ -68,11 +83,11 @@ function materializePlan(runnerProfile: string, rows: number, changedBaseRef?: s
         runner: "blacksmith-4vcpu-ubuntu-2404",
       })),
     },
-    coreTypeMatrix: { include: [] },
+    coreTypeMatrix: stripeMatrix(0),
     // A null lint plan retains templates even when their runner profile disables them.
-    lintCoreMatrix: { include: rows ? [{ stripe: 1 }, { stripe: 2 }] : [] },
-    lintExtensionMatrix: { include: rows ? [{ stripe: 1 }, { stripe: 2 }, { stripe: 3 }] : [] },
-  };
+    lintCoreMatrix: stripeMatrix(rows ? 2 : 0),
+    lintExtensionMatrix: stripeMatrix(rows ? 3 : 0),
+  });
   const output = join(tempDirs.make("ci-check-plan-"), "output");
   const workflow = readCiWorkflow();
   const planner = workflow.jobs["check-plan"];
@@ -102,23 +117,10 @@ describe("CI check-plan selection", () => {
     "selects complete extension roots without narrowing full check owners (%s)",
     async (runnerProfile) => {
       for (const mode of ["affected", "none", "full"] as const) {
-        const roots = mode === "affected" ? ["extensions/discord"] : [];
-        vi.mocked(resolveCiExtensionLintSelection).mockResolvedValue({
-          mode: mode === "full" ? "full" : "selected",
-          extensionRoots: roots,
-          reasons: Object.fromEntries(roots.map((root) => [root, ["changed owner"]])),
-          fullReasons: mode === "full" ? ["OPENCLAW_CI_EXTENSION_LINT_FULL"] : [],
-        });
+        const roots = selectLint(mode);
         vi.mocked(createChangedCiTypeCheckPlan).mockClear();
-        const checkMatrix = {
-          include: ["lint", "prod-types", "test-types", "guards"].map((task) => ({
-            check_name: `check-${task}`,
-            task,
-            runner: "unused",
-          })),
-        };
-        const coreStripes = runnerProfile === "hybrid" ? [1, 2] : [1, 2, 3, 4, 5];
-        const coreTypeMatrix = { include: [1, 2, 3, 4, 5].map((stripe) => ({ stripe })) };
+        const checkMatrix = checks("lint", "prod-types", "test-types", "guards");
+        const coreTypeMatrix = stripeMatrix(5);
         const plan = await createPlan({
           changedBaseRef: "a".repeat(40),
           extensionLintMode: mode === "full" ? "full" : "affected",
@@ -128,8 +130,8 @@ describe("CI check-plan selection", () => {
           runnerProfile,
           checkMatrix,
           coreTypeMatrix,
-          lintCoreMatrix: { include: coreStripes.map((stripe) => ({ stripe })) },
-          lintExtensionMatrix: { include: [1, 2, 3, 4, 5, 6].map((stripe) => ({ stripe })) },
+          lintCoreMatrix: stripeMatrix(runnerProfile === "hybrid" ? 2 : 5),
+          lintExtensionMatrix: stripeMatrix(6),
         });
         expect(plan.check_matrix.include).toEqual(
           runnerProfile === "hybrid"
@@ -201,24 +203,13 @@ describe("CI check-plan selection", () => {
   ])(
     "retains separate central owners beyond formatting and scripts: $paths",
     async ({ paths, share }) => {
-      vi.mocked(resolveCiExtensionLintSelection).mockResolvedValue({
-        mode: "selected",
-        extensionRoots: [],
-        reasons: {},
-        fullReasons: [],
-      });
+      selectLint();
       const plan = await createPlan({
         preserveFullChecks: true,
         extensionLintMode: "affected",
         changedPaths: paths,
-        checkMatrix: {
-          include: ["lint", "guards"].map((task) => ({
-            check_name: `check-${task}`,
-            task,
-            runner: "unused",
-          })),
-        },
-        lintCoreMatrix: { include: [{ stripe: 1 }, { stripe: 2 }] },
+        checkMatrix: checks("lint", "guards"),
+        lintCoreMatrix: stripeMatrix(2),
       });
       expect(plan.check_matrix.include.map(({ task }) => task)).toEqual(
         share ? ["guards"] : ["lint", "guards"],
@@ -230,18 +221,13 @@ describe("CI check-plan selection", () => {
   );
 
   it("keeps the last check row required by the gate", async () => {
-    vi.mocked(resolveCiExtensionLintSelection).mockResolvedValue({
-      mode: "selected",
-      extensionRoots: [],
-      reasons: {},
-      fullReasons: [],
-    });
+    selectLint();
     const plan = await createPlan({
       preserveFullChecks: true,
       extensionLintMode: "affected",
       changedPaths: ["package.json"],
-      checkMatrix: { include: [{ check_name: "check-lint", task: "lint", runner: "unused" }] },
-      lintCoreMatrix: { include: [{ stripe: 1 }, { stripe: 2 }] },
+      checkMatrix: checks("lint"),
+      lintCoreMatrix: stripeMatrix(2),
     });
     expect(plan.check_matrix.include.map(({ task }) => task)).toEqual(["lint"]);
     expect(plan.lint_core_matrix.include).toEqual([{ stripe: 1 }, { stripe: 2 }]);
@@ -309,12 +295,7 @@ describe("CI check-plan selection", () => {
         const plan = await createPlan({
           typeGraphBoundaryOwner,
           changedPaths: paths,
-          checkMatrix: {
-            include: [
-              { check_name: "check-prod-types", task: "prod-types", runner: "unused" },
-              { check_name: "check-test-types", task: "test-types", runner: "unused" },
-            ],
-          },
+          checkMatrix: checks("prod-types", "test-types"),
         });
         expect(createChangedCiTypeCheckPlan).toHaveBeenCalledExactlyOnceWith(paths, {
           cwd: process.cwd(),
@@ -387,9 +368,9 @@ describe("CI check-plan selection", () => {
         typeGraphBoundaryOwner: "",
         changedPaths: ["package.json"],
         runnerProfile,
-        checkMatrix: { include: [{ check_name: "check-lint", task: "lint", runner: "unused" }] },
-        coreTypeMatrix: { include: [] },
-        lintExtensionMatrix: { include: [1, 2, 3, 4, 5, 6].map((stripe) => ({ stripe })) },
+        checkMatrix: checks("lint"),
+        coreTypeMatrix: stripeMatrix(0),
+        lintExtensionMatrix: stripeMatrix(6),
       });
       const rows = plan.lint_extension_matrix.include;
       expect(rows).toHaveLength(runnerProfile === "hybrid" ? 3 : 6);

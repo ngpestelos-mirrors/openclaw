@@ -33,24 +33,25 @@ function workspace() {
       git(["add", "--", file]);
     }
   };
-  write("package.json", '{"type":"module"}');
-  write("pnpm-workspace.yaml", "packages:\n  - extensions/*\n");
-  write(
-    "tsconfig.json",
-    JSON.stringify({
-      compilerOptions: {
-        paths: { "openclaw/plugin-sdk/*": ["./src/plugin-sdk/*.ts"] },
-      },
+  const files = {
+    "package.json": '{"type":"module"}',
+    "pnpm-workspace.yaml": "packages:\n  - extensions/*\n",
+    "tsconfig.json": JSON.stringify({
+      compilerOptions: { paths: { "openclaw/plugin-sdk/*": ["./src/plugin-sdk/*.ts"] } },
     }),
-  );
+    "scripts/lib/plugin-sdk-entrypoints.json": '["api", "public"]',
+    "scripts/lib/plugin-sdk-private-local-only-subpaths.json": "[]",
+    "src/plugin-sdk/api.ts": "export type Result = Promise<void>;\n",
+    "src/plugin-sdk/public.ts": 'export type { Result } from "./api.js";\n',
+    "src/leaf.ts": "export const value = 1;\n",
+  };
+  for (const [file, contents] of Object.entries(files)) {
+    write(file, contents);
+  }
   for (const id of ["alpha", "beta", "unrelated", "telegram", "codex", "slack"]) {
     write(`extensions/${id}/package.json`, '{"private":true}');
     write(`extensions/${id}/index.ts`, "export {};\n");
   }
-  write("scripts/lib/plugin-sdk-entrypoints.json", '["api", "public"]');
-  write("scripts/lib/plugin-sdk-private-local-only-subpaths.json", "[]");
-  write("src/plugin-sdk/api.ts", "export type Result = Promise<void>;\n");
-  write("src/plugin-sdk/public.ts", 'export type { Result } from "./api.js";\n');
   write(
     "extensions/alpha/index.ts",
     'import type { Result } from "openclaw/plugin-sdk/public"; export type Response = Result;\n',
@@ -59,14 +60,10 @@ function workspace() {
     "extensions/beta/index.ts",
     'import type { Response } from "../alpha/index.js"; export type Reply = Response;\n',
   );
-  write("src/leaf.ts", "export const value = 1;\n");
   git(["init", "--quiet"]);
-  const commitBase = () => {
-    git(["add", "."]);
-    git(["commit", "--quiet", "--allow-empty", "-m", "fixture base"]);
-    return git(["rev-parse", "HEAD"]).trim();
-  };
-  const baseRef = commitBase();
+  git(["add", "."]);
+  git(["commit", "--quiet", "--allow-empty", "-m", "fixture base"]);
+  const baseRef = git(["rev-parse", "HEAD"]).trim();
   return { cwd, write, baseRef };
 }
 
@@ -167,21 +164,13 @@ describe("extension lint package selection", () => {
         cwd,
         testCase.pinned ? { baseRef } : {},
       );
-      expect(selection.mode).toBe("selected");
-      expect(selection.extensionRoots).toEqual(testCase.roots);
-      expect(selection.fullReasons).toEqual([]);
-      if (testCase.reasons) {
-        if (testCase.roots.length === 0) {
-          expect(selection).toEqual({
-            mode: "selected",
-            extensionRoots: [],
-            reasons: {},
-            fullReasons: [],
-          });
-        } else {
-          for (const [root, reasons] of Object.entries(testCase.reasons)) {
-            expect(selection.reasons[root]).toEqual(reasons);
-          }
+      const expected = { mode: "selected", extensionRoots: testCase.roots, fullReasons: [] };
+      if (testCase.roots.length === 0 && testCase.reasons) {
+        expect(selection).toEqual({ ...expected, reasons: {} });
+      } else {
+        expect(selection).toMatchObject(expected);
+        for (const [root, reasons] of Object.entries(testCase.reasons ?? {})) {
+          expect(selection.reasons[root]).toEqual(reasons);
         }
       }
     },

@@ -30,6 +30,16 @@ const failure = (file: string, tests: string[] = [], classification = "new") => 
   reason: "Matching main job passed",
 });
 const file = "src/gateway/server.sessions.abort-authorization.test.ts";
+const job = (id: number, name: string, conclusion = "failure") => ({
+  id,
+  name,
+  run_id: run.id,
+  run_attempt: run.run_attempt,
+  status: "completed",
+  conclusion,
+  html_url: `job-${id}`,
+});
+const jobPage = (jobs: ReturnType<typeof job>[]) => ({ total_count: jobs.length, jobs });
 
 describe("CI failed-test reruns", () => {
   it("opts --run into collecting ordinary failures outside CI", async () => {
@@ -61,20 +71,7 @@ describe("CI failed-test reruns", () => {
           return JSON.stringify(run);
         }
         if (route.includes("/actions/runs/100/")) {
-          return JSON.stringify({
-            total_count: 1,
-            jobs: [
-              {
-                id: 1,
-                name: "checks-node",
-                run_id: 100,
-                run_attempt: 1,
-                status: "completed",
-                conclusion: "failure",
-                html_url: "job-1",
-              },
-            ],
-          });
+          return JSON.stringify(jobPage([job(1, "checks-node")]));
         }
         if (route.includes("/actions/workflows/")) {
           return JSON.stringify({ workflow_runs: [] });
@@ -94,10 +91,10 @@ describe("CI failed-test reruns", () => {
       ];
       await import("../../scripts/ci-failed-tests.mts");
       const child = await invoked.promise;
-      expect(child.command).toBe("pnpm");
-      expect(child.args).toEqual(["test", file, "--", "-t", "native session > denies"]);
-      expect(child.options.env).toMatchObject({
-        OPENCLAW_NODE_TEST_PLAN_CONTINUE_ON_FAILURE: "1",
+      expect(child).toMatchObject({
+        command: "pnpm",
+        args: ["test", file, "--", "-t", "native session > denies"],
+        options: { env: { OPENCLAW_NODE_TEST_PLAN_CONTINUE_ON_FAILURE: "1" } },
       });
       expect(child.options.env?.CI).toBeUndefined();
       expect(child.options.env?.GITHUB_ACTIONS).toBeUndefined();
@@ -188,56 +185,36 @@ describe("CI failed-test reruns", () => {
   });
 
   it("starts failed-job log reads together and sorts results by job name", async () => {
-    let releaseLogs!: (log: string) => void;
-    const logs = new Promise<string>((resolve) => {
-      releaseLogs = resolve;
-    });
-    let firstLogStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
-      firstLogStarted = resolve;
-    });
+    const logs = Promise.withResolvers<string>();
+    const started = Promise.withResolvers<void>();
     const requestedLogs: string[] = [];
-    const jobs = ["zulu", "alpha", "bravo"].map((name, index) => ({
-      id: index + 1,
-      name,
-      run_id: run.id,
-      run_attempt: run.run_attempt,
-      status: "completed",
-      conclusion: "failure",
-      html_url: `job-${index + 1}`,
-    }));
+    const jobs = ["zulu", "alpha", "bravo"].map((name, index) => job(index + 1, name));
     const api = async (route: string) => {
       if (route.startsWith("/actions/runs/100/")) {
-        return { total_count: jobs.length, jobs };
+        return jobPage(jobs);
       }
       if (route.startsWith("/actions/workflows/")) {
         return { workflow_runs: [] };
       }
       if (route.endsWith("/logs")) {
         requestedLogs.push(route);
-        firstLogStarted();
-        return logs;
+        started.resolve();
+        return logs.promise;
       }
       throw new Error(`Unexpected route ${route}`);
     };
     const pending = collectFailures(run, "openclaw/openclaw", api);
-    await started;
+    await started.promise;
     const beforeRelease = [...requestedLogs];
-    releaseLogs("build failed");
+    logs.resolve("build failed");
     const failures = await pending;
     expect(beforeRelease).toHaveLength(3);
     expect(failures.map((entry) => entry.job)).toEqual(["alpha", "bravo", "zulu"]);
   });
 
   it("shares classifier evidence, excludes control jobs, and explains non-Vitest failures", async () => {
-    const job = (id: number, name: string, conclusion = "failure") => ({
-      id,
-      name,
-      run_id: 100,
-      run_attempt: 1,
-      status: "completed",
-      conclusion,
-      html_url: `job-${id}`,
+    const steppedJob = (id: number, name: string, conclusion = "failure") => ({
+      ...job(id, name, conclusion),
       steps:
         name === "check-docs"
           ? [
@@ -252,12 +229,12 @@ describe("CI failed-test reruns", () => {
             ],
     });
     const jobs = [
-      job(1, "checks-node-new"),
-      job(2, "check-docs"),
-      job(3, "custom-e2e", "timed_out"),
-      job(4, "pr-failure-report"),
-      job(5, "openclaw/ci-gate"),
-      job(6, "checks-node-old"),
+      steppedJob(1, "checks-node-new"),
+      steppedJob(2, "check-docs"),
+      steppedJob(3, "custom-e2e", "timed_out"),
+      steppedJob(4, "pr-failure-report"),
+      steppedJob(5, "openclaw/ci-gate"),
+      steppedJob(6, "checks-node-old"),
     ];
     const main = {
       ...run,
@@ -272,17 +249,16 @@ describe("CI failed-test reruns", () => {
         return { workflow_runs: [main] };
       }
       if (route.startsWith("/actions/runs/100/")) {
-        return { total_count: jobs.length, jobs };
+        return jobPage(jobs);
       }
       if (route.startsWith("/actions/runs/200/")) {
-        return {
-          total_count: 3,
-          jobs: [
-            job(10, "checks-node-new", "success"),
-            job(20, "check-docs"),
-            job(30, "checks-node-old", "success"),
+        return jobPage(
+          [
+            steppedJob(10, "checks-node-new", "success"),
+            steppedJob(20, "check-docs"),
+            steppedJob(30, "checks-node-old", "success"),
           ].map((entry) => Object.assign(entry, { run_id: 200 })),
-        };
+        );
       }
       if (route.endsWith("/logs")) {
         return route.includes("/1/") || route.includes("/6/")

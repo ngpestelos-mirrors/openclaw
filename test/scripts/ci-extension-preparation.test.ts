@@ -17,6 +17,34 @@ import { isSharedVitestExcludedPath } from "../vitest/vitest.pattern-file.ts";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 type ExtensionShard = Parameters<typeof packChangedExtensionConfigShards>[0][number];
 const runtimePreparationSeconds = VITEST_PRETEST_BUILD_SECONDS.runtime;
+const configs = {
+  database: "test/vitest/vitest.extension-database-workers.config.ts",
+  telegram: "test/vitest/vitest.extension-telegram.config.ts",
+};
+const files = {
+  database: "extensions/codex/src/app-server/settled-turn-finalizer.native.test.ts",
+  telegram: "extensions/telegram/src/sticker-cache.selection.test.ts",
+};
+function preparedShard(
+  name: string,
+  kind: keyof typeof configs,
+  seconds: number,
+  args: string[],
+): ExtensionShard {
+  return {
+    checkName: name,
+    shardName: name,
+    configs: [configs[kind]],
+    includePatterns: [files[kind]],
+    env: { OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: JSON.stringify(args) },
+    pretestBuildMode: "runtime",
+    predictedSeconds: runtimePreparationSeconds + seconds,
+    predictedTestSeconds: seconds,
+    runner: "blacksmith-8vcpu-ubuntu-2404",
+    requiresDist: false,
+    planConcurrency: 1,
+  };
+}
 
 function fallbackGroups(shards: ReturnType<typeof packChangedExtensionConfigShards>) {
   return shards.flatMap((shard) => shard.groups ?? [{ ...shard, shard_name: shard.shardName }]);
@@ -65,34 +93,9 @@ const cases: Array<{
 
 describe("extension preparation packing", () => {
   it.each(cases)("preserves process ownership for $name", async ({ second, jobs, seconds }) => {
-    const inputs: ExtensionShard[] = [
-      {
-        checkName: "first",
-        shardName: "first",
-        configs: ["test/vitest/vitest.extension-database-workers.config.ts"],
-        includePatterns: ["extensions/codex/src/app-server/settled-turn-finalizer.native.test.ts"],
-        env: { OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["--isolate"]' },
-        pretestBuildMode: "runtime",
-        predictedSeconds: runtimePreparationSeconds + 18,
-        predictedTestSeconds: 18,
-        runner: "blacksmith-8vcpu-ubuntu-2404",
-        requiresDist: false,
-        planConcurrency: 1,
-      },
-      {
-        checkName: "second",
-        shardName: "second",
-        configs: ["test/vitest/vitest.extension-telegram.config.ts"],
-        includePatterns: ["extensions/telegram/src/sticker-cache.selection.test.ts"],
-        env: { OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["--fileParallelism=false"]' },
-        pretestBuildMode: "runtime",
-        predictedSeconds: runtimePreparationSeconds + 8,
-        predictedTestSeconds: 8,
-        runner: "blacksmith-8vcpu-ubuntu-2404",
-        requiresDist: false,
-        planConcurrency: 1,
-        ...second,
-      },
+    const inputs = [
+      preparedShard("first", "database", 18, ["--isolate"]),
+      { ...preparedShard("second", "telegram", 8, ["--fileParallelism=false"]), ...second },
     ];
     const packed = packChangedExtensionConfigShards(inputs);
     expect(packed).toHaveLength(jobs);
@@ -147,16 +150,12 @@ describe("extension preparation packing", () => {
     expect(calls).toEqual(
       expect.arrayContaining([
         {
-          args: ["test/vitest/vitest.extension-database-workers.config.ts", "--", "--isolate"],
-          files: ["extensions/codex/src/app-server/settled-turn-finalizer.native.test.ts"],
+          args: [configs.database, "--", "--isolate"],
+          files: [files.database],
         },
         {
-          args: [
-            "test/vitest/vitest.extension-telegram.config.ts",
-            "--",
-            "--fileParallelism=false",
-          ],
-          files: ["extensions/telegram/src/sticker-cache.selection.test.ts"],
+          args: [configs.telegram, "--", "--fileParallelism=false"],
+          files: [files.telegram],
         },
       ]),
     );
@@ -179,8 +178,8 @@ describe("extension preparation packing", () => {
         (group) =>
           group.configs[0] ===
             (group.includePatterns?.every((file) => databaseWorkerExtensionTestFiles.includes(file))
-              ? "test/vitest/vitest.extension-database-workers.config.ts"
-              : "test/vitest/vitest.extension-telegram.config.ts") &&
+              ? configs.database
+              : configs.telegram) &&
           (group.includePatterns?.length ?? 0) > 0 &&
           (group.includePatterns?.length ?? 0) <= 10,
       ),
@@ -189,10 +188,7 @@ describe("extension preparation packing", () => {
       listExecutableExtensionFiles(["extensions/telegram"]).toSorted(),
     );
     const runtimeFiles = new Set(
-      listVitestRuntimeConsumerFiles([
-        "test/vitest/vitest.extension-telegram.config.ts",
-        "test/vitest/vitest.extension-database-workers.config.ts",
-      ]),
+      listVitestRuntimeConsumerFiles([configs.telegram, configs.database]),
     );
     const preparedConsumers: string[] = [];
     for (const shard of shards) {
