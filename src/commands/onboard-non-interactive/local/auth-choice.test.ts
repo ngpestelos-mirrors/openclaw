@@ -539,6 +539,54 @@ describe("applyNonInteractiveAuthChoice", () => {
     expect(runtime.exit).toHaveBeenCalledWith(1);
   });
 
+  it("imports a large catalog without repeatedly traversing existing rows", async () => {
+    let existingIdReads = 0;
+    const existingModels: ModelDefinitionConfig[] = Array.from({ length: 64 }, (_, index) => ({
+      get id() {
+        existingIdReads += 1;
+        return `existing-${index}`;
+      },
+      name: `Authored ${index}`,
+      contextWindow: 65_536,
+      maxTokens: 2048,
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    }));
+    const discoveredIds = Array.from({ length: 64 }, (_, index) => `discovered-${index}`);
+    vi.spyOn(fetchGuard, "fetchWithSsrFGuard").mockResolvedValue({
+      response: Response.json({ data: discoveredIds.map((id) => ({ id })) }),
+      finalUrl: "https://models.custom.local/v1/models",
+      release: async () => {},
+    });
+    const result = await applyChoice({
+      nextConfig: {
+        models: {
+          providers: {
+            local: {
+              baseUrl: "https://models.custom.local/v1",
+              models: existingModels,
+            },
+          },
+        },
+        agents: { defaults: { model: { primary: "other/chat", fallbacks: ["other/fallback"] } } },
+      },
+      opts: { customBaseUrl: "https://models.custom.local/v1", customProviderId: "local" },
+    });
+    const catalog = result?.models?.providers?.local?.models ?? [];
+    expect(catalog.map((model) => model.id)).toEqual([
+      ...Array.from({ length: 64 }, (_, index) => `existing-${index}`),
+      ...discoveredIds.toReversed(),
+    ]);
+    expect(catalog[0]).toMatchObject({ name: "Authored 0", contextWindow: 65_536 });
+    expect(Object.keys(result?.agents?.defaults?.models ?? {})).toHaveLength(64);
+    expect(result?.agents?.defaults?.model).toEqual({
+      primary: "local/discovered-0",
+      fallbacks: ["other/fallback"],
+    });
+    expect(existingIdReads).toBeLessThanOrEqual(8 * (64 + 64));
+  });
+
   it("uses model ids prepared before reset without rediscovery", async () => {
     const request = vi
       .spyOn(fetchGuard, "fetchWithSsrFGuard")
@@ -646,57 +694,87 @@ describe("applyNonInteractiveAuthChoice", () => {
   });
 
   it.each([
-    { name: "explicit model", modelId: "local-large", apiKey: undefined },
-    { name: "saved inline key", modelId: undefined, apiKey: "fixture-saved-key" },
+    { name: "explicit model", modelId: "local-large", apiKey: undefined, persisted: false },
+    { name: "saved inline key", modelId: undefined, apiKey: "fixture-saved-key", persisted: false },
+    {
+      name: "persisted policy with inline key",
+      modelId: undefined,
+      apiKey: "fixture-saved-key",
+      persisted: true,
+    },
+    {
+      name: "persisted policy with unresolved SecretRef",
+      modelId: undefined,
+      apiKey: { source: "env", provider: "default", id: "UNRESOLVED_DISCOVERY_KEY" },
+      persisted: true,
+    },
     {
       name: "unresolved SecretRef",
+      persisted: false,
       modelId: undefined,
       apiKey: { source: "env", provider: "default", id: "UNRESOLVED_DISCOVERY_KEY" },
     },
-  ] as const)("skips credentials for custom no-auth with $name", async ({ modelId, apiKey }) => {
-    vi.stubEnv("UNRESOLVED_DISCOVERY_KEY", undefined);
-    resolveNonInteractiveApiKey.mockResolvedValueOnce({
-      key: "ambient-env-key-must-be-ignored",
-      source: "env",
-      envVarName: "CUSTOM_API_KEY",
-    });
-    const authorizationHeaders: Array<string | null> = [];
-    const request = vi.spyOn(fetchGuard, "fetchWithSsrFGuard").mockImplementation(async (input) => {
-      const authorization = new Headers(input.init?.headers).get("authorization");
-      authorizationHeaders.push(authorization);
-      return {
-        response: authorization
-          ? new Response(null, { status: 401 })
-          : Response.json({ data: [{ id: "discovered-chat" }] }),
-        finalUrl: input.url,
-        release: async () => {},
-      };
-    });
+  ] as const)(
+    "skips credentials for custom no-auth with $name",
+    async ({ modelId, apiKey, persisted }) => {
+      vi.stubEnv("CUSTOM_API_KEY", undefined);
+      vi.stubEnv("UNRESOLVED_DISCOVERY_KEY", undefined);
+      resolveNonInteractiveApiKey.mockResolvedValueOnce(
+        persisted
+          ? null
+          : {
+              key: "ambient-env-key-must-be-ignored",
+              source: "env",
+              envVarName: "CUSTOM_API_KEY",
+            },
+      );
+      const authorizationHeaders: Array<string | null> = [];
+      const request = vi
+        .spyOn(fetchGuard, "fetchWithSsrFGuard")
+        .mockImplementation(async (input) => {
+          const authorization = new Headers(input.init?.headers).get("authorization");
+          authorizationHeaders.push(authorization);
+          return {
+            response: authorization
+              ? new Response(null, { status: 401 })
+              : Response.json({ data: [{ id: "discovered-chat" }] }),
+            finalUrl: input.url,
+            release: async () => {},
+          };
+        });
 
-    const result = await applyChoice({
-      nextConfig: {
-        models: {
-          providers: { local: { baseUrl: "https://models.custom.local/v1", apiKey, models: [] } },
+      const result = await applyChoice({
+        nextConfig: {
+          models: {
+            providers: {
+              local: {
+                baseUrl: "https://models.custom.local/v1",
+                apiKey,
+                ...(persisted ? { auth: "none" as const } : {}),
+                models: [],
+              },
+            },
+          },
         },
-      },
-      opts: {
-        customBaseUrl: "https://models.custom.local/v1",
-        customProviderId: "local",
-        customModelId: modelId,
-        customNoAuth: true,
-      },
-    });
+        opts: {
+          customBaseUrl: "https://models.custom.local/v1",
+          customProviderId: "local",
+          customModelId: modelId,
+          customNoAuth: !persisted,
+        },
+      });
 
-    expect(authorizationHeaders).toEqual(modelId ? [] : [null]);
-    expect(request).toHaveBeenCalledTimes(modelId ? 0 : 1);
-    expect(result?.models?.providers?.local).toMatchObject({
-      auth: "none",
-      models: [expect.objectContaining({ id: modelId ?? "discovered-chat" })],
-    });
-    expect(result?.models?.providers?.local?.apiKey).toBeUndefined();
-    expect(resolveNonInteractiveApiKey).not.toHaveBeenCalled();
-    expect(runtime.error).not.toHaveBeenCalled();
-  });
+      expect(authorizationHeaders).toEqual(modelId ? [] : [null]);
+      expect(request).toHaveBeenCalledTimes(modelId ? 0 : 1);
+      expect(result?.models?.providers?.local).toMatchObject({
+        auth: "none",
+        models: [expect.objectContaining({ id: modelId ?? "discovered-chat" })],
+      });
+      expect(result?.models?.providers?.local?.apiKey).toEqual(persisted ? apiKey : undefined);
+      expect(resolveNonInteractiveApiKey).not.toHaveBeenCalled();
+      expect(runtime.error).not.toHaveBeenCalled();
+    },
+  );
 
   it("never commits an existing profile key as plaintext during custom secret-ref onboarding", async () => {
     const profileKey = "fixture-custom-profile-secret";

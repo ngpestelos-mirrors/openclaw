@@ -8,6 +8,7 @@ import { CONTEXT_WINDOW_HARD_MIN_TOKENS } from "../agents/context-window-guard.j
 import { DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { normalizeConfiguredProviderCatalogModelId } from "../agents/model-ref-shared.js";
 import { buildModelAliasIndex, modelKey, type ModelRef } from "../agents/model-selection.js";
+import { normalizeAgentModelRefForConfig } from "../config/model-input.js";
 import type { ModelApi } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSecretRef, type SecretInput } from "../config/types.secrets.js";
@@ -136,6 +137,7 @@ type ApplyCustomApiConfigParams = {
   config: OpenClawConfig;
   baseUrl: string;
   modelId: string;
+  modelIds?: string[];
   compatibility: CustomApiCompatibility;
   apiKey?: SecretInput;
   /** Explicitly mark the endpoint as not enforcing auth (`auth: "none"`). */
@@ -411,6 +413,19 @@ export function resolveCustomProviderId(params: {
   return { providerId: `${requestedId}-${suffix}`, providerIdRenamedFrom: requestedId };
 }
 
+/** Preserve a matching provider's anonymous policy unless a new key replaces it. */
+export function resolveCustomProviderNoAuth(params: {
+  config: OpenClawConfig;
+  providerId: string;
+  apiKey?: string;
+  noAuth?: boolean;
+}): boolean {
+  return (
+    params.noAuth === true ||
+    (!params.apiKey && params.config.models?.providers?.[params.providerId]?.auth === "none")
+  );
+}
+
 /** Discovers custom endpoint ids without changing the runtime model catalog. */
 export async function discoverCustomApiModelIds(params: {
   baseUrl: string;
@@ -466,9 +481,8 @@ export async function resolveNonInteractiveCustomApiModelIds(params: {
   let modelIds = params.modelId ? [params.modelId] : params.modelIds;
   if (!modelIds) {
     const { providerId } = resolveCustomProviderId(params);
-    let configuredKey = params.noAuth
-      ? undefined
-      : params.config.models?.providers?.[providerId]?.apiKey;
+    const noAuth = resolveCustomProviderNoAuth({ ...params, providerId });
+    let configuredKey = noAuth ? undefined : params.config.models?.providers?.[providerId]?.apiKey;
     const credentialError = () =>
       new CustomApiError(
         "missing_required",
@@ -494,7 +508,7 @@ export async function resolveNonInteractiveCustomApiModelIds(params: {
         throw credentialError();
       }
     }
-    const apiKey = params.noAuth
+    const apiKey = noAuth
       ? undefined
       : (params.apiKey ??
         (await materializeSecretInput({
@@ -593,50 +607,55 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams) {
 
   const existingProvider = providers[providerId];
   const existingModels = Array.isArray(existingProvider?.models) ? existingProvider.models : [];
-  const existingModel = existingModels.find((model) => model.id === modelId);
-  // Azure reasoning deployments usually need explicit reasoning metadata for
-  // the provider loop, while non-Azure endpoints rely on model-name inference.
-  const isLikelyReasoningModel = isAzure && /\b(o[134]|gpt-([5-9]|\d{2,}))\b/i.test(modelId);
+  const modelIds = params.modelIds ?? [modelId];
+  const modelPositions = new Map(existingModels.map((model, index) => [model.id, index]));
+  const mergedModels = [...existingModels];
+  const reasoningModels = new Set<string>();
+  const importedApis = new Set<ModelApi>();
   const explicitInput =
     params.supportsImageInput === undefined
       ? undefined
       : customModelInputs(params.supportsImageInput);
-  const generatedInput =
-    explicitInput ??
-    customModelInputs(
-      isAzure
-        ? isLikelyReasoningModel
-        : resolveCustomModelImageInputInference(modelId).supportsImageInput,
-    );
-  const nextModel = {
-    id: modelId,
-    name: `${modelId} (Custom Provider)`,
-    contextWindow: isAzure
-      ? AZURE_DEFAULT_CONTEXT_WINDOW
-      : CUSTOM_PROVIDER_DEFAULT_CONTEXT_WINDOW_TOKENS,
-    maxTokens: isAzure ? AZURE_DEFAULT_MAX_TOKENS : DEFAULT_MAX_TOKENS,
-    input: generatedInput,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    reasoning: isLikelyReasoningModel,
-    ...(isAzure ? { compat: { supportsStore: false } } : {}),
-  };
-  const mergedModels = existingModel
-    ? existingModels.map((model) =>
-        model.id === modelId
-          ? {
-              ...model,
-              ...(isAzure && !params.preserveExistingModelMetadata ? nextModel : {}),
-              // Preserve caller-authored catalog fields unless setup explicitly
-              // received a new input-mode choice for this existing model.
-              ...(explicitInput ? { input: explicitInput } : {}),
-              name: model.name ?? nextModel.name,
-              cost: model.cost ?? nextModel.cost,
-              contextWindow: normalizeContextWindowForCustomModel(model.contextWindow),
-              maxTokens: model.maxTokens ?? nextModel.maxTokens,
-            }
-          : model,
-      )
-    : [...existingModels, nextModel];
+  // Keep the established reverse append order while merging the catalog once.
+  for (const id of modelIds.toReversed()) {
+    const position = modelPositions.get(id);
+    const existingModel = position === undefined ? undefined : mergedModels[position];
+    importedApis.add(existingModel?.api ?? api);
+    const isReasoning = isAzure && /\b(o[134]|gpt-([5-9]|\d{2,}))\b/i.test(id);
+    if (isReasoning) {
+      reasoningModels.add(id);
+    }
+    const nextModel = {
+      id,
+      name: `${id} (Custom Provider)`,
+      contextWindow: isAzure
+        ? AZURE_DEFAULT_CONTEXT_WINDOW
+        : CUSTOM_PROVIDER_DEFAULT_CONTEXT_WINDOW_TOKENS,
+      maxTokens: isAzure ? AZURE_DEFAULT_MAX_TOKENS : DEFAULT_MAX_TOKENS,
+      input:
+        explicitInput ??
+        customModelInputs(
+          isAzure ? isReasoning : resolveCustomModelImageInputInference(id).supportsImageInput,
+        ),
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      reasoning: isReasoning,
+      ...(isAzure ? { compat: { supportsStore: false } } : {}),
+    };
+    if (existingModel && position !== undefined) {
+      mergedModels[position] = {
+        ...existingModel,
+        ...(isAzure && !params.preserveExistingModelMetadata ? nextModel : {}),
+        ...(explicitInput ? { input: explicitInput } : {}),
+        name: existingModel.name ?? nextModel.name,
+        cost: existingModel.cost ?? nextModel.cost,
+        contextWindow: normalizeContextWindowForCustomModel(existingModel.contextWindow),
+        maxTokens: existingModel.maxTokens ?? nextModel.maxTokens,
+      };
+    } else {
+      modelPositions.set(id, mergedModels.length);
+      mergedModels.push(nextModel);
+    }
+  }
   const {
     apiKey: existingApiKey,
     auth: existingAuth,
@@ -646,7 +665,10 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams) {
   // auth mode; other authored values survive untouched.
   const redeclaresAuth = params.noAuth === true || params.apiKey !== undefined;
   const nextAuth = params.noAuth ? ("none" as const) : redeclaresAuth ? undefined : existingAuth;
-  if (nextAuth === "none" && (existingModel?.api ?? api) !== "openai-completions") {
+  if (
+    nextAuth === "none" &&
+    [...importedApis].some((modelApi) => modelApi !== "openai-completions")
+  ) {
     throw new CustomApiError(
       "no_auth_unsupported",
       'auth: "none" requires the openai-completions adapter. Select that adapter or configure an API key.',
@@ -684,11 +706,19 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams) {
   const applyModelDefaults = (modelConfig: OpenClawConfig): OpenClawConfig => {
     const updated =
       params.setAsPrimary === false ? modelConfig : applyPrimaryModel(modelConfig, modelRef);
-    const existingModelConfig = updated.agents?.defaults?.models?.[modelRef];
-    // Seed reasoning only when this Azure deployment has no authored effort.
-    const seedThinking = isLikelyReasoningModel && !existingModelConfig?.params?.thinking;
-    if (!seedThinking && !alias) {
+    if (!params.modelIds && !reasoningModels.has(modelId) && !alias) {
       return updated;
+    }
+    const models = { ...updated.agents?.defaults?.models };
+    for (const id of modelIds) {
+      const ref = normalizeAgentModelRefForConfig(modelKey(providerId, id));
+      const existing = models[ref];
+      const seedThinking = reasoningModels.has(id) && !existing?.params?.thinking;
+      models[ref] = {
+        ...existing,
+        ...(seedThinking ? { params: { ...existing?.params, thinking: "medium" } } : {}),
+        ...(alias && id === modelId ? { alias } : {}),
+      };
     }
     return {
       ...updated,
@@ -696,16 +726,7 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams) {
         ...updated.agents,
         defaults: {
           ...updated.agents?.defaults,
-          models: {
-            ...updated.agents?.defaults?.models,
-            [modelRef]: {
-              ...existingModelConfig,
-              ...(seedThinking
-                ? { params: { ...existingModelConfig?.params, thinking: "medium" } }
-                : {}),
-              ...(alias ? { alias } : {}),
-            },
-          },
+          models,
         },
       },
     };

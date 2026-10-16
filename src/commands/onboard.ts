@@ -278,6 +278,7 @@ async function validateResetAuthChoice(params: {
       CustomApiError,
       parseNonInteractiveCustomApiFlags,
       resolveCustomProviderId,
+      resolveCustomProviderNoAuth,
       resolveNonInteractiveCustomApiModelIds,
     } = await import("./onboard-custom-config.js");
     try {
@@ -296,7 +297,13 @@ async function validateResetAuthChoice(params: {
         providerId: custom.providerId,
       }).providerId;
       const configuredKey = params.discoveryConfig.models?.providers?.[customProviderId]?.apiKey;
-      const customCredential = custom.noAuth
+      const noAuth = resolveCustomProviderNoAuth({
+        ...custom,
+        config: params.discoveryConfig,
+        providerId: customProviderId,
+        apiKey: custom.apiKey ?? process.env.CUSTOM_API_KEY?.trim(),
+      });
+      const customCredential = noAuth
         ? undefined
         : await resolveNonInteractiveCredential({
             provider: customProviderId,
@@ -318,7 +325,7 @@ async function validateResetAuthChoice(params: {
       }
       if (
         !custom.modelId &&
-        !custom.noAuth &&
+        !noAuth &&
         !customCredential &&
         hasConfiguredSecretInput(configuredKey)
       ) {
@@ -329,6 +336,7 @@ async function validateResetAuthChoice(params: {
       const modelIds = await resolveNonInteractiveCustomApiModelIds({
         ...custom,
         config: params.discoveryConfig,
+        noAuth,
         apiKey: customCredential?.key,
         agentDir: target.agentDir,
       });
@@ -336,8 +344,12 @@ async function validateResetAuthChoice(params: {
         ...custom,
         modelId: modelIds[0] ?? "",
         config: params.baseConfig,
+        noAuth,
         apiKey: customCredential?.key,
       });
+      if (noAuth) {
+        params.opts.customNoAuth = true;
+      }
       params.opts.customModelIds = modelIds;
       params.opts.customProviderId = customProviderId;
     } catch (error) {

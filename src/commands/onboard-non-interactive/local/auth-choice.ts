@@ -22,6 +22,7 @@ import {
   CustomApiError,
   parseNonInteractiveCustomApiFlags,
   resolveCustomProviderId,
+  resolveCustomProviderNoAuth,
   resolveNonInteractiveCustomApiModelIds,
 } from "../../onboard-custom-config.js";
 import { rejectOnboardingOption } from "../../onboard-options.js";
@@ -189,7 +190,13 @@ export async function applyNonInteractiveAuthChoice(params: {
       // No-auth selection must not resolve ambient credentials: keeping the
       // env/flag key alive would serialize it next to auth: "none" and crash
       // the replacement branch (which expects a staged profile).
-      const resolvedCustomApiKey = customAuth.noAuth
+      const noAuth = resolveCustomProviderNoAuth({
+        ...customAuth,
+        config: nextConfig,
+        providerId: resolvedProviderId.providerId,
+        apiKey: customAuth.apiKey ?? process.env.CUSTOM_API_KEY?.trim(),
+      });
+      const resolvedCustomApiKey = noAuth
         ? undefined
         : await resolveApiKey({
             provider: resolvedProviderId.providerId,
@@ -224,31 +231,20 @@ export async function applyNonInteractiveAuthChoice(params: {
       const modelIds = await resolveNonInteractiveCustomApiModelIds({
         ...customAuth,
         config: nextConfig,
+        noAuth,
         apiKey: resolvedCustomApiKey?.key,
         agentDir: params.target.agentDir,
         modelIds: opts.customModelIds,
       });
-      // Apply the advertised first model last so every model joins the allowlist.
-      const [firstToApply = "", ...remainingModels] = modelIds.toReversed();
-      let result = applyCustomApiConfig({
+      const result = applyCustomApiConfig({
         config: nextConfig,
         ...customAuth,
-        modelId: firstToApply,
+        modelId: modelIds[0] ?? "",
+        modelIds: customAuth.modelId ? undefined : modelIds,
         preserveExistingModelMetadata: !customAuth.modelId,
         apiKey: customApiKeyInput,
         target: params.target,
       });
-      for (const modelId of remainingModels) {
-        result = applyCustomApiConfig({
-          ...customAuth,
-          config: result.config,
-          modelId,
-          preserveExistingModelMetadata: !customAuth.modelId,
-          apiKey: customApiKeyInput,
-          providerId: result.providerId,
-          target: params.target,
-        });
-      }
       if (resolvedProviderId.providerIdRenamedFrom) {
         runtime.log(
           `Custom provider ID "${resolvedProviderId.providerIdRenamedFrom}" already exists for a different base URL. Using "${result.providerId}".`,
