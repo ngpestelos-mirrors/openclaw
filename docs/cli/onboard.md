@@ -349,6 +349,8 @@ openclaw onboard --non-interactive --accept-risk --skip-health \
 
 For `openai` and `openai-responses`, omit `--custom-model-id` to discover models from the base URL's `/models` endpoint (for example, `/v1/models`). Onboarding saves all discovered models and uses the first as the default. An explicit `--custom-model-id` skips discovery and configures that model. Discovery sends the supplied API key and times out after five seconds. If the endpoint is unavailable, returns invalid data, or lists no models, rerun with `--custom-model-id`. Anthropic-compatible setup always requires that flag.
 
+When combining discovery with `--reset`, a credential stored only in the configuration being reset cannot be reused. Supply the key for the new setup through `--custom-api-key` or `CUSTOM_API_KEY`, or rerun without `--reset`. Onboarding rejects the request before resetting if the discovered provider would lose its credential.
+
 LM Studio also has a provider-specific key flag:
 
 ```bash

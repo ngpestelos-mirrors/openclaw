@@ -125,7 +125,7 @@ export function registerOnboardResetDiscoveryTests({
       expectedKey: "fixture-explicit-key",
       customApiKey: "fixture-explicit-key",
     },
-  ])("authenticates discovery before reset with $name", async (testCase) => {
+  ])("requires surviving discovery credentials before reset with $name", async (testCase) => {
     const authProfileStore = await import("../agents/auth-profiles/store-runtime.js");
     vi.spyOn(
       authProfileStore,
@@ -183,20 +183,32 @@ export function registerOnboardResetDiscoveryTests({
       runtime,
     );
 
-    expect(request).toHaveBeenCalledOnce();
-    expect(mocks.handleReset).toHaveBeenCalledOnce();
-    expect(mocks.runNonInteractiveSetup).toHaveBeenCalledWith(
-      expect.objectContaining({ customModelIds: ["secured-first", "secured-second"] }),
-      runtime,
-    );
-    const discoveryOrder = request.mock.invocationCallOrder[0];
-    const resetOrder = mocks.handleReset.mock.invocationCallOrder[0];
-    const setupOrder = mocks.runNonInteractiveSetup.mock.invocationCallOrder[0];
-    if (discoveryOrder === undefined || resetOrder === undefined || setupOrder === undefined) {
-      throw new Error("Expected authenticated discovery, reset, and setup");
+    if (!testCase.customApiKey) {
+      expect(request).not.toHaveBeenCalled();
+      expect(mocks.handleReset).not.toHaveBeenCalled();
+      expect(mocks.runNonInteractiveSetup).not.toHaveBeenCalled();
+      expect(runtime.error).toHaveBeenCalledWith(
+        expect.stringContaining("would remove the configured discovery credential"),
+      );
+    } else {
+      expect(request).toHaveBeenCalledOnce();
+      expect(mocks.handleReset).toHaveBeenCalledOnce();
+      expect(mocks.runNonInteractiveSetup).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customApiKey: testCase.customApiKey,
+          customModelIds: ["secured-first", "secured-second"],
+        }),
+        runtime,
+      );
+      const discoveryOrder = request.mock.invocationCallOrder[0];
+      const resetOrder = mocks.handleReset.mock.invocationCallOrder[0];
+      const setupOrder = mocks.runNonInteractiveSetup.mock.invocationCallOrder[0];
+      if (discoveryOrder === undefined || resetOrder === undefined || setupOrder === undefined) {
+        throw new Error("Expected authenticated discovery, reset, and setup");
+      }
+      expect(discoveryOrder).toBeLessThan(resetOrder);
+      expect(resetOrder).toBeLessThan(setupOrder);
     }
-    expect(discoveryOrder).toBeLessThan(resetOrder);
-    expect(resetOrder).toBeLessThan(setupOrder);
     expect(config).toEqual(authoredConfig);
     const output = JSON.stringify([runtime.log.mock.calls, runtime.error.mock.calls]);
     expect(output).not.toContain(testCase.expectedKey);

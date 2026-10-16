@@ -295,6 +295,7 @@ async function validateResetAuthChoice(params: {
         baseUrl: custom.baseUrl,
         providerId: custom.providerId,
       }).providerId;
+      const configuredKey = params.discoveryConfig.models?.providers?.[customProviderId]?.apiKey;
       const customCredential = custom.noAuth
         ? undefined
         : await resolveNonInteractiveCredential({
@@ -307,16 +308,23 @@ async function validateResetAuthChoice(params: {
             agentDir: target.agentDir,
             workspaceDir: params.workspaceDir,
             allowProfile:
-              params.resetScope === "config" &&
-              !hasConfiguredSecretInput(
-                params.discoveryConfig.models?.providers?.[customProviderId]?.apiKey,
-              ),
+              params.resetScope === "config" && !hasConfiguredSecretInput(configuredKey),
             required: false,
             secretInputMode: params.opts.secretInputMode,
             json: params.opts.json,
           });
       if (params.opts.customApiKey?.trim() && !customCredential) {
         return false;
+      }
+      if (
+        !custom.modelId &&
+        !custom.noAuth &&
+        !customCredential &&
+        hasConfiguredSecretInput(configuredKey)
+      ) {
+        return reject(
+          "Reset would remove the configured discovery credential. Pass --custom-api-key or rerun without --reset.",
+        );
       }
       const modelIds = await resolveNonInteractiveCustomApiModelIds({
         ...custom,
