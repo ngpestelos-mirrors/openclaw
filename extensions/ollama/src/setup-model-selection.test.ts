@@ -2,6 +2,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/provider-auth";
 import type { WizardPrompter } from "openclaw/plugin-sdk/setup";
 import { requestBodyText, requestUrl } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { OllamaModelWithContext } from "./provider-models.js";
 import {
   buildOllamaModelsConfig,
   discoverOllamaModelsForSetup,
@@ -27,7 +28,7 @@ describe("Ollama onboarding model selection", () => {
     (remote) => {
       const models = buildOllamaModelsConfig(
         ["private-alias", "local-model"],
-        new Map([
+        new Map<string, OllamaModelWithContext>([
           ["private-alias", { name: "private-alias", contextWindow: 262_144, ...remote }],
           ["local-model", { name: "local-model", contextWindow: 262_144 }],
         ]),

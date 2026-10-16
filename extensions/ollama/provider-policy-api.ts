@@ -102,33 +102,32 @@ export function normalizeConfig({
     : normalizedProviderId === OLLAMA_CLOUD_PROVIDER_ID
       ? OLLAMA_CLOUD_BASE_URL
       : OLLAMA_DEFAULT_BASE_URL;
-  return {
-    ...providerConfig,
-    baseUrl,
-    models: (providerConfig.models ?? []).map((model) => {
-      const cloudModel = resolveOllamaCloudDefaultModel(model.id);
-      const remote =
-        isHostedOllamaCloud(model.baseUrl ?? baseUrl) ||
-        normalizedProviderId === OLLAMA_CLOUD_PROVIDER_ID;
-      if (
-        model.maxTokens !== undefined ||
-        (model.contextWindow === undefined && !cloudModel) ||
-        (!remote && !isCloudModelRef(model.id) && !cloudModel)
-      ) {
-        return model;
-      }
-      return {
-        ...model,
-        maxTokens:
-          providerConfig.maxTokens ??
-          resolveOllamaOutputBudget({
-            modelId: model.id,
-            contextWindow: model.contextWindow,
-            remote,
-          }),
-      };
-    }),
-  };
+  const models: ModelProviderConfig["models"] = [];
+  for (const model of providerConfig.models ?? []) {
+    const cloudModel = resolveOllamaCloudDefaultModel(model.id);
+    const remote =
+      isHostedOllamaCloud(model.baseUrl ?? baseUrl) ||
+      normalizedProviderId === OLLAMA_CLOUD_PROVIDER_ID;
+    if (
+      model.maxTokens !== undefined ||
+      (model.contextWindow === undefined && !cloudModel) ||
+      (!remote && !isCloudModelRef(model.id) && !cloudModel)
+    ) {
+      models.push(model);
+      continue;
+    }
+    models.push({
+      ...model,
+      maxTokens:
+        providerConfig.maxTokens ??
+        resolveOllamaOutputBudget({
+          modelId: model.id,
+          contextWindow: model.contextWindow,
+          remote,
+        }),
+    });
+  }
+  return { ...providerConfig, baseUrl, models };
 }
 
 /**
