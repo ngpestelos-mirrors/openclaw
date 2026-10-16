@@ -448,6 +448,7 @@ describe("chat pane embedded panels", () => {
         fullMessageAgentId: scopedAgentParamsForSession(state, state.sessionKey).agentId,
         loadFullAssistantMessage: createSidebarFullMessageLoader(state, context.gateway),
         connectionEpoch: state.connectionEpoch,
+        onRequestUpdate: renderAttachment,
       } as ChatProps;
       const [current, setCurrent] = createSignal(chat);
       const application = createSolidApplicationContextProvider(context);
@@ -462,10 +463,11 @@ describe("chat pane embedded panels", () => {
         { container: transcript, wrapper: application.wrapper },
       );
       function renderAttachment() {
-        setCurrent({ ...chat, onRequestUpdate: renderAttachment });
+        setCurrent({ ...chat });
         flush();
         controller.hostUpdated();
       }
+      controller.hostConnected();
       try {
         renderAttachment();
         const open = await vi.waitFor(() => {
