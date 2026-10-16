@@ -124,6 +124,9 @@ export function createControlUiTeamScaleFixture(options: FixtureOptions = {}) {
       sessionId: `team-session-${index + 1}`,
       agentId: "main",
       kind: "direct",
+      ...(options.restoreDashboard
+        ? { visibility: "shared" as const, sharingRole: "admin" as const }
+        : {}),
       label: pinned ? `Project dashboard ${index - 269}` : `Project discussion ${index + 1}`,
       displayName: pinned ? `Project dashboard ${index - 269}` : `Project discussion ${index + 1}`,
       updatedAt: now - index * 1_000,
@@ -228,18 +231,10 @@ export function createControlUiTeamScaleFixture(options: FixtureOptions = {}) {
     })),
   });
   const historyMessages = Array.from({ length: counts.transcriptMessages }, (_, index) => ({
-    role:
-      options.restoreDashboard && index % 20 === 19
-        ? "toolResult"
-        : index % 2
-          ? "assistant"
-          : "user",
+    role: index % 2 ? "assistant" : "user",
     ...(options.restoreDashboard
       ? {
           __openclaw: { id: `team-message-${index + 1}`, seq: index + 1 },
-          ...(index % 20 === 19
-            ? { toolName: "canvas", toolCallId: `team-widget-${Math.floor(index / 20) + 1}` }
-            : {}),
           ...(index % 2
             ? { usage: { input: 12_000, output: 600, cacheRead: 8_000, totalTokens: 20_600 } }
             : {}),

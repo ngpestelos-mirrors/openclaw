@@ -921,6 +921,7 @@ try {
         bundleDir,
         fixture: fixture.counts,
         sidebarView,
+        restoreDashboard: values["restore-dashboard"],
         streamingReply: values["streaming-reply"],
         sidebarListChurn: values["sidebar-list-churn"],
         sidebarLiveChurn: fixture.sidebarLiveChurn,
