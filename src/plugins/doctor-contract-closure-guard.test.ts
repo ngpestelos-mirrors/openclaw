@@ -14,115 +14,29 @@ afterAll(() => parser.close());
 const SOURCE_MODULE_EXTENSIONS = [".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"] as const;
 const FORBIDDEN_SPECIFIER = "openclaw/plugin-sdk/agent-runtime";
 type ClosureKind = "doctor-contract" | "legacy-setup";
-// Static value imports only; type-only and lazy dynamic imports of these stay allowed.
-// Rules scoped to "doctor-contract" protect doctor enumeration cold-load cost;
-// legacy-setup closures (telegram sent-message-cache, discord thread-bindings.state)
-// still share sync runtime modules with these barrels and are a named follow-up.
-function forbid(specifier: string, reason: string, legacySetup = false) {
-  return [
-    specifier,
-    {
-      reason,
-      kinds: new Set<ClosureKind>(
-        legacySetup ? ["doctor-contract", "legacy-setup"] : ["doctor-contract"],
-      ),
-    },
-  ] as const;
-}
+// Doctor enumeration must stay dependency-light. Legacy setup also forbids the second group.
 const FORBIDDEN_SPECIFIER_RULES = new Map([
-  forbid(
+  ...[
     "matrix-js-sdk/lib/matrix.js",
-    "the Matrix SDK barrel loads the live client, crypto and WebRTC graph; " +
-      "keep persisted-state codecs separate from live client stores",
-  ),
-  forbid(
-    FORBIDDEN_SPECIFIER,
-    "the deprecated broad barrel makes doctor enumeration cold-load the core agents graph; " +
-      "use openclaw/plugin-sdk/agent-scope-runtime or another focused subpath",
-    true,
-  ),
-  forbid(
-    "openclaw/plugin-sdk/doctor-repair-runtime",
-    "install-path, uninstall, and state-db schema repair cold-load the state-db/kysely graph; " +
-      "use openclaw/plugin-sdk/runtime-doctor-migrations, or defer the repair behind a dynamic import",
-    true,
-  ),
-  forbid(
-    "openclaw/plugin-sdk/runtime-doctor",
-    "the retired package path exists only for shipped plugin artifacts; " +
-      "current source must use openclaw/plugin-sdk/runtime-doctor-migrations",
-    true,
-  ),
-  forbid(
-    "openclaw/plugin-sdk/ssrf-runtime",
-    "the SSRF runtime barrel cold-loads DNS, proxy state, and logging; " +
-      "legacy private-network config migration lives in openclaw/plugin-sdk/runtime-doctor-migrations",
-    true,
-  ),
-  forbid(
     "openclaw/plugin-sdk/provider-model-shared",
-    "the provider-model barrel cold-loads replay/endpoint/catalog helpers; " +
-      "use openclaw/plugin-sdk/model-ref-parse for provider/model reference parsing",
-  ),
-  forbid(
     "openclaw/plugin-sdk/acp-runtime",
-    "the ACP runtime barrel cold-loads the ACP control-plane manager and backend registry; " +
-      "keep legacy-state row shapes in a plugin-local leaf module",
-  ),
-  forbid(
     "openclaw/plugin-sdk/conversation-runtime",
-    "the deprecated conversation barrel cold-loads binding-routing and the session-binding registry; " +
-      "keep legacy-state row shapes in a plugin-local leaf module",
-  ),
-  forbid(
     "openclaw/plugin-sdk/provider-auth",
-    "the provider-auth barrel cold-loads the auth-profile store, provider runtime, and plugin " +
-      "install graph (execa, kysely, commander); use openclaw/plugin-sdk/secret-provider-alias " +
-      "for the default secret provider alias",
-  ),
-  forbid(
     "openclaw/plugin-sdk/channel-secret-basic-runtime",
-    "the channel-secret barrel cold-loads secret-ref/account-routing modules; " +
-      "the canonical record guard is openclaw/plugin-sdk/string-coerce-runtime",
-  ),
-  forbid(
     "openclaw/plugin-sdk/plugin-state-store-runtime",
-    "opening a keyed plugin-state store cold-loads the state-db/kysely graph; " +
-      "keep the store behind the migration context or a dynamic import inside async bodies",
-  ),
-  forbid(
     "openclaw/plugin-sdk/session-store-runtime",
-    "the session-store barrel makes doctor enumeration cold-load the session-accessor/kysely graph; " +
-      "defer it behind a dynamic import inside async migration bodies",
-  ),
-  forbid(
-    "openclaw/plugin-sdk/logging-core",
-    "the logging barrel makes doctor enumeration cold-load the diagnostic/config graph; " +
-      "use openclaw/plugin-sdk/security-runtime for redaction helpers",
-    true,
-  ),
-  forbid(
-    "openclaw/plugin-sdk/realtime-voice",
-    "the realtime-voice barrel makes doctor enumeration cold-load the agent-consult/session graph; " +
-      "use openclaw/plugin-sdk/realtime-voice-activation for activation-name helpers",
-    true,
-  ),
-  forbid(
     "openclaw/plugin-sdk/channel-outbound",
-    "the channel-outbound barrel makes doctor enumeration cold-load the reply-pipeline/channel-registry graph; " +
-      "use openclaw/plugin-sdk/channel-streaming-config for streaming config helpers",
-  ),
-  forbid(
     "openclaw/plugin-sdk/memory-core-host-engine-schema",
-    "the memory schema barrel loads SQLite/FTS migration helpers during doctor enumeration; " +
-      "defer sidecar writers behind a dynamic import after legacy state is found",
-  ),
-  forbid(
+  ].map((specifier) => [specifier, false] as const),
+  ...[
+    FORBIDDEN_SPECIFIER,
+    "openclaw/plugin-sdk/doctor-repair-runtime",
+    "openclaw/plugin-sdk/runtime-doctor",
+    "openclaw/plugin-sdk/ssrf-runtime",
+    "openclaw/plugin-sdk/logging-core",
+    "openclaw/plugin-sdk/realtime-voice",
     "openclaw/plugin-sdk/memory-host-core",
-    "the memory-host barrel makes doctor enumeration cold-load the event-store/kysely graph; " +
-      "use openclaw/plugin-sdk/agent-scope-runtime for agent scope resolvers",
-    true,
-  ),
+  ].map((specifier) => [specifier, true] as const),
 ]);
 const LEGACY_SETUP_PROPERTIES = new Set([
   "legacyStateMigrations",
@@ -349,9 +263,9 @@ function inspectRelativeClosure(
 
 function collectForbiddenClosureImports(entry: ClosureEntry): string[] {
   return inspectRelativeClosure(entry.entryPath, entry.pluginRoot, (filePath, reference) => {
-    const rule = FORBIDDEN_SPECIFIER_RULES.get(reference.specifier);
-    return rule?.kinds.has(entry.kind)
-      ? `${entry.pluginId}: ${formatRepoPath(filePath)}:${reference.line} imports ${reference.specifier}; ${rule.reason}`
+    const legacyToo = FORBIDDEN_SPECIFIER_RULES.get(reference.specifier);
+    return legacyToo !== undefined && (entry.kind === "doctor-contract" || legacyToo)
+      ? `${entry.pluginId}: ${formatRepoPath(filePath)}:${reference.line} imports ${reference.specifier}; use a focused subpath or defer the import until migration`
       : undefined;
   });
 }
