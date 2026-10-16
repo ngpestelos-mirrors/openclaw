@@ -3,38 +3,26 @@ import type { RestartSentinelPayload } from "../../infra/restart-sentinel.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 
 const mocks = vi.hoisted(() => ({
-  getLatest: vi.fn<() => RestartSentinelPayload | null>(),
   refreshLatest: vi.fn<() => Promise<RestartSentinelPayload | null>>(),
   prepare: vi.fn(),
   submit: vi.fn(),
 }));
 
-vi.mock("../../../packages/gateway-protocol/src/index.js", async () => {
-  const actual = await vi.importActual<
-    typeof import("../../../packages/gateway-protocol/src/index.js")
-  >("../../../packages/gateway-protocol/src/index.js");
-  return {
-    ...actual,
-    validateUpdateReportParams: () => true,
-    validateUpdateReportResult: () => true,
-  };
-});
+vi.mock("../../../packages/gateway-protocol/src/index.js", async (original) => ({
+  ...(await original<typeof import("../../../packages/gateway-protocol/src/index.js")>()),
+  validateUpdateReportParams: () => true,
+  validateUpdateReportResult: () => true,
+}));
 
 vi.mock("../../infra/update-failure-report.js", () => ({
   prepareUpdateFailureReport: mocks.prepare,
   submitUpdateFailureReport: mocks.submit,
 }));
 
-vi.mock("../server-update-sentinel.js", async () => {
-  const actual = await vi.importActual<typeof import("../server-update-sentinel.js")>(
-    "../server-update-sentinel.js",
-  );
-  return {
-    ...actual,
-    getLatestUpdateRestartSentinel: mocks.getLatest,
-    refreshLatestUpdateRestartSentinel: mocks.refreshLatest,
-  };
-});
+vi.mock("../server-update-sentinel.js", async (original) => ({
+  ...(await original<typeof import("../server-update-sentinel.js")>()),
+  refreshLatestUpdateRestartSentinel: mocks.refreshLatest,
+}));
 
 const { updateHandlers } = await import("./update.js");
 
@@ -47,18 +35,15 @@ const failure: RestartSentinelPayload = {
     mode: "git",
     target: "origin/main@abcdef",
     reason: "build-failed",
-    before: { version: "2026.8.1" },
-    after: { version: "2026.8.2" },
     steps: [
       {
         name: "build",
         command: "pnpm build --token secret",
         cwd: "/Users/private/openclaw",
-        durationMs: 10,
         log: { exitCode: 1, stderrTail: "raw log secret" },
       },
+      { name: "post-install doctor", advisory: true, log: { exitCode: 86 } },
     ],
-    durationMs: 20,
     recovery: { serviceRestartSafe: true, version: "2026.8.1" },
   },
 };
@@ -79,14 +64,11 @@ const submitParams = {
 };
 
 function expectInvalid(respond: unknown, message?: string) {
-  expect(respond).toHaveBeenCalledWith(
-    false,
-    undefined,
-    expect.objectContaining({
-      code: "INVALID_REQUEST",
-      ...(message ? { message: expect.stringContaining(message) } : {}),
-    }),
-  );
+  const error = {
+    code: "INVALID_REQUEST",
+    ...(message ? { message: expect.stringContaining(message) } : {}),
+  };
+  expect(respond).toHaveBeenCalledWith(false, undefined, expect.objectContaining(error));
 }
 
 async function invoke(
@@ -111,10 +93,8 @@ async function invoke(
 describe("update.report", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.getLatest.mockReturnValue(failure);
     mocks.refreshLatest.mockResolvedValue(failure);
     mocks.prepare.mockResolvedValue(preparedReport);
-    mocks.submit.mockReset();
   });
 
   it.each([
@@ -125,7 +105,7 @@ describe("update.report", () => {
       attemptId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     },
   ])(
-    "previews a current $name failure without carrying command or log content",
+    "previews a current $name failure with redaction and advisory classification",
     async ({ runId, attemptId }) => {
       mocks.refreshLatest.mockResolvedValue({
         ...failure,
@@ -142,11 +122,15 @@ describe("update.report", () => {
           status: "error",
           mode: "git",
           recovery: { serviceRestartSafe: true, version: "2026.8.1" },
-          steps: [{ name: "build", command: "", cwd: "", exitCode: 1 }],
+          steps: [
+            { name: "build", command: "", cwd: "", exitCode: 1 },
+            { name: "post-install doctor", advisory: { kind: "package-post-install-doctor" } },
+          ],
         },
       });
       expect(JSON.stringify(input)).not.toContain("secret");
       expect(JSON.stringify(input)).not.toContain("/Users/private");
+      expect(input.result.steps[0]).not.toHaveProperty("advisory");
       expect(respond).toHaveBeenCalledWith(
         true,
         expect.objectContaining({ status: "ready", previewDigest: "a".repeat(64) }),
@@ -252,35 +236,23 @@ describe("update.report", () => {
     expectInvalid(respond, "authenticated client");
   });
 
-  it("rejects successful and non-update sentinels", async () => {
-    mocks.refreshLatest.mockResolvedValue({ ...failure, status: "ok" });
+  it.each([
+    { status: "ok", reason: "build-failed", ready: false },
+    { status: "skipped", reason: "already-current", ready: false },
+    { status: "skipped", reason: "not-git-install", ready: true },
+  ] as const)("classifies $status/$reason for reporting", async ({ status, reason, ready }) => {
+    mocks.refreshLatest.mockResolvedValue({
+      ...failure,
+      status,
+      stats: { ...failure.stats, reason },
+    });
     const respond = await invoke(previewParams);
-
-    expect(mocks.prepare).not.toHaveBeenCalled();
-    expectInvalid(respond);
-  });
-
-  it("rejects a classified skipped no-op but allows a skipped terminal failure", async () => {
-    mocks.refreshLatest.mockResolvedValue({
-      ...failure,
-      status: "skipped",
-      stats: { ...failure.stats, reason: "already-current" },
-    });
-    const noop = await invoke(previewParams);
-    expect(mocks.prepare).not.toHaveBeenCalled();
-    expectInvalid(noop);
-
-    mocks.refreshLatest.mockResolvedValue({
-      ...failure,
-      status: "skipped",
-      stats: { ...failure.stats, reason: "not-git-install" },
-    });
-    const failureResponse = await invoke(previewParams);
-    expect(mocks.prepare).toHaveBeenCalledOnce();
-    expect(failureResponse).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({ status: "ready" }),
-    );
+    expect(mocks.prepare).toHaveBeenCalledTimes(ready ? 1 : 0);
+    if (ready) {
+      expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ status: "ready" }));
+    } else {
+      expectInvalid(respond);
+    }
   });
 
   it("uses the canonical sentinel instead of a stale cached attempt", async () => {

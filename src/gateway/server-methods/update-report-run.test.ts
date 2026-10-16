@@ -103,10 +103,10 @@ type ClientAuthority = Pick<
   "internal" | "authenticatedUserProfile" | "connectionSignal"
 >;
 
-function namedAdministrator(): ClientAuthority {
+function namedAdministrator(profileId = "11111111-2222-4333-8444-555555555555"): ClientAuthority {
   return {
     authenticatedUserProfile: {
-      profileId: "11111111-2222-4333-8444-555555555555",
+      profileId,
       displayName: "Example administrator",
       hasAvatar: false,
       updatedAt: 0,
@@ -120,6 +120,40 @@ function expectPartialReply(respond: unknown, payload: Record<string, unknown>) 
 
 function expectError(respond: unknown, error: Record<string, unknown>) {
   expect(respond).toHaveBeenCalledWith(false, undefined, expect.objectContaining(error));
+}
+
+function expectText(text: string | undefined, contains: string[] = [], excludes: string[] = []) {
+  for (const value of contains) {
+    expect(text).toContain(value);
+  }
+  for (const value of excludes) {
+    expect(text).not.toContain(value);
+  }
+}
+
+async function expectNoReport({ receipt = true, github = true } = {}) {
+  if (receipt) {
+    expect(await readUpdateFailureReportReceipt(runId)).toBeNull();
+  }
+  expect(await reportFiles()).toEqual([]);
+  if (github) {
+    expect(mocks.runGh).not.toHaveBeenCalled();
+  }
+}
+
+function resultStep(name: string, exitCode: number | null = null, durationMs = 0) {
+  return { name, command: "", cwd: "", durationMs, exitCode };
+}
+
+function interactiveReport(
+  result: NonNullable<Parameters<typeof runInteractiveUpdateFailureAction>[0]["result"]>,
+  env = process.env,
+) {
+  const runtime = { log: vi.fn(), error: vi.fn() };
+  return {
+    runtime,
+    run: () => runInteractiveUpdateFailureAction({ attemptId: runId, env, result, runtime }),
+  };
 }
 
 function ghResult(stdout = "", status = 0) {
@@ -138,13 +172,24 @@ function recordFactFailure(
   failureFacts: UpdateFailureFact[] | undefined,
   step = "doctor",
   reason = "doctor-failed",
+  extraSteps: { step: string; failureFacts?: UpdateFailureFact[] }[] = [],
+  detail?: string,
 ) {
   createUpdateRun({ runId, trigger: "control-ui" });
-  recordUpdateRunPhase(runId, "validating", { step: { step, status: "failed", failureFacts } });
+  recordUpdateRunPhase(runId, "validating", {
+    step: { step, status: "failed", failureFacts, detail },
+  });
+  for (const entry of extraSteps) {
+    recordUpdateRunStep(runId, { ...entry, status: "failed" });
+  }
   finishUpdateRun(runId, { status: "failed", reason });
 }
 function submit(previewDigest: string, authority?: ClientAuthority) {
   return invoke({ action: "submit", attemptId: runId, previewDigest }, undefined, authority);
+}
+
+function submitParams(previewDigest: string) {
+  return { action: "submit", attemptId: runId, previewDigest };
 }
 function publicFact(
   check: string,
@@ -282,11 +327,7 @@ describe("Report action from the authoritative update ledger", () => {
           await resume.promise;
           return change === "digest" ? matchingSentinel() : null;
         });
-      const submitting = invoke(
-        { action: "submit", attemptId: runId, previewDigest },
-        undefined,
-        authority,
-      );
+      const submitting = invoke(submitParams(previewDigest), undefined, authority);
       await paused.promise;
       if (change === "identity") {
         authority.authenticatedUserProfile!.profileId = "another-administrator";
@@ -296,16 +337,13 @@ describe("Report action from the authoritative update ledger", () => {
       resume.resolve();
       const response = await submitting;
       expect(response).not.toHaveBeenCalledWith(true, expect.anything());
-      expect(await readUpdateFailureReportReceipt(runId)).toBeNull();
-      expect(await reportFiles()).toEqual([]);
-      expect(mocks.runGh).not.toHaveBeenCalled();
+      await expectNoReport();
     },
   );
 
   it("never authenticates the host after owner demotion during artifact publication", async () => {
     recordFailure();
-    const authority = namedAdministrator();
-    authority.authenticatedUserProfile!.profileId = GATEWAY_OWNER_PROFILE_ID;
+    const authority = namedAdministrator(GATEWAY_OWNER_PROFILE_ID);
     const { previewDigest } = await preview(authority);
     const rename = fs.rename.bind(fs);
     const publication = vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
@@ -315,15 +353,9 @@ describe("Report action from the authoritative update ledger", () => {
       }
     });
     try {
-      const response = await invoke(
-        { action: "submit", attemptId: runId, previewDigest },
-        undefined,
-        authority,
-      );
+      const response = await invoke(submitParams(previewDigest), undefined, authority);
       expect(response).not.toHaveBeenCalledWith(true, expect.anything());
-      expect(mocks.runGh).not.toHaveBeenCalled();
-      expect(await readUpdateFailureReportReceipt(runId)).toBeNull();
-      expect(await reportFiles()).toEqual([]);
+      await expectNoReport();
     } finally {
       publication.mockRestore();
     }
@@ -349,38 +381,27 @@ describe("Report action from the authoritative update ledger", () => {
       });
       finishUpdateRun(runId, { status: "failed", reason: "verification-failed" });
       mocks.confirm.mockResolvedValue(false);
-      const runtime = { log: vi.fn(), error: vi.fn() };
-      await runInteractiveUpdateFailureAction({
-        attemptId: runId,
-        env:
-          mode === "other-scope"
-            ? { ...process.env, OPENCLAW_STATE_DIR: path.join(home.home, "other-scope") }
-            : process.env,
-        result: {
+      const interactive = interactiveReport(
+        {
           status: "error",
           mode: "npm",
           reason: "verification-failed",
           durationMs: 1,
-          steps: [
-            {
-              name: "verifying",
-              command: "",
-              cwd: "",
-              durationMs: 1,
-              exitCode: mode === "direct-success" ? 0 : 7,
-            },
-          ],
+          steps: [resultStep("verifying", mode === "direct-success" ? 0 : 7, 1)],
         },
-        runtime,
-      });
+        mode === "other-scope"
+          ? { ...process.env, OPENCLAW_STATE_DIR: path.join(home.home, "other-scope") }
+          : process.env,
+      );
+      await interactive.run();
+      const { runtime } = interactive;
       const body =
         runtime.log.mock.calls
           .map(([text]) => String(text))
           .find((text) => text.startsWith("# OpenClaw update failure report")) ?? "";
       expect(runtime.error).not.toHaveBeenCalled();
       if (mode === "other-scope") {
-        expect(body).not.toContain("Failed phase activating");
-        expect(body).not.toContain("Failing check readyz");
+        expectText(body, [], ["Failed phase activating", "Failing check readyz"]);
       } else {
         expect(body).toContain("Failed phase activating: exit unknown");
         if (mode === "compact") {
@@ -390,8 +411,7 @@ describe("Report action from the authoritative update ledger", () => {
           expect(body.match(/Failed phase verifying:/gu)).toHaveLength(1);
           expect(body).toContain("Failing check readyz (readyz-unhealthy)");
         } else {
-          expect(body).not.toContain("Failed phase verifying:");
-          expect(body).not.toContain("Failing check readyz");
+          expectText(body, [], ["Failed phase verifying:", "Failing check readyz"]);
         }
       }
     },
@@ -439,77 +459,73 @@ describe("Report action from the authoritative update ledger", () => {
       const recorded = getUpdateRun(runId);
       expect(recorded?.steps.at(-1)?.failureFacts?.[0]?.message?.length).toBeLessThanOrEqual(200);
       const { body, previewDigest } = await preview();
-      expect(body).not.toContain("PRIVATE_CUSTOMER_ID");
+      expectText(
+        body,
+        [`Failing check package-stage (${publicCode})`],
+        [
+          "PRIVATE_CUSTOMER_ID",
+          "private-customer-text",
+          "private-host.example",
+          "synthetic-private-token",
+          "Example Person",
+          "config.json",
+        ],
+      );
       expect(renderUpdateRunReport(recorded!).lines.join("\n")).toContain(
         `Failing check package-stage (${code})`,
       );
-      expect(body).toContain(`Failing check package-stage (${publicCode})`);
-      for (const privateText of [
-        "private-customer-text",
-        "private-host.example",
-        "synthetic-private-token",
-        "Example Person",
-        "config.json",
-      ]) {
-        expect(body).not.toContain(privateText);
-      }
       await submit(previewDigest);
-      const submission = submissionBody();
-      expect(submission).toContain("package-stage");
-      expect(submission).not.toContain("private-customer-text");
-      expect(submission).not.toContain("PRIVATE_CUSTOMER_ID");
+      expectText(
+        submissionBody(),
+        ["package-stage"],
+        ["private-customer-text", "PRIVATE_CUSTOMER_ID"],
+      );
     },
   );
 
   it.each([
-    { field: "check", value: "core/doctor/private-customer-check", marker: "[redacted-check]" },
-    { field: "code", value: "private-customer-code", marker: "[redacted-code]" },
-    { field: "pluginId", value: "private-customer-plugin", marker: "[redacted-plugin]" },
+    ["check", "core/doctor/private-customer-check", "[redacted-check]"],
+    ["code", "private-customer-code", "[redacted-code]"],
+    ["pluginId", "private-customer-plugin", "[redacted-plugin]"],
+    ["path", "hooks.internal.entries.private-customer-key.enabled", "hooks.internal.entries.*"],
+    ["path", "gateway.auth.identityScopes.private-customer-key", "gateway.*"],
+    ["path", "tools.byProvider.private-customer-key.profile", "tools.*"],
   ] as const)(
-    "keeps an unrecognized $field local, including unshipped extensions, when publishing a report",
-    async ({ field, value, marker }) => {
-      const fact = { check: "doctor", code: "doctor-failed", pluginId: "discord", [field]: value };
-      recordFactFailure([fact]);
+    "keeps private %s %s local when publishing a report",
+    async (field, value, marker) => {
+      if (field === "path") {
+        const doctor = parseUpdateDoctorLintReport(
+          JSON.stringify({
+            ok: false,
+            checksRun: 1,
+            findings: [
+              {
+                checkId: "core/doctor/final-config-validation",
+                severity: "error",
+                message: "Invalid input: expected boolean, received string",
+                path: value,
+              },
+            ],
+          }),
+        );
+        recordFactFailure(doctor?.failureFacts);
+      } else {
+        recordFactFailure([
+          { check: "doctor", code: "doctor-failed", pluginId: "discord", [field]: value },
+        ]);
+      }
       expect(localReport()).toContain(value);
       const { body, previewDigest } = await preview();
-      expect(body).not.toContain(value);
-      expect(body).toContain(marker);
-      await submit(previewDigest);
-      const submission = submissionBody();
-      expect(submission).not.toContain(value);
-    },
-  );
-
-  it.each([
-    ["hooks.internal.entries.private-customer-key.enabled", "hooks.internal.entries.*"],
-    ["gateway.auth.identityScopes.private-customer-key", "gateway.*"],
-    ["tools.byProvider.private-customer-key.profile", "tools.*"],
-  ])(
-    "removes operator names from Doctor config path %s in public reports",
-    async (configKey, publicKey) => {
-      const doctor = parseUpdateDoctorLintReport(
-        JSON.stringify({
-          ok: false,
-          checksRun: 1,
-          findings: [
-            {
-              checkId: "core/doctor/final-config-validation",
-              severity: "error",
-              message: "Invalid input: expected boolean, received string",
-              path: configKey,
-            },
-          ],
-        }),
+      const excluded = field === "path" ? "private-customer-key" : value;
+      expectText(
+        body,
+        field === "path"
+          ? ["core/doctor/final-config-validation (doctor-failed)", `key ${marker}`]
+          : [marker],
+        [excluded],
       );
-      recordFactFailure(doctor?.failureFacts);
-      expect(localReport()).toContain(configKey);
-      const { body, previewDigest } = await preview();
-      expect(body).toContain("core/doctor/final-config-validation (doctor-failed)");
-      expect(body).not.toContain("private-customer-key");
-      expect(body).toContain(`key ${publicKey}`);
       await submit(previewDigest);
-      const submission = submissionBody();
-      expect(submission).not.toContain("private-customer-key");
+      expectText(submissionBody(), [], [excluded]);
     },
   );
 
@@ -544,37 +560,27 @@ describe("Report action from the authoritative update ledger", () => {
   ])(
     "retains $check through the ledger, local summary and public preview",
     async ({ publicMessage, ...fact }) => {
-      createUpdateRun({ runId, trigger: "control-ui" });
-      recordUpdateRunPhase(runId, "validating", {
-        step: {
-          step: "failing check",
-          status: "failed",
-          detail: "private-raw-log",
-          failureFacts: [fact],
-        },
-      });
-      for (const step of [
-        "package rollback",
-        "repairing",
-        "repair attempt 1",
-        "repair attempt 2",
-      ]) {
-        recordUpdateRunStep(runId, { step, status: "failed" });
-      }
-      for (const step of ["global install rollback", "global install backup retention"]) {
-        recordUpdateRunStep(runId, {
-          step,
-          status: "failed",
-          failureFacts: [
-            {
-              check: "package-swap",
-              code: "swap-failed",
-              message: "Rollback verification timed out",
-            },
-          ],
-        });
-      }
-      finishUpdateRun(runId, { status: "failed", reason: "update-failed" });
+      recordFactFailure(
+        [fact],
+        "failing check",
+        "update-failed",
+        [
+          ...["package rollback", "repairing", "repair attempt 1", "repair attempt 2"].map(
+            (step) => ({ step }),
+          ),
+          ...["global install rollback", "global install backup retention"].map((step) => ({
+            step,
+            failureFacts: [
+              {
+                check: "package-swap",
+                code: "swap-failed",
+                message: "Rollback verification timed out",
+              },
+            ],
+          })),
+        ],
+        "private-raw-log",
+      );
       const recorded = getUpdateRun(runId)!;
       expect(recorded.steps.find((step) => step.step === "failing check")?.failureFacts).toEqual([
         fact,
@@ -595,8 +601,7 @@ describe("Report action from the authoritative update ledger", () => {
         }
       }
       expect(local).toContain(fact.message);
-      expect(body).toContain(`: ${publicMessage}\n`);
-      expect(body).not.toContain("private-raw-log");
+      expectText(body, [`: ${publicMessage}\n`], ["private-raw-log"]);
     },
   );
   it.each([
@@ -620,8 +625,7 @@ describe("Report action from the authoritative update ledger", () => {
       } else {
         expectError(respond, { code: "INVALID_REQUEST" });
       }
-      expect(mocks.runGh).not.toHaveBeenCalled();
-      expect(await reportFiles()).toEqual([]);
+      await expectNoReport({ receipt: false });
     },
   );
 
@@ -630,15 +634,13 @@ describe("Report action from the authoritative update ledger", () => {
     async (status) => {
       recordFailure(status);
       const result = await preview();
-      expect(result.body).toContain("f".repeat(40));
-      expect(result.body).toContain("build");
-      expect(result.body).toContain("2026.9.1");
-      expect(result.body).toContain("2026.9.2");
-      expect(result.body).toContain("Recovery outcome: not recorded");
-      expect(result.body).not.toContain("private-");
+      expectText(
+        result.body,
+        ["f".repeat(40), "build", "2026.9.1", "2026.9.2", "Recovery outcome: not recorded"],
+        ["private-"],
+      );
       expect(Buffer.byteLength(result.body)).toBeLessThan(16_000);
-      expect(await reportFiles()).toEqual([]);
-      expect(mocks.runGh).not.toHaveBeenCalled();
+      await expectNoReport({ receipt: false });
     },
   );
 
@@ -671,8 +673,7 @@ describe("Report action from the authoritative update ledger", () => {
       mocks.sentinel.mockResolvedValue(matchingSentinel());
       const respond = await invoke({ action: "preview", attemptId: runId });
       expectError(respond, { code: "INVALID_REQUEST" });
-      expect(await reportFiles()).toEqual([]);
-      expect(mocks.runGh).not.toHaveBeenCalled();
+      await expectNoReport({ receipt: false });
     },
   );
 
@@ -712,29 +713,17 @@ describe("Report action from the authoritative update ledger", () => {
         expect(args[0]).toBe("api");
         return outcome === "created" ? ghResult(issueUrl) : ghResult("", 1);
       });
-      const runtime = { log: vi.fn(), error: vi.fn() };
-      await expect(
-        runInteractiveUpdateFailureAction({
-          attemptId: runId,
-          env: process.env,
-          result: {
-            status: "error",
-            mode: "git",
-            reason: "build-failed",
-            before: { version: "2026.9.1" },
-            after: {
-              version: changedPreview ? "2026.9.3" : "2026.9.2",
-              upstreamRef: "f".repeat(40),
-            },
-            steps: [
-              { name: "validating", command: "", cwd: "", durationMs: 0, exitCode: null },
-              { name: "build", command: "", cwd: "", durationMs: 0, exitCode: null },
-            ],
-            durationMs: 1,
-          },
-          runtime,
-        }),
-      ).resolves.toBe("handled");
+      const interactive = interactiveReport({
+        status: "error",
+        mode: "git",
+        reason: "build-failed",
+        durationMs: 1,
+        before: { version: "2026.9.1" },
+        after: { version: changedPreview ? "2026.9.3" : "2026.9.2", upstreamRef: "f".repeat(40) },
+        steps: [resultStep("validating"), resultStep("build")],
+      });
+      await expect(interactive.run()).resolves.toBe("handled");
+      const { runtime } = interactive;
       expect(runtime.error).not.toHaveBeenCalled();
       expect(mocks.select).toHaveBeenCalledTimes(outcome === "pending" ? 2 : 1);
       if (outcome === "pending") {
@@ -761,8 +750,8 @@ describe("Report action from the authoritative update ledger", () => {
         const callsBefore = mocks.runGh.mock.calls.length;
         const named = await submit(previewDigest, namedAdministrator());
         expectPartialReply(named, { status: "pending" });
-        expect(named.mock.calls[0]?.[1]).not.toHaveProperty("fallbackUrl");
         expect(named.mock.calls[0]?.[1]).not.toHaveProperty("url");
+        expect(named.mock.calls[0]?.[1]).not.toHaveProperty("fallbackUrl");
         expect(mocks.runGh).toHaveBeenCalledTimes(callsBefore);
       }
       const response = await submit(previewDigest);
@@ -802,13 +791,8 @@ describe("Report action from the authoritative update ledger", () => {
       recordFailure();
       const connection = new AbortController();
       const authority: ClientAuthority = {
+        ...namedAdministrator(GATEWAY_OWNER_PROFILE_ID),
         connectionSignal: connection.signal,
-        authenticatedUserProfile: {
-          profileId: GATEWAY_OWNER_PROFILE_ID,
-          displayName: null,
-          hasAvatar: false,
-          updatedAt: 0,
-        },
       };
       const { previewDigest } = await preview(authority);
       const paused = createDeferred();
@@ -827,7 +811,7 @@ describe("Report action from the authoritative update ledger", () => {
         }
         return ghResult();
       });
-      const params = { action: "submit", attemptId: runId, previewDigest };
+      const params = submitParams(previewDigest);
       const submitting = invoke(params, () => true, authority);
       await paused.promise;
       // The host retires the socket without changing its admitted auth generation.
@@ -836,8 +820,7 @@ describe("Report action from the authoritative update ledger", () => {
       const respond = await submitting;
       expect(ghPhases()).toEqual(["auth"]);
       expectError(respond, { code: "INVALID_REQUEST" });
-      expect(await readUpdateFailureReportReceipt(runId)).toBeNull();
-      expect(await reportFiles()).toEqual([]);
+      await expectNoReport({ github: false });
       const reconnected = { ...authority, connectionSignal: new AbortController().signal };
       const retried = await invoke(params, () => true, reconnected);
       expectPartialReply(retried, { status: "created", url: issueUrl });
@@ -856,9 +839,7 @@ describe("Report action from the authoritative update ledger", () => {
     });
     expect(respond).not.toHaveBeenCalled();
     expect(mocks.sentinel).not.toHaveBeenCalled();
-    expect(await readUpdateFailureReportReceipt(runId)).toBeNull();
-    expect(await reportFiles()).toEqual([]);
-    expect(mocks.runGh).not.toHaveBeenCalled();
+    await expectNoReport();
   });
 
   it("settles accepted report transport, receipt, and artifact cleanup before Gateway close", async () => {
@@ -881,7 +862,7 @@ describe("Report action from the authoritative update ledger", () => {
       }
       return ghResult();
     });
-    const params = { action: "submit", attemptId: runId, previewDigest };
+    const params = submitParams(previewDigest);
     const submitting = invoke(
       params,
       () => true,
