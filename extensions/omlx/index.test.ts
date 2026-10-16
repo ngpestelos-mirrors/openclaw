@@ -683,6 +683,32 @@ it.each<{
   ).toEqual({ apiKey: scenario.runtimeApiKey });
 });
 
+it("lets custom request auth override a configured profile credential", async () => {
+  const provider = capturePluginRegistration(plugin).providers[0];
+  const model = chatModel("https://omlx.example.test/v1");
+  const providerConfig: ModelProviderConfig = {
+    baseUrl: model.baseUrl,
+    api: "openai-completions",
+    apiKey: "omlx:profile",
+    request: {
+      auth: { mode: "header", headerName: "X-oMLX-Key", value: "fixture-request-key" },
+    },
+    models: [],
+  };
+
+  await expect(
+    provider?.prepareRuntimeAuth?.({
+      config: { models: { providers: { omlx: providerConfig } } },
+      env: {},
+      provider: "omlx",
+      modelId: model.id,
+      model,
+      apiKey: "fixture-profile-key",
+      authMode: "api-key",
+    }),
+  ).resolves.toEqual({ apiKey: CUSTOM_LOCAL_AUTH_MARKER });
+});
+
 it("keeps configured keys and unoverridden profile credentials authoritative", async () => {
   const provider = capturePluginRegistration(plugin).providers[0];
   const baseUrl = "https://omlx.example.test/v1";

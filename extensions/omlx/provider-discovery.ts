@@ -52,7 +52,11 @@ export default {
     const { CUSTOM_LOCAL_AUTH_MARKER, findNormalizedProviderValue } =
       await import("openclaw/plugin-sdk/provider-auth");
     const providerConfig = findNormalizedProviderValue(config?.models?.providers, provider);
-    if (providerConfig?.apiKey && providerConfig.apiKey !== OMLX_LOCAL_API_KEY) {
+    if (
+      providerConfig?.apiKey &&
+      providerConfig.apiKey !== OMLX_LOCAL_API_KEY &&
+      providerConfig.request?.auth?.mode !== "header"
+    ) {
       return undefined;
     }
     if (hasOmlxAuthorization(providerConfig, model.headers)) {
