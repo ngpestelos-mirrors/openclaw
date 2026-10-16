@@ -33,17 +33,31 @@ function namedPrompt(
 function observedSender(accountId: string) {
   return { type: "observation", pluginId: "slack", accountId, senderKind: "human", id: "alice" };
 }
-function profilePrompt(
-  content: string,
-  timestamp: number,
-  id: string,
-  name: string,
-  metadata: Record<string, unknown> = {},
-) {
+function profilePrompt(...args: Parameters<typeof namedPrompt>) {
+  const [content, timestamp, id, name, metadata] = args;
   return namedPrompt(content, timestamp, id, name, {
     senderIdentity: { type: "profile", id },
     ...metadata,
   });
+}
+function queuedPrompt(id: string, message: Record<string, unknown>, acceptedAt: number) {
+  return { id, runId: id, acceptedAt, state: "queued" as const, message };
+}
+function boundary(
+  label: string,
+  searchOpen: boolean,
+  fields: Record<string, unknown>,
+  recipient?: string,
+) {
+  return {
+    boundary: label,
+    searchOpen,
+    recipient,
+    message: { role: "assistant", content: label, timestamp: searchOpen ? 1002 : 1006, ...fields },
+  };
+}
+function sender(senderId = "alice", fields: Record<string, unknown> = {}) {
+  return { senderId, senderName: senderId === "alice" ? "Alice" : "Bob", ...fields };
 }
 const profileKey = (id: string) => sessionParticipantIdentityKey({ type: "profile", id });
 function senderCase(
@@ -60,118 +74,86 @@ function messageGroups(props: Partial<Props>) {
 beforeEach(() => resetChatThreadState());
 describe("reply attribution grouping", () => {
   it.each([
-    ...[
-      { boundary: "sender-less user", message: userMessage("Local follow-up", 1006) },
-      {
-        boundary: "system turn",
-        message: userMessage("[System] Scheduled report", 1006, {
-          provenance: { kind: "internal_system", sourceTool: "cron" },
-          __openclaw: { idempotencyKey: "system-run:user" },
-        }),
+    boundary("sender-less user", false, { role: "user" }),
+    boundary("[System] Scheduled report", false, {
+      role: "user",
+      provenance: { kind: "internal_system", sourceTool: "cron" },
+      __openclaw: { idempotencyKey: "system-run:user" },
+    }),
+    boundary("forwarded input", false, {
+      senderSession: { sessionKey: "agent:other:main" },
+      provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+    }),
+    boundary("human prompt", true, { role: "user", __openclaw: sender("bob") }, "Bob"),
+    boundary("forwarded input", true, {
+      senderLabel: "Forwarded from main",
+      provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+    }),
+    boundary("projected source", true, {
+      senderSession: { sessionKey: "agent:other:main", agentId: "other" },
+    }),
+    boundary("cron delivery", true, {
+      senderLabel: "Daily report",
+      provenance: {
+        kind: "internal_system",
+        sourceTool: "cron",
+        jobId: "daily",
+        runId: "cron-run",
+        sourceSessionKey: "agent:main:cron:daily",
       },
-      {
-        boundary: "forwarded input",
-        message: assistantMessage("Forwarded input", 1006, {
-          senderSession: { sessionKey: "agent:other:main" },
-          provenance: { kind: "inter_session", sourceTool: "sessions_send" },
-        }),
-      },
-    ].map((entry) => Object.assign(entry, { searchOpen: false, recipient: undefined })),
-    ...[
-      {
-        boundary: "human prompt",
-        message: namedPrompt("Status?", 1002, "bob", "Bob"),
-        recipient: "Bob",
-      },
-      {
-        boundary: "forwarded input",
-        message: assistantMessage("Forwarded report", 1002, {
-          senderLabel: "Forwarded from main",
-          provenance: { kind: "inter_session", sourceTool: "sessions_send" },
-        }),
-        recipient: undefined,
-      },
-      {
-        boundary: "projected forwarded source",
-        message: assistantMessage("Forwarded report", 1002, {
-          senderSession: { sessionKey: "agent:other:main", agentId: "other" },
-        }),
-        recipient: undefined,
-      },
-      {
-        boundary: "cron delivery",
-        message: assistantMessage("Scheduled report", 1002, {
-          senderLabel: "Daily report",
-          provenance: {
-            kind: "internal_system",
-            sourceTool: "cron",
-            jobId: "daily",
-            runId: "cron-run",
-            sourceSessionKey: "agent:main:cron:daily",
-          },
-        }),
-        recipient: undefined,
-      },
-      {
-        boundary: "projected turn",
-        message: assistantMessage("Automatic continuation", 1002, {
-          __openclaw: { turnBoundary: true },
-        }),
-        recipient: undefined,
-      },
-    ].map((entry) => Object.assign(entry, { searchOpen: true })),
-  ])(
-    "attributes prompts across $boundary (search: $searchOpen)",
-    ({ message, recipient, searchOpen }) => {
-      const alice = namedPrompt("Alice asks", 1000, "alice", "Alice");
-      const followUp = namedPrompt("Bob follows up", 1003, "bob", "Bob");
-      const groups = messageGroups({
-        searchOpen,
-        searchQuery: "Rollout",
-        replyPeople: searchOpen ? ["alice", "bob"].map((id) => profileKey(id)) : undefined,
-        messages: searchOpen
-          ? [
-              alice,
-              assistantMessage("Rollout started", 1001),
-              message,
-              assistantMessage("Rollout done", 1003),
-            ]
-          : [
-              alice,
-              assistantMessage("For Alice", 1001),
-              namedPrompt("Bob asks", 1002, "bob", "Bob"),
-              followUp,
-              assistantMessage("For Bob", 1004),
-              message,
-              assistantMessage("After boundary", 1007),
-            ],
+    }),
+    boundary("projected turn", true, {
+      __openclaw: { turnBoundary: true },
+    }),
+  ])("attributes $boundary prompts (search=$searchOpen)", ({ message, recipient, searchOpen }) => {
+    const alice = namedPrompt("Alice asks", 1000, "alice", "Alice");
+    const followUp = namedPrompt("Bob follows up", 1003, "bob", "Bob");
+    const groups = messageGroups({
+      searchOpen,
+      searchQuery: "Rollout",
+      replyPeople: searchOpen ? ["alice", "bob"].map((id) => profileKey(id)) : undefined,
+      messages: searchOpen
+        ? [
+            alice,
+            assistantMessage("Rollout started", 1001),
+            message,
+            assistantMessage("Rollout done", 1003),
+          ]
+        : [
+            alice,
+            assistantMessage("For Alice", 1001),
+            namedPrompt("Bob asks", 1002, "bob", "Bob"),
+            followUp,
+            assistantMessage("For Bob", 1004),
+            message,
+            assistantMessage("After boundary", 1007),
+          ],
+    });
+    if (searchOpen) {
+      expect(groups.map((group) => [group.messages.length, group.replyToSender?.name])).toEqual([
+        [1, "Alice"],
+        [1, recipient],
+      ]);
+    } else {
+      const replies = groups.filter((group) => group.role === "assistant");
+      expect(replies[0]).toMatchObject({
+        replyToSender: { id: "alice", name: "Alice" },
+        replyToMessage: { message: alice },
       });
-      if (searchOpen) {
-        expect(groups.map((group) => [group.messages.length, group.replyToSender?.name])).toEqual([
-          [1, "Alice"],
-          [1, recipient],
-        ]);
-      } else {
-        const replies = groups.filter((group) => group.role === "assistant");
-        expect(replies[0]).toMatchObject({
-          replyToSender: { id: "alice", name: "Alice" },
-          replyToMessage: { message: alice },
-        });
-        const bob = groups.find((group) => group.role === "user" && group.sender?.id === "bob");
-        expect(bob?.messages).toHaveLength(2);
-        expect(replies[1]).toMatchObject({
-          replyToSender: { id: "bob", name: "Bob" },
-          replyToMessage: { message: followUp, key: bob?.messages.at(-1)?.key },
-        });
-        expect(replies.at(-1)?.replyToSender).toBeUndefined();
-        expect(replies.at(-1)?.replyToMessage).toBeUndefined();
-      }
-    },
-  );
+      const bob = groups.find((group) => group.role === "user" && group.sender?.id === "bob");
+      expect(bob?.messages).toHaveLength(2);
+      expect(replies[1]).toMatchObject({
+        replyToSender: { id: "bob", name: "Bob" },
+        replyToMessage: { message: followUp, key: bob?.messages.at(-1)?.key },
+      });
+      const last = replies.at(-1);
+      expect([last?.replyToSender, last?.replyToMessage]).toEqual([undefined, undefined]);
+    }
+  });
 
   it.each(["human", "forwarded", "projected source"] as const)(
-    "keeps tool results out of the previous turn when search hides a %s boundary",
-    (boundary) => {
+    "keeps tool results across a hidden %s boundary",
+    (kind) => {
       const invocation = {
         role: "assistant",
         content: [
@@ -181,12 +163,12 @@ describe("reply attribution grouping", () => {
         timestamp: 1000,
       };
       const separator =
-        boundary === "human"
+        kind === "human"
           ? userMessage("New request", 1001)
           : assistantMessage(
               "Forwarded request",
               1001,
-              boundary === "forwarded"
+              kind === "forwarded"
                 ? { provenance: { kind: "inter_session", sourceTool: "sessions_send" } }
                 : { senderSession: { sessionKey: "agent:other:main", agentId: "other" } },
             );
@@ -207,20 +189,16 @@ describe("reply attribution grouping", () => {
   );
 
   it.each(["pending", "local"] as const)(
-    "attributes recovered output across a search-hidden %s prompt",
+    "attributes recovered output across hidden %s prompts",
     (source) => {
       const local = source === "local";
-      const prompt = userMessage("Please resume", 1002, {
-        __openclaw: { id: "pending:bob", senderId: "bob", senderName: "Bob" },
-      });
+      const prompt = namedPrompt("Please resume", 1002, "bob", "Bob", { id: "pending:bob" });
       const groups = messageGroups({
         searchOpen: true,
         searchQuery: "Rollout",
         replyLocalPerson: local ? localParticipantIdentityKey("viewer") : undefined,
         messages: [
-          userMessage("Rollout plan?", 1000, {
-            __openclaw: { senderId: local ? "bob" : "alice", senderName: local ? "Bob" : "Alice" },
-          }),
+          namedPrompt("Rollout plan?", 1000, local ? "bob" : "alice", local ? "Bob" : "Alice"),
           assistantMessage("Rollout started", 1001),
           assistantMessage(
             "Rollout resumed",
@@ -228,24 +206,21 @@ describe("reply attribution grouping", () => {
             local ? { __openclaw: { id: "recovered", seq: 3, runId: "local-run" } } : {},
           ),
         ],
-        ...(local
-          ? {
-              queue: [
-                {
-                  id: "local",
-                  text: "Please resume",
-                  createdAt: 1002,
-                  sendRunId: "local-run",
-                  sendState: "waiting-reconnect",
-                  sendAttempts: 1,
-                },
-              ],
-            }
-          : {
-              pendingInputs: [
-                { id: "bob", acceptedAt: 1002, state: "interrupted", message: prompt },
-              ],
-            }),
+        queue: local
+          ? [
+              {
+                id: "local",
+                text: "Please resume",
+                createdAt: 1002,
+                sendRunId: "local-run",
+                sendState: "waiting-reconnect",
+                sendAttempts: 1,
+              },
+            ]
+          : [],
+        pendingInputs: local
+          ? undefined
+          : [{ id: "bob", acceptedAt: 1002, state: "interrupted", message: prompt }],
       });
       const replies = groups.filter((group) => group.role === "assistant");
       expect(replies.map((group) => [group.messages.length, group.replyToSender?.name])).toEqual([
@@ -264,86 +239,55 @@ describe("reply attribution grouping", () => {
     },
   );
 
-  it.each([false, true])(
-    "keeps live attribution before a future pending input (search: %s)",
-    (searchOpen) => {
-      const current = userMessage("Current prompt", 1000, {
-        __openclaw: { id: "pending:current", senderId: "bob", senderName: "Bob" },
-      });
-      const future = userMessage("Rollout follow-up", 1001, {
-        __openclaw: { id: "pending:future", senderId: "alice", senderName: "Alice" },
-      });
-      const items = buildCachedChatItems(
-        createProps({
-          searchOpen,
-          searchQuery: "Rollout",
-          runId: "current",
-          stream: "Rollout in progress",
-          streamStartedAt: 1002,
-          pendingInputs: [
-            {
-              id: "current",
-              runId: "current",
-              acceptedAt: 1000,
-              state: "queued",
-              message: current,
-            },
-            { id: "future", runId: "future", acceptedAt: 1001, state: "queued", message: future },
-          ],
-        }),
-      );
-      const streamIndex = items.findIndex((item) => item.kind === "stream");
-      const futureIndex = items.findIndex(
-        (item) =>
-          item.kind === "group" && item.messages.some((source) => source.message === future),
-      );
-      expect(streamIndex).toBeGreaterThanOrEqual(0);
-      expect(streamIndex).toBeLessThan(futureIndex);
-      const stream = items[streamIndex];
-      expect(stream).toMatchObject({ replyToSender: { name: "Bob" } });
-      expect(stream?.kind === "stream" && stream.replyToMessage?.message).toBe(current);
-    },
-  );
+  it.each([false, true])("attributes live output before future input (search=%s)", (searchOpen) => {
+    const current = namedPrompt("Current prompt", 1000, "bob", "Bob", { id: "pending:current" });
+    const future = namedPrompt("Rollout follow-up", 1001, "alice", "Alice", {
+      id: "pending:future",
+    });
+    const items = buildCachedChatItems(
+      createProps({
+        searchOpen,
+        searchQuery: "Rollout",
+        runId: "current",
+        stream: "Rollout in progress",
+        streamStartedAt: 1002,
+        pendingInputs: [
+          queuedPrompt("current", current, 1000),
+          queuedPrompt("future", future, 1001),
+        ],
+      }),
+    );
+    const streamIndex = items.findIndex((item) => item.kind === "stream");
+    const futureIndex = items.findIndex(
+      (item) => item.kind === "group" && item.messages.some((source) => source.message === future),
+    );
+    expect(streamIndex).toBeGreaterThanOrEqual(0);
+    expect(streamIndex).toBeLessThan(futureIndex);
+    const stream = items[streamIndex];
+    expect(stream).toMatchObject({ replyToSender: { name: "Bob" } });
+    expect(stream?.kind === "stream" && stream.replyToMessage?.message).toBe(current);
+  });
 
   it.each([
-    senderCase(
-      "a listed profile's legacy messages",
-      [{ senderId: "alice", senderName: "Alice" }],
-      undefined,
-      [profileKey("alice")],
-    ),
-    senderCase("an untyped sender whose name changes", [
-      { senderId: "alice", senderName: "Alice" },
-      { senderId: "alice", senderName: "Alice Liddell", senderUsername: "al" },
+    senderCase("listed legacy profile", [sender()], undefined, [profileKey("alice")]),
+    senderCase("renamed untyped sender", [
+      sender(),
+      sender("alice", { senderName: "Alice Liddell", senderUsername: "al" }),
     ]),
-    senderCase("a typed profile after its own untyped messages", [
-      { senderId: "alice", senderName: "Alice" },
+    senderCase("typed after untyped profile", [
+      sender(),
       { senderId: "alice", senderIdentity: { type: "profile", id: "alice" } },
     ]),
-    senderCase(
-      "two untyped senders",
-      [
-        { senderId: "alice", senderName: "Alice" },
-        { senderId: "bob", senderName: "Bob" },
-      ],
-      true,
-      [profileKey("alice")],
-    ),
-    senderCase("one observed sender with reordered identity fields", [
+    senderCase("two untyped senders", [sender(), sender("bob")], true, [profileKey("alice")]),
+    senderCase("reordered observation fields", [
       { senderId: "alice", senderIdentity: observedSender("work") },
       {
         senderId: "alice",
-        senderIdentity: {
-          id: "alice",
-          senderKind: "human",
-          accountId: "work",
-          pluginId: "slack",
-          type: "observation",
-        },
+        senderIdentity: Object.fromEntries(Object.entries(observedSender("work")).toReversed()),
       },
     ]),
     senderCase(
-      "same observed sender id in different accounts",
+      "same id, distinct accounts",
       ["work", "personal"].map((accountId) => ({
         senderId: "alice",
         senderIdentity: observedSender(accountId),
@@ -353,8 +297,8 @@ describe("reply attribution grouping", () => {
   ])("counts people by stable sender id: $case", ({ people, senders, shared }) => {
     const groups = messageGroups({
       replyPeople: people,
-      messages: senders.flatMap((sender, index) => [
-        userMessage(`Ask ${index}`, index * 2, { __openclaw: sender }),
+      messages: senders.flatMap((metadata, index) => [
+        userMessage(`Ask ${index}`, index * 2, { __openclaw: metadata }),
         assistantMessage(`Answer ${index}`, index * 2 + 1),
       ]),
     });
@@ -363,8 +307,7 @@ describe("reply attribution grouping", () => {
     expect(groups.map((group) => group.role)).toEqual(senders.flatMap(() => ["user", "assistant"]));
     const last = groups.at(-1);
     if (!shared) {
-      expect(last?.replyToSender).toBeUndefined();
-      expect(last?.replyToMessage).toBeUndefined();
+      expect([last?.replyToSender, last?.replyToMessage]).toEqual([undefined, undefined]);
     }
     expect(last?.replyTurnSource?.message).toMatchObject({ content: `Ask ${senders.length - 1}` });
   });
@@ -372,30 +315,27 @@ describe("reply attribution grouping", () => {
   it.each([
     { peer: "bob", shared: true },
     { peer: "viewer", shared: undefined },
-  ])(
-    "counts local sender-less prompts as the signed-in viewer (attributed: $peer)",
-    ({ peer, shared }) => {
-      // The session row lists only its owner; the viewer's own prompts carry no sender.
-      const viewer = localParticipantIdentityKey("viewer");
-      const attributed = profilePrompt("Status?", 1002, peer, peer);
-      const groups = messageGroups({
-        replyPeople: [viewer],
-        replyLocalPerson: viewer,
-        messages: [
-          userMessage("Deploy?", 1000),
-          assistantMessage("Deploying", 1001),
-          attributed,
-          assistantMessage("Rollout done", 1003),
-        ],
-      });
+  ])("counts the local viewer beside $peer", ({ peer, shared }) => {
+    // The session row lists only its owner; the viewer's own prompts carry no sender.
+    const viewer = localParticipantIdentityKey("viewer");
+    const attributed = profilePrompt("Status?", 1002, peer, peer);
+    const groups = messageGroups({
+      replyPeople: [viewer],
+      replyLocalPerson: viewer,
+      messages: [
+        userMessage("Deploy?", 1000),
+        assistantMessage("Deploying", 1001),
+        attributed,
+        assistantMessage("Rollout done", 1003),
+      ],
+    });
 
-      const [first, last] = groups.filter((group) => group.role === "assistant");
-      expect(last?.replyShared).toBe(shared);
-      expect(last?.replyToMessage?.message).toBe(shared ? attributed : undefined);
-      // The local prompt counts as a person but never names its reply.
-      expect(first?.replyToSender).toBeUndefined();
-    },
-  );
+    const [first, last] = groups.filter((group) => group.role === "assistant");
+    expect(last?.replyShared).toBe(shared);
+    expect(last?.replyToMessage?.message).toBe(shared ? attributed : undefined);
+    // The local prompt counts as a person but never names its reply.
+    expect(first?.replyToSender).toBeUndefined();
+  });
 
   it.each([
     { first: null, second: "older", groups: 2 },

@@ -13,9 +13,7 @@ import { ComposerDictationSession } from "./composer-dictation-session.ts";
 import { ComposerDictationController, insertComposerDictation } from "./composer-dictation.ts";
 
 type GatewayListener = (event: GatewayEventFrame) => void;
-type MockProcessor = {
-  connect: ReturnType<typeof vi.fn>;
-  disconnect: ReturnType<typeof vi.fn>;
+type MockProcessor = ReturnType<typeof connection> & {
   onaudioprocess: ((event: { inputBuffer: { getChannelData: () => Float32Array } }) => void) | null;
 };
 
@@ -45,19 +43,20 @@ class MockAudio extends EventTarget {
   }
 }
 
+const connection = () => ({ connect: vi.fn(), disconnect: vi.fn() });
+const microphone = (stop = vi.fn()) => ({
+  getTracks: () => [Object.assign(new EventTarget(), { stop })],
+});
 class MockAudioContext {
   readonly destination = {};
   readonly sampleRate = 8000;
   readonly close = vi.fn(async () => undefined);
 
-  createMediaStreamSource() {
-    return { connect: vi.fn(), disconnect: vi.fn() };
-  }
+  createMediaStreamSource = connection;
 
   createScriptProcessor() {
     const processor: MockProcessor = {
-      connect: vi.fn(),
-      disconnect: vi.fn(),
+      ...connection(),
       onaudioprocess: null,
     };
     processors.push(processor);
@@ -65,15 +64,14 @@ class MockAudioContext {
   }
 
   createGain() {
-    return { connect: vi.fn(), disconnect: vi.fn(), gain: { value: 1 } };
+    return { ...connection(), gain: { value: 1 } };
   }
 
   createAnalyser() {
     return {
       fftSize: 0,
       smoothingTimeConstant: 0,
-      connect: vi.fn(),
-      disconnect: vi.fn(),
+      ...connection(),
       getFloatTimeDomainData: (samples: Float32Array) => samples.fill(0),
     };
   }
@@ -130,86 +128,59 @@ function click(target: HTMLElement) {
   target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 }
 
-function pointer(type: string, pointerId = 7, x = 50, y = 50): Event {
+function pointer(type: string): Event {
   const event = new MouseEvent(type, {
     bubbles: true,
     cancelable: true,
-    clientX: x,
-    clientY: y,
+    clientX: 50,
+    clientY: 50,
     button: 0,
   });
-  Object.defineProperty(event, "pointerId", { value: pointerId });
+  Object.defineProperty(event, "pointerId", { value: 7 });
   return event;
 }
 
-function createHarness(
-  overrides: {
-    sessionKey?: string;
-    enabled?: boolean;
-    realtimeTalkActive?: boolean;
-    dictationAvailable?: boolean;
-  } = {},
-) {
-  const onCommit = vi.fn();
-  const onError = vi.fn();
-  const onStateChange = vi.fn();
-  const onTap = vi.fn();
-  const onDictationUnavailable = vi.fn();
+type ControllerOptions = ConstructorParameters<typeof ComposerDictationController>[0];
+function controllerFixture(overrides: Omit<Partial<ControllerOptions>, "client"> = {}) {
+  const callbacks = { onCommit: vi.fn(), onError: vi.fn(), onTap: vi.fn() };
   const options = {
     client: createClient(),
-    sessionKey: overrides.sessionKey,
     connected: true,
-    enabled: overrides.enabled ?? true,
-    dictationAvailable: overrides.dictationAvailable,
-    realtimeTalkActive: overrides.realtimeTalkActive ?? false,
-    onCommit,
-    onError,
-    onStateChange,
-    onTap,
-    onDictationUnavailable,
+    enabled: true,
+    realtimeTalkActive: false,
+    onStateChange: vi.fn(),
+    ...callbacks,
+    ...overrides,
   };
   const controller = new ComposerDictationController(options);
   controllers.push(controller);
-  const target = document.createElement("button");
+  return { controller, options, ...callbacks };
+}
+function pointerTarget(target: HTMLElement) {
   target.getBoundingClientRect = () => ({ left: 0, right: 100, top: 0, bottom: 100 }) as DOMRect;
   target.setPointerCapture = vi.fn();
   target.releasePointerCapture = vi.fn();
+  return target;
+}
+function createHarness(overrides: Omit<Partial<ControllerOptions>, "client"> = {}) {
+  const harness = controllerFixture(overrides);
+  const target = pointerTarget(document.createElement("button"));
   target.addEventListener("pointerdown", (event) =>
-    controller.handlePointerDown(event as PointerEvent),
+    harness.controller.handlePointerDown(event as PointerEvent),
   );
-  target.addEventListener("click", (event) => controller.handleClick(event));
+  target.addEventListener("click", (event) => harness.controller.handleClick(event));
   document.body.append(target);
-  return {
-    controller,
-    onCommit,
-    onDictationUnavailable,
-    onError,
-    onStateChange,
-    onTap,
-    options,
-    target,
-  };
+  return { ...harness, target };
 }
 
 // Drives the shipped microphone button, whose click routing differs from the
 // controller-only harness above once dictation is active.
 function createButtonHarness() {
-  const onCommit = vi.fn();
-  const onTap = vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
   const [revision, setRevision] = createSignal(0);
-  const controller = new ComposerDictationController({
-    client: createClient(),
-    connected: true,
-    enabled: true,
-    realtimeTalkActive: false,
-    onCommit,
-    onError: vi.fn(),
-    onStateChange: renderButton,
-    onTap,
-  });
-  controllers.push(controller);
+  const harness = controllerFixture({ onStateChange: renderButton });
+  const { controller } = harness;
   function renderButton() {
     setRevision((value) => value + 1);
     flush();
@@ -228,15 +199,17 @@ function createButtonHarness() {
     { container },
   );
   const target = container.querySelector("button");
-  if (!target) {
-    throw new Error("expected the microphone button");
-  }
-  target.getBoundingClientRect = () => ({ left: 0, right: 100, top: 0, bottom: 100 }) as DOMRect;
-  target.setPointerCapture = vi.fn();
-  target.releasePointerCapture = vi.fn();
-  return { controller, onCommit, onTap, target };
+  assert.isNotNull(target);
+  return { ...harness, target: pointerTarget(target) };
 }
 
+async function startDirect(controller: ComposerDictationController) {
+  const start = vi.spyOn(ComposerDictationSession.prototype, "start");
+  expect(controller.startDirect()).toBe(true);
+  const started = start.mock.results[0];
+  assert.isDefined(started);
+  await started.value;
+}
 async function startHold(target: HTMLElement): Promise<void> {
   target.dispatchEvent(pointer("pointerdown"));
   await vi.advanceTimersByTimeAsync(500);
@@ -246,7 +219,7 @@ async function startHold(target: HTMLElement): Promise<void> {
 }
 
 it("binds microphone transcription to the displayed agent session", async () => {
-  const { controller, target } = createHarness({ sessionKey: "agent:researcher:conversation" });
+  const { target } = createHarness({ sessionKey: "agent:researcher:conversation" });
   await startHold(target);
   expect(request).toHaveBeenCalledWith("talk.session.create", {
     sessionKey: "agent:researcher:conversation",
@@ -254,7 +227,6 @@ it("binds microphone transcription to the displayed agent session", async () => 
     transport: "gateway-relay",
     brain: "none",
   });
-  controller.dispose();
 });
 
 async function releaseLatched(target: HTMLElement): Promise<void> {
@@ -286,9 +258,7 @@ beforeEach(() => {
     }
     return { ok: true };
   });
-  getUserMedia = vi.fn(async () => ({
-    getTracks: () => [Object.assign(new EventTarget(), { stop: vi.fn() })],
-  }));
+  getUserMedia = vi.fn(async () => microphone());
   Object.defineProperty(globalThis.navigator, "mediaDevices", {
     configurable: true,
     value: { getUserMedia },
@@ -319,13 +289,9 @@ afterEach(() => {
 
 describe("ComposerDictationController", () => {
   it("surfaces final transcription failure and discards its pending result", async () => {
-    const start = vi.spyOn(ComposerDictationSession.prototype, "start");
     const { controller, onCommit, onError } = createHarness();
 
-    expect(controller.startDirect()).toBe(true);
-    const started = start.mock.results[0];
-    assert.isDefined(started);
-    await started.value;
+    await startDirect(controller);
     const finished = controller.finishActive();
     transcript("failed result");
     emit({ type: "error", message: "Local transcription failed" });
@@ -340,14 +306,10 @@ describe("ComposerDictationController", () => {
   });
 
   it("lets Read aloud discard pending dictation without stopping newer playback", async () => {
-    const start = vi.spyOn(ComposerDictationSession.prototype, "start");
     const { controller, onCommit, options } = createHarness();
     const reading = new GatewaySpeechPlayback();
     try {
-      expect(controller.startDirect()).toBe(true);
-      const started = start.mock.results[0];
-      assert.isDefined(started);
-      await started.value;
+      await startDirect(controller);
 
       const finished = controller.finishActive();
       const speaking = reading.speak(options.client, "New message");
@@ -363,7 +325,6 @@ describe("ComposerDictationController", () => {
       await speaking;
     } finally {
       reading.stop();
-      controller.dispose();
     }
   });
 
@@ -381,9 +342,7 @@ describe("ComposerDictationController", () => {
       return implementation?.(method, params);
     });
     const stopTrack = vi.fn();
-    getUserMedia.mockResolvedValue({
-      getTracks: () => [Object.assign(new EventTarget(), { stop: stopTrack })],
-    });
+    getUserMedia.mockResolvedValue(microphone(stopTrack));
     const { controller, onCommit, options } = createHarness();
     const previous = new GatewaySpeechPlayback();
     const next = new GatewaySpeechPlayback();
@@ -414,7 +373,6 @@ describe("ComposerDictationController", () => {
     } finally {
       previous.stop();
       next.stop();
-      controller.dispose();
     }
   });
 
@@ -424,10 +382,7 @@ describe("ComposerDictationController", () => {
     const addListener = vi.spyOn(track, "addEventListener");
     getUserMedia.mockResolvedValueOnce({ getTracks: () => [track] });
 
-    expect(controller.startDirect()).toBe(true);
-    await waitForFast(() =>
-      expect(request).toHaveBeenCalledWith("talk.session.create", expect.anything()),
-    );
+    await startDirect(controller);
     emit({ type: "partial", text: "Keep these words" });
     onError.mockImplementation(() => {
       throw new Error("error display failed");
@@ -455,22 +410,15 @@ describe("ComposerDictationController", () => {
   it.each(["Escape", "hidden"])("discards direct dictation on %s", async (action) => {
     const { controller, onCommit } = createHarness();
     const stopTrack = vi.fn();
-    getUserMedia.mockResolvedValue({
-      getTracks: () => [Object.assign(new EventTarget(), { stop: stopTrack })],
-    });
+    getUserMedia.mockResolvedValue(microphone(stopTrack));
 
-    expect(controller.startDirect()).toBe(true);
-    await waitForFast(() =>
-      expect(request).toHaveBeenCalledWith("talk.session.create", expect.anything()),
-    );
+    await startDirect(controller);
     expect(getUserMedia).toHaveBeenCalledOnce();
     expect(controller.active).toBe(true);
     emit({ type: "partial", text: "discard me" });
 
     if (action === "Escape") {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    } else if (action === "blur") {
-      window.dispatchEvent(new Event("blur"));
     } else {
       vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
       document.dispatchEvent(new Event("visibilitychange"));
@@ -543,8 +491,7 @@ describe("ComposerDictationController", () => {
 
     const committed = controller.finishActive();
 
-    expect(controller.active).toBe(false);
-    expect(controller.locksComposer).toBe(false);
+    expect(controller).toMatchObject({ active: false, locksComposer: false });
     expect(onCommit).not.toHaveBeenCalled();
     await waitForFast(() => expectClosed());
     try {
@@ -586,10 +533,7 @@ describe("ComposerDictationController", () => {
   });
 
   it("returns to idle and classifies microphone startup failures", async () => {
-    getUserMedia = vi.fn(async () => {
-      throw new DOMException("blocked", "NotAllowedError");
-    });
-    Object.defineProperty(navigator.mediaDevices, "getUserMedia", { value: getUserMedia });
+    getUserMedia.mockRejectedValueOnce(new DOMException("blocked", "NotAllowedError"));
     const { controller, onError, target } = createHarness();
 
     target.dispatchEvent(pointer("pointerdown"));
@@ -601,10 +545,8 @@ describe("ComposerDictationController", () => {
       ),
     );
 
-    expect(controller.active).toBe(false);
-    expect(controller.locksComposer).toBe(false);
+    expect(controller).toMatchObject({ active: false, locksComposer: false });
     expect(request).not.toHaveBeenCalledWith("talk.session.create", expect.anything());
-    controller.dispose();
   });
 
   it("does not switch microphones or allocate dictation after a selected-input constraint failure", async () => {
@@ -648,11 +590,10 @@ describe("ComposerDictationController", () => {
 
   it("streams g711_ulaw audio and commits final transcript from latched Stop", async () => {
     const order: string[] = [];
-    getUserMedia = vi.fn(async () => {
+    getUserMedia.mockImplementation(async () => {
       order.push("microphone");
-      return { getTracks: () => [Object.assign(new EventTarget(), { stop: vi.fn() })] };
+      return microphone();
     });
-    Object.defineProperty(navigator.mediaDevices, "getUserMedia", { value: getUserMedia });
     request = vi.fn(async (method: string, params: unknown) => {
       order.push(method);
       if (method === "talk.session.create") {
@@ -674,31 +615,23 @@ describe("ComposerDictationController", () => {
     emit({ type: "partial", text: "hello wor" });
     expect(controller.transcript).toBe("hello wor");
     transcript("hello world");
-    await commitLatched(controller, target);
+    await releaseLatched(target);
+    await expect(controller.finishActive()).resolves.toBe(true);
     expect(controller.finalizing).toBe(false);
     expect(onCommit).toHaveBeenCalledWith("hello world");
     await waitForFast(() => expectClosed());
-    expectClosed();
     expect(order.indexOf("talk.session.appendAudio")).toBeLessThan(
       order.indexOf("talk.session.close"),
     );
   });
 
-  it("reports whether the immediate snapshot committed a transcript", async () => {
-    const withTranscript = createHarness();
-    await startHold(withTranscript.target);
-    transcript("send these words");
-    const committed = withTranscript.controller.finishActive();
-    await expect(committed).resolves.toBe(true);
-    withTranscript.controller.dispose();
-
+  it("reports false for an empty immediate transcript snapshot", async () => {
     const withoutTranscript = createHarness();
     await startHold(withoutTranscript.target);
     const empty = withoutTranscript.controller.finishActive();
     await waitForFast(() => expectClosed());
     await vi.advanceTimersByTimeAsync(10_000);
     await expect(empty).resolves.toBe(false);
-    withoutTranscript.controller.dispose();
   });
 
   it("buffers microphone audio while the transcription session is being created", async () => {
@@ -756,7 +689,6 @@ describe("ComposerDictationController", () => {
       if (!bounded) {
         expect(onError).not.toHaveBeenCalled();
       }
-      controller.dispose();
     },
   );
 
@@ -776,9 +708,7 @@ describe("ComposerDictationController", () => {
       { kind: "interrupted", preservesText: true },
     );
     expect(harness.onError).toHaveBeenCalledTimes(1);
-    expect(harness.controller.finalizing).toBe(false);
-    expect(harness.controller.locksComposer).toBe(false);
-    expect(harness.onError).toHaveBeenCalledTimes(1);
+    expect(harness.controller).toMatchObject({ finalizing: false, locksComposer: false });
     expectClosed();
   });
 
@@ -796,7 +726,6 @@ describe("ComposerDictationController", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(settingOff.onTap).toHaveBeenCalledOnce();
     expect(request).not.toHaveBeenCalled();
-    settingOff.controller.dispose();
   });
 });
 
@@ -832,15 +761,13 @@ describe("composer microphone button", () => {
   });
 });
 
-describe("insertComposerDictation", () => {
-  it("inserts at the selection and joins surrounding text with sensible spaces", () => {
-    expect(insertComposerDictation("hello world", "brave new", 6, 6)).toEqual({
-      value: "hello brave new world",
-      caret: 16,
-    });
-    expect(insertComposerDictation("hello world", "there", 6, 11)).toEqual({
-      value: "hello there",
-      caret: 11,
-    });
+it("insertComposerDictation spaces inserted and replaced selections", () => {
+  expect(insertComposerDictation("hello world", "brave new", 6, 6)).toEqual({
+    value: "hello brave new world",
+    caret: 16,
+  });
+  expect(insertComposerDictation("hello world", "there", 6, 11)).toEqual({
+    value: "hello there",
+    caret: 11,
   });
 });

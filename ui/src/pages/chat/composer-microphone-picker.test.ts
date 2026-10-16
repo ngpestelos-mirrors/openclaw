@@ -12,6 +12,9 @@ function catalog(ready: boolean) {
 }
 
 let picker: ComposerMicrophonePicker;
+function expectStatus(status: string) {
+  expect(picker).toMatchObject({ realtimeStatus: status, dictationStatus: status });
+}
 
 afterEach(() => {
   picker?.dispose();
@@ -20,47 +23,66 @@ afterEach(() => {
 });
 
 describe("composer voice readiness", () => {
-  it("reloads session readiness and rejects results from the previous session", async () => {
-    const previous = createDeferred<ReturnType<typeof catalog>>();
-    const current = createDeferred<ReturnType<typeof catalog>>();
-    const readCatalog = vi
-      .fn()
-      .mockResolvedValueOnce(catalog(true))
-      .mockReturnValueOnce(previous.promise)
-      .mockReturnValueOnce(current.promise);
-    const request = vi.fn((method: string) =>
-      method === "talk.config" ? Promise.resolve({}) : readCatalog(),
-    );
-    const client = { request } as unknown as GatewayBrowserClient;
-    let updated = createDeferred();
-    const requestUpdate = vi.fn(() => updated.resolve());
-    picker = new ComposerMicrophonePicker(requestUpdate);
-    picker.syncCatalog(client, true, "agent:first:main");
-    await updated.promise;
-    expect(picker.realtimeStatus).toBe("ready");
-    expect(picker.dictationStatus).toBe("ready");
-
-    window.dispatchEvent(new Event("focus"));
-    updated = createDeferred();
-    picker.syncCatalog(client, true, "agent:second:main");
-    expect(picker.realtimeStatus).toBe("checking");
-    expect(picker.dictationStatus).toBe("checking");
-    expect(request).toHaveBeenCalledWith("talk.catalog", { sessionKey: "agent:second:main" });
-    current.resolve(catalog(false));
-    await updated.promise;
-    expect(picker.realtimeStatus).toBe("unavailable");
-    expect(picker.dictationStatus).toBe("unavailable");
-
-    requestUpdate.mockClear();
-    previous.resolve(catalog(true));
-    await previous.promise;
-    await Promise.resolve();
-    expect(picker.realtimeStatus).toBe("unavailable");
-    expect(picker.dictationStatus).toBe("unavailable");
-    expect(requestUpdate).not.toHaveBeenCalled();
-    picker.syncCatalog(client, true, "agent:second:main");
-    expect(readCatalog).toHaveBeenCalledTimes(3);
-  });
+  it.each(["session", "dispose"] as const)(
+    "retires stale catalog requests after %s",
+    async (transition) => {
+      const session = transition === "session";
+      const stale = createDeferred<ReturnType<typeof catalog>>();
+      const current = createDeferred<ReturnType<typeof catalog>>();
+      const readCatalog = vi
+        .fn()
+        .mockResolvedValueOnce(catalog(session))
+        .mockReturnValueOnce(stale.promise)
+        .mockReturnValueOnce(current.promise);
+      if (!session) {
+        readCatalog.mockResolvedValue(catalog(true));
+      }
+      const request = vi.fn((method: string) =>
+        method === "talk.config" ? Promise.resolve({}) : readCatalog(),
+      );
+      let updated = createDeferred();
+      const requestUpdate = vi.fn(() => updated.resolve());
+      const client = { request } as unknown as GatewayBrowserClient;
+      picker = new ComposerMicrophonePicker(requestUpdate);
+      picker.syncCatalog(client, true, session ? "agent:first:main" : undefined);
+      await updated.promise;
+      expectStatus(session ? "ready" : "unavailable");
+      window.dispatchEvent(new Event("focus"));
+      updated = createDeferred();
+      if (session) {
+        picker.syncCatalog(client, true, "agent:second:main");
+        expectStatus("checking");
+        expect(request).toHaveBeenCalledWith("talk.catalog", { sessionKey: "agent:second:main" });
+      } else {
+        expect(readCatalog).toHaveBeenCalledTimes(2);
+        picker.dispose();
+        window.dispatchEvent(new Event("focus"));
+        expect(readCatalog).toHaveBeenCalledTimes(2);
+        expect(picker.realtimeStatus).toBe("unknown");
+        picker.syncCatalog(client, true);
+      }
+      current.resolve(catalog(!session));
+      await updated.promise;
+      const status = session ? "unavailable" : "ready";
+      expectStatus(status);
+      requestUpdate.mockClear();
+      stale.resolve(catalog(session));
+      await stale.promise;
+      await Promise.resolve();
+      expectStatus(status);
+      expect(requestUpdate).not.toHaveBeenCalled();
+      if (session) {
+        picker.syncCatalog(client, true, "agent:second:main");
+        expect(readCatalog).toHaveBeenCalledTimes(3);
+      } else {
+        window.dispatchEvent(new Event("focus"));
+        expect(readCatalog).toHaveBeenCalledTimes(4);
+        picker.syncCatalog(client, false);
+        window.dispatchEvent(new Event("focus"));
+        expect(readCatalog).toHaveBeenCalledTimes(4);
+      }
+    },
+  );
 
   it("refreshes after returning from login on the same Gateway connection", async () => {
     let ready = false;
@@ -76,49 +98,9 @@ describe("composer voice readiness", () => {
     window.dispatchEvent(new Event("focus"));
 
     await vi.waitFor(() => expect(picker.realtimeStatus).toBe("ready"));
-    expect(picker.dictationStatus).toBe("ready");
+    expect(picker).toMatchObject({ dictationStatus: "ready", open: false });
     expect(request).toHaveBeenCalledTimes(4);
     expect(request).toHaveBeenCalledWith("talk.catalog", {});
-    expect(picker.open).toBe(false);
-  });
-
-  it("retires focus requests on disposal and reconnects a reused picker without stale results", async () => {
-    const stale = createDeferred<ReturnType<typeof catalog>>();
-    const readCatalog = vi
-      .fn()
-      .mockResolvedValueOnce(catalog(false))
-      .mockReturnValueOnce(stale.promise)
-      .mockResolvedValue(catalog(true));
-    const request = vi.fn((method: string) =>
-      method === "talk.config" ? Promise.resolve({}) : readCatalog(),
-    );
-    const client = { request } as unknown as GatewayBrowserClient;
-    const requestUpdate = vi.fn();
-    picker = new ComposerMicrophonePicker(requestUpdate);
-    picker.syncCatalog(client, true);
-    await vi.waitFor(() => expect(picker.realtimeStatus).toBe("unavailable"));
-    window.dispatchEvent(new Event("focus"));
-    expect(readCatalog).toHaveBeenCalledTimes(2);
-
-    picker.dispose();
-    window.dispatchEvent(new Event("focus"));
-    expect(readCatalog).toHaveBeenCalledTimes(2);
-    expect(picker.realtimeStatus).toBe("unknown");
-
-    picker.syncCatalog(client, true);
-    await vi.waitFor(() => expect(picker.realtimeStatus).toBe("ready"));
-    requestUpdate.mockClear();
-    stale.resolve(catalog(false));
-    await stale.promise;
-    await Promise.resolve();
-    expect(picker.realtimeStatus).toBe("ready");
-    expect(requestUpdate).not.toHaveBeenCalled();
-
-    window.dispatchEvent(new Event("focus"));
-    expect(readCatalog).toHaveBeenCalledTimes(4);
-    picker.syncCatalog(client, false);
-    window.dispatchEvent(new Event("focus"));
-    expect(readCatalog).toHaveBeenCalledTimes(4);
   });
 
   it.each([
@@ -165,56 +147,54 @@ describe("composer voice readiness", () => {
   });
 });
 
-describe("media permission lifetime: composer", () => {
-  it.each(["close", "dispose", "replace", "remain open"] as const)(
-    "%s during pending discovery",
-    async (transition) => {
-      const initial = createDeferred<MediaDeviceInfo[]>();
-      const replacement = createDeferred<MediaDeviceInfo[]>();
-      const enumerateDevices = vi.fn().mockReturnValueOnce(initial.promise);
-      if (transition === "replace") {
-        enumerateDevices.mockReturnValueOnce(replacement.promise);
-      }
-      enumerateDevices.mockResolvedValue([]);
-      const stop = vi.fn();
-      const getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [{ stop }] });
-      const addEventListener = vi.fn();
-      const removeEventListener = vi.fn();
-      vi.stubGlobal("navigator", {
-        mediaDevices: { enumerateDevices, getUserMedia, addEventListener, removeEventListener },
-      });
-      // Call through unchanged: the returned promise only makes the actual owner boundary awaitable.
-      const discovery = vi.spyOn(realtimeTalkInput, "discoverRealtimeTalkInputs");
-      picker = new ComposerMicrophonePicker(vi.fn());
-      picker.handleOpen();
-      expect(enumerateDevices).toHaveBeenCalledOnce();
-      expect(getUserMedia).not.toHaveBeenCalled();
-      if (transition === "dispose") {
-        picker.dispose();
-      } else if (transition !== "remain open") {
-        picker.handleClose();
-      }
-      if (transition === "replace") {
-        picker.handleOpen();
-      }
-      initial.resolve([]);
-      const initialDiscovery = discovery.mock.results[0];
-      assert.isDefined(initialDiscovery);
-      await initialDiscovery.value;
-      const staleProbes = getUserMedia.mock.calls.length;
-      if (transition === "replace") {
-        replacement.resolve([]);
-        const replacementDiscovery = discovery.mock.results[1];
-        assert.isDefined(replacementDiscovery);
-        await replacementDiscovery.value;
-      }
-      expect(staleProbes).toBe(transition === "remain open" ? 1 : 0);
-      const permits = transition === "remain open" || transition === "replace";
-      expect(getUserMedia).toHaveBeenCalledTimes(permits ? 1 : 0);
-      expect(stop).toHaveBeenCalledTimes(permits ? 1 : 0);
-      expect(picker.open).toBe(permits);
+it.each(["close", "dispose", "replace", "remain open"] as const)(
+  "media permission lifetime: %s during pending discovery",
+  async (transition) => {
+    const initial = createDeferred<MediaDeviceInfo[]>();
+    const replacement = createDeferred<MediaDeviceInfo[]>();
+    const enumerateDevices = vi.fn().mockReturnValueOnce(initial.promise);
+    if (transition === "replace") {
+      enumerateDevices.mockReturnValueOnce(replacement.promise);
+    }
+    enumerateDevices.mockResolvedValue([]);
+    const stop = vi.fn();
+    const getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [{ stop }] });
+    const addEventListener = vi.fn();
+    const removeEventListener = vi.fn();
+    vi.stubGlobal("navigator", {
+      mediaDevices: { enumerateDevices, getUserMedia, addEventListener, removeEventListener },
+    });
+    // Call through unchanged: the returned promise only makes the actual owner boundary awaitable.
+    const discovery = vi.spyOn(realtimeTalkInput, "discoverRealtimeTalkInputs");
+    picker = new ComposerMicrophonePicker(vi.fn());
+    picker.handleOpen();
+    expect(enumerateDevices).toHaveBeenCalledOnce();
+    expect(getUserMedia).not.toHaveBeenCalled();
+    if (transition === "dispose") {
       picker.dispose();
-      expect(removeEventListener.mock.calls).toEqual(addEventListener.mock.calls);
-    },
-  );
-});
+    } else if (transition !== "remain open") {
+      picker.handleClose();
+    }
+    if (transition === "replace") {
+      picker.handleOpen();
+    }
+    initial.resolve([]);
+    const initialDiscovery = discovery.mock.results[0];
+    assert.isDefined(initialDiscovery);
+    await initialDiscovery.value;
+    const staleProbes = getUserMedia.mock.calls.length;
+    if (transition === "replace") {
+      replacement.resolve([]);
+      const replacementDiscovery = discovery.mock.results[1];
+      assert.isDefined(replacementDiscovery);
+      await replacementDiscovery.value;
+    }
+    expect(staleProbes).toBe(transition === "remain open" ? 1 : 0);
+    const permits = transition === "remain open" || transition === "replace";
+    expect(getUserMedia).toHaveBeenCalledTimes(permits ? 1 : 0);
+    expect(stop).toHaveBeenCalledTimes(permits ? 1 : 0);
+    expect(picker.open).toBe(permits);
+    picker.dispose();
+    expect(removeEventListener.mock.calls).toEqual(addEventListener.mock.calls);
+  },
+);

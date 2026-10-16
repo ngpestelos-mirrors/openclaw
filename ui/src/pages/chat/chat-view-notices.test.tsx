@@ -1,22 +1,32 @@
 /* @vitest-environment jsdom */
 
+import type { JSX } from "@solidjs/web";
 import { createSignal, flush } from "solid-js";
 import { afterEach, expect, it, vi } from "vitest";
 import { t } from "../../i18n/index.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import { renderChatComposerNotices, renderChatTopbarNotices } from "./chat-view-notices.tsx";
 
+const unsafeModel = "<img src=x onerror=alert(1)>";
 type ComposerProps = Parameters<typeof renderChatComposerNotices>[0];
 
 function mountComposer(props: Omit<ComposerProps, "messages">) {
   return mountSolid(() => renderChatComposerNotices({ messages: [], ...props })).container;
 }
 
-function publishedComposer(initial: ComposerProps) {
-  const ComposerNotices = renderChatComposerNotices;
+function publishedNotices<P extends object>(Notices: (props: P) => JSX.Element, initial: P) {
   const [props, publish] = createSignal(initial);
-  return { ...mountSolid(() => <ComposerNotices {...props()} />), publish };
+  return { ...mountSolid(() => <Notices {...props()} />), publish };
 }
+const publishedComposer = (initial: ComposerProps) =>
+  publishedNotices(renderChatComposerNotices, initial);
+const failedPlacement = (error: string) => ({
+  sessionKey: "agent:main:failed-start",
+  phase: "failed" as const,
+  startedAt: 1,
+  retryable: false,
+  error,
+});
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -38,81 +48,56 @@ it.each([
 ] as const)(
   "renders worker runtime progress for %s at %s bytes",
   (phase, transferredBytes, title, body) => {
-    const container = document.body.appendChild(document.createElement("div"));
-    const [props, setProps] = createSignal<Parameters<typeof renderChatTopbarNotices>[0]>({
-      workerRuntimeInstall: {
-        phase,
-        transferredBytes,
-        totalBytes: 100 * 1_024 * 1_024,
-        startedAtMs: 1,
-        updatedAtMs: 2,
+    const { container, publish } = publishedNotices<Parameters<typeof renderChatTopbarNotices>[0]>(
+      renderChatTopbarNotices,
+      {
+        workerRuntimeInstall: {
+          phase,
+          transferredBytes,
+          totalBytes: 100 * 1_024 * 1_024,
+          startedAtMs: 1,
+          updatedAtMs: 2,
+        },
       },
-    });
-    mountSolid(() => <>{renderChatTopbarNotices(props())}</>, { container });
-
+    );
     const notice = container.querySelector(".chat-worker-runtime-install-notice");
     expect(notice?.getAttribute("role")).toBe("status");
-    expect(notice?.querySelector("strong")?.textContent).toBe(title);
-    expect(notice?.getAttribute("title")).toBe(body);
+    expect(notice?.querySelector("strong")).toMatchObject({ textContent: title });
+    expect(notice).toMatchObject({ title: body });
     expect(notice?.textContent).toContain(body);
 
-    setProps({});
+    publish({});
     flush();
     expect(container.querySelector(".chat-worker-runtime-install-notice")).toBeNull();
   },
 );
 
-it.each([true, false])("refreshes a failed conversation only while connected=%s", (connected) => {
-  const onRefresh = vi.fn();
-  const container = mountComposer({
-    connected,
-    runError: { summary: "The conversation changed before your message could run." },
-    onRefresh,
-  });
-  const refresh = Array.from(
-    container.querySelectorAll<HTMLButtonElement>(".chat-error button"),
-  ).find((button) => button.textContent?.trim() === "Refresh");
-  expect(refresh).toBeDefined();
-  expect(refresh?.disabled).toBe(!connected);
-  refresh?.click();
-  expect(onRefresh).toHaveBeenCalledTimes(connected ? 1 : 0);
-});
-
 it.each([
   ["buffering", "status", "OpenAI is reviewing this response for cyber safety."],
   ["blocked", "alert", "OpenAI blocked this response under its cyber policy."],
-  ["fallback", "status", "OpenAI routed this response to <img src=x onerror=alert(1)>."],
-  ["escalated", "status", "OpenAI declined this request; retried on <img src=x onerror=alert(1)>."],
-  [
-    "unavailable",
-    "alert",
-    "OpenAI declined this request; <img src=x onerror=alert(1)> is not authorized.",
-  ],
-] as const)(
-  "renders the %s provider notice above the composer as plain text",
-  (state, role, copy) => {
-    const container = document.body.appendChild(document.createElement("div"));
-    const [props, setProps] = createSignal<Parameters<typeof renderChatComposerNotices>[0]>({
-      messages: [],
-      providerPolicyNotice: {
-        runId: "run-1",
-        seq: 1,
-        state,
-        model: "original-model",
-        fallbackModel: "<img src=x onerror=alert(1)>",
-      },
-    });
-    mountSolid(() => <>{renderChatComposerNotices(props())}</>, { container });
-    const notice = container.querySelector(".chat-provider-policy-notice");
-    expect(notice?.getAttribute("role")).toBe(role);
-    expect(notice?.textContent).toContain(copy);
-    expect(notice?.querySelector("img, button")).toBeNull();
+  ["fallback", "status", `OpenAI routed this response to ${unsafeModel}.`],
+  ["escalated", "status", `OpenAI declined this request; retried on ${unsafeModel}.`],
+  ["unavailable", "alert", `OpenAI declined this request; ${unsafeModel} is not authorized.`],
+] as const)("renders %s provider notice as plain text", (state, role, copy) => {
+  const { container, publish } = publishedComposer({
+    messages: [],
+    providerPolicyNotice: {
+      runId: "run-1",
+      seq: 1,
+      state,
+      model: "original-model",
+      fallbackModel: unsafeModel,
+    },
+  });
+  const notice = container.querySelector(".chat-provider-policy-notice");
+  expect(notice?.getAttribute("role")).toBe(role);
+  expect(notice?.textContent).toContain(copy);
+  expect(notice?.querySelector("img, button")).toBeNull();
 
-    setProps({ messages: [] });
-    flush();
-    expect(container.querySelector(".chat-provider-policy-notice")).toBeNull();
-  },
-);
+  publish({ messages: [] });
+  flush();
+  expect(container.querySelector(".chat-provider-policy-notice")).toBeNull();
+});
 
 it("retains the provider notice across unrelated pane publications", () => {
   const providerPolicyNotice = { runId: "run-1", seq: 1, state: "buffering" as const };
@@ -132,11 +117,7 @@ it("offers an explicit discard action with the full warning when unsaved starts 
   const retry = vi.fn();
   const container = mountComposer({
     placementStartup: {
-      sessionKey: "agent:main:unsaved-start",
-      phase: "failed",
-      startedAt: 1,
-      retryable: false,
-      error: t("newSession.placementReloadBlocked"),
+      ...failedPlacement(t("newSession.placementReloadBlocked")),
       discardAndReload,
     },
     onRetrySessionPlacementStartup: retry,
@@ -157,76 +138,78 @@ it("offers an explicit discard action with the full warning when unsaved starts 
   expect(retry).not.toHaveBeenCalled();
 });
 
-it.each([true, false])(
-  "checks state contention status without retrying while connected=%s",
-  (connected) => {
-    const onRefresh = vi.fn();
-    const onRetrySessionPlacementStartup = vi.fn();
-    const diagnostic =
-      "Temporarily busy. Check status before trying again.\nState contention: session store; attempts exhausted.\n<img src=x onerror=alert(1)>";
+it.each([
+  { contention: false, connected: true },
+  { contention: false, connected: false },
+  { contention: true, connected: true },
+  { contention: true, connected: false },
+])(
+  "refreshes errors without retrying (contention=$contention, connected=$connected)",
+  ({ contention, connected }) => {
+    const onRefresh = vi.fn(),
+      onRetrySessionPlacementStartup = vi.fn();
+    const diagnostic = contention
+      ? "Temporarily busy. Check status before trying again.\nState contention: session store; attempts exhausted.\n<img src=x onerror=alert(1)>"
+      : "The conversation changed before your message could run.";
     const container = mountComposer({
       connected,
-      runError: { kind: "state_contention", summary: diagnostic },
+      runError: {
+        ...(contention ? { kind: "state_contention" as const } : {}),
+        summary: diagnostic,
+      },
       onRefresh,
-      onRetrySessionPlacementStartup,
+      ...(contention ? { onRetrySessionPlacementStartup } : {}),
     });
     const notice = container.querySelector(".chat-error");
-    expect(notice?.classList.contains("chat-composer-neighbor-card--warn")).toBe(true);
-    expect(notice?.classList.contains("chat-composer-neighbor-card--danger")).toBe(false);
-    expect(notice?.getAttribute("role")).toBe("status");
-    const details = notice?.querySelector("details");
-    expect(details?.open).toBe(false);
-    expect(details?.querySelector("strong")?.textContent).toBe(
-      "OpenClaw is busy. Check status before trying again.",
-    );
-    expect(details?.querySelector("pre")?.textContent).toBe(diagnostic);
-    expect(notice?.querySelector("img")).toBeNull();
-    const check = notice?.querySelector<HTMLButtonElement>(".chat-error__refresh");
-    expect(check?.textContent?.trim()).toBe("Check status");
-    expect(check?.disabled).toBe(!connected);
-    check?.click();
-    expect(onRefresh).toHaveBeenCalledTimes(connected ? 1 : 0);
-    expect(onRetrySessionPlacementStartup).not.toHaveBeenCalled();
-  },
-);
-
-it.each(["run", "placement"] as const)(
-  "keeps an expanded diagnostic and its focus across owner publications (%s)",
-  (kind) => {
-    const diagnostic = "Synthetic failure\n  at workspace/session.ts:42";
-    const initial: Parameters<typeof renderChatComposerNotices>[0] = {
-      messages: [],
-      runError: kind === "run" ? { summary: diagnostic } : undefined,
-      placementStartup:
-        kind === "placement"
-          ? {
-              sessionKey: "agent:main:failed-start",
-              phase: "failed",
-              startedAt: 1,
-              retryable: false,
-              error: diagnostic,
-            }
-          : undefined,
-    };
-    const { container, publish } = publishedComposer(initial);
-    const details = container.querySelector("details")!;
-    const summary = details.querySelector("summary")!;
-    details.open = true;
-    summary.focus();
-    for (const messages of [[], [{ role: "assistant", content: "Updated history" }]]) {
-      publish({
-        ...initial,
-        messages,
-        runError: initial.runError && { ...initial.runError },
-        placementStartup: initial.placementStartup && { ...initial.placementStartup },
-      });
-      flush();
-      expect(container.querySelector("details")).toBe(details);
-      expect(details.open).toBe(true);
-      expect(document.activeElement).toBe(summary);
-      expect(details.querySelector("pre")?.textContent).toBe(
-        kind === "run" ? diagnostic : t("newSession.placementStartFailed", { error: diagnostic }),
+    if (contention) {
+      expect(notice?.classList.contains("chat-composer-neighbor-card--warn")).toBe(true);
+      expect(notice?.classList.contains("chat-composer-neighbor-card--danger")).toBe(false);
+      expect(notice?.getAttribute("role")).toBe("status");
+      const details = notice?.querySelector("details");
+      expect(details).toMatchObject({ open: false });
+      expect(details?.querySelector("strong")?.textContent).toBe(
+        "OpenClaw is busy. Check status before trying again.",
       );
+      expect(details?.querySelector("pre")?.textContent).toBe(diagnostic);
+      expect(notice?.querySelector("img")).toBeNull();
+    }
+    const action = notice?.querySelector<HTMLButtonElement>(".chat-error__refresh");
+    expect(action).not.toBeNull();
+    expect(action).toMatchObject({ disabled: !connected });
+    expect(action?.textContent?.trim()).toBe(contention ? "Check status" : "Refresh");
+    action?.click();
+    expect(onRefresh).toHaveBeenCalledTimes(connected ? 1 : 0);
+    if (contention) {
+      expect(onRetrySessionPlacementStartup).not.toHaveBeenCalled();
     }
   },
 );
+
+it.each(["run", "placement"] as const)("preserves expanded diagnostics and focus (%s)", (kind) => {
+  const diagnostic = "Synthetic failure\n  at workspace/session.ts:42";
+  const initial: Parameters<typeof renderChatComposerNotices>[0] = {
+    messages: [],
+    runError: kind === "run" ? { summary: diagnostic } : undefined,
+    placementStartup: kind === "placement" ? failedPlacement(diagnostic) : undefined,
+  };
+  const { container, publish } = publishedComposer(initial);
+  const details = container.querySelector("details")!;
+  const summary = details.querySelector("summary")!;
+  details.open = true;
+  summary.focus();
+  for (const messages of [[], [{ role: "assistant", content: "Updated history" }]]) {
+    publish({
+      ...initial,
+      messages,
+      runError: initial.runError && { ...initial.runError },
+      placementStartup: initial.placementStartup && { ...initial.placementStartup },
+    });
+    flush();
+    expect(container.querySelector("details")).toBe(details);
+    expect(details.open).toBe(true);
+    expect(document.activeElement).toBe(summary);
+    expect(details.querySelector("pre")?.textContent).toBe(
+      kind === "run" ? diagnostic : t("newSession.placementStartFailed", { error: diagnostic }),
+    );
+  }
+});

@@ -40,10 +40,25 @@ import {
   updateStoredChatComposerQueueItems as updateItems,
 } from "./composer-persistence.ts";
 
-type ComposerState = Parameters<typeof persist>[0] & {
-  selectedChatSessionIncognito: boolean;
-};
+type ComposerState = ReturnType<typeof createState>;
 
+function pane(chatMessage = ""): [ComposerState, ChatComposerPersistence] {
+  const state = createState({ chatMessage });
+  return [state, startPersistence(state)];
+}
+function savedState(overrides: Partial<ComposerState> = {}) {
+  const state = createState({ chatMessage: "saved draft", ...overrides });
+  expect(persist(state)).toBe(true);
+  return state;
+}
+function replaceItem(
+  state: ComposerState,
+  expected: ChatQueueItem,
+  next: ChatQueueItem,
+  agentId?: string,
+) {
+  return updateItems(state, state.sessionKey, [{ expected, next }], agentId);
+}
 function seedSessions(
   sessions: Record<string, unknown>,
   version = 1,
@@ -78,6 +93,12 @@ function revision(state: ComposerState) {
 
 function readStored(state: ComposerState) {
   return JSON.parse(sessionStorage.getItem(storageTargetForComposer(state).key)!);
+}
+function storedRow(state: ComposerState) {
+  return readStored(state).sessions[`${state.sessionKey}\u0000agent:lily`];
+}
+function quotaFailure() {
+  throw new DOMException("quota exceeded", "QuotaExceededError");
 }
 
 function expectPersisted(persistence: ChatComposerPersistence) {
@@ -180,16 +201,14 @@ it("restores objective-edit mode with its literal draft and exact target", () =>
     goalId: "goal-a",
     previousDraft: "Prior conversation draft",
   };
-  const state = createState({
+  const state = savedState({
     chatMessage: "  /goal clear\n  literal objective ",
     chatGoalDraftMode: goalMode,
     agentsList: { defaultId: "lily", mainKey: "main" },
   });
-  expect(persist(state)).toBe(true);
   const restored = createState();
   expect(restore(restored)).toBe(true);
-  expect(restored.chatMessage).toBe(state.chatMessage);
-  expect(restored.chatGoalDraftMode).toEqual(goalMode);
+  expect(restored).toMatchObject({ chatMessage: state.chatMessage, chatGoalDraftMode: goalMode });
   expect(snapshot(state, "agent:lily:other")).toBeNull();
   const queued = reconnectItem("other-message", 1);
   expect(admitItem(state, queued)).toBe(true);
@@ -235,14 +254,9 @@ it("reviews legacy steer rows as generic mode-bearing sends and never rewrites o
   expect(restored).not.toHaveProperty("kind");
   expect(restored).not.toHaveProperty("steerTargetRunId");
 
-  expect(
-    updateItems(
-      state,
-      state.sessionKey,
-      [{ expected: restored!, next: { ...restored!, text: "updated" } }],
-      restored?.agentId,
-    ),
-  ).toBe(true);
+  expect(replaceItem(state, restored!, { ...restored!, text: "updated" }, restored?.agentId)).toBe(
+    true,
+  );
   const written = sessionStorage.getItem(storageKey) ?? "";
   expect(written).toContain('"queueMode":"steer"');
   expect(written).not.toContain('"kind":"steered"');
@@ -251,11 +265,9 @@ it("reviews legacy steer rows as generic mode-bearing sends and never rewrites o
 });
 
 it("does not erase another split pane draft when its own draft is unchanged", () => {
-  const untouchedPane = createState();
-  const untouchedPersistence = startPersistence(untouchedPane);
+  const [, untouchedPersistence] = pane();
 
-  const editedPane = createState({ chatMessage: "draft from the other pane" });
-  expect(persist(editedPane)).toBe(true);
+  const editedPane = savedState({ chatMessage: "draft from the other pane" });
 
   expectPersisted(untouchedPersistence);
   expect(snapshot(editedPane)?.draft).toBe("draft from the other pane");
@@ -263,10 +275,8 @@ it("does not erase another split pane draft when its own draft is unchanged", ()
 
 it("keeps the later edit when split pane timers flush in natural order", () => {
   vi.useFakeTimers();
-  const firstPane = createState();
-  const firstPersistence = startPersistence(firstPane);
-  const secondPane = createState();
-  const secondPersistence = startPersistence(secondPane);
+  const [firstPane, firstPersistence] = pane();
+  const [secondPane, secondPersistence] = pane();
 
   edit(firstPane, firstPersistence, "first draft");
   vi.advanceTimersByTime(10);
@@ -281,12 +291,9 @@ it("keeps the later edit when split pane timers flush in natural order", () => {
 
 it("fences an older pane after a newer clear and allows a subsequent edit", () => {
   vi.useFakeTimers();
-  const initial = createState({ chatMessage: "saved draft" });
-  expect(persist(initial)).toBe(true);
-  const olderPane = createState({ chatMessage: "saved draft" });
-  const olderPersistence = startPersistence(olderPane);
-  const clearingPane = createState({ chatMessage: "saved draft" });
-  const clearingPersistence = startPersistence(clearingPane);
+  const initial = savedState();
+  const [olderPane, olderPersistence] = pane("saved draft");
+  const [clearingPane, clearingPersistence] = pane("saved draft");
 
   edit(olderPane, olderPersistence, "stale replacement");
   edit(clearingPane, clearingPersistence, "");
@@ -306,12 +313,11 @@ it("persists a delayed global draft to the agent scope captured when typed", () 
   const persistence = startPersistence(state);
   edit(state, persistence, "alpha draft");
 
-  const beta = createState({
+  const beta = savedState({
     assistantAgentId: "beta",
     chatMessage: "beta draft",
     sessionKey: "global",
   });
-  expect(persist(beta)).toBe(true);
   state.assistantAgentId = "beta";
 
   expect(persistence.scopeForRouteSwitch()).toEqual({ sessionKey: "global", agentId: "alpha" });
@@ -331,11 +337,10 @@ it("rejects conflicting admission of an existing item id", () => {
 });
 
 it("rejects stale updates and deletes after an attachment payload replacement", () => {
-  const state = createState({
+  const state = savedState({
     chatMessage: "keep this draft",
     client: { recoveryScope: "versioned-owner", recoveryScopeReady: true },
   });
-  expect(persist(state)).toBe(true);
   const reference = {
     key: "original-payload",
     recoveryScope: "versioned-owner",
@@ -348,14 +353,8 @@ it("rejects stale updates and deletes after an attachment payload replacement", 
   };
   const successor = { ...original, attachmentPayload: { ...reference, key: "replacement" } };
   expect(admitItem(state, original)).toBe(true);
-  expect(updateItems(state, state.sessionKey, [{ expected: original, next: successor }])).toBe(
-    true,
-  );
-  expect(
-    updateItems(state, state.sessionKey, [
-      { expected: original, next: { ...original, sendAttempts: 2 } },
-    ]),
-  ).toBe(false);
+  expect(replaceItem(state, original, successor)).toBe(true);
+  expect(replaceItem(state, original, { ...original, sendAttempts: 2 })).toBe(false);
   expect(removeItem(state, state.sessionKey, original.id, original)).toBe(false);
   expect(snapshot(state)?.queue[0]).toMatchObject(successor);
   expect(removeItem(state, state.sessionKey, successor.id, successor)).toBe(true);
@@ -383,12 +382,8 @@ it("keeps unresolved bare main and raw global independent until their owners res
   expect(listStoredChatOutboxes(resolved)).toEqual([mainBox, globalBox]);
   const attemptedMain = { ...mainBox.queue[0]!, sendAttempts: 1 };
   const attemptedGlobal = { ...globalBox.queue[0]!, sendAttempts: 1 };
-  expect(
-    updateItems(resolved, "global", [{ expected: mainBox.queue[0]!, next: attemptedMain }]),
-  ).toBe(true);
-  expect(
-    updateItems(resolved, "global", [{ expected: globalBox.queue[0]!, next: attemptedGlobal }]),
-  ).toBe(true);
+  expect(replaceItem(resolved, mainBox.queue[0]!, attemptedMain)).toBe(true);
+  expect(replaceItem(resolved, globalBox.queue[0]!, attemptedGlobal)).toBe(true);
   expect(removeItem(resolved, "global", mainItem.id, attemptedMain)).toBe(true);
   expect(listStoredChatOutboxes(resolved)).toEqual([outbox(attemptedGlobal, "global", "alpha")]);
   expect(removeItem(resolved, "global", globalItem.id, attemptedGlobal)).toBe(true);
@@ -427,7 +422,7 @@ it("reviews shipped selected-agent opaque rows without passively adopting either
   expectDraft(state, "older draft", outbox(expected, sessionKey).queue);
 
   const attempted = { ...restored, sendAttempts: 1 };
-  expect(updateItems(state, sessionKey, [{ expected: restored, next: attempted }])).toBe(true);
+  expect(replaceItem(state, restored, attempted)).toBe(true);
   expect(removeItem(state, sessionKey, first.id, attempted)).toBe(true);
   expectDraft(state, "older draft");
   expect(readChatOutboxRecovery(state).entries).toHaveLength(1);
@@ -440,13 +435,10 @@ it("reviews shipped selected-agent opaque rows without passively adopting either
 });
 
 it("keeps readable migrated composer state when the migration write fails", () => {
-  const unresolved = createState({ chatMessage: "unresolved draft", sessionKey: "main" });
+  const unresolved = savedState({ chatMessage: "unresolved draft", sessionKey: "main" });
   const item = reconnectItem("unresolved-with-quota", 1);
-  expect(persist(unresolved)).toBe(true);
   expect(admitItem(unresolved, item, "main")).toBe(true);
-  vi.spyOn(sessionStorage, "setItem").mockImplementation(() => {
-    throw new DOMException("quota exceeded", "QuotaExceededError");
-  });
+  vi.spyOn(sessionStorage, "setItem").mockImplementation(quotaFailure);
 
   const resolved = createState({
     agentsList: { defaultId: "work", mainKey: "main", scope: "global" },
@@ -499,11 +491,9 @@ it("reviews full v1 main and global queues while consuming legacy tombstones", (
     ["global", globalQueue],
     [mainKey, mainQueue],
   ] as const) {
-    const expectedQueue = structuredClone(queue);
-    for (const item of expectedQueue) {
-      item.sessionKey = sessionKey;
-      item.agentId = "work";
-    }
+    const expectedQueue = queue.map((item) =>
+      Object.assign({}, item, { sessionKey, agentId: "work" }),
+    );
     expect(
       entries.find((entry) => entry.sourceScopeKey === sessionKey + "\u0000agent:work")?.session
         .queue,
@@ -667,17 +657,15 @@ it("evicts draft-only sessions before rejecting an outbox session overflow", () 
 });
 
 it("retains an unresolved custom-main clear through draft and outbox capacity pressure", () => {
-  const resolved = createState({
+  const resolved = savedState({
     assistantAgentId: "work",
     chatMessage: "stale resolved draft",
     sessionKey: "global",
   });
   const queued = reconnectItem("resolved-work-queue", 1);
-  expect(persist(resolved)).toBe(true);
   expect(admitItem(resolved, queued)).toBe(true);
 
-  const offline = createState({ sessionKey: "workspace", chatMessage: "stale resolved draft" });
-  expect(persist(offline)).toBe(true);
+  const offline = savedState({ sessionKey: "workspace", chatMessage: "stale resolved draft" });
   expect(restore(offline)).toBe(true);
   expect(offline.chatMessage).toBe("stale resolved draft");
   const persistence = startPersistence(offline);
@@ -705,8 +693,7 @@ it("retains an unresolved custom-main clear through draft and outbox capacity pr
 });
 
 it("restores an evicted live draft into a same-scope queue-only row", () => {
-  const state = createState();
-  const persistence = startPersistence(state);
+  const [state, persistence] = pane();
   edit(state, persistence, "merge this live draft");
   expectPersisted(persistence);
 
@@ -723,11 +710,9 @@ it("restores an evicted live draft into a same-scope queue-only row", () => {
 });
 
 it("lets only the newest failed split-pane draft retry after capacity recovers", () => {
-  const baseline = createState({ chatMessage: "saved draft" });
-  expect(persist(baseline)).toBe(true);
+  const baseline = savedState();
   const baselineRevision = revision(baseline);
-  const olderPane = createState({ chatMessage: baseline.chatMessage });
-  const olderPersistence = startPersistence(olderPane);
+  const [olderPane, olderPersistence] = pane(baseline.chatMessage);
 
   const outboxes = fillOutboxes("failed-fence");
   expect(snapshot(baseline)).toBeNull();
@@ -737,8 +722,7 @@ it("lets only the newest failed split-pane draft retry after capacity recovers",
 
   // A pane mounted after the failed attempt must issue after it without
   // treating that uncommitted attempt as the persisted CAS baseline.
-  const newerPane = createState({ chatMessage: baseline.chatMessage });
-  const newerPersistence = startPersistence(newerPane);
+  const [newerPane, newerPersistence] = pane(baseline.chatMessage);
   edit(newerPane, newerPersistence, "newer late-pane draft");
   const newerResult = failedWrite(newerPersistence, baselineRevision);
   expect(olderResult.draftRevision).toBeLessThan(newerResult.draftRevision);
@@ -751,13 +735,10 @@ it("lets only the newest failed split-pane draft retry after capacity recovers",
 });
 
 it("does not let an untouched evicted pane fence out a newer failed edit", () => {
-  const baseline = createState({ chatMessage: "saved draft" });
-  expect(persist(baseline)).toBe(true);
+  const baseline = savedState();
   const baselineRevision = revision(baseline);
-  const stalePane = createState({ chatMessage: baseline.chatMessage });
-  const stalePersistence = startPersistence(stalePane);
-  const newerPane = createState({ chatMessage: baseline.chatMessage });
-  const newerPersistence = startPersistence(newerPane);
+  const [stalePane, stalePersistence] = pane(baseline.chatMessage);
+  const [newerPane, newerPersistence] = pane(baseline.chatMessage);
 
   const outboxes = fillOutboxes("stale-fence");
   expect(snapshot(baseline)).toBeNull();
@@ -774,8 +755,7 @@ it("does not let an untouched evicted pane fence out a newer failed edit", () =>
 });
 
 it("persists a revert after an intermediate draft attempt fails", () => {
-  const state = createState({ chatMessage: "saved draft" });
-  expect(persist(state)).toBe(true);
+  const state = savedState();
   const persistence = startPersistence(state);
 
   const outboxes = fillOutboxes("failed-revert");
@@ -794,11 +774,8 @@ it("persists a revert after an intermediate draft attempt fails", () => {
 });
 
 it("retries a failed draft write when stopping", () => {
-  const write = vi.spyOn(sessionStorage, "setItem").mockImplementationOnce(() => {
-    throw new DOMException("quota exceeded", "QuotaExceededError");
-  });
-  const state = createState();
-  const persistence = startPersistence(state);
+  const write = vi.spyOn(sessionStorage, "setItem").mockImplementationOnce(quotaFailure);
+  const [state, persistence] = pane();
   state.chatMessage = "retry this write";
   persistence.persistNow();
   persistence.stop();
@@ -843,7 +820,7 @@ it("keeps failed attachment sends durable and retryable, including stack-overflo
 
 describe("Incognito composer persistence", () => {
   it.each(["canonical key", "arriving metadata"] as const)(
-    "retires Incognito input identified by %s without clearing live input or queues",
+    "retires %s private storage, preserving live input and queues",
     (source) => {
       const state = createState({
         sessionKey:
@@ -852,8 +829,6 @@ describe("Incognito composer persistence", () => {
         chatMentions: [{ profileId: "alex", start: 0, end: 5 }],
         chatGoalDraftMode: { action: "start", sessionId: "private-session" },
         chatReplyTarget: { messageId: "private-reply", text: "Private quote" },
-        connected: true,
-        client: { recoveryScope: "credential", recoveryScopeReady: true },
       });
       const queued: ChatQueueItem = {
         id: "submitted",
@@ -885,23 +860,21 @@ describe("Incognito composer persistence", () => {
       expect(persistence.durableScope).toBeNull();
       expect(sessionStorage.getItem(storageKey)).not.toContain("private objective");
       expect(persist(state)).toBe(true);
-      const stored = readStored(state);
-      expect(stored.sessions[`${state.sessionKey}\u0000agent:lily`]).toMatchObject({
-        queue: [queued],
-      });
-      expect(stored.sessions[`${state.sessionKey}\u0000agent:lily`].draft).toBeUndefined();
-      expect(stored.sessions[`${state.sessionKey}\u0000agent:lily`].draftMentions).toBeUndefined();
-      expect(stored.sessions[`${state.sessionKey}\u0000agent:lily`].goalMode).toBeUndefined();
-      expect(stored.sessions[`${state.sessionKey}\u0000agent:lily`].replyTarget).toBeUndefined();
+      const row = storedRow(state);
+      expect(row).toMatchObject({ queue: [queued] });
+      expect([row.draft, row.draftMentions, row.goalMode, row.replyTarget]).toEqual(
+        Array(4).fill(undefined),
+      );
       expect(restore(state)).toBe(true);
-      expect(state.chatMessage).toBe("@Alex private objective");
-      expect(state.chatMentions).toHaveLength(1);
-      expect(state.chatGoalDraftMode?.action).toBe("start");
+      expect(state).toMatchObject({
+        chatMessage: "@Alex private objective",
+        chatMentions: [expect.anything()],
+        chatGoalDraftMode: { action: "start" },
+      });
       reloadStorage(state);
       const restored = createState({ sessionKey: state.sessionKey });
       expect(restore(restored)).toBe(true);
-      expect(restored.chatMessage).toBe("");
-      expect(restored.chatQueue).toMatchObject([queued]);
+      expect(restored).toMatchObject({ chatMessage: "", chatQueue: [queued] });
       persistence.stop();
     },
   );
@@ -917,7 +890,6 @@ describe("Incognito composer persistence", () => {
       createdAt: 1,
       sendState: "held",
     };
-    const storageKey = storageTargetForComposer(state).key;
     seedSessions(
       {
         [`${state.sessionKey}\u0000agent:lily`]: {
@@ -931,22 +903,9 @@ describe("Incognito composer persistence", () => {
       },
       4,
     );
-    expect(
-      updateItems(state, state.sessionKey, [
-        {
-          expected: queued,
-          next: {
-            ...queued,
-            text: "Edited submitted message",
-          },
-        },
-      ]),
-    ).toBe(true);
-    const stored = JSON.parse(sessionStorage.getItem(storageKey)!);
-    const row = stored.sessions[`${state.sessionKey}\u0000agent:lily`];
-    expect(row.draft).toBeUndefined();
-    expect(row.draftMentions).toBeUndefined();
-    expect(row.goalMode).toBeUndefined();
+    expect(replaceItem(state, queued, { ...queued, text: "Edited submitted message" })).toBe(true);
+    const row = storedRow(state);
+    expect([row.draft, row.draftMentions, row.goalMode]).toEqual(Array(3).fill(undefined));
     expect(row.draftRevision).toBe(7);
     expect(row.queue?.map((item: ChatQueueItem) => item.text) ?? []).toEqual([
       "Edited submitted message",
@@ -984,25 +943,20 @@ describe("Incognito composer persistence", () => {
     }
   });
 
-  it.each([true, false])(
-    "keeps delayed drafts bound to their captured Incognito status (%s)",
-    (incognito) => {
-      const state = createState({ selectedChatSessionIncognito: incognito });
-      const sourceKey = state.sessionKey;
-      const persistence = startPersistence(state);
-      state.chatMessage = "captured draft";
-      persistence.schedule();
-      state.sessionKey = "agent:lily:destination";
-      state.selectedChatSessionIncognito = !incognito;
-      state.chatMessage = "destination input";
-      persistence.persistNow();
-      expect(loadChatComposerState(createState(), sourceKey).snapshot?.draft ?? "").toBe(
-        incognito ? "" : "captured draft",
-      );
-      expect(snapshot(state)).toBeNull();
-      persistence.stop();
-    },
-  );
+  it.each([true, false])("binds delayed drafts to captured privacy (%s)", (incognito) => {
+    const state = createState({ selectedChatSessionIncognito: incognito });
+    const sourceKey = state.sessionKey;
+    const persistence = startPersistence(state);
+    state.chatMessage = "captured draft";
+    persistence.schedule();
+    state.sessionKey = "agent:lily:destination";
+    state.selectedChatSessionIncognito = !incognito;
+    state.chatMessage = "destination input";
+    persistence.persistNow();
+    expect(snapshot(createState(), sourceKey)?.draft ?? "").toBe(incognito ? "" : "captured draft");
+    expect(snapshot(state)).toBeNull();
+    persistence.stop();
+  });
 });
 
 describe("chat composer draft presence notifications", () => {

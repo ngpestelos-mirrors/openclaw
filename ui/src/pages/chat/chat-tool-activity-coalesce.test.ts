@@ -16,16 +16,35 @@ function result(id: string) {
 function item(message: Record<string, unknown>, key = "current"): ChatItem {
   return { kind: "message", key, message };
 }
+function toolCall(id: string, args: Record<string, unknown> = {}) {
+  return { type: "tool_call", id, name: "custom", arguments: args };
+}
+function invocation(id: string) {
+  const call = {
+    role: "assistant",
+    content: [
+      { type: "text", text: `before ${id}` },
+      toolCall(id),
+      { type: "text", text: `after ${id}` },
+    ],
+  };
+  const output = { role: "toolResult", content: [result(id)] };
+  return { call, output, items: () => [item(call, `call-${id}`), item(output, `result-${id}`)] };
+}
+const messages = (items: ChatItem[]) =>
+  coalesceToolActivityMessages(items).flatMap((row) =>
+    row.kind === "message" ? [row.message] : [],
+  );
 
 describe("tool activity preparation cache", () => {
   it("coalesces a new projected boundary's invocation without borrowing from the previous turn", () => {
     const previous = {
       role: "assistant",
-      content: [{ type: "tool_call", id: "call", name: "custom", arguments: { turn: "old" } }],
+      content: [toolCall("call", { turn: "old" })],
     };
     const current = {
       role: "assistant",
-      content: [{ type: "tool_call", id: "call", name: "custom", arguments: { turn: "new" } }],
+      content: [toolCall("call", { turn: "new" })],
       __openclaw: { turnBoundary: true },
     };
     const rows = coalesceToolActivityMessages([
@@ -42,29 +61,9 @@ describe("tool activity preparation cache", () => {
   });
 
   it("reuses finalized bundles across prepends and invalidates only changed sources", () => {
-    const invocation = (id: string) => {
-      const call = {
-        role: "assistant",
-        content: [
-          { type: "text", text: `before ${id}` },
-          { type: "tool_call", id, name: "custom", arguments: {} },
-          { type: "text", text: `after ${id}` },
-        ],
-      };
-      const output = { role: "toolResult", content: [result(id)] };
-      return {
-        call,
-        output,
-        items: () => [item(call, `call-${id}`), item(output, `result-${id}`)],
-      };
-    };
     const first = invocation("first");
     const second = invocation("second");
     const older = invocation("older");
-    const messages = (items: ChatItem[]) =>
-      coalesceToolActivityMessages(items).flatMap((row) =>
-        row.kind === "message" ? [row.message] : [],
-      );
     const initial = messages([...first.items(), ...second.items()]);
     const prepare = vi.spyOn(canvas, "extractCanvasFromText");
     initial.forEach((message) => {
@@ -99,7 +98,7 @@ describe("tool activity preparation cache", () => {
   });
 
   it.each(["anonymous sibling", "standalone"])(
-    "prepares %s output once across rebuilds and older pages",
+    "caches %s across rebuilds and prepends",
     (shape) => {
       const block = result("current");
       const message =
@@ -107,12 +106,7 @@ describe("tool activity preparation cache", () => {
           ? { role: "toolResult", toolCallId: block.id, toolName: block.name, content: block.text }
           : {
               role: "assistant",
-              content: [
-                ...(shape === "anonymous sibling"
-                  ? [{ type: "tool_call", name: "other", arguments: {} }]
-                  : []),
-                block,
-              ],
+              content: [{ type: "tool_call", name: "other", arguments: {} }, block],
             };
       const prepare = vi.spyOn(canvas, "extractCanvasFromText");
       const current = item(message);
@@ -161,45 +155,41 @@ describe("tool activity outcome authority", () => {
       row.kind === "message" ? readPreparedActivity(row.message) : [],
     );
 
-  it.each([false, true])(
-    "lets live activity replace a history placeholder (live first: %s)",
-    (liveFirst) => {
-      const history = call();
-      const live = call("running", true);
-      expect(outcomes(liveFirst ? [live, history] : [history, live])).toEqual([
-        activity("running"),
-      ]);
-      expect(outcomes([history])).toEqual([{ ...activity(), unpairedCall: true }]);
+  it.each([false, true])("replaces history placeholders (live first: %s)", (liveFirst) => {
+    const history = call();
+    const live = call("running", true);
+    expect(outcomes(liveFirst ? [live, history] : [history, live])).toEqual([activity("running")]);
+    expect(outcomes([history])).toEqual([{ ...activity(), unpairedCall: true }]);
+  });
+
+  it.each(["raw result", "off-page result"] as const)(
+    "retains durable %s over stale live activity",
+    (shape) => {
+      const hasRawResult = shape === "raw result";
+      const terminal = item(
+        {
+          role: hasRawResult ? "toolResult" : "assistant",
+          runId: "run",
+          activity: [activity()],
+          ...(hasRawResult
+            ? {
+                toolCallId: "active",
+                toolName: "exec",
+                content: [{ type: "text", text: "Command ended" }],
+              }
+            : { content: [{ type: "toolCall", id: "active", name: "exec", arguments: {} }] }),
+        },
+        hasRawResult ? "result" : "current",
+      );
+      const orders = hasRawResult
+        ? [
+            [call(), terminal, call("running", true)],
+            [call("running", true), call(), terminal],
+          ]
+        : [[terminal, call("running", true)]];
+      for (const rows of orders) {
+        expect(outcomes(rows)).toEqual([activity()]);
+      }
     },
   );
-
-  it("retains a durable result over stale live activity", () => {
-    const terminal = item(
-      {
-        role: "toolResult",
-        runId: "run",
-        toolCallId: "active",
-        toolName: "exec",
-        content: [{ type: "text", text: "Command ended" }],
-        activity: [activity()],
-      },
-      "result",
-    );
-    for (const rows of [
-      [call(), terminal, call("running", true)],
-      [call("running", true), call(), terminal],
-    ]) {
-      expect(outcomes(rows)).toEqual([activity()]);
-    }
-  });
-
-  it("retains a terminal outcome when its raw result is outside the page", () => {
-    const history = item({
-      role: "assistant",
-      runId: "run",
-      content: [{ type: "toolCall", id: "active", name: "exec", arguments: {} }],
-      activity: [activity()],
-    });
-    expect(outcomes([history, call("running", true)])).toEqual([activity()]);
-  });
 });
