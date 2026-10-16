@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -12,10 +13,10 @@ import { bindSessionRowProjection } from "../gateway/session-row-projection-acce
 import type { SessionRowProjection } from "../gateway/session-row-projection.js";
 import { setGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { clearCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
-import { makePluginMetadataIndex } from "../plugins/current-plugin-metadata.test-support.js";
 import { resolveInstalledPluginIndexPolicyHash } from "../plugins/installed-plugin-index-policy.js";
 import { runPluginRegisterSyncInRegistry } from "../plugins/loader-module-runtime.js";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
+import { createEmptyPluginMetadataSnapshot } from "../plugins/plugin-metadata-empty.test-support.js";
 import { buildPluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { bindPluginRuntimeArtifactSelection } from "../plugins/plugin-runtime-artifact-binding.js";
 import { createRuntimeTestRegistry } from "../plugins/registry-runtime.test-helpers.js";
@@ -60,18 +61,17 @@ const pluginOnlyPlan = {
 };
 
 function requireTool(tools: AnyAgentTool[], name: string) {
-  const tool = tools.find((candidate) => candidate.name === name);
-  if (!tool) {
-    throw new Error(`Expected registered tool ${name}`);
-  }
-  return tool;
+  return expectDefined(
+    tools.find((candidate) => candidate.name === name),
+    name,
+  );
 }
 
 function assertCapturedPolicy(name: string) {
-  const assertToolAllowed = getGatewayToolCallerIdentity()?.assertToolAllowed;
-  if (!assertToolAllowed) {
-    throw new Error("Missing captured tool assertion");
-  }
+  const assertToolAllowed = expectDefined(
+    getGatewayToolCallerIdentity()?.assertToolAllowed,
+    "captured policy",
+  );
   assertToolAllowed(name);
   return jsonResult({ allowed: name });
 }
@@ -101,13 +101,8 @@ function assemble(allow: string[], deny: string[] = []) {
     contracts: { tools: id === "fixture-reader" ? ["select_public_item", toolName] : [toolName] },
   }));
   for (const manifest of manifests) {
-    const record = createPluginRecord({
-      id: manifest.id,
-      source: manifest.source,
-      rootDir: manifest.rootDir,
-      origin: manifest.origin,
-      contracts: manifest.contracts,
-    });
+    const { id, source, rootDir, origin, contracts } = manifest;
+    const record = createPluginRecord({ id, source, rootDir, origin, contracts });
     bindPluginRuntimeArtifactSelection(record, {
       runtimeEntry: { source: manifest.source, rootDir: manifest.rootDir },
       preferBuiltPluginArtifacts: false,
@@ -158,24 +153,17 @@ function assemble(allow: string[], deny: string[] = []) {
       manifest.id,
     );
   }
-  const index = makePluginMetadataIndex();
+  const emptySnapshot = createEmptyPluginMetadataSnapshot("/tmp");
+  const index = { ...emptySnapshot.index, policyHash: "test" };
   const snapshot = {
     ...buildPluginMetadataSnapshot(
       {
+        ...emptySnapshot,
         policyHash: resolveInstalledPluginIndexPolicyHash(config),
-        workspaceDir: "/tmp",
-        index: { ...index, plugins: [] },
-        registryIndex: { ...index, plugins: [] },
-        registryDiagnostics: [],
+        index,
+        registryIndex: { ...index },
         manifestRegistry: { plugins: manifests, diagnostics: [] },
-        metrics: {
-          registrySnapshotMs: 0,
-          manifestRegistryMs: 0,
-          ownerMapsMs: 0,
-          totalMs: 0,
-          indexPluginCount: 0,
-          manifestPluginCount: 2,
-        },
+        metrics: { ...emptySnapshot.metrics, manifestPluginCount: 2 },
       },
       { config, env: process.env },
     ),
@@ -194,22 +182,17 @@ function assemble(allow: string[], deny: string[] = []) {
     metadataSnapshot: snapshot,
   });
   const catalogRef = createToolSearchCatalogRef();
+  const callerOptions = { config, agentId: "main", sessionKey, workspaceDir: "/tmp" };
   const tools = withPluginRuntimeRegistryScope(registry.registry, () =>
     createOpenClawCodingTools({
-      config,
-      agentId: "main",
-      sessionKey,
-      workspaceDir: "/tmp",
+      ...callerOptions,
       includeCoreTools: false,
       includeToolSearchControls: true,
       toolSearchCatalogRef: catalogRef,
       toolConstructionPlan: pluginOnlyPlan,
       wrapBeforeToolCallHook: false,
       conversationCapabilityProfile: resolveConversationCapabilityProfile({
-        config,
-        agentId: "main",
-        sessionKey,
-        workspaceDir: "/tmp",
+        ...callerOptions,
         pluginMetadataSnapshot: snapshot,
       }),
     }),
@@ -284,11 +267,10 @@ async function prepareResourceFixture(
     throw new Error("Admitted resource caller is missing");
   }
   const methodName = toolName === "browser" ? "browser.dashboard.request" : "fixture-reader.read";
-  const descriptor = methodRegistry.descriptors().find((method) => method.name === methodName);
-  const policy = descriptor?.sessionAccess;
-  if (!descriptor || !policy) {
-    throw new Error("Registered session-access policy is missing");
-  }
+  expectDefined(
+    methodRegistry.descriptors().find((method) => method.name === methodName)?.sessionAccess,
+    "registered session-access policy",
+  );
   let beforeEffect = () => {};
   const effect = vi.fn();
   const execute = toolName === "browser" ? browserRuntime.execute : readPublicItem;
@@ -349,10 +331,7 @@ describe("captured registered plugin tool policy", () => {
       pluginId: "browser",
       artifactBasename: "index.js",
     });
-    if (!surface.default.register) {
-      throw new Error("Browser plugin registration is missing");
-    }
-    registerBrowserPlugin = surface.default.register;
+    registerBrowserPlugin = expectDefined(surface.default.register, "browser plugin registration");
   });
 
   afterEach(async () => {
@@ -392,28 +371,28 @@ describe("captured registered plugin tool policy", () => {
     );
   });
 
-  it.each(["direct", "dispatch_action"] as const)(
-    "retains the browser plugin group allow through %s execution",
-    async (route) => {
-      const fixture = await prepareResourceFixture();
-      const browser = requireTool(fixture.tools, "browser");
-      expect(getPluginToolMeta(browser)?.pluginId).toBe("browser");
-      const result = await fixture.execute(route);
-      expect(JSON.stringify(result)).toContain('"allowed":"browser"');
+  it.each([
+    ["direct", "browser", "group:plugins", false],
+    ["dispatch_action", "browser", "group:plugins", false],
+    ["direct", "Read_Public_Item", "fixture-reader", false],
+    ["direct", "browser", "group:plugins", true],
+  ] as const)(
+    "retains %s %s allowance via %s (ambient=%s)",
+    async (route, toolName, allow, ambient) => {
+      const fixture = await prepareResourceFixture({
+        toolName,
+        allow: [allow],
+        unrelatedAmbientRegistry: ambient,
+      });
+      if (toolName === "browser" && !ambient) {
+        expect(getPluginToolMeta(requireTool(fixture.tools, "browser"))?.pluginId).toBe("browser");
+      }
+      await expect(fixture.execute(route)).resolves.toMatchObject({
+        details: { allowed: toolName },
+      });
       expect(fixture.effect).toHaveBeenCalledOnce();
     },
   );
-
-  it("retains plugin-ID allowance with case and reference whitespace", async () => {
-    const fixture = await prepareResourceFixture({
-      toolName: "Read_Public_Item",
-      allow: ["fixture-reader"],
-    });
-    await expect(fixture.execute("direct")).resolves.toMatchObject({
-      details: { allowed: "Read_Public_Item" },
-    });
-    expect(fixture.effect).toHaveBeenCalledOnce();
-  });
 
   it.each(["Read_Public_Item", "fixture-reader", "group:plugins"])(
     "keeps %s denied in the assembled surface",
@@ -475,26 +454,13 @@ describe("captured registered plugin tool policy", () => {
     },
   );
 
-  it("uses selected method registration when the ambient registry differs", async () => {
-    const fixture = await prepareResourceFixture({ unrelatedAmbientRegistry: true });
-    await expect(fixture.execute("direct")).resolves.toMatchObject({
-      details: { allowed: "browser" },
-    });
-    expect(fixture.effect).toHaveBeenCalledOnce();
-  });
-
-  it("does not borrow registration from the ambient registry", async () => {
-    const fixture = await prepareResourceFixture({ missingSelectedRegistration: true });
-    await expect(fixture.execute("direct")).rejects.toThrow("current tool policy does not allow");
-    expect(fixture.effect).not.toHaveBeenCalled();
-  });
-
-  it.each<GatewayMethodOwner>([
-    { kind: "core", area: "fixture" },
-    { kind: "plugin", pluginId: "fixture-reader" },
-    { kind: "plugin", pluginId: "unregistered" },
-  ])("does not lend browser ownership to another method owner: %j", async (methodOwner) => {
-    const fixture = await prepareResourceFixture({ methodOwner });
+  it.each<NonNullable<Parameters<typeof prepareResourceFixture>[0]>>([
+    { missingSelectedRegistration: true },
+    { methodOwner: { kind: "core", area: "fixture" } },
+    { methodOwner: { kind: "plugin", pluginId: "fixture-reader" } },
+    { methodOwner: { kind: "plugin", pluginId: "unregistered" } },
+  ])("does not borrow browser ownership from another registry or method: %j", async (options) => {
+    const fixture = await prepareResourceFixture(options);
     await expect(fixture.execute("direct")).rejects.toThrow("current tool policy does not allow");
     expect(fixture.effect).not.toHaveBeenCalled();
   });

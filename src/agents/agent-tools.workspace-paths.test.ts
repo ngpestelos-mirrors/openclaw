@@ -2,11 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createReadTool } from "openclaw/plugin-sdk/agent-sessions";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import "./test-helpers/fast-coding-tools.js";
 import "./test-helpers/fast-openclaw-tools.js";
 import { createCanonicalFixtureSkill } from "../skills/test-support/test-helpers.js";
-import { withTempDir } from "../test-utils/temp-dir.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
 import { wrapToolWorkspaceRootGuardWithOptions } from "./agent-tools.read.js";
 import { createApplyPatchTool } from "./apply-patch.js";
@@ -20,19 +20,28 @@ import { createHostSandboxFsBridge } from "./test-helpers/host-sandbox-fs-bridge
 import { withUnsafeMountedSandboxHarness } from "./test-helpers/unsafe-mounted-sandbox.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+let rootDir: string, workspaceDir: string, outsideDir: string;
+beforeEach(async () => {
+  rootDir = await fs.realpath(tempDirs.make("openclaw-workspace-paths-"));
+  workspaceDir = path.join(rootDir, "workspace");
+  outsideDir = path.join(rootDir, "outside");
+  await fs.mkdir(workspaceDir);
+  await fs.mkdir(outsideDir);
+});
 vi.mock("../infra/shell-env.js", async () => {
   const mod =
     await vi.importActual<typeof import("../infra/shell-env.js")>("../infra/shell-env.js");
   return { ...mod, getShellPathFromLoginShell: () => null };
 });
 function workspaceTools(
-  workspaceDir: string,
+  directory: string,
   options: Parameters<typeof createOpenClawCodingTools>[0] = {},
 ) {
   return expectReadWriteEditTools(
     createOpenClawCodingTools({
       ...options,
-      workspaceDir,
+      workspaceDir: directory,
       config: { tools: { fs: { workspaceOnly: true } } },
     }),
   );
@@ -42,202 +51,166 @@ const readText = async (tool: AnyAgentTool, id: string, filePath: string) =>
 const expectFile = (filePath: string, content: string) =>
   expect(fs.readFile(filePath, "utf8")).resolves.toBe(content);
 
-async function withSkillWorkspace(
-  run: (fixture: {
-    rootDir: string;
-    skillDir: string;
-    skillFile: string;
-    tools: ReturnType<typeof workspaceTools>;
-  }) => Promise<void>,
-) {
-  await withTempDir("openclaw-skill-read-", async (rootDir) => {
-    const workspaceDir = path.join(rootDir, "workspace");
-    const skillDir = path.join(rootDir, "global-skills/demo");
-    const skillFile = path.join(skillDir, "SKILL.md");
-    await fs.mkdir(workspaceDir);
-    await fs.mkdir(skillDir, { recursive: true });
-    await fs.writeFile(skillFile, "# Demo skill\noriginal skill\n");
-    const tools = workspaceTools(workspaceDir, {
-      skillsSnapshot: {
-        prompt: "",
-        skills: [{ name: "demo" }],
-        resolvedSkills: [
-          createCanonicalFixtureSkill({
-            name: "demo",
-            description: "Demo skill",
-            filePath: skillFile,
-            baseDir: skillDir,
-            source: "test",
-          }),
-        ],
-      },
-    });
-    await run({ rootDir, skillDir, skillFile, tools });
+async function skillWorkspace() {
+  const skillDir = path.join(rootDir, "global-skills/demo");
+  const skillFile = path.join(skillDir, "SKILL.md");
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(skillFile, "# Demo skill\noriginal skill\n");
+  const tools = workspaceTools(workspaceDir, {
+    skillsSnapshot: {
+      prompt: "",
+      skills: [{ name: "demo" }],
+      resolvedSkills: [
+        createCanonicalFixtureSkill({
+          name: "demo",
+          description: "Demo skill",
+          filePath: skillFile,
+          baseDir: skillDir,
+          source: "test",
+        }),
+      ],
+    },
   });
+  return { skillDir, skillFile, ...tools };
 }
 
 describe("workspace path resolution", () => {
   it("uses cwd for coding filesystem tools while workspaceDir remains the agent workspace", async () => {
-    await withTempDir("openclaw-agent-ws-", async (workspaceDir) => {
-      await withTempDir("openclaw-task-cwd-", async (cwd) => {
-        const tools = createOpenClawCodingTools({ workspaceDir, cwd });
-        const { readTool, writeTool } = expectReadWriteEditTools(tools);
+    const cwd = tempDirs.make("openclaw-task-cwd-");
+    const tools = createOpenClawCodingTools({ workspaceDir, cwd });
+    const { readTool, writeTool } = expectReadWriteEditTools(tools);
 
-        await fs.writeFile(path.join(cwd, "task.txt"), "task cwd read ok", "utf8");
-        expect(await readText(readTool, "cwd-read", "task.txt")).toContain("task cwd read ok");
+    await fs.writeFile(path.join(cwd, "task.txt"), "task cwd read ok", "utf8");
+    expect(await readText(readTool, "cwd-read", "task.txt")).toContain("task cwd read ok");
 
-        await writeTool.execute("cwd-write", { path: "created.txt", content: "task cwd write ok" });
-        await expectFile(path.join(cwd, "created.txt"), "task cwd write ok");
-        await expect(fs.access(path.join(workspaceDir, "created.txt"))).rejects.toThrow();
-      });
-    });
+    await writeTool.execute("cwd-write", { path: "created.txt", content: "task cwd write ok" });
+    await expectFile(path.join(cwd, "created.txt"), "task cwd write ok");
+    await expect(fs.access(path.join(workspaceDir, "created.txt"))).rejects.toThrow();
   });
 
   it.runIf(process.platform === "win32")(
     "preserves mixed-case and Unicode names for workspace-only writes on Windows",
     async () => {
-      await withTempDir("openclaw-windows-case-", async (workspaceDir) => {
-        const { writeTool } = workspaceTools(workspaceDir);
+      const { writeTool } = workspaceTools(workspaceDir);
 
-        await writeTool.execute("windows-case-write", {
-          path: "Source/İstanbul/Widget.ts",
-          content: "export const Widget = true;",
-        });
-
-        await expect(fs.readdir(workspaceDir)).resolves.toEqual(["Source"]);
-        await expect(fs.readdir(path.join(workspaceDir, "Source"))).resolves.toEqual(["İstanbul"]);
-        await expect(fs.readdir(path.join(workspaceDir, "Source", "İstanbul"))).resolves.toEqual([
-          "Widget.ts",
-        ]);
+      await writeTool.execute("windows-case-write", {
+        path: "Source/İstanbul/Widget.ts",
+        content: "export const Widget = true;",
       });
+
+      await expect(fs.readdir(workspaceDir)).resolves.toEqual(["Source"]);
+      await expect(fs.readdir(path.join(workspaceDir, "Source"))).resolves.toEqual(["İstanbul"]);
+      await expect(fs.readdir(path.join(workspaceDir, "Source", "İstanbul"))).resolves.toEqual([
+        "Widget.ts",
+      ]);
     },
   );
 
   it("defaults exec cwd to workspaceDir when workdir is omitted", async () => {
-    await withTempDir("openclaw-ws-", async (workspaceDir) => {
-      const exec = createOpenClawCodingTools({
-        workspaceDir,
-        exec: { host: "gateway", ask: "off", security: "full" },
-      }).find((tool) => tool.name === "exec");
-      if (!exec) {
-        throw new Error("expected exec tool");
-      }
-      const result = await exec.execute("cwd", { command: "echo ok" });
-      const details = result.details;
-      if (
-        !details ||
-        typeof details !== "object" ||
-        !("cwd" in details) ||
-        typeof details.cwd !== "string"
-      ) {
-        throw new Error("expected exec result cwd");
-      }
-      expect(await fs.realpath(details.cwd)).toBe(await fs.realpath(workspaceDir));
-    });
+    const exec = createOpenClawCodingTools({
+      workspaceDir,
+      exec: { host: "gateway", ask: "off", security: "full" },
+    }).find((tool) => tool.name === "exec");
+    if (!exec) {
+      throw new Error("expected exec tool");
+    }
+    const result = await exec.execute("cwd", { command: "echo ok" });
+    const details = result.details;
+    if (
+      !details ||
+      typeof details !== "object" ||
+      !("cwd" in details) ||
+      typeof details.cwd !== "string"
+    ) {
+      throw new Error("expected exec result cwd");
+    }
+    expect(await fs.realpath(details.cwd)).toBe(await fs.realpath(workspaceDir));
   });
 
   it("rejects @-prefixed absolute paths outside workspace when workspaceOnly is enabled", async () => {
-    await withTempDir("openclaw-ws-", async (workspaceDir) => {
-      const { readTool } = workspaceTools(workspaceDir);
+    const { readTool } = workspaceTools(workspaceDir);
 
-      const outsideAbsolute = path.resolve(path.parse(workspaceDir).root, "outside-openclaw.txt");
-      await expect(
-        readTool.execute("ws-read-at-prefix", { path: `@${outsideAbsolute}` }),
-      ).rejects.toThrow(/Path escapes sandbox root/i);
-    });
+    const outsideAbsolute = path.resolve(path.parse(workspaceDir).root, "outside-openclaw.txt");
+    await expect(
+      readTool.execute("ws-read-at-prefix", { path: `@${outsideAbsolute}` }),
+    ).rejects.toThrow(/Path escapes sandbox root/i);
   });
 
   it("guards decoded file URLs while forwarding the original URL", async () => {
-    await withTempDir("openclaw-guard-url-", async (stateDir) => {
-      const stateRoot = await fs.realpath(stateDir);
-      const root = path.join(stateRoot, "workspace");
-      const inside = path.join(root, "note.txt");
-      const outside = path.join(stateRoot, "outside.txt");
-      await fs.mkdir(root);
-      await fs.writeFile(inside, "URL_INSIDE_MARKER");
-      await fs.writeFile(outside, "URL_OUTSIDE_MARKER");
-      const base = createReadTool(root) as unknown as AnyAgentTool;
-      const execute = vi.spyOn(base, "execute");
-      const read = wrapToolWorkspaceRootGuardWithOptions(base, root, {
-        containerWorkdir: "/workspace",
-        normalizeGuardedPathParams: false,
-      });
-      const insideUrl = pathToFileURL(inside).href;
-
-      expect(await readText(read, "inside-url", insideUrl)).toContain("URL_INSIDE_MARKER");
-      expect(execute).toHaveBeenCalledWith("inside-url", { path: insideUrl }, undefined, undefined);
-      await expect(
-        read.execute("outside-url", { path: pathToFileURL(outside).href }),
-      ).rejects.toThrow(/Path escapes sandbox root/i);
-      expect(execute).toHaveBeenCalledTimes(1);
-      await expectFile(inside, "URL_INSIDE_MARKER");
-      await expectFile(outside, "URL_OUTSIDE_MARKER");
+    const root = workspaceDir;
+    const inside = path.join(root, "note.txt");
+    const outside = path.join(rootDir, "outside.txt");
+    await fs.writeFile(inside, "URL_INSIDE_MARKER");
+    await fs.writeFile(outside, "URL_OUTSIDE_MARKER");
+    const base = createReadTool(root) as unknown as AnyAgentTool;
+    const execute = vi.spyOn(base, "execute");
+    const read = wrapToolWorkspaceRootGuardWithOptions(base, root, {
+      containerWorkdir: "/workspace",
+      normalizeGuardedPathParams: false,
     });
+    const insideUrl = pathToFileURL(inside).href;
+
+    expect(await readText(read, "inside-url", insideUrl)).toContain("URL_INSIDE_MARKER");
+    expect(execute).toHaveBeenCalledWith("inside-url", { path: insideUrl }, undefined, undefined);
+    await expect(
+      read.execute("outside-url", { path: pathToFileURL(outside).href }),
+    ).rejects.toThrow(/Path escapes sandbox root/i);
+    expect(execute).toHaveBeenCalledTimes(1);
+    await expectFile(inside, "URL_INSIDE_MARKER");
+    await expectFile(outside, "URL_OUTSIDE_MARKER");
   });
 
   it.runIf(process.platform !== "win32")("rejects hardlinked file aliases", async () => {
-    await withTempDir("openclaw-hardlinks-", async (parent) => {
-      const workspaceDir = path.join(parent, "workspace");
-      const outside = path.join(parent, "outside.txt");
-      await fs.mkdir(workspaceDir);
-      await fs.writeFile(outside, "top-secret");
-      await fs.link(outside, path.join(workspaceDir, "linked.txt"));
-      const { readTool, writeTool } = workspaceTools(workspaceDir);
-      await expect(readTool.execute("read", { path: "linked.txt" })).rejects.toThrow(
-        /hardlink|sandbox/i,
-      );
-      await expect(
-        writeTool.execute("write", { path: "linked.txt", content: "pwned" }),
-      ).rejects.toThrow(/hardlink|sandbox/i);
-      await expectFile(outside, "top-secret");
-    });
+    const outside = path.join(rootDir, "outside.txt");
+    await fs.writeFile(outside, "top-secret");
+    await fs.link(outside, path.join(workspaceDir, "linked.txt"));
+    const { readTool, writeTool } = workspaceTools(workspaceDir);
+    await expect(readTool.execute("read", { path: "linked.txt" })).rejects.toThrow(
+      /hardlink|sandbox/i,
+    );
+    await expect(
+      writeTool.execute("write", { path: "linked.txt", content: "pwned" }),
+    ).rejects.toThrow(/hardlink|sandbox/i);
+    await expectFile(outside, "top-secret");
   });
 
   it.runIf(process.platform !== "win32").each(["write", "edit"] as const)(
     "%s follows in-workspace symlink parents",
     async (operation) => {
-      await withTempDir("openclaw-symlink-parent-", async (workspaceDir) => {
-        const realDir = path.join(workspaceDir, "real");
-        await fs.mkdir(realDir);
-        await fs.symlink(realDir, path.join(workspaceDir, "memory"));
-        const target = path.join(realDir, "note.md");
-        await fs.writeFile(target, "old memory\n");
-        const { writeTool, editTool } = workspaceTools(workspaceDir);
-        if (operation === "write") {
-          await writeTool.execute("write", { path: "memory/note.md", content: "new memory\n" });
-        } else {
-          await editTool.execute("edit", {
-            path: "memory/note.md",
-            edits: [{ oldText: "old", newText: "new" }],
-          });
-        }
-        await expectFile(target, "new memory\n");
-      });
+      const realDir = path.join(workspaceDir, "real");
+      await fs.mkdir(realDir);
+      await fs.symlink(realDir, path.join(workspaceDir, "memory"));
+      const target = path.join(realDir, "note.md");
+      await fs.writeFile(target, "old memory\n");
+      const { writeTool, editTool } = workspaceTools(workspaceDir);
+      if (operation === "write") {
+        await writeTool.execute("write", { path: "memory/note.md", content: "new memory\n" });
+      } else {
+        await editTool.execute("edit", {
+          path: "memory/note.md",
+          edits: [{ oldText: "old", newText: "new" }],
+        });
+      }
+      await expectFile(target, "new memory\n");
     },
   );
 
   it.runIf(process.platform !== "win32")(
     "rejects writes through symlink parents that resolve outside the workspace",
     async () => {
-      await withTempDir("openclaw-ws-symlink-escape-", async (rootDir) => {
-        const workspaceDir = path.join(rootDir, "workspace");
-        const outsideDir = path.join(rootDir, "outside");
-        const aliasDir = path.join(workspaceDir, "memory");
-        await fs.mkdir(workspaceDir, { recursive: true });
-        await fs.mkdir(outsideDir, { recursive: true });
-        await fs.symlink(outsideDir, aliasDir);
+      const aliasDir = path.join(workspaceDir, "memory");
+      await fs.symlink(outsideDir, aliasDir);
 
-        const { writeTool } = workspaceTools(workspaceDir);
+      const { writeTool } = workspaceTools(workspaceDir);
 
-        await expect(
-          writeTool.execute("ws-write-symlink-escape", {
-            path: "memory/secret.md",
-            content: "pwned\n",
-          }),
-        ).rejects.toThrow(/Path escapes workspace root|outside-workspace|sandbox/i);
-        await expect(fs.stat(path.join(outsideDir, "secret.md"))).rejects.toMatchObject({
-          code: "ENOENT",
-        });
+      await expect(
+        writeTool.execute("ws-write-symlink-escape", {
+          path: "memory/secret.md",
+          content: "pwned\n",
+        }),
+      ).rejects.toThrow(/Path escapes workspace root|outside-workspace|sandbox/i);
+      await expect(fs.stat(path.join(outsideDir, "secret.md"))).rejects.toMatchObject({
+        code: "ENOENT",
       });
     },
   );
@@ -245,72 +218,66 @@ describe("workspace path resolution", () => {
   it.runIf(process.platform !== "win32")(
     "rejects writes to final symlinks when workspaceOnly is enabled",
     async () => {
-      await withTempDir("openclaw-ws-symlink-leaf-", async (workspaceDir) => {
-        const targetPath = path.join(workspaceDir, "target.md");
-        const linkPath = path.join(workspaceDir, "memory.md");
-        await fs.writeFile(targetPath, "original\n", "utf8");
-        await fs.symlink(targetPath, linkPath);
+      const targetPath = path.join(workspaceDir, "target.md");
+      const linkPath = path.join(workspaceDir, "memory.md");
+      await fs.writeFile(targetPath, "original\n", "utf8");
+      await fs.symlink(targetPath, linkPath);
 
-        const { writeTool } = workspaceTools(workspaceDir);
+      const { writeTool } = workspaceTools(workspaceDir);
 
-        await expect(
-          writeTool.execute("ws-write-final-symlink", {
-            path: "memory.md",
-            content: "pwned\n",
-          }),
-        ).rejects.toThrow(/symlink|not-file|directory component/i);
-        await expectFile(targetPath, "original\n");
-      });
+      await expect(
+        writeTool.execute("ws-write-final-symlink", {
+          path: "memory.md",
+          content: "pwned\n",
+        }),
+      ).rejects.toThrow(/symlink|not-file|directory component/i);
+      await expectFile(targetPath, "original\n");
     },
   );
 
   it("allows workspaceOnly reads for resolved skill roots without allowing other filesystem access", async () => {
-    await withSkillWorkspace(
-      async ({ rootDir, skillDir, skillFile, tools: { readTool, writeTool, editTool } }) => {
-        const guideFile = path.join(skillDir, "guide.md");
-        const siblingFile = path.join(rootDir, "global-skills/other/SKILL.md");
-        const outsideFile = path.join(rootDir, "outside.txt");
-        await fs.mkdir(path.dirname(siblingFile));
-        await fs.writeFile(guideFile, "skill guide");
-        await fs.writeFile(siblingFile, "sibling skill");
-        await fs.writeFile(outsideFile, "outside secret");
+    const { skillDir, skillFile, readTool, writeTool, editTool } = await skillWorkspace();
+    const guideFile = path.join(skillDir, "guide.md");
+    const siblingFile = path.join(rootDir, "global-skills/other/SKILL.md");
+    const outsideFile = path.join(rootDir, "outside.txt");
+    await fs.mkdir(path.dirname(siblingFile));
+    await fs.writeFile(guideFile, "skill guide");
+    await fs.writeFile(siblingFile, "sibling skill");
+    await fs.writeFile(outsideFile, "outside secret");
 
-        expect(await readText(readTool, "read-skill", skillFile)).toContain("original skill");
-        expect(await readText(readTool, "read-skill-guide", guideFile)).toContain("skill guide");
-        await expect(readTool.execute("read-sibling", { path: siblingFile })).rejects.toThrow(
-          /Path escapes sandbox root/i,
-        );
-        await expect(readTool.execute("read-outside", { path: outsideFile })).rejects.toThrow(
-          /Path escapes sandbox root/i,
-        );
-        await expect(
-          writeTool.execute("write-skill", { path: skillFile, content: "overwritten" }),
-        ).rejects.toThrow(/Path escapes sandbox root|outside-workspace/i);
-        await expect(
-          editTool.execute("edit-skill", {
-            path: skillFile,
-            edits: [{ oldText: "original", newText: "edited" }],
-          }),
-        ).rejects.toThrow(/Path escapes sandbox root|outside-workspace/i);
-        expect(await fs.readFile(skillFile, "utf8")).toContain("original skill");
-      },
+    expect(await readText(readTool, "read-skill", skillFile)).toContain("original skill");
+    expect(await readText(readTool, "read-skill-guide", guideFile)).toContain("skill guide");
+    await expect(readTool.execute("read-sibling", { path: siblingFile })).rejects.toThrow(
+      /Path escapes sandbox root/i,
     );
+    await expect(readTool.execute("read-outside", { path: outsideFile })).rejects.toThrow(
+      /Path escapes sandbox root/i,
+    );
+    await expect(
+      writeTool.execute("write-skill", { path: skillFile, content: "overwritten" }),
+    ).rejects.toThrow(/Path escapes sandbox root|outside-workspace/i);
+    await expect(
+      editTool.execute("edit-skill", {
+        path: skillFile,
+        edits: [{ oldText: "original", newText: "edited" }],
+      }),
+    ).rejects.toThrow(/Path escapes sandbox root|outside-workspace/i);
+    expect(await fs.readFile(skillFile, "utf8")).toContain("original skill");
   });
 
   it("rejects symlink escapes inside resolved skill roots", async () => {
     if (process.platform === "win32") {
       return;
     }
-    await withSkillWorkspace(async ({ rootDir, skillDir, tools: { readTool } }) => {
-      const outsideFile = path.join(rootDir, "outside.txt");
-      const linkPath = path.join(skillDir, "outside-link.txt");
-      await fs.writeFile(outsideFile, "outside secret");
-      await fs.symlink(outsideFile, linkPath);
+    const { skillDir, readTool } = await skillWorkspace();
+    const outsideFile = path.join(rootDir, "outside.txt");
+    const linkPath = path.join(skillDir, "outside-link.txt");
+    await fs.writeFile(outsideFile, "outside secret");
+    await fs.symlink(outsideFile, linkPath);
 
-      await expect(readTool.execute("read-skill-symlink", { path: linkPath })).rejects.toThrow(
-        /symlink|sandbox|outside|escape/i,
-      );
-    });
+    await expect(readTool.execute("read-skill-symlink", { path: linkPath })).rejects.toThrow(
+      /symlink|sandbox|outside|escape/i,
+    );
   });
 });
 
@@ -348,60 +315,41 @@ describe("sandboxed workspace paths", () => {
   });
 
   it("uses sandbox workspace for relative read/write/edit", async () => {
-    await withTempDir("openclaw-sandbox-", async (sandboxDir) => {
-      await withTempDir("openclaw-workspace-", async (workspaceDir) => {
-        const sandbox = createAgentToolsSandboxContext({
-          workspaceDir: sandboxDir,
-          agentWorkspaceDir: workspaceDir,
-          workspaceAccess: "rw" as const,
-          fsBridge: createHostSandboxFsBridge(sandboxDir),
-          tools: { allow: [], deny: [] },
-        });
-
-        const testFile = "sandbox.txt";
-        await fs.writeFile(path.join(sandboxDir, testFile), "sandbox read", "utf8");
-        await fs.writeFile(path.join(workspaceDir, testFile), "workspace read", "utf8");
-
-        const tools = createOpenClawCodingTools({ workspaceDir, sandbox });
-        const { readTool, writeTool, editTool } = expectReadWriteEditTools(tools);
-
-        const result = await readTool?.execute("sbx-read", { path: testFile });
-        expect(getTextContent(result)).toContain("sandbox read");
-
-        await writeTool?.execute("sbx-write", {
-          path: "new.txt",
-          content: "sandbox write",
-        });
-        await expectFile(path.join(sandboxDir, "new.txt"), "sandbox write");
-
-        await editTool?.execute("sbx-edit", {
-          path: "new.txt",
-          edits: [{ oldText: "write", newText: "edit" }],
-        });
-        await expectFile(path.join(sandboxDir, "new.txt"), "sandbox edit");
-      });
+    const sandboxDir = tempDirs.make("openclaw-sandbox-");
+    const sandbox = createAgentToolsSandboxContext({
+      workspaceDir: sandboxDir,
+      agentWorkspaceDir: workspaceDir,
+      workspaceAccess: "rw" as const,
+      fsBridge: createHostSandboxFsBridge(sandboxDir),
+      tools: { allow: [], deny: [] },
     });
+
+    const testFile = "sandbox.txt";
+    await fs.writeFile(path.join(sandboxDir, testFile), "sandbox read", "utf8");
+    await fs.writeFile(path.join(workspaceDir, testFile), "workspace read", "utf8");
+
+    const tools = createOpenClawCodingTools({ workspaceDir, sandbox });
+    const { readTool, writeTool, editTool } = expectReadWriteEditTools(tools);
+
+    const result = await readTool?.execute("sbx-read", { path: testFile });
+    expect(getTextContent(result)).toContain("sandbox read");
+
+    await writeTool?.execute("sbx-write", {
+      path: "new.txt",
+      content: "sandbox write",
+    });
+    await expectFile(path.join(sandboxDir, "new.txt"), "sandbox write");
+
+    await editTool?.execute("sbx-edit", {
+      path: "new.txt",
+      edits: [{ oldText: "write", newText: "edit" }],
+    });
+    await expectFile(path.join(sandboxDir, "new.txt"), "sandbox edit");
   });
 });
 
-type UnsafeMountedSandbox = Parameters<
-  Parameters<typeof withUnsafeMountedSandboxHarness>[0]
->[0]["sandbox"];
-
 const APPLY_PATCH_PAYLOAD =
   "*** Begin Patch\n*** Add File: /agent/pwned.txt\n+owned-by-apply-patch\n*** End Patch";
-
-function patchSandbox(sandbox: UnsafeMountedSandbox) {
-  const { workspaceDir: root, containerWorkdir: containerRoot, fsBridge } = sandbox;
-  return { root, bridge: fsBridge!, workspaceMounts: [{ hostRoot: root, containerRoot }] };
-}
-
-function resolveApplyPatchTool(sandbox: UnsafeMountedSandbox) {
-  return createApplyPatchTool({
-    cwd: sandbox.workspaceDir,
-    sandbox: patchSandbox(sandbox),
-  });
-}
 
 describe("tools.fs.workspaceOnly", () => {
   it("defaults to allowing sandbox mounts outside the workspace root", async () => {
@@ -462,7 +410,11 @@ describe("tools.fs.workspaceOnly", () => {
 
   it("enforces apply_patch workspace-only in sandbox mounts by default", async () => {
     await withUnsafeMountedSandboxHarness(async ({ agentRoot, sandbox }) => {
-      const applyPatchTool = resolveApplyPatchTool(sandbox);
+      const { workspaceDir: root, containerWorkdir: containerRoot, fsBridge } = sandbox;
+      const applyPatchTool = createApplyPatchTool({
+        cwd: root,
+        sandbox: { root, bridge: fsBridge!, workspaceMounts: [{ hostRoot: root, containerRoot }] },
+      });
 
       await expect(applyPatchTool.execute("t1", { input: APPLY_PATCH_PAYLOAD })).rejects.toThrow(
         /Path escapes sandbox root/i,

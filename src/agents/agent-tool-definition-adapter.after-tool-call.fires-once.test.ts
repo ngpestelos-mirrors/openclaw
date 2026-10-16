@@ -42,15 +42,9 @@ function createTestTool(name: string, fail = false) {
 
 function createToolHandlerCtx() {
   return {
-    params: {
-      runId: "integration-test",
-      session: { messages: [] },
-    },
+    params: { runId: "integration-test", session: { messages: [] } },
     hookRunner: hookMocks.runner,
-    state: {
-      ...createBaseToolHandlerState(),
-      successfulCronAdds: 0,
-    },
+    state: { ...createBaseToolHandlerState(), successfulCronAdds: 0 },
     log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() },
     flushBlockReplyBuffer: vi.fn(),
     shouldEmitToolResult: () => false,
@@ -107,18 +101,12 @@ describe("after_tool_call fires exactly once in embedded runs", () => {
   beforeAll(loadFreshAfterToolCallModulesForTest);
 
   beforeEach(() => {
-    hookMocks.runner.hasHooks.mockClear();
+    vi.clearAllMocks();
     hookMocks.runner.hasHooks.mockReturnValue(true);
-    hookMocks.runner.runAfterToolCall.mockClear();
     hookMocks.runner.runAfterToolCall.mockResolvedValue(undefined);
-    hookMocks.runner.runBeforeToolCall.mockClear();
     hookMocks.runner.runBeforeToolCall.mockResolvedValue(undefined);
-    beforeToolCallMocks.consumeAdjustedParamsForToolCall.mockClear();
     beforeToolCallMocks.consumeAdjustedParamsForToolCall.mockReturnValue(undefined);
-    beforeToolCallMocks.recordAdjustedParamsForToolCall.mockClear();
-    beforeToolCallMocks.isToolWrappedWithBeforeToolCallHook.mockClear();
     beforeToolCallMocks.isToolWrappedWithBeforeToolCallHook.mockReturnValue(false);
-    beforeToolCallMocks.runBeforeToolCallHook.mockClear();
     beforeToolCallMocks.runBeforeToolCallHook.mockImplementation(async ({ params }) => ({
       blocked: false,
       params,

@@ -24,6 +24,16 @@ import { createSandboxTestContext } from "./sandbox/test-fixtures.js";
 import { createSandboxFsBridgeFromResolver } from "./test-helpers/host-sandbox-fs-bridge.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const patchInput = (lines: string[]) => ["*** Begin Patch", ...lines, "*** End Patch"].join("\n");
+const addFile = (file: string, text: string) => [`*** Add File: ${file}`, `+${text}`];
+const deleteFile = (file: string) => `*** Delete File: ${file}`;
+const updateFile = (file: string, oldText: string, newText: string, moveTo?: string) => [
+  `*** Update File: ${file}`,
+  ...(moveTo ? [`*** Move to: ${moveTo}`] : []),
+  "@@",
+  `-${oldText}`,
+  `+${newText}`,
+];
 
 describe.each(["portable", "Linux shell"] as const)("leading-@ remote paths (%s)", (fixture) => {
   // The shell fixture runs remote GNU utilities locally; the portable fixture
@@ -92,7 +102,7 @@ describe.each(["portable", "Linux shell"] as const)("leading-@ remote paths (%s)
       const patchOptions = { cwd: hostRoot, sandbox: patchSandbox };
       const patch = (callId: string, lines: string[]) =>
         createApplyPatchTool(patchOptions).execute(callId, {
-          input: ["*** Begin Patch", ...lines, "*** End Patch"].join("\n"),
+          input: patchInput(lines),
         });
       const guard = <TDetails>(tool: AnyAgentTool<TDetails>) =>
         wrapToolWorkspaceRootGuardWithOptions(tool, hostRoot, {
@@ -144,14 +154,9 @@ describe.each(["portable", "Linux shell"] as const)("leading-@ remote paths (%s)
       await expectRead("remote-reference-literal-read", "@@notes.md", "literal edited");
       await write("remote-reference-literal-write", "@@notes.md", "referenced original");
       await edit("remote-reference-literal-edit", "@@notes.md", "original", "edited");
-      const referencedPatch = [
-        "*** Begin Patch",
-        "*** Update File: @@notes.md",
-        "@@",
-        "-referenced edited",
-        "+referenced patched",
-        "*** End Patch",
-      ].join("\n");
+      const referencedPatch = patchInput(
+        updateFile("@@notes.md", "referenced edited", "referenced patched"),
+      );
       await expect(
         extractResolvedApplyPatchTargetPaths(referencedPatch, patchOptions),
       ).resolves.toEqual([path.posix.join(containerWorkdir, "@notes.md")]);
@@ -180,22 +185,14 @@ describe.each(["portable", "Linux shell"] as const)("leading-@ remote paths (%s)
       ).rejects.toThrow(/Memory flush writes are restricted/);
       await expectFile(journal, "allowed");
 
-      await patch("remote-at-patch", ["*** Delete File: @notes.md"]);
+      await patch("remote-at-patch", [deleteFile("@notes.md")]);
       await expectMissing("@notes.md");
       await expectFile("notes.md", "sibling original");
       await patch("remote-at-shorthand-patch", [
-        "*** Update File: @reference.md",
-        "@@",
-        "-reference",
-        "+reference patched",
-        "*** Add File: @added.md",
-        "+added",
-        "*** Delete File: @obsolete.md",
-        "*** Update File: @move-source.md",
-        "*** Move to: @moved.md",
-        "@@",
-        "-move source",
-        "+move target",
+        ...updateFile("@reference.md", "reference", "reference patched"),
+        ...addFile("@added.md", "added"),
+        deleteFile("@obsolete.md"),
+        ...updateFile("@move-source.md", "move source", "move target", "@moved.md"),
       ]);
       await expectFile("reference.md", "reference patched");
       await expectFile("added.md", "added\n");
@@ -203,12 +200,10 @@ describe.each(["portable", "Linux shell"] as const)("leading-@ remote paths (%s)
       await expectMissing("move-source.md");
       await expectFile("moved.md", "move target");
       await patch("remote-at-replace-patch", [
-        "*** Delete File: @replace-absent.md",
-        "*** Add File: @replace-absent.md",
-        "+new literal",
-        "*** Delete File: @replace-present.md",
-        "*** Add File: @replace-present.md",
-        "+new literal",
+        deleteFile("@replace-absent.md"),
+        ...addFile("@replace-absent.md", "new literal"),
+        deleteFile("@replace-present.md"),
+        ...addFile("@replace-present.md", "new literal"),
       ]);
       await expectFile("@replace-absent.md", "new literal\n");
       await expectMissing("replace-absent.md");
@@ -251,14 +246,7 @@ describe.each(["portable", "Linux shell"] as const)("leading-@ remote paths (%s)
             sandbox: patchSandbox,
             memoryWriteProvenance,
           }).execute("remote-memory-patch", {
-            input: [
-              "*** Begin Patch",
-              `*** Update File: ${memoryPath}`,
-              "@@",
-              "-edited",
-              "+patched",
-              "*** End Patch",
-            ].join("\n"),
+            input: patchInput(updateFile(memoryPath, "edited", "patched")),
           });
           await expectQuarantine("patched");
           await wrapToolMemoryFlushAppendOnlyWrite(memoryWrite, {
