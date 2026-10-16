@@ -162,9 +162,13 @@ export class DecisionProviderHost {
     await Promise.all([...this.pending.values()].map((request) => request.done));
   }
 
-  private ready(): boolean {
+  private ready(): boolean | undefined {
     try {
-      const available = this.provider.isReady?.() ?? true;
+      // Providers may resolve per-call credentials without prepared local evidence.
+      if (this.provider.isReady === undefined) {
+        return undefined;
+      }
+      const available = this.provider.isReady();
       if (typeof available !== "boolean") {
         throw new DecisionContractError();
       }
@@ -182,16 +186,16 @@ export class DecisionProviderHost {
       config.plugins?.enabled !== false &&
       config.plugins?.entries?.[this.record.id]?.enabled !== false;
     const admitted = !this.retired && !this.reloadPause && instance?.acceptingCalls === true;
-    const credentialReady = admitted && instance.run(() => this.ready());
+    const readiness = admitted && instance.run(() => this.ready());
     return {
       providerId: this.provider.id,
       pluginId: this.record.id,
       configured,
-      credentialReady,
+      credentialReady: readiness === true,
       callable:
         configured &&
         enabled &&
-        credentialReady &&
+        readiness !== false &&
         !health.authFailed &&
         !health.trial &&
         health.openUntil <= performance.now() &&
@@ -264,7 +268,7 @@ export class DecisionProviderHost {
     }
     const health = this.generation(config);
     const readConfig = createRuntimeConfigReader(config);
-    if (!instance.runInRegistry(registry, () => this.ready())) {
+    if (instance.runInRegistry(registry, () => this.ready()) === false) {
       return this.unavailable("credentials-unavailable");
     }
     if (health.authFailed || health.openUntil > performance.now() || health.trial) {
