@@ -3,6 +3,7 @@ import { expect, it, vi, type Mock } from "vitest";
 import type { GatewayServer } from "../../gateway/server-public.js";
 import type { GatewayActiveWorkSnapshot } from "../../infra/gateway-active-work.js";
 import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 
 type ManagedUpdateOwner = NonNullable<GatewayRestartIntent["successorOwner"]>;
 
@@ -86,17 +87,14 @@ export function createSignaledStart(
   close: GatewayServer["close"],
   startupSettled = Promise.resolve(),
 ) {
-  let resolveStarted: (() => void) | null = null;
-  const started = new Promise<void>((resolve) => {
-    resolveStarted = resolve;
-  });
+  const started = createDeferredCore();
   const start = vi.fn<Parameters<typeof import("./run-loop.js").runGatewayLoop>[0]["start"]>(
     async () => {
-      resolveStarted?.();
-      return { getTailscaleIngressEndpoint: () => undefined, close, startupSettled };
+      started.resolve();
+      return createGatewayServer(close, startupSettled);
     },
   );
-  return { start, started };
+  return { start, started: started.promise };
 }
 
 export const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
@@ -114,29 +112,6 @@ export function setPlatform(platform: string) {
 const LOOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGUSR2"] as const;
 type LoopSignal = (typeof LOOP_SIGNALS)[number];
 
-function removeNewSignalListeners(signal: LoopSignal, existing: Set<(...args: unknown[]) => void>) {
-  for (const listener of process.listeners(signal)) {
-    const fn = listener as (...args: unknown[]) => void;
-    if (!existing.has(fn)) {
-      process.removeListener(signal, fn);
-    }
-  }
-}
-
-function addedSignalListener(
-  signal: LoopSignal,
-  existing: Set<(...args: unknown[]) => void>,
-): (() => void) | null {
-  const listeners = process.listeners(signal) as Array<(...args: unknown[]) => void>;
-  for (let i = listeners.length - 1; i >= 0; i -= 1) {
-    const listener = listeners[i];
-    if (listener && !existing.has(listener)) {
-      return listener as () => void;
-    }
-  }
-  return null;
-}
-
 export async function withIsolatedSignals(
   run: (helpers: { captureSignal: (signal: LoopSignal) => () => void }) => Promise<void>,
 ) {
@@ -146,8 +121,10 @@ export async function withIsolatedSignals(
       new Set(process.listeners(signal) as Array<(...args: unknown[]) => void>),
     ]),
   ) as Record<LoopSignal, Set<(...args: unknown[]) => void>>;
+  const added = (signal: LoopSignal) =>
+    process.listeners(signal).filter((listener) => !existingListeners[signal].has(listener));
   const captureSignal = (signal: LoopSignal) => {
-    const listener = addedSignalListener(signal, existingListeners[signal]);
+    const listener = added(signal).at(-1);
     if (!listener) {
       throw new Error(`expected new ${signal} listener`);
     }
@@ -157,7 +134,9 @@ export async function withIsolatedSignals(
     await run({ captureSignal });
   } finally {
     for (const signal of LOOP_SIGNALS) {
-      removeNewSignalListeners(signal, existingListeners[signal]);
+      for (const listener of added(signal)) {
+        process.removeListener(signal, listener);
+      }
     }
   }
 }
@@ -176,19 +155,38 @@ export async function runGatewayLoop({
 }
 
 export function createRuntimeWithExitSignal(exitCallOrder?: string[]) {
-  let resolveExit: (code: number) => void = () => {};
-  const exited = new Promise<number>((resolve) => {
-    resolveExit = resolve;
-  });
+  const exited = createDeferredCore<number>();
   const runtime = {
     log: vi.fn(),
     error: vi.fn(),
     exit: vi.fn((code: number) => {
       exitCallOrder?.push("exit");
-      resolveExit(code);
+      exited.resolve(code);
     }),
   };
-  return { runtime, exited };
+  return { runtime, exited: exited.promise };
+}
+
+export function createLifecycleGate() {
+  const entered = createDeferredCore();
+  const release = createDeferredCore();
+  const wait = async () => {
+    entered.resolve();
+    await release.promise;
+  };
+  return { entered: entered.promise, release: release.resolve, reject: release.reject, wait };
+}
+
+export function systemdReply(timeout = "30s") {
+  return { code: 0, stdout: `LoadState=loaded\nTimeoutStopUSec=${timeout}`, stderr: "" };
+}
+
+export function expectStopCloseCall(close: Mock<GatewayServer["close"]>) {
+  expect(close).toHaveBeenCalledWith({
+    retainSharedState: true,
+    reason: "gateway stopping",
+    restartExpectedMs: null,
+  });
 }
 
 export function createCloseMock() {
@@ -249,7 +247,7 @@ export function createUpdateRespawnChild(pid = 7777) {
 }
 
 export function registerUpdateRespawnProgressTests({
-  runLoopWithStart,
+  createSignaledLoopHarness,
   peekGatewayRestartReason,
   consumeGatewayRestartIntent,
   respawnGatewayProcessForUpdate,
@@ -301,10 +299,10 @@ export function registerUpdateRespawnProgressTests({
             setTimeout(resolve, closeMs);
           });
         });
-        const { start, started } = createSignaledStart(close);
-        const { runtime, exited } = createRuntimeWithExitSignal();
-        await runLoopWithStart({ start, runtime, lockPort: 18789 });
-        await waitForStart(started);
+        const { start, runtime, exited } = await createSignaledLoopHarness(undefined, false, {
+          close,
+          lockPort: 18789,
+        });
         const restartSignal = captureSignal("SIGUSR2");
 
         vi.useFakeTimers();

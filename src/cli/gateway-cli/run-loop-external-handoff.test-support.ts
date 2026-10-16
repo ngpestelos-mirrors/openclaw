@@ -5,7 +5,9 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalMap } from "../../shared/global-singleton.js";
 import { captureEnv } from "../../test-utils/env.js";
 import {
+  createLifecycleGate,
   expectRestartCloseCall,
+  expectStopCloseCall,
   waitForLoopCondition,
   withIsolatedSignals,
   type UpdateRespawnFixtures,
@@ -109,21 +111,19 @@ export function registerExternalHandoffShutdownTests({
           });
           acquireGatewayLock.mockResolvedValueOnce({ release: lockRelease });
           restartGatewayProcessWithFreshPid.mockReturnValueOnce({ mode: "supervised", exitCode });
-          const handoffEntered = createDeferredCore();
-          const releaseHandoff = createDeferredCore();
+          const handoffGate = createLifecycleGate();
           const writeHandoff = writeGatewayRestartHandoff.getMockImplementation()!;
           writeGatewayRestartHandoff.mockImplementationOnce(async (...args) => {
-            handoffEntered.resolve();
-            await releaseHandoff.promise;
+            await handoffGate.wait();
             return writeHandoff(...args);
           });
           const { runtime, exited } = await createSignaledLoopHarness(exitCallOrder);
           captureSignal("SIGUSR2")();
-          await handoffEntered.promise;
+          await handoffGate.entered;
           try {
             expect(runtime.exit).not.toHaveBeenCalled();
           } finally {
-            releaseHandoff.resolve();
+            handoffGate.release();
           }
           await expect(exited).resolves.toBe(exitCode ?? 0);
           expect(lockRelease).toHaveBeenCalledOnce();
@@ -179,8 +179,7 @@ export function registerExternalHandoffShutdownTests({
     process.env.OPENCLAW_SUPERVISOR_MODE = "external";
     const closed = createDeferredCore();
     const closeEntered = createDeferredCore();
-    const handoffEntered = createDeferredCore();
-    const releaseHandoff = createDeferredCore();
+    const handoffGate = createLifecycleGate();
     const sharedState = resolveGlobalMap<string, boolean>(
       Symbol("restart-handoff-shared-state"),
       "shared-state",
@@ -188,8 +187,7 @@ export function registerExternalHandoffShutdownTests({
     sharedState.set("live", true);
     const writeHandoff = writeGatewayRestartHandoff.getMockImplementation()!;
     writeGatewayRestartHandoff.mockImplementationOnce(async (...args) => {
-      handoffEntered.resolve();
-      await releaseHandoff.promise;
+      await handoffGate.wait();
       return writeHandoff(...args);
     });
     restartGatewayProcessWithFreshPid.mockReturnValueOnce({ mode: "supervised" });
@@ -211,7 +209,7 @@ export function registerExternalHandoffShutdownTests({
           expect(writeGatewayRestartHandoff).not.toHaveBeenCalled();
           closed.resolve();
           await awaitGateBeforeSettlement(
-            handoffEntered.promise,
+            handoffGate.entered,
             loopPromise,
             "Gateway exited before publishing its restart handoff",
           );
@@ -219,7 +217,7 @@ export function registerExternalHandoffShutdownTests({
           expect(runtime.exit).not.toHaveBeenCalled();
         } finally {
           closed.resolve();
-          releaseHandoff.resolve();
+          handoffGate.release();
           await Promise.allSettled([loopPromise]);
         }
         await loopPromise;
@@ -228,7 +226,7 @@ export function registerExternalHandoffShutdownTests({
       });
     } finally {
       closed.resolve();
-      releaseHandoff.resolve();
+      handoffGate.release();
       env.restore();
     }
   });
@@ -243,11 +241,7 @@ export function registerExternalHandoffShutdownTests({
       captureSignal("SIGTERM")();
       await expect(exited).resolves.toBe(0);
       expect(waitForGatewayActiveWork).toHaveBeenCalledWith(20_000, expect.any(Object));
-      expect(close).toHaveBeenCalledWith({
-        retainSharedState: true,
-        reason: "gateway stopping",
-        restartExpectedMs: null,
-      });
+      expectStopCloseCall(close);
       expect(gatewayLog.warn).toHaveBeenCalledWith(
         "external restart handoff refused: gateway terminal persistence is still pending",
       );

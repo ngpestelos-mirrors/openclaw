@@ -4,10 +4,8 @@ import "../../test-utils/prepare-compiled-subprocesses.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { HostedGatewayStop } from "../../daemon/hosted-stop.js";
 import type { GatewayActiveWorkSnapshot } from "../../infra/gateway-active-work.js";
-import type { GatewayBootLifecycleCompletion } from "../../infra/gateway-boot-lifecycle.js";
 import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
 import { SUPERVISOR_HINT_ENV_VARS } from "../../infra/supervisor-markers.js";
-import type { RuntimeEnv } from "../../runtime.js";
 import { captureEnv, deleteTestEnvValue } from "../../test-utils/env.js";
 import type { GatewayRestartResult } from "../daemon-cli/restart-health.types.js";
 import {
@@ -20,6 +18,7 @@ import {
   runGatewayLoop,
   type UpdateRespawnResultFixture,
   setPlatform,
+  systemdReply,
   waitForStart,
 } from "./run-loop.test-support.js";
 
@@ -57,11 +56,7 @@ vi.mock("../../daemon/systemd-exec.js", () => ({
   execSystemctlUser: () => systemctl(),
 }));
 
-// darwin now refreshes the stop budget on every stop/restart request, and the real
-// reader spawns launchctl print against three domains through the mocked
-// node:child_process module. Keep launchctl out of the loop and let each case state
-// the deadline launchd is enforcing. The reader reports stop: null when launchd is not
-// running the stop, which leaves the platform-neutral policy in force.
+// Avoid real launchctl queries; each case supplies its enforced native deadline.
 const readLaunchdStopTimeout = vi.fn<
   typeof import("../../infra/launchd-stop-timeout.js").readLaunchdStopTimeout
 >(async () => ({ stop: null }));
@@ -363,32 +358,30 @@ vi.mock("./shutdown-hard-exit.js", () => ({
     armShutdownHardExitWatchdog(params),
 }));
 
-async function runLoopWithStart(params: {
-  start: ReturnType<typeof vi.fn>;
-  runtime: RuntimeEnv;
-  ownsProcessLifecycle?: boolean;
-  lockPort?: number;
-  healthHost?: string;
-  beginBoot?: (startedAtMs: number) => void | Promise<void>;
-  completeBoot?: (completion: GatewayBootLifecycleCompletion) => void;
-}) {
-  const loopPromise = runGatewayLoop({
-    start: params.start as unknown as Parameters<typeof runGatewayLoop>[0]["start"],
-    runtime: params.runtime,
-    ownsProcessLifecycle: params.ownsProcessLifecycle,
-    lockPort: params.lockPort,
-    healthHost: params.healthHost,
-    beginBoot: params.beginBoot,
-    completeBoot: params.completeBoot,
-  });
+async function runLoopWithStart(params: Parameters<typeof runGatewayLoop>[0]) {
+  const loopPromise = runGatewayLoop(params);
   return { loopPromise };
 }
 
-async function createSignaledLoopHarness(exitCallOrder?: string[], ownsProcessLifecycle = false) {
-  const close = createCloseMock();
+async function createSignaledLoopHarness(
+  exitCallOrder?: string[],
+  ownsProcessLifecycle = false,
+  options: Omit<
+    Parameters<typeof runGatewayLoop>[0],
+    "start" | "runtime" | "ownsProcessLifecycle"
+  > & {
+    close?: ReturnType<typeof createCloseMock>;
+  } = {},
+) {
+  const { close = createCloseMock(), ...params } = options;
   const { start, started } = createSignaledStart(close);
   const { runtime, exited } = createRuntimeWithExitSignal(exitCallOrder);
-  const { loopPromise } = await runLoopWithStart({ start, runtime, ownsProcessLifecycle });
+  const { loopPromise } = await runLoopWithStart({
+    ...params,
+    start,
+    runtime,
+    ownsProcessLifecycle,
+  });
   await waitForStart(started);
   return { close, start, runtime, exited, loopPromise };
 }
@@ -400,20 +393,11 @@ function expectRestartHandoffCall(expected: {
 }) {
   expect(writeGatewayRestartHandoff).toHaveBeenCalledTimes(1);
   const [handoff] = writeGatewayRestartHandoff.mock.calls[0] ?? [];
-  if (!handoff || typeof handoff !== "object" || Array.isArray(handoff)) {
-    throw new Error("expected restart handoff options object");
-  }
-  const processInstanceId = (handoff as { processInstanceId?: unknown }).processInstanceId;
-  expect(typeof processInstanceId).toBe("string");
-  if (typeof processInstanceId !== "string") {
-    throw new Error("expected restart handoff processInstanceId string");
-  }
-  expect(processInstanceId).toMatch(
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
   expect(handoff).toEqual({
     ...expected,
-    processInstanceId,
+    processInstanceId: expect.stringMatching(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    ),
   });
 }
 
@@ -433,11 +417,7 @@ beforeEach(async () => {
   }));
   setPlatform("linux");
   readCgroup.mockReset().mockResolvedValue("0::/\n");
-  systemctl.mockReset().mockResolvedValue({
-    code: 0,
-    stdout: "LoadState=loaded\nTimeoutStopUSec=5min 30s",
-    stderr: "",
-  });
+  systemctl.mockReset().mockResolvedValue(systemdReply("5min 30s"));
   // mockReset also drops any one-shot launchd deadline a previous case left queued.
   readLaunchdStopTimeout.mockReset().mockResolvedValue({ stop: null });
   hostedStopExecute.mockReset().mockResolvedValue({ outcome: "accepted" });
@@ -458,10 +438,8 @@ beforeEach(async () => {
   consumeGatewaySuspendHandoff.mockReset().mockReturnValue({ ok: true, value: false });
   disarmGatewaySuspendHandoff.mockClear();
   consumeGatewayRestartIntent.mockReturnValue(null);
-  peekGatewayRestartReason.mockReset();
-  peekGatewayRestartReason.mockReturnValue(undefined);
-  restartGatewayProcessWithFreshPid.mockReset();
-  restartGatewayProcessWithFreshPid.mockReturnValue({ mode: "disabled" });
+  peekGatewayRestartReason.mockReset().mockReturnValue(undefined);
+  restartGatewayProcessWithFreshPid.mockReset().mockReturnValue({ mode: "disabled" });
   respawnGatewayProcessForUpdate.mockReset();
   waitForGatewayHealthyRestart.mockReset().mockResolvedValue(respawnHealth());
   writeRestartSentinelIfUnchanged.mockReset().mockResolvedValue(null);
@@ -470,33 +448,25 @@ beforeEach(async () => {
     mode: "disabled",
     detail: "OPENCLAW_NO_RESPAWN",
   });
-  hasManagedProviderLocalServices.mockReset();
-  hasManagedProviderLocalServices.mockReturnValue(false);
-  stopManagedProviderLocalServices.mockReset();
-  stopManagedProviderLocalServices.mockResolvedValue(undefined);
+  hasManagedProviderLocalServices.mockReset().mockReturnValue(false);
+  stopManagedProviderLocalServices.mockReset().mockResolvedValue(undefined);
 
   gatewayWorkAdmissionActual = await vi.importActual("../../process/gateway-work-admission.js");
   gatewayWorkAdmissionActual.resetGatewayWorkAdmission();
-  createGatewayActiveWorkSnapshot.mockReset();
-  createGatewayActiveWorkSnapshot.mockReturnValue(idleActiveWorkSnapshot);
-  waitForGatewayActiveWork.mockReset();
-  waitForGatewayActiveWork.mockImplementation(async (_timeoutMs, options) => {
+  createGatewayActiveWorkSnapshot.mockReset().mockReturnValue(idleActiveWorkSnapshot);
+  waitForGatewayActiveWork.mockReset().mockImplementation(async (_timeoutMs, options) => {
     const snapshot = createGatewayActiveWorkSnapshot();
     options?.onSnapshot?.(snapshot);
     return { drained: snapshot.idle, snapshot };
   });
-  cancelManagedServiceUpdateHandoff.mockReset();
-  cancelManagedServiceUpdateHandoff.mockResolvedValue("restored-in-process");
-  claimManagedServiceUpdateHandoff.mockReset();
-  claimManagedServiceUpdateHandoff.mockReturnValue(true);
+  cancelManagedServiceUpdateHandoff.mockReset().mockResolvedValue("restored-in-process");
+  claimManagedServiceUpdateHandoff.mockReset().mockReturnValue(true);
   isForegroundUpdateHandoff.mockReset().mockReturnValue(false);
   completeForegroundUpdateHandoffAfterClose.mockReset().mockResolvedValue({ respawn: true });
   captureForegroundUpdateHandoffStop.mockReset().mockReturnValue(undefined);
-  requestManagedServiceUpdateHandoffPark.mockReset();
-  requestManagedServiceUpdateHandoffPark.mockResolvedValue(true);
+  requestManagedServiceUpdateHandoffPark.mockReset().mockResolvedValue(true);
   waitForSystemServiceUpdateHandoffs.mockReset().mockReturnValue(undefined);
-  commitManagedServiceUpdateHandoff.mockReset();
-  commitManagedServiceUpdateHandoff.mockResolvedValue(true);
+  commitManagedServiceUpdateHandoff.mockReset().mockResolvedValue(true);
 });
 
 afterEach(() => {
