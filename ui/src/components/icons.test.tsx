@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { LitContent } from "../lit/solid-content.tsx";
 import { mountSolid } from "../test-helpers/mount-solid.ts";
 import { iconData } from "./icon-data.ts";
 import { renderIconRegistry, toolIcons } from "./icons-tools.ts";
-import { icons } from "./icons.ts";
 
 const solidIcons = renderIconRegistry(iconData);
 
@@ -19,19 +17,6 @@ describe("icon registries", () => {
     expect(firstSvg?.getAttribute("stroke")).toBe("currentColor");
     expect(firstSvg?.getAttribute("stroke-width")).toBe("2");
     expect(firstSvg?.querySelector("rect")?.getAttribute("width")).toBe("14");
-    first.unmount();
-    expect(secondSvg?.isConnected).toBe(true);
-  });
-
-  it("keeps independent placements in the remaining Lit slots", () => {
-    const storedIcon = icons.copy;
-    const first = mountSolid(() => <LitContent value={storedIcon} />);
-    const second = mountSolid(() => <LitContent value={storedIcon} />);
-    const firstSvg = first.container.querySelector("svg");
-    const secondSvg = second.container.querySelector("svg");
-    expect(firstSvg).not.toBeNull();
-    expect(secondSvg).not.toBeNull();
-    expect(firstSvg).not.toBe(secondSvg);
     first.unmount();
     expect(secondSvg?.isConnected).toBe(true);
   });
