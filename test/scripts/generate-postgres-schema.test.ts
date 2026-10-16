@@ -195,6 +195,7 @@ describe("PostgreSQL schema generation", () => {
     for (const file of [
       "state.postgres.sql",
       "state-v23-v24.postgres.sql",
+      "state-v24-v25.postgres.sql",
       "agent.postgres.sql",
       "agent-search.postgres.sql",
       ...report.fragments.map((item) => item.file),
@@ -226,6 +227,7 @@ describe("PostgreSQL schema generation", () => {
         "portability-report.md",
         "state.postgres.sql",
         "state-v23-v24.postgres.sql",
+        "state-v24-v25.postgres.sql",
         "runtime.ts",
         "sqlite-catalogs.ts",
         "sqlite-state-catalogs.ts",
