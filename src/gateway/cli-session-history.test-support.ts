@@ -179,79 +179,55 @@ export function buildLegacyReseedPrompt(current = "current"): string {
 }
 
 function createClaudeHistoryLines(sessionId: string) {
+  const message = (
+    role: "user" | "assistant",
+    id: number,
+    time: string,
+    content: unknown,
+    fields: Record<string, unknown> = {},
+  ) => ({
+    type: role,
+    uuid: `${role}-${id}`,
+    timestamp: `2026-03-26T16:29:${time}Z`,
+    message: {
+      role,
+      ...(role === "assistant" ? { model: "claude-sonnet-4-6" } : {}),
+      content,
+      ...fields,
+    },
+  });
   return [
-    JSON.stringify({
+    {
       type: "queue-operation",
       operation: "enqueue",
       timestamp: "2026-03-26T16:29:54.722Z",
       sessionId,
       content: "[Thu 2026-03-26 16:29 GMT] Reply with exactly: AGENT CLI OK.",
+    },
+    message(
+      "user",
+      1,
+      "54.800",
+      'Sender: ⟦openclaw:ctx⟧\n```json\n{"label":"openclaw-control-ui"}\n```\n\n[Thu 2026-03-26 16:29 GMT] hi',
+    ),
+    message("assistant", 1, "55.500", [{ type: "text", text: "hello from Claude" }], {
+      stop_reason: "end_turn",
+      usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 22 },
     }),
-    JSON.stringify({
-      type: "user",
-      uuid: "user-1",
-      timestamp: "2026-03-26T16:29:54.800Z",
-      message: {
-        role: "user",
-        content:
-          'Sender: ⟦openclaw:ctx⟧\n```json\n{"label":"openclaw-control-ui"}\n```\n\n[Thu 2026-03-26 16:29 GMT] hi',
-      },
-    }),
-    JSON.stringify({
-      type: "assistant",
-      uuid: "assistant-1",
-      timestamp: "2026-03-26T16:29:55.500Z",
-      message: {
-        role: "assistant",
-        model: "claude-sonnet-4-6",
-        content: [{ type: "text", text: "hello from Claude" }],
-        stop_reason: "end_turn",
-        usage: {
-          input_tokens: 11,
-          output_tokens: 7,
-          cache_read_input_tokens: 22,
-        },
-      },
-    }),
-    JSON.stringify({
-      type: "assistant",
-      uuid: "assistant-2",
-      timestamp: "2026-03-26T16:29:56.000Z",
-      message: {
-        role: "assistant",
-        model: "claude-sonnet-4-6",
-        content: [
-          {
-            type: "tool_use",
-            id: "toolu_123",
-            name: "Bash",
-            input: {
-              command: "pwd",
-            },
-          },
-        ],
+    message(
+      "assistant",
+      2,
+      "56.000",
+      [{ type: "tool_use", id: "toolu_123", name: "Bash", input: { command: "pwd" } }],
+      {
         stop_reason: "tool_use",
       },
-    }),
-    JSON.stringify({
-      type: "user",
-      uuid: "user-2",
-      timestamp: "2026-03-26T16:29:56.400Z",
-      message: {
-        role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: "toolu_123",
-            content: "/tmp/demo",
-          },
-        ],
-      },
-    }),
-    JSON.stringify({
-      type: "last-prompt",
-      sessionId,
-      lastPrompt: "ignored",
-    }),
-  ].join("\n");
+    ),
+    message("user", 2, "56.400", [
+      { type: "tool_result", tool_use_id: "toolu_123", content: "/tmp/demo" },
+    ]),
+    { type: "last-prompt", sessionId, lastPrompt: "ignored" },
+  ]
+    .map((entry) => JSON.stringify(entry))
+    .join("\n");
 }

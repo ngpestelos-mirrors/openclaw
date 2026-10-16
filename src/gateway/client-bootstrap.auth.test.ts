@@ -12,31 +12,34 @@ import { resolveGatewayClientBootstrap } from "./client-bootstrap.js";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function remoteGatewayConfig(remote?: GatewayRemoteConfig): OpenClawConfig {
-  return {
-    gateway: {
-      mode: "remote",
-      remote: {
-        url: "wss://remote.example/ws",
-        ...remote,
-      },
-    },
-  };
+  return { gateway: { mode: "remote", remote: { url: "wss://remote.example/ws", ...remote } } };
+}
+
+type BootstrapParams = Parameters<typeof resolveGatewayClientBootstrap>[0];
+const localConfig: OpenClawConfig = {
+  gateway: { mode: "local", auth: { token: "configured-auth-value" } },
+};
+const shellToken = { OPENCLAW_GATEWAY_TOKEN: "shell-token-value" };
+const overrideUrl = "wss://override.example/rpc";
+function interactive(params: BootstrapParams) {
+  return resolveGatewayClientBootstrap({
+    env: {},
+    authPolicy: "interactive",
+    overrideAuthErrorHint: "Fix: pass explicit auth.",
+    ...params,
+  });
 }
 
 async function expectInteractiveAuth(
   params: { config: OpenClawConfig; env?: NodeJS.ProcessEnv },
   expectedAuth: { token?: string; password?: string },
 ): Promise<void> {
-  const result = await resolveGatewayClientBootstrap({
-    config: params.config,
-    env: params.env ?? {},
-    authPolicy: "interactive",
-  });
-  expect(result.auth).toEqual(expectedAuth);
+  const result = await interactive(params);
+  expect(result.auth).toEqual({ token: undefined, password: undefined, ...expectedAuth });
   expect(result).not.toHaveProperty("authFailureReason");
 }
 
-async function loadLocalTokenConfig(token: string, overrides: NodeJS.ProcessEnv = {}) {
+async function loadLocalTokenConfig(token: string) {
   const root = tempDirs.make("openclaw-client-bootstrap-literal-");
   const configPath = path.join(root, "openclaw.json");
   const env: NodeJS.ProcessEnv = {
@@ -46,7 +49,6 @@ async function loadLocalTokenConfig(token: string, overrides: NodeJS.ProcessEnv 
     OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
     OPENCLAW_STATE_DIR: path.join(root, "state"),
     VITEST: "true",
-    ...overrides,
   };
   fs.writeFileSync(
     configPath,
@@ -66,64 +68,30 @@ describe("resolveGatewayClientBootstrap interactive auth policy", () => {
     expect(result.auth).toEqual({ token: "${LITERAL_TOKEN}", password: undefined });
   });
 
-  it("keeps configured local password ahead of OPENCLAW_GATEWAY_PASSWORD", async () => {
+  it.each([
+    ["local", "local-config-auth-value", "local-config-auth-value"],
+    ["local", undefined, "shell-password-value"],
+    ["remote", undefined, "shell-token-value"],
+    ["remote", "remote-config-auth-value", "remote-config-auth-value"],
+  ] as const)("resolves %s auth (configured=%s)", async (mode, configured, expected) => {
+    const local = mode === "local";
     await expectInteractiveAuth(
       {
-        config: {
-          gateway: {
-            mode: "local",
-            auth: { mode: "password", password: "local-config-auth-value" }, // pragma: allowlist secret
-          },
-        },
-        env: { OPENCLAW_GATEWAY_PASSWORD: "shell-password-value" }, // pragma: allowlist secret
+        config: local
+          ? { gateway: { mode, auth: { mode: "password", password: configured } } }
+          : remoteGatewayConfig({ token: configured }),
+        env: local ? { OPENCLAW_GATEWAY_PASSWORD: "shell-password-value" } : shellToken,
       },
-      {
-        token: undefined,
-        password: "local-config-auth-value", // pragma: allowlist secret
-      },
-    );
-  });
-
-  it("falls back to OPENCLAW_GATEWAY_PASSWORD without configured local password", async () => {
-    await expectInteractiveAuth(
-      {
-        config: { gateway: { mode: "local", auth: { mode: "password" } } },
-        env: { OPENCLAW_GATEWAY_PASSWORD: "shell-password-value" }, // pragma: allowlist secret
-      },
-      {
-        token: undefined,
-        password: "shell-password-value", // pragma: allowlist secret
-      },
-    );
-  });
-
-  it("uses OPENCLAW_GATEWAY_TOKEN as remote interactive fallback", async () => {
-    await expectInteractiveAuth(
-      {
-        config: remoteGatewayConfig(),
-        env: { OPENCLAW_GATEWAY_TOKEN: "shell-token-value" },
-      },
-      { token: "shell-token-value", password: undefined },
-    );
-  });
-
-  it("keeps configured remote token ahead of OPENCLAW_GATEWAY_TOKEN", async () => {
-    await expectInteractiveAuth(
-      {
-        config: remoteGatewayConfig({ token: "remote-config-auth-value" }),
-        env: { OPENCLAW_GATEWAY_TOKEN: "shell-token-value" },
-      },
-      { token: "remote-config-auth-value", password: undefined },
+      local ? { password: expected } : { token: expected },
     );
   });
 
   it("reports an unresolved remote token ref instead of substituting ambient auth", async () => {
-    const result = await resolveGatewayClientBootstrap({
+    const result = await interactive({
       config: remoteGatewayConfig({
         token: { source: "env", provider: "default", id: "ABSENT_BOOTSTRAP_REMOTE_TOKEN" },
       }),
-      env: { OPENCLAW_GATEWAY_TOKEN: "shell-token-value" },
-      authPolicy: "interactive",
+      env: shellToken,
     });
 
     expect(result.auth).toEqual({ token: undefined, password: undefined });
@@ -132,44 +100,25 @@ describe("resolveGatewayClientBootstrap interactive auth policy", () => {
 
   it("never reuses config or env credentials for a CLI URL override", async () => {
     await expect(
-      resolveGatewayClientBootstrap({
-        config: {
-          gateway: { mode: "local", auth: { token: "configured-auth-value" } },
-        },
-        gatewayUrl: "wss://override.example/rpc",
-        env: { OPENCLAW_GATEWAY_TOKEN: "shell-token-value" },
-        authPolicy: "interactive",
-        overrideAuthErrorHint: "Fix: pass explicit auth.",
-      }),
+      interactive({ config: localConfig, gatewayUrl: overrideUrl, env: shellToken }),
     ).rejects.toThrow("gateway url override requires explicit credentials");
   });
 
   it("uses only env credentials for an env URL override", async () => {
-    const result = await resolveGatewayClientBootstrap({
-      config: {
-        gateway: { mode: "local", auth: { token: "configured-auth-value" } },
-      },
-      env: {
-        OPENCLAW_GATEWAY_URL: "wss://override.example/rpc",
-        OPENCLAW_GATEWAY_TOKEN: "shell-token-value",
-      },
-      authPolicy: "interactive",
-      overrideAuthErrorHint: "Fix: pass explicit auth.",
+    const result = await interactive({
+      config: localConfig,
+      env: { OPENCLAW_GATEWAY_URL: overrideUrl, ...shellToken },
     });
 
     expect(result.auth).toEqual({ token: "shell-token-value", password: undefined });
   });
 
   it("keeps explicit credentials ahead of every implicit source", async () => {
-    const result = await resolveGatewayClientBootstrap({
-      config: {
-        gateway: { mode: "local", auth: { token: "configured-auth-value" } },
-      },
-      gatewayUrl: "wss://override.example/rpc",
+    const result = await interactive({
+      config: localConfig,
+      gatewayUrl: overrideUrl,
       explicitAuth: { token: "caller-auth-value" },
-      env: { OPENCLAW_GATEWAY_TOKEN: "shell-token-value" },
-      authPolicy: "interactive",
-      overrideAuthErrorHint: "Fix: pass explicit auth.",
+      env: shellToken,
     });
 
     expect(result.auth).toEqual({ token: "caller-auth-value", password: undefined });
@@ -178,11 +127,9 @@ describe("resolveGatewayClientBootstrap interactive auth policy", () => {
   it("allows stored auth only for the exact normalized URL origin", async () => {
     const seenScopes: string[] = [];
     await expect(
-      resolveGatewayClientBootstrap({
+      interactive({
         config: { gateway: { mode: "local" } },
         gatewayUrl: "wss://override.example/rpc/?ignored=1",
-        env: {},
-        authPolicy: "interactive",
         allowStoredOriginAuth: async (scope) => {
           seenScopes.push(scope);
           return scope === "wss://override.example/rpc";
@@ -196,11 +143,9 @@ describe("resolveGatewayClientBootstrap interactive auth policy", () => {
     expect(seenScopes).toEqual(["wss://override.example/rpc"]);
 
     await expect(
-      resolveGatewayClientBootstrap({
+      interactive({
         config: { gateway: { mode: "local" } },
         gatewayUrl: "wss://other.example/rpc",
-        env: {},
-        authPolicy: "interactive",
         allowStoredOriginAuth: async (scope) => scope === "wss://override.example/rpc",
         overrideAuthErrorHint: "Fix: pair this origin.",
       }),

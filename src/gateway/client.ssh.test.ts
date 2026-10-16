@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { GatewayClientOptions as BaseGatewayClientOptions } from "../../packages/gateway-client/src/client.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { SshTunnel, startSshPortForward } from "../infra/ssh-tunnel.js";
-import { GatewayClient } from "./client.js";
+import { GatewayClient, type GatewayClientOptions } from "./client.js";
 
 type CapturedClient = {
   options: BaseGatewayClientOptions;
@@ -104,6 +104,24 @@ function controlledTunnel(localPort: number, waitForExitOnStop = false) {
 const route = { target: "alice@gateway.example.test:2222", remotePort: 18789 };
 const deviceAuthScope = "remote:ssh:fixture-selected-route";
 
+function createClient(overrides: GatewayClientOptions = {}) {
+  return new GatewayClient({
+    url: "ws://127.0.0.1:18789",
+    deviceIdentity: null,
+    deviceAuthScope,
+    sshTunnel: route,
+    ...overrides,
+  });
+}
+
+async function startClient(client: GatewayClient) {
+  const started = createDeferred<CapturedClient>();
+  fixture.onStart = started.resolve;
+  client.start();
+  await vi.dynamicImportSettled();
+  return started.promise;
+}
+
 it("keeps route-bound credentials and TLS identity when the local listener changes", async () => {
   const entry = {
     token: "fixture-route-token",
@@ -121,21 +139,15 @@ it("keeps route-bound credentials and TLS identity when the local listener chang
   ] as const) {
     const owned = controlledTunnel(localPort);
     fixture.startSsh.mockResolvedValueOnce(owned.tunnel);
-    const started = createDeferred<CapturedClient>();
-    fixture.onStart = started.resolve;
-    const client = new GatewayClient({
+    const client = createClient({
       url: `wss://${host}:18789/gateway/ws?profile=work`,
-      deviceIdentity: null,
-      deviceAuthScope,
       sshTunnel: { ...route, identity },
     });
 
-    client.start();
-    await vi.dynamicImportSettled();
+    const base = await startClient(client);
     expect(fixture.startSsh).toHaveBeenLastCalledWith(
       expect.objectContaining({ ...route, identity }),
     );
-    const base = await started.promise;
     try {
       expect(base.options.url).toBe(`wss://127.0.0.1:${localPort}/gateway/ws?profile=work`);
       expect(base.options.tlsServerName).toBe(tlsServerName);
@@ -165,13 +177,7 @@ it("joins a canceled pending tunnel before stopping without opening the Gateway 
   const owned = controlledTunnel(40103, true);
   fixture.startSsh.mockReturnValueOnce(pending.promise);
   const onConnectError = vi.fn();
-  const client = new GatewayClient({
-    url: "ws://127.0.0.1:18789",
-    deviceIdentity: null,
-    deviceAuthScope,
-    sshTunnel: route,
-    onConnectError,
-  });
+  const client = createClient({ onConnectError });
 
   client.start();
   await vi.dynamicImportSettled();
@@ -195,23 +201,12 @@ it("joins a canceled pending tunnel before stopping without opening the Gateway 
 it("rejects a reconnect as soon as the SSH child exits and never reuses its released port", async () => {
   const owned = controlledTunnel(40104);
   fixture.startSsh.mockResolvedValueOnce(owned.tunnel);
-  const started = createDeferred<CapturedClient>();
   const stopped = createDeferred();
-  fixture.onStart = started.resolve;
   fixture.onStop = stopped.resolve;
   const beforeConnect = vi.fn();
-  const client = new GatewayClient({
-    url: "ws://127.0.0.1:18789",
-    deviceIdentity: null,
-    deviceAuthScope,
-    sshTunnel: route,
-    hostDeps: { beforeConnect },
-  });
-
-  client.start();
-  await vi.dynamicImportSettled();
+  const client = createClient({ hostDeps: { beforeConnect } });
+  const base = await startClient(client);
   expect(fixture.startSsh).toHaveBeenCalledOnce();
-  const base = await started.promise;
   expect(beforeConnect).toHaveBeenCalledOnce();
   expect(client.connected).toBe(true);
   assert(base.options.hostDeps?.beforeConnect);
@@ -231,11 +226,7 @@ it("settles SSH teardown and close notification even when the error callback thr
   const owned = controlledTunnel(40105);
   fixture.startSsh.mockResolvedValueOnce(owned.tunnel);
   const closed = createDeferred();
-  const client = new GatewayClient({
-    url: "ws://127.0.0.1:18789",
-    deviceIdentity: null,
-    deviceAuthScope,
-    sshTunnel: route,
+  const client = createClient({
     hostDeps: {
       beforeConnect: () => {
         throw new Error("synthetic start failure");

@@ -50,9 +50,12 @@ function readConfigGetResponse(
 
 const activeWatcher = () => "active" as const;
 const disabledWatcher = () => "disabled" as const;
+const loadUiHints = vi.fn(() => undefined);
+const readWatched = () => readConfigGetResponse({ getHotReloadStatus: activeWatcher, loadUiHints });
 
 beforeEach(() => {
   invalidateConfigGetResponseCache();
+  loadUiHints.mockClear();
   mocks.appliedConfigHash = "applied-1";
   mocks.pluginRegistryVersion = 1;
   mocks.readConfigFileSnapshot.mockReset();
@@ -80,15 +83,8 @@ describe("config.get response cache", () => {
       };
       const before = structuredClone(snapshot);
       mocks.readConfigFileSnapshot.mockResolvedValue(snapshot);
-      const loadUiHints = () => undefined;
-      const cold = await readConfigGetResponse({
-        getHotReloadStatus: activeWatcher,
-        loadUiHints,
-      });
-      const cached = await readConfigGetResponse({
-        getHotReloadStatus: activeWatcher,
-        loadUiHints,
-      });
+      const cold = await readWatched();
+      const cached = await readWatched();
       expect(cached).toBe(cold);
       expect(mocks.readConfigFileSnapshot).toHaveBeenCalledOnce();
       const uncached = await readConfigGetResponse({
@@ -226,69 +222,65 @@ describe("config.get response cache", () => {
     }
   });
 
-  it.each(["core"])(
-    "redacts retained owner credentials from every snapshot projection with %s selected",
-    async (owner) => {
-      const config: OpenClawConfig = {
-        plugins: {
-          entries: { core: { enabled: owner === "core" }, plus: { enabled: owner === "plus" } },
+  it("redacts retained owner credentials from every snapshot projection with core selected", async () => {
+    const config: OpenClawConfig = {
+      plugins: {
+        entries: { core: { enabled: true }, plus: { enabled: false } },
+      },
+      channels: {
+        proofchat: { core: "synthetic-core", plus: "synthetic-plus", visible: "public-setting" },
+      },
+    };
+    const { manifestRegistry } = createPluginMetadataSnapshotFixture({
+      plugins: ["core", "plus"].map((id) => ({
+        id,
+        origin: "config",
+        channels: ["proofchat"],
+        channelConfigs: {
+          proofchat: {
+            schema: {
+              type: "object",
+              properties: { [id]: { type: "string" } },
+            },
+            uiHints: { [id]: { sensitive: true } },
+          },
         },
+      })),
+    });
+    mocks.readConfigFileSnapshot.mockResolvedValue(makeSnapshot(config));
+    const response = await readConfigGetResponse({
+      loadUiHints: () => buildRuntimeConfigSchemaFromRegistry(manifestRegistry, config).uiHints,
+    });
+    const output = JSON.stringify(response);
+    expect(output).not.toContain("synthetic-core");
+    expect(output).not.toContain("synthetic-plus");
+    for (const field of [
+      "config",
+      "sourceConfig",
+      "runtimeConfig",
+      "parsed",
+      "resolved",
+    ] as const) {
+      expect(response[field]).toMatchObject({
         channels: {
-          proofchat: { core: "synthetic-core", plus: "synthetic-plus", visible: "public-setting" },
+          proofchat: {
+            core: "__OPENCLAW_REDACTED__",
+            plus: "__OPENCLAW_REDACTED__",
+            visible: "public-setting",
+          },
         },
-      };
-      const { manifestRegistry } = createPluginMetadataSnapshotFixture({
-        plugins: ["core", "plus"].map((id) => ({
-          id,
-          origin: "config",
-          channels: ["proofchat"],
-          channelConfigs: {
-            proofchat: {
-              schema: {
-                type: "object",
-                properties: { [id]: { type: "string" } },
-              },
-              uiHints: { [id]: { sensitive: true } },
-            },
-          },
-        })),
       });
-      mocks.readConfigFileSnapshot.mockResolvedValue(makeSnapshot(config));
-      const response = await readConfigGetResponse({
-        loadUiHints: () => buildRuntimeConfigSchemaFromRegistry(manifestRegistry, config).uiHints,
-      });
-      const output = JSON.stringify(response);
-      expect(output).not.toContain("synthetic-core");
-      expect(output).not.toContain("synthetic-plus");
-      for (const field of [
-        "config",
-        "sourceConfig",
-        "runtimeConfig",
-        "parsed",
-        "resolved",
-      ] as const) {
-        expect(response[field]).toMatchObject({
-          channels: {
-            proofchat: {
-              core: "__OPENCLAW_REDACTED__",
-              plus: "__OPENCLAW_REDACTED__",
-              visible: "public-setting",
-            },
-          },
-        });
-      }
-      expect(response.raw).toContain("public-setting");
-    },
-  );
+    }
+    expect(response.raw).toContain("public-setting");
+  });
 
   it("serves identical bytes without filesystem work on an active-watcher cache hit", async () => {
-    const loadUiHints = vi.fn(() => undefined);
-    const first = await readConfigGetResponse({ getHotReloadStatus: activeWatcher, loadUiHints });
+    const first = await readWatched();
     const stat = vi.spyOn(fs.promises, "stat");
     mocks.readConfigFileSnapshot.mockClear();
     loadUiHints.mockClear();
 
-    const hit = await readConfigGetResponse({ getHotReloadStatus: activeWatcher, loadUiHints });
+    const hit = await readWatched();
 
     expect(hit).toBe(first);
     expect(stat).not.toHaveBeenCalled();
@@ -296,18 +288,12 @@ describe("config.get response cache", () => {
     expect(loadUiHints).not.toHaveBeenCalled();
 
     invalidateConfigGetResponseCache();
-    const fresh = await readConfigGetResponse({ getHotReloadStatus: activeWatcher, loadUiHints });
+    const fresh = await readWatched();
     expect(hit).toEqual(fresh);
   });
 
   it("shares one projection across concurrent active-watcher callers", async () => {
-    const loadUiHints = vi.fn(() => undefined);
-
-    const responses = await Promise.all(
-      Array.from({ length: 8 }, () =>
-        readConfigGetResponse({ getHotReloadStatus: activeWatcher, loadUiHints }),
-      ),
-    );
+    const responses = await Promise.all(Array.from({ length: 8 }, () => readWatched()));
 
     expect(mocks.readConfigFileSnapshot).toHaveBeenCalledOnce();
     expect(loadUiHints).toHaveBeenCalledOnce();
@@ -315,32 +301,21 @@ describe("config.get response cache", () => {
   });
 
   it("evicts a failed projection instead of retaining its rejected promise", async () => {
-    const loadUiHints = vi.fn(() => undefined);
     mocks.readConfigFileSnapshot.mockRejectedValueOnce(new Error("transient read failure"));
 
-    await expect(
-      readConfigGetResponse({ getHotReloadStatus: activeWatcher, loadUiHints }),
-    ).rejects.toThrow("transient read failure");
-    await expect(
-      readConfigGetResponse({ getHotReloadStatus: activeWatcher, loadUiHints }),
-    ).resolves.toMatchObject({ appliedConfigHash: "resolved-token:applied-1" });
+    await expect(readWatched()).rejects.toThrow("transient read failure");
+    await expect(readWatched()).resolves.toMatchObject({
+      appliedConfigHash: "resolved-token:applied-1",
+    });
 
     expect(mocks.readConfigFileSnapshot).toHaveBeenCalledTimes(2);
   });
 
-  it.each([
-    {
-      reason: "the active plugin metadata generation changes",
-      invalidate: () => {
-        mocks.pluginRegistryVersion = 2;
-      },
-    },
-  ])("rebuilds when $reason", async ({ invalidate }) => {
-    const loadUiHints = vi.fn(() => undefined);
-    await readConfigGetResponse({ getHotReloadStatus: activeWatcher, loadUiHints });
+  it("rebuilds when the active plugin metadata generation changes", async () => {
+    await readWatched();
 
-    invalidate();
-    await readConfigGetResponse({ getHotReloadStatus: activeWatcher, loadUiHints });
+    mocks.pluginRegistryVersion = 2;
+    await readWatched();
 
     expect(mocks.readConfigFileSnapshot).toHaveBeenCalledTimes(2);
     expect(loadUiHints).toHaveBeenCalledTimes(2);
