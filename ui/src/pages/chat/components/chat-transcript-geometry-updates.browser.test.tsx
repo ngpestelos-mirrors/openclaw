@@ -1,4 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
+import type { JSX } from "@solidjs/web";
+import { createMemo } from "solid-js";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ApplicationContext } from "../../../app/context.ts";
 import { createMountedPanes } from "../chat-pane-mounted.test-support.ts";
@@ -8,9 +10,21 @@ import { ChatPaneRuntime } from "../chat-pane-render.ts";
 import { createPaneTestHost } from "../chat-pane.test-support.ts";
 import { saveChatSessionScrollPosition } from "../scroll.ts";
 import type { TranscriptRow } from "./chat-transcript-layout.ts";
-import { nativePaneLayout } from "./chat-transcript-native-pane.test-support.ts";
 import { subscribeTranscriptScroll } from "./chat-transcript-scroll-events.ts";
 import { ChatSessionVirtualizerHost } from "./chat-transcript-virtualizer-host.ts";
+
+const geometryView = vi.hoisted(() => ({ render: (): JSX.Element => null }));
+
+// Exercise the runtime's commit cadence independently of the full pane renderer.
+vi.mock("../chat-pane-layout-view.tsx", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../chat-pane-layout-view.tsx")>()),
+  PaneLayout(props: { layout: unknown }) {
+    return createMemo(() => {
+      void props.layout;
+      return geometryView.render();
+    });
+  },
+}));
 
 class GeometryPane extends ChatPaneRuntime {
   session: ChatSessionVirtualizerHost | undefined;
@@ -56,8 +70,9 @@ class GeometryPane extends ChatPaneRuntime {
         size: virtualizer.getTotalSize(),
       };
     });
+    geometryView.render = () => <GeometryLayout {...layout} />;
     return {
-      layout: nativePaneLayout(GeometryLayout, layout),
+      layout: null,
       dialog: undefined,
       capabilityDialogs: undefined,
     };
@@ -77,6 +92,7 @@ function GeometryLayout(props: { contents: HTMLDivElement; size: number }) {
 
 let pane: (GeometryPane & HTMLElement) | undefined;
 afterEach(() => {
+  geometryView.render = () => null;
   pane?.remove();
   pane = undefined;
   vi.restoreAllMocks();

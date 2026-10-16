@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { createSignal } from "solid-js";
+import { createSignal, Show } from "solid-js";
 import { afterEach, expect, it } from "vitest";
 import {
   PRESENTATION_CHANGED_EVENT,
@@ -9,7 +9,7 @@ import {
 import { cleanupSolid, mountSolid } from "../../test-helpers/mount-solid.ts";
 import { flush } from "../../test-helpers/solid-settle.ts";
 import { sidebarPanelDefinitions } from "./chat-pane-embedded-panels.ts";
-import { PresentedPaneContent } from "./chat-pane-embedded-view.tsx";
+import { usePanePresentation } from "./chat-pane-embedded-view.tsx";
 import { SidebarRegionView } from "./chat-pane-sidebar-view.tsx";
 import { openSlot, setSidebarOpen } from "./sidebar-layout.ts";
 
@@ -72,7 +72,8 @@ it("parks on owner events and reveals only with the matching parent props", () =
   const mounted = mountSolid(() => {
     const [presentation, setPresentation] = createSignal(binding);
     repaint = () => setPresentation({ ...binding });
-    return <PresentedPaneContent presentation={presentation()} content={content} />;
+    const active = usePanePresentation(presentation);
+    return <Show when={active()}>{content}</Show>;
   });
   flush();
   expect(mounted.container.querySelector("input")).toBe(content);

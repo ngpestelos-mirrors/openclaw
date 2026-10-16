@@ -11,8 +11,10 @@ import {
   TERMINAL_PANEL_TOGGLE_EVENT,
 } from "../../../components/panel-toggle-contract.ts";
 import { Icon } from "../../../components/solid/icon.tsx";
+import { AgentIdentityAvatar } from "../../../components/solid/identity-avatar.tsx";
 import { KeyboardShortcut } from "../../../components/solid/kbd.tsx";
 import { Menu, type MenuItem } from "../../../components/solid/menu.tsx";
+import type { AgentIdentity } from "../../../lib/identity-avatar-view.ts";
 import "../../../components/tooltip.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
 import { LitContent, emptyLegacyContent } from "../../../lit/solid-content.tsx";
@@ -55,6 +57,23 @@ export function sidebarPanelType(definitions: SidebarPanelDefinition[], slot: Si
   return definition;
 }
 
+export function SidebarPanelIcon(props: {
+  type: Pick<SidebarPanelDefinition, "icon" | "iconName"> & { avatar?: AgentIdentity };
+}) {
+  return (
+    <Show
+      when={props.type.avatar}
+      fallback={
+        <Show when={props.type.iconName} fallback={props.type.icon}>
+          {(name) => <Icon name={name()} />}
+        </Show>
+      }
+    >
+      {(avatar) => <AgentIdentityAvatar agent={avatar()} />}
+    </Show>
+  );
+}
+
 export function PanelTypeOption(props: { type: SidebarPanelDefinition; slotted?: boolean }) {
   return (
     <>
@@ -63,7 +82,7 @@ export function PanelTypeOption(props: { type: SidebarPanelDefinition; slotted?:
         class="side-panel-type-option__icon"
         aria-hidden="true"
       >
-        <LitContent value={props.type.icon} />
+        <SidebarPanelIcon type={props.type} />
       </span>
       <span class="side-panel-type-option__label">{props.type.label}</span>{" "}
       <Show when={props.type.shortcut}>
@@ -229,7 +248,7 @@ export function SidebarRegionHeader(props: SidebarRegionHeaderProps) {
             panel.slot === "dashboard" || canRestore
               ? () => props.callbacks?.togglePanelExpanded(panel.id)
               : undefined,
-          icon: <LitContent value={tab.icon} />,
+          icon: <SidebarPanelIcon type={tab} />,
           closeLabel: t("chat.sidebarColumns.close", { panel: type.label }),
         },
       ];

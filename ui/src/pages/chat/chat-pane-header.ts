@@ -7,7 +7,6 @@ import type { ApplicationPlacementStartupStatus } from "../../app/session-placem
 import type { UiSettings } from "../../app/settings.ts";
 import type { BoardWidgetPageMenu } from "../../components/board/board-widget-cell-options.ts";
 import { COMMAND_PALETTE_OPEN_EVENT } from "../../components/command-palette-contract.ts";
-import { icons } from "../../components/icons.ts";
 import { personActivityRouting } from "../../components/person-activity-link.ts";
 import { sessionMenuReasons } from "../../components/session-menu-access.ts";
 import { isCloudWorkerPlacementState } from "../../components/session-row-badges.ts";
@@ -326,31 +325,31 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
           [
             "terminal",
             t("terminal.toggle"),
-            icons.terminal,
+            "terminal",
             sessionWorkspace.onToggleTerminal && callbacks.terminal,
           ],
           [
             "browser",
             t("browser.toggle"),
-            icons.globe,
+            "globe",
             sessionWorkspace.onToggleBrowser && callbacks.browser,
           ],
           [
             "desktop",
             t("desktop.toggle"),
-            icons.monitor,
+            "monitor",
             desktopPanelAvailable && sessionWorkspace.onToggleDesktop && callbacks.desktop,
           ],
           [
             "discussion",
             discussion?.label ?? "",
-            icons.messageSquare,
+            "messageSquare",
             discussion && callbacks.discussion,
           ],
           [
             "changes",
             t("chat.sessionDiff.show"),
-            icons.diff,
+            "diff",
             sessionWorkspace.onOpenDiff && callbacks.changes,
           ],
         ] as const) {
@@ -371,14 +370,14 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
               ? "chat.workspaceFiles.showFiles"
               : "chat.workspaceFiles.collapse",
           ),
-          icon: icons.fileText,
+          icon: "fileText",
           active: !sessionWorkspace.collapsed,
           onActivate: callbacks.files,
         });
         addPanelAction("companion", {
           id: "session-companion",
           label: t(sessionRailVisible ? "chat.rail.collapse" : "chat.rail.show"),
-          icon: icons.spark,
+          icon: "spark",
           active: sessionRailVisible,
           onActivate: callbacks.companion,
         });
@@ -388,7 +387,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
             addPanelAction(slot, {
               id: `session-${slot}`,
               label: t(subagents ? "chat.subagentsPanel.title" : "chat.processesPanel.title"),
-              icon: subagents ? icons.bot : icons.terminal,
+              icon: subagents ? "bot" : "terminal",
               active: subagents ? subagentsVisible : processesVisible,
               onActivate: () =>
                 this.requestBackgroundPanel(
@@ -411,7 +410,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
           addPanelAction(slot, {
             id: `panel-${slot}`,
             label: definition.label,
-            icon: definition.icon,
+            icon: definition.iconName ?? "plug",
             active: Boolean(currentLayout && isSidebarSlotVisible(currentLayout, slot)),
             onActivate: () => {
               if (this.state && isSidebarSlotVisible(this.state.sidebarLayout, slot)) {
@@ -427,7 +426,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
     );
     const defaultAction = !catalog && this.dashboardDefaultMenuAction(row, currentLayout);
     const layoutMenuActions: HeaderMenuQuickAction[] = defaultAction
-      ? [{ id: "dashboard-default", icon: icons.check, ...defaultAction }]
+      ? [{ id: "dashboard-default", icon: "check", ...defaultAction }]
       : [];
     const placement = resolveChatPanePlacement({
       gatewaySnapshot: this.context.gateway.snapshot,

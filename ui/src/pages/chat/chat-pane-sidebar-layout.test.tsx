@@ -3,7 +3,6 @@
 import { createSignal, type Setter } from "solid-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApplicationContext } from "../../app/context.ts";
-import { solidContent } from "../../lit/solid-content.tsx";
 import { createApplicationContextProvider } from "../../test-helpers/application-context.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import { flush } from "../../test-helpers/solid-settle.ts";
@@ -82,34 +81,36 @@ function nativeCloseLayoutFixture() {
   const [layout, setLayout] = createSignal(
     openSlot(openSlot({ columns: [] }, "workspace"), "detail"),
   );
-  const panelDefinitions = sidebarPanelDefinitions().map((definition) =>
-    Object.assign(definition, {
-      available: definition.slot === "detail" || definition.slot === "workspace",
-      content:
-        definition.slot === "detail"
-          ? solidContent(CloseDetailContent, {})
-          : definition.slot === "workspace"
-            ? solidContent(WorkspaceContent, {})
-            : null,
-    }),
-  );
-  const { container } = mountSolid(() => (
-    <SidebarRegionView
-      panelIdPrefix="chat-panel-sidebar-layout-fixture"
-      presentationId="sidebar-layout-fixture"
-      availableWidth={1_400}
-      callbacks={{
-        ...callbacks(),
-        closeSlot: (slot) => setLayout((current) => closeSlot(current, slot)),
-      }}
-      layout={layout()}
-      narrow={false}
-      panelDefinitions={panelDefinitions}
-      primary={<main>Conversation</main>}
-      requestUpdate={() => undefined}
-      regionError={undefined}
-    />
-  ));
+  const { container } = mountSolid(() => {
+    const panelDefinitions = sidebarPanelDefinitions().map((definition) =>
+      Object.assign(definition, {
+        available: definition.slot === "detail" || definition.slot === "workspace",
+        content:
+          definition.slot === "detail" ? (
+            <CloseDetailContent />
+          ) : definition.slot === "workspace" ? (
+            <WorkspaceContent />
+          ) : null,
+      }),
+    );
+    return (
+      <SidebarRegionView
+        panelIdPrefix="chat-panel-sidebar-layout-fixture"
+        presentationId="sidebar-layout-fixture"
+        availableWidth={1_400}
+        callbacks={{
+          ...callbacks(),
+          closeSlot: (slot) => setLayout((current) => closeSlot(current, slot)),
+        }}
+        layout={layout()}
+        narrow={false}
+        panelDefinitions={panelDefinitions}
+        primary={<main>Conversation</main>}
+        requestUpdate={() => undefined}
+        regionError={undefined}
+      />
+    );
+  });
   return { container, layout };
 }
 
@@ -132,7 +133,7 @@ async function renderLayout(
         const panelDefinitions = sidebarPanelDefinitions().map((definition) =>
           Object.assign(definition, {
             available: ["detail", "terminal", "workspace"].includes(definition.slot),
-            content: definition.slot === "detail" ? solidContent(DetailContent, {}) : null,
+            content: definition.slot === "detail" ? <DetailContent /> : null,
           }),
         );
         return (

@@ -1,7 +1,8 @@
+import type { JSX } from "@solidjs/web";
+import { createMemo } from "solid-js";
 import { afterEach, expect, it, vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
-import { solidContent } from "../../lit/solid-content.tsx";
 import {
   createInitializationContext,
   createTestChatPane,
@@ -9,6 +10,19 @@ import {
 } from "./chat-pane.test-support.ts";
 import { createPageState } from "./chat-state-page.ts";
 import { requestChatPageUpdate } from "./chat-state-render.ts";
+
+const frameView = vi.hoisted(() => ({ render: (): JSX.Element => null }));
+
+// Exercise the runtime's commit cadence independently of the full pane renderer.
+vi.mock("./chat-pane-layout-view.tsx", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./chat-pane-layout-view.tsx")>()),
+  PaneLayout(props: { layout: unknown }) {
+    return createMemo(() => {
+      void props.layout;
+      return frameView.render();
+    });
+  },
+}));
 
 function PaneLabels(props: { label: string | undefined; id: string }) {
   return (
@@ -55,10 +69,9 @@ async function mountPane(presented = true) {
     sessions: {} as SessionCapability,
   });
   // Use the existing lifecycle harness, with a small render to isolate cadence.
+  frameView.render = () => <PaneLabels label={pane.paneLabel} id={pane.paneId} />;
   Object.assign(pane, {
-    render: () => ({
-      layout: solidContent(PaneLabels, { label: pane.paneLabel, id: pane.paneId }),
-    }),
+    render: () => ({ layout: null }),
     presentedChanged: () => {},
   });
   pane.presented = presented;
@@ -72,6 +85,7 @@ async function mountPane(presented = true) {
 }
 
 afterEach(() => {
+  frameView.render = () => null;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -168,8 +182,9 @@ it("absorbs a queued stream frame into a property commit and accepts the next st
   );
   pane.state = state;
   pane.chatState.attach(state);
+  frameView.render = () => <StreamOutput value={state.chatStream} />;
   Object.assign(pane, {
-    render: () => ({ layout: solidContent(StreamOutput, { value: state.chatStream }) }),
+    render: () => ({ layout: null }),
   });
   const updates = vi.spyOn(pane, "render");
   state.chatStream = "First stream revision";

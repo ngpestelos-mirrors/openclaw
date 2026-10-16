@@ -5,7 +5,6 @@ import {
   PANEL_HOSTED_TABS_CHANGE_EVENT,
   readPanelHostedTabs,
 } from "../../../components/panel-hosted-tabs.ts";
-import { solidContent } from "../../../lit/solid-content.tsx";
 import {
   createGatewayBrowserClientFixture,
   createSessionCapabilityFixture,
@@ -496,7 +495,7 @@ describe("workspace file tabs", () => {
     Object.assign(panel, {
       previews: getSessionWorkspace(state).previews,
       activeId: "a",
-      renderDetail: () => solidContent(Draft, {}),
+      renderDetail: Draft,
       onSelect: (id: string | null) => selectSessionWorkspacePreview(state, id),
       onClose: (id: string) => closeSessionWorkspacePreview(state, id),
     });

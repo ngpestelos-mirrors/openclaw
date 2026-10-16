@@ -3,7 +3,7 @@
 import { undo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import { expectDefined } from "@openclaw/normalization-core";
-import { createRenderEffect } from "solid-js";
+import { createComponent, createSignal } from "solid-js";
 import "./components/chat-detail-panel.tsx";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
@@ -12,23 +12,26 @@ import { loadSettings } from "../../app/settings.ts";
 import * as videoPosters from "../../lib/media/video-poster.ts";
 import { scopedAgentParamsForSession } from "../../lib/sessions/index.ts";
 import { PRESENTATION_CHANGED_EVENT } from "../../lit/presentation-binding.ts";
-import { emptyLegacyContent, solidContent } from "../../lit/solid-content.tsx";
 import {
   createReviewFixture as createUnboundReviewFixture,
   renderPanelFixture,
-  renderPaneLegacyContent,
 } from "../../test-helpers/chat-pane-embedded-panels.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
-import { waitForSolid } from "../../test-helpers/solid-settle.ts";
+import { createSolidApplicationContextProvider } from "../../test-helpers/solid-application-context.tsx";
+import { flush, waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { resolveChatAgentId } from "./chat-agent-id.ts";
 import { sidebarPanelDefinitions } from "./chat-pane-embedded-panels.ts";
 import { createSidebarFullMessageLoader } from "./chat-pane-sidebar-layout.ts";
-import { createGatewayBrowserClientFixture } from "./chat-pane.test-support.ts";
+import {
+  createGatewayBrowserClientFixture,
+  createInitializationContext,
+} from "./chat-pane.test-support.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
-import { createTestTranscript } from "./chat-view.test-helpers.ts";
+import { createPageState } from "./chat-state-page.ts";
+import { createChatProps, createTestTranscript } from "./chat-view.test-helpers.ts";
 import type { ChatProps } from "./chat-view.tsx";
-import { renderChatDetailSlot } from "./components/chat-detail-slot.ts";
+import { ChatDetailSlot } from "./components/chat-detail-slot-view.tsx";
 import { renderAssistantAttachments } from "./components/chat-message-attachments.ts";
 import {
   releaseChatMediaResourceSubscriber,
@@ -45,12 +48,9 @@ import {
   createSessionWorkspaceProps,
   openSessionWorkspaceFile,
 } from "./components/chat-session-workspace.ts";
-import type {
-  ChatDetailPanelContent,
-  SidebarContent,
-} from "./components/chat-sidebar-content-types.ts";
+import type { SidebarContent } from "./components/chat-sidebar-content-types.ts";
 import { createChatSidebarContainer } from "./components/chat-sidebar.test-support.ts";
-import { renderChatThread } from "./components/chat-thread.test-support.ts";
+import { ChatThread } from "./components/chat-thread-view.tsx";
 import {
   installTranscriptDomMocks,
   resetTranscriptTestDom,
@@ -67,18 +67,6 @@ import {
   setSidebarOpen,
   type SidebarLayout,
 } from "./sidebar-layout.ts";
-
-function EmbeddedDetailPanel(props: { content: ChatDetailPanelContent }) {
-  const panel = document.createElement("openclaw-chat-detail-panel");
-  panel.embedded = true;
-  createRenderEffect(
-    () => props.content,
-    (content) => {
-      panel.content = content;
-    },
-  );
-  return panel;
-}
 
 function createReviewFixture() {
   const fixture = createUnboundReviewFixture();
@@ -456,13 +444,23 @@ describe("chat pane embedded panels", () => {
         loadFullAssistantMessage: createSidebarFullMessageLoader(state, context.gateway),
         connectionEpoch: state.connectionEpoch,
       } as ChatProps;
-      const renderAttachment = () => {
-        renderPaneLegacyContent(
-          renderChatThread({ ...chat, onRequestUpdate: renderAttachment }, controller),
-          transcript,
-        );
+      const [current, setCurrent] = createSignal(chat);
+      const application = createSolidApplicationContextProvider(context);
+      const view = mountSolid(
+        () =>
+          createComponent(ChatThread, {
+            get props() {
+              return current();
+            },
+            transcript: controller,
+          }),
+        { container: transcript, wrapper: application.wrapper },
+      );
+      function renderAttachment() {
+        setCurrent({ ...chat, onRequestUpdate: renderAttachment });
+        flush();
         controller.hostUpdated();
-      };
+      }
       try {
         renderAttachment();
         const open = await vi.waitFor(() => {
@@ -478,14 +476,15 @@ describe("chat pane embedded panels", () => {
         if (!content || content.kind !== "attachment") {
           throw new Error("Expected an attachment preview");
         }
-        renderPaneLegacyContent(
-          renderChatDetailSlot({
-            chat,
-            content: content!,
-            host: state,
-            requestUpdate: vi.fn(),
-          }),
-          mount,
+        mountSolid(
+          () =>
+            createComponent(ChatDetailSlot, {
+              chat,
+              content,
+              host: state,
+              requestUpdate: vi.fn(),
+            }),
+          { container: mount, wrapper: application.wrapper },
         );
         await mount.querySelector("openclaw-chat-detail-panel")?.updateComplete;
         expect(fetchMetadata).toHaveBeenCalledOnce();
@@ -519,7 +518,7 @@ describe("chat pane embedded panels", () => {
           expect(mount.querySelector<HTMLAnchorElement>("a[download]")?.download).toBe(filename);
         }
       } finally {
-        renderPaneLegacyContent(emptyLegacyContent, transcript);
+        view.unmount();
         controller.hostDisconnected();
         mount.remove();
         releaseChatMediaResourceSubscriber(renderAttachment);
@@ -689,7 +688,16 @@ describe("chat pane embedded panels", () => {
       deletions: 1,
       files: [{ path: "example.txt", status: "modified", additions: 1, deletions: 1 }],
     });
-    const state = {
+    const mount = document.body.appendChild(createChatSidebarContainer());
+    const state = createPageState(
+      createInitializationContext(),
+      {
+        invalidate: vi.fn(),
+        afterCommit: () => () => {},
+      },
+      mount,
+    );
+    Object.assign(state, {
       client: { request },
       connected: true,
       connectionEpoch: 1,
@@ -698,8 +706,7 @@ describe("chat pane embedded panels", () => {
       sidebarContent: null,
       sidebarLayout: { columns: [] },
       settings: loadSettings(),
-    } as unknown as ChatPageHost;
-    const mount = document.body.appendChild(createChatSidebarContainer());
+    });
     let presented = true;
     const owner = new EventTarget();
     const renderPanels = async (layout: SidebarLayout) => {
@@ -707,17 +714,12 @@ describe("chat pane embedded panels", () => {
       const definitions = sidebarPanelDefinitions({
         state,
         panePresentation: { owner, isPresented: () => presented },
-        renderDetail: (content) => {
-          if (content.kind === "tool-output") {
-            throw new Error("Expected a detail panel preview");
-          }
-          return solidContent(EmbeddedDetailPanel, { content });
+        detail: {
+          chat: createChatProps({ sessionKey: state.sessionKey }),
+          host: state,
+          requestUpdate: vi.fn(),
         },
-        workspace: solidContent(() => {
-          const files = document.createElement("div");
-          files.textContent = "Files";
-          return files;
-        }, {}),
+        workspace: createSessionWorkspaceProps(state),
       } as Parameters<typeof sidebarPanelDefinitions>[0]);
       await renderPanelFixture(mount, layout, definitions);
     };

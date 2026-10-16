@@ -1,23 +1,31 @@
-import type { JSX as SolidJSX } from "@solidjs/web";
-import { createMemo, createRenderEffect, createSignal } from "solid-js";
+import { dynamic, type JSX as SolidJSX } from "@solidjs/web";
+import { createMemo, createRenderEffect, createSignal, Match, Show, Switch } from "solid-js";
 import { resolveControlUiAuthToken } from "../../app/control-ui-auth.ts";
 import { isBrowserPanelAvailable } from "../../app/panel-availability.ts";
 import { EMPTY_LINK_READERS } from "../../components/link-reader-target.ts";
 import { Icon } from "../../components/solid/icon.tsx";
+import { LazyViewError } from "../../components/solid/lazy-view-error.tsx";
+import { PanelLoadingSkeleton } from "../../components/solid/panel-loading-skeleton.tsx";
 import { t } from "../../lib/reactive/i18n.ts";
 import {
   PRESENTATION_CHANGED_EVENT,
   type PresentationValue,
 } from "../../lit/presentation-binding.ts";
-import { LitContent } from "../../lit/solid-content.tsx";
+import { PluginContribution } from "../../plugins/control-ui-view.solid.tsx";
 import type { ElementProperties } from "../../types/solid-elements.d.ts";
-import type { SidebarPanelDefinitionParams } from "./chat-pane-embedded-types.ts";
+import type { SidebarPanelDefinitionParams, SidebarPanelData } from "./chat-pane-embedded-types.ts";
+import { ChatBoardPanel } from "./chat-pane-surfaces.tsx";
 import { resolveChatAttachmentLimits } from "./components/chat-attachment-admission.ts";
+import { ChatDetailSlot } from "./components/chat-detail-slot-view.tsx";
+import { SessionWorkspaceRail } from "./components/chat-session-workspace-rail-solid.tsx";
 import {
   closeSessionWorkspacePreview,
   selectSessionWorkspacePreview,
 } from "./components/chat-session-workspace-state.ts";
 import type { SessionWorkspaceState } from "./components/chat-session-workspace-types.ts";
+import type { SidebarContent } from "./components/chat-sidebar-content-types.ts";
+import type { SidebarPanelDefinition } from "./components/chat-sidebar-region-types.ts";
+import type { SidebarSlotId } from "./sidebar-layout-types.ts";
 import { sidebarMainPanel } from "./sidebar-layout.ts";
 
 /** Park immediately; reveal alongside the parent's next props unless explicitly previewing. */
@@ -160,6 +168,10 @@ export function PortalPanel(props: Props) {
 }
 
 export function WorkspacePanel(props: Props & { workspaceState: SessionWorkspaceState }) {
+  const browser = <SessionWorkspaceRail workspace={props.workspace} />;
+  const Detail = (detail: { content: SidebarContent }) => (
+    <ChatDetailSlot {...props.detail} content={detail.content} />
+  );
   const presented = usePanePresentation(() => props.panePresentation ?? true);
   return (
     <openclaw-chat-files-panel
@@ -167,8 +179,8 @@ export function WorkspacePanel(props: Props & { workspaceState: SessionWorkspace
       prop:tabsInHeader={sidebarMainPanel(props.state.sidebarLayout)?.slot !== "workspace"}
       prop:previews={presented() ? props.workspaceState.previews : []}
       prop:activeId={presented() ? props.workspaceState.activePreviewId : null}
-      prop:browser={props.workspace}
-      prop:renderDetail={props.renderDetail}
+      prop:browser={browser}
+      prop:renderDetail={Detail}
       prop:onSelect={(id: string | null) => selectSessionWorkspacePreview(props.state, id)}
       prop:onClose={(id: string) => closeSessionWorkspacePreview(props.state, id)}
     />
@@ -256,18 +268,68 @@ export function ClearCompanion(props: Props) {
   );
 }
 
-export function UnavailableDetail(props: { message: string }) {
+function DetailPanel(props: SidebarPanelData) {
+  const presented = usePanePresentation(() =>
+    props.state.sidebarContent ? (props.panePresentation ?? true) : true,
+  );
   return (
-    <div class="callout danger review-unavailable" role="alert">
-      <strong>{t("chat.detailPanel.unavailable")}</strong>
-      <span>{props.message}</span>
-    </div>
+    <Show when={presented()}>
+      <ChatDetailSlot {...props.detail} content={props.detailContent!} />
+    </Show>
   );
 }
 
-export function PresentedPaneContent(props: { presentation: PresentationValue; content: unknown }) {
-  const presented = usePanePresentation(() => props.presentation);
-  return <LitContent value={presented() ? props.content : undefined} />;
+function DashboardPanel(props: SidebarPanelData) {
+  return <ChatBoardPanel {...props.dashboard!} />;
+}
+
+const embeddedPanels: Partial<
+  Record<SidebarSlotId, (props: SidebarPanelData) => SolidJSX.Element>
+> = {
+  terminal: TerminalPanel,
+  browser: BrowserPanel,
+  companion: CompanionPanel,
+  desktop: DesktopPanel,
+  discussion: DiscussionPanel,
+  portal: PortalPanel,
+  subagents: SubagentsPanel,
+  processes: ProcessesPanel,
+  "link-reader": LinkReaderPanel,
+  workspace: WorkspacePanel,
+  detail: DetailPanel,
+  dashboard: DashboardPanel,
+};
+
+export function SidebarPanel(props: { definition: SidebarPanelDefinition }) {
+  const Panel = dynamic(() => embeddedPanels[props.definition.slot]);
+  return (
+    <Switch>
+      <Match when={props.definition.loadState === null}>
+        <PanelLoadingSkeleton {...props.definition.loading} />
+      </Match>
+      <Match when={props.definition.loadState}>{(error) => <LazyViewError {...error()} />}</Match>
+      <Match when={props.definition.view}>
+        {(data) => (
+          <Show when={props.definition.slot.startsWith("plugin:")} fallback={<Panel {...data()} />}>
+            <PluginPanel {...data()} slot={props.definition.slot} />
+          </Show>
+        )}
+      </Match>
+      <Match when={props.definition.content != null}>{props.definition.content}</Match>
+    </Switch>
+  );
+}
+
+function PluginPanel(props: SidebarPanelData & { slot: SidebarSlotId }) {
+  const presented = usePanePresentation(() => props.isPluginPanelPresented(props.slot));
+  return (
+    <PluginContribution
+      kind="panels"
+      contributionKey={props.slot.slice("plugin:".length)}
+      props={{ sessionKey: props.state.sessionKey, agentId: props.agentId ?? undefined }}
+      presented={presented()}
+    />
+  );
 }
 
 type EmbeddedAttributes<Element extends HTMLElement> = SolidJSX.HTMLAttributes<Element> &

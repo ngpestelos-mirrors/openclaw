@@ -1,3 +1,4 @@
+import { createMemo, createSignal } from "solid-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "./components/chat-sidebar-region.runtime.tsx";
 import "../../components/browser/browser-panel.ts";
@@ -16,14 +17,15 @@ import {
   rememberSessionPanelToggle,
   type SessionPanelToggleSlot,
 } from "../../components/session-panel-toggle-buffer.ts";
-import { solidContent } from "../../lit/solid-content.tsx";
-import { renderPaneLegacyContent } from "../../test-helpers/chat-pane-embedded-panels.ts";
+import { mountSolid } from "../../test-helpers/mount-solid.ts";
+import { flush } from "../../test-helpers/solid-settle.ts";
 import { sidebarPanelDefinitions } from "./chat-pane-embedded-panels.ts";
 import {
   ChatPaneSessionPanelToggleController,
   type PendingSessionPanelToggle,
 } from "./chat-pane-session-panel-toggle.ts";
 import { renderSidebarRegion } from "./chat-pane-sidebar-layout.ts";
+import { SidebarRegionView } from "./chat-pane-sidebar-view.tsx";
 import {
   createGatewayBrowserClientFixture,
   createInitializationContext,
@@ -332,40 +334,59 @@ it("delivers a browser card after the pane's scheduled render commits", async ()
   }
   const conversation = document.createElement("main");
   conversation.textContent = "Conversation";
+  const [snapshot, setSnapshot] = createSignal({
+    layout: state.sidebarLayout,
+    sessionKey: state.sessionKey,
+    refresh: !pending.has("browser"),
+  });
+  let view: ReturnType<typeof mountSolid> | undefined;
   function draw() {
-    renderPaneLegacyContent(
-      renderSidebarRegion({
-        presentationId: "delayed-browser-card",
-        availableWidth: 1400,
-        callbacks: {
-          activatePanel: () => undefined,
-          togglePanelExpanded: () => undefined,
-          closeSlot: () => undefined,
-          openSlot: () => undefined,
-          reorderPanel: () => undefined,
-          resizePanel: () => undefined,
-          setOpen: () => undefined,
-        },
-        layout: state.sidebarLayout,
-        narrow: false,
-        panelDefinitions: sidebarPanelDefinitions().map((definition) =>
-          Object.assign(definition, {
-            available: definition.slot === "browser",
-            content:
-              definition.slot === "browser"
-                ? solidContent(BrowserCard, {
-                    sessionKey: state.sessionKey,
-                    presented: isSidebarSlotVisible(state.sidebarLayout, "browser"),
-                    refresh: !pending.has("browser"),
-                  })
-                : null,
+    setSnapshot({
+      layout: state.sidebarLayout,
+      sessionKey: state.sessionKey,
+      refresh: !pending.has("browser"),
+    });
+    view ??= mountSolid(
+      () => {
+        const definitions = sidebarPanelDefinitions().map((definition) => ({
+          ...definition,
+          available: definition.slot === "browser",
+          content:
+            definition.slot === "browser"
+              ? () => (
+                  <BrowserCard
+                    sessionKey={snapshot().sessionKey}
+                    presented={isSidebarSlotVisible(snapshot().layout, "browser")}
+                    refresh={snapshot().refresh}
+                  />
+                )
+              : null,
+        }));
+        const region = createMemo(() =>
+          renderSidebarRegion({
+            presentationId: "delayed-browser-card",
+            availableWidth: 1400,
+            callbacks: {
+              activatePanel: () => undefined,
+              togglePanelExpanded: () => undefined,
+              closeSlot: () => undefined,
+              openSlot: () => undefined,
+              reorderPanel: () => undefined,
+              resizePanel: () => undefined,
+              setOpen: () => undefined,
+            },
+            layout: snapshot().layout,
+            narrow: false,
+            panelDefinitions: definitions,
+            primary: conversation,
+            requestUpdate,
           }),
-        ),
-        primary: conversation,
-        requestUpdate,
-      }),
-      pane,
+        );
+        return <SidebarRegionView {...region()} />;
+      },
+      { container: pane },
     );
+    flush();
   }
   function requestUpdate() {
     // Expose the new commit promise before the browser card can mount.
@@ -409,6 +430,7 @@ it("delivers a browser card after the pane's scheduled render commits", async ()
     ).toBe("Local preview");
   } finally {
     commit.resolve();
+    view?.unmount();
     pane.remove();
     vi.unstubAllGlobals();
     vi.useRealTimers();
