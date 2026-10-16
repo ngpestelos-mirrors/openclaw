@@ -211,7 +211,10 @@ export function ChatPaneLayoutMenu(props: ChatPaneLayoutMenuProps) {
       <Menu
         lazy
         id={id}
-        class={`chat-pane__layout-menu chat-panel-layout-menu${props.mobile ? " chat-panel-layout-menu--mobile" : ""}`}
+        class={[
+          "chat-pane__layout-menu chat-panel-layout-menu",
+          { "chat-panel-layout-menu--mobile": props.mobile },
+        ]}
         placement="bottom-end"
         label={t(props.mobile ? "chat.sessionHeader.panels" : "chat.sessionHeader.layout")}
         triggerClass="btn btn--ghost chat-pane__layout-trigger"

@@ -78,14 +78,10 @@ defineSolidBridge<Props, Methods>(
         label,
         title: content.kind === "file" ? content.path : label,
         get icon() {
-          return (
-            <>
-              {content.kind === "mcp-app" ? (
-                <Icon name="puzzle" />
-              ) : (
-                <AttachmentFileIcon filename={label} mode="preview-with-favicon" />
-              )}
-            </>
+          return content.kind === "mcp-app" ? (
+            <Icon name="puzzle" />
+          ) : (
+            <AttachmentFileIcon filename={label} mode="preview-with-favicon" />
           );
         },
         className: content.kind === "loading" ? "is-connecting" : undefined,
