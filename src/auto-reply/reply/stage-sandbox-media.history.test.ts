@@ -14,6 +14,7 @@ import {
 import { stageSandboxMedia } from "./stage-sandbox-media.js";
 
 const sandboxMocks = vi.hoisted(() => ({ ensureSandboxWorkspaceForSession: vi.fn() }));
+// mock-isolation: History rewriting owns synthetic workspaces without provisioning real sandboxes.
 vi.mock("../../agents/sandbox.js", () => ({
   ...sandboxMocks,
   prepareSandboxWorkspaceForSession: async (...args: unknown[]) =>

@@ -24,6 +24,7 @@ const mediaRootMocks = vi.hoisted(() => ({
   resolveChannelRemoteInboundAttachmentRoots: vi.fn(),
 }));
 
+// mock-isolation: File-policy cases supply fixture workspaces and opt into real preparation explicitly.
 vi.mock("../agents/sandbox.js", () => ({
   ...sandboxMocks,
   prepareSandboxWorkspaceForSession: async (...args: unknown[]) =>

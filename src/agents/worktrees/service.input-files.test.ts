@@ -29,6 +29,7 @@ import { ManagedWorktreeService } from "./service.js";
 import { initializeManagedWorktreeTestRepository } from "./service.test-support.js";
 
 const sandbox = vi.hoisted(() => ({ ensureSandboxWorkspaceForSession: vi.fn() }));
+// mock-isolation: Reconciliation uses the fixture checkout without provisioning a separate sandbox.
 vi.mock("../sandbox.js", () => ({
   ...sandbox,
   prepareSandboxWorkspaceForSession: async (...args: unknown[]) =>

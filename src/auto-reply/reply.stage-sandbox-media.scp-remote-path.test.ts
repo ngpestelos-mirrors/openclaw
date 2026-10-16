@@ -22,6 +22,7 @@ const mediaRootMocks = vi.hoisted(() => ({
   resolveChannelRemoteInboundAttachmentRoots: vi.fn(),
 }));
 
+// mock-isolation: SCP source-policy cases own synthetic sandbox and cache directories.
 vi.mock("../agents/sandbox.js", () => ({
   ...sandboxMocks,
   prepareSandboxWorkspaceForSession: async (...args: unknown[]) =>
