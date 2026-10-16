@@ -12,6 +12,7 @@ import {
   untrack,
 } from "solid-js";
 import { PANEL_HOSTED_TABS_CHANGE_EVENT } from "../../../components/panel-hosted-tabs.ts";
+import { Icon } from "../../../components/solid/icon.tsx";
 import { PanelEmptyState } from "../../../components/solid/panel-empty-state.tsx";
 import { cancelLayout, scheduleLayout } from "../../../lib/layout-frame.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
@@ -32,7 +33,6 @@ import {
 } from "../sidebar-layout.ts";
 import {
   SidebarRegionHeader,
-  SidebarPanelIcon,
   PanelTypeOption,
   sidebarPanelType,
   readRegionHostedTabs,
@@ -291,7 +291,7 @@ function Region(props: RegionProps, host: RegionElement) {
         {(type) => (
           <div class="side-panel-empty side-panel-empty--type">
             <PanelEmptyState
-              icon={<SidebarPanelIcon type={type()} />}
+              icon={<Icon name={type().icon} />}
               heading={type().label}
               description={type().empty.description}
               action={type().empty.action}

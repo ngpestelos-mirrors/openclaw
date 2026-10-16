@@ -35,7 +35,7 @@ export class ChatPaneNativeSessionActions {
         onAction,
       ],
       () => [
-        ...pluginActions.map<HeaderMenuSessionAction>((action) => ({
+        ...pluginActions.map((action): HeaderMenuSessionAction => ({
           label: action.label,
           disabled: action.disabled,
           id: `plugin/${action.id}`,

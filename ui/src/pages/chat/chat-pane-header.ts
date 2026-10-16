@@ -407,7 +407,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
           addPanelAction(slot, {
             id: `panel-${slot}`,
             label: definition.label,
-            icon: definition.iconName ?? "plug",
+            icon: definition.icon,
             active: Boolean(currentLayout && isSidebarSlotVisible(currentLayout, slot)),
             onActivate: () => {
               if (this.state && isSidebarSlotVisible(this.state.sidebarLayout, slot)) {

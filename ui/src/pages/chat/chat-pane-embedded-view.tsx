@@ -7,9 +7,9 @@ import { Icon } from "../../components/solid/icon.tsx";
 import { LazyViewError } from "../../components/solid/lazy-view-error.tsx";
 import { PanelLoadingSkeleton } from "../../components/solid/panel-loading-skeleton.tsx";
 import { t } from "../../lib/reactive/i18n.ts";
-import { PluginContribution } from "../../plugins/control-ui-view.solid.tsx";
 import type { ElementProperties } from "../../types/solid-elements.d.ts";
 import type { SidebarPanelDefinitionParams, SidebarPanelData } from "./chat-pane-embedded-types.ts";
+import { EmbeddedPluginPanel } from "./chat-pane-plugin-panel.tsx";
 import { usePanePresentation } from "./chat-pane-presentation.ts";
 import { ChatBoardPanel } from "./chat-pane-surfaces.tsx";
 import { resolveChatAttachmentLimits } from "./components/chat-attachment-admission.ts";
@@ -284,24 +284,19 @@ export function SidebarPanel(props: { definition: SidebarPanelDefinition }) {
       <Match when={props.definition.view}>
         {(data) => (
           <Show when={props.definition.slot.startsWith("plugin:")} fallback={<Panel {...data()} />}>
-            <PluginPanel {...data()} slot={props.definition.slot} />
+            <EmbeddedPluginPanel
+              contributionKey={props.definition.slot.slice("plugin:".length)}
+              props={{
+                sessionKey: data().state.sessionKey,
+                agentId: data().agentId ?? undefined,
+              }}
+              presentation={data().isPluginPanelPresented(props.definition.slot)}
+            />
           </Show>
         )}
       </Match>
       <Match when={props.definition.content != null}>{props.definition.content}</Match>
     </Switch>
-  );
-}
-
-function PluginPanel(props: SidebarPanelData & { slot: SidebarSlotId }) {
-  const presented = usePanePresentation(() => props.isPluginPanelPresented(props.slot));
-  return (
-    <PluginContribution
-      kind="panels"
-      contributionKey={props.slot.slice("plugin:".length)}
-      props={{ sessionKey: props.state.sessionKey, agentId: props.agentId ?? undefined }}
-      presented={presented()}
-    />
   );
 }
 

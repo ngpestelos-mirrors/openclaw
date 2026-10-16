@@ -133,22 +133,26 @@ describe("chat sidebar region", () => {
     Object.assign(region, {
       conversationTab: {
         label: "Research assistant",
-        icon: element("<span data-agent-avatar>\ud83e\udd89</span>"),
+        avatar: { id: "research-assistant", textAvatar: "🦉" },
       },
     });
     await region.updateComplete;
     expect(label()?.textContent).toBe("Research assistant");
     expect(
-      root(region).querySelector(
-        '.tabstrip-tab[data-tab-value="conversation"] [data-agent-avatar]',
-      ),
-    ).not.toBeNull();
+      root(region)
+        .querySelector(
+          '.tabstrip-tab[data-tab-value="conversation"] .identity-avatar--agent .identity-avatar__text',
+        )
+        ?.getAttribute("data-avatar"),
+    ).toBe("🦉");
     expect(root(region).querySelector('button[aria-label="Close Chat"]')).not.toBeNull();
     expect(
       [...root(region).querySelectorAll(".tabstrip-tab__label")].map((tab) => tab.textContent),
     ).toContain("Files");
 
-    Object.assign(region, { conversationTab: { label: "", icon: null } });
+    Object.assign(region, {
+      conversationTab: { label: "", avatar: { id: "research-assistant", textAvatar: "🦉" } },
+    });
     await region.updateComplete;
     expect(label()?.textContent).toBe("Chat");
     expect(
@@ -160,12 +164,16 @@ describe("chat sidebar region", () => {
     Object.assign(region, {
       conversationTab: {
         label: "Planning assistant",
-        icon: element("<span data-agent-avatar>\ud83e\udd8a</span>"),
+        avatar: { id: "planning-assistant", textAvatar: "🦊" },
       },
     });
     await region.updateComplete;
     expect(label()?.textContent).toBe("Planning assistant");
-    expect(root(region).querySelector("[data-agent-avatar]")?.textContent).toBe("🦊");
+    expect(
+      root(region)
+        .querySelector(".identity-avatar--agent .identity-avatar__text")
+        ?.getAttribute("data-avatar"),
+    ).toBe("🦊");
     region.conversationTab = undefined;
     await region.updateComplete;
     expect(label()?.textContent).toBe("Chat");

@@ -32,7 +32,7 @@ it("keeps content actions and focus in Layout across plugin panel swaps", async 
     {
       slot,
       label: "Fixture notes",
-      iconName: sidebarPanelDefinitions()[0]!.iconName,
+      icon: sidebarPanelDefinitions()[0]!.icon,
       available: true,
       content: "Notes",
       loading: { variant: "files", label: "Loading notes" },

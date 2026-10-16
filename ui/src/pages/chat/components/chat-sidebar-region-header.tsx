@@ -14,7 +14,6 @@ import { Icon } from "../../../components/solid/icon.tsx";
 import { AgentIdentityAvatar } from "../../../components/solid/identity-avatar.tsx";
 import { KeyboardShortcut } from "../../../components/solid/kbd.tsx";
 import { Menu, type MenuItem } from "../../../components/solid/menu.tsx";
-import type { AgentIdentity } from "../../../lib/identity-avatar-view.ts";
 import "../../../components/tooltip.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
 import { readLinkFavicon } from "../link-favicon-cache.ts";
@@ -56,23 +55,6 @@ export function sidebarPanelType(definitions: SidebarPanelDefinition[], slot: Si
   return definition;
 }
 
-export function SidebarPanelIcon(props: {
-  type: Pick<SidebarPanelDefinition, "icon" | "iconName"> & { avatar?: AgentIdentity };
-}) {
-  return (
-    <Show
-      when={props.type.avatar}
-      fallback={
-        <Show when={props.type.iconName} fallback={props.type.icon}>
-          {(name) => <Icon name={name()} />}
-        </Show>
-      }
-    >
-      {(avatar) => <AgentIdentityAvatar agent={avatar()} />}
-    </Show>
-  );
-}
-
 export function PanelTypeOption(props: { type: SidebarPanelDefinition; slotted?: boolean }) {
   return (
     <>
@@ -81,7 +63,7 @@ export function PanelTypeOption(props: { type: SidebarPanelDefinition; slotted?:
         class="side-panel-type-option__icon"
         aria-hidden="true"
       >
-        <SidebarPanelIcon type={props.type} />
+        <Icon name={props.type.icon} />
       </span>
       <span class="side-panel-type-option__label">{props.type.label}</span>{" "}
       <Show when={props.type.shortcut}>
@@ -222,10 +204,11 @@ export function SidebarRegionHeader(props: SidebarRegionHeaderProps) {
         }));
       }
       const type = sidebarPanelType(props.panelDefinitions, panel.slot);
-      const tab =
+      const conversation =
         panel.slot === "conversation" && props.conversationTab?.label
           ? props.conversationTab
-          : type;
+          : undefined;
+      const tab = conversation ?? type;
       return [
         {
           id: panel.id,
@@ -247,7 +230,11 @@ export function SidebarRegionHeader(props: SidebarRegionHeaderProps) {
             panel.slot === "dashboard" || canRestore
               ? () => props.callbacks?.togglePanelExpanded(panel.id)
               : undefined,
-          icon: <SidebarPanelIcon type={tab} />,
+          icon: conversation ? (
+            <AgentIdentityAvatar agent={conversation.avatar} />
+          ) : (
+            <Icon name={type.icon} />
+          ),
           closeLabel: t("chat.sidebarColumns.close", { panel: type.label }),
         },
       ];

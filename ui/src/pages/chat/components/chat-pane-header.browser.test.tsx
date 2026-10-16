@@ -52,7 +52,7 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
           {
             slot: "conversation",
             label: "Chat",
-            iconName: "copy",
+            icon: "copy",
             available: true,
             content: null,
             loading: { variant: "files", label: "Loading" },
@@ -61,7 +61,7 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
           {
             slot: "subagents",
             label: "Subagents",
-            iconName: "copy",
+            icon: "copy",
             available: true,
             content: null,
             loading: { variant: "files", label: "Loading" },
@@ -122,7 +122,7 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
             ...Array.from({ length: 7 }, (_, index) => ({
               id: `panel-${index + 1}`,
               label: `Panel ${index + 1}`,
-              icon: "copy",
+              icon: "copy" as const,
               onActivate: vi.fn(),
             })),
           ],

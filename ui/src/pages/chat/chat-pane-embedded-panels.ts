@@ -30,7 +30,7 @@ export function sidebarPanelDefinitions(
   };
   const definePanel = (
     slot: Exclude<SidebarSlotId, `plugin:${string}` | "link-reader">,
-    iconName: IconName,
+    icon: IconName,
     hasContent = true,
     actions?: Pick<SidebarPanelDefinition, "headerAction" | "headerActionView" | "headerLink">,
   ): SidebarPanelDefinition => {
@@ -38,7 +38,7 @@ export function sidebarPanelDefinitions(
     return {
       slot,
       label: t(`chat.sidePanel.${textKey}`),
-      iconName,
+      icon,
       available: Boolean(
         panelContext &&
         (slot === "portal"
@@ -101,7 +101,7 @@ export function sidebarPanelDefinitions(
     {
       slot: "link-reader",
       label: t("linkReader.title"),
-      iconName: "link",
+      icon: "link",
       available: Boolean(params?.linkReaders?.length),
       content: null,
       view: data,
@@ -124,7 +124,7 @@ export function sidebarPanelDefinitions(
     ...[...pluginPanels].map(([slot, entry]): SidebarPanelDefinition => ({
       slot,
       label: entry?.value.label ?? slot.slice("plugin:".length),
-      iconName: "plug",
+      icon: "plug",
       available: entry !== undefined,
       content: null,
       view: entry ? data : undefined,

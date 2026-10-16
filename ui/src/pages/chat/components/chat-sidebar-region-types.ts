@@ -15,8 +15,7 @@ import type { SidebarLayout, SidebarSlotId } from "../sidebar-layout.ts";
 export type SidebarPanelDefinition = {
   slot: SidebarSlotId;
   label: string;
-  icon?: JSX.Element;
-  iconName?: IconName;
+  icon: IconName;
   shortcut?: KeyboardShortcutCombo;
   available: boolean;
   content: JSX.Element;
@@ -45,8 +44,7 @@ export type SidebarRegionCallbacks = {
 export type RegionProps = {
   panelIdPrefix: string;
   conversationTab?: Pick<SidebarPanelDefinition, "label"> & {
-    icon?: JSX.Element;
-    avatar?: AgentIdentity;
+    avatar: AgentIdentity;
   };
   layout: SidebarLayout;
   panelDefinitions: SidebarPanelDefinition[];
