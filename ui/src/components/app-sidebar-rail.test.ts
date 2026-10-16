@@ -4,6 +4,7 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import { normalizeSidebarEntries } from "../app-navigation.ts";
+import { setAvatarGatewayOrigin } from "../lib/identity-avatar-context.ts";
 import { ApplicationProvider } from "../lib/reactive/context.ts";
 import * as toast from "../lib/toast.ts";
 import {
@@ -495,6 +496,61 @@ describe("personal navigation rail", () => {
     expect(sidebar.querySelector(".sidebar-agent-menu")).not.toBeNull();
     expect(sidebar.querySelector('[data-value="agent:research"]')).not.toBeNull();
     expect(sidebar.querySelector(".sidebar-brand")).toBeNull();
+  });
+
+  it("settles retained menu avatars through a sidebar view-root replacement", async () => {
+    setAvatarGatewayOrigin(globalThis.location.origin, ["avatar-token"]);
+    onTestFinished(() => setAvatarGatewayOrigin(null));
+    const response = createDeferred<Response>();
+    onTestFinished(() => response.resolve(new Response(null, { status: 404 })));
+    const nativeFetch = globalThis.fetch;
+    const fetchAvatar = vi.fn<typeof fetch>().mockReturnValue(response.promise);
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      return url.pathname === "/avatar/research"
+        ? fetchAvatar(input, init)
+        : nativeFetch(input, init);
+    });
+    vi.stubGlobal(
+      "URL",
+      class extends URL {
+        static override createObjectURL = vi.fn(() => "blob:retained-menu-avatar");
+        static override revokeObjectURL = vi.fn();
+      },
+    );
+    const gateway = createGatewayHarness({} as GatewayBrowserClient);
+    const sessions = createSessionsHarness("main", ["agent:main:main"]);
+    const agents = {
+      ...TWO_AGENTS,
+      agents: TWO_AGENTS.agents.map((agent) =>
+        agent.id === "research"
+          ? Object.assign({}, agent, { identity: { avatar: "/avatar/research?v=1" } })
+          : agent,
+      ),
+    };
+    const { sidebar, provider, context } = await mountSidebar(
+      gateway.gateway,
+      sessions.sessions,
+      "panel",
+      agents,
+    );
+    sidebar.querySelector<HTMLButtonElement>(".sidebar-agent-card__main")!.click();
+    await vi.dynamicImportSettled();
+    await waitForSolid(() => expect(fetchAvatar).toHaveBeenCalledOnce());
+    provider.setContext({ ...context, basePath: "/control" });
+    await sidebar.updateComplete;
+    await vi.dynamicImportSettled();
+    response.resolve(
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-type": "image/png" },
+      }),
+    );
+    await waitForSolid(() =>
+      expect(sidebar.querySelector('[data-value="agent:research"] img')?.getAttribute("src")).toBe(
+        "blob:retained-menu-avatar",
+      ),
+    );
+    expect(fetchAvatar).toHaveBeenCalledOnce();
   });
 
   it("pins a person with native drag and retains a safe destination after they go offline", async () => {
