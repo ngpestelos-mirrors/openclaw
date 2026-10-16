@@ -223,11 +223,12 @@ suite.define(() => {
         if (canOrganize) {
           await unread.click();
           await unreadBadge.waitFor();
-          await page.locator(".chat-header-session-menu__trigger").click();
-          await page
+          await activePane.locator(".chat-header-session-menu__trigger").click();
+          await activePane
             .locator("openclaw-chat-header-session-menu")
             .getByRole("menuitem", { name: "Mark as read", exact: true })
             .click();
+          await activePane.locator(".chat-header-session-menu__panel").waitFor({ state: "hidden" });
           await unreadBadge.waitFor({ state: "hidden" });
           await ownRow.click({ button: "right" });
           await rename.waitFor();
