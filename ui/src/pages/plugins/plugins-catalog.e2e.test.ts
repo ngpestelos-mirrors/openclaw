@@ -1,3 +1,4 @@
+import type { Page } from "playwright";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
   calendarPlugin,
@@ -13,6 +14,24 @@ import {
   setupPluginsE2e,
   teardownPluginsE2e,
 } from "./plugins.e2e.test-support.ts";
+
+async function interceptIcon(page: Page, id: string, attachment = false) {
+  let authorization = "";
+  await page.route(`**/__openclaw__/plugin-icon/${id}`, async (route) => {
+    authorization = route.request().headers().authorization ?? "";
+    await route.fulfill({
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><circle cx="12" cy="12" r="10" fill="#f97316"/></svg>',
+      contentType: "image/svg+xml",
+      headers: attachment
+        ? {
+            "content-disposition": 'attachment; filename="plugin-icon.svg"',
+            "content-security-policy": "default-src 'none'; sandbox",
+          }
+        : undefined,
+    });
+  });
+  return () => authorization;
+}
 
 describeControlUiE2e("Control UI installed plugin catalog", () => {
   beforeAll(setupPluginsE2e);
@@ -39,14 +58,7 @@ describeControlUiE2e("Control UI installed plugin catalog", () => {
         { viewport, nativeAuth: true },
       );
       await page.emulateMedia({ colorScheme: "dark" });
-      let iconAuthorization = "";
-      await page.route("**/__openclaw__/plugin-icon/matrix", async (route) => {
-        iconAuthorization = route.request().headers().authorization ?? "";
-        await route.fulfill({
-          body: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><circle cx="12" cy="12" r="10" fill="#f97316"/></svg>',
-          contentType: "image/svg+xml",
-        });
-      });
+      const iconAuthorization = await interceptIcon(page, "matrix");
       await page.goto(`${server.baseUrl}chat`);
       // Navigation can finish before the shell installs its palette shortcut.
       await page.locator(".agent-chat__composer-combobox textarea:visible").waitFor();
@@ -63,7 +75,7 @@ describeControlUiE2e("Control UI installed plugin catalog", () => {
       await expect
         .poll(() => icon.evaluate((image: HTMLImageElement) => image.naturalWidth))
         .toBeGreaterThan(0);
-      expect(iconAuthorization).toBe("Bearer e2e-device-token");
+      expect(iconAuthorization()).toBe("Bearer e2e-device-token");
       await captureScreenshot(page, `palette-plugin-${viewport.width}.png`, "viewport");
       await result.click();
       await expect.poll(() => new URL(page.url()).pathname).toBe("/plugins/ch_bWF0cml4");
@@ -82,23 +94,11 @@ describeControlUiE2e("Control UI installed plugin catalog", () => {
       },
       { nativeAuth: true },
     );
-    let iconAuthorization = "";
-    await page.route("**/__openclaw__/plugin-icon/remote-icon", async (route) => {
-      iconAuthorization = route.request().headers().authorization ?? "";
-      await route.fulfill({
-        body: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path fill="#f97316" d="M4 3h16v18H4z"/></svg>',
-        contentType: "image/svg+xml",
-        headers: {
-          "content-disposition": 'attachment; filename="plugin-icon.svg"',
-          "content-security-policy": "default-src 'none'; sandbox",
-        },
-        status: 200,
-      });
-    });
+    const iconAuthorization = await interceptIcon(page, "remote-icon", true);
     await page.goto(`${server.baseUrl}settings/plugins`);
     const icon = page.locator('[data-plugin-icon-id="remote-icon"] img');
     await icon.waitFor();
-    expect(iconAuthorization).toBe("Bearer e2e-device-token");
+    expect(iconAuthorization()).toBe("Bearer e2e-device-token");
     await expect
       .poll(() =>
         icon.evaluate(async (image: HTMLImageElement) => {
@@ -133,9 +133,9 @@ describeControlUiE2e("Control UI installed plugin catalog", () => {
       await action.waitFor();
       expect(await action.getAttribute("aria-disabled")).toBe("true");
     }
-    expect(await gateway.getRequests("plugins.setEnabled")).toHaveLength(0);
-    expect(await gateway.getRequests("plugins.reload")).toHaveLength(0);
-    expect(await gateway.getRequests("plugins.uninstall")).toHaveLength(0);
+    for (const method of ["plugins.setEnabled", "plugins.reload", "plugins.uninstall"]) {
+      expect(await gateway.getRequests(method)).toHaveLength(0);
+    }
   });
 
   it("shows an inventory failure and retries the authoritative request", async () => {

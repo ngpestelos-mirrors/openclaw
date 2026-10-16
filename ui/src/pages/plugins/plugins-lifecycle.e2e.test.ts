@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
   calendarDiscoveryPlugin,
+  calendarDetail,
   calendarInspection,
   calendarPlugin,
   captureScreenshot,
@@ -22,6 +23,35 @@ import {
   workboardEnabled,
 } from "./plugins.e2e.test-support.ts";
 
+type PluginTest = Awaited<ReturnType<typeof openPluginTest>>;
+const installedCalendar = { ...calendarPlugin, catalogId: calendarDiscoveryPlugin.id };
+const calendarPath = `/plugins/${calendarDiscoveryPlugin.id}`;
+const installParams = { source: "clawhub", packageName: "calendar-plus" };
+const removalResult = {
+  ok: true,
+  pluginId: "calendar-plus",
+  removed: ["config entry", "install record"],
+  warnings: [],
+};
+
+async function startInstall({ page, gateway }: PluginTest, after = 0) {
+  await gateway.deferNext("plugins.install");
+  await button(page, "Install").click();
+  return gateway.waitForRequest("plugins.install", { after });
+}
+
+async function confirmRemoval({ page, gateway }: PluginTest) {
+  await gateway.deferNext("plugins.uninstall");
+  await button(page, "Uninstall Calendar Plus").click();
+  await button(page.locator("openclaw-modal-dialog"), "Remove").click();
+  return gateway.waitForRequest("plugins.uninstall");
+}
+
+async function expectNoRestart(gateway: PluginTest["gateway"], connects: number) {
+  expect(await gateway.getRequests("connect")).toHaveLength(connects);
+  expect(await gateway.getRequests("gateway.restart.request")).toHaveLength(0);
+}
+
 describeControlUiE2e("Control UI plugin lifecycle", () => {
   beforeAll(setupPluginsE2e);
   afterAll(teardownPluginsE2e);
@@ -42,10 +72,7 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
       await toggle.click();
       expect(
         (await gateway.waitForRequest("plugins.setEnabled", { after: writes })).params,
-      ).toEqual({
-        pluginId: "workboard",
-        enabled,
-      });
+      ).toEqual({ pluginId: "workboard", enabled });
       await expect.poll(() => toggle.getAttribute("aria-busy")).toBe("true");
       expect(await toggle.locator(".btn__spinner").count()).toBe(1);
       expect(await page.locator(".plugin-catalog-detail__actions .btn__spinner").count()).toBe(1);
@@ -103,8 +130,7 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
         .count(),
     ).toBe(0);
     expect(await gateway.getRequests("plugins.setEnabled")).toHaveLength(3);
-    expect(await gateway.getRequests("connect")).toHaveLength(connects);
-    expect(await gateway.getRequests("gateway.restart.request")).toHaveLength(0);
+    await expectNoRestart(gateway, connects);
   });
 
   it.each([
@@ -112,17 +138,13 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
     { withWarnings: true, inspection: "during" },
   ])("retains uninstall feedback through $inspection inspection", async (scenario) => {
     const { withWarnings, inspection } = scenario;
-    const installedCalendar = { ...calendarPlugin, catalogId: calendarDiscoveryPlugin.id };
     const { page, gateway } = await openPluginTest();
-    await page.goto(`${server.baseUrl}plugins/${calendarDiscoveryPlugin.id}`);
+    await page.goto(new URL(calendarPath, server.baseUrl).href);
     const connects = (await gateway.getRequests("connect")).length;
     await gateway.deferNext("plugins.install");
     await button(page, "Install").click();
     expect(await page.locator("openclaw-modal-dialog").count()).toBe(0);
-    expect((await gateway.waitForRequest("plugins.install")).params).toEqual({
-      source: "clawhub",
-      packageName: "calendar-plus",
-    });
+    expect((await gateway.waitForRequest("plugins.install")).params).toEqual(installParams);
     expect(await page.locator("[data-plugin-consent]").count()).toBe(0);
     await completeInstall(gateway, installedCalendar);
     await button(page, "Disable Calendar Plus").waitFor();
@@ -130,12 +152,8 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
     expect(await gateway.getRequests("plugins.install")).toHaveLength(1);
     expect(await page.locator("[data-plugin-consent]").count()).toBe(0);
     await captureScreenshot(page, "direct-install-desktop.png");
-    expect(await gateway.getRequests("connect")).toHaveLength(connects);
-    expect(await gateway.getRequests("gateway.restart.request")).toHaveLength(0);
-    await expect
-      .poll(() => new URL(page.url()).pathname)
-      .toBe(`/plugins/${calendarDiscoveryPlugin.id}`);
-    await button(page, "Disable Calendar Plus").waitFor();
+    await expectNoRestart(gateway, connects);
+    await expect.poll(() => new URL(page.url()).pathname).toBe(calendarPath);
     await page
       .locator(".plugin-catalog-detail__actions")
       .getByRole("link", { name: "Settings", exact: true })
@@ -168,15 +186,7 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
       observer.observe(document.body, { childList: true, subtree: true, characterData: true });
       return { errors, observer };
     });
-    await gateway.deferNext("plugins.uninstall");
-    await button(page, "Uninstall Calendar Plus").click();
-    await page
-      .locator("openclaw-modal-dialog")
-      .getByRole("button", { name: "Remove", exact: true })
-      .click();
-    expect((await gateway.waitForRequest("plugins.uninstall")).params).toEqual({
-      pluginId: "calendar-plus",
-    });
+    expect((await confirmRemoval({ page, gateway })).params).toEqual({ pluginId: "calendar-plus" });
     const warnings = [
       "Claw planner depends on calendar-plus. Update its plugin selection.",
       "Removed all plugin entries owned by the calendar-plus package.",
@@ -187,10 +197,7 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
     expect(await removing.locator(".btn__spinner").count()).toBe(1);
     expect(await page.locator(".plugin-catalog-detail__actions .btn__spinner").count()).toBe(1);
     await captureScreenshot(page, "lifecycle-uninstall-pending.png");
-    const missingPlugin = {
-      code: "INVALID_REQUEST",
-      message: "Plugin 'calendar-plus' not found",
-    };
+    const missingPlugin = { code: "INVALID_REQUEST", message: "Plugin 'calendar-plus' not found" };
     if (inspection === "before") {
       await gateway.rejectDeferred("plugins.inspect", missingPlugin);
     } else {
@@ -209,9 +216,7 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
     );
     await gateway.setMethodResponse("plugins.list", initialInventory);
     await gateway.resolveDeferred("plugins.uninstall", {
-      ok: true,
-      pluginId: "calendar-plus",
-      removed: ["config entry", "install record"],
+      ...removalResult,
       warnings: withWarnings ? warnings : [],
     });
     await button(page, "Install").waitFor();
@@ -240,23 +245,15 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
     }
     expect(await page.getByText("Removed Calendar Plus.", { exact: true }).count()).toBe(0);
     expect(await page.locator(".plugins-row-message--success").count()).toBe(0);
-    await expect
-      .poll(() => new URL(page.url()).pathname)
-      .toBe(`/plugins/${calendarDiscoveryPlugin.id}`);
+    await expect.poll(() => new URL(page.url()).pathname).toBe(calendarPath);
     await gateway.setMethodResponse("config.get", configSnapshot(false));
-    await gateway.deferNext("plugins.install");
-    await button(page, "Install").click();
-    expect((await gateway.waitForRequest("plugins.install", { after: 1 })).params).toEqual({
-      source: "clawhub",
-      packageName: "calendar-plus",
-    });
+    expect((await startInstall({ page, gateway }, 1)).params).toEqual(installParams);
     expect(await notice.count()).toBe(0);
     await completeInstall(gateway, installedCalendar);
     await button(page, "Disable Calendar Plus").waitFor();
     expect(await page.getByText("Installed Calendar Plus.", { exact: true }).count()).toBe(0);
     expect(await gateway.getRequests("plugins.install")).toHaveLength(2);
-    expect(await gateway.getRequests("connect")).toHaveLength(connects);
-    expect(await gateway.getRequests("gateway.restart.request")).toHaveLength(0);
+    await expectNoRestart(gateway, connects);
   });
 
   it.each([
@@ -265,7 +262,6 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
   ])(
     "retains known catalog content while installed inspection is pending at $width",
     async (viewport) => {
-      const plugin = { ...calendarPlugin, catalogId: calendarDiscoveryPlugin.id };
       const catalog = {
         plugin: {
           ...calendarDiscoveryPlugin,
@@ -275,13 +271,7 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
           },
         },
         detail: {
-          origin: "clawhub",
-          packageName: "calendar-plus",
-          topics: [],
-          configuration: [],
-          mcpServers: [],
-          skills: [],
-          versions: [],
+          ...calendarDetail.detail,
           readme: "# Calendar workflows\n\nPlan your week with the shared calendar.",
         },
       };
@@ -289,39 +279,31 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
         { "plugins.catalog.get": catalog },
         { viewport, heldMethods: ["plugins.inspect"] },
       );
+      const capture = (stage: string) =>
+        captureScreenshot(page, `retained-catalog-${viewport.width}-${stage}.png`, "viewport");
       await page.route("**/__openclaw__/catalog-icon/**", async (route) => {
         await route.fulfill({
           contentType: "image/svg+xml",
           body: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path fill="#f97316" d="M4 3h16v18H4z"/></svg>',
         });
       });
-      await page.goto(`${server.baseUrl}plugins/${plugin.catalogId}`);
+      await page.goto(new URL(calendarPath, server.baseUrl).href);
       const readme = page.getByRole("heading", { name: "Calendar workflows", exact: true });
       await readme.waitFor();
       const heroIcon = page.locator(".plugin-catalog-detail__hero img");
       await heroIcon.waitFor();
       const iconUrl = await heroIcon.getAttribute("src");
-      await captureScreenshot(
-        page,
-        `retained-catalog-${viewport.width}-before-install.png`,
-        "viewport",
-      );
-      await gateway.deferNext("plugins.install");
-      await button(page, "Install").click();
-      await gateway.waitForRequest("plugins.install");
-      await completeInstall(gateway, plugin);
+      await capture("before-install");
+      await startInstall({ page, gateway });
+      await completeInstall(gateway, installedCalendar);
       await gateway.waitForRequest("plugins.inspect");
       await button(page, "Disable Calendar Plus").waitFor();
-      await captureScreenshot(
-        page,
-        `retained-catalog-${viewport.width}-inspection-pending.png`,
-        "viewport",
-      );
+      await capture("inspection-pending");
       expect(await readme.count()).toBe(1);
       expect(await heroIcon.getAttribute("src")).toBe(iconUrl);
       await gateway.resolveDeferred("plugins.inspect", {
         ...calendarInspection,
-        plugin,
+        plugin: installedCalendar,
         overview: { readme: "# Updated calendar workflows" },
       });
       await page
@@ -337,14 +319,11 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
   ] as const)(
     "keeps keyboard focus on the $surface page after canceling and confirming removal",
     async ({ surface, heading }) => {
-      const installedCalendar = { ...calendarPlugin, catalogId: calendarDiscoveryPlugin.id };
       const { page, gateway } = await openPluginTest();
       const hasFocus = (locator: ReturnType<typeof page.locator>) =>
         locator.evaluate((element) => element === document.activeElement);
       await page.goto(`${server.baseUrl}plugins/${calendarDiscoveryPlugin.id}`);
-      await gateway.deferNext("plugins.install");
-      await button(page, "Install").click();
-      await gateway.waitForRequest("plugins.install");
+      await startInstall({ page, gateway });
       await completeInstall(gateway, installedCalendar);
       await button(page, "Disable Calendar Plus").waitFor();
       if (surface === "settings") {
@@ -368,12 +347,7 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
       await gateway.waitForRequest("plugins.uninstall");
       await gateway.setMethodResponse("plugins.list", initialInventory);
       await gateway.setMethodResponse("config.get", configSnapshot(false));
-      await gateway.resolveDeferred("plugins.uninstall", {
-        ok: true,
-        pluginId: "calendar-plus",
-        removed: ["config entry", "install record"],
-        warnings: [],
-      });
+      await gateway.resolveDeferred("plugins.uninstall", removalResult);
       const title = page.getByRole("heading", { level: 1, name: heading, exact: true });
       await expect.poll(() => hasFocus(title)).toBe(true);
       expect(await trigger.count()).toBe(0);
@@ -387,14 +361,11 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
     const { page, gateway } = await openPluginTest();
     await page.goto(`${server.baseUrl}plugins/${calendarDiscoveryPlugin.id}`);
     const connects = (await gateway.getRequests("connect")).length;
-    await gateway.deferNext("plugins.install");
-    await button(page, "Install").click();
-    await gateway.waitForRequest("plugins.install");
+    await startInstall({ page, gateway });
     const listReads = (await gateway.getRequests("plugins.list")).length;
     const configReads = (await gateway.getRequests("config.get")).length;
     const failedPlugin = {
-      ...calendarPlugin,
-      catalogId: calendarDiscoveryPlugin.id,
+      ...installedCalendar,
       enabled: false,
       state: "error" as const,
       error: "Calendar service failed to start",
@@ -451,54 +422,28 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
       message: "Calendar enable failed",
     });
     await failure.getByText("Calendar enable failed", { exact: true }).waitFor();
-    await gateway.deferNext("plugins.uninstall");
-    await button(page, "Uninstall Calendar Plus").click();
-    await page
-      .locator("openclaw-modal-dialog")
-      .getByRole("button", { name: "Remove", exact: true })
-      .click();
-    await gateway.waitForRequest("plugins.uninstall");
+    await confirmRemoval({ page, gateway });
     await gateway.setMethodResponse("plugins.list", initialInventory);
     await gateway.resolveDeferred("plugins.uninstall");
     const install = button(page, "Install");
     await expect.poll(() => install.count()).toBe(1);
     await captureScreenshot(page, "failed-install-removed.png");
-    await gateway.deferNext("plugins.install");
-    await install.click();
-    expect((await gateway.waitForRequest("plugins.install", { after: 1 })).params).toEqual({
-      source: "clawhub",
-      packageName: "calendar-plus",
-    });
-    const reinstalled = { ...calendarPlugin, catalogId: calendarDiscoveryPlugin.id };
-    await gateway.setMethodResponse(
-      "plugins.list",
-      inventory([...initialInventory.plugins, reinstalled]),
-    );
+    expect((await startInstall({ page, gateway }, 1)).params).toEqual(installParams);
     await gateway.setMethodResponse("plugins.inspect", {
       ...calendarInspection,
-      plugin: reinstalled,
+      plugin: installedCalendar,
     });
-    await gateway.resolveDeferred("plugins.install", {
-      ok: true,
-      plugin: reinstalled,
-      restartRequired: false,
-    });
+    await completeInstall(gateway, installedCalendar);
     await button(page, "Disable Calendar Plus").waitFor();
     expect(await gateway.getRequests("plugins.install")).toHaveLength(2);
     expect(await gateway.getRequests("plugins.reload")).toHaveLength(0);
-    expect(await gateway.getRequests("connect")).toHaveLength(connects);
-    expect(await gateway.getRequests("gateway.restart.request")).toHaveLength(0);
+    await expectNoRestart(gateway, connects);
   });
 
   it("keeps server policy findings visible until each warning is explicitly acknowledged", async () => {
     const { page, gateway } = await openPluginTest();
     await page.goto(`${server.baseUrl}plugins/${calendarDiscoveryPlugin.id}`);
-    await gateway.deferNext("plugins.install");
-    await button(page, "Install").click();
-    expect((await gateway.waitForRequest("plugins.install")).params).toEqual({
-      source: "clawhub",
-      packageName: "calendar-plus",
-    });
+    expect((await startInstall({ page, gateway })).params).toEqual(installParams);
     await gateway.rejectDeferred("plugins.install", {
       code: "INVALID_REQUEST",
       message: "raw terminal install-policy output",
@@ -516,8 +461,7 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
       await gateway.deferNext("plugins.install");
       await button(warning, "Continue installation").click();
       expect((await gateway.waitForRequest("plugins.install", { after: attempt })).params).toEqual({
-        source: "clawhub",
-        packageName: "calendar-plus",
+        ...installParams,
         acknowledgeInstallPolicyWarning: true,
       });
       expect(await button(warning, "Continue installation").isDisabled()).toBe(true);
@@ -533,8 +477,7 @@ describeControlUiE2e("Control UI plugin lifecycle", () => {
         );
         expect(await warning.textContent()).not.toContain("raw dependency");
       } else {
-        const installed = { ...calendarPlugin, catalogId: calendarDiscoveryPlugin.id };
-        await completeInstall(gateway, installed);
+        await completeInstall(gateway, installedCalendar);
       }
     }
     await button(page, "Disable Calendar Plus").waitFor();
