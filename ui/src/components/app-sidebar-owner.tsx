@@ -51,6 +51,7 @@ import { SessionOrganizerController } from "./session-organizer-controller.ts";
 import { SidebarAgentRoster, renderSidebarPinnedSession } from "./sidebar-agent-roster.tsx";
 import { SidebarContextController } from "./sidebar-context-controller.ts";
 import { SidebarMenusController } from "./sidebar-menus-controller.tsx";
+import type { SidebarNavigationCatalog } from "./sidebar-navigation-catalog.ts";
 import { SidebarPeopleController } from "./sidebar-people-controller.ts";
 import {
   captureSidebarSnapshotModel,
@@ -177,7 +178,10 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
   private narration: SidebarSessionNarrationController | null = null;
   private narrationLoad: Promise<void> | null = null;
   private readonly sidebarContext = new SidebarContextController(this);
-  constructor(...args: ConstructorParameters<typeof AppSidebarSessionNavigationElement>) {
+  constructor(
+    public override navigationCatalog: SidebarNavigationCatalog,
+    ...args: ConstructorParameters<typeof AppSidebarSessionNavigationElement>
+  ) {
     super(...args);
     new SubscriptionsController(this)
       .effect(
