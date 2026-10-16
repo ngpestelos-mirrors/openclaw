@@ -305,7 +305,7 @@ it("rejects unmerged and unavailable sparse index inputs", () => {
   );
   expect(() => fingerprint()).toThrow(/requires resolved file index entries/);
   git(["update-index", "--force-remove", file]);
-  git(["update-index", "--info-only", "--cacheinfo", "100644", "1".repeat(40), file]);
+  git(["update-index", "--add", "--info-only", "--cacheinfo", "100644", "1".repeat(40), file]);
   git(["update-index", "--skip-worktree", file]);
   rmSync(path.join(git(["rev-parse", "--show-toplevel"]), file));
   expect(() => fingerprint()).toThrow(/could not read sparse install input/);

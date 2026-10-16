@@ -1689,7 +1689,9 @@ console.log(JSON.stringify(pages));`,
           const pages = JSON.parse(result.stdout) as Inspection[];
           expect(pages.length).toBeGreaterThan(1);
           expect(pages.at(-1)?.incomplete).toBe(false);
-          for (const page of pages) expect(page.entries.length).toBeLessThanOrEqual(64);
+          for (const page of pages) {
+            expect(page.entries.length).toBeLessThanOrEqual(64);
+          }
           expect(pages.flatMap((page) => page.entries)).toContainEqual(
             expect.objectContaining({ id: stage.receipt.id, status: "candidate" }),
           );
