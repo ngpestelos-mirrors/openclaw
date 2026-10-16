@@ -232,7 +232,7 @@ export function createControlUiTeamScaleFixture(options: FixtureOptions = {}) {
     timestamp: now - (counts.transcriptMessages - index) * 60_000,
     content: [
       ...(options.duplicateBootReads && index === counts.transcriptMessages - 1
-        ? Array.from({ length: 6 }, (unused, alias) => ({
+        ? Array.from({ length: 6 }, (_unused, alias) => ({
             type: "image",
             artifactId: "artifact_managed_image_team-scale",
             url: `/api/chat/media/outgoing/${encodeURIComponent(selectedSessionKey)}/team-scale/full?mediaTicket=historical-${alias}`,
