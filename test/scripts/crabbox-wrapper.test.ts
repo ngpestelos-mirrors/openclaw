@@ -727,26 +727,8 @@ function expectMirrorDirectories(syncRoot: string, repository: string, allocatio
   if (allocation) {
     expect(path.basename(allocation)).toBe(`openclaw-crabbox-sync-${id}`);
   }
-  const cursorName = "openclaw-crabbox-sync-discovery";
-  const cursor = path.join(syncRoot, cursorName);
-  if (existsSync(cursor)) {
-    expect(readdirSync(cursor)).toEqual(["position.json"]);
-    const identity = (directory: string) => {
-      const stat = lstatSync(directory, { bigint: true });
-      return { dev: String(stat.dev), ino: String(stat.ino) };
-    };
-    expect(JSON.parse(readFileSync(path.join(cursor, "position.json"), "utf8"))).toMatchObject({
-      version: 1,
-      rootIdentity: identity(syncRoot),
-      cursorIdentity: identity(cursor),
-    });
-  }
   expect(readdirSync(syncRoot).toSorted()).toEqual(
-    [
-      "mirrors",
-      ...(allocation ? [path.basename(allocation)] : []),
-      ...(existsSync(cursor) ? [cursorName] : []),
-    ].toSorted(),
+    ["mirrors", ...(allocation ? [path.basename(allocation)] : [])].toSorted(),
   );
   return { key, id };
 }
@@ -4598,6 +4580,7 @@ process.on("exit", () => {
     ["blacksmith-testbox", false, "transport"],
     ["blacksmith-testbox", false, "reuse"],
     ["blacksmith-testbox", false, "unchanged"],
+    ["blacksmith-testbox", false, "unrelated-staging"],
     ["blacksmith-testbox", false, "captured-base"],
     ["blacksmith-testbox", false, "graph"],
     ["blacksmith-testbox", false, "frozen"],
@@ -4787,6 +4770,18 @@ process.on("exit", () => {
       const scriptBody = '#!/usr/bin/env bash\nexec "$@"\n';
       const scriptInput = path.join(root, "input.sh");
       writeFileSync(scriptInput, scriptBody);
+      const completionProbe =
+        scenario === "unrelated-staging" ? path.join(root, "staging-probe.cjs") : undefined;
+      const stagingScans = path.join(root, "staging-scans");
+      if (completionProbe) {
+        mkdirSync(path.join(root, "sync"), { recursive: true });
+        writeFileSync(
+          completionProbe,
+          `const fs=require('node:fs');const original=fs.opendirSync;
+fs.opendirSync=function(directory,...args){if(fs.realpathSync(directory)===${JSON.stringify(realpathSync(path.join(root, "sync")))})fs.appendFileSync(${JSON.stringify(stagingScans)},'scan\\n');return original.call(this,directory,...args);};
+require('node:module').syncBuiltinESMExports();`,
+        );
+      }
       const runSender = (
         mode: "direct" | "shell" | "script" | "stdin" = "direct",
         delegatedArgs?: string[],
@@ -4804,7 +4799,13 @@ process.on("exit", () => {
           [fixtureWrapper, ...(delegatedArgs ?? ["run", "--provider", provider, ...payload])],
           {
             cwd: producer,
-            env,
+            env: completionProbe
+              ? {
+                  ...env,
+                  NODE_OPTIONS:
+                    `${process.env.NODE_OPTIONS ?? ""} --require ${JSON.stringify(completionProbe)}`.trim(),
+                }
+              : env,
             encoding: "utf8",
             input: mode === "stdin" ? scriptBody : undefined,
             timeout: 10_000,
@@ -4936,6 +4937,14 @@ process.on("exit", () => {
         }
         return { receiver, result };
       };
+      if (scenario === "unrelated-staging") {
+        runSender();
+        expect(
+          existsSync(stagingScans),
+          "normal completion must not inspect unrelated staging",
+        ).toBe(false);
+        return;
+      }
       if (scenario === "captured-base") {
         const sharedBase = git(producer, ["rev-parse", base + "^"]);
         git(producer, ["update-ref", "refs/remotes/origin/main", sharedBase]);
