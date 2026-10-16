@@ -25,22 +25,24 @@ function writeExecutable(filePath: string, lines: string[]): void {
   writeFileSync(filePath, `${lines.join("\n")}\n`, "utf8");
   chmodSync(filePath, 0o755);
 }
+function writeFixture(root: string, name: string, content: string): void {
+  const file = path.join(root, name);
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, content, "utf8");
+}
 function copyGeneratedPublisherFixture(root: string, workspaceName: string) {
   if (!generatedPublisherTemplate) {
     const templateRoot = publisherTemplateDirs.make("openclaw-generated-pr-template-");
     const origin = path.join(templateRoot, "origin.git");
     const worktree = path.join(templateRoot, "worktree");
-    const generatedDir = path.join(worktree, "generated");
-    const sourceDir = path.join(worktree, "source");
-    mkdirSync(generatedDir, { recursive: true });
-    mkdirSync(sourceDir);
+    mkdirSync(worktree);
     runGit(templateRoot, ["init", "--bare", origin]);
     runGit(templateRoot, ["init", "--initial-branch=main", worktree]);
     runGit(worktree, ["config", "user.name", "Test Publisher"]);
     runGit(worktree, ["config", "user.email", "publisher@example.com"]);
-    writeFileSync(path.join(generatedDir, "a.txt"), "old-a\n", "utf8");
-    writeFileSync(path.join(generatedDir, "b.txt"), "old-b\n", "utf8");
-    writeFileSync(path.join(sourceDir, "input.txt"), "old-input\n", "utf8");
+    writeFixture(worktree, "generated/a.txt", "old-a\n");
+    writeFixture(worktree, "generated/b.txt", "old-b\n");
+    writeFixture(worktree, "source/input.txt", "old-input\n");
     runGit(worktree, ["add", "generated", "source"]);
     runGit(worktree, ["commit", "-m", "base"]);
     runGit(worktree, ["remote", "add", "origin", "../origin.git"]);
@@ -86,7 +88,6 @@ export function prepareGeneratedPublisherFixture(
   const origin = path.join(root, "origin.git");
   const updater = path.join(root, "updater");
   const worktree = path.join(root, workspaceName);
-  const generatedDir = path.join(worktree, "generated");
   const fakeBin = path.join(root, "publisher-bin");
   const runnerTemp = path.join(root, "runner-temp");
   const prState = path.join(root, "pr-open");
@@ -109,7 +110,7 @@ export function prepareGeneratedPublisherFixture(
   }
   if (options.existingPr) {
     runGit(worktree, ["switch", "-c", "automation/locale"]);
-    writeFileSync(path.join(generatedDir, "a.txt"), "stale-pr-a\n", "utf8");
+    writeFixture(worktree, "generated/a.txt", "stale-pr-a\n");
     runGit(worktree, ["add", "generated"]);
     runGit(worktree, ["commit", "-m", "stale generated pull request"]);
     runGit(worktree, ["push", "-u", "origin", "automation/locale"]);
@@ -122,17 +123,12 @@ export function prepareGeneratedPublisherFixture(
     runGit(updater, ["config", "user.name", "Base Updater"]);
     runGit(updater, ["config", "user.email", "updater@example.com"]);
     if (baseChangePath !== null) {
-      writeFileSync(
-        path.join(updater, "generated", `${baseChangePath}.txt`),
-        `newer-${baseChangePath}\n`,
-        "utf8",
-      );
+      writeFixture(updater, `generated/${baseChangePath}.txt`, `newer-${baseChangePath}\n`);
     }
     if (options.updateSource) {
       const sourcePath =
         typeof options.updateSource === "string" ? options.updateSource : "source/input.txt";
-      mkdirSync(path.dirname(path.join(updater, sourcePath)), { recursive: true });
-      writeFileSync(path.join(updater, sourcePath), "newer-input\n", "utf8");
+      writeFixture(updater, sourcePath, "newer-input\n");
     }
     if (!options.updateSourceBeforeAutoMerge) {
       runGit(updater, ["add", "--all"]);
@@ -141,7 +137,7 @@ export function prepareGeneratedPublisherFixture(
     }
   }
   if (!options.noGeneratedChange) {
-    writeFileSync(path.join(generatedDir, "a.txt"), "desired-a\n", "utf8");
+    writeFixture(worktree, "generated/a.txt", "desired-a\n");
   }
   if (options.failGeneratedPush) {
     writeExecutable(path.join(origin, "hooks", "pre-receive"), [
@@ -166,6 +162,14 @@ export function prepareGeneratedPublisherFixture(
   writeExecutable(path.join(fakeBin, "gh"), [
     "#!/usr/bin/env bash",
     "set -euo pipefail",
+    "read_head() {",
+    '  if [[ -f "$1" ]]; then',
+    '    head="0000000000000000000000000000000000000000"',
+    '    rm -f "$1"',
+    "  else",
+    '    head="$("${FAKE_REAL_GIT:-git}" --git-dir="$FAKE_ORIGIN" rev-parse refs/heads/automation/locale)"',
+    "  fi",
+    "}",
     'if [[ "$FAKE_UPDATE_BEFORE_AUTO_MERGE" == "true" && ( "${1-}:${2-}" == "pr:create" || "${1-}:${2-}" == "pr:edit" ) ]]; then',
     '  printf "newer-input\\n" > "$FAKE_UPDATER/source/input.txt"',
     '  git -C "$FAKE_UPDATER" add source/input.txt',
@@ -176,12 +180,7 @@ export function prepareGeneratedPublisherFixture(
     "  auth:setup-git) exit 0 ;;",
     "  api:*)",
     '    if [[ -f "$FAKE_PR_STATE" ]]; then',
-    '      if [[ -f "$FAKE_STALE_HEAD_ONCE" ]]; then',
-    '        head="0000000000000000000000000000000000000000"',
-    '        rm -f "$FAKE_STALE_HEAD_ONCE"',
-    "      else",
-    '        head="$("${FAKE_REAL_GIT:-git}" --git-dir="$FAKE_ORIGIN" rev-parse refs/heads/automation/locale)"',
-    "      fi",
+    '      read_head "$FAKE_STALE_HEAD_ONCE"',
     '      printf "https://github.com/openclaw/openclaw/pull/1\\t%s\\n" "$head"',
     "    fi",
     "    ;;",
@@ -195,12 +194,7 @@ export function prepareGeneratedPublisherFixture(
     '    if [[ -f "$FAKE_MERGE_CALLS.disabled" ]]; then FAKE_AUTO_MERGE_METHOD=""; fi',
     '    [[ -n "${GH_TOKEN:-}" ]]',
     '    [[ -f "$FAKE_PR_STATE" ]]',
-    '    if [[ -f "$FAKE_STALE_PR_VIEW_HEAD_ONCE" ]]; then',
-    '      head="0000000000000000000000000000000000000000"',
-    '      rm -f "$FAKE_STALE_PR_VIEW_HEAD_ONCE"',
-    "    else",
-    '      head="$("${FAKE_REAL_GIT:-git}" --git-dir="$FAKE_ORIGIN" rev-parse refs/heads/automation/locale)"',
-    "    fi",
+    '    read_head "$FAKE_STALE_PR_VIEW_HEAD_ONCE"',
     '    if [[ "$FAKE_MALFORMED_AUTO_MERGE_RECORD" == "true" ]]; then printf "%s\\n" "$head"; else printf "%s\\t%s\\n" "$head" "$FAKE_AUTO_MERGE_METHOD"; fi',
     '    if [[ -n "$FAKE_RACE" && ! -f "$FAKE_PR_STATE.raced" ]]; then',
     '      : > "$FAKE_PR_STATE.raced"',

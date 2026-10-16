@@ -258,20 +258,15 @@ describe("PostgreSQL schema generation", () => {
             row.name,
             row.name,
           );
-          for (const col of db
-            .prepare("SELECT name FROM pragma_table_xinfo(?)")
-            .all(String(row.name))) {
-            add("column", row.name, col.name);
-          }
-          for (const index of db
-            .prepare("SELECT name FROM pragma_index_list(?)")
-            .all(String(row.name))) {
-            add("index", row.name, index.name);
-          }
-          for (const fk of db
-            .prepare("SELECT DISTINCT id FROM pragma_foreign_key_list(?)")
-            .all(String(row.name))) {
-            add("foreignKey", row.name, String(fk.id));
+          for (const [objectKind, pragma, field] of [
+            ["column", "table_xinfo", "name"],
+            ["index", "index_list", "name"],
+            ["foreignKey", "foreign_key_list", "id"],
+          ] as const) {
+            const query = `SELECT DISTINCT ${field} AS value FROM pragma_${pragma}(?)`;
+            for (const item of db.prepare(query).all(String(row.name))) {
+              add(objectKind, row.name, String(item.value));
+            }
           }
           if (!excluded) {
             const checks = String(row.sql).match(/\bCHECK\s*\(/gi) ?? [];

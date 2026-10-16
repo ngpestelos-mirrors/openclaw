@@ -144,9 +144,7 @@ it("diffs exclusive retained sizes and named strong paths without double-countin
   expect(shared.rootPath.nodes.map((node: { id: number }) => node.id)).toEqual([1, 3, 11]);
   expect(shared.dominatorPath.nodes.map((node: { id: number }) => node.id)).toEqual([1, 11]);
   expect(result.retainers.find((row: { id: number }) => row.id === 15)).toEqual({
-    id: 15,
-    label: "object: WeakOnly",
-    retained: 0,
+    ...retained(15, "WeakOnly", 0),
     rootPath: null,
     dominatorPath: null,
   });

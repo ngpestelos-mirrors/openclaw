@@ -19,11 +19,14 @@ const oversizedError = { code: "ETOOBIG", message: "GitHub API response body exc
 function streamed(source: UnderlyingSource<Uint8Array>, init?: ResponseInit) {
   return new Response(new ReadableStream(source), init);
 }
+async function expectTimeout(request: Promise<unknown>, message: RegExp) {
+  const rejection = expect(request).rejects.toThrow(message);
+  await vi.advanceTimersByTimeAsync(5);
+  await rejection;
+}
 
 describe("gh-read helpers", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
+  afterEach(() => vi.useRealTimers());
 
   it("finds repo from gh args", () => {
     expect(parseRepoArg(["pr", "view", "42", "-R", "openclaw/openclaw"])).toBe("openclaw/openclaw");
@@ -96,12 +99,8 @@ describe("gh-read helpers", () => {
         return new Promise(() => {});
       }) as typeof fetch,
     });
-    const rejection = expect(request).rejects.toThrow(/GitHub API GET \/app exceeded timeout/u);
-
     await fetchStarted;
-    await vi.advanceTimersByTimeAsync(5);
-
-    await rejection;
+    await expectTimeout(request, /GitHub API GET \/app exceeded timeout/u);
     expect(signal?.aborted).toBe(true);
   });
 
@@ -113,13 +112,7 @@ describe("gh-read helpers", () => {
       timeoutMs: 5,
       fetchImpl: (() => Promise.resolve(response)) as typeof fetch,
     });
-    const rejection = expect(request).rejects.toThrow(
-      /GitHub API GET \/app\/installations exceeded timeout/u,
-    );
-
-    await vi.advanceTimersByTimeAsync(5);
-
-    await rejection;
+    await expectTimeout(request, /GitHub API GET \/app\/installations exceeded timeout/u);
     await Promise.resolve();
     expect(cancel).toHaveBeenCalled();
   });
@@ -137,9 +130,8 @@ describe("gh-read helpers", () => {
   );
 
   it("reads bounded GitHub API JSON responses", async () => {
-    await expect(readBoundedGitHubJson(new Response('{"id":123}'), 1024)).resolves.toEqual({
-      id: 123,
-    });
+    const response = new Response('{"id":123}');
+    await expect(readBoundedGitHubJson(response, 1024)).resolves.toEqual({ id: 123 });
   });
 
   it("rejects oversized GitHub API JSON responses by content length", async () => {
