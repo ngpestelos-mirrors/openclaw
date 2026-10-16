@@ -30,6 +30,7 @@ import {
   summarizeColdLoadTrace,
   summarizeCpuProfile,
 } from "./lib/control-ui-cold-load-trace.ts";
+import { longSessionInitScript, runLongSessionSoak } from "./lib/control-ui-long-session-soak.ts";
 import { warmReloadProbe } from "./lib/control-ui-warm-reload-probe.ts";
 
 function readRigProbeSnapshot() {
@@ -173,6 +174,7 @@ function summarizeSidebarWindows(
 const { values } = parseArgs({
   options: {
     "warm-reload": { type: "boolean", default: false },
+    "soak-minutes": { type: "string", default: "0" },
     untraced: { type: "boolean", default: false },
     "probe-dir": { type: "string" },
     "live-events": { type: "boolean", default: false },
@@ -216,6 +218,15 @@ if (sidebarView !== "sessions" && sidebarView !== "online") {
   throw new Error("Expected sidebar-view sessions or online");
 }
 const runs = Number(values.runs);
+const soakMinutes = Number(values["soak-minutes"]);
+if (
+  !Number.isInteger(soakMinutes) ||
+  soakMinutes < 0 ||
+  soakMinutes > 120 ||
+  (soakMinutes && runs !== 1)
+) {
+  throw new Error("Soak requires 1 run and 1–120 whole minutes");
+}
 const latencyMs = Number(values["latency-ms"]);
 const frameGapMs = Number(values["frame-gap-ms"]);
 if (
@@ -255,7 +266,7 @@ const fixture = createControlUiTeamScaleFixture({
   baseUrl: server.baseUrl,
   sandboxUrl: buildSandboxHostPath({ blockDescendantFrames: true }),
   sandboxPort: address.port,
-  liveRun: values["live-events"] || values["streaming-reply"],
+  liveRun: values["live-events"] || values["streaming-reply"] || Boolean(soakMinutes),
   sidebarListChurn: values["sidebar-list-churn"],
   sidebarLiveChurn: values["sidebar-live-churn"],
 });
@@ -383,7 +394,7 @@ try {
   );
   const warmProbes = values["warm-reload"] ? `\n(${warmReloadProbe.toString()})();` : "";
   await page.addInitScript({
-    content: `;(() => { if (window !== window.top) return; const __name = (fn) => fn; ${createControlUiMockGatewayInitScript(prepared.scenario)}\n${rigProbeScript}\n${fixture.sidebarListChurn ? `window.__teamScaleSidebarLists = { apply: (mutation) => window.__teamScaleMutate(mutation) }; window.openclawControlUiE2eGateway.setRequestHandler("sessions.list", async ({ params, respond }) => respond(await window.__teamScaleList(params)));` : ""}\n${createColdLoadProbeInitScript({ latencyMs, frameGapMs, events: fixture.events, liveEvents: fixture.liveEvents, liveHistory: fixture.liveHistory })}\n${streamingReply ? createStreamingReplyProbeInitScript() : ""}\n${extraInitScripts.join("\n")}\n${warmProbes} })();`,
+    content: `;(() => { if (window !== window.top) return; const __name = (fn) => fn; ${createControlUiMockGatewayInitScript(prepared.scenario)}\n${soakMinutes ? longSessionInitScript() : ""}\n${rigProbeScript}\n${fixture.sidebarListChurn ? `window.__teamScaleSidebarLists = { apply: (mutation) => window.__teamScaleMutate(mutation) }; window.openclawControlUiE2eGateway.setRequestHandler("sessions.list", async ({ params, respond }) => respond(await window.__teamScaleList(params)));` : ""}\n${createColdLoadProbeInitScript({ latencyMs, frameGapMs, events: fixture.events, liveEvents: fixture.liveEvents, liveHistory: fixture.liveHistory })}\n${streamingReply ? createStreamingReplyProbeInitScript() : ""}\n${extraInitScripts.join("\n")}\n${warmProbes} })();`,
   });
   const url = controlUiSessionUrl(server.baseUrl, fixture.selectedSessionKey, "dashboard");
   async function settle() {
@@ -715,6 +726,9 @@ try {
       await page.screenshot({ path: path.join(artifactDir, `run-${run + 1}.streaming.png`) });
     }
     let live;
+    if (soakMinutes) {
+      await runLongSessionSoak({ page, context, fixture, minutes: soakMinutes, artifactDir });
+    }
     const readLivePresentation = () =>
       page.evaluate(
         (keys) => {
