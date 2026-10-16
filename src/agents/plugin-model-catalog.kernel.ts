@@ -190,7 +190,7 @@ export function replacePluginModelCatalogEntriesInDatabase(params: {
     // Match SQLite BINARY and the generated PostgreSQL C collation.
     catalogs: [...existingByPluginId]
       .flatMap(([pluginId, contents]) => (contents === null ? [] : [{ pluginId, contents }]))
-      .sort((left, right) =>
+      .toSorted((left, right) =>
         Buffer.compare(Buffer.from(left.pluginId), Buffer.from(right.pluginId)),
       ),
   };
