@@ -397,9 +397,12 @@ describe("SQLite-backed plugin model catalogs", () => {
   it("does not create agent state when an empty catalog is already current", async () => {
     const agentDir = createAgentDir();
 
-    expect(await replacePersistedPluginModelCatalogs({ agentDir, pluginCatalogWrites: {} })).toBe(
-      false,
-    );
+    expect(
+      await replacePersistedPluginModelCatalogs({ agentDir, pluginCatalogWrites: {} }),
+    ).toEqual({
+      changed: false,
+      catalogs: [],
+    });
     expect(existsSync(join(agentDir, "openclaw-agent.sqlite"))).toBe(false);
     expect(existsSync(join(agentDir, "plugins"))).toBe(false);
   });
@@ -981,25 +984,28 @@ describe("SQLite-backed plugin model catalogs", () => {
     expect(existsSync(sourcePath)).toBe(true);
   });
 
-  it("persists provider-owned catalogs in deterministic SQLite order", async () => {
+  it("preserves SQLite catalog key order in committed receipts", async () => {
     const agentDir = createAgentDir();
-    const zai = catalogContents("zai");
-    const anthropic = catalogContents("anthropic");
-
-    expect(
-      await replacePersistedPluginModelCatalogs({
-        agentDir,
-        pluginCatalogWrites: {
-          [encodePluginModelCatalogRelativePath("zai")]: zai,
-          [encodePluginModelCatalogRelativePath("anthropic")]: anthropic,
-        },
-      }),
-    ).toBe(true);
-
-    expect(loadPersistedPluginModelCatalogsReadOnly(agentDir)).toEqual([
-      { pluginId: "anthropic", contents: anthropic },
-      { pluginId: "zai", contents: zai },
-    ]);
+    const contents = catalogContents("fixture");
+    const pluginCatalogWrites = Object.fromEntries(
+      ["𐀀", "zai", "\uE000", "anthropic"].map((id) => [
+        encodePluginModelCatalogRelativePath(id),
+        contents,
+      ]),
+    );
+    const catalogs = ["anthropic", "zai", "\uE000", "𐀀"].map((pluginId) => ({
+      pluginId,
+      contents,
+    }));
+    expect(await replacePersistedPluginModelCatalogs({ agentDir, pluginCatalogWrites })).toEqual({
+      changed: true,
+      catalogs,
+    });
+    expect(loadPersistedPluginModelCatalogsReadOnly(agentDir)).toEqual(catalogs);
+    expect(await replacePersistedPluginModelCatalogs({ agentDir, pluginCatalogWrites })).toEqual({
+      changed: false,
+      catalogs,
+    });
     expect(existsSync(join(agentDir, "openclaw-agent.sqlite"))).toBe(true);
     expect(existsSync(join(agentDir, "plugins"))).toBe(false);
   });
@@ -1016,12 +1022,12 @@ describe("SQLite-backed plugin model catalogs", () => {
       );
     const both = { [encodePluginModelCatalogRelativePath("zai")]: zai, ...catalogRows("stale") };
 
-    expect(await replacePersistedPluginModelCatalogs({ agentDir, pluginCatalogWrites: both })).toBe(
-      true,
-    );
-    expect(await replacePersistedPluginModelCatalogs({ agentDir, pluginCatalogWrites: both })).toBe(
-      false,
-    );
+    expect(
+      await replacePersistedPluginModelCatalogs({ agentDir, pluginCatalogWrites: both }),
+    ).toMatchObject({ changed: true });
+    expect(
+      await replacePersistedPluginModelCatalogs({ agentDir, pluginCatalogWrites: both }),
+    ).toMatchObject({ changed: false });
     const unchanged = readCatalogCacheRow(agentDir, "zai");
     const refreshed = catalogContents("fresh");
     const next = { [encodePluginModelCatalogRelativePath("zai")]: zai, ...catalogRows("new") };
@@ -1032,7 +1038,7 @@ describe("SQLite-backed plugin model catalogs", () => {
         agentDir,
         pluginCatalogWrites: next,
       }),
-    ).toBe(true);
+    ).toMatchObject({ changed: true });
     expect(readCatalogCacheRow(agentDir, "zai")).toEqual(unchanged);
     expect(loadPersistedPluginModelCatalogsReadOnly(agentDir)).toHaveLength(71);
     expect(readCatalogCacheRow(agentDir, "new-35").value_json).toBe(
@@ -1045,10 +1051,59 @@ describe("SQLite-backed plugin model catalogs", () => {
           [encodePluginModelCatalogRelativePath("zai")]: refreshed,
         },
       }),
-    ).toBe(true);
+    ).toEqual({ changed: true, catalogs: [{ pluginId: "zai", contents: refreshed }] });
     expect(loadPersistedPluginModelCatalogsReadOnly(agentDir)).toEqual([
       { pluginId: "zai", contents: refreshed },
     ]);
+  });
+
+  it("returns committed rows when credential stripping skips invalid planned catalogs", async () => {
+    const agentDir = createAgentDir();
+    const keep = catalogContents("keep");
+    await replacePersistedPluginModelCatalogs({
+      agentDir,
+      pluginCatalogWrites: {
+        [encodePluginModelCatalogRelativePath("keep")]: keep,
+        [encodePluginModelCatalogRelativePath("null-row")]: catalogContents("null-row"),
+        [encodePluginModelCatalogRelativePath("stale")]: catalogContents("stale"),
+      },
+    });
+    await closeOpenClawAgentDatabasesAsync();
+    const database = new DatabaseSync(join(agentDir, "openclaw-agent.sqlite"));
+    try {
+      database
+        .prepare("UPDATE cache_entries SET value_json = NULL WHERE scope = ? AND key = ?")
+        .run("plugin-model-catalog-v1", "null-row");
+    } finally {
+      database.close();
+    }
+
+    const publication = await replacePersistedPluginModelCatalogs({
+      agentDir,
+      authSnapshot: [
+        {
+          databasePath: resolveAuthProfileDatabasePath(agentDir),
+          kind: "agent",
+          credentials: { removed: ["synthetic-removed"] },
+        },
+      ],
+      pluginCatalogWrites: {
+        [encodePluginModelCatalogRelativePath("keep")]: "{",
+        [encodePluginModelCatalogRelativePath("absent")]: "{",
+        [encodePluginModelCatalogRelativePath("null-row")]: "{",
+        [encodePluginModelCatalogRelativePath("next")]: catalogContents(
+          "next",
+          "synthetic-removed",
+        ),
+      },
+    });
+    const expected = [
+      { pluginId: "keep", contents: keep },
+      { pluginId: "next", contents: catalogContents("next") },
+    ];
+    expect(publication).toEqual({ changed: true, catalogs: expected });
+    expect(loadPersistedPluginModelCatalogsReadOnly(agentDir)).toEqual(expected);
+    expect(readCatalogCacheRow(agentDir, "null-row").value_json).toBeNull();
   });
 
   it("rejects invalid planning keys without deleting the committed catalog", async () => {
