@@ -35,6 +35,27 @@ afterEach(() => {
 
 const button = (name: string) => page.getByRole("button", { name, exact: true });
 const textbox = (name: string) => page.getByRole("textbox", { name, exact: true });
+const alertText = (text: string) => expect.element(page.getByRole("alert")).toHaveTextContent(text);
+function makeFile(
+  name: string,
+  { hash = "original-hash", ...overrides }: Partial<FileContent> & { hash?: string } = {},
+): FileContent {
+  const file: FileContent = {
+    kind: "file",
+    name,
+    path: name,
+    draftKey: crypto.randomUUID(),
+    content: "Saved content",
+    edit: {
+      hash,
+      save: vi.fn().mockResolvedValue({ ok: true, hash: "saved-hash" }),
+      fetchLatest: vi.fn(),
+    },
+    ...overrides,
+  };
+  files.push(file);
+  return file;
+}
 
 async function openFile(content: FileContent) {
   const panel = document.createElement("openclaw-chat-detail-panel") as DetailPanel;
@@ -49,15 +70,10 @@ async function openFile(content: FileContent) {
 describe.runIf(browserMode)("file draft document reload protection", () => {
   it("recovers closed file edits locally while the stale route is inert", async () => {
     document.body.append(document.createElement("openclaw-toast-host"));
-    const file: FileContent = {
-      kind: "file",
-      name: "notes 雪.md",
+    const file = makeFile("notes 雪.md", {
       path: "reports/notes 雪.md",
-      draftKey: crypto.randomUUID(),
-      content: "Saved content",
       edit: { hash: "original-hash", save: vi.fn(), fetchLatest: vi.fn() },
-    };
-    files.push(file);
+    });
     const panel = await openFile(file);
     await button("Edit file").click();
     const draft = "Unsaved café 雪 🦞\nKeep these bytes.\n";
@@ -86,11 +102,7 @@ describe.runIf(browserMode)("file draft document reload protection", () => {
     vi.stubGlobal("navigator", { clipboard: { writeText: clipboard } });
     const fallback = vi.spyOn(document, "execCommand").mockReturnValue(false);
     await button(`Copy ${file.name}`).click();
-    await expect
-      .element(page.getByRole("alert"))
-      .toHaveTextContent(
-        "Could not copy the edits. Select the text or download the draft instead.",
-      );
+    await alertText("Could not copy the edits. Select the text or download the draft instead.");
     expect(fallback).toHaveBeenCalledWith("copy");
     expect(canReloadControlUiDocument()).toBe(false);
     clipboard.mockResolvedValue(undefined);
@@ -121,30 +133,15 @@ describe.runIf(browserMode)("file draft document reload protection", () => {
 
   it("distinguishes same-path drafts by session and pane without discarding newer edits", async () => {
     document.body.append(document.createElement("openclaw-toast-host"));
-    const createFile = (
-      sessionKey: string,
-      sessionTitle: string,
-      paneLabel: string,
-    ): FileContent => {
-      const file: FileContent = {
-        kind: "file",
-        name: "notes.txt",
-        path: "notes.txt",
-        draftKey: crypto.randomUUID(),
-        draftContext: { sessionKey, sessionTitle, paneLabel },
+    const createFile = (sessionKey: string, paneLabel: string) =>
+      makeFile("notes.txt", {
+        hash: "disk-hash",
         content: "Saved",
-        edit: {
-          hash: "disk-hash",
-          save: vi.fn().mockResolvedValue({ ok: true, hash: "saved-hash" }),
-          fetchLatest: vi.fn(),
-        },
-      };
-      files.push(file);
-      return file;
-    };
-    const first = createFile("agent:main:alpha", "Research", "Column 1, row 1");
-    const second = createFile("agent:main:alpha", "Research", "Column 2, row 1");
-    const later = createFile("agent:main:beta", "Research", "Column 1, row 1");
+        draftContext: { sessionKey, sessionTitle: "Research", paneLabel },
+      });
+    const first = createFile("agent:main:alpha", "Column 1, row 1");
+    const second = createFile("agent:main:alpha", "Column 2, row 1");
+    const later = createFile("agent:main:beta", "Column 1, row 1");
     const group = (file: FileContent) =>
       page.getByRole("group", {
         name: `${file.path} — ${file.draftContext?.sessionTitle} — ${file.draftContext?.paneLabel} — ${file.draftContext?.sessionKey}`,
@@ -161,9 +158,7 @@ describe.runIf(browserMode)("file draft document reload protection", () => {
     setFileDraft(first, { content: "Newer draft", expectedHash: "newer-hash" });
     setFileDraft(later, { content: "Later draft", expectedHash: "later-hash" });
     await group(first).getByRole("button", { name: "Discard notes.txt", exact: true }).click();
-    await expect
-      .element(page.getByRole("alert"))
-      .toHaveTextContent("These edits changed. Close this dialog and review the drafts again.");
+    await alertText("These edits changed. Close this dialog and review the drafts again.");
     await group(second).getByRole("button", { name: "Discard notes.txt", exact: true }).click();
     expect(canReloadControlUiDocument()).toBe(false);
     await button("Keep drafts").click();
@@ -208,24 +203,8 @@ describe.runIf(browserMode)("file draft document reload protection", () => {
           ? scheduleStaleChunkReload({ storage, reload })
           : retryStaleChunkReloadWhenReachable({ storage, reload, timeoutMs: 0 });
       };
-      const createFile = (name: string): FileContent => {
-        const file: FileContent = {
-          kind: "file",
-          name,
-          path: name,
-          draftKey: crypto.randomUUID(),
-          content: "Saved content",
-          edit: {
-            hash: "original-hash",
-            save: vi.fn().mockResolvedValue({ ok: true, hash: "saved-hash" }),
-            fetchLatest: vi.fn(),
-          },
-        };
-        files.push(file);
-        return file;
-      };
-      const first = createFile("first.txt");
-      const second = createFile("second.txt");
+      const first = makeFile("first.txt");
+      const second = makeFile("second.txt");
       let panel = await openFile(first);
       await expect(attempt()).resolves.toBe(true);
       expect(reload).toHaveBeenCalledOnce();

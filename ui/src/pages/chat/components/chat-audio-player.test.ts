@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../../test/helpers/promise.js";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
 import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import "./chat-audio-player.tsx";
@@ -14,6 +15,36 @@ function setMediaNumber(
   value: number,
 ) {
   Object.defineProperty(media, property, { configurable: true, writable: true, value });
+}
+
+function mockPlayback(media: HTMLMediaElement, emitPause = true) {
+  let paused = true;
+  Object.defineProperty(media, "paused", { configurable: true, get: () => paused });
+  const update = (next: boolean, event: string) => {
+    paused = next;
+    if (event !== "pause" || emitPause) {
+      media.dispatchEvent(new Event(event));
+    }
+  };
+  return {
+    play: vi.spyOn(media, "play").mockImplementation(async () => update(false, "play")),
+    pause: vi.spyOn(media, "pause").mockImplementation(() => update(true, "pause")),
+  };
+}
+
+const toggle = (player: ChatAudioPlayer) =>
+  player.querySelector<HTMLButtonElement>(".chat-audio-player__toggle")!;
+const download = (player: ChatAudioPlayer) =>
+  player.querySelector<HTMLAnchorElement>(".chat-assistant-attachment-card__download")!;
+const audioResponse = () =>
+  new Response(new Uint8Array([1, 2, 3, 4]), {
+    status: 200,
+    headers: { "Content-Type": "audio/mpeg", "Content-Length": "4" },
+  });
+function expectCompact(player: ChatAudioPlayer) {
+  expect(player.querySelector(".chat-assistant-attachment-card--compact")).not.toBeNull();
+  expect(player.querySelector(".chat-assistant-attachment-card__reason")).toBeNull();
+  expect(player.querySelector(".chat-audio-player")).toBeNull();
 }
 
 function mockActivePlayback(media: HTMLMediaElement) {
@@ -160,35 +191,18 @@ describe("ChatAudioPlayer", () => {
   it("drives play, pause, seek, and keyboard state through the hidden audio element", async () => {
     const player = await createPlayer("briefing");
     const media = player.querySelector("audio")!;
-    let paused = true;
-    Object.defineProperty(media, "paused", { configurable: true, get: () => paused });
+    const { play, pause } = mockPlayback(media);
     setMediaNumber(media, "duration", 125);
     setMediaNumber(media, "currentTime", 0);
-    const play = vi.spyOn(media, "play").mockImplementation(async () => {
-      paused = false;
-      media.dispatchEvent(new Event("play"));
-    });
-    const pause = vi.spyOn(media, "pause").mockImplementation(() => {
-      paused = true;
-      media.dispatchEvent(new Event("pause"));
-    });
 
     media.dispatchEvent(new Event("loadedmetadata"));
     await player.updateComplete;
     expect(player.querySelector(".chat-audio-player__time")?.textContent).toContain("2:05");
 
-    player.querySelector<HTMLButtonElement>(".chat-audio-player__toggle")!.click();
+    toggle(player).click();
     await waitForSolid(() => expect(play).toHaveBeenCalledOnce());
-    await waitForSolid(() =>
-      expect(player.querySelector(".chat-audio-player__toggle")?.getAttribute("aria-label")).toBe(
-        "Pause",
-      ),
-    );
-    expect(
-      player
-        .querySelector<HTMLAnchorElement>(".chat-assistant-attachment-card__download")
-        ?.getAttribute("download"),
-    ).toBe("briefing.mp3");
+    await waitForSolid(() => expect(toggle(player).getAttribute("aria-label")).toBe("Pause"));
+    expect(download(player).getAttribute("download")).toBe("briefing.mp3");
 
     const seek = player.querySelector<HTMLInputElement>(".chat-audio-player__seek")!;
     seek.value = "35";
@@ -236,34 +250,18 @@ describe("ChatAudioPlayer", () => {
   it("releases playback and shows a normal attachment card after an unrecovered media error", async () => {
     const first = await createPlayer("broken");
     const firstMedia = first.querySelector("audio")!;
-    let paused = true;
-    Object.defineProperty(firstMedia, "paused", { configurable: true, get: () => paused });
-    const play = vi.spyOn(firstMedia, "play").mockImplementation(async () => {
-      paused = false;
-      firstMedia.dispatchEvent(new Event("play"));
-    });
-    const pauseFirst = vi.spyOn(firstMedia, "pause").mockImplementation(() => {
-      paused = true;
-    });
+    const { play, pause: pauseFirst } = mockPlayback(firstMedia, false);
 
-    first.querySelector<HTMLButtonElement>(".chat-audio-player__toggle")!.click();
+    toggle(first).click();
     await first.updateComplete;
     expect(play).toHaveBeenCalledOnce();
-    expect(first.querySelector(".chat-audio-player__toggle")?.getAttribute("aria-label")).toBe(
-      "Pause",
-    );
+    expect(toggle(first).getAttribute("aria-label")).toBe("Pause");
 
     firstMedia.dispatchEvent(new Event("error"));
     await first.updateComplete;
     expect(first.querySelector(".chat-audio-player__toggle")).toBeNull();
-    expect(first.querySelector(".chat-assistant-attachment-card--compact")).not.toBeNull();
-    expect(first.querySelector(".chat-assistant-attachment-card__reason")).toBeNull();
-    expect(first.querySelector(".chat-audio-player")).toBeNull();
-    expect(
-      first
-        .querySelector<HTMLAnchorElement>(".chat-assistant-attachment-card__download")
-        ?.getAttribute("download"),
-    ).toBe("broken.mp3");
+    expectCompact(first);
+    expect(download(first).getAttribute("download")).toBe("broken.mp3");
     expect(pauseFirst).toHaveBeenCalledOnce();
     pauseFirst.mockClear();
 
@@ -321,14 +319,8 @@ describe("ChatAudioPlayer", () => {
     await vi.runAllTimersAsync();
     await player.updateComplete;
 
-    expect(player.querySelector(".chat-assistant-attachment-card--compact")).not.toBeNull();
-    expect(player.querySelector(".chat-assistant-attachment-card__reason")).toBeNull();
-    expect(player.querySelector(".chat-audio-player")).toBeNull();
-    expect(
-      player
-        .querySelector<HTMLAnchorElement>(".chat-assistant-attachment-card__download")
-        ?.getAttribute("href"),
-    ).not.toContain("playback=1");
+    expectCompact(player);
+    expect(download(player).getAttribute("href")).not.toContain("playback=1");
 
     const failedAttempts = fetchMock.mock.calls.length;
     player.label = "renamed-voice.caf";
@@ -356,13 +348,11 @@ describe("ChatAudioPlayer", () => {
   it("renders decoded waveform peaks and scopes waveform cache reuse to auth context", async () => {
     const intersect = observeIntersections();
     const decodeAudioData = mockAudioContext();
-    let resolveFetch: ((response: Response) => void) | undefined;
-    const fetchMock = vi.fn<typeof fetch>(
-      async () =>
-        await new Promise<Response>((resolve) => {
-          resolveFetch = resolve;
-        }),
-    );
+    let pending = createDeferred<Response>();
+    const fetchMock = vi.fn<typeof fetch>(() => {
+      pending = createDeferred<Response>();
+      return pending.promise;
+    });
     vi.stubGlobal("fetch", fetchMock);
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:waveform-audio");
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
@@ -374,40 +364,20 @@ describe("ChatAudioPlayer", () => {
     intersect();
     await waitForSolid(() => expect(fetchMock).toHaveBeenCalledOnce());
     const media = player.querySelector("audio")!;
-    let paused = true;
-    Object.defineProperty(media, "paused", { configurable: true, get: () => paused });
-    const play = vi.spyOn(media, "play").mockImplementation(async () => {
-      paused = false;
-      media.dispatchEvent(new Event("play"));
-    });
-    vi.spyOn(media, "pause").mockImplementation(() => {
-      paused = true;
-      media.dispatchEvent(new Event("pause"));
-    });
-
-    resolveFetch?.(
-      new Response(new Uint8Array([1, 2, 3, 4]), {
-        status: 200,
-        headers: { "Content-Type": "audio/mpeg", "Content-Length": "4" },
-      }),
-    );
+    const { play } = mockPlayback(media);
+    pending.resolve(audioResponse());
     await waitForSolid(() =>
       expect(player.querySelectorAll(".chat-audio-player__waveform rect")).toHaveLength(96),
     );
     await player.updateComplete;
-    expect(
-      new Set(
-        Array.from(player.querySelectorAll(".chat-audio-player__waveform rect"), (rect) =>
-          rect.getAttribute("height"),
-        ),
-      ).size,
-    ).toBeGreaterThan(1);
+    const heights = () =>
+      Array.from(player.querySelectorAll(".chat-audio-player__waveform rect"), (rect) =>
+        rect.getAttribute("height"),
+      );
+    expect(new Set(heights()).size).toBeGreaterThan(1);
     player.voiceNote = true;
     await player.updateComplete;
-    const voiceHeights = Array.from(
-      player.querySelectorAll(".chat-audio-player__waveform rect"),
-      (rect) => Number(rect.getAttribute("height")),
-    );
+    const voiceHeights = heights().map(Number);
     expect(Math.min(...voiceHeights)).toBeGreaterThanOrEqual(6);
     expect(Math.max(...voiceHeights)).toBeLessThanOrEqual(14);
     expect(new Set(voiceHeights).size).toBeGreaterThan(1);
@@ -415,7 +385,7 @@ describe("ChatAudioPlayer", () => {
     expect(decodeAudioData).toHaveBeenCalledOnce();
     expect(media.getAttribute("src")).toBe("blob:waveform-audio");
 
-    player.querySelector<HTMLButtonElement>(".chat-audio-player__toggle")!.click();
+    toggle(player).click();
     await waitForSolid(() => expect(play).toHaveBeenCalledOnce());
     expect(media.getAttribute("src")).toBe("blob:waveform-audio");
     expect(fetchMock).toHaveBeenCalledOnce();
@@ -425,36 +395,27 @@ describe("ChatAudioPlayer", () => {
     expect(media.getAttribute("src")).toBe("https://example.com/waveform-reuse.mp3");
 
     player.remove();
-    const refreshed = document.createElement("openclaw-chat-audio-player");
-    refreshed.src = "https://example.com/waveform-reuse.mp3?mediaTicket=fresh";
-    refreshed.sourceIdentity = "media://waveform-reuse";
-    refreshed.authToken = "different-principal";
-    refreshed.label = "waveform-reuse.mp3";
-    refreshed.serverDurationMs = 4_000;
-    mountSolid(() => refreshed);
-    await refreshed.updateComplete;
+    const refreshed = await createPlayer("waveform-reuse", {
+      src: "https://example.com/waveform-reuse.mp3?mediaTicket=fresh",
+      authToken: "different-principal",
+      serverDurationMs: 4_000,
+    });
     intersect();
     const refreshedMedia = refreshed.querySelector("audio")!;
     Object.defineProperty(refreshedMedia, "paused", { configurable: true, value: true });
     vi.spyOn(refreshedMedia, "play").mockResolvedValue(undefined);
     await waitForSolid(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-    resolveFetch?.(new Response(null, { status: 500 }));
+    pending.resolve(new Response(null, { status: 500 }));
   });
 
   it("recovers a waveform-backed source after a renewed media ticket", async () => {
     const intersect = observeIntersections();
     mockAudioContext();
-    let resolveFirstFetch: ((response: Response) => void) | undefined;
-    let fetchCount = 0;
-    const fetchMock = vi.fn<typeof fetch>(async () => {
-      fetchCount += 1;
-      if (fetchCount > 1) {
-        return new Response(null, { status: 500 });
-      }
-      return await new Promise<Response>((resolve) => {
-        resolveFirstFetch = resolve;
-      });
-    });
+    const pending = createDeferred<Response>();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue(new Response(null, { status: 500 }));
     vi.stubGlobal("fetch", fetchMock);
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:waveform-audio");
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
@@ -463,12 +424,7 @@ describe("ChatAudioPlayer", () => {
     await player.updateComplete;
     intersect();
     await waitForSolid(() => expect(fetchMock).toHaveBeenCalledOnce());
-    resolveFirstFetch?.(
-      new Response(new Uint8Array([1, 2, 3, 4]), {
-        status: 200,
-        headers: { "Content-Type": "audio/mpeg", "Content-Length": "4" },
-      }),
-    );
+    pending.resolve(audioResponse());
     await waitForSolid(() =>
       expect(player.querySelector("audio")?.getAttribute("src")).toBe("blob:waveform-audio"),
     );
@@ -590,7 +546,7 @@ describe("ChatAudioPlayer", () => {
     Object.defineProperty(media, "paused", { configurable: true, value: true });
     const play = vi.spyOn(media, "play").mockResolvedValue(undefined);
 
-    player.querySelector<HTMLButtonElement>(".chat-audio-player__toggle")!.click();
+    toggle(player).click();
     expect(play).toHaveBeenCalledOnce();
     await waitForSolid(() => expect(fetchMock).toHaveBeenCalledOnce());
     await waitForSolid(() => expect(response.body?.locked).toBe(false));
@@ -608,50 +564,30 @@ describe("ChatAudioPlayer", () => {
     vi.stubGlobal("AudioContext", FailingAudioContext);
     vi.stubGlobal(
       "fetch",
-      vi.fn<typeof fetch>(
-        async () =>
-          new Response(new Uint8Array([1, 2, 3, 4]), {
-            status: 200,
-            headers: { "Content-Type": "audio/mpeg", "Content-Length": "4" },
-          }),
-      ),
+      vi.fn<typeof fetch>(async () => audioResponse()),
     );
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:context-fallback");
     const player = await createPlayer("context-fallback");
     player.serverDurationMs = 4_000;
     const media = player.querySelector("audio")!;
-    let paused = true;
-    Object.defineProperty(media, "paused", { configurable: true, get: () => paused });
-    const play = vi.spyOn(media, "play").mockImplementation(async () => {
-      paused = false;
-      media.dispatchEvent(new Event("play"));
-    });
-    vi.spyOn(media, "pause").mockImplementation(() => {
-      paused = true;
-      media.dispatchEvent(new Event("pause"));
-    });
+    const { play } = mockPlayback(media);
 
-    player.querySelector<HTMLButtonElement>(".chat-audio-player__toggle")!.click();
+    toggle(player).click();
     await waitForSolid(() => expect(FailingAudioContext).toHaveBeenCalledOnce());
     await Promise.resolve();
     flush();
     media.pause();
-    player.querySelector<HTMLButtonElement>(".chat-audio-player__toggle")!.click();
+    toggle(player).click();
 
     expect(play).toHaveBeenCalledTimes(2);
     expect(media.getAttribute("src")).toBe("blob:context-fallback");
   });
 
   it("cancels the old source when identity changes during rendition preparation", async () => {
-    let resolveFetch: ((response: Response) => void) | undefined;
+    const pending = createDeferred<Response>();
     vi.stubGlobal(
       "fetch",
-      vi.fn<typeof fetch>(
-        async () =>
-          await new Promise<Response>((resolve) => {
-            resolveFetch = resolve;
-          }),
-      ),
+      vi.fn<typeof fetch>(() => pending.promise),
     );
     const player = await createPlayer("identity-before");
     const media = player.querySelector("audio")!;
@@ -665,7 +601,7 @@ describe("ChatAudioPlayer", () => {
 
     expect(pause).toHaveBeenCalledOnce();
     expect(media.hasAttribute("src")).toBe(false);
-    resolveFetch?.(new Response(null, { status: 200 }));
+    pending.resolve(new Response(null, { status: 200 }));
     await waitForSolid(() => expect(media.getAttribute("src")).toContain("playback=1"));
     media.dispatchEvent(new Event("loadedmetadata"));
     expect(play).not.toHaveBeenCalled();

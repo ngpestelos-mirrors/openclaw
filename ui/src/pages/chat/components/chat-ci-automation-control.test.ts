@@ -15,6 +15,12 @@ import type { ChatCiAutomationElement } from "./chat-ci-automation-control.ts";
 import "./chat-ci-automation-control.ts";
 
 const sessionKey = "agent:main:dashboard:ci-test";
+const cronStatus = { enabled: true, triggersEnabled: true, jobs: 0 };
+const hello = (scopes = ["operator.admin"]) => ({
+  type: "hello-ok" as const,
+  protocol: 1,
+  auth: { role: "operator", scopes },
+});
 const pr = {
   owner: "example",
   repo: "project",
@@ -60,19 +66,25 @@ function job(sessionId: string, option: CiAutomationOption = "autoFix"): CronJob
 async function setup() {
   const harness = createGatewayHarness();
   const client = new GatewayBrowserClient({ url: "ws://example.test" });
-  const request = vi
-    .spyOn(client, "request")
-    .mockImplementation(async (method) =>
-      method === "cron.status" ? { enabled: true, triggersEnabled: true, jobs: 0 } : inventory([]),
-    );
+  const request = vi.spyOn(client, "request");
+  const respond = (
+    jobs: () => CronJob[] = () => [],
+    writes: Partial<Record<"cron.add" | "cron.update", Promise<unknown>>> = {},
+  ) =>
+    request.mockImplementation(async (method) => {
+      if (method === "cron.status") {
+        return { ...cronStatus, jobs: jobs().length };
+      }
+      if ((method === "cron.add" || method === "cron.update") && writes[method]) {
+        return writes[method];
+      }
+      return inventory(jobs());
+    });
+  respond();
   harness.setSnapshot({
     ...harness.gateway.snapshot,
     client,
-    hello: {
-      type: "hello-ok",
-      protocol: 1,
-      auth: { role: "operator", scopes: ["operator.admin"] },
-    },
+    hello: hello(),
   });
   const root = document.createElement("div");
   document.body.append(root);
@@ -102,7 +114,34 @@ async function setup() {
   };
   const checkbox = (option: CiAutomationOption = "autoFix") =>
     root.querySelector<HTMLInputElement>(`input[name="${option}"]`)!;
-  return { ...harness, root, client, request, element, paint, open, settle, checkbox };
+  const ready = async () => {
+    await open();
+    await settle();
+  };
+  const calls = (method: string) => request.mock.calls.filter(([name]) => name === method);
+  const phase = (next: "reconnecting" | "connected") =>
+    harness.setSnapshot({ ...harness.gateway.snapshot, phase: next });
+  const auth = (scope: string) =>
+    harness.setSnapshot({ ...harness.gateway.snapshot, hello: hello([scope]) });
+  const toggles = (fix: boolean, merge: boolean) => {
+    expect([checkbox().checked, checkbox("autoMerge").checked]).toEqual([fix, merge]);
+  };
+  return {
+    ...harness,
+    root,
+    request,
+    element,
+    paint,
+    open,
+    settle,
+    checkbox,
+    respond,
+    ready,
+    calls,
+    toggles,
+    phase,
+    auth,
+  };
 }
 
 describe("CI automation popup scope", () => {
@@ -110,22 +149,15 @@ describe("CI automation popup scope", () => {
     const h = await setup();
     const pending = createDeferred<CronJob>();
     let stored = job("first");
-    h.request.mockImplementation(async (method) =>
-      method === "cron.status"
-        ? { enabled: true, triggersEnabled: true, jobs: 1 }
-        : method === "cron.update"
-          ? pending.promise
-          : inventory([stored]),
-    );
-    await h.open();
-    await h.settle();
+    h.respond(() => [stored], { "cron.update": pending.promise });
+    await h.ready();
     const before = h.root.textContent;
     h.checkbox().click();
     expect(h.checkbox().checked).toBe(false);
     await h.element.updateComplete;
     expect(h.checkbox().checked).toBe(false);
     expect(h.checkbox().closest("fieldset")?.disabled).toBe(false);
-    expect(h.root.querySelector<HTMLInputElement>('input[name="autoMerge"]')!.disabled).toBe(false);
+    expect(h.checkbox("autoMerge").disabled).toBe(false);
     expect(h.root.textContent).toBe(before);
     expect(h.root.querySelector('a[href*="?job="]')).toBeNull();
     stored = { ...stored, enabled: false, configRevision: "v2" };
@@ -143,33 +175,19 @@ describe("CI automation popup scope", () => {
     const fix = job("first");
     const merge = job("first", "autoMerge");
     let stored = [fix];
-    h.request.mockImplementation(async (method) => {
-      if (method === "cron.status") {
-        return { enabled: true, triggersEnabled: true, jobs: stored.length };
-      }
-      if (method === "cron.update") {
-        return fixWrite.promise;
-      }
-      if (method === "cron.add") {
-        return mergeWrite.promise;
-      }
-      return inventory(stored);
-    });
-    await h.open();
-    await h.settle();
+    h.respond(() => stored, { "cron.update": fixWrite.promise, "cron.add": mergeWrite.promise });
+    await h.ready();
     h.request.mockImplementationOnce(() => staleRead.promise);
     h.emit({}, "cron");
     await h.element.updateComplete;
     h.checkbox().click();
     h.checkbox("autoMerge").click();
     await h.element.updateComplete;
-    expect(h.checkbox().checked).toBe(false);
-    expect(h.checkbox("autoMerge").checked).toBe(true);
+    h.toggles(false, true);
     expect(h.checkbox("autoArchive").disabled).toBe(false);
     staleRead.resolve(inventory([job("first")]));
     await h.settle();
-    expect(h.checkbox().checked).toBe(false);
-    expect(h.checkbox("autoMerge").checked).toBe(true);
+    h.toggles(false, true);
     stored.push(merge);
     mergeWrite.resolve({ job: merge });
     h.emit({}, "cron");
@@ -178,14 +196,13 @@ describe("CI automation popup scope", () => {
     expect(h.checkbox().checked).toBe(false);
     expect(h.checkbox().disabled).toBe(true);
     expect(h.checkbox("autoMerge").disabled).toBe(false);
-    expect(h.request.mock.calls.filter(([method]) => method === "cron.list")).toHaveLength(2);
+    expect(h.calls("cron.list")).toHaveLength(2);
     const disabledFix = { ...fix, enabled: false, configRevision: "v2" };
     stored = [disabledFix, merge];
     fixWrite.resolve(disabledFix);
     await h.settle();
-    expect(h.request.mock.calls.filter(([method]) => method === "cron.list")).toHaveLength(3);
-    expect(h.checkbox().checked).toBe(false);
-    expect(h.checkbox("autoMerge").checked).toBe(true);
+    expect(h.calls("cron.list")).toHaveLength(3);
+    h.toggles(false, true);
     expect(h.checkbox().disabled).toBe(false);
   });
 
@@ -195,7 +212,7 @@ describe("CI automation popup scope", () => {
     const mergeWrite = createDeferred<{ job: CronJob }>();
     h.request.mockImplementation(async (method, params) => {
       if (method === "cron.status") {
-        return { enabled: true, triggersEnabled: true, jobs: 0 };
+        return cronStatus;
       }
       if (method === "cron.add") {
         return (params as { declarationKey: string }).declarationKey.endsWith(":autoFix")
@@ -204,29 +221,22 @@ describe("CI automation popup scope", () => {
       }
       return inventory([]);
     });
-    await h.open();
-    await h.settle();
+    await h.ready();
     h.checkbox().click();
     h.checkbox("autoMerge").click();
     h.emit({}, "cron");
     fixWrite.reject(new Error("Lost acknowledgement"));
     await h.settle();
-    expect(h.checkbox().checked).toBe(false);
-    expect(h.checkbox("autoMerge").checked).toBe(true);
-    h.request.mockImplementation(async (method) =>
-      method === "cron.status"
-        ? { enabled: true, triggersEnabled: true, jobs: 2 }
-        : inventory([job("first"), job("first", "autoMerge")]),
-    );
+    h.toggles(false, true);
+    h.respond(() => [job("first"), job("first", "autoMerge")]);
     mergeWrite.resolve({ job: job("first", "autoMerge") });
     await h.settle();
     expect(h.root.textContent).toContain("Lost acknowledgement");
-    expect(h.checkbox().checked).toBe(true);
-    expect(h.checkbox("autoMerge").checked).toBe(true);
+    h.toggles(true, true);
     h.root.querySelector<HTMLButtonElement>(".chat-ci__automation-retry")!.click();
     await h.settle();
     expect(h.root.querySelector('[role="alert"]')).toBeNull();
-    expect(h.request.mock.calls.filter(([method]) => method === "cron.add")).toHaveLength(2);
+    expect(h.calls("cron.add")).toHaveLength(2);
   });
 
   it.each(["identity", "connection", "read scope"])(
@@ -236,16 +246,9 @@ describe("CI automation popup scope", () => {
       if (missing === "identity") {
         await h.paint("");
       } else if (missing === "connection") {
-        h.setSnapshot({ ...h.gateway.snapshot, phase: "reconnecting" });
+        h.phase("reconnecting");
       } else {
-        h.setSnapshot({
-          ...h.gateway.snapshot,
-          hello: {
-            type: "hello-ok",
-            protocol: 1,
-            auth: { role: "operator", scopes: ["operator.sessions.read"] },
-          },
-        });
+        h.auth("operator.sessions.read");
       }
       await h.element.updateComplete;
       await h.open();
@@ -260,18 +263,13 @@ describe("CI automation popup scope", () => {
     const h = await setup();
     const oldRead = createDeferred<ReturnType<typeof inventory>>();
     h.request.mockImplementation(async (method) =>
-      method === "cron.status"
-        ? { enabled: true, triggersEnabled: true, jobs: 1 }
-        : oldRead.promise,
+      method === "cron.status" ? { ...cronStatus, jobs: 1 } : oldRead.promise,
     );
     await h.open();
     expect(h.request.mock.calls.some(([method]) => method === "cron.list")).toBe(true);
     await h.paint("replacement");
-    h.request.mockImplementation(async (method) =>
-      method === "cron.status" ? { enabled: true, triggersEnabled: true, jobs: 0 } : inventory([]),
-    );
-    await h.open();
-    await h.settle();
+    h.respond();
+    await h.ready();
     oldRead.resolve(inventory([job("first")]));
     await h.settle();
     expect(h.checkbox().checked).toBe(false);
@@ -284,29 +282,15 @@ describe("CI automation popup scope", () => {
     async (change) => {
       const h = await setup();
       const pending = createDeferred<{ job: CronJob }>();
-      h.request.mockImplementation(async (method) =>
-        method === "cron.status"
-          ? { enabled: true, triggersEnabled: true, jobs: 0 }
-          : method === "cron.add"
-            ? pending.promise
-            : inventory([]),
-      );
-      await h.open();
-      await h.settle();
+      h.respond(() => [], { "cron.add": pending.promise });
+      await h.ready();
       h.checkbox().click();
       await h.element.updateComplete;
       if (change === "session") {
         await h.paint("replacement");
         await h.open();
       } else if (change === "auth") {
-        h.setSnapshot({
-          ...h.gateway.snapshot,
-          hello: {
-            type: "hello-ok",
-            protocol: 1,
-            auth: { role: "operator", scopes: ["operator.read"] },
-          },
-        });
+        h.auth("operator.read");
       } else {
         h.element.gateway = createGatewayHarness().gateway;
       }
@@ -315,39 +299,28 @@ describe("CI automation popup scope", () => {
       await h.settle();
       expect(h.root.textContent).not.toContain("Old context failure");
       expect(h.checkbox().checked).toBe(false);
-      expect(h.request.mock.calls.filter(([method]) => method === "cron.add")).toHaveLength(1);
+      expect(h.calls("cron.add")).toHaveLength(1);
     },
   );
 
   it("does not apply an old write to a reconnected Gateway or replay it", async () => {
     const h = await setup();
     const pending = createDeferred<CronJob>();
-    h.request.mockImplementation(async (method) =>
-      method === "cron.status"
-        ? { enabled: true, triggersEnabled: true, jobs: 1 }
-        : method === "cron.update"
-          ? pending.promise
-          : inventory([job("first")]),
-    );
-    await h.open();
-    await h.settle();
+    h.respond(() => [job("first")], { "cron.update": pending.promise });
+    await h.ready();
     expect(h.checkbox().checked).toBe(true);
     h.checkbox().checked = false;
     h.checkbox().dispatchEvent(new Event("change"));
     await h.element.updateComplete;
-    expect(h.request.mock.calls.filter(([method]) => method === "cron.update")).toHaveLength(1);
-    h.setSnapshot({ ...h.gateway.snapshot, phase: "reconnecting" });
+    expect(h.calls("cron.update")).toHaveLength(1);
+    h.phase("reconnecting");
     await h.element.updateComplete;
-    h.request.mockImplementation(async (method) =>
-      method === "cron.status"
-        ? { enabled: true, triggersEnabled: true, jobs: 1 }
-        : inventory([job("first")]),
-    );
-    h.setSnapshot({ ...h.gateway.snapshot, phase: "connected" });
+    h.respond(() => [job("first")]);
+    h.phase("connected");
     await h.settle();
     pending.resolve({ ...job("first"), enabled: false });
     await h.settle();
     expect(h.checkbox().checked).toBe(true);
-    expect(h.request.mock.calls.filter(([method]) => method === "cron.update")).toHaveLength(1);
+    expect(h.calls("cron.update")).toHaveLength(1);
   });
 });
