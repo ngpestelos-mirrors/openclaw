@@ -98,9 +98,9 @@ describe("AppSidebar live narration", () => {
       const gateway = createGatewayHarness({} as GatewayBrowserClient);
       const sessions = createSessionsHarness("main", [key]);
       let acquired = createDeferred();
-      sessions.subscribeMessages.mockImplementation((key) => {
+      sessions.subscribeMessages.mockImplementation((subscribedKey) => {
         acquired.resolve();
-        return Promise.resolve({ key, agentId: null });
+        return Promise.resolve({ key: subscribedKey, agentId: null });
       });
       sessions.publishList({ result: sessionsResult([runningRow(key, 5)]), agentId: "main" });
       const { sidebar } = await mountSidebar(gateway.gateway, sessions.sessions);

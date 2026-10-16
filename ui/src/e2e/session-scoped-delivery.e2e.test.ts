@@ -40,17 +40,20 @@ suite.define(() => {
     async (mode) => {
       await suite.withPage({ viewport: { width: 1440, height: 900 } }, async ({ page }) => {
         await page.addInitScript(
-          ({ settingsKey, mode }) => {
+          ({ settingsKey, presentation }) => {
             localStorage.setItem(
               "openclaw:sidebar:sessions:show-preview",
-              String(mode === "roster"),
+              String(presentation === "roster"),
             );
             localStorage.setItem(
               settingsKey,
-              JSON.stringify({ sidebarAgentsMode: mode === "roster" ? "roster" : "chip" }),
+              JSON.stringify({ sidebarAgentsMode: presentation === "roster" ? "roster" : "chip" }),
             );
           },
-          { settingsKey: controlUiBundledSettingsStorageKey(suite.server.baseUrl), mode },
+          {
+            settingsKey: controlUiBundledSettingsStorageKey(suite.server.baseUrl),
+            presentation: mode,
+          },
         );
         const keys = [
           first,
