@@ -8,6 +8,7 @@ import { CONTEXT_WINDOW_HARD_MIN_TOKENS } from "../agents/context-window-guard.j
 import { DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { normalizeConfiguredProviderCatalogModelId } from "../agents/model-ref-shared.js";
 import { buildModelAliasIndex, modelKey, type ModelRef } from "../agents/model-selection.js";
+import type { ModelApi } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSecretRef, type SecretInput } from "../config/types.secrets.js";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
@@ -112,6 +113,23 @@ function hasSameHost(a: string, b: string): boolean {
 
 export type CustomApiCompatibility = "openai" | "openai-responses" | "anthropic";
 
+export function resolveCustomProviderApi(params: {
+  baseUrl: string;
+  compatibility: CustomApiCompatibility;
+  modelApi?: ModelApi;
+}): ModelApi {
+  return (
+    params.modelApi ??
+    (isAzureUrl(params.baseUrl, true)
+      ? "azure-openai-responses"
+      : params.compatibility === "anthropic"
+        ? "anthropic-messages"
+        : params.compatibility === "openai-responses"
+          ? "openai-responses"
+          : "openai-completions")
+  );
+}
+
 export type CustomApiResult = ReturnType<typeof applyCustomApiConfig>;
 
 type ApplyCustomApiConfigParams = {
@@ -120,6 +138,8 @@ type ApplyCustomApiConfigParams = {
   modelId: string;
   compatibility: CustomApiCompatibility;
   apiKey?: SecretInput;
+  /** Explicitly mark the endpoint as not enforcing auth (`auth: "none"`). */
+  noAuth?: boolean;
   providerId?: string;
   alias?: string;
   supportsImageInput?: boolean;
@@ -135,6 +155,7 @@ type ParseNonInteractiveCustomApiFlagsParams = {
   modelId?: string;
   compatibility?: string;
   apiKey?: string;
+  noAuth?: boolean;
   providerId?: string;
   supportsImageInput?: boolean;
 };
@@ -145,7 +166,9 @@ type CustomApiErrorCode =
   | "invalid_base_url"
   | "invalid_model_id"
   | "invalid_provider_id"
-  | "invalid_alias";
+  | "invalid_alias"
+  | "no_auth_conflict"
+  | "no_auth_unsupported";
 
 /** Error class used by callers to turn custom API validation failures into CLI UX. */
 export class CustomApiError extends Error {
@@ -436,13 +459,16 @@ export async function resolveNonInteractiveCustomApiModelIds(params: {
   providerId?: string;
   modelId: string;
   apiKey?: string;
+  noAuth?: boolean;
   agentDir?: string;
   modelIds?: string[];
 }): Promise<string[]> {
   let modelIds = params.modelId ? [params.modelId] : params.modelIds;
   if (!modelIds) {
     const { providerId } = resolveCustomProviderId(params);
-    let configuredKey = params.config.models?.providers?.[providerId]?.apiKey;
+    let configuredKey = params.noAuth
+      ? undefined
+      : params.config.models?.providers?.[providerId]?.apiKey;
     const credentialError = () =>
       new CustomApiError(
         "missing_required",
@@ -468,16 +494,17 @@ export async function resolveNonInteractiveCustomApiModelIds(params: {
         throw credentialError();
       }
     }
-    const apiKey =
-      params.apiKey ??
-      (await materializeSecretInput({
-        config: params.config,
-        value: configuredKey,
-        env: process.env,
-        onResolveRefError: () => {
-          throw credentialError();
-        },
-      }));
+    const apiKey = params.noAuth
+      ? undefined
+      : (params.apiKey ??
+        (await materializeSecretInput({
+          config: params.config,
+          value: configuredKey,
+          env: process.env,
+          onResolveRefError: () => {
+            throw credentialError();
+          },
+        })));
     modelIds = await discoverCustomApiModelIds({ ...params, apiKey });
   }
   if (!modelIds.length) {
@@ -505,11 +532,18 @@ export function parseNonInteractiveCustomApiFlags(params: ParseNonInteractiveCus
   const apiKey = normalizeOptionalString(params.apiKey);
   const providerId = normalizeOptionalString(params.providerId);
   assertValidCustomProviderId(providerId);
+  if (params.noAuth && apiKey) {
+    throw new CustomApiError(
+      "no_auth_conflict",
+      "Custom provider flags conflict: --custom-no-auth cannot be combined with --custom-api-key. Omit one.",
+    );
+  }
   return {
     baseUrl,
     modelId,
     compatibility,
     ...(apiKey ? { apiKey } : {}),
+    ...(params.noAuth ? { noAuth: true } : {}),
     ...(providerId ? { providerId } : {}),
     ...(params.supportsImageInput === undefined
       ? {}
@@ -533,7 +567,7 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams) {
   }
 
   const isAzure = isAzureUrl(baseUrl);
-  const isAzureOpenAi = isAzureUrl(baseUrl, true);
+  const api = resolveCustomProviderApi(params);
   const resolvedBaseUrl = isAzure ? transformAzureConfigUrl(baseUrl) : baseUrl;
 
   const providerIdResult = resolveCustomProviderId({
@@ -559,7 +593,7 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams) {
 
   const existingProvider = providers[providerId];
   const existingModels = Array.isArray(existingProvider?.models) ? existingProvider.models : [];
-  const hasModel = existingModels.some((model) => model.id === modelId);
+  const existingModel = existingModels.find((model) => model.id === modelId);
   // Azure reasoning deployments usually need explicit reasoning metadata for
   // the provider loop, while non-Azure endpoints rely on model-name inference.
   const isLikelyReasoningModel = isAzure && /\b(o[134]|gpt-([5-9]|\d{2,}))\b/i.test(modelId);
@@ -586,7 +620,7 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams) {
     reasoning: isLikelyReasoningModel,
     ...(isAzure ? { compat: { supportsStore: false } } : {}),
   };
-  const mergedModels = hasModel
+  const mergedModels = existingModel
     ? existingModels.map((model) =>
         model.id === modelId
           ? {
@@ -603,10 +637,25 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams) {
           : model,
       )
     : [...existingModels, nextModel];
-  const { apiKey: existingApiKey, ...existingProviderRest } = existingProvider ?? {};
-  const normalizedApiKey =
-    normalizeOptionalProviderApiKey(params.apiKey) ??
-    normalizeOptionalProviderApiKey(existingApiKey);
+  const {
+    apiKey: existingApiKey,
+    auth: existingAuth,
+    ...existingProviderRest
+  } = existingProvider ?? {};
+  // An explicit key or no-auth choice on this call redeclares the provider's
+  // auth mode; other authored values survive untouched.
+  const redeclaresAuth = params.noAuth === true || params.apiKey !== undefined;
+  const nextAuth = params.noAuth ? ("none" as const) : redeclaresAuth ? undefined : existingAuth;
+  if (nextAuth === "none" && (existingModel?.api ?? api) !== "openai-completions") {
+    throw new CustomApiError(
+      "no_auth_unsupported",
+      'auth: "none" requires the openai-completions adapter. Select that adapter or configure an API key.',
+    );
+  }
+  const normalizedApiKey = params.noAuth
+    ? undefined
+    : (normalizeOptionalProviderApiKey(params.apiKey) ??
+      normalizeOptionalProviderApiKey(existingApiKey));
 
   // Azure clients use api-key headers and no bearer Authorization header.
   const azureHeaders = isAzure && normalizedApiKey ? { "api-key": normalizedApiKey } : undefined;
@@ -621,14 +670,9 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams) {
         [providerId]: {
           ...existingProviderRest,
           baseUrl: resolvedBaseUrl,
-          api: isAzureOpenAi
-            ? "azure-openai-responses"
-            : params.compatibility === "anthropic"
-              ? "anthropic-messages"
-              : params.compatibility === "openai-responses"
-                ? "openai-responses"
-                : "openai-completions",
+          api,
           ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
+          ...(nextAuth ? { auth: nextAuth } : {}),
           ...(isAzure ? { authHeader: false } : {}),
           ...(azureHeaders ? { headers: azureHeaders } : {}),
           models: mergedModels,

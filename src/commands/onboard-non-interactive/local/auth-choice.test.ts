@@ -645,6 +645,59 @@ describe("applyNonInteractiveAuthChoice", () => {
     expect(apiKeyParams?.secretInputMode).toBe("ref");
   });
 
+  it.each([
+    { name: "explicit model", modelId: "local-large", apiKey: undefined },
+    { name: "saved inline key", modelId: undefined, apiKey: "fixture-saved-key" },
+    {
+      name: "unresolved SecretRef",
+      modelId: undefined,
+      apiKey: { source: "env", provider: "default", id: "UNRESOLVED_DISCOVERY_KEY" },
+    },
+  ] as const)("skips credentials for custom no-auth with $name", async ({ modelId, apiKey }) => {
+    vi.stubEnv("UNRESOLVED_DISCOVERY_KEY", undefined);
+    resolveNonInteractiveApiKey.mockResolvedValueOnce({
+      key: "ambient-env-key-must-be-ignored",
+      source: "env",
+      envVarName: "CUSTOM_API_KEY",
+    });
+    const authorizationHeaders: Array<string | null> = [];
+    const request = vi.spyOn(fetchGuard, "fetchWithSsrFGuard").mockImplementation(async (input) => {
+      const authorization = new Headers(input.init?.headers).get("authorization");
+      authorizationHeaders.push(authorization);
+      return {
+        response: authorization
+          ? new Response(null, { status: 401 })
+          : Response.json({ data: [{ id: "discovered-chat" }] }),
+        finalUrl: input.url,
+        release: async () => {},
+      };
+    });
+
+    const result = await applyChoice({
+      nextConfig: {
+        models: {
+          providers: { local: { baseUrl: "https://models.custom.local/v1", apiKey, models: [] } },
+        },
+      },
+      opts: {
+        customBaseUrl: "https://models.custom.local/v1",
+        customProviderId: "local",
+        customModelId: modelId,
+        customNoAuth: true,
+      },
+    });
+
+    expect(authorizationHeaders).toEqual(modelId ? [] : [null]);
+    expect(request).toHaveBeenCalledTimes(modelId ? 0 : 1);
+    expect(result?.models?.providers?.local).toMatchObject({
+      auth: "none",
+      models: [expect.objectContaining({ id: modelId ?? "discovered-chat" })],
+    });
+    expect(result?.models?.providers?.local?.apiKey).toBeUndefined();
+    expect(resolveNonInteractiveApiKey).not.toHaveBeenCalled();
+    expect(runtime.error).not.toHaveBeenCalled();
+  });
+
   it("never commits an existing profile key as plaintext during custom secret-ref onboarding", async () => {
     const profileKey = "fixture-custom-profile-secret";
     resolveNonInteractiveApiKey.mockResolvedValueOnce({ key: profileKey, source: "profile" });

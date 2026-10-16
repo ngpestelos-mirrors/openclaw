@@ -43,53 +43,70 @@ export function registerOnboardResetDiscoveryTests({
     );
   });
 
-  it.each([false, true])(
-    "carries discovery identity through reset (replacement %s)",
-    async (replacement) => {
-      if (replacement) {
-        const config: OpenClawConfig = {
-          models: {
-            providers: {
-              local: { baseUrl: "https://previous.example.com/v1", models: [] },
+  it.each([
+    { name: "new endpoint", replacement: false, noAuth: false },
+    { name: "replacement endpoint", replacement: true, noAuth: false },
+    { name: "no-auth with unresolved SecretRef", replacement: false, noAuth: true },
+  ])("carries discovery identity through reset ($name)", async ({ replacement, noAuth }) => {
+    if (replacement || noAuth) {
+      vi.stubEnv("UNRESOLVED_DISCOVERY_KEY", undefined);
+      const config: OpenClawConfig = {
+        models: {
+          providers: {
+            local: {
+              baseUrl: replacement ? "https://previous.example.com/v1" : "https://example.com/v1",
+              ...(noAuth
+                ? {
+                    apiKey: {
+                      source: "env",
+                      provider: "default",
+                      id: "UNRESOLVED_DISCOVERY_KEY",
+                    } as const,
+                  }
+                : {}),
+              models: [],
             },
           },
-        };
-        mocks.readConfigFileSnapshot.mockResolvedValue({
-          exists: true,
-          valid: true,
-          config,
-          sourceConfig: config,
-        });
-      }
-      vi.spyOn(nonInteractiveApiKeys, "resolveNonInteractiveApiKey").mockResolvedValue(null);
-      const request = vi.spyOn(fetchGuard, "fetchWithSsrFGuard").mockResolvedValue({
-        response: Response.json({ data: [{ id: "first" }, { id: "second" }] }),
-        finalUrl: "https://example.com/v1/models",
-        release: async () => {},
-      });
-      const runtime = makeRuntime();
-      await setupWizardCommand(
-        {
-          reset: true,
-          resetScope: "config",
-          nonInteractive: true,
-          acceptRisk: true,
-          customBaseUrl: "https://example.com/v1",
-          customProviderId: "local",
         },
-        runtime,
-      );
-      expect(mocks.handleReset).toHaveBeenCalledOnce();
-      expect(mocks.runNonInteractiveSetup).toHaveBeenCalledWith(
-        expect.objectContaining({
-          customProviderId: replacement ? "local-2" : "local",
-          customModelIds: ["first", "second"],
-        }),
-        runtime,
-      );
-      expect(request).toHaveBeenCalledOnce();
-    },
-  );
+      };
+      mocks.readConfigFileSnapshot.mockResolvedValue({
+        exists: true,
+        valid: true,
+        config,
+        sourceConfig: config,
+      });
+    }
+    vi.spyOn(nonInteractiveApiKeys, "resolveNonInteractiveApiKey").mockResolvedValue(null);
+    const request = vi.spyOn(fetchGuard, "fetchWithSsrFGuard").mockResolvedValue({
+      response: Response.json({ data: [{ id: "first" }, { id: "second" }] }),
+      finalUrl: "https://example.com/v1/models",
+      release: async () => {},
+    });
+    const runtime = makeRuntime();
+    await setupWizardCommand(
+      {
+        reset: true,
+        resetScope: "config",
+        nonInteractive: true,
+        acceptRisk: true,
+        customBaseUrl: "https://example.com/v1",
+        customProviderId: "local",
+        customNoAuth: noAuth,
+      },
+      runtime,
+    );
+    expect(mocks.handleReset).toHaveBeenCalledOnce();
+    expect(mocks.runNonInteractiveSetup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customProviderId: replacement ? "local-2" : "local",
+        customModelIds: ["first", "second"],
+        customNoAuth: noAuth,
+      }),
+      runtime,
+    );
+    expect(request).toHaveBeenCalledOnce();
+    expect(new Headers(request.mock.calls[0]?.[0].init?.headers).has("authorization")).toBe(false);
+  });
 
   it.each([
     {
