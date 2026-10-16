@@ -7,6 +7,11 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { assertUpdateDatabaseEngineContexts } from "./update-database-engine-admission.js";
 
+vi.mock("../snapshot/database-backup.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../snapshot/database-backup.js")>()),
+  readPostgresBackupFamily: vi.fn(async () => "workboard"),
+}));
+
 const directories = useAutoCleanupTempDirTracker(afterEach);
 
 async function store(engine: "sqlite" | "postgres", enabled = true) {
@@ -56,7 +61,7 @@ it.each([
 it("admits a matching PostgreSQL target without changing its anchor", async () => {
   const { file, context } = await store("postgres");
   const before = await fs.readFile(file);
-  await assertUpdateDatabaseEngineContexts([context], ["sqlite", "postgres"]);
+  await assertUpdateDatabaseEngineContexts([context], ["sqlite", "postgres"], ["workboard"]);
   expect(await fs.readFile(file)).toEqual(before);
 });
 
@@ -88,7 +93,7 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     try {
       await expect(fs.lstat(marker)).rejects.toMatchObject({ code: "EACCES" });
       await expect(
-        assertUpdateDatabaseEngineContexts([context], ["sqlite", "postgres"]),
+        assertUpdateDatabaseEngineContexts([context], ["sqlite", "postgres"], ["workboard"]),
       ).resolves.toBeUndefined();
       await expect(assertUpdateDatabaseEngineContexts([context], ["sqlite"])).rejects.toThrow(
         `target does not support the PostgreSQL store at ${file}`,
