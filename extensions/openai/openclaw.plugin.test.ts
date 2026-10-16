@@ -121,7 +121,7 @@ it("labels and orders OpenAI authentication choices", () => {
       "Sign in with ChatGPT (Beta)",
       "Authorize OpenClaw for eligible Responses models using your Codex allowance",
     ],
-  ]) {
+  ] as const) {
     expect(choice(id)).toMatchObject({ choiceLabel, choiceHint, ...group });
   }
   for (const id of ["openai", "openai-device-code"]) {

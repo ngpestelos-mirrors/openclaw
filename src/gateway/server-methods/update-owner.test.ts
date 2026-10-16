@@ -95,6 +95,7 @@ vi.mock("../../agents/tools/gateway.js", () => ({
   callGatewayTool: vi.fn(),
   readGatewayCallOptions: vi.fn(),
 }));
+// mock-isolation: Route update calls through this suite's isolated Gateway host.
 vi.mock("../server-plugin-in-process-dispatch.js", () => ({
   getInProcessGatewayRequestContext: () => host.context,
   dispatchGatewayMethodInProcess: async (
