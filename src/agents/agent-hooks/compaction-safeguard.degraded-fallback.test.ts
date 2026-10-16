@@ -68,7 +68,7 @@ describe("compaction-safeguard degraded fallback", () => {
             id: "older",
             parentId: null,
             timestamp: "1970-01-01T00:00:00.000Z",
-            get message() {
+            get message(): never {
               throw failure;
             },
           },
