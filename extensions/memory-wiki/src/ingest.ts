@@ -6,7 +6,12 @@ import { asNullableRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { compileMemoryWikiVault } from "./compile.js";
 import type { ResolvedMemoryWikiConfig } from "./config.js";
 import { appendMemoryWikiLog } from "./log.js";
-import { preserveHumanNotesBlock, slugifyWikiPageStem, slugifyWikiSegment } from "./markdown.js";
+import {
+  decodeWikiPageUtf8,
+  preserveHumanNotesBlock,
+  slugifyWikiPageStem,
+  slugifyWikiSegment,
+} from "./markdown.js";
 import { withMemoryWikiVaultMutation } from "./mutation-coordinator.js";
 import { renderImportedSourcePage } from "./source-page-shared.js";
 import { resolveMemoryWikiTimestamp } from "./time.js";
@@ -74,7 +79,7 @@ export async function ingestMemoryWikiSource(params: {
     const existing = created
       ? ""
       : await readExistingWikiPage(
-          () => fs.readFile(pagePath, "utf8"),
+          async () => decodeWikiPageUtf8(await fs.readFile(pagePath), pagePath),
           (error) => {
             const code = asNullableRecord(error)?.code;
             return code === "ENOENT" || code === "EISDIR";

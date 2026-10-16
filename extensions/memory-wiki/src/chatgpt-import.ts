@@ -33,6 +33,7 @@ import {
 } from "./import-runs-state.js";
 import { appendMemoryWikiLog } from "./log.js";
 import {
+  decodeWikiPageUtf8,
   parseWikiMarkdown,
   renderWikiMarkdown,
   WIKI_RELATED_END_MARKER,
@@ -595,7 +596,7 @@ export async function importChatGptConversations(params: {
       const rendered = renderConversationPage(record);
       const absolutePath = path.join(params.config.vault.path, record.pagePath);
       const existing = await readExistingWikiPage(
-        () => fs.readFile(absolutePath, "utf8"),
+        async () => decodeWikiPageUtf8(await fs.readFile(absolutePath), absolutePath),
         (error) => asNullableRecord(error)?.code === "ENOENT",
       );
       const stabilized = preserveExistingPageBlocks(rendered, existing);

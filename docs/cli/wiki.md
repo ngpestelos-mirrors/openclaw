@@ -105,6 +105,8 @@ Import a local markdown or text file into the wiki `sources/` folder as a source
 
 Source files must be valid UTF-8. Malformed input is rejected without replacing an existing source page. Save the source as valid UTF-8 and retry the ingest.
 
+`wiki ingest`, bridge/unsafe-local sync, and ChatGPT imports also reject existing source pages with malformed UTF-8 instead of rewriting their human notes. Save the affected page as valid UTF-8 and retry.
+
 Imported source pages carry provenance frontmatter (`sourceType: local-file`, `sourcePath`, `ingestedAt`). Ingest always recompiles the vault afterward.
 
 Flags: `--title <title>` overrides the source title (default: derived from the filename).
