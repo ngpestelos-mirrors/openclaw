@@ -187,7 +187,7 @@ function usesPrimarySessionList(scope: SessionListOptions = {}) {
   return (
     (!scope.archivedFilter || scope.archivedFilter === "active") &&
     !scope.spawnedBy &&
-    !scope.source &&
+    scope.source !== "dashboard" &&
     !scope.ownerId &&
     !scope.involvingMe
   );
