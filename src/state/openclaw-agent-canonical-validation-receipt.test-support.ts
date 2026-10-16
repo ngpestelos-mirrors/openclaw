@@ -4,6 +4,7 @@ import type { StatementSync } from "node:sqlite";
 import { isMainThread } from "node:worker_threads";
 import { writeSessionEntry } from "../config/sessions/session-accessor.sqlite-entry-store.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
+import { sqlPublicationAnchor } from "../infra/sql-connection.js";
 import { assertSqliteSchemaContains } from "../infra/sqlite-schema-contract.test-support.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
@@ -70,7 +71,7 @@ for (const legacy of ["legacy-birthtime", "missing-column"] as const) {
       const previousSchema = OPENCLAW_AGENT_SCHEMA_SQL.replace(/^\s*canonical_ready TEXT,\n/mu, "");
       assert.doesNotThrow(() =>
         assertSqliteSchemaContains(
-          database.db,
+          sqlPublicationAnchor(database.db),
           database.path,
           previousSchema,
           AGENT_SCHEMA_COMPATIBILITY,

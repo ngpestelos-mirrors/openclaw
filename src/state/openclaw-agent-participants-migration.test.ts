@@ -4,6 +4,7 @@ import { recoverDoctorSessionSqliteTargets } from "../commands/doctor-session-sq
 import { captureRuntimeConfigAsyncReader } from "../config/io.runtime.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+import { requireNativeSqliteDatabase } from "../test-utils/native-sqlite.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { withAgentDatabaseMaintenanceLease } from "./openclaw-agent-db-maintenance-lease.js";
 import {
@@ -23,8 +24,8 @@ describe("participant identity migration", () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const initial = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
       const databasePath = initial.path;
-      restoreEmptyV21StorageForHistoricalFixture(initial.db);
-      removeCanonicalValidationFromHistoricalAgentFixture(initial.db);
+      restoreEmptyV21StorageForHistoricalFixture(requireNativeSqliteDatabase(initial.db));
+      removeCanonicalValidationFromHistoricalAgentFixture(requireNativeSqliteDatabase(initial.db));
       initial.db.exec(
         "DROP TABLE session_participants; PRAGMA user_version = 17; UPDATE schema_meta SET schema_version = 17;",
       );
@@ -45,8 +46,8 @@ describe("participant identity migration", () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const initial = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
       const databasePath = initial.path;
-      restoreEmptyV21StorageForHistoricalFixture(initial.db);
-      removeCanonicalValidationFromHistoricalAgentFixture(initial.db);
+      restoreEmptyV21StorageForHistoricalFixture(requireNativeSqliteDatabase(initial.db));
+      removeCanonicalValidationFromHistoricalAgentFixture(requireNativeSqliteDatabase(initial.db));
       initial.db.exec(`
         DROP TABLE session_participants;
         PRAGMA user_version = 17;
@@ -56,7 +57,7 @@ describe("participant identity migration", () => {
         DROP INDEX idx_agent_cache_expiry;
         CREATE INDEX idx_agent_cache_expiry ON cache_entries(key);
       `);
-      initial.db.enableDefensive?.(false);
+      requireNativeSqliteDatabase(initial.db).enableDefensive?.(false);
       initial.db.exec(`PRAGMA writable_schema = ON;
         UPDATE sqlite_schema SET sql = 'CREATE INDEX idx_agent_cache_expiry ON cache_entries(scope, expires_at, key) WHERE expires_at IS NOT NULL'
           WHERE name = 'idx_agent_cache_expiry';
@@ -104,8 +105,10 @@ describe("participant identity migration", () => {
         );
         const initial = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
         const databasePath = initial.path;
-        restoreEmptyV21StorageForHistoricalFixture(initial.db);
-        removeCanonicalValidationFromHistoricalAgentFixture(initial.db);
+        restoreEmptyV21StorageForHistoricalFixture(requireNativeSqliteDatabase(initial.db));
+        removeCanonicalValidationFromHistoricalAgentFixture(
+          requireNativeSqliteDatabase(initial.db),
+        );
         initial.db.exec(
           "DROP TABLE session_participants; PRAGMA user_version = 17; UPDATE schema_meta SET schema_version = 17;",
         );
@@ -184,8 +187,10 @@ describe("participant identity migration", () => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const initial = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
         const databasePath = initial.path;
-        restoreEmptyV21StorageForHistoricalFixture(initial.db);
-        removeCanonicalValidationFromHistoricalAgentFixture(initial.db);
+        restoreEmptyV21StorageForHistoricalFixture(requireNativeSqliteDatabase(initial.db));
+        removeCanonicalValidationFromHistoricalAgentFixture(
+          requireNativeSqliteDatabase(initial.db),
+        );
         initial.db.exec(
           `DROP TABLE session_participants; PRAGMA user_version = ${version}; UPDATE schema_meta SET schema_version = ${version};`,
         );
@@ -215,8 +220,8 @@ describe("participant identity migration", () => {
       );
       const initial = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
       const databasePath = initial.path;
-      restoreEmptyV21StorageForHistoricalFixture(initial.db);
-      removeCanonicalValidationFromHistoricalAgentFixture(initial.db);
+      restoreEmptyV21StorageForHistoricalFixture(requireNativeSqliteDatabase(initial.db));
+      removeCanonicalValidationFromHistoricalAgentFixture(requireNativeSqliteDatabase(initial.db));
       initial.db.exec("DROP TABLE session_participants;");
       initial.db.exec(LEGACY_PARTICIPANTS_SCHEMA);
       const kinds = [
@@ -297,8 +302,10 @@ describe("participant identity migration", () => {
         );
         const initial = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
         const databasePath = initial.path;
-        restoreEmptyV21StorageForHistoricalFixture(initial.db);
-        removeCanonicalValidationFromHistoricalAgentFixture(initial.db);
+        restoreEmptyV21StorageForHistoricalFixture(requireNativeSqliteDatabase(initial.db));
+        removeCanonicalValidationFromHistoricalAgentFixture(
+          requireNativeSqliteDatabase(initial.db),
+        );
         initial.db.exec(`
           DROP TABLE session_participants;
           CREATE TABLE session_participants (

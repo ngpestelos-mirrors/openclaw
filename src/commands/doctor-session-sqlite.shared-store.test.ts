@@ -34,6 +34,7 @@ import { removeCanonicalValidationFromHistoricalAgentFixture } from "../state/op
 import { LEGACY_PARTICIPANTS_SCHEMA } from "../state/openclaw-agent-schema-history.js";
 import { seedOpenClawAgentSchemaV21 } from "../state/openclaw-agent-schema-v21.test-support.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { requireNativeSqliteDatabase } from "../test-utils/native-sqlite.js";
 import {
   cleanupSessionStateForTest,
   useSessionStoreTempDirs,
@@ -229,7 +230,9 @@ function expectUpgradedSharedStore(store: Awaited<ReturnType<typeof createHistor
     createdVia: "operator",
     createdActor: { type: "human", source: "profile", id: "person", label: "Original creator" },
   });
-  expect(readStoredGoalState(reopened.db, store.scope.sessionKey)).toEqual(store.goalState);
+  expect(
+    readStoredGoalState(requireNativeSqliteDatabase(reopened.db), store.scope.sessionKey),
+  ).toEqual(store.goalState);
   expect(
     readSessionGoalOperationInDatabase(reopened, {
       ...store.scope,

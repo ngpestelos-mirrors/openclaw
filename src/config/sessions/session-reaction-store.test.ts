@@ -18,6 +18,7 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "../../state/openclaw-agent-schema.js";
 import { closeStateDatabaseForTest } from "../../test-utils/database-cleanup.js";
+import { requireNativeSqliteDatabase } from "../../test-utils/native-sqlite.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../runtime-snapshot.js";
 import { SessionWorkStartInvalidatedError } from "./lifecycle.js";
 import { upsertSessionEntryCore } from "./session-accessor.sqlite-entry.js";
@@ -483,7 +484,7 @@ describe("session reaction store", () => {
     });
     expect(() =>
       assertSqliteSchemaContains(
-        database.db,
+        requireNativeSqliteDatabase(database.db),
         database.path,
         previousSchema,
         AGENT_SCHEMA_COMPATIBILITY,

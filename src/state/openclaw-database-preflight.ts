@@ -487,6 +487,7 @@ export async function preflightOpenClawDatabaseSchemas(
         const schemaInput = {
           pathname: realAgentPath,
           agentId: row.agentId,
+          env: options.env,
           supportedVersion: supportedVersions.agent,
           inspectOwnership,
           verifyCurrentSchemaShape: row.holdForDeletionRecovery
@@ -504,7 +505,8 @@ export async function preflightOpenClawDatabaseSchemas(
         // artifact preservation must use the WAL-aware private snapshot below.
         if (
           !schemaInspection &&
-          (options.preserveSourceArtifacts !== true ||
+          (getDatabaseEngineSelection()?.input ||
+            options.preserveSourceArtifacts !== true ||
             (purpose === "runtime" && readSqliteDatabaseCleanClose(realAgentPath)))
         ) {
           schemaInspection = await inspectSchema(schemaInput, options.signal);
