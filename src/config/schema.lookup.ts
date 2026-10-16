@@ -1,3 +1,4 @@
+import { isStringArray } from "@openclaw/normalization-core/record-coerce";
 import type { ConfigSchemaLookupResult as ProtocolConfigSchemaLookupResult } from "../../packages/gateway-protocol/src/schema/config.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
 import { parseConfigPathArrayIndex } from "../shared/path-array-index.js";
@@ -280,7 +281,7 @@ function stripSchemaForLookup(schema: JsonSchemaObject, nestedFormDepth = 0): Js
     if (key === "type") {
       if (typeof value === "string") {
         next[key] = value;
-      } else if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
+      } else if (isStringArray(value)) {
         next[key] = [...value];
       }
       continue;

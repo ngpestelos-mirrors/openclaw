@@ -18,12 +18,16 @@ vi.mock("node:child_process", async () => {
   );
 });
 
-vi.mock("node:fs", () => ({
-  default: {
+vi.mock("node:fs", async () => {
+  const { constants } = await vi.importActual<typeof import("node:fs")>("node:fs");
+  return {
+    default: {
+      constants,
+      readFileSync: (...args: unknown[]) => readFileSyncMock(...args),
+    },
     readFileSync: (...args: unknown[]) => readFileSyncMock(...args),
-  },
-  readFileSync: (...args: unknown[]) => readFileSyncMock(...args),
-}));
+  };
+});
 
 vi.mock("./restart-stale-pids.js", () => ({
   findGatewayPidsOnPortSync: (...args: unknown[]) => findGatewayPidsOnPortSyncMock(...args),

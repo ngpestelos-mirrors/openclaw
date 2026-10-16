@@ -1,6 +1,7 @@
 // Suppress substantial boot-prompt echoes even when the model omits the
 // internal-runtime-context delimiters that normally keep BOOT.md private.
 
+import { collapseWhitespace as normalizeEchoComparisonText } from "@openclaw/normalization-core/string-normalization";
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 
 const MIN_ECHO_CHARS = 80;
@@ -24,10 +25,6 @@ type BootEchoContext = {
 
 const bootContextBySessionKey = new Map<string, BootEchoContext>();
 const bootChunksByNormalizedPrompt = new Map<string, Set<string>>();
-
-function normalizeEchoComparisonText(text: string): string {
-  return text.replace(/\s+/gu, " ").trim();
-}
 
 function getBootPromptChunks(normalizedBootPrompt: string): Set<string> {
   const cached = bootChunksByNormalizedPrompt.get(normalizedBootPrompt);

@@ -4,6 +4,7 @@ import path from "node:path";
 import { replaceFileAtomic } from "@openclaw/fs-safe/atomic";
 import {
   asOptionalObjectRecord,
+  isStringArray,
   readStringField,
 } from "@openclaw/normalization-core/record-coerce";
 import { normalizeNullableString } from "@openclaw/normalization-core/string-coerce";
@@ -445,10 +446,7 @@ export async function scrubConfigAuditLog(params: {
     let mutated = false;
     for (const key of ["argv", "execArgv"] as const) {
       const value = obj[key];
-      if (!Array.isArray(value)) {
-        continue;
-      }
-      if (!value.every((entry): entry is string => typeof entry === "string")) {
+      if (!isStringArray(value)) {
         continue;
       }
       const redacted = redactConfigAuditArgv(value);

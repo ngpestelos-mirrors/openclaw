@@ -12,6 +12,7 @@ function detectContainerEnvironment(): boolean {
     return true;
   }
 
+  // CLI bootstrap must not load package-backed filesystem helpers.
   for (const sentinelPath of ["/.dockerenv", "/run/.containerenv", "/var/run/.containerenv"]) {
     try {
       fs.accessSync(sentinelPath, fs.constants.F_OK);

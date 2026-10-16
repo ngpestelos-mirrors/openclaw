@@ -63,11 +63,15 @@ export function truncateUtf16Safe(input: string, maxLen: number): string {
   return sliceUtf16Safe(input, 0, limit);
 }
 
-/** Truncates text and appends a marker while preserving the caller's reserved width contract. */
+/** Truncates without trimming, reserving three characters for "..." unless overridden. */
 export function truncateWithMarker(
   value: string,
   max: number,
-  options: { marker: string; reserve: number; trimEnd: boolean },
+  options: { marker: string; reserve: number; trimEnd: boolean } = {
+    marker: "...",
+    reserve: 3,
+    trimEnd: false,
+  },
 ): string {
   if (value.length <= max) {
     return value;

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { floorPositiveFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -31,13 +32,6 @@ type BootstrapTruncationReportMeta = {
   nearLimitFiles: number;
   totalNearLimit: boolean;
 };
-
-function normalizePositiveLimit(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) {
-    return 1;
-  }
-  return Math.floor(value);
-}
 
 function effectiveBootstrapFileLimit(name: string, bootstrapMaxChars: number): number {
   return name.toLowerCase() === "user.md"
@@ -125,8 +119,8 @@ export function analyzeBootstrapBudget(params: {
   bootstrapTotalMaxChars: number;
   nearLimitRatio?: number;
 }): BootstrapBudgetAnalysis {
-  const bootstrapMaxChars = normalizePositiveLimit(params.bootstrapMaxChars);
-  const bootstrapTotalMaxChars = normalizePositiveLimit(params.bootstrapTotalMaxChars);
+  const bootstrapMaxChars = floorPositiveFiniteNumber(params.bootstrapMaxChars) ?? 1;
+  const bootstrapTotalMaxChars = floorPositiveFiniteNumber(params.bootstrapTotalMaxChars) ?? 1;
   const nearLimitRatio =
     typeof params.nearLimitRatio === "number" &&
     Number.isFinite(params.nearLimitRatio) &&

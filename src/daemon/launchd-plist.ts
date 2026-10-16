@@ -1,9 +1,14 @@
 import fs from "node:fs/promises";
-import { asOptionalRecord, isStringRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  asOptionalRecord,
+  isStringArray,
+  isStringRecord,
+} from "@openclaw/normalization-core/record-coerce";
 import { hasErrnoCode } from "../infra/errno.js";
 import { LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS } from "../infra/gateway-shutdown-budget.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { runExec } from "../process/exec.js";
+import { shellEscapeBackslash as quoteLaunchAgentEnvironmentValue } from "../shared/shell-quote.js";
 import { escapeXml } from "../shared/xml.js";
 import type {
   GatewayServiceCommandConfig,
@@ -12,6 +17,7 @@ import type {
 } from "./service-types.js";
 
 export { LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS };
+export { quoteLaunchAgentEnvironmentValue };
 
 // launchd defaults to a 10s spawn throttle. Keep that default explicitly so
 // crash loops back off instead of respawning every second while still allowing
@@ -33,10 +39,6 @@ type ReadLaunchAgentProgramArgumentsOptions = GatewayServiceReadOptions & {
   expectedEnvironmentFilePath?: string;
   generatedEnvironmentLabel?: string;
 };
-
-export function quoteLaunchAgentEnvironmentValue(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
 
 function parseGeneratedEnvValue(value: string): string {
   const trimmed = value.trim();
@@ -284,8 +286,7 @@ export async function resolveLaunchAgentProgramArguments(
   const workingDirectory = plist?.WorkingDirectory;
   const inlineEnvironment = plist?.EnvironmentVariables;
   if (
-    !Array.isArray(args) ||
-    !args.every((arg): arg is string => typeof arg === "string") ||
+    !isStringArray(args) ||
     (workingDirectory !== undefined && typeof workingDirectory !== "string") ||
     (inlineEnvironment !== undefined && !isStringRecord(inlineEnvironment))
   ) {

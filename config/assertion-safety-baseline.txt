@@ -1341,7 +1341,6 @@ src/agents/session-transcript-repair.ts	2
 src/agents/sessions/agent-session-base.ts	3
 src/agents/sessions/agent-session-models.ts	1
 src/agents/sessions/agent-session-tree.ts	1
-src/agents/sessions/agent-session-utils.ts	1
 src/agents/sessions/auth-storage.ts	1
 src/agents/sessions/extensions/loader.ts	2
 src/agents/sessions/extensions/runner.ts	14
@@ -2419,7 +2418,6 @@ src/sessions/session-upstream-monitor.ts	2
 src/sessions/user-turn-transcript-runtime-context.ts	2
 src/shared/account-enabled.ts	1
 src/shared/bounded-serial-queue.ts	1
-src/shared/chat-content.ts	2
 src/shared/chat-message-content.ts	1
 src/shared/config-eval.ts	1
 src/shared/deferred.ts	1

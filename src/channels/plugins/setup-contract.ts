@@ -1,5 +1,5 @@
 import { parseStrictNonNegativeInteger } from "@openclaw/normalization-core/number-coercion";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { isRecord, isStringArray } from "@openclaw/normalization-core/record-coerce";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { Option } from "commander";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -138,11 +138,8 @@ export function resolveChannelSetupExecutionAdapter(plugin: {
 }
 
 function parseStringList(value: unknown): string[] | undefined {
-  if (Array.isArray(value)) {
-    return value.every((entry) => typeof entry === "string") ? value : undefined;
-  }
   if (typeof value !== "string") {
-    return undefined;
+    return isStringArray(value) ? value : undefined;
   }
   return value
     .split(/[\n,]/u)

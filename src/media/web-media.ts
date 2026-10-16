@@ -13,6 +13,7 @@ import {
   normalizeMimeType,
 } from "@openclaw/media-core/mime";
 import { hasHttpUrlPrefix } from "@openclaw/net-policy/url-protocol";
+import { floorPositiveFiniteNumber as positiveInteger } from "@openclaw/normalization-core/number-coercion";
 import { uniqueValues } from "@openclaw/normalization-core/string-normalization";
 import type { EncodedImage } from "rastermill";
 import { resolveCanvasHttpPathToLocalPath } from "../canvas/documents.js";
@@ -520,12 +521,6 @@ const DEFAULT_JPEG_SIDES = [2048, 1536, 1280, 1024, 800] as const;
 const DEFAULT_JPEG_QUALITIES = [80, 70, 60, 50, 40] as const;
 const DEFAULT_VISION_MAX_SIDE = 2048;
 const LOW_IMAGE_SIDE_FALLBACKS = [640, 512, 384, 256, 192, 128] as const;
-
-function positiveInteger(value: number | undefined): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : undefined;
-}
 
 function effectiveImageQualityPreference(
   policy?: ImageCompressionPolicy,

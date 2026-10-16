@@ -1,4 +1,5 @@
 /** Handles /mcp commands for showing and mutating configured MCP servers. */
+import { isStringArray } from "@openclaw/normalization-core/record-coerce";
 import {
   setConfiguredMcpServer,
   unsetConfiguredMcpServer,
@@ -38,7 +39,7 @@ function redactMcpServerArgsForDisplay(server: unknown): unknown {
     return server;
   }
   const record = server as Record<string, unknown>;
-  if (!Array.isArray(record.args) || !record.args.every((arg) => typeof arg === "string")) {
+  if (!isStringArray(record.args)) {
     return server;
   }
   return {

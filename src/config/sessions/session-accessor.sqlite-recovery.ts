@@ -1,4 +1,4 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { isRecord, isStringArray } from "@openclaw/normalization-core/record-coerce";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
 import type { SqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
@@ -128,8 +128,7 @@ export async function recoverSessionEntryFromRestartTombstone(
       if (
         !isRecord(receipt) ||
         receipt.kind !== "session-entry-replacements" ||
-        !Array.isArray(receipt.changedKeys) ||
-        !receipt.changedKeys.every((key): key is string => typeof key === "string") ||
+        !isStringArray(receipt.changedKeys) ||
         !publication
       ) {
         throw new Error("Session recovery commit omitted its publication keys");

@@ -11,6 +11,7 @@ import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { killProcessTree } from "../process/kill-tree.js";
 import { withChildProcessOperation } from "../process/spawn-diagnostics.js";
 import { spawnProcess } from "../process/spawn-utils.js";
+import { shellEscapeBackslash as shQuote } from "../shared/shell-quote.js";
 
 const SNAPSHOT_VERSION = 1;
 const SNAPSHOT_REFRESH_MS = 5 * 60 * 1000;
@@ -392,10 +393,6 @@ function buildSnapshotWrappedCommand(
   ]
     .filter((part) => part.trim().length > 0)
     .join("\n");
-}
-
-function shQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 async function runShell(opts: {

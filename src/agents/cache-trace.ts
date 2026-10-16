@@ -1,7 +1,7 @@
-import crypto from "node:crypto";
 import path from "node:path";
 import { sanitizeSurrogates } from "@openclaw/ai/internal/shared";
 import { stableStringify } from "@openclaw/normalization-core";
+import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
@@ -64,8 +64,7 @@ type CacheTraceInit = AgentTraceBase & {
 const writers = new Map<string, QueuedFileWriter>();
 
 function digest(value: unknown): string {
-  const serialized = stableStringify(value, sanitizeSurrogates);
-  return crypto.createHash("sha256").update(serialized).digest("hex");
+  return sha256Hex(stableStringify(value, sanitizeSurrogates));
 }
 
 function summarizeMessages(messages: AgentMessage[]): {

@@ -1,7 +1,11 @@
 // Archive artifact bytes and publication; no session lifecycle or database orchestration.
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import {
+  sha256Hex,
+  sha256Hex as hashSessionArchiveBytes,
+} from "@openclaw/normalization-core/node-crypto";
 import { syncDirectoryBestEffortSync } from "../../infra/directory-durability.js";
 import { hasErrnoCode } from "../../infra/errno.js";
 import {
@@ -25,7 +29,7 @@ function resolveRegisteredArchiveSessionIdComponent(sessionId: string): string {
   if (Buffer.byteLength(sessionId, "utf8") <= MAX_REGISTERED_ARCHIVE_SESSION_ID_BYTES) {
     return sessionId;
   }
-  return `session-${createHash("sha256").update(sessionId).digest("hex")}`;
+  return `session-${sha256Hex(sessionId)}`;
 }
 
 export function resolveSqliteTranscriptArchivePath(params: {
@@ -172,9 +176,7 @@ function writeDurableFileExclusive(filePath: string, content: Buffer): void {
   }
 }
 
-export function hashSessionArchiveBytes(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
+export { hashSessionArchiveBytes };
 
 /** Publishes one exact canonical archive without directory scans or replacement. */
 export function publishEncodedSessionTranscriptArchive(params: {

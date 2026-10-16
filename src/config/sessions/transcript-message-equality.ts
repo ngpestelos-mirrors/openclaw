@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { isRecord, isStringArray } from "@openclaw/normalization-core/record-coerce";
 import {
   isOpenClawDeliveryMirrorAssistantMessage,
   OPENCLAW_TRANSCRIPT_ARTIFACT_API,
@@ -23,8 +23,7 @@ export function messagesMatchForIdempotentReplay(stored: unknown, candidate: unk
     if (
       projectLegacyMedia &&
       isRecord(stable.openclawDelivery) &&
-      Array.isArray(stable.openclawDelivery.mediaUrls) &&
-      stable.openclawDelivery.mediaUrls.every((url) => typeof url === "string")
+      isStringArray(stable.openclawDelivery.mediaUrls)
     ) {
       const { mediaUrls: _mediaUrls, ...delivery } = stable.openclawDelivery;
       if (storedDelivery === undefined && Object.keys(delivery).length === 0) {

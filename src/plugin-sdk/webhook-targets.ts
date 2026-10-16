@@ -23,6 +23,7 @@ export type RegisterWebhookTargetOptions<T extends { path: string }> = {
 type RegisterPluginHttpRouteParams = Parameters<typeof registerPluginHttpRoute>[0];
 
 export { registerPluginHttpRoute };
+export { sendJson } from "../infra/http-json.js";
 
 /** Normalize a webhook path to a leading slash without a trailing slash. */
 export function normalizeWebhookPath(raw: string): string {

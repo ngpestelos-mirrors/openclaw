@@ -1,4 +1,5 @@
 import { expectDefined, stableStringify } from "@openclaw/normalization-core";
+import { isStringArray } from "@openclaw/normalization-core/record-coerce";
 import { isRecord } from "../utils.js";
 import {
   readSourceConfigSnapshot,
@@ -75,11 +76,7 @@ function restoreMcpServerArgvSentinels(params: {
   }
 
   const originalArgs = params.original?.args;
-  if (
-    !Array.isArray(originalArgs) ||
-    !originalArgs.every((arg) => typeof arg === "string") ||
-    incomingArgs.length !== originalArgs.length
-  ) {
+  if (!isStringArray(originalArgs) || incomingArgs.length !== originalArgs.length) {
     return {
       ok: false,
       error: `Cannot restore MCP args containing "${REDACTED_SENTINEL}" without the same original argv shape.`,

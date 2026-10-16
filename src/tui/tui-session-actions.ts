@@ -1,5 +1,5 @@
 import type { TUI } from "@earendil-works/pi-tui";
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { asOptionalRecord, isStringArray } from "@openclaw/normalization-core/record-coerce";
 import { err as resultError, ok, type Result } from "@openclaw/normalization-core/result";
 import { normalizeOptionalString, type FastMode } from "@openclaw/normalization-core/string-coerce";
 import type { SessionsPatchResult } from "../../packages/gateway-protocol/src/index.js";
@@ -579,9 +579,7 @@ export function createSessionActions(context: SessionActionContext) {
       return {
         loaded: true,
         runOutcome,
-        ...(Array.isArray(activeRunIds) && activeRunIds.every((id) => typeof id === "string")
-          ? { activeRunIds }
-          : {}),
+        ...(isStringArray(activeRunIds) ? { activeRunIds } : {}),
       };
     } catch (err) {
       if (isCurrentLoad() && !isAbortError(err)) {

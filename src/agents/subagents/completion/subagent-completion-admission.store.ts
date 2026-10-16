@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { isRecord, isStringArray } from "@openclaw/normalization-core/record-coerce";
 import type { DeliveryQueueStoredStatus } from "../../../infra/delivery-queue-sqlite.kernel.js";
 import { scheduleSessionDelivery } from "../../../infra/session-delivery-queue-runtime.js";
 import type { QueuedSessionDelivery } from "../../../infra/session-delivery-queue.records.js";
@@ -97,11 +97,8 @@ function parseMutationReceipt(
     (typeof value.applied !== "boolean" && value.applied !== null) ||
     !Array.isArray(value.records) ||
     !Array.isArray(value.retiredRunIds) ||
-    !Array.isArray(value.queueIds) ||
-    !value.retiredRunIds.every(
-      (id): id is string => typeof id === "string" && runIds.includes(id),
-    ) ||
-    !value.queueIds.every((id): id is string => typeof id === "string")
+    !isStringArray(value.queueIds) ||
+    !value.retiredRunIds.every((id): id is string => typeof id === "string" && runIds.includes(id))
   ) {
     throw new Error("Subagent completion mutation acknowledgment does not identify its write");
   }

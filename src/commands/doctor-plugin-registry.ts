@@ -1,7 +1,10 @@
 /** Doctor repairs for stale plugin registry entries, managed npm shadows, and peer links. */
 import fs from "node:fs";
 import path from "node:path";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  isRecord,
+  normalizeOptionalTrimmedStringRecord,
+} from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { note } from "../../packages/terminal-core/src/note.js";
 import { formatCliCommand } from "../cli/command-format.js";
@@ -9,7 +12,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import type { HealthFinding, HealthRepairEffect } from "../flows/health-checks.js";
 import { writeJsonTarget } from "../infra/json-file.js";
-import { tryReadJsonSync } from "../infra/json-files.js";
+import { tryReadJsonObjectSync as readJsonObject } from "../infra/json-files.js";
 import type { BundledPluginSource } from "../plugins/bundled-sources.js";
 import {
   clearLoadInstalledPluginIndexInstallRecordsCache,
@@ -96,24 +99,6 @@ type PluginRegistryHealthIssue =
     }
   | StaleManagedNpmInstallGenerationIssue;
 
-function readJsonObject(filePath: string): Record<string, unknown> | null {
-  const parsed = tryReadJsonSync(filePath);
-  return isRecord(parsed) ? parsed : null;
-}
-
-function readStringMap(value: unknown): Record<string, string> {
-  if (!isRecord(value)) {
-    return {};
-  }
-  const result: Record<string, string> = {};
-  for (const [key, raw] of Object.entries(value)) {
-    if (typeof raw === "string" && raw.trim()) {
-      result[key] = raw.trim();
-    }
-  }
-  return result;
-}
-
 function deleteObjectKey(record: Record<string, unknown>, key: string): boolean {
   if (!Object.hasOwn(record, key)) {
     return false;
@@ -138,7 +123,8 @@ function listStaleManagedNpmBundledPlugins(
 
   for (const npmRoot of resolveDoctorPluginNpmRoots(params)) {
     const npmPackageJsonPath = path.join(npmRoot, "package.json");
-    const dependencies = readStringMap(readJsonObject(npmPackageJsonPath)?.dependencies);
+    const dependencies =
+      normalizeOptionalTrimmedStringRecord(readJsonObject(npmPackageJsonPath)?.dependencies) ?? {};
     for (const packageName of Object.keys(dependencies).toSorted((left, right) =>
       left.localeCompare(right),
     )) {
@@ -216,7 +202,7 @@ function removeManagedNpmDependency(params: {
 }): void {
   const npmPackageJsonPath = path.join(params.npmRoot, "package.json");
   const packageJson = readJsonObject(npmPackageJsonPath) ?? {};
-  const dependencies = readStringMap(packageJson.dependencies);
+  const dependencies = normalizeOptionalTrimmedStringRecord(packageJson.dependencies) ?? {};
   delete dependencies[params.packageName];
   if (Object.keys(dependencies).length === 0) {
     delete packageJson.dependencies;
@@ -251,7 +237,7 @@ function removeManagedNpmPackageLockDependency(params: {
   if (isRecord(packages)) {
     const rootPackage = packages[""];
     if (isRecord(rootPackage)) {
-      const rootDependencies = readStringMap(rootPackage.dependencies);
+      const rootDependencies = normalizeOptionalTrimmedStringRecord(rootPackage.dependencies) ?? {};
       if (deleteObjectKey(rootDependencies, params.packageName)) {
         changed = true;
         if (Object.keys(rootDependencies).length === 0) {

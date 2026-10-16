@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   copyFileHandle,
+  flushAndHashFileSync,
   hashFileDescriptorSync,
   hashFileMutationSnapshotSync,
 } from "./file-descriptor.js";
@@ -22,6 +23,13 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("pinned file descriptors", () => {
+  it("flushes and hashes a writable file without changing its bytes", async () => {
+    const file = path.join(directory, "writable");
+    await fs.writeFile(file, bytes);
+    expect(flushAndHashFileSync(file)).toEqual({ sha256: expectedHash, sizeBytes: bytes.length });
+    expect(await fs.readFile(file)).toEqual(bytes);
+  });
+
   it.each(["hard link", "restored-mtime rewrite"] as const)(
     "rechecks a %s between the digest and final path observation",
     async (change) => {

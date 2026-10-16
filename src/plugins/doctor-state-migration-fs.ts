@@ -1,16 +1,10 @@
 // Shared filesystem helpers for plugin doctor legacy-state migrations.
 import fs from "node:fs/promises";
 import path from "node:path";
+import { regularFileExists } from "../infra/path-guards.js";
 
 /** True when the legacy-state path exists and is a regular file. */
-export async function legacyStateFileExists(filePath: string): Promise<boolean> {
-  try {
-    const stat = await fs.stat(filePath);
-    return stat.isFile();
-  } catch {
-    return false;
-  }
-}
+export { regularFileExists as legacyStateFileExists };
 
 /**
  * Renames a migrated legacy source to `<path>.migrated`, recording the outcome in the
@@ -37,7 +31,7 @@ export async function archiveLegacyStateSource(params: {
       }
       await fs.mkdir(params.archiveDirectory, { recursive: true });
     }
-    if (await legacyStateFileExists(archivedPath)) {
+    if (await regularFileExists(archivedPath)) {
       // Import commits before archival, so an existing archive must converge
       // instead of re-warning every startup (#102749): identical bytes already
       // preserve the snapshot; differing bytes archive under a free suffix.
@@ -54,7 +48,7 @@ export async function archiveLegacyStateSource(params: {
       }
       for (let index = 2; ; index++) {
         archivedPath = `${archiveBase}.migrated.${index}`;
-        if (!(await legacyStateFileExists(archivedPath))) {
+        if (!(await regularFileExists(archivedPath))) {
           break;
         }
       }

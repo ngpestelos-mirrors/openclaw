@@ -1,6 +1,7 @@
-// Repairs configured auth orders whose referenced profiles no longer exist.
 import fs from "node:fs";
 import path from "node:path";
+// Repairs configured auth orders whose referenced profiles no longer exist.
+import { isStringArray } from "@openclaw/normalization-core/record-coerce";
 import { listAgentIds, resolveAgentDir } from "../../../agents/agent-scope-config.js";
 import { listRuntimeExternalAuthProfiles } from "../../../agents/auth-profiles/external-auth-runtime.js";
 import {
@@ -64,7 +65,7 @@ function readValidConfiguredAuthOrder(cfg: OpenClawConfig): Record<string, strin
   }
   const result: Record<string, string[]> = {};
   for (const [provider, profileIds] of Object.entries(order)) {
-    if (!Array.isArray(profileIds) || !profileIds.every((id) => typeof id === "string")) {
+    if (!isStringArray(profileIds)) {
       return undefined;
     }
     result[provider] = profileIds;

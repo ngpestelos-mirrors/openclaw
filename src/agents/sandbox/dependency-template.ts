@@ -1,4 +1,5 @@
 import path from "node:path";
+import { sha256Hex as hashTextSha256 } from "@openclaw/normalization-core/node-crypto";
 import { timeWorktreePreparationPhase } from "../worktrees/preparation-timing.js";
 import {
   DOCKER_SANDBOX_ENGINE,
@@ -7,7 +8,6 @@ import {
   type SandboxContainerEngineTarget,
 } from "./container-engine.js";
 import { resolveSandboxDockerUser } from "./docker-user.js";
-import { hashTextSha256 } from "./hash.js";
 import {
   bindPodmanSandboxEngine,
   resolvePodmanSandboxRuntimeInfo,

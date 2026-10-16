@@ -1,6 +1,9 @@
 // Core legacy config normalizers for shipped keys retired outside the rule table.
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
-import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
+import {
+  asFiniteNumber,
+  floorPositiveFiniteNumber as normalizeConfiguredPositiveInteger,
+} from "@openclaw/normalization-core/number-coercion";
 import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
@@ -442,12 +445,6 @@ export function normalizeLegacyNanoBananaSkill(cfg: OpenClawConfig, changes: str
   if (Object.keys(skills).length === 0) {
     delete cfg.skills;
   }
-}
-
-function normalizeConfiguredPositiveInteger(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : undefined;
 }
 
 function resolveConfiguredOllamaModelNumCtxBudget(

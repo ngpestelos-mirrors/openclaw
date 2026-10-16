@@ -1,4 +1,5 @@
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import { floorPositiveFiniteNumber as normalizeContextTokenBudget } from "@openclaw/normalization-core/number-coercion";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -129,10 +130,6 @@ function resolveManualCompactContextTokenBudget(params: {
   }
 
   return liveContextTokens ?? normalizeContextTokenBudget(params.persistedContextTokens);
-}
-
-function normalizeContextTokenBudget(value: number | undefined): number | undefined {
-  return value !== undefined && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
 }
 
 function resolveManualCompactContextModelId(params: {

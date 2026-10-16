@@ -1,5 +1,6 @@
 /** Expand systemd POSIX EnvironmentFile patterns without normalizing literal path bytes. */
 import fs from "node:fs/promises";
+import { isStringArray } from "@openclaw/normalization-core/record-coerce";
 import { Minimatch } from "minimatch";
 import { hasErrnoCode } from "../infra/errno.js";
 
@@ -14,7 +15,7 @@ export async function expandSystemdEnvironmentFilePattern(pattern: string): Prom
   if (!parts) {
     return [];
   }
-  if (parts.every((part) => typeof part === "string")) {
+  if (isStringArray(parts)) {
     return [parts.join("/")];
   }
   // Node's fs.glob treats backslashes as separators. Match the parsed POSIX

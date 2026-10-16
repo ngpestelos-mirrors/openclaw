@@ -1,3 +1,4 @@
+import { isStringArray } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { getAdmittedSqliteSchemaFacts } from "../../infra/sqlite-schema-facts.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
@@ -88,10 +89,7 @@ export function prepareSessionEntryReplacementPublication(
     const memberIds: unknown = JSON.parse(
       postimage?.sideTables.memberIdsJson ?? committed?.row.member_ids_json ?? "null",
     );
-    if (
-      !Array.isArray(memberIds) ||
-      !memberIds.every((id): id is string => typeof id === "string")
-    ) {
+    if (!isStringArray(memberIds)) {
       throw new Error(`Session publication lost its committed membership: ${key}`);
     }
     const committedEntry = postimage?.entry ?? committed?.entry;

@@ -1,4 +1,5 @@
 import { ensureSystemPromptCacheBoundary } from "@openclaw/ai/internal/shared";
+import { isStringArray } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import {
@@ -1026,10 +1027,7 @@ async function prepareCliRunContextWithinReadFence(
                       if (!activeCapture || !activeCapture.captureNativeToolAuthority(null)) {
                         throw new Error("Native tool authority capture is no longer active.");
                       }
-                      if (
-                        !Array.isArray(tools) ||
-                        !tools.every((name): name is string => typeof name === "string")
-                      ) {
+                      if (!isStringArray(tools)) {
                         throw new Error(
                           "Native runtime reported an invalid tool list; start a fresh session.",
                         );

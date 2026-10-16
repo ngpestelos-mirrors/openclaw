@@ -1,4 +1,4 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { isRecord, isStringArray } from "@openclaw/normalization-core/record-coerce";
 import {
   createSqliteCommitReceipt,
   hasSqliteCommitReceiptCoverage,
@@ -122,7 +122,7 @@ export function parseSessionEntryMetadataReceipts(
     }
     const keys = [...receipt.facts.keys()];
     if (
-      !keys.every((key) => typeof key === "string") ||
+      !isStringArray(keys) ||
       !hasSqliteCommitReceiptCoverage(receipt, {
         source: { identity: receipt.source.identity, incarnation: receipt.source.incarnation },
         domain: "session-entry-metadata",
