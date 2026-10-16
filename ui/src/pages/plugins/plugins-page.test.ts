@@ -14,7 +14,7 @@ import type {
   PluginListResult,
   PluginMutationResult,
 } from "../../lib/plugins/index.ts";
-import { waitForSolid } from "../../test-helpers/solid-settle.ts";
+import { waitForSolid as waitFor } from "../../test-helpers/solid-settle.ts";
 import {
   clickPluginAction,
   createClient,
@@ -87,6 +87,15 @@ function scriptedClient(handlers: Record<string, (params: unknown) => unknown>) 
   return createScriptedClient({ "plugins.inspect": () => createInspectResult(), ...handlers });
 }
 
+function localCatalog(plugin: ReturnType<typeof createPlugin>, id: string) {
+  const catalog = createDiscoveryDetail(plugin);
+  catalog.plugin.id = id;
+  catalog.plugin.local.pluginId = plugin.id;
+  catalog.plugin.local.action = "manage";
+  catalog.detail.origin = "local";
+  return catalog;
+}
+
 async function mountInventory(
   client: ReturnType<typeof createClient>["client"],
   result: PluginListResult | null = createResult(),
@@ -109,38 +118,35 @@ it("flushes a pending config draft before enabling and refreshes afterward", asy
   let config: Record<string, unknown> = { pending: false };
   let hash = "hash-1";
   const enabled = enabledPlugin();
-  const { client } = createClient(async (method, params) => {
-    order.push(method);
-    if (method === "config.get") {
-      return {
-        config,
-        sourceConfig: config,
-        raw: JSON.stringify(config),
-        hash,
-        valid: true,
-        issues: [],
-      };
-    }
-    if (method === "config.set") {
+  const responses: Record<string, (params: unknown) => unknown> = {
+    "config.get": () => ({
+      config,
+      sourceConfig: config,
+      raw: JSON.stringify(config),
+      hash,
+      valid: true,
+      issues: [],
+    }),
+    "config.set": (params) => {
       config = JSON.parse((params as { raw: string }).raw) as Record<string, unknown>;
       hash = "hash-2";
       return { config, hash };
-    }
-    if (method === "plugins.setEnabled") {
+    },
+    "plugins.setEnabled": () => {
       config = { ...config, pluginMutation: "enable" };
       hash = "hash-3";
       return mutationResult(enabled);
+    },
+    "plugins.inspect": () => createInspectResult(),
+    "config.schema": () => ({ schema: { type: "object", properties: {} }, uiHints: {} }),
+    "plugins.list": () => createResult(enabled),
+  };
+  const { client } = createClient(async (method, params) => {
+    order.push(method);
+    if (!responses[method]) {
+      throw new Error(`Unexpected method ${method}`);
     }
-    if (method === "plugins.inspect") {
-      return createInspectResult();
-    }
-    if (method === "config.schema") {
-      return { schema: { type: "object", properties: {} }, uiHints: {} };
-    }
-    if (method === "plugins.list") {
-      return createResult(enabled);
-    }
-    throw new Error(`Unexpected method ${method}`);
+    return responses[method](params);
   });
   const harness = createGateway(client);
   const runtimeConfig = createRuntimeConfigCapability(harness.gateway);
@@ -154,17 +160,16 @@ it("flushes a pending config draft before enabling and refreshes afterward", asy
     order.length = 0;
     runtimeConfig.patchForm(["pending"], true);
     await clickPluginAction(page, "Enable Workboard");
-    await waitForSolid(() => expect(order).toContain("plugins.list"));
+    await waitFor(() => expect(order).toContain("plugins.list"));
     expect(order.slice(0, 4)).toEqual([
       "config.set",
       "plugins.setEnabled",
       "config.get",
       "plugins.list",
     ]);
-    expect(runtimeConfig.state.configSnapshot?.hash).toBe("hash-3");
-    expect(runtimeConfig.state.configForm).toMatchObject({
-      pending: true,
-      pluginMutation: "enable",
+    expect(runtimeConfig.state).toMatchObject({
+      configSnapshot: { hash: "hash-3" },
+      configForm: { pending: true, pluginMutation: "enable" },
     });
   } finally {
     runtimeConfig.dispose();
@@ -184,7 +189,7 @@ it("waits for uninstall confirmation and sends nothing when cancelled", async ()
     "plugins.list": () => createResult(),
   });
   const calls = request.mock.calls;
-  const { page, find } = await mountInventory(
+  const { page, ui } = await mountInventory(
     client,
     createResult([createPlugin(), removablePlugin()]),
     communityPath,
@@ -193,7 +198,7 @@ it("waits for uninstall confirmation and sends nothing when cancelled", async ()
   const confirmation = deferred<boolean>();
   vi.mocked(showConfirmDialog).mockReturnValueOnce(confirmation.promise);
   await clickPluginAction(page, "Uninstall Community Thing");
-  await waitForSolid(() => expect(showConfirmDialog).toHaveBeenCalledOnce());
+  await waitFor(() => expect(showConfirmDialog).toHaveBeenCalledOnce());
   expect(showConfirmDialog).toHaveBeenCalledWith(
     expect.objectContaining({
       title: "Remove Community Thing?",
@@ -209,10 +214,10 @@ it("waits for uninstall confirmation and sends nothing when cancelled", async ()
   await clickPluginAction(page, "Uninstall Community Thing");
 
   await page.updateComplete;
-  await waitForSolid(() => expect(find('[aria-label="Uninstall Community Thing"]')).toBeNull());
-  expect(find(".plugins-row-message--success")).toBeNull();
-  expect(find(".plugins-row-message--warning")?.textContent).toContain(removalWarning);
-  expect(page.textContent).not.toContain("Removed Community Thing");
+  await waitFor(() => ui.node('[aria-label="Uninstall Community Thing"]').toBeNull());
+  ui.node(".plugins-row-message--success").toBeNull();
+  ui.content(".plugins-row-message--warning").toContain(removalWarning);
+  ui.text.not.toContain("Removed Community Thing");
   expect(calls).toContainEqual(["plugins.uninstall", { pluginId: "community-thing" }]);
   expect(calls).toContainEqual(["plugins.list", {}]);
 });
@@ -230,14 +235,14 @@ it("keeps newer notices when an older uninstall completes", async () => {
     }),
     "plugins.list": () => createResult(enabled),
   });
-  const { page, find, harness } = await mountInventory(
+  const { page, ui, harness } = await mountInventory(
     client,
     createResult([createPlugin(), removablePlugin()]),
     communityPath,
   );
 
   await clickPluginAction(page, "Uninstall Community Thing");
-  await waitForSolid(() =>
+  await waitFor(() =>
     expect(request).toHaveBeenCalledWith("plugins.uninstall", { pluginId: "community-thing" }),
   );
   page.routeData = createPluginsRouteData(
@@ -246,7 +251,7 @@ it("keeps newer notices when an older uninstall completes", async () => {
     "/settings/plugins/workboard",
   );
   await clickPluginAction(page, "Enable Workboard");
-  await waitForSolid(() => expect(page.textContent).toContain("Enable requires attention."));
+  await waitFor(() => ui.text.toContain("Enable requires attention."));
 
   uninstallResult.resolve({
     ok: true,
@@ -258,13 +263,9 @@ it("keeps newer notices when an older uninstall completes", async () => {
   await settlePlugins();
   await page.updateComplete;
 
-  expect(page.textContent).not.toContain(
-    "Old uninstall warning must not replace the newer action.",
-  );
-  expect(page.textContent).not.toContain("Removed Community Thing");
-  expect(find(".plugins-row-message--warning")?.textContent).toContain(
-    "Enable requires attention.",
-  );
+  ui.text.not.toContain("Old uninstall warning must not replace the newer action.");
+  ui.text.not.toContain("Removed Community Thing");
+  ui.content(".plugins-row-message--warning").toContain("Enable requires attention.");
 });
 it("reports rejected artifacts without another confirmation", async () => {
   const installRequest: PluginInstallRequest = {
@@ -296,19 +297,19 @@ it("reports rejected artifacts without another confirmation", async () => {
       throw error;
     },
   });
-  const { page, find } = await mountInventory(
+  const { page, ui } = await mountInventory(
     client,
     createResult(available),
     pathForPluginCatalogEntry(catalog.plugin.id),
   );
   await clickPluginAction(page, "Install");
-  await waitForSolid(() =>
-    expect(find('.plugins-row-message[role="alert"]')?.textContent).toContain(
-      "The staged plugin changed before installation.",
-    ),
+  await waitFor(() =>
+    ui
+      .content('.plugins-row-message[role="alert"]')
+      .toContain("The staged plugin changed before installation."),
   );
-  expect(find("[data-plugin-consent]")).toBeNull();
-  expect(find('.plugins-row-message[role="alert"]')?.textContent).toContain(
+  ui.node("[data-plugin-consent]").toBeNull();
+  ui.content('.plugins-row-message[role="alert"]').toContain(
     "Resolve the reported issue, then select Retry install to try again.",
   );
   expect(methodCalls(request, "plugins.install")).toHaveLength(1);
@@ -358,14 +359,12 @@ it("requires fresh inspection and acknowledgement when a reviewed capability sur
     },
     "plugins.list": () => createResult(updated),
   });
-  const { page, find } = await mountInventory(client, createResult(plugin));
+  const { page, ui, find } = await mountInventory(client, createResult(plugin));
 
   await clickPluginAction(page, "Enable Workboard");
-  await waitForSolid(() =>
-    expect(request).toHaveBeenCalledWith("plugins.setEnabled", enableRequest),
-  );
+  await waitFor(() => expect(request).toHaveBeenCalledWith("plugins.setEnabled", enableRequest));
   expect(methodCalls(request, "plugins.inspect")).toHaveLength(1);
-  expect(find("[data-plugin-consent]")).toBeNull();
+  ui.node("[data-plugin-consent]").toBeNull();
   enableAttempt.reject(
     new GatewayRequestError({
       code: "INVALID_REQUEST",
@@ -373,7 +372,7 @@ it("requires fresh inspection and acknowledgement when a reviewed capability sur
       details,
     }),
   );
-  await waitForSolid(() => {
+  await waitFor(() => {
     const dialog = find('[data-plugin-consent="enable"]');
     expect(dialog?.textContent).toContain("Authoritative Workboard");
     expect(dialog?.textContent).toContain("workboard_review");
@@ -382,37 +381,37 @@ it("requires fresh inspection and acknowledgement when a reviewed capability sur
 
   consentAction(page)?.click();
 
-  await waitForSolid(() =>
+  await waitFor(() =>
     expect(request).toHaveBeenCalledWith(
       "plugins.setEnabled",
       acknowledgedEnable(inspection.reviewToken),
     ),
   );
-  await waitForSolid(() => expect(inspections).toBe(3));
+  await waitFor(() => expect(inspections).toBe(3));
   await page.updateComplete;
   expect(consentAction(page)?.disabled).toBe(true);
-  expect(find('[aria-label="Disable Workboard"]')).toBeNull();
+  ui.node('[aria-label="Disable Workboard"]').toBeNull();
   expect(methodCalls(request, "plugins.setEnabled")).toHaveLength(2);
 
   reinspection.resolve(changedInspection);
-  await waitForSolid(() => {
+  await waitFor(() => {
     const dialog = find('[data-plugin-consent="enable"]');
     expect(dialog?.textContent).toContain("workboard_manage");
     expect(consentAction(page)?.disabled).toBe(false);
   });
-  expect(find('[aria-label="Disable Workboard"]')).toBeNull();
+  ui.node('[aria-label="Disable Workboard"]').toBeNull();
   expect(methodCalls(request, "plugins.setEnabled")).toHaveLength(2);
 
   consentAction(page)?.click();
 
-  await waitForSolid(() => expect(find('[aria-label="Disable Workboard"]')).not.toBeNull());
+  await waitFor(() => ui.node('[aria-label="Disable Workboard"]').not.toBeNull());
   expect(methodCalls(request, "plugins.setEnabled").map(([, params]) => params)).toEqual([
     enableRequest,
     acknowledgedEnable(inspection.reviewToken),
     acknowledgedEnable(changedInspection.reviewToken),
   ]);
   await page.updateComplete;
-  expect(find('[data-plugin-consent="enable"]')).toBeNull();
+  ui.node('[data-plugin-consent="enable"]').toBeNull();
 });
 
 it("blocks consent until inspection retry succeeds", async () => {
@@ -430,13 +429,11 @@ it("blocks consent until inspection retry succeeds", async () => {
       return createInspectResult();
     },
   });
-  const { page, find } = await mountInventory(client, createResult(plugin));
+  const { page, ui } = await mountInventory(client, createResult(plugin));
 
   await clickPluginAction(page, "Enable Workboard");
-  await waitForSolid(() =>
-    expect(find('[data-plugin-consent="enable"] [role="alert"]')?.textContent).toContain(
-      "Inspection unavailable",
-    ),
+  await waitFor(() =>
+    ui.content('[data-plugin-consent="enable"] [role="alert"]').toContain("Inspection unavailable"),
   );
   expect(consentAction(page)?.disabled).toBe(true);
 
@@ -444,7 +441,7 @@ it("blocks consent until inspection retry succeeds", async () => {
     .querySelector<HTMLButtonElement>('[data-plugin-consent="enable"] [role="alert"] .btn')
     ?.click();
 
-  await waitForSolid(() => expect(consentAction(page)?.disabled).toBe(false));
+  await waitFor(() => expect(consentAction(page)?.disabled).toBe(false));
   expect(methodCalls(request, "plugins.inspect")).toHaveLength(3);
 });
 
@@ -467,27 +464,25 @@ it("discards stale consent inspections after reconnect", async () => {
     },
     "plugins.list": () => createResult(plugin),
   });
-  const { page, find, harness } = await mountInventory(client, createResult(plugin));
+  const { page, ui, harness } = await mountInventory(client, createResult(plugin));
 
   await clickPluginAction(page, "Enable Workboard");
-  await waitForSolid(() =>
-    expect(find("openclaw-modal-dialog .plugins-consent__hint")).not.toBeNull(),
-  );
+  await waitFor(() => ui.node("openclaw-modal-dialog .plugins-consent__hint").not.toBeNull());
   harness.emit(client, false);
   harness.emit(client, true);
   pendingInspection.resolve(createInspectResult({ reviewToken: "stale-review" }));
   await page.updateComplete;
 
-  expect(find("openclaw-modal-dialog")).toBeNull();
+  ui.node("openclaw-modal-dialog").toBeNull();
   expect(methodCalls(request, "plugins.setEnabled").map(([, params]) => params)).toEqual([
     enableRequest,
   ]);
-  await waitForSolid(() => expect(find('[aria-label="Enable Workboard"]')).not.toBeNull());
+  await waitFor(() => ui.node('[aria-label="Enable Workboard"]').not.toBeNull());
   await clickPluginAction(page, "Enable Workboard");
-  await waitForSolid(() => expect(consentAction(page)?.disabled).toBe(false));
+  await waitFor(() => expect(consentAction(page)?.disabled).toBe(false));
   consentAction(page)?.click();
 
-  await waitForSolid(() =>
+  await waitFor(() =>
     expect(request).toHaveBeenCalledWith("plugins.setEnabled", acknowledgedEnable("fresh-review")),
   );
 });
@@ -535,28 +530,26 @@ it("retains a failed uninstall, resumes inspection, and allows retry", async () 
     },
     "plugins.list": () => createResult(uninstallAttempts < 2 ? plugin : []),
   });
-  const { page, find } = await mountInventory(
+  const { page, ui, find } = await mountInventory(
     client,
     createResult(plugin),
     "/settings/plugins/calendar",
   );
-  await waitForSolid(() => expect(page.textContent).toContain("Existing plugin"));
+  await waitFor(() => ui.text.toContain("Existing plugin"));
   await clickPluginAction(page, "Uninstall Calendar");
-  await waitForSolid(() =>
+  await waitFor(() =>
     expect(request).toHaveBeenCalledWith("plugins.uninstall", { pluginId: plugin.id }),
   );
   expect(inspectionReads).toBe(1);
   removing.reject(unavailable("Plugin removal was refused."));
   await settlePlugins();
-  await waitForSolid(() => expect(page.textContent).toContain("Still installed"));
-  expect(find('.plugins-row-message[role="alert"]')?.textContent).toContain(
-    "Plugin removal was refused.",
-  );
+  await waitFor(() => ui.text.toContain("Still installed"));
+  ui.content('.plugins-row-message[role="alert"]').toContain("Plugin removal was refused.");
   expect(find<HTMLButtonElement>('[aria-label="Uninstall Calendar"]')?.disabled).toBe(false);
   await clickPluginAction(page, "Uninstall Calendar");
-  await waitForSolid(() => expect(uninstallAttempts).toBe(2));
-  await waitForSolid(() => expect(find('[aria-label="Uninstall Calendar"]')).toBeNull());
-  expect(find(".plugins-row-message")).toBeNull();
+  await waitFor(() => expect(uninstallAttempts).toBe(2));
+  await waitFor(() => ui.node('[aria-label="Uninstall Calendar"]').toBeNull());
+  ui.node(".plugins-row-message").toBeNull();
 });
 
 it.each(["removed", "available", "navigated", "failed"] as const)(
@@ -569,15 +562,8 @@ it.each(["removed", "available", "navigated", "failed"] as const)(
       removable: true,
     });
     const other = createPlugin({ id: "other", name: "Other" });
-    const catalog = createDiscoveryDetail(plugin);
-    catalog.plugin.id = "local_Y2FsZW5kYXI";
-    catalog.plugin.local.pluginId = plugin.id;
-    catalog.plugin.local.action = "manage";
-    catalog.detail.origin = "local";
-    const otherCatalog = createDiscoveryDetail(other);
-    otherCatalog.plugin.id = "local_b3RoZXI";
-    otherCatalog.plugin.local.pluginId = other.id;
-    otherCatalog.detail.origin = "local";
+    const catalog = localCatalog(plugin, "local_Y2FsZW5kYXI");
+    const otherCatalog = localCatalog(other, "local_b3RoZXI");
     const available = {
       ...plugin,
       installed: false,
@@ -628,24 +614,19 @@ it.each(["removed", "available", "navigated", "failed"] as const)(
     const context = createContext(harness.gateway);
     const route = (id: string) =>
       createPluginsRouteData(harness.gateway, createResult([plugin, other]), `/plugins/${id}`);
-    const { page, find } = await mountPage(context, route(catalog.plugin.id));
-    await waitForSolid(() => expect(find("h1")?.textContent).toBe("Calendar"));
+    const { page, ui, find } = await mountPage(context, route(catalog.plugin.id));
+    await waitFor(() => ui.content("h1").toBe("Calendar"));
     await clickPluginAction(page, "Uninstall Calendar");
-    await waitForSolid(() =>
+    await waitFor(() =>
       expect(find('[aria-label="Uninstall Calendar"]')?.getAttribute("aria-busy")).toBe("true"),
     );
     if (outcome === "navigated") {
       page.routeData = route(otherCatalog.plugin.id);
-      await waitForSolid(() => expect(find("h1")?.textContent).toBe("Other"));
+      await waitFor(() => ui.content("h1").toBe("Other"));
     }
     removed = true;
     if (outcome === "failed") {
-      removing.reject(
-        new GatewayRequestError({
-          code: "UNAVAILABLE",
-          message: "Plugin files were removed, but runtime activation failed.",
-        }),
-      );
+      removing.reject(unavailable("Plugin files were removed, but runtime activation failed."));
     } else {
       removing.resolve({ ok: true, pluginId: plugin.id, removed: ["install record"] });
     }
@@ -653,20 +634,20 @@ it.each(["removed", "available", "navigated", "failed"] as const)(
     await page.updateComplete;
     expect(missingCatalogReads).toBe(0);
     if (outcome === "removed" || outcome === "failed") {
-      await waitForSolid(() =>
+      await waitFor(() =>
         expect(context.replace).toHaveBeenCalledWith("plugins", { pathname: "/plugins" }),
       );
       if (outcome === "failed") {
-        expect(find('.plugins-row-message[role="alert"]')?.textContent).toContain(
+        ui.content('.plugins-row-message[role="alert"]').toContain(
           "Plugin files were removed, but runtime activation failed.",
         );
       }
     } else {
       expect(context.replace).not.toHaveBeenCalled();
       if (outcome === "available") {
-        await waitForSolid(() => expect(find("openclaw-plugin-install-action")).not.toBeNull());
+        await waitFor(() => ui.node("openclaw-plugin-install-action").not.toBeNull());
       } else {
-        expect(find("h1")?.textContent).toBe("Other");
+        ui.content("h1").toBe("Other");
       }
     }
   },
@@ -706,7 +687,7 @@ it.each(["confirmation", "queued"] as const)(
       await page.updateComplete;
       config.release.resolve();
     } else {
-      await waitForSolid(() => expect(showConfirmDialog).toHaveBeenCalledOnce());
+      await waitFor(() => expect(showConfirmDialog).toHaveBeenCalledOnce());
       harness.emit(replacement.client, true);
       confirmation.resolve(true);
     }
@@ -749,26 +730,24 @@ it("requires a fresh install-policy review after reconnect", async () => {
       return mutationResult({ ...available, installed: true }) satisfies PluginMutationResult;
     },
   });
-  const { page, harness } = await mountInventory(
+  const { page, ui, harness } = await mountInventory(
     client,
     createResult(available),
     pathForPluginCatalogEntry(catalog.plugin.id),
   );
 
   await clickPluginAction(page, "Install");
-  await waitForSolid(() =>
-    expect(page.textContent).toContain("Review this plugin before installing it."),
-  );
+  await waitFor(() => ui.text.toContain("Review this plugin before installing it."));
   expect(installCalls).toBe(1);
   expect(showConfirmDialog).not.toHaveBeenCalled();
   harness.emit(client, false);
   harness.emit(client, true);
   await clickPluginAction(page, "Continue installation");
-  await waitForSolid(() => expect(page.textContent).toContain("request a fresh review"));
+  await waitFor(() => ui.text.toContain("request a fresh review"));
   expect(installCalls).toBe(1);
   await clickPluginAction(page, "Install");
-  await waitForSolid(() => expect(installCalls).toBe(2));
+  await waitFor(() => expect(installCalls).toBe(2));
   await clickPluginAction(page, "Continue installation");
-  await waitForSolid(() => expect(installCalls).toBe(3));
+  await waitFor(() => expect(installCalls).toBe(3));
   expect(showConfirmDialog).not.toHaveBeenCalled();
 });

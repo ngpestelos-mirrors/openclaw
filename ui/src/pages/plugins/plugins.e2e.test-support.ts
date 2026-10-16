@@ -8,13 +8,11 @@ import {
   type Locator,
 } from "playwright";
 import { describe, onTestFinished } from "vitest";
-import type { PluginsSearchResult } from "../../../../packages/gateway-protocol/src/schema/plugins.ts";
 import { PROTOCOL_VERSION } from "../../../../packages/gateway-protocol/src/version.js";
 import type {
   PluginCatalogItem,
   PluginDiscoveryDetailResult,
   PluginListResult,
-  PluginMutationResult,
   PluginsInspectResult,
 } from "../../lib/plugins/index.ts";
 import { createControlUiE2eArtifactDir } from "../../test-helpers/control-ui-e2e-artifacts.ts";
@@ -50,7 +48,6 @@ export const pluginMethods = [
   "plugins.controlUi.report",
   "plugins.list",
   "plugins.inspect",
-  "plugins.search",
   "plugins.catalog.browse",
   "plugins.catalog.categories",
   "plugins.catalog.get",
@@ -62,18 +59,29 @@ function catalogItem<T extends Omit<PluginCatalogItem, "installed" | "enabled">>
   return { ...item, installed: item.state !== "not-installed", enabled: item.state === "enabled" };
 }
 
-export const workboardDisabled = catalogItem({
+function installedPlugin<
+  T extends Pick<PluginCatalogItem, "id" | "name"> & Partial<PluginCatalogItem>,
+>(item: T) {
+  return catalogItem({
+    packageName: item.id,
+    kind: ["productivity"],
+    origin: "global",
+    state: "disabled",
+    category: "tool",
+    removable: true,
+    ...item,
+  });
+}
+
+export const workboardDisabled = installedPlugin({
   id: "workboard",
   name: "Workboard",
   packageName: "@openclaw/workboard",
   description: "Dashboard workboard for agent-owned issues and sessions.",
   version: "2026.7.9",
-  kind: ["productivity"],
   origin: "bundled",
-  state: "disabled",
   featured: true,
   order: 10,
-  category: "tool",
   removable: false,
 });
 
@@ -105,20 +113,15 @@ export const remoteIconPlugin = {
   install: { source: "clawhub", packageName: "@openclaw/firecrawl" },
 } satisfies PluginCatalogItem;
 
-export const calendarPlugin = catalogItem({
+export const calendarPlugin = installedPlugin({
   id: "calendar-plus",
   name: "Calendar Plus",
-  packageName: "calendar-plus",
   description: "Plan and coordinate work from a shared calendar.",
   version: "1.2.3",
-  kind: ["productivity"],
-  origin: "global",
   state: "enabled",
-  category: "tool",
-  removable: true,
 });
 
-const telegramPlugin = catalogItem({
+const telegramPlugin = installedPlugin({
   id: "telegram",
   name: "Telegram",
   packageName: "@openclaw/telegram",
@@ -126,7 +129,6 @@ const telegramPlugin = catalogItem({
   version: "1.4.0",
   kind: ["channel"],
   origin: "bundled",
-  state: "disabled",
   category: "channel",
   removable: false,
 });
@@ -137,37 +139,12 @@ export const initialInventory = inventory([
   lobsterPlugin,
   remoteIconPlugin,
 ]);
-const calendarSearchResponse = {
-  results: [
-    {
-      score: 0.98,
-      package: {
-        name: "calendar-plus",
-        displayName: "Calendar Plus",
-        family: "code-plugin",
-        channel: "community",
-        isOfficial: false,
-        summary: "Plan and coordinate work from a shared calendar.",
-        latestVersion: "1.2.3",
-        downloads: 1420,
-        verificationTier: "source-linked",
-      },
-    },
-  ],
-} satisfies PluginsSearchResult;
-
 const uninstallResult = {
   ok: true,
   pluginId: "calendar-plus",
   restartRequired: false,
   removed: ["config entry", "install record", "directory"],
 };
-
-const installResult = {
-  ok: true,
-  plugin: calendarPlugin,
-  restartRequired: false,
-} satisfies PluginMutationResult;
 
 export const installPolicyWarning = {
   installPolicyCode: "install_policy_warning_acknowledgement_required",
@@ -199,12 +176,6 @@ export const changedInstallPolicyWarning = {
     },
   ],
 };
-
-const enableWorkboardResult = {
-  ok: true,
-  plugin: workboardEnabled,
-  restartRequired: false,
-} satisfies PluginMutationResult;
 
 const workboardInspection = {
   ok: true,
@@ -246,19 +217,6 @@ const workboardInspection = {
   },
 } satisfies PluginsInspectResult;
 
-const lobsterInspection = {
-  ...workboardInspection,
-  reviewToken: "b".repeat(64),
-  plugin: {
-    id: lobsterPlugin.id,
-    name: lobsterPlugin.name,
-    origin: lobsterPlugin.origin,
-    installed: false,
-    enabled: false,
-  },
-  source: { kind: "npm", packageName: "@openclaw/lobster" },
-} satisfies PluginsInspectResult;
-
 export const calendarInspection = {
   ...workboardInspection,
   reviewToken: "c".repeat(64),
@@ -280,50 +238,18 @@ const matrixDetail = {
     createdAt: 1_760_000_000_000,
     updatedAt: 1_780_000_000_000,
     readme: "# Matrix\n\nConnect OpenClaw to Matrix rooms and direct messages.",
-    compatibility: {
-      minGatewayVersion: ">=2026.5.1",
-      pluginApiRange: ">=2026.5.1",
-    },
-    configuration: [
-      {
-        name: "homeserver",
-        description: "Matrix homeserver URL",
-        required: true,
-        sensitive: false,
-      },
-      {
-        name: "accessToken",
-        description: "Matrix access token",
-        required: true,
-        sensitive: true,
-      },
-    ],
+    configuration: [],
     mcpServers: [],
     skills: [{ name: "Matrix messaging", description: "Send and receive Matrix messages." }],
-    versions: [
-      {
-        version: "2.1.0",
-        createdAt: 1_780_000_000_000,
-        changelog: "Current release",
-        tags: ["latest"],
-      },
-      { version: "2.0.0", createdAt: 1_770_000_000_000, changelog: "Previous release", tags: [] },
-    ],
+    versions: [],
     verification: {
       tier: "source-linked",
-      summary: "Validated package structure and linked release source.",
       sourceRepo: "openclaw/openclaw",
-      sourceCommit: "abc123",
-      sourcePath: "extensions/matrix",
-      scanStatus: "clean",
     },
     security: {
       status: "clean",
       verdict: "benign",
       auditUrl: "https://clawhub.ai/openclaw/plugins/matrix/security-audit",
-      summary: "Capabilities match the stated purpose.",
-      guidance: "Review the access token before enabling.",
-      checkedAt: 1_780_000_000_000,
     },
   },
 } satisfies PluginDiscoveryDetailResult;
@@ -353,17 +279,14 @@ export const calendarDetail = {
   },
 } satisfies PluginDiscoveryDetailResult;
 
-export const matrixNeedsSetup = catalogItem({
+export const matrixNeedsSetup = installedPlugin({
   id: "matrix",
   name: "Matrix",
-  packageName: "matrix",
   description: "Connect OpenClaw to Matrix rooms and direct messages.",
   version: "2.1.0",
   kind: ["channel"],
-  origin: "global",
   state: "needs-setup",
   category: "channel",
-  removable: true,
 });
 
 export const matrixEnabled = {
@@ -415,16 +338,13 @@ const localOnlyDetail = {
   },
 } satisfies PluginDiscoveryDetailResult;
 
-export const localCalendarDisabled = catalogItem({
+export const localCalendarDisabled = installedPlugin({
   id: "local-calendar",
   name: "Local Calendar",
   packageName: "@openclaw/local-calendar",
   description: "Coordinate work using the included calendar plugin.",
   version: "1.0.0",
-  kind: ["productivity"],
   origin: "official",
-  state: "disabled",
-  category: "tool",
   removable: false,
 });
 
@@ -436,13 +356,7 @@ export function inventory(plugins: PluginCatalogItem[], generation = 0): PluginL
 }
 
 export function configSnapshot(isWorkboardEnabled: boolean) {
-  const config = {
-    plugins: {
-      entries: {
-        workboard: { enabled: isWorkboardEnabled },
-      },
-    },
-  };
+  const config = { plugins: { entries: { workboard: { enabled: isWorkboardEnabled } } } };
   return {
     config,
     hash: isWorkboardEnabled ? "plugins-config-enabled" : "plugins-config-disabled",
@@ -585,7 +499,6 @@ export function pluginMethodResponses() {
     "plugins.list": initialInventory,
     "plugins.inspect": responseCases([
       [{ pluginId: "workboard" }, workboardInspection],
-      [{ pluginId: "lobster" }, lobsterInspection],
       [{ pluginId: "calendar-plus" }, calendarInspection],
       ...[localCalendarDisabled, matrixEnabled].map(
         (plugin): [Record<string, unknown>, PluginsInspectResult] => [
@@ -598,7 +511,6 @@ export function pluginMethodResponses() {
         ],
       ),
     ]),
-    "plugins.search": responseCases([[{ query: "calendar", limit: 20 }, calendarSearchResponse]]),
     "plugins.catalog.browse": responseCases([
       [
         { intent: "all", cursor: "catalog-page-2", pageSize: 100 },
@@ -618,19 +530,6 @@ export function pluginMethodResponses() {
       [{ id: matrixDiscoveryPlugin.id }, matrixDetail],
       [{ id: calendarDiscoveryPlugin.id }, calendarDetail],
       [{ id: localOnlyDiscoveryPlugin.id }, localOnlyDetail],
-    ]),
-    "plugins.install": responseCases([
-      [
-        {
-          source: "clawhub",
-          packageName: "calendar-plus",
-          acknowledgeCapabilities: { reviewToken: calendarInspection.reviewToken },
-        },
-        installResult,
-      ],
-    ]),
-    "plugins.setEnabled": responseCases([
-      [{ pluginId: "workboard", enabled: true }, enableWorkboardResult],
     ]),
     "plugins.uninstall": responseCases([[{ pluginId: "calendar-plus" }, uninstallResult]]),
   };

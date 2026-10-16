@@ -13,9 +13,8 @@ import type {
   PluginListResult,
 } from "../../lib/plugins/index.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
-import { waitForSolid } from "../../test-helpers/solid-settle.ts";
+import { waitForSolid as waitFor } from "../../test-helpers/solid-settle.ts";
 import {
-  createClient,
   createScriptedClient,
   createContext,
   createDiscoveryDetail,
@@ -32,6 +31,14 @@ import {
 
 const SETTINGS_URL = "/settings/plugins/workboard?view=settings";
 const objectSchema = (properties: Record<string, unknown>) => ({ type: "object", properties });
+const configuredState = <T, S>(configForm: T, configSchema: S) => ({
+  connected: true,
+  configFormDirty: false,
+  lastError: null,
+  configUiHints: {},
+  configForm,
+  configSchema,
+});
 
 function discoveryDetail(plugin: PluginCatalogItem): PluginDiscoveryDetailResult {
   const result = createDiscoveryDetail(plugin);
@@ -113,23 +120,23 @@ it("a chat install link opens uninstalled plugin details without installing", as
     }),
   );
   const { request, harness } = pageGateway({ "plugins.catalog.get": () => detail });
-  const { page, find, context } = await mountRoute(
+  const { ui, find, context } = await mountRoute(
     harness,
     inventory,
     "/plugins/ch_d2hhdHNhcHA?action=install",
   );
-  await waitForSolid(() =>
+  await waitFor(() =>
     expect(context.replace).toHaveBeenCalledWith("plugins", {
       pathname: "/plugins/ch_d2hhdHNhcHA",
       search: "",
     }),
   );
-  await waitForSolid(() => expect(find("h1")).not.toBeNull());
+  await waitFor(() => ui.node("h1").not.toBeNull());
   expect(find<HTMLButtonElement>(".plugin-catalog-detail__install")?.disabled).toBe(false);
-  expect(page.textContent).not.toContain("Accounts");
-  expect(page.textContent).not.toContain("Credentials");
+  ui.text.not.toContain("Accounts");
+  ui.text.not.toContain("Credentials");
   expect(request.mock.calls.some(([method]) => method === "plugins.inspect")).toBe(false);
-  expect(find("openclaw-modal-dialog")).toBeNull();
+  ui.node("openclaw-modal-dialog").toBeNull();
   expect(request.mock.calls.some(([method]) => method === "plugins.install")).toBe(false);
 });
 
@@ -159,8 +166,8 @@ it.each([true, false])("retries failed configuration recovery (write=%s)", async
       : null,
   };
   const runtimeConfig = createRuntimeConfigHarness(refresh, configState, () => client);
-  const { page, find } = await mountRoute(harness, result, SETTINGS_URL, runtimeConfig);
-  await waitForSolid(() => expect(find(".plugin-editor .callout button")).not.toBeNull());
+  const { page, ui } = await mountRoute(harness, result, SETTINGS_URL, runtimeConfig);
+  await waitFor(() => ui.node(".plugin-editor .callout button").not.toBeNull());
   const retry = [...page.querySelectorAll<HTMLElement>(".plugin-editor .callout")]
     .find((element) => element.textContent?.includes(configState.lastError))
     ?.querySelector<HTMLButtonElement>("button");
@@ -177,21 +184,25 @@ it("closes setting menus before Escape dismisses settings and commits a focused 
     "plugins.inspect": () => createInspectResult(),
     "plugins.list": () => result,
   });
-  const configState = {
-    connected: true,
-    configFormDirty: false,
-    lastError: null,
-    configForm: structuredClone(configMocks["config.get"].config),
-    configSchema: configMocks["config.schema"].schema,
+  const state = {
+    ...configuredState(
+      structuredClone(configMocks["config.get"].config),
+      configMocks["config.schema"].schema,
+    ),
     configUiHints: configMocks["config.schema"].uiHints,
   };
   const runtimeConfig = createRuntimeConfigHarness(
     vi.fn(async () => undefined),
-    configState,
+    state,
   );
-  const { page, find, context } = await mountRoute(harness, result, SETTINGS_URL, runtimeConfig);
+  const { page, ui, find, context } = await mountRoute(
+    harness,
+    result,
+    SETTINGS_URL,
+    runtimeConfig,
+  );
   const selector = 'input[aria-label="Refresh interval (minutes)"]';
-  await waitForSolid(() => expect(find(selector)).not.toBeNull());
+  await waitFor(() => ui.node(selector).not.toBeNull());
   const input = find<HTMLInputElement>(selector)!;
   const row = input.closest(".plugin-editor__row")!;
   const trigger = row.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')!;
@@ -212,7 +223,7 @@ it("closes setting menus before Escape dismisses settings and commits a focused 
     );
     await settlePlugins();
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
-    expect(find(".plugin-editor")).not.toBeNull();
+    ui.node(".plugin-editor").not.toBeNull();
     expect(context.replace).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(trigger);
   }
@@ -222,7 +233,7 @@ it("closes setting menus before Escape dismisses settings and commits a focused 
   expect(runtimeConfig.runtimeConfig.patchForm).not.toHaveBeenCalled();
   input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   await page.updateComplete;
-  expect(find(".plugin-editor")).toBeNull();
+  ui.node(".plugin-editor").toBeNull();
   expect(runtimeConfig.runtimeConfig.patchForm).toHaveBeenCalledExactlyOnceWith(
     ["plugins", "entries", "workboard", "config", "refreshMinutes"],
     30,
@@ -253,38 +264,34 @@ it("keeps the autosaved inspection when an older optional catalog completes", as
     },
     "plugins.list": () => result,
   });
-  const configState = {
-    connected: true,
-    configFormDirty: false,
-    lastError: null,
+  const state = {
     configAutoSaveStatus: "idle",
-    configForm: { plugins: { entries: { workboard: { config: { greeting: "Before" } } } } },
-    configUiHints: {},
-    configSchema: objectSchema({
-      plugins: objectSchema({
-        entries: objectSchema({
-          workboard: objectSchema({
-            config: objectSchema({ greeting: { type: "string", title: "Greeting" } }),
+    ...configuredState(
+      { plugins: { entries: { workboard: { config: { greeting: "Before" } } } } },
+      objectSchema({
+        plugins: objectSchema({
+          entries: objectSchema({
+            workboard: objectSchema({
+              config: objectSchema({ greeting: { type: "string", title: "Greeting" } }),
+            }),
           }),
         }),
       }),
-    }),
+    ),
   };
   const runtimeConfig = createRuntimeConfigHarness(
     vi.fn(async () => undefined),
-    configState,
+    state,
     () => client,
   );
-  const { page, find } = await mountRoute(
+  const { page, ui, find } = await mountRoute(
     harness,
     result,
     "/settings/plugins/workboard#configuration",
     runtimeConfig,
   );
-  await waitForSolid(() => expect(catalogs).toBe(1));
-  await waitForSolid(() =>
-    expect(find('.plugin-editor input[aria-label="Greeting"]')).not.toBeNull(),
-  );
+  await waitFor(() => expect(catalogs).toBe(1));
+  await waitFor(() => ui.node('.plugin-editor input[aria-label="Greeting"]').not.toBeNull());
   const input = find<HTMLInputElement>('.plugin-editor input[aria-label="Greeting"]')!;
   input.focus();
   input.value = "After";
@@ -296,12 +303,12 @@ it("keeps the autosaved inspection when an older optional catalog completes", as
     ["plugins", "entries", "workboard", "config", "greeting"],
     "After",
   );
-  configState.configForm.plugins.entries.workboard.config.greeting = "After";
-  configState.configAutoSaveStatus = "saving";
+  state.configForm.plugins.entries.workboard.config.greeting = "After";
+  state.configAutoSaveStatus = "saving";
   runtimeConfig.notify();
-  configState.configAutoSaveStatus = "saved";
+  state.configAutoSaveStatus = "saved";
   runtimeConfig.notify();
-  await waitForSolid(() => expect(catalogs).toBe(2));
+  await waitFor(() => expect(catalogs).toBe(2));
   page.routeData = createPluginsRouteData(harness.gateway, result, "/settings/plugins/workboard");
   await page.updateComplete;
   const rows = () =>
@@ -323,7 +330,6 @@ it("reports when a listed install becomes unavailable", async () => {
       name: "Calendar",
       installed: false,
       state: "not-installed",
-
       catalogId: "ch_Y2FsZW5kYXI",
     }),
   );
@@ -334,10 +340,10 @@ it("reports when a listed install becomes unavailable", async () => {
     "plugins.catalog.categories": () => ({ categories: [] }),
     "plugins.catalog.get": () => current,
   });
-  const { page, find } = await mountRoute(harness, createResult(), "/plugins");
-  await waitForSolid(() => expect(find('[aria-label="Install Calendar"]')).not.toBeNull());
+  const { ui, find } = await mountRoute(harness, createResult(), "/plugins");
+  await waitFor(() => ui.node('[aria-label="Install Calendar"]').not.toBeNull());
   find<HTMLButtonElement>('[aria-label="Install Calendar"]')!.click();
-  await waitForSolid(() => expect(page.textContent).toContain("Plugin availability changed"));
+  await waitFor(() => ui.text.toContain("Plugin availability changed"));
   expect(request.mock.calls.some(([method]) => method === "plugins.install")).toBe(false);
   expect(find<HTMLButtonElement>('[aria-label="Install Calendar"]')?.disabled).toBe(false);
 });
@@ -414,7 +420,6 @@ it.each(["disabled", "needs-setup"] as const)(
       clawhubPackage: "@openclaw/workboard",
       version: "1.2.3",
       state,
-
       catalogId: "ch_QG9wZW5jbGF3L3dvcmtib2FyZA",
     });
     const result = createResult(plugin);
@@ -449,36 +454,36 @@ it.each(["disabled", "needs-setup"] as const)(
     harness.emit(client, true, {
       hello: gatewayHelloForMethods(["plugins.inspect", "plugins.setEnabled", "tools.catalog"]),
     });
-    const { page, find, context } = await mountRoute(
+    const { page, ui, find, context } = await mountRoute(
       harness,
       result,
       "/settings/plugins/workboard?from=plugins",
     );
 
-    await waitForSolid(() =>
+    await waitFor(() =>
       expect(
         [...page.querySelectorAll(".plugin-capability__static strong")].map((row) =>
           row.textContent?.trim(),
         ),
       ).toContain("board_create"),
     );
-    expect(find("h1")?.textContent).toContain("Workboard");
+    ui.content("h1").toContain("Workboard");
     const enable = find('[aria-label="Enable Workboard"]');
     expect(enable).not.toBeNull();
     expect(enable?.getAttribute("aria-disabled")).toBe(state === "needs-setup" ? "true" : null);
     if (state === "needs-setup") {
-      expect(find(".plugins-settings-detail-setup")).toBeNull();
-      expect(find('[role="tablist"]')).toBeNull();
-      expect(find(".plugin-catalog-detail__panel .oc-banner-warning")).toBeNull();
+      ui.node(".plugins-settings-detail-setup").toBeNull();
+      ui.node('[role="tablist"]').toBeNull();
+      ui.node(".plugin-catalog-detail__panel .oc-banner-warning").toBeNull();
       expect(
         find<HTMLAnchorElement>('.plugin-catalog-detail__actions a[aria-label="Settings"]')?.href,
       ).toContain("view=settings");
     } else {
-      expect(find('[aria-label="Connect account"]')).not.toBeNull();
-      expect(page.textContent).toContain("Credentials");
+      ui.node('[aria-label="Connect account"]').not.toBeNull();
+      ui.text.toContain("Credentials");
     }
-    expect(find(".plugin-catalog-detail__sidebar")?.textContent).toContain("1.2.3");
-    expect(find(".plugin-metadata__loading[role=status]")).not.toBeNull();
+    ui.content(".plugin-catalog-detail__sidebar").toContain("1.2.3");
+    ui.node(".plugin-metadata__loading[role=status]").not.toBeNull();
     expect(request).toHaveBeenCalledWith(
       "plugins.catalog.get",
       {
@@ -489,9 +494,9 @@ it.each(["disabled", "needs-setup"] as const)(
     );
 
     catalogPending.resolve(catalog);
-    await waitForSolid(() => expect(find(".plugin-metadata__loading")).toBeNull());
-    expect(find(".plugin-metadata__categories .chip")?.textContent).toBe("tools");
-    expect(find(".plugin-catalog-detail__sidebar")?.textContent).toContain("1.2.3");
+    await waitFor(() => ui.node(".plugin-metadata__loading").toBeNull());
+    ui.content(".plugin-metadata__categories .chip").toBe("tools");
+    ui.content(".plugin-catalog-detail__sidebar").toContain("1.2.3");
     tools.resolve({
       agentId: "main",
       profiles: [],
@@ -515,8 +520,8 @@ it.each(["disabled", "needs-setup"] as const)(
         },
       ],
     });
-    await waitForSolid(() => expect(page.textContent).toContain("Full board search description"));
-    expect(page.textContent).toContain("board_create");
+    await waitFor(() => ui.text.toContain("Full board search description"));
+    ui.text.toContain("board_create");
     if (state === "disabled") {
       const breadcrumb = find<HTMLAnchorElement>(".plugins-settings-breadcrumb__parent");
       expect(breadcrumb?.textContent).toBe("Plugins");
@@ -543,19 +548,19 @@ it("uses a late local inventory while catalog metadata is pending", async () => 
       throw new Error("ClawHub unavailable");
     },
   });
-  const { page, find } = await mountRoute(harness, null, `/plugins/${plugin.catalogId}`);
-  await waitForSolid(() => expect(catalogs).toBe(1));
+  const { page, ui } = await mountRoute(harness, null, `/plugins/${plugin.catalogId}`);
+  await waitFor(() => expect(catalogs).toBe(1));
   local.resolve(result);
-  await waitForSolid(() =>
+  await waitFor(() =>
     expect(request).toHaveBeenCalledWith("plugins.inspect", { pluginId: plugin.id }),
   );
-  expect(find('[aria-label="Enable Workboard"]')).not.toBeNull();
-  expect(find(".plugin-catalog-detail__install")).toBeNull();
+  ui.node('[aria-label="Enable Workboard"]').not.toBeNull();
+  ui.node(".plugin-catalog-detail__install").toBeNull();
   remote.resolve(discoveryDetail({ ...plugin, installed: false }));
   await remote.promise;
   await settlePage(page);
-  expect(find('[aria-label="Enable Workboard"]')).not.toBeNull();
-  expect(find(".plugin-catalog-detail__install")).toBeNull();
+  ui.node('[aria-label="Enable Workboard"]').not.toBeNull();
+  ui.node(".plugin-catalog-detail__install").toBeNull();
 });
 
 const hello = gatewayHelloForMethods(["config.get", "config.schema", "plugins.list"]);
@@ -563,17 +568,10 @@ const capabilities = new Set<ReturnType<typeof createRuntimeConfigCapability>>()
 
 async function mountAdvanced(options: { connected: boolean; schema?: () => Promise<unknown> }) {
   const inventory = createResult();
-  const { client, request } = createClient(async (method) => {
-    switch (method) {
-      case "config.get":
-        return configMocks["config.get"];
-      case "config.schema":
-        return options.schema ? options.schema() : configMocks["config.schema"];
-      case "plugins.list":
-        return inventory;
-      default:
-        throw new Error(`Unexpected method: ${method}`);
-    }
+  const { client, request } = createScriptedClient({
+    "config.get": () => configMocks["config.get"],
+    "config.schema": () => (options.schema ? options.schema() : configMocks["config.schema"]),
+    "plugins.list": () => inventory,
   });
   const gateway = createGateway(client, options.connected);
   gateway.emit(client, options.connected, { hello });

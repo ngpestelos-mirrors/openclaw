@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred as deferred } from "../../../../test/helpers/promise.js";
 import { i18n } from "../../i18n/index.ts";
 import { waitForSolid as waitFor } from "../../test-helpers/solid-settle.ts";
-import { createModelSetupIconLoader } from "../model-setup/model-setup-icon-loader.tsx";
+import { createModelSetupIconLoader as createIconLoader } from "../model-setup/model-setup-icon-loader.tsx";
 import type { ModelSetupPageState } from "../model-setup/state.ts";
 import {
   createClient,
@@ -16,6 +16,7 @@ import {
   createPlugin,
   createPluginsRouteData,
   createResult,
+  createScriptedClient,
   mountPage,
   resetPluginsPageTestState,
   settlePlugins,
@@ -23,11 +24,11 @@ import {
 
 function stubIcons(
   implementation: typeof fetch = async () => iconResponse(),
-  value: () => string = () => "blob:icon",
+  value: string | (() => string) = "blob:icon",
 ) {
   const fetchMock = vi.fn(implementation);
   vi.stubGlobal("fetch", fetchMock);
-  const create = vi.fn(value);
+  const create = vi.fn(typeof value === "string" ? () => value : value);
   const revoke = vi.fn();
   vi.stubGlobal(
     "URL",
@@ -51,8 +52,10 @@ async function requestResult(method: string) {
       : createResult();
 }
 
-function iconGateway(handler: Parameters<typeof createClient>[0] = requestResult) {
-  const { client, request } = createClient(handler);
+type IconHandler = Parameters<typeof createClient>[0] | Record<string, () => unknown>;
+function iconGateway(handler: IconHandler = requestResult) {
+  const { client, request } =
+    typeof handler === "function" ? createClient(handler) : createScriptedClient(handler);
   const { gateway } = createGateway(client);
   gateway.connection.gatewayUrl = window.location.origin.replace(/^http/u, "ws");
   return { gateway, request };
@@ -73,7 +76,7 @@ const inspectGateway = (result: ReturnType<typeof createResult>) =>
   iconGateway(async (method) => (method === "plugins.inspect" ? createInspectResult() : result));
 
 const iconUrl = "https://cdn.example.com/lifecycle.png";
-let activeLoader: ReturnType<typeof createModelSetupIconLoader> | undefined;
+let activeLoader: ReturnType<typeof createIconLoader> | undefined;
 afterEach(() => {
   activeLoader?.reset();
   activeLoader = undefined;
@@ -124,24 +127,17 @@ it("uses late publisher enrichment after package 404 without retrying the packag
       String(url).includes("/plugin-icon/")
         ? new Response(null, { status: 404, headers: { "content-type": "image/png" } })
         : iconResponse("author"),
-    () => "blob:author",
+    "blob:author",
   );
   const plugin = createPlugin({ hasIcon: true, catalogId: "catalog:workboard" });
   const detail = createDiscoveryDetail(plugin);
   detail.detail.author = { handle: "publisher", imageUrl: authorUrl };
   const catalog = deferred<typeof detail>();
   const result = createResult(plugin);
-  const { gateway } = iconGateway(async (method) => {
-    switch (method) {
-      case "plugins.inspect":
-        return createInspectResult();
-      case "plugins.catalog.get":
-        return catalog.promise;
-      case "plugins.list":
-        return result;
-      default:
-        throw new Error(`Unexpected method: ${method}`);
-    }
+  const { gateway } = iconGateway({
+    "plugins.inspect": () => createInspectResult(),
+    "plugins.catalog.get": () => catalog.promise,
+    "plugins.list": () => result,
   });
   const { page } = await mountIcons(gateway, result, "/settings/plugins/workboard");
   await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
@@ -189,7 +185,7 @@ function setupIcons() {
   const published = vi.fn<(urls: Record<string, string>) => void>();
   let sequence = 0;
   const { revoke, fetchMock } = stubIcons(vi.fn<typeof fetch>(), () => `blob:icon-${++sequence}`);
-  const loader = createModelSetupIconLoader(
+  const loader = createIconLoader(
     () => context,
     () => pageState,
     published,
@@ -211,18 +207,17 @@ function setupIcons() {
 it("times out and retries a missed icon only after removal and re-add", async () => {
   vi.useFakeTimers();
   const { loader, fetchMock, published, eligible } = setupIcons();
+  const response = deferred<Response>();
   fetchMock
-    .mockImplementationOnce(
-      (_input, init) =>
-        new Promise<Response>((_resolve, reject) => {
-          const signal = expectDefined(init?.signal, "icon request abort signal");
-          signal.addEventListener(
-            "abort",
-            () => reject(new Error("fixture fetch aborted", { cause: signal.reason })),
-            { once: true },
-          );
-        }),
-    )
+    .mockImplementationOnce((_input, init) => {
+      const signal = expectDefined(init?.signal, "icon request abort signal");
+      signal.addEventListener(
+        "abort",
+        () => response.reject(new Error("fixture fetch aborted", { cause: signal.reason })),
+        { once: true },
+      );
+      return response.promise;
+    })
     .mockResolvedValueOnce(iconResponse());
   loader.reconcile();
   expect(fetchMock).toHaveBeenCalledOnce();
@@ -266,10 +261,7 @@ it("revokes before invalidation publication and publishes both empty resets", as
 it("keeps a pending detail icon on its skeleton until the image loads", async () => {
   vi.useFakeTimers();
   const response = deferred<Response>();
-  const { fetchMock } = stubIcons(
-    () => response.promise,
-    () => "blob:loaded-icon",
-  );
+  const { fetchMock } = stubIcons(() => response.promise, "blob:loaded-icon");
   const result = createResult(createPlugin({ hasIcon: true }));
   const { gateway } = inspectGateway(result);
   const { page } = await mountIcons(gateway, result, "/settings/plugins/workboard");

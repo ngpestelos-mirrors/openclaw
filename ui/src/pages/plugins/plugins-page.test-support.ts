@@ -1,6 +1,6 @@
 import type { RouteLocation } from "@openclaw/uirouter";
 import { createComponent, createSignal, flush } from "solid-js";
-import { onTestFinished, vi } from "vitest";
+import { expect, onTestFinished, vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type {
   ApplicationContext,
@@ -16,6 +16,7 @@ import type {
   PluginsInspectResult,
 } from "../../lib/plugins/index.ts";
 import { ControlUiPluginRuntime } from "../../plugins/control-ui-runtime.ts";
+import { createApplicationGateway } from "../../test-helpers/application-context-fixtures.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { mountSolid, cleanupSolid } from "../../test-helpers/mount-solid.ts";
 import { createSolidApplicationContextProvider } from "../../test-helpers/solid-application-context.tsx";
@@ -213,32 +214,23 @@ function createSnapshot(
 }
 
 export function createGateway(client: GatewayBrowserClient, connected = true) {
-  let snapshot = createSnapshot(client, connected);
-  const listeners = new Set<(next: ApplicationGatewaySnapshot) => void>();
-  const gateway = {
-    get snapshot() {
-      return snapshot;
-    },
+  const { gateway, publish } = createApplicationGateway(createSnapshot(client, connected));
+  Object.assign(gateway, {
     connection: { gatewayUrl: "ws://localhost", token: "", password: "", bootstrapToken: "" },
-    connectionRevision: 0,
     eventLog: [],
     eventLogRevision: 0,
     loadSelfProfile: async () => null,
-    connect: () => undefined,
     setSessionKey: () => undefined,
     start: () => undefined,
     stop: () => undefined,
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
     subscribeEventLog: () => () => undefined,
     subscribeEvents: () => () => undefined,
-  } satisfies ApplicationGateway;
+  });
   return {
     gateway,
     publishPlugins() {
-      snapshot = {
+      const snapshot = gateway.snapshot;
+      publish({
         ...snapshot,
         pluginCapabilities: {
           ok: true,
@@ -249,20 +241,15 @@ export function createGateway(client: GatewayBrowserClient, connected = true) {
           controlUiWidgetKinds: [],
           pluginSurfaceUrls: {},
         },
-      };
-      for (const listener of listeners) {
-        listener(snapshot);
-      }
+      });
     },
     emit(
       nextClient: GatewayBrowserClient | null,
       nextConnected: boolean,
       overrides: Partial<ApplicationGatewaySnapshot> = {},
     ) {
-      snapshot = { ...createSnapshot(nextClient, nextConnected), ...overrides };
-      for (const listener of listeners) {
-        listener(snapshot);
-      }
+      const snapshot = { ...createSnapshot(nextClient, nextConnected), ...overrides };
+      publish(snapshot);
       return snapshot;
     },
   };
@@ -308,10 +295,7 @@ export function createRuntimeConfigHarness(
   };
   const runtimeConfig = {
     // Keep the fixture identity used by autosave notifications, with the owner's real defaults.
-    state: Object.assign(runtimeConfigState, {
-      ...createInitialConfigState(),
-      ...runtimeConfigState,
-    }),
+    state: Object.assign(runtimeConfigState, createInitialConfigState(), { ...runtimeConfigState }),
     canSet: true,
     refresh: refreshConfig,
     ensureLoaded: vi.fn(async () => undefined),
@@ -324,8 +308,7 @@ export function createRuntimeConfigHarness(
     save: vi.fn(async () => true),
     flushFormChanges: vi.fn(async () => true),
     patchFromSnapshot: async (build: Parameters<RuntimeConfig["patchFromSnapshot"]>[0]) => {
-      const config = runtimeConfigState.configSnapshot?.sourceConfig ?? {};
-      const built = build(config);
+      const built = build(runtimeConfigState.configSnapshot?.sourceConfig ?? {});
       if ("error" in built) {
         runtimeConfigState.lastError = built.error;
         return false;
@@ -384,14 +367,27 @@ export async function settlePlugins(): Promise<boolean> {
   return true;
 }
 
+function createPageAssertions(page: HTMLElement) {
+  return {
+    get text() {
+      return expect(page.textContent);
+    },
+    node: (selector: string) => expect(page.querySelector(selector)),
+    content: (selector: string) => expect(page.querySelector(selector)?.textContent),
+  };
+}
+
 export async function mountPage(
   context: ApplicationContext,
   routeData?: PluginsRouteData,
   surface: TestPluginsPage["surface"] = routeData?.location.pathname.includes("/settings/plugins")
     ? "settings"
     : "discovery",
-): Promise<{ page: TestPluginsPage; find: TestPluginsPage["querySelector"] }> {
-  const provider = createSolidApplicationContextProvider(context);
+): Promise<{
+  page: TestPluginsPage;
+  find: TestPluginsPage["querySelector"];
+  ui: ReturnType<typeof createPageAssertions>;
+}> {
   const [currentRouteData, setRouteData] = createSignal(routeData);
   const [currentSurface, setSurface] = createSignal(surface);
   const mounted = mountSolid(
@@ -405,7 +401,7 @@ export async function mountPage(
         },
       }),
     {
-      wrapper: provider.wrapper,
+      wrapper: createSolidApplicationContextProvider(context).wrapper,
     },
   );
   await settlePlugins();
@@ -419,7 +415,7 @@ export async function mountPage(
     updateComplete: { get: settlePlugins },
   });
   page.remove = () => mounted.unmount();
-  return { page, find: page.querySelector.bind(page) };
+  return { page, find: page.querySelector.bind(page), ui: createPageAssertions(page) };
 }
 
 export async function clickPluginAction(page: HTMLElement, label: string): Promise<void> {
