@@ -6,6 +6,7 @@ import { closeOpenClawStateDatabaseByPath } from "../../state/openclaw-state-db-
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { resolveAgentPortRoots } from "./agent-port.js";
 import { withDatabaseEngineSelection } from "./context.js";
+import { resolveDatabaseFamilyEngines } from "./registry.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -20,7 +21,8 @@ it("discovers default, shared auth, explicit session and retained agent stores w
   const registryPath = path.join(stateDir, "state", "openclaw.sqlite");
   const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir, OPENCLAW_AGENT_DIR: sharedAuth };
   await fs.mkdir(unconfigured, { recursive: true });
-  const bytes = await withDatabaseEngineSelection({ input: undefined }, async () => {
+  const selection = { effectiveEngines: resolveDatabaseFamilyEngines({}) };
+  const bytes = await withDatabaseEngineSelection(selection, async () => {
     const { db } = openOpenClawStateDatabase({ env });
     db.prepare(
       "INSERT INTO agent_databases (agent_id, path, schema_version, last_seen_at) VALUES (?, ?, ?, 0)",
@@ -29,7 +31,7 @@ it("discovers default, shared auth, explicit session and retained agent stores w
     return fs.readFile(registryPath);
   });
 
-  const roots = await withDatabaseEngineSelection({ input: undefined }, () =>
+  const roots = await withDatabaseEngineSelection(selection, () =>
     resolveAgentPortRoots({
       stateDir,
       env: { ...env, OPENCLAW_STATE_DIR: path.join(root, "unselected") },

@@ -29,6 +29,7 @@ import {
 import { withDatabaseEngineSelection } from "./context.js";
 import { DatabasePortDataError, type PortDescriptor, type PortTable } from "./port-descriptor.js";
 import { postgresSearchSql } from "./postgres-search-schema.js";
+import { resolveDatabaseFamilyEngines } from "./registry.js";
 
 export async function loadAgentPortDescriptor(): Promise<PortDescriptor> {
   const catalog = agentPostgresRuntime.expectedCatalog;
@@ -159,36 +160,45 @@ export async function loadAgentPortDescriptor(): Promise<PortDescriptor> {
       if (!agentId) {
         throw new DatabasePortDataError("Private agent copy has no owner");
       }
-      await withDatabaseEngineSelection({ input: undefined }, () =>
-        runWithAgentDatabaseMaintenanceAuthority(
-          {
-            signal: new AbortController().signal,
-            assertOwned: assertCurrent,
-            assertOwnedInTransaction: assertCurrent,
-            renew: assertCurrent,
-          },
-          file,
-          async () => ensureOpenClawAgentDatabaseSchema(db, { agentId, register: false }),
-        ),
+      await withDatabaseEngineSelection(
+        { effectiveEngines: resolveDatabaseFamilyEngines({}) },
+        () =>
+          runWithAgentDatabaseMaintenanceAuthority(
+            {
+              signal: new AbortController().signal,
+              assertOwned: assertCurrent,
+              assertOwnedInTransaction: assertCurrent,
+              renew: assertCurrent,
+            },
+            file,
+            async () => ensureOpenClawAgentDatabaseSchema(db, { agentId, register: false }),
+          ),
       );
     },
     async admit(file, input) {
-      withDatabaseEngineSelection({ input }, () =>
-        withEngineStoreAdmission(() => {
-          using anchor = openNodeSqliteDatabase(file);
-          if (input) {
-            const selected = openAgentEngineStore(anchor, undefined, file, true);
-            if (selected !== anchor) {
-              selected.close();
+      withDatabaseEngineSelection(
+        {
+          effectiveEngines: resolveDatabaseFamilyEngines({
+            database: { engine: input ? "postgres" : "sqlite" },
+          }),
+          postgres: input,
+        },
+        () =>
+          withEngineStoreAdmission(() => {
+            using anchor = openNodeSqliteDatabase(file);
+            if (input) {
+              const selected = openAgentEngineStore(anchor, undefined, file, true);
+              if (selected !== anchor) {
+                selected.close();
+              }
+            } else {
+              const agentId = readExistingAgentSchemaMeta(anchor)?.agentId;
+              if (!agentId) {
+                throw new DatabasePortDataError("Restored agent has no owner");
+              }
+              assertOpenClawAgentSchemaContains(anchor, file, OPENCLAW_AGENT_SCHEMA_SQL);
             }
-          } else {
-            const agentId = readExistingAgentSchemaMeta(anchor)?.agentId;
-            if (!agentId) {
-              throw new DatabasePortDataError("Restored agent has no owner");
-            }
-            assertOpenClawAgentSchemaContains(anchor, file, OPENCLAW_AGENT_SCHEMA_SQL);
-          }
-        }),
+          }),
       );
     },
   };

@@ -214,7 +214,7 @@ export async function discoverBackupDatabasePaths(params: {
     )),
   );
   const plugins = resolvePluginMetadataSnapshot(params);
-  const capable = new Set(
+  const capable = new Set<string>(
     listDatabaseEngineStores()
       .filter((store) => store.postgres)
       .map((store) => store.id),
