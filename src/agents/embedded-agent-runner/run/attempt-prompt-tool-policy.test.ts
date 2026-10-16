@@ -9,6 +9,7 @@ import {
   createPromptBuildToolPolicy,
 } from "./attempt-prompt-support.js";
 
+// mock-isolation: Observe policy facts without creating the process-global logger or warning budget.
 vi.mock("../../../decisions/diagnostics.js", () => ({
   logDecisionToolPrefilter: vi.fn(),
 }));
