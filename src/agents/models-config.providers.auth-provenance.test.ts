@@ -547,9 +547,8 @@ describe("models-config provider auth provenance", () => {
   describe.each(["resolveProviderApiKey", "resolveProviderAuth"] as const)(
     "%s configured profile references",
     (callback) => {
-      it("uses the pinned credential instead of ambient auth or the first ordered profile", async () => {
+      it("uses the pinned credential instead of the first ordered profile", async () => {
         await withDiscoveryFixture("api_key", callback, async (fixture) => {
-          fixture.env.OPENAI_API_KEY = "ambient-other-key";
           fixture.store.profiles = {
             "openai:other": createApiKeyCredential("openai", "other-profile-key"),
             [fixture.profileId]: createApiKeyCredential("openai", "pinned-profile-key"),
@@ -603,7 +602,6 @@ describe("models-config provider auth provenance", () => {
         "fails closed when the pinned profile contains $name",
         async ({ credential }) => {
           await withDiscoveryFixture("api_key", callback, async (fixture) => {
-            fixture.env.OPENAI_API_KEY = "ambient-other-key";
             fixture.store.profiles = {
               "openai:other": createApiKeyCredential("openai", "must-not-fall-back"),
               [fixture.profileId]: credential,

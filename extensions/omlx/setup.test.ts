@@ -118,34 +118,59 @@ describe("oMLX setup through the inference catalog", () => {
     expect(new Headers(fetchMock.mock.lastCall?.[1]?.headers).get("authorization")).toBeNull();
   });
 
-  it("discovers with the selected profile credential instead of its identifier", async () => {
+  it.each([
+    {
+      name: "selected profile",
+      apiKey: "omlx:selected",
+      envKey: "old-endpoint-key",
+      key: "selected-key",
+    },
+    { name: "literal key", apiKey: "literal-key", envKey: undefined, key: "literal-key" },
+  ])("keeps the $name for setup and catalog discovery", async ({ apiKey, envKey, key }) => {
     const fetchMock = fixture();
-    vi.stubEnv("OMLX_API_KEY", "old-endpoint-key");
+    vi.stubEnv("OMLX_API_KEY", envKey);
+    vi.stubEnv("OMLX_MISSING_KEY", undefined);
     await withOpenClawTestState({ label: "omlx-setup-profile" }, async (state) => {
       await state.writeAuthProfiles({
         version: 1,
         profiles: {
+          "omlx:unavailable": {
+            type: "api_key",
+            provider: "omlx",
+            keyRef: { source: "env", provider: "default", id: "OMLX_MISSING_KEY" },
+          },
           "omlx:selected": { type: "api_key", provider: "omlx", key: "selected-key" },
         },
       });
-      await expect(
-        detectOmlxAvailability({
-          env: { OMLX_API_KEY: "old-endpoint-key" },
-          config: {
-            models: {
-              providers: {
-                omlx: {
-                  baseUrl: "http://127.0.0.1:8000/v1",
-                  apiKey: "omlx:selected",
-                  models: [],
-                },
+      const ctx = {
+        env: { OMLX_API_KEY: envKey },
+        config: {
+          models: {
+            providers: {
+              omlx: {
+                baseUrl: "http://127.0.0.1:8000/v1",
+                apiKey,
+                models: [],
               },
             },
           },
+        },
+      };
+      await expect(detectOmlxAvailability(ctx)).resolves.toBe(true);
+      await expect(
+        discoverOmlxProvider({
+          ...ctx,
+          resolveProviderApiKey: () => ({
+            apiKey: "OMLX_API_KEY",
+            discoveryApiKey: "old-endpoint-key",
+          }),
+          resolveProviderAuth: () => {
+            throw new Error("Unselected profile is unavailable");
+          },
         }),
-      ).resolves.toBe(true);
+      ).resolves.toMatchObject({ provider: { apiKey } });
       expect(new Headers(fetchMock.mock.lastCall?.[1]?.headers).get("authorization")).toBe(
-        "Bearer selected-key",
+        `Bearer ${key}`,
       );
     });
   });

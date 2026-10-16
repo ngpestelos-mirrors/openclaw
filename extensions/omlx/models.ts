@@ -59,6 +59,7 @@ export async function listOmlxModels(params: {
               provider: OMLX_PROVIDER_ID,
               cfg: params.config,
               agentDir: params.agentDir,
+              allowAuthProfileFallback: configuredKey === OMLX_API_KEY_ENV_VAR,
             })
           ).apiKey
         : undefined;
@@ -117,19 +118,21 @@ export async function discoverOmlxProvider(ctx: ProviderCatalogContext) {
   if (!ctx.providerIds && !ctx.config.models?.providers?.omlx && !ctx.env[OMLX_API_KEY_ENV_VAR]) {
     return null;
   }
+  const configuredKey = ctx.config.models?.providers?.omlx?.apiKey;
   const auth =
-    ctx.config.models?.providers?.omlx?.apiKey === OMLX_LOCAL_API_KEY
-      ? { apiKey: OMLX_LOCAL_API_KEY }
-      : ctx.resolveProviderApiKey(OMLX_PROVIDER_ID);
+    configuredKey === undefined ? ctx.resolveProviderApiKey(OMLX_PROVIDER_ID) : undefined;
   const result = await runLiveProviderCatalog({
     providerId: OMLX_PROVIDER_ID,
     run: async () => {
-      const listing = await listOmlxModels({ ...ctx, apiKey: auth.discoveryApiKey, strict: true });
+      const listing = await listOmlxModels({ ...ctx, apiKey: auth?.discoveryApiKey, strict: true });
       if (!listing) {
         throw new Error("oMLX model discovery unavailable");
       }
       return {
-        provider: { ...listing.provider, apiKey: auth.apiKey ?? listing.provider.apiKey },
+        provider: {
+          ...listing.provider,
+          apiKey: configuredKey ?? auth?.apiKey ?? listing.provider.apiKey,
+        },
         outcomes: [
           {
             provider: OMLX_PROVIDER_ID,
