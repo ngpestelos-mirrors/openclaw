@@ -1007,16 +1007,14 @@ describe("SQLite-backed plugin model catalogs", () => {
   it("recognizes unchanged payloads and atomically removes stale provider rows", async () => {
     const agentDir = createAgentDir();
     const zai = catalogContents("zai");
-    const stale = Object.fromEntries(
-      Array.from({ length: 70 }, (_, index) => [
-        encodePluginModelCatalogRelativePath(`stale-${index}`),
-        catalogContents(`stale-${index}`),
-      ]),
-    );
-    const both = {
-      [encodePluginModelCatalogRelativePath("zai")]: zai,
-      ...stale,
-    };
+    const catalogRows = (prefix: string) =>
+      Object.fromEntries(
+        Array.from({ length: 70 }, (_, index) => [
+          encodePluginModelCatalogRelativePath(`${prefix}-${index}`),
+          catalogContents(`${prefix}-${index}`),
+        ]),
+      );
+    const both = { [encodePluginModelCatalogRelativePath("zai")]: zai, ...catalogRows("stale") };
 
     expect(await replacePersistedPluginModelCatalogs({ agentDir, pluginCatalogWrites: both })).toBe(
       true,
@@ -1026,25 +1024,17 @@ describe("SQLite-backed plugin model catalogs", () => {
     );
     const unchanged = readCatalogCacheRow(agentDir, "zai");
     const refreshed = catalogContents("fresh");
-    const next = Object.fromEntries(
-      Array.from({ length: 70 }, (_, index) => [
-        encodePluginModelCatalogRelativePath(`new-${index}`),
-        // Exercise both row and payload batch boundaries without changing JSON semantics.
-        catalogContents(`new-${index}`) + (index === 35 ? " ".repeat(1024 * 1024) : ""),
-      ]),
-    );
+    const next = { [encodePluginModelCatalogRelativePath("zai")]: zai, ...catalogRows("new") };
+    // Exercise both row and payload batch boundaries without changing JSON semantics.
+    next[encodePluginModelCatalogRelativePath("new-35")] += " ".repeat(1024 * 1024);
     expect(
       await replacePersistedPluginModelCatalogs({
         agentDir,
-        pluginCatalogWrites: {
-          [encodePluginModelCatalogRelativePath("zai")]: zai,
-          [encodePluginModelCatalogRelativePath("fresh")]: refreshed,
-          ...next,
-        },
+        pluginCatalogWrites: next,
       }),
     ).toBe(true);
     expect(readCatalogCacheRow(agentDir, "zai")).toEqual(unchanged);
-    expect(loadPersistedPluginModelCatalogsReadOnly(agentDir)).toHaveLength(72);
+    expect(loadPersistedPluginModelCatalogsReadOnly(agentDir)).toHaveLength(71);
     expect(readCatalogCacheRow(agentDir, "new-35").value_json).toBe(
       next[encodePluginModelCatalogRelativePath("new-35")],
     );
