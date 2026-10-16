@@ -3,6 +3,7 @@ import {
   For,
   Show,
   createEffect,
+  createMemo,
   createRoot,
   createSignal,
   getOwner,
@@ -58,7 +59,8 @@ export type MenuItem = {
   type?: "checkbox" | "radio";
   class?: string;
   variant?: "danger";
-  children?: readonly MenuEntry[];
+  /** Lazy branches construct their entries on first open. */
+  children?: readonly MenuEntry[] | (() => readonly MenuEntry[]);
   content?: JSX.Element;
   trigger?: JSX.Element;
   closeOnSelect?: boolean;
@@ -440,49 +442,59 @@ export function Menu(props: BranchProps): JSX.Element {
               };
               return (
                 <Show when={item().children} fallback={<Leaf />}>
-                  {(children) => (
-                    <Menu
-                      id={`${identity.id}-${item().id}`}
-                      label={item().label}
-                      items={children()}
-                      trigger={
-                        item().trigger ?? (
-                          <>
-                            <Show when={item().icon}>
-                              <span class="oc-menu-item__icon">{item().icon}</span>
-                            </Show>
-                            <span class={["oc-menu-item__label", item().labelClass]}>
-                              {item().label}
-                            </span>
+                  {(children) => {
+                    const entries = createMemo(
+                      () => {
+                        const value = children();
+                        return typeof value === "function" ? value() : value;
+                      },
+                      { lazy: true },
+                    );
+                    return (
+                      <Menu
+                        id={`${identity.id}-${item().id}`}
+                        label={item().label}
+                        lazy={lazy}
+                        items={entries()}
+                        trigger={
+                          item().trigger ?? (
+                            <>
+                              <Show when={item().icon}>
+                                <span class="oc-menu-item__icon">{item().icon}</span>
+                              </Show>
+                              <span class={["oc-menu-item__label", item().labelClass]}>
+                                {item().label}
+                              </span>
 
-                            <Show when={item().details}>
-                              <span class="oc-menu-item__details">{item().details}</span>
-                            </Show>
-                          </>
-                        )
-                      }
-                      parent={overlay}
-                      root={menuRoot}
-                      parentBinding={binding}
-                      tabFocusTarget={props.tabFocusTarget}
-                      dir={direction()}
-                      disabled={item().disabled}
-                      triggerClass={item().class}
-                      triggerAttributes={{
-                        "data-value": item().id,
-                        value: item().attributes?.value ?? item().id,
-                        "data-shortcut": item().attributes?.["data-shortcut"],
-                        "aria-keyshortcuts": item().attributes?.["aria-keyshortcuts"],
-                        title: item().attributes?.title,
-                      }}
-                      onSelect={props.onSelect}
-                      onNavigate={props.onNavigate}
-                      onBeforeShow={(event) => item().onBeforeShow?.(event)}
-                      onEscape={(event) => props.onEscape?.(event) ?? false}
-                    >
-                      {item().content}
-                    </Menu>
-                  )}
+                              <Show when={item().details}>
+                                <span class="oc-menu-item__details">{item().details}</span>
+                              </Show>
+                            </>
+                          )
+                        }
+                        parent={overlay}
+                        root={menuRoot}
+                        parentBinding={binding}
+                        tabFocusTarget={props.tabFocusTarget}
+                        dir={direction()}
+                        disabled={item().disabled}
+                        triggerClass={item().class}
+                        triggerAttributes={{
+                          "data-value": item().id,
+                          value: item().attributes?.value ?? item().id,
+                          "data-shortcut": item().attributes?.["data-shortcut"],
+                          "aria-keyshortcuts": item().attributes?.["aria-keyshortcuts"],
+                          title: item().attributes?.title,
+                        }}
+                        onSelect={props.onSelect}
+                        onNavigate={props.onNavigate}
+                        onBeforeShow={(event) => item().onBeforeShow?.(event)}
+                        onEscape={(event) => props.onEscape?.(event) ?? false}
+                      >
+                        {item().content}
+                      </Menu>
+                    );
+                  }}
                 </Show>
               );
             }}
