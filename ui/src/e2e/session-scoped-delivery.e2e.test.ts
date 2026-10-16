@@ -36,7 +36,7 @@ async function receivedSessions(page: Page): Promise<unknown[]> {
 
 suite.define(() => {
   it.each(["roster", "preview-off"] as const)(
-    "keeps background streams off the socket when %s hides sidebar activity",
+    "preserves the visible consumers in %s presentation",
     async (mode) => {
       await suite.withPage({ viewport: { width: 1440, height: 900 } }, async ({ page }) => {
         await page.addInitScript(
@@ -69,9 +69,26 @@ suite.define(() => {
         await page.goto(controlUiSessionUrl(suite.server.baseUrl, first));
         await page.locator(`[data-session-key="${keys[1]}"]`).first().waitFor();
         await gateway.waitForRequest("sessions.messages.subscribe", { match: { key: first } });
-        const subscriptions = await gateway.getRequests("sessions.messages.subscribe");
-        expect(subscriptions).toHaveLength(1);
-        expect(subscriptions).toMatchObject([{ params: { key: first } }]);
+        if (mode === "roster") {
+          const subscriptions = await gateway.getRequests("sessions.messages.subscribe");
+          expect(subscriptions).toHaveLength(1);
+          expect(subscriptions).toMatchObject([{ params: { key: first } }]);
+        } else {
+          await gateway.waitForRequest("sessions.messages.subscribe", { match: { key: keys[1] } });
+          await gateway.emitGatewayEvent("session.observer", {
+            sessionKey: keys[1],
+            agentId: "main",
+            runId: "run-1",
+            revision: 1,
+            updatedAt: Date.now(),
+            health: "waiting-on-user",
+            headline: "Waiting for the next instruction",
+          });
+          await page
+            .locator(`[data-session-key="${keys[1]}"]`)
+            .getByText("Waiting for the next instruction", { exact: true })
+            .waitFor();
+        }
         await gateway.emitGatewayEvent("chat", {
           sessionKey: first,
           runId: "run-0",

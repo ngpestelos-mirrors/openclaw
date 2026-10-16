@@ -329,10 +329,10 @@ mode, Display omits grouping and empty-group controls because the sidebar always
 groups by agent. Reset leaves those hidden preferences unchanged. It also preserves
 a saved Person grouping while owner data temporarily makes that choice unavailable.
 
-Live sidebar activity is streamed only while message previews are visible in the
-active agent's session list. Hiding previews, switching to the all-agents roster
-or another navigation view, or closing navigation releases those background
-streams. Open conversation panes keep their live messages.
+Switching to the all-agents roster or another navigation view, or closing
+navigation releases background sidebar activity streams. Open conversation panes
+keep their live messages. The active agent's session list retains critical observer
+headlines even when ambient message previews are off.
 
 On phone-width layouts the panel opens as a bottom sheet, like the issues sheet:
 tap the backdrop or press Escape to close it. The sheet has no hover or flyouts:

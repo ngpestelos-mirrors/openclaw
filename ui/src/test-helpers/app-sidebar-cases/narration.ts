@@ -43,13 +43,6 @@ describe("AppSidebar live narration", () => {
     sidebar.sessionOrganizer.setSessionsShowPreview(false);
     sidebar.connected = true;
     await sidebar.updateComplete;
-    expect(sessions.subscribeMessages).not.toHaveBeenCalled();
-    const row = () => sidebar.querySelector(`[data-session-key="${key}"]`);
-    expect(row()?.classList.contains("sidebar-recent-session--single-line")).toBe(true);
-    expect(row()?.querySelector(".sidebar-session-tool")).toBeNull();
-    expect(row()?.querySelector(".sidebar-recent-session__subtitle")).toBeNull();
-    sidebar.sessionOrganizer.setSessionsShowPreview(true);
-    await sidebar.updateComplete;
     await waitForFast(() => expect(sessions.subscribeMessages).toHaveBeenCalledTimes(1));
     gateway.publishEvent("session.tool", {
       sessionKey: key,
@@ -72,6 +65,12 @@ describe("AppSidebar live narration", () => {
       },
     });
     await sidebar.updateComplete;
+    const row = () => sidebar.querySelector(`[data-session-key="${key}"]`);
+    expect(row()?.classList.contains("sidebar-recent-session--single-line")).toBe(true);
+    expect(row()?.querySelector(".sidebar-session-tool")).toBeNull();
+    expect(row()?.querySelector(".sidebar-recent-session__subtitle")).toBeNull();
+    sidebar.sessionOrganizer.setSessionsShowPreview(true);
+    await sidebar.updateComplete;
     expect(row()?.querySelector(".sidebar-session-tool")?.getAttribute("aria-label")).toBe(
       "Tool: exec",
     );
@@ -87,7 +86,6 @@ describe("AppSidebar live narration", () => {
     ).not.toBeNull();
     sidebar.sessionOrganizer.setSessionsShowPreview(false);
     await sidebar.updateComplete;
-    expect(sessions.unsubscribeMessages).toHaveBeenCalledTimes(1);
     expect(row()?.querySelector(".sidebar-session-tool")).toBeNull();
     expect(row()?.querySelector(".sidebar-recent-session__subtitle")).toBeNull();
   });
@@ -105,10 +103,15 @@ describe("AppSidebar live narration", () => {
       await sidebar.updateComplete;
       await waitForFast(() => expect(sessions.subscribeMessages).toHaveBeenCalledTimes(1));
 
-      if (hidden === "roster") sidebar.sidebarAgentsMode = "roster";
-      else if (hidden === "collapsed") sidebar.navigationCollapsed = true;
-      else if (hidden === "hidden") sidebar.navigationVisible = false;
-      else sidebar.navigationView = hidden;
+      if (hidden === "roster") {
+        sidebar.sidebarAgentsMode = "roster";
+      } else if (hidden === "collapsed") {
+        sidebar.navigationCollapsed = true;
+      } else if (hidden === "hidden") {
+        sidebar.navigationVisible = false;
+      } else {
+        sidebar.navigationView = hidden;
+      }
       sidebar.requestUpdate();
       await sidebar.updateComplete;
       expect(sessions.unsubscribeMessages).toHaveBeenCalledTimes(1);

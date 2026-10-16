@@ -322,7 +322,6 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     const gateway = this.context?.gateway.snapshot;
     const enabled =
       this.sidebarLiveActivity &&
-      this.sessionsShowPreview &&
       this.sidebarAgentsMode === "chip" &&
       this.navigationVisible &&
       !this.navigationCollapsed &&
