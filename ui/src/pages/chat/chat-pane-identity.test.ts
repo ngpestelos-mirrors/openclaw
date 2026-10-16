@@ -178,7 +178,11 @@ describe("chat pane assistant identity snapshots", () => {
     pane.context = context;
     pane.connectedClient = null;
     pane.sessionKey = "global";
-    pane.render = () => ({ layout: emptyLegacyContent, capabilityDialogs: undefined });
+    pane.render = () => ({
+      layout: emptyLegacyContent,
+      capabilityDialogs: undefined,
+      providerReviewSource: undefined,
+    });
 
     try {
       pane.connectedCallback();
