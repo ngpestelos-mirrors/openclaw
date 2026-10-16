@@ -74,10 +74,12 @@ vi.mock(import("openclaw/plugin-sdk/session-store-runtime"), async (importOrigin
   resolveStorePath: mocks.mockResolveStorePath,
 }));
 
+// mock-isolation: Capture broadcast delivery without constructing live reply dispatchers.
 vi.mock("./reply-dispatcher.js", () => ({
   createFeishuReplyDispatcher: mocks.mockCreateFeishuReplyDispatcher,
 }));
 
+// mock-isolation: Use fixture chat metadata without opening Feishu clients.
 vi.mock("./client.js", () => ({
   createFeishuClient: mocks.mockCreateFeishuClient,
 }));

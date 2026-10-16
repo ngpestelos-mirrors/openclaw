@@ -279,20 +279,24 @@ vi.mock(import("openclaw/plugin-sdk/session-store-runtime"), async (importOrigin
   return { ...actual, resolveStorePath: storePath };
 });
 
+// mock-isolation: Capture reply routing without constructing transport dispatchers.
 vi.mock("./reply-dispatcher.js", () => ({
   createFeishuReplyDispatcher: createReplyDispatcher,
 }));
 
+// mock-isolation: Pin preview policy independently of operator settings.
 vi.mock("./reasoning-preview.js", () => ({
   resolveFeishuReasoningPreviewEnabled: reasoningPreviewEnabled,
 }));
 
+// mock-isolation: Fixture messages and history replace Feishu network requests.
 vi.mock("./send.js", () => ({
   sendMessageFeishu: sendMessage,
   getMessageFeishu: getMessage,
   listFeishuThreadMessages: listThreadMessages,
 }));
 
+// mock-isolation: Fixture saved media avoids downloads and real attachment writes.
 vi.mock("./media.js", () => ({
   saveMessageResourceFeishu: saveMessageResource,
 }));
@@ -302,14 +306,17 @@ vi.mock(import("openclaw/plugin-sdk/media-runtime"), async (importOriginal) => (
   transcribeFirstAudio: transcribeAudio,
 }));
 
+// mock-isolation: Fixture sender metadata avoids live credential and API access.
 vi.mock("./client.js", () => ({
   createFeishuClient: createClient,
 }));
 
+// mock-isolation: Exercise routing without creating persistent dynamic agents.
 vi.mock("./dynamic-agent.js", () => ({
   maybeCreateDynamicAgent: maybeCreateAgent,
 }));
 
+// mock-isolation: Pin bot identity without fetching live account metadata.
 vi.mock("./bot-name.js", () => ({
   resolveFeishuBotName: resolveBotName,
 }));

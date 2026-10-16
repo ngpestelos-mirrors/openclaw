@@ -21,11 +21,14 @@ const { createClient, getChat, sendCard, sendMessage } = vi.hoisted(() => ({
   sendCard: vi.fn<typeof import("./send.js").sendCardFeishu>(),
   sendMessage: vi.fn<typeof import("./send.js").sendMessageFeishu>(),
 }));
+// mock-isolation: Pin the selected account without consulting operator configuration.
 vi.mock("./accounts.js", () => ({
   resolveFeishuRuntimeAccount: vi.fn().mockReturnValue({ accountId: "mock-account" }),
 }));
 vi.mock("./bot.js", () => ({ handleFeishuMessage: vi.fn() }));
+// mock-isolation: Resolve chat metadata through the fixture client, never the Feishu API.
 vi.mock("./client.js", () => ({ createFeishuClient: createClient }));
+// mock-isolation: Observe card and message sends without external delivery.
 vi.mock("./send.js", () => ({
   sendCardFeishu: sendCard,
   sendMessageFeishu: sendMessage,

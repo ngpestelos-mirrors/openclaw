@@ -24,11 +24,13 @@ const loadPluginRegistrySnapshot = vi.hoisted(() =>
     diagnostics: [],
   })),
 );
+// mock-isolation: Pin installed metadata without consulting the operator plugin registry.
 vi.mock("./plugin-registry.js", () => ({ loadPluginRegistrySnapshot }));
 
 const resolveManifestProviderAuthChoices = vi.hoisted(() =>
   vi.fn<ResolveManifestProviderAuthChoices>(() => []),
 );
+// mock-isolation: Supply manifest auth choices without loading provider artifacts.
 vi.mock("./provider-auth-choices.js", () => ({ resolveManifestProviderAuthChoices }));
 
 const listOfficialExternalProviderCatalogEntries = vi.hoisted(() =>

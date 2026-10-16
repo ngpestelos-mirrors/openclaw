@@ -12,6 +12,7 @@ import {
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const mocks = getRegistryJitiMocks();
 const loadRetained = vi.hoisted(() => vi.fn());
+// mock-isolation: Supply retained artifacts without loading installed plugin code.
 vi.mock("./public-surface-loader.js", () => ({
   loadBundledPluginPublicArtifactModuleFromCandidatesSync: loadRetained,
 }));

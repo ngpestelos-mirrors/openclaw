@@ -75,7 +75,7 @@ describe("broadcast dispatch", () => {
     return { ...dispatcher.delivery, ensureNoVisibleReplyFallback };
   }
 
-  function mockAgentReply<T>(agent: "main" | "susan", result: T) {
+  function mockAgentReply(agent: "main" | "susan", result: unknown) {
     mockDispatchReply.mockImplementation(async ({ ctx }) =>
       String(ctx.SessionKey).startsWith(`agent:${agent}:`)
         ? result

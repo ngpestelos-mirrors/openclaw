@@ -3,6 +3,7 @@ import { createCliDispatchTranscriptRecorder } from "./cli-backend-dispatch-tran
 
 const appendTranscriptMessage = vi.hoisted(() => vi.fn());
 
+// mock-isolation: Inspect recorder output without opening or mutating a session database.
 vi.mock("../../config/sessions/session-accessor.js", () => ({ appendTranscriptMessage }));
 
 const appendedRecords = () =>

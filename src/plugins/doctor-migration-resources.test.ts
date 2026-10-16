@@ -158,17 +158,16 @@ it.each([
     ],
     "Conflicting migration backup resource kinds",
   ],
-] as const)(
-  "still refuses a declared %s",
-  async (_label, collect, message = "Invalid migration backup resource") => {
-    const invalid = {
-      ...fixtureMigration,
-      collectBackupResources: collect as PluginDoctorStateMigration["collectBackupResources"],
-    };
-    await expect(collectResources(invalid, "invalid-owner")).rejects.toThrow(message);
-    expect(input.warnings).toEqual([]);
-  },
-);
+] as const)("still refuses a declared %s", async (_label, collect, message) => {
+  const invalid = {
+    ...fixtureMigration,
+    collectBackupResources: collect as PluginDoctorStateMigration["collectBackupResources"],
+  };
+  await expect(collectResources(invalid, "invalid-owner")).rejects.toThrow(
+    message ?? "Invalid migration backup resource",
+  );
+  expect(input.warnings).toEqual([]);
+});
 
 it.each(["undeclared", "declared", "malformed"] as const)(
   "collects a configured plugin's %s inventory through the registry without migrating",
