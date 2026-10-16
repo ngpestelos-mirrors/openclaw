@@ -3,29 +3,24 @@ import { Buffer } from "node:buffer";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Page } from "playwright";
-import { beforeEach, expect, it } from "vitest";
-import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
+import { expect, it } from "vitest";
 import {
   takeControlUiElementScreenshot,
   waitForControlUiProofSurface,
 } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
-import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
+import {
+  configSnapshot,
+  objectSchema,
+  pageRunner,
+  configProof,
+  settingsPageOptions,
+  createConfigSuite,
+} from "./config-composer-fixtures.test-support.ts";
 
-const suite = createControlUiE2eSuite({
-  name: "Control UI Settings controls mocked Gateway E2E",
-  startServerBeforeBrowser: true,
-  unavailableMessage: (executablePath) =>
-    `Playwright Chromium is not installed or cannot start at ${executablePath}. Run \`pnpm --dir ui exec playwright install --with-deps chromium\`, or set OPENCLAW_UI_E2E_ALLOW_MISSING_CHROMIUM=1 only when intentionally skipping this lane.`,
-});
+const suite = createConfigSuite("Control UI Settings controls mocked Gateway E2E");
 
-const captureUiProofEnabled = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
-let uiProofArtifactDir: string;
-beforeEach(() => {
-  if (captureUiProofEnabled) {
-    uiProofArtifactDir = createControlUiE2eArtifactDir("settings-controls");
-  }
-});
+const proof = configProof("settings-controls");
 
 async function resolvedBackground(page: Page, value: string): Promise<string> {
   return page.evaluate((background) => {
@@ -52,30 +47,17 @@ function collectPageErrors(page: Page): string[] {
 function browserConfigMocks() {
   const config = { browser: { enabled: true } };
   return {
-    "config.get": {
-      config,
-      hash: "hash-1",
-      issues: [],
-      raw: JSON.stringify(config),
-      valid: true,
-    },
+    "config.get": configSnapshot(config, "hash-1"),
     "config.schema": {
       generatedAt: "2026-08-14T00:00:00.000Z",
-      schema: {
-        type: "object",
-        properties: {
-          browser: {
-            type: "object",
-            title: "Browser",
-            properties: {
-              enabled: {
-                type: "boolean",
-                title: "Browser Enabled",
-              },
-            },
+      schema: objectSchema("", {
+        browser: objectSchema("Browser", {
+          enabled: {
+            type: "boolean",
+            title: "Browser Enabled",
           },
-        },
-      },
+        }),
+      }),
       uiHints: {},
       version: "e2e",
     },
@@ -97,47 +79,38 @@ async function captureBrowserSettingProof(
   section: ReturnType<Page["locator"]>,
   name: string,
 ) {
-  if (!captureUiProofEnabled) {
+  if (!proof.enabled) {
     return;
   }
-  if (page.video()) {
-    await writeFile(
-      path.join(uiProofArtifactDir, `${name}-desktop.png`),
-      await takeControlUiElementScreenshot(page, section, [
-        section.locator(".settings-row").first(),
-      ]),
-    );
-  } else {
-    await section.screenshot({
-      animations: "disabled",
-      path: path.join(uiProofArtifactDir, `${name}-desktop.png`),
-    });
-  }
-  await page.setViewportSize({ height: 844, width: 390 });
-  if (page.video()) {
-    await waitForControlUiProofSurface(page.locator(".shell.shell--mobile-nav"), [
-      section.locator(".settings-row").first(),
-    ]);
-    await writeFile(
-      path.join(uiProofArtifactDir, `${name}-narrow.png`),
-      await takeControlUiElementScreenshot(page, section, [
-        section.locator(".settings-row").first(),
-      ]),
-    );
-  } else {
-    await section.screenshot({
-      animations: "disabled",
-      path: path.join(uiProofArtifactDir, `${name}-narrow.png`),
-    });
+  const row = section.locator(".settings-row").first();
+  for (const size of ["desktop", "narrow"]) {
+    if (size === "narrow") {
+      await page.setViewportSize({ height: 844, width: 390 });
+      if (page.video()) {
+        await waitForControlUiProofSurface(page.locator(".shell.shell--mobile-nav"), [row]);
+      }
+    }
+    const file = path.join(proof.directory(), `${name}-${size}.png`);
+    if (page.video()) {
+      await writeFile(file, await takeControlUiElementScreenshot(page, section, [row]));
+    } else {
+      await section.screenshot({ animations: "disabled", path: file });
+    }
   }
 }
+
+const withPage = pageRunner(suite, {
+  ...settingsPageOptions,
+  viewport: { height: 900, width: 1280 },
+});
+
+const capture = proof.capture;
 
 suite.define(() => {
   it.each(["light", "dark"] as const)(
     "keeps selected Usage accents at rest and on hover in %s mode",
     async (colorScheme) => {
-      await suite.withPage(
-        { colorScheme, locale: "en-US", viewport: { width: 1280, height: 900 } },
+      await withPage(
         async ({ page }) => {
           const totals = {
             input: 0,
@@ -195,12 +168,7 @@ suite.define(() => {
               if (state === "hover") {
                 await selected.hover();
               }
-              if (captureUiProofEnabled) {
-                await filters.screenshot({
-                  animations: "disabled",
-                  path: path.join(uiProofArtifactDir, `usage-${colorScheme}-${label}-${state}.png`),
-                });
-              }
+              await capture(filters, `usage-${colorScheme}-${label}-${state}.png`);
               await expect
                 .poll(() =>
                   selected.evaluate((element) => getComputedStyle(element).backgroundColor),
@@ -209,6 +177,7 @@ suite.define(() => {
             }
           }
         },
+        { colorScheme, viewport: { width: 1280, height: 900 }, serviceWorkers: undefined },
       );
     },
   );
@@ -234,14 +203,7 @@ suite.define(() => {
     ];
 
     for (const scenario of cases) {
-      await suite.withPage(
-        {
-          colorScheme: scenario.colorScheme,
-          forcedColors: "active",
-          locale: "en-US",
-          serviceWorkers: "block",
-          viewport: { height: 900, width: 1280 },
-        },
+      await withPage(
         async ({ page }) => {
           await installMockGateway(page, {
             featureMethods: scenario.featureMethods,
@@ -271,19 +233,12 @@ suite.define(() => {
           expect(await unselected.isChecked()).toBe(false);
           const selectedLabel = selected.locator("..");
           const unselectedLabel = unselected.locator("..");
-          if (captureUiProofEnabled) {
-            await selected
-              .locator(
-                "xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' settings-row ')][1]",
-              )
-              .screenshot({
-                animations: "disabled",
-                path: path.join(
-                  uiProofArtifactDir,
-                  `segmented-forced-colors-${scenario.colorScheme}.png`,
-                ),
-              });
-          }
+          await capture(
+            selected.locator(
+              "xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' settings-row ')][1]",
+            ),
+            `segmented-forced-colors-${scenario.colorScheme}.png`,
+          );
           expect(
             await selectedLabel.evaluate((element) => {
               const style = getComputedStyle(element);
@@ -320,77 +275,56 @@ suite.define(() => {
             textDecorationLine: "underline",
           });
         },
+        { colorScheme: scenario.colorScheme, forcedColors: "active" },
       );
     }
   });
 
   it("keeps checked switches on the scene accent on the security page", async () => {
-    await suite.withPage(
-      {
-        colorScheme: "dark",
-        locale: "en-US",
-        serviceWorkers: "block",
-        viewport: { height: 900, width: 1280 },
-      },
-      async ({ page }) => {
-        const config = { browser: { enabled: true } };
-        await installMockGateway(page, {
-          methodResponses: {
-            "config.get": {
-              config,
-              hash: "hash-1",
-              issues: [],
-              raw: JSON.stringify(config),
-              valid: true,
-            },
-          },
+    await withPage(async ({ page }) => {
+      const config = { browser: { enabled: true } };
+      await installMockGateway(page, {
+        methodResponses: {
+          "config.get": configSnapshot(config, "hash-1"),
+        },
+      });
+
+      const response = await page.goto(`${suite.server.baseUrl}settings/security`);
+      expect(response?.status()).toBe(200);
+
+      const overview = page.locator(".security-page");
+      const browserSwitchRole = overview.getByRole("switch", {
+        name: "Browser enabled",
+        exact: true,
+      });
+      await browserSwitchRole.waitFor();
+      expect(await browserSwitchRole.isChecked()).toBe(true);
+      const browserSwitchControl = browserSwitchRole.locator("+ .settings-toggle__control");
+      expect(
+        await browserSwitchControl.evaluate((element) => getComputedStyle(element).backgroundColor),
+      ).toBe(await resolvedBackground(page, "var(--accent)"));
+
+      if (proof.enabled) {
+        await page.locator(".content-header").screenshot({
+          animations: "disabled",
+          path: path.join(proof.directory(), "01-settings-view.png"),
         });
-
-        const response = await page.goto(`${suite.server.baseUrl}settings/security`);
-        expect(response?.status()).toBe(200);
-
-        const overview = page.locator(".security-page");
-        const browserSwitchRole = overview.getByRole("switch", {
-          name: "Browser enabled",
-          exact: true,
-        });
-        await browserSwitchRole.waitFor();
-        expect(await browserSwitchRole.isChecked()).toBe(true);
-        const browserSwitchControl = browserSwitchRole.locator("+ .settings-toggle__control");
-        expect(
-          await browserSwitchControl.evaluate(
-            (element) => getComputedStyle(element).backgroundColor,
-          ),
-        ).toBe(await resolvedBackground(page, "var(--accent)"));
-
-        if (captureUiProofEnabled) {
-          await page.locator(".content-header").screenshot({
+        await overview
+          .locator(".settings-section")
+          .first()
+          .screenshot({
             animations: "disabled",
-            path: path.join(uiProofArtifactDir, "01-settings-view.png"),
+            path: path.join(proof.directory(), "02-security-controls.png"),
           });
-          await overview
-            .locator(".settings-section")
-            .first()
-            .screenshot({
-              animations: "disabled",
-              path: path.join(uiProofArtifactDir, "02-security-controls.png"),
-            });
-        }
+      }
 
-        await browserSwitchRole.click();
-        await expect.poll(() => browserSwitchRole.isChecked()).toBe(false);
-      },
-    );
+      await browserSwitchRole.click();
+      await expect.poll(() => browserSwitchRole.isChecked()).toBe(false);
+    });
   });
 
   it("hides the link-routing preference when the Control UI browser is unavailable", async () => {
-    await suite.withPage(
-      {
-        colorScheme: "dark",
-        locale: "en-US",
-        serviceWorkers: "block",
-        viewport: { height: 1000, width: 1180 },
-      },
+    await withPage(
       async ({ page }) => {
         await installMockGateway(page, { methodResponses: browserConfigMocks() });
 
@@ -407,21 +341,13 @@ suite.define(() => {
           .toBe(0);
         await captureBrowserSettingProof(page, section, "browser-before");
       },
+      { viewport: { height: 1000, width: 1180 } },
     );
   });
 
   for (const host of ["browser", "app"] as const) {
     it(`routes links to the Control UI browser in a ${host}-hosted UI`, async () => {
-      await suite.withPage(
-        {
-          colorScheme: "dark",
-          locale: "en-US",
-          recordVideo: captureUiProofEnabled
-            ? { dir: uiProofArtifactDir, size: { height: 900, width: 1180 } }
-            : undefined,
-          serviceWorkers: "block",
-          viewport: { height: 1000, width: 1180 },
-        },
+      await withPage(
         async ({ page }) => {
           const pageErrors = collectPageErrors(page);
           if (host === "app") {
@@ -623,6 +549,12 @@ suite.define(() => {
             ).toEqual([]);
           }
           expect(pageErrors).toEqual([]);
+        },
+        {
+          recordVideo: proof.enabled
+            ? { dir: proof.directory(), size: { height: 900, width: 1180 } }
+            : undefined,
+          viewport: { height: 1000, width: 1180 },
         },
       );
     });
