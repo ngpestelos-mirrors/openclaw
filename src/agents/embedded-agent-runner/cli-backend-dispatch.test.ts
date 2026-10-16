@@ -216,7 +216,9 @@ describe("runEmbeddedAgentViaCliBackendIfEligible gate", () => {
   });
 
   it("dispatches claude-cli runs with subscription (oauth) credentials", async () => {
-    expect(await runGate({ agentDir: "/agents/main", workspaceDir: "/workspace" })).toBeDefined();
+    expect(
+      await runDispatch({ agentDir: "/agents/main", workspaceDir: "/workspace" }),
+    ).toBeDefined();
     expect(ensureAuthProfileStore).toHaveBeenCalledWith("/agents/main", expect.anything());
     expect(resolveModelAuthMode).toHaveBeenCalledWith(
       "claude-cli",
@@ -229,7 +231,7 @@ describe("runEmbeddedAgentViaCliBackendIfEligible gate", () => {
 
   it("dispatches when no credential mode resolves for the passthrough", async () => {
     resolveModelAuthMode.mockReturnValue(undefined);
-    expect(await runGate()).toBeDefined();
+    expect(await runDispatch()).toBeDefined();
     expect(runCliAgent).toHaveBeenCalledTimes(1);
   });
 
@@ -261,7 +263,7 @@ describe("runEmbeddedAgentViaCliBackendIfEligible gate", () => {
     });
     resolveAuthProfileOrder.mockReturnValue(["anthropic:claude-cli", "anthropic:api"]);
     resolveModelAuthMode.mockReturnValue("mixed");
-    expect(await runGate()).toBeDefined();
+    expect(await runDispatch()).toBeDefined();
     expect(resolveModelAuthMode).not.toHaveBeenCalled();
   });
 
@@ -273,7 +275,7 @@ describe("runEmbeddedAgentViaCliBackendIfEligible gate", () => {
       },
     });
     resolveAuthProfileOrder.mockReturnValue(["anthropic:api", "anthropic:claude-cli"]);
-    expect(await runGate()).toBeUndefined();
+    expect(await runDispatch()).toBeUndefined();
     expect(runCliAgent).not.toHaveBeenCalled();
   });
 
@@ -317,7 +319,7 @@ describe("runEmbeddedAgentViaCliBackendIfEligible gate", () => {
   });
 
   it("keeps the passthrough for other CLI runtimes until verified", async () => {
-    expect(await runGate({ provider: "google-gemini-cli" })).toBeUndefined();
+    expect(await runDispatch({ provider: "google-gemini-cli" })).toBeUndefined();
     expect(resolveModelAuthMode).not.toHaveBeenCalled();
   });
 
@@ -327,7 +329,7 @@ describe("runEmbeddedAgentViaCliBackendIfEligible gate", () => {
 
   it("keeps the passthrough when no claude-cli backend is registered", async () => {
     resolveRuntimeCliBackends.mockReturnValue([]);
-    expect(await runGate()).toBeUndefined();
+    expect(await runDispatch()).toBeUndefined();
   });
 });
 

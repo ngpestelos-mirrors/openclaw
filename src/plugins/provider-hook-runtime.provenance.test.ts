@@ -573,7 +573,7 @@ describe("provider runtime physical ownership", () => {
     const old = registry(snapshot);
     setActivePluginRegistry(old, "old");
     const resolve = (selected: ReturnType<typeof metadata>) =>
-      getLoadedRuntimePluginRegistry({
+      loadedRegistryFor({
         requiredPluginIds: ["same-id"],
         loadOptions: {
           onlyPluginIds: ["same-id"],
@@ -598,15 +598,15 @@ describe("provider runtime physical ownership", () => {
       },
     });
     const oldOptions = options(snapshot);
-    setActivePluginRegistry(old, resolvePluginLoadCacheContext(oldOptions).cacheKey);
+    setActivePluginRegistry(old, loadCacheContext(oldOptions).cacheKey);
     expect(
-      getLoadedRuntimePluginRegistry({
+      loadedRegistryFor({
         loadOptions: oldOptions,
         requiredPluginIds: ["same-id"],
       }) === old,
     ).toBe(true);
     expect(
-      getLoadedRuntimePluginRegistry({
+      loadedRegistryFor({
         loadOptions: options(metadata("/synthetic/new")),
         requiredPluginIds: ["same-id"],
       }) === undefined,

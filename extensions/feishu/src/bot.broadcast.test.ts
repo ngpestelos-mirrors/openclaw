@@ -278,7 +278,7 @@ describe("broadcast dispatch", () => {
     mockDispatchReply.mockImplementation(async ({ ctx, replyOptions }) => {
       if (String(ctx.SessionKey).startsWith("agent:susan:")) {
         deferredLifecycle = replyOptions?.turnAdoptionLifecycle;
-        deferredLifecycle?.onDeferred();
+        deferredLifecycle?.onDeferred?.();
         return { queuedFinal: false, counts: { final: 1 }, deferAdoption: true };
       }
       return { queuedFinal: false, counts: { final: 1 } };

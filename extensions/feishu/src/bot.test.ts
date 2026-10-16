@@ -1,6 +1,9 @@
 import {
   buildChannelInboundEventContext,
+  type BuildChannelInboundEventContextAsyncParams,
+  type BuildChannelInboundEventContextParams,
   type BuiltChannelInboundEventContext,
+  type ChannelInboundSupplementalResolutionOptions,
 } from "openclaw/plugin-sdk/channel-inbound";
 import {
   createPluginRuntimeMock,
@@ -241,20 +244,33 @@ function inboundContext(): BuiltChannelInboundEventContext {
 
 vi.mock(import("openclaw/plugin-sdk/channel-inbound"), async (importOriginal) => {
   const actual = await importOriginal();
+  const finalize: NonNullable<BuildChannelInboundEventContextParams["finalize"]> = (ctx) => {
+    buildInboundContext(ctx);
+    return ctx;
+  };
+  function buildContext(
+    params: BuildChannelInboundEventContextAsyncParams,
+  ): Promise<BuiltChannelInboundEventContext>;
+  function buildContext(
+    params: BuildChannelInboundEventContextParams,
+  ): BuiltChannelInboundEventContext;
+  function buildContext(
+    params: BuildChannelInboundEventContextParams &
+      Partial<ChannelInboundSupplementalResolutionOptions>,
+  ): BuiltChannelInboundEventContext | Promise<BuiltChannelInboundEventContext> {
+    return params.resolveSupplementalMedia
+      ? actual.buildChannelInboundEventContext({
+          ...params,
+          finalize,
+          resolveSupplementalMedia: true,
+        })
+      : actual.buildChannelInboundEventContext({ ...params, finalize });
+  }
   return {
     ...actual,
     formatAgentEnvelope: formatEnvelope,
     resolveEnvelopeFormatOptions: () => ({}),
-    buildChannelInboundEventContext: (
-      params: Parameters<typeof actual.buildChannelInboundEventContext>[0],
-    ) => {
-      const context = actual.buildChannelInboundEventContext({
-        ...params,
-        finalize: (ctx) => ctx,
-      });
-      buildInboundContext(context);
-      return context;
-    },
+    buildChannelInboundEventContext: buildContext,
   };
 });
 
@@ -1417,13 +1433,16 @@ describe("handleFeishuMessage command authorization", () => {
   ] as const)(
     "keeps the %s session key stable across topic creation",
     async (chatType, first, second, topicId) => {
+      const firstMessageId = `msg-topic-first-${chatType}`;
+      const secondMessageId = `msg-topic-second-${chatType}`;
+      const expectedTopicId = chatType === "group" ? firstMessageId : topicId;
       const cfg = groupConfig({
         groupSessionScope: "group_topic",
         replyInThread: chatType === "group" ? "enabled" : undefined,
       });
       for (const [messageId, message] of [
-        ["msg-topic-first", first],
-        ["msg-topic-second", second],
+        [firstMessageId, first],
+        [secondMessageId, { ...second, root_id: firstMessageId }],
       ] as const) {
         await receiveConfigured(
           {
@@ -1436,16 +1455,16 @@ describe("handleFeishuMessage command authorization", () => {
           cfg,
         );
       }
-      const peer = { kind: "group" as const, id: `oc-group:topic:${topicId}` };
+      const peer = { kind: "group" as const, id: `oc-group:topic:${expectedTopicId}` };
       expectResolvedRouteCall(0, peer, { kind: "group", id: "oc-group" });
       expectResolvedRouteCall(1, peer, { kind: "group", id: "oc-group" });
       if (chatType === "group") {
         expect(createReplyDispatcher).toHaveBeenNthCalledWith(
           2,
           expect.objectContaining({
-            replyToMessageId: "msg-topic-first",
-            rootId: "msg-topic-first",
-            typingTargetMessageId: "msg-topic-second",
+            replyToMessageId: firstMessageId,
+            rootId: firstMessageId,
+            typingTargetMessageId: secondMessageId,
           }),
         );
       }
@@ -1561,13 +1580,13 @@ describe("handleFeishuMessage command authorization", () => {
 
   it.each([
     ["omt_dm_thread", "om_dm_root", false, true],
-    [undefined, "om_dm_child", true, false],
+    [undefined, "om_dm_unthreaded_child", true, false],
   ] as const)(
     "routes P2P replies with thread_id=%s",
     async (threadId, replyToMessageId, skipReplyToInMessages, threaded) => {
       const text = "hello inside a DM reply";
       const runtime = await receive({
-        messageId: "om_dm_child",
+        messageId: threadId ? "om_dm_child" : "om_dm_unthreaded_child",
         senderOpenId: "ou-dm-sender",
         chatId: "oc-dm",
         text,

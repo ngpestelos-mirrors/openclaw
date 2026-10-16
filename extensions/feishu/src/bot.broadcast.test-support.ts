@@ -1,5 +1,9 @@
 import {
   buildChannelInboundEventContext,
+  type BuildChannelInboundEventContextAsyncParams,
+  type BuildChannelInboundEventContextParams,
+  type BuiltChannelInboundEventContext,
+  type ChannelInboundSupplementalResolutionOptions,
   type ChannelInboundTurnPlan,
 } from "openclaw/plugin-sdk/channel-inbound";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
@@ -37,18 +41,31 @@ const mocks = vi.hoisted(() => {
 
 vi.mock(import("openclaw/plugin-sdk/channel-inbound"), async (importOriginal) => {
   const actual = await importOriginal();
+  const finalize: NonNullable<BuildChannelInboundEventContextParams["finalize"]> = (ctx) => {
+    mocks.builtInboundContextCalls.push(ctx);
+    return ctx;
+  };
+  function buildContext(
+    params: BuildChannelInboundEventContextAsyncParams,
+  ): Promise<BuiltChannelInboundEventContext>;
+  function buildContext(
+    params: BuildChannelInboundEventContextParams,
+  ): BuiltChannelInboundEventContext;
+  function buildContext(
+    params: BuildChannelInboundEventContextParams &
+      Partial<ChannelInboundSupplementalResolutionOptions>,
+  ): BuiltChannelInboundEventContext | Promise<BuiltChannelInboundEventContext> {
+    return params.resolveSupplementalMedia
+      ? actual.buildChannelInboundEventContext({
+          ...params,
+          finalize,
+          resolveSupplementalMedia: true,
+        })
+      : actual.buildChannelInboundEventContext({ ...params, finalize });
+  }
   return {
     ...actual,
-    buildChannelInboundEventContext: (
-      params: Parameters<typeof actual.buildChannelInboundEventContext>[0],
-    ) =>
-      actual.buildChannelInboundEventContext({
-        ...params,
-        finalize: (ctx) => {
-          mocks.builtInboundContextCalls.push(ctx);
-          return ctx as never;
-        },
-      }),
+    buildChannelInboundEventContext: buildContext,
   };
 });
 

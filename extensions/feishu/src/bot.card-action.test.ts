@@ -87,9 +87,8 @@ describe("Feishu Card Action Handler", () => {
   it("opens approval cards with resolved DM type and preserved interaction context", async () => {
     getChat.mockResolvedValueOnce({ code: 0, data: { chat_mode: "p2p" } });
     await dispatch(cardEvent(approvalAction()), { accountId: "main" });
-    const containing = expect.objectContaining;
     const expected = { u: "u123", h: "chat1", t: "p2p", s: "session", e: expect.any(Number) };
-    const button = containing({ value: containing({ c: expected }) });
+    const button = expect.objectContaining({ value: expect.objectContaining({ c: expected }) });
     const actions = { tag: "action", actions: [button, expect.anything()] };
     const card = {
       header: { title: { content: "Confirm action" } },
