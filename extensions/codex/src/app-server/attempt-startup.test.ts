@@ -402,13 +402,11 @@ describe("startCodexAttemptThread", () => {
     {
       method: "initialize",
       stage: "client-acquire",
-      acquireBoundary: "initialize",
       loggerThrows: false,
     },
     {
       method: "thread/start",
       stage: "thread-lifecycle",
-      acquireBoundary: undefined,
       loggerThrows: true,
     },
   ])(
@@ -464,7 +462,6 @@ describe("startCodexAttemptThread", () => {
             runId: attemptParams.runId,
             sessionId: attemptParams.sessionId,
             stage: blocked.stage,
-            acquireBoundary: blocked.acquireBoundary,
             clientInstanceId: harness.client.getInstanceId(),
             clientPendingRequestMethods: [blocked.method],
             elapsedMs: 500,

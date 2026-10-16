@@ -1,3 +1,5 @@
+import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-registration";
+import { areDiagnosticsEnabledForProcess } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { raceWithTimeout } from "openclaw/plugin-sdk/time-runtime";
 import type { CodexCatalogPreviewCache } from "../session-catalog-native-projection.js";
 import type { resolveCodexAppServerAuthProfileIdForAgent } from "./auth-profile.js";
@@ -9,7 +11,6 @@ import type {
   CodexGetAccountResponse,
   JsonValue,
 } from "./protocol.js";
-import { createCodexRequestTimeoutDiagnostics } from "./request-diagnostics.js";
 import type {
   CodexControlRequestFailureCategory,
   CodexControlRequestObservation,
@@ -295,7 +296,7 @@ export async function withCodexAppServerJsonClient<T>(
 ): Promise<T> {
   const timeoutMs = params.timeoutMs ?? 60_000;
   const timeoutMessage = params.timeoutMessage ?? "codex app-server request timed out";
-  const timeoutDiagnostics = createCodexRequestTimeoutDiagnostics(timeoutMs);
+  const startedAt = performance.now();
   let activePhase: CodexControlRequestPhase = "prepare";
   let errorPhase: CodexControlRequestPhase | undefined;
   const setPhase = (phase: CodexControlRequestPhase) => {
@@ -309,8 +310,7 @@ export async function withCodexAppServerJsonClient<T>(
   if (params.signal?.aborted) {
     abort();
   }
-  const deadline =
-    Number.isFinite(timeoutMs) && timeoutMs > 0 ? performance.now() + timeoutMs : undefined;
+  const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0 ? startedAt + timeoutMs : undefined;
   const isPastDeadline = () => deadline !== undefined && performance.now() >= deadline;
   const throwIfAbandoned = () => {
     if (timeoutController.signal.aborted && timeoutController.signal.reason instanceof Error) {
@@ -345,7 +345,6 @@ export async function withCodexAppServerJsonClient<T>(
         const acquireClient = params.isolated
           ? createIsolatedCodexAppServerClient
           : getLeasedSharedCodexAppServerClient;
-        const acquireObservation = timeoutDiagnostics?.beginAttempt(1);
         const acquireOptions = {
           startOptions: params.startOptions,
           pluginConfig: params.pluginConfig,
@@ -360,11 +359,9 @@ export async function withCodexAppServerJsonClient<T>(
           abandonSignal: timeoutController.signal,
           assertCurrent: params.assertCurrent,
           assertCurrentAsync: params.assertCurrentAsync,
-          ...acquireObservation,
         };
         setPhase("acquire-client");
         const client = await acquireClient(acquireOptions);
-        timeoutDiagnostics?.acquired(client);
         let scopeActive = true;
         const assertCurrent = () => {
           throwIfAbandoned();
@@ -427,12 +424,7 @@ export async function withCodexAppServerJsonClient<T>(
                 },
               };
               setPhase("client-request");
-              const settled = timeoutDiagnostics?.request(method);
-              try {
-                return await client.request<R>(method, requestParams, requestOptions);
-              } finally {
-                settled?.();
-              }
+              return await client.request<R>(method, requestParams, requestOptions);
             } finally {
               sandboxGuard.release();
             }
@@ -451,7 +443,6 @@ export async function withCodexAppServerJsonClient<T>(
         } finally {
           scopeActive = false;
           setPhase("release-client");
-          timeoutDiagnostics?.release();
           const requestErrorPhase = errorPhase;
           errorPhase = activePhase;
           if (params.isolated) {
@@ -480,7 +471,17 @@ export async function withCodexAppServerJsonClient<T>(
       { error, deadlineObserved },
     );
     if (deadlineObserved) {
-      timeoutDiagnostics?.timeout();
+      try {
+        if (areDiagnosticsEnabledForProcess() && embeddedAgentLog.isEnabled("warn")) {
+          embeddedAgentLog.warn("codex app-server scope timed out", {
+            phase: activePhase,
+            timeoutMs,
+            elapsedMs: Math.round(performance.now() - startedAt),
+          });
+        }
+      } catch {
+        // Diagnostic sinks must not replace the timeout or prevent scope cleanup.
+      }
       throw new Error(timeoutMessage, { cause: error });
     }
     throw error;
