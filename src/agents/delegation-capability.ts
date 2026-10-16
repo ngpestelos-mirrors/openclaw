@@ -14,7 +14,9 @@ import { ToolAuthorizationError } from "./tools/common.js";
 
 const log = createSubsystemLogger("agents/delegation-capability");
 
-export type DelegationCapability = "full" | "report_only";
+// Host-only continuations retain tools fenced by OpenClaw at their final effect;
+// native collaboration cannot inherit that settlement authority.
+export type DelegationCapability = "full" | "host_only" | "report_only";
 
 const NEW_DELEGATION_TOOL_NAMES = new Set([
   "codex_session_send",
@@ -50,6 +52,7 @@ export function resolveDelegationCapability(params: {
   if (params.disableTools === true) {
     return "report_only";
   }
+  const permitted = params.fallbackActive ? "host_only" : "full";
   if (params.fallbackActive) {
     const continuation = params.requesterContinuation;
     // A private live settle batch resumes the requester's unfinished work, not
@@ -66,7 +69,7 @@ export function resolveDelegationCapability(params: {
     }
   }
   if (params.toolsAllow === undefined) {
-    return "full";
+    return permitted;
   }
 
   // Native harness delegation is outside the dynamic-tool allowlist, so carry
@@ -74,7 +77,7 @@ export function resolveDelegationCapability(params: {
   const delegationAllowed = [...NEW_DELEGATION_TOOL_NAMES].some(
     createRuntimeToolMatcher(params.toolsAllow),
   );
-  return delegationAllowed ? "full" : "report_only";
+  return delegationAllowed ? permitted : "report_only";
 }
 
 /** Prepare lineage through its worker owner only for supported requester continuations. */

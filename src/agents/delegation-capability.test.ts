@@ -82,7 +82,9 @@ describe("delegation capability", () => {
               },
       },
     };
-    expect(resolveDelegationCapability(params)).toBe(state === "current" ? "full" : "report_only");
+    expect(resolveDelegationCapability(params)).toBe(
+      state === "current" ? "host_only" : "report_only",
+    );
   });
 
   it("enters report-only mode for fallback completion reports", () => {
@@ -175,6 +177,7 @@ describe("delegation capability", () => {
       "sessions_history",
     ]);
     expect(applyDelegationCapability(tools, "full")).toBe(tools);
+    expect(applyDelegationCapability(tools, "host_only")).toBe(tools);
   });
 
   it("keeps status and cleanup actions while rejecting new background work", async () => {

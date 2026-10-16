@@ -4,6 +4,8 @@ import {
   consumeSubagentCompletionToolHandoff,
   registerSubagentCompletionToolHandoff,
 } from "../../gateway/subagent-completion-tool-handoff.js";
+import type { EmbeddedRunAttemptParamsV2 } from "../../plugin-sdk/agent-harness-runtime.js";
+import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { applyDelegationCapability } from "../delegation-capability.js";
 import { createModelFallbackConfig } from "../test-helpers/model-fallback-config-fixture.js";
@@ -104,9 +106,13 @@ describe("runEmbeddedAgent prompt timeout fallback handoff", () => {
     },
   );
 
-  it.each(["openclaw", "codex"] as const)(
-    "retains the verified requester settle capability on a rate-limit fallback under %s",
-    async (harness) => {
+  it.each([
+    { harness: "openclaw", toolsAllow: undefined },
+    { harness: "codex", toolsAllow: undefined },
+    { harness: "codex", toolsAllow: ["*"] },
+  ] as const)(
+    "retains host delegation without native collaboration under $harness (tools: $toolsAllow)",
+    async ({ harness, toolsAllow }) => {
       const run = createOverflowRunParams(state);
       if (harness === "codex") {
         const { getRegisteredAgentHarness, registerAgentHarness } =
@@ -135,7 +141,7 @@ describe("runEmbeddedAgent prompt timeout fallback handoff", () => {
           spawnedBy: run.sessionKey,
           spawnDepth: 1,
           inheritedToolPolicyVersion: 1,
-          inheritedToolAllow: ["sessions_send", "sessions_spawn"],
+          inheritedToolAllow: [],
           inheritedToolDeny: [],
         },
       );
@@ -153,12 +159,68 @@ describe("runEmbeddedAgent prompt timeout fallback handoff", () => {
         provider: "openai",
         model: "gpt-5.4",
       });
-      mockedRunEmbeddedAttempt.mockResolvedValueOnce(
-        makeAttemptResult({ assistantTexts: ["Continue the authorized work."] }),
-      );
+      mockedRunEmbeddedAttempt.mockImplementationOnce(async (attempt) => {
+        expect(attempt.fallbackActive).toBe(true);
+        if (harness === "codex") {
+          const codex = await loadBundledPluginFacade<{
+            resolveCodexPromptSnapshotAppServerOptions: () => unknown;
+            buildCodexHarnessPromptSnapshot: (params: {
+              attempt: EmbeddedRunAttemptParamsV2;
+              cwd: string;
+              threadId: string;
+              dynamicTools: Array<{
+                type: "function";
+                name: string;
+                description: string;
+                inputSchema: { type: string };
+              }>;
+              appServer: unknown;
+            }) => Promise<{
+              developerInstructions: string;
+              threadStartParams: { config?: Record<string, unknown>; dynamicTools?: unknown };
+              threadResumeParams: { config?: Record<string, unknown> };
+            }>;
+          }>({ pluginId: "codex", artifactBasename: "test-api.js" });
+          const hostCapabilities = attempt.hostCapabilities;
+          if (!hostCapabilities) {
+            throw new Error("Native attempt lacks its admitted host capability");
+          }
+          const dynamicTools = ["sessions_send", "sessions_spawn"].map((name) => ({
+            type: "function" as const,
+            name,
+            description: name,
+            inputSchema: { type: "object" },
+          }));
+          const render = (delegationCapability: typeof attempt.delegationCapability) =>
+            codex.buildCodexHarnessPromptSnapshot({
+              attempt: { ...attempt, delegationCapability, hostCapabilities },
+              cwd: state.workspaceDir,
+              threadId: "settle-thread",
+              dynamicTools,
+              appServer: codex.resolveCodexPromptSnapshotAppServerOptions(),
+            });
+          const restricted = await render(attempt.delegationCapability);
+          for (const request of [restricted.threadStartParams, restricted.threadResumeParams]) {
+            expect(request.config).toMatchObject({
+              "agents.enabled": false,
+              "features.multi_agent": false,
+              "features.multi_agent_v2": false,
+            });
+          }
+          expect(restricted.threadStartParams.dynamicTools).toEqual(dynamicTools);
+          expect(restricted.developerInstructions).not.toContain("spawn_agent");
+          // A permissive ordinary turn still has native delegation: no other gate masks this proof.
+          const ordinary = await render("full");
+          expect(ordinary.threadStartParams.config).not.toHaveProperty("agents.enabled", false);
+          expect(ordinary.developerInstructions).toContain("spawn_agent");
+        }
+        expect(attempt.delegationCapability).toBe("host_only");
+        return makeAttemptResult({ assistantTexts: ["Continue the authorized work."] });
+      });
       await runEmbeddedAgent({
         ...run,
         config,
+        toolsAllow: toolsAllow ? [...toolsAllow] : undefined,
         provider: "openai",
         model: "gpt-5.4",
         agentHarnessRuntimeOverride: harness,
@@ -172,10 +234,6 @@ describe("runEmbeddedAgent prompt timeout fallback handoff", () => {
         },
       });
       expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
-      expect(mockedRunEmbeddedAttempt.mock.calls[0]?.[0]).toMatchObject({
-        fallbackActive: true,
-        delegationCapability: "full",
-      });
     },
   );
 

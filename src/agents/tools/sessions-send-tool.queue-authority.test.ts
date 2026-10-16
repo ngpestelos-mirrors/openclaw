@@ -68,7 +68,9 @@ describe("sessions_send direct queue source authority", () => {
     "peer-live",
     "ask-revoked",
     "settle-live",
+    "settle-wildcard",
     "settle-revoked",
+    "settle-reassigned",
   ] as const)(
     "checks the %s source at the real final enqueue and preserves accepted input",
     async (source) => {
@@ -83,6 +85,7 @@ describe("sessions_send direct queue source authority", () => {
           source === "peer-revoked" ||
           source === "ask-revoked" ||
           source === "settle-revoked" ||
+          source === "settle-reassigned" ||
           source === "unscoped";
         const targetAgentId = crossAgent ? "worker" : "main";
         const cfg = {
@@ -222,7 +225,8 @@ describe("sessions_send direct queue source authority", () => {
           return responses[0]![0];
         };
         const message = "guidance-from-" + source + "-source";
-        let settleCurrent = true;
+        const settleOwner = {};
+        let currentSettleOwner: object | undefined = settleOwner;
         let tool = createSessionsSendTool({
           config: cfg,
           agentSessionKey: requesterSessionKey,
@@ -241,7 +245,7 @@ describe("sessions_send direct queue source authority", () => {
               spawnedBy: requesterSessionKey,
               spawnDepth: 1,
               inheritedToolPolicyVersion: 1,
-              inheritedToolAllow: ["sessions_send"],
+              inheritedToolAllow: source === "settle-wildcard" ? ["*"] : [],
               inheritedToolDeny: [],
             },
           );
@@ -250,7 +254,10 @@ describe("sessions_send direct queue source authority", () => {
             targetSessionKey: requesterSessionKey,
             targetSessionId: "queue-source-session",
             idempotencyKey: "settle-source",
-            settleBatch: { sourceSessionKeys: [child], isCurrent: () => settleCurrent },
+            settleBatch: {
+              sourceSessionKeys: [child],
+              isCurrent: () => currentSettleOwner === settleOwner,
+            },
           };
           const trustedInternalHandoff = consumeSubagentCompletionToolHandoff({
             ...registration,
@@ -280,6 +287,7 @@ describe("sessions_send direct queue source authority", () => {
           const capability = await withPreparedSessionCapabilityRead(() =>
             resolveDelegationCapability(capabilityInput),
           );
+          expect(capability).toBe("host_only");
           const profile = await prepareConversationCapabilityProfile(requesterContinuation);
           const wrap = createCodingToolsGatewayCaller({
             options: requesterContinuation,
@@ -349,8 +357,8 @@ describe("sessions_send direct queue source authority", () => {
           if (source === "revoked") {
             releaseAgentRunDelegatedAuthority(authority);
           }
-          if (source === "settle-revoked") {
-            settleCurrent = false;
+          if (source === "settle-revoked" || source === "settle-reassigned") {
+            currentSettleOwner = source === "settle-reassigned" ? {} : undefined;
           }
           const revokeSend = () =>
             setRuntimeConfigSnapshot({

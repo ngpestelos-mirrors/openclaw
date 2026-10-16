@@ -94,9 +94,10 @@ A verified requester continuation after its child tasks settle is different: on
 the built-in and plugin harness paths, it retains the requester's authorized
 session tools so unfinished work can continue. The live settlement owner and
 persisted child lineage must still match; an active Goal or completion message
-alone does not grant that exception. Existing tool restrictions and Stop still
-apply. CLI backends that cannot enforce settlement authority keep the report-only
-restriction.
+alone does not grant that exception. The exception is host-mediated: native
+collaboration stays disabled because it does not carry the settlement owner’s
+final-effect authority check. Existing tool restrictions and Stop still apply.
+CLI backends that cannot enforce settlement authority keep the report-only restriction.
 
 Sessions placed on an OpenClaw cloud worker keep the OpenClaw runtime when
 automatic model selection advances to a fallback. The configured provider,
