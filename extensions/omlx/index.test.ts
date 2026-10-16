@@ -48,6 +48,7 @@ describe("oMLX registered embedding provider", () => {
       );
       for (const scenario of [
         { envKey: undefined, apiKey: "OMLX_API_KEY", remote: undefined },
+        { envKey: undefined, apiKey: "omlx:default", remote: undefined },
         { envKey: "fixture-env-omlx-key", apiKey: "OMLX_API_KEY", remote: undefined },
         { envKey: "fixture-env-omlx-key", apiKey: "fixture-literal-omlx-key", remote: undefined },
         {
@@ -83,6 +84,10 @@ describe("oMLX registered embedding provider", () => {
         await expect(result.provider?.embed("orchard")).resolves.toEqual([1, 0]);
       }
       expect(requests).toEqual([
+        {
+          url: "http://127.0.0.1:8000/v1/embeddings",
+          authorization: "Bearer fixture-saved-omlx-key",
+        },
         {
           url: "http://127.0.0.1:8000/v1/embeddings",
           authorization: "Bearer fixture-saved-omlx-key",

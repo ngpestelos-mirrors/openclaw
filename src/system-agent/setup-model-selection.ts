@@ -264,7 +264,11 @@ export function projectSetupInferenceConfig(params: {
   if (providerKey && providerConfig) {
     const selectedProvider = structuredClone(providerConfig);
     if (params.profileId) {
-      delete selectedProvider.apiKey;
+      if (params.credential?.type === "api_key" || params.credential?.type === "token") {
+        selectedProvider.apiKey = params.profileId;
+      } else {
+        delete selectedProvider.apiKey;
+      }
     }
     if (
       selectedProvider.headers?.["api-key"] &&

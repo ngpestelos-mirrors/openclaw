@@ -98,6 +98,7 @@ it.each([
 
     const verifiedProviders = setup.run.mock.calls[0]?.[0].config?.models?.providers;
     expect(verifiedProviders?.openai?.baseUrl).toBe("https://replacement.example/v1");
+    expect(verifiedProviders?.openai?.apiKey).toBe(saved.profile.profileId);
     expect(verifiedProviders?.openai?.request).toEqual(request);
     expect(verifiedProviders?.openai?.headers).toBeUndefined();
     expect(verifiedProviders?.unrelated).toEqual(unrelatedRuntimeProvider);
@@ -108,6 +109,7 @@ it.each([
       "https://replacement.example/v1",
     );
     expect(snapshot.sourceConfig.models?.providers?.openai?.request).toEqual(request);
+    expect(snapshot.sourceConfig.models?.providers?.openai?.apiKey).toBe(saved.profile.profileId);
     expect(snapshot.sourceConfig.models?.providers?.openai?.headers).toBeUndefined();
     expect(snapshot.sourceConfig.models?.providers?.unrelated).toEqual(unrelatedProvider);
     expect(snapshot.sourceConfig.models?.providers?.openai?.models).toEqual([
