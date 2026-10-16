@@ -45,6 +45,31 @@ function transfer(overrides: Partial<CreationComposerTransfer> = {}): CreationCo
   };
 }
 
+function deferPayload() {
+  const prepared = createDeferred<Awaited<ReturnType<typeof payloads.prepareOutboxPayload>>>();
+  vi.spyOn(payloads, "prepareOutboxPayload").mockImplementationOnce(() => prepared.promise);
+  return prepared;
+}
+
+function gatewayUpdates() {
+  const listeners = new Set<() => void>();
+  return {
+    gateway: {
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+    },
+    publish: () => {
+      for (const listener of listeners) {
+        listener();
+      }
+    },
+  };
+}
+
 function fixture() {
   const host = makeChatHost({ sessionKey: "agent:main:canonical-created", requestHandlers: {} });
   const resume = vi.spyOn(actions, "resumeStoredChatOutboxes").mockResolvedValue();
@@ -59,8 +84,7 @@ describe("created-composer canonical outbox admission", () => {
     const peer = makeChatHost({ sessionKey: host.sessionKey, client: host.client });
     onTestFinished(owner.subscribe(host));
     onTestFinished(owner.subscribe(peer));
-    const prepared = createDeferred<Awaited<ReturnType<typeof payloads.prepareOutboxPayload>>>();
-    vi.spyOn(payloads, "prepareOutboxPayload").mockImplementationOnce(() => prepared.promise);
+    const prepared = deferPayload();
     const first = admitCreatedComposerQueue(host, input);
     const delivery = first.then(() =>
       owner.update(host, [
@@ -87,25 +111,19 @@ describe("created-composer canonical outbox admission", () => {
   it("holds every follower when the accepted session rejected its initial turn", async () => {
     const { host, owner, scope, resume } = fixture();
     await admitCreatedComposerQueue(host, transfer({ initialRejected: true }));
-    expect(owner.snapshot(host, scope.scope)).toEqual([
-      expect.objectContaining({
-        id: "first-input",
+    expect(owner.snapshot(host, scope.scope)).toMatchObject(
+      ["first-input", "second-input"].map((id) => ({
+        id,
         sendState: "held",
         sendError: expect.stringContaining("first message"),
-      }),
-      expect.objectContaining({
-        id: "second-input",
-        sendState: "held",
-        sendError: expect.stringContaining("first message"),
-      }),
-    ]);
+      })),
+    );
     expect(resume).not.toHaveBeenCalled();
   });
 
   it("blocks fresh and background delivery from overtaking asynchronous attachment admission", async () => {
     const { host, owner, scope } = fixture();
-    const prepared = createDeferred<Awaited<ReturnType<typeof payloads.prepareOutboxPayload>>>();
-    vi.spyOn(payloads, "prepareOutboxPayload").mockImplementationOnce(() => prepared.promise);
+    const prepared = deferPayload();
     const adoption = admitCreatedComposerQueue(host, transfer());
     expect(owner.admissions.has(scope.scope)).toBe(true);
     const later = owner.keep(host, scope.scope, {
@@ -119,9 +137,7 @@ describe("created-composer canonical outbox admission", () => {
     expect(owner.admit(host, scope, later)).toBe("admitted");
     expect(finishChatDeliveryAdmission(host, later, "durable", host.sessionKey)).toBe("pending");
     const send = vi.fn(async () => "sent" as const);
-    await scheduleStoredChatOutboxDrain(host, scope.scope, {
-      sendQueuedChatMessage: send,
-    });
+    await scheduleStoredChatOutboxDrain(host, scope.scope, { sendQueuedChatMessage: send });
     expect(send).not.toHaveBeenCalled();
     prepared.resolve({ status: "ready", update: {} });
     await adoption;
@@ -141,13 +157,9 @@ describe("created-composer canonical outbox admission", () => {
     });
     await admitCreatedComposerQueue(host, transfer());
     expect(owner.admissions.has(scope.scope)).toBe(true);
-    expect(owner.snapshot(host, scope.scope)).toEqual([
-      expect.objectContaining({
-        id: "first-input",
-        sendState: "held",
-        sendError: expect.any(String),
-      }),
-      expect.objectContaining({ id: "second-input", sendState: "held" }),
+    expect(owner.snapshot(host, scope.scope)).toMatchObject([
+      { id: "first-input", sendState: "held", sendError: expect.any(String) },
+      { id: "second-input", sendState: "held" },
     ]);
     expect(resume).not.toHaveBeenCalled();
     expect(owner.remove(host, "first-input", { discard: true })?.text).toBe("first follower");
@@ -156,48 +168,30 @@ describe("created-composer canonical outbox admission", () => {
 
   it("resumes the same ordered batch after a replacement client interrupts payload admission", async () => {
     const { host, owner, scope, resume } = fixture();
-    const prepared = createDeferred<Awaited<ReturnType<typeof payloads.prepareOutboxPayload>>>();
-    vi.spyOn(payloads, "prepareOutboxPayload").mockImplementationOnce(() => prepared.promise);
-    const listeners = new Set<() => void>();
-    const context = {
-      gateway: {
-        subscribe: (listener: () => void) => {
-          listeners.add(listener);
-          return () => {
-            listeners.delete(listener);
-          };
-        },
-      },
-    };
+    const prepared = deferPayload();
+    const context = gatewayUpdates();
     const resumed = createDeferred();
-    resume.mockImplementation(async () => {
-      resumed.resolve();
-    });
+    resume.mockImplementation(async () => resumed.resolve());
     const disconnect = connectCreatedComposerQueue(context, host, transfer());
     onTestFinished(disconnect);
     const ids = host.chatQueue.map((item) => [item.id, item.sendRunId]);
     expect(owner.admissions.has(scope.scope)).toBe(true);
     host.client = createTestGatewayClient(host.request);
-    for (const listener of listeners) {
-      listener();
-    }
+    context.publish();
     prepared.resolve({ status: "ready", update: {} });
     await resumed.promise;
     expect(host.chatQueue.map((item) => [item.id, item.sendRunId])).toEqual(ids);
     expect(host.chatQueue.every((item) => item.sendState === "waiting-idle")).toBe(true);
     expect(owner.admissions.has(scope.scope)).toBe(false);
     expect(resume).toHaveBeenCalledOnce();
-    for (const listener of listeners) {
-      listener();
-    }
+    context.publish();
     expect(resume).toHaveBeenCalledOnce();
   });
 
   it("recovers still-volatile input in a remounted pane without replaying or dropping its IDs", async () => {
     const { host, owner, scope } = fixture();
     const input = transfer();
-    const prepared = createDeferred<Awaited<ReturnType<typeof payloads.prepareOutboxPayload>>>();
-    vi.spyOn(payloads, "prepareOutboxPayload").mockImplementationOnce(() => prepared.promise);
+    const prepared = deferPayload();
     const first = admitCreatedComposerQueue(host, input);
     const ids = host.chatQueue.map((item) => [item.id, item.sendRunId]);
     host.connected = false;
@@ -214,21 +208,9 @@ describe("created-composer canonical outbox admission", () => {
   it("waits for recovery before adopting and keeps staged input ahead of later offline messages", async () => {
     const { host, owner, scope, resume } = fixture();
     const readiness = vi.spyOn(host.client!, "recoveryScopeReady", "get").mockReturnValue(false);
-    const listeners = new Set<() => void>();
-    const context = {
-      gateway: {
-        subscribe: (listener: () => void) => {
-          listeners.add(listener);
-          return () => {
-            listeners.delete(listener);
-          };
-        },
-      },
-    };
+    const context = gatewayUpdates();
     const resumed = createDeferred();
-    resume.mockImplementation(async () => {
-      resumed.resolve();
-    });
+    resume.mockImplementation(async () => resumed.resolve());
     const disconnect = connectCreatedComposerQueue(context, host, transfer());
     onTestFinished(disconnect);
     expect(host.chatQueue).toEqual([]);
@@ -240,17 +222,14 @@ describe("created-composer canonical outbox admission", () => {
       sendState: "waiting-idle",
     });
     expect(owner.admit(host, scope, later)).toBe("admitted");
-    for (const listener of listeners) {
-      listener();
-    }
+    context.publish();
     await resumed.promise;
     expect(host.chatQueue.map((item) => item.id)).toEqual(["first-input", "second-input", "later"]);
   });
 
   it("releases admission barriers when the authenticated scope is revoked during payload preparation", async () => {
     const { host, owner, scope, resume } = fixture();
-    const prepared = createDeferred<Awaited<ReturnType<typeof payloads.prepareOutboxPayload>>>();
-    vi.spyOn(payloads, "prepareOutboxPayload").mockImplementationOnce(() => prepared.promise);
+    const prepared = deferPayload();
     let current = true;
     let invalidate = () => {};
     const input = transfer({

@@ -19,6 +19,41 @@ function assistantMessage(
 ) {
   return { role: "assistant", content, timestamp, ...overrides };
 }
+function namedPrompt(
+  content: string,
+  timestamp: number,
+  id: string,
+  name: string,
+  metadata: Record<string, unknown> = {},
+) {
+  return userMessage(content, timestamp, {
+    __openclaw: { senderId: id, senderName: name, ...metadata },
+  });
+}
+function observedSender(accountId: string) {
+  return { type: "observation", pluginId: "slack", accountId, senderKind: "human", id: "alice" };
+}
+function profilePrompt(
+  content: string,
+  timestamp: number,
+  id: string,
+  name: string,
+  metadata: Record<string, unknown> = {},
+) {
+  return namedPrompt(content, timestamp, id, name, {
+    senderIdentity: { type: "profile", id },
+    ...metadata,
+  });
+}
+const profileKey = (id: string) => sessionParticipantIdentityKey({ type: "profile", id });
+function senderCase(
+  label: string,
+  senders: Record<string, unknown>[],
+  shared?: boolean,
+  people: string[] = [],
+) {
+  return { case: label, senders, shared, people };
+}
 function messageGroups(props: Partial<Props>) {
   return buildCachedChatItems(createProps(props)).filter((item) => item.kind === "group");
 }
@@ -45,9 +80,7 @@ describe("reply attribution grouping", () => {
     ...[
       {
         boundary: "human prompt",
-        message: userMessage("Status?", 1002, {
-          __openclaw: { senderId: "bob", senderName: "Bob" },
-        }),
+        message: namedPrompt("Status?", 1002, "bob", "Bob"),
         recipient: "Bob",
       },
       {
@@ -90,18 +123,12 @@ describe("reply attribution grouping", () => {
   ])(
     "attributes prompts across $boundary (search: $searchOpen)",
     ({ message, recipient, searchOpen }) => {
-      const alice = userMessage("Alice asks", 1000, {
-        __openclaw: { senderId: "alice", senderName: "Alice" },
-      });
-      const followUp = userMessage("Bob follows up", 1003, {
-        __openclaw: { senderId: "bob", senderName: "Bob" },
-      });
+      const alice = namedPrompt("Alice asks", 1000, "alice", "Alice");
+      const followUp = namedPrompt("Bob follows up", 1003, "bob", "Bob");
       const groups = messageGroups({
         searchOpen,
         searchQuery: "Rollout",
-        replyPeople: searchOpen
-          ? ["alice", "bob"].map((id) => sessionParticipantIdentityKey({ type: "profile", id }))
-          : undefined,
+        replyPeople: searchOpen ? ["alice", "bob"].map((id) => profileKey(id)) : undefined,
         messages: searchOpen
           ? [
               alice,
@@ -112,7 +139,7 @@ describe("reply attribution grouping", () => {
           : [
               alice,
               assistantMessage("For Alice", 1001),
-              userMessage("Bob asks", 1002, { __openclaw: { senderId: "bob", senderName: "Bob" } }),
+              namedPrompt("Bob asks", 1002, "bob", "Bob"),
               followUp,
               assistantMessage("For Bob", 1004),
               message,
@@ -221,17 +248,10 @@ describe("reply attribution grouping", () => {
             }),
       });
       const replies = groups.filter((group) => group.role === "assistant");
-      expect(replies.map((group) => [group.messages.length, group.replyToSender?.name])).toEqual(
-        local
-          ? [
-              [1, "Bob"],
-              [1, undefined],
-            ]
-          : [
-              [1, "Alice"],
-              [1, "Bob"],
-            ],
-      );
+      expect(replies.map((group) => [group.messages.length, group.replyToSender?.name])).toEqual([
+        [1, local ? "Bob" : "Alice"],
+        [1, local ? undefined : "Bob"],
+      ]);
       if (local) {
         expect(replies[1]?.replyShared).toBe(true);
         expect(replies[1]?.replyTurnSource?.key).toBe("msg:send:local-run:0");
@@ -286,81 +306,50 @@ describe("reply attribution grouping", () => {
   );
 
   it.each([
-    {
-      case: "a listed profile's legacy messages",
-      people: [sessionParticipantIdentityKey({ type: "profile", id: "alice" })],
-      senders: [{ senderId: "alice", senderName: "Alice" }],
-      shared: undefined,
-    },
-    {
-      case: "an untyped sender whose name changes",
-      people: [],
-      senders: [
-        { senderId: "alice", senderName: "Alice" },
-        { senderId: "alice", senderName: "Alice Liddell", senderUsername: "al" },
-      ],
-      shared: undefined,
-    },
-    {
-      case: "a typed profile after its own untyped messages",
-      people: [],
-      senders: [
-        { senderId: "alice", senderName: "Alice" },
-        { senderId: "alice", senderIdentity: { type: "profile", id: "alice" } },
-      ],
-      shared: undefined,
-    },
-    {
-      case: "two untyped senders",
-      people: [sessionParticipantIdentityKey({ type: "profile", id: "alice" })],
-      senders: [
+    senderCase(
+      "a listed profile's legacy messages",
+      [{ senderId: "alice", senderName: "Alice" }],
+      undefined,
+      [profileKey("alice")],
+    ),
+    senderCase("an untyped sender whose name changes", [
+      { senderId: "alice", senderName: "Alice" },
+      { senderId: "alice", senderName: "Alice Liddell", senderUsername: "al" },
+    ]),
+    senderCase("a typed profile after its own untyped messages", [
+      { senderId: "alice", senderName: "Alice" },
+      { senderId: "alice", senderIdentity: { type: "profile", id: "alice" } },
+    ]),
+    senderCase(
+      "two untyped senders",
+      [
         { senderId: "alice", senderName: "Alice" },
         { senderId: "bob", senderName: "Bob" },
       ],
-      shared: true,
-    },
-    {
-      case: "one observed sender with reordered identity fields",
-      people: [],
-      senders: [
-        {
-          senderId: "alice",
-          senderIdentity: {
-            type: "observation",
-            pluginId: "slack",
-            accountId: "work",
-            senderKind: "human",
-            id: "alice",
-          },
-        },
-        {
-          senderId: "alice",
-          senderIdentity: {
-            id: "alice",
-            senderKind: "human",
-            accountId: "work",
-            pluginId: "slack",
-            type: "observation",
-          },
-        },
-      ],
-      shared: undefined,
-    },
-    {
-      case: "same observed sender id in different accounts",
-      people: [],
-      senders: ["work", "personal"].map((accountId) => ({
+      true,
+      [profileKey("alice")],
+    ),
+    senderCase("one observed sender with reordered identity fields", [
+      { senderId: "alice", senderIdentity: observedSender("work") },
+      {
         senderId: "alice",
         senderIdentity: {
-          type: "observation",
-          pluginId: "slack",
-          accountId,
-          senderKind: "human",
           id: "alice",
+          senderKind: "human",
+          accountId: "work",
+          pluginId: "slack",
+          type: "observation",
         },
+      },
+    ]),
+    senderCase(
+      "same observed sender id in different accounts",
+      ["work", "personal"].map((accountId) => ({
+        senderId: "alice",
+        senderIdentity: observedSender(accountId),
       })),
-      shared: true,
-    },
+      true,
+    ),
   ])("counts people by stable sender id: $case", ({ people, senders, shared }) => {
     const groups = messageGroups({
       replyPeople: people,
@@ -388,13 +377,7 @@ describe("reply attribution grouping", () => {
     ({ peer, shared }) => {
       // The session row lists only its owner; the viewer's own prompts carry no sender.
       const viewer = localParticipantIdentityKey("viewer");
-      const attributed = userMessage("Status?", 1002, {
-        __openclaw: {
-          senderId: peer,
-          senderName: peer,
-          senderIdentity: { type: "profile", id: peer },
-        },
-      });
+      const attributed = profilePrompt("Status?", 1002, peer, peer);
       const groups = messageGroups({
         replyPeople: [viewer],
         replyLocalPerson: viewer,
@@ -449,34 +432,16 @@ describe("reply attribution grouping", () => {
     },
     { changed: "prompt content", text: "updated prompt", name: "Bob", avatar: undefined },
   ])("$changed refreshes attribution on an unchanged assistant reply", ({ text, name, avatar }) => {
-    const alice = userMessage("first", 1, {
-      __openclaw: {
-        senderId: "alice",
-        senderName: "Alice",
-        senderIdentity: { type: "profile", id: "alice" },
-      },
-    });
-    const bob = userMessage("second", 2, {
-      __openclaw: {
-        id: "bob-prompt",
-        senderId: "bob",
-        senderName: "Bob",
-        senderIdentity: { type: "profile", id: "bob" },
-      },
-    });
+    const alice = profilePrompt("first", 1, "alice", "Alice");
+    const bob = profilePrompt("second", 2, "bob", "Bob", { id: "bob-prompt" });
     const reply = assistantMessage("answer", 3);
     const input = createProps({ messages: [alice, bob, reply] });
     const original = buildCachedChatItems(input).find(
       (item) => item.kind === "group" && item.role === "assistant",
     );
-    const replacement = userMessage(text, 2, {
-      __openclaw: {
-        id: "bob-prompt",
-        senderId: "bob",
-        senderName: name,
-        senderIdentity: { type: "profile", id: "bob" },
-        ...(avatar ? { senderProfileAvatarUrl: avatar } : {}),
-      },
+    const replacement = profilePrompt(text, 2, "bob", name, {
+      id: "bob-prompt",
+      ...(avatar ? { senderProfileAvatarUrl: avatar } : {}),
     });
     const updated = buildCachedChatItems({ ...input, messages: [alice, replacement, reply] }).find(
       (item) => item.kind === "group" && item.role === "assistant",

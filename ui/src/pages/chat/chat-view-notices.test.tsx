@@ -6,6 +6,18 @@ import { t } from "../../i18n/index.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import { renderChatComposerNotices, renderChatTopbarNotices } from "./chat-view-notices.tsx";
 
+type ComposerProps = Parameters<typeof renderChatComposerNotices>[0];
+
+function mountComposer(props: Omit<ComposerProps, "messages">) {
+  return mountSolid(() => renderChatComposerNotices({ messages: [], ...props })).container;
+}
+
+function publishedComposer(initial: ComposerProps) {
+  const ComposerNotices = renderChatComposerNotices;
+  const [props, publish] = createSignal(initial);
+  return { ...mountSolid(() => <ComposerNotices {...props()} />), publish };
+}
+
 afterEach(() => {
   document.body.replaceChildren();
 });
@@ -52,17 +64,11 @@ it.each([
 
 it.each([true, false])("refreshes a failed conversation only while connected=%s", (connected) => {
   const onRefresh = vi.fn();
-  const container = document.body.appendChild(document.createElement("div"));
-  mountSolid(
-    () =>
-      renderChatComposerNotices({
-        connected,
-        messages: [],
-        runError: { summary: "The conversation changed before your message could run." },
-        onRefresh,
-      }),
-    { container },
-  );
+  const container = mountComposer({
+    connected,
+    runError: { summary: "The conversation changed before your message could run." },
+    onRefresh,
+  });
   const refresh = Array.from(
     container.querySelectorAll<HTMLButtonElement>(".chat-error button"),
   ).find((button) => button.textContent?.trim() === "Refresh");
@@ -109,13 +115,8 @@ it.each([
 );
 
 it("retains the provider notice across unrelated pane publications", () => {
-  const ComposerNotices = renderChatComposerNotices;
   const providerPolicyNotice = { runId: "run-1", seq: 1, state: "buffering" as const };
-  const [props, publish] = createSignal<Parameters<typeof ComposerNotices>[0]>({
-    messages: [],
-    providerPolicyNotice,
-  });
-  const { container } = mountSolid(() => <ComposerNotices {...props()} />);
+  const { container, publish } = publishedComposer({ messages: [], providerPolicyNotice });
   const notice = container.querySelector(".chat-provider-policy-notice");
   expect(notice).not.toBeNull();
   for (const messages of [[], [{ role: "assistant", content: "Updated history" }]]) {
@@ -129,24 +130,17 @@ it("retains the provider notice across unrelated pane publications", () => {
 it("offers an explicit discard action with the full warning when unsaved starts block recovery", () => {
   const discardAndReload = vi.fn();
   const retry = vi.fn();
-  const container = document.body.appendChild(document.createElement("div"));
-
-  mountSolid(
-    () =>
-      renderChatComposerNotices({
-        messages: [],
-        placementStartup: {
-          sessionKey: "agent:main:unsaved-start",
-          phase: "failed",
-          startedAt: 1,
-          retryable: false,
-          error: t("newSession.placementReloadBlocked"),
-          discardAndReload,
-        },
-        onRetrySessionPlacementStartup: retry,
-      }),
-    { container },
-  );
+  const container = mountComposer({
+    placementStartup: {
+      sessionKey: "agent:main:unsaved-start",
+      phase: "failed",
+      startedAt: 1,
+      retryable: false,
+      error: t("newSession.placementReloadBlocked"),
+      discardAndReload,
+    },
+    onRetrySessionPlacementStartup: retry,
+  });
 
   const alert = container.querySelector('[role="alert"]');
   expect(alert?.querySelector("details")).toBeNull();
@@ -170,18 +164,12 @@ it.each([true, false])(
     const onRetrySessionPlacementStartup = vi.fn();
     const diagnostic =
       "Temporarily busy. Check status before trying again.\nState contention: session store; attempts exhausted.\n<img src=x onerror=alert(1)>";
-    const container = document.body.appendChild(document.createElement("div"));
-    mountSolid(
-      () =>
-        renderChatComposerNotices({
-          connected,
-          messages: [],
-          runError: { kind: "state_contention", summary: diagnostic },
-          onRefresh,
-          onRetrySessionPlacementStartup,
-        }),
-      { container },
-    );
+    const container = mountComposer({
+      connected,
+      runError: { kind: "state_contention", summary: diagnostic },
+      onRefresh,
+      onRetrySessionPlacementStartup,
+    });
     const notice = container.querySelector(".chat-error");
     expect(notice?.classList.contains("chat-composer-neighbor-card--warn")).toBe(true);
     expect(notice?.classList.contains("chat-composer-neighbor-card--danger")).toBe(false);
@@ -205,7 +193,6 @@ it.each([true, false])(
 it.each(["run", "placement"] as const)(
   "keeps an expanded diagnostic and its focus across owner publications (%s)",
   (kind) => {
-    const ComposerNotices = renderChatComposerNotices;
     const diagnostic = "Synthetic failure\n  at workspace/session.ts:42";
     const initial: Parameters<typeof renderChatComposerNotices>[0] = {
       messages: [],
@@ -221,8 +208,7 @@ it.each(["run", "placement"] as const)(
             }
           : undefined,
     };
-    const [props, publish] = createSignal(initial);
-    const { container } = mountSolid(() => <ComposerNotices {...props()} />);
+    const { container, publish } = publishedComposer(initial);
     const details = container.querySelector("details")!;
     const summary = details.querySelector("summary")!;
     details.open = true;

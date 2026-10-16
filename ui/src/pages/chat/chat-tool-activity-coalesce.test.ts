@@ -173,39 +173,33 @@ describe("tool activity outcome authority", () => {
     },
   );
 
-  it.each([undefined] as const)(
-    "retains a durable %s result over stale live activity",
-    (status) => {
-      const terminal = item(
-        {
-          role: "toolResult",
-          runId: "run",
-          toolCallId: "active",
-          toolName: "exec",
-          content: [{ type: "text", text: "Command ended" }],
-          activity: [activity(status)],
-        },
-        "result",
-      );
-      for (const rows of [
-        [call(), terminal, call("running", true)],
-        [call("running", true), call(), terminal],
-      ]) {
-        expect(outcomes(rows)).toEqual([activity(status)]);
-      }
-    },
-  );
-
-  it.each([undefined] as const)(
-    "retains a terminal %s outcome when its raw result is outside the page",
-    (status) => {
-      const history = item({
-        role: "assistant",
+  it("retains a durable result over stale live activity", () => {
+    const terminal = item(
+      {
+        role: "toolResult",
         runId: "run",
-        content: [{ type: "toolCall", id: "active", name: "exec", arguments: {} }],
-        activity: [activity(status)],
-      });
-      expect(outcomes([history, call("running", true)])).toEqual([activity(status)]);
-    },
-  );
+        toolCallId: "active",
+        toolName: "exec",
+        content: [{ type: "text", text: "Command ended" }],
+        activity: [activity()],
+      },
+      "result",
+    );
+    for (const rows of [
+      [call(), terminal, call("running", true)],
+      [call("running", true), call(), terminal],
+    ]) {
+      expect(outcomes(rows)).toEqual([activity()]);
+    }
+  });
+
+  it("retains a terminal outcome when its raw result is outside the page", () => {
+    const history = item({
+      role: "assistant",
+      runId: "run",
+      content: [{ type: "toolCall", id: "active", name: "exec", arguments: {} }],
+      activity: [activity()],
+    });
+    expect(outcomes([history, call("running", true)])).toEqual([activity()]);
+  });
 });
