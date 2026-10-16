@@ -9,7 +9,6 @@ import {
   resolveAgentRunErrorLifecycleFields,
 } from "../../agents/run-termination.js";
 import { installSessionPlacementAdmissionProvider } from "../../agents/session-placement-admission.js";
-import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import {
   type AgentEventPayload,
   getAgentEventLifecycleGeneration,
@@ -30,7 +29,10 @@ import { closeStateDatabaseForTest } from "../../test-utils/database-cleanup.js"
 import { STALE_WORKER_BUILD_REASON } from "./admission.js";
 import type { WorkerTurnTunnelHandle } from "./tunnel-contract.js";
 import {
+  completeTurn,
+  createLauncher,
   environmentForTunnel,
+  expectUncalled,
   executeTurn,
   localResult,
   runIdentity,
@@ -38,13 +40,11 @@ import {
 import {
   createWorkerTurnTunnel,
   reconcileUnchangedLocalWorkspace,
-  acknowledgeCompletedWorkerTurn,
   SESSION_ID,
   SESSION_KEY,
   attachedEnvironment,
   cleanupWorkerTurnLauncherTest,
   createWorkerSessionTurnPlacementProvider,
-  openSessionManager,
   placements,
   root,
   seedActivePlacement,
@@ -105,11 +105,7 @@ describe("worker turn launcher reclaimed placement", () => {
     const redispatchPlacement = vi.fn(async () => {
       throw new Error("redispatch should not run");
     });
-    const provider = createWorkerSessionTurnPlacementProvider({
-      environments: unusedEnvironments(),
-      placements,
-      redispatchPlacement,
-    });
+    const provider = createLauncher({ redispatchPlacement });
 
     await expect(
       provider.executeTurn(
@@ -164,14 +160,7 @@ describe("worker turn launcher reclaimed placement", () => {
         state: "active",
         turnClaim: { owner: "worker", runId },
       });
-      const completed = await openSessionManager();
-      const leafId = await completed.appendMessageAsync(
-        makeAgentAssistantMessage({
-          content: [{ type: "text", text: "Redispatched worker reply" }],
-          timestamp: 51,
-        }),
-      );
-      return acknowledgeCompletedWorkerTurn(request.turnClaim, leafId);
+      return completeTurn(request, "Redispatched worker reply", 51);
     });
     const environments = environmentForTunnel({
       startTunnel: vi.fn(async () =>
@@ -425,9 +414,7 @@ describe("worker turn launcher reclaimed placement", () => {
           expect(onLaneWait.mock.calls).toEqual([[{ waitMs: 0, queuedAhead: 0, waiting: false }]]);
         }
         expect(placements.get(SESSION_ID)).toMatchObject({ state: "active", turnClaim: null });
-        expect(environments.get).not.toHaveBeenCalled();
-        expect(environments.startTunnel).not.toHaveBeenCalled();
-        expect(runLocal).not.toHaveBeenCalled();
+        expectUncalled(environments.get, environments.startTunnel, runLocal);
       } finally {
         resumeWorkspaceResolution.resolve();
         uninstallPlacement();
@@ -438,50 +425,30 @@ describe("worker turn launcher reclaimed placement", () => {
     },
   );
 
-  it("rejects setup without a live dispatch owner instead of falling back locally", async () => {
-    await placements.startDispatch({
-      sessionId: SESSION_ID,
-      sessionKey: SESSION_KEY,
-      agentId: "main",
-    });
-    const provider = createWorkerSessionTurnPlacementProvider({
-      environments: unusedEnvironments(),
-      placements,
-    });
-    const runLocal = vi.fn(localResult);
+  it.each(["requested", "failed"] as const)(
+    "rejects %s placement without local fallback",
+    async (state) => {
+      await placements.startDispatch(runIdentity(`run-${state}`));
+      if (state === "failed") {
+        await placements.fail({
+          sessionId: SESSION_ID,
+          recoveryError: "stale terminal worker failure",
+        });
+        await placements.fail({ sessionId: SESSION_ID, recoveryError: STALE_WORKER_BUILD_REASON });
+      }
+      const provider = createLauncher();
+      const runLocal = vi.fn(localResult);
 
-    await expect(executeTurn(provider, "run-requested", runLocal)).rejects.toThrow(
-      "Worker setup has no live dispatch owner.",
-    );
-    expect(runLocal).not.toHaveBeenCalled();
-    expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
-  });
-
-  it("preserves the failed placement cause", async () => {
-    const recoveryError = STALE_WORKER_BUILD_REASON;
-    await placements.startDispatch({
-      sessionId: SESSION_ID,
-      sessionKey: SESSION_KEY,
-      agentId: "main",
-    });
-    await placements.fail({
-      sessionId: SESSION_ID,
-      recoveryError: "stale terminal worker failure",
-    });
-    await placements.fail({
-      sessionId: SESSION_ID,
-      recoveryError,
-    });
-    const provider = createWorkerSessionTurnPlacementProvider({
-      environments: unusedEnvironments(),
-      placements,
-    });
-    const runLocal = vi.fn(localResult);
-
-    await expect(executeTurn(provider, "run-failed", runLocal)).rejects.toMatchObject({
-      message: `Worker turn rejected in placement failed: ${recoveryError}`,
-    });
-    expect(runLocal).not.toHaveBeenCalled();
-    expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
-  });
+      const run = executeTurn(provider, `run-${state}`, runLocal);
+      await expect(run).rejects.toThrow();
+      await expect(run).rejects.toMatchObject({
+        message:
+          state === "failed"
+            ? `Worker turn rejected in placement failed: ${STALE_WORKER_BUILD_REASON}`
+            : expect.stringContaining("Worker setup has no live dispatch owner."),
+      });
+      expect(runLocal).not.toHaveBeenCalled();
+      expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
+    },
+  );
 });

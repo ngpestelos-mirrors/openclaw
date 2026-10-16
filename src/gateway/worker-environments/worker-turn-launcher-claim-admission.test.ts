@@ -6,17 +6,18 @@ import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-messa
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { SpawnResult } from "../../process/exec.js";
 import { closeStateDatabaseForTest } from "../../test-utils/database-cleanup.js";
-import { parseWorkerLaunchDescriptor } from "../../worker/launch-descriptor.js";
 import { result as processResult } from "./bootstrap.test-support.js";
 import { placementTurnOwner } from "./placement-record.js";
 import { completeWorkerWorkspaceTeardown } from "./placement-teardown.js";
-import { seedAttachedPlacementEnvironment } from "./placement-test-fixtures.js";
 import { createWorkerSessionPlacementGate } from "./placement-worker-gate.js";
 import type { WorkerTurnTunnelHandle } from "./tunnel-contract.js";
 import { createWorkerGatewayTools } from "./worker-session-tool-executor.js";
 import { waitForPendingWorkerResult } from "./worker-turn-admission.js";
 import {
+  completeTurn,
+  createLauncher,
   environmentForTunnel,
+  launchDescriptor,
   executeTurn,
   localResult,
   runIdentity,
@@ -24,7 +25,6 @@ import {
 import {
   createWorkerTurnTunnel,
   reconcileUnchangedLocalWorkspace,
-  acknowledgeCompletedWorkerTurn,
   ENVIRONMENT_ID,
   MANIFEST_REF,
   OWNER_EPOCH,
@@ -32,6 +32,7 @@ import {
   attachedEnvironment,
   cleanupWorkerTurnLauncherTest,
   database,
+  dispatchInitialWorkerPlacement,
   createWorkerSessionTurnPlacementProvider,
   credential,
   openSessionManager,
@@ -40,7 +41,6 @@ import {
   sessionTarget,
   setupWorkerTurnLauncherTest,
   turn,
-  unusedEnvironments,
   withWorkerCompactionAdoption,
 } from "./worker-turn-launcher.test-support.js";
 
@@ -70,10 +70,7 @@ describe("worker turn launcher claim admission", () => {
   it.each(["worker-turn", "remote-exec"] as const)(
     "rejects compaction successors throughout the %s placement lifecycle without changing ownership",
     async (executionMode) => {
-      const provider = createWorkerSessionTurnPlacementProvider({
-        environments: unusedEnvironments(),
-        placements,
-      });
+      const provider = createLauncher();
       const successorGate = vi.spyOn(provider, "assertCompactionSuccessorAllowed");
       const uninstall = installSessionPlacementAdmissionProvider(provider);
       try {
@@ -95,41 +92,23 @@ describe("worker turn launcher claim admission", () => {
             runId: "run-placement-compaction",
             owner: { kind: "local" },
           });
-          let placement = await placements.startDispatch({ ...sessionTarget, executionMode });
-          await expect(adopt(SESSION_ID)).resolves.toBeUndefined();
-          expect(successorGate).not.toHaveBeenCalled();
-          await assertRejected();
-          expect(placements.validateTurnClaim(localClaim)).toBe(true);
-          await placements.releaseTurn(localClaim);
-          seedAttachedPlacementEnvironment(database, {
-            environmentId: ENVIRONMENT_ID,
-            sessionId: SESSION_ID,
-            ownerEpoch: OWNER_EPOCH,
-          });
-          for (const { to, patch } of [
-            { to: "provisioning", patch: { environmentId: ENVIRONMENT_ID } },
-            { to: "syncing", patch: { workerBundleHash: "a".repeat(64) } },
-            {
-              to: "starting",
-              patch: {
-                remoteWorkspaceDir: "/worker/workspace",
-                workspaceBaseManifestRef: MANIFEST_REF,
-              },
+          const placement = await dispatchInitialWorkerPlacement({
+            database,
+            placements,
+            identity: { ...sessionTarget, executionMode },
+            workspace: "/worker/workspace",
+            onTransition: async (current) => {
+              if (current.state === "requested") {
+                await expect(adopt(SESSION_ID)).resolves.toBeUndefined();
+                expect(successorGate).not.toHaveBeenCalled();
+              }
+              await assertRejected();
+              if (current.state === "requested") {
+                expect(placements.validateTurnClaim(localClaim)).toBe(true);
+                await placements.releaseTurn(localClaim);
+              }
             },
-            { to: "active", patch: { activeOwnerEpoch: OWNER_EPOCH } },
-          ] as const) {
-            placement = await placements.transition({
-              sessionId: SESSION_ID,
-              from: placement.state,
-              to,
-              expectedGeneration: placement.generation,
-              patch,
-            });
-            await assertRejected();
-          }
-          if (placement.state !== "active") {
-            throw new Error("expected active placement after dispatch");
-          }
+          });
           const workerClaim = await placements.claimTurn({
             ...sessionTarget,
             claimId: "active-worker-compaction",
@@ -173,33 +152,57 @@ describe("worker turn launcher claim admission", () => {
     },
   );
 
-  it("keeps a replacement admitted while a healthy workspace result is pending", async () => {
-    const { claim: priorClaim } = await claimActiveTurn("prior-result");
-    await placements.markWorkspaceResultPending(priorClaim);
-    const waitForRelease = vi.spyOn(placements, "waitForTurnClaimRelease");
-    const provider = createWorkerSessionTurnPlacementProvider({
-      environments: unusedEnvironments(),
-      placements,
-    });
+  it.each(["worker-turn", "remote-exec"] as const)(
+    "holds a %s replacement across pending-result admission and reconciliation",
+    async (mode) => {
+      const { claim: priorClaim } = await claimActiveTurn("prior-result", mode);
+      const projectionReads = vi.spyOn(placements, "readProjection");
+      let readsBeforeClaim = 0;
+      if (mode === "remote-exec") {
+        const claimTurn = placements.claimTurn.bind(placements);
+        vi.spyOn(placements, "claimTurn").mockImplementationOnce(async (...args) => {
+          readsBeforeClaim = projectionReads.mock.calls.length;
+          try {
+            return await claimTurn(...args);
+          } catch (error) {
+            await placements.markWorkspaceResultPending(priorClaim);
+            throw error;
+          }
+        });
+      } else {
+        await placements.markWorkspaceResultPending(priorClaim);
+      }
+      const waitForRelease = vi.spyOn(placements, "waitForTurnClaimRelease");
+      const provider = createLauncher();
 
-    await expect(executeTurn(provider, priorClaim.runId)).rejects.toThrow(
-      "already has an active turn claim",
-    );
-    expect(waitForRelease).not.toHaveBeenCalled();
+      if (mode === "worker-turn") {
+        await expect(executeTurn(provider, priorClaim.runId)).rejects.toThrow(
+          "already has an active turn claim",
+        );
+        expect(waitForRelease).not.toHaveBeenCalled();
+      }
 
-    const replacement = executeTurn(provider, "next-run");
-    void replacement.catch(() => undefined);
-    await vi.waitFor(() => expect(waitForRelease).toHaveBeenCalledOnce());
-    expect(waitForRelease).toHaveBeenCalledWith(SESSION_ID, {});
-    expect(placements.get(SESSION_ID)?.turnClaim?.runId).toBe(priorClaim.runId);
+      const replacement = executeTurn(provider, "next-run");
+      void replacement.catch(() => undefined);
+      await vi.waitFor(() => expect(waitForRelease).toHaveBeenCalledOnce());
+      expect(waitForRelease).toHaveBeenCalledWith(SESSION_ID, {});
+      expect(placements.get(SESSION_ID)?.turnClaim?.runId).toBe(priorClaim.runId);
 
-    await placements.updateWorkspaceBaseManifest({ claim: priorClaim, manifestRef: MANIFEST_REF });
-    await placements.acceptWorkspaceResult(priorClaim);
-    await placements.completeWorkspaceResultAndReleaseTurn(priorClaim);
-    await expect(replacement).rejects.toThrow(
-      "Active worker placement does not match its attached environment",
-    );
-  });
+      await placements.updateWorkspaceBaseManifest({
+        claim: priorClaim,
+        manifestRef: MANIFEST_REF,
+      });
+      await placements.acceptWorkspaceResult(priorClaim);
+      await placements.completeWorkspaceResultAndReleaseTurn(priorClaim);
+      await expect(replacement).rejects.toThrow(
+        `Active ${mode === "worker-turn" ? "worker" : "remote-exec"} placement does not match its attached environment`,
+      );
+      // Both preparation facts must come from one worker request, even when claim admission loses a race.
+      if (mode === "remote-exec") {
+        expect(readsBeforeClaim).toBe(1);
+      }
+    },
+  );
 
   it("returns a recovery outcome for restart-cleared claim retry", async () => {
     const runId = "restart-result-run";
@@ -227,10 +230,7 @@ describe("worker turn launcher claim admission", () => {
       "Workspace recovery is still pending",
     );
     const runLocal = vi.fn(localResult);
-    const provider = createWorkerSessionTurnPlacementProvider({
-      environments: unusedEnvironments(),
-      placements,
-    });
+    const provider = createLauncher();
     await expect(
       provider.executeTurn({ ...sessionTarget, runId }, turn(runId), runLocal),
     ).rejects.toThrow("Wait for workspace recovery to finish before retrying");
@@ -240,42 +240,6 @@ describe("worker turn launcher claim admission", () => {
     expect(runLocal).not.toHaveBeenCalled();
     expect(await placements.listPendingWorkspaceResultsAsync()).toEqual(pending);
     expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
-  });
-
-  it("holds a remote-exec follow-up when reconciliation starts during claim admission", async () => {
-    const { claim: priorClaim } = await claimActiveTurn("remote-result", "remote-exec");
-    const projectionReads = vi.spyOn(placements, "readProjection");
-    let readsBeforeClaim = 0;
-    const claimTurn = placements.claimTurn.bind(placements);
-    vi.spyOn(placements, "claimTurn").mockImplementationOnce(async (...args) => {
-      readsBeforeClaim = projectionReads.mock.calls.length;
-      try {
-        return await claimTurn(...args);
-      } catch (error) {
-        await placements.markWorkspaceResultPending(priorClaim);
-        throw error;
-      }
-    });
-    const waitForRelease = vi.spyOn(placements, "waitForTurnClaimRelease");
-    const provider = createWorkerSessionTurnPlacementProvider({
-      environments: unusedEnvironments(),
-      placements,
-    });
-
-    const replacement = executeTurn(provider, "next-remote-run");
-    void replacement.catch(() => undefined);
-    await vi.waitFor(() => expect(waitForRelease).toHaveBeenCalledOnce());
-    expect(waitForRelease).toHaveBeenCalledWith(SESSION_ID, {});
-    expect(placements.get(SESSION_ID)?.turnClaim?.runId).toBe(priorClaim.runId);
-
-    await placements.updateWorkspaceBaseManifest({ claim: priorClaim, manifestRef: MANIFEST_REF });
-    await placements.acceptWorkspaceResult(priorClaim);
-    await placements.completeWorkspaceResultAndReleaseTurn(priorClaim);
-    await expect(replacement).rejects.toThrow(
-      "Active remote-exec placement does not match its attached environment",
-    );
-    // Placement and pending-result preparation must use the same worker request.
-    expect(readsBeforeClaim).toBe(1);
   });
 
   it("redispatches the admitted replacement after pending-result recovery reclaims it", async () => {
@@ -298,11 +262,7 @@ describe("worker turn launcher claim admission", () => {
     const redispatchPlacement = vi.fn(async () => {
       throw new Error("redispatch reached");
     });
-    const provider = createWorkerSessionTurnPlacementProvider({
-      environments: unusedEnvironments(),
-      placements,
-      redispatchPlacement,
-    });
+    const provider = createLauncher({ redispatchPlacement });
 
     await expect(executeTurn(provider, "next-after-reclaim")).rejects.toThrow("redispatch reached");
     expect(redispatchPlacement).toHaveBeenCalledOnce();
@@ -325,14 +285,7 @@ describe("worker turn launcher claim admission", () => {
         await finishCancellation.promise;
         return processResult({ code: 1, killed: true });
       }
-      const completed = await openSessionManager();
-      const leafId = await completed.appendMessageAsync(
-        makeAgentAssistantMessage({
-          content: [{ type: "text", text: "Recovered after cancellation" }],
-          timestamp: 41,
-        }),
-      );
-      return acknowledgeCompletedWorkerTurn(request.turnClaim, leafId);
+      return completeTurn(request, "Recovered after cancellation", 41);
     });
     const environments = environmentForTunnel({
       acquireTurnCredential: vi.fn(async () => credential(String(launchCount + 1).repeat(43))),
@@ -547,13 +500,7 @@ describe("worker turn launcher claim admission", () => {
           launchTurn: vi.fn(async (request): Promise<SpawnResult> => {
             request.onDispatchReady?.();
             launchCount += 1;
-            const descriptor = parseWorkerLaunchDescriptor({
-              ...structuredClone(request.plan),
-              connectionEndpoint: {
-                kind: "unix",
-                socketPath: "/worker/gateway.sock",
-              },
-            });
+            const descriptor = launchDescriptor(request.plan);
             turnIds.push(descriptor.assignment.turnId);
             if (launchCount === 1) {
               const completed = await openSessionManager();
@@ -579,14 +526,7 @@ describe("worker turn launcher claim admission", () => {
                 }),
               });
             }
-            const completed = await openSessionManager();
-            const leafId = await completed.appendMessageAsync(
-              makeAgentAssistantMessage({
-                content: [{ type: "text", text: "Recovered worker reply" }],
-                timestamp: 41,
-              }),
-            );
-            return acknowledgeCompletedWorkerTurn(request.turnClaim, leafId);
+            return completeTurn(request, "Recovered worker reply", 41);
           }),
           reconcileWorkspace: vi.fn(reconcileUnchangedLocalWorkspace),
         }),
