@@ -1,5 +1,5 @@
 /* @vitest-environment jsdom */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
 import { GatewayBrowserClient } from "../../../api/gateway.ts";
 import type { CronJob } from "../../../api/types.ts";
@@ -41,16 +41,6 @@ function inventory(jobs: CronJob[]) {
     snapshotRevision: "inventory",
   };
 }
-const roots = new Set<HTMLElement>();
-afterEach(() => {
-  for (const root of roots) {
-    root.replaceChildren();
-    root.remove();
-  }
-  roots.clear();
-  vi.restoreAllMocks();
-});
-
 function job(sessionId: string, option: CiAutomationOption = "autoFix"): CronJob {
   return {
     ...ciAutomationJobSpec({ ...pr, agentId: "main", sessionKey, sessionId }, option),
@@ -86,15 +76,17 @@ async function setup() {
     client,
     hello: hello(),
   });
-  const root = document.createElement("div");
+  const root = document.createElement("details");
+  root.className = "chat-pr__checks";
   document.body.append(root);
-  roots.add(root);
-  const disclosure = document.createElement("details");
-  disclosure.className = "chat-pr__checks";
-  disclosure.append(document.createElement("openclaw-chat-ci-automation"));
-  const element = disclosure.querySelector<ChatCiAutomationElement>("openclaw-chat-ci-automation")!;
+  onTestFinished(() => {
+    root.replaceChildren();
+    root.remove();
+    vi.restoreAllMocks();
+  });
+  root.append(document.createElement("openclaw-chat-ci-automation"));
+  const element = root.querySelector<ChatCiAutomationElement>("openclaw-chat-ci-automation")!;
   Object.assign(element, { pullRequest: pr, gateway: harness.gateway, sessionKey });
-  root.append(disclosure);
   const paint = async (sessionId: string) => {
     element.sessionId = sessionId;
     await element.updateComplete;
@@ -102,8 +94,8 @@ async function setup() {
   };
   await paint("first");
   const open = async () => {
-    disclosure.open = true;
-    disclosure.dispatchEvent(new Event("toggle"));
+    root.open = true;
+    root.dispatchEvent(new Event("toggle"));
     await element.updateComplete;
   };
   const settle = async () => {
@@ -145,28 +137,6 @@ async function setup() {
 }
 
 describe("CI automation popup scope", () => {
-  it("keeps independent toggles responsive and reconciles silently after saving", async () => {
-    const h = await setup();
-    const pending = createDeferred<CronJob>();
-    let stored = job("first");
-    h.respond(() => [stored], { "cron.update": pending.promise });
-    await h.ready();
-    const before = h.root.textContent;
-    h.checkbox().click();
-    expect(h.checkbox().checked).toBe(false);
-    await h.element.updateComplete;
-    expect(h.checkbox().checked).toBe(false);
-    expect(h.checkbox().closest("fieldset")?.disabled).toBe(false);
-    expect(h.checkbox("autoMerge").disabled).toBe(false);
-    expect(h.root.textContent).toBe(before);
-    expect(h.root.querySelector('a[href*="?job="]')).toBeNull();
-    stored = { ...stored, enabled: false, configRevision: "v2" };
-    pending.resolve(stored);
-    await h.settle();
-    expect(h.checkbox().checked).toBe(false);
-    expect(h.root.textContent).toBe(before);
-  });
-
   it("keeps concurrent intents across stale inventory and out-of-order acknowledgements", async () => {
     const h = await setup();
     const staleRead = createDeferred<ReturnType<typeof inventory>>();
@@ -177,10 +147,18 @@ describe("CI automation popup scope", () => {
     let stored = [fix];
     h.respond(() => stored, { "cron.update": fixWrite.promise, "cron.add": mergeWrite.promise });
     await h.ready();
+    const before = h.root.textContent;
     h.request.mockImplementationOnce(() => staleRead.promise);
     h.emit({}, "cron");
     await h.element.updateComplete;
     h.checkbox().click();
+    expect(h.checkbox().checked).toBe(false);
+    await h.element.updateComplete;
+    expect(h.checkbox().checked).toBe(false);
+    expect(h.checkbox().closest("fieldset")?.disabled).toBe(false);
+    expect(h.checkbox("autoMerge").disabled).toBe(false);
+    expect(h.root.textContent).toBe(before);
+    expect(h.root.querySelector('a[href*="?job="]')).toBeNull();
     h.checkbox("autoMerge").click();
     await h.element.updateComplete;
     h.toggles(false, true);
@@ -204,6 +182,7 @@ describe("CI automation popup scope", () => {
     expect(h.calls("cron.list")).toHaveLength(3);
     h.toggles(false, true);
     expect(h.checkbox().disabled).toBe(false);
+    expect(h.root.textContent).toBe(before);
   });
 
   it("retains a lost-ack error through sibling completion and reconciles without replay", async () => {

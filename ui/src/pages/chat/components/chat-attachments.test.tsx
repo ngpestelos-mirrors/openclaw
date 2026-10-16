@@ -59,22 +59,18 @@ it("memoizes each advertised policy and derives the default decoded frame budget
 });
 
 it("counts restored payload bytes when size metadata is absent or invalid", () => {
-  const attachments: ChatAttachment[] = [
-    { id: "size", mimeType: "text/plain", sizeBytes: 4, dataUrl: "data:text/plain;base64,aGk=" },
-    { id: "missing", mimeType: "text/plain", dataUrl: "data:text/plain;base64,aGk=" },
-    {
-      id: "invalid",
-      mimeType: "text/plain",
-      sizeBytes: Number.NaN,
-      dataUrl: "data:text/plain;base64,YQ==",
-    },
-    {
-      id: "negative",
-      mimeType: "text/plain",
-      sizeBytes: -1,
-      dataUrl: "data:text/plain;base64,YWJj",
-    },
-    { id: "unavailable", mimeType: "text/plain", sizeBytes: Infinity },
+  const attachment = (id: string, sizeBytes?: number, data?: string): ChatAttachment => ({
+    id,
+    mimeType: "text/plain",
+    sizeBytes,
+    dataUrl: data ? "data:text/plain;base64," + data : undefined,
+  });
+  const attachments = [
+    attachment("size", 4, "aGk="),
+    attachment("missing", undefined, "aGk="),
+    attachment("invalid", Number.NaN, "YQ=="),
+    attachment("negative", -1, "YWJj"),
+    attachment("unavailable", Infinity),
   ];
   expect(chatAttachmentBatchBytes(attachments)).toBe(10);
 });
@@ -91,7 +87,7 @@ it("admits same-name image payloads with independent identities", () => {
   });
 
   expect(attachments[0]?.id).not.toBe(attachments[1]?.id);
-  expect(attachments.map(({ fileName, sizeBytes }) => ({ fileName, sizeBytes }))).toEqual([
+  expect(attachments).toMatchObject([
     { fileName: "capture.png", sizeBytes: 6 },
     { fileName: "capture.png", sizeBytes: 6 },
   ]);
@@ -120,19 +116,10 @@ function resizePngFixture(bytes?: Uint8Array<ArrayBuffer>): File {
   return file;
 }
 
-class StubFileReader {
+class StubFileReader extends EventTarget {
   static failNames = new Set<string>();
   static heldNames = new Set<string>();
   result: string | ArrayBuffer | null = null;
-  private listeners = new Map<string, Array<() => void>>();
-
-  addEventListener(type: string, listener: () => void) {
-    const existing = this.listeners.get(type) ?? [];
-    existing.push(listener);
-    this.listeners.set(type, existing);
-  }
-
-  removeEventListener() {}
   abort() {}
 
   readAsDataURL(file: File) {
@@ -141,18 +128,12 @@ class StubFileReader {
     }
     queueMicrotask(() => {
       if (StubFileReader.failNames.has(file.name)) {
-        this.emit("error");
+        this.dispatchEvent(new Event("error"));
         return;
       }
       this.result = "data:image/png;base64,aGk=";
-      this.emit("load");
+      this.dispatchEvent(new Event("load"));
     });
-  }
-
-  private emit(type: string) {
-    for (const listener of this.listeners.get(type) ?? []) {
-      listener();
-    }
   }
 }
 
@@ -170,17 +151,20 @@ function pasteEventWithFiles(files: File[], text = ""): ClipboardEvent {
 }
 
 function readFixture(initial: ChatAttachment[] = [], onChange = () => {}) {
-  let attachments = initial;
-  const done = createDeferred();
-  const reads = new ChatAttachmentReadLifecycle(onChange);
+  const h = {
+    attachments: initial,
+    done: createDeferred(),
+    reads: new ChatAttachmentReadLifecycle(onChange),
+  };
+  const { reads, done } = h;
   const signal = reads.readSignal;
   const props = {
     attachmentLimits: { maxBytes: 8, maxImageBytes: 4, maxBatchBytes: 8 },
     attachmentReads: reads,
     readSignal: signal,
-    getAttachments: () => attachments,
+    getAttachments: () => h.attachments,
     onAttachmentsChange: vi.fn((next: ChatAttachment[]) => {
-      attachments = next;
+      h.attachments = next;
       onChange();
     }),
     onPendingReadsChange: (delta: 1 | -1) => {
@@ -192,16 +176,16 @@ function readFixture(initial: ChatAttachment[] = [], onChange = () => {}) {
   };
   onTestFinished(() => {
     reads.abortReads();
-    payloads.releaseChatAttachmentPayloads(attachments);
+    payloads.releaseChatAttachmentPayloads(h.attachments);
   });
-  return {
-    reads,
+  return Object.assign(h, {
     props,
-    done,
-    get attachments() {
-      return attachments;
-    },
-  };
+    paste: (files: File[], overrides: ChatAttachmentControlsProps = {}) =>
+      handleChatAttachmentPaste(pasteEventWithFiles(files), { ...props, ...overrides }),
+    append: (files: File[]) => appendChatAttachmentFiles(files, props),
+    names: () =>
+      reads.project(h.attachments).map(({ attachment }) => attachment.fileName ?? attachment.id),
+  });
 }
 
 function previewFixture(
@@ -221,14 +205,12 @@ function previewFixture(
   const redraw = () => preview.update({ ...props, attachments: h.attachments });
   onTestFinished(preview.unmount);
   redraw();
-  return {
-    ...h,
-    container,
-    props,
-    get attachments() {
-      return h.attachments;
-    },
-  };
+  return Object.assign(h, { container, previewProps: props });
+}
+
+function fakeTimers() {
+  vi.useFakeTimers();
+  onTestFinished(() => vi.useRealTimers());
 }
 
 function imageFile(name: string, bytes: string, type = "image/png") {
@@ -275,6 +257,15 @@ describe("chat attachment read failures", () => {
     vi.unstubAllGlobals();
   });
 
+  async function expectOverflowToast(name: string) {
+    await waitForSolid(() => {
+      expect(toastHost.querySelectorAll(".app-toast")).toHaveLength(1);
+      expect(toastHost.querySelector(".app-toast__message")).toMatchObject({
+        textContent: "Too large to send: " + name,
+      });
+    });
+  }
+
   it.each([false, true])(
     "retains published payload custody when remaining reads abort (presented=%s)",
     async (presented) => {
@@ -291,10 +282,9 @@ describe("chat attachment read failures", () => {
       );
       const h = readFixture();
       const { reads } = h;
-      handleChatAttachmentPaste(
-        pasteEventWithFiles([imageFile("completed.png", "hi"), imageFile("held.png", "held")]),
-        { ...h.props, attachmentLimits: undefined },
-      );
+      h.paste([imageFile("completed.png", "hi"), imageFile("held.png", "held")], {
+        attachmentLimits: undefined,
+      });
       await vi.waitFor(() => expect(registered).toHaveBeenCalledOnce());
       const attachment = expectDefined(
         registered.mock.calls[0]?.[0].attachment,
@@ -329,15 +319,12 @@ describe("chat attachment read failures", () => {
     if (failure === "error") {
       StubFileReader.failNames.add("bad.png");
     } else {
-      vi.useFakeTimers();
-      onTestFinished(() => {
-        vi.useRealTimers();
-      });
+      fakeTimers();
       StubFileReader.heldNames.add("stalled.png");
     }
     const h = previewFixture([], {}, true);
-    const { container, reads, props } = h;
-    handleChatAttachmentPaste(pasteEventWithFiles(files), props);
+    const { container, reads } = h;
+    handleChatAttachmentPaste(pasteEventWithFiles(files), h.previewProps);
     if (failure === "error") {
       expect(container.querySelectorAll('.chat-attachment-thumb[aria-busy="true"]')).toHaveLength(
         2,
@@ -375,100 +362,59 @@ describe("chat attachment read failures", () => {
     }
   });
 
-  it("rejects batch overflow by name and admits a later smaller file before reading", async () => {
-    vi.useFakeTimers();
-    const reads = new ChatAttachmentReadLifecycle(() => {});
-    onTestFinished(() => {
-      reads.abortReads();
-      vi.useRealTimers();
-    });
-    const files = [
-      imageFile("first.png", "1234"),
-      imageFile("second.png", "5678"),
-      imageFile("third.png", "90"),
-    ];
-    StubFileReader.heldNames = new Set(files.map((file) => file.name));
-    const admitted = appendChatAttachmentFiles(files, {
-      attachmentLimits: { maxBytes: 8, maxImageBytes: 8, maxBatchBytes: 6 },
-      attachmentReads: reads,
-      attachments: [],
-      onAttachmentsChange: vi.fn(),
-    });
-    expect(admitted).toBe(2);
-    expect(reads.project([]).map(({ attachment }) => attachment.fileName)).toEqual([
-      "second.png",
-      "first.png",
-      "third.png",
-    ]);
-    await waitForSolid(() => {
-      expect(toastHost.querySelectorAll(".app-toast")).toHaveLength(1);
-      expect(toastHost.querySelector(".app-toast__message")?.textContent).toBe(
-        "Too large to send: second.png",
-      );
-    });
-  });
-
-  it("reserves the batch budget for ready attachments and overlapping in-flight reads", async () => {
-    vi.useFakeTimers();
-    const reads = new ChatAttachmentReadLifecycle(() => {});
-    onTestFinished(() => {
-      reads.abortReads();
-      vi.useRealTimers();
-    });
-    StubFileReader.heldNames = new Set(["reading.png", "overflow.png"]);
-    const attachments: ChatAttachment[] = [{ id: "ready", mimeType: "image/png", sizeBytes: 3 }];
-    const props = {
-      attachmentLimits: { maxBytes: 8, maxImageBytes: 8, maxBatchBytes: 8 },
-      attachmentReads: reads,
-      attachments,
-      onAttachmentsChange: vi.fn(),
-    };
-    expect(appendChatAttachmentFiles([imageFile("reading.png", "123")], props)).toBe(1);
-    expect(appendChatAttachmentFiles([imageFile("overflow.png", "456")], props)).toBe(0);
-    expect(
-      reads.project(attachments).map(({ attachment }) => attachment.fileName ?? attachment.id),
-    ).toEqual(["ready", "reading.png", "overflow.png"]);
-    await waitForSolid(() =>
-      expect(toastHost.querySelector(".app-toast__message")?.textContent).toBe(
-        "Too large to send: overflow.png",
-      ),
-    );
+  it.each([
+    {
+      mode: "batch overflow admits a later smaller file",
+      ready: [],
+      limit: 6,
+      batches: [
+        [
+          imageFile("first.png", "1234"),
+          imageFile("second.png", "5678"),
+          imageFile("third.png", "90"),
+        ],
+      ],
+      admitted: [2],
+      names: ["second.png", "first.png", "third.png"],
+      rejected: "second.png",
+    },
+    {
+      mode: "ready and overlapping reads reserve the budget",
+      ready: [{ id: "ready", mimeType: "image/png", sizeBytes: 3 }],
+      limit: 8,
+      batches: [[imageFile("reading.png", "123")], [imageFile("overflow.png", "456")]],
+      admitted: [1, 0],
+      names: ["ready", "reading.png", "overflow.png"],
+      rejected: "overflow.png",
+    },
+  ])("enforces admission: $mode", async ({ ready, limit, batches, admitted, names, rejected }) => {
+    fakeTimers();
+    const h = readFixture(ready);
+    const { props } = h;
+    props.attachmentLimits = { maxBytes: 8, maxImageBytes: 8, maxBatchBytes: limit };
+    StubFileReader.heldNames = new Set(batches.flat().map((file) => file.name));
+    for (const [index, files] of batches.entries()) {
+      expect(h.append(files)).toBe(admitted[index]);
+    }
+    expect(h.names()).toEqual(names);
+    await expectOverflowToast(rejected);
   });
 
   it("reserves the image ceiling for an oversized PNG while admitting following text files", async () => {
     const started = createDeferred<ResizeWorker>();
     mockResizeWorker((worker) => started.resolve(worker));
     const h = readFixture();
-    const { reads, props } = h;
-    expect(
-      appendChatAttachmentFiles(
-        [resizePngFixture(), imageFile("first.txt", "1", "text/plain")],
-        props,
-      ),
-    ).toBe(2);
+    expect(h.append([resizePngFixture(), imageFile("first.txt", "1", "text/plain")])).toBe(2);
     await started.promise;
     expect(h.attachments.map(({ fileName }) => fileName)).toEqual(["first.txt"]);
     expect(
-      appendChatAttachmentFiles(
-        [
-          imageFile("fits.txt", "234", "text/plain"),
-          imageFile("overflow.txt", "56789", "text/plain"),
-        ],
-        props,
-      ),
+      h.append([
+        imageFile("fits.txt", "234", "text/plain"),
+        imageFile("overflow.txt", "56789", "text/plain"),
+      ]),
     ).toBe(1);
-    expect(reads.project(h.attachments).map(({ attachment }) => attachment.fileName)).toEqual([
-      "large.png",
-      "first.txt",
-      "overflow.txt",
-      "fits.txt",
-    ]);
-    await waitForSolid(() => {
-      expect(toastHost.querySelectorAll(".app-toast")).toHaveLength(1);
-      expect(toastHost.querySelector(".app-toast__message")?.textContent).toBe(
-        "Too large to send: overflow.txt",
-      );
-    });
+    expect(h.names()).toEqual(["large.png", "first.txt", "overflow.txt", "fits.txt"]);
+    await expectOverflowToast("overflow.txt");
   });
 
   it("rejects oversized non-resizable images against hello policy before encoding", async () => {
@@ -517,19 +463,14 @@ describe("chat attachment read failures", () => {
   it.each(["abort", "remove", "timeout"] as const)(
     "settles pending image preparation on %s and discards a late worker result",
     async (outcome) => {
-      vi.useFakeTimers();
-      onTestFinished(() => {
-        vi.useRealTimers();
-      });
+      fakeTimers();
       const started = createDeferred<ResizeWorker>();
       mockResizeWorker((worker) => started.resolve(worker));
-      const { reads, props } = readFixture();
+      const h = readFixture();
+      const { reads, props } = h;
       const registered = vi.spyOn(payloads, "registerChatAttachmentPayload");
       const pending = vi.fn(props.onPendingReadsChange);
-      handleChatAttachmentPaste(pasteEventWithFiles([resizePngFixture()]), {
-        ...props,
-        onPendingReadsChange: pending,
-      });
+      h.paste([resizePngFixture()], { onPendingReadsChange: pending });
       expect(reads.pendingReads).toBe(1);
       const worker = await started.promise;
       if (outcome === "abort") {
@@ -554,8 +495,8 @@ describe("chat attachment read failures", () => {
     const started = createDeferred<ResizeWorker>();
     const created = mockResizeWorker((worker) => started.resolve(worker));
     const h = readFixture();
-    const { reads, props, done } = h;
-    handleChatAttachmentPaste(pasteEventWithFiles([resizePngFixture(), resizePngFixture()]), props);
+    const { reads, done } = h;
+    h.paste([resizePngFixture(), resizePngFixture()]);
     const worker = await started.promise;
     expect(reads.pendingReads).toBe(2);
     reads.remove(expectDefined(reads.project([])[1], "queued image"));
@@ -567,7 +508,7 @@ describe("chat attachment read failures", () => {
   });
 
   it("gives each queued resize its own processing timeout", async () => {
-    vi.useFakeTimers();
+    fakeTimers();
     const first = createDeferred<ResizeWorker>();
     const second = createDeferred<ResizeWorker>();
     const pendingStarts = [first, second];
@@ -575,9 +516,8 @@ describe("chat attachment read failures", () => {
       expectDefined(pendingStarts.shift(), "expected image worker").resolve(worker),
     );
     const h = readFixture();
-    const { reads, props, done } = h;
-    onTestFinished(() => vi.useRealTimers());
-    handleChatAttachmentPaste(pasteEventWithFiles([resizePngFixture(), resizePngFixture()]), props);
+    const { reads, done } = h;
+    h.paste([resizePngFixture(), resizePngFixture()]);
     const worker = await first.promise;
     await vi.advanceTimersByTimeAsync(10_000);
     worker.complete();
@@ -615,8 +555,9 @@ describe("chat attachment read failures", () => {
         source = new Uint8Array([...bytes.slice(0, 33), ...control, ...bytes.slice(33)]);
       }
       const file = resizePngFixture(source);
-      const { reads, props, done } = readFixture();
-      handleChatAttachmentPaste(pasteEventWithFiles([file]), props);
+      const h = readFixture();
+      const { reads, props, done } = h;
+      h.paste([file]);
       await done.promise;
       expect(decode).toHaveBeenCalledTimes(failure === "decode" ? 1 : 0);
       expect(reads.pendingReads).toBe(0);

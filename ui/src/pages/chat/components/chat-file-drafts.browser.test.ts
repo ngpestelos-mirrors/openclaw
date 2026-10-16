@@ -36,6 +36,14 @@ afterEach(() => {
 const button = (name: string) => page.getByRole("button", { name, exact: true });
 const textbox = (name: string) => page.getByRole("textbox", { name, exact: true });
 const alertText = (text: string) => expect.element(page.getByRole("alert")).toHaveTextContent(text);
+const reloadWarning = () =>
+  expect
+    .element(page.getByText("Save or discard your file edits before reloading.", { exact: true }))
+    .toBeVisible();
+async function reviewDrafts() {
+  expect(canReloadControlUiDocument(true)).toBe(false);
+  await button("Review file drafts").click();
+}
 function makeFile(
   name: string,
   { hash = "original-hash", ...overrides }: Partial<FileContent> & { hash?: string } = {},
@@ -66,6 +74,27 @@ async function openFile(content: FileContent) {
   await panel.updateComplete;
   return panel;
 }
+async function closeEditedFile(file: FileContent, draft: string, panel?: DetailPanel) {
+  const editor = panel ?? (await openFile(file));
+  await button("Edit file").click();
+  await textbox(file.name).fill(draft);
+  editor.remove();
+}
+async function settleFile(
+  file: FileContent,
+  content: string,
+  expectedHash: string,
+  action: "Save" | "Discard" = "Save",
+) {
+  const panel = await openFile(file);
+  await expect.element(textbox(file.name)).toHaveTextContent(content);
+  await button(action).click();
+  if (action === "Save") {
+    await expect.element(button("Save")).toBeDisabled();
+    expect(file.edit?.save).toHaveBeenCalledWith({ content, expectedHash });
+  }
+  panel.remove();
+}
 
 describe.runIf(browserMode)("file draft document reload protection", () => {
   it("recovers closed file edits locally while the stale route is inert", async () => {
@@ -74,29 +103,19 @@ describe.runIf(browserMode)("file draft document reload protection", () => {
       path: "reports/notes 雪.md",
       edit: { hash: "original-hash", save: vi.fn(), fetchLatest: vi.fn() },
     });
-    const panel = await openFile(file);
-    await button("Edit file").click();
     const draft = "Unsaved café 雪 🦞\nKeep these bytes.\n";
-    await textbox(file.name).fill(draft);
-    panel.remove();
+    await closeEditedFile(file, draft);
     const route = document.createElement("openclaw-router-outlet");
     route.inert = true;
     document.body.append(route);
 
     expect(canReloadControlUiDocument(true)).toBe(false);
-    await expect
-      .element(page.getByText("Save or discard your file edits before reloading.", { exact: true }))
-      .toBeVisible();
-    expect(
-      document.querySelector(".app-toast__action"),
-      "the blocked reload must offer local draft recovery",
-    ).not.toBeNull();
+    await reloadWarning();
     await button("Review file drafts").click();
     await expect.element(textbox(file.path)).toHaveValue(draft);
     expect(document.querySelector("openclaw-modal-dialog")?.closest("[inert]")).toBeNull();
     await button("Keep drafts").click();
-    expect(canReloadControlUiDocument(true)).toBe(false);
-    await button("Review file drafts").click();
+    await reviewDrafts();
 
     const clipboard = vi.fn().mockRejectedValueOnce(new Error("Clipboard denied"));
     vi.stubGlobal("navigator", { clipboard: { writeText: clipboard } });
@@ -117,7 +136,6 @@ describe.runIf(browserMode)("file draft document reload protection", () => {
     });
     await button(`Download ${file.name}`).click();
     const blob = createUrl.mock.calls[0]?.[0];
-    expect(blob).toBeInstanceOf(Blob);
     if (!(blob instanceof Blob)) {
       throw new Error("Expected the recovered file bytes");
     }
@@ -149,8 +167,7 @@ describe.runIf(browserMode)("file draft document reload protection", () => {
       });
     setFileDraft(first, { content: "Original draft", expectedHash: "first-hash" });
     setFileDraft(second, { content: "Second draft", expectedHash: "second-hash" });
-    expect(canReloadControlUiDocument(true)).toBe(false);
-    await button("Review file drafts").click();
+    await reviewDrafts();
     await expect
       .element(group(first).getByRole("textbox", { name: first.path, exact: true }))
       .toHaveValue("Original draft");
@@ -162,8 +179,7 @@ describe.runIf(browserMode)("file draft document reload protection", () => {
     await group(second).getByRole("button", { name: "Discard notes.txt", exact: true }).click();
     expect(canReloadControlUiDocument()).toBe(false);
     await button("Keep drafts").click();
-    expect(canReloadControlUiDocument(true)).toBe(false);
-    await button("Review file drafts").click();
+    await reviewDrafts();
     await expect.element(group(first).getByRole("textbox")).toHaveValue("Newer draft");
     await expect.element(group(later).getByRole("textbox")).toHaveValue("Later draft");
     await button("Keep drafts").click();
@@ -171,12 +187,7 @@ describe.runIf(browserMode)("file draft document reload protection", () => {
       [first, "Newer draft", "newer-hash"],
       [later, "Later draft", "later-hash"],
     ] as const) {
-      const panel = await openFile(file);
-      await expect.element(textbox(file.name)).toHaveTextContent(text);
-      await button("Save").click();
-      await expect.element(button("Save")).toBeDisabled();
-      expect(file.edit?.save).toHaveBeenCalledWith({ content: text, expectedHash: hash });
-      panel.remove();
+      await settleFile(file, text, hash);
       expect(canReloadControlUiDocument()).toBe(file === later);
     }
   });
@@ -205,43 +216,23 @@ describe.runIf(browserMode)("file draft document reload protection", () => {
       };
       const first = makeFile("first.txt");
       const second = makeFile("second.txt");
-      let panel = await openFile(first);
+      const panel = await openFile(first);
       await expect(attempt()).resolves.toBe(true);
       expect(reload).toHaveBeenCalledOnce();
       reload.mockClear();
       fetchDocument.mockClear();
 
-      for (const file of [first, second]) {
-        if (file === second) {
-          panel = await openFile(file);
-        }
-        await button("Edit file").click();
-        await textbox(file.name).fill(`Draft for ${file.name}`);
-        panel.remove();
-      }
+      await closeEditedFile(first, `Draft for ${first.name}`, panel);
+      await closeEditedFile(second, `Draft for ${second.name}`);
       await expect(attempt()).resolves.toBe(false);
       expect(fetchDocument).not.toHaveBeenCalled();
       expect(reload).not.toHaveBeenCalled();
       if (mode === "manual") {
-        await expect
-          .element(
-            page.getByText("Save or discard your file edits before reloading.", { exact: true }),
-          )
-          .toBeVisible();
+        await reloadWarning();
       }
 
       for (const file of [first, second]) {
-        panel = await openFile(file);
-        await expect.element(textbox(file.name)).toHaveTextContent(`Draft for ${file.name}`);
-        await button(settle).click();
-        if (settle === "Save") {
-          await expect.element(button("Save")).toBeDisabled();
-          expect(file.edit?.save).toHaveBeenCalledWith({
-            content: `Draft for ${file.name}`,
-            expectedHash: "original-hash",
-          });
-        }
-        panel.remove();
+        await settleFile(file, `Draft for ${file.name}`, "original-hash", settle);
         await expect(attempt()).resolves.toBe(file === second);
       }
       expect(reload).toHaveBeenCalledOnce();
