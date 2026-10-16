@@ -11,6 +11,7 @@ import {
   clearNativeGatewayTestState,
   setNativeGatewayTestState,
 } from "../../../test-helpers/native-gateways.ts";
+import { openSubmenu } from "../../../test-helpers/session-menu.ts";
 import { createSessionOwnerMenuHarness } from "../../../test-helpers/session-owner-menu.ts";
 import {
   createGatewayBrowserClientFixture,
@@ -284,6 +285,7 @@ describe("chat header session menu", () => {
         session: { hiddenFromInvolvingMe: hidden },
         onAction,
       });
+      await openSubmenu(panel(menu), "Advanced");
       for (const multiple of [false, true, false]) {
         owner.publish({
           hello: {
@@ -356,7 +358,8 @@ describe("chat header session menu", () => {
       expect(menu?.openMenu()).toBe(true);
       flush();
       await menu?.updateComplete;
-
+      const advanced = await openSubmenu(panel(menu!), "Advanced");
+      await openSubmenu(advanced, "Open in");
       expect(menu?.textContent?.includes("Open in")).toBe(true);
       expect(menu?.textContent?.includes("Cursor")).toBe(testCase.offered);
     },
@@ -420,7 +423,7 @@ describe("chat header session menu", () => {
     expect(menu.openMenu()).toBe(true);
     flush();
     await menu.updateComplete;
-
+    await openSubmenu(panel(menu), "Move to group");
     const moveToGroup = item(menu, "Move to group");
     const groupLabels = submenuItems(moveToGroup).map(itemLabel);
     expect(groupLabels).toEqual(["Catalog", "Discovered", "New group"]);
@@ -436,6 +439,7 @@ describe("chat header session menu", () => {
       onSettingsChange,
     });
     const view = item(menu, "View");
+    await openSubmenu(panel(menu), "View");
     const viewItems = submenuItems(view);
 
     expect(viewItems.map(itemLabel)).toEqual([
@@ -495,6 +499,8 @@ describe("chat header session menu", () => {
     menu.settings = { ...settings(), chatBubbleSessionKeys: ["agent:main:main"] };
     if (compact) {
       await select(menu, "compact:open-view");
+    } else {
+      await openSubmenu(panel(menu), "View");
     }
     await menu.updateComplete;
     const bubbleItem = item(menu, "Speech bubbles");
@@ -646,6 +652,7 @@ describe("chat header session menu", () => {
       await menu.updateComplete;
       expect(rootLabels(menu)).toEqual(initialLabels);
     } else {
+      await openSubmenu(panel(menu), "View");
       expect(submenuItems(item(menu, "View")).map(itemLabel)).toEqual([
         "Reasoning",
         "Tool calls",
@@ -721,8 +728,11 @@ describe("chat header session menu", () => {
 
       expect(item(menu, "Rename…").disabled).toBe(true);
       expect(item(menu, "Archive session").disabled).toBe(true);
+      const advanced = await openSubmenu(dropdown, "Advanced");
       expect(item(menu, "Delete…").disabled).toBe(true);
+      await openSubmenu(advanced, "Copy details");
       expect(item(menu, "Conversation as Markdown").disabled).toBe(!allowed);
+      await openSubmenu(advanced, "Open in");
       if (allowed) {
         expect(item(menu, "Split right").disabled).toBe(false);
       }
@@ -767,7 +777,8 @@ describe("chat header session menu", () => {
   it("emits terminal continuation only while the current Gateway is connected", async () => {
     const onAction = vi.fn<(action: HeaderMenuAction) => void>();
     const connected = await mountMenu({ onAction });
-
+    const advanced = await openSubmenu(panel(connected), "Advanced");
+    await openSubmenu(advanced, "Open in");
     expect(item(connected, "Continue in terminal…").disabled).toBe(false);
     const dropdown = panel(connected);
     await select(connected, "continue-in-terminal");
@@ -778,6 +789,8 @@ describe("chat header session menu", () => {
       actionDisabledReasons: { "continue-in-terminal": "Gateway disconnected." },
       onAction,
     });
+    const disconnectedAdvanced = await openSubmenu(panel(disconnected), "Advanced");
+    await openSubmenu(disconnectedAdvanced, "Open in");
     const disabledAction = item(disconnected, "Continue in terminal…");
     expect(disabledAction.disabled).toBe(true);
     expect(disabledAction.getAttribute("title")).toBe("Gateway disconnected.");
