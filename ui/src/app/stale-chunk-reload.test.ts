@@ -81,6 +81,12 @@ function stubDocumentNavigation() {
   return replace;
 }
 
+function dispatchPreloadError(payload: unknown) {
+  const event = new Event("vite:preloadError", { cancelable: true });
+  Object.defineProperty(event, "payload", { value: payload });
+  window.dispatchEvent(event);
+}
+
 beforeEach(() => {
   vi.useFakeTimers({ now: 1_000 });
   vi.spyOn(Math, "random").mockReturnValue(0);
@@ -99,26 +105,44 @@ afterEach(async () => {
 });
 
 describe("isStaleChunkImportError", () => {
-  it("does not reload an unreachable import; persistent failure reaches guarded recovery only after reconnect", async () => {
-    const reload = vi.fn();
-    const probe = vi.fn().mockRejectedValue(new TypeError("offline"));
-    vi.stubGlobal("fetch", probe);
-    const failure = new TypeError("Failed to fetch dynamically imported module");
-    const load = vi.fn().mockRejectedValue(failure);
-    const completion = retryControlUiImport(load).catch(async (error) => {
-      expect(error).toBe(failure);
-      return scheduleStaleChunkReload({ reload, storage: memoryStorage() });
-    });
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(reload).not.toHaveBeenCalled();
-    expect(load).toHaveBeenCalledOnce();
-    probe.mockResolvedValue(new Response(null, { status: 200 }));
-    window.dispatchEvent(new Event("online"));
-    await vi.advanceTimersByTimeAsync(0);
-    await expect(completion).resolves.toBe(true);
-    expect(load).toHaveBeenCalledTimes(2);
-    expect(reload).toHaveBeenCalledOnce();
-  });
+  it.each([false, true])(
+    "leaves route recovery to its retry owner (persistent failure: %s)",
+    async (persistent) => {
+      const replace = stubDocumentNavigation();
+      const uninstall = installStaleChunkReloadListener();
+      const reload = vi.fn();
+      const probe = vi.fn().mockRejectedValue(new TypeError("offline"));
+      vi.stubGlobal("fetch", probe);
+      const failImport = async () => {
+        const error = new TypeError("Failed to fetch dynamically imported module");
+        dispatchPreloadError(error);
+        throw error;
+      };
+      const load = vi
+        .fn<() => Promise<string>>()
+        .mockImplementationOnce(failImport)
+        .mockImplementation(persistent ? failImport : async () => "loaded");
+      const completion = retryControlUiImport(load).catch(async (error: unknown) => {
+        expect(isStaleChunkImportError(error)).toBe(true);
+        return scheduleStaleChunkReload({ reload, storage: memoryStorage() });
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(reload).not.toHaveBeenCalled();
+        expect(replace).not.toHaveBeenCalled();
+        expect(load).toHaveBeenCalledOnce();
+        probe.mockResolvedValue(new Response(null, { status: 200 }));
+        window.dispatchEvent(new Event("online"));
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(completion).resolves.toBe(persistent ? true : "loaded");
+        expect(load).toHaveBeenCalledTimes(2);
+        expect(reload).toHaveBeenCalledTimes(persistent ? 1 : 0);
+        expect(replace).not.toHaveBeenCalled();
+      } finally {
+        uninstall();
+      }
+    },
+  );
   it("does not retry a failed CSS preload without its styles after reachability returns", async () => {
     const probe = vi.fn().mockRejectedValue(new TypeError("offline"));
     vi.stubGlobal("fetch", probe);
@@ -787,13 +811,7 @@ describe("retryStaleChunkReloadWhenReachable", () => {
 });
 
 describe("installStaleChunkReloadListener", () => {
-  function dispatchPreloadError(payload: unknown) {
-    const event = new Event("unhandledrejection", { cancelable: true });
-    Object.defineProperty(event, "reason", { value: payload });
-    window.dispatchEvent(event);
-  }
-
-  it("schedules recovery only for stale-chunk payloads", async () => {
+  it("recovers caught lazy-surface failures when the document is reachable, not evaluation errors", async () => {
     const replace = stubDocumentNavigation();
     const fetchMock = stubDocumentFetch(new Response(null, { status: 200 }));
     const uninstall = installStaleChunkReloadListener();

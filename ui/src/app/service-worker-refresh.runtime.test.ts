@@ -62,7 +62,7 @@ describe("Control UI service-worker reconnect refresh", () => {
         registration.update.mockImplementation(
           () =>
             new Promise((resolve) => {
-              complete = resolve;
+              complete = () => resolve(undefined);
             }),
         );
       } else {

@@ -44,6 +44,7 @@ type RecoveryState = {
 const recoveryByStorage = new WeakMap<object, RecoveryState>();
 const unavailableStorage = {};
 let routeReachability: Promise<boolean> | undefined;
+const routeImportErrors = new WeakSet<Error>();
 // A shared probe can release automatic and manual recovery in the same microtask.
 // Admit one navigation before either path can replace the guard or reload.
 let inFlightDocumentProbe: Promise<boolean> | null = null;
@@ -64,6 +65,7 @@ export async function retryControlUiImport<T>(
     if (!isStaleChunkImportError(error)) {
       throw error;
     }
+    routeImportErrors.add(error);
     routeReachability ??= waitForReachableControlUiDocument(
       { timeoutMs: Infinity },
       () => true,
@@ -79,7 +81,14 @@ export async function retryControlUiImport<T>(
     }
     // Chromium can retain the first failed import in its module map. A persistent
     // failure now reaches the route error surface and its guarded reload owner.
-    return load();
+    try {
+      return await load();
+    } catch (retryError) {
+      if (isStaleChunkImportError(retryError)) {
+        routeImportErrors.add(retryError);
+      }
+      throw retryError;
+    }
   }
 }
 
@@ -359,19 +368,31 @@ export async function retryStaleChunkReloadWhenReachable(
 }
 
 /**
- * Handled route imports own their retry. Only unhandled asset failures reach
- * this safety net; Vite's earlier preload event would race that retry.
+ * Caught lazy-surface failures still need recovery. Give route imports the
+ * rejection microtasks to claim their errors before starting global recovery.
  */
 export function installStaleChunkReloadListener(): () => void {
-  const onUnhandledImport = (event: PromiseRejectionEvent) => {
-    const payload = event.reason;
+  const pending = new Set<ReturnType<typeof setTimeout>>();
+  const onPreloadError = (event: Event & { payload?: unknown }) => {
+    const payload = event.payload;
     if (!isStaleChunkImportError(payload)) {
       return;
     }
-    void scheduleStaleChunkReload();
+    const timer = setTimeout(() => {
+      pending.delete(timer);
+      if (!routeImportErrors.has(payload)) {
+        void scheduleStaleChunkReload();
+      }
+    }, 0);
+    pending.add(timer);
   };
-  window.addEventListener("unhandledrejection", onUnhandledImport);
-  return () => window.removeEventListener("unhandledrejection", onUnhandledImport);
+  window.addEventListener("vite:preloadError", onPreloadError);
+  return () => {
+    window.removeEventListener("vite:preloadError", onPreloadError);
+    for (const timer of pending) {
+      clearTimeout(timer);
+    }
+  };
 }
 
 export function installMissingStylesheetRecovery(): () => void {

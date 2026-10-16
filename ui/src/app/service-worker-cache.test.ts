@@ -653,8 +653,18 @@ function createFetchServiceWorker(
       navigator.onLine = online;
     },
     async activate() {
-      // SAFETY: The activation listener only consumes the event lifetime callback.
-      listeners.get("activate")?.({ waitUntil } as ServiceWorkerFetchEventStub);
+      listeners.get("activate")?.({
+        waitUntil,
+        request: {
+          url: scope,
+          method: "GET",
+          mode: "cors",
+          cache: "default",
+          headers: new Headers(),
+        },
+        clientId: "",
+        respondWith: vi.fn(),
+      });
       await Promise.all(pendingWrites);
     },
     probe() {
