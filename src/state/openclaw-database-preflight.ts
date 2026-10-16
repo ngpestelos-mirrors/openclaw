@@ -7,7 +7,7 @@ import {
   resolveConfiguredAgentDatabaseCandidatePaths,
 } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { getDatabaseEngineSelection } from "../infra/database-engine/context.js";
+import { getDatabaseEngineInput } from "../infra/database-engine/context.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { openNodeSqliteDatabase, resolveImmutableSqliteFileUri } from "../infra/node-sqlite.js";
 import { readSqliteDatabaseCleanClose } from "../infra/sqlite-database-admission.js";
@@ -238,7 +238,7 @@ export async function preflightOpenClawDatabaseSchemas(
   }
   try {
     if (statePresence.status === "present") {
-      if (getDatabaseEngineSelection()?.input) {
+      if (getDatabaseEngineInput("state")) {
         const read = await executeExistingOpenClawStateRead(
           { env: options.env },
           {
@@ -505,7 +505,7 @@ export async function preflightOpenClawDatabaseSchemas(
         // artifact preservation must use the WAL-aware private snapshot below.
         if (
           !schemaInspection &&
-          (getDatabaseEngineSelection()?.input ||
+          (getDatabaseEngineInput("agent") ||
             options.preserveSourceArtifacts !== true ||
             (purpose === "runtime" && readSqliteDatabaseCleanClose(realAgentPath)))
         ) {
