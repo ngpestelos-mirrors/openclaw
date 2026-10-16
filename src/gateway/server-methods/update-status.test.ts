@@ -63,7 +63,7 @@ const logGateway: GatewayRequestContext["logGateway"] = {
   warn,
 };
 
-function expectPartialReply(respond: unknown, payload: Record<string, unknown>) {
+function expectPartial(respond: unknown, payload: Record<string, unknown>) {
   expect(respond).toHaveBeenCalledWith(true, expect.objectContaining(payload));
 }
 
@@ -76,13 +76,13 @@ function expectError(respond: unknown, error: Record<string, unknown>) {
 }
 const emptyStatus = { sentinel: null, updateAvailable: null, effectiveChannel: "stable" };
 async function expectStatus(runs: Record<string, unknown> = {}) {
-  expectReply(await requestUpdateRead("update.status"), { ...emptyStatus, ...runs });
+  expectReply(await read("update.status"), { ...emptyStatus, ...runs });
 }
 async function expectRun(runId: string, run: unknown) {
-  expectReply(await requestUpdateRead("update.runs.get", { runId }), { run });
+  expectReply(await read("update.runs.get", { runId }), { run });
 }
 async function expectRuns(runs: unknown[], params: { limit?: number } = {}) {
-  expectReply(await requestUpdateRead("update.runs.list", params), { runs });
+  expectReply(await read("update.runs.list", params), { runs });
 }
 function agedRun(minutes: number, options: Parameters<typeof createUpdateRun>[0]) {
   const now = Date.now();
@@ -110,7 +110,7 @@ async function observeWatcher(
   }
 }
 
-async function requestUpdateRead(method: UpdateReadMethod, params: Record<string, unknown> = {}) {
+async function read(method: UpdateReadMethod, params: Record<string, unknown> = {}) {
   const respond = vi.fn<RespondFn>();
   const handler = expectDefined(updateStatusHandlers[method], method);
   await handler({
@@ -129,10 +129,10 @@ async function requestUpdateRead(method: UpdateReadMethod, params: Record<string
 
 let home: TempHomeEnv;
 let lifecycle: UpdateCheckLifecycle;
-let campaignOwner: UpdateCampaignController;
+let owner: UpdateCampaignController;
 
 function announceCampaign(version = "2026.9.6") {
-  campaignOwner.announce({
+  owner.announce({
     target: { kind: "package", version },
     apply: async () => "applied",
     onChange: (campaign) =>
@@ -140,15 +140,15 @@ function announceCampaign(version = "2026.9.6") {
         next: { channel: "stable", autoEnabled: true, ...(campaign ? { campaign } : {}) },
       }),
   });
-  expect(campaignOwner.adopt().status).toBe("adopted");
-  return expectDefined(campaignOwner.getState(), "campaign state");
+  expect(owner.adopt().status).toBe("adopted");
+  return expectDefined(owner.getState(), "campaign state");
 }
 
 beforeEach(async () => {
   home = await createTempHomeEnv("openclaw-update-status-");
   lifecycle = createGatewayUpdateLifecycle(createTestGatewayScheduler());
-  campaignOwner = new UpdateCampaignController(lifecycle.scheduler);
-  lifecycle.campaign = campaignOwner;
+  owner = new UpdateCampaignController(lifecycle.scheduler);
+  lifecycle.campaign = owner;
 });
 afterEach(async () => {
   await lifecycle.stop();
@@ -171,7 +171,7 @@ it.each(["failed", "running", "unrelated", "hidden-run retry"] as const)(
     });
     const keepCampaign = kind === "running" || kind === "unrelated";
     if (!keepCampaign) {
-      campaignOwner.bindRun(campaign.id, run.runId);
+      owner.bindRun(campaign.id, run.runId);
     }
     if (kind !== "running") {
       finishUpdateRun(run.runId, {
@@ -186,16 +186,16 @@ it.each(["failed", "running", "unrelated", "hidden-run retry"] as const)(
       finishUpdateRun(newer.runId, { status: "skipped", reason: "dry-run" });
       lastRunId = newer.runId;
       vi.spyOn(ledger, "getUpdateRunAsync").mockRejectedValueOnce(new Error("ledger read failed"));
-      expectPartialReply(await requestUpdateRead("update.status"), {
+      expectPartial(await read("update.status"), {
         lastRun: expect.objectContaining({ runId: newer.runId }),
         schedule: { channel: "stable", autoEnabled: true, campaign },
       });
-      expect(campaignOwner.getState()).toEqual(campaign);
+      expect(owner.getState()).toEqual(campaign);
       expect(warn).toHaveBeenCalledWith(
         "update.status campaign run lookup failed: ledger read failed",
       );
     }
-    expectPartialReply(await requestUpdateRead("update.status"), {
+    expectPartial(await read("update.status"), {
       lastRun: expect.objectContaining({
         runId: lastRunId,
         ...(kind === "hidden-run retry" ? {} : { status: kind === "unrelated" ? "failed" : kind }),
@@ -206,28 +206,28 @@ it.each(["failed", "running", "unrelated", "hidden-run retry"] as const)(
         ...(keepCampaign ? { campaign } : {}),
       },
     });
-    expect(campaignOwner.getState()).toEqual(keepCampaign ? campaign : undefined);
+    expect(owner.getState()).toEqual(keepCampaign ? campaign : undefined);
   },
 );
 
 it("does not clear a replacement campaign after an awaited ledger read", async () => {
   const original = announceCampaign();
   const run = createUpdateRun({ trigger: "campaign", origin: { campaignId: original.id } });
-  campaignOwner.bindRun(original.id, run.runId);
+  owner.bindRun(original.id, run.runId);
   finishUpdateRun(run.runId, { status: "failed" });
   const readStatus = ledger.getUpdateRunStatusAsync;
   vi.spyOn(ledger, "getUpdateRunStatusAsync").mockImplementationOnce(async () => {
     const status = await readStatus();
-    campaignOwner.clear();
+    owner.clear();
     announceCampaign("2026.9.7");
     return status;
   });
 
-  const respond = await requestUpdateRead("update.status");
-  const replacement = campaignOwner.getState();
+  const respond = await read("update.status");
+  const replacement = owner.getState();
   expect(replacement).toMatchObject({ state: "applying" });
   expect(replacement?.id).not.toBe(original.id);
-  expectPartialReply(respond, {
+  expectPartial(respond, {
     schedule: { channel: "stable", autoEnabled: true, campaign: replacement },
   });
 });
@@ -336,7 +336,7 @@ it.each(["signal", "drain"] as const)(
     } else {
       markGatewayRestartDraining();
     }
-    const response = await requestUpdateRead("update.runs.get", { runId: run.runId });
+    const response = await read("update.runs.get", { runId: run.runId });
     if (phase === "signal") {
       expectError(response, { code: "UNAVAILABLE" });
     } else {
@@ -346,7 +346,7 @@ it.each(["signal", "drain"] as const)(
     expect(warn).not.toHaveBeenCalled();
 
     resetGatewayWorkAdmission();
-    await requestUpdateRead("update.runs.get", { runId: run.runId });
+    await read("update.runs.get", { runId: run.runId });
     expect(getUpdateRun(run.runId)).toMatchObject({
       status: "failed",
       reason: "legacy-driver-expired",
@@ -360,18 +360,15 @@ it("reads fresh status concurrently without copying the shared database", async 
   const sql = observeMainThreadSql();
   sql.calibrate();
   try {
-    for (const respond of await Promise.all([
-      requestUpdateRead("update.status"),
-      requestUpdateRead("update.status"),
-    ])) {
-      expectPartialReply(respond, { activeRun: run, lastRun: run });
+    for (const respond of await Promise.all([read("update.status"), read("update.status")])) {
+      expectPartial(respond, { activeRun: run, lastRun: run });
     }
     expect(sql.count()).toBe(0);
   } finally {
     sql.restore();
   }
   const completed = finishUpdateRun(run.runId, { status: "succeeded" });
-  const respond = await requestUpdateRead("update.status");
+  const respond = await read("update.status");
   expectReply(respond, { ...emptyStatus, lastRun: completed });
   expect(backup).not.toHaveBeenCalled();
 });
@@ -398,12 +395,9 @@ it.each(
     });
     vi.stubEnv("OPENCLAW_SUPERVISOR_MODE", "");
   }
-  const respond = await requestUpdateRead(
-    method,
-    method === "update.runs.get" ? { runId: run.runId } : {},
-  );
+  const respond = await read(method, method === "update.runs.get" ? { runId: run.runId } : {});
   if (kind === "refused") {
-    expectPartialReply(
+    expectPartial(
       respond,
       method === "update.runs.get" ? { run } : { activeRun: run, lastRun: run },
     );
@@ -421,7 +415,7 @@ it.each(
       ...(kind === "expired legacy" ? { phase: "finished" } : {}),
     });
     if (kind === "expired legacy") {
-      expectPartialReply(respond, {
+      expectPartial(respond, {
         [method === "update.status" ? "lastRun" : "run"]: expect.objectContaining(result),
       });
     }
@@ -465,7 +459,7 @@ it("rejects malformed identities, invalid limits, and unsupported query fields",
     ["update.status", { runId: randomUUID() }],
   ];
   for (const [method, params] of invalidRequests) {
-    const respond = await requestUpdateRead(method, params);
+    const respond = await read(method, params);
     expect(respond, `${method}: ${JSON.stringify(params)}`).toHaveBeenCalledExactlyOnceWith(
       false,
       undefined,

@@ -42,7 +42,6 @@ vi.mock("../../infra/update-git-metadata.js", async (importOriginal) => ({
 }));
 vi.mock("../server-update-sentinel.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../server-update-sentinel.js")>()),
-  getLatestUpdateRestartSentinel: () => null,
   prepareLatestUpdateRestartSentinel: async () => null,
 }));
 
@@ -66,10 +65,6 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   vi.useRealTimers();
 });
-
-function expectReply(respond: unknown, payload: unknown) {
-  expect(respond).toHaveBeenCalledWith(true, payload);
-}
 
 function expectPartialReply(respond: unknown, payload: Record<string, unknown>) {
   expect(respond).toHaveBeenCalledWith(true, expect.objectContaining(payload));
@@ -107,8 +102,12 @@ function installAt(
 ) {
   return discovered({ root, installKind, packageManager: "unknown", ...extra });
 }
-function makeConfig(channel: "dev" | "stable" | "beta" = "dev", enabled = false): OpenClawConfig {
-  return { update: { channel, auto: { enabled } } };
+function makeConfig(
+  channel: "dev" | "stable" | "beta" | null = "dev",
+  enabled = false,
+  checkOnStart?: boolean,
+): OpenClawConfig {
+  return { update: { channel: channel ?? undefined, auto: { enabled }, checkOnStart } };
 }
 function cache(next: Parameters<typeof setUpdateScheduleCache>[0]["next"]) {
   setUpdateScheduleCache({ next });
@@ -139,7 +138,7 @@ async function requestStatus(
 }
 async function status(config: OpenClawConfig, params: { refreshCheckout?: boolean } = {}) {
   const respond = await requestStatus(() => config, params);
-  expectReply(respond, expect.any(Object));
+  expect(respond).toHaveBeenCalledWith(true, expect.any(Object));
   return respond.mock.calls[0]![1];
 }
 
@@ -157,7 +156,7 @@ function announcePackageCampaign() {
         ...(campaign ? { campaign } : {}),
       }),
   });
-  return { target, campaign: campaignOwner.getState() };
+  return target;
 }
 
 it.each([false, true])(
@@ -199,33 +198,24 @@ it("reads campaign publication after awaited run history", async () => {
 });
 
 it.each([
-  { policy: "external", enabled: false },
-  { policy: "external", enabled: true },
-  { policy: "config", enabled: true },
-  { policy: "environment", enabled: true },
+  { policy: "external", enabled: false, autoEnabled: false },
+  { policy: "external", enabled: true, autoEnabled: true },
+  { policy: "config", enabled: true, autoEnabled: false },
+  { policy: "environment", enabled: true, autoEnabled: false },
 ])(
   "reports cold scheduler policy before discovery ($policy, auto=$enabled)",
-  async ({ policy, enabled }) => {
+  async ({ policy, enabled, autoEnabled }) => {
     if (policy === "external") {
       vi.stubEnv("OPENCLAW_SUPERVISOR_MODE", "external");
     } else {
       vi.stubEnv("OPENCLAW_NO_AUTO_UPDATE", policy === "environment" ? "1" : "");
     }
-    const currentConfig = {
-      update: {
-        channel: "dev" as const,
-        auto: { enabled },
-        ...(policy === "config" ? { checkOnStart: false } : {}),
-      },
-    };
+    const currentConfig = makeConfig("dev", enabled, policy === "config" ? false : undefined);
     const result = await status(currentConfig);
-    expect(result.schedule).toMatchObject({
-      channel: "dev",
-      autoEnabled: policy === "external" && enabled,
-    });
+    expect(result.schedule).toMatchObject({ channel: "dev", autoEnabled });
     if (policy === "external") {
       expect(result.schedule.campaign).toBeUndefined();
-      expect(currentConfig.update.auto.enabled).toBe(enabled);
+      expect(currentConfig.update?.auto?.enabled).toBe(enabled);
       expect(getUpdateSchedule()).toBeNull();
     }
     expect(install).not.toHaveBeenCalled();
@@ -274,7 +264,7 @@ it("reports exhausted Git discovery without retrying from status reads and clear
 });
 
 it.each(["replace", "remove"])("uses current channel after history lookup (%s)", async (change) => {
-  let config: OpenClawConfig = { update: { channel: "dev", auto: { enabled: false } } };
+  let config = makeConfig();
   cache({
     channel: "dev",
     autoEnabled: false,
@@ -286,17 +276,12 @@ it.each(["replace", "remove"])("uses current channel after history lookup (%s)",
     },
   });
   history.mockImplementationOnce(async () => {
-    config = {
-      update: {
-        ...(change === "replace" ? { channel: "beta" as const } : {}),
-        auto: { enabled: true },
-      },
-    };
+    config = makeConfig(change === "replace" ? "beta" : null, true);
     return { activeRun: undefined, lastRun: undefined };
   });
   const respond = await requestStatus(() => config);
   if (change === "remove") {
-    expectReply(respond, { sentinel: null, updateAvailable: null });
+    expect(respond).toHaveBeenCalledWith(true, { sentinel: null, updateAvailable: null });
     return;
   }
   expectPartialReply(respond, {
@@ -321,7 +306,7 @@ it("preserves the admitted campaign channel and target without publishing status
 it.each([false, true])(
   "does not replace a live campaign's metadata during checkout refresh (applying=%s)",
   async (applying) => {
-    const { target } = announcePackageCampaign();
+    const target = announcePackageCampaign();
     if (applying) {
       expect(campaignOwner.adopt().status).toBe("adopted");
     }
@@ -359,16 +344,7 @@ it("keeps the optional schedule unknown when local identity cannot resolve its c
 
 it("omits app-owned install and stale package targets from the protocol schedule", async () => {
   stalePackageSchedule("dev", false);
-  install.mockResolvedValue(
-    installAt("host", "/opt/OpenClaw.app/openclaw", {
-      installOwner: {
-        schemaVersion: 1,
-        owner: "macos-app",
-        displayName: "OpenClaw.app",
-        updateHint: "Update OpenClaw.app to update this Gateway.",
-      },
-    }),
-  );
+  install.mockResolvedValue(installAt("host", "/opt/OpenClaw.app/openclaw"));
 
   const result = await status(makeConfig(), { refreshCheckout: true });
 
@@ -422,9 +398,7 @@ it.for([
 ] as const)(
   "revalidates the inferred channel from fresh Git identity (tag=$tag, configured=$configured)",
   async ({ tag, configured }) => {
-    const config: OpenClawConfig = {
-      update: { ...(configured ? { channel: "dev" as const } : {}), auto: { enabled: true } },
-    };
+    const config = makeConfig(configured ? "dev" : null, true);
     install.mockResolvedValue(discovered(createDevGitStatus()));
     await lifecycle.initialize();
     const fresh = createDevGitStatus({ branch: "HEAD" });
@@ -511,7 +485,7 @@ it.each([
     expect(result.updateAvailable).toBeNull();
     expect((await lifecycle.initialize()).status.immutable?.prepared).toEqual(prepared);
     if (refreshCheckout) {
-      expectReply(install, expect.any(AbortSignal));
+      expect(install).toHaveBeenCalledWith(true, expect.any(AbortSignal));
     } else {
       expect(resolveManager).not.toHaveBeenCalled();
       expect(privateStatus).not.toHaveBeenCalled();
@@ -526,8 +500,7 @@ it.each([
 it.each([false, true])(
   "preserves immutable status after optional discovery fails (refreshCheckout=%s)",
   async (refreshCheckout) => {
-    const immutable = baseImmutable;
-    install.mockResolvedValueOnce(immutableInstall(immutable));
+    install.mockResolvedValueOnce(immutableInstall(baseImmutable));
     await lifecycle.initialize();
     install.mockRejectedValueOnce(new Error("discovery unavailable"));
     const warn = vi.fn();
@@ -543,7 +516,7 @@ it.each([false, true])(
         schedule: {
           channel: "dev",
           autoEnabled: false,
-          install: { kind: "immutable", immutable },
+          install: { kind: "immutable", immutable: baseImmutable },
         },
       });
       expect(history).toHaveBeenCalledOnce();
