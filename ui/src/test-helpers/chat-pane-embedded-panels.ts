@@ -63,7 +63,7 @@ export async function renderPanelFixture(
     existing.update(props);
   } else {
     const view = mountSolid(SidebarRegionView, props, mount);
-    panelViews.set(mount, { primary, update: view.update });
+    panelViews.set(mount, { primary, update: (next) => view.update(next) });
     onTestFinished(() => panelViews.delete(mount));
   }
   await mount.querySelector("openclaw-chat-sidebar-region")?.updateComplete;

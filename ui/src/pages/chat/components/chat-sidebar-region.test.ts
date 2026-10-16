@@ -445,7 +445,7 @@ describe("chat sidebar region", () => {
     const definitions = () =>
       sidebarPanelDefinitions(params).map((definition) =>
         definition.slot === "workspace"
-          ? { ...definition, view: undefined, content: workspace }
+          ? Object.assign(definition, { view: undefined, content: workspace })
           : definition,
       );
     const region = await createRegion(layout, definitions());

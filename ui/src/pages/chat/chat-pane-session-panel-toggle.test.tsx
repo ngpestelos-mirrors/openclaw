@@ -348,20 +348,21 @@ it("delivers a browser card after the pane's scheduled render commits", async ()
     });
     view ??= mountSolid(
       () => {
-        const definitions = sidebarPanelDefinitions().map((definition) => ({
-          ...definition,
-          available: definition.slot === "browser",
-          content:
-            definition.slot === "browser"
-              ? () => (
-                  <BrowserCard
-                    sessionKey={snapshot().sessionKey}
-                    presented={isSidebarSlotVisible(snapshot().layout, "browser")}
-                    refresh={snapshot().refresh}
-                  />
-                )
-              : null,
-        }));
+        const definitions = sidebarPanelDefinitions().map((definition) =>
+          Object.assign(definition, {
+            available: definition.slot === "browser",
+            content:
+              definition.slot === "browser"
+                ? () => (
+                    <BrowserCard
+                      sessionKey={snapshot().sessionKey}
+                      presented={isSidebarSlotVisible(snapshot().layout, "browser")}
+                      refresh={snapshot().refresh}
+                    />
+                  )
+                : null,
+          }),
+        );
         const region = createMemo(() =>
           renderSidebarRegion({
             presentationId: "delayed-browser-card",
