@@ -242,9 +242,7 @@ function ChatHeaderSessionMenuContent(
       ) : undefined,
       children: props.compact
         ? undefined
-        : viewName === "sharing"
-          ? sharing.items()
-          : viewOptions(),
+        : () => (viewName === "sharing" ? sharing.items() : viewOptions()),
       closeOnSelect: false,
     };
   }
