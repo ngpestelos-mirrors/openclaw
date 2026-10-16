@@ -1837,7 +1837,7 @@ posixIt(
   55_000,
 );
 
-posixIt.for([
+posixIt.for<[string, NonNullable<Parameters<typeof maturityRun>[1]>, number, string, number?]>([
   ["invalid expected SHA", { env: { EXPECTED_SHA: "bad" } }, 0, "expected_sha must be a full"],
   ["mismatched expected SHA", { env: { EXPECTED_SHA: "f".repeat(40) } }, 0, "expected fffff"],
   ["invalid evidence id", { env: { EVIDENCE_RUN_ID: "1x" } }, 1, "must be a numeric"],
@@ -1854,7 +1854,7 @@ posixIt.for([
     "changed maturity inputs",
   ],
   ["failed publication diff", { gitFault: { match: "^diff ", code: 23 } }, 2, "", 23],
-] satisfies [string, NonNullable<Parameters<typeof maturityRun>[1]>, number, string, number?][])(
+])(
   "maturity rejects %s without outputs",
   { timeout: 55_000 },
   async ([_label, options, fetches, diagnostic, code = 1], { signal }) => {

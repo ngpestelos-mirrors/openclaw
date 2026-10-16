@@ -1,3 +1,4 @@
+// Control UI tests cover plugin catalog browsing and lifecycle mutations.
 import path from "node:path";
 import {
   chromium,
@@ -5,14 +6,15 @@ import {
   type BrowserContext,
   type BrowserContextOptions,
   type Page,
-  type Locator,
 } from "playwright";
-import { describe, onTestFinished } from "vitest";
+import { describe } from "vitest";
+import type { PluginsSearchResult } from "../../../../packages/gateway-protocol/src/schema/plugins.ts";
 import { PROTOCOL_VERSION } from "../../../../packages/gateway-protocol/src/version.js";
 import type {
   PluginCatalogItem,
   PluginDiscoveryDetailResult,
   PluginListResult,
+  PluginMutationResult,
   PluginsInspectResult,
 } from "../../lib/plugins/index.ts";
 import { createControlUiE2eArtifactDir } from "../../test-helpers/control-ui-e2e-artifacts.ts";
@@ -22,7 +24,6 @@ import {
   resolvePlaywrightChromiumExecutablePath,
   startControlUiE2eServer,
   type ControlUiE2eServer,
-  type ControlUiMockGatewayScenario,
 } from "../../test-helpers/control-ui-e2e.ts";
 import {
   discoveryCategories,
@@ -35,19 +36,19 @@ import {
 const chromiumExecutablePath = resolvePlaywrightChromiumExecutablePath(chromium.executablePath());
 const chromiumAvailable = canRunPlaywrightChromium(chromiumExecutablePath);
 const allowMissingChromium = process.env.OPENCLAW_UI_E2E_ALLOW_MISSING_CHROMIUM === "1";
-export const describeControlUiE2e =
-  chromiumAvailable || !allowMissingChromium ? describe : describe.skip;
+const describeControlUiE2e = chromiumAvailable || !allowMissingChromium ? describe : describe.skip;
 const updateScreenshots = process.env.OPENCLAW_UPDATE_E2E_SCREENSHOTS === "1";
 const artifacts = new WeakMap<Page, string>();
-export const mobileViewport = { height: 852, width: 393 };
+const mobileViewport = { height: 852, width: 393 };
 const desktopViewport = { height: 1000, width: 1440 };
-export const pluginMethods = [
+const pluginMethods = [
   "plugins.reload",
   "plugins.uiDescriptors",
   "plugins.controlUi.list",
   "plugins.controlUi.report",
   "plugins.list",
   "plugins.inspect",
+  "plugins.search",
   "plugins.catalog.browse",
   "plugins.catalog.categories",
   "plugins.catalog.get",
@@ -55,73 +56,74 @@ export const pluginMethods = [
   "plugins.setEnabled",
   "plugins.uninstall",
 ];
-function catalogItem<T extends Omit<PluginCatalogItem, "installed" | "enabled">>(item: T) {
-  return { ...item, installed: item.state !== "not-installed", enabled: item.state === "enabled" };
-}
-
-function installedPlugin<
-  T extends Pick<PluginCatalogItem, "id" | "name"> & Partial<PluginCatalogItem>,
->(item: T) {
-  return catalogItem({
-    packageName: item.id,
-    kind: ["productivity"],
-    origin: "global",
-    state: "disabled",
-    category: "tool",
-    removable: true,
-    ...item,
-  });
-}
-
-export const workboardDisabled = installedPlugin({
+const workboardDisabled = {
   id: "workboard",
   name: "Workboard",
   packageName: "@openclaw/workboard",
   description: "Dashboard workboard for agent-owned issues and sessions.",
   version: "2026.7.9",
+  kind: ["productivity"],
   origin: "bundled",
+  installed: true,
+  enabled: false,
+  state: "disabled",
   featured: true,
   order: 10,
+  category: "tool",
   removable: false,
-});
+} satisfies PluginCatalogItem;
 
-export const workboardEnabled = {
+const workboardEnabled = {
   ...workboardDisabled,
   enabled: true,
   state: "enabled",
 } satisfies PluginCatalogItem;
 
-const lobsterPlugin = catalogItem({
+const lobsterPlugin = {
   id: "lobster",
   name: "Lobster",
   description: "Run typed workflows with resumable approvals.",
   kind: ["plugin"],
   origin: "official",
+  installed: false,
+  enabled: false,
   state: "not-installed",
   featured: true,
   order: 50,
   install: { source: "clawhub", packageName: "@openclaw/lobster" },
-});
+} satisfies PluginCatalogItem;
 
-export const remoteIconPlugin = {
-  ...lobsterPlugin,
+const remoteIconPlugin = {
   id: "remote-icon",
   name: "FireCrawl",
   description: "Web extraction and crawling.",
+  kind: ["plugin"],
+  origin: "official",
+  installed: false,
+  enabled: false,
+  state: "not-installed",
+  featured: true,
   order: 60,
   hasIcon: true,
   install: { source: "clawhub", packageName: "@openclaw/firecrawl" },
 } satisfies PluginCatalogItem;
 
-export const calendarPlugin = installedPlugin({
+const calendarPlugin = {
   id: "calendar-plus",
   name: "Calendar Plus",
+  packageName: "calendar-plus",
   description: "Plan and coordinate work from a shared calendar.",
   version: "1.2.3",
+  kind: ["productivity"],
+  origin: "global",
+  installed: true,
+  enabled: true,
   state: "enabled",
-});
+  category: "tool",
+  removable: true,
+} satisfies PluginCatalogItem;
 
-const telegramPlugin = installedPlugin({
+const telegramPlugin = {
   id: "telegram",
   name: "Telegram",
   packageName: "@openclaw/telegram",
@@ -129,16 +131,38 @@ const telegramPlugin = installedPlugin({
   version: "1.4.0",
   kind: ["channel"],
   origin: "bundled",
+  installed: true,
+  enabled: false,
+  state: "disabled",
   category: "channel",
   removable: false,
-});
+} satisfies PluginCatalogItem;
 
-export const initialInventory = inventory([
+const initialInventory = inventory([
   workboardDisabled,
   telegramPlugin,
   lobsterPlugin,
   remoteIconPlugin,
 ]);
+const calendarSearchResponse = {
+  results: [
+    {
+      score: 0.98,
+      package: {
+        name: "calendar-plus",
+        displayName: "Calendar Plus",
+        family: "code-plugin",
+        channel: "community",
+        isOfficial: false,
+        summary: "Plan and coordinate work from a shared calendar.",
+        latestVersion: "1.2.3",
+        downloads: 1420,
+        verificationTier: "source-linked",
+      },
+    },
+  ],
+} satisfies PluginsSearchResult;
+
 const uninstallResult = {
   ok: true,
   pluginId: "calendar-plus",
@@ -146,7 +170,13 @@ const uninstallResult = {
   removed: ["config entry", "install record", "directory"],
 };
 
-export const installPolicyWarning = {
+const installResult = {
+  ok: true,
+  plugin: calendarPlugin,
+  restartRequired: false,
+} satisfies PluginMutationResult;
+
+const installPolicyWarning = {
   installPolicyCode: "install_policy_warning_acknowledgement_required",
   targetName: "@openclaw/lobster",
   targetType: "plugin",
@@ -163,7 +193,7 @@ export const installPolicyWarning = {
   ],
 };
 
-export const changedInstallPolicyWarning = {
+const changedInstallPolicyWarning = {
   ...installPolicyWarning,
   reason: "ClawScan returned a changed warning after the fresh check.",
   findings: [
@@ -176,6 +206,12 @@ export const changedInstallPolicyWarning = {
     },
   ],
 };
+
+const enableWorkboardResult = {
+  ok: true,
+  plugin: workboardEnabled,
+  restartRequired: false,
+} satisfies PluginMutationResult;
 
 const workboardInspection = {
   ok: true,
@@ -217,7 +253,20 @@ const workboardInspection = {
   },
 } satisfies PluginsInspectResult;
 
-export const calendarInspection = {
+const lobsterInspection = {
+  ...workboardInspection,
+  reviewToken: "b".repeat(64),
+  plugin: {
+    id: lobsterPlugin.id,
+    name: lobsterPlugin.name,
+    origin: lobsterPlugin.origin,
+    installed: false,
+    enabled: false,
+  },
+  source: { kind: "npm", packageName: "@openclaw/lobster" },
+} satisfies PluginsInspectResult;
+
+const calendarInspection = {
   ...workboardInspection,
   reviewToken: "c".repeat(64),
   plugin: { ...calendarPlugin, installed: false, enabled: false },
@@ -238,23 +287,55 @@ const matrixDetail = {
     createdAt: 1_760_000_000_000,
     updatedAt: 1_780_000_000_000,
     readme: "# Matrix\n\nConnect OpenClaw to Matrix rooms and direct messages.",
-    configuration: [],
+    compatibility: {
+      minGatewayVersion: ">=2026.5.1",
+      pluginApiRange: ">=2026.5.1",
+    },
+    configuration: [
+      {
+        name: "homeserver",
+        description: "Matrix homeserver URL",
+        required: true,
+        sensitive: false,
+      },
+      {
+        name: "accessToken",
+        description: "Matrix access token",
+        required: true,
+        sensitive: true,
+      },
+    ],
     mcpServers: [],
     skills: [{ name: "Matrix messaging", description: "Send and receive Matrix messages." }],
-    versions: [],
+    versions: [
+      {
+        version: "2.1.0",
+        createdAt: 1_780_000_000_000,
+        changelog: "Current release",
+        tags: ["latest"],
+      },
+      { version: "2.0.0", createdAt: 1_770_000_000_000, changelog: "Previous release", tags: [] },
+    ],
     verification: {
       tier: "source-linked",
+      summary: "Validated package structure and linked release source.",
       sourceRepo: "openclaw/openclaw",
+      sourceCommit: "abc123",
+      sourcePath: "extensions/matrix",
+      scanStatus: "clean",
     },
     security: {
       status: "clean",
       verdict: "benign",
       auditUrl: "https://clawhub.ai/openclaw/plugins/matrix/security-audit",
+      summary: "Capabilities match the stated purpose.",
+      guidance: "Review the access token before enabling.",
+      checkedAt: 1_780_000_000_000,
     },
   },
 } satisfies PluginDiscoveryDetailResult;
 
-export const calendarDiscoveryPlugin = {
+const calendarDiscoveryPlugin = {
   ...matrixDiscoveryPlugin,
   id: "ch_Y2FsZW5kYXItcGx1cw",
   catalog: {
@@ -266,7 +347,7 @@ export const calendarDiscoveryPlugin = {
   },
 };
 
-export const calendarDetail = {
+const calendarDetail = {
   plugin: calendarDiscoveryPlugin,
   detail: {
     origin: "clawhub",
@@ -279,45 +360,63 @@ export const calendarDetail = {
   },
 } satisfies PluginDiscoveryDetailResult;
 
-export const matrixNeedsSetup = installedPlugin({
+const matrixNeedsSetup = {
   id: "matrix",
   name: "Matrix",
+  packageName: "matrix",
   description: "Connect OpenClaw to Matrix rooms and direct messages.",
   version: "2.1.0",
   kind: ["channel"],
+  origin: "global",
+  installed: true,
+  enabled: false,
   state: "needs-setup",
   category: "channel",
-});
+  removable: true,
+} satisfies PluginCatalogItem;
 
-export const matrixEnabled = {
+const matrixEnabled = {
   ...matrixNeedsSetup,
   enabled: true,
   state: "enabled",
 } satisfies PluginCatalogItem;
 
-function objectSchema<T>(properties: T) {
-  return { type: "object", properties };
-}
-
-export const matrixConfigSchema = {
+const matrixConfigSchema = {
   generatedAt: "2026-09-03T00:00:00.000Z",
-  schema: objectSchema({
-    plugins: objectSchema({
-      entries: objectSchema({
-        matrix: objectSchema({
-          enabled: { type: "boolean", title: "Enabled" },
-          config: {
-            ...objectSchema({
-              homeserver: { type: "string", title: "Homeserver" },
-              accessToken: { type: "string", title: "Access token" },
-              mode: { type: ["string", "null"], enum: ["auto", null], title: "Mode" },
-            }),
-            required: ["homeserver", "accessToken"],
+  schema: {
+    type: "object",
+    properties: {
+      plugins: {
+        type: "object",
+        properties: {
+          entries: {
+            type: "object",
+            properties: {
+              matrix: {
+                type: "object",
+                properties: {
+                  enabled: { type: "boolean", title: "Enabled" },
+                  config: {
+                    type: "object",
+                    properties: {
+                      homeserver: { type: "string", title: "Homeserver" },
+                      accessToken: { type: "string", title: "Access token" },
+                      mode: {
+                        type: ["string", "null"],
+                        enum: ["auto", null],
+                        title: "Mode",
+                      },
+                    },
+                    required: ["homeserver", "accessToken"],
+                  },
+                },
+              },
+            },
           },
-        }),
-      }),
-    }),
-  }),
+        },
+      },
+    },
+  },
   uiHints: {
     "plugins.entries.matrix.config.homeserver": { advanced: false },
     "plugins.entries.matrix.config.accessToken": { advanced: false, sensitive: true },
@@ -338,25 +437,36 @@ const localOnlyDetail = {
   },
 } satisfies PluginDiscoveryDetailResult;
 
-export const localCalendarDisabled = installedPlugin({
+const localCalendarDisabled = {
   id: "local-calendar",
   name: "Local Calendar",
   packageName: "@openclaw/local-calendar",
   description: "Coordinate work using the included calendar plugin.",
   version: "1.0.0",
+  kind: ["productivity"],
   origin: "official",
+  installed: true,
+  enabled: false,
+  state: "disabled",
+  category: "tool",
   removable: false,
-});
+} satisfies PluginCatalogItem;
 
 let browser: Browser;
-export let server: ControlUiE2eServer;
+let server: ControlUiE2eServer;
 
-export function inventory(plugins: PluginCatalogItem[], generation = 0): PluginListResult {
+function inventory(plugins: PluginCatalogItem[], generation = 0): PluginListResult {
   return { plugins, diagnostics: [], mutationAllowed: true, generation };
 }
 
-export function configSnapshot(isWorkboardEnabled: boolean) {
-  const config = { plugins: { entries: { workboard: { enabled: isWorkboardEnabled } } } };
+function configSnapshot(isWorkboardEnabled: boolean) {
+  const config = {
+    plugins: {
+      entries: {
+        workboard: { enabled: isWorkboardEnabled },
+      },
+    },
+  };
   return {
     config,
     hash: isWorkboardEnabled ? "plugins-config-enabled" : "plugins-config-disabled",
@@ -369,7 +479,7 @@ export function configSnapshot(isWorkboardEnabled: boolean) {
   };
 }
 
-export function readOnlyConnectResponse() {
+function readOnlyConnectResponse() {
   return {
     auth: {
       deviceToken: "plugins-read-only-device-token",
@@ -413,7 +523,7 @@ export function enabledWorkboardCapabilities() {
   };
 }
 
-export async function captureScreenshot(
+async function captureScreenshot(
   page: Page,
   name: string,
   target: "content" | "viewport" = "content",
@@ -433,7 +543,7 @@ export async function captureScreenshot(
   });
 }
 
-export async function newContext(
+async function newContext(
   viewport = desktopViewport,
   options: Pick<BrowserContextOptions, "hasTouch" | "recordVideo"> = {},
 ): Promise<BrowserContext> {
@@ -445,93 +555,106 @@ export async function newContext(
   });
 }
 
-export function button(scope: Page | Locator, name: string) {
-  return scope.getByRole("button", { name, exact: true });
-}
-
-export async function openPluginTest(
-  responses: ControlUiMockGatewayScenario["methodResponses"] = {},
-  {
-    viewport = desktopViewport,
-    nativeAuth = false,
-    heldMethods = [],
-  }: {
-    viewport?: { width: number; height: number };
-    nativeAuth?: boolean;
-    heldMethods?: string[];
-  } = {},
-) {
-  const context = await newContext(viewport);
-  onTestFinished(() => context.close());
-  const page = await context.newPage();
-  if (nativeAuth) {
-    await page.addInitScript(
-      (gatewayUrl) => {
-        window["__OPENCLAW_NATIVE_CONTROL_AUTH__"] = { gatewayUrl };
-      },
-      server.baseUrl.replace(/^http/u, "ws"),
-    );
-  }
-  const gateway = await installMockGateway(page, {
-    featureMethods: pluginMethods,
-    methodResponses: { ...pluginMethodResponses(), ...responses },
-    heldMethods,
-  });
-  return { page, gateway };
-}
-
-export async function completeInstall(
-  gateway: Awaited<ReturnType<typeof installMockGateway>>,
-  plugin: PluginCatalogItem,
-) {
-  await gateway.setMethodResponse("plugins.list", inventory([...initialInventory.plugins, plugin]));
-  await gateway.resolveDeferred("plugins.install", { ok: true, plugin, restartRequired: false });
-}
-
-function responseCases(entries: Array<[Record<string, unknown>, unknown]>) {
-  return { cases: entries.map(([match, response]) => ({ match, response })) };
-}
-
-export function pluginMethodResponses() {
+function pluginMethodResponses() {
   return {
     "plugins.controlUi.list": { revision: "empty", plugins: [], diagnostics: [] },
     "config.get": configSnapshot(false),
     "plugins.list": initialInventory,
-    "plugins.inspect": responseCases([
-      [{ pluginId: "workboard" }, workboardInspection],
-      [{ pluginId: "calendar-plus" }, calendarInspection],
-      ...[localCalendarDisabled, matrixEnabled].map(
-        (plugin): [Record<string, unknown>, PluginsInspectResult] => [
-          { pluginId: plugin.id },
-          {
+    "plugins.inspect": {
+      cases: [
+        { match: { pluginId: "workboard" }, response: workboardInspection },
+        { match: { pluginId: "lobster" }, response: lobsterInspection },
+        { match: { pluginId: "calendar-plus" }, response: calendarInspection },
+        {
+          match: { pluginId: "local-calendar" },
+          response: {
             ...workboardInspection,
-            plugin,
-            source: { kind: "npm", packageName: plugin.packageName },
+            plugin: localCalendarDisabled,
+            source: { kind: "npm", packageName: localCalendarDisabled.packageName },
+          } satisfies PluginsInspectResult,
+        },
+        {
+          match: { pluginId: "matrix" },
+          response: {
+            ...workboardInspection,
+            plugin: matrixEnabled,
+            source: { kind: "npm", packageName: matrixEnabled.packageName },
+          } satisfies PluginsInspectResult,
+        },
+      ],
+    },
+    "plugins.search": {
+      cases: [
+        {
+          match: { query: "calendar", limit: 20 },
+          response: calendarSearchResponse,
+        },
+      ],
+    },
+    "plugins.catalog.browse": {
+      cases: [
+        {
+          match: { intent: "all", cursor: "catalog-page-2", pageSize: 100 },
+          response: {
+            items: secondDiscoveryPageItems,
+            nextCursor: "catalog-page-3",
           },
-        ],
-      ),
-    ]),
-    "plugins.catalog.browse": responseCases([
-      [
-        { intent: "all", cursor: "catalog-page-2", pageSize: 100 },
-        { items: secondDiscoveryPageItems, nextCursor: "catalog-page-3" },
+        },
+        {
+          match: { intent: "all", cursor: "catalog-page-3", pageSize: 100 },
+          response: { items: finalDiscoveryPageItems },
+        },
+        {
+          match: { intent: "official", pageSize: 100 },
+          response: { items: [matrixDiscoveryPlugin] },
+        },
+        {
+          match: { intent: "all", category: "channels", pageSize: 100 },
+          response: { items: [matrixDiscoveryPlugin] },
+        },
+        {
+          match: { intent: "all", query: "matrix", pageSize: 100 },
+          response: { items: [matrixDiscoveryPlugin] },
+        },
+        { match: { intent: "all", pageSize: 100 }, response: discoveryResult },
       ],
-      [
-        { intent: "all", cursor: "catalog-page-3", pageSize: 100 },
-        { items: finalDiscoveryPageItems },
-      ],
-      [{ intent: "official", pageSize: 100 }, { items: [matrixDiscoveryPlugin] }],
-      [{ intent: "all", category: "channels", pageSize: 100 }, { items: [matrixDiscoveryPlugin] }],
-      [{ intent: "all", query: "matrix", pageSize: 100 }, { items: [matrixDiscoveryPlugin] }],
-      [{ intent: "all", pageSize: 100 }, discoveryResult],
-    ]),
+    },
     "plugins.catalog.categories": discoveryCategories,
-    "plugins.catalog.get": responseCases([
-      [{ id: matrixDiscoveryPlugin.id }, matrixDetail],
-      [{ id: calendarDiscoveryPlugin.id }, calendarDetail],
-      [{ id: localOnlyDiscoveryPlugin.id }, localOnlyDetail],
-    ]),
-    "plugins.uninstall": responseCases([[{ pluginId: "calendar-plus" }, uninstallResult]]),
+    "plugins.catalog.get": {
+      cases: [
+        { match: { id: matrixDiscoveryPlugin.id }, response: matrixDetail },
+        { match: { id: calendarDiscoveryPlugin.id }, response: calendarDetail },
+        { match: { id: localOnlyDiscoveryPlugin.id }, response: localOnlyDetail },
+      ],
+    },
+    "plugins.install": {
+      cases: [
+        {
+          match: {
+            source: "clawhub",
+            packageName: "calendar-plus",
+            acknowledgeCapabilities: { reviewToken: calendarInspection.reviewToken },
+          },
+          response: installResult,
+        },
+      ],
+    },
+    "plugins.setEnabled": {
+      cases: [
+        {
+          match: { pluginId: "workboard", enabled: true },
+          response: enableWorkboardResult,
+        },
+      ],
+    },
+    "plugins.uninstall": {
+      cases: [
+        {
+          match: { pluginId: "calendar-plus" },
+          response: uninstallResult,
+        },
+      ],
+    },
   };
 }
 
@@ -550,4 +673,32 @@ export async function teardownPluginsE2e(): Promise<void> {
   await server?.close();
 }
 
-export { discoveryResult, installMockGateway, localOnlyDiscoveryPlugin, matrixDiscoveryPlugin };
+export {
+  remoteIconPlugin,
+  calendarDiscoveryPlugin,
+  calendarInspection,
+  calendarPlugin,
+  changedInstallPolicyWarning,
+  configSnapshot,
+  installPolicyWarning,
+  mobileViewport,
+  workboardDisabled,
+  workboardEnabled,
+  captureScreenshot,
+  describeControlUiE2e,
+  discoveryResult,
+  initialInventory,
+  installMockGateway,
+  inventory,
+  localCalendarDisabled,
+  localOnlyDiscoveryPlugin,
+  matrixConfigSchema,
+  matrixDiscoveryPlugin,
+  matrixEnabled,
+  matrixNeedsSetup,
+  newContext,
+  pluginMethodResponses,
+  pluginMethods,
+  readOnlyConnectResponse,
+  server,
+};

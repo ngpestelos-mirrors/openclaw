@@ -26,6 +26,7 @@ afterEach(() => {
   typeSelection.graphs = null;
 });
 
+// mock-isolation: Select type graphs deterministically without inspecting checkout changes.
 vi.mock("../../scripts/run-tsgo-core-test-shards.mts", () => ({
   createChangedCiTypeCheckPlan: vi.fn(async () => ({
     mode: "targeted",
