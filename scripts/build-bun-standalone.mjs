@@ -29,6 +29,7 @@ import { createStandaloneEntrySource } from "./lib/bun-standalone-entry.mjs";
 import { rewriteStandaloneImports } from "./lib/bun-standalone-imports.mjs";
 import { createStandaloneMetadataAdapter } from "./lib/bun-standalone-metadata.mjs";
 import { createStandaloneNativeAdapter } from "./lib/bun-standalone-native.mjs";
+import { prepareStandaloneNpm } from "./lib/bun-standalone-npm.mjs";
 import {
   planStandalonePlugins,
   pruneStandalonePluginDirectories,
@@ -195,6 +196,8 @@ moduleEntries.push(
     .toSorted(),
 );
 moduleEntries = await selectStandalonePluginModules(runtimeRoot, moduleEntries, plugins);
+const npm = prepareStandaloneNpm({ runtimeRoot, parse });
+moduleEntries.push(...npm.moduleEntries);
 const workerEntries = discoverStandaloneWorkers({
   runtimeRoot,
   moduleEntries,
@@ -319,6 +322,7 @@ const commonJsEntries = [
     .map((entry) => embeddedPaths[entry]),
   ...Object.keys(moduleAliases).map((name) => embeddedPaths[name]),
   ...native.commonJsEntries.map((entry) => embeddedPaths[entry]),
+  ...npm.commonJsEntries.map((entry) => embeddedPaths[entry]),
 ];
 const artifacts = createStandaloneArtifactAdapter({
   runtimeRoot,
@@ -441,6 +445,11 @@ const result = await Bun.build({
             return undefined;
           }
           let contents = await fs.promises.readFile(filename, "utf8");
+          const npmResult = npm.transform({ contents });
+          contents = npmResult.contents;
+          if (npmResult.count) {
+            artifactTransforms.push({ file: relative, npm: npmResult.count });
+          }
           contents = workers.rewriteInlineWorkers(filename, contents);
           const artifact = artifacts.transform({ filename, contents });
           contents = artifact.contents;
@@ -470,7 +479,10 @@ const result = await Bun.build({
             contents = workers.rewriteWorkerImports(
               filename,
               contents,
-              parse(contents, { ecmaVersion: "latest", sourceType: "module" }),
+              parse(contents, {
+                ecmaVersion: "latest",
+                sourceType: native.sourceTypeFor(filename),
+              }),
             );
           }
           // The launcher loops over legacy suffixes. Expose existing candidates to Bun's graph.
@@ -502,6 +514,7 @@ const result = await Bun.build({
             moduleAliases,
             workerThreadsShim: workers.workerThreadsShim,
             parse,
+            sourceType: native.sourceTypeFor(filename),
           });
           if (audit) {
             const observed = audit.instrumentSource(contents, relative);

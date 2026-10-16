@@ -49,7 +49,8 @@ export function createStandaloneRequireAdapter({ runtimeRoot, embeddedPaths }) {
           ? path.resolve(path.dirname(parent), specifier) : undefined;
       if (filename === undefined) return undefined;
       if (embedded(filename)) return filename;
-      const key = path.relative(root, filename).split(path.sep).join("/");
+      const original = globalThis.__openclawStandaloneOriginalPath(filename);
+      const key = path.relative(root, original).split(path.sep).join("/");
       return Object.hasOwn(resolutions, key) ? path.join(root, resolutions[key]) : undefined;
     };
     // Keep physical filenames for admission/cache owners, while loading the mapped image entry.

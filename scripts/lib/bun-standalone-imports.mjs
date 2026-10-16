@@ -8,6 +8,7 @@ export function rewriteStandaloneImports({
   moduleAliases,
   workerThreadsShim,
   parse,
+  sourceType = "module",
 }) {
   let contents = originalContents;
   const relative = path.relative(runtimeRoot, filename).split(path.sep).join("/");
@@ -16,8 +17,10 @@ export function rewriteStandaloneImports({
   const ast = /import\.meta|import\s*\(|createRequire/.test(contents)
     ? parse(contents, {
         ecmaVersion: "latest",
-        sourceType: "module",
+        sourceType,
+        allowImportExportEverywhere: true,
         allowAwaitOutsideFunction: true,
+        allowReturnOutsideFunction: sourceType === "script",
       })
     : undefined;
   const requireFactories = new Set(

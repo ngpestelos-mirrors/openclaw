@@ -826,8 +826,14 @@ export function createStandaloneNativeAdapter({
   globalThis.__openclawStandaloneNativeRequire.resolve = (parent, ...args) => requireFrom(parent).resolve(...args);
 })();\n`;
 
+  // Preserve legacy CJS syntax; Bun owns acceptance of mixed module syntax.
+  const sourceTypeFor = (filename) => {
+    const owner = ownerOf(filename);
+    return owner?.relocate && isCommonJsEntry(filename, owner.manifest.type) ? "script" : "module";
+  };
   return {
     bootstrap,
+    sourceTypeFor,
     discover(moduleEntries) {
       const pending = new Set([...moduleEntries, ...additionalModuleEntries]);
       for (const entry of pending) {
@@ -838,7 +844,8 @@ export function createStandaloneNativeAdapter({
         }
         const ast = parse(contents, {
           ecmaVersion: "latest",
-          sourceType: "module",
+          sourceType: sourceTypeFor(filename),
+          allowImportExportEverywhere: true,
           allowReturnOutsideFunction: true,
         });
         collectRuntimeReferences(ast, filename, true);
@@ -870,7 +877,8 @@ export function createStandaloneNativeAdapter({
       }
       const ast = parse(contents, {
         ecmaVersion: "latest",
-        sourceType: "module",
+        sourceType: sourceTypeFor(filename),
+        allowImportExportEverywhere: true,
         allowReturnOutsideFunction: true,
       });
       const { isBound, moduleResolutions } = collectRuntimeReferences(ast, filename);

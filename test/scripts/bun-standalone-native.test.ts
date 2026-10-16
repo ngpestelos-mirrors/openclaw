@@ -402,6 +402,10 @@ console.log("full-ws loaded without node_modules");
     const sourceEntry = path.relative(root, path.join(dependency, "dist/secure-temp-dir.js"));
     const embeddedPaths = { [sourceEntry]: imageEntry };
     const adapter = createStandaloneNativeAdapter({ runtimeRoot: root, parse });
+    adapter.transform({
+      filename: path.join(dependency, "dist/secure-temp-dir.js"),
+      contents: fs.readFileSync(path.join(dependency, "dist/secure-temp-dir.js"), "utf8"),
+    });
     const finalized = adapter.finalize({ embeddedPaths });
     const requireAdapter = createStandaloneRequireAdapter({ runtimeRoot: root, embeddedPaths });
     const context = vm.createContext({
@@ -427,6 +431,14 @@ console.log("full-ws loaded without node_modules");
       path.join(root, "dist/entry.mjs"),
     );
     expect(load("@fixture/fs-safe/secure-temp-root").resolveSecureTempRoot()).toBe("safe");
+    const fromRelocated = context["__openclawStandaloneCreateRequire"](
+      createRequire,
+      path.join(root, "native/@fixture+fs-safe@1.0.0/@fixture/fs-safe/dist/entry.js"),
+    );
+    expect(fromRelocated("./secure-temp-dir").resolveSecureTempRoot()).toBe("safe");
+    expect(fromRelocated.resolve("./secure-temp-dir")).toBe(
+      path.join(dependency, "dist/secure-temp-dir.js"),
+    );
   });
 
   it("discovers opaque bundled requires without promoting metadata-only or shadowed packages", () => {
@@ -815,7 +827,7 @@ console.log("full-ws loaded without node_modules");
     const { root, write, pkg } = fixture();
     pkg("sqlite-vec-darwin-arm64", {}, { "vec0.dylib": "native-library" });
     const source =
-      'exports.getLoadablePath = () => require.resolve("sqlite-vec-darwin-arm64/" + "vec0.dylib");';
+      'var protected = 0644; exports.getLoadablePath = () => require.resolve("sqlite-vec-darwin-arm64/" + "vec0.dylib");';
     const owner = pkg(
       "sqlite-vec",
       { main: "index.cjs", optionalDependencies: { "sqlite-vec-darwin-arm64": "1.0.0" } },
