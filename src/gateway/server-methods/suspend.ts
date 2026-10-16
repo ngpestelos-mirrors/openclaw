@@ -22,6 +22,14 @@ function invalidParams(method: string) {
   return errorShape(ErrorCodes.INVALID_REQUEST, `invalid ${method} params`);
 }
 
+function schedulerRecoveryError(retryAfterMs: number) {
+  return errorShape(ErrorCodes.UNAVAILABLE, "gateway scheduler recovery is pending", {
+    retryable: true,
+    retryAfterMs,
+    details: { reason: "scheduler-resume-failed" },
+  });
+}
+
 function respondSuspendStatus(
   result: ReturnType<typeof prepareGatewaySuspend> | ReturnType<typeof getGatewaySuspendStatus>,
   context: GatewayRequestContext,
@@ -38,6 +46,8 @@ function respondSuspendStatus(
         details: { reason: "gateway-suspension-conflict", expiresAtMs: result.expiresAtMs },
       }),
     );
+  } else if (result.status === "recovering") {
+    respond(false, undefined, schedulerRecoveryError(result.retryAfterMs));
   } else {
     if (result.status === "draining") {
       context.logGateway.info(
@@ -131,6 +141,10 @@ export const suspendHandlers: GatewayRequestHandlers = {
           undefined,
           errorShape(ErrorCodes.UNAVAILABLE, "gateway shutdown is committed"),
         );
+        return;
+      }
+      if (result.reason === "scheduler-resume-failed") {
+        respond(false, undefined, schedulerRecoveryError(result.retryAfterMs));
         return;
       }
       respond(
