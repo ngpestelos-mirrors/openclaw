@@ -11,6 +11,7 @@ import {
   cpSync,
   existsSync,
   lstatSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -4592,9 +4593,11 @@ process.on("exit", () => {
     ["aws", false, "transport"],
     ["aws", false, "arbitrary"],
     ["aws", false, "reuse"],
+    ["aws", false, "unchanged"],
     ["blacksmith-testbox", true, "transport"],
     ["blacksmith-testbox", false, "transport"],
     ["blacksmith-testbox", false, "reuse"],
+    ["blacksmith-testbox", false, "unchanged"],
     ["blacksmith-testbox", false, "captured-base"],
     ["blacksmith-testbox", false, "graph"],
     ["blacksmith-testbox", false, "frozen"],
@@ -4958,11 +4961,26 @@ process.on("exit", () => {
         expect(git(producer, ["diff", "--name-only", sharedBase, "HEAD"])).toContain("mode.sh");
         return;
       }
-      if (scenario === "reuse") {
+      if (scenario === "reuse" || scenario === "unchanged") {
         const sent = runSender();
         const first = receive("reused", sent.remoteCommand, sent.bundle);
         expect(first.result.status, failureDetail(first.result)).toBe(0);
         expect(git(first.receiver, ["rev-parse", "--is-shallow-repository"])).toBe("true");
+        const retained =
+          scenario === "unchanged"
+            ? ["unchanged.bin", "alias", "directory-alias"].map((file) => ({
+                file,
+                stat: lstatSync(path.join(first.receiver, file)),
+              }))
+            : [];
+        if (scenario === "unchanged") {
+          // Keep the old inode allocated so recreation cannot pass through inode reuse.
+          linkSync(path.join(first.receiver, "unchanged.bin"), path.join(root, "retained-inode"));
+          writeFileSync(path.join(first.receiver, "owner.txt"), "stale physical bytes\n");
+          chmodSync(path.join(first.receiver, "mode.sh"), 0o644);
+          rmSync(path.join(first.receiver, "raw-crlf.txt"));
+          symlinkSync(deletionReferent, path.join(first.receiver, "raw-crlf.txt"), "dir");
+        }
         // The old private Git owner is removed during promotion. A second import
         // must work without origin and leave no alternate pointing at that owner.
         const reused = receive(
@@ -4976,6 +4994,24 @@ process.on("exit", () => {
         expect(git(reused.receiver, ["rev-parse", "origin/main"])).toBe(base);
         expect(git(reused.receiver, ["rev-parse", "HEAD^"])).toBe(base);
         expect(existsSync(path.join(reused.receiver, ".git/objects/info/alternates"))).toBe(false);
+        for (const { file, stat } of retained) {
+          const current = lstatSync(path.join(reused.receiver, file));
+          expect({ dev: current.dev, ino: current.ino, mtimeMs: current.mtimeMs }, file).toEqual({
+            dev: stat.dev,
+            ino: stat.ino,
+            mtimeMs: stat.mtimeMs,
+          });
+        }
+        for (const file of ["owner.txt", "raw-crlf.txt"]) {
+          expect(lstatSync(path.join(reused.receiver, file)).isFile()).toBe(true);
+          expect(readFileSync(path.join(reused.receiver, file))).toEqual(
+            readFileSync(path.join(producer, file)),
+          );
+        }
+        expect(lstatSync(path.join(reused.receiver, "mode.sh")).mode & 0o100).toBe(0o100);
+        expect(readFileSync(path.join(deletionReferent, "canary.txt"), "utf8")).toBe(
+          "private referent\n",
+        );
         git(reused.receiver, ["fsck", "--connectivity-only", "--no-dangling"]);
         return;
       }
