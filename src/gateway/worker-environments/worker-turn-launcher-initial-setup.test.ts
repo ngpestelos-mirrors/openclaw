@@ -19,9 +19,9 @@ import { closeStateDatabaseForTest } from "../../test-utils/database-cleanup.js"
 import { coordinateWorkerPlacementDispatch } from "./placement-dispatch-coordinator.js";
 import { createCoordinatorTestService } from "./placement-dispatch-coordinator.test-support.js";
 import type { WorkerTunnelHandle } from "./tunnel-contract.js";
+import { localResult } from "./worker-turn-launcher-flow.test-support.js";
 import {
   ENVIRONMENT_ID,
-  MANIFEST_REF,
   OWNER_EPOCH,
   SESSION_ID,
   attachedEnvironment,
@@ -35,6 +35,7 @@ import {
   setupWorkerTurnLauncherTest,
   turn,
   unusedEnvironments,
+  reconcileUnchangedLocalWorkspace,
 } from "./worker-turn-launcher.test-support.js";
 
 afterAll(closeStateDatabaseForTest);
@@ -85,10 +86,18 @@ async function setup(
     dispatch,
     finish,
     operation,
-    waiting: waiting.promise,
     waitForInitialPlacement: (...args: Parameters<typeof dispatch.waitForInitialPlacement>) => {
       waiting.resolve();
       return dispatch.waitForInitialPlacement(...args);
+    },
+    wait: (run: Promise<unknown>, signal: AbortSignal) =>
+      withinTest(
+        awaitGateBeforeSettlement(waiting.promise, run, "turn skipped the setup wait"),
+        signal,
+      ),
+    settle: async (run: Promise<unknown>) => {
+      finish.resolve();
+      await Promise.allSettled([run, operation]);
     },
     fail: () => {
       failure = new Error("setup transfer failed");
@@ -108,20 +117,7 @@ function readyEnvironment() {
         timeoutMs: 5000,
       }),
     quiesceWorkspace: async () => ({ assertActive: async () => {}, resume: async () => {} }),
-    reconcileWorkspace: async (request) => {
-      if (request.source.kind !== "local") {
-        throw new Error("expected local workspace");
-      }
-      await request.source.journal.commit(MANIFEST_REF);
-      return {
-        manifestRef: MANIFEST_REF,
-        changed: false,
-        verifyStable: async () => {},
-        verifyLocalStable: async () => {},
-        publishStagedResult: async () => {},
-        discardPreparedStagedResult: async () => {},
-      };
-    },
+    reconcileWorkspace: reconcileUnchangedLocalWorkspace,
     syncWorkspace: vi.fn(),
     stop: async () => {},
   };
@@ -136,90 +132,81 @@ describe("initial worker setup admission", () => {
   beforeEach(setupWorkerTurnLauncherTest);
   afterEach(() => cleanupWorkerTurnLauncherTest({ reuseReadWorkers: true }));
 
-  it.for(["worker-turn"] as const)(
-    "holds %s input during initial sync without agent IO, then claims the intended active placement",
-    async (executionMode, { signal }) => {
-      const fixture = await setup(executionMode);
-      const environments = unusedEnvironments();
-      const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
-      const provider = createWorkerSessionTurnPlacementProvider({
-        environments,
-        placements,
-        waitForInitialPlacement: fixture.waitForInitialPlacement,
-      });
-      let outcome = "held";
-      const run = provider.executeTurn(
-        { ...sessionTarget, runId: "initial-input" },
-        { ...turn("initial-input"), abortSignal: signal },
-        runLocal,
-      );
-      void run.then(
-        () => {
-          outcome = "completed";
-        },
-        () => {
-          outcome = "rejected";
-        },
-      );
-      try {
-        await withinTest(
-          awaitGateBeforeSettlement(fixture.waiting, run, "turn skipped the setup wait"),
-          signal,
-        );
-        expect(outcome).toBe("held");
-        expect(environments.get).not.toHaveBeenCalled();
-        expect(runLocal).not.toHaveBeenCalled();
-        expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
-      } finally {
-        fixture.finish.resolve();
-        await fixture.operation;
-        await run.catch(() => undefined);
-      }
-      await expect(run).rejects.toThrow("does not match its attached environment");
-      expect(environments.get).toHaveBeenCalledOnce();
+  it("holds worker-turn input during initial sync without agent IO, then claims the intended active placement", async ({
+    signal,
+  }) => {
+    const executionMode = "worker-turn";
+    const fixture = await setup(executionMode);
+    const environments = unusedEnvironments();
+    const runLocal = vi.fn(localResult);
+    const provider = createWorkerSessionTurnPlacementProvider({
+      environments,
+      placements,
+      waitForInitialPlacement: fixture.waitForInitialPlacement,
+    });
+    let outcome = "held";
+    const run = provider.executeTurn(
+      { ...sessionTarget, runId: "initial-input" },
+      { ...turn("initial-input"), abortSignal: signal },
+      runLocal,
+    );
+    void run.then(
+      () => {
+        outcome = "completed";
+      },
+      () => {
+        outcome = "rejected";
+      },
+    );
+    try {
+      await fixture.wait(run, signal);
+      expect(outcome).toBe("held");
+      expect(environments.get).not.toHaveBeenCalled();
       expect(runLocal).not.toHaveBeenCalled();
-    },
-  );
+      expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
+    } finally {
+      fixture.finish.resolve();
+      await fixture.operation;
+      await run.catch(() => undefined);
+    }
+    await expect(run).rejects.toThrow("does not match its attached environment");
+    expect(environments.get).toHaveBeenCalledOnce();
+    expect(runLocal).not.toHaveBeenCalled();
+  });
 
-  it.for(["syncing"])(
-    "executes once after %s becomes authoritative and active",
-    async (phase, { signal }) => {
-      const fixture = await setup("remote-exec", phase);
-      const environments = readyEnvironment();
-      const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
-      const admitted = vi.fn();
-      const provider = createWorkerSessionTurnPlacementProvider({
-        environments,
-        placements,
-        waitForInitialPlacement: fixture.waitForInitialPlacement,
-      });
-      const run = provider.executeTurn(
-        { ...sessionTarget, runId: "ready-input" },
-        { ...turn("ready-input"), abortSignal: signal },
-        runLocal,
-        admitted,
-      );
-      void run.catch(() => undefined);
-      try {
-        await withinTest(
-          awaitGateBeforeSettlement(fixture.waiting, run, "turn skipped the setup wait"),
-          signal,
-        );
-        expect(runLocal).not.toHaveBeenCalled();
-        expect(environments.startTunnel).not.toHaveBeenCalled();
-        expect(admitted).not.toHaveBeenCalled();
-        fixture.finish.resolve();
-        await fixture.operation;
-        await expect(run).resolves.toMatchObject({ meta: { durationMs: 1 } });
-        expect(runLocal).toHaveBeenCalledOnce();
-        expect(admitted).toHaveBeenCalledOnce();
-        expect(placements.get(SESSION_ID)).toMatchObject({ state: "active", turnClaim: null });
-      } finally {
-        fixture.finish.resolve();
-        await Promise.allSettled([run, fixture.operation]);
-      }
-    },
-  );
+  it("executes once after syncing becomes authoritative and active", async ({ signal }) => {
+    const phase = "syncing";
+    const fixture = await setup("remote-exec", phase);
+    const environments = readyEnvironment();
+    const runLocal = vi.fn(localResult);
+    const admitted = vi.fn();
+    const provider = createWorkerSessionTurnPlacementProvider({
+      environments,
+      placements,
+      waitForInitialPlacement: fixture.waitForInitialPlacement,
+    });
+    const run = provider.executeTurn(
+      { ...sessionTarget, runId: "ready-input" },
+      { ...turn("ready-input"), abortSignal: signal },
+      runLocal,
+      admitted,
+    );
+    void run.catch(() => undefined);
+    try {
+      await fixture.wait(run, signal);
+      expect(runLocal).not.toHaveBeenCalled();
+      expect(environments.startTunnel).not.toHaveBeenCalled();
+      expect(admitted).not.toHaveBeenCalled();
+      fixture.finish.resolve();
+      await fixture.operation;
+      await expect(run).resolves.toMatchObject({ meta: { durationMs: 1 } });
+      expect(runLocal).toHaveBeenCalledOnce();
+      expect(admitted).toHaveBeenCalledOnce();
+      expect(placements.get(SESSION_ID)).toMatchObject({ state: "active", turnClaim: null });
+    } finally {
+      await fixture.settle(run);
+    }
+  });
 
   it("keeps the worker runtime default when setup finishes during its read", async ({ signal }) => {
     const fixture = await setup("worker-turn");
@@ -270,7 +257,7 @@ describe("initial worker setup admission", () => {
       await placements.clearLocalTurnClaimsAfterRestartAsync();
     });
     const claimTurn = vi.spyOn(placements, "claimTurn");
-    const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
+    const runLocal = vi.fn(localResult);
     const provider = createWorkerSessionTurnPlacementProvider({
       environments: unusedEnvironments(),
       placements,
@@ -283,18 +270,14 @@ describe("initial worker setup admission", () => {
     );
     void run.catch(() => undefined);
     try {
-      await withinTest(
-        awaitGateBeforeSettlement(fixture.waiting, run, "turn skipped the setup wait"),
-        signal,
-      );
+      await fixture.wait(run, signal);
       fixture.finish.resolve();
       await fixture.operation;
       await expect(run).rejects.toThrow("Workspace recovery is still pending");
       expect(claimTurn.mock.calls.filter(([claim]) => claim.runId === "waiting-input")).toEqual([]);
       expect(runLocal).not.toHaveBeenCalled();
     } finally {
-      fixture.finish.resolve();
-      await Promise.allSettled([run, fixture.operation]);
+      await fixture.settle(run);
     }
   });
 
@@ -318,7 +301,7 @@ describe("initial worker setup admission", () => {
       );
       const environments = readyEnvironment();
       const controller = new AbortController();
-      const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
+      const runLocal = vi.fn(localResult);
       const provider = createWorkerSessionTurnPlacementProvider({
         environments,
         placements,
@@ -332,10 +315,7 @@ describe("initial worker setup admission", () => {
       );
       void run.catch(() => undefined);
       try {
-        await withinTest(
-          awaitGateBeforeSettlement(fixture.waiting, run, "turn skipped the setup wait"),
-          signal,
-        );
+        await fixture.wait(run, signal);
         if (change === "failure") {
           fixture.fail();
         }
@@ -359,8 +339,7 @@ describe("initial worker setup admission", () => {
         expect(environments.startTunnel).not.toHaveBeenCalled();
         expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
       } finally {
-        fixture.finish.resolve();
-        await Promise.allSettled([run, fixture.operation]);
+        await fixture.settle(run);
         uninstall();
       }
     },
@@ -371,7 +350,7 @@ describe("initial worker setup admission", () => {
     async (kind, { signal }) => {
       const fixture = await setup("remote-exec");
       const environments = readyEnvironment();
-      const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
+      const runLocal = vi.fn(localResult);
       const resolveWorkspace = vi.fn(async () => ({ kind: "local" as const, path: root }));
       let sourceLive = true;
       const base = turn("revoked-input");
@@ -411,10 +390,7 @@ describe("initial worker setup admission", () => {
       );
       void run.catch(() => undefined);
       try {
-        await withinTest(
-          awaitGateBeforeSettlement(fixture.waiting, run, "turn skipped the setup wait"),
-          signal,
-        );
+        await fixture.wait(run, signal);
         if (admitted) {
           closeAdmittedRunDelegatedAuthority(admitted);
         } else {
@@ -428,8 +404,7 @@ describe("initial worker setup admission", () => {
         expect(runLocal).not.toHaveBeenCalled();
         expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
       } finally {
-        fixture.finish.resolve();
-        await Promise.allSettled([run, fixture.operation]);
+        await fixture.settle(run);
         admission.close();
         uninstall();
       }

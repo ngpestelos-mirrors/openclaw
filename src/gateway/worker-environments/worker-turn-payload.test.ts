@@ -135,18 +135,34 @@ function fitLaunchDescriptor(messages: WorkerLaunchPlan["assignment"]["initialMe
   const operationalRunInstance = createTestAdmittedRunContext("run").operationalRunInstance;
   return {
     operationalRunInstance,
-    plan: fitLaunchDescriptorWithRuntimeIdentity({
-      measure: measureLaunch,
-      build: (identityToken, initialMessages) =>
-        buildDescriptor(initialMessages, identityToken, operationalRunInstance),
+    plan: fitWithIdentity(
       messages,
-      runtimeIdentity: {
-        agentId: "main",
-        sessionKey: "worker:session",
-        operationalRunInstance,
-      },
-    }),
+      (identityToken, initialMessages) =>
+        buildDescriptor(initialMessages, identityToken, operationalRunInstance),
+      operationalRunInstance,
+    ),
   };
+}
+
+function completeWindow(messages: AgentMessage[], promptMessages = 1) {
+  const projected = windowInitialMessages(messages, promptMessages);
+  if (projected.kind !== "complete") {
+    throw new Error("expected complete projection");
+  }
+  return projected;
+}
+
+function fitWithIdentity(
+  messages: WorkerLaunchPlan["assignment"]["initialMessages"],
+  build: Parameters<typeof fitLaunchDescriptorWithRuntimeIdentity>[0]["build"],
+  operationalRunInstance: OperationalRunInstanceRef,
+) {
+  return fitLaunchDescriptorWithRuntimeIdentity({
+    build,
+    measure: measureLaunch,
+    messages,
+    runtimeIdentity: { agentId: "main", sessionKey: "worker:session", operationalRunInstance },
+  });
 }
 
 beforeEach(() => {
@@ -198,12 +214,8 @@ describe("windowInitialMessages", () => {
       ),
     );
 
-    const result = windowInitialMessages(history);
+    const result = completeWindow(history);
 
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") {
-      throw new Error("expected complete window");
-    }
     expect(result.messages).toHaveLength(WORKER_INFERENCE_MAX_CONTEXT_MESSAGES - 1);
     expect(result.messages[0]).toMatchObject({
       role: "assistant",
@@ -217,12 +229,8 @@ describe("windowInitialMessages", () => {
       userMessage(`history-${index}`, index + 1),
     );
 
-    const result = windowInitialMessages(history, promptMessages);
+    const result = completeWindow(history, promptMessages);
 
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") {
-      throw new Error("expected complete window");
-    }
     expect(result.messages).toHaveLength(WORKER_INFERENCE_MAX_CONTEXT_MESSAGES - promptMessages);
     expect(result.messages[0]).toMatchObject({
       role: "user",
@@ -253,11 +261,11 @@ describe("windowInitialMessages", () => {
 
 describe("fitLaunchDescriptor", () => {
   it.each([0, 1])("fits the complete transport bound at cap %+i byte(s)", async (delta) => {
-    const projected = windowInitialMessages([
+    const projected = completeWindow([
       assistantMessage(1, true),
       toolResultMessage({ payload: "" }, 2),
     ]);
-    if (projected.kind !== "complete" || projected.messages[1]?.role !== "toolResult") {
+    if (projected.messages[1]?.role !== "toolResult") {
       throw new Error("expected replay context");
     }
     const operationalRunInstance = createTestAdmittedRunContext("run").operationalRunInstance;
@@ -268,12 +276,7 @@ describe("fitLaunchDescriptor", () => {
     projected.messages[1].details = { payload: "x".repeat(targetBytes - emptyBytes) };
     const candidate = build(runtimeIdentityToken.value, projected.messages);
     expect(measureLaunch(candidate)).toBe(targetBytes);
-    const fitted = await fitLaunchDescriptorWithRuntimeIdentity({
-      build,
-      measure: measureLaunch,
-      messages: projected.messages,
-      runtimeIdentity: { agentId: "main", sessionKey: "worker:session", operationalRunInstance },
-    });
+    const fitted = await fitWithIdentity(projected.messages, build, operationalRunInstance);
     expect(fitted.kind).toBe(delta > 0 ? "provider-replay-unavailable" : "launch");
     expect(runtimeIdentityToken.mint).toHaveBeenCalledTimes(delta > 0 ? 0 : 1);
     if (fitted.kind === "launch") {
@@ -291,13 +294,10 @@ describe("fitLaunchDescriptor", () => {
 
   it("fits the actual near-ceiling launch transport with nested escaping", async () => {
     const operationalRunInstance = createTestAdmittedRunContext("run").operationalRunInstance;
-    const projected = windowInitialMessages([
+    const projected = completeWindow([
       assistantMessage(1, true),
       toolResultMessage({ payload: "" }, 2),
     ]);
-    if (projected.kind !== "complete") {
-      throw new Error("expected complete projection");
-    }
     const messages = projected.messages;
     const result = messages[1];
     if (result?.role !== "toolResult") {
@@ -342,12 +342,7 @@ describe("fitLaunchDescriptor", () => {
     });
     parseWorkerProcessRequest(JSON.parse(line));
 
-    const fitted = await fitLaunchDescriptorWithRuntimeIdentity({
-      measure: measureLaunch,
-      build,
-      messages,
-      runtimeIdentity: { agentId: "main", sessionKey: "worker:session", operationalRunInstance },
-    });
+    const fitted = await fitWithIdentity(messages, build, operationalRunInstance);
     expect(fitted.kind).toBe("provider-replay-unavailable");
     expect(runtimeIdentityToken.mint).not.toHaveBeenCalled();
   });
@@ -382,12 +377,7 @@ describe("fitLaunchDescriptor", () => {
       WORKER_PROTOCOL_MAX_INFERENCE_PAYLOAD_BYTES,
     );
     const original = structuredClone(messages);
-    const fitted = await fitLaunchDescriptorWithRuntimeIdentity({
-      build,
-      measure: measureLaunch,
-      messages,
-      runtimeIdentity: { agentId: "main", sessionKey: "worker:session", operationalRunInstance },
-    });
+    const fitted = await fitWithIdentity(messages, build, operationalRunInstance);
     expect(fitted.kind).toBe("launch");
     if (fitted.kind === "launch") {
       expect(fitted.plan.assignment.initialMessages).toEqual(expected);
@@ -414,7 +404,7 @@ describe("fitLaunchDescriptor", () => {
 
   it("drops complete old turns while retaining the replay anchor", async () => {
     const large = "x".repeat(13 * 1024 * 1024);
-    const projected = windowInitialMessages([
+    const projected = completeWindow([
       userMessage("old turn", 1),
       toolResultMessage({ payload: large }, 2),
       assistantMessage(3, true),
@@ -422,9 +412,6 @@ describe("fitLaunchDescriptor", () => {
       toolResultMessage({ payload: large }, 5),
       assistantMessage(6, true),
     ]);
-    if (projected.kind !== "complete") {
-      throw new Error("expected complete projection");
-    }
 
     const fitted = fitLaunchDescriptor(projected.messages);
     const plan = await fitted.plan;
@@ -450,13 +437,10 @@ describe("fitLaunchDescriptor", () => {
   });
 
   it("drops a non-user prefix directly to the replay owner", async () => {
-    const projected = windowInitialMessages([
+    const projected = completeWindow([
       toolResultMessage({ payload: "x".repeat(WORKER_PROTOCOL_MAX_INFERENCE_PAYLOAD_BYTES) }, 1),
       assistantMessage(2, true),
     ]);
-    if (projected.kind !== "complete") {
-      throw new Error("expected complete projection");
-    }
 
     const fitted = fitLaunchDescriptor(projected.messages);
     const plan = await fitted.plan;

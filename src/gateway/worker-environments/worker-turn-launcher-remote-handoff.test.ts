@@ -38,6 +38,11 @@ import { createAgentRuntimeApprovalAuthorityValidator } from "../agent-runtime-a
 import { verifyAgentRuntimeIdentityToken } from "../agent-runtime-identity-token.js";
 import type { WorkerTunnelHandle } from "./tunnel-contract.js";
 import {
+  environmentForTunnel,
+  localResult,
+  runIdentity,
+} from "./worker-turn-launcher-flow.test-support.js";
+import {
   createWorkerTurnTunnel,
   reconcileUnchangedLocalWorkspace,
   acknowledgeCompletedWorkerTurn,
@@ -45,12 +50,9 @@ import {
   MANIFEST_REF,
   OWNER_EPOCH,
   SESSION_ID,
-  SESSION_KEY,
-  attachedEnvironment,
   browserEnvironment,
   cleanupWorkerTurnLauncherTest,
   createWorkerSessionTurnPlacementProvider,
-  credential,
   openSessionManager,
   placements,
   root,
@@ -60,7 +62,6 @@ import {
   setWorkerTurnSessionTarget,
   setupWorkerTurnLauncherTest,
   turn,
-  type WorkerTurnEnvironmentService,
 } from "./worker-turn-launcher.test-support.js";
 
 afterAll(closeStateDatabaseForTest);
@@ -113,10 +114,7 @@ describe("worker turn launcher remote handoff", () => {
     let descriptor: WorkerLaunchDescriptor | undefined;
     const environment = browserEnvironment();
     environment.desktop!.apps![0]!.args = ["-File", "C:\\ProgramData\\OpenClaw\\browser.ps1"];
-    const bootstrapReceipt = environment.bootstrapReceipt;
-    if (!bootstrapReceipt) {
-      throw new Error("expected bootstrap receipt");
-    }
+    const bootstrapReceipt = expectDefined(environment.bootstrapReceipt, "bootstrap receipt");
     const acknowledgeCredentialDelivery = vi.fn(async () => true);
     const reconcileWorkspace = vi.fn(
       async (request: Parameters<WorkerTunnelHandle["reconcileWorkspace"]>[0]) => {
@@ -212,14 +210,11 @@ describe("worker turn launcher remote handoff", () => {
       }),
       reconcileWorkspace,
     });
-    const environments: WorkerTurnEnvironmentService = {
+    const environments = environmentForTunnel({
       get: vi.fn(() => environment),
-      acquireTurnCredential: vi.fn(async () => credential()),
       acknowledgeCredentialDelivery,
       startTunnel: vi.fn(async () => tunnel),
-      stopTunnel: vi.fn(async () => {}),
-      destroy: vi.fn(async () => attachedEnvironment()),
-    };
+    });
     const resolveWorkspace = vi.fn(async () => ({ kind: "local" as const, path: root }));
     const provider = createWorkerSessionTurnPlacementProvider({
       environments,
@@ -227,7 +222,7 @@ describe("worker turn launcher remote handoff", () => {
       resolveWorkspace,
       reconcileActivePlacement: async () => {},
     });
-    const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
+    const runLocal = vi.fn(localResult);
     const onAgentEvent = vi.fn(() => {
       throw new Error("supplemental event failed");
     });
@@ -489,23 +484,14 @@ describe("worker turn launcher remote handoff", () => {
       }),
       reconcileWorkspace: vi.fn(reconcileUnchangedLocalWorkspace),
     });
-    const environments: WorkerTurnEnvironmentService = {
+    const environments = environmentForTunnel({
       get: vi.fn(() => browserEnvironment()),
-      acquireTurnCredential: vi.fn(async () => credential()),
-      acknowledgeCredentialDelivery: vi.fn(async () => true),
       startTunnel: vi.fn(async () => tunnel),
-      stopTunnel: vi.fn(async () => {}),
-      destroy: vi.fn(async () => attachedEnvironment()),
-    };
+    });
     const provider = createWorkerSessionTurnPlacementProvider({ environments, placements });
 
     await provider.executeTurn(
-      {
-        sessionId: SESSION_ID,
-        sessionKey: SESSION_KEY,
-        agentId: "main",
-        runId: "run-persisted-user",
-      },
+      runIdentity("run-persisted-user"),
       {
         ...turn("run-persisted-user"),
         config: {
@@ -518,7 +504,7 @@ describe("worker turn launcher remote handoff", () => {
         imageOrder: ["inline", "offloaded", "inline"],
         media: [{ path: imagePath, contentType: "image/png", kind: "image" }],
       },
-      async () => ({ meta: { durationMs: 1 } }),
+      localResult,
     );
 
     expect(descriptor?.assignment.prompt).toEqual([
@@ -557,32 +543,16 @@ describe("worker turn launcher remote handoff", () => {
       "Discarded owner result",
     );
     const persistedEntries = (await openSessionManager()).getEntries();
-    const persistedCurrentUsers = persistedEntries.filter((entry) => {
-      if (typeof entry !== "object" || entry === null || !("message" in entry)) {
-        return false;
-      }
-      const message = entry.message;
-      if (
-        typeof message !== "object" ||
-        message === null ||
-        !("role" in message) ||
-        !("content" in message)
-      ) {
-        return false;
-      }
-      return (
-        message.role === "user" &&
-        (message.content === "Inspect this workspace" ||
-          (Array.isArray(message.content) &&
-            message.content.some(
-              (part) =>
-                typeof part === "object" &&
-                part !== null &&
-                "text" in part &&
-                part.text === "Inspect this workspace",
-            )))
-      );
-    });
+    const persistedCurrentUsers = persistedEntries.filter(
+      (entry) =>
+        entry.type === "message" &&
+        entry.message.role === "user" &&
+        (entry.message.content === "Inspect this workspace" ||
+          (Array.isArray(entry.message.content) &&
+            entry.message.content.some(
+              (part) => part.type === "text" && part.text === "Inspect this workspace",
+            ))),
+    );
     expect(persistedCurrentUsers).toHaveLength(1);
   });
 });

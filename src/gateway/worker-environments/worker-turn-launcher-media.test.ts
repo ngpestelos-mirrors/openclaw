@@ -27,14 +27,15 @@ import { closeStateDatabaseForTest } from "../../test-utils/database-cleanup.js"
 import type { WorkerLaunchPlan } from "../../worker/launch-descriptor.js";
 import { NODE_WORKER_WORKSPACE_STDOUT_MAX_BYTES } from "../../worker/node-workspace-protocol.js";
 import { parseMessageWithAttachments } from "../chat-attachments.js";
+import { result as processResult } from "./bootstrap.test-support.js";
 import { projectWorkerSessionTurnClaim } from "./placement-record.js";
 import { createWorkerSessionPlacementGate } from "./placement-worker-gate.js";
 import type { WorkerTurnTunnelHandle } from "./tunnel-contract.js";
+import { runIdentity } from "./worker-turn-launcher-flow.test-support.js";
 import {
   createWorkerTurnTunnel,
   reconcileUnchangedLocalWorkspace,
   SESSION_ID,
-  SESSION_KEY,
   attachedEnvironment,
   cleanupWorkerTurnLauncherTest,
   createWorkerSessionTurnPlacementProvider,
@@ -49,6 +50,23 @@ import {
 } from "./worker-turn-launcher.test-support.js";
 
 afterAll(closeStateDatabaseForTest);
+
+function recordInput(input: Parameters<typeof createUserTurnTranscriptRecorder>[0]["input"]) {
+  return createUserTurnTranscriptRecorder({
+    target: { ...sessionTarget, sessionEntry: undefined },
+    input,
+  });
+}
+
+async function imagePair(png: Buffer) {
+  const image = await saveMediaBuffer(png, "image/png", "inbound");
+  const described = await saveMediaBuffer(png, "image/png", "inbound");
+  const media = [
+    { url: `media://inbound/${image.id}`, contentType: "image/png" },
+    { url: `media://inbound/${described.id}`, contentType: "image/png", hydrationSuppressed: true },
+  ];
+  return { image, described, media };
+}
 
 function harness(assistantText = "image received") {
   const launches: WorkerLaunchPlan[] = [];
@@ -88,18 +106,13 @@ function harness(assistantText = "image received") {
         transcriptSeq: seq,
         liveSeq: request.plan.assignment.liveEvents.nextSeq,
       });
-      return {
+      return processResult({
         stdout: JSON.stringify({
           status: "completed",
           transcriptLeafId: leaf,
           transcriptNextSeq: seq + 1,
         }),
-        stderr: "",
-        code: 0,
-        signal: null,
-        killed: false,
-        termination: "exit",
-      };
+      });
     }),
   });
   const provider = createWorkerSessionTurnPlacementProvider({
@@ -115,11 +128,7 @@ function harness(assistantText = "image received") {
   });
   const runLocal = vi.fn(async () => ({ meta: { durationMs: 0 } }));
   const execute = async (input: Parameters<typeof provider.executeTurn>[1]) =>
-    await provider.executeTurn(
-      { sessionId: SESSION_ID, sessionKey: SESSION_KEY, agentId: "main", runId: input.runId },
-      input,
-      runLocal,
-    );
+    await provider.executeTurn(runIdentity(input.runId), input, runLocal);
   const inputFiles = () =>
     new Map([...remoteFiles].filter(([file]) => path.basename(file) !== ".gitignore"));
   return { launches, remoteFiles, inputFiles, tunnel, environment, execute, runLocal };
@@ -132,57 +141,52 @@ describe("cloud turn media boundary", () => {
     await cleanupWorkerTurnLauncherTest({ reuseReadWorkers: true });
   });
 
-  it.each(["relative"] as const)(
-    "stages %s worker reply bytes before reconciliation without using the Gateway copy",
-    async (pathKind) => {
-      const remoteRoot = path.join(root, "remote-output");
-      const remotePath = path.join(remoteRoot, "reply.txt");
-      const bytes = Buffer.from("worker-only output\n".repeat(5_000));
-      await fs.mkdir(remoteRoot);
-      await fs.writeFile(remotePath, bytes);
-      await fs.writeFile(path.join(root, "reply.txt"), "stale Gateway copy");
-      await seedActivePlacement("worker-turn", remoteRoot);
-      const text = "MEDIA:" + (pathKind === "relative" ? "./reply.txt" : remotePath);
-      const rig = harness(text);
-      vi.mocked(rig.tunnel.runWorkspaceCommand).mockImplementation(async ({ argv }) => {
-        let stdout = "";
-        let stderr = "";
-        const commandProcess = {
-          argv: [process.execPath, path.resolve(remoteRoot, argv[4]!), ...argv.slice(5)],
-          platform: process.platform,
-          exitCode: 0,
-          stdout: { write: (value: string) => (stdout += value) },
-          stderr: { write: (value: string) => (stderr += value) },
-        };
-        runInNewContext(argv[2]!, {
-          Buffer,
-          process: commandProcess,
-          require: createRequire(import.meta.url),
-        });
-        return {
-          stdout: stdout.slice(0, NODE_WORKER_WORKSPACE_STDOUT_MAX_BYTES),
-          stderr,
-          code: commandProcess.exitCode,
-          signal: null,
-          killed: false,
-          termination: "exit",
-        };
+  it("stages relative worker reply bytes before reconciliation without using the Gateway copy", async () => {
+    const pathKind = "relative";
+    const remoteRoot = path.join(root, "remote-output");
+    const remotePath = path.join(remoteRoot, "reply.txt");
+    const bytes = Buffer.from("worker-only output\n".repeat(5_000));
+    await fs.mkdir(remoteRoot);
+    await fs.writeFile(remotePath, bytes);
+    await fs.writeFile(path.join(root, "reply.txt"), "stale Gateway copy");
+    await seedActivePlacement("worker-turn", remoteRoot);
+    const text = "MEDIA:" + (pathKind === "relative" ? "./reply.txt" : remotePath);
+    const rig = harness(text);
+    vi.mocked(rig.tunnel.runWorkspaceCommand).mockImplementation(async ({ argv }) => {
+      let stdout = "";
+      let stderr = "";
+      const commandProcess = {
+        argv: [process.execPath, path.resolve(remoteRoot, argv[4]!), ...argv.slice(5)],
+        platform: process.platform,
+        exitCode: 0,
+        stdout: { write: (value: string) => (stdout += value) },
+        stderr: { write: (value: string) => (stderr += value) },
+      };
+      runInNewContext(argv[2]!, {
+        Buffer,
+        process: commandProcess,
+        require: createRequire(import.meta.url),
       });
-      vi.mocked(rig.tunnel.reconcileWorkspace).mockImplementationOnce(async (request) => {
-        await fs.rm(remotePath);
-        return await reconcileUnchangedLocalWorkspace(request);
+      return processResult({
+        stdout: stdout.slice(0, NODE_WORKER_WORKSPACE_STDOUT_MAX_BYTES),
+        stderr,
+        code: commandProcess.exitCode,
       });
+    });
+    vi.mocked(rig.tunnel.reconcileWorkspace).mockImplementationOnce(async (request) => {
+      await fs.rm(remotePath);
+      return await reconcileUnchangedLocalWorkspace(request);
+    });
 
-      const result = await rig.execute(turn("outbound-" + pathKind));
-      const mediaUrl = result.payloads?.[0]?.mediaUrl;
-      expect(mediaUrl).toBeTypeOf("string");
-      await expect(fs.readFile(mediaUrl!)).resolves.toEqual(bytes);
-      expect((await openSessionManager()).getLeafEntry()).toMatchObject({
-        type: "message",
-        message: { role: "assistant", content: [{ type: "text", text }] },
-      });
-    },
-  );
+    const result = await rig.execute(turn("outbound-" + pathKind));
+    const mediaUrl = result.payloads?.[0]?.mediaUrl;
+    expect(mediaUrl).toBeTypeOf("string");
+    await expect(fs.readFile(mediaUrl!)).resolves.toEqual(bytes);
+    expect((await openSessionManager()).getLeafEntry()).toMatchObject({
+      type: "message",
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    });
+  });
 
   it("preserves ordered managed image input, follow-up files, replay and canonical paths", async () => {
     await seedActivePlacement();
@@ -196,17 +200,14 @@ describe("cloud turn media boundary", () => {
       { url: `media://inbound/${saved.id}`, contentType: "image/png" },
       { url: `media://inbound/${savedInline.id}`, contentType: "image/png" },
     ];
-    const recorder = createUserTurnTranscriptRecorder({
-      target: { ...sessionTarget, sessionEntry: undefined },
-      input: {
-        text: "compare in order",
-        media,
-        mediaImageLayout: {
-          slots: [
-            { kind: "offloaded", factIndex: 0 },
-            { kind: "inline", factIndex: 1 },
-          ],
-        },
+    const recorder = recordInput({
+      text: "compare in order",
+      media,
+      mediaImageLayout: {
+        slots: [
+          { kind: "offloaded", factIndex: 0 },
+          { kind: "inline", factIndex: 1 },
+        ],
       },
     });
     const parsed = await parseMessageWithAttachments("compare in order", [
@@ -252,12 +253,9 @@ describe("cloud turn media boundary", () => {
       "text/plain",
       "inbound",
     );
-    const followupRecorder = createUserTurnTranscriptRecorder({
-      target: { ...sessionTarget, sessionEntry: undefined },
-      input: {
-        text: "read the file",
-        media: [{ url: `media://inbound/${document.id}`, contentType: "text/plain" }],
-      },
+    const followupRecorder = recordInput({
+      text: "read the file",
+      media: [{ url: `media://inbound/${document.id}`, contentType: "text/plain" }],
     });
     await rig.execute({
       ...turn("images-followup"),
@@ -340,22 +338,12 @@ describe("cloud turn media boundary", () => {
     };
     await rig.execute({ ...turn("raw-history"), prompt: "raw image", images: [rawImage] });
     const png = createSolidPngBuffer(2, 2, { r: 0, g: 255, b: 0 });
-    const historical = await saveMediaBuffer(png, "image/png", "inbound");
-    const describedHistory = await saveMediaBuffer(png, "image/png", "inbound");
-    const historyRecorder = createUserTurnTranscriptRecorder({
-      target: { ...sessionTarget, sessionEntry: undefined },
-      input: {
-        text: "structured images",
-        media: [
-          { url: `media://inbound/${historical.id}`, contentType: "image/png" },
-          {
-            url: `media://inbound/${describedHistory.id}`,
-            contentType: "image/png",
-            hydrationSuppressed: true,
-          },
-        ],
-      },
-    });
+    const {
+      image: historical,
+      described: describedHistory,
+      media: historyMedia,
+    } = await imagePair(png);
+    const historyRecorder = recordInput({ text: "structured images", media: historyMedia });
     await rig.execute({
       ...turn("structured-history"),
       userTurnTranscriptRecorder: historyRecorder,
@@ -371,20 +359,8 @@ describe("cloud turn media boundary", () => {
     expect(rawHistory.content).toContainEqual(rawImage);
     expect(rig.inputFiles().size).toBe(3);
 
-    const current = await saveMediaBuffer(png, "image/png", "inbound");
-    const describedCurrent = await saveMediaBuffer(png, "image/png", "inbound");
-    const media = [
-      { url: `media://inbound/${current.id}`, contentType: "image/png" },
-      {
-        url: `media://inbound/${describedCurrent.id}`,
-        contentType: "image/png",
-        hydrationSuppressed: true,
-      },
-    ];
-    const recorder = createUserTurnTranscriptRecorder({
-      target: { ...sessionTarget, sessionEntry: undefined },
-      input: { text: "read attachment files", media },
-    });
+    const { image: current, described: describedCurrent, media } = await imagePair(png);
+    const recorder = recordInput({ text: "read attachment files", media });
     vi.mocked(rig.tunnel.stageAttachments!).mockClear();
     await rig.execute({
       ...turn("text-only"),
@@ -430,20 +406,8 @@ describe("cloud turn media boundary", () => {
     await seedActivePlacement();
     const rig = harness();
     const png = createSolidPngBuffer(2, 2, { r: 255, g: 0, b: 0 });
-    const expired = await saveMediaBuffer(png, "image/png", "inbound");
-    const described = await saveMediaBuffer(png, "image/png", "inbound");
-    const media = [
-      { url: `media://inbound/${expired.id}`, contentType: "image/png" },
-      {
-        url: `media://inbound/${described.id}`,
-        contentType: "image/png",
-        hydrationSuppressed: true,
-      },
-    ];
-    const recorder = createUserTurnTranscriptRecorder({
-      target: { ...sessionTarget, sessionEntry: undefined },
-      input: { text: "inspect the image", media },
-    });
+    const { image: expired, described, media } = await imagePair(png);
+    const recorder = recordInput({ text: "inspect the image", media });
     await rig.execute({ ...turn("before-expiry"), userTurnTranscriptRecorder: recorder });
     const canonical = structuredClone(
       (await openSessionManager()).buildSessionContext().messages[0],
@@ -707,15 +671,12 @@ describe("cloud turn media boundary", () => {
     const png = createSolidPngBuffer(2, 2, { r: 0, g: 255, b: 0 });
     const saved = await saveMediaBuffer(png, "image/png", "inbound");
     const prompt = `described [media attached: ${saved.path}]`;
-    const recorder = createUserTurnTranscriptRecorder({
-      target: { ...sessionTarget, sessionEntry: undefined },
-      input: {
-        text: prompt,
-        media: [{ path: saved.path, contentType: "image/png", hydrationSuppressed: true }],
-        mediaImageLayout: {
-          slots: [{ kind: "offloaded", factIndex: 0 }],
-          suppressedFactIndexes: [0],
-        },
+    const recorder = recordInput({
+      text: prompt,
+      media: [{ path: saved.path, contentType: "image/png", hydrationSuppressed: true }],
+      mediaImageLayout: {
+        slots: [{ kind: "offloaded", factIndex: 0 }],
+        suppressedFactIndexes: [0],
       },
     });
     await rig.execute({

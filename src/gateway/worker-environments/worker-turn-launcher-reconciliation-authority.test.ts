@@ -30,6 +30,7 @@ import {
   setupWorkerTurnLauncherTest,
   turn,
   unusedEnvironments,
+  reconcileUnchangedLocalWorkspace,
 } from "./worker-turn-launcher.test-support.js";
 import { WORKER_ATTACHMENT_DIRECTORY_PREFIX } from "./workspace-path-exclusions.js";
 
@@ -131,20 +132,7 @@ describe("reconciliation continuation authority", () => {
         ownerEpoch: OWNER_EPOCH,
         runWorkspaceCommand,
         quiesceWorkspace: async () => ({ assertActive: async () => {}, resume: async () => {} }),
-        reconcileWorkspace: async (request) => {
-          if (request.source.kind !== "local") {
-            throw new Error("expected local source");
-          }
-          await request.source.journal.commit(MANIFEST_REF);
-          return {
-            manifestRef: MANIFEST_REF,
-            changed: false,
-            verifyStable: async () => {},
-            verifyLocalStable: async () => {},
-            publishStagedResult: async () => {},
-            discardPreparedStagedResult: async () => {},
-          };
-        },
+        reconcileWorkspace: reconcileUnchangedLocalWorkspace,
         syncWorkspace: vi.fn(),
         stop: async () => {},
       };
