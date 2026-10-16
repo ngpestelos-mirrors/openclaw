@@ -3,6 +3,7 @@ import { findNormalizedProviderKey } from "@openclaw/model-catalog-core/provider
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { toAgentEntriesRecord } from "../agents/agent-scope-config.js";
 import type { AuthProfileCredential } from "../agents/auth-profiles/types.js";
+import { isNonSecretApiKeyMarker } from "../agents/model-auth-markers.js";
 import { resolveModelRuntimePolicy } from "../agents/model-runtime-policy.js";
 import { applyMergePatch } from "../config/merge-patch.js";
 import { mergeAgentModelEntryForConfig } from "../config/model-input.js";
@@ -265,7 +266,13 @@ export function projectSetupInferenceConfig(params: {
     const selectedProvider = structuredClone(providerConfig);
     if (params.profileId) {
       if (params.credential?.type === "api_key" || params.credential?.type === "token") {
-        selectedProvider.apiKey = params.profileId;
+        const key =
+          params.credential.type === "api_key" ? params.credential.key : params.credential.token;
+        // No-auth markers must remain visible to the provider's transport preparation.
+        selectedProvider.apiKey =
+          key && isNonSecretApiKeyMarker(key, { includeEnvVarName: false })
+            ? key.trim()
+            : params.profileId;
       } else {
         delete selectedProvider.apiKey;
       }

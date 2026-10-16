@@ -1,7 +1,82 @@
 import { describe, expect, it } from "vitest";
+import type { AuthProfileCredential } from "../agents/auth-profiles/types.js";
 import { buildAllowedModelSet } from "../agents/model-selection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { applySystemAgentModelSelection } from "./setup-model-selection.js";
+import {
+  applySystemAgentModelSelection,
+  projectSetupInferenceConfig,
+} from "./setup-model-selection.js";
+
+describe("projectSetupInferenceConfig", () => {
+  const profileId = "omlx:setup-proof";
+
+  it.each([
+    {
+      name: "core no-auth marker",
+      credential: { type: "api_key", provider: "custom-studio", key: "custom-local" },
+      expectedApiKey: "custom-local",
+    },
+    {
+      name: "bundled oMLX no-auth marker",
+      credential: { type: "api_key", provider: "omlx", key: "omlx-local" },
+      expectedApiKey: "omlx-local",
+    },
+    {
+      name: "literal API key",
+      credential: { type: "api_key", provider: "omlx", key: "synthetic-api-key" },
+      expectedApiKey: profileId,
+    },
+    {
+      name: "real token",
+      credential: { type: "token", provider: "omlx", token: "synthetic-token" },
+      expectedApiKey: profileId,
+    },
+    {
+      name: "environment marker",
+      credential: { type: "api_key", provider: "omlx", key: "OMLX_API_KEY" },
+      expectedApiKey: profileId,
+    },
+    {
+      name: "environment SecretRef",
+      credential: {
+        type: "api_key",
+        provider: "omlx",
+        keyRef: { source: "env", provider: "default", id: "OMLX_API_KEY" },
+      },
+      expectedApiKey: profileId,
+    },
+  ] satisfies { name: string; credential: AuthProfileCredential; expectedApiKey: string }[])(
+    "preserves credential semantics for $name",
+    ({ credential, expectedApiKey }) => {
+      const provider = credential.provider;
+      const prepared: OpenClawConfig = {
+        models: {
+          providers: {
+            [provider]: {
+              baseUrl: "http://127.0.0.1:8000/v1",
+              apiKey:
+                credential.type === "token"
+                  ? credential.token
+                  : (credential.key ?? credential.keyRef),
+              models: [],
+            },
+          },
+        },
+      };
+
+      const projected = projectSetupInferenceConfig({
+        base: {},
+        prepared,
+        modelRef: `${provider}/local-model`,
+        agentId: "main",
+        profileId,
+        credential,
+      });
+
+      expect(projected.models?.providers?.[provider]?.apiKey).toBe(expectedApiKey);
+    },
+  );
+});
 
 describe("applySystemAgentModelSelection", () => {
   it("adds a utility without changing other bindings", async () => {
