@@ -4,15 +4,15 @@ import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type { PluginLogger } from "openclaw/plugin-sdk/plugin-entry";
 import type { RealtimeVoiceGatewayControl } from "openclaw/plugin-sdk/realtime-voice";
 import { createMockIncomingRequest } from "openclaw/plugin-sdk/test-env";
-import { vi, type Mock } from "vitest";
+import { vi } from "vitest";
 import { openAIRealtimeHost } from "./realtime-host.js";
 import { OpenAIQuicksilverDelegationController } from "./realtime-quicksilver-delegation-controller.js";
 import { createOpenAIQuicksilverBrowserSessionBroker } from "./realtime-quicksilver-session.js";
 
-type MockLogger = {
-  debug: Mock<NonNullable<PluginLogger["debug"]>>;
-  warn: Mock<PluginLogger["warn"]>;
-};
+const createLogger = () => ({
+  debug: vi.fn<NonNullable<PluginLogger["debug"]>>(),
+  warn: vi.fn<PluginLogger["warn"]>(),
+});
 
 export class FakeSocket extends EventEmitter {
   readyState: 0 | 1 | 2 | 3 = 0;
@@ -63,11 +63,9 @@ export function createRequest(params: {
     method: params.method ?? "POST",
     headers: {
       ...(params.token ? { authorization: `Bearer ${params.token}` } : {}),
-      ...(params.contentType === undefined
-        ? { "content-type": "application/sdp" }
-        : params.contentType
-          ? { "content-type": params.contentType }
-          : {}),
+      ...((params.contentType ?? "application/sdp")
+        ? { "content-type": params.contentType ?? "application/sdp" }
+        : {}),
       ...(params.origin ? { origin: params.origin } : {}),
       ...(params.host ? { host: params.host } : {}),
     },
@@ -87,12 +85,7 @@ export function createPreflightRequest(origin: string, host?: string): IncomingM
   });
 }
 
-export function createResponseHarness(): {
-  res: ServerResponse;
-  end: ReturnType<typeof vi.fn>;
-  setHeader: ReturnType<typeof vi.fn>;
-  readBody: () => string;
-} {
+export function createResponseHarness() {
   let body = "";
   const setHeader = vi.fn();
   const end = vi.fn((value?: string) => {
@@ -129,10 +122,7 @@ export function createBroker(params?: {
 }) {
   const sockets: FakeSocket[] = [];
   const socketRequests: Array<{ url: string; headers?: Record<string, string> }> = [];
-  const logger: MockLogger = {
-    debug: vi.fn<NonNullable<PluginLogger["debug"]>>(),
-    warn: vi.fn<PluginLogger["warn"]>(),
-  };
+  const logger = createLogger();
   const realtime = createOpenAIQuicksilverBrowserSessionBroker(
     {
       getConfig: () => ({
@@ -159,26 +149,8 @@ export function createBroker(params?: {
   return { realtime, sockets, socketRequests, logger, runAgentConsult };
 }
 
-export type ConsultRunner = ((params: {
-  prompt: string;
-  signal?: AbortSignal;
-  requesterFinal?: { append: (text: string) => boolean };
-}) => Promise<{ text: string; yielded?: true }>) & {
-  adoptCompletionClaims?: () => void;
-  claimAppend?: () => boolean;
-  claimFailureAppend?: () => boolean;
-  revokeRequesterFinal?: () => void;
-  steer?: (params: { prompt: string; signal?: AbortSignal }) => Promise<{ text: string }>;
-};
-
-type DelegationHarness = {
-  controller: OpenAIQuicksilverDelegationController;
-  logger: MockLogger;
-  onFatalError: Mock<NonNullable<RealtimeVoiceGatewayControl["onError"]>>;
-  runAgentConsult: ConsultRunner;
-  sessionController: AbortController;
-  socket: FakeSocket;
-};
+type DelegationOptions = ConstructorParameters<typeof OpenAIQuicksilverDelegationController>[0];
+export type ConsultRunner = DelegationOptions["runAgentConsult"];
 
 export function createDelegationHarness(params?: {
   model?: string;
@@ -191,20 +163,17 @@ export function createDelegationHarness(params?: {
   getSocket?: () => FakeSocket;
   onWireEventType?: (eventType: string) => void;
   onTranscript?: (role: "user" | "assistant", text: string, done: boolean) => void;
-}): DelegationHarness {
+}) {
   const socket = new FakeSocket("manual");
   socket.readyState = 1;
-  const logger: MockLogger = {
-    debug: vi.fn<NonNullable<PluginLogger["debug"]>>(),
-    warn: vi.fn<PluginLogger["warn"]>(),
-  };
+  const logger = createLogger();
   const onFatalError = vi.fn<NonNullable<RealtimeVoiceGatewayControl["onError"]>>();
   const sessionController = new AbortController();
   const claimAppend =
     params?.claimAppend === null ? undefined : (params?.claimAppend ?? (() => true));
   const claimFailureAppend =
     params?.claimFailureAppend === null ? undefined : (params?.claimFailureAppend ?? (() => true));
-  const runAgentConsult = Object.assign(
+  const runAgentConsult: ConsultRunner = Object.assign(
     params?.runAgentConsult ?? vi.fn(async () => ({ text: "Done" })),
     {
       ...(claimAppend ? { claimAppend } : {}),
