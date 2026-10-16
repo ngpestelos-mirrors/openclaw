@@ -14,7 +14,11 @@ import { emptyLegacyContent, solidContent } from "../../lit/solid-content.tsx";
 import { ChatPaneBrowserAnnotationRender } from "./chat-pane-browser-annotation-render.ts";
 import { sidebarPanelDefinitions } from "./chat-pane-embedded-panels.ts";
 import type { PaneDetailsProps } from "./chat-pane-header-view.tsx";
-import { PaneOutboxRecovery, type PaneLayoutData } from "./chat-pane-layout-view.tsx";
+import {
+  PaneOutboxRecovery,
+  PaneSubagentStop,
+  type PaneLayoutData,
+} from "./chat-pane-layout-view.tsx";
 import { resolveChatPaneDesktopTarget } from "./chat-pane-placement.ts";
 import type { createChatPaneRails } from "./chat-pane-rails.ts";
 import type { ResolvedBoardView } from "./chat-pane-shared.ts";
@@ -332,7 +336,7 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
               chatProps.placementStartup,
               savedLayout,
               panelDefinitions,
-              subagentStop,
+              subagentStop ? solidContent(PaneSubagentStop, subagentStop) : emptyLegacyContent,
               headerDetails,
               { openPanelSlot: callbacks.openSlot, closePanelSlot: callbacks.closeSlot },
             ),

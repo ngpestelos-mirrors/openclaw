@@ -17,7 +17,6 @@ import { Menu, type MenuItem } from "../../../components/solid/menu.tsx";
 import type { AgentIdentity } from "../../../lib/identity-avatar-view.ts";
 import "../../../components/tooltip.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
-import { LitContent, emptyLegacyContent } from "../../../lit/solid-content.tsx";
 import { readLinkFavicon } from "../link-favicon-cache.ts";
 import {
   sidebarActivePanel,
@@ -166,7 +165,7 @@ function HostedIcon(props: SidebarRegionHeaderProps & { tab: PanelHostedTab }) {
       : null;
   };
   return (
-    <Show when={favicon()} fallback={<LitContent value={props.tab.icon} />}>
+    <Show when={favicon()} fallback={props.tab.icon}>
       {(src) => <img class="tabstrip-tab__favicon" src={src()} alt="" />}
     </Show>
   );
@@ -262,7 +261,7 @@ export function SidebarRegionHeader(props: SidebarRegionHeaderProps) {
       : (active?.id ?? null);
     return { tabs, activeId, active, activeHosted, resolveHostedTab, column };
   });
-  const hostedActions = () => state().activeHosted?.element.hostedActions ?? emptyLegacyContent;
+  const hostedActions = () => state().activeHosted?.element.hostedActions;
   return (
     <header
       class="rail-header side-panel__header"
@@ -306,9 +305,9 @@ export function SidebarRegionHeader(props: SidebarRegionHeaderProps) {
         />
         <TypeMenu {...props} />
       </div>
-      <Show when={hostedActions() !== emptyLegacyContent}>
+      <Show when={hostedActions()}>
         <div class="rail-header__actions side-panel__actions">
-          <LitContent value={hostedActions()} />
+          {hostedActions()}
         </div>
       </Show>
     </header>

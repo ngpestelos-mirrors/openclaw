@@ -1,12 +1,13 @@
 /* @vitest-environment jsdom */
 
+import { createComponent } from "solid-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { icons } from "../../../components/icons.ts";
 import {
   PANEL_HOSTED_TABS_CHANGE_EVENT,
   type PanelHostedTab,
   type PanelHostedTabsElement,
 } from "../../../components/panel-hosted-tabs.ts";
+import { Icon } from "../../../components/solid/icon.tsx";
 import { sidebarPanelDefinitions } from "../chat-pane-embedded-panels.ts";
 import type { LinkFaviconFetcher } from "../link-favicon-cache.ts";
 import { activatePanel, openSlot, type SidebarSlotId } from "../sidebar-layout.ts";
@@ -17,13 +18,17 @@ const firstTab: PanelHostedTab = {
   id: "remote:page:1",
   label: "First page",
   url: "https://first.example/a",
-  icon: icons.globe,
+  get icon() {
+    return createComponent(Icon, { name: "globe" });
+  },
 };
 const secondTab: PanelHostedTab = {
   id: "native:page:2",
   label: "Second page",
   url: "https://second.example/b",
-  icon: icons.monitor,
+  get icon() {
+    return createComponent(Icon, { name: "monitor" });
+  },
 };
 const tabs = [firstTab, secondTab];
 
@@ -252,7 +257,9 @@ describe("chat sidebar hosted tabs", () => {
           statusLabel: "Exited (0)",
           badge: "agent",
           className: "is-exited",
-          icon: icons.terminal,
+          get icon() {
+            return createComponent(Icon, { name: "terminal" });
+          },
         },
       ],
     });
