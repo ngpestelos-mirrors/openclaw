@@ -154,13 +154,15 @@ describe("telegram inbound media", () => {
         assert: (payload: Record<string, unknown>) => {
           expect(payload.Body).toContain("Meet here");
           expect(payload.Body).toContain("48.858844");
-          expect(payload.LocationLat).toBe(48.858844);
-          expect(payload.LocationLon).toBe(2.294351);
-          expect(payload.LocationSource).toBe("pin");
-          expect(payload.LocationIsLive).toBe(false);
-          expect(payload.ProviderUpdateId).toBe("7005");
-          expect(payload.ProviderUpdateKind).toBe("message");
-          expect(payload.ProviderMessageTimestamp).toBe(1736380800000);
+          expect(payload).toMatchObject({
+            LocationLat: 48.858844,
+            LocationLon: 2.294351,
+            LocationSource: "pin",
+            LocationIsLive: false,
+            ProviderUpdateId: "7005",
+            ProviderUpdateKind: "message",
+            ProviderMessageTimestamp: 1736380800000,
+          });
         },
       },
       {
@@ -177,9 +179,11 @@ describe("telegram inbound media", () => {
         },
         assert: (payload: Record<string, unknown>) => {
           expect(payload.Body).toContain("48.858844");
-          expect(payload.LocationName).toBe("Eiffel Tower");
-          expect(payload.LocationAddress).toBe("Champ de Mars, Paris");
-          expect(payload.LocationSource).toBe("place");
+          expect(payload).toMatchObject({
+            LocationName: "Eiffel Tower",
+            LocationAddress: "Champ de Mars, Paris",
+            LocationSource: "place",
+          });
         },
       },
     ] as const;
@@ -445,33 +449,24 @@ describe("telegram media groups", () => {
         deliveredTurn.resolve(ctx);
         return undefined;
       });
+      const forwarded = (messageId: number, message: Record<string, unknown>) =>
+        mediaContext(messageId, "fwd_photo_1", "photos/fwd1.jpg", {
+          from: { id: 777, is_bot: false, first_name: "N" },
+          date: 1736380779 + messageId,
+          forward_origin: {
+            type: "hidden_user",
+            date: 1736380679 + messageId,
+            sender_user_name: "A",
+          },
+          ...message,
+        });
 
       try {
         await handler({
-          message: {
-            chat: { id: 42, type: "private" },
-            from: { id: 777, is_bot: false, first_name: "N" },
-            message_id: 21,
-            text: "Look at this",
-            date: 1736380800,
-            forward_origin: { type: "hidden_user", date: 1736380700, sender_user_name: "A" },
-          },
-          me: { username: "openclaw_bot" },
+          ...forwarded(21, { text: "Look at this", photo: undefined }),
           getFile: async () => ({}),
         });
-
-        await handler({
-          message: {
-            chat: { id: 42, type: "private" },
-            from: { id: 777, is_bot: false, first_name: "N" },
-            message_id: 22,
-            date: 1736380801,
-            photo: [createTelegramPhotoForTest("fwd_photo_1")],
-            forward_origin: { type: "hidden_user", date: 1736380701, sender_user_name: "A" },
-          },
-          me: { username: "openclaw_bot" },
-          getFile: async () => ({ file_path: "photos/fwd1.jpg" }),
-        });
+        await handler(forwarded(22, {}));
         expect(timers.elapse()).toBe(1);
 
         const payload = await deliveredTurn.promise;
@@ -550,18 +545,13 @@ describe("Telegram media failure notices", () => {
       readRemoteMediaBufferSpy.mockRejectedValueOnce(failure);
 
       await handler({
-        message: {
+        ...mediaContext(901, "topic-attachment", "photos/topic-attachment.jpg", {
           chat,
-          from: { id: 777, is_bot: false, first_name: "Ada" },
-          message_id: 901,
           message_thread_id: threadId,
           is_topic_message: true,
           caption: "Topic attachment",
-          date: 1736380800,
-          photo: [createTelegramPhotoForTest("topic-attachment")],
-        },
+        }),
         me: { username: "openclaw_bot", has_topics_enabled: true },
-        getFile: async () => ({ file_path: "photos/topic-attachment.jpg" }),
       });
 
       expect(telegramMediaHarnessSendMessageSpy).toHaveBeenCalledWith(
@@ -628,19 +618,13 @@ describe("Telegram media failure notices", () => {
         );
       }
       for (let index = 0; index < 2; index++) {
-        await handler({
-          message: {
+        await handler(
+          mediaContext(910 + index, `album-${index}`, `photos/album-${index}.jpg`, {
             chat: { id: 4242, type: "private" },
-            from: { id: 777, is_bot: false, first_name: "Ada" },
-            message_id: 910 + index,
-            date: 1736380800,
             media_group_id: "failure-notice-album",
             ...(index === 0 ? { caption: "Album attachment" } : {}),
-            photo: [createTelegramPhotoForTest(`album-${index}`)],
-          },
-          me: { username: "openclaw_bot" },
-          getFile: async () => ({ file_path: `photos/album-${index}.jpg` }),
-        });
+          }),
+        );
       }
       await flushChannelPostMediaGroup(
         setTimeoutSpy,
