@@ -12,6 +12,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { getPreparedModelCatalogOwnerSnapshot } from "./prepared-model-catalog.js";
 import { getPreparedModelRuntimeAuthStore } from "./prepared-model-runtime-auth.js";
+import { PreparedModelRuntimePublicationSupersededError } from "./prepared-model-runtime.errors.js";
 import {
   acquireAgentRunPreparedModelRuntime,
   acquireReadOnlyPreparedModelRuntime,
@@ -165,10 +166,8 @@ describe("prepared model runtime snapshots", () => {
       markPreparedModelRuntimeSnapshotsStale("test in-flight standalone publication");
       build.finish();
 
-      const published = await activation;
-      expect(published).toBeDefined();
-      expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2);
-      await expect(prepareModelRuntimeSnapshot(input)).resolves.toBe(published);
+      await expect(activation).rejects.toThrow(PreparedModelRuntimePublicationSupersededError);
+      expect(getPreparedModelRuntimeSnapshot(input)).toBeUndefined();
     } finally {
       build.finish();
       await Promise.allSettled([activation]);
