@@ -1,4 +1,3 @@
-// Discord tests cover monitor plugin behavior.
 import { GatewayDispatchEvents } from "discord-api-types/v10";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
@@ -10,11 +9,10 @@ import {
 import { danger } from "openclaw/plugin-sdk/runtime-env";
 import * as fixtures from "openclaw/plugin-sdk/test-fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ChannelType, type Guild } from "./internal/discord.js";
+import { ChannelType } from "./internal/discord.js";
 import { mapGatewayDispatchData } from "./internal/gateway-dispatch.js";
 import {
   allowListMatches,
-  type DiscordGuildEntryResolved,
   isDiscordGroupAllowedByPolicy,
   normalizeDiscordAllowList,
   resolveDiscordChannelConfig,
@@ -46,8 +44,6 @@ vi.mock("openclaw/plugin-sdk/conversation-runtime", async () => {
   };
 });
 
-const fakeGuild = (id: string, name: string) => ({ id, name }) as Guild;
-
 function expectNormalizedAllowList(
   entries: string[],
   prefixes: string[],
@@ -58,23 +54,6 @@ function expectNormalizedAllowList(
   }
   return allow;
 }
-
-const makeEntries = (
-  entries: Record<string, Partial<DiscordGuildEntryResolved>>,
-): Record<string, DiscordGuildEntryResolved> => {
-  const out: Record<string, DiscordGuildEntryResolved> = {};
-  for (const [key, value] of Object.entries(entries)) {
-    out[key] = {
-      slug: value.slug,
-      requireMention: value.requireMention,
-      reactionNotifications: value.reactionNotifications,
-      users: value.users,
-      roles: value.roles,
-      channels: value.channels,
-    };
-  }
-  return out;
-};
 
 beforeEach(() => {
   setDiscordRuntime(createPluginRuntimeMock());
@@ -150,10 +129,7 @@ describe("DiscordMessageListener", () => {
   });
 
   it("logs handler failures", async () => {
-    const logger = {
-      warn: vi.fn(),
-      error: vi.fn(),
-    } as unknown as ReturnType<
+    const logger = { warn: vi.fn(), error: vi.fn() } as unknown as ReturnType<
       typeof import("openclaw/plugin-sdk/logging-core").createSubsystemLogger
     >;
     const handler = vi.fn(async () => {
@@ -190,31 +166,24 @@ describe("discord allowlist helpers", () => {
       allowFrom: ["*"],
       sender: { id: "123" },
     });
-    expect(wildcardOnly.ownerAllowList).toBeNull();
-    expect(wildcardOnly.ownerAllowed).toBe(false);
+    expect(wildcardOnly).toEqual({ ownerAllowList: null, ownerAllowed: false });
 
     const explicitOwner = resolveDiscordOwnerAccess({
       allowFrom: ["*", "user:123"],
       sender: { id: "123" },
     });
-    if (explicitOwner.ownerAllowList === null) {
-      throw new Error("Expected explicit owner allowlist");
-    }
-    expect(explicitOwner.ownerAllowList.allowAll).toBe(false);
-    expect(explicitOwner.ownerAllowList.ids).toEqual(new Set(["123"]));
-    expect(explicitOwner.ownerAllowed).toBe(true);
+    expect(explicitOwner).toMatchObject({
+      ownerAllowList: { allowAll: false },
+      ownerAllowed: true,
+    });
+    expect(explicitOwner.ownerAllowList?.ids).toEqual(new Set(["123"]));
   });
 });
 
 describe("discord guild/channel resolution", () => {
   it("denies channel when config present but no match", () => {
-    const guildInfo: DiscordGuildEntryResolved = {
-      channels: {
-        general: { enabled: true },
-      },
-    };
     const channel = resolveDiscordChannelConfig({
-      guildInfo,
+      guildInfo: { channels: { general: { enabled: true } } },
       channelId: "999",
       channelName: "random",
       channelSlug: "random",
@@ -223,14 +192,8 @@ describe("discord guild/channel resolution", () => {
   });
 
   it("does not match thread name/slug when resolving allowlists", () => {
-    const guildInfo: DiscordGuildEntryResolved = {
-      channels: {
-        general: { enabled: true },
-        random: { enabled: false },
-      },
-    };
     const thread = resolveDiscordChannelConfigWithFallback({
-      guildInfo,
+      guildInfo: { channels: { general: { enabled: true }, random: { enabled: false } } },
       channelId: "thread-999",
       channelName: "general",
       channelSlug: "general",
@@ -243,13 +206,8 @@ describe("discord guild/channel resolution", () => {
   });
 
   it("falls back to wildcard when thread channel and parent are missing", () => {
-    const guildInfo: DiscordGuildEntryResolved = {
-      channels: {
-        "*": { enabled: true, requireMention: false },
-      },
-    };
     const thread = resolveDiscordChannelConfigWithFallback({
-      guildInfo,
+      guildInfo: { channels: { "*": { enabled: true, requireMention: false } } },
       channelId: "thread-123",
       channelName: "topic",
       channelSlug: "topic",
@@ -258,9 +216,7 @@ describe("discord guild/channel resolution", () => {
       parentSlug: "general",
       scope: "thread",
     });
-    expect(thread?.allowed).toBe(true);
-    expect(thread?.matchKey).toBe("*");
-    expect(thread?.matchSource).toBe("wildcard");
+    expect(thread).toMatchObject({ allowed: true, matchKey: "*", matchSource: "wildcard" });
   });
 });
 
@@ -295,22 +251,14 @@ it("discord groupPolicy gating: applies open/disabled/allowlist policy rules", (
 });
 
 it("discord group DM gating: matches group DM allowlist", () => {
-  expect(
-    resolveGroupDmAllow({
-      channels: ["openclaw-dm"],
-      channelId: "1",
-      channelName: "OpenClaw DM",
-      channelSlug: "openclaw-dm",
-    }),
-  ).toBe(true);
-  expect(
-    resolveGroupDmAllow({
-      channels: ["openclaw-dm"],
-      channelId: "1",
-      channelName: "Other",
-      channelSlug: "other",
-    }),
-  ).toBe(false);
+  for (const [channelName, channelSlug, allowed] of [
+    ["OpenClaw DM", "openclaw-dm", true],
+    ["Other", "other", false],
+  ] as const) {
+    expect(
+      resolveGroupDmAllow({ channels: ["openclaw-dm"], channelId: "1", channelName, channelSlug }),
+    ).toBe(allowed);
+  }
 });
 
 it("discord reply target selection: handles off/first/all reply modes", () => {
@@ -332,6 +280,12 @@ it("discord reply target selection: handles off/first/all reply modes", () => {
 it("discord reaction notification gating: applies mode-specific reaction notification rules", () => {
   type Input = Omit<Parameters<typeof shouldEmitDiscordReactionNotification>[0], "botId">;
   const outsider = { users: ["trusted-user"] };
+  const namedUser = {
+    mode: "allowlist" as const,
+    userId: "999",
+    userName: "trusted-user",
+    guildInfo: outsider,
+  };
   const cases: Array<[string, Partial<Input>, boolean]> = [
     ["unset own, bot author", { messageAuthorId: "bot-1", userId: "user-1" }, true],
     ["unset own, other author", {}, false],
@@ -361,27 +315,8 @@ it("discord reaction notification gating: applies mode-specific reaction notific
       },
       true,
     ],
-    [
-      "allowlist names disabled",
-      {
-        mode: "allowlist",
-        userId: "999",
-        userName: "trusted-user",
-        guildInfo: outsider,
-      },
-      false,
-    ],
-    [
-      "allowlist names enabled",
-      {
-        mode: "allowlist",
-        userId: "999",
-        userName: "trusted-user",
-        guildInfo: outsider,
-        allowNameMatching: true,
-      },
-      true,
-    ],
+    ["allowlist names disabled", namedUser, false],
+    ["allowlist names enabled", { ...namedUser, allowNameMatching: true }, true],
     [
       "allowlist role",
       {
@@ -406,10 +341,6 @@ it("discord reaction notification gating: applies mode-specific reaction notific
     ).toBe(expected);
   }
 });
-
-// --- DM reaction integration tests ---
-// These test that handleDiscordReactionEvent (via DiscordReactionListener)
-// properly handles DM reactions instead of silently dropping them.
 
 const { enqueueSystemEventSpy, resolveAgentRouteMock } = vi.hoisted(() => ({
   enqueueSystemEventSpy: vi.fn(),
@@ -481,9 +412,7 @@ function makeReactionEvent(overrides?: {
       username: overrides?.username ?? "testuser",
       discriminator: "0",
     },
-    message: {
-      fetch: messageFetch,
-    },
+    message: { fetch: messageFetch },
   } as unknown as DiscordReactionEvent;
 }
 
@@ -564,9 +493,9 @@ describe("discord DM reaction handling", () => {
       { name: "no guild allowlist", guildEntries: undefined },
       {
         name: "guild allowlist configured",
-        guildEntries: makeEntries({
+        guildEntries: {
           "guild-123": { slug: "guild-123" },
-        }),
+        },
       },
     ] as const;
 
@@ -746,7 +675,7 @@ describe("discord DM reaction handling", () => {
 
   it("blocks guild reactions for sender outside users allowlist", async () => {
     await handleReaction(
-      { guildEntries: makeEntries({ "guild-123": { users: ["user:trusted-user"] } }) },
+      { guildEntries: { "guild-123": { users: ["user:trusted-user"] } } },
       {
         guildId: "guild-123",
         userId: "attacker-user",
@@ -770,31 +699,23 @@ describe("discord DM reaction handling", () => {
       matchedBy: "default",
     });
 
-    const data = makeReactionEvent({
-      guildId: "guild-123",
-      userId: "member-user",
-      botAsAuthor: true,
-      guild: { id: "guild-123", name: "Test Guild" },
-      memberRoleIds: ["trusted-role"],
-    });
-    const client = makeReactionClient({ channelType: ChannelType.GuildText });
-    const listener = new DiscordReactionListener(
-      makeReactionListenerParams({
-        guildEntries: makeEntries({
+    const client = await handleReaction(
+      {
+        guildEntries: {
           "guild-123": {
             roles: ["role:blocked-role"],
-            channels: {
-              "channel-1": {
-                enabled: true,
-                roles: ["role:trusted-role"],
-              },
-            },
+            channels: { "channel-1": { enabled: true, roles: ["role:trusted-role"] } },
           },
-        }),
-      }),
+        },
+      },
+      {
+        guildId: "guild-123",
+        userId: "member-user",
+        guild: { id: "guild-123", name: "Test Guild" },
+        memberRoleIds: ["trusted-role"],
+      },
+      ChannelType.GuildText,
     );
-
-    await listener.handle(data, client);
 
     expect(getReactionClientFetchChannelMock(client)).toHaveBeenCalled();
     expect(enqueueSystemEventSpy).toHaveBeenCalledOnce();
@@ -815,7 +736,7 @@ describe("discord DM reaction handling", () => {
 
 describe("discord reaction notification modes", () => {
   const guildId = "guild-900";
-  const guild = fakeGuild(guildId, "Mode Guild");
+  const guild = { id: guildId, name: "Mode Guild" };
 
   it("applies message-fetch behavior across notification modes and channel types", async () => {
     type Scenario = {
@@ -871,12 +792,12 @@ describe("discord reaction notification modes", () => {
         channelType: testCase.channelType ?? ChannelType.GuildText,
         parentId: testCase.parentId,
       });
-      const guildEntries = makeEntries({
+      const guildEntries = {
         [guildId]: {
           reactionNotifications,
           users: testCase.users ? [...testCase.users] : undefined,
         },
-      });
+      };
       const listener = new DiscordReactionListener(makeReactionListenerParams({ guildEntries }));
 
       await listener.handle(data, client);

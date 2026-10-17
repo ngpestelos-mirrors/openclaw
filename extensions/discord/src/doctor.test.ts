@@ -1,4 +1,3 @@
-// Discord tests cover doctor plugin behavior.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { describe, expect, it } from "vitest";
 import {
@@ -46,32 +45,23 @@ describe("discord doctor", () => {
     expect(result.changes).toContain("Removed retired Discord tuning knobs.");
   });
 
-  it("keeps delivery-only aliases mode-free and preserves explicit legacy progress", () => {
-    const deliveryOnly = normalize({ blockStreaming: true });
-
-    const deliveryOnlyMigrated = deliveryOnly.config.channels?.discord as Record<string, unknown>;
-    expect(deliveryOnlyMigrated).toEqual({
-      streaming: { block: { enabled: true } },
-    });
-    expect(resolveDiscordPreviewStreamMode(deliveryOnlyMigrated)).toBe("progress");
-    expect(deliveryOnly.changes).toEqual([
-      "Moved channels.discord.blockStreaming → channels.discord.streaming.block.enabled.",
-    ]);
-
-    const explicitProgress = normalize({ streamMode: "progress", blockStreaming: true });
-    const explicitProgressMigrated = explicitProgress.config.channels?.discord as Record<
-      string,
-      unknown
-    >;
-    expect(explicitProgressMigrated).toEqual({
-      streaming: { mode: "progress", block: { enabled: true } },
-    });
-    expect(resolveDiscordPreviewStreamMode(explicitProgressMigrated)).toBe("progress");
-    expect(explicitProgress.changes).toEqual([
-      "Moved channels.discord.streamMode → channels.discord.streaming.mode (progress).",
-      "Moved channels.discord.blockStreaming → channels.discord.streaming.block.enabled.",
-    ]);
-  });
+  it.each([undefined, "progress"] as const)(
+    "migrates delivery aliases without inventing preview mode (legacy mode=%s)",
+    (mode) => {
+      const result = normalize({ blockStreaming: true, ...(mode ? { streamMode: mode } : {}) });
+      const discord = result.config.channels?.discord as Record<string, unknown>;
+      expect(discord).toEqual({
+        streaming: { ...(mode ? { mode } : {}), block: { enabled: true } },
+      });
+      expect(resolveDiscordPreviewStreamMode(discord)).toBe("progress");
+      expect(result.changes).toEqual([
+        ...(mode
+          ? ["Moved channels.discord.streamMode → channels.discord.streaming.mode (progress)."]
+          : []),
+        "Moved channels.discord.blockStreaming → channels.discord.streaming.block.enabled.",
+      ]);
+    },
+  );
 
   it("seeds the inherited root streaming settings when migrating account delivery aliases", () => {
     // Account `streaming` objects replace the root object wholesale on merge,
