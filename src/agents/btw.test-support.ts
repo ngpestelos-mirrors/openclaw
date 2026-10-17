@@ -38,11 +38,8 @@ type RunBtwSideQuestionParams = Parameters<typeof runBtwSideQuestion>[0];
 export const DEFAULT_AGENT_DIR = "/tmp/agent";
 export const DEFAULT_MODEL = "claude-sonnet-4-6";
 export const DEFAULT_PROVIDER = "anthropic";
-const DEFAULT_REASONING_LEVEL = "off";
 export const DEFAULT_SESSION_KEY = "agent:main:main";
-const DEFAULT_STORE_PATH = "/tmp/sessions.json";
 export const DEFAULT_QUESTION = "What changed?";
-const MATH_QUESTION = "What is 17 * 19?";
 export const MATH_ANSWER = "323";
 let defaultPluginMetadataSnapshot: ReturnType<typeof resolvePluginMetadataSnapshot> | undefined;
 
@@ -56,8 +53,6 @@ const DEFAULT_USAGE = {
 };
 
 export function makeAsyncEvents(events: unknown[]) {
-  // Minimal async iterable that matches provider stream shape without loading
-  // real model/runtime infrastructure.
   return {
     async *[Symbol.asyncIterator]() {
       for (const event of events) {
@@ -76,27 +71,15 @@ export function createSessionEntry(overrides: Partial<SessionEntry> = {}) {
   };
 }
 
-function createAssistantDoneEvent(
-  content: AssistantMessage["content"],
-): Extract<AssistantMessageEvent, { type: "done" }> {
+export function createDoneEvent(text: string): Extract<AssistantMessageEvent, { type: "done" }> {
   return {
     type: "done",
     reason: "stop",
-    message: {
-      role: "assistant",
-      content,
-      provider: DEFAULT_PROVIDER,
-      api: "anthropic-messages",
-      model: DEFAULT_MODEL,
-      stopReason: "stop",
-      usage: DEFAULT_USAGE,
-      timestamp: Date.now(),
-    },
+    message: createAssistantTranscriptMessage<AssistantMessage["content"]>(
+      [{ type: "text", text }],
+      { timestamp: Date.now() },
+    ),
   };
-}
-
-export function createDoneEvent(text: string) {
-  return createAssistantDoneEvent([{ type: "text", text }]);
 }
 
 export function mockDoneAnswer(text: string) {
@@ -169,8 +152,8 @@ export function createSideQuestionParams(
     question: DEFAULT_QUESTION,
     sessionEntry: createSessionEntry(),
     sessionKey: DEFAULT_SESSION_KEY,
-    storePath: DEFAULT_STORE_PATH,
-    resolvedReasoningLevel: DEFAULT_REASONING_LEVEL,
+    storePath: "/tmp/sessions.json",
+    resolvedReasoningLevel: "off",
     opts: {},
     isNewSession: false,
     ...overrides,
@@ -183,7 +166,7 @@ export function runSideQuestion(overrides: Partial<RunBtwSideQuestionParams> = {
 
 export function runMathSideQuestion(overrides: Partial<RunBtwSideQuestionParams> = {}) {
   return runSideQuestion({
-    question: MATH_QUESTION,
+    question: "What is 17 * 19?",
     ...overrides,
   });
 }
@@ -200,19 +183,19 @@ export function createUserTranscriptMessage(content: unknown[] = [{ type: "text"
   };
 }
 
-export function createAssistantTranscriptMessage(
-  content: unknown,
+export function createAssistantTranscriptMessage<Content>(
+  content: Content,
   overrides: {
-    stopReason?: string;
+    stopReason?: AssistantMessage["stopReason"];
     output?: number;
     timestamp?: number;
   } = {},
 ) {
   return {
-    role: "assistant",
+    role: "assistant" as const,
     content,
     provider: DEFAULT_PROVIDER,
-    api: "anthropic-messages",
+    api: "anthropic-messages" as const,
     model: DEFAULT_MODEL,
     stopReason: overrides.stopReason ?? "stop",
     usage: {
@@ -249,10 +232,8 @@ export function mockActiveTranscript(messages: unknown[]) {
   });
 }
 
-export function mockCall(
-  mockFn: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } },
-  callIndex = 0,
-): ReadonlyArray<unknown> {
+type RecordedMock = { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } };
+export function mockCall(mockFn: RecordedMock, callIndex = 0): ReadonlyArray<unknown> {
   const call = mockFn.mock.calls[callIndex];
   if (!call) {
     throw new Error(`Expected mock call ${callIndex + 1}`);
@@ -260,19 +241,14 @@ export function mockCall(
   return call;
 }
 
-export function mockArg(
-  mockFn: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } },
-  callIndex: number,
-  argIndex: number,
-): unknown {
+export function mockArg(mockFn: RecordedMock, callIndex: number, argIndex: number): unknown {
   return mockCall(mockFn, callIndex)[argIndex];
 }
 
 export async function runMathSideQuestionAndCaptureContext() {
   mockDoneAnswer(MATH_ANSWER);
   await runMathSideQuestion();
-  const context = mockArg(mocks.streamSimpleMock, 0, 1);
-  return context;
+  return mockArg(mocks.streamSimpleMock, 0, 1);
 }
 
 export function expectRecordFields(
@@ -289,22 +265,16 @@ export function expectRecordFields(
   return actual;
 }
 
-export function streamContext(callIndex = 0): {
+type StreamContext = {
   messages?: Array<Record<string, unknown>>;
   systemPrompt?: unknown;
-} {
-  const call = mocks.streamSimpleMock.mock.calls[callIndex];
-  if (!call) {
-    throw new Error(`Expected streamSimple call at index ${callIndex}`);
-  }
-  return (call[1] ?? {}) as {
-    messages?: Array<Record<string, unknown>>;
-    systemPrompt?: unknown;
-  };
+};
+export function streamContext(callIndex = 0): StreamContext {
+  return (mockArg(mocks.streamSimpleMock, callIndex, 1) ?? {}) as StreamContext;
 }
 
 export function contextMessages(context: unknown): Array<Record<string, unknown>> {
-  const messages = (context as { messages?: Array<Record<string, unknown>> }).messages;
+  const messages = (context as StreamContext).messages;
   if (!messages) {
     throw new Error("Expected BTW context messages");
   }
@@ -374,7 +344,6 @@ export function setupBtwTestHooks() {
       llmRuntime: { streamSimple: mocks.streamSimpleMock },
     });
     mocks.listSessionEntriesCoreMock.mockReturnValue([]);
-    mocks.loadSessionEntryMock.mockReturnValue(undefined);
     mocks.shouldPreferExplicitConfigApiKeyAuthMock.mockReturnValue(false);
     mocks.hasUsableCustomProviderApiKeyMock.mockReturnValue(false);
     mocks.resolveProviderEntryApiKeyProfileReferenceMock.mockReturnValue({ kind: "none" });
@@ -394,7 +363,6 @@ export function setupBtwTestHooks() {
     };
     mocks.preparedRuntimeSnapshotState.useSnapshotPluginRegistry = false;
 
-    mocks.loadTranscriptEventsMock.mockResolvedValue([]);
     mockTranscriptEntries([
       createTranscriptEntry({
         id: "user-1",
@@ -440,7 +408,6 @@ export function setupBtwTestHooks() {
       source: "auto",
       routeRequirement: undefined,
     });
-    mocks.getActiveEmbeddedRunSnapshotMock.mockReturnValue(undefined);
     mocks.resolveSessionAgentIdMock.mockReturnValue("main");
     mocks.resolveSessionAgentIdsMock.mockReturnValue({
       defaultAgentId: "main",
@@ -449,7 +416,6 @@ export function setupBtwTestHooks() {
     mocks.resolveAgentWorkspaceDirMock.mockReturnValue("/tmp/workspace");
     mocks.listAgentEntriesMock.mockReturnValue([]);
     mocks.prepareProviderRuntimeAuthMock.mockResolvedValue(undefined);
-    mocks.registerProviderStreamForModelMock.mockReturnValue(undefined);
     mocks.resolveEmbeddedAgentStreamMock.mockImplementation(
       (params: { currentStreamFn: unknown; providerStreamFn?: unknown }) => {
         return {
@@ -462,33 +428,4 @@ export function setupBtwTestHooks() {
 }
 
 export { runBtwSideQuestion, registerAgentHarness };
-export {
-  streamSimpleMock,
-  buildSessionContextMock,
-  loadPreparedModelRuntimeSnapshotMock,
-  snapshotResources,
-  discoverAuthStorageMock,
-  discoverModelsMock,
-  resolveModelWithRegistryMock,
-  ensureAuthProfileStoreMock,
-  ensureAuthProfileStoreWithoutExternalProfilesMock,
-  resolveModelAsyncMock,
-  getApiKeyForModelMock,
-  requireApiKeyMock,
-  resolveSessionAuthSelectionMock,
-  getActiveEmbeddedRunSnapshotMock,
-  resolveSessionAgentIdMock,
-  resolveAgentWorkspaceDirMock,
-  prepareProviderRuntimeAuthMock,
-  registerProviderStreamForModelMock,
-  prepareCliRunContextMock,
-  diagDebugMock,
-  createAgentHarnessHostCapabilitiesMock,
-  closeAgentHarnessHostCapabilitiesMock,
-  agentHarnessHostCapabilitiesMock,
-  listSessionEntriesCoreMock,
-  loadSessionEntryMock,
-  loadTranscriptEventsMock,
-  resolveProviderEntryApiKeyProfileReferenceMock,
-  preparedRuntimeSnapshotState,
-} from "./btw.mocks.test-support.js";
+export * from "./btw.mocks.test-support.js";

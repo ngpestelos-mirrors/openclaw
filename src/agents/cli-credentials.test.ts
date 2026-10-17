@@ -1,4 +1,3 @@
-/** Tests CLI credential parsing and cache expiry. */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,8 +14,6 @@ let readGeminiCliCredentialsCached: typeof import("./cli-credentials.js").readGe
 let readMiniMaxCliCredentialsCached: typeof import("./cli-credentials.js").readMiniMaxCliCredentialsCached;
 
 function createJwtWithExp(expirySeconds: number): string {
-  // Signature verification is out of scope; expiration extraction only needs a
-  // syntactically valid JWT-like payload.
   const encode = (value: Record<string, unknown>) =>
     Buffer.from(JSON.stringify(value)).toString("base64url");
   return `${encode({ alg: "RS256", typ: "JWT" })}.${encode({ exp: expirySeconds })}.signature`;
@@ -45,6 +42,26 @@ function writeJson(file: string, value: unknown) {
 
 function tokens(refresh: string, expiry = expSeconds) {
   return { access_token: createJwtWithExp(expiry), refresh_token: refresh };
+}
+
+function writeCodexAuth(value: unknown) {
+  const file = path.join(codexHome(), "auth.json");
+  writeJson(file, value);
+  return file;
+}
+
+function keychainRecord(value: unknown, inspectCommand = false) {
+  execSyncMock.mockImplementation((command: unknown) => {
+    if (inspectCommand) {
+      expect(String(command)).toContain("Codex Auth");
+      expect(String(command)).toContain("cli|");
+    }
+    return JSON.stringify(value);
+  });
+}
+
+function readActiveKey(home: string) {
+  return readCodexCliActiveApiKey({ codexHome: home, platform: "darwin", execSync: execSyncMock });
 }
 
 function readCodex(options: Parameters<typeof readCodexCliCredentialsCached>[0] = {}) {
@@ -149,17 +166,13 @@ describe("cli credentials", () => {
     codexHome();
     const lastRefresh = Date.parse("2026-01-01T00:00:00Z");
     const fallbackExpiry = lastRefresh + 60 * 60 * 1000;
-    const accountHash = "cli|";
-
-    execSyncMock.mockImplementation((command: unknown) => {
-      const cmd = String(command);
-      expect(cmd).toContain("Codex Auth");
-      expect(cmd).toContain(accountHash);
-      return JSON.stringify({
+    keychainRecord(
+      {
         tokens: tokens("keychain-refresh", 8_700_000_000_000),
         last_refresh: "2026-01-01T00:00:00Z",
-      });
-    });
+      },
+      true,
+    );
 
     const creds = readCodex({ platform: "darwin" });
 
@@ -172,17 +185,9 @@ describe("cli credentials", () => {
 
   it("rejects Codex keychain fallback expiry when the process clock is invalid", () => {
     codexHome();
-    const accountHash = "cli|";
     const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(Number.NaN);
     try {
-      execSyncMock.mockImplementation((command: unknown) => {
-        const cmd = String(command);
-        expect(cmd).toContain("Codex Auth");
-        expect(cmd).toContain(accountHash);
-        return JSON.stringify({
-          tokens: tokens("keychain-refresh", 8_700_000_000_000),
-        });
-      });
+      keychainRecord({ tokens: tokens("keychain-refresh", 8_700_000_000_000) }, true);
 
       expect(readCodex({ platform: "darwin" })).toBeNull();
     } finally {
@@ -191,19 +196,11 @@ describe("cli credentials", () => {
   });
 
   it("falls back to Codex auth.json when keychain is unavailable", () => {
-    const tempHome = codexHome();
     execSyncMock.mockImplementation(() => {
       throw new Error("not found");
     });
 
-    const authPath = path.join(tempHome, "auth.json");
-    writeJson(authPath, {
-      tokens: {
-        id_token: "file-id-token",
-        access_token: createJwtWithExp(expSeconds),
-        refresh_token: "file-refresh",
-      },
-    });
+    writeCodexAuth({ tokens: { ...tokens("file-refresh"), id_token: "file-id-token" } });
 
     const creds = readCodex();
 
@@ -217,26 +214,18 @@ describe("cli credentials", () => {
   });
 
   it("prefers active Codex OAuth over a stale file API key", () => {
-    const home = makeHome();
-    writeJson(path.join(home, "auth.json"), {
+    const authPath = writeCodexAuth({
       auth_mode: "apikey",
       OPENAI_API_KEY: "stale-file-api-key",
     });
     execSyncMock.mockReturnValue("Logged in using ChatGPT");
 
-    expect(
-      readCodexCliActiveApiKey({
-        codexHome: home,
-        platform: "darwin",
-        execSync: execSyncMock,
-      }),
-    ).toBeNull();
+    expect(readActiveKey(path.dirname(authPath))).toBeNull();
     expect(execSyncMock).toHaveBeenCalledTimes(1);
   });
 
   it("uses the API key that Codex reports active instead of a stale Keychain record", () => {
-    const home = makeHome();
-    writeJson(path.join(home, "auth.json"), {
+    const authPath = writeCodexAuth({
       auth_mode: "apikey",
       OPENAI_API_KEY: "active-file-api-key",
     });
@@ -246,24 +235,20 @@ describe("cli credentials", () => {
         : JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "stale-keychain-api-key" }),
     );
 
-    expect(
-      readCodexCliActiveApiKey({
-        codexHome: home,
-        platform: "darwin",
-        execSync: execSyncMock,
-      }),
-    ).toEqual({ type: "api_key", provider: "openai", key: "active-file-api-key" });
+    expect(readActiveKey(path.dirname(authPath))).toEqual({
+      type: "api_key",
+      provider: "openai",
+      key: "active-file-api-key",
+    });
     expect(execSyncMock).toHaveBeenCalledTimes(2);
   });
 
   it("treats an empty Codex auth.json API-key field as API-key mode", () => {
-    const tempHome = codexHome();
     execSyncMock.mockImplementation(() => {
       throw new Error("not found");
     });
 
-    const authPath = path.join(tempHome, "auth.json");
-    writeJson(authPath, {
+    writeCodexAuth({
       OPENAI_API_KEY: "",
       tokens: tokens("stale-file-refresh", expSeconds),
     });
@@ -272,9 +257,7 @@ describe("cli credentials", () => {
   });
 
   it("rejects Codex auth.json fallback expiry when stat and process clock are invalid", () => {
-    const tempHome = codexHome();
-    const authPath = path.join(tempHome, "auth.json");
-    writeJson(authPath, {
+    writeCodexAuth({
       tokens: tokens("file-refresh", 8_700_000_000_000),
     });
     execSyncMock.mockImplementation(() => {
@@ -298,11 +281,7 @@ describe("cli credentials", () => {
     const withoutKeychain = readPromptScopedCache(false);
     expect(withoutKeychain).toBeNull();
 
-    execSyncMock.mockReturnValue(
-      JSON.stringify({
-        tokens: tokens("keychain-refresh", expSeconds),
-      }),
-    );
+    keychainRecord({ tokens: tokens("keychain-refresh") });
     const withKeychain = readPromptScopedCache(true);
 
     expectFields(withKeychain, {
@@ -314,18 +293,12 @@ describe("cli credentials", () => {
   });
 
   it("keeps no-prompt Codex reads on auth.json after a keychain read", () => {
-    const tempHome = codexHome();
     const keychainExpiry = Math.floor(Date.parse("2026-03-24T12:34:56Z") / 1000);
     const fileExpiry = Math.floor(Date.parse("2026-03-25T12:34:56Z") / 1000);
-    const authPath = path.join(tempHome, "auth.json");
-    writeJson(authPath, {
+    writeCodexAuth({
       tokens: tokens("file-refresh", fileExpiry),
     });
-    execSyncMock.mockReturnValue(
-      JSON.stringify({
-        tokens: tokens("keychain-refresh", keychainExpiry),
-      }),
-    );
+    keychainRecord({ tokens: tokens("keychain-refresh", keychainExpiry) });
 
     const withKeychain = readPromptScopedCache(true);
     const withoutPrompt = readPromptScopedCache(false);
@@ -344,11 +317,9 @@ describe("cli credentials", () => {
   });
 
   it("invalidates cached Codex credentials when auth.json changes within the TTL window", () => {
-    const tempHome = codexHome();
-    const authPath = path.join(tempHome, "auth.json");
     const firstExpiry = Math.floor(Date.parse("2026-03-24T12:34:56Z") / 1000);
     const secondExpiry = Math.floor(Date.parse("2026-03-25T12:34:56Z") / 1000);
-    writeJson(authPath, {
+    const authPath = writeCodexAuth({
       tokens: tokens("stale-refresh", firstExpiry),
     });
     fs.utimesSync(authPath, new Date("2026-03-24T10:00:00Z"), new Date("2026-03-24T10:00:00Z"));
@@ -378,7 +349,6 @@ describe("cli credentials", () => {
   it("lifts Google account identity from the Gemini id_token", () => {
     const home = makeHome();
     const credPath = path.join(home, ".gemini", "oauth_creds.json");
-    fs.mkdirSync(path.dirname(credPath), { recursive: true, mode: 0o700 });
     const idTokenPayload = Buffer.from(
       JSON.stringify({ sub: "google-account-42", email: "user@example.com" }),
     ).toString("base64url");

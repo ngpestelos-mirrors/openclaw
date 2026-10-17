@@ -4,6 +4,10 @@ import type { ProviderResolveModelRoutesContext } from "../plugin-sdk/provider-m
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import type { AgentHarnessHostCapabilities } from "./harness/host-capability-types.js";
 import type { AgentHarness } from "./harness/types.js";
+import type { PreparedModelRuntimeInput } from "./prepared-model-runtime.js";
+type RuntimeAliasParams = Parameters<
+  typeof import("./model-runtime-aliases.js").resolveCliRuntimeExecutionProvider
+>[0];
 export const streamSimpleMock = vi.fn();
 export const parseSessionEntriesMock = vi.fn();
 export const migrateSessionEntriesMock = vi.fn();
@@ -90,26 +94,16 @@ vi.mock("./sessions/model-registry-runtime.js", () => ({
 }));
 
 vi.mock("./prepared-model-runtime.js", () => {
-  const loadSnapshot = async (params: {
-    agentId?: string;
-    agentDir: string;
-    config: unknown;
-    inheritedAuthDir?: string;
-    workspaceDir?: string;
-    allowGatewaySubagentBinding?: boolean;
-  }) => {
+  const loadSnapshot = async (params: PreparedModelRuntimeInput) => {
     loadPreparedModelRuntimeSnapshotMock(params);
     const workspaceOptions = params.workspaceDir ? { workspaceDir: params.workspaceDir } : {};
+    const configOptions = { config: params.config, ...workspaceOptions };
     await ensureOpenClawModelsJsonMock(params.config, params.agentDir, workspaceOptions);
     const authStorage = discoverAuthStorageMock(params.agentDir, {
-      config: params.config,
+      ...configOptions,
       ...(params.inheritedAuthDir ? { inheritedAuthDir: params.inheritedAuthDir } : {}),
-      ...workspaceOptions,
     });
-    const modelRegistry = discoverModelsMock(authStorage, params.agentDir, {
-      config: params.config,
-      ...workspaceOptions,
-    });
+    const modelRegistry = discoverModelsMock(authStorage, params.agentDir, configOptions);
     return {
       ...(preparedRuntimeSnapshotState.snapshot as object),
       ...(preparedRuntimeSnapshotState.useSnapshotPluginRegistry
@@ -168,44 +162,21 @@ vi.mock("./model-auth.js", () => ({
 vi.mock("./model-runtime-aliases.js", () => ({
   isCliRuntimeAliasForProvider: ({ runtime, provider }: { runtime?: string; provider?: string }) =>
     runtime === "claude-cli" && provider === "anthropic",
-  resolveCliRuntimeExecutionProvider: ({
-    provider,
-    cfg,
-    modelId,
-    authProfileId,
-  }: {
-    provider?: string;
-    cfg?: {
-      agents?: {
-        defaults?: {
-          models?: Record<string, { agentRuntime?: { id?: string } }>;
-        };
-      };
-      auth?: {
-        order?: Record<string, string[]>;
-        profiles?: Record<string, { provider?: string }>;
-      };
-    };
-    modelId?: string;
-    authProfileId?: string;
-  }) => {
+  resolveCliRuntimeExecutionProvider: (params: RuntimeAliasParams) => {
+    const { provider, cfg, modelId, authProfileId } = params;
     const key = provider && modelId ? `${provider}/${modelId}` : undefined;
     const runtime = key
       ? cfg?.agents?.defaults?.models?.[key]?.agentRuntime?.id?.trim()
       : undefined;
-    if ((!runtime || runtime === "auto") && authProfileId?.trim()) {
-      return cfg?.auth?.profiles?.[authProfileId]?.provider === "claude-cli"
-        ? "claude-cli"
-        : undefined;
+    if (runtime && runtime !== "auto") {
+      return runtime === "claude-cli" ? runtime : undefined;
     }
-    if (!runtime || runtime === "auto") {
-      for (const profileId of cfg?.auth?.order?.[provider ?? ""] ?? []) {
-        if (cfg?.auth?.profiles?.[profileId]?.provider === "claude-cli") {
-          return "claude-cli";
-        }
-      }
-    }
-    return runtime === "claude-cli" ? runtime : undefined;
+    const profiles = authProfileId?.trim()
+      ? [authProfileId]
+      : (cfg?.auth?.order?.[provider ?? ""] ?? []);
+    return profiles.some((id) => cfg?.auth?.profiles?.[id]?.provider === "claude-cli")
+      ? "claude-cli"
+      : undefined;
   },
 }));
 
@@ -238,17 +209,15 @@ vi.mock("./harness/builtin-openclaw.js", () => ({
   isBuiltInOpenClawAgentHarness: (harness: AgentHarness) => builtInOpenClawHarnesses.has(harness),
 }));
 
-vi.mock("./harness/host-capability.js", () => {
-  return {
-    createAgentHarnessHostCapabilities: (params: unknown) => {
-      createAgentHarnessHostCapabilitiesMock(params);
-      return {
-        capabilities: agentHarnessHostCapabilitiesMock,
-        close: closeAgentHarnessHostCapabilitiesMock,
-      };
-    },
-  };
-});
+vi.mock("./harness/host-capability.js", () => ({
+  createAgentHarnessHostCapabilities: (params: unknown) => {
+    createAgentHarnessHostCapabilitiesMock(params);
+    return {
+      capabilities: agentHarnessHostCapabilitiesMock,
+      close: closeAgentHarnessHostCapabilitiesMock,
+    };
+  },
+}));
 
 vi.mock("./embedded-agent-runner/runs.js", () => ({
   getActiveEmbeddedRunSnapshot: (...args: unknown[]) => getActiveEmbeddedRunSnapshotMock(...args),
@@ -268,15 +237,12 @@ vi.mock("../plugins/provider-runtime.js", () => ({
   prepareProviderRuntimeAuth: (...args: unknown[]) => prepareProviderRuntimeAuthMock(...args),
 }));
 
-// Provider ownership and public-surface loading have dedicated owner suites. BTW stubs those
-// boundaries so its orchestration tests do not rediscover every plugin.
+// Keep plugin discovery out of BTW orchestration tests.
 vi.mock("../plugins/providers.js", () => ({
   resolveProviderRefOwnership: () => ({ status: "unowned" as const }),
 }));
 
 vi.mock("../plugins/provider-policy-surface.js", () => ({
-  // Provider route policy has dedicated adapter and OpenAI owner suites. BTW needs only a
-  // deterministic route fixture so orchestration tests do not load plugin public surfaces.
   resolveDirectBundledProviderPolicySurface: (provider: string) => {
     if (provider.trim().toLowerCase() !== "openai") {
       return null;
@@ -291,22 +257,18 @@ vi.mock("../plugins/provider-policy-surface.js", () => ({
         return {
           kind: "routes" as const,
           defaultRuntimeId: requestTransportOverrides === "none" ? "codex" : "openclaw",
-          routes: [
-            {
-              api: "openai-responses" as const,
-              baseUrl: "https://api.openai.com/v1",
-              authRequirement: "api-key" as const,
-              requestTransportOverrides,
-              runtimePolicy: { compatibleIds },
-            },
-            {
-              api: "openai-chatgpt-responses" as const,
-              baseUrl: "https://chatgpt.com/backend-api/codex",
-              authRequirement: "subscription" as const,
-              requestTransportOverrides,
-              runtimePolicy: { compatibleIds },
-            },
-          ],
+          routes: (
+            [
+              ["openai-responses", "https://api.openai.com/v1", "api-key"],
+              ["openai-chatgpt-responses", "https://chatgpt.com/backend-api/codex", "subscription"],
+            ] as const
+          ).map(([api, baseUrl, authRequirement]) => ({
+            api,
+            baseUrl,
+            authRequirement,
+            requestTransportOverrides,
+            runtimePolicy: { compatibleIds },
+          })),
         };
       },
     };
