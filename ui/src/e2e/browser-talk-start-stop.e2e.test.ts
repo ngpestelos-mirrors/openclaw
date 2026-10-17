@@ -1,5 +1,4 @@
 import type { Page } from "playwright";
-// Control UI E2E tests cover browser Talk start and stop through a real page.
 import { expect, it } from "vitest";
 import { finishElementAnimations } from "../test-helpers/animations.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
@@ -123,8 +122,6 @@ suite.define(() => {
       await installTalkBrowserFixtures(page);
 
       await page.emulateMedia({ reducedMotion: "reduce" });
-      // The microphone picker lives on the Settings appearance page; the
-      // selection persists and applies to talk sessions started from chat.
       await page.goto(`${suite.server.baseUrl}settings/appearance`);
       const microphoneSelect = page.locator("[data-settings-microphone]");
       await expect
@@ -133,10 +130,15 @@ suite.define(() => {
         )
         .toEqual(["System default", "Built-in Microphone", "USB Audio Interface"]);
       await microphoneSelect.selectOption("usb");
+      const tapToTalk = page.getByRole("button", { name: "Tap to talk" });
+      const activity = page.locator(".agent-chat__voice-activity");
+      const firstBar = page.locator(".agent-chat__voice-activity-bar").first();
+      const barTransform = () =>
+        firstBar.evaluate((element) => getComputedStyle(element).transform);
       await page.goto(`${suite.server.baseUrl}chat`);
       await page.setViewportSize({ width: 320, height: 720 });
       await waitForTalkReady(page);
-      await page.getByRole("button", { name: "Tap to talk" }).click();
+      await tapToTalk.click();
 
       const createRequest = await gateway.waitForRequest("talk.client.create");
       expect(createRequest.params).toMatchObject({ sessionKey: "agent:main:main" });
@@ -163,31 +165,17 @@ suite.define(() => {
       await expect
         .poll(() => page.locator('.agent-chat__voice-activity[data-status="connecting"]').count())
         .toBe(1);
-      // The level meter renders inside the stop-voice pill button, not as a
-      // separate floating row above the composer.
       await expect
         .poll(() =>
           page.locator('button[aria-label="Stop voice input"] .agent-chat__voice-activity').count(),
         )
         .toBe(1);
-      // Phone widths keep the pill wide enough for the 7-bar meter instead of
-      // collapsing it to the generic 44px square control size.
       const pillBox = await page.getByRole("button", { name: "Stop voice input" }).boundingBox();
       expect(pillBox?.width ?? 0).toBeGreaterThanOrEqual(60);
       await expect
-        .poll(() =>
-          page
-            .locator(".agent-chat__voice-activity-bar")
-            .first()
-            .evaluate((element) => {
-              return getComputedStyle(element).animationName;
-            }),
-        )
+        .poll(() => firstBar.evaluate((element) => getComputedStyle(element).animationName))
         .toBe("none");
-      const connectingReducedMotionTransform = await page
-        .locator(".agent-chat__voice-activity-bar")
-        .first()
-        .evaluate((element) => getComputedStyle(element).transform);
+      const connectingReducedMotionTransform = await barTransform();
 
       await gateway.deliverLatest({ setupComplete: {} });
       await expect
@@ -197,32 +185,18 @@ suite.define(() => {
       await expect
         .poll(() => page.locator('[role="status"].agent-chat__voice-status').textContent())
         .toBe("Listening...");
-      const reducedMotionTransform = await page
-        .locator(".agent-chat__voice-activity-bar")
-        .first()
-        .evaluate((element) => getComputedStyle(element).transform);
+      const reducedMotionTransform = await barTransform();
       expect(reducedMotionTransform).not.toBe(connectingReducedMotionTransform);
 
       await feedAudio(page, 0.25, 1, true);
       await expect
-        .poll(async () =>
-          Number(await page.locator(".agent-chat__voice-activity").getAttribute("data-level")),
-        )
+        .poll(async () => Number(await activity.getAttribute("data-level")))
         .toBeGreaterThan(0);
-      await expect
-        .poll(() =>
-          page
-            .locator(".agent-chat__voice-activity-bar")
-            .first()
-            .evaluate((element) => getComputedStyle(element).transform),
-        )
-        .toBe(reducedMotionTransform);
+      await expect.poll(barTransform).toBe(reducedMotionTransform);
 
       await page.getByRole("button", { name: "Stop voice input" }).click();
-      await expect
-        .poll(() => page.getByRole("button", { name: "Tap to talk" }).isVisible())
-        .toBe(true);
-      await expect.poll(() => page.locator(".agent-chat__voice-activity").count()).toBe(0);
+      await expect.poll(() => tapToTalk.isVisible()).toBe(true);
+      await expect.poll(() => activity.count()).toBe(0);
       await expect
         .poll(() =>
           page.evaluate(() => {
@@ -238,10 +212,7 @@ suite.define(() => {
         .toEqual({ audioContextsClosed: 2, tracksStopped: 1 });
 
       await gateway.deliverLatest({ setupComplete: {} });
-      await expect
-        .poll(() => page.getByRole("button", { name: "Tap to talk" }).isVisible())
-        .toBe(true);
-      console.info("[video-talk-e2e] ordinary_voice=start-stop-passed");
+      await expect.poll(() => tapToTalk.isVisible()).toBe(true);
     });
   });
 
@@ -365,7 +336,6 @@ suite.define(() => {
       expect(request.params).toMatchObject({
         sessionKey: "agent:main:main",
       });
-      console.info("[video-talk-e2e] session=provider:openai,transport:webrtc");
       await expect
         .poll(() =>
           page.evaluate(() =>
@@ -414,9 +384,6 @@ suite.define(() => {
       }));
       expect(dimensions.height).toBeGreaterThan(0);
       expect(dimensions.width).toBeGreaterThan(0);
-      console.info(
-        `[video-talk-e2e] preview=live,width:${dimensions.width},height:${dimensions.height}`,
-      );
       await captureVideoTalkProof(suite, page, "02-live-camera-preview.png");
 
       await dispatchOpenAiTalkEvent(page, {
@@ -458,15 +425,11 @@ suite.define(() => {
         )
         .toEqual({ image: true, toolResult: true });
       await expectTalkRequests(gateway);
-      console.info(
-        "[video-talk-e2e] describe_view=input_image+function_output+response_create,gateway_frame_requests:0",
-      );
 
       await page.getByRole("button", { name: "Stop voice input" }).click();
       await expect.poll(() => preview.count()).toBe(0);
       expect(await trackStates(page)).toEqual(["ended", "ended"]);
       await captureVideoTalkProof(suite, page, "04-after-video-talk-stop.png");
-      console.info("[video-talk-e2e] stop=preview-removed,tracks:ended+ended");
     });
   });
 
@@ -482,6 +445,14 @@ suite.define(() => {
         },
       );
       const googleLiveMessages: unknown[] = [];
+      const findMessage = (field: string, fragment: string) =>
+        googleLiveMessages.find(
+          (message) =>
+            typeof message === "object" &&
+            message !== null &&
+            field in message &&
+            JSON.stringify(message).includes(fragment),
+        );
       let describeViewSent = false;
       await page.routeWebSocket("wss://generativelanguage.googleapis.com/**", (ws) => {
         ws.onMessage((message) => {
@@ -517,48 +488,20 @@ suite.define(() => {
         sessionKey: "agent:main:main",
       });
       const preview = await startCamera(page);
+      await expect.poll(() => findMessage("realtimeInput", '"video"')).toBeDefined();
       await expect
-        .poll(() =>
-          googleLiveMessages.some(
-            (message) =>
-              typeof message === "object" &&
-              message !== null &&
-              "realtimeInput" in message &&
-              JSON.stringify(message).includes('"video"'),
-          ),
-        )
-        .toBe(true);
-      await expect
-        .poll(() =>
-          googleLiveMessages.some(
-            (message) =>
-              typeof message === "object" &&
-              message !== null &&
-              "toolResponse" in message &&
-              JSON.stringify(message).includes('"cameraStreamActive":true'),
-          ),
-        )
-        .toBe(true);
-      const videoMessage = googleLiveMessages.find(
-        (message) =>
-          typeof message === "object" &&
-          message !== null &&
-          "realtimeInput" in message &&
-          JSON.stringify(message).includes('"video"'),
-      );
+        .poll(() => findMessage("toolResponse", '"cameraStreamActive":true'))
+        .toBeDefined();
+      const videoMessage = findMessage("realtimeInput", '"video"');
       expect(new TextEncoder().encode(JSON.stringify(videoMessage)).length).toBeLessThanOrEqual(
         512 * 1024,
       );
       await expectTalkRequests(gateway);
       await captureVideoTalkProof(suite, page, "05-gemini-live-camera-preview.png");
-      console.info(
-        "[video-talk-e2e] gemini=realtimeInput.video+functionResponse,gateway_frame_requests:0",
-      );
 
       await page.getByRole("button", { name: "Stop voice input" }).click();
       await expect.poll(() => preview.count()).toBe(0);
       expect(await trackStates(page)).toEqual(["ended", "ended"]);
-      console.info("[video-talk-e2e] gemini_stop=preview-removed,tracks:ended+ended");
     });
   });
 
@@ -603,7 +546,6 @@ suite.define(() => {
       await captureVideoTalkProof(suite, page, "03-camera-permission-blocked.png");
       await page.getByRole("button", { name: "Stop voice input" }).click();
       expect(await trackStates(page)).toEqual(["ended"]);
-      console.info("[video-talk-e2e] camera_denial=actionable,audio_track:ended");
     });
   });
 

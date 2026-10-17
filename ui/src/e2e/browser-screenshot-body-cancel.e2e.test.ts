@@ -31,13 +31,8 @@ suite.define(() => {
         const originalFetch = window.fetch.bind(window);
         window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
           const response = await originalFetch(input, init);
-          const url =
-            typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-          if (!url.includes("/__openclaw__/assistant-media")) {
-            return response;
-          }
-          const source = response.body;
-          if (!source) {
+          const url = input instanceof Request ? input.url : String(input);
+          if (!url.includes("/__openclaw__/assistant-media") || !response.body) {
             return response;
           }
           const proofWindow = window as Window & { openclawScreenshotProof?: ScreenshotProof };
@@ -49,8 +44,8 @@ suite.define(() => {
           });
           proof.fetchCount += 1;
           proof.statuses.push(response.status);
-          const originalCancel = source.cancel.bind(source);
-          source.cancel = async (reason) => {
+          const originalCancel = response.body.cancel.bind(response.body);
+          response.body.cancel = async (reason) => {
             proof.cancelCount += 1;
             await originalCancel(reason);
             proof.cancelResolvedCount += 1;
@@ -91,13 +86,11 @@ suite.define(() => {
         },
       });
 
-      const response = await page.goto(`${suite.server.baseUrl}chat`);
-      expect(response?.status()).toBe(200);
+      expect((await page.goto(`${suite.server.baseUrl}chat`))?.status()).toBe(200);
       await openChatSidePanelType(page, "Files");
       await openChatSidePanelType(page, "Browser");
 
       const panel = page.locator("section.bp");
-      await panel.waitFor();
       const alert = panel.getByRole("alert");
       await alert.waitFor();
       expect(await alert.textContent()).toBe(

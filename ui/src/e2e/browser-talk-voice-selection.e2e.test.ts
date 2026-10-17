@@ -9,6 +9,7 @@ import {
   videoTalkCatalog,
   waitForTalkReady,
 } from "./browser-talk-start-stop.fixtures.ts";
+import { configSchema, configSnapshot } from "./config-composer-fixtures.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({
@@ -47,6 +48,7 @@ suite.define(() => {
       await page.goto(`${suite.server.baseUrl}chat`);
       await waitForTalkReady(page);
       await page.getByRole("button", { name: "Start voice input" }).click();
+      const stopVoice = page.getByRole("button", { name: "Stop voice input" });
       const openAudio = async () => {
         await page.waitForFunction(() => {
           const current = (window as TalkWindow).openclawVideoTalkE2e;
@@ -60,7 +62,7 @@ suite.define(() => {
       };
       await gateway.waitForRequest("talk.client.create");
       await openAudio();
-      await page.getByRole("button", { name: "Stop voice input" }).waitFor();
+      await stopVoice.waitFor();
       expect(await page.locator(".chat-talk-voice-picker").count()).toBe(0);
       const transcript = async (text: string) => {
         await dispatchOpenAiTalkEvent(page, {
@@ -79,11 +81,10 @@ suite.define(() => {
           transcript: text,
         });
       };
-      await transcript("Keep working while I change your voice.");
+      const originalTranscript = "Keep working while I change your voice.";
+      await transcript(originalTranscript);
       const captions = page.getByRole("log", { name: "Voice transcript" });
-      await expect
-        .poll(() => captions.textContent())
-        .toContain("Keep working while I change your voice.");
+      await expect.poll(() => captions.textContent()).toContain(originalTranscript);
 
       await gateway.deferNext("chat.send");
       const textarea = page.locator(".agent-chat__input textarea");
@@ -118,7 +119,7 @@ suite.define(() => {
       });
       expect(await gateway.getRequests("talk.voice.complete")).toHaveLength(0);
       expect(await stopRun.isVisible()).toBe(true);
-      expect(await captions.textContent()).toContain("Keep working while I change your voice.");
+      expect(await captions.textContent()).toContain(originalTranscript);
 
       await gateway.resolveDeferred("talk.client.create", {
         ...clientSession,
@@ -132,13 +133,11 @@ suite.define(() => {
       });
       await transcript("The new voice is ready.");
       await expect.poll(() => captions.textContent()).toContain("The new voice is ready.");
-      expect(await captions.textContent()).toContain("Keep working while I change your voice.");
+      expect(await captions.textContent()).toContain(originalTranscript);
       expect(await stopRun.isVisible()).toBe(true);
       await screenshot(page, "03-after-voice-change.png");
-      await page.getByRole("button", { name: "Stop voice input" }).click();
-      await expect
-        .poll(() => page.getByRole("button", { name: "Stop voice input" }).count())
-        .toBe(0);
+      await stopVoice.click();
+      await expect.poll(() => stopVoice.count()).toBe(0);
       expect(await gateway.getRequests("talk.voice.get")).toHaveLength(0);
       expect(await gateway.getRequests("talk.voice.set")).toHaveLength(0);
       expect(await stopRun.isVisible()).toBe(true);
@@ -153,21 +152,11 @@ suite.define(() => {
       };
       const gateway = await installMockGateway(page, {
         methodResponses: {
-          "config.get": {
-            exists: true,
-            valid: true,
-            config,
-            raw: JSON.stringify(config),
-            hash: "voice-settings",
-          },
-          "config.schema": {
-            schema: {
-              type: "object",
-              properties: { talk: { type: "object", additionalProperties: true } },
-            },
-            uiHints: {},
-            version: "test",
-          },
+          "config.get": { exists: true, ...configSnapshot(config, "voice-settings") },
+          "config.schema": configSchema({
+            type: "object",
+            properties: { talk: { type: "object", additionalProperties: true } },
+          }),
           "talk.catalog": {
             realtime: {
               activeProvider: "openai",

@@ -14,10 +14,7 @@ import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts"
 const PAGE_URL = "https://startup.example/page";
 const pageInfo = { targetId: "raw-startup", title: "Startup page", url: PAGE_URL };
 type Viewport = { cssWidth: number; cssHeight: number };
-const READY = JSON.stringify({
-  type: "ready",
-  ...pageInfo,
-});
+const READY = JSON.stringify({ type: "ready", ...pageInfo });
 const suite = createControlUiE2eSuite({
   name: "Control UI browser stream startup",
   startServerBeforeBrowser: true,
@@ -104,21 +101,17 @@ suite.define(() => {
             targetId: "raw-startup",
             url: PAGE_URL,
           };
-          const response = (path: string, payload: unknown) => ({
-            match: { path },
-            response: payload,
-          });
           const browserResponses = (viewport: Viewport) => ({
-            cases: [
-              response("/tabs", { running: true, tabs: [{ tabId: "tab-startup", ...pageInfo }] }),
-              response("/screencast", minted),
-              response("/screenshot", {
+            cases: Object.entries({
+              "/tabs": { running: true, tabs: [{ tabId: "tab-startup", ...pageInfo }] },
+              "/screencast": minted,
+              "/screenshot": {
                 path: "/synthetic-fallback.png",
                 targetId: pageInfo.targetId,
                 url: PAGE_URL,
-              }),
-              response("/act", { result: { ...viewport, title: pageInfo.title, url: PAGE_URL } }),
-            ],
+              },
+              "/act": { result: { ...viewport, title: pageInfo.title, url: PAGE_URL } },
+            }).map(([path, response]) => ({ match: { path }, response })),
           });
           const gateway = await installMockGateway(page, {
             featureMethods: [...defaultControlUiFeatureMethods, "browser.request"],
@@ -138,12 +131,6 @@ suite.define(() => {
             const canvas = document.createElement("canvas");
             canvas.width = 80;
             canvas.height = 60;
-            const context = canvas.getContext("2d");
-            if (!context) {
-              throw new Error("Canvas context unavailable");
-            }
-            context.fillStyle = "#2070b0";
-            context.fillRect(0, 0, 80, 60);
             return canvas.toDataURL("image/jpeg").split(",")[1]!;
           });
           if (phase === "mint") {
@@ -175,7 +162,6 @@ suite.define(() => {
             expect(await requestCount("/screenshot")).toBe(1);
             await page.clock.runFor(10_000);
             await expect.poll(() => fixture.sockets.length).toBe(2);
-            fixture.sockets[1]!.send(frame(jpeg, viewport));
           } else {
             if (phase === "mint") {
               await gateway.resolveDeferred("browser.request", minted);
@@ -187,20 +173,17 @@ suite.define(() => {
             if (phase !== "frame") {
               fixture.sockets[0]!.send(READY);
             }
-            fixture.sockets[0]!.send(frame(jpeg, viewport));
           }
+          fixture.sockets[phase === "timeout" ? 1 : 0]!.send(frame(jpeg, viewport));
           await expect
             .poll(() =>
-              image.evaluate((element) => {
-                const rendered = element as HTMLImageElement;
-                return (
-                  rendered.src.startsWith("blob:") &&
-                  rendered.complete &&
-                  rendered.naturalWidth === 80
-                );
-              }),
+              image.evaluate((element: HTMLImageElement) => ({
+                blob: element.src.startsWith("blob:"),
+                complete: element.complete,
+                width: element.naturalWidth,
+              })),
             )
-            .toBe(true);
+            .toEqual({ blob: true, complete: true, width: 80 });
           const src = await image.getAttribute("src");
           await page.clock.runFor(120_000);
           expect(await image.getAttribute("src")).toBe(src);

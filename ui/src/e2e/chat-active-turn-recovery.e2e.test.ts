@@ -28,6 +28,11 @@ beforeEach(() => {
   }
 });
 const captureProof = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
+const recoveryTool = {
+  id: "tool-active-turn-recovery",
+  name: "read",
+  arguments: { path: "README.md" },
+};
 type ActiveRunSnapshotOptions = {
   events?: unknown[];
   messages?: unknown[];
@@ -51,10 +56,10 @@ function toolEvent(runId: unknown) {
     ts: 1_000,
     sessionKey: "agent:main:main",
     data: {
-      toolCallId: "tool-active-turn-recovery",
-      name: "read",
+      toolCallId: recoveryTool.id,
+      name: recoveryTool.name,
       phase: "start",
-      args: { path: "README.md" },
+      args: recoveryTool.arguments,
     },
   };
 }
@@ -74,6 +79,11 @@ function activeRunSnapshot(
   streamText: string,
   opts?: ActiveRunSnapshotOptions,
 ) {
+  const persistedRead = {
+    content: [{ type: "toolCall", ...recoveryTool }],
+    role: "assistant",
+    timestamp: 950,
+  };
   return {
     inFlightRun: {
       runId,
@@ -84,22 +94,7 @@ function activeRunSnapshot(
     },
     messages: opts?.messages ?? [
       chatMessage("user", prompt, { idempotencyKey: `${runId}:user` }, 900),
-      ...(opts?.persistedToolCall
-        ? [
-            {
-              content: [
-                {
-                  type: "toolCall",
-                  id: "tool-active-turn-recovery",
-                  name: "read",
-                  arguments: { path: "README.md" },
-                },
-              ],
-              role: "assistant",
-              timestamp: 950,
-            },
-          ]
-        : []),
+      ...(opts?.persistedToolCall ? [persistedRead] : []),
     ],
     sessionId: "active-turn-recovery-session",
     sessionInfo: {
@@ -212,8 +207,8 @@ async function finishRecoveredTurn(
     ts: 1_200,
     sessionKey: "agent:main:main",
     data: {
-      toolCallId: "tool-active-turn-recovery",
-      name: "read",
+      toolCallId: recoveryTool.id,
+      name: recoveryTool.name,
       phase: "result",
       result: { content: [{ type: "text", text: "README recovered" }] },
     },
@@ -233,41 +228,37 @@ async function openActiveTurn(scenario: Parameters<typeof installMockGateway>[1]
   const gateway = await installMockGateway(page, scenario);
   await page.goto(`${suite.server.baseUrl}chat`);
   await page.locator(".agent-chat__composer-combobox textarea").waitFor({ timeout: 10_000 });
-  return { context, page, gateway };
+  return { page, gateway };
 }
 
 async function recoverTurn(
   mode: "navigation" | "reconnect" | "reload",
   recover: (page: Page, gateway: MockGatewayControls) => Promise<void>,
 ) {
-  const { context, page, gateway } = await openActiveTurn();
-  try {
-    const title = mode[0].toUpperCase() + mode.slice(1);
-    const prompt = `${mode} active turn`;
-    const streamText = `${title} progress is still running.`;
-    const runId = await startActiveTurn(page, gateway, prompt, streamText);
-    const startedAt = Date.now() - 10 * 60_000;
-    await installActiveRunSnapshot(gateway, runId, prompt, streamText, {
-      startedAt,
-      persistedToolCall: mode === "reload",
-    });
-    const prefix = { navigation: "01", reconnect: "03", reload: "05" }[mode];
-    await capture(page, `${prefix}-${mode}-before`);
-    await recover(page, gateway);
-    await assertActiveTurnVisible(page, streamText);
-    if (mode === "navigation") {
-      await expect.poll(() => readWorkingStartedAts(page)).toContain(startedAt);
-    } else {
-      expect(await readWorkingStartedAts(page)).toContain(startedAt);
-    }
-    await expect(
-      page.locator(".chat-working-indicator openclaw-elapsed-time").filter({ hasText: "10m" }),
-    ).not.toHaveCount(0);
-    await capture(page, `${String(Number(prefix) + 1).padStart(2, "0")}-${mode}-after`);
-    await finishRecoveredTurn(page, gateway, runId, `${title} delivery complete.`);
-  } finally {
-    await suite.closeBrowserContext(context);
+  const { page, gateway } = await openActiveTurn();
+  const title = mode[0].toUpperCase() + mode.slice(1);
+  const prompt = `${mode} active turn`;
+  const streamText = `${title} progress is still running.`;
+  const runId = await startActiveTurn(page, gateway, prompt, streamText);
+  const startedAt = Date.now() - 10 * 60_000;
+  await installActiveRunSnapshot(gateway, runId, prompt, streamText, {
+    startedAt,
+    persistedToolCall: mode === "reload",
+  });
+  const prefix = { navigation: "01", reconnect: "03", reload: "05" }[mode];
+  await capture(page, `${prefix}-${mode}-before`);
+  await recover(page, gateway);
+  await assertActiveTurnVisible(page, streamText);
+  if (mode === "navigation") {
+    await expect.poll(() => readWorkingStartedAts(page)).toContain(startedAt);
+  } else {
+    expect(await readWorkingStartedAts(page)).toContain(startedAt);
   }
+  await expect(
+    page.locator(".chat-working-indicator openclaw-elapsed-time").filter({ hasText: "10m" }),
+  ).not.toHaveCount(0);
+  await capture(page, `${String(Number(prefix) + 1).padStart(2, "0")}-${mode}-after`);
+  await finishRecoveredTurn(page, gateway, runId, `${title} delivery complete.`);
 }
 
 async function assertSteeredRecoveryOrder(
@@ -341,13 +332,14 @@ suite.define(() => {
   it.each([true, false])(
     "keeps an owned reconnect prompt before a durable reply while history recovery is pending (active=%s)",
     async (active) => {
-      const { context, page, gateway } = await openActiveTurn({
+      const { page, gateway } = await openActiveTurn({
         deferredMethods: ["chat.send"],
         // Terminal events can request ordinary history alongside outbox recovery.
         heldMethods: ["chat.history"],
       });
+      const pane = page.locator("openclaw-chat-pane");
       const readPane = () =>
-        page.locator("openclaw-chat-pane").evaluate((element) => {
+        pane.evaluate((element) => {
           const state = (element as HTMLElement & { state: ChatPageHost }).state;
           return {
             connected: state.connected,
@@ -361,169 +353,162 @@ suite.define(() => {
             messageCount: state.chatMessages.length,
           };
         });
-      try {
-        await expect.poll(readPane).toMatchObject({ connected: true, loading: false });
-        const initial = await readPane();
-        const sessionKey = initial.sessionKey;
-        const prompt = "Keep my reconnect prompt before its answer.";
-        const reply = "This durable answer arrived before history recovery.";
-        await page.locator(".agent-chat__composer-combobox textarea").fill(prompt);
-        await page.getByRole("button", { name: "Send message" }).click();
-        const send = await gateway.waitForRequest("chat.send");
-        const runId = (send.params as { idempotencyKey?: unknown }).idempotencyKey;
-        if (typeof runId !== "string") {
-          throw new Error("chat.send did not carry its generated run ID");
-        }
-        // This scenario commits the user below while disconnected, after acceptance.
-        await gateway.resolveDeferred("chat.send", { runId, status: "started" });
-        await expect.poll(readPane).toMatchObject({
-          runId,
-          sending: false,
-          queue: [{ sendRunId: runId, sendState: "sending" }],
-        });
-        const oldSubscription = await page
-          .locator("openclaw-chat-pane")
-          .evaluateHandle(
-            (element) =>
-              (element as HTMLElement & { state: ChatPageHost }).state
-                .chatSessionMessageSubscription,
-          );
-        await gateway.setOnline(false);
-        await expect.poll(readPane).toMatchObject({
-          connected: false,
-          runId,
-          queue: [{ sendRunId: runId, sendState: "waiting-reconnect" }],
-        });
-        const userIdentity = { id: "reconnect-user", seq: 1, idempotencyKey: `${runId}:user` };
-        const user = chatMessage("user", prompt, userIdentity, Date.now());
-        const sessionInfo = {
-          key: sessionKey,
-          sessionId: initial.sessionId,
-          kind: "direct",
-          hasActiveRun: true,
-          activeRunIds: [runId],
-          status: "running",
-          updatedAt: user.timestamp,
-        };
-        const history = {
-          sessionId: initial.sessionId,
-          sessionInfo,
-          messages: [user],
-          pendingInputs: { items: [], total: 0 },
-          inFlightRun: { runId, text: "", events: [] },
-        };
-        // Contract fixture: the user is saved and published while disconnected.
-        // Reconnect subscriptions do not replay it; both real recovery RPCs still run.
-        await gateway.setHistoryMessages([user]);
-        await gateway.emitGatewayEvent("session.message", {
-          sessionKey,
-          hasActiveRun: true,
-          messageId: userIdentity.id,
-          messageSeq: userIdentity.seq,
-          message: user,
-        });
-        await gateway.setMethodResponse("chat.startup", history);
-        await gateway.setMethodResponse("chat.history", history);
-        await gateway.setSessionsListResponse({
-          count: 1,
-          sessions: [sessionInfo],
-          defaults: {},
-          ts: user.timestamp,
-        });
-        const startupCount = (await gateway.getRequests("chat.startup")).length;
-        const historyCount = (await gateway.getRequests("chat.history")).length;
-        const subscriptionCount = (await gateway.getRequests("sessions.messages.subscribe")).length;
-        await gateway.deferNext("chat.startup", { sessionKey });
-        await gateway.setOnline(true);
-        await waitForGatewayConnected(page);
-        await gateway.waitForRequest("sessions.messages.subscribe", { after: subscriptionCount });
-        await expect
-          .poll(() =>
-            page.locator("openclaw-chat-pane").evaluate((element, previous) => {
-              const subscription = (element as HTMLElement & { state: ChatPageHost }).state
-                .chatSessionMessageSubscription;
-              return subscription != null && subscription !== previous;
-            }, oldSubscription),
-          )
-          .toBe(true);
-        await oldSubscription.dispose();
-        await gateway.waitForRequest("chat.startup", { after: startupCount });
-        const recovery = await gateway.waitForRequest("chat.history", { after: historyCount });
-        expect(recovery.params).toMatchObject({ sessionKey, limit: 1000, inputRunIds: [runId] });
-        await expect.poll(readPane).toMatchObject({
-          connected: true,
-          loading: true,
-          subscriptionKey: sessionKey,
-          runId,
-          queue: [{ sendRunId: runId, sendState: "waiting-reconnect" }],
-          messageCount: initial.messageCount,
-        });
-
-        const assistantIdentity = { id: "reconnect-assistant", seq: 2, runId };
-        const assistant = chatMessage("assistant", reply, assistantIdentity, Date.now());
-        const replySessionInfo = {
-          ...sessionInfo,
-          hasActiveRun: active,
-          activeRunIds: active ? [runId] : [],
-          status: active ? "running" : "done",
-          ...(!active ? { lastRunId: runId } : {}),
-        };
-        const completeHistory = {
-          ...history,
-          sessionInfo: replySessionInfo,
-          messages: [user, assistant],
-          inFlightRun: active ? history.inFlightRun : undefined,
-        };
-        await gateway.setHistoryMessages(completeHistory.messages);
-        await gateway.setMethodResponse("chat.startup", completeHistory);
-        await gateway.setMethodResponse("chat.history", completeHistory);
-        await gateway.setSessionsListResponse({
-          count: 1,
-          sessions: [replySessionInfo],
-          defaults: {},
-          ts: user.timestamp,
-        });
-        await gateway.emitGatewayEvent("session.message", {
-          sessionKey,
-          runId,
-          hasActiveRun: active,
-          session: replySessionInfo,
-          messageId: assistantIdentity.id,
-          messageSeq: assistantIdentity.seq,
-          message: assistant,
-        });
-        await expect.poll(readPane).toMatchObject({
-          loading: true,
-          runId: active ? runId : null,
-          queue: [{ sendRunId: runId, sendState: "waiting-reconnect" }],
-          messageCount: initial.messageCount + 1,
-        });
-        const thread = page.locator(".chat-thread-inner");
-        const assertOrder = async () => {
-          await expect(thread.getByText(prompt, { exact: true })).toHaveCount(1);
-          await expect(thread.getByText(reply, { exact: true })).toHaveCount(1);
-          const promptBounds = await thread.getByText(prompt, { exact: true }).boundingBox();
-          const replyBounds = await thread.getByText(reply, { exact: true }).boundingBox();
-          if (!promptBounds || !replyBounds) {
-            throw new Error("The reconnect prompt and reply must both be visible");
-          }
-          expect(promptBounds.y).toBeLessThan(replyBounds.y);
-        };
-        await expect(page.locator('[data-entry-id="reconnect-assistant"]')).toHaveCount(1);
-        await capture(page, "09-reconnect-early-durable");
-        await assertOrder();
-
-        await gateway.resolveDeferred("chat.startup", completeHistory);
-        await gateway.resolveDeferred("chat.history", completeHistory);
-        await expect.poll(readPane).toMatchObject({ loading: false, queue: [] });
-        await gateway.emitChatFinal({ runId, sessionKey, text: reply });
-        await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0);
-        await assertOrder();
-        expect(await gateway.getRequests("chat.send")).toHaveLength(1);
-        await capture(page, "10-reconnect-recovered");
-      } finally {
-        await suite.closeBrowserContext(context);
+      await expect.poll(readPane).toMatchObject({ connected: true, loading: false });
+      const initial = await readPane();
+      const sessionKey = initial.sessionKey;
+      const prompt = "Keep my reconnect prompt before its answer.";
+      const reply = "This durable answer arrived before history recovery.";
+      await page.locator(".agent-chat__composer-combobox textarea").fill(prompt);
+      await page.getByRole("button", { name: "Send message" }).click();
+      const send = await gateway.waitForRequest("chat.send");
+      const runId = (send.params as { idempotencyKey?: unknown }).idempotencyKey;
+      if (typeof runId !== "string") {
+        throw new Error("chat.send did not carry its generated run ID");
       }
+      // This scenario commits the user below while disconnected, after acceptance.
+      await gateway.resolveDeferred("chat.send", { runId, status: "started" });
+      await expect.poll(readPane).toMatchObject({
+        runId,
+        sending: false,
+        queue: [{ sendRunId: runId, sendState: "sending" }],
+      });
+      const oldSubscription = await pane.evaluateHandle(
+        (element) =>
+          (element as HTMLElement & { state: ChatPageHost }).state.chatSessionMessageSubscription,
+      );
+      await gateway.setOnline(false);
+      await expect.poll(readPane).toMatchObject({
+        connected: false,
+        runId,
+        queue: [{ sendRunId: runId, sendState: "waiting-reconnect" }],
+      });
+      const userIdentity = { id: "reconnect-user", seq: 1, idempotencyKey: `${runId}:user` };
+      const user = chatMessage("user", prompt, userIdentity, Date.now());
+      const sessionInfo = {
+        key: sessionKey,
+        sessionId: initial.sessionId,
+        kind: "direct",
+        hasActiveRun: true,
+        activeRunIds: [runId],
+        status: "running",
+        updatedAt: user.timestamp,
+      };
+      const history = {
+        sessionId: initial.sessionId,
+        sessionInfo,
+        messages: [user],
+        pendingInputs: { items: [], total: 0 },
+        inFlightRun: { runId, text: "", events: [] },
+      };
+      // Contract fixture: the user is saved and published while disconnected.
+      // Reconnect subscriptions do not replay it; both real recovery RPCs still run.
+      await gateway.setHistoryMessages([user]);
+      await gateway.emitGatewayEvent("session.message", {
+        sessionKey,
+        hasActiveRun: true,
+        messageId: userIdentity.id,
+        messageSeq: userIdentity.seq,
+        message: user,
+      });
+      await gateway.setMethodResponse("chat.startup", history);
+      await gateway.setMethodResponse("chat.history", history);
+      await gateway.setSessionsListResponse({
+        count: 1,
+        sessions: [sessionInfo],
+        defaults: {},
+        ts: user.timestamp,
+      });
+      const startupCount = (await gateway.getRequests("chat.startup")).length;
+      const historyCount = (await gateway.getRequests("chat.history")).length;
+      const subscriptionCount = (await gateway.getRequests("sessions.messages.subscribe")).length;
+      await gateway.deferNext("chat.startup", { sessionKey });
+      await gateway.setOnline(true);
+      await waitForGatewayConnected(page);
+      await gateway.waitForRequest("sessions.messages.subscribe", { after: subscriptionCount });
+      await expect
+        .poll(() =>
+          pane.evaluate((element, previous) => {
+            const subscription = (element as HTMLElement & { state: ChatPageHost }).state
+              .chatSessionMessageSubscription;
+            return subscription != null && subscription !== previous;
+          }, oldSubscription),
+        )
+        .toBe(true);
+      await oldSubscription.dispose();
+      await gateway.waitForRequest("chat.startup", { after: startupCount });
+      const recovery = await gateway.waitForRequest("chat.history", { after: historyCount });
+      expect(recovery.params).toMatchObject({ sessionKey, limit: 1000, inputRunIds: [runId] });
+      await expect.poll(readPane).toMatchObject({
+        connected: true,
+        loading: true,
+        subscriptionKey: sessionKey,
+        runId,
+        queue: [{ sendRunId: runId, sendState: "waiting-reconnect" }],
+        messageCount: initial.messageCount,
+      });
+
+      const assistantIdentity = { id: "reconnect-assistant", seq: 2, runId };
+      const assistant = chatMessage("assistant", reply, assistantIdentity, Date.now());
+      const replySessionInfo = {
+        ...sessionInfo,
+        hasActiveRun: active,
+        activeRunIds: active ? [runId] : [],
+        status: active ? "running" : "done",
+        ...(!active ? { lastRunId: runId } : {}),
+      };
+      const completeHistory = {
+        ...history,
+        sessionInfo: replySessionInfo,
+        messages: [user, assistant],
+        inFlightRun: active ? history.inFlightRun : undefined,
+      };
+      await gateway.setHistoryMessages(completeHistory.messages);
+      await gateway.setMethodResponse("chat.startup", completeHistory);
+      await gateway.setMethodResponse("chat.history", completeHistory);
+      await gateway.setSessionsListResponse({
+        count: 1,
+        sessions: [replySessionInfo],
+        defaults: {},
+        ts: user.timestamp,
+      });
+      await gateway.emitGatewayEvent("session.message", {
+        sessionKey,
+        runId,
+        hasActiveRun: active,
+        session: replySessionInfo,
+        messageId: assistantIdentity.id,
+        messageSeq: assistantIdentity.seq,
+        message: assistant,
+      });
+      await expect.poll(readPane).toMatchObject({
+        loading: true,
+        runId: active ? runId : null,
+        queue: [{ sendRunId: runId, sendState: "waiting-reconnect" }],
+        messageCount: initial.messageCount + 1,
+      });
+      const thread = page.locator(".chat-thread-inner");
+      const assertOrder = async () => {
+        await expect(thread.getByText(prompt, { exact: true })).toHaveCount(1);
+        await expect(thread.getByText(reply, { exact: true })).toHaveCount(1);
+        const promptBounds = await thread.getByText(prompt, { exact: true }).boundingBox();
+        const replyBounds = await thread.getByText(reply, { exact: true }).boundingBox();
+        if (!promptBounds || !replyBounds) {
+          throw new Error("The reconnect prompt and reply must both be visible");
+        }
+        expect(promptBounds.y).toBeLessThan(replyBounds.y);
+      };
+      await expect(page.locator('[data-entry-id="reconnect-assistant"]')).toHaveCount(1);
+      await capture(page, "09-reconnect-early-durable");
+      await assertOrder();
+
+      await gateway.resolveDeferred("chat.startup", completeHistory);
+      await gateway.resolveDeferred("chat.history", completeHistory);
+      await expect.poll(readPane).toMatchObject({ loading: false, queue: [] });
+      await gateway.emitChatFinal({ runId, sessionKey, text: reply });
+      await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0);
+      await assertOrder();
+      expect(await gateway.getRequests("chat.send")).toHaveLength(1);
+      await capture(page, "10-reconnect-recovered");
     },
   );
 
@@ -534,24 +519,20 @@ suite.define(() => {
   });
 
   it("routes recovered embedded-run Stop through the session owner", async () => {
-    const { context, page, gateway } = await openActiveTurn();
-    try {
-      const runId = "run-embedded-reload";
-      const startedAt = Date.now() - 10 * 60_000;
-      await installActiveRunSnapshot(gateway, runId, "channel turn", "", {
-        sessionAbortable: true,
-        startedAt,
-      });
+    const { page, gateway } = await openActiveTurn();
+    const runId = "run-embedded-reload";
+    const startedAt = Date.now() - 10 * 60_000;
+    await installActiveRunSnapshot(gateway, runId, "channel turn", "", {
+      sessionAbortable: true,
+      startedAt,
+    });
 
-      await page.reload();
-      await page.getByRole("button", { name: "Stop generating" }).click();
+    await page.reload();
+    await page.getByRole("button", { name: "Stop generating" }).click();
 
-      const abortRequest = await gateway.waitForRequest("sessions.abort");
-      expect(abortRequest.params).toMatchObject({ key: "agent:main:main", runId });
-      expect(await gateway.getRequests("chat.abort")).toHaveLength(0);
-    } finally {
-      await suite.closeBrowserContext(context);
-    }
+    const abortRequest = await gateway.waitForRequest("sessions.abort");
+    expect(abortRequest.params).toMatchObject({ key: "agent:main:main", runId });
+    expect(await gateway.getRequests("chat.abort")).toHaveLength(0);
   });
 
   it("preserves accepted steer order through a full reload", async () => {
@@ -621,20 +602,16 @@ suite.define(() => {
         preamble(4, 5, "fixture-latest-preamble", texts.latest),
       ],
     });
-    const { context, page } = await openActiveTurn({
+    const { page } = await openActiveTurn({
       historyMessages: snapshot.messages,
       inFlightRun: snapshot.inFlightRun,
       sessionInfo: snapshot.sessionInfo,
     });
-    try {
-      await assertSteeredRecoveryOrder(page, texts);
-      await capture(page, "07-steer-refresh-before");
+    await assertSteeredRecoveryOrder(page, texts);
+    await capture(page, "07-steer-refresh-before");
 
-      await page.reload();
-      await assertSteeredRecoveryOrder(page, texts);
-      await capture(page, "08-steer-refresh-after");
-    } finally {
-      await suite.closeBrowserContext(context);
-    }
+    await page.reload();
+    await assertSteeredRecoveryOrder(page, texts);
+    await capture(page, "08-steer-refresh-after");
   });
 });

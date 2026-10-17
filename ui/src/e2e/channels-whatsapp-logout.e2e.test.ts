@@ -1,16 +1,20 @@
-// Control UI tests cover WhatsApp logout feedback against a mocked Gateway.
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Locator, Page } from "playwright";
-import { beforeEach, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import { buildChannelWizardMocks } from "../../../scripts/control-ui-mock-channels.ts";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import {
   takeControlUiElementScreenshot,
   waitForControlUiProofSurface,
 } from "../test-helpers/control-ui-e2e-screenshot.ts";
-import { installMockGateway, waitForConfirmModal } from "../test-helpers/control-ui-e2e.ts";
+import {
+  installMockGateway,
+  type MockGatewayControls,
+  waitForConfirmModal,
+} from "../test-helpers/control-ui-e2e.ts";
 import { selectPickerValue } from "../test-helpers/select-picker-e2e.ts";
+import { configProof, configSnapshot } from "./config-composer-fixtures.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({
@@ -21,7 +25,7 @@ const suite = createControlUiE2eSuite({
 
 const QR_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlY9Z8AAAAASUVORK5CYII=";
-const captureUiProofEnabled = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
+const proof = configProof("channels-save-failure");
 const pairing = {
   accounts: [],
   requests: [],
@@ -52,8 +56,26 @@ const whatsappStatus = (overrides: Record<string, unknown> = {}) =>
   );
 const objectSchema = (properties: Record<string, unknown>) => ({ type: "object", properties });
 const contextOptions = { locale: "en-US", serviceWorkers: "block" } as const;
+function withChannels(
+  responses: Record<string, unknown>,
+  run: (page: Page, gateway: MockGatewayControls) => Promise<void>,
+  options: NonNullable<Parameters<typeof suite.withPage>[0]> = contextOptions,
+  featureMethods?: string[],
+) {
+  return suite.withPage(options, async ({ page }) => {
+    const gateway = await installMockGateway(page, {
+      featureMethods,
+      methodResponses: {
+        "channels.status": whatsappStatus(),
+        "channels.pairing.list": pairing,
+        ...responses,
+      },
+    });
+    expect((await page.goto(`${suite.server.baseUrl}settings/channels`))?.status()).toBe(200);
+    await run(page, gateway);
+  });
+}
 async function openWhatsApp(page: Page) {
-  expect((await page.goto(`${suite.server.baseUrl}settings/channels`))?.status()).toBe(200);
   await page
     .locator("button.channels-item, button.channels-item__detail", { hasText: "WhatsApp" })
     .first()
@@ -63,108 +85,67 @@ async function openWhatsApp(page: Page) {
   return detail;
 }
 async function captureDetail(page: Page, detail: Locator, target: Locator, name: string) {
-  if (captureUiProofEnabled) {
+  if (proof.enabled) {
     await writeFile(
-      path.join(uiProofArtifactDir, name),
+      path.join(proof.directory(), name),
       await takeControlUiElementScreenshot(page, detail, [target]),
     );
   }
 }
-async function capturePage(page: Page, name: string) {
-  if (captureUiProofEnabled) {
-    await page.screenshot({
-      animations: "disabled",
-      fullPage: true,
-      path: path.join(uiProofArtifactDir, name),
-    });
-  }
-}
-let uiProofArtifactDir: string;
-beforeEach(() => {
-  if (captureUiProofEnabled) {
-    uiProofArtifactDir = createControlUiE2eArtifactDir("channels-save-failure");
-  }
-});
-let wizardUiProofArtifactDir: string;
-beforeEach(() => {
-  if (captureUiProofEnabled) {
-    wizardUiProofArtifactDir = createControlUiE2eArtifactDir("channel-wizard-continue-spinner");
-  }
-});
 
 suite.define(() => {
   it("completes direct setup as the selected channel", async () => {
-    await suite.withPage(contextOptions, async ({ page }) => {
-      const channelWizard = buildChannelWizardMocks();
-      const gateway = await installMockGateway(page, {
-        featureMethods: ["channels.status", "channels.pairing.list", "wizard.start", "wizard.next"],
-        methodResponses: {
-          "channels.status": channelStatus(
-            { slack: "Slack" },
-            { slack: { configured: false, running: false } },
-            { channelMeta: [{ id: "slack", label: "Slack" }] },
-          ),
-          "channels.pairing.list": pairing,
-          "wizard.start": channelWizard.start,
-          "wizard.next": channelWizard.next,
-        },
-      });
+    const channelWizard = buildChannelWizardMocks();
+    await withChannels(
+      {
+        "channels.status": channelStatus(
+          { slack: "Slack" },
+          { slack: { configured: false, running: false } },
+          { channelMeta: [{ id: "slack", label: "Slack" }] },
+        ),
+        "wizard.start": channelWizard.start,
+        "wizard.next": channelWizard.next,
+      },
+      async (page, gateway) => {
+        const slackRow = page.locator(".channels-item", { hasText: "Slack" }).first();
+        await slackRow.getByRole("button", { name: "Set up", exact: true }).click();
+        const wizard = page.locator(".channels-wizard");
+        await wizard.getByRole("button", { name: "Continue" }).click();
 
-      await page.goto(`${suite.server.baseUrl}settings/channels`);
-      const slackRow = page.locator(".channels-item", { hasText: "Slack" }).first();
-      await slackRow.getByRole("button", { name: "Set up", exact: true }).click();
-      const wizard = page.locator(".channels-wizard");
-      await wizard.getByRole("button", { name: "Continue" }).click();
-
-      expect((await gateway.getRequests("wizard.next")).map(({ params }) => params)).toEqual([
-        {
-          sessionId: "mock-wizard-session",
-          answer: { stepId: "mock-wizard-step-slack", value: null },
-        },
-      ]);
-      await wizard.getByText("Channel configured", { exact: true }).waitFor();
-      await wizard.getByRole("heading", { name: "Set up Slack" }).waitFor();
-    });
+        expect((await gateway.getRequests("wizard.next")).map(({ params }) => params)).toEqual([
+          {
+            sessionId: "mock-wizard-session",
+            answer: { stepId: "mock-wizard-step-slack", value: null },
+          },
+        ]);
+        await wizard.getByText("Channel configured", { exact: true }).waitFor();
+        await wizard.getByRole("heading", { name: "Set up Slack" }).waitFor();
+      },
+      contextOptions,
+      ["channels.status", "channels.pairing.list", "wizard.start", "wizard.next"],
+    );
   });
 
   it("shows rejected channel configuration saves in the open editor without losing the draft", async () => {
-    await suite.withPage(
+    const config = { channels: { whatsapp: { enabled: true } } };
+    await withChannels(
       {
-        ...contextOptions,
-        viewport: { height: 900, width: 1280 },
-        ...(captureUiProofEnabled
-          ? { recordVideo: { dir: uiProofArtifactDir, size: { height: 900, width: 1280 } } }
-          : {}),
+        "config.get": configSnapshot(config, "channel-config-1"),
+        "config.schema": {
+          generatedAt: "2026-08-25T00:00:00.000Z",
+          version: "e2e",
+          uiHints: { "channels.whatsapp.enabled": { advanced: false } },
+          schema: objectSchema({
+            channels: objectSchema({
+              whatsapp: objectSchema({ enabled: { type: "boolean", title: "Enabled" } }),
+            }),
+          }),
+        },
       },
-      async ({ page }) => {
-        const config = { channels: { whatsapp: { enabled: true } } };
-        const gateway = await installMockGateway(page, {
-          methodResponses: {
-            "channels.status": whatsappStatus(),
-            "channels.pairing.list": pairing,
-            "config.get": {
-              config,
-              hash: "channel-config-1",
-              raw: JSON.stringify(config),
-              valid: true,
-              issues: [],
-            },
-            "config.schema": {
-              generatedAt: "2026-08-25T00:00:00.000Z",
-              version: "e2e",
-              uiHints: { "channels.whatsapp.enabled": { advanced: false } },
-              schema: objectSchema({
-                channels: objectSchema({
-                  whatsapp: objectSchema({ enabled: { type: "boolean", title: "Enabled" } }),
-                }),
-              }),
-            },
-          },
-        });
-
+      async (page, gateway) => {
         const detail = await openWhatsApp(page);
         await detail.getByRole("switch", { name: "Enabled" }).waitFor();
-        if (captureUiProofEnabled) {
+        if (proof.enabled) {
           // The native dialog owns the scale/fade around this slotted detail panel.
           await waitForControlUiProofSurface(
             page.locator("openclaw-modal-dialog").filter({ has: detail }).locator("dialog"),
@@ -212,20 +193,22 @@ suite.define(() => {
         expect(await gateway.getRequests("config.get")).toHaveLength(readsBefore);
         await captureDetail(page, detail, alert, "01-visible-error.png");
       },
+      {
+        ...contextOptions,
+        viewport: { height: 900, width: 1280 },
+        ...(proof.enabled
+          ? { recordVideo: { dir: proof.directory(), size: { height: 900, width: 1280 } } }
+          : {}),
+      },
     );
   });
 
   it("shows rejected WhatsApp login immediately without waiting for channel status", async () => {
-    await suite.withPage(
-      { ...contextOptions, viewport: { height: 900, width: 1280 } },
-      async ({ page }) => {
-        const gateway = await installMockGateway(page, {
-          methodResponses: {
-            "channels.status": whatsappStatus({ channels: { whatsapp: linked } }),
-            "channels.pairing.list": pairing,
-          },
-        });
-
+    await withChannels(
+      {
+        "channels.status": whatsappStatus({ channels: { whatsapp: linked } }),
+      },
+      async (page, gateway) => {
         const detail = await openWhatsApp(page);
         const relink = detail.getByRole("button", { name: "Relink" });
         await relink.waitFor();
@@ -240,42 +223,35 @@ suite.define(() => {
           message: "WhatsApp login rejected",
         });
 
-        await capturePage(
+        await proof.capture(
           page,
           `whatsapp-mutation-${process.env.OPENCLAW_UI_PROOF_LABEL ?? "rejected"}.png`,
+          true,
         );
         await expect.poll(() => detail.textContent()).toContain("WhatsApp login rejected");
         await expect.poll(() => relink.isEnabled()).toBe(true);
         expect(await gateway.getRequests("channels.status")).toHaveLength(statusReadsBefore);
       },
+      { ...contextOptions, viewport: { height: 900, width: 1280 } },
     );
   });
 
   it("confirms the explicit default account and preserves a no-op logout", async () => {
-    await suite.withPage(
+    await withChannels(
       {
-        ...contextOptions,
-        viewport: { height: 1000, width: 1280 },
+        "web.login.start": {
+          connected: false,
+          message: "Scan this QR.",
+          qrDataUrl: QR_DATA_URL,
+        },
+        "channels.logout": {
+          channel: "whatsapp",
+          accountId: "default",
+          cleared: false,
+          loggedOut: false,
+        },
       },
-      async ({ page }) => {
-        const gateway = await installMockGateway(page, {
-          methodResponses: {
-            "channels.status": whatsappStatus(),
-            "channels.pairing.list": pairing,
-            "web.login.start": {
-              connected: false,
-              message: "Scan this QR.",
-              qrDataUrl: QR_DATA_URL,
-            },
-            "channels.logout": {
-              channel: "whatsapp",
-              accountId: "default",
-              cleared: false,
-              loggedOut: false,
-            },
-          },
-        });
-
+      async (page, gateway) => {
         const detail = await openWhatsApp(page);
 
         await detail.getByRole("button", { name: "Relink" }).click();
@@ -294,9 +270,10 @@ suite.define(() => {
         );
         await firstConfirm.getByRole("button", { name: "Cancel" }).focus();
         await page.keyboard.press("Escape");
-        await capturePage(
+        await proof.capture(
           page,
           `modal-escape-${process.env.OPENCLAW_UI_PROOF_LABEL ?? "dismissed"}.png`,
+          true,
         );
         await expect.poll(() => new URL(page.url()).pathname).toBe("/settings/channels");
         await expect.poll(() => page.locator("openclaw-modal-dialog").count()).toBe(1);
@@ -328,185 +305,185 @@ suite.define(() => {
         });
         await expect.poll(async () => gateway.getRequests("channels.status")).toHaveLength(3);
       },
+      { ...contextOptions, viewport: { height: 1000, width: 1280 } },
     );
   });
 
   it("rejects a captured custom-account logout after the Gateway reconnects", async () => {
-    await suite.withPage(contextOptions, async ({ page }) => {
-      const gateway = await installMockGateway(page, {
-        methodResponses: {
-          "channels.status": whatsappStatus({
-            channelAccounts: {
-              whatsapp: [{ accountId: "work", ...linked }],
-            },
-            channelDefaultAccountId: { whatsapp: "work" },
-          }),
-          "channels.pairing.list": pairing,
-          "channels.logout": {
-            channel: "whatsapp",
-            accountId: "work",
-            cleared: true,
-            loggedOut: true,
+    await withChannels(
+      {
+        "channels.status": whatsappStatus({
+          channelAccounts: {
+            whatsapp: [{ accountId: "work", ...linked }],
           },
+          channelDefaultAccountId: { whatsapp: "work" },
+        }),
+        "channels.logout": {
+          channel: "whatsapp",
+          accountId: "work",
+          cleared: true,
+          loggedOut: true,
         },
-      });
-
-      const detail = await openWhatsApp(page);
-      await detail.getByRole("button", { name: "Logout" }).click();
-      const confirm = await waitForConfirmModal(page);
-      await expect(confirm.textContent()).resolves.toContain("work");
-      const socketCount = await gateway.getSocketCount();
-      await gateway.closeLatest(1012, "Reconnect during logout confirmation");
-      await expect.poll(() => gateway.getSocketCount()).toBeGreaterThan(socketCount);
-      await confirm.getByRole("button", { name: "Logout" }).click();
-      await expect.poll(() => page.locator("openclaw-modal-dialog").count()).toBe(1);
-      await expect.poll(async () => gateway.getRequests("channels.logout")).toHaveLength(0);
-    });
+      },
+      async (page, gateway) => {
+        const detail = await openWhatsApp(page);
+        await detail.getByRole("button", { name: "Logout" }).click();
+        const confirm = await waitForConfirmModal(page);
+        await expect(confirm.textContent()).resolves.toContain("work");
+        const socketCount = await gateway.getSocketCount();
+        await gateway.closeLatest(1012, "Reconnect during logout confirmation");
+        await expect.poll(() => gateway.getSocketCount()).toBeGreaterThan(socketCount);
+        await confirm.getByRole("button", { name: "Logout" }).click();
+        await expect.poll(() => page.locator("openclaw-modal-dialog").count()).toBe(1);
+        await expect.poll(async () => gateway.getRequests("channels.logout")).toHaveLength(0);
+      },
+    );
   });
 
   it("preserves standard channel details and the complete Telegram setup wizard", async () => {
-    await suite.withPage(contextOptions, async ({ page }) => {
-      const channelEntries = [
-        ["discord", "Discord"],
-        ["googlechat", "Google Chat"],
-        ["imessage", "iMessage"],
-        ["signal", "Signal"],
-        ["slack", "Slack"],
-        ["telegram", "Telegram"],
-      ] as const;
-      const running = { configured: true, running: true };
-      const details: Record<string, Record<string, unknown>> = {
-        googlechat: {
-          credentialSource: "service-account",
-          audienceType: "url",
-          audience: "https://chat.example.test",
-        },
-        signal: { baseUrl: "https://signal.example.test" },
-      };
-      const bot = (accountId: string, username: string) => ({
-        accountId,
-        ...running,
-        probe: { bot: { username } },
-      });
-      const step = (id: string, type: string, values: Record<string, unknown> = {}) => ({
-        done: false,
-        status: "running",
-        step: { id, type, ...values },
-      });
-      const gateway = await installMockGateway(page, {
-        featureMethods: ["channels.status", "channels.pairing.list", "wizard.start", "wizard.next"],
-        methodResponses: {
-          "channels.status": channelStatus(
-            Object.fromEntries(channelEntries),
-            Object.fromEntries(channelEntries.map(([id]) => [id, { ...running, ...details[id] }])),
-            {
-              channelMeta: channelEntries.map(([id, label]) => ({ id, label })),
-              channelAccounts: {
-                telegram: [bot("personal", "alpha_bot"), bot("work", "work_bot")],
-              },
-              channelDefaultAccountId: { telegram: "personal" },
+    const channelEntries = [
+      ["discord", "Discord"],
+      ["googlechat", "Google Chat"],
+      ["imessage", "iMessage"],
+      ["signal", "Signal"],
+      ["slack", "Slack"],
+      ["telegram", "Telegram"],
+    ] as const;
+    const running = { configured: true, running: true };
+    const details: Record<string, Record<string, unknown>> = {
+      googlechat: {
+        credentialSource: "service-account",
+        audienceType: "url",
+        audience: "https://chat.example.test",
+      },
+      signal: { baseUrl: "https://signal.example.test" },
+    };
+    const bot = (accountId: string, username: string) => ({
+      accountId,
+      ...running,
+      probe: { bot: { username } },
+    });
+    const step = (id: string, type: string, values: Record<string, unknown> = {}) => ({
+      done: false,
+      status: "running",
+      step: { id, type, ...values },
+    });
+    await withChannels(
+      {
+        "channels.status": channelStatus(
+          Object.fromEntries(channelEntries),
+          Object.fromEntries(channelEntries.map(([id]) => [id, { ...running, ...details[id] }])),
+          {
+            channelMeta: channelEntries.map(([id, label]) => ({ id, label })),
+            channelAccounts: {
+              telegram: [bot("personal", "alpha_bot"), bot("work", "work_bot")],
             },
-          ),
-          "channels.pairing.list": pairing,
-          "wizard.start": {
-            sessionId: "channel-standard-proof",
-            ...step("account", "select", {
-              message: "Choose Telegram account",
-              initialValue: "personal",
-              options: ["personal", "work"].map((value) => ({
+            channelDefaultAccountId: { telegram: "personal" },
+          },
+        ),
+        "wizard.start": {
+          sessionId: "channel-standard-proof",
+          ...step("account", "select", {
+            message: "Choose Telegram account",
+            initialValue: "personal",
+            options: ["personal", "work"].map((value) => ({
+              value,
+              label: value === "work" ? "Work bot" : "Personal bot",
+            })),
+          }),
+        },
+        "wizard.next": {
+          sequence: [
+            step("token", "text", { message: "Telegram bot token", sensitive: true }),
+            step("features", "multiselect", {
+              initialValue: ["alpha"],
+              options: ["alpha", "beta"].map((value) => ({
                 value,
-                label: value === "work" ? "Work bot" : "Personal bot",
+                label: value === "alpha" ? "Alpha" : "Beta",
               })),
             }),
-          },
-          "wizard.next": {
-            sequence: [
-              step("token", "text", { message: "Telegram bot token", sensitive: true }),
-              step("features", "multiselect", {
-                initialValue: ["alpha"],
-                options: ["alpha", "beta"].map((value) => ({
-                  value,
-                  label: value === "alpha" ? "Alpha" : "Beta",
-                })),
-              }),
-              step("confirm", "confirm", { message: "Apply Telegram settings?" }),
-              step("progress", "progress", { executor: "gateway", message: "Finish preparation" }),
-              { done: true, status: "done", channels: ["telegram"], accounts: [] },
-            ],
-          },
+            step("confirm", "confirm", { message: "Apply Telegram settings?" }),
+            step("progress", "progress", { executor: "gateway", message: "Finish preparation" }),
+            { done: true, status: "done", channels: ["telegram"], accounts: [] },
+          ],
         },
-      });
+      },
+      async (page, gateway) => {
+        const expectedFields: Record<string, string[]> = {
+          googlechat: ["service-account", "url · https://chat.example.test"],
+          signal: ["https://signal.example.test"],
+          telegram: ["@alpha_bot", "@work_bot", "2"],
+        };
+        for (const [channelId, label] of channelEntries) {
+          await page
+            .locator("button.channels-item, button.channels-item__detail", { hasText: label })
+            .first()
+            .click();
+          const detail = page.locator(".channels-detail");
+          await expect
+            .poll(() => detail.locator("h2.settings-section__heading").textContent())
+            .toContain(label);
+          await detail.getByRole("button", { name: "Check connection" }).waitFor();
+          for (const value of expectedFields[channelId] ?? []) {
+            await detail.getByText(value, { exact: true }).waitFor();
+          }
+          if (channelId !== "telegram") {
+            await detail.getByRole("button", { name: "Close" }).click();
+          }
+        }
 
-      await page.goto(`${suite.server.baseUrl}settings/channels`);
-      const expectedFields: Record<string, string[]> = {
-        googlechat: ["service-account", "url · https://chat.example.test"],
-        signal: ["https://signal.example.test"],
-        telegram: ["@alpha_bot", "@work_bot", "2"],
-      };
-      for (const [channelId, label] of channelEntries) {
-        await page
-          .locator("button.channels-item, button.channels-item__detail", { hasText: label })
-          .first()
-          .click();
-        const detail = page.locator(".channels-detail");
+        await page.locator(".channels-detail").getByRole("button", { name: "Run setup" }).click();
+        const wizard = page.locator(".channels-wizard");
+        await gateway.deferNext("wizard.next");
+        const account = wizard.locator("openclaw-select-picker");
+        await selectPickerValue(account, "1");
+        await expect.poll(async () => gateway.getRequests("wizard.next")).toHaveLength(1);
         await expect
-          .poll(() => detail.locator("h2.settings-section__heading").textContent())
-          .toContain(label);
-        await detail.getByRole("button", { name: "Check connection" }).waitFor();
-        for (const value of expectedFields[channelId] ?? []) {
-          await detail.getByText(value, { exact: true }).waitFor();
+          .poll(() => account.locator(".picker-select__trigger").getAttribute("disabled"))
+          .not.toBeNull();
+        const busyButton = wizard.locator('button[aria-busy="true"]');
+        await expect.poll(() => busyButton.getAttribute("disabled")).not.toBeNull();
+        await expect.poll(() => busyButton.locator(".btn__label").textContent()).toBe("Continue");
+        await expect.poll(() => busyButton.locator(".btn__spinner").count()).toBe(1);
+        if (proof.enabled) {
+          const wizardUiProofArtifactDir = createControlUiE2eArtifactDir(
+            "channel-wizard-continue-spinner",
+          );
+          await wizard.screenshot({ path: path.join(wizardUiProofArtifactDir, "after.png") });
         }
-        if (channelId !== "telegram") {
-          await detail.getByRole("button", { name: "Close" }).click();
-        }
-      }
+        await expect
+          .poll(() => wizard.locator(".channels-wizard__spinner", { hasText: "Working…" }).count())
+          .toBe(0);
+        await gateway.resolveDeferred("wizard.next");
 
-      await page.locator(".channels-detail").getByRole("button", { name: "Run setup" }).click();
-      const wizard = page.locator(".channels-wizard");
-      await gateway.deferNext("wizard.next");
-      const account = wizard.locator("openclaw-select-picker");
-      await selectPickerValue(account, "1");
-      await expect.poll(async () => gateway.getRequests("wizard.next")).toHaveLength(1);
-      await expect
-        .poll(() => account.locator(".picker-select__trigger").getAttribute("disabled"))
-        .not.toBeNull();
-      const busyButton = wizard.locator('button[aria-busy="true"]');
-      await expect.poll(() => busyButton.getAttribute("disabled")).not.toBeNull();
-      await expect.poll(() => busyButton.locator(".btn__label").textContent()).toBe("Continue");
-      await expect.poll(() => busyButton.locator(".btn__spinner").count()).toBe(1);
-      if (captureUiProofEnabled) {
-        await wizard.screenshot({ path: path.join(wizardUiProofArtifactDir, "after.png") });
-      }
-      await expect
-        .poll(() => wizard.locator(".channels-wizard__spinner", { hasText: "Working…" }).count())
-        .toBe(0);
-      await gateway.resolveDeferred("wizard.next");
+        const token = wizard.getByLabel("Telegram bot token");
+        await expect.poll(() => token.getAttribute("type")).toBe("password");
+        await token.fill("123456:proof-secret");
+        await wizard.getByRole("button", { name: "Continue" }).click();
+        const beta = wizard.getByRole("button", { name: /Beta/u });
+        await expect.poll(() => beta.getAttribute("aria-pressed")).toBe("false");
+        await beta.click();
+        await expect.poll(() => beta.getAttribute("aria-pressed")).toBe("true");
+        await wizard.getByRole("button", { name: "Continue" }).click();
+        await wizard.getByRole("button", { name: "Yes" }).click();
+        await wizard.getByRole("button", { name: "Finish" }).waitFor();
 
-      const token = wizard.getByLabel("Telegram bot token");
-      await expect.poll(() => token.getAttribute("type")).toBe("password");
-      await token.fill("123456:proof-secret");
-      await wizard.getByRole("button", { name: "Continue" }).click();
-      const beta = wizard.getByRole("button", { name: /Beta/u });
-      await expect.poll(() => beta.getAttribute("aria-pressed")).toBe("false");
-      await beta.click();
-      await expect.poll(() => beta.getAttribute("aria-pressed")).toBe("true");
-      await wizard.getByRole("button", { name: "Continue" }).click();
-      await wizard.getByRole("button", { name: "Yes" }).click();
-      await wizard.getByRole("button", { name: "Finish" }).waitFor();
-
-      const userAnswers = [
-        ["account", "work"],
-        ["token", "123456:proof-secret"],
-        ["features", ["alpha", "beta"]],
-        ["confirm", true],
-      ] as const;
-      expect((await gateway.getRequests("wizard.next")).map(({ params }) => params)).toEqual([
-        ...userAnswers.map(([stepId, value]) => ({
-          sessionId: "channel-standard-proof",
-          answer: { stepId, value },
-        })),
-        { sessionId: "channel-standard-proof" },
-      ]);
-    });
+        const userAnswers = [
+          ["account", "work"],
+          ["token", "123456:proof-secret"],
+          ["features", ["alpha", "beta"]],
+          ["confirm", true],
+        ] as const;
+        expect((await gateway.getRequests("wizard.next")).map(({ params }) => params)).toEqual([
+          ...userAnswers.map(([stepId, value]) => ({
+            sessionId: "channel-standard-proof",
+            answer: { stepId, value },
+          })),
+          { sessionId: "channel-standard-proof" },
+        ]);
+      },
+      contextOptions,
+      ["channels.status", "channels.pairing.list", "wizard.start", "wizard.next"],
+    );
   });
 });
