@@ -62,57 +62,74 @@ vi.mock("../plugins/memory-runtime.js", () => ({
 let testState: OpenClawTestState | undefined;
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-function registerBootstrapEntries(
-  makeFiles: (context: AgentBootstrapHookContext) => WorkspaceBootstrapFile[],
-) {
+function registerMalformedBootstrapFileHook() {
   registerInternalHook("agent:bootstrap", (event) => {
     const context = event.context as AgentBootstrapHookContext;
-    context.bootstrapFiles = [...context.bootstrapFiles, ...makeFiles(context)];
+    // Hook contracts are extension-facing; malformed entries must warn and drop
+    // without breaking normal project bootstrap files.
+    context.bootstrapFiles = [
+      ...context.bootstrapFiles,
+      {
+        name: "EXTRA.md",
+        filePath: path.join(context.workspaceDir, "BROKEN.md"),
+        content: "broken",
+        missing: false,
+      } as unknown as WorkspaceBootstrapFile,
+      {
+        name: "EXTRA.md",
+        path: 123,
+        content: "broken",
+        missing: false,
+      } as unknown as WorkspaceBootstrapFile,
+      {
+        name: "EXTRA.md",
+        path: "   ",
+        content: "broken",
+        missing: false,
+      } as unknown as WorkspaceBootstrapFile,
+    ];
   });
 }
 
-function registerMalformedBootstrapFileHook() {
-  registerBootstrapEntries((context) =>
-    [
-      { filePath: path.join(context.workspaceDir, "BROKEN.md") },
-      { path: 123 },
-      { path: "   " },
-    ].map(
-      (fields) =>
-        Object.assign(
-          { name: "EXTRA.md", content: "broken", missing: false },
-          fields,
-        ) as unknown as WorkspaceBootstrapFile,
-    ),
-  );
-}
-
-function hookFile(
-  name: WorkspaceBootstrapFile["name"],
-  filePath: string,
-  content: string,
-): WorkspaceBootstrapFile {
-  return { name, path: filePath, content, missing: false };
-}
-
 function registerDuplicateBootstrapFileHook() {
-  registerBootstrapEntries((context) => [
-    hookFile("AGENTS.md", "AGENTS.md", "duplicate relative hook content"),
-    hookFile(
-      "AGENTS.md",
-      path.join(context.workspaceDir, ".", "AGENTS.md"),
-      "duplicate absolute hook content",
-    ),
-  ]);
+  registerInternalHook("agent:bootstrap", (event) => {
+    const context = event.context as AgentBootstrapHookContext;
+    // Duplicates exercise canonical path dedupe between relative hook entries
+    // and resolved workspace files.
+    context.bootstrapFiles = [
+      ...context.bootstrapFiles,
+      {
+        name: "AGENTS.md",
+        path: "AGENTS.md",
+        content: "duplicate relative hook content",
+        missing: false,
+      },
+      {
+        name: "AGENTS.md",
+        path: path.join(context.workspaceDir, ".", "AGENTS.md"),
+        content: "duplicate absolute hook content",
+        missing: false,
+      },
+    ];
+  });
 }
 
 function registerNamedBootstrapFileHook(
   relativePath = "MEMORY.md",
   name: WorkspaceBootstrapFile["name"] = "MEMORY.md",
 ) {
-  registerBootstrapEntries((context) => [
-    hookFile(name, path.join(context.workspaceDir, relativePath), "hook memory"),
-  ]);
+  registerInternalHook("agent:bootstrap", (event) => {
+    const context = event.context as AgentBootstrapHookContext;
+    context.bootstrapFiles = [
+      ...context.bootstrapFiles,
+      {
+        name,
+        path: path.join(context.workspaceDir, relativePath),
+        content: "hook memory",
+        missing: false,
+      },
+    ];
+  });
 }
 
 function registerLoadedBootstrapFilesHook(
@@ -145,26 +162,18 @@ async function createDirectoryAlias(params: {
 }
 
 function registerBootstrapFileHook(relativePath = "BOOTSTRAP.md") {
-  registerBootstrapEntries((context) => [
-    hookFile("BOOTSTRAP.md", path.join(context.workspaceDir, relativePath), "stale ritual"),
-  ]);
-}
-
-async function writeFiles(root: string, files: Record<string, string>) {
-  for (const [name, content] of Object.entries(files)) {
-    const file = path.join(root, name);
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, content, "utf8");
-  }
-}
-
-async function memoryWorkspace(prefix: string, memory = "memory", user = "user") {
-  const workspaceDir = await makeTempWorkspace(prefix);
-  await writeFiles(workspaceDir, {
-    [DEFAULT_MEMORY_FILENAME]: memory,
-    [DEFAULT_USER_FILENAME]: user,
+  registerInternalHook("agent:bootstrap", (event) => {
+    const context = event.context as AgentBootstrapHookContext;
+    context.bootstrapFiles = [
+      ...context.bootstrapFiles,
+      {
+        name: "BOOTSTRAP.md",
+        path: path.join(context.workspaceDir, relativePath),
+        content: "stale ritual",
+        missing: false,
+      },
+    ];
   });
-  return workspaceDir;
 }
 
 async function writeCompletedWorkspaceState(workspaceDir: string): Promise<void> {
@@ -187,47 +196,67 @@ describe("resolveBootstrapFilesForRun", () => {
     });
   });
 
-  it.each([
-    ["untrusted root and trusted user", "untrusted", "owner", [DEFAULT_USER_FILENAME]],
-    ["missing user classification", "agent", undefined, [DEFAULT_MEMORY_FILENAME]],
-    ["unsupported provenance", undefined, undefined, []],
-  ] as const)("filters %s", async (label, memoryOrigin, userOrigin, expected) => {
-    const workspaceDir = await memoryWorkspace(
-      "openclaw-bootstrap-provenance-",
-      "tainted memory",
-      "trusted user",
-    );
-    if (memoryOrigin === "untrusted") {
-      registerNamedBootstrapFileHook();
-    }
-    const classifications = [
-      ...(memoryOrigin
-        ? [{ relativePath: DEFAULT_MEMORY_FILENAME, originClass: memoryOrigin }]
-        : []),
-      ...(userOrigin ? [{ relativePath: DEFAULT_USER_FILENAME, originClass: userOrigin }] : []),
-    ];
-    memoryRuntimeMocks.classifyWorkspacePaths.mockResolvedValue(
-      label === "unsupported provenance"
-        ? { status: "unsupported" }
-        : { status: "classified", classifications },
-    );
+  it("excludes lower-trust root memory before hooks while preserving trusted user context", async () => {
+    const workspaceDir = await makeTempWorkspace("openclaw-bootstrap-memory-provenance-");
+    await fs.writeFile(path.join(workspaceDir, DEFAULT_MEMORY_FILENAME), "tainted memory", "utf8");
+    await fs.writeFile(path.join(workspaceDir, DEFAULT_USER_FILENAME), "trusted user", "utf8");
+    registerNamedBootstrapFileHook(DEFAULT_MEMORY_FILENAME);
+    memoryRuntimeMocks.classifyWorkspacePaths.mockResolvedValue({
+      status: "classified",
+      classifications: [
+        { relativePath: DEFAULT_MEMORY_FILENAME, originClass: "untrusted" },
+        { relativePath: DEFAULT_USER_FILENAME, originClass: "owner" },
+      ],
+    });
+
+    const files = await resolveBootstrapFilesForRun({
+      workspaceDir,
+      config: {},
+      agentId: "main",
+    });
+
+    expect(files.map((file) => file.name)).not.toContain(DEFAULT_MEMORY_FILENAME);
+    expect(files.map((file) => file.name)).toContain(DEFAULT_USER_FILENAME);
+  });
+
+  it("fails closed when the memory runtime omits a requested root classification", async () => {
+    const workspaceDir = await makeTempWorkspace("openclaw-bootstrap-missing-provenance-");
+    await fs.writeFile(path.join(workspaceDir, DEFAULT_MEMORY_FILENAME), "memory", "utf8");
+    await fs.writeFile(path.join(workspaceDir, DEFAULT_USER_FILENAME), "user", "utf8");
+    memoryRuntimeMocks.classifyWorkspacePaths.mockResolvedValue({
+      status: "classified",
+      classifications: [{ relativePath: DEFAULT_MEMORY_FILENAME, originClass: "agent" }],
+    });
+
+    const files = await resolveBootstrapFilesForRun({
+      workspaceDir,
+      config: {},
+      agentId: "main",
+    });
+
+    expect(files.map((file) => file.name)).toContain(DEFAULT_MEMORY_FILENAME);
+    expect(files.map((file) => file.name)).not.toContain(DEFAULT_USER_FILENAME);
+  });
+
+  it("excludes root memory for a selected runtime without provenance support", async () => {
+    const workspaceDir = await makeTempWorkspace("openclaw-bootstrap-unsupported-provenance-");
+    await fs.writeFile(path.join(workspaceDir, DEFAULT_MEMORY_FILENAME), "memory", "utf8");
+    await fs.writeFile(path.join(workspaceDir, DEFAULT_USER_FILENAME), "user", "utf8");
+    memoryRuntimeMocks.classifyWorkspacePaths.mockResolvedValue({ status: "unsupported" });
     const warnings: string[] = [];
+
     const files = await resolveBootstrapFilesForRun({
       workspaceDir,
       config: {},
       agentId: "main",
       warn: (message) => warnings.push(message),
     });
-    expect(
-      files
-        .map((file) => file.name)
-        .filter((name) => name === DEFAULT_MEMORY_FILENAME || name === DEFAULT_USER_FILENAME),
-    ).toEqual(expected);
-    if (label === "unsupported provenance") {
-      expect(warnings).toContain(
-        "excluding automatic memory context: selected memory runtime does not support provenance classification",
-      );
-    }
+
+    expect(files.map((file) => file.name)).not.toContain(DEFAULT_MEMORY_FILENAME);
+    expect(files.map((file) => file.name)).not.toContain(DEFAULT_USER_FILENAME);
+    expect(warnings).toContain(
+      "excluding automatic memory context: selected memory runtime does not support provenance classification",
+    );
   });
   afterEach(async () => {
     clearInternalHooks();
@@ -298,7 +327,8 @@ describe("resolveBootstrapFilesForRun", () => {
     const workspaceDir = path.join(parentDir, "workspace");
     await fs.mkdir(workspaceDir, { recursive: true });
     await writeCompletedWorkspaceState(workspaceDir);
-    await writeFiles(workspaceDir, { "AGENTS.md": "rules", "BOOTSTRAP.md": "stale ritual" });
+    await fs.writeFile(path.join(workspaceDir, "AGENTS.md"), "rules", "utf8");
+    await fs.writeFile(path.join(workspaceDir, "BOOTSTRAP.md"), "stale ritual", "utf8");
 
     const files = await withEnvAsync({ OPENCLAW_HOME: parentDir }, async () =>
       resolveBootstrapFilesForRun({ workspaceDir: "~/workspace" }),
@@ -311,12 +341,15 @@ describe("resolveBootstrapFilesForRun", () => {
   it("keeps hook-added nested BOOTSTRAP.md after setup is completed", async () => {
     registerBootstrapFileHook(path.join("packages", "core", "BOOTSTRAP.md"));
     const workspaceDir = await makeTempWorkspace("openclaw-bootstrap-");
+    await fs.mkdir(path.join(workspaceDir, "packages", "core"), { recursive: true });
     await writeCompletedWorkspaceState(workspaceDir);
-    await writeFiles(workspaceDir, {
-      "AGENTS.md": "rules",
-      "BOOTSTRAP.md": "stale ritual",
-      "packages/core/BOOTSTRAP.md": "package ritual",
-    });
+    await fs.writeFile(path.join(workspaceDir, "AGENTS.md"), "rules", "utf8");
+    await fs.writeFile(path.join(workspaceDir, "BOOTSTRAP.md"), "stale ritual", "utf8");
+    await fs.writeFile(
+      path.join(workspaceDir, "packages", "core", "BOOTSTRAP.md"),
+      "package ritual",
+      "utf8",
+    );
 
     const files = await resolveBootstrapFilesForRun({ workspaceDir });
 
@@ -561,45 +594,69 @@ describe("resolveBootstrapContextForDiagnostics", () => {
   }> {
     const workspaceDir = await fs.realpath(await makeTempWorkspace("openclaw-bootstrap-diag-"));
     const extraPath = path.join(workspaceDir, "packages", "core", "AGENTS.md");
-    await writeFiles(workspaceDir, { "packages/core/AGENTS.md": "extra agents" });
+    await fs.mkdir(path.dirname(extraPath), { recursive: true });
+    await fs.writeFile(extraPath, "extra agents", "utf8");
     return { workspaceDir, extraPath };
   }
 
+  it("does not execute registered hooks while projecting declared files", async () => {
+    const { workspaceDir, extraPath } = await makeWorkspaceWithExtraAgentsFile();
+    const handler = vi.fn(() => {
+      throw new Error("diagnostics must not execute hook code");
+    });
+    registerInternalHook("agent:bootstrap", handler);
+
+    const result = await resolveBootstrapContextForDiagnostics({
+      workspaceDir,
+      config: createExtraFilesConfig(),
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(result.contextFiles).toContainEqual({ path: extraPath, content: "extra agents" });
+  });
+
+  it("projects nothing while the hook system is disabled", async () => {
+    const { workspaceDir, extraPath } = await makeWorkspaceWithExtraAgentsFile();
+
+    const result = await resolveBootstrapContextForDiagnostics({
+      workspaceDir,
+      config: createExtraFilesConfig(false),
+    });
+
+    expect(result.bootstrapFiles.map((file) => file.path)).not.toContain(extraPath);
+  });
+
   it.each([
-    ["bundled declarations", undefined, false, undefined, true],
-    ["disabled hook system", false, false, undefined, false],
-    ["managed import failure", undefined, true, 'throw new Error("must not import");', false],
-    ["unreadable managed handler", undefined, true, undefined, true],
-  ] as const)(
-    "projects %s without executing hooks",
-    async (_label, enabled, managed, handler, projects) => {
+    { label: "an import failure", handler: 'throw new Error("must not import");', projects: false },
+    { label: "no readable handler", handler: undefined, projects: true },
+  ])(
+    "matches fresh-start selection for a managed hook with $label",
+    async ({ handler, projects }) => {
       const { workspaceDir, extraPath } = await makeWorkspaceWithExtraAgentsFile();
-      const registered = vi.fn(() => {
-        throw new Error("diagnostics must not execute hook code");
-      });
-      registerInternalHook("agent:bootstrap", registered);
-      const config = createExtraFilesConfig(enabled);
-      if (managed) {
-        const managedHooksDir = await makeTempWorkspace("openclaw-managed-hooks-");
-        await writeFiles(path.join(managedHooksDir, "bootstrap-extra-files"), {
-          "HOOK.md": [
-            "---",
-            "name: bootstrap-extra-files",
-            "description: managed replacement",
-            'metadata: { "openclaw": { "events": ["agent:bootstrap"] } }',
-            "---",
-            "",
-          ].join("\n"),
-          ...(handler === undefined ? {} : { "handler.js": handler }),
-        });
-        config.hooks!.internal!.load = { extraDirs: [managedHooksDir] };
+      const managedHooksDir = await makeTempWorkspace("openclaw-managed-hooks-");
+      const replacementDir = path.join(managedHooksDir, "bootstrap-extra-files");
+      await fs.mkdir(replacementDir, { recursive: true });
+      await fs.writeFile(
+        path.join(replacementDir, "HOOK.md"),
+        [
+          "---",
+          "name: bootstrap-extra-files",
+          "description: managed replacement",
+          'metadata: { "openclaw": { "events": ["agent:bootstrap"] } }',
+          "---",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      if (handler !== undefined) {
+        await fs.writeFile(path.join(replacementDir, "handler.js"), handler, "utf8");
       }
+      const config = createExtraFilesConfig();
+      config.hooks!.internal!.load = { extraDirs: [managedHooksDir] };
+
       const result = await resolveBootstrapContextForDiagnostics({ workspaceDir, config });
-      expect(registered).not.toHaveBeenCalled();
+
       expect(result.bootstrapFiles.some((file) => file.path === extraPath)).toBe(projects);
-      if (projects && !managed) {
-        expect(result.contextFiles).toContainEqual({ path: extraPath, content: "extra agents" });
-      }
     },
   );
 });
@@ -637,34 +694,35 @@ describe("hasCompletedBootstrapTurn", () => {
     expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(false);
   });
 
-  it.each([
-    { boundary: "compaction", renew: false },
-    { boundary: "compaction", renew: true },
-    { boundary: "reset", renew: false },
-  ])("checks completion after $boundary (new marker=$renew)", async ({ boundary, renew }) => {
-    const firstEntryId = sessionManager.appendMessage(
-      boundary === "reset"
-        ? { role: "user", content: "hello", timestamp: 1 }
-        : makeUserMessage("hello", 1),
-    );
+  it("invalidates a completion marker after compaction", async () => {
+    const firstEntryId = sessionManager.appendMessage(makeUserMessage("hello", 1));
     sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 2 });
-    if (boundary === "reset") {
-      sessionManager.appendResetBoundary("reset");
-    } else {
-      sessionManager.appendCompaction("trimmed", firstEntryId, 10);
-    }
-    if (renew) {
-      sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 3 });
-    }
-    const hostExec = renew ? vi.spyOn(DatabaseSync.prototype, "exec") : undefined;
+    sessionManager.appendCompaction("trimmed", firstEntryId, 10);
+
+    expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(false);
+  });
+
+  it("accepts a newer full bootstrap marker after compaction", async () => {
+    const firstEntryId = sessionManager.appendMessage(makeUserMessage("hello", 1));
+    sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 2 });
+    sessionManager.appendCompaction("trimmed", firstEntryId, 10);
+    sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 3 });
+
+    const hostExec = vi.spyOn(DatabaseSync.prototype, "exec");
     try {
-      expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(renew);
-      if (hostExec) {
-        expect(hostExec.mock.calls.filter(([sql]) => /^BEGIN\b/iu.test(sql))).toEqual([]);
-      }
+      expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(true);
+      expect(hostExec.mock.calls.filter(([sql]) => /^BEGIN\b/iu.test(sql))).toEqual([]);
     } finally {
-      hostExec?.mockRestore();
+      hostExec.mockRestore();
     }
+  });
+
+  it("invalidates a completion marker after a session reset", async () => {
+    sessionManager.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+    sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 2 });
+    sessionManager.appendResetBoundary("reset");
+
+    expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(false);
   });
 
   it("ignores completion markers on an inactive transcript branch", async () => {
@@ -732,24 +790,35 @@ describe("makeBootstrapWarn", () => {
 });
 
 describe("resolveContextInjectionMode", () => {
-  it.each([
-    [undefined, undefined, "always"],
-    [
-      {
-        agents: {
-          defaults: { contextInjection: "continuation-skip" },
-          entries: { strict: { contextInjection: "always" } },
-        },
-      },
-      "strict",
-      "always",
-    ],
-    [
-      { agents: { defaults: { contextInjection: "never" }, entries: { worker: {} } } },
-      "worker",
-      "never",
-    ],
-  ] as const)("resolves %j for agent=%s to %s", (config, agentId, expected) => {
-    expect(resolveContextInjectionMode(config as never, agentId)).toBe(expected);
+  it("defaults to always when config is missing", () => {
+    expect(resolveContextInjectionMode(undefined)).toBe("always");
+  });
+
+  it("uses per-agent contextInjection before defaults", () => {
+    expect(
+      resolveContextInjectionMode(
+        {
+          agents: {
+            defaults: { contextInjection: "continuation-skip" },
+            entries: { strict: { contextInjection: "always" } },
+          },
+        } as never,
+        "strict",
+      ),
+    ).toBe("always");
+  });
+
+  it("falls back to defaults when the agent has no contextInjection override", () => {
+    expect(
+      resolveContextInjectionMode(
+        {
+          agents: {
+            defaults: { contextInjection: "never" },
+            entries: { worker: {} },
+          },
+        } as never,
+        "worker",
+      ),
+    ).toBe("never");
   });
 });

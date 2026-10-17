@@ -18,41 +18,94 @@ import {
 import { AsyncWorkScope, trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createApiKeyCredential } from "./auth-profiles/credential-fixtures.test-support.js";
-import type { AuthProfileStore } from "./auth-profiles/types.js";
 import { executePreparedCliRunMock } from "./btw.mocks.test-support.js";
-import * as btw from "./btw.test-support.js";
+import {
+  state,
+  runBtwSideQuestion,
+  registerAgentHarness,
+  DEFAULT_AGENT_DIR,
+  DEFAULT_MODEL,
+  DEFAULT_PROVIDER,
+  DEFAULT_SESSION_KEY,
+  DEFAULT_QUESTION,
+  MATH_ANSWER,
+  makeAsyncEvents,
+  createSessionEntry,
+  createDoneEvent,
+  mockDoneAnswer,
+  mockCliOutput,
+  createCliRuntimeConfig,
+  registerCodexSideQuestionHarness,
+  supportsPreparedOpenAIAuth,
+  createSideQuestionParams,
+  runSideQuestion,
+  runMathSideQuestion,
+  clearBuiltSessionMessages,
+  createUserTranscriptMessage,
+  createAssistantTranscriptMessage,
+  createTranscriptEntry,
+  mockTranscriptEntries,
+  mockActiveTranscript,
+  mockCall,
+  mockArg,
+  runMathSideQuestionAndCaptureContext,
+  expectRecordFields,
+  streamContext,
+  contextMessages,
+  expectTextBlockContains,
+  expectNoAssistantMessages,
+  expectSanitizedAssistantContext,
+  expectSeedOnlyUserContext,
+  mockOpenAIPlatformProfile,
+  streamSimpleMock,
+  buildSessionContextMock,
+  loadPreparedModelRuntimeSnapshotMock,
+  snapshotResources,
+  discoverAuthStorageMock,
+  discoverModelsMock,
+  resolveModelWithRegistryMock,
+  ensureAuthProfileStoreMock,
+  ensureAuthProfileStoreWithoutExternalProfilesMock,
+  resolveModelAsyncMock,
+  getApiKeyForModelMock,
+  requireApiKeyMock,
+  resolveSessionAuthSelectionMock,
+  getActiveEmbeddedRunSnapshotMock,
+  resolveSessionAgentIdMock,
+  resolveAgentWorkspaceDirMock,
+  prepareProviderRuntimeAuthMock,
+  registerProviderStreamForModelMock,
+  prepareCliRunContextMock,
+  diagDebugMock,
+  createAgentHarnessHostCapabilitiesMock,
+  closeAgentHarnessHostCapabilitiesMock,
+  agentHarnessHostCapabilitiesMock,
+  listSessionEntriesCoreMock,
+  loadSessionEntryMock,
+  loadTranscriptEventsMock,
+  resolveProviderEntryApiKeyProfileReferenceMock,
+  preparedRuntimeSnapshotState,
+  setupBtwTestHooks,
+} from "./btw.test-support.js";
 import { testing as cliBackendsTesting } from "./cli-backends.test-support.js";
 import {
   createModelGenerationFixture,
   publishCurrentModelGeneration,
 } from "./embedded-agent-runner/model.generation-scope.test-support.js";
-import type { AgentHarness, AgentHarnessSideQuestionParams } from "./harness/types.js";
-import type { ResolvedProviderAuth } from "./model-auth-runtime-shared.js";
+import type { AgentHarness } from "./harness/types.js";
+import type { AgentRuntimeAuthPlan } from "./runtime-plan/types.js";
 
 function createSeedTranscript() {
-  const userEntry = btw.createTranscriptEntry({
+  const userEntry = createTranscriptEntry({
     id: "user-seed",
-    message: btw.createUserTranscriptMessage(),
+    message: createUserTranscriptMessage(),
   });
-  const assistantEntry = assistantTranscript("assistant-seed", "seed answer", "user-seed");
+  const assistantEntry = createTranscriptEntry({
+    id: "assistant-seed",
+    parentId: "user-seed",
+    message: createAssistantTranscriptMessage([{ type: "text", text: "seed answer" }]),
+  });
   return { userEntry, assistantEntry };
-}
-
-function assistantTranscript(id: string, text: string, parentId?: string) {
-  return btw.createTranscriptEntry({
-    id,
-    parentId,
-    message: btw.createAssistantTranscriptMessage([{ type: "text", text }]),
-  });
-}
-
-async function expectMathBranch(entries: unknown[], once = false) {
-  btw.mockDoneAnswer(btw.MATH_ANSWER);
-  await expect(btw.runMathSideQuestion()).resolves.toEqual({ text: btw.MATH_ANSWER });
-  expect(btw.buildSessionContextMock).toHaveBeenCalledWith(entries);
-  if (once) {
-    expect(btw.buildSessionContextMock).toHaveBeenCalledOnce();
-  }
 }
 
 function createOpenAIModel(subscription = false) {
@@ -64,73 +117,15 @@ function createOpenAIModel(subscription = false) {
   };
 }
 
-function authStore(
-  profiles: AuthProfileStore["profiles"],
-  order?: AuthProfileStore["order"],
-): AuthProfileStore {
-  return { version: 1, profiles, ...(order ? { order } : {}) };
-}
-
-function oauth(provider: string, access: string, refresh: string) {
-  return { type: "oauth" as const, provider, access, refresh, expires: Date.now() + 60_000 };
-}
-
-function subscriptionToken(value: string) {
-  return { type: "token" as const, provider: "openai", token: value, expires: Date.now() + 60_000 };
-}
-
-function authResult(
-  apiKey: string | undefined,
-  mode: ResolvedProviderAuth["mode"],
-  source: string,
-  profileId?: string,
-): ResolvedProviderAuth {
-  return { apiKey, mode, source, ...(profileId ? { profileId } : {}) };
-}
-
-function expectCallFields(mock: unknown, fields: Record<string, unknown>) {
-  expect(mock).toHaveBeenCalledWith(expect.objectContaining(fields));
-}
-
-function expectUncalled(...mocks: unknown[]) {
-  for (const mock of mocks) {
-    expect(mock).not.toHaveBeenCalled();
-  }
-}
-
-function sideQuestionArgs(mock: Parameters<typeof btw.mockArg>[0]) {
-  return btw.mockArg(mock, 0, 0) as AgentHarnessSideQuestionParams;
-}
-
-function expectPreparedAuth(mock: unknown, preparedAuth: Record<string, unknown>) {
-  expectCallFields(mock, { modelProvider: expect.objectContaining({ preparedAuth }) });
-}
-
-function harnessConfig(id: "codex" | "openclaw") {
-  return { agents: { defaults: { models: { "openai/gpt-5.5": { agentRuntime: { id } } } } } };
-}
-
-function runOpenAISideQuestion(overrides: Parameters<typeof btw.runSideQuestion>[0] = {}) {
-  return btw.runSideQuestion({ provider: "openai", model: "gpt-5.5", ...overrides });
-}
-
-function runCliSideQuestion(overrides: Parameters<typeof btw.runSideQuestion>[0] = {}) {
-  return btw.runSideQuestion({
-    cfg: btw.createCliRuntimeConfig(),
-    model: "claude-opus-4-7",
-    ...overrides,
-  });
-}
-
 describe("runBtwSideQuestion", () => {
-  btw.setupBtwTestHooks();
+  setupBtwTestHooks();
 
   it.each(["off", "stream"] as const)(
     "keeps admitted %s reasoning visibility when caller input changes",
     async (mode) => {
       const onReasoningStream = vi.fn();
       const onReasoningEnd = vi.fn();
-      const input = btw.createSideQuestionParams({
+      const input = createSideQuestionParams({
         resolvedReasoningLevel: mode,
         opts: {
           onAssistantMessageStart: async () => {
@@ -140,9 +135,9 @@ describe("runBtwSideQuestion", () => {
           onReasoningEnd,
         },
       });
-      const done = btw.createDoneEvent("Final answer.");
-      btw.streamSimpleMock.mockReturnValue(
-        btw.makeAsyncEvents([
+      const done = createDoneEvent("Final answer.");
+      streamSimpleMock.mockReturnValue(
+        makeAsyncEvents([
           { type: "start", partial: done.message },
           { type: "thinking_delta", delta: "One " },
           { type: "thinking_delta", delta: "two" },
@@ -151,7 +146,7 @@ describe("runBtwSideQuestion", () => {
         ]),
       );
 
-      await expect(btw.runBtwSideQuestion(input)).resolves.toEqual({ text: "Final answer." });
+      await expect(runBtwSideQuestion(input)).resolves.toEqual({ text: "Final answer." });
       expect(onReasoningStream.mock.calls).toEqual(
         mode === "off"
           ? []
@@ -167,15 +162,19 @@ describe("runBtwSideQuestion", () => {
   ])(
     "retains the selected global agent for $harness with policy $sandboxSessionKey",
     async ({ harness, sandboxSessionKey }) => {
-      // Gateway-published owners require the binding flag to match their owner key.
-      btw.mockDoneAnswer("Final answer.");
-      btw.resolveSessionAgentIdMock.mockImplementation(
+      // Gateway startup publishes configured owners with allowGatewaySubagentBinding
+      // (server-startup-post-attach.ts), and that flag is part of the owner key
+      // (prepared-model-runtime.owner.ts). A gateway-hosted BTW request that omits
+      // it matches no owner, and standalone activation is refused while the gateway
+      // lifecycle is active, so the side question fails with "owner was not published".
+      mockDoneAnswer("Final answer.");
+      resolveSessionAgentIdMock.mockImplementation(
         (await vi.importActual<typeof import("./agent-scope.js")>("./agent-scope.js"))
           .resolveSessionAgentId,
       );
-      const sideQuestion = harness === "codex" ? btw.registerCodexSideQuestionHarness() : undefined;
+      const sideQuestion = harness === "codex" ? registerCodexSideQuestionHarness() : undefined;
 
-      await btw.runSideQuestion({
+      await runSideQuestion({
         agentId: "work",
         cfg: {
           agents: { ownership: "explicit", entries: { main: {}, work: {} } },
@@ -186,25 +185,31 @@ describe("runBtwSideQuestion", () => {
         allowGatewaySubagentBinding: true,
       });
 
-      expect(btw.mockCall(btw.loadPreparedModelRuntimeSnapshotMock)?.[0]).toMatchObject({
-        agentDir: btw.DEFAULT_AGENT_DIR,
+      expect(mockCall(loadPreparedModelRuntimeSnapshotMock)?.[0]).toMatchObject({
+        agentDir: DEFAULT_AGENT_DIR,
         agentId: "work",
         allowGatewaySubagentBinding: true,
       });
-      expectCallFields(btw.resolveSessionAuthSelectionMock, { agentId: "work" });
+      expect(resolveSessionAuthSelectionMock).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: "work" }),
+      );
       if (sideQuestion) {
-        expectCallFields(sideQuestion, { agentId: "work", sessionKey: "global" });
+        expect(sideQuestion).toHaveBeenCalledWith(
+          expect.objectContaining({ agentId: "work", sessionKey: "global" }),
+        );
       }
     },
   );
 
   it("keeps gateway subagent binding off for local callers such as the embedded TUI", async () => {
-    // Direct TUI calls must not borrow Gateway subagent/node capabilities.
-    btw.mockDoneAnswer("Final answer.");
+    // The embedded TUI calls runBtwSideQuestion directly and must not borrow the
+    // active registry's subagent and node capabilities, so the flag stays unset
+    // unless a gateway-hosted caller opts in.
+    mockDoneAnswer("Final answer.");
 
-    await btw.runSideQuestion();
+    await runSideQuestion();
 
-    expect(btw.mockCall(btw.loadPreparedModelRuntimeSnapshotMock)?.[0]).not.toHaveProperty(
+    expect(mockCall(loadPreparedModelRuntimeSnapshotMock)?.[0]).not.toHaveProperty(
       "allowGatewaySubagentBinding",
     );
   });
@@ -212,7 +217,7 @@ describe("runBtwSideQuestion", () => {
   it.each(["harness cleanup", "harness error", "stream output and transport"] as const)(
     "keeps the source database through %s after its publication retires",
     async (mode) => {
-      const file = btw.state.path(`btw-${mode.replaceAll(" ", "-")}.sqlite`);
+      const file = state.path(`btw-${mode.replaceAll(" ", "-")}.sqlite`);
       const database = new DatabaseSync(file);
       database.exec("CREATE TABLE answer (value INTEGER); INSERT INTO answer VALUES (42)");
       const source = new PluginRegistryInspectionResources(async () => {});
@@ -227,7 +232,7 @@ describe("runBtwSideQuestion", () => {
           },
         }),
       );
-      btw.snapshotResources.acquire = () => source.retain();
+      snapshotResources.acquire = () => source.retain();
       const entered = createDeferredCore();
       const finish = createDeferredCore();
       const tailEntered = createDeferredCore();
@@ -237,7 +242,7 @@ describe("runBtwSideQuestion", () => {
       let tailValue: unknown;
       try {
         if (mode !== "stream output and transport") {
-          const runHarness = btw.registerCodexSideQuestionHarness();
+          const runHarness = registerCodexSideQuestionHarness();
           runHarness.mockImplementationOnce(async () => {
             try {
               entered.resolve();
@@ -252,21 +257,18 @@ describe("runBtwSideQuestion", () => {
               tailValue = database.prepare("SELECT value FROM answer").get()?.value;
             }
           });
-          operation = owner.track(() => btw.runSideQuestion());
+          operation = owner.track(() => runSideQuestion());
         } else {
-          btw.streamSimpleMock.mockImplementationOnce(() => {
+          streamSimpleMock.mockImplementationOnce(() => {
             void trackAsyncWork(async () => {
               tailEntered.resolve();
               await finishTail.promise;
               tailValue = database.prepare("SELECT value FROM answer").get()?.value;
             });
-            return btw.makeAsyncEvents([
-              { type: "text_start" },
-              btw.createDoneEvent("The answer is 42."),
-            ]);
+            return makeAsyncEvents([{ type: "text_start" }, createDoneEvent("The answer is 42.")]);
           });
           operation = owner.track(() =>
-            btw.runSideQuestion({
+            runSideQuestion({
               opts: {
                 onAssistantMessageStart: async () => {
                   entered.resolve();
@@ -322,21 +324,27 @@ describe("runBtwSideQuestion", () => {
 
   it("keeps model, runtime auth, and stream selection on prepared A after current advances to B", async () => {
     const cfg = { agents: { entries: { main: {} } } };
-    const generation = (label: string) =>
-      createModelGenerationFixture({
-        agentDir: btw.state.agentDir(),
-        workspaceDir: btw.state.workspaceDir,
-        config: cfg,
-        label,
-        provider: "local-proxy",
-        requestProvider: "local-proxy",
-        modelId: "side-model",
-      });
-    const generationA = generation("btw-a");
-    const generationB = generation("btw-b");
-    btw.preparedRuntimeSnapshotState.snapshot = generationA.preparedModelRuntime;
-    btw.preparedRuntimeSnapshotState.useSnapshotPluginRegistry = true;
-    btw.resolveAgentWorkspaceDirMock.mockReturnValue(btw.state.workspaceDir);
+    const generationA = createModelGenerationFixture({
+      agentDir: state.agentDir(),
+      workspaceDir: state.workspaceDir,
+      config: cfg,
+      label: "btw-a",
+      provider: "local-proxy",
+      requestProvider: "local-proxy",
+      modelId: "side-model",
+    });
+    const generationB = createModelGenerationFixture({
+      agentDir: state.agentDir(),
+      workspaceDir: state.workspaceDir,
+      config: cfg,
+      label: "btw-b",
+      provider: "local-proxy",
+      requestProvider: "local-proxy",
+      modelId: "side-model",
+    });
+    preparedRuntimeSnapshotState.snapshot = generationA.preparedModelRuntime;
+    preparedRuntimeSnapshotState.useSnapshotPluginRegistry = true;
+    resolveAgentWorkspaceDirMock.mockReturnValue(state.workspaceDir);
     publishCurrentModelGeneration(generationB);
     const runtimeAuthA = vi.fn(async () => ({ apiKey: "runtime-auth-a" }));
     const runtimeAuthB = vi.fn(async () => ({ apiKey: "runtime-auth-b" }));
@@ -345,20 +353,20 @@ describe("runBtwSideQuestion", () => {
         const apiKey = options?.apiKey;
         const resolvedApiKey =
           apiKey && looksLikeSecretSentinel(apiKey) ? resolveSecretSentinel(apiKey) : apiKey;
-        return btw.makeAsyncEvents([
-          btw.createDoneEvent(`${model.name ?? "missing model"} / ${resolvedApiKey} / Stream A`),
+        return makeAsyncEvents([
+          createDoneEvent(`${model.name ?? "missing model"} / ${resolvedApiKey} / Stream A`),
         ]);
       },
     );
     const streamB = vi.fn(() =>
-      btw.makeAsyncEvents([btw.createDoneEvent("Generation B / runtime-auth-b / Stream B")]),
+      makeAsyncEvents([createDoneEvent("Generation B / runtime-auth-b / Stream B")]),
     );
     const activeGenerationRegistry = () =>
       getPluginRuntimeGenerationRegistry() ?? getActivePluginRegistry();
-    btw.resolveModelWithRegistryMock.mockImplementation(() => {
+    resolveModelWithRegistryMock.mockImplementation(() => {
       const snapshot = getCurrentPluginMetadataSnapshot({
         config: cfg,
-        workspaceDir: btw.state.workspaceDir,
+        workspaceDir: state.workspaceDir,
       });
       const label = snapshot === generationA.metadataSnapshot ? "A" : "B";
       return {
@@ -369,82 +377,118 @@ describe("runBtwSideQuestion", () => {
         baseUrl: `https://generation-${label.toLowerCase()}.example.test/v1`,
       };
     });
-    btw.prepareProviderRuntimeAuthMock.mockImplementation(async () =>
+    prepareProviderRuntimeAuthMock.mockImplementation(async () =>
       activeGenerationRegistry() === generationA.pluginRegistry
         ? await runtimeAuthA()
         : await runtimeAuthB(),
     );
-    btw.registerProviderStreamForModelMock.mockImplementation(() =>
+    registerProviderStreamForModelMock.mockImplementation(() =>
       activeGenerationRegistry() === generationA.pluginRegistry ? streamA : streamB,
     );
 
     await expect(
-      btw.runSideQuestion({ cfg, provider: "local-proxy", model: "side-model" }),
+      runSideQuestion({ cfg, provider: "local-proxy", model: "side-model" }),
     ).resolves.toEqual({ text: "Generation A / runtime-auth-a / Stream A" });
     expect(runtimeAuthA).toHaveBeenCalledOnce();
-    expectUncalled(runtimeAuthB);
+    expect(runtimeAuthB).not.toHaveBeenCalled();
     expect(streamA).toHaveBeenCalledOnce();
     expect(streamA).toHaveBeenCalledWith(
       expect.objectContaining({ name: "Generation A" }),
       expect.any(Object),
       expect.any(Object),
     );
-    expectUncalled(streamB, btw.streamSimpleMock);
-    expectCallFields(btw.registerProviderStreamForModelMock, { wrapProviderStream: true });
+    expect(streamB).not.toHaveBeenCalled();
+    expect(streamSimpleMock).not.toHaveBeenCalled();
+    expect(registerProviderStreamForModelMock).toHaveBeenCalledWith(
+      expect.objectContaining({ wrapProviderStream: true }),
+    );
   });
 
-  it.each(["token", "legacy-oauth"] as const)(
-    "routes %s subscription auth through the Codex side-question hook",
-    async (mode) => {
-      const legacy = mode === "legacy-oauth";
-      const profileId = legacy ? "openai-codex:user@example.test" : "openai:work";
-      const supports = vi.fn(
-        legacy
-          ? (ctx: Parameters<AgentHarness["supports"]>[0]) =>
-              ctx.provider === "openai"
-                ? { supported: true as const, priority: 100 }
-                : { supported: false as const, reason: "openai only" }
-          : btw.supportsPreparedOpenAIAuth,
-      );
-      const sideQuestion = btw.registerCodexSideQuestionHarness({ supports });
-      btw.resolveModelWithRegistryMock.mockReturnValue(createOpenAIModel());
-      btw.resolveSessionAuthSelectionMock.mockResolvedValue({
-        profileId,
-        source: "auto",
-        routeRequirement: "subscription",
-      });
-      btw.ensureAuthProfileStoreMock.mockReturnValue(
-        authStore(
-          {
-            [profileId]: legacy
-              ? oauth("openai", "subscription-token", "refresh-token")
-              : subscriptionToken("subscription-token"),
-          },
-          { openai: [profileId] },
-        ),
-      );
-      btw.resolveModelAsyncMock.mockImplementation(
-        async (
-          _provider: string,
-          _modelId: string,
-          _agentDir: string,
-          _config: unknown,
-          options?: { authProfileMode?: string },
-        ) => ({
-          model:
-            legacy || options?.authProfileMode === "token"
-              ? createOpenAIModel(true)
-              : btw.resolveModelWithRegistryMock(),
-        }),
-      );
-      btw.getApiKeyForModelMock.mockResolvedValue({
-        apiKey: "subscription-token",
-        mode: legacy ? "oauth" : "token",
-        source: `profile:${profileId}`,
-        profileId,
-      });
-      const origin = {
+  it("routes Codex-selected BTW questions through the harness side-question hook", async () => {
+    const supports = vi.fn(supportsPreparedOpenAIAuth);
+    const codexSideQuestionMock = registerCodexSideQuestionHarness({
+      supports,
+    });
+    resolveModelWithRegistryMock.mockReturnValue({
+      provider: "openai",
+      id: "gpt-5.5",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+    });
+    resolveSessionAuthSelectionMock.mockResolvedValue({
+      profileId: "openai:work",
+      source: "auto",
+      routeRequirement: "subscription",
+    });
+    ensureAuthProfileStoreMock.mockReturnValue({
+      version: 1,
+      profiles: {
+        "openai:work": {
+          type: "token",
+          provider: "openai",
+          token: "subscription-token",
+          expires: Date.now() + 60_000,
+        },
+      },
+      order: { openai: ["openai:work"] },
+    });
+    resolveModelAsyncMock.mockImplementation(
+      async (
+        _provider: string,
+        _modelId: string,
+        _agentDir: string,
+        _config: unknown,
+        options?: { authProfileMode?: string },
+      ) => ({
+        model:
+          options?.authProfileMode === "token"
+            ? {
+                provider: "openai",
+                id: "gpt-5.5",
+                api: "openai-chatgpt-responses",
+                baseUrl: "https://chatgpt.com/backend-api/codex",
+              }
+            : resolveModelWithRegistryMock(),
+      }),
+    );
+    getApiKeyForModelMock.mockResolvedValue({
+      apiKey: "subscription-token",
+      mode: "token",
+      source: "profile:openai:work",
+      profileId: "openai:work",
+    });
+
+    const result = await runSideQuestion({
+      provider: "openai",
+      model: "gpt-5.5",
+      sessionKey: DEFAULT_SESSION_KEY,
+      authorityRunId: "btw-side-authority",
+      opts: { runId: "parent-correlation" },
+      sandboxSessionKey: "agent:main:runtime-policy",
+      agentAccountId: "account-1",
+      groupId: "group-1",
+      groupChannel: "#ops",
+      groupSpace: "workspace-1",
+      spawnedBy: "agent:main:parent",
+      senderId: "sender-1",
+      senderName: "Rosita",
+      senderUsername: "rosita",
+      senderE164: "+15550001",
+    });
+
+    expect(result).toEqual({ text: "Codex side answer." });
+    expect(codexSideQuestionMock).toHaveBeenCalledTimes(1);
+    expect(codexSideQuestionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai",
+        model: "gpt-5.5",
+        question: DEFAULT_QUESTION,
+        sessionId: "session-1",
+        agentId: "main",
+        workspaceDir: "/tmp/workspace",
+        authProfileId: "openai:work",
         agentAccountId: "account-1",
+        sandboxSessionKey: "agent:main:runtime-policy",
         groupId: "group-1",
         groupChannel: "#ops",
         groupSpace: "workspace-1",
@@ -453,86 +497,65 @@ describe("runBtwSideQuestion", () => {
         senderName: "Rosita",
         senderUsername: "rosita",
         senderE164: "+15550001",
-        sandboxSessionKey: "agent:main:runtime-policy",
-      };
-      await expect(
-        btw.runSideQuestion({
-          provider: legacy ? "openai-codex" : "openai",
-          model: "gpt-5.5",
-          sessionKey: btw.DEFAULT_SESSION_KEY,
-          ...(legacy
-            ? { cfg: { auth: { order: { openai: [profileId] } }, ...harnessConfig("codex") } }
-            : {
-                ...origin,
-                authorityRunId: "btw-side-authority",
-                opts: { runId: "parent-correlation" },
-              }),
+        opts: { runId: "btw-side-authority" },
+        runtimeModel: expect.objectContaining({
+          api: "openai-chatgpt-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
         }),
-      ).resolves.toEqual({ text: "Codex side answer." });
-      expect(sideQuestion).toHaveBeenCalledOnce();
-      const handed = sideQuestionArgs(sideQuestion);
-      expect(handed).toMatchObject({
-        provider: "openai",
-        authProfileId: profileId,
-        runtimeModel: createOpenAIModel(true),
-      });
-      expectUncalled(btw.streamSimpleMock, btw.registerProviderStreamForModelMock);
-      if (legacy) {
-        expect(handed.preparedRuntimeAuth.plan.modelRoute).toMatchObject({
-          api: handed.runtimeModel?.api,
-          baseUrl: handed.runtimeModel?.baseUrl,
-          authRequirement: "subscription",
-        });
-        expect(Object.keys(handed.preparedRuntimeAuth.authProfileStore.profiles)).toEqual([
-          profileId,
-        ]);
-      } else {
-        expectCallFields(sideQuestion, {
-          ...origin,
-          model: "gpt-5.5",
-          question: btw.DEFAULT_QUESTION,
-          sessionId: "session-1",
-          agentId: "main",
-          workspaceDir: "/tmp/workspace",
-          opts: { runId: "btw-side-authority" },
-        });
-        expect(handed).toHaveProperty("hostCapabilities", btw.agentHarnessHostCapabilitiesMock);
-        expectCallFields(btw.createAgentHarnessHostCapabilitiesMock, {
-          attempt: expect.objectContaining({
-            admittedRunContext: expect.objectContaining({
-              operationalRunInstance: expect.objectContaining({ runId: "btw-side-authority" }),
-            }),
-            runId: "btw-side-authority",
+      }),
+    );
+    expect(mockArg(codexSideQuestionMock, 0, 0)).toHaveProperty(
+      "hostCapabilities",
+      agentHarnessHostCapabilitiesMock,
+    );
+    expect(createAgentHarnessHostCapabilitiesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempt: expect.objectContaining({
+          admittedRunContext: expect.objectContaining({
+            operationalRunInstance: expect.objectContaining({ runId: "btw-side-authority" }),
           }),
-        });
-        expect(btw.closeAgentHarnessHostCapabilitiesMock).toHaveBeenCalledOnce();
-        expect(btw.resolveModelAsyncMock).toHaveBeenCalledWith(
-          "openai",
-          "gpt-5.5",
-          btw.DEFAULT_AGENT_DIR,
-          expect.any(Object),
-          expect.objectContaining({
-            authProfileMode: "token",
-            preparedModelRuntime: expect.objectContaining({
-              configuredRuntimeModels: [],
-              inlineProviderModels: [],
-            }),
-          }),
-        );
-        expect(handed).toHaveProperty(
-          "preparedModelRuntime",
-          btw.expectRecordFields(btw.mockArg(btw.resolveModelAsyncMock, 0, 4), {})
-            .preparedModelRuntime,
-        );
-        expect(handed.sessionFile).toContain("session-1.jsonl");
-        expectPreparedAuth(supports, {
-          source: "profile",
-          mode: "token",
-          requirement: "subscription",
-        });
-      }
-    },
-  );
+          runId: "btw-side-authority",
+        }),
+      }),
+    );
+    expect(closeAgentHarnessHostCapabilitiesMock).toHaveBeenCalledOnce();
+    expect(resolveModelAsyncMock).toHaveBeenCalledWith(
+      "openai",
+      "gpt-5.5",
+      DEFAULT_AGENT_DIR,
+      expect.any(Object),
+      expect.objectContaining({
+        authProfileMode: "token",
+        preparedModelRuntime: expect.objectContaining({
+          configuredRuntimeModels: [],
+          inlineProviderModels: [],
+        }),
+      }),
+    );
+    const preparedModelRuntime = (
+      mockArg(resolveModelAsyncMock, 0, 4) as { preparedModelRuntime?: unknown }
+    ).preparedModelRuntime;
+    expect(mockArg(codexSideQuestionMock, 0, 0)).toHaveProperty(
+      "preparedModelRuntime",
+      preparedModelRuntime,
+    );
+    expect(
+      (mockArg(codexSideQuestionMock, 0, 0) as { sessionFile?: string }).sessionFile,
+    ).toContain("session-1.jsonl");
+    expect(streamSimpleMock).not.toHaveBeenCalled();
+    expect(registerProviderStreamForModelMock).not.toHaveBeenCalled();
+    expect(supports).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelProvider: expect.objectContaining({
+          preparedAuth: {
+            source: "profile",
+            mode: "token",
+            requirement: "subscription",
+          },
+        }),
+      }),
+    );
+  });
 
   it("exposes block-streamed side-question usage without mutating the parent session", async () => {
     const tokens = { input: 13, output: 9, cacheRead: 7, cacheWrite: 3 };
@@ -540,10 +563,10 @@ describe("runBtwSideQuestion", () => {
     const cost = { input: 0.1, output: 0.1, cacheRead: 0.03, cacheWrite: 0.02, total: 0.25 };
     const text = "Side answer.";
     const onBlockReply = vi.fn().mockResolvedValue(undefined);
-    const done = btw.createDoneEvent(text);
+    const done = createDoneEvent(text);
     done.message.usage = { ...tokens, totalTokens: 41, cost };
-    btw.streamSimpleMock.mockReturnValue(
-      btw.makeAsyncEvents([
+    streamSimpleMock.mockReturnValue(
+      makeAsyncEvents([
         { type: "text_delta", delta: text },
         { type: "text_end", content: text, contentIndex: 0 },
         done,
@@ -551,7 +574,7 @@ describe("runBtwSideQuestion", () => {
     );
     const runId = "btw-usage-reply-direct-block";
     const authorityRunId = "btw-usage-authority-direct-block";
-    const sessionEntry = btw.createSessionEntry({ inputTokens: 200, cacheRead: 100 });
+    const sessionEntry = createSessionEntry({ inputTokens: 200, cacheRead: 100 });
     const originalEntry = structuredClone(sessionEntry);
     const diagnostics: unknown[] = [];
     const unsubscribe = onInternalDiagnosticEvent((event) => {
@@ -561,7 +584,7 @@ describe("runBtwSideQuestion", () => {
     });
     try {
       await expect(
-        btw.runSideQuestion({
+        runSideQuestion({
           cfg: { diagnostics: { enabled: undefined } },
           sessionEntry,
           authorityRunId,
@@ -572,7 +595,7 @@ describe("runBtwSideQuestion", () => {
       ).resolves.toEqual(undefined);
       expect(onBlockReply).toHaveBeenCalledExactlyOnceWith({
         text,
-        btw: { question: btw.DEFAULT_QUESTION },
+        btw: { question: DEFAULT_QUESTION },
       });
       expect
         .soft(consumeReplyUsageState(runId))
@@ -596,22 +619,24 @@ describe("runBtwSideQuestion", () => {
   });
 
   it("keeps an unprofiled subscription token on the OpenClaw BTW path", async () => {
-    const supports = vi.fn(btw.supportsPreparedOpenAIAuth);
-    const codexSideQuestionMock = btw.registerCodexSideQuestionHarness({ supports });
+    const supports = vi.fn(supportsPreparedOpenAIAuth);
+    const codexSideQuestionMock = registerCodexSideQuestionHarness({ supports });
     const subscriptionModel = createOpenAIModel(true);
-    btw.resolveModelWithRegistryMock.mockReturnValue(subscriptionModel);
-    btw.resolveModelAsyncMock.mockResolvedValue({ model: subscriptionModel });
-    btw.resolveSessionAuthSelectionMock.mockResolvedValue(undefined);
-    btw.ensureAuthProfileStoreMock.mockReturnValue({ version: 1, profiles: {} });
-    btw.resolveProviderEntryApiKeyProfileReferenceMock.mockReturnValue({ kind: "literal" });
-    btw.getApiKeyForModelMock.mockResolvedValue(
-      authResult("subscription-token", "token", "models.json"),
-    );
-    btw.requireApiKeyMock.mockReturnValue("subscription-token");
-    btw.mockDoneAnswer("OpenClaw side answer.");
+    resolveModelWithRegistryMock.mockReturnValue(subscriptionModel);
+    resolveModelAsyncMock.mockResolvedValue({ model: subscriptionModel });
+    resolveSessionAuthSelectionMock.mockResolvedValue(undefined);
+    ensureAuthProfileStoreMock.mockReturnValue({ version: 1, profiles: {} });
+    resolveProviderEntryApiKeyProfileReferenceMock.mockReturnValue({ kind: "literal" });
+    getApiKeyForModelMock.mockResolvedValue({
+      apiKey: "subscription-token",
+      mode: "token",
+      source: "models.json",
+    });
+    requireApiKeyMock.mockReturnValue("subscription-token");
+    mockDoneAnswer("OpenClaw side answer.");
 
     await expect(
-      runOpenAISideQuestion({
+      runSideQuestion({
         cfg: {
           models: {
             providers: {
@@ -619,69 +644,103 @@ describe("runBtwSideQuestion", () => {
             },
           },
         } as never,
+        provider: "openai",
+        model: "gpt-5.5",
       }),
     ).resolves.toEqual({ text: "OpenClaw side answer." });
 
     expect(codexSideQuestionMock).not.toHaveBeenCalled();
-    expect(btw.streamSimpleMock).toHaveBeenCalled();
-    expectPreparedAuth(supports, { source: "direct", mode: "token", requirement: "subscription" });
+    expect(streamSimpleMock).toHaveBeenCalled();
+    expect(supports).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelProvider: expect.objectContaining({
+          preparedAuth: {
+            source: "direct",
+            mode: "token",
+            requirement: "subscription",
+          },
+        }),
+      }),
+    );
   });
 
   it("lets native Codex bootstrap auth without a host profile", async () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     const supports = vi.fn((ctx: Parameters<AgentHarness["supports"]>[0]) => {
       if (ctx.modelProvider?.preparedAuth?.source !== "harness") {
-        return btw.supportsPreparedOpenAIAuth(ctx);
+        return supportsPreparedOpenAIAuth(ctx);
       }
       return ctx.modelProvider.requestTransportOverrides === "none" &&
         ctx.modelProvider.runtimePolicy?.compatibleIds.includes("codex")
         ? { supported: true as const, priority: 100 }
         : { supported: false as const, reason: "deferred route support is missing" };
     });
-    const codexSideQuestionMock = btw.registerCodexSideQuestionHarness({
+    const codexSideQuestionMock = registerCodexSideQuestionHarness({
       authBootstrap: "harness",
       supports,
     });
     const platformModel = createOpenAIModel();
-    btw.resolveModelWithRegistryMock.mockReturnValue(platformModel);
-    btw.resolveSessionAuthSelectionMock.mockResolvedValue(undefined);
-    btw.ensureAuthProfileStoreMock.mockReturnValue({ version: 1, profiles: {} });
-    btw.getApiKeyForModelMock.mockResolvedValue(authResult(undefined, "api-key", "none"));
+    resolveModelWithRegistryMock.mockReturnValue(platformModel);
+    resolveSessionAuthSelectionMock.mockResolvedValue(undefined);
+    ensureAuthProfileStoreMock.mockReturnValue({ version: 1, profiles: {} });
+    getApiKeyForModelMock.mockResolvedValue({
+      apiKey: undefined,
+      mode: "api-key",
+      source: "none",
+    });
 
-    await expect(runOpenAISideQuestion()).resolves.toEqual({
+    await expect(runSideQuestion({ provider: "openai", model: "gpt-5.5" })).resolves.toEqual({
       text: "Codex side answer.",
     });
 
     expect(codexSideQuestionMock).toHaveBeenCalledOnce();
-    const preparedRuntimeAuth = sideQuestionArgs(codexSideQuestionMock).preparedRuntimeAuth;
+    const preparedRuntimeAuth = (
+      mockArg(codexSideQuestionMock, 0, 0) as {
+        preparedRuntimeAuth?: {
+          plan?: AgentRuntimeAuthPlan;
+          authProfileStore?: { profiles?: Record<string, unknown> };
+          resolvedApiKey?: string;
+        };
+      }
+    ).preparedRuntimeAuth;
     expect(preparedRuntimeAuth?.plan).toMatchObject({
       harnessAuthProvider: "openai",
     });
     expect(preparedRuntimeAuth?.plan?.forwardedAuthProfileId).toBeUndefined();
     expect(preparedRuntimeAuth?.resolvedApiKey).toBeUndefined();
     expect(Object.keys(preparedRuntimeAuth?.authProfileStore?.profiles ?? {})).toEqual([]);
-    expectPreparedAuth(supports, { source: "harness" });
+    expect(supports).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelProvider: expect.objectContaining({
+          preparedAuth: { source: "harness" },
+        }),
+      }),
+    );
   });
 
   it("hands a Codex side question the resolved Platform backup after subscription failure", async () => {
-    const supports = vi.fn(btw.supportsPreparedOpenAIAuth);
-    const codexSideQuestionMock = btw.registerCodexSideQuestionHarness({
+    const supports = vi.fn(supportsPreparedOpenAIAuth);
+    const codexSideQuestionMock = registerCodexSideQuestionHarness({
       supports,
     });
     const subscriptionModel = createOpenAIModel(true);
     const platformModel = createOpenAIModel();
-    btw.ensureAuthProfileStoreMock.mockReturnValue(
-      authStore(
-        {
-          "openai:subscription": subscriptionToken("unresolved-token"),
-          "openai:platform": createApiKeyCredential("openai", "platform-key"),
+    ensureAuthProfileStoreMock.mockReturnValue({
+      version: 1,
+      profiles: {
+        "openai:subscription": {
+          type: "token",
+          provider: "openai",
+          token: "unresolved-token",
+          expires: Date.now() + 60_000,
         },
-        { openai: ["openai:subscription", "openai:platform"] },
-      ),
-    );
-    btw.resolveSessionAuthSelectionMock.mockResolvedValue(undefined);
-    btw.resolveModelWithRegistryMock.mockReturnValue(platformModel);
-    btw.resolveModelAsyncMock.mockImplementation(
+        "openai:platform": createApiKeyCredential("openai", "platform-key"),
+      },
+      order: { openai: ["openai:subscription", "openai:platform"] },
+    });
+    resolveSessionAuthSelectionMock.mockResolvedValue(undefined);
+    resolveModelWithRegistryMock.mockReturnValue(platformModel);
+    resolveModelAsyncMock.mockImplementation(
       async (
         _provider: string,
         _modelId: string,
@@ -692,7 +751,7 @@ describe("runBtwSideQuestion", () => {
         model: options?.authProfileId === "openai:subscription" ? subscriptionModel : platformModel,
       }),
     );
-    btw.getApiKeyForModelMock.mockImplementation(async (authParams: { profileId?: string }) => {
+    getApiKeyForModelMock.mockImplementation(async (authParams: { profileId?: string }) => {
       if (authParams.profileId === "openai:subscription") {
         throw new Error("subscription credential resolution failed");
       }
@@ -705,16 +764,34 @@ describe("runBtwSideQuestion", () => {
     });
 
     await expect(
-      runOpenAISideQuestion({
+      runSideQuestion({
         cfg: {
-          auth: { order: { openai: ["openai:subscription", "openai:platform"] } },
-          ...harnessConfig("codex"),
+          auth: {
+            order: { openai: ["openai:subscription", "openai:platform"] },
+          },
+          agents: {
+            defaults: {
+              models: {
+                "openai/gpt-5.5": { agentRuntime: { id: "codex" } },
+              },
+            },
+          },
         } as never,
-        sessionKey: btw.DEFAULT_SESSION_KEY,
+        provider: "openai",
+        model: "gpt-5.5",
+        sessionKey: DEFAULT_SESSION_KEY,
       }),
     ).resolves.toEqual({ text: "Codex side answer." });
 
-    const sideQuestionParams = sideQuestionArgs(codexSideQuestionMock);
+    const sideQuestionParams = mockArg(codexSideQuestionMock, 0, 0) as {
+      authProfileId?: string;
+      runtimeModel?: { api?: string; baseUrl?: string };
+      preparedRuntimeAuth?: {
+        resolvedApiKey?: string;
+        plan?: { modelRoute?: { authRequirement?: string } };
+        authProfileStore?: { profiles?: Record<string, unknown> };
+      };
+    };
     expect(sideQuestionParams.runtimeModel).toMatchObject(platformModel);
     expect(sideQuestionParams.authProfileId).toBeUndefined();
     expect(sideQuestionParams.preparedRuntimeAuth).toMatchObject({
@@ -724,12 +801,22 @@ describe("runBtwSideQuestion", () => {
     expect(
       Object.keys(sideQuestionParams.preparedRuntimeAuth?.authProfileStore?.profiles ?? {}),
     ).toEqual([]);
-    expect(btw.streamSimpleMock).not.toHaveBeenCalled();
-    expectPreparedAuth(supports, { source: "profile", mode: "api-key", requirement: "api-key" });
+    expect(streamSimpleMock).not.toHaveBeenCalled();
+    expect(supports).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelProvider: expect.objectContaining({
+          preparedAuth: {
+            source: "profile",
+            mode: "api-key",
+            requirement: "api-key",
+          },
+        }),
+      }),
+    );
   });
 
   it("uses registry ownership and closes host capabilities when a BTW hook rejects", async () => {
-    btw.registerAgentHarness(
+    registerAgentHarness(
       {
         id: "spoofed",
         label: "Spoofed BTW harness",
@@ -741,22 +828,128 @@ describe("runBtwSideQuestion", () => {
       { ownerPluginId: "actual-owner" },
     );
 
-    await expect(btw.runSideQuestion()).rejects.toThrow("side question failed");
+    await expect(runSideQuestion()).rejects.toThrow("side question failed");
 
-    expectCallFields(btw.createAgentHarnessHostCapabilitiesMock, { pluginId: "actual-owner" });
-    expect(btw.closeAgentHarnessHostCapabilitiesMock).toHaveBeenCalledOnce();
+    expect(createAgentHarnessHostCapabilitiesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ pluginId: "actual-owner" }),
+    );
+    expect(closeAgentHarnessHostCapabilitiesMock).toHaveBeenCalledOnce();
+  });
+
+  it("reselects the Codex hook after resolving legacy openai-codex route state", async () => {
+    const codexSideQuestionMock = registerCodexSideQuestionHarness({
+      supports: (ctx) =>
+        ctx.provider === "openai"
+          ? { supported: true, priority: 100 }
+          : { supported: false, reason: "openai only" },
+    });
+    resolveModelWithRegistryMock.mockReturnValue({
+      provider: "openai",
+      id: "gpt-5.5",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+    });
+    resolveSessionAuthSelectionMock.mockResolvedValue({
+      profileId: "openai-codex:user@example.test",
+      source: "auto",
+      routeRequirement: "subscription",
+    });
+    ensureAuthProfileStoreMock.mockReturnValue({
+      version: 1,
+      profiles: {
+        "openai-codex:user@example.test": {
+          type: "oauth",
+          provider: "openai",
+          access: "subscription-token",
+          refresh: "refresh-token",
+          expires: Date.now() + 60_000,
+        },
+      },
+      order: { openai: ["openai-codex:user@example.test"] },
+    });
+    resolveModelAsyncMock.mockResolvedValue({
+      model: {
+        provider: "openai",
+        id: "gpt-5.5",
+        api: "openai-chatgpt-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+      },
+    });
+    getApiKeyForModelMock.mockResolvedValue({
+      apiKey: "subscription-token",
+      mode: "oauth",
+      source: "profile:openai-codex:user@example.test",
+      profileId: "openai-codex:user@example.test",
+    });
+
+    const result = await runSideQuestion({
+      cfg: {
+        auth: {
+          order: {
+            openai: ["openai-codex:user@example.test"],
+          },
+        },
+        agents: {
+          defaults: {
+            models: {
+              "openai/gpt-5.5": {
+                agentRuntime: { id: "codex" },
+              },
+            },
+          },
+        },
+      } as never,
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      sessionKey: DEFAULT_SESSION_KEY,
+    });
+
+    expect(result).toEqual({ text: "Codex side answer." });
+    expect(codexSideQuestionMock).toHaveBeenCalledTimes(1);
+    const sideQuestionParams = mockArg(codexSideQuestionMock, 0, 0) as {
+      provider?: string;
+      authProfileId?: string;
+      runtimeModel?: { api?: string; baseUrl?: string };
+      preparedRuntimeAuth?: {
+        plan?: { modelRoute?: { api?: string; baseUrl?: string; authRequirement?: string } };
+        authProfileStore?: { profiles?: Record<string, unknown> };
+      };
+    };
+    expect(sideQuestionParams.provider).toBe("openai");
+    expect(sideQuestionParams.authProfileId).toBe("openai-codex:user@example.test");
+    expect(sideQuestionParams.runtimeModel).toMatchObject({
+      api: "openai-chatgpt-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+    expect(sideQuestionParams.preparedRuntimeAuth?.plan?.modelRoute).toMatchObject({
+      api: sideQuestionParams.runtimeModel?.api,
+      baseUrl: sideQuestionParams.runtimeModel?.baseUrl,
+      authRequirement: "subscription",
+    });
+    expect(
+      Object.keys(sideQuestionParams.preparedRuntimeAuth?.authProfileStore?.profiles ?? {}),
+    ).toEqual(["openai-codex:user@example.test"]);
+    expect(streamSimpleMock).not.toHaveBeenCalled();
+    expect(registerProviderStreamForModelMock).not.toHaveBeenCalled();
   });
 
   it("prepares deny-all sender policy before calling a plugin side-question hook", async () => {
-    const codexSideQuestionMock = btw.registerCodexSideQuestionHarness();
-    btw.mockOpenAIPlatformProfile();
-    btw.resolveModelWithRegistryMock.mockReturnValue({
+    const codexSideQuestionMock = registerCodexSideQuestionHarness();
+    mockOpenAIPlatformProfile();
+    resolveModelWithRegistryMock.mockReturnValue({
       provider: "openai",
       id: "gpt-5.5",
       api: "openai-responses",
     });
-    btw.resolveModelAsyncMock.mockResolvedValue({ model: createOpenAIModel() });
-    await btw.runSideQuestion({
+    resolveModelAsyncMock.mockResolvedValue({
+      model: {
+        provider: "openai",
+        id: "gpt-5.5",
+        api: "openai-responses",
+        baseUrl: "https://api.openai.com/v1",
+      },
+    });
+    await runSideQuestion({
       cfg: {
         channels: {
           telegram: {
@@ -779,41 +972,44 @@ describe("runBtwSideQuestion", () => {
     });
 
     expect(codexSideQuestionMock).toHaveBeenCalledOnce();
-    expect(btw.mockArg(codexSideQuestionMock, 0, 0)).toMatchObject({ toolsAllow: [] });
+    expect(mockArg(codexSideQuestionMock, 0, 0)).toMatchObject({ toolsAllow: [] });
   });
 
   it("does not fall back to the direct provider call when Codex lacks BTW support", async () => {
-    btw.registerAgentHarness({
+    registerAgentHarness({
       id: "codex",
       label: "Codex test harness",
       supports: () => ({ supported: true, priority: 100 }),
       runAttempt: vi.fn(),
     });
 
-    await expect(runOpenAISideQuestion({ sessionKey: btw.DEFAULT_SESSION_KEY })).rejects.toThrow(
-      'Selected agent harness "codex" does not support /btw side questions.',
-    );
-    expectUncalled(btw.streamSimpleMock, btw.registerProviderStreamForModelMock);
+    await expect(
+      runSideQuestion({
+        provider: "openai",
+        model: "gpt-5.5",
+        sessionKey: DEFAULT_SESSION_KEY,
+      }),
+    ).rejects.toThrow('Selected agent harness "codex" does not support /btw side questions.');
+    expect(streamSimpleMock).not.toHaveBeenCalled();
+    expect(registerProviderStreamForModelMock).not.toHaveBeenCalled();
   });
 
   it("rejects CLI session forks before backend preparation or provider I/O", async () => {
-    btw.mockCliOutput({ text: "CLI side answer." });
+    mockCliOutput({ text: "CLI side answer." });
     const params = {
-      cfg: btw.createCliRuntimeConfig(),
+      cfg: createCliRuntimeConfig(),
       model: "claude-opus-4-7",
     };
 
-    await expect(btw.runSideQuestion({ ...params, toolCalls: "deny" })).rejects.toThrow(
+    await expect(runSideQuestion({ ...params, toolCalls: "deny" })).rejects.toThrow(
       "Session forks are not supported for CLI runtime claude-cli",
     );
-    expectUncalled(
-      btw.prepareCliRunContextMock,
-      executePreparedCliRunMock,
-      btw.streamSimpleMock,
-      btw.registerProviderStreamForModelMock,
-    );
+    expect(prepareCliRunContextMock).not.toHaveBeenCalled();
+    expect(executePreparedCliRunMock).not.toHaveBeenCalled();
+    expect(streamSimpleMock).not.toHaveBeenCalled();
+    expect(registerProviderStreamForModelMock).not.toHaveBeenCalled();
 
-    await expect(btw.runSideQuestion(params)).resolves.toEqual({ text: "CLI side answer." });
+    await expect(runSideQuestion(params)).resolves.toEqual({ text: "CLI side answer." });
     expect(executePreparedCliRunMock).toHaveBeenCalledOnce();
   });
 
@@ -857,42 +1053,50 @@ describe("runBtwSideQuestion", () => {
   ])(
     "preserves the timeout override $options for CLI-runtime BTW",
     async ({ options, expected }) => {
-      btw.mockCliOutput({ text: "CLI side answer." });
+      mockCliOutput({ text: "CLI side answer." });
 
-      await runCliSideQuestion({
+      await runSideQuestion({
+        cfg: createCliRuntimeConfig(),
+        model: "claude-opus-4-7",
         opts: options,
-        sessionKey: btw.DEFAULT_SESSION_KEY,
+        sessionKey: DEFAULT_SESSION_KEY,
       });
 
-      btw.expectRecordFields(btw.mockArg(btw.prepareCliRunContextMock, 0, 0), {
-        timeoutMs: expected,
-        runTimeoutOverrideMs: expected,
-      });
+      const prepareParams = mockArg(prepareCliRunContextMock, 0, 0) as {
+        timeoutMs?: unknown;
+        runTimeoutOverrideMs?: unknown;
+      };
+      expect(prepareParams.timeoutMs).toBe(expected);
+      expect(prepareParams.runTimeoutOverrideMs).toBe(expected);
     },
   );
 
   it("does not expose raw CLI BTW output when transformed text is empty", async () => {
-    const { cleanup } = btw.mockCliOutput({
+    const { cleanup } = mockCliOutput({
       text: "   ",
       rawText: "raw untransformed answer",
     });
 
-    await expect(runCliSideQuestion({ sessionKey: btw.DEFAULT_SESSION_KEY })).rejects.toThrow(
-      "/btw side question via claude-cli produced no answer",
-    );
+    await expect(
+      runSideQuestion({
+        cfg: createCliRuntimeConfig(),
+        model: "claude-opus-4-7",
+        sessionKey: DEFAULT_SESSION_KEY,
+      }),
+    ).rejects.toThrow("/btw side question via claude-cli produced no answer");
 
     expect(cleanup).toHaveBeenCalledTimes(1);
-    expect(btw.streamSimpleMock).not.toHaveBeenCalled();
+    expect(streamSimpleMock).not.toHaveBeenCalled();
   });
 
   it("preserves auto-selected session CLI BTW routing before resolving runtime auth", async () => {
-    const { cleanup } = btw.mockCliOutput({ text: "Session Claude CLI answer." });
-    const sessionEntry = btw.createSessionEntry({
+    const { cleanup } = mockCliOutput({ text: "Session Claude CLI answer." });
+    const sessionEntry = createSessionEntry({
       authProfileOverride: "anthropic:auto-cli",
       authProfileOverrideSource: "auto",
     });
-    const sessionStore = { [btw.DEFAULT_SESSION_KEY]: sessionEntry };
-    btw.resolveSessionAuthSelectionMock.mockImplementation(
+    const sessionStore = { [DEFAULT_SESSION_KEY]: sessionEntry };
+    resolveSessionAuthSelectionMock.mockImplementation(
       async (params: { sessionEntry?: SessionEntry }) => {
         if (params.sessionEntry) {
           params.sessionEntry.authProfileOverride = "anthropic:api";
@@ -905,9 +1109,9 @@ describe("runBtwSideQuestion", () => {
         };
       },
     );
-    btw.mockDoneAnswer("Generic fallback answer.");
+    mockDoneAnswer("Generic fallback answer.");
 
-    const result = await btw.runSideQuestion({
+    const result = await runSideQuestion({
       cfg: {
         auth: {
           order: { anthropic: ["anthropic:api"] },
@@ -919,59 +1123,73 @@ describe("runBtwSideQuestion", () => {
       } as never,
       sessionEntry,
       sessionStore,
-      sessionKey: btw.DEFAULT_SESSION_KEY,
+      sessionKey: DEFAULT_SESSION_KEY,
     });
 
     expect(result).toEqual({ text: "Session Claude CLI answer." });
-    btw.expectRecordFields(btw.mockArg(btw.prepareCliRunContextMock, 0, 0), {
-      provider: "claude-cli",
-      executionMode: "side-question",
-      authProfileId: "anthropic:auto-cli",
-    });
-    expect(btw.resolveSessionAuthSelectionMock).not.toHaveBeenCalled();
+    const prepareParams = mockArg(prepareCliRunContextMock, 0, 0) as {
+      provider?: string;
+      authProfileId?: string;
+      executionMode?: string;
+    };
+    expect(prepareParams.provider).toBe("claude-cli");
+    expect(prepareParams.executionMode).toBe("side-question");
+    expect(prepareParams.authProfileId).toBe("anthropic:auto-cli");
+    expect(resolveSessionAuthSelectionMock).not.toHaveBeenCalled();
     expect(cleanup).toHaveBeenCalledTimes(1);
-    expect(btw.getApiKeyForModelMock).not.toHaveBeenCalled();
-    expect(btw.streamSimpleMock).not.toHaveBeenCalled();
+    expect(getApiKeyForModelMock).not.toHaveBeenCalled();
+    expect(streamSimpleMock).not.toHaveBeenCalled();
   });
 
   it("loads Claude CLI auth for BTW from persisted auth-store order", async () => {
-    const staticAuthStore = authStore({}, { anthropic: ["anthropic:claude-cli"] });
-    const claudeAuthStore = authStore({
-      "anthropic:claude-cli": oauth("claude-cli", "claude-cli-access", "claude-cli-refresh"),
+    const staticAuthStore = {
+      version: 1 as const,
+      profiles: {},
+      order: { anthropic: ["anthropic:claude-cli"] },
+    };
+    const claudeAuthStore = {
+      version: 1 as const,
+      profiles: {
+        "anthropic:claude-cli": {
+          type: "oauth" as const,
+          provider: "claude-cli",
+          access: "claude-cli-access",
+          refresh: "claude-cli-refresh",
+          expires: Date.now() + 60_000,
+        },
+      },
+    };
+    ensureAuthProfileStoreWithoutExternalProfilesMock.mockReturnValueOnce(staticAuthStore);
+    ensureAuthProfileStoreMock.mockReturnValueOnce(claudeAuthStore);
+    getApiKeyForModelMock.mockResolvedValueOnce({
+      apiKey: "claude-cli-access",
+      mode: "oauth",
+      source: "profile:anthropic:claude-cli",
+      profileId: "anthropic:claude-cli",
     });
-    btw.ensureAuthProfileStoreWithoutExternalProfilesMock.mockReturnValueOnce(staticAuthStore);
-    btw.ensureAuthProfileStoreMock.mockReturnValueOnce(claudeAuthStore);
-    btw.getApiKeyForModelMock.mockResolvedValueOnce(
-      authResult(
-        "claude-cli-access",
-        "oauth",
-        "profile:anthropic:claude-cli",
-        "anthropic:claude-cli",
-      ),
-    );
-    btw.requireApiKeyMock.mockReturnValueOnce("claude-cli-access");
-    btw.resolveSessionAuthSelectionMock.mockResolvedValueOnce(undefined);
-    btw.resolveModelAsyncMock.mockResolvedValueOnce({
+    requireApiKeyMock.mockReturnValueOnce("claude-cli-access");
+    resolveSessionAuthSelectionMock.mockResolvedValueOnce(undefined);
+    resolveModelAsyncMock.mockResolvedValueOnce({
       model: {
-        provider: btw.DEFAULT_PROVIDER,
-        id: btw.DEFAULT_MODEL,
+        provider: DEFAULT_PROVIDER,
+        id: DEFAULT_MODEL,
         api: "anthropic-messages",
       },
     });
-    btw.mockDoneAnswer("Claude CLI answer.");
+    mockDoneAnswer("Claude CLI answer.");
 
-    const result = await btw.runSideQuestion();
+    const result = await runSideQuestion();
 
     expect(result).toEqual({ text: "Claude CLI answer." });
-    expect(btw.ensureAuthProfileStoreWithoutExternalProfilesMock).toHaveBeenCalledWith(
-      btw.DEFAULT_AGENT_DIR,
+    expect(ensureAuthProfileStoreWithoutExternalProfilesMock).toHaveBeenCalledWith(
+      DEFAULT_AGENT_DIR,
       { allowKeychainPrompt: false },
     );
-    expect(btw.ensureAuthProfileStoreMock).toHaveBeenCalledWith(btw.DEFAULT_AGENT_DIR, {
+    expect(ensureAuthProfileStoreMock).toHaveBeenCalledWith(DEFAULT_AGENT_DIR, {
       externalCliProviderIds: ["claude-cli"],
       allowKeychainPrompt: false,
     });
-    expect(btw.getApiKeyForModelMock).toHaveBeenCalledWith(
+    expect(getApiKeyForModelMock).toHaveBeenCalledWith(
       expect.objectContaining({
         profileId: "anthropic:claude-cli",
         store: claudeAuthStore,
@@ -982,9 +1200,14 @@ describe("runBtwSideQuestion", () => {
   it("rematerializes the direct model when automatic auth rotates to a SecretRef backup", async () => {
     const authStorage = { id: "btw-auth-storage" };
     const modelRegistry = { id: "btw-model-registry" };
-    const store = authStore(
-      {
-        "anthropic:primary": createApiKeyCredential("anthropic", "primary-key"),
+    const authStore = {
+      version: 1 as const,
+      profiles: {
+        "anthropic:primary": {
+          type: "api_key" as const,
+          provider: "anthropic",
+          key: "primary-key",
+        },
         "anthropic:backup": {
           type: "api_key" as const,
           provider: "anthropic",
@@ -995,52 +1218,50 @@ describe("runBtwSideQuestion", () => {
           },
         },
       },
-      { anthropic: ["anthropic:primary", "anthropic:backup"] },
-    );
+      order: { anthropic: ["anthropic:primary", "anthropic:backup"] },
+    };
     const rotatedModel = {
       provider: "anthropic",
-      id: btw.DEFAULT_MODEL,
+      id: DEFAULT_MODEL,
       api: "anthropic-messages" as const,
       baseUrl: "https://backup.example.test",
       name: "Backup profile model",
     };
-    btw.discoverAuthStorageMock.mockReturnValue(authStorage);
-    btw.discoverModelsMock.mockReturnValue(modelRegistry);
-    btw.resolveModelWithRegistryMock.mockReturnValue({
+    discoverAuthStorageMock.mockReturnValue(authStorage);
+    discoverModelsMock.mockReturnValue(modelRegistry);
+    resolveModelWithRegistryMock.mockReturnValue({
       provider: "anthropic",
-      id: btw.DEFAULT_MODEL,
+      id: DEFAULT_MODEL,
       api: "anthropic-messages",
       baseUrl: "https://primary.example.test",
       name: "Primary profile model",
     });
-    btw.resolveModelAsyncMock.mockResolvedValue({
+    resolveModelAsyncMock.mockResolvedValue({
       model: rotatedModel,
       authStorage,
       modelRegistry,
     });
-    btw.ensureAuthProfileStoreWithoutExternalProfilesMock.mockReturnValue(store);
-    btw.resolveSessionAuthSelectionMock.mockResolvedValue(undefined);
-    btw.getApiKeyForModelMock.mockImplementation(
-      async (authParams: { profileId?: string } = {}) => {
-        if (authParams.profileId === "anthropic:primary") {
-          throw new Error("primary credential resolution failed");
-        }
-        if (authParams.profileId === "anthropic:backup") {
-          return {
-            apiKey: mintSecretSentinel("backup-secret", { label: "btw-backup" }),
-            mode: "api-key",
-            source: "profile:anthropic:backup",
-            profileId: "anthropic:backup",
-          };
-        }
-        throw new Error(`unexpected profile: ${authParams.profileId ?? "none"}`);
-      },
-    );
-    btw.requireApiKeyMock.mockReturnValue("backup-secret");
-    btw.mockDoneAnswer("Backup answer.");
+    ensureAuthProfileStoreWithoutExternalProfilesMock.mockReturnValue(authStore);
+    resolveSessionAuthSelectionMock.mockResolvedValue(undefined);
+    getApiKeyForModelMock.mockImplementation(async (authParams: { profileId?: string } = {}) => {
+      if (authParams.profileId === "anthropic:primary") {
+        throw new Error("primary credential resolution failed");
+      }
+      if (authParams.profileId === "anthropic:backup") {
+        return {
+          apiKey: mintSecretSentinel("backup-secret", { label: "btw-backup" }),
+          mode: "api-key",
+          source: "profile:anthropic:backup",
+          profileId: "anthropic:backup",
+        };
+      }
+      throw new Error(`unexpected profile: ${authParams.profileId ?? "none"}`);
+    });
+    requireApiKeyMock.mockReturnValue("backup-secret");
+    mockDoneAnswer("Backup answer.");
 
     await expect(
-      btw.runSideQuestion({
+      runSideQuestion({
         cfg: {
           secrets: {
             providers: {
@@ -1052,14 +1273,14 @@ describe("runBtwSideQuestion", () => {
     ).resolves.toEqual({ text: "Backup answer." });
 
     expect(
-      btw.getApiKeyForModelMock.mock.calls.map(
+      getApiKeyForModelMock.mock.calls.map(
         ([authParams]) => (authParams as { profileId?: string }).profileId,
       ),
     ).toEqual(["anthropic:primary", "anthropic:backup"]);
-    expect(btw.resolveModelAsyncMock).toHaveBeenCalledWith(
+    expect(resolveModelAsyncMock).toHaveBeenCalledWith(
       "anthropic",
-      btw.DEFAULT_MODEL,
-      btw.DEFAULT_AGENT_DIR,
+      DEFAULT_MODEL,
+      DEFAULT_AGENT_DIR,
       expect.any(Object),
       expect.objectContaining({
         authStorage,
@@ -1073,34 +1294,47 @@ describe("runBtwSideQuestion", () => {
         skipAgentDiscovery: true,
       }),
     );
-    btw.expectRecordFields(
-      (btw.mockArg(btw.prepareProviderRuntimeAuthMock, 0, 0) as { context?: unknown }).context,
+    const preparedAuthContext = expectRecordFields(
+      (mockArg(prepareProviderRuntimeAuthMock, 0, 0) as { context?: unknown }).context,
       {
         provider: "anthropic",
-        modelId: btw.DEFAULT_MODEL,
+        modelId: DEFAULT_MODEL,
         model: rotatedModel,
         profileId: "anthropic:backup",
-        apiKey: "backup-secret",
       },
     );
-    btw.expectRecordFields(btw.mockArg(btw.streamSimpleMock, 0, 0), {
+    expect(preparedAuthContext.apiKey).toBe("backup-secret");
+    expectRecordFields(mockArg(streamSimpleMock, 0, 0), {
       name: "Backup profile model",
       baseUrl: "https://backup.example.test",
     });
   });
 
   it("uses a same-route literal fallback only after its prepared profile tier fails", async () => {
-    const platformModel = { ...createOpenAIModel(), name: "Platform model" };
-    const store = authStore(
-      { "openai:broken": createApiKeyCredential("openai", "broken-profile-key") },
-      { openai: ["openai:broken"] },
-    );
-    btw.resolveModelWithRegistryMock.mockReturnValue(platformModel);
-    btw.resolveModelAsyncMock.mockResolvedValue({ model: platformModel });
-    btw.ensureAuthProfileStoreMock.mockReturnValue(store);
-    btw.resolveSessionAuthSelectionMock.mockResolvedValue(undefined);
-    btw.resolveProviderEntryApiKeyProfileReferenceMock.mockReturnValue({ kind: "literal" });
-    btw.getApiKeyForModelMock.mockImplementation(
+    const platformModel = {
+      provider: "openai",
+      id: "gpt-5.5",
+      api: "openai-responses" as const,
+      baseUrl: "https://api.openai.com/v1",
+      name: "Platform model",
+    };
+    const authStore = {
+      version: 1 as const,
+      profiles: {
+        "openai:broken": {
+          type: "api_key" as const,
+          provider: "openai",
+          key: "broken-profile-key",
+        },
+      },
+      order: { openai: ["openai:broken"] },
+    };
+    resolveModelWithRegistryMock.mockReturnValue(platformModel);
+    resolveModelAsyncMock.mockResolvedValue({ model: platformModel });
+    ensureAuthProfileStoreMock.mockReturnValue(authStore);
+    resolveSessionAuthSelectionMock.mockResolvedValue(undefined);
+    resolveProviderEntryApiKeyProfileReferenceMock.mockReturnValue({ kind: "literal" });
+    getApiKeyForModelMock.mockImplementation(
       async (authParams: { profileId?: string; allowAuthProfileFallback?: boolean }) => {
         if (authParams.profileId === "openai:broken") {
           throw new Error("profile key could not be resolved");
@@ -1115,11 +1349,11 @@ describe("runBtwSideQuestion", () => {
         throw new Error("unexpected auth lookup");
       },
     );
-    btw.requireApiKeyMock.mockReturnValue("literal-key");
-    btw.mockDoneAnswer("Literal fallback answer.");
+    requireApiKeyMock.mockReturnValue("literal-key");
+    mockDoneAnswer("Literal fallback answer.");
 
     await expect(
-      btw.runSideQuestion({
+      runSideQuestion({
         cfg: {
           auth: { order: { openai: ["openai:broken"] } },
           models: {
@@ -1127,7 +1361,13 @@ describe("runBtwSideQuestion", () => {
               openai: { apiKey: "literal-key" },
             },
           },
-          ...harnessConfig("openclaw"),
+          agents: {
+            defaults: {
+              models: {
+                "openai/gpt-5.5": { agentRuntime: { id: "openclaw" } },
+              },
+            },
+          },
         } as never,
         provider: "openai",
         model: "gpt-5.5",
@@ -1135,7 +1375,7 @@ describe("runBtwSideQuestion", () => {
     ).resolves.toEqual({ text: "Literal fallback answer." });
 
     expect(
-      btw.getApiKeyForModelMock.mock.calls.map(([authParams]) => {
+      getApiKeyForModelMock.mock.calls.map(([authParams]) => {
         const lookup = authParams as {
           profileId?: string;
           allowAuthProfileFallback?: boolean;
@@ -1149,7 +1389,7 @@ describe("runBtwSideQuestion", () => {
       { profileId: "openai:broken", allowAuthProfileFallback: undefined },
       { profileId: undefined, allowAuthProfileFallback: false },
     ]);
-    btw.expectRecordFields(btw.mockArg(btw.streamSimpleMock, 0, 0), {
+    expectRecordFields(mockArg(streamSimpleMock, 0, 0), {
       api: "openai-responses",
       baseUrl: "https://api.openai.com/v1",
     });
@@ -1158,22 +1398,32 @@ describe("runBtwSideQuestion", () => {
   it.each([{ label: "legacy source-less", source: undefined }])(
     "keeps $label user-pinned static Anthropic auth first for BTW",
     async ({ source }) => {
-      const staticAuthStore = authStore({
-        "anthropic:api": createApiKeyCredential("anthropic", "static-key"),
+      const staticAuthStore = {
+        version: 1 as const,
+        profiles: {
+          "anthropic:api": {
+            type: "api_key" as const,
+            provider: "anthropic",
+            key: "static-key",
+          },
+        },
+      };
+      ensureAuthProfileStoreMock.mockReturnValueOnce(staticAuthStore);
+      getApiKeyForModelMock.mockResolvedValueOnce({
+        apiKey: "static-key",
+        mode: "api-key",
+        source: "profile:anthropic:api",
+        profileId: "anthropic:api",
       });
-      btw.ensureAuthProfileStoreMock.mockReturnValueOnce(staticAuthStore);
-      btw.getApiKeyForModelMock.mockResolvedValueOnce(
-        authResult("static-key", "api-key", "profile:anthropic:api", "anthropic:api"),
-      );
-      btw.requireApiKeyMock.mockReturnValueOnce("static-key");
-      btw.resolveSessionAuthSelectionMock.mockResolvedValueOnce({
+      requireApiKeyMock.mockReturnValueOnce("static-key");
+      resolveSessionAuthSelectionMock.mockResolvedValueOnce({
         profileId: "anthropic:api",
         source: "user",
         routeRequirement: "api-key",
       });
-      btw.mockDoneAnswer("Static answer.");
+      mockDoneAnswer("Static answer.");
 
-      await btw.runSideQuestion({
+      await runSideQuestion({
         cfg: {
           auth: {
             order: { anthropic: ["anthropic:claude-cli"] },
@@ -1183,24 +1433,24 @@ describe("runBtwSideQuestion", () => {
             },
           },
         } as never,
-        sessionEntry: btw.createSessionEntry({
+        sessionEntry: createSessionEntry({
           authProfileOverride: "anthropic:api",
           authProfileOverrideSource: source,
         }),
       });
 
-      expect(btw.ensureAuthProfileStoreWithoutExternalProfilesMock).not.toHaveBeenCalled();
-      expect(btw.ensureAuthProfileStoreMock).toHaveBeenCalledWith(btw.DEFAULT_AGENT_DIR, {
+      expect(ensureAuthProfileStoreWithoutExternalProfilesMock).not.toHaveBeenCalled();
+      expect(ensureAuthProfileStoreMock).toHaveBeenCalledWith(DEFAULT_AGENT_DIR, {
         profileId: "anthropic:api",
         externalCliProviderIds: ["claude-cli"],
         allowKeychainPrompt: false,
       });
-      btw.expectRecordFields(btw.mockArg(btw.getApiKeyForModelMock, 0, 0), {
+      expectRecordFields(mockArg(getApiKeyForModelMock, 0, 0), {
         profileId: "anthropic:api",
         store: staticAuthStore,
       });
-      btw.expectRecordFields(
-        (btw.mockArg(btw.prepareProviderRuntimeAuthMock, 0, 0) as { context?: unknown }).context,
+      expectRecordFields(
+        (mockArg(prepareProviderRuntimeAuthMock, 0, 0) as { context?: unknown }).context,
         {
           profileId: "anthropic:api",
           authMode: "api-key",
@@ -1210,38 +1460,44 @@ describe("runBtwSideQuestion", () => {
   );
 
   it("applies provider runtime auth before streaming github-copilot BTW questions", async () => {
-    const model = {
+    resolveModelWithRegistryMock.mockReturnValue({
       provider: "github-copilot",
       id: "gpt-5.4",
       api: "openai-responses",
       baseUrl: "https://api.individual.githubcopilot.com",
-    };
-    btw.resolveModelWithRegistryMock.mockReturnValue(model);
-    btw.resolveModelAsyncMock.mockResolvedValue({ model });
-    btw.getApiKeyForModelMock.mockResolvedValue(
-      authResult("github-token", "token", "profile", "github-copilot:github"),
-    );
-    btw.requireApiKeyMock.mockReturnValue("github-token");
-    btw.prepareProviderRuntimeAuthMock.mockResolvedValue({
+    });
+    resolveModelAsyncMock.mockResolvedValue({
+      model: {
+        provider: "github-copilot",
+        id: "gpt-5.4",
+        api: "openai-responses",
+        baseUrl: "https://api.individual.githubcopilot.com",
+      },
+    });
+    getApiKeyForModelMock.mockResolvedValue({
+      apiKey: "github-token",
+      mode: "token",
+      source: "profile",
+      profileId: "github-copilot:github",
+    });
+    requireApiKeyMock.mockReturnValue("github-token");
+    prepareProviderRuntimeAuthMock.mockResolvedValue({
       apiKey: "copilot-runtime-token",
       baseUrl: "https://api.enterprise.githubcopilot.com",
     });
-    btw.mockDoneAnswer("Copilot answer.");
+    mockDoneAnswer("Copilot answer.");
 
-    const result = await btw.runSideQuestion({
+    const result = await runSideQuestion({
       provider: "github-copilot",
       model: "gpt-5.4",
     });
 
     expect(result).toEqual({ text: "Copilot answer." });
-    const runtimeAuthParams = btw.expectRecordFields(
-      btw.mockArg(btw.prepareProviderRuntimeAuthMock, 0, 0),
-      {
-        provider: "github-copilot",
-        workspaceDir: "/tmp/workspace",
-      },
-    );
-    btw.expectRecordFields(runtimeAuthParams.context, {
+    const runtimeAuthParams = expectRecordFields(mockArg(prepareProviderRuntimeAuthMock, 0, 0), {
+      provider: "github-copilot",
+      workspaceDir: "/tmp/workspace",
+    });
+    expectRecordFields(runtimeAuthParams.context, {
       provider: "github-copilot",
       modelId: "gpt-5.4",
       workspaceDir: "/tmp/workspace",
@@ -1249,8 +1505,8 @@ describe("runBtwSideQuestion", () => {
       authMode: "token",
       profileId: "github-copilot:github",
     });
-    const [streamModel, , streamOptions] = btw.mockCall(btw.streamSimpleMock);
-    btw.expectRecordFields(streamModel, {
+    const [streamModel, , streamOptions] = mockCall(streamSimpleMock);
+    expectRecordFields(streamModel, {
       provider: "github-copilot",
       id: "gpt-5.4",
       baseUrl: "https://api.enterprise.githubcopilot.com",
@@ -1262,11 +1518,11 @@ describe("runBtwSideQuestion", () => {
   });
 
   it("strips injected empty tools arrays from BTW payloads before sending", async () => {
-    btw.mockDoneAnswer("Final answer.");
+    mockDoneAnswer("Final answer.");
 
-    await btw.runSideQuestion();
+    await runSideQuestion();
 
-    const options = btw.mockArg(btw.streamSimpleMock, 0, 2);
+    const options = mockArg(streamSimpleMock, 0, 2);
     const onPayload = (options as { onPayload?: (payload: unknown) => void })?.onPayload;
     const payloadWithEmptyTools = { messages: [], tools: [] as unknown[] };
 
@@ -1277,45 +1533,45 @@ describe("runBtwSideQuestion", () => {
   });
 
   it("allows Bedrock /btw runs to proceed without a static api key in aws-sdk mode", async () => {
-    btw.resolveModelWithRegistryMock.mockReturnValue({
+    resolveModelWithRegistryMock.mockReturnValue({
       provider: "amazon-bedrock",
       id: "us.anthropic.claude-sonnet-4-5-v1:0",
       api: "anthropic-messages",
     });
-    btw.getApiKeyForModelMock.mockResolvedValue(
-      authResult(undefined, "aws-sdk", "aws-sdk default chain"),
-    );
-    btw.streamSimpleMock.mockReturnValue(
-      btw.makeAsyncEvents([btw.createDoneEvent("Bedrock answer.")]),
-    );
+    getApiKeyForModelMock.mockResolvedValue({
+      apiKey: undefined,
+      mode: "aws-sdk",
+      source: "aws-sdk default chain",
+    });
+    streamSimpleMock.mockReturnValue(makeAsyncEvents([createDoneEvent("Bedrock answer.")]));
 
-    const result = await btw.runSideQuestion({
+    const result = await runSideQuestion({
       cfg: {},
       provider: "amazon-bedrock",
       model: "us.anthropic.claude-sonnet-4-5-v1:0",
     });
 
     expect(result).toEqual({ text: "Bedrock answer." });
-    expect(btw.requireApiKeyMock).not.toHaveBeenCalled();
-    const options = btw.streamSimpleMock.mock.calls.at(-1)?.[2];
+    expect(requireApiKeyMock).not.toHaveBeenCalled();
+    const options = streamSimpleMock.mock.calls.at(-1)?.[2];
     expect((options as { apiKey?: string } | undefined)?.apiKey).toBeUndefined();
   });
 
   it("uses the in-flight prompt as background only when there is no prior transcript context", async () => {
-    btw.clearBuiltSessionMessages();
-    btw.getActiveEmbeddedRunSnapshotMock.mockReturnValue({
+    clearBuiltSessionMessages();
+    getActiveEmbeddedRunSnapshotMock.mockReturnValue({
       transcriptLeafId: null,
       messages: [],
       inFlightPrompt: "build me a tic-tac-toe game in brainfuck",
     });
-    btw.mockDoneAnswer("You're building a tic-tac-toe game in Brainfuck.");
+    mockDoneAnswer("You're building a tic-tac-toe game in Brainfuck.");
 
-    const result = await btw.runSideQuestion({ question: "what are we doing?" });
+    const result = await runSideQuestion({ question: "what are we doing?" });
 
     expect(result).toEqual({ text: "You're building a tic-tac-toe game in Brainfuck." });
-    const [message] = btw.contextMessages(btw.streamContext());
-    btw.expectRecordFields(message, { role: "user" });
-    btw.expectTextBlockContains(
+    const [message] = contextMessages(streamContext());
+    expectRecordFields(message, { role: "user" });
+    expectTextBlockContains(
       expectDefined(
         (expectDefined(message, "message test invariant").content as Array<unknown>)[0],
         "(message.content as Array<unknown>)[0] test invariant",
@@ -1325,64 +1581,81 @@ describe("runBtwSideQuestion", () => {
   });
 
   it("branches away from an unresolved trailing user turn before building BTW context", async () => {
-    const assistantEntry = assistantTranscript("assistant-1", "seed answer");
-    const trailingUserEntry = btw.createTranscriptEntry({
+    const assistantEntry = createTranscriptEntry({
+      id: "assistant-1",
+      message: createAssistantTranscriptMessage([{ type: "text", text: "seed answer" }]),
+    });
+    const trailingUserEntry = createTranscriptEntry({
       id: "user-2",
       parentId: "assistant-1",
-      message: btw.createUserTranscriptMessage([{ type: "text", text: "unfinished task" }]),
+      message: createUserTranscriptMessage([{ type: "text", text: "unfinished task" }]),
     });
-    btw.mockTranscriptEntries([assistantEntry, trailingUserEntry]);
-    await expectMathBranch([assistantEntry], true);
+    mockTranscriptEntries([assistantEntry, trailingUserEntry]);
+    mockDoneAnswer(MATH_ANSWER);
+
+    const result = await runMathSideQuestion();
+
+    expect(buildSessionContextMock).toHaveBeenCalledTimes(1);
+    expect(buildSessionContextMock).toHaveBeenCalledWith([assistantEntry]);
+    expect(result).toEqual({ text: MATH_ANSWER });
   });
 
   it("rejects a supplied session key that disagrees with an incomplete SQLite marker target", async () => {
     const markerStorePath = "/tmp/marker-sessions.sqlite";
-    btw.listSessionEntriesCoreMock.mockReturnValue([
+    listSessionEntriesCoreMock.mockReturnValue([
       {
         sessionKey: "agent:main:matching",
-        entry: btw.createSessionEntry(),
+        entry: createSessionEntry(),
       },
     ]);
-    btw.loadSessionEntryMock.mockReturnValue(
-      btw.createSessionEntry({ sessionId: "different-session" }),
-    );
+    loadSessionEntryMock.mockReturnValue(createSessionEntry({ sessionId: "different-session" }));
 
     await expect(
-      btw.runMathSideQuestion({
-        sessionEntry: btw.createSessionEntry({
+      runMathSideQuestion({
+        sessionEntry: createSessionEntry({
           sessionFile: `sqlite:main:session-1:${markerStorePath}`,
         }),
         storePath: undefined,
       }),
     ).rejects.toThrow("No active session context.");
 
-    expect(btw.listSessionEntriesCoreMock).toHaveBeenCalledWith({
+    expect(listSessionEntriesCoreMock).toHaveBeenCalledWith({
       agentId: "main",
       storePath: markerStorePath,
     });
-    expect(btw.loadSessionEntryMock).toHaveBeenCalledWith({
+    expect(loadSessionEntryMock).toHaveBeenCalledWith({
       agentId: "main",
-      sessionKey: btw.DEFAULT_SESSION_KEY,
+      sessionKey: DEFAULT_SESSION_KEY,
       storePath: markerStorePath,
     });
-    expect(btw.loadTranscriptEventsMock).not.toHaveBeenCalled();
+    expect(loadTranscriptEventsMock).not.toHaveBeenCalled();
   });
 
   it("falls back when the active run snapshot leaf no longer exists", async () => {
     const { userEntry, assistantEntry } = createSeedTranscript();
-    btw.mockTranscriptEntries([userEntry, assistantEntry]);
-    btw.getActiveEmbeddedRunSnapshotMock.mockReturnValue({
+    mockTranscriptEntries([userEntry, assistantEntry]);
+    getActiveEmbeddedRunSnapshotMock.mockReturnValue({
       transcriptLeafId: "assistant-gone",
     });
-    await expectMathBranch([userEntry, assistantEntry], true);
-    expect(btw.diagDebugMock).toHaveBeenCalledWith(
+    mockDoneAnswer(MATH_ANSWER);
+
+    const result = await runMathSideQuestion();
+
+    expect(buildSessionContextMock).toHaveBeenCalledTimes(1);
+    expect(buildSessionContextMock).toHaveBeenCalledWith([userEntry, assistantEntry]);
+    expect(result).toEqual({ text: MATH_ANSWER });
+    expect(diagDebugMock).toHaveBeenCalledWith(
       "btw snapshot leaf unavailable: sessionId=session-1 leaf=assistant-gone",
     );
   });
 
   it("keeps visible history after continuing from a disjoint opaque append cursor", async () => {
     const { userEntry, assistantEntry } = createSeedTranscript();
-    const sideEntry = assistantTranscript("side-delivery", "side delivery", "assistant-seed");
+    const sideEntry = createTranscriptEntry({
+      id: "side-delivery",
+      parentId: "assistant-seed",
+      message: createAssistantTranscriptMessage([{ type: "text", text: "side delivery" }]),
+    });
     const metadataEntry = {
       type: "metadata",
       id: "plugin-metadata",
@@ -1395,12 +1668,12 @@ describe("runBtwSideQuestion", () => {
       targetId: "assistant-seed",
       appendParentId: "plugin-metadata",
     };
-    const continuationEntry = assistantTranscript(
-      "assistant-continuation",
-      "continued answer",
-      "plugin-metadata",
-    );
-    btw.mockTranscriptEntries([
+    const continuationEntry = createTranscriptEntry({
+      id: "assistant-continuation",
+      parentId: "plugin-metadata",
+      message: createAssistantTranscriptMessage([{ type: "text", text: "continued answer" }]),
+    });
+    mockTranscriptEntries([
       userEntry,
       assistantEntry,
       sideEntry,
@@ -1408,16 +1681,21 @@ describe("runBtwSideQuestion", () => {
       leafEntry,
       continuationEntry,
     ]);
-    await expectMathBranch([
+    mockDoneAnswer(MATH_ANSWER);
+
+    const result = await runMathSideQuestion();
+
+    expect(buildSessionContextMock).toHaveBeenCalledWith([
       userEntry,
       assistantEntry,
       { ...continuationEntry, parentId: "assistant-seed" },
     ]);
+    expect(result).toEqual({ text: MATH_ANSWER });
   });
 
   it("excludes tool results from BTW context to avoid replaying raw tool output", async () => {
-    btw.mockActiveTranscript([
-      btw.createUserTranscriptMessage(),
+    mockActiveTranscript([
+      createUserTranscriptMessage(),
       {
         role: "toolResult",
         content: [{ type: "text", text: "sensitive tool output" }],
@@ -1430,18 +1708,22 @@ describe("runBtwSideQuestion", () => {
         timestamp: 3,
       },
     ]);
-    btw.mockDoneAnswer(btw.MATH_ANSWER);
+    mockDoneAnswer(MATH_ANSWER);
 
-    await btw.runMathSideQuestion();
+    await runMathSideQuestion();
 
-    const messages = btw.contextMessages(btw.streamContext());
-    expect(messages).toMatchObject([{ role: "user" }, { role: "assistant" }, { role: "user" }]);
+    const messages = contextMessages(streamContext());
+    expect(messages).toHaveLength(3);
+    expectRecordFields(messages[0], { role: "user" });
+    expectRecordFields(messages[1], { role: "assistant" });
+    expectRecordFields(messages[2], { role: "user" });
+    expect(messages.some((message) => message.role === "toolResult")).toBe(false);
   });
 
   it("strips assistant tool calls from fallback BTW context so stale calls are not replayed", async () => {
-    btw.mockActiveTranscript([
-      btw.createUserTranscriptMessage(),
-      btw.createAssistantTranscriptMessage(
+    mockActiveTranscript([
+      createUserTranscriptMessage(),
+      createAssistantTranscriptMessage(
         [
           { type: "text", text: "Let me check." },
           { type: "thinking", thinking: "Hidden chain of thought" },
@@ -1452,42 +1734,59 @@ describe("runBtwSideQuestion", () => {
         { stopReason: "toolUse" },
       ),
     ]);
-    btw.mockDoneAnswer(btw.MATH_ANSWER);
+    mockDoneAnswer(MATH_ANSWER);
 
-    await btw.runMathSideQuestion();
+    await runMathSideQuestion();
 
-    const context = btw.streamContext();
-    btw.expectSanitizedAssistantContext(context, "Let me check.");
+    const context = streamContext();
+    expectSanitizedAssistantContext(context, "Let me check.");
   });
 
-  it.each([
-    [
-      "embedded tool results",
-      [
-        { type: "toolResult", toolUseId: "call_1", content: [{ type: "text", text: "secret" }] },
-        { type: "tool_result", toolUseId: "call_2", content: [{ type: "text", text: "secret-2" }] },
-      ],
-    ],
-    ["malformed image", [{ type: "image", mimeType: "image/png" }]],
-  ] as const)("strips %s from user context", async (_label, blocks) => {
-    btw.mockActiveTranscript([
-      btw.createUserTranscriptMessage([{ type: "text", text: "seed" }, ...blocks]),
+  it("strips embedded user tool results from BTW context", async () => {
+    mockActiveTranscript([
+      createUserTranscriptMessage([
+        { type: "text", text: "seed" },
+        {
+          type: "toolResult",
+          toolUseId: "call_1",
+          content: [{ type: "text", text: "secret" }],
+        },
+        {
+          type: "tool_result",
+          toolUseId: "call_2",
+          content: [{ type: "text", text: "secret-2" }],
+        },
+      ]),
     ]);
-    btw.expectSeedOnlyUserContext(await btw.runMathSideQuestionAndCaptureContext());
+
+    const context = await runMathSideQuestionAndCaptureContext();
+    expectSeedOnlyUserContext(context);
+  });
+
+  it("drops malformed user image blocks from BTW context", async () => {
+    mockActiveTranscript([
+      createUserTranscriptMessage([
+        { type: "text", text: "seed" },
+        { type: "image", mimeType: "image/png" },
+      ]),
+    ]);
+
+    const context = await runMathSideQuestionAndCaptureContext();
+    expectSeedOnlyUserContext(context);
   });
 
   it("normalizes malformed assistant content before stripping tool blocks", async () => {
-    btw.mockActiveTranscript([
-      btw.createUserTranscriptMessage(),
-      btw.createAssistantTranscriptMessage(
+    mockActiveTranscript([
+      createUserTranscriptMessage(),
+      createAssistantTranscriptMessage(
         { type: "toolCall", id: "call_1", name: "read", arguments: {} },
         { stopReason: "toolUse", output: 0 },
       ),
     ]);
 
-    const context = await btw.runMathSideQuestionAndCaptureContext();
+    const context = await runMathSideQuestionAndCaptureContext();
 
-    btw.expectNoAssistantMessages(context);
+    expectNoAssistantMessages(context);
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

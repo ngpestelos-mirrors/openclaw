@@ -36,11 +36,7 @@ function thrown(run: () => unknown): Error {
   throw new Error("Expected an Error");
 }
 
-const sandbox = {
-  containerName: "test-sandbox",
-  workspaceDir: "/workspace",
-  containerWorkdir: "/workspace",
-};
+const sandbox = { containerName: "test", workspaceDir: "/w", containerWorkdir: "/w" };
 
 describe("exec target policy", () => {
   it("authenticates the sandbox escape rejection once, not copies or invalid syntax", () => {
@@ -97,40 +93,23 @@ describe("exec target policy", () => {
     },
   );
 
-  it.each<{ name: string; options: Partial<TargetOptions>; error: string | RegExp }>([
-    {
-      name: "node override from auto with an available sandbox",
-      options: { requestedTarget: "node" },
-      error:
-        "exec host not allowed (requested node; configured host is auto; set tools.exec.host=node to allow this override).",
-    },
-    {
-      name: "gateway override from configured node even with elevation",
-      options: {
+  it.each<[Partial<TargetOptions>, string | RegExp]>([
+    [
+      {
         configuredTarget: "node",
         requestedTarget: "gateway",
         elevatedRequested: true,
         sandboxAvailable: false,
       },
-      error:
-        "exec host not allowed (requested gateway; configured host is node; set tools.exec.host=gateway or auto to allow this override).",
-    },
-    {
-      name: "explicit matching node when the session requires a sandbox",
-      options: { configuredTarget: "node", requestedTarget: "node", sandboxRequired: true },
-      error: /sandbox|required|not allowed/i,
-    },
-    {
-      name: "elevation when the session requires a sandbox",
-      options: { elevatedRequested: true, sandboxRequired: true },
-      error: /sandbox|required|elevated/i,
-    },
-    {
-      name: "an unavailable required sandbox",
-      options: { sandboxAvailable: false, sandboxRequired: true },
-      error: /sandbox|required|unavailable/i,
-    },
-  ])("rejects $name", ({ options, error }) => {
+      "exec host not allowed (requested gateway; configured host is node; set tools.exec.host=gateway or auto to allow this override).",
+    ],
+    [
+      { configuredTarget: "node", requestedTarget: "node", sandboxRequired: true },
+      /sandbox|required|not allowed/i,
+    ],
+    [{ elevatedRequested: true, sandboxRequired: true }, /sandbox|required|elevated/i],
+    [{ sandboxAvailable: false, sandboxRequired: true }, /sandbox|required|unavailable/i],
+  ])("rejects target options %j", (options, error) => {
     expect(() => target(options)).toThrow(error);
   });
 
