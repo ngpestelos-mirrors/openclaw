@@ -6,6 +6,7 @@ import {
   AGENT_OUTBOX_SEQUENCE_SCHEMA_VERSION,
   AGENT_STORAGE_SCHEMA_VERSION,
   AGENT_WRITE_LAYOUT_SCHEMA_VERSION,
+  AGENT_TRAJECTORY_STORAGE_SCHEMA_VERSION,
   CANONICAL_SESSION_VALIDATION_SCHEMA_VERSION,
   CANONICAL_SESSION_WRITER_VALIDATION_SCHEMA_VERSION,
   SESSION_PARTICIPANTS_TABLE,
@@ -18,6 +19,7 @@ import {
   withoutSessionEntrySnapshotsSchema,
 } from "./openclaw-agent-session-snapshots-schema.js";
 import { withLegacyAgentStorageSchema } from "./openclaw-agent-storage-schema.js";
+import { withoutTrajectoryPayloadColumns } from "./openclaw-agent-trajectory-storage-migration.js";
 
 // Schema 21–24 kept every raw writer observable through this required trigger group.
 export const LEGACY_ENTRY_VALIDITY_TRIGGERS_SQL = `
@@ -307,10 +309,14 @@ export function getOpenClawAgentMigrationSchema(targetVersion: number): string {
     targetVersion < AGENT_MEMORY_REVISION_SCHEMA_VERSION
       ? withLegacyAgentMemoryRevisionTriggers(OPENCLAW_AGENT_SCHEMA_SQL)
       : OPENCLAW_AGENT_SCHEMA_SQL;
+  const trajectorySchemaSql =
+    targetVersion < AGENT_TRAJECTORY_STORAGE_SCHEMA_VERSION
+      ? withoutTrajectoryPayloadColumns(revisionSchemaSql)
+      : revisionSchemaSql;
   const indexSchemaSql =
     targetVersion < AGENT_INDEX_RETIREMENT_SCHEMA_VERSION
-      ? withLegacyAgentIndexes(revisionSchemaSql)
-      : revisionSchemaSql;
+      ? withLegacyAgentIndexes(trajectorySchemaSql)
+      : trajectorySchemaSql;
   const layoutSchemaSql =
     targetVersion < AGENT_WRITE_LAYOUT_SCHEMA_VERSION
       ? withLegacyAgentWriteLayout(indexSchemaSql)
@@ -353,7 +359,7 @@ export const OPENCLAW_AGENT_BOARD_SCHEMA_SQL = extractSqliteTableSchema(
 );
 export const AGENT_V14_BOARD_SCHEMA_SQL = OPENCLAW_AGENT_BOARD_SCHEMA_SQL;
 const OPENCLAW_AGENT_SCHEMA_WITHOUT_BOARD_SQL = withLegacyAgentIndexes(
-  withLegacyAgentMemoryRevisionTriggers(OPENCLAW_AGENT_SCHEMA_SQL),
+  withoutTrajectoryPayloadColumns(withLegacyAgentMemoryRevisionTriggers(OPENCLAW_AGENT_SCHEMA_SQL)),
 ).replace(OPENCLAW_AGENT_BOARD_SCHEMA_SQL, "");
 
 export const SESSION_PROGRESS_CARDS_TABLE = "session_progress_cards";

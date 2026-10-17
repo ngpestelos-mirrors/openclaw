@@ -1,22 +1,25 @@
 const revisionTables = ["memory_index_sources", "memory_index_chunks"] as const;
 const revisionEvents = ["insert", "update", "delete"] as const;
-export const LEGACY_MEMORY_REVISION_TRIGGER_NAMES = revisionTables.flatMap((table) =>
-  revisionEvents.map((event) => `${table}_revision_after_${event}`),
-);
-
-/** Historical admission and rollback retain the row triggers written before schema 31. */
-export function withLegacyAgentMemoryRevisionTriggers(schema: string): string {
-  const triggers = revisionTables
-    .flatMap((table) =>
-      revisionEvents.map(
-        (event) => `CREATE TRIGGER IF NOT EXISTS ${table}_revision_after_${event}
+export const LEGACY_MEMORY_REVISION_SQLITE_TRIGGERS = revisionTables.flatMap((table) =>
+  revisionEvents.map((event) => ({
+    name: `${table}_revision_after_${event}`,
+    table,
+    sql: `CREATE TRIGGER IF NOT EXISTS ${table}_revision_after_${event}
 AFTER ${event.toUpperCase()} ON ${table}
 BEGIN
   UPDATE memory_index_state SET revision = revision + 1 WHERE id = 1;
 END;`,
-      ),
-    )
-    .join("\n\n");
+  })),
+);
+export const LEGACY_MEMORY_REVISION_TRIGGER_NAMES = LEGACY_MEMORY_REVISION_SQLITE_TRIGGERS.map(
+  (trigger) => trigger.name,
+);
+
+/** Historical admission and rollback retain the row triggers written before schema 31. */
+export function withLegacyAgentMemoryRevisionTriggers(schema: string): string {
+  const triggers = LEGACY_MEMORY_REVISION_SQLITE_TRIGGERS.map((trigger) => trigger.sql).join(
+    "\n\n",
+  );
   return schema.replace(
     "CREATE INDEX IF NOT EXISTS idx_memory_embedding_cache_updated_at",
     `${triggers}\n\nCREATE INDEX IF NOT EXISTS idx_memory_embedding_cache_updated_at`,

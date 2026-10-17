@@ -70,6 +70,7 @@ const derivedMigrationColumns = new Map<string, ReadonlySet<string>>(
   Object.entries({
     ...AGENT_JSON_PREDICATE_COLUMNS,
     session_windows: ["row_transcript_json", "row_transcript_updated_at"],
+    trajectory_runtime_events: ["event_utf8_bytes", "event_payload", "event_codec"],
   }).map(([table, columns]) => [table, new Set<string>(columns)]),
 );
 
@@ -510,6 +511,7 @@ export function captureOpenClawMigrationWitness(
             LEGACY_MEMORY_REVISION_TRIGGER_NAMES.includes(object.name)) ||
           (object.type === "index" &&
             (indexKey === "session_windows.idx_agent_session_windows_conversation" ||
+              indexKey === "trajectory_runtime_events.idx_agent_trajectory_runtime_run" ||
               (schemaVersion < AGENT_INDEX_RETIREMENT_SCHEMA_VERSION &&
                 (indexKey === "session_nodes.idx_agent_session_nodes_last_interaction_at" ||
                   indexKey === "session_reactions.idx_agent_session_reactions_message")) ||

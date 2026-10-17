@@ -46,6 +46,7 @@ backup and its matching build, not just reinstalling the older package.
 | 27      | Explicit context-engine outbox enqueue sequence preserving FIFO through SQLite rebuilds and PostgreSQL generation                                                                                                                                      | `Unreleased` |
 | 28      | Smaller transcript/conversation indexes and primary-key storage for memory origins                                                                                                                                                                     | `Unreleased` |
 | 29      | Retire redundant reaction and unused last-interaction indexes without changing retained rows                                                                                                                                                           | `Unreleased` |
+| 30      | Brotli trajectory payloads with per-row codec markers and logical-byte retention                                                                                                                                                                       | `Unreleased` |
 | 31      | Memory publication advances the index revision once per committed batch instead of once per source or chunk row                                                                                                                                        | `Unreleased` |
 
 Schema 1 first appeared in `v2026.5.30-beta.1` and was also written by the
@@ -81,6 +82,31 @@ and the search and vector projection triggers. Both engines advance their schema
 metadata in that transaction. A scoped SQLite backup retains the source and
 chunk tables with their historical triggers; rollback requires restoring the
 verified backup with its matching build, never lowering schema markers.
+
+### Trajectory payload storage
+
+Agent schema 30 adds nullable `event_utf8_bytes`, `event_payload`, and
+`event_codec` columns to `trajectory_runtime_events`. New UTF-8 SQLite writes
+compress suitable events with stable Brotli quality 3. The per-row `br` marker
+identifies the codec independently of the schema version. Readers return the
+original JSON bytes; exports, diagnostics, media repair, generation copies, and
+engine ports share the same decoder. Each compressed event has a 256 KiB output
+bound. Small or incompressible events remain text.
+
+Upgrade adds the columns and rebuilds the retention index without rewriting old
+event payloads. Old text rows remain readable, are compressed only when a repair
+actually rewrites them, and otherwise age out through existing retention. There
+is no background backfill. Retention and read budgets count logical bytes rather
+than compressed bytes. UTF-16 SQLite keeps its existing text representation and
+native-byte global retention accounting. PostgreSQL mirrors the nullable columns
+with `bytea` storage, but receives raw text and retains its native TOAST compression.
+
+The migration declares `trajectory_runtime_events`, `sqlite_stat1`, and
+`sqlite_stat4` as its backup scope; backup machinery includes schema metadata.
+SQLite may scan the trajectory table while adding columns, and rebuilding the
+covering index reads retained event sizes. It does not scan or rewrite transcript
+payloads. Older builds refuse the new schema; rollback needs the verified
+pre-upgrade backup and its matching build.
 
 ### Agent schema 29
 
