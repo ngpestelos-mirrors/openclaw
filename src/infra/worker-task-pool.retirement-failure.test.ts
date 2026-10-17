@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { EventEmitter } from "node:events";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,39 +6,22 @@ import * as nativeSections from "../../packages/worker-runtime/src/worker-task-n
 import { resolveSessionHistoryUnavailableMessage } from "../gateway/session-history-error.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createOwnedWorkerTaskPool, WorkerTaskError, WorkerTaskPool } from "./worker-task-pool.js";
+import { holdExit, type MockWorker } from "./worker-task-pool.owned.test-support.js";
+import type { WorkerTaskPoolOptions } from "./worker-task-pool.types.js";
 
 type PostedTask = { taskId: number; responseId?: number; nativeSections?: SharedArrayBuffer };
 
-type FakeWorker = EventEmitter & {
-  posted: ReturnType<typeof vi.fn<(message: PostedTask) => void>>;
-  postMessage: (message: PostedTask) => void;
-  terminate: ReturnType<typeof vi.fn<() => Promise<number>>>;
-};
+type FakeWorker = MockWorker<PostedTask>;
 const workers = vi.hoisted(() => [] as FakeWorker[]);
 const cleanup = vi.hoisted(() => vi.fn<() => Promise<void>>());
 const taskPosted = vi.hoisted(() => vi.fn());
 
 vi.mock("node:worker_threads", async (importOriginal) => {
-  const { EventEmitter } = await import("node:events");
+  const { createMockWorkerClass } = await import("./worker-task-pool.owned.test-support.js");
   return {
     ...(await importOriginal<typeof import("node:worker_threads")>()),
     parentPort: null,
-    Worker: class extends EventEmitter {
-      constructor() {
-        super();
-        workers.push(this);
-      }
-      posted = vi.fn<(message: PostedTask) => void>(() => {
-        taskPosted();
-      });
-      postMessage = this.posted;
-      ref() {}
-      unref() {}
-      terminate = vi.fn(async () => {
-        this.emit("exit", 0);
-        return 0;
-      });
-    },
+    Worker: createMockWorkerClass(workers, () => taskPosted()),
   };
 });
 vi.mock("node:os", async (importOriginal) => ({
@@ -50,18 +32,18 @@ vi.mock("./runtime-worker-url.js", () => ({ resolveRuntimeWorkerThreadExecArgv: 
 vi.mock("./temp-artifact-cleanup.js", () => ({ removeTemporaryArtifacts: cleanup }));
 
 const pools: WorkerTaskPool<string, string>[] = [];
-function createPool(validateResult?: (value: string) => void) {
+function publicPool(options: Partial<WorkerTaskPoolOptions<string>> = {}) {
   const pool = new WorkerTaskPool<string, string>({
     workerUrl: new URL("data:text/javascript,"),
     maxWorkers: 1,
-    maxPendingBytes: 10,
-    sharedCompute: true,
     idleTimeoutMs: 0,
-    validateResult,
+    ...options,
   });
   pools.push(pool);
   return pool;
 }
+const createPool = (validateResult?: (value: string) => void) =>
+  publicPool({ maxPendingBytes: 10, sharedCompute: true, validateResult });
 function taskId(worker: FakeWorker) {
   return expectDefined(worker.posted.mock.calls[0]?.[0].taskId, "posted task");
 }
@@ -135,16 +117,13 @@ describe("worker task retirement failures", () => {
           admitted.resolve();
         }
       });
-      const pool = new WorkerTaskPool<string, string>({
-        workerUrl: new URL("data:text/javascript,"),
+      const pool = publicPool({
         maxWorkers: 2,
-        idleTimeoutMs: 0,
         prepareWorker: () => ({
           options: {},
           temporaryDirectory: `/fixture/worker-${workers.length}`,
         }),
       });
-      pools.push(pool);
       const released = [vi.fn(), vi.fn()];
       const controllers = [new AbortController(), new AbortController()];
       const tasks = controllers.map((controller, index) =>
@@ -227,12 +206,7 @@ describe("worker task retirement failures", () => {
   );
 
   it("retries failed retirement without terminating or waiting for a healthy sibling", async () => {
-    const pool = new WorkerTaskPool<string, string>({
-      workerUrl: new URL("data:text/javascript,"),
-      maxWorkers: 2,
-      idleTimeoutMs: 0,
-    });
-    pools.push(pool);
+    const pool = publicPool({ maxWorkers: 2 });
     const controller = new AbortController();
     const released = vi.fn();
     const failed = pool.run("failed", {
@@ -252,22 +226,15 @@ describe("worker task retirement failures", () => {
     failedWorker.terminate.mockRejectedValueOnce(new Error("exit uncertain"));
     controller.abort(new Error("failed task"));
     await rejected;
-    const entered = createDeferredCore();
-    const exit = createDeferredCore();
-    failedWorker.terminate.mockImplementationOnce(async () => {
-      entered.resolve();
-      await exit.promise;
-      failedWorker.emit("exit", 0);
-      return 0;
-    });
+    const native = holdExit(failedWorker);
     const retirement = pool.retryFailedRetirements();
     try {
-      await entered.promise;
+      await native.entered;
       expect(released).not.toHaveBeenCalled();
       expect(healthyWorker.terminate).not.toHaveBeenCalled();
       expect(pool.getSnapshot().pendingTasks).toBe(2);
     } finally {
-      exit.resolve();
+      native.release();
       await retirement;
     }
     expect(released).toHaveBeenCalledOnce();
@@ -377,24 +344,17 @@ describe("worker task retirement failures", () => {
       const waitingPool = createPool();
       const waitingResult = waitingPool.run("waiting", {}).catch((error: unknown) => error);
       expect(workers).toHaveLength(1);
-      const exit = createDeferredCore();
-      const terminating = createDeferredCore();
-      worker.terminate.mockImplementationOnce(async () => {
-        terminating.resolve();
-        await exit.promise;
-        worker.emit("exit", 0);
-        return 0;
-      });
+      const native = holdExit(worker);
       const joined = pool[join]();
       try {
-        await terminating.promise;
+        await native.entered;
         expect(inputReleased).not.toHaveBeenCalled();
         expect(responseReleased).not.toHaveBeenCalled();
         expect(executionSettled).not.toHaveBeenCalled();
         expect(pool.getSnapshot().pendingTasks).toBe(1);
         expect(workers).toHaveLength(1);
       } finally {
-        exit.resolve();
+        native.release();
         await joined;
       }
       expect(inputReleased).toHaveBeenCalledOnce();

@@ -140,23 +140,32 @@ export async function runNativeResourceLifecycle(
   const source = captureRetainedNativeWorkerSource({ runtimeGeneration: undefined });
   const idleBrokerProof =
     edge === "idle-broker" ? createIdleBrokerRetirementProof(source) : undefined;
-  const resource = source.captureResource(
-    resolveRuntimeWorkerUrl(nativeWorkerResourceEntrypoint),
-    "nativeResource",
-    { databasePath, lateAttachment: edge === "late-attachment" },
-    control.connect,
-  );
   const resourceWorkerSource = `const { parentPort, workerData } = require("node:worker_threads");
     const port = workerData.nativeResource;
     port.on("message", (value) => parentPort.postMessage(value, []));
     parentPort.on("message", (value) => port.postMessage(value, []));
     port.postMessage({ open: true }, []);`;
-  const target = createRetainedNativeWorker(
-    resourceWorkerSource,
-    { eval: true, execArgv: [], workerData: {} },
-    source,
-    resource,
-  );
+  const createResourceWorker = (owner: ReturnType<typeof createControl>, input: unknown) =>
+    createRetainedNativeWorker(
+      resourceWorkerSource,
+      { eval: true, execArgv: [], workerData: {} },
+      source,
+      source.captureResource(
+        resolveRuntimeWorkerUrl(nativeWorkerResourceEntrypoint),
+        "nativeResource",
+        input,
+        owner.connect,
+      ),
+    );
+  const target = createResourceWorker(control, {
+    databasePath,
+    lateAttachment: edge === "late-attachment",
+  });
+  const service = (
+    label: string,
+    done: () => boolean,
+    port: Pick<typeof target, "service"> = target,
+  ) => serviceUntil(label, () => port.service(), done);
   const replies: unknown[] = [];
   const errors: Error[] = [];
   let exited = false;
@@ -170,9 +179,8 @@ export async function runNativeResourceLifecycle(
   });
   let database: DatabaseSync | undefined;
   try {
-    serviceUntil(
+    service(
       "native SQLite child ready",
-      () => target.service(),
       () =>
         (replies.length > 0 && facts.childPid > 0 && facts.childEnvironmentObserved) ||
         errors.length > 0,
@@ -189,27 +197,18 @@ export async function runNativeResourceLifecycle(
     if (edge === "late-attachment") {
       await delay(15_050);
       const siblingControl = createControl();
-      const siblingResource = source.captureResource(
-        resolveRuntimeWorkerUrl(nativeWorkerResourceEntrypoint),
-        "nativeResource",
-        { databasePath: path.join(directory, "late-native-child.sqlite") },
-        siblingControl.connect,
-      );
-      const sibling = createRetainedNativeWorker(
-        resourceWorkerSource,
-        { eval: true, execArgv: [], workerData: {} },
-        source,
-        siblingResource,
-      );
+      const sibling = createResourceWorker(siblingControl, {
+        databasePath: path.join(directory, "late-native-child.sqlite"),
+      });
       const ready = createDeferredCore<unknown>();
       sibling.on("message", ready.resolve);
       sibling.on("error", ready.reject);
       try {
         await ready.promise;
-        serviceUntil(
+        service(
           "late native resource owner ready",
-          () => sibling.service(),
           () => siblingControl.facts.childEnvironmentObserved,
+          sibling,
         );
         assert.equal(siblingControl.facts.brokerPid, facts.brokerPid);
         await assert.rejects(sibling.terminate(), /synthetic first resource close failure/);
@@ -226,11 +225,7 @@ export async function runNativeResourceLifecycle(
       assertHeld();
     }
     const first = target.stop();
-    serviceUntil(
-      "failed native resource close",
-      () => first.service(),
-      () => first.read().status !== "pending",
-    );
+    service("failed native resource close", () => first.read().status !== "pending", first);
     const failure = first.read();
     assert.equal(failure.status, "rejected");
     if (failure.status === "rejected") {
@@ -238,19 +233,11 @@ export async function runNativeResourceLifecycle(
     }
     assertHeld();
     const retry = target.stop();
-    serviceUntil(
-      "same resource owner retry",
-      () => retry.service(),
-      () => facts.attempts === 2,
-    );
+    service("same resource owner retry", () => facts.attempts === 2, retry);
     assert.equal(retry.read().status, "pending");
     assertHeld();
     permit();
-    serviceUntil(
-      "native resource close",
-      () => retry.service(),
-      () => retry.read().status !== "pending",
-    );
+    service("native resource close", () => retry.read().status !== "pending", retry);
     assert.deepEqual(retry.read(), { status: "fulfilled", value: undefined });
     assert.equal(facts.constructions, 1);
     assert.equal(facts.childClosed, true);

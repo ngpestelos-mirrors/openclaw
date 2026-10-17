@@ -1,7 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { EventEmitter } from "node:events";
 import { setImmediate as nextTurn } from "node:timers/promises";
-import type { WorkerOptions } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
@@ -11,14 +9,10 @@ import {
 } from "./diagnostic-events.js";
 import type { WorkerPoolClass } from "./worker-pool-sizing.js";
 import { createOwnedWorkerTaskPool, WorkerTaskPool } from "./worker-task-pool.js";
+import { holdExit, type MockWorker } from "./worker-task-pool.owned.test-support.js";
 
 type PostedTask = { input: string; taskId: number };
-type FakeWorker = EventEmitter & {
-  options?: WorkerOptions;
-  posted: ReturnType<typeof vi.fn<(message: PostedTask) => void>>;
-  postMessage: (message: PostedTask) => void;
-  terminate: ReturnType<typeof vi.fn<() => Promise<number>>>;
-};
+type FakeWorker = MockWorker<PostedTask>;
 const workers = vi.hoisted(() => [] as FakeWorker[]);
 const cpu = vi.hoisted(() => ({ count: 2 }));
 vi.mock("node:os", async (importOriginal) => ({
@@ -27,30 +21,14 @@ vi.mock("node:os", async (importOriginal) => ({
 }));
 vi.mock("node:worker_threads", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:worker_threads")>();
-  const { EventEmitter } = await import("node:events");
+  const { createMockWorkerClass } = await import("./worker-task-pool.owned.test-support.js");
   return {
     ...actual,
-    Worker: class extends EventEmitter {
-      constructor(
-        _url: URL,
-        readonly options: WorkerOptions,
-      ) {
-        super();
-        workers.push(this);
-      }
-      posted = vi.fn((message: PostedTask) => {
-        queueMicrotask(() =>
-          this.emit("message", { status: "ok", taskId: message.taskId, value: message.input }),
-        );
-      });
-      postMessage = this.posted;
-      ref() {}
-      unref() {}
-      terminate = vi.fn(async () => {
-        this.emit("exit", 0);
-        return 0;
-      });
-    },
+    Worker: createMockWorkerClass(workers, (worker, message) => {
+      queueMicrotask(() =>
+        worker.emit("message", { status: "ok", taskId: message.taskId, value: message.input }),
+      );
+    }),
   };
 });
 vi.mock("./runtime-worker-url.js", () => ({ resolveRuntimeWorkerThreadExecArgv: () => [] }));
@@ -78,6 +56,19 @@ afterEach(async () => {
   await Promise.all(pools.splice(0).map((pool) => pool.close()));
   cpu.count = 2;
 });
+
+function diagnosticRequests() {
+  const events: Extract<DiagnosticEventPayload, { type: "worker.request" }>[] = [];
+  const unsubscribe = onTrustedInternalDiagnosticEvent(
+    (event) => {
+      if (event.type === "worker.request") {
+        events.push(event);
+      }
+    },
+    { include: ["worker.request"] },
+  );
+  return { events, unsubscribe };
+}
 
 it.each<{
   cpus: number;
@@ -177,15 +168,7 @@ describe("public worker task preparation custody", () => {
   );
 
   it("attributes owned tasks before input preparation without exporting private operation suffixes", async () => {
-    const events: Extract<DiagnosticEventPayload, { type: "worker.request" }>[] = [];
-    const unsubscribe = onTrustedInternalDiagnosticEvent(
-      (event) => {
-        if (event.type === "worker.request") {
-          events.push(event);
-        }
-      },
-      { include: ["worker.request"] },
-    );
+    const { events, unsubscribe } = diagnosticRequests();
     const pool = createOwnedWorkerTaskPool<string, string>({
       workerUrl: new URL("file:///fixture/openclaw-state-read.worker.js"),
       maxWorkers: 1,
@@ -217,10 +200,7 @@ describe("public worker task preparation custody", () => {
   });
 
   it("attributes unknown workers without publishing private paths or inputs", async () => {
-    const events: DiagnosticEventPayload[] = [];
-    const unsubscribe = onTrustedInternalDiagnosticEvent((event) => events.push(event), {
-      include: ["worker.request"],
-    });
+    const { events, unsubscribe } = diagnosticRequests();
     const pool = createPool({
       workerUrl: new URL("file:///synthetic-private-root/synthetic-private-worker.js"),
     });
@@ -229,9 +209,7 @@ describe("public worker task preparation custody", () => {
         "synthetic-private-input",
       );
       await waitForDiagnosticEventsDrained();
-      expect(
-        events.map((event) => event.type === "worker.request" && [event.kind, event.phase]),
-      ).toEqual([
+      expect(events.map((event) => [event.kind, event.phase])).toEqual([
         ["extension", "queued"],
         ["extension", "started"],
         ["extension", "completed"],
@@ -280,14 +258,7 @@ describe("public worker task preparation custody", () => {
       const pool = createPool({ sharedCompute: true, maxPendingBytes: 8 });
       await expect(pool.run("warm", {})).resolves.toBe("warm");
       const worker = workers[0]!;
-      const exit = createDeferredCore();
-      const stopping = createDeferredCore();
-      worker.terminate.mockImplementationOnce(async () => {
-        stopping.resolve();
-        await exit.promise;
-        worker.emit("exit", 0);
-        return 0;
-      });
+      const native = holdExit(worker);
       const preparation = createDeferredCore();
       const captured = ["retained request"];
       let observed: string[] | undefined;
@@ -326,14 +297,14 @@ describe("public worker task preparation custody", () => {
       const rotation = pool.rotate();
       controller.abort(reason);
       try {
-        await stopping.promise;
+        await native.entered;
         expect(captured).toEqual(["retained request"]);
         expect(pool.getSnapshot().pendingTasks).toBe(1);
         await expect(pool.run("over capacity", { inputBytes: 1 })).rejects.toMatchObject({
           code: "overloaded",
         });
         if (order === "exit-first") {
-          exit.resolve();
+          native.release();
           await rejected;
           expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: true });
           await rotation;
@@ -354,7 +325,7 @@ describe("public worker task preparation custody", () => {
         await nextTurn();
         expect(closed).toBe(false);
         preparation.resolve();
-        exit.resolve();
+        native.release();
         await Promise.all([closing, rotation, rejected]);
         await expect(next).resolves.toBe("next pool");
         expect(observed).toEqual(["retained request"]);
@@ -366,7 +337,7 @@ describe("public worker task preparation custody", () => {
         await expect(active).rejects.toBe(reason);
       } finally {
         preparation.resolve();
-        exit.resolve();
+        native.release();
         await rejected;
         await Promise.allSettled([active, next, rotation, pool.close()]);
       }

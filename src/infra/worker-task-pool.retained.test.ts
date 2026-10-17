@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { setImmediate as nextTurn } from "node:timers/promises";
+import type { WorkerOptions } from "node:worker_threads";
 import type { RetainedOperation } from "@openclaw/worker-runtime/lifecycle";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -20,6 +22,7 @@ import type {
   ResourceFixtureReply,
 } from "./worker-task-pool.resources.test-support.js";
 import type { PoolFixtureInput, PoolFixtureResult } from "./worker-task-pool.test-support.js";
+import type { WorkerTaskPoolOptions } from "./worker-task-pool.types.js";
 
 const pools: Array<{ close(): Promise<void> }> = [];
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -28,18 +31,43 @@ afterEach(async () => {
   resetDatabaseEngineSelectionForTest();
 });
 
+function createPool<Input, Output>(
+  file: string,
+  retainedTransport = true,
+  options: Partial<WorkerTaskPoolOptions<Output>> = {},
+) {
+  const pool = createOwnedWorkerTaskPool<Input, Output>(
+    { workerUrl: new URL(file, import.meta.url), maxWorkers: 1, idleTimeoutMs: 0, ...options },
+    retainedTransport ? { retainedTransport: true } : undefined,
+  );
+  pools.push(pool);
+  return pool;
+}
+
+const taskFixture = (retained = true, workerOptions?: WorkerOptions) =>
+  createPool<PoolFixtureInput, PoolFixtureResult>("./worker-task-pool.test-support.ts", retained, {
+    workerOptions,
+  });
+const fixture = (retained = true) =>
+  createPool<ResourceFixtureInput, ResourceFixtureReply>(
+    "./worker-task-pool.resources.test-support.ts",
+    retained,
+    retained ? {} : { idleTimeoutMs: undefined },
+  );
+
+async function runResource(pool: ReturnType<typeof fixture>, input: ResourceFixtureInput) {
+  const task = pool.runTask(input, {});
+  try {
+    return await task.result;
+  } finally {
+    await task.close();
+  }
+}
+
 it.each([false, true])(
   "carries boot and offline selections through a reused task worker (retained: %s)",
   async (retainedTransport) => {
-    const pool = createOwnedWorkerTaskPool<PoolFixtureInput, PoolFixtureResult>(
-      {
-        workerUrl: new URL("./worker-task-pool.test-support.ts", import.meta.url),
-        maxWorkers: 1,
-        idleTimeoutMs: 0,
-      },
-      retainedTransport ? { retainedTransport: true } : undefined,
-    );
-    pools.push(pool);
+    const pool = taskFixture(retainedTransport);
     const run = () => pool.run({ label: "selection", readEngineSelection: true }, {});
     const prewarmed = await run();
     expect(prewarmed.engineSelection).toBeUndefined();
@@ -74,32 +102,10 @@ it.each([false, true])(
 
 it("preserves workerData through retained task startup", async () => {
   const workerData = { type: "user data", port: "user port" };
-  const pool = createOwnedWorkerTaskPool<PoolFixtureInput, PoolFixtureResult>(
-    {
-      workerUrl: new URL("./worker-task-pool.test-support.ts", import.meta.url),
-      workerOptions: { workerData },
-      maxWorkers: 1,
-      idleTimeoutMs: 0,
-    },
-    { retainedTransport: true },
-  );
-  pools.push(pool);
+  const pool = taskFixture(true, { workerData });
   const reply = await pool.run({ label: "startup", readStartupOptions: true }, {});
   expect(reply.startupOptions?.data).toEqual(workerData);
 });
-
-function fixture() {
-  const pool = createOwnedWorkerTaskPool<ResourceFixtureInput, ResourceFixtureReply>(
-    {
-      workerUrl: new URL("./worker-task-pool.resources.test-support.ts", import.meta.url),
-      maxWorkers: 1,
-      idleTimeoutMs: 0,
-    },
-    { retainedTransport: true },
-  );
-  pools.push(pool);
-  return pool;
-}
 
 const pause = new Int32Array(new SharedArrayBuffer(4));
 function serviceUntil(service: () => void, ready: () => boolean): void {
@@ -226,15 +232,7 @@ it("enforces the existing task deadline while the caller cannot run timers and j
 });
 
 it("answers an earlier task's synchronous host exchange while servicing a queued task", () => {
-  const pool = createOwnedWorkerTaskPool<PoolFixtureInput, PoolFixtureResult>(
-    {
-      workerUrl: new URL("./worker-task-pool.test-support.ts", import.meta.url),
-      maxWorkers: 1,
-      idleTimeoutMs: 0,
-    },
-    { retainedTransport: true },
-  );
-  pools.push(pool);
+  const pool = taskFixture();
   const context = new AsyncLocalStorage<string>();
   const callbacks: Array<string | undefined> = [];
   const consumed: Array<string | undefined> = [];
@@ -282,15 +280,9 @@ it("answers an earlier task's synchronous host exchange while servicing a queued
 
 it("services a sibling pool's database facts while the host event loop is blocked", async () => {
   const blockedPool = fixture();
-  const admissionPool = createOwnedWorkerTaskPool<AdmissionTaskInput, AdmissionTaskResult>(
-    {
-      workerUrl: new URL("./sqlite-database-admission.task.test-support.ts", import.meta.url),
-      maxWorkers: 1,
-      idleTimeoutMs: 0,
-    },
-    { retainedTransport: true },
+  const admissionPool = createPool<AdmissionTaskInput, AdmissionTaskResult>(
+    "./sqlite-database-admission.task.test-support.ts",
   );
-  pools.push(admissionPool);
   await Promise.all([blockedPool.run({}, {}), admissionPool.run({}, {})]);
   const location = path.join(tempDirs.make("cross-pool-admission-"), "shared.sqlite");
   const database = new DatabaseSync(location);
@@ -322,25 +314,9 @@ it("services a sibling pool's database facts while the host event loop is blocke
   }
 });
 
-function ordinaryFixture() {
-  const pool = createOwnedWorkerTaskPool<ResourceFixtureInput, ResourceFixtureReply>({
-    workerUrl: new URL("./worker-task-pool.resources.test-support.ts", import.meta.url),
-    maxWorkers: 1,
-  });
-  pools.push(pool);
-  const run = async (input: ResourceFixtureInput) => {
-    const task = pool.runTask(input, {});
-    try {
-      return await task.result;
-    } finally {
-      await task.close();
-    }
-  };
-  return { pool, run };
-}
-
 it("serializes resource cleanup after an asynchronous task without cancelling it", async () => {
-  const { pool, run } = ordinaryFixture();
+  const pool = fixture(false);
+  const run = (input: ResourceFixtureInput) => runResource(pool, input);
   const first = await run({ retain: "source" });
   const barrier = new Int32Array(new SharedArrayBuffer(8));
   const task = pool.runTask({ wait: barrier.buffer }, {});
@@ -350,9 +326,7 @@ it("serializes resource cleanup after an asynchronous task without cancelling it
     closed = true;
   });
   try {
-    await new Promise((resolve) => {
-      setImmediate(resolve);
-    });
+    await nextTurn();
     expect(closed).toBe(false);
     Atomics.store(barrier, 1, 1);
     Atomics.notify(barrier, 1);

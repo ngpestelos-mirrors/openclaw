@@ -18,6 +18,11 @@ vi.mock("node:worker_threads", async (importOriginal) => ({
 }));
 
 const cleanups: Array<() => void> = [];
+const workerUrl = new URL("file:///synthetic/direct-task.worker.mjs");
+const messageMetrics = () =>
+  getWorkerMessageMetrics().find(
+    (entry) => entry.kind === "other" && entry.direction === "from_worker",
+  );
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) {
     cleanup();
@@ -29,17 +34,12 @@ function fixture() {
   const context = new AsyncLocalStorage<string>();
   const controls: NativeWorkerReply[] = [];
   const sent: NativeWorkerRequest[] = [];
-  const errors: Error[] = [];
   const references: boolean[] = [];
   const handles = new Set([1]);
   const runtime: NativeWorkerRuntime = {
     handles,
     service() {
-      for (;;) {
-        const reply = controls.shift();
-        if (!reply) {
-          break;
-        }
+      for (let reply = controls.shift(); reply; reply = controls.shift()) {
         worker.receive(reply);
       }
       worker.serviceTaskPort();
@@ -56,18 +56,9 @@ function fixture() {
   };
   const worker = context.run(
     "constructor",
-    () =>
-      new NativeWorker(
-        runtime,
-        1,
-        new URL("file:///synthetic/direct-task.worker.mjs"),
-        false,
-        false,
-        undefined,
-        port1,
-      ),
+    () => new NativeWorker(runtime, 1, workerUrl, false, false, undefined, port1),
   );
-  worker.on("error", (error) => errors.push(error));
+  worker.on("error", () => {});
   cleanups.push(() => {
     worker.ownerJoined(new Error("Fixture native owner joined"));
     port1.close();
@@ -80,7 +71,6 @@ function fixture() {
     context,
     controls,
     sent,
-    errors,
     handles,
     runtime,
     references,
@@ -90,9 +80,7 @@ function fixture() {
 describe("retained worker direct task transport", () => {
   it("retains pre-start messages and permits synchronous delivery from the started callback", async () => {
     const { worker, port, peer, context, controls } = fixture();
-    const before = getWorkerMessageMetrics().find(
-      (entry) => entry.kind === "other" && entry.direction === "from_worker",
-    );
+    const before = messageMetrics();
     const events: unknown[] = [];
     worker.on("message", (message) => events.push([message, context.getStore()]));
     worker.on("started", () => {
@@ -112,11 +100,7 @@ describe("retained worker direct task transport", () => {
       ["buffered", "constructor"],
       ["queued", "constructor"],
     ]);
-    expect(
-      getWorkerMessageMetrics().find(
-        (entry) => entry.kind === "other" && entry.direction === "from_worker",
-      ),
-    ).toEqual({
+    expect(messageMetrics()).toEqual({
       kind: "other",
       direction: "from_worker",
       messages: (before?.messages ?? 0) + 2,
@@ -139,8 +123,7 @@ describe("retained worker direct task transport", () => {
     expect(events).toEqual([]);
     worker.ownerFailed(new Error("native failure"));
     expect(events).toEqual(["native failure"]);
-    expect(worker.started).toBe(false);
-    expect(worker.executionStopped).toBe(false);
+    expect(worker).toMatchObject({ started: false, executionStopped: false });
     expect(handles.size).toBe(1);
     worker.ownerJoined(new Error("native owner joined"));
     expect(events).toEqual(["native failure", "execution-exit", "exit"]);
