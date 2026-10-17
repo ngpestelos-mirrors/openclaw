@@ -216,8 +216,9 @@ Once a session is established, a dropped Gateway connection does not log you out
 stays visible. The sidebar avatar has a green connection dot when healthy, amber during recovery
 or suspension, and red when disconnected or a refresh is required. The sidebar footer
 explains the interruption without moving the page and briefly shows **Connected** after recovery.
-With the sidebar collapsed, a flag beside the avatar appears for four seconds on status changes;
-hover or focus the avatar to reopen it. Below 1000px, the avatar tooltip replaces the flag.
+With the sidebar collapsed, a flag beside the avatar appears for four seconds on status changes.
+Hover or focus the avatar to reopen it. If the flag would cover a composer or other writing
+controls, the avatar tooltip carries the status instead. The tooltip is hidden while the flag is visible.
 On mobile, status replaces the header breadcrumb and badges the menu button; opening the drawer
 shows the full footer row. Brief disconnects keep the existing two-second grace.
 

@@ -3622,8 +3622,7 @@ openclaw-tooltip.sidebar-hover-tooltip {
   transition: transform 160ms ease;
 }
 
-.sidebar-connection-flag[data-open],
-.sidebar-identity-anchor:is(:hover, :focus-within) .sidebar-connection-flag {
+.sidebar-connection-flag[data-open] {
   visibility: visible;
   transform: none;
 }

@@ -542,9 +542,92 @@ it("briefly reveals collapsed status transitions and a recovery footer without e
   vi.advanceTimersByTime(2_000);
   await settle();
   expect(flag()?.hasAttribute("data-open")).toBe(false);
-  vi.stubGlobal("innerWidth", 999);
+});
+
+it("checks writing-surface clearance only when the avatar flag would open", async () => {
+  const { owner, runtime, view } = await mountShell();
+  await vi.dynamicImportSettled();
+  const connected = { ...runtime.context.gateway.snapshot, phase: "connected" as const };
+  const snapshot = vi.spyOn(runtime.context.gateway, "snapshot", "get").mockReturnValue(connected);
+  runtime.context.navigation.update({ navCollapsed: true });
+  const settle = async () => {
+    owner.invalidate();
+    flush();
+    await owner.navigationSidebar.updateComplete;
+    flush();
+  };
   await settle();
-  expect(flag()).toBeNull();
+  const anchor = view.container.querySelector<HTMLElement>(".sidebar-identity-anchor")!;
+  const card = anchor.querySelector<HTMLButtonElement>(".sidebar-identity-card")!;
+  const flag = anchor.querySelector<HTMLElement>(".sidebar-connection-flag")!;
+  const measure = vi
+    .spyOn(anchor, "getBoundingClientRect")
+    .mockReturnValue(new DOMRect(8, 764, 36, 36));
+  vi.spyOn(flag, "getBoundingClientRect").mockReturnValue(new DOMRect(36, 756, 240, 44));
+  const footer = document.createElement("div");
+  footer.className = "chat-footer";
+  const composer = document.createElement("div");
+  composer.className = "agent-chat__composer-shell";
+  let visible = true;
+  composer.checkVisibility = () => visible;
+  let bounds = new DOMRect(60, 760, 600, 80);
+  vi.spyOn(composer, "getBoundingClientRect").mockImplementation(() => bounds);
+  footer.append(composer);
+  view.container.querySelector("main.content")!.append(footer);
+  vi.useFakeTimers();
+  snapshot.mockReturnValue({ ...connected, phase: "offline", offlineStable: true });
+  await settle();
+  expect(flag.hasAttribute("data-open")).toBe(false);
+  expect(card.title).toBe(card.getAttribute("aria-label"));
+  expect(measure).toHaveBeenCalledOnce();
+  snapshot.mockReturnValue({
+    ...connected,
+    phase: "offline",
+    offlineStable: true,
+    lastError: "Still offline",
+  });
+  await settle();
+  expect(measure).toHaveBeenCalledOnce();
+  vi.advanceTimersByTime(4_000);
+  await settle();
+
+  for (const name of [
+    "agent-chat__composer-shell",
+    "new-session-page__composer",
+    "creation-composer",
+    "cron-editor-actions",
+  ]) {
+    composer.className = name;
+    anchor.dispatchEvent(new Event("pointerenter"));
+    flush();
+    expect(flag.hasAttribute("data-open"), name).toBe(false);
+    expect(card.title).toBe(card.getAttribute("aria-label"));
+    anchor.dispatchEvent(new Event("pointerleave"));
+    flush();
+  }
+  visible = false;
+  anchor.dispatchEvent(new Event("pointerenter"));
+  flush();
+  expect(flag.hasAttribute("data-open")).toBe(true);
+  expect(card.title).toBe("");
+  expect(card.getAttribute("aria-label")).toContain("Disconnected");
+  anchor.dispatchEvent(new Event("pointerleave"));
+  flush();
+  visible = true;
+  bounds = new DOMRect(500, 760, 600, 80);
+  card.focus();
+  flush();
+  expect(flag.hasAttribute("data-open")).toBe(true);
+  const reads = measure.mock.calls.length;
+  bounds = new DOMRect(60, 760, 600, 80);
+  await settle();
+  expect(measure).toHaveBeenCalledTimes(reads);
+  card.blur();
+  flush();
+  card.focus();
+  flush();
+  expect(flag.hasAttribute("data-open")).toBe(false);
+  expect(card.title).toBe(card.getAttribute("aria-label"));
 });
 
 it("restores the delegated shell after a pending update and can select another workspace", async () => {

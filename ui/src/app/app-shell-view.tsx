@@ -138,8 +138,7 @@ export function ApplicationShell(props: { host: ShellViewHost }): SolidJSX.Eleme
           gatewayStatus: status,
           connectionRecovery: recovery,
           connectionFlagVisible: flag,
-          connectionFlagAllowed:
-            state.navCollapsed && !state.mobileNavLayout && state.shellWidth >= 1000,
+          connectionFlagAllowed: state.navCollapsed && !state.mobileNavLayout,
         });
       }
     },

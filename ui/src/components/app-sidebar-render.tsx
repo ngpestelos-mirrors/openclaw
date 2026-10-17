@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, Show } from "solid-js";
 import type { GatewayControlUiPluginTab } from "../api/gateway.ts";
 import { serializeSidebarEntry, type SidebarZoneEntry } from "../app-navigation.ts";
 import { isRouteId, pluginTabLocation } from "../app-route-paths.ts";
@@ -282,6 +282,61 @@ export function renderAppSidebarFooterBar(host: AppSidebarRenderHost): JSX.Eleme
         : buildSubtitle())
     );
   };
+  const identityLabel = () =>
+    identityDetail() ? `${identityMenuLabel()}: ${identityDetail()}` : identityMenuLabel();
+  let identityAnchor!: HTMLDivElement;
+  let flag!: HTMLDivElement;
+  const [hovered, setHovered] = createSignal(false);
+  const [focused, setFocused] = createSignal(false);
+  const [flagOpen, setFlagOpen] = createSignal(false);
+  const flagKind = createMemo(() => (host.connectionFlagAllowed ? host.gatewayStatus?.kind : null));
+  createEffect(
+    () => ({
+      kind: flagKind(),
+      transition: host.connectionFlagVisible,
+      hover: hovered(),
+      focus: focused(),
+    }),
+    (request, previous) => {
+      if (!request.kind || !(request.transition || request.hover || request.focus)) {
+        setFlagOpen(false);
+        return;
+      }
+      // Measure only new open requests, not exits held open by another input.
+      if (
+        previous &&
+        request.kind === previous.kind &&
+        (!request.transition || previous.transition) &&
+        (!request.hover || previous.hover) &&
+        (!request.focus || previous.focus)
+      ) {
+        return;
+      }
+      const anchor = identityAnchor.getBoundingClientRect();
+      const { width, height } = flag.getBoundingClientRect();
+      // The hidden flag has a box; anchor its resting rect without the slide transform.
+      const surfaces = identityAnchor
+        .closest(".shell")
+        ?.querySelectorAll<HTMLElement>(
+          "main.content :is(.chat-footer .agent-chat__composer-shell, .new-session-page__composer, .creation-composer, .cron-editor-actions)",
+        );
+      const overlaps = Array.from(surfaces ?? []).some((surface) => {
+        if (!surface.checkVisibility({ checkOpacity: true, visibilityProperty: true })) {
+          return false;
+        }
+        const rect = surface.getBoundingClientRect();
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          rect.left < anchor.right + width &&
+          rect.right > anchor.right &&
+          rect.top < anchor.bottom &&
+          rect.bottom > anchor.bottom - height
+        );
+      });
+      setFlagOpen(!overlaps);
+    },
+  );
   return (
     <div class="sidebar-footer-bar sidebar-footer-bar--one-action">
       <span class="sidebar-footer-actions">
@@ -341,19 +396,27 @@ export function renderAppSidebarFooterBar(host: AppSidebarRenderHost): JSX.Eleme
           watchUpdateProgress={host.watchUpdateProgress}
         />
       </span>
-      <div class="sidebar-identity-anchor">
+      <div
+        ref={(element) => (identityAnchor = element)}
+        class="sidebar-identity-anchor"
+        onPointerEnter={() => setHovered(true)}
+        onPointerLeave={() => setHovered(false)}
+        onFocusIn={() => setFocused(true)}
+        onFocusOut={(event) =>
+          setFocused(
+            event.relatedTarget instanceof Node &&
+              event.currentTarget.contains(event.relatedTarget),
+          )
+        }
+      >
         <button
           type="button"
           class="sidebar-identity-card"
           aria-haspopup="menu"
           aria-expanded={host.sidebarMenus.identityMenuPosition !== null ? "true" : "false"}
-          title={
-            identityDetail() ? `${identityMenuLabel()}: ${identityDetail()}` : identityMenuLabel()
-          }
+          title={flagOpen() ? "" : identityLabel()}
           data-connection-status={connectionStatus() ?? (host.connected ? "connected" : undefined)}
-          aria-label={
-            identityDetail() ? `${identityMenuLabel()}: ${identityDetail()}` : identityMenuLabel()
-          }
+          aria-label={identityLabel()}
           onClick={(event) => host.sidebarMenus.toggleIdentityMenu(event.currentTarget)}
         >
           <span class="sidebar-identity-card__avatar">
@@ -376,10 +439,11 @@ export function renderAppSidebarFooterBar(host: AppSidebarRenderHost): JSX.Eleme
             ) : undefined}
           </span>
         </button>
-        <Show when={host.connectionFlagAllowed && host.gatewayStatus?.kind}>
+        <Show when={flagKind()}>
           <div
+            ref={(element) => (flag = element)}
             class="sidebar-connection-flag"
-            data-open={host.connectionFlagVisible ? "" : undefined}
+            data-open={flagOpen() ? "" : undefined}
           >
             <GatewayStatus {...host.gatewayStatus!} row />
           </div>

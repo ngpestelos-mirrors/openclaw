@@ -6,6 +6,7 @@ import { defaultControlUiFeatureMethods } from "../test-helpers/control-ui-e2e-d
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
 import { takeControlUiScreenshotFrame } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import { controlUiSessionUrl, installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import { closeChatDetails, openChatDetails } from "./chat-details.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 import { installNativeWebChrome } from "./native-nav.test-support.ts";
 import { waitForGatewayRecoveryScope } from "./new-session-page.test-support.ts";
@@ -168,16 +169,27 @@ suite.define(() => {
   });
 
   it("briefly reveals collapsed-rail status and reopens it for pointer and keyboard access", async () => {
-    await withPage(1280, async ({ page }) => {
+    await withPage(1920, async ({ page }) => {
       await installNativeWebChrome(page);
       const gateway = await installMockGateway(page);
       await page.goto(`${suite.server.baseUrl}chat`);
       await waitForControlUiGatewayReady(page);
       await page.locator(".agent-chat__composer-combobox textarea").waitFor({ state: "visible" });
+      await openChatDetails(page);
       await gateway.emitGatewayEvent("ui.command", {
         command: { kind: "sidebar", visible: false },
       });
       await page.locator(".shell--nav-collapsed").waitFor({ state: "visible" });
+      const composer = page.locator(".chat-footer .agent-chat__composer-shell");
+      const identity = page.locator(".sidebar-identity-card");
+      const flag = page.locator(".sidebar-connection-flag");
+      const flagRight = async () =>
+        (await identity.boundingBox())!.x +
+        (await identity.boundingBox())!.width +
+        (await flag.boundingBox())!.width;
+      await expect
+        .poll(async () => (await composer.boundingBox())!.x - (await flagRight()))
+        .toBeGreaterThanOrEqual(0);
       await page.clock.install();
       await gateway.setOnline(false);
       const retainedStatus = page.locator(
@@ -185,16 +197,25 @@ suite.define(() => {
       );
       await retainedStatus.waitFor({ state: "visible" });
       expect(await retainedStatus.getAttribute("aria-label")).toContain("Reconnecting…");
-      const flag = page.locator(".sidebar-connection-flag");
+      await expect
+        .poll(async () => (await composer.boundingBox())!.x - (await flagRight()))
+        .toBeGreaterThanOrEqual(0);
+      const identityTooltip = page
+        .getByRole("tooltip")
+        .filter({ hasText: "Identity and app menu for Owner:" });
       const retry = flag.getByRole("button", {
         name: "Reconnecting… — Retry now",
         exact: true,
       });
       await retry.waitFor({ state: "visible" });
+      expect(await retainedStatus.getAttribute("title")).toBe("");
       await page.clock.runFor(4_001);
       await flag.waitFor({ state: "hidden" });
       await retainedStatus.hover();
       await retry.waitFor({ state: "visible" });
+      await page.clock.runFor(200);
+      expect(await identityTooltip.count()).toBe(0);
+      expect(await retainedStatus.getAttribute("aria-label")).toContain("Reconnecting…");
       expect(
         await retry.evaluate((button) => {
           const bounds = button.getBoundingClientRect();
@@ -210,9 +231,31 @@ suite.define(() => {
       await retry.waitFor({ state: "visible" });
       await page.keyboard.press("Tab");
       expect(await retry.evaluate((element) => element === document.activeElement)).toBe(true);
-      await page.setViewportSize({ width: 999, height: 900 });
+
+      await composer.locator("textarea").focus();
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await openChatDetails(page);
+      await expect
+        .poll(async () => (await composer.boundingBox())!.x - (await flagRight()))
+        .toBeLessThan(0);
+      await retainedStatus.hover();
+      await page.clock.runFor(200);
       await flag.waitFor({ state: "hidden" });
+      await identityTooltip.waitFor({ state: "visible" });
+      await captureStatus(page, "collapsed-avatar-overlap", composer, [retainedStatus, composer]);
+      await retainedStatus.focus();
+      expect(await flag.isVisible()).toBe(false);
       expect(await retainedStatus.getAttribute("aria-label")).toContain("Reconnecting…");
+      await closeChatDetails(page);
+      await page.setViewportSize({ width: 900, height: 900 });
+      await page.mouse.move(600, 400);
+      await expect
+        .poll(async () => (await composer.boundingBox())!.x - (await flagRight()))
+        .toBeLessThan(0);
+      await retainedStatus.hover();
+      await page.clock.runFor(200);
+      expect(await flag.isVisible()).toBe(false);
+      await identityTooltip.waitFor({ state: "visible" });
       await page.clock.resume();
     });
   });
