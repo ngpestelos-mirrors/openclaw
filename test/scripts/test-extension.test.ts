@@ -9,11 +9,10 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { bundledPluginFile, bundledPluginRoot } from "openclaw/plugin-sdk/test-fixtures";
+import { bundledPluginRoot } from "openclaw/plugin-sdk/test-fixtures";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { parseCLI } from "vitest/node";
 import {
-  detectChangedExtensionIds,
   listAvailableExtensionIds,
   listChangedExtensionIds,
 } from "../../scripts/lib/changed-extensions.mts";
@@ -176,19 +175,6 @@ beforeAll(async () => {
 afterAll(async () => {
   await receipts?.close();
 });
-let balancedExtensionShards: ReturnType<typeof createExtensionTestShards>;
-let balancedExpectedExtensionIds: string[];
-
-beforeAll(() => {
-  balancedExtensionShards = createExtensionTestShards({
-    cwd: process.cwd(),
-    shardCount: DEFAULT_EXTENSION_TEST_SHARD_COUNT,
-  });
-  balancedExpectedExtensionIds = listAvailableExtensionIds().filter(
-    (extensionId) =>
-      resolveExtensionTestPlan({ cwd: process.cwd(), targetArg: extensionId }).hasTests,
-  );
-});
 
 it("splits the IRC batch between persistence and channel owners without double counting", async () => {
   const extensionId = "irc";
@@ -262,34 +248,11 @@ it("infers the extension from the current working directory", () => {
   expect(plan).toMatchObject({ extensionId: "slack", extensionDir: bundledPluginRoot("slack") });
 });
 
-it.each([
-  {
-    name: "maps changed paths back to extension ids",
-    paths: [
-      bundledPluginFile("slack", "src/channel.ts"),
-      "src/line/message.test.ts",
-      bundledPluginFile("firecrawl", "package.json"),
-      "src/not-a-plugin/file.ts",
-    ],
-    expected: ["firecrawl", "line", "slack"],
-  },
-  {
-    name: "does not normalize extension path lookalikes",
-    paths: [
-      " extensions/slack/src/channel.ts",
-      String.raw`extensions\slack\src\channel.ts`,
-      " src/line/message.test.ts",
-    ],
-    expected: [],
-  },
-])("$name", ({ paths, expected }) => {
-  expect(detectChangedExtensionIds(paths)).toEqual(expected);
-});
-
-it("lists available extension ids from git without reading extension directories", () => {
+it("maps only exact tracked extension paths without reading extension directories", () => {
   const payload = expectNoNodeFsScans<{
     changed: string[];
     ids: number;
+    lookalikes: string[];
   }>(`
       const { detectChangedExtensionIds, listAvailableExtensionIds } =
         await import("./scripts/lib/changed-extensions.mts");
@@ -297,11 +260,19 @@ it("lists available extension ids from git without reading extension directories
       const changed = detectChangedExtensionIds([
         "extensions/slack/src/channel.ts",
         "src/line/message.test.ts",
+        "extensions/firecrawl/package.json",
         "extensions/not-real/package.json",
+        "src/not-a-plugin/file.ts",
       ]);
-      return { changed, ids: ids.length };
+      const lookalikes = detectChangedExtensionIds([
+        " extensions/slack/src/channel.ts",
+        ${JSON.stringify(String.raw`extensions\slack\src\channel.ts`)},
+        " src/line/message.test.ts",
+      ]);
+      return { changed, ids: ids.length, lookalikes };
     `);
-  expect(payload.changed).toEqual(["line", "slack"]);
+  expect(payload.changed).toEqual(["firecrawl", "line", "slack"]);
+  expect(payload.lookalikes).toEqual([]);
   expect(payload.ids).toBeGreaterThan(0);
 });
 
@@ -367,7 +338,10 @@ it("balances extension test shards by estimated CI cost", () => {
     expect(estimateExtensionTestCost(config, 1), config).toBe(singletonSeconds);
     expect(estimateExtensionTestCost(config, 10), config).toBe(tenFileSeconds);
   }
-  const shards = balancedExtensionShards;
+  const shards = createExtensionTestShards({ shardCount: DEFAULT_EXTENSION_TEST_SHARD_COUNT });
+  const expectedIds = listAvailableExtensionIds().filter(
+    (targetArg) => resolveExtensionTestPlan({ targetArg }).hasTests,
+  );
 
   expect(shards).toHaveLength(DEFAULT_EXTENSION_TEST_SHARD_COUNT);
   expect(shards.map((shard) => shard.checkName)).toEqual(
@@ -378,15 +352,13 @@ it("balances extension test shards by estimated CI cost", () => {
   const uniqueAssigned = [...new Set(assigned)];
 
   expect(uniqueAssigned.toSorted((left, right) => left.localeCompare(right))).toEqual(
-    balancedExpectedExtensionIds.toSorted((left, right) => left.localeCompare(right)),
+    expectedIds.toSorted((left, right) => left.localeCompare(right)),
   );
-  expect(assigned).toHaveLength(balancedExpectedExtensionIds.length);
+  expect(assigned).toHaveLength(expectedIds.length);
 
   const totals = shards.map((shard) => shard.estimatedCost);
   const largestPlugin = Math.max(
-    ...balancedExpectedExtensionIds.map(
-      (targetArg) => resolveExtensionTestPlan({ targetArg }).estimatedCost,
-    ),
+    ...expectedIds.map((targetArg) => resolveExtensionTestPlan({ targetArg }).estimatedCost),
   );
   const lowerBound = Math.max(
     largestPlugin,
@@ -622,6 +594,9 @@ posixIt(
       const childPidPath = path.join(root, "child.pid");
       const descendantPidPath = path.join(root, "descendant.pid");
       const signaledPath = path.join(root, "signaled");
+      const pidPaths = [childPidPath, descendantPidPath];
+      const readPids = () => pidPaths.map((file) => Number(readFileSync(file, "utf8")));
+      let pids: number[] = [];
 
       writeFileSync(
         config,
@@ -650,9 +625,6 @@ await new Promise(()=>{});export default {};`,
           runner.once("close", (code, exitSignal) => resolve({ code, signal: exitSignal }));
         },
       );
-      let childPid = 0;
-      let descendantPid = 0;
-
       try {
         // The native config publishes both PIDs before the receipt. Its exit can
         // overtake that separate socket, so durable records decide an early close.
@@ -660,17 +632,15 @@ await new Promise(()=>{});export default {};`,
           Promise.race([
             receipts.waitFor(childPidPath, "ready"),
             runnerClosed.then(() => {
-              if (!existsSync(childPidPath) || !existsSync(descendantPidPath)) {
+              if (!pidPaths.every(existsSync)) {
                 throw new Error(`timeout waiting for pid in ${childPidPath}`);
               }
             }),
           ]),
           signal,
         );
-        childPid = Number(readFileSync(childPidPath, "utf8"));
-        descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
-        expect(Number.isInteger(childPid)).toBe(true);
-        expect(Number.isInteger(descendantPid)).toBe(true);
+        pids = readPids();
+        expect(pids.map(Number.isInteger)).toEqual([true, true]);
 
         expect(runner.pid).toBeGreaterThan(0);
         process.kill(runner.pid!, "SIGTERM");
@@ -680,21 +650,18 @@ await new Promise(()=>{});export default {};`,
         // The config writes this synchronously before exiting, and the batch
         // runner joins the native process before re-raising its signal.
         expect(readFileSync(signaledPath, "utf8")).toBe("SIGTERM");
-        await waitForProcessesExit([childPid, descendantPid], signal);
+        await waitForProcessesExit(pids, signal);
       } finally {
         if (runner.pid && isProcessAlive(runner.pid)) {
           process.kill(runner.pid, "SIGTERM");
         }
         await runnerClosed;
-        childPid ||= existsSync(childPidPath) ? Number(readFileSync(childPidPath, "utf8")) : 0;
-        descendantPid ||= existsSync(descendantPidPath)
-          ? Number(readFileSync(descendantPidPath, "utf8"))
-          : 0;
-        if (childPid && isProcessAlive(childPid)) {
-          process.kill(childPid, "SIGKILL");
-        }
-        if (descendantPid && isProcessAlive(descendantPid)) {
-          process.kill(descendantPid, "SIGKILL");
+        for (const pid of pids.length
+          ? pids
+          : pidPaths.filter(existsSync).map((file) => Number(readFileSync(file, "utf8")))) {
+          if (pid && isProcessAlive(pid)) {
+            process.kill(pid, "SIGKILL");
+          }
         }
       }
     }),

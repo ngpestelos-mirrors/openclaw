@@ -84,27 +84,18 @@ describe.runIf(["darwin", "linux"].includes(process.platform))(
       ([scenario, expectedError], { command, expect }) =>
         command.lifetime.run(async () => {
           const root = command.createTempDir("openclaw-bun-stage-");
+          const file = (name: string) => path.join(root, name);
+          const write = async (name: string, data: string | Buffer, mode?: number) => {
+            await mkdir(path.dirname(file(name)), { recursive: true });
+            await writeFile(file(name), data, { mode });
+          };
           const run = toolRunner(root, command);
           const checksum = (kind: string, value: string) =>
             scenario === kind ? "0".repeat(64) : value;
           const redownload = ["download", "archive-checksum"].includes(scenario);
           const binaries = await revisionExecutables(root, command);
-          const scripts = path.join(root, "scripts");
           const tag = "fixture-release";
-          const cache = path.join(root, ".cache/openclaw-bun", tag);
-          const downloads = path.join(root, "downloads");
-          const tools = path.join(root, "tools");
-          const runtime = path.join(root, "runtime");
-          for (const directory of [
-            path.join(scripts, "lib"),
-            cache,
-            downloads,
-            tools,
-            path.join(runtime, "bin"),
-          ]) {
-            await mkdir(directory, { recursive: true });
-          }
-          await copyFile(stageScript, path.join(root, stageScript));
+          await mkdir(file("downloads"));
           const arches: Arch[] =
             scenario === "cached" && process.platform === "darwin" ? ["arm64", "x64"] : [hostArch];
           const artifacts: Record<
@@ -116,12 +107,14 @@ describe.runIf(["darwin", "linux"].includes(process.platform))(
             const executable = `${directory}/bun`;
             const asset = `${directory}.zip`;
             const binary = binaries[scenario === "architecture" ? otherArch : arch];
-            await mkdir(path.join(root, directory));
-            await writeFile(path.join(root, executable), binary);
-            const archive = path.join(downloads, asset);
+            await write(executable, binary);
+            const archive = file(`downloads/${asset}`);
             await run("/usr/bin/zip", ["-q", archive, executable]);
             const archiveBytes = await readFile(archive);
-            await writeFile(path.join(cache, asset), redownload ? "damaged cache" : archiveBytes);
+            await write(
+              `.cache/openclaw-bun/${tag}/${asset}`,
+              redownload ? "damaged cache" : archiveBytes,
+            );
             artifacts[`${process.platform}-${arch}`] = {
               asset,
               sha256: checksum("archive-checksum", digest(archiveBytes)),
@@ -135,7 +128,8 @@ describe.runIf(["darwin", "linux"].includes(process.platform))(
             commit: scenario === "commit" ? "f".repeat(40) : commit,
             artifacts,
           };
-          await writeFile(path.join(scripts, "lib/openclaw-bun.json"), JSON.stringify(pin));
+          await write("scripts/lib/openclaw-bun.json", JSON.stringify(pin));
+          await copyFile(stageScript, file(stageScript));
           const release = {
             repository: "openclaw/bun",
             tag: scenario === "release-identity" ? "different-release" : tag,
@@ -148,9 +142,9 @@ describe.runIf(["darwin", "linux"].includes(process.platform))(
             })),
           };
           const releaseBytes = Buffer.from(JSON.stringify(release));
-          await writeFile(path.join(downloads, "manifest.json"), releaseBytes);
-          await writeFile(
-            path.join(downloads, "SHA256SUMS"),
+          await write("downloads/manifest.json", releaseBytes);
+          await write(
+            "downloads/SHA256SUMS",
             [
               `${checksum("release-manifest-checksum", digest(releaseBytes))}  manifest.json`,
               ...Object.values(artifacts).map(
@@ -159,9 +153,9 @@ describe.runIf(["darwin", "linux"].includes(process.platform))(
               ),
             ].join("\n") + "\n",
           );
-          const curlLog = path.join(root, "curl-log");
-          await writeFile(
-            path.join(tools, "curl"),
+          const curlLog = file("curl-log");
+          await write(
+            "tools/curl",
             `#!/bin/bash
 set -euo pipefail
 printf 'download\\n' >> "$fixture_curl_log"
@@ -174,19 +168,19 @@ while [[ "$#" -gt 0 ]]; do
 done
 exit 2
 `,
-            { mode: 0o755 },
+            0o755,
           );
-          const bun = path.join(runtime, "bin/bun");
-          await writeFile(bun, "previous runtime");
+          const bun = file("runtime/bin/bun");
+          await write("runtime/bin/bun", "previous runtime");
           const result = await command.run(
             "/bin/bash",
-            [path.join(root, stageScript), runtime, process.platform, ...arches],
+            [file(stageScript), file("runtime"), process.platform, ...arches],
             {
               encoding: "utf8",
               env: {
-                PATH: `${tools}:${nodeDirectory}:/usr/bin:/bin`,
+                PATH: `${file("tools")}:${nodeDirectory}:/usr/bin:/bin`,
                 TMPDIR: root,
-                fixture_downloads: downloads,
+                fixture_downloads: file("downloads"),
                 fixture_curl_log: curlLog,
                 HOME: root,
               },
@@ -215,9 +209,9 @@ exit 2
           }
           expect(await run(bun, ["--revision"])).toBe(revision);
           expect(await run(bun, ["-p", "Bun.revision"])).toBe(commit);
-          expect(
-            JSON.parse(await readFile(path.join(runtime, "bun-manifest.json"), "utf8")).tag,
-          ).toBe(tag);
+          expect(JSON.parse(await readFile(file("runtime/bun-manifest.json"), "utf8")).tag).toBe(
+            tag,
+          );
         }),
     );
   },

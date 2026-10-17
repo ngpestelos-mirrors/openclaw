@@ -19,16 +19,14 @@ const outputFiles = [
 ];
 const entryList = "scripts/lib/plugin-sdk-entrypoints.json";
 const privateList = "scripts/lib/plugin-sdk-private-local-only-subpaths.json";
+const syncScript = "scripts/sync-plugin-sdk-exports.mts";
+const loaderArgs = ["--import", path.join(repoRoot, "scripts/tsx.mjs")];
 const fixtureFiles = [
   "dist/",
   "assets/",
   "!assets/internal.txt",
   "!dist/plugin-sdk/nested/internal.d.ts",
-  "!dist/plugin-sdk/owner-*.js",
-  "!dist/plugin-sdk/owner-?.js",
-  "!dist/plugin-sdk/owner-[ab].js",
-  "!dist/plugin-sdk/owner-{a,b}.js",
-  "!dist/plugin-sdk/owner-@(a|b).js",
+  ...["*", "?", "[ab]", "{a,b}", "@(a|b)"].map((glob) => `!dist/plugin-sdk/owner-${glob}.js`),
   "!dist/**/*.map",
   "!dist/plugin-sdk/.tsbuildinfo",
   "!dist/plugin-sdk/qa-lab.*",
@@ -65,24 +63,16 @@ function expectRegistration(root: string, publicEntries: string[], privateEntrie
     ]),
   });
   for (const { file, prefix } of declarationConfigs) {
-    expect(readConfig(root, file).compilerOptions.paths).toEqual(
-      declarationPaths(prefix, privateEntries),
+    const config: { compilerOptions: { paths: Record<string, string[]> } } = JSON.parse(
+      fs.readFileSync(path.join(root, file), "utf8"),
     );
+    expect(config.compilerOptions.paths).toEqual(declarationPaths(prefix, privateEntries));
   }
 }
 
 function writeJson(root: string, file: string, value: unknown) {
   fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
   fs.writeFileSync(path.join(root, file), `${JSON.stringify(value, null, 2)}\n`);
-}
-
-function readConfig(
-  root: string,
-  file: string,
-): {
-  compilerOptions: { paths: Record<string, string[]> };
-} {
-  return JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
 }
 
 function readOutputs(root: string) {
@@ -96,7 +86,7 @@ function readPackage(root: string): { exports: Record<string, unknown>; files: s
 function createFixture(inventory?: { entries: string[]; privateEntries: string[] }) {
   const root = tempDirs.make("openclaw-sdk-registration-");
   for (const file of [
-    "scripts/sync-plugin-sdk-exports.mts",
+    syncScript,
     "scripts/lib/plugin-sdk-entries.mts",
     entryList,
     privateList,
@@ -120,17 +110,7 @@ function createFixture(inventory?: { entries: string[]; privateEntries: string[]
     });
     writeJson(root, "packages/plugin-sdk/package.json", { exports: {} });
     for (const { file, prefix } of declarationConfigs) {
-      writeJson(root, file, {
-        compilerOptions: {
-          paths: {
-            "openclaw/plugin-sdk/*": [`${prefix}dist/plugin-sdk/*.d.ts`],
-            "openclaw/plugin-sdk/custom": [
-              `${prefix}packages/plugin-sdk/dist/src/plugin-sdk/custom.d.ts`,
-              "./override.d.ts",
-            ],
-          },
-        },
-      });
+      writeJson(root, file, { compilerOptions: { paths: declarationPaths(prefix) } });
     }
   } else {
     // Registration reads facade names, not their implementation or dependencies.
@@ -144,16 +124,10 @@ function createFixture(inventory?: { entries: string[]; privateEntries: string[]
 }
 
 function runSync(root: string, ...args: string[]) {
-  return spawnSync(
-    process.execPath,
-    [
-      "--import",
-      path.join(repoRoot, "scripts/tsx.mjs"),
-      path.join(root, "scripts/sync-plugin-sdk-exports.mts"),
-      ...args,
-    ],
-    { cwd: root, encoding: "utf8" },
-  );
+  return spawnSync(process.execPath, [...loaderArgs, path.join(root, syncScript), ...args], {
+    cwd: root,
+    encoding: "utf8",
+  });
 }
 
 function expectStableSync(root: string) {
@@ -219,8 +193,7 @@ describe("plugin SDK registration CLI", () => {
       "dist/plugin-sdk/test-fixtures.d.ts",
     ];
     for (const file of [...included, ...excluded]) {
-      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
-      fs.writeFileSync(path.join(root, file), "fixture\n");
+      writeJson(root, file, {});
     }
     const result = runSync(root);
 

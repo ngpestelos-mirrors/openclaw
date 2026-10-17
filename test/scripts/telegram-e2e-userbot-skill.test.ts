@@ -14,6 +14,7 @@ import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 const scriptsDir = path.resolve(".agents/skills/telegram-e2e-userbot/scripts");
 const testNodeExecPath = resolveTestNodeExecPath();
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const commandOptions = { cwd: process.cwd(), encoding: "utf8", timeout: 120_000 } as const;
 
 function signalGroup(pgid: number, signal: NodeJS.Signals) {
   try {
@@ -118,13 +119,10 @@ async function runNodeTests(
   deadline: Promise<unknown> | number,
 ) {
   const completed = Promise.all(runs.map((run) => run.completion));
+  const settled = completed.then(() => false);
   const overrun = await (typeof deadline === "number"
-    ? raceWithTimeoutResult(
-        completed.then(() => false),
-        deadline,
-        true,
-      )
-    : Promise.race([completed.then(() => false), deadline.then(() => true)]));
+    ? raceWithTimeoutResult(settled, deadline, true)
+    : Promise.race([settled, deadline.then(() => true)]));
   const unfinished = new Set(overrun ? runs.filter((run) => !run.result.closed) : []);
   if (unfinished.size) {
     await killProcessTrees([...unfinished].flatMap(({ child }) => (child.pid ? [child.pid] : [])));
@@ -143,11 +141,7 @@ async function runNodeTests(
 }
 
 function requireSuccess(command: string, args: string[]) {
-  const result = spawnSync(command, args, {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    timeout: 120_000,
-  });
+  const result = spawnSync(command, args, commandOptions);
   expect(result.error, `${result.stdout}${result.stderr}`).toBeUndefined();
   expect(result.status, `${command} ${args.join(" ")}\n${result.stdout}${result.stderr}`).toBe(0);
 }
@@ -242,7 +236,7 @@ describe("repository Telegram E2E skill", () => {
         "--test-name-pattern=^emits interleaved visible and reasoning blocks$",
         path.join(scriptsDir, "triage-mock-openai.test.mjs"),
       ],
-      { cwd: process.cwd(), encoding: "utf8", timeout: 120_000 },
+      commandOptions,
     );
     const output = `${result.stdout}${result.stderr}`;
     expect(result.error, output).toBeUndefined();
