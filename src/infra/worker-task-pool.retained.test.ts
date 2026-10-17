@@ -55,15 +55,6 @@ const fixture = (retained = true) =>
     retained ? {} : { idleTimeoutMs: undefined },
   );
 
-async function runResource(pool: ReturnType<typeof fixture>, input: ResourceFixtureInput) {
-  const task = pool.runTask(input, {});
-  try {
-    return await task.result;
-  } finally {
-    await task.close();
-  }
-}
-
 it.each([false, true])(
   "carries boot and offline selections through a reused task worker (retained: %s)",
   async (retainedTransport) => {
@@ -286,7 +277,7 @@ it("services a sibling pool's database facts while the host event loop is blocke
 
 it("serializes resource cleanup after an asynchronous task without cancelling it", async () => {
   const pool = fixture(false);
-  const run = (input: ResourceFixtureInput) => runResource(pool, input);
+  const run = (input: ResourceFixtureInput) => pool.run(input, {});
   const first = await run({ retain: "source" });
   const barrier = blockingInput();
   const task = pool.runTask(barrier.input, {});

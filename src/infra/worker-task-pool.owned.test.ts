@@ -78,6 +78,31 @@ function cleanupReceipt(worker: FakeWorker) {
   return expectDefined(worker.posted.mock.calls.at(-1)?.[0].resourcePort, "cleanup receipt");
 }
 
+function trackedTask(
+  pool: Pool,
+  input: Parameters<Pool["runTask"]>[0],
+  options: Parameters<Pool["runTask"]>[1] = {},
+) {
+  const consumed = vi.fn();
+  const settled = vi.fn();
+  return {
+    ...pool.runTask(input, { ...options, onInputConsumed: consumed, onExecutionSettled: settled }),
+    expectHeld() {
+      expect(consumed).not.toHaveBeenCalled();
+      expect(settled).not.toHaveBeenCalled();
+    },
+    expectReleased(retired: boolean) {
+      expect(consumed).toHaveBeenCalledOnce();
+      expect(settled).toHaveBeenCalledExactlyOnceWith({ retired });
+    },
+  };
+}
+
+function acknowledgeCleanup(receipt: MessagePort, error?: string) {
+  receipt.postMessage(error ? { ok: false, error } : { ok: true }, []);
+  receipt.close();
+}
+
 beforeEach(() => workers.splice(0));
 afterEach(async () => {
   await Promise.all(pools.splice(0).map((pool) => pool.close()));
@@ -175,9 +200,7 @@ it("retires only idle slots on critical pressure, after result and resource cust
   const cleanup = pool.closeResources("source");
   pressure.publish(undefined);
   expect(worker.terminate).not.toHaveBeenCalled();
-  const receipt = cleanupReceipt(worker);
-  receipt.postMessage({ ok: true }, []);
-  receipt.close();
+  acknowledgeCleanup(cleanupReceipt(worker));
   await cleanup;
   pressure.publish(undefined);
   await nextTurn();
@@ -324,11 +347,7 @@ it.each(["receipts", "exit"] as const)(
       .map(([message]) => expectDefined(message.resourcePort, "cleanup receipt"));
     expect(worker.listenerCount("exit")).toBe(listeners + 1);
     for (const [index, receipt] of receipts.slice(0, 16).entries()) {
-      receipt.postMessage(
-        index === 0 ? { ok: false, error: "synthetic close failure" } : { ok: true },
-        [],
-      );
-      receipt.close();
+      acknowledgeCleanup(receipt, index === 0 ? "synthetic close failure" : undefined);
     }
     const partial = await Promise.allSettled(cleanups.slice(0, 16));
     expect(partial.filter((result) => result.status === "fulfilled")).toHaveLength(15);
@@ -342,8 +361,7 @@ it.each(["receipts", "exit"] as const)(
       await pool.close();
     } else {
       for (const receipt of receipts.slice(16)) {
-        receipt.postMessage({ ok: true }, []);
-        receipt.close();
+        acknowledgeCleanup(receipt);
       }
     }
     expect((await results).filter((result) => result.status === "fulfilled")).toHaveLength(31);
@@ -397,21 +415,14 @@ it("cancels a queued task without preparing its input or stopping the occupied w
   const controller = new AbortController();
   const reason = new Error("queued owner closed");
   const prepare = vi.fn(() => "must not dispatch");
-  const consumed = vi.fn();
-  const executionSettled = vi.fn();
-  const queued = pool.runTask(prepare, {
-    signal: controller.signal,
-    onInputConsumed: consumed,
-    onExecutionSettled: executionSettled,
-  });
+  const queued = trackedTask(pool, prepare, { signal: controller.signal });
   const rejected = expect(queued.result).rejects.toBe(reason);
   controller.abort(reason);
   await rejected;
   await queued.close();
 
   expect(prepare).not.toHaveBeenCalled();
-  expect(consumed).toHaveBeenCalledOnce();
-  expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: false });
+  queued.expectReleased(false);
   expect(worker.terminate).not.toHaveBeenCalled();
   expect(worker.posted).toHaveBeenCalledOnce();
   await finishTask(active, "active");
@@ -423,9 +434,8 @@ it("joins cancelled asynchronous preparation before releasing input custody", as
   const prepared = createDeferredCore<string>();
   const controller = new AbortController();
   const reason = new Error("preparation owner closed");
-  const consumed = vi.fn();
-  const executionSettled = vi.fn();
-  const task = pool.runTask(
+  const task = trackedTask(
+    pool,
     async () => {
       preparing.resolve();
       return await prepared.promise;
@@ -433,8 +443,6 @@ it("joins cancelled asynchronous preparation before releasing input custody", as
     {
       inputBytes: 8,
       signal: controller.signal,
-      onInputConsumed: consumed,
-      onExecutionSettled: executionSettled,
     },
   );
   await preparing.promise;
@@ -445,17 +453,15 @@ it("joins cancelled asynchronous preparation before releasing input custody", as
   try {
     await rejected;
     expect(closed).not.toHaveBeenCalled();
-    expect(consumed).not.toHaveBeenCalled();
+    task.expectHeld();
     expect(pool.getSnapshot().pendingTasks).toBe(1);
     expect(workers).toHaveLength(0);
-    expect(executionSettled).not.toHaveBeenCalled();
   } finally {
     prepared.resolve("must not dispatch");
     await closing;
   }
   expect(closed).toHaveBeenCalledOnce();
-  expect(consumed).toHaveBeenCalledOnce();
-  expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: true });
+  task.expectReleased(true);
   expect(pool.getSnapshot().pendingTasks).toBe(0);
   expect(workers).toHaveLength(0);
 });
@@ -476,19 +482,12 @@ it.each(["message", "error", "exit"] as const)(
       },
       onRetirementFailure: () => retirementFailed.resolve(),
     });
-    const consumed = vi.fn();
-    const executionSettled = vi.fn();
-    const failed = pool.runTask("failed", {
-      inputBytes: 8,
-      onInputConsumed: consumed,
-      onExecutionSettled: executionSettled,
-    });
+    const failed = trackedTask(pool, "failed", { inputBytes: 8 });
     const sibling = pool.runTask("sibling", { inputBytes: 1 });
     const worker = workerFor("failed");
     const siblingWorker = workerFor("sibling");
     const expectRetained = () => {
-      expect(consumed).not.toHaveBeenCalled();
-      expect(executionSettled).not.toHaveBeenCalled();
+      failed.expectHeld();
       expect(pool.getSnapshot().pendingTasks).toBe(2);
       expect(siblingWorker.terminate).not.toHaveBeenCalled();
       expect(worker.terminate).toHaveBeenCalledOnce();
@@ -500,15 +499,11 @@ it.each(["message", "error", "exit"] as const)(
     await retirementFailed.promise;
     // Both the cached owner failure and the slot retirement rejection must have settled.
     await nextTurn();
-    const emitLateEvent = () => {
-      if (lateEvent === "message") {
-        reply(worker, "failed", "late reply from the same task");
-      } else if (lateEvent === "error") {
-        worker.emit("error", new Error("late worker error"));
-      } else if (lateEvent === "exit") {
-        worker.emit("exit", 1);
-      }
-    };
+    const emitLateEvent = {
+      message: () => reply(worker, "failed", "late reply from the same task"),
+      error: () => worker.emit("error", new Error("late worker error")),
+      exit: () => worker.emit("exit", 1),
+    }[lateEvent];
     emitLateEvent();
     await nextTurn();
     expectRetained();
@@ -529,8 +524,7 @@ it.each(["message", "error", "exit"] as const)(
     const alsoClosing = failed.close();
     try {
       await native.entered;
-      expect(consumed).not.toHaveBeenCalled();
-      expect(executionSettled).not.toHaveBeenCalled();
+      failed.expectHeld();
       const next = pool.runTask("sibling successor", { inputBytes: 2 });
       expect(workerFor("sibling successor")).toBe(siblingWorker);
       expect(workers).toHaveLength(2);
@@ -541,12 +535,11 @@ it.each(["message", "error", "exit"] as const)(
       await Promise.all([closing, alsoClosing]);
     }
     expect(worker.terminate).toHaveBeenCalledTimes(2);
-    expect(consumed).toHaveBeenCalledOnce();
-    expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: true });
+    failed.expectReleased(true);
     expect(pool.getSnapshot().pendingTasks).toBe(0);
     await expect(failed.result).rejects.toBe(primary);
     await failed.close({ retire: true });
-    expect(executionSettled).toHaveBeenCalledOnce();
+    failed.expectReleased(true);
     expect(worker.terminate).toHaveBeenCalledTimes(2);
   },
 );
@@ -593,9 +586,7 @@ it("observes each failed stop once before a global close retries an owned task",
     expectHeld(1);
 
     const resources = closeWorkerTaskPoolResources("retained-after-failed-close");
-    const receipt = cleanupReceipt(worker);
-    receipt.postMessage({ ok: true }, []);
-    receipt.close();
+    acknowledgeCleanup(cleanupReceipt(worker));
     await resources;
 
     await expect(pool.close()).rejects.toBe(secondStop);

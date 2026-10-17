@@ -18,7 +18,8 @@ import type { PoolFixtureInput, PoolFixtureResult } from "./worker-task-pool.tes
 import type { WorkerTaskPoolOptions } from "./worker-task-pool.types.js";
 
 const workerUrl = resolveRuntimeWorkerUrl(workerTaskPoolEntrypoints.worker);
-const pools: WorkerTaskPool<PoolFixtureInput, PoolFixtureResult>[] = [];
+const pools: Array<{ close(): Promise<void> }> = [];
+const context = new AsyncLocalStorage<string>();
 const workers = vi.hoisted(() => [] as Worker[]);
 const directories = createTempDirTracker();
 const exec = promisify(execFile);
@@ -38,8 +39,10 @@ vi.mock("node:worker_threads", async (importOriginal) => {
     },
   };
 });
-function createPool(options: Partial<WorkerTaskPoolOptions<PoolFixtureResult>> = {}) {
-  const pool = new WorkerTaskPool<PoolFixtureInput, PoolFixtureResult>({
+function createPool<Input = PoolFixtureInput, Output = PoolFixtureResult>(
+  options: Partial<WorkerTaskPoolOptions<Output>> = {},
+) {
+  const pool = new WorkerTaskPool<Input, Output>({
     workerUrl,
     maxWorkers: 1,
     ...options,
@@ -190,7 +193,6 @@ it("shares compute capacity across pools while ordered workers remain independen
 });
 
 it("requests a host checkpoint when compute contention arrives during an exchange", async () => {
-  const context = new AsyncLocalStorage<string>();
   const limit = Math.max(1, availableParallelism() - 1);
   const owner = createPool({ sharedCompute: true, maxWorkers: limit });
   const waiting = createPool({ sharedCompute: true });
@@ -230,12 +232,11 @@ it("requests a host checkpoint when compute contention arrives during an exchang
 });
 
 it("keeps host cancellation callbacks in the admitted caller context", async () => {
-  const context = new AsyncLocalStorage<string>();
   const pool = createPool();
   const entered = createDeferredCore();
   const canceled = createDeferredCore<never>();
   const abort = new AbortController();
-  const observed = vi.fn(() => context.getStore());
+  const observed: Array<string | undefined> = [];
   const run = context.run("owner", () =>
     pool.run(
       { label: "cancel", exchanges: 1 },
@@ -246,7 +247,7 @@ it("keeps host cancellation callbacks in the admitted caller context", async () 
           signal.addEventListener(
             "abort",
             () => {
-              observed();
+              observed.push(context.getStore());
               canceled.reject(new Error("closed"));
             },
             { once: true },
@@ -260,8 +261,7 @@ it("keeps host cancellation callbacks in the admitted caller context", async () 
   await entered.promise;
   context.run("unrelated caller", () => abort.abort());
   expect((await result)[0]?.status).toBe("rejected");
-  expect(observed).toHaveBeenCalledOnce();
-  expect(observed.mock.results[0]?.value).toBe("owner");
+  expect(observed).toEqual(["owner"]);
 });
 
 it.each([
@@ -327,7 +327,6 @@ it.each([
 );
 
 it("keeps queued and reused tasks in their caller context through preparation and exchanges", async () => {
-  const context = new AsyncLocalStorage<string>();
   const pool = createPool();
   const observed: string[] = [];
   const submit = (owner: string) =>
@@ -391,8 +390,7 @@ it("closes a generation before a rejected result can dispatch its successor", as
   await Promise.all([expect(first).rejects.toBe(reason), expect(next).rejects.toBe(reason)]);
   await expect(pool.run({ label: "closed" }, {})).rejects.toBe(reason);
   expect(nextFactory).not.toHaveBeenCalled();
-  expect(workers).toHaveLength(1);
-  expect(workers[0]?.threadId).toBe(-1);
+  expect(workers.map((worker) => worker.threadId)).toEqual([-1]);
 });
 
 it("arms idle retirement on the clock the pool was created under", async () => {
@@ -443,15 +441,10 @@ it("keeps import-only dependency exports when a source worker requires compiled 
     const { marker } = createRequire(import.meta.url)(fileURLToPath(new URL("./bridge.js", import.meta.url)));
     parentPort.on("message", () => parentPort.postMessage({ status: "ok", value: marker }));`,
   );
-  const pool = new WorkerTaskPool<Record<string, never>, number>({
+  const pool = createPool<Record<string, never>, number>({
     workerUrl: pathToFileURL(workerPath),
-    maxWorkers: 1,
   });
-  try {
-    expect(await pool.run({}, { timeoutMs: 10_000 })).toBe(37);
-  } finally {
-    await pool.close();
-  }
+  expect(await pool.run({}, { timeoutMs: 10_000 })).toBe(37);
 });
 
 it("keeps SQLite worker diagnostics off the parent JSON stdout", async () => {

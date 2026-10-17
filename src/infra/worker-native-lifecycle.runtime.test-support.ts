@@ -16,6 +16,12 @@ export const nativeWorkerResourceEntrypoint = {
   distWorkerPath: "infra/worker-native-lifecycle.resource.test-support.js",
 } as const;
 
+export function assertNativeWorkerFields(actual: object, expected: object): void {
+  for (const [key, value] of Object.entries(expected)) {
+    assert.deepEqual(Reflect.get(actual, key), value, key);
+  }
+}
+
 export function assertNativeWorkerDiagnosticMatches(
   actual: unknown,
   expected: unknown,
@@ -68,9 +74,9 @@ export async function runNativeResourceLifecycle(
   const { assertNativeResourceCustody, createIdleBrokerRetirementProof } =
     await import("./worker-native-lifecycle.custody.test-support.js");
   const databasePath = path.join(directory, "native-child.sqlite");
-  const createControl = () => {
-    const channel = new MessageChannel();
-    const facts = {
+  class ResourceControl {
+    channel = new MessageChannel();
+    facts = {
       constructions: 0,
       brokerPid: 0,
       childPid: 0,
@@ -78,65 +84,58 @@ export async function runNativeResourceLifecycle(
       attempts: 0,
       childClosed: false,
     };
-    const order: string[] = [];
-    let disposed = false;
-    const receive = (value: unknown) => {
+    order: string[] = [];
+    disposed = false;
+    constructor() {
+      this.channel.port1.on("message", this.receive);
+    }
+    receive = (value: unknown) => {
       assert.ok(isRecord(value));
       if (value.type === "constructed") {
         assert.ok(typeof value.brokerPid === "number");
-        facts.constructions++;
-        facts.brokerPid = value.brokerPid;
+        this.facts.constructions++;
+        this.facts.brokerPid = value.brokerPid;
       } else if (value.type === "child") {
         assert.ok(typeof value.pid === "number");
-        facts.childPid = value.pid;
+        this.facts.childPid = value.pid;
       } else if (value.type === "child-environment") {
         assert.deepEqual(value.keys, [], "native bootstrap must not enter the child's environment");
-        facts.childEnvironmentObserved = true;
+        this.facts.childEnvironmentObserved = true;
       } else if (value.type === "close-attempt") {
         assert.ok(typeof value.attempt === "number");
-        facts.attempts = value.attempt;
+        this.facts.attempts = value.attempt;
       } else if (value.type === "child-closed") {
         assert.equal(value.code, 0);
-        facts.childClosed = true;
-        order.push("child-close");
+        this.facts.childClosed = true;
+        this.order.push("child-close");
       } else {
         assert.fail("Unexpected native resource fixture fact");
       }
     };
-    const service = () => {
-      for (;;) {
-        const next = receiveMessageOnPort(channel.port1);
-        if (!next) {
-          return;
-        }
-        receive(next.message);
+    service = () => {
+      let next: ReturnType<typeof receiveMessageOnPort>;
+      while ((next = receiveMessageOnPort(this.channel.port1))) {
+        this.receive(next.message);
       }
     };
-    channel.port1.on("message", receive);
-    const permit = () => {
-      if (!disposed) {
-        channel.port1.postMessage({ type: "permit-close" });
+    permit = () => {
+      if (!this.disposed) {
+        this.channel.port1.postMessage({ type: "permit-close" });
       }
     };
-    return {
-      channel,
-      facts,
-      order,
-      service,
-      permit,
-      connect: () => ({
-        port: channel.port2,
-        service,
-        dispose() {
-          service();
-          disposed = true;
-          channel.port1.close();
-        },
-      }),
+    connect = () => ({ port: this.channel.port2, service: this.service, dispose: this.dispose });
+    dispose = () => {
+      this.service();
+      this.disposed = true;
+      this.channel.port1.close();
     };
-  };
-  const control = createControl();
-  const { channel, facts, order, permit } = control;
+    close() {
+      this.channel.port1.close();
+      this.channel.port2.close();
+    }
+  }
+  const control = new ResourceControl();
+  const { facts, order, permit } = control;
   const source = captureRetainedNativeWorkerSource({ runtimeGeneration: undefined });
   const idleBrokerProof =
     edge === "idle-broker" ? createIdleBrokerRetirementProof(source) : undefined;
@@ -145,7 +144,7 @@ export async function runNativeResourceLifecycle(
     port.on("message", (value) => parentPort.postMessage(value, []));
     parentPort.on("message", (value) => port.postMessage(value, []));
     port.postMessage({ open: true }, []);`;
-  const createResourceWorker = (owner: ReturnType<typeof createControl>, input: unknown) =>
+  const createResourceWorker = (owner: ResourceControl, input: unknown) =>
     createRetainedNativeWorker(
       resourceWorkerSource,
       { eval: true, execArgv: [], workerData: {} },
@@ -196,7 +195,7 @@ export async function runNativeResourceLifecycle(
     await idleBrokerProof?.assertRefused(facts.brokerPid, assertHeld);
     if (edge === "late-attachment") {
       await delay(15_050);
-      const siblingControl = createControl();
+      const siblingControl = new ResourceControl();
       const sibling = createResourceWorker(siblingControl, {
         databasePath: path.join(directory, "late-native-child.sqlite"),
       });
@@ -219,8 +218,7 @@ export async function runNativeResourceLifecycle(
       } finally {
         siblingControl.permit();
         await sibling.terminate();
-        siblingControl.channel.port1.close();
-        siblingControl.channel.port2.close();
+        siblingControl.close();
       }
       assertHeld();
     }
@@ -239,8 +237,7 @@ export async function runNativeResourceLifecycle(
     permit();
     service("native resource close", () => retry.read().status !== "pending", retry);
     assert.deepEqual(retry.read(), { status: "fulfilled", value: undefined });
-    assert.equal(facts.constructions, 1);
-    assert.equal(facts.childClosed, true);
+    assertNativeWorkerFields(facts, { constructions: 1, childClosed: true });
     assert.equal(exited, true);
     assert.equal(target.threadId, -1);
     await idleBrokerProof?.assertRetired(facts.brokerPid);
@@ -267,7 +264,6 @@ export async function runNativeResourceLifecycle(
     database?.close();
     await target.terminate();
     await closeDefaultRetainedNativeWorkerSource();
-    channel.port1.close();
-    channel.port2.close();
+    control.close();
   }
 }
