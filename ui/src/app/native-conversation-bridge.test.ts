@@ -86,6 +86,9 @@ function fixture(features: string[] = []) {
     );
   return {
     messages,
+    messagesOf: (type: string) => messages.filter((message) => message.type === type),
+    expectMessage: (message: Record<string, unknown>) =>
+      expect(messages).toContainEqual(expect.objectContaining(message)),
     reply,
     bridge,
     documentId,
@@ -112,7 +115,7 @@ describe("native conversation contract", () => {
     const old = fixture();
     old.bridge.publishSessionFacts([]);
     await flush();
-    expect(old.messages.some((message) => message.type === "session-facts")).toBe(false);
+    expect(old.messagesOf("session-facts")).toEqual([]);
     old.bridge.dispose();
     const f = fixture(["session-facts-v1", "unknown-feature"]);
     const row = {
@@ -127,7 +130,7 @@ describe("native conversation contract", () => {
     expect(f.messages[0]).toMatchObject({
       capabilities: ["navigate", "presentation", "focus-composer", "session-facts-v1"],
     });
-    expect(f.messages.filter((message) => message.type === "session-facts")).toEqual([
+    expect(f.messagesOf("session-facts")).toEqual([
       {
         contract: 1,
         documentId: f.documentId,
@@ -200,7 +203,7 @@ describe("native conversation contract", () => {
       pane.classList.add("chat-pane-cache__pane--active");
       page.append(pane);
       document.body.append(page);
-      const results = () => f.messages.filter((message) => message.type === "command-result");
+      const results = () => f.messagesOf("command-result");
       f.command("open-session-actions", {
         agentId: f.data.agentId,
         sessionKey: f.data.sessionKey,
@@ -280,7 +283,7 @@ describe("native conversation contract", () => {
     f.snapshot.lastErrorAuthReason = "token_missing";
     f.changed();
     await flush();
-    expect(f.messages.filter((message) => message.type === "state")).toMatchObject([
+    expect(f.messagesOf("state")).toMatchObject([
       {
         revision: 1,
         title: "Native conversation",
@@ -327,7 +330,7 @@ describe("native conversation contract", () => {
       f.command("presentation", payload, { documentId });
     }
     await flush();
-    expect(f.messages.filter((message) => message.type === "command-result")).toEqual([
+    expect(f.messagesOf("command-result")).toEqual([
       {
         contract: 1,
         documentId: "retired-document",
@@ -362,14 +365,14 @@ describe("native conversation contract", () => {
       "chat",
       expect.objectContaining({ pathname: expect.stringContaining("/chat/") }),
     );
-    expect(f.messages.some((message) => message.type === "command-result")).toBe(false);
+    expect(f.messagesOf("command-result")).toEqual([]);
     gate.resolve();
     await flush();
     expect(f.messages.slice(-2)).toMatchObject([
       { type: "state", context: { agentId: "main", sessionKey: "agent:main:next" } },
       { type: "command-result", ok: true },
     ]);
-    expect(f.messages.some((message) => message.type === "route-changed")).toBe(false);
+    expect(f.messagesOf("route-changed")).toEqual([]);
   });
 
   it.each(["accepted", "rejected", "timeout"] as const)(
@@ -393,7 +396,7 @@ describe("native conversation contract", () => {
         type: "state",
         context: { sessionKey: target.sessionKey },
       });
-      expect(f.messages.some((message) => message.type === "command-result")).toBe(false);
+      expect(f.messagesOf("command-result")).toEqual([]);
       if (deliveryResult === "timeout") {
         await vi.advanceTimersByTimeAsync(15_000);
       } else {
@@ -415,7 +418,7 @@ describe("native conversation contract", () => {
       f.reply.mockResolvedValue({ ok: true });
       f.changed();
       await flush();
-      expect(f.messages.filter((message) => message.type === "state")).toHaveLength(2);
+      expect(f.messagesOf("state")).toHaveLength(2);
       f.command("navigate", target, { requestId: "retry" });
       await flush();
       expect(f.messages.slice(-2)).toMatchObject([
@@ -426,7 +429,7 @@ describe("native conversation contract", () => {
       await flush();
       f.command("navigate", target, { requestId: "confirmed" });
       await flush();
-      expect(f.messages.filter((message) => message.type === "state")).toHaveLength(3);
+      expect(f.messagesOf("state")).toHaveLength(3);
       expect(f.messages.at(-1)).toMatchObject({
         type: "command-result",
         requestId: "confirmed",
@@ -467,20 +470,16 @@ describe("native conversation contract", () => {
         f.changed();
         gate.resolve();
         await flush();
-        expect(f.messages).toContainEqual(
-          expect.objectContaining({
-            type: "command-result",
-            ok: false,
-            error: "navigate-rejected",
-          }),
-        );
-        expect(f.messages).toContainEqual(
-          expect.objectContaining({
-            type: "route-changed",
-            agentId: "main",
-            sessionKey: "agent:main:web",
-          }),
-        );
+        f.expectMessage({
+          type: "command-result",
+          ok: false,
+          error: "navigate-rejected",
+        });
+        f.expectMessage({
+          type: "route-changed",
+          agentId: "main",
+          sessionKey: "agent:main:web",
+        });
       } else {
         expect(f.messages.at(-1)).toMatchObject({
           type: "command-result",
@@ -539,23 +538,19 @@ describe("native conversation contract", () => {
       { requestId: "second" },
     );
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(f.messages).toContainEqual(
-      expect.objectContaining({
-        type: "command-result",
-        requestId: "request-1",
-        ok: false,
-        error: "navigate-timeout",
-      }),
-    );
+    f.expectMessage({
+      type: "command-result",
+      requestId: "request-1",
+      ok: false,
+      error: "navigate-timeout",
+    });
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(f.messages).toContainEqual(
-      expect.objectContaining({
-        type: "command-result",
-        requestId: "second",
-        ok: false,
-        error: "navigate-timeout",
-      }),
-    );
+    f.expectMessage({
+      type: "command-result",
+      requestId: "second",
+      ok: false,
+      error: "navigate-timeout",
+    });
   });
 
   it.each(["ready", "state"] as const)(
@@ -576,14 +571,12 @@ describe("native conversation contract", () => {
       f.command("navigate", { agentId: "main", sessionKey: "agent:main:next" });
       await flush();
       await vi.advanceTimersByTimeAsync(15_000);
-      expect(f.messages).toContainEqual(
-        expect.objectContaining({
-          type: "command-result",
-          requestId: "request-1",
-          ok: false,
-          error: "navigate-timeout",
-        }),
-      );
+      f.expectMessage({
+        type: "command-result",
+        requestId: "request-1",
+        ok: false,
+        error: "navigate-timeout",
+      });
     },
   );
 
@@ -602,7 +595,7 @@ describe("native conversation contract", () => {
         f.bridge.dispose();
         first.resolve();
         await flush();
-        expect(f.messages.some((message) => message.type === "command-result")).toBe(false);
+        expect(f.messagesOf("command-result")).toEqual([]);
         expect(vi.getTimerCount()).toBe(0);
         return;
       }
@@ -673,7 +666,7 @@ describe("native conversation contract", () => {
         expect(handled).toHaveBeenCalledOnce();
       }
       await flush();
-      expect(f.messages.some((message) => message.type === "open-dashboard")).toBe(false);
+      expect(f.messagesOf("open-dashboard")).toEqual([]);
       expect(f.navigateAndWait).not.toHaveBeenCalled();
       if (!claimed) {
         document.body.innerHTML = '<a href="/settings?section=general">Settings</a>';

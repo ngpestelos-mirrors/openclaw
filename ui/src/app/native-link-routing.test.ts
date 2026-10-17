@@ -33,7 +33,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function installBridge() {
+function installBridge(options: Parameters<typeof startNativeLinkRouting>[0] = {}) {
   const messages: NativeMessage[] = [];
   const postMessage = vi.fn((message: NativeMessage) => messages.push(message));
   vi.stubGlobal("webkit", {
@@ -44,6 +44,7 @@ function installBridge() {
     browserRequests.push((event as CustomEvent<BrowserPanelToggleDetail>).detail);
   window.addEventListener(BROWSER_PANEL_TOGGLE_EVENT, listener);
   stopBrowserListener = () => window.removeEventListener(BROWSER_PANEL_TOGGLE_EVENT, listener);
+  routing = startNativeLinkRouting(options);
   return { messages, postMessage, browserRequests };
 }
 
@@ -99,7 +100,8 @@ function contextMenu(anchor: HTMLAnchorElement) {
   return event;
 }
 
-async function waitForMenu() {
+async function openMenu(anchor: HTMLAnchorElement) {
+  expect(contextMenu(anchor).defaultPrevented).toBe(true);
   await waitForSolid(() =>
     expect(
       document
@@ -107,6 +109,9 @@ async function waitForMenu() {
         ?.getAttribute("aria-expanded"),
     ).toBe("true"),
   );
+  const menu = document.querySelector("openclaw-native-link-menu")!;
+  await menu.updateComplete;
+  return menu;
 }
 
 function menuItem(label: string): HTMLButtonElement {
@@ -156,28 +161,20 @@ async function focusGitHubLink() {
 }
 
 describe("native link routing", () => {
-  it.each(["abort"] as const)(
-    "cancels a pending context menu on %s and removes link handlers",
-    async (stop) => {
-      const bridge = installBridge();
-      const abort = new AbortController();
-      routing = startNativeLinkRouting({ signal: abort.signal });
-      const anchor = appendLink("https://example.com/report");
-      expect(contextMenu(anchor).defaultPrevented).toBe(true);
-      if (stop === "abort") {
-        abort.abort();
-      } else {
-        routing.dispose();
-      }
-      await vi.dynamicImportSettled();
+  it("cancels a pending context menu on abort and removes link handlers", async () => {
+    const abort = new AbortController();
+    const bridge = installBridge({ signal: abort.signal });
+    const anchor = appendLink("https://example.com/report");
+    expect(contextMenu(anchor).defaultPrevented).toBe(true);
+    abort.abort();
+    await vi.dynamicImportSettled();
 
-      expect(clickWithoutNavigation(anchor)).toBe(false);
-      expect(contextMenu(anchor).defaultPrevented).toBe(false);
-      expect(document.querySelector("openclaw-native-link-menu")).toBeNull();
-      expect(bridge.messages).toEqual([]);
-      expect(bridge.browserRequests).toEqual([]);
-    },
-  );
+    expect(clickWithoutNavigation(anchor)).toBe(false);
+    expect(contextMenu(anchor).defaultPrevented).toBe(false);
+    expect(document.querySelector("openclaw-native-link-menu")).toBeNull();
+    expect(bridge.messages).toEqual([]);
+    expect(bridge.browserRequests).toEqual([]);
+  });
 
   it("keeps native decline fallback on its posted Gateway and consumes it once", async () => {
     const requestA = vi.fn<RequestFn>(async () => ({}));
@@ -244,7 +241,6 @@ describe("native link routing", () => {
 
   it("closes an active GitHub hovercard after routing its link", async () => {
     const bridge = installBridge();
-    routing = startNativeLinkRouting();
     const anchor = await focusGitHubLink();
 
     click(anchor);
@@ -263,7 +259,6 @@ describe("native link routing", () => {
 
   it("preserves modified, local, file, download, and untrusted app-link clicks", async () => {
     const bridge = installBridge();
-    routing = startNativeLinkRouting();
     const links = [
       appendLink(`${location.origin}/usage`),
       appendLink("https://example.com/file", { "data-file-path": "README.md" }),
@@ -284,13 +279,9 @@ describe("native link routing", () => {
     const bridge = installBridge();
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { clipboard: { writeText } } as unknown as Navigator);
-    routing = startNativeLinkRouting();
     const anchor = appendLink("https://example.com/report?q=1");
 
-    expect(contextMenu(anchor).defaultPrevented).toBe(true);
-    await waitForMenu();
-    const firstMenu = document.querySelector("openclaw-native-link-menu");
-    await (firstMenu as HTMLElement & { updateComplete: Promise<boolean> }).updateComplete;
+    const firstMenu = await openMenu(anchor);
     expect(
       [...firstMenu!.querySelectorAll('[role="menuitem"]')].map((item) =>
         item.querySelector(".session-menu__text")?.textContent?.trim(),
@@ -303,20 +294,14 @@ describe("native link routing", () => {
       target: "external",
     });
 
-    contextMenu(anchor);
-    await waitForMenu();
-    const panelMenu = document.querySelector("openclaw-native-link-menu");
-    await (panelMenu as HTMLElement & { updateComplete: Promise<boolean> }).updateComplete;
+    await openMenu(anchor);
     await selectMenuItem("Open in Browser Panel");
     expect(bridge.browserRequests).toEqual([
       { open: true, url: "https://example.com/report?q=1", native: true },
     ]);
     expect(bridge.messages).toHaveLength(1);
 
-    contextMenu(anchor);
-    await waitForMenu();
-    const secondMenu = document.querySelector("openclaw-native-link-menu");
-    await (secondMenu as HTMLElement & { updateComplete: Promise<boolean> }).updateComplete;
+    await openMenu(anchor);
     await selectMenuItem("Copy Link");
     await vi.waitFor(() =>
       expect(writeText).toHaveBeenCalledWith("https://example.com/report?q=1"),
@@ -324,19 +309,15 @@ describe("native link routing", () => {
   });
 
   it("opens the panel menu action externally during Settings takeover and restores it afterward", async () => {
-    const bridge = installBridge();
     let canPresentBrowserPanel = false;
-    routing = startNativeLinkRouting({
+    const bridge = installBridge({
       canPresentBrowserPanel: () => canPresentBrowserPanel,
     });
     const anchor = appendLink("https://example.com/report");
 
     for (const available of [false, true]) {
       canPresentBrowserPanel = available;
-      contextMenu(anchor);
-      await waitForMenu();
-      const menu = document.querySelector("openclaw-native-link-menu");
-      await (menu as HTMLElement & { updateComplete: Promise<boolean> }).updateComplete;
+      await openMenu(anchor);
       await selectMenuItem("Open in Browser Panel");
       expect(bridge.messages).toEqual([
         { type: "open-link", url: "https://example.com/report", target: "external" },
@@ -349,20 +330,13 @@ describe("native link routing", () => {
 
   it("ignores a stale close callback after replacing the context menu", async () => {
     installBridge();
-    routing = startNativeLinkRouting();
     const firstAnchor = appendLink("https://example.com/first");
     const secondAnchor = appendLink("https://example.com/second");
 
-    contextMenu(firstAnchor);
-    await waitForMenu();
-    const firstMenu = document.querySelector("openclaw-native-link-menu");
-    expect(firstMenu).not.toBeNull();
-    await firstMenu?.updateComplete;
+    const firstMenu = await openMenu(firstAnchor);
     const closeFirst = firstMenu!.onClose;
 
-    contextMenu(secondAnchor);
-    await waitForMenu();
-    const secondMenu = document.querySelector("openclaw-native-link-menu");
+    const secondMenu = await openMenu(secondAnchor);
     expect(secondMenu).not.toBe(firstMenu);
 
     closeFirst();
@@ -372,7 +346,6 @@ describe("native link routing", () => {
 
   it("mounts a fallback menu inside an active dialog", async () => {
     installBridge();
-    routing = startNativeLinkRouting();
     const dialog = document.createElement("dialog");
     dialog.setAttribute("open", "");
     const anchor = document.createElement("a");
@@ -380,8 +353,7 @@ describe("native link routing", () => {
     dialog.append(anchor);
     document.body.append(dialog);
 
-    contextMenu(anchor);
-    await waitForMenu();
+    await openMenu(anchor);
 
     const menu = dialog.querySelector("openclaw-native-link-menu");
     expect(menu).not.toBeNull();
@@ -391,7 +363,6 @@ describe("native link routing", () => {
 
   it("keeps modal menus in the non-inert overlay container", async () => {
     installBridge();
-    routing = startNativeLinkRouting();
     const modal = document.createElement("openclaw-modal-dialog");
     const anchor = document.createElement("a");
     anchor.href = "https://example.com/modal-link";
@@ -399,8 +370,7 @@ describe("native link routing", () => {
     document.body.append(modal);
     await (modal as HTMLElement & { updateComplete: Promise<boolean> }).updateComplete;
 
-    contextMenu(anchor);
-    await waitForMenu();
+    await openMenu(anchor);
 
     const container = modal.getOverlayContainer();
     expect(container?.closest("dialog")?.open).toBe(true);

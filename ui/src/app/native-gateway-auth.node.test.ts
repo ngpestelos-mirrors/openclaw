@@ -29,6 +29,24 @@ const publicKeyBytes = keys.publicKey.export({ format: "der", type: "spki" }).su
 const deviceId = createHash("sha256").update(publicKeyBytes).digest("hex");
 const signedAt = 1_790_000_000_000;
 type Challenge = { id: string; nonce: string; signedAt: number };
+const identityKey = "openclaw-device-identity-v1";
+const authKey = "openclaw.device.auth.v1:wss://gateway.example/work";
+
+function challengeSocket(socket: RecordingSocket, nonce = "challenge-1", ts = signedAt) {
+  socket.emitOpen();
+  socket.emitMessage({ type: "event", event: "connect.challenge", payload: { nonce, ts } });
+}
+
+function deliverPort(port: MessagePort, source: unknown = null, origin = "", target = gatewayUrl) {
+  window.dispatchEvent(
+    Object.assign(new Event("message"), {
+      data: JSON.stringify({ type: "openclaw.native-control-auth", gatewayUrl: target }),
+      source,
+      origin,
+      ports: [port],
+    }),
+  );
+}
 
 class RecordingSocket extends MockWebSocket {
   readonly connect = createDeferred<{ id: string; params: ConnectParams }>();
@@ -88,6 +106,12 @@ describe("native authenticated Control UI", () => {
     postMessage: ReturnType<typeof vi.fn<(message: string) => void | Promise<unknown>>>;
   };
 
+  function replyWith(authorize: (challenge: Challenge) => unknown = signedAuthorization) {
+    return (message: string) => {
+      bridge.onmessage?.({ data: JSON.stringify(authorize(JSON.parse(message))) });
+    };
+  }
+
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.spyOn(Math, "random").mockReturnValue(0);
@@ -106,9 +130,7 @@ describe("native authenticated Control UI", () => {
     vi.stubGlobal("WebSocket", RecordingSocket);
     bridge = {
       onmessage: null,
-      postMessage: vi.fn((message: string) => {
-        bridge.onmessage?.({ data: JSON.stringify(signedAuthorization(JSON.parse(message))) });
-      }),
+      postMessage: vi.fn(replyWith()),
     };
     const host = Object.assign(new EventTarget(), {
       location,
@@ -159,12 +181,7 @@ describe("native authenticated Control UI", () => {
     if (!(socket instanceof RecordingSocket)) {
       throw new Error("missing socket");
     }
-    socket.emitOpen();
-    socket.emitMessage({
-      type: "event",
-      event: "connect.challenge",
-      payload: challenge,
-    });
+    challengeSocket(socket, challenge.nonce, challenge.ts);
     return socket;
   }
 
@@ -180,16 +197,8 @@ describe("native authenticated Control UI", () => {
       channel.port1.on("message", (message: string) => {
         channel.port1.postMessage(JSON.stringify(signedAuthorization(JSON.parse(message))));
       });
-      const deliver = (source: unknown, origin: string, target = gatewayUrl) => {
-        window.dispatchEvent(
-          Object.assign(new Event("message"), {
-            data: JSON.stringify({ type: "openclaw.native-control-auth", gatewayUrl: target }),
-            source,
-            origin,
-            ports: [channel.port2],
-          }),
-        );
-      };
+      const deliver = (source: unknown, origin: string, target = gatewayUrl) =>
+        deliverPort(channel.port2, source, origin, target);
       if (arrival === "before challenge") {
         // Startup owns the listener, before the Gateway opens or sends a challenge.
         const startup = resolveApplicationStartupSettings(makeUiSettings(gatewayUrl), {
@@ -205,17 +214,12 @@ describe("native authenticated Control UI", () => {
         deliver(null, "");
         gateway.connect();
         const socket = wsInstances.at(-1) as RecordingSocket;
-        socket.emitOpen();
-        socket.emitMessage({
-          type: "event",
-          event: "connect.challenge",
-          payload: { nonce: "challenge-1", ts: signedAt },
-        });
+        challengeSocket(socket);
       } else {
         const socket = connect();
         await vi.advanceTimersByTimeAsync(0);
         expect(socket.sent).toEqual([]);
-        expect(localStorage.getItem("openclaw-device-identity-v1")).toBeNull();
+        expect(localStorage.getItem(identityKey)).toBeNull();
         // Page/iframe messages and a port for another route cannot select the transport.
         deliver(window, window.location.origin);
         deliver(null, "https://foreign.example");
@@ -231,7 +235,7 @@ describe("native authenticated Control UI", () => {
       expect(frame.params.scopes).toEqual(scopes);
       expect(frame.params.auth).toEqual({ deviceToken: "synthetic-native-grant" });
       expect(sendToNative).toHaveBeenCalledOnce();
-      expect(localStorage.getItem("openclaw-device-identity-v1")).toBeNull();
+      expect(localStorage.getItem(identityKey)).toBeNull();
       expect(bridge.postMessage).not.toHaveBeenCalled();
     },
   );
@@ -258,14 +262,7 @@ describe("native authenticated Control UI", () => {
         const channel = new MessageChannel();
         ports.push(channel.port1, channel.port2);
         const sendToNative = vi.spyOn(channel.port2, "postMessage");
-        window.dispatchEvent(
-          Object.assign(new Event("message"), {
-            data: JSON.stringify({ type: "openclaw.native-control-auth", gatewayUrl }),
-            source: null,
-            origin: "",
-            ports: [channel.port2],
-          }),
-        );
+        deliverPort(channel.port2);
         await vi.advanceTimersByTimeAsync(0);
         expect(sendToNative).not.toHaveBeenCalled();
       } else {
@@ -274,7 +271,7 @@ describe("native authenticated Control UI", () => {
       }
       expect(socket.sent).toEqual([]);
       expect(vi.getTimerCount()).toBe(0);
-      expect(localStorage.getItem("openclaw-device-identity-v1")).toBeNull();
+      expect(localStorage.getItem(identityKey)).toBeNull();
     },
   );
 
@@ -305,9 +302,7 @@ describe("native authenticated Control UI", () => {
           Promise.resolve(authorize(JSON.parse(message))),
         );
       } else {
-        bridge.postMessage.mockImplementation((message) => {
-          bridge.onmessage?.({ data: JSON.stringify(authorize(JSON.parse(message))) });
-        });
+        bridge.postMessage.mockImplementation(replyWith(authorize));
       }
       const socket = connect();
       const frame = await Promise.race([
@@ -344,7 +339,7 @@ describe("native authenticated Control UI", () => {
           Buffer.from(device.signature, "base64url"),
         ),
       ).toBe(true);
-      expect(localStorage.getItem("openclaw-device-identity-v1")).toBeNull();
+      expect(localStorage.getItem(identityKey)).toBeNull();
       socket.emitMessage({
         type: "res",
         id: frame.id,
@@ -356,8 +351,8 @@ describe("native authenticated Control UI", () => {
         },
       });
       await vi.advanceTimersByTimeAsync(0);
-      expect(localStorage.getItem("openclaw-device-identity-v1")).toBeNull();
-      expect(localStorage.getItem("openclaw.device.auth.v1:wss://gateway.example/work")).toBeNull();
+      expect(localStorage.getItem(identityKey)).toBeNull();
+      expect(localStorage.getItem(authKey)).toBeNull();
     },
   );
 
@@ -432,25 +427,18 @@ describe("native authenticated Control UI", () => {
       }
     }
     expect(socket.sent).toEqual([]);
-    expect(localStorage.getItem("openclaw-device-identity-v1")).toBeNull();
+    expect(localStorage.getItem(identityKey)).toBeNull();
   });
 
   it("obtains the current native grant again when the dashboard reconnects", async () => {
     const first = connect();
     await first.connect.promise;
-    bridge.postMessage.mockImplementation((message) => {
-      bridge.onmessage?.({
-        data: JSON.stringify(signedAuthorization(JSON.parse(message), "rotated-native-grant")),
-      });
-    });
+    bridge.postMessage.mockImplementation(
+      replyWith((challenge) => signedAuthorization(challenge, "rotated-native-grant")),
+    );
     gateway!.connect();
     const second = wsInstances.at(-1) as RecordingSocket;
-    second.emitOpen();
-    second.emitMessage({
-      type: "event",
-      event: "connect.challenge",
-      payload: { nonce: "challenge-2", ts: signedAt + 1 },
-    });
+    challengeSocket(second, "challenge-2", signedAt + 1);
     const frame = await second.connect.promise;
     expect(frame.params.auth).toEqual({ deviceToken: "rotated-native-grant" });
     expect(frame.params.device?.id).toBe(deviceId);
@@ -485,7 +473,7 @@ describe("native authenticated Control UI", () => {
       if (failure.startsWith("silent bridge")) {
         expect(gateway!.snapshot.lastError).toContain("did not authorize");
       }
-      expect(localStorage.getItem("openclaw-device-identity-v1")).toBeNull();
+      expect(localStorage.getItem(identityKey)).toBeNull();
       if (failure === "silent bridge stopped") {
         gateway!.stop();
         expect(vi.getTimerCount()).toBe(0);
@@ -494,22 +482,13 @@ describe("native authenticated Control UI", () => {
         return;
       }
 
-      bridge.postMessage.mockImplementation((message) => {
-        bridge.onmessage?.({
-          data: JSON.stringify(
-            signedAuthorization(JSON.parse(message), "reconnected-native-grant"),
-          ),
-        });
-      });
+      bridge.postMessage.mockImplementation(
+        replyWith((challenge) => signedAuthorization(challenge, "reconnected-native-grant")),
+      );
       await vi.advanceTimersByTimeAsync(800);
       expect(wsInstances).toHaveLength(2);
       const second = wsInstances.at(-1) as RecordingSocket;
-      second.emitOpen();
-      second.emitMessage({
-        type: "event",
-        event: "connect.challenge",
-        payload: { nonce: "recovered-challenge", ts: signedAt + 1 },
-      });
+      challengeSocket(second, "recovered-challenge", signedAt + 1);
       const frame = await second.connect.promise;
       expect(frame.params.auth).toEqual({ deviceToken: "reconnected-native-grant" });
       expect(frame.params.device).toMatchObject({
@@ -527,8 +506,8 @@ describe("native authenticated Control UI", () => {
       });
       await vi.advanceTimersByTimeAsync(0);
       expect(gateway!.snapshot.phase).toBe("connected");
-      expect(localStorage.getItem("openclaw-device-identity-v1")).toBeNull();
-      expect(localStorage.getItem("openclaw.device.auth.v1:wss://gateway.example/work")).toBeNull();
+      expect(localStorage.getItem(identityKey)).toBeNull();
+      expect(localStorage.getItem(authKey)).toBeNull();
       gateway!.stop();
       expect(vi.getTimerCount()).toBe(0);
       await vi.advanceTimersByTimeAsync(30_000);
@@ -548,7 +527,7 @@ describe("native authenticated Control UI", () => {
         },
       });
       localStorage.setItem(
-        "openclaw-device-identity-v1",
+        identityKey,
         JSON.stringify({
           version: 1,
           deviceId,
@@ -561,7 +540,7 @@ describe("native authenticated Control UI", () => {
         }),
       );
       localStorage.setItem(
-        "openclaw.device.auth.v1:wss://gateway.example/work",
+        authKey,
         JSON.stringify({
           version: 1,
           deviceId,

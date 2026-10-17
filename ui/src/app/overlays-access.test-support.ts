@@ -61,70 +61,66 @@ export function createGatewayHarness(
       return () => eventListeners.delete(listener);
     },
   } satisfies ApplicationGateway;
+  const emitEvent = (event: string, payload: unknown) => {
+    const frame: GatewayEventFrame = { event, payload, type: "event" };
+    for (const listener of eventListeners) {
+      listener(frame);
+    }
+  };
+  const update = (next: Partial<ApplicationGatewaySnapshot>) => {
+    snapshot = { ...snapshot, ...next };
+    for (const listener of snapshotListeners) {
+      listener(snapshot);
+    }
+  };
   return {
-    emitEvent(event: string, payload: unknown) {
-      const frame = { event, payload, type: "event" } as GatewayEventFrame;
-      for (const listener of eventListeners) {
-        listener(frame);
-      }
-    },
+    emitEvent,
     emitApproval(id: string, createdAtMs: number) {
-      const event: GatewayEventFrame = {
-        event: "exec.approval.requested",
-        payload: approval(id, createdAtMs),
-        type: "event",
-      };
-      for (const listener of eventListeners) {
-        listener(event);
-      }
+      emitEvent("exec.approval.requested", approval(id, createdAtMs));
     },
     emitDevicePairRequested() {
-      const event: GatewayEventFrame = {
-        event: "device.pair.requested",
-        payload: {},
-        type: "event",
-      };
-      for (const listener of eventListeners) {
-        listener(event);
-      }
+      emitEvent("device.pair.requested", {});
     },
     emitSystemApproval(id: string, createdAtMs: number) {
-      const event: GatewayEventFrame = {
-        event: "openclaw.approval.requested",
-        payload: {
-          id,
-          createdAtMs,
-          expiresAtMs: Date.now() + 60_000,
-          request: {
-            title: SYSTEM_APPROVAL_TITLE,
-            description: SYSTEM_APPROVAL_COMMAND,
-            command: SYSTEM_APPROVAL_COMMAND,
-            proposalHash: "a".repeat(64),
-            allowedDecisions: ["allow-once", "deny"],
-          },
+      emitEvent("openclaw.approval.requested", {
+        id,
+        createdAtMs,
+        expiresAtMs: Date.now() + 60_000,
+        request: {
+          title: SYSTEM_APPROVAL_TITLE,
+          description: SYSTEM_APPROVAL_COMMAND,
+          command: SYSTEM_APPROVAL_COMMAND,
+          proposalHash: "a".repeat(64),
+          allowedDecisions: ["allow-once", "deny"],
         },
-        type: "event",
-      };
-      for (const listener of eventListeners) {
-        listener(event);
-      }
+      });
     },
     gateway,
     connect,
     replaceSnapshotWithoutPublishing(next: Partial<ApplicationGatewaySnapshot>) {
       snapshot = { ...snapshot, ...next };
     },
-    update(next: Partial<ApplicationGatewaySnapshot>) {
-      snapshot = { ...snapshot, ...next };
-      for (const listener of snapshotListeners) {
-        listener(snapshot);
-      }
+    update,
+    setScopes(scopes: string[]) {
+      update({
+        hello: { auth: { role: "operator", scopes } } as ApplicationGatewaySnapshot["hello"],
+      });
     },
   };
 }
 
 export function client(request: RequestFn): GatewayBrowserClient {
   return { request } as unknown as GatewayBrowserClient;
+}
+
+export function createOverlayHarness(request: RequestFn, scopes?: string[] | null) {
+  const harness = createGatewayHarness(client(request));
+  if (scopes === null) {
+    harness.update({ hello: null });
+  } else if (scopes) {
+    harness.setScopes(scopes);
+  }
+  return { harness, overlays: createApplicationOverlays(harness.gateway) };
 }
 
 export async function flushMicrotasks() {
@@ -209,9 +205,7 @@ export function registerOverlayPairingAccessTests() {
       const request = vi.fn<RequestFn>((method) =>
         Promise.resolve(method === "device.pair.list" ? { pending } : []),
       );
-      const harness = createGatewayHarness(client(request));
-      harness.update({ hello: null });
-      const overlays = createApplicationOverlays(harness.gateway);
+      const { harness, overlays } = createOverlayHarness(request, null);
 
       await overlays.openDevicePairSetup();
       await flushMicrotasks();
@@ -229,11 +223,7 @@ export function registerOverlayPairingAccessTests() {
         2,
       );
 
-      harness.update({
-        hello: {
-          auth: { role: "operator", scopes: ["operator.read"] },
-        } as ApplicationGatewaySnapshot["hello"],
-      });
+      harness.setScopes(["operator.read"]);
       expect(overlays.snapshot.devicePairSetupOpen).toBe(false);
       expect(overlays.snapshot.devicePairPendingCount).toBe(0);
       harness.emitDevicePairRequested();
@@ -257,13 +247,7 @@ export function registerOverlayPairingAccessTests() {
         }
         return Promise.resolve([]);
       });
-      const harness = createGatewayHarness(client(request));
-      harness.update({
-        hello: {
-          auth: { role: "operator", scopes: ["operator.admin"] },
-        } as ApplicationGatewaySnapshot["hello"],
-      });
-      const overlays = createApplicationOverlays(harness.gateway);
+      const { harness, overlays } = createOverlayHarness(request, ["operator.admin"]);
       await overlays.openDevicePairSetup();
       const mintingSetup = overlays.refreshDevicePairSetup();
       expect(overlays.snapshot.devicePairSetupLifecycle).toEqual({
@@ -271,11 +255,7 @@ export function registerOverlayPairingAccessTests() {
         access: "full",
       });
 
-      harness.update({
-        hello: {
-          auth: { role: "operator", scopes: ["operator.pairing"] },
-        } as ApplicationGatewaySnapshot["hello"],
-      });
+      harness.setScopes(["operator.pairing"]);
       expect(overlays.snapshot.devicePairSetupOpen).toBe(false);
       expect(overlays.snapshot.devicePairSetupLifecycle).toEqual({
         phase: "selection",
@@ -283,13 +263,9 @@ export function registerOverlayPairingAccessTests() {
       });
 
       setup.resolve({
-        setupId: "retired-setup",
-        expiresAtMs: Date.now() + 60_000,
+        ...setupResult("retired-setup"),
         setupCode: "retired-test-setup-code",
         gatewayUrl: "ws://gateway.test",
-        auth: "token",
-        urlSource: "test",
-        access: "full",
       });
       await mintingSetup;
 
@@ -311,11 +287,7 @@ export function registerOverlayPairingAccessTests() {
       { name: "explicitly ungranted", scopes: [] },
     ])("does not dispatch pairing or setup requests for a $name operator", async ({ scopes }) => {
       const request = vi.fn<RequestFn>(() => Promise.resolve({ pending: [] }));
-      const harness = createGatewayHarness(client(request));
-      harness.update({
-        hello: { auth: { role: "operator", scopes } } as ApplicationGatewaySnapshot["hello"],
-      });
-      const overlays = createApplicationOverlays(harness.gateway);
+      const { overlays } = createOverlayHarness(request, scopes);
 
       await expect(overlays.openDevicePairSetup()).resolves.toBe(false);
       await overlays.refreshDevicePairSetup();
@@ -334,8 +306,7 @@ export function registerOverlayPairingAccessTests() {
         }
         return Promise.resolve(method === "device.pair.list" ? { pending: [] } : []);
       });
-      const harness = createGatewayHarness(client(request));
-      const overlays = createApplicationOverlays(harness.gateway);
+      const { harness, overlays } = createOverlayHarness(request);
 
       await overlays.openDevicePairSetup();
       await overlays.refreshDevicePairSetup();
@@ -396,8 +367,7 @@ export function registerOverlayPairingAccessTests() {
               : [],
         ),
       );
-      const harness = createGatewayHarness(client(request));
-      const overlays = createApplicationOverlays(harness.gateway);
+      const { harness, overlays } = createOverlayHarness(request);
 
       await overlays.openDevicePairSetup();
       await overlays.refreshDevicePairSetup();
@@ -435,13 +405,7 @@ export function registerOverlayPairingAccessTests() {
               : { pending: [] },
           ),
         );
-        const harness = createGatewayHarness(client(request));
-        harness.update({
-          hello: {
-            auth: { role: "operator", scopes: ["operator.admin"] },
-          } as ApplicationGatewaySnapshot["hello"],
-        });
-        const overlays = createApplicationOverlays(harness.gateway);
+        const { harness, overlays } = createOverlayHarness(request, ["operator.admin"]);
 
         try {
           await overlays.openDevicePairSetup();
@@ -451,11 +415,7 @@ export function registerOverlayPairingAccessTests() {
           if (boundary === "reconnect") {
             harness.update({ client: client(request) });
           } else if (boundary === "access revocation") {
-            harness.update({
-              hello: {
-                auth: { role: "operator", scopes: ["operator.pairing"] },
-              } as ApplicationGatewaySnapshot["hello"],
-            });
+            harness.setScopes(["operator.pairing"]);
           } else {
             overlays.dispose();
           }
