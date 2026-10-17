@@ -134,10 +134,7 @@ async function migrateAgentDatabase(params: {
     configureSqliteMaintenanceCache(database);
     database.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
     enableNodeSqliteKyselyStatementCache(database);
-    let metadata = assertOpenClawAgentDatabaseOwner(database, {
-      agentId: params.agentId,
-      pathname: params.pathname,
-    });
+    let metadata = assertOpenClawAgentDatabaseOwner(database, params);
     assertSupportedAgentSchemaVersion(database, params.pathname);
     let userVersion = readSqliteUserVersion(database);
     if (userVersion < OPENCLAW_AGENT_SCHEMA_VERSION) {
@@ -181,10 +178,7 @@ async function migrateAgentDatabase(params: {
         await runSchema(
           migrateOpenClawAgentDatabaseToMediaPrerequisiteSchemaSteps(database, schemaOptions),
         );
-        metadata = assertOpenClawAgentDatabaseOwner(database, {
-          agentId: params.agentId,
-          pathname: params.pathname,
-        });
+        metadata = assertOpenClawAgentDatabaseOwner(database, params);
         userVersion = readSqliteUserVersion(database);
       }
       if (metadata.schemaVersion !== userVersion) {
@@ -199,12 +193,10 @@ async function migrateAgentDatabase(params: {
           // The version phase verified this file under the same Doctor custody.
           // Only ordinary additive maintenance remains before readers can open it.
           ensureOpenClawAgentSchema(database, params.agentId, params.pathname);
-          registerOpenClawAgentDatabase({
-            ...schemaOptions,
-            admittedDb: nativeVersionMigration
-              ? admitOpenClawAgentDatabaseSchema(database, schemaOptions)
-              : undefined,
-          });
+          const admittedDb = nativeVersionMigration
+            ? admitOpenClawAgentDatabaseSchema(database, schemaOptions)
+            : undefined;
+          registerOpenClawAgentDatabase({ ...schemaOptions, admittedDb });
         } else {
           await runSchema(ensureOpenClawAgentDatabaseSchemaSteps(database, schemaOptions));
         }
