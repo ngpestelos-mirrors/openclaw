@@ -1,4 +1,5 @@
 import { channel } from "node:diagnostics_channel";
+import fs from "node:fs";
 import path from "node:path";
 import { getEnvironmentData, setEnvironmentData, Worker } from "node:worker_threads";
 import pg from "pg";
@@ -30,6 +31,12 @@ import { admitSqliteSchema } from "../infra/sqlite-schema-facts.js";
 import { migrateDaemonRuntimePins } from "../infra/state-migrations.daemon-runtime-pins.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
 import {
+  executeExistingOpenClawStateRead,
+  withArtifactPreservingStateReads,
+  withOpenClawStateDatabaseReadSnapshot,
+} from "./openclaw-state-db-readonly.js";
+import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -49,6 +56,63 @@ const legacyWriteIndexesSql = `
 `;
 
 describe.skipIf(!connection)("PostgreSQL shared-state owner", () => {
+  it("reads warm and cold discovery state without copying or changing the PostgreSQL anchor", async () => {
+    const directory = tempDirs.make("state-discovery-postgres-");
+    const pathname = path.join(directory, "state.sqlite");
+    const options = { path: pathname, env: { ...process.env, OPENCLAW_STATE_DIR: directory } };
+    const client = new pg.Client({ connectionString: connection });
+    await client.connect();
+    installDatabaseEngineSelection({
+      effectiveEngines: resolveDatabaseFamilyEngines({ database: { engine: "postgres" } }),
+      postgres: { connection: connection!, schemaPrefix: "state_discovery_conformance" },
+    });
+    let namespace: string | undefined;
+    const stateKey = "discovery.fixture";
+    const valueJson = JSON.stringify({ source: "PostgreSQL" });
+    try {
+      namespace = withEngineStoreAdmission(() =>
+        runOpenClawStateWriteTransaction(({ db }) => {
+          db.prepare(
+            "INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)",
+          ).run(stateKey, valueJson, 1);
+          return getPostgresPhysicalFacts(db)?.namespace;
+        }, options),
+      );
+      expect(namespace).toBeDefined();
+      const anchorBytes = fs.readFileSync(pathname);
+      for (const source of ["warm", "cold"]) {
+        if (source === "cold") {
+          await closeOpenClawStateDatabaseAsync();
+        }
+        const reply = await withArtifactPreservingStateReads(() =>
+          withOpenClawStateDatabaseReadSnapshot(
+            () =>
+              executeExistingOpenClawStateRead(options, { type: "tui.lastSession.read", stateKey }),
+            options,
+          ),
+        );
+        expect(reply?.row).toEqual({ value_json: valueJson, updated_at_ms: 1 });
+        expect(fs.readFileSync(pathname)).toEqual(anchorBytes);
+        expect(fs.readdirSync(directory)).toEqual(["state.sqlite"]);
+      }
+      using anchor = openNodeSqliteDatabase(pathname, { readOnly: true });
+      expect(
+        anchor.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all(),
+      ).toEqual([{ name: "openclaw_engine_anchor" }]);
+    } finally {
+      await closeOpenClawStateDatabaseAsync();
+      retireSqliteDatabaseAdmissionForPath(pathname);
+      resetDatabaseEngineSelectionForTest();
+      try {
+        if (namespace) {
+          await client.query(`DROP SCHEMA "${namespace}" CASCADE`);
+        }
+      } finally {
+        await client.end();
+      }
+    }
+  });
+
   it.each([25, 26])(
     "migrates version %i indexes while preserving heads, leases, lazy fragments and schema admission",
     async (previousVersion) => {
