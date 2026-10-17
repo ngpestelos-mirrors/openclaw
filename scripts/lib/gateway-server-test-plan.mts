@@ -1,11 +1,14 @@
 // Bounds the non-isolated Gateway server project before its shared module graph
-// reaches the V8 worker heap limit.
+// exhausts memory on Node or Bun.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { isGatewayServerTestFile } from "../../test/vitest/vitest.gateway-server-paths.mjs";
+import { matchesVitestCliSelection } from "../../test/vitest/vitest.pattern-file.ts";
+import { hasNonRunVitestSubcommand, resolveExplicitVitestMode } from "./vitest-cli-mode.mts";
 
-const GATEWAY_SERVER_TEST_FILE_LIMIT = 50;
+// Three 36-file processes peaked at 10.05 GiB under a 16 GB, four-CPU limit.
+const GATEWAY_SERVER_TEST_FILE_LIMIT = 36;
 
 function normalizePath(value: string): string {
   return value.replaceAll("\\", "/");
@@ -64,7 +67,30 @@ export function splitTestTargetChunks(targets: string[], chunkCount: number): st
   return chunks;
 }
 
-export function createGatewayServerTestTargetChunks(cwd = process.cwd()): string[][] {
-  const targets = listGatewayServerTestTargets(cwd);
+export function createGatewayServerTestTargetChunks(
+  cwd = process.cwd(),
+  args: string[] = [],
+  env: NodeJS.ProcessEnv = {},
+  includePatterns?: readonly string[] | null,
+): string[][] {
+  // Native sharding must see the whole selection before runtime filtering.
+  // Stateful/output modifiers likewise retain their single-invocation semantics.
+  if (
+    hasNonRunVitestSubcommand(args) ||
+    resolveExplicitVitestMode(args) === "watch" ||
+    args.some(
+      (arg, index) =>
+        /^--(?:shard|changed|bail|coverage|mergeReports|outputFile|project|root|dir|no-run)(?:[.=]|$)/u.test(
+          arg,
+        ) ||
+        arg === "--run=false" ||
+        (arg === "--run" && args[index + 1] === "false"),
+    )
+  ) {
+    return [];
+  }
+  const targets = listGatewayServerTestTargets(cwd).filter((file) =>
+    matchesVitestCliSelection(file, [file], args, "src/gateway", env, includePatterns),
+  );
   return splitTestTargetChunks(targets, Math.ceil(targets.length / GATEWAY_SERVER_TEST_FILE_LIMIT));
 }

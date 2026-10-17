@@ -34,8 +34,10 @@ import {
 } from "../../scripts/lib/ci-test-runtime.mts";
 import { refitTestTimings } from "../../scripts/lib/ci-test-timings-refit.mts";
 import * as buildPrerequisites from "../../scripts/lib/vitest-build-prerequisites.mts";
+import { collectVitestFileFilters } from "../../scripts/lib/vitest-cli-mode.mts";
 import { resolveLocalVitestScheduling } from "../../scripts/lib/vitest-local-scheduling.mts";
 import * as workerOwner from "../../scripts/lib/vitest-worker-run.mts";
+import { createVitestRunSpecs } from "../../scripts/test-projects.test-support.mts";
 import * as groupOwner from "../../scripts/vitest-process-group.mts";
 import { createDeferred, withTestTimeout } from "../helpers/promise.js";
 import { testRunnerFixtureEnv } from "./prepared-script-wrapper.test-support.js";
@@ -114,6 +116,57 @@ afterEach(() => {
 });
 
 describe("scripts/ci-run-node-test-shard.mts", () => {
+  it.each([{ filters: [] }, { filters: ["server.chat-fixture"] }])(
+    "bounds the CI Gateway include selection with filters $filters inside its original timing envelope",
+    async ({ filters }) => {
+      const cwd = makeScratchDir();
+      mkdirSync(path.join(cwd, "src/gateway"), { recursive: true });
+      const files = Array.from(
+        { length: 74 },
+        (_, index) => `src/gateway/server.chat-fixture-${String(index).padStart(3, "0")}.test.ts`,
+      );
+      for (const file of files) {
+        writeFileSync(path.join(cwd, file), "");
+      }
+      const included = files.slice(0, 73);
+      const config = "test/vitest/vitest.gateway-server.config.ts";
+      const launched: string[][] = [];
+      const envelopes: string[] = [];
+      const code = await runShardPlans(
+        [
+          {
+            kind: "group",
+            name: "agent-chat",
+            timingKey: "original-key",
+            plan: { configs: [config], includePatterns: included },
+          },
+        ],
+        {
+          env: { CI: "1", OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: JSON.stringify(filters) },
+          scratchDir: cwd,
+          runChild: async (args, env, _label, timingKey) => {
+            envelopes.push(timingKey);
+            const specs = createVitestRunSpecs(args, { baseEnv: env, cwd });
+            for (const spec of specs) {
+              const cliFilters = collectVitestFileFilters(
+                spec.pnpmArgs.slice(spec.pnpmArgs.indexOf("run")),
+              );
+              launched.push(
+                files.filter((file) => cliFilters.some((filter) => file.includes(filter))),
+              );
+              expect(spec.env.OPENCLAW_VITEST_INCLUDE_FILE).toBe(env.OPENCLAW_VITEST_INCLUDE_FILE);
+            }
+            return 1;
+          },
+        },
+      );
+      expect(code).toBe(1);
+      expect(envelopes).toEqual(["original-key"]);
+      expect(launched.map((chunk) => chunk.length)).toEqual([25, 24, 24]);
+      expect(launched.flat()).toEqual(included);
+    },
+  );
+
   it.each([
     { preparation: "UI", code: 0 },
     { preparation: "UI", code: 23 },
