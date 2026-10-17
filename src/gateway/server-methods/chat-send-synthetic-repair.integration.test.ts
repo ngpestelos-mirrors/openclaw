@@ -56,20 +56,14 @@ it("chat.send replays synthetic repairs through session history and the register
   const providerWork: Promise<void>[] = [];
   const endpoint = createServer((request, response) => {
     const work = (async () => {
-      expect(request.method).toBe("POST");
-      expect(request.url).toBe("/v1/messages");
+      expect(request).toMatchObject({ method: "POST", url: "/v1/messages" });
       requests.push(JSON.parse(await readText(request)));
       const events = [
         {
           type: "message_start",
           message: {
             id: "replay-message",
-            type: "message",
-            role: "assistant",
             model,
-            content: [],
-            stop_reason: null,
-            stop_sequence: null,
             usage: { input_tokens: 100, output_tokens: 0 },
           },
         },
@@ -82,7 +76,7 @@ it("chat.send replays synthetic repairs through session history and the register
         { type: "content_block_stop", index: 0 },
         {
           type: "message_delta",
-          delta: { stop_reason: "end_turn", stop_sequence: null },
+          delta: { stop_reason: "end_turn" },
           usage: { output_tokens: 5 },
         },
         { type: "message_stop" },
@@ -214,18 +208,18 @@ it("chat.send replays synthetic repairs through session history and the register
               content: [{ type: "text", text: "LATE_ACTUAL_RESULT" }],
             });
           }
-          for (const result of [
-            { id: "real", text: "REAL_SIBLING_RESULT", isError: false },
-            { id: "error", text: "File not found", isError: true },
-            { id: "quoted", text: DEFAULT_MISSING_TOOL_RESULT_TEXT, isError: false },
-          ]) {
+          for (const [id, text, isError] of [
+            ["real", "REAL_SIBLING_RESULT", false],
+            ["error", "File not found", true],
+            ["quoted", DEFAULT_MISSING_TOOL_RESULT_TEXT, false],
+          ] as const) {
             manager.appendMessage({
               role: "toolResult",
-              toolCallId: `call${result.id}`,
+              toolCallId: `call${id}`,
               toolName: "read",
               timestamp,
-              isError: result.isError,
-              content: [{ type: "text", text: result.text }],
+              isError,
+              content: [{ type: "text", text }],
             });
           }
           manager.appendMessage(assistant([{ type: "text", text: "USEFUL_ALERT" }]));
@@ -254,7 +248,6 @@ it("chat.send replays synthetic repairs through session history and the register
               : message.content,
           );
           const results = blocks.filter((block) => block.type === "tool_result");
-          expect(results).toHaveLength(4);
           const resultBlock = (id: string, content: string, is_error: boolean) =>
             expect.objectContaining({ tool_use_id: `call${id}`, content, is_error });
           expect

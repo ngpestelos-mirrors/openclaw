@@ -8,7 +8,6 @@ import {
 import { createSolidPngBuffer } from "../../../test/helpers/image-fixtures.js";
 import { resolveBootstrapContextForRun } from "../../agents/bootstrap-files.js";
 import { hydratePromptMediaMessages } from "../../agents/embedded-agent-runner/run/images.js";
-import type { AgentMessage } from "../../agents/runtime/index.js";
 import { resolveCommandAuthorization } from "../../auto-reply/command-auth.js";
 import { normalizeCommandBody } from "../../auto-reply/commands-registry.js";
 import { resolveReplyDirectiveRouting } from "../../auto-reply/reply/get-reply-directives-routing.js";
@@ -97,28 +96,6 @@ function imageRef(
     sizeBytes: 10,
     sourceIndex: 0,
     ...overrides,
-  };
-}
-
-function persistedImage(
-  id: string,
-  mediaPath: string,
-  imageKind: "inline" | "offloaded",
-  fileName: string,
-  sizeBytes = 10,
-) {
-  return {
-    id,
-    path: mediaPath,
-    sourceIndex: 0,
-    imageKind,
-    fact: {
-      url: `media://inbound/${id}`,
-      contentType: "image/png",
-      fileName,
-      kind: "image" as const,
-      sizeBytes,
-    },
   };
 }
 
@@ -298,8 +275,6 @@ describe("prepareChatSendUserTurn", () => {
         using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
         const prepared = prepareTurn({
           session: {
-            agentId: "main",
-            clientRunId: "run-1",
             sessionKey: "agent:main:dashboard:guest-chat",
             cfg: {
               gateway: {
@@ -556,7 +531,6 @@ describe("prepareChatSendUserTurn", () => {
   it("persists video then image as claim-only facts with the image at fact index one", async () => {
     const { controller, readInput } = createUserTurnInputController();
     prepareTurn({
-      session: { clientRunId: "run-mixed" },
       attachments: {
         imageOrder: ["offloaded"],
         offloadedRefs: [
@@ -606,7 +580,6 @@ describe("prepareChatSendUserTurn", () => {
     try {
       const { controller, readInput } = createUserTurnInputController();
       const prepared = prepareTurn({
-        session: { clientRunId: "run-omission" },
         attachments: {
           imageOrder: ["inline"],
           parsedImages: [
@@ -627,143 +600,108 @@ describe("prepareChatSendUserTurn", () => {
     }
   });
 
-  it("exposes an ordinary WebChat inline image as managed media for downstream staging", async () => {
-    const persistedPath = "/state/media/inbound/photo.png";
-    const persist = vi
-      .spyOn(chatAttachments, "persistInboundImagesForTranscript")
-      .mockResolvedValueOnce({
-        entries: [persistedImage("photo.png", persistedPath, "inline", "photo café 雪 🦞.png")],
-        omission: "none",
-      });
-    try {
-      const prepared = prepareTurn({
-        request: {
-          inboundMessage: "inspect",
-          clientInfo: uiClientInfo(GATEWAY_CLIENT_MODES.WEBCHAT),
-        },
-        session: { clientRunId: "run-inline" },
-        attachments: {
-          imageOrder: ["inline"],
-          parsedImages: [
-            { type: "image", data: "aGVsbG8=", mimeType: "image/png", sourceIndex: 0 },
-          ],
-        },
-      });
-
-      const managedMedia = await prepared.pluginBoundMediaPromise;
-      expect(managedMedia).toEqual([
-        {
-          path: persistedPath,
-          contentType: "image/png",
-          fileName: "photo café 雪 🦞.png",
-          hydrationSuppressed: true,
-        },
-      ]);
-      const ctx = {
-        media: [{ path: "uploads/report.pdf", workspaceDir: "/workspace" }],
-      } as MsgContext;
-      applyChatSendManagedMedia(ctx, managedMedia, prepared.managedMediaApplyMode);
-      applyChatSendManagedMedia(ctx, managedMedia, prepared.managedMediaApplyMode);
-      expect(ctx.media).toEqual([
-        { path: "uploads/report.pdf", workspaceDir: "/workspace" },
-        {
-          path: persistedPath,
-          contentType: "image/png",
-          fileName: "photo café 雪 🦞.png",
-          hydrationSuppressed: true,
-        },
-      ]);
-    } finally {
-      persist.mockRestore();
-    }
-  });
-
-  it("exposes an ordinary WebChat offloaded image as the media-store path for staging", async () => {
-    const persistedPath = "/state/media/inbound/photo---abc.png";
-    const mediaRef = "media://inbound/photo---abc.png";
-    const persist = vi
-      .spyOn(chatAttachments, "persistInboundImagesForTranscript")
-      .mockResolvedValueOnce({
-        entries: [
-          persistedImage("photo---abc.png", persistedPath, "offloaded", "photo.png", 2_100_000),
-        ],
-        omission: "none",
-      });
-    try {
-      const prepared = prepareTurn({
-        request: {
-          inboundMessage: "inspect",
-          clientInfo: uiClientInfo(GATEWAY_CLIENT_MODES.WEBCHAT),
-        },
-        session: { clientRunId: "run-offloaded" },
-        attachments: {
-          imageOrder: ["offloaded"],
-          offloadedRefs: [
-            imageRef("photo---abc.png", persistedPath, {
-              label: "photo.png",
-              sizeBytes: 2_100_000,
-            }),
-          ],
-          parsedMessage: `inspect\n[media attached: ${mediaRef}]`,
-        },
-      });
-
-      const managedMedia = await prepared.pluginBoundMediaPromise;
-      expect(managedMedia).toEqual([
-        {
-          path: persistedPath,
-          contentType: "image/png",
-          fileName: "photo.png",
-          hydrationSuppressed: true,
-        },
-      ]);
-      expect(prepared.replyOptionImages).toBeUndefined();
-      expect(prepared.replyOptionMedia).toEqual([
-        {
-          path: persistedPath,
-          url: mediaRef,
-          contentType: "image/png",
-        },
-      ]);
-      const ctx = {} as MsgContext;
-      applyChatSendManagedMedia(ctx, managedMedia, prepared.managedMediaApplyMode);
-      expect(ctx.media).toEqual(managedMedia);
-    } finally {
-      persist.mockRestore();
-    }
-  });
-
-  it("does not restage an offloaded image that pre-staging already published", async () => {
-    const prepared = prepareTurn({
-      request: {
-        inboundMessage: "inspect",
-        clientInfo: uiClientInfo(GATEWAY_CLIENT_MODES.WEBCHAT),
-      },
-      session: { clientRunId: "run-prestaged" },
-      attachments: {
-        imageOrder: ["offloaded"],
-        mediaPathOffloads: [
-          {
-            path: "/tmp/1.png",
-            contentType: "image/png",
-            fileName: "attachment-1",
-            workspaceDir: "/tmp",
-          },
-        ],
-        offloadedRefs: [imageRef("1.png", "/tmp/1.png", { label: "attachment-1" })],
-      },
-    });
-
-    await expect(prepared.pluginBoundMediaPromise).resolves.toEqual([]);
-    expect(prepared.ctx.media).toEqual([
-      {
-        path: "/tmp/1.png",
+  it.each(["inline", "offloaded", "prestaged"] as const)(
+    "stages ordinary WebChat %s images exactly once",
+    async (kind) => {
+      const inline = kind === "inline";
+      const prestaged = kind === "prestaged";
+      const id = inline ? "photo.png" : prestaged ? "1.png" : "photo---abc.png";
+      const persistedPath = prestaged ? "/tmp/1.png" : `/state/media/inbound/${id}`;
+      const mediaRef = `media://inbound/${id}`;
+      const fileName = inline ? "photo café 雪 🦞.png" : prestaged ? "attachment-1" : "photo.png";
+      const sizeBytes = kind === "offloaded" ? 2_100_000 : 10;
+      const staged = {
+        path: persistedPath,
         contentType: "image/png",
-        fileName: "attachment-1",
+        fileName,
         workspaceDir: "/tmp",
-      },
-    ]);
-  });
+      };
+      const persist = prestaged
+        ? undefined
+        : vi.spyOn(chatAttachments, "persistInboundImagesForTranscript").mockResolvedValueOnce({
+            entries: [
+              {
+                id,
+                path: persistedPath,
+                sourceIndex: 0,
+                imageKind: inline ? "inline" : "offloaded",
+                fact: {
+                  url: mediaRef,
+                  contentType: "image/png",
+                  fileName,
+                  kind: "image",
+                  sizeBytes,
+                },
+              },
+            ],
+            omission: "none",
+          });
+      try {
+        const prepared = prepareTurn({
+          request: {
+            inboundMessage: "inspect",
+            clientInfo: uiClientInfo(GATEWAY_CLIENT_MODES.WEBCHAT),
+          },
+          attachments: {
+            imageOrder: [inline ? "inline" : "offloaded"],
+            ...(inline
+              ? {
+                  parsedImages: [
+                    { type: "image", data: "aGVsbG8=", mimeType: "image/png", sourceIndex: 0 },
+                  ],
+                }
+              : { offloadedRefs: [imageRef(id, persistedPath, { label: fileName, sizeBytes })] }),
+            ...(prestaged ? { mediaPathOffloads: [staged] } : {}),
+            ...(kind === "offloaded"
+              ? { parsedMessage: `inspect\n[media attached: ${mediaRef}]` }
+              : {}),
+          },
+        });
+        const managedMedia = await prepared.pluginBoundMediaPromise;
+        if (prestaged) {
+          expect(managedMedia).toEqual([]);
+          expect(prepared.ctx.media).toEqual([
+            {
+              path: "/tmp/1.png",
+              contentType: "image/png",
+              fileName: "attachment-1",
+              workspaceDir: "/tmp",
+            },
+          ]);
+          return;
+        }
+        const expectedMedia = [
+          {
+            path: persistedPath,
+            contentType: "image/png",
+            fileName,
+            hydrationSuppressed: true,
+          },
+        ];
+        expect(managedMedia).toEqual(expectedMedia);
+        if (!inline) {
+          expect(prepared.replyOptionImages).toBeUndefined();
+          expect(prepared.replyOptionMedia).toEqual([
+            { path: persistedPath, url: mediaRef, contentType: "image/png" },
+          ]);
+        }
+        const priorMedia = inline
+          ? [{ path: "uploads/report.pdf", workspaceDir: "/workspace" }]
+          : [];
+        const ctx: MsgContext = inline ? { media: priorMedia } : {};
+        applyChatSendManagedMedia(ctx, managedMedia, prepared.managedMediaApplyMode);
+        if (inline) {
+          applyChatSendManagedMedia(ctx, managedMedia, prepared.managedMediaApplyMode);
+        }
+        expect(ctx.media).toEqual([
+          ...(inline ? [{ path: "uploads/report.pdf", workspaceDir: "/workspace" }] : []),
+          ...expectedMedia,
+        ]);
+      } finally {
+        persist?.mockRestore();
+      }
+    },
+  );
 
   it("hydrates a staged image claim-check alias as structured ownership", async () => {
     const id = `gateway-image-${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
@@ -777,9 +715,7 @@ describe("prepareChatSendUserTurn", () => {
     try {
       const { controller, readInput } = createUserTurnInputController();
       prepareTurn({
-        request: {
-          inboundMessage: "inspect",
-        },
+        request: { inboundMessage: "inspect" },
         attachments: {
           imageOrder: ["offloaded"],
           offloadedRefs: [imageRef(id, imagePath)],
@@ -801,20 +737,14 @@ describe("prepareChatSendUserTurn", () => {
       expect(input.media).toEqual(expectedMedia);
       expect(input.media?.[0]).not.toHaveProperty("hydrationSuppressed");
       const persisted = buildPersistedUserTurnMessage({ ...input, text });
-      expect(
-        (
-          (persisted as unknown as Record<string, unknown>)["__openclaw"] as {
-            media?: unknown;
-          }
-        ).media,
-      ).toEqual(expectedMedia);
+      expect(persisted).toHaveProperty("__openclaw.media", expectedMedia);
 
-      const hydrated = await hydratePromptMediaMessages([persisted as AgentMessage], {
+      const hydrated = await hydratePromptMediaMessages([persisted], {
         workspaceDir: path.dirname(imagePath),
         model: { input: ["text", "image"] },
         workspaceOnly: true,
       });
-      expect((hydrated[0] as unknown as { content?: unknown[] }).content).toEqual([
+      expect(hydrated[0]).toHaveProperty("content", [
         { type: "text", text },
         expect.objectContaining({ type: "image", mimeType: "image/png" }),
       ]);
