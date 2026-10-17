@@ -5,7 +5,7 @@ import { setImmediate } from "node:timers/promises";
 import type { MatrixClient as MatrixJsSdkClient } from "matrix-js-sdk/lib/matrix.js";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import { expect, it, vi } from "vitest";
+import { expect, it, vi, type MockInstance } from "vitest";
 import { installMatrixTestRuntime } from "../../test-runtime.js";
 import { SqliteBackedMatrixSyncStore } from "../client/file-sync-store.js";
 import { readMatrixIdbSnapshotJson } from "../crypto-state-store.js";
@@ -24,104 +24,79 @@ type CryptoPersistenceContext = {
 
 export function registerCryptoShutdownTests(context: CryptoPersistenceContext): void {
   const { createSdkClient, clearMatrixSyncApiForNeverStartedClient } = context;
-  it("persists crypto before marking and flushing the clean sync cursor", async () => {
+  async function withCryptoStore(
+    run: (fixture: {
+      client: MatrixClient;
+      tempDir: string;
+      store: SqliteBackedMatrixSyncStore;
+      databasesSpy: MockInstance<typeof indexedDB.databases>;
+    }) => Promise<void>,
+  ) {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-matrix-sdk-store-"));
     resetPluginStateStoreForTests();
     installMatrixTestRuntime();
     clearMatrixSyncApiForNeverStartedClient();
-    const cause = new Error("sync store flush failed");
-    const pendingDatabases = createDeferred<IDBDatabaseInfo[]>();
-    const dumping = createDeferred<void>();
     const databasesSpy = vi.spyOn(indexedDB, "databases");
-    let shutdown: Promise<void> | undefined;
-
     let client: MatrixClient | undefined;
     try {
+      const store = await SqliteBackedMatrixSyncStore.create(tempDir);
       client = createSdkClient({
         encryption: true,
         cryptoDatabasePrefix: path.basename(tempDir),
-        syncStore: await SqliteBackedMatrixSyncStore.create(tempDir),
+        syncStore: store,
         idbSnapshotPath: path.join(tempDir, "crypto-idb-snapshot.json"),
       });
-
       await client.prepareForOneOff();
-
       await seedDatabase({
         name: path.basename(tempDir) + "::crypto",
         storeName: "keys",
         records: [{ key: "session", value: "fresh-key" }],
       });
-
-      // SAFETY: createSdkClient forwards the SQLite syncStore supplied above to the SDK.
-      const store = context.getSyncStore() as
-        | { flush: () => Promise<void>; markCleanShutdown: () => void }
-        | undefined;
-      if (!store) {
-        throw new Error("expected Matrix sync store");
-      }
-      const flushSpy = vi.spyOn(store, "flush").mockRejectedValue(cause);
-      const markCleanSpy = vi.spyOn(store, "markCleanShutdown");
-
-      const databases = await indexedDB.databases();
-      databasesSpy.mockImplementation(() => {
-        dumping.resolve();
-        return pendingDatabases.promise;
-      });
-      shutdown = client.stopAndPersist();
-      const rejected = expect(shutdown).rejects.toBe(cause);
-      await dumping.promise;
-      expect(markCleanSpy).not.toHaveBeenCalled();
-      expect(flushSpy).not.toHaveBeenCalled();
-
-      pendingDatabases.resolve(databases);
-      await rejected;
-      expect(await readMatrixIdbSnapshotJson(tempDir)).toContain("fresh-key");
-      expect(markCleanSpy).toHaveBeenCalledTimes(1);
-      expect(flushSpy).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(context.getMatrixJsClient()).stopClient).toHaveBeenCalledTimes(1);
+      expect(context.getSyncStore()).toBe(store);
+      await run({ client, tempDir, store, databasesSpy });
     } finally {
-      pendingDatabases.resolve([]);
-      await shutdown?.catch(() => undefined);
       databasesSpy.mockRestore();
       await client?.stopWithoutPersist();
       await clearAllIndexedDbState({ databasePrefix: path.basename(tempDir) });
       resetPluginStateStoreForTests();
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
+  }
+
+  it("persists crypto before marking and flushing the clean sync cursor", async () => {
+    await withCryptoStore(async ({ client, tempDir, store, databasesSpy }) => {
+      const cause = new Error("sync store flush failed");
+      const pendingDatabases = createDeferred<IDBDatabaseInfo[]>();
+      const dumping = createDeferred<void>();
+      const flushSpy = vi.spyOn(store, "flush").mockRejectedValue(cause);
+      const markCleanSpy = vi.spyOn(store, "markCleanShutdown");
+      const databases = await indexedDB.databases();
+      databasesSpy.mockImplementation(() => {
+        dumping.resolve();
+        return pendingDatabases.promise;
+      });
+      const shutdown = client.stopAndPersist();
+      try {
+        const rejected = expect(shutdown).rejects.toBe(cause);
+        await dumping.promise;
+        expect(markCleanSpy).not.toHaveBeenCalled();
+        expect(flushSpy).not.toHaveBeenCalled();
+        pendingDatabases.resolve(databases);
+        await rejected;
+        expect(await readMatrixIdbSnapshotJson(tempDir)).toContain("fresh-key");
+        expect(markCleanSpy).toHaveBeenCalledTimes(1);
+        expect(flushSpy).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(context.getMatrixJsClient()).stopClient).toHaveBeenCalledTimes(1);
+      } finally {
+        pendingDatabases.resolve([]);
+        await shutdown.catch(() => undefined);
+      }
+    });
   });
 
   it("does not mark or flush the sync cursor when strict crypto persistence fails", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-matrix-sdk-store-"));
-    resetPluginStateStoreForTests();
-    installMatrixTestRuntime();
-    clearMatrixSyncApiForNeverStartedClient();
-    const cause = new Error("indexeddb unavailable");
-    const databasesSpy = vi.spyOn(indexedDB, "databases");
-
-    let client: MatrixClient | undefined;
-    try {
-      client = createSdkClient({
-        encryption: true,
-        cryptoDatabasePrefix: path.basename(tempDir),
-        syncStore: await SqliteBackedMatrixSyncStore.create(tempDir),
-        idbSnapshotPath: path.join(tempDir, "crypto-idb-snapshot.json"),
-      });
-
-      await client.prepareForOneOff();
-
-      await seedDatabase({
-        name: path.basename(tempDir) + "::crypto",
-        storeName: "keys",
-        records: [{ key: "session", value: "fresh-key" }],
-      });
-
-      // SAFETY: createSdkClient forwards the SQLite syncStore supplied above to the SDK.
-      const store = context.getSyncStore() as
-        | { flush: () => Promise<void>; markCleanShutdown: () => void }
-        | undefined;
-      if (!store) {
-        throw new Error("expected Matrix sync store");
-      }
+    await withCryptoStore(async ({ client, store, databasesSpy }) => {
+      const cause = new Error("indexeddb unavailable");
       const flushSpy = vi.spyOn(store, "flush");
       const markCleanSpy = vi.spyOn(store, "markCleanShutdown");
 
@@ -130,46 +105,12 @@ export function registerCryptoShutdownTests(context: CryptoPersistenceContext): 
       expect(markCleanSpy).not.toHaveBeenCalled();
       expect(flushSpy).not.toHaveBeenCalled();
       expect(vi.mocked(context.getMatrixJsClient()).stopClient).toHaveBeenCalledTimes(1);
-    } finally {
-      databasesSpy.mockRestore();
-      await client?.stopWithoutPersist();
-      await clearAllIndexedDbState({ databasePrefix: path.basename(tempDir) });
-      resetPluginStateStoreForTests();
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
+    });
   });
 
   it("falls back to one non-persisting SDK stop when public stop persistence fails", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-matrix-sdk-stop-"));
-    resetPluginStateStoreForTests();
-    installMatrixTestRuntime();
-    clearMatrixSyncApiForNeverStartedClient();
-    const cause = new Error("indexeddb unavailable");
-    const databasesSpy = vi.spyOn(indexedDB, "databases");
-
-    let client: MatrixClient | undefined;
-    try {
-      client = createSdkClient({
-        encryption: true,
-        cryptoDatabasePrefix: path.basename(tempDir),
-        syncStore: await SqliteBackedMatrixSyncStore.create(tempDir),
-        idbSnapshotPath: path.join(tempDir, "crypto-idb-snapshot.json"),
-      });
-      await client.prepareForOneOff();
-
-      await seedDatabase({
-        name: path.basename(tempDir) + "::crypto",
-        storeName: "keys",
-        records: [{ key: "session", value: "fresh-key" }],
-      });
-
-      // SAFETY: createSdkClient forwards the SQLite syncStore supplied above to the SDK.
-      const store = context.getSyncStore() as
-        | { discardPendingSyncCursorPersistence: () => void }
-        | undefined;
-      if (!store) {
-        throw new Error("expected Matrix sync store");
-      }
+    await withCryptoStore(async ({ client, store, databasesSpy }) => {
+      const cause = new Error("indexeddb unavailable");
       const discardSpy = vi.spyOn(store, "discardPendingSyncCursorPersistence");
 
       databasesSpy.mockRejectedValue(cause);
@@ -179,13 +120,7 @@ export function registerCryptoShutdownTests(context: CryptoPersistenceContext): 
         expect(discardSpy).toHaveBeenCalledTimes(1);
       });
       expect(vi.mocked(context.getMatrixJsClient()).stopClient).toHaveBeenCalledTimes(1);
-    } finally {
-      databasesSpy.mockRestore();
-      await client?.stopWithoutPersist();
-      await clearAllIndexedDbState({ databasePrefix: path.basename(tempDir) });
-      resetPluginStateStoreForTests();
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
+    });
   });
 }
 

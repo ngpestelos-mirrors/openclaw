@@ -45,6 +45,29 @@ vi.mock("matrix-js-sdk/lib/matrix.js", async (importOriginal) => {
 
 describe("Matrix client custody at the real SQLite snapshot boundary", () => {
   let clients: MatrixClient[];
+  function makeClient(
+    idbSnapshotPath: string,
+    options: ConstructorParameters<typeof MatrixClient>[2] = {},
+  ) {
+    const client = new MatrixClient("https://matrix.example.org", "test-token", {
+      userId: "@bot:example.org",
+      deviceId: "BOT",
+      encryption: true,
+      autoBootstrapCrypto: false,
+      idbSnapshotPath,
+      ...options,
+    });
+    clients.push(client);
+    return client;
+  }
+  async function seedSnapshot(snapshotPath: string) {
+    await seedDatabase({
+      name: databaseName,
+      storeName: "sessions",
+      records: [{ key: "durable", value: { session: "saved" } }],
+    });
+    await persistIdbToDisk({ snapshotPath, databasePrefix: prefix });
+  }
   beforeEach(async () => {
     resetPluginStateStoreForTests();
     installMatrixTestRuntime();
@@ -69,14 +92,7 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
       databaseCount: 0,
       snapshotJson: "[]",
     });
-    const client = new MatrixClient("https://matrix.example.org", "test-token", {
-      userId: "@bot:example.org",
-      deviceId: "BOT",
-      encryption: true,
-      autoBootstrapCrypto: false,
-      idbSnapshotPath: snapshotPath,
-    });
-    clients.push(client);
+    const client = makeClient(snapshotPath);
     await expect(client.prepareForOneOff()).rejects.toThrow("Malformed IndexedDB snapshot payload");
     expect(sdk.init).not.toHaveBeenCalled();
   });
@@ -96,15 +112,7 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
         );
       });
     });
-    const client = new MatrixClient("https://matrix.example.org", "test-token", {
-      userId: "@bot:example.org",
-      deviceId: "BOT",
-      encryption: true,
-      autoBootstrapCrypto: false,
-      cryptoDatabasePrefix: databasePrefix,
-      idbSnapshotPath: snapshotPath,
-    });
-    clients.push(client);
+    const client = makeClient(snapshotPath, { cryptoDatabasePrefix: databasePrefix });
     await client.prepareForOneOff();
     if (!connection) {
       throw new Error("SDK fixture did not open its crypto store");
@@ -134,25 +142,8 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
       const storageRootDir = tempDirs.make("matrix-sealed-custody-");
       const snapshotPath = path.join(storageRootDir, "snapshot.json");
       const guardPath = `${snapshotPath}.owner.poisoned`;
-      await seedDatabase({
-        name: databaseName,
-        storeName: "sessions",
-        records: [{ key: "durable", value: { session: "saved" } }],
-      });
-      await persistIdbToDisk({ snapshotPath, databasePrefix: prefix });
-      const makeClient = () => {
-        const client = new MatrixClient("https://matrix.example.org", "test-token", {
-          userId: "@bot:example.org",
-          deviceId: "BOT",
-          encryption: true,
-          autoBootstrapCrypto: false,
-          cryptoDatabasePrefix: prefix,
-          idbSnapshotPath: snapshotPath,
-        });
-        clients.push(client);
-        return client;
-      };
-      const owner = makeClient();
+      await seedSnapshot(snapshotPath);
+      const owner = makeClient(snapshotPath, { cryptoDatabasePrefix: prefix });
       await owner.prepareForOneOff();
       await owner.stopAndPersist();
       if (fault === "lost final seal") {
@@ -173,21 +164,16 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
       } else {
         await fs.writeFile(guardPath, "torn");
       }
-      await expect(makeClient().prepareForOneOff()).rejects.toThrow(
-        "unresolved unsafe final state",
-      );
+      await expect(
+        makeClient(snapshotPath, { cryptoDatabasePrefix: prefix }).prepareForOneOff(),
+      ).rejects.toThrow("unresolved unsafe final state");
       expect(sdk.init).toHaveBeenCalledTimes(1);
     },
   );
 
   it("blocks a concurrent client before SQLite snapshot I/O, then restores after handoff", async () => {
     const snapshotPath = path.join(tempDirs.make("matrix-real-custody-"), "snapshot.json");
-    await seedDatabase({
-      name: databaseName,
-      storeName: "sessions",
-      records: [{ key: "durable", value: { session: "saved" } }],
-    });
-    await persistIdbToDisk({ snapshotPath, databasePrefix: prefix });
+    await seedSnapshot(snapshotPath);
     await clearAllIndexedDbState({ databasePrefix: prefix });
 
     const actualOpen = getMatrixRuntime().state.openKeyedStoreV2;
@@ -204,28 +190,16 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
         return actualOpen(options);
       }) as typeof actualOpen,
     };
-    const makeClient = () => {
-      const client = new MatrixClient("https://matrix.example.org", "test-token", {
-        userId: "@bot:example.org",
-        deviceId: "BOT",
-        encryption: true,
-        autoBootstrapCrypto: false,
-        cryptoDatabasePrefix: prefix,
-        idbSnapshotPath: snapshotPath,
-        stateRuntime,
-      });
-      clients.push(client);
-      return client;
-    };
-
-    const owner = makeClient();
+    const makeOwner = () =>
+      makeClient(snapshotPath, { cryptoDatabasePrefix: prefix, stateRuntime });
+    const owner = makeOwner();
     await owner.prepareForOneOff();
     expect(snapshotOpens).toBeGreaterThan(0);
     expect(await readDatabaseRecords({ name: databaseName, storeName: "sessions" })).toEqual([
       { key: "durable", value: { session: "saved" } },
     ]);
     const beforeContender = snapshotOpens;
-    const contender = makeClient();
+    const contender = makeOwner();
     await expect(contender.start()).rejects.toMatchObject({
       code: "matrix_crypto_store_owner_active",
     });
@@ -235,20 +209,20 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
 
     await owner.stopAndPersist();
     expect(await fs.readFile(`${snapshotPath}.owner.poisoned`, "utf8")).toMatch(/^[a-f0-9]{32}\n$/);
-    const successor = makeClient();
+    const successor = makeOwner();
     await successor.prepareForOneOff();
     expect(snapshotOpens).toBeGreaterThan(beforeContender);
     expect(sdk.init).toHaveBeenCalledTimes(2);
     await successor.stopAndPersist();
 
-    const failedOwner = makeClient();
+    const failedOwner = makeOwner();
     await failedOwner.prepareForOneOff();
     rejectSnapshotWrites = true;
     await expect(failedOwner.stopAndPersist()).rejects.toThrow("simulated snapshot store failure");
     rejectSnapshotWrites = false;
     expect(await fs.stat(`${snapshotPath}.owner.poisoned`)).toBeDefined();
     const beforeRefused = snapshotOpens;
-    const refused = makeClient();
+    const refused = makeOwner();
     await expect(refused.prepareForOneOff()).rejects.toThrow("unresolved unsafe final state");
     expect(snapshotOpens).toBeGreaterThan(beforeRefused);
     expect(sdk.init).toHaveBeenCalledTimes(3);

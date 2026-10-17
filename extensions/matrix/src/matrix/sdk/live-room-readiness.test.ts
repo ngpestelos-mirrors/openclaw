@@ -79,6 +79,33 @@ describe("Matrix live encrypted room ownership", () => {
     return room;
   };
   const liveSync = () => sdk.emit(ClientEvent.Sync, SyncState.Syncing, SyncState.Syncing);
+  function holdProbe(once = false) {
+    const started = createDeferred<void>();
+    const finish = createDeferred<boolean>();
+    const probe = () => {
+      started.resolve();
+      return finish.promise;
+    };
+    if (once) {
+      fixture.probe.mockImplementationOnce(probe);
+    } else {
+      fixture.probe.mockImplementation(probe);
+    }
+    return { started, finish };
+  }
+  function makeClient(options: ConstructorParameters<typeof MatrixClient>[2]) {
+    client = new MatrixClient("https://127.0.0.1:8008", "fixture-token", {
+      userId: "@bot:matrix.test",
+      encryption: true,
+      autoBootstrapCrypto: false,
+      idbSnapshotPath: path.join(tempDirs.make("matrix-live-room-"), "snapshot.json"),
+      ...options,
+    });
+    sdk = fixture.sdk!;
+    fixture.room = makeRoom();
+  }
+  const uploadFixture = () =>
+    client.uploadContent(Buffer.from("encrypted fixture"), "application/octet-stream", "fixture");
 
   beforeEach(async () => {
     installMatrixTestRuntime();
@@ -87,16 +114,10 @@ describe("Matrix live encrypted room ownership", () => {
     fixture.probe.mockReset().mockResolvedValue(true);
     fixture.stopped.mockReset();
     fixture.beforeResolve = undefined;
-    client = new MatrixClient("https://127.0.0.1:8008", "fixture-token", {
-      userId: "@bot:matrix.test",
+    makeClient({
       deviceId: "BOT",
-      encryption: true,
-      autoBootstrapCrypto: false,
-      idbSnapshotPath: path.join(tempDirs.make("matrix-live-room-"), "snapshot.json"),
       ssrfPolicy: { allowPrivateNetwork: true },
     });
-    sdk = fixture.sdk!;
-    fixture.room = makeRoom();
     await client.start();
   });
   afterEach(async () => {
@@ -110,12 +131,7 @@ describe("Matrix live encrypted room ownership", () => {
     "revalidates %s after a held crypto probe",
     async (change) => {
       liveSync();
-      const started = createDeferred<void>();
-      const finish = createDeferred<boolean>();
-      fixture.probe.mockImplementationOnce(() => {
-        started.resolve();
-        return finish.promise;
-      });
+      const { started, finish } = holdProbe(true);
       const send = vi.fn(async () => "$sent");
       const operation = client.withLiveEncryptedRoom(roomId, send);
       const settled = Promise.allSettled([operation]);
@@ -156,14 +172,7 @@ describe("Matrix live encrypted room ownership", () => {
       await initialization.promise;
     });
     await client.stopWithoutPersist();
-    client = new MatrixClient("https://127.0.0.1:8008", "fixture-token", {
-      userId: "@bot:matrix.test",
-      encryption: true,
-      autoBootstrapCrypto: false,
-      idbSnapshotPath: path.join(tempDirs.make("matrix-live-room-"), "snapshot.json"),
-    });
-    sdk = fixture.sdk!;
-    fixture.room = makeRoom();
+    makeClient({});
     const startup = client.start();
     await started.promise;
     const abort = new AbortController();
@@ -194,12 +203,7 @@ describe("Matrix live encrypted room ownership", () => {
       liveSync();
       const state = vi.fn();
       client.on("sync.state", state);
-      const started = createDeferred<void>();
-      const finish = createDeferred<boolean>();
-      fixture.probe.mockImplementation(() => {
-        started.resolve();
-        return finish.promise;
-      });
+      const { started, finish } = holdProbe();
       const abort = new AbortController();
       const send = vi.fn(async () => "$sent");
       const operation = client.withLiveEncryptedRoom(roomId, send, { abortSignal: abort.signal });
@@ -260,9 +264,7 @@ describe("Matrix live encrypted room ownership", () => {
       });
     });
     vi.stubGlobal("fetch", fetch);
-    const upload = client.withLiveEncryptedRoom(roomId, () =>
-      client.uploadContent(Buffer.from("encrypted fixture"), "application/octet-stream", "fixture"),
-    );
+    const upload = client.withLiveEncryptedRoom(roomId, uploadFixture);
     const settled = Promise.allSettled([upload]);
     const signal = await dispatched.promise;
     client.abortPendingRequests();
@@ -290,22 +292,13 @@ describe("Matrix live encrypted room ownership", () => {
         Response.json({ content_uri: "mxc://matrix.test/image" }),
       );
       vi.stubGlobal("fetch", fetch);
-      const upload = client.withLiveEncryptedRoom(
-        roomId,
-        () =>
-          client.uploadContent(
-            Buffer.from("encrypted fixture"),
-            "application/octet-stream",
-            "fixture",
-          ),
-        {
-          assertCurrent: () => {
-            if (!active) {
-              throw new Error("operation stopped");
-            }
-          },
+      const upload = client.withLiveEncryptedRoom(roomId, uploadFixture, {
+        assertCurrent: () => {
+          if (!active) {
+            throw new Error("operation stopped");
+          }
         },
-      );
+      });
       const settled = Promise.allSettled([upload]);
       try {
         await resolving.promise;

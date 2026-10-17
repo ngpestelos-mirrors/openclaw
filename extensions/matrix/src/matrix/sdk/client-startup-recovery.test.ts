@@ -68,6 +68,19 @@ vi.mock("matrix-js-sdk/lib/matrix.js", async (importOriginal) => {
 
 describe("Matrix encrypted startup ownership", () => {
   let client: MatrixClient;
+  const optionsFor = (
+    idbSnapshotPath?: string,
+    cryptoDatabasePrefix?: string,
+  ): ConstructorParameters<typeof MatrixClient>[2] => ({
+    userId: "@bot:example.org",
+    deviceId: "BOT",
+    encryption: true,
+    autoBootstrapCrypto: false,
+    idbSnapshotPath,
+    cryptoDatabasePrefix,
+  });
+  const makeClient = (options = optionsFor()) =>
+    new MatrixClient("https://matrix.example.org", "test-token", options);
   beforeEach(() => {
     const stateDir = tempDirs.make("matrix-startup-state-");
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
@@ -76,13 +89,7 @@ describe("Matrix encrypted startup ownership", () => {
     fixture.init.mockReset().mockResolvedValue(undefined);
     fixture.start.mockReset().mockResolvedValue(undefined);
     fixture.stop.mockReset();
-    client = new MatrixClient("https://matrix.example.org", "test-token", {
-      userId: "@bot:example.org",
-      deviceId: "BOT",
-      encryption: true,
-      autoBootstrapCrypto: false,
-      cryptoDatabasePrefix: "openclaw-matrix-test",
-    });
+    client = makeClient(optionsFor(undefined, "openclaw-matrix-test"));
   });
   afterEach(async () => {
     await client.stopWithoutPersist();
@@ -95,12 +102,7 @@ describe("Matrix encrypted startup ownership", () => {
   it("holds custody when encrypted startup uses the default snapshot path", async () => {
     const stateDir = tempDirs.make("matrix-default-custody-");
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
-    client = new MatrixClient("https://matrix.example.org", "test-token", {
-      encryption: true,
-      autoBootstrapCrypto: false,
-      userId: "@bot:example.org",
-      deviceId: "BOT",
-    });
+    client = makeClient();
     try {
       await client.prepareForOneOff();
       const recover = vi.fn(async () => {});
@@ -134,8 +136,8 @@ describe("Matrix encrypted startup ownership", () => {
       },
     );
     const options = { encryption: true, autoBootstrapCrypto: false, idbSnapshotPath: snapshotPath };
-    client = new MatrixClient("https://matrix.example.org", "test-token", options);
-    const successor = new MatrixClient("https://matrix.example.org", "test-token", options);
+    client = makeClient(options);
+    const successor = makeClient(options);
     const abort = new AbortController();
     const startup = client.start({ abortSignal: abort.signal });
     const rejected = expect(startup).rejects.toMatchObject({ name: "AbortError" });
@@ -234,16 +236,9 @@ describe("Matrix encrypted startup ownership", () => {
   it("allows a successor after post-initialization readiness failure is published", async () => {
     const tempDir = tempDirs.make("matrix-readiness-retry-");
     const snapshotPath = path.join(tempDir, "snapshot.json");
-    const options = {
-      userId: "@bot:example.org",
-      deviceId: "BOT",
-      encryption: true,
-      autoBootstrapCrypto: false,
-      cryptoDatabasePrefix: "openclaw-matrix-readiness-test",
-      idbSnapshotPath: snapshotPath,
-    };
-    const failed = new MatrixClient("https://matrix.example.org", "test-token", options);
-    const successor = new MatrixClient("https://matrix.example.org", "test-token", options);
+    const options = optionsFor(snapshotPath, "openclaw-matrix-readiness-test");
+    const failed = makeClient(options);
+    const successor = makeClient(options);
     fixture.reconcile.mockRejectedValueOnce(new Error("room reconciliation failed"));
     try {
       await expect(failed.start()).rejects.toThrow("room reconciliation failed");
@@ -267,16 +262,9 @@ describe("Matrix encrypted startup ownership", () => {
       started.resolve();
       await finish.promise;
     });
-    const options = {
-      userId: "@bot:example.org",
-      deviceId: "BOT",
-      encryption: true,
-      autoBootstrapCrypto: false,
-      cryptoDatabasePrefix: "openclaw-matrix-owner-test",
-      idbSnapshotPath: snapshotPath,
-    };
-    const owner = new MatrixClient("https://matrix.example.org", "test-token", options);
-    const replacement = new MatrixClient("https://matrix.example.org", "test-token", options);
+    const options = optionsFor(snapshotPath, "openclaw-matrix-owner-test");
+    const owner = makeClient(options);
+    const replacement = makeClient(options);
     const abort = new AbortController();
     const startup = owner.start({ abortSignal: abort.signal });
 
@@ -309,14 +297,7 @@ describe("Matrix encrypted startup ownership", () => {
       initStarted.resolve();
       await finishInit.promise;
     });
-    const owner = new MatrixClient("https://matrix.example.org", "test-token", {
-      userId: "@bot:example.org",
-      deviceId: "BOT",
-      encryption: true,
-      autoBootstrapCrypto: false,
-      cryptoDatabasePrefix: "openclaw-matrix-quiesce-failure-test",
-      idbSnapshotPath: snapshotPath,
-    });
+    const owner = makeClient(optionsFor(snapshotPath, "openclaw-matrix-quiesce-failure-test"));
     vi.spyOn(owner, "quiesceSync").mockRejectedValue(quiesceError);
     const abortRequests = owner.abortPendingRequests.bind(owner);
     vi.spyOn(owner, "abortPendingRequests").mockImplementation(() => {
@@ -368,13 +349,7 @@ describe("Matrix encrypted startup ownership", () => {
     const snapshotPath = path.join(tempDirs.make("matrix-rust-init-failure-"), "snapshot.json");
     const failure = new Error("Rust initialization failed after opening its store");
     fixture.init.mockRejectedValueOnce(failure);
-    const owner = new MatrixClient("https://matrix.example.org", "test-token", {
-      userId: "@bot:example.org",
-      deviceId: "BOT",
-      encryption: true,
-      autoBootstrapCrypto: false,
-      idbSnapshotPath: snapshotPath,
-    });
+    const owner = makeClient(optionsFor(snapshotPath));
     const inspect = vi.fn(async () => undefined);
     try {
       await expect(owner.prepareForOneOff()).rejects.toBe(failure);
@@ -399,14 +374,7 @@ describe("Matrix encrypted startup ownership", () => {
   it("retains custody after SDK stop throws even when discard cleanup is requested", async () => {
     const tempDir = tempDirs.make("matrix-sdk-stop-failure-");
     const snapshotPath = path.join(tempDir, "snapshot.json");
-    const owner = new MatrixClient("https://matrix.example.org", "test-token", {
-      userId: "@bot:example.org",
-      deviceId: "BOT",
-      encryption: true,
-      autoBootstrapCrypto: false,
-      cryptoDatabasePrefix: "openclaw-matrix-sdk-stop-failure-test",
-      idbSnapshotPath: snapshotPath,
-    });
+    const owner = makeClient(optionsFor(snapshotPath, "openclaw-matrix-sdk-stop-failure-test"));
     const stopError = new Error("SDK stop failed");
     try {
       await owner.prepareForOneOff();
@@ -441,16 +409,9 @@ describe("Matrix encrypted startup ownership", () => {
   it("never publishes a refused replacement that did not acquire crypto ownership", async () => {
     const tempDir = tempDirs.make("matrix-unowned-replacement-");
     const snapshotPath = path.join(tempDir, "snapshot.json");
-    const options = {
-      userId: "@bot:example.org",
-      deviceId: "BOT",
-      encryption: true,
-      autoBootstrapCrypto: false,
-      cryptoDatabasePrefix: "openclaw-matrix-unowned-test",
-      idbSnapshotPath: snapshotPath,
-    };
-    const owner = new MatrixClient("https://matrix.example.org", "test-token", options);
-    const replacement = new MatrixClient("https://matrix.example.org", "test-token", options);
+    const options = optionsFor(snapshotPath, "openclaw-matrix-unowned-test");
+    const owner = makeClient(options);
+    const replacement = makeClient(options);
     try {
       await owner.prepareForOneOff();
       const savedBefore = vi.mocked(persistIdbToDisk).mock.calls.length;
@@ -462,7 +423,7 @@ describe("Matrix encrypted startup ownership", () => {
       expect(vi.mocked(persistIdbToDisk).mock.calls.length).toBe(savedBefore);
       await owner.stopAndPersist();
       expect(await cryptoOwnership.isMatrixCryptoStoreUnsafe(snapshotPath)).toBe(false);
-      const successor = new MatrixClient("https://matrix.example.org", "test-token", options);
+      const successor = makeClient(options);
       try {
         await successor.prepareForOneOff();
       } finally {
@@ -476,21 +437,14 @@ describe("Matrix encrypted startup ownership", () => {
   it("refuses a successor when final snapshot publication fails", async () => {
     const tempDir = tempDirs.make("matrix-failed-final-save-");
     const snapshotPath = path.join(tempDir, "snapshot.json");
-    const options = {
-      userId: "@bot:example.org",
-      deviceId: "BOT",
-      encryption: true,
-      autoBootstrapCrypto: false,
-      cryptoDatabasePrefix: "openclaw-matrix-failed-save-test",
-      idbSnapshotPath: snapshotPath,
-    };
-    const owner = new MatrixClient("https://matrix.example.org", "test-token", options);
+    const options = optionsFor(snapshotPath, "openclaw-matrix-failed-save-test");
+    const owner = makeClient(options);
     try {
       await owner.prepareForOneOff();
       expect(await fs.stat(`${snapshotPath}.owner.poisoned`)).toBeDefined();
       vi.mocked(persistIdbToDisk).mockRejectedValueOnce(new Error("disk full"));
       await expect(owner.stopAndPersist()).rejects.toThrow("disk full");
-      const successor = new MatrixClient("https://matrix.example.org", "test-token", options);
+      const successor = makeClient(options);
       try {
         await expect(successor.prepareForOneOff()).rejects.toThrow("unresolved unsafe final state");
       } finally {
@@ -541,14 +495,7 @@ describe("Matrix encrypted startup ownership", () => {
       await fs.mkdir(`${snapshotPath}.owner.poisoned`);
       return false;
     });
-    const owner = new MatrixClient("https://matrix.example.org", "test-token", {
-      userId: "@bot:example.org",
-      deviceId: "BOT",
-      encryption: true,
-      autoBootstrapCrypto: false,
-      cryptoDatabasePrefix: "openclaw-matrix-arm-failure-test",
-      idbSnapshotPath: snapshotPath,
-    });
+    const owner = makeClient(optionsFor(snapshotPath, "openclaw-matrix-arm-failure-test"));
     try {
       await expect(owner.prepareForOneOff()).rejects.toThrow();
       expect(fixture.init).not.toHaveBeenCalled();
