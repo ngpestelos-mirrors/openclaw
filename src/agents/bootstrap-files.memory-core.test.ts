@@ -29,27 +29,49 @@ afterEach(() => {
   resetPluginStateStoreForTests();
 });
 
-function withMemoryPlugin<T>(run: () => T, legacyClassifier = false): T {
+const refuseSearch = async () => {
+  throw new Error("Bootstrap must not open search");
+};
+const noSearchRuntime = (): MemoryPluginRuntime => ({
+  getMemorySearchManager: refuseSearch,
+  resolveMemoryBackendConfig: () => ({ backend: "builtin" }),
+});
+
+async function expectClassifications(
+  workspaceDir: string,
+  expected: Record<string, "agent" | "untrusted">,
+  readSources?: Parameters<typeof classifyActiveMemoryWorkspacePaths>[0]["readSources"],
+  legacyClassifier = false,
+) {
   const registry = createEmptyPluginRegistry();
-  const runtime: MemoryPluginRuntime = {
-    getMemorySearchManager: async () => {
-      throw new Error("Workspace context must not open the search manager");
-    },
-    resolveMemoryBackendConfig: () => ({ backend: "builtin" }),
-    ...(legacyClassifier
-      ? {
-          classifyWorkspaceMemoryPaths: async () => {
-            throw new Error("Legacy classifiers cannot consume remote read identities");
-          },
-        }
-      : {}),
-  };
+  const runtime = noSearchRuntime();
+  if (legacyClassifier) {
+    runtime.classifyWorkspaceMemoryPaths = async () => {
+      throw new Error("Legacy classifiers cannot consume remote read identities");
+    };
+  }
   registry.memoryCapabilities.push({
     pluginId: "memory-fixture",
     memorySlotSelected: true,
     capability: { runtime },
   });
-  return withPluginRuntimeRegistryScope(registry, run);
+  await expect(
+    withPluginRuntimeRegistryScope(registry, () =>
+      classifyActiveMemoryWorkspacePaths({
+        cfg: {},
+        agentId: "main",
+        workspaceDir,
+        relativePaths: Object.keys(expected),
+        readSources,
+      }),
+    ),
+  ).resolves.toEqual({
+    status: "classified",
+    classifications: Object.entries(expected).map(([relativePath, originClass]) => ({
+      relativePath,
+      originClass,
+    })),
+  });
 }
 
 async function recordUntrusted(workspaceDir: string, relativePath: string) {
@@ -72,12 +94,7 @@ describe("workspace bootstrap with memory plugins", () => {
           runtime:
             pluginId === "memory-core"
               ? createMemoryRuntime({ runInBackgroundContext: (run) => run() })
-              : {
-                  getMemorySearchManager: async () => {
-                    throw new Error("Bootstrap must not open search");
-                  },
-                  resolveMemoryBackendConfig: () => ({ backend: "builtin" }),
-                },
+              : noSearchRuntime(),
         });
         const workspaceDir = state.statePath("workspace");
         const profile = ensureProfileForEmail("person@example.test");
@@ -136,23 +153,11 @@ describe("workspace bootstrap with memory plugins", () => {
         path.join(workspaceDir, "memory", "escape.md"),
       );
       await recordUntrusted(workspaceDir, "memory/tainted.md");
-      await expect(
-        withMemoryPlugin(() =>
-          classifyActiveMemoryWorkspacePaths({
-            cfg: {},
-            agentId: "main",
-            workspaceDir,
-            relativePaths: ["USER.md", "MEMORY.md", "memory/escape.md", "memory/missing.md"],
-          }),
-        ),
-      ).resolves.toEqual({
-        status: "classified",
-        classifications: [
-          { relativePath: "USER.md", originClass: "untrusted" },
-          { relativePath: "MEMORY.md", originClass: "agent" },
-          { relativePath: "memory/escape.md", originClass: "untrusted" },
-          { relativePath: "memory/missing.md", originClass: "untrusted" },
-        ],
+      await expectClassifications(workspaceDir, {
+        "USER.md": "untrusted",
+        "MEMORY.md": "agent",
+        "memory/escape.md": "untrusted",
+        "memory/missing.md": "untrusted",
       });
     });
   });
@@ -176,42 +181,26 @@ describe("workspace bootstrap with memory plugins", () => {
           "memory/dreaming/note.md",
           "notes/USER.md",
         ];
-        const relativePaths = [
-          "USER.md",
-          "MEMORY.md",
-          "alias/MEMORY.md",
-          "missing/MEMORY.md",
-          ...invalid,
-        ];
-        await expect(
-          withMemoryPlugin(
-            () =>
-              classifyActiveMemoryWorkspacePaths({
-                cfg: {},
-                agentId: "main",
-                workspaceDir,
-                relativePaths,
-                readSources: [
-                  { relativePath: "USER.md", canonicalRelativePath: "USER.md" },
-                  { relativePath: "MEMORY.md" },
-                  { relativePath: "alias/MEMORY.md", canonicalRelativePath: "memory/tainted.md" },
-                  ...invalid.map((relativePath) => ({
-                    relativePath,
-                    canonicalRelativePath: relativePath,
-                  })),
-                ],
-              }),
-            legacyClassifier,
-          ),
-        ).resolves.toEqual({
-          status: "classified",
-          classifications: [
-            { relativePath: "USER.md", originClass: "agent" },
-            ...relativePaths
-              .slice(1)
-              .map((relativePath) => ({ relativePath, originClass: "untrusted" })),
+        await expectClassifications(
+          workspaceDir,
+          {
+            "USER.md": "agent",
+            "MEMORY.md": "untrusted",
+            "alias/MEMORY.md": "untrusted",
+            "missing/MEMORY.md": "untrusted",
+            ...Object.fromEntries(invalid.map((file) => [file, "untrusted" as const])),
+          },
+          [
+            { relativePath: "USER.md", canonicalRelativePath: "USER.md" },
+            { relativePath: "MEMORY.md" },
+            { relativePath: "alias/MEMORY.md", canonicalRelativePath: "memory/tainted.md" },
+            ...invalid.map((relativePath) => ({
+              relativePath,
+              canonicalRelativePath: relativePath,
+            })),
           ],
-        });
+          legacyClassifier,
+        );
       });
     },
   );

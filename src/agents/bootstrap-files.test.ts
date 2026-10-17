@@ -187,65 +187,47 @@ describe("resolveBootstrapFilesForRun", () => {
     });
   });
 
-  it("excludes lower-trust root memory before hooks while preserving trusted user context", async () => {
+  it.each([
+    ["untrusted root and trusted user", "untrusted", "owner", [DEFAULT_USER_FILENAME]],
+    ["missing user classification", "agent", undefined, [DEFAULT_MEMORY_FILENAME]],
+    ["unsupported provenance", undefined, undefined, []],
+  ] as const)("filters %s", async (label, memoryOrigin, userOrigin, expected) => {
     const workspaceDir = await memoryWorkspace(
-      "openclaw-bootstrap-memory-provenance-",
+      "openclaw-bootstrap-provenance-",
       "tainted memory",
       "trusted user",
     );
-    registerNamedBootstrapFileHook(DEFAULT_MEMORY_FILENAME);
-    memoryRuntimeMocks.classifyWorkspacePaths.mockResolvedValue({
-      status: "classified",
-      classifications: [
-        { relativePath: DEFAULT_MEMORY_FILENAME, originClass: "untrusted" },
-        { relativePath: DEFAULT_USER_FILENAME, originClass: "owner" },
-      ],
-    });
-
-    const files = await resolveBootstrapFilesForRun({
-      workspaceDir,
-      config: {},
-      agentId: "main",
-    });
-
-    expect(files.map((file) => file.name)).not.toContain(DEFAULT_MEMORY_FILENAME);
-    expect(files.map((file) => file.name)).toContain(DEFAULT_USER_FILENAME);
-  });
-
-  it("fails closed when the memory runtime omits a requested root classification", async () => {
-    const workspaceDir = await memoryWorkspace("openclaw-bootstrap-missing-provenance-");
-    memoryRuntimeMocks.classifyWorkspacePaths.mockResolvedValue({
-      status: "classified",
-      classifications: [{ relativePath: DEFAULT_MEMORY_FILENAME, originClass: "agent" }],
-    });
-
-    const files = await resolveBootstrapFilesForRun({
-      workspaceDir,
-      config: {},
-      agentId: "main",
-    });
-
-    expect(files.map((file) => file.name)).toContain(DEFAULT_MEMORY_FILENAME);
-    expect(files.map((file) => file.name)).not.toContain(DEFAULT_USER_FILENAME);
-  });
-
-  it("excludes root memory for a selected runtime without provenance support", async () => {
-    const workspaceDir = await memoryWorkspace("openclaw-bootstrap-unsupported-provenance-");
-    memoryRuntimeMocks.classifyWorkspacePaths.mockResolvedValue({ status: "unsupported" });
+    if (memoryOrigin === "untrusted") {
+      registerNamedBootstrapFileHook();
+    }
+    const classifications = [
+      ...(memoryOrigin
+        ? [{ relativePath: DEFAULT_MEMORY_FILENAME, originClass: memoryOrigin }]
+        : []),
+      ...(userOrigin ? [{ relativePath: DEFAULT_USER_FILENAME, originClass: userOrigin }] : []),
+    ];
+    memoryRuntimeMocks.classifyWorkspacePaths.mockResolvedValue(
+      label === "unsupported provenance"
+        ? { status: "unsupported" }
+        : { status: "classified", classifications },
+    );
     const warnings: string[] = [];
-
     const files = await resolveBootstrapFilesForRun({
       workspaceDir,
       config: {},
       agentId: "main",
       warn: (message) => warnings.push(message),
     });
-
-    expect(files.map((file) => file.name)).not.toContain(DEFAULT_MEMORY_FILENAME);
-    expect(files.map((file) => file.name)).not.toContain(DEFAULT_USER_FILENAME);
-    expect(warnings).toContain(
-      "excluding automatic memory context: selected memory runtime does not support provenance classification",
-    );
+    expect(
+      files
+        .map((file) => file.name)
+        .filter((name) => name === DEFAULT_MEMORY_FILENAME || name === DEFAULT_USER_FILENAME),
+    ).toEqual(expected);
+    if (label === "unsupported provenance") {
+      expect(warnings).toContain(
+        "excluding automatic memory context: selected memory runtime does not support provenance classification",
+      );
+    }
   });
   afterEach(async () => {
     clearInternalHooks();
@@ -583,64 +565,41 @@ describe("resolveBootstrapContextForDiagnostics", () => {
     return { workspaceDir, extraPath };
   }
 
-  it("does not execute registered hooks while projecting declared files", async () => {
-    const { workspaceDir, extraPath } = await makeWorkspaceWithExtraAgentsFile();
-    const handler = vi.fn(() => {
-      throw new Error("diagnostics must not execute hook code");
-    });
-    registerInternalHook("agent:bootstrap", handler);
-
-    const result = await resolveBootstrapContextForDiagnostics({
-      workspaceDir,
-      config: createExtraFilesConfig(),
-    });
-
-    expect(handler).not.toHaveBeenCalled();
-    expect(result.contextFiles).toContainEqual({ path: extraPath, content: "extra agents" });
-  });
-
-  it("projects nothing while the hook system is disabled", async () => {
-    const { workspaceDir, extraPath } = await makeWorkspaceWithExtraAgentsFile();
-
-    const result = await resolveBootstrapContextForDiagnostics({
-      workspaceDir,
-      config: createExtraFilesConfig(false),
-    });
-
-    expect(result.bootstrapFiles.map((file) => file.path)).not.toContain(extraPath);
-  });
-
   it.each([
-    { label: "an import failure", handler: 'throw new Error("must not import");', projects: false },
-    { label: "no readable handler", handler: undefined, projects: true },
-  ])(
-    "matches fresh-start selection for a managed hook with $label",
-    async ({ handler, projects }) => {
+    ["bundled declarations", undefined, false, undefined, true],
+    ["disabled hook system", false, false, undefined, false],
+    ["managed import failure", undefined, true, 'throw new Error("must not import");', false],
+    ["unreadable managed handler", undefined, true, undefined, true],
+  ] as const)(
+    "projects %s without executing hooks",
+    async (_label, enabled, managed, handler, projects) => {
       const { workspaceDir, extraPath } = await makeWorkspaceWithExtraAgentsFile();
-      const managedHooksDir = await makeTempWorkspace("openclaw-managed-hooks-");
-      const replacementDir = path.join(managedHooksDir, "bootstrap-extra-files");
-      await fs.mkdir(replacementDir, { recursive: true });
-      await fs.writeFile(
-        path.join(replacementDir, "HOOK.md"),
-        [
-          "---",
-          "name: bootstrap-extra-files",
-          "description: managed replacement",
-          'metadata: { "openclaw": { "events": ["agent:bootstrap"] } }',
-          "---",
-          "",
-        ].join("\n"),
-        "utf8",
-      );
-      if (handler !== undefined) {
-        await fs.writeFile(path.join(replacementDir, "handler.js"), handler, "utf8");
+      const registered = vi.fn(() => {
+        throw new Error("diagnostics must not execute hook code");
+      });
+      registerInternalHook("agent:bootstrap", registered);
+      const config = createExtraFilesConfig(enabled);
+      if (managed) {
+        const managedHooksDir = await makeTempWorkspace("openclaw-managed-hooks-");
+        await writeFiles(path.join(managedHooksDir, "bootstrap-extra-files"), {
+          "HOOK.md": [
+            "---",
+            "name: bootstrap-extra-files",
+            "description: managed replacement",
+            'metadata: { "openclaw": { "events": ["agent:bootstrap"] } }',
+            "---",
+            "",
+          ].join("\n"),
+          ...(handler === undefined ? {} : { "handler.js": handler }),
+        });
+        config.hooks!.internal!.load = { extraDirs: [managedHooksDir] };
       }
-      const config = createExtraFilesConfig();
-      config.hooks!.internal!.load = { extraDirs: [managedHooksDir] };
-
       const result = await resolveBootstrapContextForDiagnostics({ workspaceDir, config });
-
+      expect(registered).not.toHaveBeenCalled();
       expect(result.bootstrapFiles.some((file) => file.path === extraPath)).toBe(projects);
+      if (projects && !managed) {
+        expect(result.contextFiles).toContainEqual({ path: extraPath, content: "extra agents" });
+      }
     },
   );
 });
@@ -678,35 +637,34 @@ describe("hasCompletedBootstrapTurn", () => {
     expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(false);
   });
 
-  it("invalidates a completion marker after compaction", async () => {
-    const firstEntryId = sessionManager.appendMessage(makeUserMessage("hello", 1));
+  it.each([
+    { boundary: "compaction", renew: false },
+    { boundary: "compaction", renew: true },
+    { boundary: "reset", renew: false },
+  ])("checks completion after $boundary (new marker=$renew)", async ({ boundary, renew }) => {
+    const firstEntryId = sessionManager.appendMessage(
+      boundary === "reset"
+        ? { role: "user", content: "hello", timestamp: 1 }
+        : makeUserMessage("hello", 1),
+    );
     sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 2 });
-    sessionManager.appendCompaction("trimmed", firstEntryId, 10);
-
-    expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(false);
-  });
-
-  it("accepts a newer full bootstrap marker after compaction", async () => {
-    const firstEntryId = sessionManager.appendMessage(makeUserMessage("hello", 1));
-    sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 2 });
-    sessionManager.appendCompaction("trimmed", firstEntryId, 10);
-    sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 3 });
-
-    const hostExec = vi.spyOn(DatabaseSync.prototype, "exec");
-    try {
-      expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(true);
-      expect(hostExec.mock.calls.filter(([sql]) => /^BEGIN\b/iu.test(sql))).toEqual([]);
-    } finally {
-      hostExec.mockRestore();
+    if (boundary === "reset") {
+      sessionManager.appendResetBoundary("reset");
+    } else {
+      sessionManager.appendCompaction("trimmed", firstEntryId, 10);
     }
-  });
-
-  it("invalidates a completion marker after a session reset", async () => {
-    sessionManager.appendMessage({ role: "user", content: "hello", timestamp: 1 });
-    sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 2 });
-    sessionManager.appendResetBoundary("reset");
-
-    expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(false);
+    if (renew) {
+      sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 3 });
+    }
+    const hostExec = renew ? vi.spyOn(DatabaseSync.prototype, "exec") : undefined;
+    try {
+      expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(renew);
+      if (hostExec) {
+        expect(hostExec.mock.calls.filter(([sql]) => /^BEGIN\b/iu.test(sql))).toEqual([]);
+      }
+    } finally {
+      hostExec?.mockRestore();
+    }
   });
 
   it("ignores completion markers on an inactive transcript branch", async () => {
@@ -774,35 +732,24 @@ describe("makeBootstrapWarn", () => {
 });
 
 describe("resolveContextInjectionMode", () => {
-  it("defaults to always when config is missing", () => {
-    expect(resolveContextInjectionMode(undefined)).toBe("always");
-  });
-
-  it("uses per-agent contextInjection before defaults", () => {
-    expect(
-      resolveContextInjectionMode(
-        {
-          agents: {
-            defaults: { contextInjection: "continuation-skip" },
-            entries: { strict: { contextInjection: "always" } },
-          },
-        } as never,
-        "strict",
-      ),
-    ).toBe("always");
-  });
-
-  it("falls back to defaults when the agent has no contextInjection override", () => {
-    expect(
-      resolveContextInjectionMode(
-        {
-          agents: {
-            defaults: { contextInjection: "never" },
-            entries: { worker: {} },
-          },
-        } as never,
-        "worker",
-      ),
-    ).toBe("never");
+  it.each([
+    [undefined, undefined, "always"],
+    [
+      {
+        agents: {
+          defaults: { contextInjection: "continuation-skip" },
+          entries: { strict: { contextInjection: "always" } },
+        },
+      },
+      "strict",
+      "always",
+    ],
+    [
+      { agents: { defaults: { contextInjection: "never" }, entries: { worker: {} } } },
+      "worker",
+      "never",
+    ],
+  ] as const)("resolves %j for agent=%s to %s", (config, agentId, expected) => {
+    expect(resolveContextInjectionMode(config as never, agentId)).toBe(expected);
   });
 });

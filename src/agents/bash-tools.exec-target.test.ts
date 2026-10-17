@@ -7,7 +7,15 @@ import { pinExecToolTarget } from "./exec-tool-target-pinning.js";
 import { createLazyExecTool } from "./lazy-exec-tool.js";
 import { consumeTrustedToolNoStartError } from "./tool-result-error.js";
 
-function target(overrides: Partial<Parameters<typeof resolveExecTarget>[0]>) {
+type TargetOptions = Parameters<typeof resolveExecTarget>[0];
+type ExecTool = ReturnType<typeof createExecTool>;
+function budget(
+  tool: Pick<ExecTool, "getExecutionTimeoutMs">,
+  args: Parameters<NonNullable<ExecTool["getExecutionTimeoutMs"]>>[0],
+) {
+  return tool.getExecutionTimeoutMs?.(args);
+}
+function target(overrides: Partial<TargetOptions>) {
   return resolveExecTarget({
     configuredTarget: "auto",
     elevatedRequested: false,
@@ -16,18 +24,27 @@ function target(overrides: Partial<Parameters<typeof resolveExecTarget>[0]>) {
   });
 }
 
-describe("resolveExecTarget", () => {
+function thrown(run: () => unknown): Error {
+  try {
+    run();
+  } catch (error) {
+    expect(error).toBeInstanceOf(Error);
+    if (error instanceof Error) {
+      return error;
+    }
+  }
+  throw new Error("Expected an Error");
+}
+
+const sandbox = {
+  containerName: "test-sandbox",
+  workspaceDir: "/workspace",
+  containerWorkdir: "/workspace",
+};
+
+describe("exec target policy", () => {
   it("authenticates the sandbox escape rejection once, not copies or invalid syntax", () => {
-    let denied: unknown;
-    try {
-      target({ requestedTarget: "gateway" });
-    } catch (error) {
-      denied = error;
-    }
-    expect(denied).toBeInstanceOf(Error);
-    if (!(denied instanceof Error)) {
-      throw new Error("expected host-policy rejection");
-    }
+    const denied = thrown(() => target({ requestedTarget: "gateway" }));
     expect(denied.message).toBe(
       "exec host not allowed (requested gateway; configured host is auto; set tools.exec.host=gateway to allow this override).",
     );
@@ -43,14 +60,9 @@ describe("resolveExecTarget", () => {
     expect(Object.keys(denied)).toEqual([]);
     expect(consumeTrustedToolNoStartError(denied)).toBe(true);
     expect(consumeTrustedToolNoStartError(denied)).toBe(false);
-    let invalid: unknown;
-    try {
-      requireValidExecTarget("invalid-host");
-    } catch (error) {
-      invalid = error;
-    }
-    expect(invalid).toBeInstanceOf(Error);
-    expect(consumeTrustedToolNoStartError(invalid)).toBe(false);
+    expect(
+      consumeTrustedToolNoStartError(thrown(() => requireValidExecTarget("invalid-host"))),
+    ).toBe(false);
   });
 
   it.each([
@@ -85,95 +97,66 @@ describe("resolveExecTarget", () => {
     },
   );
 
-  it("rejects a node override from auto when sandbox is available", () => {
-    expect(() => target({ requestedTarget: "node" })).toThrow(
-      "exec host not allowed (requested node; configured host is auto; set tools.exec.host=node to allow this override).",
-    );
-  });
-
-  it("rejects gateway override from configured node even with elevation", () => {
-    expect(() =>
-      target({
+  it.each<{ name: string; options: Partial<TargetOptions>; error: string | RegExp }>([
+    {
+      name: "node override from auto with an available sandbox",
+      options: { requestedTarget: "node" },
+      error:
+        "exec host not allowed (requested node; configured host is auto; set tools.exec.host=node to allow this override).",
+    },
+    {
+      name: "gateway override from configured node even with elevation",
+      options: {
         configuredTarget: "node",
         requestedTarget: "gateway",
         elevatedRequested: true,
         sandboxAvailable: false,
-      }),
-    ).toThrow(
-      "exec host not allowed (requested gateway; configured host is node; set tools.exec.host=gateway or auto to allow this override).",
-    );
+      },
+      error:
+        "exec host not allowed (requested gateway; configured host is node; set tools.exec.host=gateway or auto to allow this override).",
+    },
+    {
+      name: "explicit matching node when the session requires a sandbox",
+      options: { configuredTarget: "node", requestedTarget: "node", sandboxRequired: true },
+      error: /sandbox|required|not allowed/i,
+    },
+    {
+      name: "elevation when the session requires a sandbox",
+      options: { elevatedRequested: true, sandboxRequired: true },
+      error: /sandbox|required|elevated/i,
+    },
+    {
+      name: "an unavailable required sandbox",
+      options: { sandboxAvailable: false, sandboxRequired: true },
+      error: /sandbox|required|unavailable/i,
+    },
+  ])("rejects $name", ({ options, error }) => {
+    expect(() => target(options)).toThrow(error);
   });
 
-  describe("required session sandbox", () => {
-    it("rejects explicit host=node even when configured host matches", () => {
-      expect(() =>
-        target({ configuredTarget: "node", requestedTarget: "node", sandboxRequired: true }),
-      ).toThrow(/sandbox|required|not allowed/i);
-    });
-
-    it("keeps per-call auto sandboxed despite configured node", () => {
-      expect(
-        target({
-          configuredTarget: "node",
-          requestedTarget: "auto",
-          sandboxRequired: true,
-        }),
-      ).toMatchObject({ configuredTarget: "auto", effectiveHost: "sandbox" });
-    });
-
-    it("rejects elevated requests before they can select the gateway", () => {
-      expect(() =>
-        target({
-          elevatedRequested: true,
-          sandboxRequired: true,
-        }),
-      ).toThrow(/sandbox|required|elevated/i);
-    });
-
-    it("fails closed when the required sandbox is unavailable", () => {
-      expect(() =>
-        target({
-          sandboxAvailable: false,
-          sandboxRequired: true,
-        }),
-      ).toThrow(/sandbox|required|unavailable/i);
-    });
+  it("keeps per-call auto sandboxed despite configured node", () => {
+    expect(
+      target({ configuredTarget: "node", requestedTarget: "auto", sandboxRequired: true }),
+    ).toMatchObject({ configuredTarget: "auto", effectiveHost: "sandbox" });
   });
-});
 
-describe("removed exec timeout field", () => {
   it("rejects a stale timeout argument before command execution", async () => {
     const tool = createExecTool({ host: "gateway", security: "full", ask: "off" });
-
     await expect(
-      tool.execute("legacy-timeout", {
-        command: "exit 99",
-        timeout: 5,
-      } as never),
+      tool.execute("legacy-timeout", { command: "exit 99", timeout: 5 } as never),
     ).rejects.toThrow('exec parameter "timeout" is unsupported; use "timeoutSeconds" instead');
   });
-});
-
-describe("named node host policy", () => {
-  const sandbox = {
-    containerName: "test-sandbox",
-    workspaceDir: "/workspace",
-    containerWorkdir: "/workspace",
-  };
 
   it.each([
     { host: "gateway" as const },
     { sandbox },
     { host: "node" as const, sandbox, sandboxRequired: true },
   ])("keeps node-only calls within configured policy %j", (defaults) => {
-    const resolveHost = createExecHostResolver(defaults);
-    expect(() => resolveHost({ command: "echo ok", node: "node-1" })).toThrow(
+    expect(() => createExecHostResolver(defaults)({ command: "echo ok", node: "node-1" })).toThrow(
       /exec host not allowed.*node/,
     );
   });
-});
 
-describe("foreground node exec wait budgets", () => {
   it.each([
     { timeoutSec: undefined, timeoutSeconds: undefined, expectedMs: 1_810_000 },
     { timeoutSec: 120, timeoutSeconds: 0, expectedMs: 130_000 },
@@ -183,15 +166,14 @@ describe("foreground node exec wait budgets", () => {
       for (const createTool of [createExecTool, createLazyExecTool]) {
         const tool = createTool({ host: "node", timeoutSec });
         const args = { command: "echo ready", timeoutSeconds };
-        expect(tool.getExecutionTimeoutMs?.(args)).toBe(expectedMs);
-        const defaultTool = createTool({ timeoutSec });
-        expect(defaultTool.getExecutionTimeoutMs?.({ ...args, node: "node-1" })).toBe(expectedMs);
-
-        const nodeTool = pinExecToolTarget(tool, { host: "node" });
-        expect(nodeTool.getExecutionTimeoutMs?.({ ...args, host: "gateway" })).toBe(expectedMs);
-
-        const gatewayTool = pinExecToolTarget(tool, { host: "gateway" });
-        expect(gatewayTool.getExecutionTimeoutMs?.({ ...args, host: "node" })).toBeUndefined();
+        expect(budget(tool, args)).toBe(expectedMs);
+        expect(budget(createTool({ timeoutSec }), { ...args, node: "node-1" })).toBe(expectedMs);
+        expect(
+          budget(pinExecToolTarget(tool, { host: "node" }), { ...args, host: "gateway" }),
+        ).toBe(expectedMs);
+        expect(
+          budget(pinExecToolTarget(tool, { host: "gateway" }), { ...args, host: "node" }),
+        ).toBeUndefined();
       }
     },
   );

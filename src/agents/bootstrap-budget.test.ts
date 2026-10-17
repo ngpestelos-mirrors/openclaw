@@ -1,4 +1,3 @@
-/** Tests bootstrap context truncation accounting and user-facing warning metadata. */
 import { describe, expect, it } from "vitest";
 import { buildBootstrapPromptWarning } from "./bootstrap-budget-warning.js";
 import {
@@ -43,15 +42,17 @@ function analyze(
   return analyzeBootstrapBudget({ files, bootstrapMaxChars, bootstrapTotalMaxChars });
 }
 
-function seenSignatures(
-  bootstrapTruncation: NonNullable<
-    Parameters<typeof resolveBootstrapWarningSignaturesSeen>[0]
-  >["bootstrapTruncation"],
-) {
-  return resolveBootstrapWarningSignaturesSeen({ bootstrapTruncation });
-}
+type TruncationReport = NonNullable<
+  Parameters<typeof resolveBootstrapWarningSignaturesSeen>[0]
+>["bootstrapTruncation"];
 
-describe("buildBootstrapBudgetState", () => {
+const NOTICE = [
+  "[Bootstrap truncation warning]",
+  "Some workspace bootstrap files were truncated before Project Context injection.",
+  "Treat Project Context as partial and read the relevant files directly if details seem missing.",
+].join("\n");
+
+describe("bootstrap budget", () => {
   it("composes configured limits, ordered injection stats, and warning state", () => {
     const bootstrapFiles: WorkspaceBootstrapFile[] = [
       bootstrapFile("AGENTS.md", "a".repeat(8)),
@@ -80,9 +81,7 @@ describe("buildBootstrapBudgetState", () => {
     });
     expect(state.bootstrapAnalysis.truncatedFiles[0]?.causes).toEqual(["total-limit"]);
   });
-});
 
-describe("buildBootstrapInjectionStats", () => {
   it("gives a budget-dropped file zero injected chars when a sibling shares its basename", () => {
     const bootstrapFiles: WorkspaceBootstrapFile[] = [
       bootstrapFile("AGENTS.md", "a".repeat(1_000), "/tmp/workspace/AGENTS.md"),
@@ -95,17 +94,16 @@ describe("buildBootstrapInjectionStats", () => {
     });
     const analysis = analyze(stats, 20_000, 1_000);
 
-    expect(stats[1]).toMatchObject({
-      path: "/tmp/workspace/packages/core/AGENTS.md",
-      rawChars: 500,
-      injectedChars: 0,
-      truncated: true,
-    });
     expect(analysis.totals.injectedChars).toBe(1_000);
-    expect(analysis.truncatedFiles.map((file) => file.path)).toEqual([
-      "/tmp/workspace/packages/core/AGENTS.md",
+    expect(analysis.truncatedFiles).toMatchObject([
+      {
+        path: "/tmp/workspace/packages/core/AGENTS.md",
+        rawChars: 500,
+        injectedChars: 0,
+        truncated: true,
+        causes: ["total-limit"],
+      },
     ]);
-    expect(analysis.truncatedFiles[0]?.causes).toEqual(["total-limit"]);
   });
 
   it("derives names for path-only files supplied by bootstrap hooks", () => {
@@ -118,50 +116,44 @@ describe("buildBootstrapInjectionStats", () => {
       bootstrapFiles: [pathOnlyFile],
       injectedFiles: [pathOnlyFile],
     });
-    const analysis = analyze(stats);
-
-    expect(analysis.files).toEqual([
-      expect.objectContaining({
+    expect(analyze(stats).files).toMatchObject([
+      {
         name: "SELF_IMPROVEMENT_REMINDER.md",
         path: "/tmp/SELF_IMPROVEMENT_REMINDER.md",
         injectedChars: 8,
         truncated: false,
-      }),
+      },
     ]);
   });
-});
 
-describe("analyzeBootstrapBudget", () => {
   it("reports causes while excluding missing-file markers from file totals", () => {
     const analysis = analyze(
       [
         stat("AGENTS.md", 150, 120),
-        {
-          name: "IDENTITY.md",
-          path: "/tmp/IDENTITY.md",
-          missing: true,
-          rawChars: 0,
-          injectedChars: 40,
-          truncated: false,
-        },
+        { ...stat("IDENTITY.md", 0, 40), missing: true },
         stat("SOUL.md", 50, 40),
       ],
       120,
       200,
     );
-    expect(analysis.hasTruncation).toBe(true);
-    expect(analysis.totalNearLimit).toBe(false);
-    expect(analysis.truncatedFiles).toHaveLength(2);
-    expect(analysis.totals).toMatchObject({ rawChars: 200, injectedChars: 160 });
+    expect(analysis).toMatchObject({
+      hasTruncation: true,
+      totalNearLimit: false,
+      totals: { rawChars: 200, injectedChars: 160 },
+      truncatedFiles: [
+        { causes: ["per-file-limit"] },
+        { causes: expect.arrayContaining(["total-limit"]) },
+      ],
+    });
     expect(analysis.files[1]).toMatchObject({ nearLimit: false, causes: [] });
-    expect(analysis.truncatedFiles[0]?.causes).toEqual(["per-file-limit"]);
-    expect(analysis.truncatedFiles[1]?.causes).toContain("total-limit");
   });
 
   it("distinguishes lower per-file and exhausted total limits for USER.md", () => {
     const lowerPerFile = analyze([stat("USER.md", 3_000, 2_000)], 2_000);
-    expect(lowerPerFile.truncatedFiles[0]?.effectiveFileLimit).toBe(2_000);
-    expect(lowerPerFile.truncatedFiles[0]?.causes).toEqual(["per-file-limit"]);
+    expect(lowerPerFile.truncatedFiles[0]).toMatchObject({
+      effectiveFileLimit: 2_000,
+      causes: ["per-file-limit"],
+    });
 
     const exhaustedTotal = analyze(
       [stat("AGENTS.md", 2_000, 2_000), stat("USER.md", 5_000, 0)],
@@ -180,62 +172,46 @@ describe("analyzeBootstrapBudget", () => {
     expect(user?.causes).toStrictEqual(["per-file-limit"]);
     expect(soul?.causes).toContain("total-limit");
   });
-});
 
-describe("bootstrap prompt warnings", () => {
   it("builds a concise agent notice without raw truncation diagnostics", () => {
     const notice = buildBootstrapPromptWarningNotice([
       "AGENTS.md: 200 raw -> 0 injected",
       "If unintentional, raise agents.defaults.bootstrapMaxChars.",
     ]);
 
-    expect(notice).toContain("[Bootstrap truncation warning]");
-    expect(notice).toContain("Treat Project Context as partial");
-    expect(notice).not.toContain("raw ->");
-    expect(notice).not.toContain("bootstrapMaxChars");
+    expect(notice).toBe(NOTICE);
   });
 
-  it("resolves seen signatures from report history or legacy single signature", () => {
+  it.each<[TruncationReport, string[]]>([
+    [
+      { warningSignaturesSeen: ["a", " ", "b", "a"], promptWarningSignature: "ignored" },
+      ["a", "b"],
+    ],
+    [{ promptWarningSignature: "legacy" }, ["legacy"]],
+    [undefined, []],
+    [{ warningMode: "off", promptWarningSignature: "off" }, []],
+    [
+      { warningMode: "off", warningSignaturesSeen: ["once"], promptWarningSignature: "off" },
+      ["once"],
+    ],
+  ])("restores warning signatures from %j", (report, expected) => {
     expect(
-      seenSignatures({
-        warningSignaturesSeen: ["sig-a", " ", "sig-b", "sig-a"],
-        promptWarningSignature: "legacy-ignored",
-      }),
-    ).toEqual(["sig-a", "sig-b"]);
-
-    expect(seenSignatures({ promptWarningSignature: "legacy-only" })).toEqual(["legacy-only"]);
-
-    expect(resolveBootstrapWarningSignaturesSeen(undefined)).toStrictEqual([]);
-  });
-
-  it("ignores single-signature fallback when warning mode is off", () => {
-    expect(
-      seenSignatures({ warningMode: "off", promptWarningSignature: "off-mode-signature" }),
-    ).toStrictEqual([]);
-
-    expect(
-      seenSignatures({
-        warningMode: "off",
-        warningSignaturesSeen: ["prior-once-signature"],
-        promptWarningSignature: "off-mode-signature",
-      }),
-    ).toEqual(["prior-once-signature"]);
+      resolveBootstrapWarningSignaturesSeen(
+        report === undefined ? undefined : { bootstrapTruncation: report },
+      ),
+    ).toEqual(expected);
   });
 
   it("respects off/always warning modes", () => {
     const analysis = truncatedAnalysis();
-    const seen = buildBootstrapPromptWarning({
-      analysis,
-      mode: "once",
-    });
+    const seen = buildBootstrapPromptWarning({ analysis, mode: "once" });
     const off = buildBootstrapPromptWarning({
       analysis,
       mode: "off",
       seenSignatures: seen.warningSignaturesSeen,
       previousSignature: seen.signature,
     });
-    expect(off.warningShown).toBe(false);
-    expect(off.lines).toStrictEqual([]);
+    expect(off).toMatchObject({ warningShown: false, lines: [] });
 
     const always = buildBootstrapPromptWarning({
       analysis,
@@ -243,22 +219,12 @@ describe("bootstrap prompt warnings", () => {
       seenSignatures: seen.warningSignaturesSeen,
       previousSignature: seen.signature,
     });
-    expect(always.warningShown).toBe(true);
-    expect(always.lines).toStrictEqual([
-      [
-        "[Bootstrap truncation warning]",
-        "Some workspace bootstrap files were truncated before Project Context injection.",
-        "Treat Project Context as partial and read the relevant files directly if details seem missing.",
-      ].join("\n"),
-    ]);
+    expect(always).toMatchObject({ warningShown: true, lines: [NOTICE] });
   });
 
   it("builds truncation report metadata from analysis + warning decision", () => {
     const analysis = truncatedAnalysis();
-    const warning = buildBootstrapPromptWarning({
-      analysis,
-      mode: "once",
-    });
+    const warning = buildBootstrapPromptWarning({ analysis, mode: "once" });
     const meta = buildBootstrapTruncationReportMeta({
       analysis,
       warningMode: "once",
