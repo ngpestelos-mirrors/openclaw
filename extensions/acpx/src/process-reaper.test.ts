@@ -129,6 +129,7 @@ async function expectReaped(
 
 describe("process reaper", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     runExecMock.mockReset();
   });
 

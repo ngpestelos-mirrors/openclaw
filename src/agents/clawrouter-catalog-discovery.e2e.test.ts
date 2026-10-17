@@ -25,24 +25,6 @@ import type {
 } from "./prepared-model-catalog-worker.types.js";
 import { prepareWorkspaceBuildGroup } from "./prepared-model-runtime.facts.js";
 
-const catalogModel = {
-  id: "codex-latest",
-  displayName: "Codex (Latest)",
-  upstream: "codex-latest",
-  capabilities: ["llm.responses"],
-  supportedReasoningEfforts: ["high"],
-};
-const catalogProvider = {
-  id: "private",
-  openaiCompatible: true,
-  nativeBaseUrl: "/v1/native/private",
-  models: [catalogModel],
-};
-const apiKey = { source: "env", provider: "default", id: "CLAWROUTER_API_KEY" } as const;
-const primaryModel = (openai: boolean) => ({
-  primary: openai ? "openai/codex-latest" : "clawrouter/codex-latest",
-});
-
 describe("ClawRouter cold prepared catalog", () => {
   let state: OpenClawTestState;
   let server: Awaited<ReturnType<typeof reserveTestPortListener<Server>>> | undefined;
@@ -61,10 +43,22 @@ describe("ClawRouter cold prepared catalog", () => {
   });
 
   it.each([
-    ["publishes without a sibling catalog", false, false],
-    ["publishes with a sibling catalog", true, false],
-    ["discovers a provider introduced by refreshed auth", true, true],
-  ] as const)("%s", async (_label, sibling, refreshedAuth) => {
+    {
+      label: "publishes metadata with a sibling catalog=false",
+      sibling: false,
+      refreshedAuth: false,
+    },
+    {
+      label: "publishes metadata with a sibling catalog=true",
+      sibling: true,
+      refreshedAuth: false,
+    },
+    {
+      label: "discovers a provider introduced by refreshed auth",
+      sibling: true,
+      refreshedAuth: true,
+    },
+  ])("$label", async ({ sibling, refreshedAuth }) => {
     state = await createOpenClawTestState({
       label: "clawrouter-catalog",
       env: {
@@ -82,23 +76,53 @@ describe("ClawRouter cold prepared catalog", () => {
         createServer((request, response) => {
           requests.push({ url: request.url, authorization: request.headers.authorization });
           response.setHeader("content-type", "application/json");
-          response.end(JSON.stringify({ providers: [catalogProvider] }));
+          response.end(
+            JSON.stringify({
+              providers: [
+                {
+                  id: "private",
+                  displayName: "Synthetic provider",
+                  openaiCompatible: true,
+                  nativeBaseUrl: "/v1/native/private",
+                  models: [
+                    {
+                      id: "codex-latest",
+                      displayName: "Codex (Latest)",
+                      upstream: "codex-latest",
+                      capabilities: ["llm.responses"],
+                      supportedReasoningEfforts: ["low", "high"],
+                    },
+                  ],
+                },
+              ],
+            }),
+          );
         }),
     });
     const baseUrl = `http://127.0.0.1:${server.claim.port}/private`;
     const agentId = "private-openclaw";
-    const plugins = ["clawrouter", ...(sibling ? ["openai"] : [])];
     const config: OpenClawConfig = {
       plugins: {
         slots: { memory: "none" },
-        allow: plugins,
-        entries: Object.fromEntries(plugins.map((id) => [id, { enabled: true }])),
+        allow: sibling ? ["clawrouter", "openai"] : ["clawrouter"],
+        entries: {
+          clawrouter: { enabled: true },
+          ...(sibling ? { openai: { enabled: true } } : {}),
+        },
       },
       models: {
         providers: {
           clawrouter: {
             baseUrl,
-            ...(refreshedAuth ? {} : { apiKey }),
+            ...(refreshedAuth
+              ? {}
+              : {
+                  apiKey: {
+                    source: "env" as const,
+                    provider: "default",
+                    id: "CLAWROUTER_API_KEY",
+                  },
+                }),
             agentRuntime: { id: "openclaw" },
             models: [],
           },
@@ -107,15 +131,20 @@ describe("ClawRouter cold prepared catalog", () => {
       agents: {
         defaults: {
           workspace: state.workspaceDir,
-          model: primaryModel(sibling),
-          models: Object.fromEntries(
-            plugins
-              .filter((id) => !refreshedAuth || id !== "clawrouter")
-              .map((id) => [`${id}/codex-latest`, { agentRuntime: { id: "openclaw" } }]),
-          ),
+          model: { primary: sibling ? "openai/codex-latest" : "clawrouter/codex-latest" },
+          models: {
+            ...(refreshedAuth
+              ? {}
+              : { "clawrouter/codex-latest": { agentRuntime: { id: "openclaw" } } }),
+            ...(sibling ? { "openai/codex-latest": { agentRuntime: { id: "openclaw" } } } : {}),
+          },
           modelPolicy: { allow: ["clawrouter/codex-latest"] },
         },
-        entries: { [agentId]: { model: primaryModel(refreshedAuth) } },
+        entries: {
+          [agentId]: {
+            model: { primary: refreshedAuth ? "openai/codex-latest" : "clawrouter/codex-latest" },
+          },
+        },
       },
     };
     const input = {

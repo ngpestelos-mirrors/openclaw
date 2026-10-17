@@ -24,8 +24,18 @@ type SetupBackendEntry = NonNullable<
   ReturnType<(typeof import("../plugins/setup-registry.js"))["resolvePluginSetupCliBackend"]>
 >;
 type CliBackendOverrides = Partial<
-  Pick<CliBackendPlugin, "config" | "normalizeConfig" | "parseJsonlEvent" | "resolveModelId">
->;
+  Omit<CliBackendPlugin, "ownsNativeCompaction" | "manualCompaction">
+> &
+  (
+    | {
+        ownsNativeCompaction: true;
+        manualCompaction?: NonNullable<CliBackendPlugin["manualCompaction"]>;
+      }
+    | {
+        ownsNativeCompaction?: false;
+        manualCompaction?: never;
+      }
+  );
 
 const runtimeArtifact: CliBackendRuntimeArtifactPolicy = {
   kind: "bundled-package-tree",
@@ -33,7 +43,7 @@ const runtimeArtifact: CliBackendRuntimeArtifactPolicy = {
   entrypoint: "command",
 };
 function createBackend(overrides: CliBackendOverrides = {}): CliBackendPlugin {
-  return {
+  const base = {
     id: "acme-cli",
     modelProvider: "acme",
     config: {
@@ -45,7 +55,7 @@ function createBackend(overrides: CliBackendOverrides = {}): CliBackendPlugin {
       sessionArgs: ["--session", "{sessionId}"],
       sessionMode: "existing",
     },
-    ownsNativeCompaction: false,
+    ownsNativeCompaction: overrides.ownsNativeCompaction === true,
     bundleMcp: true,
     bundleMcpMode: "claude-config-file",
     runtimeArtifact,
@@ -58,8 +68,10 @@ function createBackend(overrides: CliBackendOverrides = {}): CliBackendPlugin {
         binaryName: "acme",
       },
     },
-    ...overrides,
-  };
+  } satisfies CliBackendPlugin;
+  return overrides.ownsNativeCompaction === true
+    ? { ...base, ...overrides, ownsNativeCompaction: true }
+    : { ...base, ...overrides, ownsNativeCompaction: false };
 }
 
 function runtimeEntry(

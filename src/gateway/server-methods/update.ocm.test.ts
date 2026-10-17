@@ -16,26 +16,26 @@ import {
 
 const exec = vi.fn<typeof import("../../process/exec.js").runExec>();
 
-type ManagerFixture = {
-  capability: Record<string, unknown>;
-  job: {
-    id: string;
-    envName: string;
-    state: string;
-    progress: string;
-    createdAt: string;
-    updatedAt: string;
-    result: null | {
-      outcome: string;
-      bindingKind?: string;
-      runtimeReleaseVersion: string | null;
-      note: string | null;
+async function withManager(
+  run: (fixture: {
+    capability: Record<string, unknown>;
+    job: {
+      id: string;
+      envName: string;
+      state: string;
+      progress: string;
+      createdAt: string;
+      updatedAt: string;
+      result: null | {
+        outcome: string;
+        bindingKind?: string;
+        runtimeReleaseVersion: string | null;
+        note: string | null;
+      };
+      error: string | null;
     };
-    error: string | null;
-  };
-};
-
-async function withManager(run: (fixture: ManagerFixture) => Promise<void>) {
+  }) => Promise<void>,
+) {
   const env = captureFullEnv();
   const stateDir = resolveStateDir();
   const configPath = resolveConfigPath();
@@ -55,15 +55,20 @@ async function withManager(run: (fixture: ManagerFixture) => Promise<void>) {
     operations: ["packaged-upgrade"],
     selectors: ["version", "channel", "runtime"],
   };
-  const job: ManagerFixture["job"] = {
+  const job = {
     id: "fixture-job",
     envName: "fixture",
     state: "running",
     progress: "Preparing update",
     createdAt: "2026-09-26T00:00:00Z",
     updatedAt: "2026-09-26T00:00:00.001Z",
-    result: null,
-    error: null,
+    result: null as null | {
+      outcome: string;
+      bindingKind?: string;
+      runtimeReleaseVersion: string | null;
+      note: string | null;
+    },
+    error: null as string | null,
   };
   for (const [key, value] of Object.entries({
     OPENCLAW_SUPERVISOR_MODE: "external",
@@ -91,23 +96,6 @@ async function withManager(run: (fixture: ManagerFixture) => Promise<void>) {
   }
 }
 
-function expectResponse(respond: ReturnType<typeof vi.fn>, fields: Record<string, unknown>) {
-  expect(respond).toHaveBeenCalledWith(true, expect.objectContaining(fields));
-}
-
-async function invoke(
-  method: string,
-  params: Record<string, unknown>,
-  respond: (ok: boolean, value?: unknown) => void,
-  context?: Record<string, unknown>,
-) {
-  const { updateHandlers } = await import("./update.js");
-  await expectDefined(
-    updateHandlers[method],
-    `${method} handler`,
-  )({ params, respond, context } as never);
-}
-
 it.each([
   { binding: "runtime", outcome: "up-to-date", status: "skipped" },
   { binding: "launcher", outcome: "source-updated", status: "succeeded" },
@@ -133,7 +121,10 @@ it.each([
       normalizeUpdateChannelMock.mockReturnValue("beta");
       const respond = vi.fn();
       await invokeUpdateRun({}, respond, { update: { channel: "beta" } });
-      expectResponse(respond, { runId: `ocm:${job.id}`, ok: true });
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({ runId: `ocm:${job.id}`, ok: true }),
+      );
       const starts = exec.mock.calls.filter(([, args]) => args[2] === "start");
       expect(starts).toHaveLength(1);
       if (source) {
@@ -164,7 +155,14 @@ it.each([
       job.state = "succeeded";
       job.updatedAt = "2026-09-26T00:00:01Z";
       job.result = result;
-      await invoke("update.runs.get", { runId: `ocm:${job.id}` }, respond);
+      const { updateHandlers } = await import("./update.js");
+      await expectDefined(
+        updateHandlers["update.runs.get"],
+        "update.runs.get handler",
+      )({
+        params: { runId: `ocm:${job.id}` },
+        respond,
+      } as never);
       expect(respond).toHaveBeenLastCalledWith(true, {
         run: expect.objectContaining({
           runId: `ocm:${job.id}`,
@@ -186,6 +184,7 @@ it("keeps accepted source jobs readable when another source update is unavailabl
     capability.operations = ["source-upgrade"];
     await invokeUpdateRun({});
     capability.operations = [];
+    const { updateHandlers } = await import("./update.js");
     const context = { getRuntimeConfig: () => ({ update: { channel: "dev" } }) };
     for (const [state, field] of [
       ["running", "activeRun"],
@@ -194,16 +193,33 @@ it("keeps accepted source jobs readable when another source update is unavailabl
       job.state = state;
       job.error = state === "failed" ? "Source recovery requires the operator" : null;
       const respond = vi.fn();
-      await invoke("update.status", {}, respond, context);
-      expectResponse(respond, {
-        [field]: expect.objectContaining({
-          runId: `ocm:${job.id}`,
-          status: state,
-          target: { installationMethod: "ocm" },
+      await expectDefined(
+        updateHandlers["update.status"],
+        "update.status handler",
+      )({
+        params: {},
+        respond,
+        context,
+      } as never);
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({
+          [field]: expect.objectContaining({
+            runId: `ocm:${job.id}`,
+            status: state,
+            target: { installationMethod: "ocm" },
+          }),
         }),
-      });
+      );
       respond.mockClear();
-      await invoke("update.runs.get", { runId: `ocm:${job.id}` }, respond, context);
+      await expectDefined(
+        updateHandlers["update.runs.get"],
+        "update.runs.get handler",
+      )({
+        params: { runId: `ocm:${job.id}` },
+        respond,
+        context,
+      } as never);
       expect(respond).toHaveBeenCalledWith(true, {
         run: expect.objectContaining({
           runId: `ocm:${job.id}`,
@@ -231,10 +247,13 @@ it("hands legacy-supervised source updates to the injected OCM manager", async (
     normalizeUpdateChannelMock.mockReturnValue("beta");
     const respond = vi.fn();
     await invokeUpdateRun({}, respond, { update: { channel: "beta" } });
-    expectResponse(respond, {
-      runId: `ocm:${job.id}`,
-      handoff: { status: "started" },
-    });
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        runId: `ocm:${job.id}`,
+        handoff: { status: "started" },
+      }),
+    );
     const starts = exec.mock.calls.filter(([, args]) => args[2] === "start");
     expect(starts).toHaveLength(1);
     expect(starts[0]?.[1]).not.toContain("--channel");
@@ -257,14 +276,23 @@ it.each(["launcher", "none", "unbound", "external-chat"])(
       }));
       const run = createUpdateRun({ trigger: "cli" });
       finishUpdateRun(run.runId, { status: "succeeded" });
+      const { updateHandlers } = await import("./update.js");
       const respond = vi.fn();
       if (bindingKind !== "external-chat") {
-        await invoke("update.status", {}, respond, {
-          getRuntimeConfig: () => ({ update: { channel: "dev" } }),
-        });
-        expectResponse(respond, {
-          lastRun: expect.objectContaining({ runId: run.runId, status: "succeeded" }),
-        });
+        await expectDefined(
+          updateHandlers["update.status"],
+          "update.status handler",
+        )({
+          params: {},
+          respond,
+          context: { getRuntimeConfig: () => ({ update: { channel: "dev" } }) },
+        } as never);
+        expect(respond).toHaveBeenCalledWith(
+          true,
+          expect.objectContaining({
+            lastRun: expect.objectContaining({ runId: run.runId, status: "succeeded" }),
+          }),
+        );
       }
       respond.mockClear();
       await invokeUpdateRun(
@@ -301,7 +329,10 @@ it.each([true, false])(
       const respond = vi.fn();
       if (exists) {
         await invokeUpdateRun({}, respond);
-        expectResponse(respond, { runId: `ocm:${job.id}` });
+        expect(respond).toHaveBeenCalledWith(
+          true,
+          expect.objectContaining({ runId: `ocm:${job.id}` }),
+        );
       } else {
         await expect(invokeUpdateRun({})).rejects.toThrow("Another update is active");
       }
@@ -454,9 +485,17 @@ it("preserves native read-only history with an older manager while refusing mana
     );
     const run = createUpdateRun({ trigger: "cli" });
     finishUpdateRun(run.runId, { status: "succeeded" });
+    const { updateHandlers } = await import("./update.js");
     const respond = vi.fn();
     const context = { getRuntimeConfig: () => ({ update: { channel: "dev" } }) };
-    await invoke("update.status", {}, respond, context);
+    await expectDefined(
+      updateHandlers["update.status"],
+      "update.status handler",
+    )({
+      params: {},
+      respond,
+      context,
+    } as never);
     expect(respond).toHaveBeenLastCalledWith(
       true,
       expect.objectContaining({
@@ -464,15 +503,22 @@ it("preserves native read-only history with an older manager while refusing mana
         lastRun: expect.objectContaining({ runId: run.runId, status: "succeeded" }),
       }),
     );
-    await invoke("update.runs.list", {}, respond);
+    await expectDefined(
+      updateHandlers["update.runs.list"],
+      "update.runs.list handler",
+    )({
+      params: {},
+      respond,
+    } as never);
     expect(respond).toHaveBeenLastCalledWith(true, {
       runs: [expect.objectContaining({ runId: run.runId })],
     });
-    await invoke("update.runs.get", { runId: run.runId }, respond);
+    const get = expectDefined(updateHandlers["update.runs.get"], "update.runs.get handler");
+    await get({ params: { runId: run.runId }, respond } as never);
     expect(respond).toHaveBeenLastCalledWith(true, {
       run: expect.objectContaining({ runId: run.runId }),
     });
-    await expect(invoke("update.runs.get", { runId: "ocm:missing" }, respond)).rejects.toThrow(
+    await expect(get({ params: { runId: "ocm:missing" }, respond } as never)).rejects.toThrow(
       "OCM update capabilities",
     );
     await expect(invokeUpdateRun({})).rejects.toThrow("OCM update capabilities");
@@ -509,8 +555,17 @@ it.each(["timeout", "authentication", "malformed", "binding", "identity", "job-r
           });
         });
       }
+      const { updateHandlers } = await import("./update.js");
       const respond = vi.fn();
-      await expect(invoke("update.status", {}, respond)).rejects.toThrow();
+      await expect(
+        expectDefined(
+          updateHandlers["update.status"],
+          "update.status handler",
+        )({
+          params: {},
+          respond,
+        } as never),
+      ).rejects.toThrow();
       expect(respond).not.toHaveBeenCalled();
     });
   },
@@ -522,8 +577,12 @@ it("redacts manager diagnostics before RPC/UI projection and probe errors", asyn
     const diagnostic = `Package fetch failed: https://example.invalid/pkg?token=${secret}`;
     job.state = "failed";
     job.error = diagnostic;
+    const { updateHandlers } = await import("./update.js");
     const respond = vi.fn<(ok: boolean, value?: { run: UpdateRunRecord }) => void>();
-    await invoke("update.runs.get", { runId: `ocm:${job.id}` }, respond);
+    await expectDefined(
+      updateHandlers["update.runs.get"],
+      "update.runs.get handler",
+    )({ params: { runId: `ocm:${job.id}` }, respond } as never);
     const response = expectDefined(respond.mock.calls[0]?.[1], "managed update response");
     expect(JSON.stringify(response)).not.toContain(secret);
     expect(renderUpdateRunReport(response.run).markdown).toContain("Package fetch failed");
