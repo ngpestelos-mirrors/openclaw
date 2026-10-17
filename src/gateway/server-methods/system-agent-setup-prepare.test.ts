@@ -1,19 +1,16 @@
 import { expectDefined } from "@openclaw/normalization-core";
-import { Compile } from "typebox/compile";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-  WizardNextParams,
-  WizardNextResult,
-} from "../../../packages/gateway-protocol/src/index.js";
-import { WizardNextResultSchema } from "../../../packages/gateway-protocol/src/schema/wizard.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { WizardSession } from "../../wizard/session.js";
 import { whenAdmittedWizardSessionSettled } from "./setup-admission.js";
-import { systemAgentHandlers } from "./system-agent.js";
-import type { GatewayRequestContext } from "./types.js";
-import { wizardHandlers } from "./wizard.js";
+import {
+  answerWizard,
+  callWizardNext,
+  invoke,
+  makeContext,
+} from "./system-agent-setup.test-support.js";
 
 const providerAuthChoiceMocks = vi.hoisted(() => ({
   prepareAuthChoiceLoadedPluginProvider: vi.fn(),
@@ -40,55 +37,6 @@ vi.mock("../../plugins/provider-auth-config.js", async (importOriginal) => ({
 const config: OpenClawConfig = {
   agents: { defaults: { model: "openai/gpt-5.6-luna" } },
 };
-const validateWizardResult = Compile(WizardNextResultSchema);
-
-function makeContext() {
-  const wizardSessions = new Map<string, WizardSession>();
-  return {
-    wizardSessions,
-    context: {
-      wizardSessions,
-      findRunningWizard: () => undefined,
-      purgeWizardSession: (id: string) => wizardSessions.delete(id),
-    } as unknown as GatewayRequestContext,
-  };
-}
-
-function makeRespond() {
-  const calls: Array<{ ok: boolean; payload?: unknown; error?: unknown }> = [];
-  return {
-    calls,
-    respond: (ok: boolean, payload?: unknown, error?: unknown) => {
-      calls.push({ ok, payload, error });
-    },
-  };
-}
-
-function systemAgentHandler(method: keyof typeof systemAgentHandlers) {
-  return expectDefined(systemAgentHandlers[method], `systemAgentHandlers["${method}"] invariant`);
-}
-
-async function callWizardNext(
-  context: GatewayRequestContext,
-  params: WizardNextParams,
-): Promise<WizardNextResult> {
-  const { calls, respond } = makeRespond();
-  await expectDefined(
-    wizardHandlers["wizard.next"],
-    "wizard.next handler",
-  )({
-    params,
-    respond,
-    context,
-  } as never);
-  expect(calls).toHaveLength(1);
-  expect(calls[0]?.ok).toBe(true);
-  const payload = calls[0]?.payload;
-  if (!validateWizardResult.Check(payload)) {
-    throw new Error("wizard.next returned an invalid result");
-  }
-  return payload;
-}
 
 describe("openclaw.setup provider preparation", () => {
   beforeEach(() => {
@@ -150,20 +98,13 @@ describe("openclaw.setup provider preparation", () => {
         },
       );
       try {
-        await systemAgentHandler("openclaw.setup.prepare.start")({
-          params: { sessionId, authChoice: "fixture-provider" },
-          respond: () => undefined,
-          context,
-        } as never);
+        await invoke("openclaw.setup.prepare.start", context, {
+          sessionId,
+          authChoice: "fixture-provider",
+        });
         session = expectDefined(wizardSessions.get(sessionId), "provider preparation wizard");
         const confirmation = await callWizardNext(context, { sessionId });
-        const terminal = callWizardNext(context, {
-          sessionId,
-          answer: {
-            stepId: expectDefined(confirmation.step, "prepare confirmation").id,
-            value: true,
-          },
-        });
+        const terminal = answerWizard(context, sessionId, confirmation, true);
         await preparationStarted.promise;
         if (beforeCredentials) {
           await vi.advanceTimersByTimeAsync(2 * 60 * 60 * 1_000);
@@ -174,15 +115,8 @@ describe("openclaw.setup provider preparation", () => {
         if (!beforeCredentials) {
           await credentialWriteStarted.promise;
           await vi.advanceTimersByTimeAsync(2 * 60 * 60 * 1_000);
-          const { calls, respond } = makeRespond();
-          await expectDefined(
-            wizardHandlers["wizard.cancel"],
-            "wizard cancel",
-          )({
-            params: { sessionId },
-            respond,
-            context,
-          } as never);
+
+          const calls = await invoke("wizard.cancel", context, { sessionId });
           expect(calls[0]?.payload).toMatchObject({ status: "running" });
           expect(session.signal.aborted).toBe(false);
           expect(authConfigMocks.writeProviderAuthConfig).not.toHaveBeenCalled();
@@ -236,19 +170,14 @@ describe("openclaw.setup provider preparation", () => {
         },
       );
       const { wizardSessions, context } = makeContext();
-      const { calls, respond } = makeRespond();
 
-      await systemAgentHandler("openclaw.setup.prepare.start")({
-        params: {
-          sessionId: "prepare-session-1",
-          nativeSessionCatalogsEnabled,
-          agentId: "research",
-          authChoice: "ollama",
-          workspace: "/tmp/models-workspace",
-        },
-        respond,
-        context,
-      } as never);
+      const calls = await invoke("openclaw.setup.prepare.start", context, {
+        sessionId: "prepare-session-1",
+        nativeSessionCatalogsEnabled,
+        agentId: "research",
+        authChoice: "ollama",
+        workspace: "/tmp/models-workspace",
+      });
 
       expect(calls[0]).toMatchObject({
         ok: true,
@@ -276,10 +205,7 @@ describe("openclaw.setup provider preparation", () => {
         }),
         expect.any(Function),
       );
-      const done = await callWizardNext(context, {
-        sessionId: "prepare-session-1",
-        answer: { stepId: expectDefined(note.step, "prepare wizard step").id, value: null },
-      });
+      const done = await answerWizard(context, "prepare-session-1", note, null);
       expect(done).toEqual({
         done: true,
         status: "done",

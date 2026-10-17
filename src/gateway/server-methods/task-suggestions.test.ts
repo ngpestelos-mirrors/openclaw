@@ -66,12 +66,34 @@ function taskRoleClient(profileId: string, admin = false): GatewayClient {
   return client;
 }
 
+function createSuggestion(
+  params: Record<string, unknown> = {},
+  overrides?: Parameters<typeof call>[3],
+) {
+  return call(
+    "taskSuggestions.create",
+    {
+      title: "Add coverage",
+      prompt: "Add the missing regression test.",
+      tldr: "The edge case is untested.",
+      cwd: GIT_CWD,
+      sessionKey: "agent:main:main",
+      ...params,
+    },
+    vi.fn(),
+    overrides,
+  );
+}
+
+async function expectPending(taskId: string) {
+  const listed = await call("taskSuggestions.list", {});
+  expect(listed.response?.[1]).toMatchObject({ suggestions: [{ id: taskId }] });
+}
+
 async function createRoleSuggestion(sessionKey: string): Promise<string> {
-  const created = await call("taskSuggestions.create", {
+  const created = await createSuggestion({
     title: "Follow up on this session",
     prompt: "Complete the session's suggested task.",
-    tldr: "The session needs a follow-up task.",
-    cwd: GIT_CWD,
     sessionKey,
     agentId: "main",
   });
@@ -210,16 +232,13 @@ describe("task suggestion gateway methods", () => {
         defaults: { sessionStore: { agentId: "ops" } },
       },
     };
-    const created = await call(
-      "taskSuggestions.create",
+    const created = await createSuggestion(
       {
         title: "Inspect the deployment",
         prompt: "Check the deployment logs.",
         tldr: "Deployment needs inspection.",
-        cwd: GIT_CWD,
         sessionKey: "global",
       },
-      vi.fn(),
       config,
     );
 
@@ -232,12 +251,10 @@ describe("task suggestion gateway methods", () => {
   });
 
   it("evicts accepted-session replay before an unseen pending suggestion", async () => {
-    const created = await call("taskSuggestions.create", {
+    const created = await createSuggestion({
       title: "Remove stale adapter",
       prompt: "Delete src/example.ts and update its tests.",
       tldr: "The adapter is unreachable and adds maintenance cost.",
-      cwd: GIT_CWD,
-      sessionKey: "agent:main:main",
       agentId: "main",
     });
     const taskId = (requirePayload(created) as { taskId: string }).taskId;
@@ -261,12 +278,9 @@ describe("task suggestion gateway methods", () => {
     const first = await call("taskSuggestions.accept", { taskId });
     for (let index = 0; index < 99; index += 1) {
       requirePayload(
-        await call("taskSuggestions.create", {
+        await createSuggestion({
           title: `Pending follow up ${index}`,
           prompt: `Complete pending follow-up task ${index}.`,
-          tldr: "The operator has not accepted this follow-up.",
-          cwd: GIT_CWD,
-          sessionKey: "agent:main:main",
         }),
       );
     }
@@ -276,12 +290,9 @@ describe("task suggestion gateway methods", () => {
       .suggestions;
     const oldestPending = pending.at(-1);
     expect(oldestPending).toBeDefined();
-    const admitted = await call("taskSuggestions.create", {
+    const admitted = await createSuggestion({
       title: "Latest follow up",
       prompt: "Prefer unseen pending work over accepted replay state.",
-      tldr: "Evict only the completed task replay.",
-      cwd: GIT_CWD,
-      sessionKey: "agent:main:main",
     });
     expect(admitted.response?.[0]).toBe(true);
     expect(admitted.broadcast).toHaveBeenCalledTimes(1);
@@ -309,13 +320,7 @@ describe("task suggestion gateway methods", () => {
   });
 
   it("coalesces concurrent acceptance requests", async ({ signal }) => {
-    const created = await call("taskSuggestions.create", {
-      title: "Add coverage",
-      prompt: "Add the missing regression test.",
-      tldr: "The edge case is untested.",
-      cwd: GIT_CWD,
-      sessionKey: "agent:main:main",
-    });
+    const created = await createSuggestion({});
     const taskId = (requirePayload(created) as { taskId: string }).taskId;
     const { promise: gate, resolve: release } = createDeferred();
     const entered = createDeferred();
@@ -373,11 +378,10 @@ describe("task suggestion gateway methods", () => {
       });
 
     const accepted = await call("taskSuggestions.accept", { taskId, mode: "local" });
-    const listed = await call("taskSuggestions.list", {});
 
     expect(accepted.response?.[0]).toBe(false);
     expect(deleteSession).toHaveBeenCalledTimes(1);
-    expect(listed.response?.[1]).toMatchObject({ suggestions: [{ id: taskId }] });
+    await expectPending(taskId);
   });
 
   it("creates, dispatches, then sends a cloud acceptance", async () => {
@@ -501,13 +505,12 @@ describe("task suggestion gateway methods", () => {
       vi.fn(),
       { context: configuredCloudContext() },
     );
-    const listed = await call("taskSuggestions.list", {});
 
     expect(accepted.response?.[0]).toBe(false);
     expect(accepted.response?.[2]).toMatchObject({ message: "dispatch unavailable" });
     expect(deleteSession).toHaveBeenCalledTimes(1);
     expect(mocks.handleChatSend).not.toHaveBeenCalled();
-    expect(listed.response?.[1]).toMatchObject({ suggestions: [{ id: taskId }] });
+    await expectPending(taskId);
   });
 
   it("rejects a missing source session and restores the suggestion", async () => {
@@ -519,7 +522,6 @@ describe("task suggestion gateway methods", () => {
         client: operatorClient(),
         context: { chatAbortControllers: new Map() },
       });
-      const listed = await call("taskSuggestions.list", {});
 
       expect(accepted.response?.[0]).toBe(false);
       expect(accepted.response?.[2]).toMatchObject({
@@ -527,7 +529,7 @@ describe("task suggestion gateway methods", () => {
         message: "source session no longer exists; start it in a new session instead",
       });
       expect(deleteSession).not.toHaveBeenCalled();
-      expect(listed.response?.[1]).toMatchObject({ suggestions: [{ id: taskId }] });
+      await expectPending(taskId);
     });
   });
 
@@ -548,12 +550,11 @@ describe("task suggestion gateway methods", () => {
         client: operatorClient(),
         context: { chatAbortControllers: new Map() },
       });
-      const listed = await call("taskSuggestions.list", {});
 
       expect(accepted.response?.[0]).toBe(false);
       expect(accepted.response?.[2]).toMatchObject({ message: "delivery unavailable" });
       expect(deleteSession).not.toHaveBeenCalled();
-      expect(listed.response?.[1]).toMatchObject({ suggestions: [{ id: taskId }] });
+      await expectPending(taskId);
     });
   });
 
@@ -562,13 +563,12 @@ describe("task suggestion gateway methods", () => {
     const createSession = vi.spyOn(sessionCreateHandlers, "sessions.create");
 
     const accepted = await call("taskSuggestions.accept", { taskId, mode: "remote" });
-    const listed = await call("taskSuggestions.list", {});
 
     expect(accepted.response?.[0]).toBe(false);
     expect(accepted.response?.[2]).toMatchObject({ code: "INVALID_REQUEST" });
     expect(accepted.response?.[2]?.message).toContain("mode");
     expect(createSession).not.toHaveBeenCalled();
-    expect(listed.response?.[1]).toMatchObject({ suggestions: [{ id: taskId }] });
+    await expectPending(taskId);
   });
 
   it("rolls back an empty session and keeps a failed seed suggestion pending", async () => {
@@ -601,7 +601,6 @@ describe("task suggestion gateway methods", () => {
       });
 
     const accepted = await call("taskSuggestions.accept", { taskId });
-    const listed = await call("taskSuggestions.list", {});
 
     expect(accepted.response?.[0]).toBe(false);
     expect(accepted.response?.[2]).toMatchObject({ message: "provider unavailable" });
@@ -614,7 +613,7 @@ describe("task suggestion gateway methods", () => {
       }),
       { dropIfSlow: true },
     );
-    expect(listed.response?.[1]).toMatchObject({ suggestions: [{ id: taskId }] });
+    await expectPending(taskId);
   });
 
   it("expires a suggestion when rollback preserves the worktree", async () => {
@@ -653,13 +652,7 @@ describe("task suggestion gateway methods", () => {
   });
 
   it("rejects a relative cwd before recording or broadcasting", async () => {
-    const result = await call("taskSuggestions.create", {
-      title: "Add coverage",
-      prompt: "Add the missing regression test.",
-      tldr: "The edge case is untested.",
-      cwd: "relative/folder",
-      sessionKey: "agent:main:main",
-    });
+    const result = await createSuggestion({ cwd: "relative/folder" });
     expect(result.response?.[0]).toBe(false);
     expect(result.response?.[2]).toMatchObject({
       code: "INVALID_REQUEST",
@@ -669,17 +662,8 @@ describe("task suggestion gateway methods", () => {
   });
 
   it("rejects an agent that conflicts with the source session", async () => {
-    const result = await call(
-      "taskSuggestions.create",
-      {
-        title: "Add coverage",
-        prompt: "Add the missing regression test.",
-        tldr: "The edge case is untested.",
-        cwd: GIT_CWD,
-        sessionKey: "agent:main:main",
-        agentId: "work",
-      },
-      vi.fn(),
+    const result = await createSuggestion(
+      { agentId: "work" },
       { agents: { entries: { main: {}, work: {} } } },
     );
 
@@ -694,12 +678,10 @@ describe("task suggestion gateway methods", () => {
   it("keeps the complete list below the retained payload budget", async () => {
     const taskIds: string[] = [];
     for (let index = 0; index < 70; index += 1) {
-      const created = await call("taskSuggestions.create", {
+      const created = await createSuggestion({
         title: `Follow up ${index}`,
         prompt: `${index}: ${"x".repeat(32_760)}`,
         tldr: "The follow-up remains useful.",
-        cwd: GIT_CWD,
-        sessionKey: "agent:main:main",
       });
       taskIds.push((requirePayload(created) as { taskId: string }).taskId);
     }
@@ -719,43 +701,35 @@ describe("task suggestion gateway methods", () => {
 
     try {
       for (let index = 0; index < 32; index += 1) {
-        const created = await call("taskSuggestions.create", {
+        const created = await createSuggestion({
           title: `Running follow up ${index}`,
           prompt: largePrompt,
           tldr: "This accepted task is still starting.",
-          cwd: GIT_CWD,
-          sessionKey: "agent:main:main",
         });
         const taskId = (requirePayload(created) as { taskId: string }).taskId;
         expect(beginTaskSuggestionAcceptance(taskId).status).toBe("claimed");
         acceptingTaskIds.push(taskId);
       }
 
-      const accepted = await call("taskSuggestions.create", {
+      const accepted = await createSuggestion({
         title: "Preserve accepted task",
         prompt: "Keep its accepted result available for retries.",
         tldr: "A rejected admission must not discard completed results.",
-        cwd: GIT_CWD,
-        sessionKey: "agent:main:main",
       });
       const acceptedTaskId = (requirePayload(accepted) as { taskId: string }).taskId;
       expect(beginTaskSuggestionAcceptance(acceptedTaskId).status).toBe("claimed");
       completeTaskSuggestionAcceptance(acceptedTaskId, "agent:main:dashboard:accepted");
 
-      const pending = await call("taskSuggestions.create", {
+      const pending = await createSuggestion({
         title: "Keep this follow up",
         prompt: "Do not discard this pending task.",
         tldr: "The operator has not accepted it yet.",
-        cwd: GIT_CWD,
-        sessionKey: "agent:main:main",
       });
       const pendingTaskId = (requirePayload(pending) as { taskId: string }).taskId;
-      const rejected = await call("taskSuggestions.create", {
+      const rejected = await createSuggestion({
         title: "One oversized follow up",
         prompt: largePrompt,
         tldr: "This valid task cannot fit beside protected tasks.",
-        cwd: GIT_CWD,
-        sessionKey: "agent:main:main",
       });
 
       expect(rejected.response?.[0]).toBe(false);

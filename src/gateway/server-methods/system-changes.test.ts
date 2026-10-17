@@ -53,6 +53,54 @@ function createAuditStores(env: NodeJS.ProcessEnv) {
   };
 }
 
+function writeConfigs(
+  store: ReturnType<typeof createAuditStores>["configStore"],
+  ...records: Array<
+    [
+      key: string,
+      at: number,
+      before: string | null,
+      after: string | null,
+      path: string | undefined,
+      origin?: Extract<ConfigAuditRecord, { event: "config.write" }>["origin"],
+      extra?: Partial<Extract<ConfigAuditRecord, { event: "config.write" }>>,
+    ]
+  >
+) {
+  for (const [key, at, previousHash, nextHash, path, origin, extra] of records) {
+    store.upsert(
+      key,
+      configRecord({
+        ts: new Date(Date.UTC(2026, 6, 18, 12) + at).toISOString(),
+        previousHash,
+        nextHash,
+        changedPaths: path ? [path] : [],
+        origin,
+        ...extra,
+      }),
+      at,
+    );
+  }
+}
+
+function seedOperation(
+  store: ReturnType<typeof createAuditStores>["systemStore"],
+  summary: string,
+  [configHashBefore, configHashAfter] = ["a", "b"],
+) {
+  store.upsert(
+    "operation",
+    {
+      timestamp: "2026-07-18T12:00:04.000Z",
+      operation: "config.set",
+      summary,
+      configHashBefore,
+      configHashAfter,
+    },
+    4_000,
+  );
+}
+
 describe("openclaw.changes.list", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -115,17 +163,7 @@ describe("openclaw.changes.list", () => {
       const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
       const { systemStore, configStore } = createAuditStores(env);
 
-      systemStore.upsert(
-        "operation",
-        {
-          timestamp: "2026-07-18T12:00:04.000Z",
-          operation: "config.set",
-          summary: "Set config gateway.port",
-          configHashBefore: "hash-a",
-          configHashAfter: "hash-b",
-        },
-        4_000,
-      );
+      seedOperation(systemStore, "Set config gateway.port", ["hash-a", "hash-b"]);
       configStore.upsert(
         "external",
         {
@@ -139,48 +177,28 @@ describe("openclaw.changes.list", () => {
         } as unknown as ConfigAuditRecord,
         1_000,
       );
-      configStore.upsert(
-        "doctor-write",
-        configRecord({
-          ts: "2026-07-18T12:00:02.000Z",
-          origin: "doctor",
-          previousHash: "hash-b",
-          nextHash: "hash-c",
-          changedPaths: ["agents.defaults.model"],
-        }),
-        2_000,
-      );
-      configStore.upsert(
-        "matching-write",
-        configRecord({
-          ts: "2026-07-18T12:00:03.000Z",
-          origin: "system-agent",
-          previousHash: "hash-a",
-          nextHash: "hash-b",
-          changedPaths: ["gateway.port"],
-        }),
-        3_000,
-      );
-      configStore.upsert(
-        "repeated-cli-transition",
-        configRecord({
-          ts: "2026-07-18T12:00:05.000Z",
-          origin: "cli",
-          previousHash: "hash-a",
-          nextHash: "hash-b",
-          changedPaths: ["gateway.bind"],
-        }),
-        2_000,
-      );
-      configStore.upsert(
-        "failed",
-        configRecord({
-          ts: "2026-07-18T12:00:05.500Z",
-          result: "failed",
-          previousHash: "failed-a",
-          nextHash: "failed-b",
-        }),
-        3_000,
+      writeConfigs(
+        configStore,
+        ["doctor", 2_000, "hash-b", "hash-c", "agents.defaults.model", "doctor"],
+        ["match", 3_000, "hash-a", "hash-b", "gateway.port", "system-agent"],
+        [
+          "repeat",
+          2_000,
+          "hash-a",
+          "hash-b",
+          "gateway.bind",
+          "cli",
+          { ts: "2026-07-18T12:00:05.000Z" },
+        ],
+        [
+          "failed",
+          3_000,
+          "failed-a",
+          "failed-b",
+          undefined,
+          undefined,
+          { ts: "2026-07-18T12:00:05.500Z", result: "failed" },
+        ],
       );
       configStore.upsert(
         "observe",
@@ -241,11 +259,7 @@ describe("openclaw.changes.list", () => {
   it("classifies legacy redacted argv when origin is absent", async () => {
     await withTestDir({ prefix: "openclaw-system-changes-argv-" }, async (stateDir) => {
       const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
-      const store = createSqliteAuditRecordStore<ConfigAuditRecord>({
-        scope: CONFIG_AUDIT_SCOPE,
-        maxEntries: CONFIG_AUDIT_MAX_ENTRIES,
-        env,
-      });
+      const { configStore: store } = createAuditStores(env);
       store.upsert(
         "doctor",
         configRecord({
@@ -286,50 +300,13 @@ describe("openclaw.changes.list", () => {
     await withTestDir({ prefix: "openclaw-system-changes-collapse-cursor-" }, async (stateDir) => {
       const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
       const { systemStore, configStore } = createAuditStores(env);
-      configStore.upsert(
-        "matching-write",
-        configRecord({
-          ts: "2026-07-18T12:00:01.000Z",
-          origin: "system-agent",
-          previousHash: "a",
-          nextHash: "b",
-          changedPaths: ["gateway.port"],
-        }),
-        1_000,
+      writeConfigs(
+        configStore,
+        ["match", 1_000, "a", "b", "gateway.port", "system-agent"],
+        ["one", 2_000, "b", "c", "gateway.bind", "cli"],
+        ["two", 3_000, "c", "d", "gateway.mode", "cli"],
       );
-      configStore.upsert(
-        "intervening-write-one",
-        configRecord({
-          ts: "2026-07-18T12:00:02.000Z",
-          origin: "cli",
-          previousHash: "b",
-          nextHash: "c",
-          changedPaths: ["gateway.bind"],
-        }),
-        2_000,
-      );
-      configStore.upsert(
-        "intervening-write-two",
-        configRecord({
-          ts: "2026-07-18T12:00:03.000Z",
-          origin: "cli",
-          previousHash: "c",
-          nextHash: "d",
-          changedPaths: ["gateway.mode"],
-        }),
-        3_000,
-      );
-      systemStore.upsert(
-        "operation",
-        {
-          timestamp: "2026-07-18T12:00:04.000Z",
-          operation: "config.set",
-          summary: "Set config gateway.port",
-          configHashBefore: "a",
-          configHashAfter: "b",
-        },
-        4_000,
-      );
+      seedOperation(systemStore, "Set config gateway.port");
 
       const first = await listSystemChanges({ limit: 1 }, { env });
       expect(first.entries).toEqual([
@@ -362,50 +339,13 @@ describe("openclaw.changes.list", () => {
     await withTestDir({ prefix: "openclaw-system-changes-pending-window-" }, async (stateDir) => {
       const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
       const { systemStore, configStore } = createAuditStores(env);
-      configStore.upsert(
-        "old-matching-transition",
-        configRecord({
-          ts: "2026-07-18T11:58:00.000Z",
-          origin: "system-agent",
-          previousHash: "a",
-          nextHash: "b",
-          changedPaths: ["old.path"],
-        }),
-        1_000,
+      writeConfigs(
+        configStore,
+        ["old", 1_000, "a", "b", "old.path", "system-agent", { ts: "2026-07-18T11:58:00.000Z" }],
+        ["one", 2_000, "b", "c", "gateway.bind", "cli"],
+        ["two", 3_000, "c", "d", "gateway.mode", "cli"],
       );
-      configStore.upsert(
-        "intervening-write-one",
-        configRecord({
-          ts: "2026-07-18T12:00:02.000Z",
-          origin: "cli",
-          previousHash: "b",
-          nextHash: "c",
-          changedPaths: ["gateway.bind"],
-        }),
-        2_000,
-      );
-      configStore.upsert(
-        "intervening-write-two",
-        configRecord({
-          ts: "2026-07-18T12:00:03.000Z",
-          origin: "cli",
-          previousHash: "c",
-          nextHash: "d",
-          changedPaths: ["gateway.mode"],
-        }),
-        3_000,
-      );
-      systemStore.upsert(
-        "operation",
-        {
-          timestamp: "2026-07-18T12:00:04.000Z",
-          operation: "config.set",
-          summary: "Set config gateway.port",
-          configHashBefore: "a",
-          configHashAfter: "b",
-        },
-        4_000,
-      );
+      seedOperation(systemStore, "Set config gateway.port");
 
       const pages = [];
       let cursor: string | undefined;
@@ -434,50 +374,13 @@ describe("openclaw.changes.list", () => {
       async (stateDir) => {
         const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
         const { systemStore, configStore } = createAuditStores(env);
-        configStore.upsert(
-          "old-transition",
-          configRecord({
-            ts: "2026-07-18T12:00:01.000Z",
-            origin: "system-agent",
-            previousHash: "a",
-            nextHash: "b",
-            changedPaths: ["old.path"],
-          }),
-          1_000,
+        writeConfigs(
+          configStore,
+          ["old", 1_000, "a", "b", "old.path", "system-agent"],
+          ["current", 2_000, "a", "b", "current.path", "system-agent"],
+          ["newer", 3_000, "b", "c", "gateway.bind", "cli"],
         );
-        configStore.upsert(
-          "current-transition",
-          configRecord({
-            ts: "2026-07-18T12:00:02.000Z",
-            origin: "system-agent",
-            previousHash: "a",
-            nextHash: "b",
-            changedPaths: ["current.path"],
-          }),
-          2_000,
-        );
-        configStore.upsert(
-          "newer-cli-write",
-          configRecord({
-            ts: "2026-07-18T12:00:03.000Z",
-            origin: "cli",
-            previousHash: "b",
-            nextHash: "c",
-            changedPaths: ["gateway.bind"],
-          }),
-          3_000,
-        );
-        systemStore.upsert(
-          "operation",
-          {
-            timestamp: "2026-07-18T12:00:04.000Z",
-            operation: "config.set",
-            summary: "Set current path",
-            configHashBefore: "a",
-            configHashAfter: "b",
-          },
-          4_000,
-        );
+        seedOperation(systemStore, "Set current path");
 
         const first = await listSystemChanges({ limit: 1 }, { env });
         expect(first.entries).toEqual([
@@ -505,44 +408,36 @@ describe("openclaw.changes.list", () => {
   it("paginates equal timestamps by per-scope sequence and freezes the scope heads", async () => {
     await withTestDir({ prefix: "openclaw-system-changes-cursor-" }, async (stateDir) => {
       const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
-      const store = createSqliteAuditRecordStore<ConfigAuditRecord>({
-        scope: CONFIG_AUDIT_SCOPE,
-        maxEntries: CONFIG_AUDIT_MAX_ENTRIES,
-        env,
-      });
+      const { configStore: store } = createAuditStores(env);
       for (const [key, before, after] of [
         ["one", "a", "b"],
         ["two", "b", "c"],
         ["three", "c", "d"],
       ] as const) {
-        store.upsert(
+        writeConfigs(store, [
           key,
-          configRecord({
-            ts: "2026-07-18T12:00:00.000Z",
-            origin: "config-rpc",
-            previousHash: before,
-            nextHash: after,
-            changedPaths: [key],
-          }),
           1_000,
-        );
+          before,
+          after,
+          key,
+          "config-rpc",
+          { ts: "2026-07-18T12:00:00.000Z" },
+        ]);
       }
 
       const first = await listSystemChanges({ limit: 2 }, { env });
       expect(first.entries.map((entry) => entry.changedPaths?.[0])).toEqual(["three", "two"]);
       expect(first.nextCursor).toEqual(expect.any(String));
 
-      store.upsert(
-        "new-after-first-page",
-        configRecord({
-          ts: "2026-07-18T12:00:01.000Z",
-          origin: "config-rpc",
-          previousHash: "d",
-          nextHash: "e",
-          changedPaths: ["new"],
-        }),
+      writeConfigs(store, [
+        "new",
         2_000,
-      );
+        "d",
+        "e",
+        "new",
+        "config-rpc",
+        { ts: "2026-07-18T12:00:01.000Z" },
+      ]);
       const second = await listSystemChanges({ limit: 2, beforeCursor: first.nextCursor }, { env });
       expect(second.entries.map((entry) => entry.changedPaths?.[0])).toEqual(["one"]);
       expect(second.nextCursor).toBeUndefined();
@@ -578,17 +473,7 @@ describe("openclaw.changes.list", () => {
       ]);
       expect(first.nextCursor).toEqual(expect.any(String));
 
-      configStore.upsert(
-        "inserted-between-pages",
-        configRecord({
-          ts: "2026-07-18T12:00:03.000Z",
-          origin: "config-rpc",
-          previousHash: "a",
-          nextHash: "b",
-          changedPaths: ["gateway.port"],
-        }),
-        3_000,
-      );
+      writeConfigs(configStore, ["inserted", 3_000, "a", "b", "gateway.port", "config-rpc"]);
 
       const second = await listSystemChanges({ limit: 1, beforeCursor: first.nextCursor }, { env });
       expect(second.entries).toEqual([
@@ -606,11 +491,7 @@ describe("openclaw.changes.list", () => {
   it("bounds filtered journal scans and resumes from the scanned frontier", async () => {
     await withTestDir({ prefix: "openclaw-system-changes-scan-budget-" }, async (stateDir) => {
       const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
-      const configStore = createSqliteAuditRecordStore<ConfigAuditRecord>({
-        scope: CONFIG_AUDIT_SCOPE,
-        maxEntries: CONFIG_AUDIT_MAX_ENTRIES,
-        env,
-      });
+      const { configStore } = createAuditStores(env);
       for (let index = 0; index < SYSTEM_CHANGE_MAX_RAW_SCAN_PER_SCOPE + 250; index += 1) {
         configStore.upsert(
           `ineligible-${index}`,

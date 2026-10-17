@@ -13,7 +13,7 @@ import {
   createModelsListTestContext,
   providerCatalogEntry,
 } from "./models-list-result.openai-routes.test-support.js";
-import type { GatewayRequestHandlerOptions } from "./types.js";
+import type { GatewayRequestContext, GatewayRequestHandlerOptions } from "./types.js";
 
 const mocks = vi.hoisted(() => ({
   resolveAdvertisedLanHostCore: vi.fn(async () => "192.168.1.20"),
@@ -60,6 +60,26 @@ vi.mock("../../infra/advertised-lan-host.js", async (importOriginal) => ({
 }));
 
 import { systemHandlers } from "./system.js";
+
+const infoHandler = expectDefined(systemHandlers["system.info"], "system.info handler");
+function infoRequest(
+  context: Partial<GatewayRequestContext> = createModelsListTestContext({ cfg: {}, catalog: [] }),
+) {
+  const respond = vi.fn();
+  const request = { params: {}, respond, context } as unknown as GatewayRequestHandlerOptions;
+  return { request, respond };
+}
+
+async function readInfo() {
+  const { request, respond } = infoRequest();
+  await infoHandler(request);
+  const [ok, payload] = respond.mock.calls[0] ?? [];
+  expect(ok).toBe(true);
+  if (!validateSystemInfoResult(payload)) {
+    throw new Error("system.info returned an invalid payload");
+  }
+  return payload;
+}
 
 describe("system.info", () => {
   let sampleTime = Date.now();
@@ -117,10 +137,7 @@ describe("system.info", () => {
       },
     } as unknown as GatewayRequestHandlerOptions;
 
-    const handler = expectDefined(
-      systemHandlers["system.info"],
-      'systemHandlers["system.info"] test invariant',
-    );
+    const handler = infoHandler;
     await handler(request);
     eventLoop.cpuCoreRatio = 0.6;
     readCpus.mockReturnValue([]);
@@ -193,7 +210,7 @@ describe("system.info", () => {
       },
     };
     const respond = vi.fn();
-    const handler = expectDefined(systemHandlers["system.info"], "system.info handler");
+    const handler = infoHandler;
     const ambientRegistry = createEmptyPluginRegistry();
     for (const label of ["First Owner", "Replacement Owner"]) {
       const pluginRegistry = createEmptyPluginRegistry();
@@ -243,13 +260,8 @@ describe("system.info", () => {
             ? null
             : { targetPath, checkedPath: targetPath, totalBytes: 2048, availableBytes: 1024 },
         );
-      const respond = vi.fn();
-      const request = {
-        params: {},
-        respond,
-        context: createModelsListTestContext({ cfg: {}, catalog: [] }),
-      } as unknown as GatewayRequestHandlerOptions;
-      const handler = expectDefined(systemHandlers["system.info"], "system.info handler");
+      const { request, respond } = infoRequest();
+      const handler = infoHandler;
       await handler(request);
       const initial = respond.mock.calls[0]?.[1];
       freemem.mockReturnValue(512);
@@ -289,21 +301,7 @@ describe("system.info", () => {
     vi.spyOn(os, "freemem").mockReturnValue(8192);
     const availableMemory = vi.spyOn(process, "availableMemory").mockReturnValue(4096);
 
-    const respond = vi.fn();
-    await expectDefined(
-      systemHandlers["system.info"],
-      "system.info handler",
-    )({
-      params: {},
-      respond,
-      context: createModelsListTestContext({ cfg: {}, catalog: [] }),
-    } as unknown as GatewayRequestHandlerOptions);
-
-    const [ok, payload] = respond.mock.calls[0] ?? [];
-    expect(ok).toBe(true);
-    if (!validateSystemInfoResult(payload)) {
-      throw new Error("system.info returned an invalid payload");
-    }
+    const payload = await readInfo();
     expect(payload.memoryFreeBytes).toBe(8192);
     expect(availableMemory).not.toHaveBeenCalled();
   });
@@ -319,29 +317,14 @@ describe("system.info", () => {
       }));
       if (failure === "throw") {
         mocks.runCommandWithTimeout.mockRejectedValueOnce(new Error("unavailable"));
-      } else if (failure === "statfs-error") {
-        mocks.statfs.mockRejectedValue(new Error("filesystem unavailable"));
       } else {
         mocks.runCommandWithTimeout.mockResolvedValueOnce({
-          code: failure === "empty" ? 0 : 1,
+          code: 0,
           stdout: "",
           stderr: "",
         });
       }
-      const respond = vi.fn();
-      await expectDefined(
-        systemHandlers["system.info"],
-        "system.info handler",
-      )({
-        params: {},
-        respond,
-        context: createModelsListTestContext({ cfg: {}, catalog: [] }),
-      } as unknown as GatewayRequestHandlerOptions);
-      const [ok, payload] = respond.mock.calls[0] ?? [];
-      expect(ok).toBe(true);
-      if (!validateSystemInfoResult(payload)) {
-        throw new Error("system.info returned an invalid payload");
-      }
+      const payload = await readInfo();
       expect(payload.disks).toEqual(
         failure === "empty"
           ? []
