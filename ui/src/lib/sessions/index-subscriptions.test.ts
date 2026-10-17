@@ -7,7 +7,10 @@ import {
   createTestSessionCapability,
 } from "./session-capability.test-support.ts";
 import type { SessionCapability } from "./session-capability.ts";
-import { createSessionScopedOperations } from "./session-scoped-operations.ts";
+import {
+  createSessionScopedOperations,
+  preloadSessionMessageSubscriptions,
+} from "./session-scoped-operations.ts";
 
 const subscriptionRequestOptions = { timeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS };
 type Params = Record<string, unknown>;
@@ -39,6 +42,7 @@ function observerRequest(reply: (params?: Params) => unknown) {
 
 describe("createSessionCapability message subscriptions", () => {
   it("retains the requested subscription intent while admission is pending", async () => {
+    await preloadSessionMessageSubscriptions();
     const request = vi.fn(async (_method: string, params?: Params) => ({
       key: params?.key,
       agentId: params?.agentId,
@@ -58,6 +62,7 @@ describe("createSessionCapability message subscriptions", () => {
   it.each(["reconnect", "dispose"])(
     "retires a pending wire observer when %s interrupts admission",
     async (retirement) => {
+      await preloadSessionMessageSubscriptions();
       const request = vi.fn(async (_method: string, params?: Params) => ({
         key: params?.key,
       }));
