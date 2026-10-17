@@ -50,44 +50,44 @@ function input() {
     },
   };
 }
+function makeAdmission(
+  params: Parameters<typeof captureHarnessCompletionRecovery>[0] = input(),
+  overrides: Partial<Parameters<typeof withAgentHarnessCompletionAdmission>[0]> = {},
+) {
+  return {
+    scope: createAgentHarnessCompletionScope({
+      requesterSessionKey: params.sessionKey,
+      requesterAgentId: params.agentId,
+    }),
+    sourceSessionKey,
+    sourceRunId: params.runId,
+    requesterSessionId: params.entry.sessionId,
+    requesterLifecycleRevision: params.entry.lifecycleRevision,
+    isSourceCurrent: () => true,
+    ...overrides,
+  };
+}
+async function captureForNativeRequester(
+  params: Parameters<typeof captureHarnessCompletionRecovery>[0],
+) {
+  return await withAgentHarnessCompletionAdmission(makeAdmission(params), async () =>
+    captureHarnessCompletionRecovery(params),
+  );
+}
 describe("native harness completion admission", () => {
   it("rejects forged provenance and structurally copied scopes", async () => {
     expect(() => captureHarnessCompletionRecovery(input())).toThrow("host-issued source admission");
-    const scope = createAgentHarnessCompletionScope({
-      requesterSessionKey,
-      requesterAgentId: "main",
-    });
+    const { scope } = makeAdmission();
     await expect(
       withAgentHarnessCompletionAdmission(
-        {
-          scope: { ...scope },
-          sourceSessionKey,
-          sourceRunId,
-          requesterSessionId: "requester-one",
-          requesterLifecycleRevision: "revision-one",
-          isSourceCurrent: () => true,
-        },
+        makeAdmission(input(), { scope: { ...scope } }),
         async () => {},
       ),
     ).rejects.toThrow("host-issued scope");
   });
   it("transfers admitted source custody to its exact durable requester receipt without a task row", async () => {
     const params = input();
-    const scope = createAgentHarnessCompletionScope({
-      requesterSessionKey,
-      requesterAgentId: "main",
-    });
-    const claim = await withAgentHarnessCompletionAdmission(
-      {
-        scope,
-        sourceSessionKey,
-        sourceRunId,
-        requesterSessionId: params.entry.sessionId,
-        requesterLifecycleRevision: params.entry.lifecycleRevision,
-        isSourceCurrent: () => true,
-      },
-      async () => captureHarnessCompletionRecovery(params),
-    );
+    const claim = await captureForNativeRequester(params);
     expect(claim).toBeDefined();
     if (!claim) {
       throw new Error("missing claim");
@@ -107,20 +107,7 @@ describe("native harness completion admission", () => {
     "does not let historical terminal evidence overrule %s current custody",
     async (variant) => {
       const params = input();
-      const claim = await withAgentHarnessCompletionAdmission(
-        {
-          scope: createAgentHarnessCompletionScope({
-            requesterSessionKey,
-            requesterAgentId: "main",
-          }),
-          sourceSessionKey,
-          sourceRunId,
-          requesterSessionId: params.entry.sessionId,
-          requesterLifecycleRevision: params.entry.lifecycleRevision,
-          isSourceCurrent: () => true,
-        },
-        async () => captureHarnessCompletionRecovery(params),
-      );
+      const claim = await captureForNativeRequester(params);
       if (!claim) {
         throw new Error("missing admitted claim");
       }
@@ -152,19 +139,8 @@ describe("native harness completion admission", () => {
   it("revalidates native source ownership after awaited work", async () => {
     const params = input();
     let current = true;
-    const scope = createAgentHarnessCompletionScope({
-      requesterSessionKey,
-      requesterAgentId: "main",
-    });
     await withAgentHarnessCompletionAdmission(
-      {
-        scope,
-        sourceSessionKey,
-        sourceRunId,
-        requesterSessionId: params.entry.sessionId,
-        requesterLifecycleRevision: params.entry.lifecycleRevision,
-        isSourceCurrent: () => current,
-      },
+      makeAdmission(params, { isSourceCurrent: () => current }),
       async () => {
         await Promise.resolve();
         current = false;
@@ -196,25 +172,6 @@ async function setupNativeRequester(state: OpenClawTestState) {
   };
   await replaceSessionEntry(target, entry);
   return { target, entry };
-}
-async function captureForNativeRequester(
-  params: Parameters<typeof captureHarnessCompletionRecovery>[0],
-) {
-  const scope = createAgentHarnessCompletionScope({
-    requesterSessionKey: params.sessionKey,
-    requesterAgentId: params.agentId,
-  });
-  return await withAgentHarnessCompletionAdmission(
-    {
-      scope,
-      sourceSessionKey: child,
-      sourceRunId: params.runId,
-      requesterSessionId: params.entry.sessionId,
-      requesterLifecycleRevision: params.entry.lifecycleRevision,
-      isSourceCurrent: () => true,
-    },
-    async () => captureHarnessCompletionRecovery(params),
-  );
 }
 describe("pre-mirror recovery input custody", () => {
   it.each(["current", "prior", "unadmitted-prior", "foreign-source", "human"] as const)(

@@ -29,7 +29,10 @@ import {
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import * as profileReader from "../state/user-profile-list.js";
-import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import {
+  withOpenClawTestState,
+  type OpenClawTestState,
+} from "../test-utils/openclaw-test-state.js";
 import { createTestAdmittedRunContext } from "./admitted-run-context.test-support.js";
 import { runWithAgentHarnessCompletionCustody } from "./agent-harness-completion-custody.js";
 import { createAgentHarnessCompletionScope } from "./agent-harness-completion-scope.js";
@@ -38,13 +41,42 @@ import { withGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js
 
 afterEach(() => resetGatewayWorkAdmission());
 
+const requesterSessionKey = "agent:main:main";
+function gateway() {
+  const context = createContext();
+  const resolver = () => context;
+  context.resolveGatewayContext = resolver;
+  return { context, resolver };
+}
+function requester(state: OpenClawTestState) {
+  const target = {
+    agentId: "main",
+    sessionKey: requesterSessionKey,
+    storePath: path.join(state.sessionsDir(), "sessions.json"),
+  };
+  return (sessionId: string) => replaceSessionEntry(target, { sessionId, updatedAt: Date.now() });
+}
+function operatorFixture(profileName: string) {
+  setRuntimeConfigSnapshot({});
+  const { context, resolver } = gateway();
+  const client = createOperatorClient({ profileName, scopes: ["operator.write"] });
+  const scope = createAgentHarnessCompletionScope({
+    requesterSessionKey,
+    gatewayContextResolver: resolver,
+  });
+  const capture = () =>
+    withPluginRuntimeGatewayRequestScope(
+      { client, context, resolveGatewayContext: resolver, isWebchatConnect: () => false },
+      () => captureAgentHarnessCompletionCustody(scope),
+    );
+  return { context, resolver, client, scope, capture };
+}
+
 describe("harness completion caller lifetime", () => {
   it.each(["current", "missing-requester", "requester-closed", "connection-closed"] as const)(
     "settles memory requester root custody when %s",
     async (outcome) => {
-      const context = createContext();
-      const resolver = () => context;
-      context.resolveGatewayContext = resolver;
+      const { context, resolver } = gateway();
       const work = new AsyncWorkScope();
       context.trackExecution = (run) => work.track(run);
       if (outcome === "connection-closed") {
@@ -109,24 +141,9 @@ describe("harness completion caller lifetime", () => {
     "settles retained root work when pending custody preparation is %s",
     async (outcome) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        setRuntimeConfigSnapshot({});
-        const context = createContext();
-        const resolver = () => context;
-        context.resolveGatewayContext = resolver;
-        const client = createOperatorClient({
-          profileName: "preparing-completion-owner",
-          scopes: ["operator.write"],
-        });
-        const target = {
-          agentId: "main",
-          sessionKey: "agent:main:main",
-          storePath: path.join(state.sessionsDir(), "sessions.json"),
-        };
-        await replaceSessionEntry(target, { sessionId: "original", updatedAt: Date.now() });
-        const scope = createAgentHarnessCompletionScope({
-          requesterSessionKey: target.sessionKey,
-          gatewayContextResolver: resolver,
-        });
+        const { capture } = operatorFixture("preparing-completion-owner");
+        const replaceRequester = requester(state);
+        await replaceRequester("original");
         const entered = createDeferredCore();
         const resume = createDeferredCore();
         const prepare = profileReader.prepareUserProfileIdentity;
@@ -143,12 +160,7 @@ describe("harness completion caller lifetime", () => {
           });
         const root = tryBeginGatewayRootWorkAdmission("test:preparing-completion")!;
         let custody: AgentHarnessCompletionCustody | undefined;
-        const pending = root.run(async () =>
-          withPluginRuntimeGatewayRequestScope(
-            { client, context, resolveGatewayContext: resolver, isWebchatConnect: () => false },
-            () => captureAgentHarnessCompletionCustody(scope),
-          ),
-        );
+        const pending = root.run(capture);
         const checked = pending.then(
           (value) => ({ custody: value }),
           (error: unknown) => ({ error }),
@@ -159,7 +171,7 @@ describe("harness completion caller lifetime", () => {
           root.release();
           expect(getActiveGatewayRootWorkCount()).toBe(1);
           if (outcome === "requester-replaced") {
-            await replaceSessionEntry(target, { sessionId: "replacement", updatedAt: Date.now() });
+            await replaceRequester("replacement");
           }
           resume.resolve();
           const result = await checked;
@@ -194,14 +206,7 @@ describe("harness completion caller lifetime", () => {
     "retains the original operator ceiling until %s",
     async (ending) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
-        setRuntimeConfigSnapshot({});
-        const context = createContext();
-        const resolver = () => context;
-        context.resolveGatewayContext = resolver;
-        const client = createOperatorClient({
-          profileName: "completion-owner",
-          scopes: ["operator.write"],
-        });
+        const { context, resolver, client, scope, capture } = operatorFixture("completion-owner");
         const revoked = new AbortController();
         const source = (await captureGatewayOperatorRunAuthority({
           client,
@@ -212,14 +217,7 @@ describe("harness completion caller lifetime", () => {
           },
         }))!;
         client.internal = { operatorRunAuthority: source.authority };
-        const scope = createAgentHarnessCompletionScope({
-          requesterSessionKey: "agent:main:main",
-          gatewayContextResolver: resolver,
-        });
-        const custody = (await withPluginRuntimeGatewayRequestScope(
-          { client, context, resolveGatewayContext: resolver, isWebchatConnect: () => false },
-          () => captureAgentHarnessCompletionCustody(scope),
-        ))!;
+        const custody = (await capture())!;
         try {
           source.release();
           expect(source.authority.assertCurrent).not.toThrow();
@@ -266,12 +264,9 @@ describe("harness completion caller lifetime", () => {
     async (callerState) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         setRuntimeConfigSnapshot({});
-        const requesterSessionKey = "agent:main:main";
         const childSessionKey = "native:child";
         const announceId = "native:parent:child:succeeded";
-        const context = createContext();
-        const resolveGatewayContext = () => context;
-        context.resolveGatewayContext = resolveGatewayContext;
+        const { context, resolver: resolveGatewayContext } = gateway();
         context.dedupe.set(`agent:${buildAnnounceIdempotencyKey(announceId)}`, {
           ts: Date.now(),
           ok: true,
@@ -281,14 +276,8 @@ describe("harness completion caller lifetime", () => {
             result: { payloads: [{ text: "The child result was received." }] },
           },
         });
-        await replaceSessionEntry(
-          {
-            agentId: "main",
-            sessionKey: requesterSessionKey,
-            storePath: path.join(state.sessionsDir(), "sessions.json"),
-          },
-          { sessionId: "parent-session", updatedAt: Date.now() },
-        );
+        const replaceRequester = requester(state);
+        await replaceRequester("parent-session");
         const scope = createAgentHarnessCompletionScope({
           requesterSessionKey,
           gatewayContextResolver: resolveGatewayContext,
@@ -338,14 +327,7 @@ describe("harness completion caller lifetime", () => {
           custody?.release();
         }
         if (callerState === "requester-replaced") {
-          await replaceSessionEntry(
-            {
-              agentId: "main",
-              sessionKey: requesterSessionKey,
-              storePath: path.join(state.sessionsDir(), "sessions.json"),
-            },
-            { sessionId: "replacement-session", updatedAt: Date.now() },
-          );
+          await replaceRequester("replacement-session");
         }
         ready.resolve();
         try {

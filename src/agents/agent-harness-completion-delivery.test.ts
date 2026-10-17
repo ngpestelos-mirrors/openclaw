@@ -137,6 +137,37 @@ function terminalEntry(entry: SessionEntry, final = true): SessionEntry {
 
 type AdmittedCompletion = Awaited<ReturnType<typeof admit>>;
 
+function withCompletion(run: (completion: AdmittedCompletion) => Promise<void>) {
+  return withOpenClawTestState({ scenario: "minimal" }, async (state) => run(await admit(state)));
+}
+
+function deliver(
+  expectedRequester?: Parameters<typeof deliverAgentHarnessCompletion>[0]["expectedRequester"],
+) {
+  return deliverAgentHarnessCompletion({
+    scope: createAgentHarnessCompletionScope({ requesterSessionKey: sessionKey }),
+    isSourceSessionAdmissionAllowed: () => true,
+    childSessionKey: runId,
+    childSessionId: "child-1",
+    announceId: announceId.slice("announce:".length),
+    status: "succeeded",
+    result: "result",
+    expectedRequester,
+  });
+}
+
+function readInput(
+  { claim, entry, target }: Pick<AdmittedCompletion, "claim" | "entry" | "target">,
+  operationalRunId?: string,
+) {
+  return readAdmittedHarnessCompletionInputAsync({
+    claim,
+    entry,
+    storePath: target.storePath,
+    operationalRunId,
+  });
+}
+
 function appendCompletionSource({ target, entry }: Pick<AdmittedCompletion, "target" | "entry">) {
   return appendTranscriptMessage(
     { ...target, sessionId: entry.sessionId },
@@ -176,8 +207,7 @@ describe("host-owned harness completion recovery", () => {
   it.each(["human", "reset", "queued-after-fence"])(
     "rechecks the admitted recovery input at %s",
     async (phase) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        const { claim, target, entry } = await admit(state);
+      await withCompletion(async ({ claim, target, entry }) => {
         const transcript = { ...target, sessionId: entry.sessionId };
         await appendCompletionSource({ target, entry });
         const recoveryRunId = "recovery-input-guard";
@@ -236,8 +266,7 @@ describe("host-owned harness completion recovery", () => {
   it.each(["before-admission", "after-admission", "at-effect"])(
     "revokes requester custody %s through the execution authority",
     async (phase) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        const { claim, target, entry } = await admit(state);
+      await withCompletion(async ({ claim, target, entry }) => {
         const admission = prepareCompletionAdmission({ claim, target });
         try {
           if (phase === "before-admission") {
@@ -275,8 +304,7 @@ describe("host-owned harness completion recovery", () => {
   );
 
   it("reads a long turn's exact source and rejects an intervening user outside the recent tail", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const { claim, entry, target } = await admit(state);
+    await withCompletion(async ({ claim, entry, target }) => {
       const scope = { ...target, sessionId: entry.sessionId };
       await appendCompletionSource({ target, entry });
       for (let index = 0; index < 40; index++) {
@@ -284,14 +312,7 @@ describe("host-owned harness completion recovery", () => {
           message: { role: "assistant", content: `tool work ${index}` },
         });
       }
-      expect(
-        await readAdmittedHarnessCompletionInputAsync({
-          claim,
-          entry,
-          storePath: target.storePath,
-          operationalRunId: announceId,
-        }),
-      ).toBe(true);
+      expect(await readInput({ claim, entry, target }, announceId)).toBe(true);
       await appendTranscriptMessage(scope, {
         message: { role: "user", content: "new human instruction" },
       });
@@ -300,22 +321,14 @@ describe("host-owned harness completion recovery", () => {
           message: { role: "assistant", content: `later work ${index}` },
         });
       }
-      expect(
-        await readAdmittedHarnessCompletionInputAsync({
-          claim,
-          entry,
-          storePath: target.storePath,
-          operationalRunId: announceId,
-        }),
-      ).toBe(false);
+      expect(await readInput({ claim, entry, target }, announceId)).toBe(false);
     });
   });
 
   it.each(["prior-generation", "intervening-human", "unknown-generation"])(
     "checks every admitted input after the completion: %s",
     async (scenario) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        const { claim, entry, target } = await admit(state);
+      await withCompletion(async ({ claim, entry, target }) => {
         const scope = { ...target, sessionId: entry.sessionId };
         await appendCompletionSource({ target, entry });
         if (scenario === "intervening-human") {
@@ -346,12 +359,7 @@ describe("host-owned harness completion recovery", () => {
         };
         await replaceSessionEntry(target, saved);
         expect(
-          await readAdmittedHarnessCompletionInputAsync({
-            claim,
-            entry: saved,
-            storePath: target.storePath,
-            operationalRunId: saved.restartRecoveryDeliveryRunId,
-          }),
+          await readInput({ claim, entry: saved, target }, saved.restartRecoveryDeliveryRunId),
         ).toBe(scenario === "prior-generation");
       });
     },
@@ -360,20 +368,10 @@ describe("host-owned harness completion recovery", () => {
   it.each(["physical", "revision"])(
     "rejects a contradictory historical requester %s before announcement",
     async (field) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        const { entry } = await admit(state);
-        const delivery = await deliverAgentHarnessCompletion({
-          scope: createAgentHarnessCompletionScope({ requesterSessionKey: sessionKey }),
-          isSourceSessionAdmissionAllowed: () => true,
-          childSessionKey: runId,
-          childSessionId: "child-1",
-          announceId: announceId.slice("announce:".length),
-          status: "succeeded",
-          result: "result",
-          expectedRequester: {
-            sessionId: field === "physical" ? "previous-physical" : entry.sessionId,
-            lifecycleRevision: field === "revision" ? "previous-revision" : entry.lifecycleRevision,
-          },
+      await withCompletion(async ({ entry }) => {
+        const delivery = await deliver({
+          sessionId: field === "physical" ? "previous-physical" : entry.sessionId,
+          lifecycleRevision: field === "revision" ? "previous-revision" : entry.lifecycleRevision,
         });
         expect(delivery).toMatchObject({
           delivered: false,
@@ -387,8 +385,7 @@ describe("host-owned harness completion recovery", () => {
   it.each(["active-source", "input-only"])(
     "does not replay %s after claim metadata is lost",
     async (retained) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        const { entry, target, request } = await admit(state);
+      await withCompletion(async ({ entry, target, request }) => {
         const lost = { ...entry, restartRecoveryHarnessCompletion: undefined };
         if (retained === "input-only") {
           lost.restartRecoveryDeliverySourceRunId = undefined;
@@ -412,15 +409,7 @@ describe("host-owned harness completion recovery", () => {
             }
           });
         try {
-          const joined = await deliverAgentHarnessCompletion({
-            scope: createAgentHarnessCompletionScope({ requesterSessionKey: sessionKey }),
-            isSourceSessionAdmissionAllowed: () => true,
-            childSessionKey: runId,
-            childSessionId: "child-1",
-            announceId: announceId.slice("announce:".length),
-            status: "succeeded",
-            result: "result",
-          });
+          const joined = await deliver();
           expect(joined).toMatchObject({ delivered: false, recoveryBlocked: true });
           expect(read).toHaveBeenCalledTimes(retained === "input-only" ? 1 : 0);
           expect(queries).toEqual([]);
@@ -432,8 +421,7 @@ describe("host-owned harness completion recovery", () => {
   );
 
   it("leaves completion without a saved claim or submitted input unowned", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const { entry, target, request } = await admit(state);
+    await withCompletion(async ({ entry, target, request }) => {
       await replaceSessionEntry(target, {
         ...entry,
         restartRecoveryHarnessCompletion: undefined,
@@ -445,20 +433,11 @@ describe("host-owned harness completion recovery", () => {
   });
 
   it("keeps an accepted source pending and adopts its original identity in a new operational run", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const { entry, claim, target, request } = await admit(state);
+    await withCompletion(async ({ entry, claim, target, request }) => {
       await appendCompletionSource({ target, entry });
 
       expect(await reconcileHarnessCompletionDelivery(request)).toBe("pending");
-      const joined = await deliverAgentHarnessCompletion({
-        scope: createAgentHarnessCompletionScope({ requesterSessionKey: sessionKey }),
-        isSourceSessionAdmissionAllowed: () => true,
-        childSessionKey: runId,
-        childSessionId: "child-1",
-        announceId: announceId.slice("announce:".length),
-        status: "succeeded",
-        result: "result",
-      });
+      const joined = await deliver();
       expect(joined).toMatchObject({ delivered: false, recoveryPending: true });
       const reserved = {
         ...entry,
@@ -478,8 +457,7 @@ describe("host-owned harness completion recovery", () => {
   });
 
   it("settles a cold terminal receipt without a surviving native monitor or another announcement", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const { entry, target, request } = await admit(state);
+    await withCompletion(async ({ entry, target, request }) => {
       await replaceSessionEntry(target, terminalEntry(entry));
       expect(await reconcileHarnessCompletionDelivery(request)).toBe("delivered");
     });
@@ -526,8 +504,7 @@ describe("host-owned harness completion recovery", () => {
   });
 
   it("does not promote an explicit progress receipt into a final after cold reading", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const { entry, target, request } = await admit(state);
+    await withCompletion(async ({ entry, target, request }) => {
       await replaceSessionEntry(target, terminalEntry(entry, false));
       expect(await reconcileHarnessCompletionDelivery(request)).toBe("blocked");
     });
@@ -536,8 +513,7 @@ describe("host-owned harness completion recovery", () => {
   it.each(["physical", "revision", "receipt-cleared"])(
     "does not settle a %s replacement from the old receipt",
     async (changed) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        const { entry, claim, target, request } = await admit(state);
+      await withCompletion(async ({ entry, claim, target, request }) => {
         const terminal = terminalEntry(entry);
         if (changed === "physical") {
           terminal.sessionId = "physical-2";
@@ -555,8 +531,7 @@ describe("host-owned harness completion recovery", () => {
 
   it("requires the exact stored source and does not claim foreign or ordinary completions", async () => {
     for (const scenario of ["valid", "wrong-key", "ordinary-provenance"]) {
-      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        const { claim, entry, target } = await admit(state);
+      await withCompletion(async ({ claim, entry, target }) => {
         await appendTranscriptMessage(
           { ...target, sessionId: entry.sessionId },
           {
@@ -572,13 +547,7 @@ describe("host-owned harness completion recovery", () => {
             },
           },
         );
-        expect(
-          await readAdmittedHarnessCompletionInputAsync({
-            claim,
-            entry,
-            storePath: target.storePath,
-          }),
-        ).toBe(scenario === "valid");
+        expect(await readInput({ claim, entry, target })).toBe(scenario === "valid");
         expect(() =>
           captureHarnessCompletionRecovery({
             agentId: "other",
@@ -602,8 +571,7 @@ describe("host-owned harness completion recovery", () => {
   });
 
   it("does not settle a same-task receipt with a different requester generation", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const { entry, target, request } = await admit(state);
+    await withCompletion(async ({ entry, target, request }) => {
       await appendCompletionSource({ target, entry });
 
       const terminal = terminalEntry(entry);
@@ -621,8 +589,7 @@ describe("host-owned harness completion recovery", () => {
   });
 
   it("rejects stored zero-count, off-target, unmarked and truncated receipts before settling", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const { entry, target, request } = await admit(state);
+    await withCompletion(async ({ entry, target, request }) => {
       const terminal = terminalEntry(entry);
       await replaceSessionEntry(target, terminal);
       const receipt = getRestartRecoveryTerminalDeliveryEvidence(
@@ -676,8 +643,7 @@ describe("review3 custody ownership", () => {
   it.each(["missing-source", "intervening-human"])(
     "retains task but releases non-executable %s custody",
     async (kind) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        const { entry, target, request } = await admit(state);
+      await withCompletion(async ({ entry, target, request }) => {
         await replaceSessionEntry(target, {
           ...entry,
           status: "interrupted",
@@ -699,8 +665,7 @@ describe("review3 custody ownership", () => {
   it.each(["owned", "ownerless", "foreign-physical", "released"])(
     "distinguishes an actual %s source before transcript commit",
     async (kind) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        const { entry, request } = await admit(state);
+      await withCompletion(async ({ entry, request }) => {
         const context = {
           sessionKey,
           agentId: "main",
@@ -745,8 +710,7 @@ describe("review3 Gateway admission custody", () => {
     "closed-resolver",
     "throwing-resolver",
   ])("uses the real %s pre-execution registration", async (kind) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const { entry, request } = await admit(state);
+    await withCompletion(async ({ entry, request }) => {
       const chatAbortControllers: GatewayRequestContext["chatAbortControllers"] = new Map();
       const registration = registerChatAbortController({
         chatAbortControllers,

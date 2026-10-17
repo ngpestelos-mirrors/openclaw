@@ -55,12 +55,8 @@ vi.mock("./model-auth-env.js", () => ({
   },
 }));
 
-async function createAgentDir(): Promise<string> {
-  return await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-agent-auth-storage-"));
-}
-
 async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<void> {
-  const agentDir = await createAgentDir();
+  const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-agent-auth-storage-"));
   try {
     await run(agentDir);
   } finally {
@@ -68,8 +64,20 @@ async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<v
   }
 }
 
-function writeAuthProfilesSqlite(agentDir: string, store: AuthProfileStore): void {
-  writePersistedAuthProfileStoreRaw(store, agentDir);
+function writeProfiles(agentDir: string, profiles: AuthProfileStore["profiles"]): void {
+  writePersistedAuthProfileStoreRaw(createAuthProfileStoreFixture(profiles), agentDir);
+}
+
+function oauth(access = "fake", refresh = "sample", expires = Date.now() + 3_600_000) {
+  return { type: "oauth" as const, provider: "openai", access, refresh, expires };
+}
+
+function discover(agentDir: string, options: Parameters<typeof discoverAuthStorageFacts>[1] = {}) {
+  return discoverAuthStorageFacts(agentDir, {
+    skipExternalAuthProfiles: true,
+    env: {},
+    ...options,
+  });
 }
 
 describe("discoverAuthStorageFacts auth storage", () => {
@@ -82,13 +90,7 @@ describe("discoverAuthStorageFacts auth storage", () => {
           provider: "anthropic",
           token: "sk-ant-runtime",
         },
-        "openai:default": {
-          type: "oauth",
-          provider: "openai",
-          access: "oauth-access",
-          refresh: "oauth-refresh",
-          expires: Date.now() + 60_000,
-        },
+        "openai:default": oauth("oauth-access", "oauth-refresh", Date.now() + 60_000),
       }),
     );
 
@@ -100,12 +102,11 @@ describe("discoverAuthStorageFacts auth storage", () => {
       type: "api_key",
       key: "sk-ant-runtime",
     });
-    const codexCredential = credentials["openai"] as
-      | { type?: string; access?: string; refresh?: string }
-      | undefined;
-    expect(codexCredential?.type).toBe("oauth");
-    expect(codexCredential?.access).toBe("oauth-access");
-    expect(codexCredential?.refresh).toBe("oauth-refresh");
+    expect(credentials.openai).toMatchObject({
+      type: "oauth",
+      access: "oauth-access",
+      refresh: "oauth-refresh",
+    });
     expect(resolveUsableAgentCredentialModes(credentials)).toEqual({
       anthropic: "api_key",
       openai: "oauth",
@@ -129,13 +130,11 @@ describe("discoverAuthStorageFacts auth storage", () => {
           token: "sk-ant-runtime",
           expires: MAX_DATE_TIMESTAMP_MS + 1,
         },
-        "openai:bad-oauth-expiry": {
-          type: "oauth",
-          provider: "openai",
-          access: "oauth-access",
-          refresh: "oauth-refresh",
-          expires: MAX_DATE_TIMESTAMP_MS + 1,
-        },
+        "openai:bad-oauth-expiry": oauth(
+          "oauth-access",
+          "oauth-refresh",
+          MAX_DATE_TIMESTAMP_MS + 1,
+        ),
       },
     });
 
@@ -147,20 +146,8 @@ describe("discoverAuthStorageFacts auth storage", () => {
     const resolved = resolveAgentCredentialMapFromStore(
       createAuthProfileStoreFixture({
         "openai:key": createApiKeyCredential("openai", "test-key"),
-        "openai:expired": {
-          type: "oauth",
-          provider: "openai",
-          access: "dummy",
-          refresh: "placeholder",
-          expires: Date.now() - 3600_000,
-        },
-        "openai:valid": {
-          type: "oauth",
-          provider: "openai",
-          access: "fake",
-          refresh: "sample",
-          expires: Date.now() + 3600_000,
-        },
+        "openai:expired": oauth("dummy", "placeholder", Date.now() - 3_600_000),
+        "openai:valid": oauth(),
       }),
     );
 
@@ -174,22 +161,11 @@ describe("discoverAuthStorageFacts auth storage", () => {
 
   it("passes configured auth order through discovery selection", async () => {
     await withAgentDir(async (agentDir) => {
-      writeAuthProfilesSqlite(
-        agentDir,
-        createAuthProfileStoreFixture({
-          "openai:oauth": {
-            type: "oauth",
-            provider: "openai",
-            access: "fake",
-            refresh: "sample",
-            expires: Date.now() + 3600_000,
-          },
-          "openai:key": createApiKeyCredential("openai", "test-key"),
-        }),
-      );
-      const { authStorage } = await discoverAuthStorageFacts(agentDir, {
-        skipExternalAuthProfiles: true,
-        env: {},
+      writeProfiles(agentDir, {
+        "openai:oauth": oauth(),
+        "openai:key": createApiKeyCredential("openai", "test-key"),
+      });
+      const { authStorage } = await discover(agentDir, {
         config: {
           auth: { order: { openai: ["openai:key", "openai:oauth"] } },
         },
@@ -236,26 +212,18 @@ describe("discoverAuthStorageFacts auth storage", () => {
 
   it("marks keyRef-only auth profiles configured for read-only model discovery", async () => {
     await withAgentDir(async (agentDir) => {
-      writeAuthProfilesSqlite(
-        agentDir,
-        createAuthProfileStoreFixture({
-          "fixture-ref-provider:default": {
-            type: "api_key",
-            provider: "fixture-ref-provider",
-            keyRef: { source: "exec", provider: "keychain", id: "FIXTURE_API_KEY" },
-          },
-        }),
-      );
+      writeProfiles(agentDir, {
+        "fixture-ref-provider:default": {
+          type: "api_key",
+          provider: "fixture-ref-provider",
+          keyRef: { source: "exec", provider: "keychain", id: "FIXTURE_API_KEY" },
+        },
+      });
 
-      const { authStorage: readOnlyStorage } = await discoverAuthStorageFacts(agentDir, {
+      const { authStorage: readOnlyStorage } = await discover(agentDir, {
         readOnly: true,
-        skipExternalAuthProfiles: true,
-        env: {},
       });
-      const { authStorage: runtimeStorage } = await discoverAuthStorageFacts(agentDir, {
-        skipExternalAuthProfiles: true,
-        env: {},
-      });
+      const { authStorage: runtimeStorage } = await discover(agentDir);
 
       expect(readOnlyStorage.hasAuth("fixture-ref-provider")).toBe(true);
       expect(runtimeStorage.hasAuth("fixture-ref-provider")).toBe(false);
@@ -265,30 +233,22 @@ describe("discoverAuthStorageFacts auth storage", () => {
   it("uses the lifecycle owner's explicit inherited auth directory", async () => {
     await withAgentDir(async (inheritedAuthDir) => {
       await withAgentDir(async (agentDir) => {
-        writeAuthProfilesSqlite(
-          inheritedAuthDir,
-          createAuthProfileStoreFixture({
-            "inherited-provider:default": createApiKeyCredential(
-              "inherited-provider",
-              "inherited-key",
-            ),
-            "shared-provider:inherited": createApiKeyCredential(
-              "shared-provider",
-              "inherited-shared-key",
-            ),
-          }),
-        );
-        writeAuthProfilesSqlite(
-          agentDir,
-          createAuthProfileStoreFixture({
-            "shared-provider:local": createApiKeyCredential("shared-provider", "local-shared-key"),
-          }),
-        );
+        writeProfiles(inheritedAuthDir, {
+          "inherited-provider:default": createApiKeyCredential(
+            "inherited-provider",
+            "inherited-key",
+          ),
+          "shared-provider:inherited": createApiKeyCredential(
+            "shared-provider",
+            "inherited-shared-key",
+          ),
+        });
+        writeProfiles(agentDir, {
+          "shared-provider:local": createApiKeyCredential("shared-provider", "local-shared-key"),
+        });
 
-        const { authStorage: storage } = await discoverAuthStorageFacts(agentDir, {
+        const { authStorage: storage } = await discover(agentDir, {
           inheritedAuthDir,
-          skipExternalAuthProfiles: true,
-          env: {},
         });
 
         expect(storage.get("inherited-provider")).toEqual({

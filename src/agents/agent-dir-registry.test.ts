@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -34,30 +33,20 @@ describe("agent directory registry", () => {
     const agentDir = path.join(root, "agent");
     registerResolvedAgentDir({ agentId: "current", agentDir });
 
-    expect(
-      isPathOwnedByAnotherRegisteredAgent({
-        agentId: "deleted",
-        pathname: root,
-      }),
-    ).toBe(true);
-    expect(
+    expect([
+      isPathOwnedByAnotherRegisteredAgent({ agentId: "deleted", pathname: root }),
       isPathOwnedByAnotherRegisteredAgent({
         agentId: "deleted",
         pathname: path.join(agentDir, "openclaw-agent.sqlite"),
       }),
-    ).toBe(true);
-    expect(
-      isPathOwnedByAnotherRegisteredAgent({
-        agentId: "current",
-        pathname: root,
-      }),
-    ).toBe(false);
+      isPathOwnedByAnotherRegisteredAgent({ agentId: "current", pathname: root }),
+    ]).toEqual([true, true, false]);
 
     unregisterResolvedAgentDir({ agentId: "current", agentDir });
   });
 
   it("keeps ownership stable through a symlinked parent after the agent dir is removed", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-agent-dir-registry-"));
+    const root = tempDirs.make("openclaw-agent-dir-registry-");
     const realRoot = path.join(root, "real");
     const linkedRoot = path.join(root, "linked");
     const realAgentDir = path.join(realRoot, "agent");
@@ -71,10 +60,7 @@ describe("agent directory registry", () => {
       registerResolvedAgentDir({ agentId: "deleted", agentDir: linkedAgentDir });
       expect(resolveRegisteredAgentIdForDir(realAgentDir)).toBeUndefined();
       expect(
-        isPathOwnedByAnotherRegisteredAgent({
-          agentId: "deleted",
-          pathname: linkedAgentDir,
-        }),
+        isPathOwnedByAnotherRegisteredAgent({ agentId: "deleted", pathname: linkedAgentDir }),
       ).toBe(true);
       expect(unregisterResolvedAgentDir({ agentId: "deleted", agentDir: linkedAgentDir })).toBe(
         true,
@@ -88,7 +74,6 @@ describe("agent directory registry", () => {
       expect(resolveRegisteredAgentIdForDir(realAgentDir)).toBeUndefined();
     } finally {
       unregisterResolvedAgentDir({ agentId: "current", agentDir: linkedAgentDir });
-      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -100,11 +85,7 @@ describe("agent directory registry", () => {
     fs.mkdirSync(customHome, { recursive: true });
 
     try {
-      registerResolvedAgentDir({
-        agentId: "main",
-        agentDir: "~/agents/main/agent",
-        env,
-      });
+      registerResolvedAgentDir({ agentId: "main", agentDir: "~/agents/main/agent", env });
       expect(resolveRegisteredAgentIdForDir(agentDir, env)).toBe("main");
     } finally {
       unregisterResolvedAgentDir({ agentId: "main", agentDir, env });
