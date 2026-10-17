@@ -25,6 +25,7 @@ import { redactPublicSupportDiagnosticLine } from "../logging/diagnostic-support
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { withCommandProcessScope } from "../process/exec-spawn.js";
 import { defaultRuntime } from "../runtime.js";
+import * as databaseBackup from "../snapshot/database-backup.js";
 import { OpenClawAgentDatabaseLeaseActiveError } from "../state/openclaw-agent-db-lease.js";
 import { beginDoctorMaintenance } from "./doctor-maintenance.js";
 import * as nocow from "./doctor-sqlite-nocow.js";
@@ -65,6 +66,8 @@ function executeEvidence(pathname: string, sql: string) {
 }
 
 function fingerprintReads() {
+  // These SQLite fixtures exercise generation settlement without native engine inspection.
+  vi.spyOn(databaseBackup, "readBackupEngine").mockReturnValue({ engine: "sqlite" });
   vi.spyOn(updateState, "readUpdateDatabaseGenerationsIsolated").mockImplementation(async (paths) =>
     readUpdatePhysicalDatabaseGenerations(paths),
   );
