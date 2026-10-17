@@ -215,23 +215,48 @@ describe("Google speech provider", () => {
     },
   );
 
-  it("surfaces malformed success JSON after releasing its single synthesis request", async () => {
-    const release = vi.fn(async () => {});
-    post.mockImplementation(async () => ({
-      response: new Response("{ nope", { headers: { "content-type": "application/json" } }),
-      release,
-    }));
+  it.each(["{ nope", "network error"])(
+    "surfaces malformed success JSON after releasing its single synthesis request: %s",
+    async (body) => {
+      const release = vi.fn(async () => {});
+      post.mockImplementation(async () => ({
+        response: new Response(body, { headers: { "content-type": "application/json" } }),
+        release,
+      }));
 
-    await expect(synthesize()).rejects.toThrow("Google TTS response: malformed JSON response");
+      await expect(synthesize()).rejects.toThrow("Google TTS response: malformed JSON response");
 
-    expect(post).toHaveBeenCalledOnce();
-    expect(release).toHaveBeenCalledOnce();
-  });
+      expect(post).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+    },
+  );
 
   it("retains one retry for a transient provider HTTP failure", async () => {
     const failed = responseResult(new Response("unavailable", { status: 503 }));
     post.mockResolvedValueOnce(failed);
     assertOkOrThrowProviderErrorMock.mockRejectedValueOnce(new Error("Google TTS failed (503)"));
+
+    const result = await synthesize();
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(failed.release).toHaveBeenCalledOnce();
+    expect(result.audioBuffer.subarray(44)).toEqual(PCM);
+  });
+
+  it("retries a transport failure while reading a successful response body", async () => {
+    const error = new TypeError("terminated", {
+      cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+    });
+    const failed = responseResult(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(error);
+          },
+        }),
+      ),
+    );
+    post.mockResolvedValueOnce(failed);
 
     const result = await synthesize();
 

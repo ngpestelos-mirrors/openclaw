@@ -1,4 +1,5 @@
 import type { sanitizeConfiguredModelProviderRequest } from "openclaw/plugin-sdk/provider-http";
+import { isTransientNetworkError } from "openclaw/plugin-sdk/retry-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { GoogleGenerateContentResponse } from "./generate-content-response.js";
 import {
@@ -39,7 +40,7 @@ class GoogleTtsRetryableError extends Error {
 }
 
 export function isGoogleTtsRetryableError(err: unknown): boolean {
-  if (err instanceof GoogleTtsRetryableError) {
+  if (err instanceof GoogleTtsRetryableError || isTransientNetworkError(err)) {
     return true;
   }
   if (!(err instanceof Error)) {
@@ -295,7 +296,13 @@ export async function synthesizeGoogleTtsPcmOnce(params: {
     }
     const payload = await readProviderJsonResponse<
       GoogleGenerateContentResponse & GoogleInteractionsSpeechResponse
-    >(res, "Google TTS response");
+    >(res, "Google TTS response", {
+      requestHeaders: headers,
+      onIdleTimeout: ({ chunkTimeoutMs }) =>
+        new GoogleTtsRetryableError(
+          `Google TTS response: response body stalled for ${chunkTimeoutMs}ms`,
+        ),
+    });
     const encoded = interactions
       ? readGoogleInteractionsAudioData(payload)
       : payload.candidates
