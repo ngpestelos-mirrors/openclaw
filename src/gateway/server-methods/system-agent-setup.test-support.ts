@@ -25,18 +25,11 @@ export function makeContext() {
   };
 }
 
-function makeRespond() {
-  const calls: Array<{ ok: boolean; payload?: unknown; error?: unknown }> = [];
-  return {
-    calls,
-    respond: (ok: boolean, payload?: unknown, error?: unknown) => {
-      calls.push({ ok, payload, error });
-    },
-  };
-}
-
 export async function invoke(method: string, context: GatewayRequestContext, params: unknown) {
-  const { calls, respond } = makeRespond();
+  const calls: Array<{ ok: boolean; payload?: unknown; error?: unknown }> = [];
+  const respond = (ok: boolean, payload?: unknown, error?: unknown) => {
+    calls.push({ ok, payload, error });
+  };
   const handler = expectDefined(systemAgentHandlers[method] ?? wizardHandlers[method], method);
   await handler({ params, respond, context } as never);
   return calls;

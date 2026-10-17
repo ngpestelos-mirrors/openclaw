@@ -1,4 +1,3 @@
-// OpenClaw setup resolution tests cover terminal provider guidance.
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -18,40 +17,48 @@ import {
   startActivation,
 } from "./system-agent-setup.test-support.js";
 
-const setupInferenceMocks = vi.hoisted(() => ({ activateSetupInference: vi.fn() }));
-const activate = setupInferenceMocks.activateSetupInference;
-const providerAuthChoiceMocks = vi.hoisted(() => ({
-  prepareAuthChoiceLoadedPluginProvider: vi.fn(),
+const mocks = vi.hoisted(() => ({
+  activate: vi.fn(),
+  prepareProvider: vi.fn(),
+  readConfig: vi.fn(),
+  writeConfig: vi.fn(),
 }));
-const setupSharedMocks = vi.hoisted(() => ({
-  readSetupConfigFileSnapshot: vi.fn(),
-}));
-const authConfigMocks = vi.hoisted(() => ({
-  writeProviderAuthConfig: vi.fn(),
-}));
+const { activate } = mocks;
 
 vi.mock("../../system-agent/setup-inference.js", () => ({
-  activateSetupInference: setupInferenceMocks.activateSetupInference,
+  activateSetupInference: mocks.activate,
 }));
 vi.mock("../../plugins/provider-auth-choice.js", () => ({
-  prepareAuthChoiceLoadedPluginProvider:
-    providerAuthChoiceMocks.prepareAuthChoiceLoadedPluginProvider,
+  prepareAuthChoiceLoadedPluginProvider: mocks.prepareProvider,
 }));
 vi.mock("../../wizard/setup.shared.js", () => ({
-  readSetupConfigFileSnapshot: setupSharedMocks.readSetupConfigFileSnapshot,
+  readSetupConfigFileSnapshot: mocks.readConfig,
 }));
 vi.mock("../../plugins/provider-auth-config.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../plugins/provider-auth-config.js")>()),
-  writeProviderAuthConfig: authConfigMocks.writeProviderAuthConfig,
+  writeProviderAuthConfig: mocks.writeConfig,
 }));
 
 const config: OpenClawConfig = {
   agents: { defaults: { model: "openai/gpt-5.6-luna" } },
 };
+const activation = { ok: true as const, latencyMs: 1 };
+const activated = (modelRef = "example/model") => ({ ...activation, modelRef, lines: [] });
+const capabilityReview = () =>
+  buildPluginCapabilityConsentReview({
+    pluginId: "test-runtime",
+    manifest: { name: "Test runtime" },
+    config: {},
+    record: { source: "npm", spec: "@example/runtime@1.0.0", integrity: "sha512-fixture" },
+  });
 
 describe("openclaw.setup provider resolution", () => {
+  const sessionId = "setup-resolution";
+  let context: ReturnType<typeof makeContext>["context"];
+  let wizardSessions: ReturnType<typeof makeContext>["wizardSessions"];
   beforeEach(() => {
-    setupSharedMocks.readSetupConfigFileSnapshot.mockResolvedValue({
+    ({ context, wizardSessions } = makeContext());
+    mocks.readConfig.mockResolvedValue({
       exists: true,
       valid: true,
       path: "/tmp/openclaw.json",
@@ -60,9 +67,7 @@ describe("openclaw.setup provider resolution", () => {
       config,
       issues: [],
     });
-    authConfigMocks.writeProviderAuthConfig.mockImplementation(
-      async ({ config: writtenConfig }) => writtenConfig,
-    );
+    mocks.writeConfig.mockImplementation(async ({ config: writtenConfig }) => writtenConfig);
   });
 
   afterEach(() => {
@@ -79,21 +84,13 @@ describe("openclaw.setup provider resolution", () => {
     ["openclaw.setup.prepare.start", { sessionId: "retained-session", authChoice: "ollama" }],
     [
       "openclaw.setup.runtime.start",
-      {
-        sessionId: "retained-session",
-        agentId: "main",
-        runtimeId: "fixture-runtime",
-        configPatch: { plugins: { entries: { fixture: { config: { enabled: true } } } } },
-      },
+      { sessionId: "retained-session", agentId: "main", runtimeId: "fixture", configPatch: {} },
     ],
   ] as const)("does not replace a retained wizard session through %s", async (method, params) => {
-    const { wizardSessions, context } = makeContext();
     const retained = new WizardSession(async () => {});
     wizardSessions.set(params.sessionId, retained);
     await retained.whenSettled();
-
     const calls = await invoke(method, context, params);
-
     expect(calls).toEqual([
       {
         ok: false,
@@ -103,21 +100,14 @@ describe("openclaw.setup provider resolution", () => {
     ]);
     expect(wizardSessions.get(params.sessionId)).toBe(retained);
     expect(activate).not.toHaveBeenCalled();
-    expect(providerAuthChoiceMocks.prepareAuthChoiceLoadedPluginProvider).not.toHaveBeenCalled();
+    expect(mocks.prepareProvider).not.toHaveBeenCalled();
   });
 
   it.each([true, false, "cancel"])(
     "keeps runtime capability consent server-owned through activation (%s)",
     async (answer) => {
-      const { wizardSessions, context } = makeContext();
-      const sessionId = "runtime-consent";
       const commit = vi.fn();
-      const review = buildPluginCapabilityConsentReview({
-        pluginId: "test-runtime",
-        manifest: { name: "Test runtime" },
-        config: {},
-        record: { source: "npm", spec: "@example/runtime@1.0.0", integrity: "sha512-fixture" },
-      });
+      const review = capabilityReview();
       activate.mockImplementationOnce(async (params) => {
         const acknowledgment = await createPluginCapabilityConsentPrompter(params.prompter, () =>
           params.signal.throwIfAborted(),
@@ -127,13 +117,7 @@ describe("openclaw.setup provider resolution", () => {
         }
         expect(acknowledgment.reviewToken).toBe(review.reviewToken);
         commit();
-        return {
-          ok: true,
-          modelRef: "example/model",
-          latencyMs: 1,
-          lines: [],
-          gatewayRestartRequired: true,
-        };
+        return { ...activated(), gatewayRestartRequired: true };
       });
 
       const calls = await startActivation(context, sessionId);
@@ -145,10 +129,7 @@ describe("openclaw.setup provider resolution", () => {
       const note = await callWizardNext(context, { sessionId });
       expect(note.step).toMatchObject({ type: "note", title: "Plugin capabilities" });
       expect(JSON.stringify(note)).not.toContain(review.reviewToken);
-      const confirmation = await callWizardNext(context, {
-        sessionId,
-        answer: { stepId: expectDefined(note.step, "capability review").id },
-      });
+      const confirmation = await answerWizard(context, sessionId, note);
       expect(confirmation.step).toMatchObject({ type: "confirm", initialValue: false });
       expect(commit).not.toHaveBeenCalled();
       if (answer === "cancel") {
@@ -176,12 +157,9 @@ describe("openclaw.setup provider resolution", () => {
 
   it("keeps an activation alive for its provider's full device-code window", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const { wizardSessions, context } = makeContext();
-    const sessionId = "activation-device-code";
     const signedIn = createDeferredCore();
     activate.mockImplementationOnce(async (params: ActivateSetupInferenceParams) => {
       const prompter = expectDefined(params.prompter, "activation prompter");
-      // Detected Codex activation hosts the provider sign-in when no profile or key exists.
       await prompter.deviceCode?.({
         title: "OpenAI Codex device code",
         code: "ABCD-EFGH",
@@ -195,18 +173,16 @@ describe("openclaw.setup provider resolution", () => {
         });
         void signedIn.promise.then(resolve);
       });
-      return { ok: true, modelRef: "openai/gpt-5.6-luna", latencyMs: 1, lines: [] };
+      return activated("openai/gpt-5.6-luna");
     });
     try {
       await startActivation(context, sessionId, "openai/gpt-5.6-luna");
       const session = expectDefined(wizardSessions.get(sessionId), "activation wizard session");
       const codeStep = await callWizardNext(context, { sessionId });
       expect(codeStep.step).toMatchObject({ deviceCode: { expiresInMinutes: 15 } });
-
       await vi.advanceTimersByTimeAsync(10 * 60 * 1_000);
       expect(session.getStatus()).toBe("running");
       expect(session.signal.aborted).toBe(false);
-
       signedIn.resolve();
       expect(await callWizardNext(context, { sessionId })).toMatchObject({
         done: true,
@@ -220,8 +196,6 @@ describe("openclaw.setup provider resolution", () => {
   });
 
   it("locks cancellation before an accepted runtime install can start", async () => {
-    const { wizardSessions, context } = makeContext();
-    const sessionId = "runtime-install-lock";
     const { promise: locked, resolve: reportLocked } = createDeferredCore();
     const { promise: installReleased, resolve: releaseInstall } = createDeferredCore();
     activate.mockImplementationOnce(async (params) => {
@@ -233,7 +207,7 @@ describe("openclaw.setup provider resolution", () => {
       await params.beforePersistentEffect?.();
       reportLocked();
       await installReleased;
-      return { ok: true, modelRef: "example/model", latencyMs: 1, lines: [] };
+      return activated();
     });
     await startActivation(context, sessionId);
     const confirmation = await callWizardNext(context, { sessionId });
@@ -261,8 +235,6 @@ describe("openclaw.setup provider resolution", () => {
     "expire after final commit",
   ])("retains install ownership but permits %s", async (action) => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const { wizardSessions, context } = makeContext();
-    const sessionId = "provider-install-then-credentials";
     const installStarted = createDeferredCore();
     const finishInstall = createDeferredCore();
     const persistCredentials = vi.fn();
@@ -307,7 +279,7 @@ describe("openclaw.setup provider resolution", () => {
       if (action === "expire before final commit") {
         params.onCommitStarted?.(config);
         promoteModel();
-        return { ok: true, modelRef: "fixture/demo-model", latencyMs: 1, lines: [] };
+        return activated("fixture/demo-model");
       }
       if (finalCommit) {
         params.onCommitStarted?.(config);
@@ -315,7 +287,7 @@ describe("openclaw.setup provider resolution", () => {
       await prompter.text({ message: "Provider API key", sensitive: true });
       params.signal?.throwIfAborted();
       persistCredentials();
-      return { ok: true, modelRef: "fixture/demo-model", latencyMs: 1, lines: [] };
+      return activated("fixture/demo-model");
     });
     const cancel = async () => {
       const calls = await invoke("wizard.cancel", context, { sessionId });
@@ -371,7 +343,7 @@ describe("openclaw.setup provider resolution", () => {
     }
     expect(installed).toBe(true);
     expect(submittedBeforeCleanup).toBe(false);
-    expect(authConfigMocks.writeProviderAuthConfig).not.toHaveBeenCalled();
+    expect(mocks.writeConfig).not.toHaveBeenCalled();
     expect(offeredStepType).toBe(expiresDuringInstall ? undefined : "text");
     expect(promoteModel).not.toHaveBeenCalled();
     expect(statusAtCheckpoint).toBe(finalCommit ? "running" : "cancelled");
@@ -386,8 +358,6 @@ describe("openclaw.setup provider resolution", () => {
   });
 
   it("permits cancellation during verification after an install without another prompt", async () => {
-    const { wizardSessions, context } = makeContext();
-    const sessionId = "installed-provider-verification";
     const probeStarted = createDeferredCore();
     const finishProbe = createDeferredCore();
     const promoteModel = vi.fn();
@@ -404,7 +374,7 @@ describe("openclaw.setup provider resolution", () => {
       params.signal?.throwIfAborted();
       params.onCommitStarted?.(config);
       promoteModel();
-      return { ok: true, modelRef: "fixture/demo-model", latencyMs: 1, lines: [] };
+      return activated("fixture/demo-model");
     });
     await startActivation(context, sessionId, "fixture/demo-model");
     const session = expectDefined(wizardSessions.get(sessionId), "verification wizard");
@@ -431,19 +401,13 @@ describe("openclaw.setup provider resolution", () => {
 
   it("returns actionable doctor guidance when provider setup is retryable", async () => {
     const result = { config, retrySelection: true, authProfiles: [], persistAuthProfiles: vi.fn() };
-    providerAuthChoiceMocks.prepareAuthChoiceLoadedPluginProvider.mockImplementationOnce(
-      async (_params, consume) => consume(result),
-    );
-    const { wizardSessions, context } = makeContext();
+    mocks.prepareProvider.mockImplementationOnce(async (_params, consume) => consume(result));
     await invoke("openclaw.setup.prepare.start", context, {
-      sessionId: "prepare-resolution-error",
+      sessionId,
       authChoice: "ollama",
     });
 
-    const session = expectDefined(
-      wizardSessions.get("prepare-resolution-error"),
-      "prepare wizard session",
-    );
+    const session = expectDefined(wizardSessions.get(sessionId), "prepare wizard session");
     await expect(session.next()).resolves.toMatchObject({
       done: true,
       status: "error",
@@ -451,24 +415,21 @@ describe("openclaw.setup provider resolution", () => {
         'Provider setup resolution failed for "ollama". Run `openclaw doctor --fix`, restart the Gateway, and try again.',
     });
     await whenAdmittedWizardSessionSettled(session);
-    expect(authConfigMocks.writeProviderAuthConfig).not.toHaveBeenCalled();
+    expect(mocks.writeConfig).not.toHaveBeenCalled();
   });
   it("returns verified utility provider auth and restart through wizard transport", async () => {
-    const { wizardSessions, context } = makeContext();
     activate.mockImplementationOnce(async (params) => {
       await params.prompter.note("Open the browser and enter ABCD", "Pair GitHub");
       return {
-        ok: true,
-        modelRef: "github-copilot/test",
+        ...activated("github-copilot/test"),
         modelTarget: "utility",
-        latencyMs: 10,
         lines: ["ready"],
         gatewayRestartRequired: true,
       };
     });
 
     const calls = await invoke("openclaw.setup.auth.start", context, {
-      sessionId: "auth-session-1",
+      sessionId,
       agentId: "research",
       authChoice: "github-copilot",
       modelTarget: "utility",
@@ -476,19 +437,19 @@ describe("openclaw.setup provider resolution", () => {
 
     expect(calls[0]).toMatchObject({
       ok: true,
-      payload: { sessionId: "auth-session-1", done: false, status: "running" },
+      payload: { sessionId, done: false, status: "running" },
     });
     expect(calls[0]?.payload).not.toHaveProperty("modelActivation");
-    const session = expectDefined(wizardSessions.get("auth-session-1"), "auth wizard session");
-    const first = await callWizardNext(context, { sessionId: "auth-session-1" });
+    const session = expectDefined(wizardSessions.get(sessionId), "auth wizard session");
+    const first = await callWizardNext(context, { sessionId });
     expect(activate).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: "provider-auth",
         authChoice: "github-copilot",
         modelTarget: "utility",
+        agentId: "research",
       }),
     );
-    expect(activate.mock.calls[0]?.[0].agentId).toBe("research");
     expect(activate.mock.calls[0]?.[0].signal).toBe(session.signal);
     expect(first).toMatchObject({
       done: false,
@@ -496,7 +457,7 @@ describe("openclaw.setup provider resolution", () => {
       step: { type: "note", title: "Pair GitHub", message: "Open the browser and enter ABCD" },
     });
     expect(first).not.toHaveProperty("modelActivation");
-    const done = await answerWizard(context, "auth-session-1", first, null);
+    const done = await answerWizard(context, sessionId, first, null);
     expect(done).toEqual({
       done: true,
       status: "done",
@@ -506,19 +467,12 @@ describe("openclaw.setup provider resolution", () => {
         gatewayRestartRequired: true,
       },
     });
-    expect(wizardSessions.has("auth-session-1")).toBe(false);
+    expect(wizardSessions.has(sessionId)).toBe(false);
   });
   it("publishes a finalized auth probe rejection after capability consent", async () => {
-    const { wizardSessions, context } = makeContext();
-    const sessionId = "rejected-probe";
     const finalizationStarted = createDeferredCore();
     const finishFinalization = createDeferredCore();
-    const review = buildPluginCapabilityConsentReview({
-      pluginId: "test-runtime",
-      manifest: { name: "Test runtime" },
-      config: {},
-      record: { source: "npm", spec: "@example/runtime@1.0.0", integrity: "sha512-fixture" },
-    });
+    const review = capabilityReview();
     activate.mockImplementationOnce(async (params: ActivateSetupInferenceParams) => {
       const prompter = expectDefined(params.prompter, "activation prompter");
       const acknowledgment = await createPluginCapabilityConsentPrompter(prompter)(review);
@@ -548,10 +502,7 @@ describe("openclaw.setup provider resolution", () => {
     try {
       const reviewStep = await callWizardNext(context, { sessionId });
       expect(reviewStep.step).toMatchObject({ type: "note", title: "Plugin capabilities" });
-      const confirmation = await callWizardNext(context, {
-        sessionId,
-        answer: { stepId: expectDefined(reviewStep.step, "capability review").id },
-      });
+      const confirmation = await answerWizard(context, sessionId, reviewStep);
       expect(confirmation.step).toMatchObject({ type: "confirm" });
       const progress = await answerWizard(context, sessionId, confirmation, true);
       await finalizationStarted.promise;
@@ -596,8 +547,6 @@ describe("openclaw.setup provider resolution", () => {
   it.each([false, true])(
     "preserves the host shutdown outcome across activation (committed=%s)",
     async (committed) => {
-      const { wizardSessions, context } = makeContext();
-      const sessionId = "activation-during-host-shutdown";
       const activationStarted = createDeferredCore();
       const finishActivation = createDeferredCore();
       const shutdownMessage = "Gateway is shutting down; restart it before continuing setup.";
@@ -610,7 +559,7 @@ describe("openclaw.setup provider resolution", () => {
         if (params.signal?.aborted) {
           return { ok: false, status: "unavailable", error: "Provider login was cancelled." };
         }
-        return { ok: true, modelRef: "fixture/demo-model", latencyMs: 1, lines: [] };
+        return activated("fixture/demo-model");
       });
       await startActivation(context, sessionId, "fixture/demo-model");
       const session = expectDefined(wizardSessions.get(sessionId), "activation wizard");
@@ -644,8 +593,6 @@ describe("openclaw.setup provider resolution", () => {
   );
 
   it("returns finalized rejection instead of buffered progress on the first wizard.next", async () => {
-    const { wizardSessions, context } = makeContext();
-    const sessionId = "buffered-probe-rejection";
     activate.mockImplementationOnce(async (params: ActivateSetupInferenceParams) => {
       const progress = expectDefined(params.prompter, "activation prompter").progress(
         "Testing your AI connection…",
@@ -685,8 +632,6 @@ describe("openclaw.setup provider resolution", () => {
   ] as const)(
     "reports only proven rejection without verified activation for %s provider auth",
     async (outcome) => {
-      const { wizardSessions, context } = makeContext();
-      const sessionId = "unverified-auth";
       activate.mockImplementationOnce(async (params: ActivateSetupInferenceParams) => {
         await expectDefined(params.prompter, "auth prompter").confirm({
           message: "Continue sign-in?",
@@ -702,7 +647,7 @@ describe("openclaw.setup provider resolution", () => {
           params.onActivationCompletion?.(async () => {
             throw new Error("The Gateway did not complete activation (failed).");
           });
-          return { ok: true, modelRef: "example/model", latencyMs: 1, lines: [] };
+          return activated();
         }
         return {
           ok: false,
