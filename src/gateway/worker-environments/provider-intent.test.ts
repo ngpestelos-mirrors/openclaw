@@ -5,7 +5,7 @@ import { requireGit } from "../../agents/worktrees/git.js";
 import type { WorkerProvider } from "../../plugins/types.js";
 import { readWorkerProjectPreparation } from "./preparation-identity.schema.js";
 import { createWorkerProviderIntent } from "./provider-intent.js";
-import { repository } from "./provider-lifecycle.test-support.js";
+import { nodeArtifacts, repository } from "./provider-lifecycle.test-support.js";
 import * as support from "./service.test-support.js";
 import type { WorkerEnvironmentRecord } from "./store.js";
 
@@ -30,17 +30,7 @@ describe("prepared worker intent admission", () => {
       supportsProjectPreparation: () => true,
       resolvePreparationTarget: target,
     });
-    const prepareNodeArtifacts = vi.fn(async () => ({
-      artifacts: {
-        nodeBootstrapSha256: support.NODE_BOOTSTRAP.sha256,
-        workerBundleHash: support.BUNDLE_ARTIFACT.bundleHash,
-        workerArchiveSha256: support.BUNDLE_ARTIFACT.tarballSha256,
-        enabledPluginIds: ["runtime-plugin"],
-        openclawVersion: support.BUNDLE_ARTIFACT.openclawVersion,
-        protocolFeatures: [],
-      },
-      assertCurrent: () => {},
-    }));
+    const prepareNodeArtifacts = vi.fn(async () => nodeArtifacts(["runtime-plugin"]));
     const resumeProvision = vi.fn(async (record: WorkerEnvironmentRecord) => record);
     const owner = createWorkerProviderIntent({
       store: support.testState.store,
@@ -77,11 +67,7 @@ describe("prepared worker intent admission", () => {
   it("admits exact local source and OS without allocating, and retains reusable facts after caller abort", async () => {
     const f = await fixture();
     const controller = new AbortController();
-    const options = {
-      machineClass: "large",
-      os: "linux",
-      signal: controller.signal,
-    };
+    const options = { machineClass: "large", os: "linux", signal: controller.signal };
     const intent = await f.prepare(options);
     expect(intent.preparationKey).toMatch(/^[a-f0-9]{64}$/u);
     expect(f.spies.target).toHaveBeenCalledWith({ region: "test" }, "large", "linux");

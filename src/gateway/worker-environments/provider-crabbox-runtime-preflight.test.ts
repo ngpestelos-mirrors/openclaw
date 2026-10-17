@@ -229,29 +229,28 @@ describe("Crabbox runtime preflight cleanup", () => {
   );
 
   it.each([
-    { name: "terminal fixed lease", result: TERMINAL, outcome: "destroyed" },
-    { name: "absent attached resource", result: ABSENT, attached: true, outcome: "destroyed" },
-    {
-      name: "absent resource with unconfirmed stop",
-      result: ABSENT,
-      attached: true,
-      outcome: "retry-stop",
-    },
-    {
-      name: "unresolved creation attempt",
-      result: {
+    ["terminal fixed lease", TERMINAL, false, "destroyed"],
+    ["absent attached resource", ABSENT, true, "destroyed"],
+    ["unconfirmed stop", ABSENT, true, "retry-stop"],
+    [
+      "unresolved creation attempt",
+      {
         ...TERMINAL,
         stderr:
           "lease_id_conflict: lease cbx_0123456789ab has an unresolved or unattested creation attempt",
       },
-    },
-    { name: "terminal text with an unexpected exit code", result: { ...TERMINAL, code: 1 } },
-    {
-      name: "not-found text mixed with an auth failure",
-      result: { ...ABSENT, stderr: `${ABSENT.stderr}\nauthentication failed` },
-    },
-  ])("reconciles requested teardown after $name", async (scenario) => {
-    const { backend, ...result } = scenario.result;
+      false,
+      "retry-inspect",
+    ],
+    ["terminal text with wrong exit code", { ...TERMINAL, code: 1 }, false, "retry-inspect"],
+    [
+      "not-found with auth failure",
+      { ...ABSENT, stderr: `${ABSENT.stderr}\nauthentication failed` },
+      false,
+      "retry-inspect",
+    ],
+  ] as const)("reconciles requested teardown after %s", async (...row) => {
+    const [, { backend, ...result }, attached, outcome] = row;
     const environmentId = "worker-inspect-cleanup";
     const leaseId = "cbx_0123456789ab";
     const intent = await createIntent(environmentId, {
@@ -264,7 +263,7 @@ describe("Crabbox runtime preflight cleanup", () => {
       sharedHost: false,
       ...support.readyPatch(environmentId),
     });
-    if (scenario.attached) {
+    if (attached) {
       record = await transition(
         record,
         "attached",
@@ -272,10 +271,10 @@ describe("Crabbox runtime preflight cleanup", () => {
       );
     }
     await support.testState.store.requestDestroy({ environmentId, state: record.state });
-    if (!scenario.attached) {
+    if (!attached) {
       record = await transition(await transition(record, "draining"), "destroying");
     }
-    let stopFails = scenario.outcome === "retry-stop";
+    let stopFails = outcome === "retry-stop";
     const calls: string[][] = [];
     mockCommands((argv) => {
       calls.push(argv);
@@ -303,7 +302,7 @@ describe("Crabbox runtime preflight cleanup", () => {
 
     await service.reconcileOnce();
 
-    if (!scenario.outcome) {
+    if (outcome === "retry-inspect") {
       expect(support.testState.store.get(environmentId)).toMatchObject({
         state: "destroying",
         leaseId,
@@ -400,34 +399,29 @@ describe("Crabbox runtime preflight cleanup", () => {
 
   // Synthetic CLI diagnostics exercise the real error producer, not captured native output.
   it.each([
-    { kind: "config", name: "config command failure", result: commandResult({ code: 2 }) },
-    { kind: "config", name: "invalid config JSON", result: commandResult({ stdout: "{" }) },
-    { kind: "config", name: "removed coordinator", result: commandResult({ stdout: "{}" }) },
-    {
-      kind: "aws-profile",
-      name: "attached AWS profile",
-      result: commandResult({ stdout: JSON.stringify({ aws: { instanceProfile: "new-role" } }) }),
-    },
-    { kind: "modes", name: "changed advertised modes" },
-    { kind: "timeout", name: "invalid timeout metadata" },
-    {
-      kind: "cli",
-      name: "unknown flag: --lease-id",
-      result: commandResult({ code: 2, stderr: "unknown flag: --lease-id" }),
-    },
-    {
-      kind: "cli",
-      name: "fixed-ID capability removed after allocation",
-      result: commandResult({
-        code: 2,
-        stderr: "provider=machine0 does not support fixed idempotent lease IDs",
-      }),
-    },
-  ])("retains the original allocation after $name across restart", async (scenario) => {
+    ["config command failure", "config", { code: 2 }],
+    ["invalid config JSON", "config", { stdout: "{" }],
+    ["removed coordinator", "config", { stdout: "{}" }],
+    [
+      "attached AWS profile",
+      "aws-profile",
+      { stdout: JSON.stringify({ aws: { instanceProfile: "new-role" } }) },
+    ],
+    ["changed advertised modes", "modes", undefined],
+    ["invalid timeout metadata", "timeout", undefined],
+    ["unknown flag: --lease-id", "cli", { code: 2, stderr: "unknown flag: --lease-id" }],
+    [
+      "fixed-ID capability removed",
+      "cli",
+      { code: 2, stderr: "provider=machine0 does not support fixed idempotent lease IDs" },
+    ],
+  ] as const)("retains allocation after %s across restart", async (...row) => {
+    const [, kind, refusal] = row;
+    const refusalResult = refusal && commandResult(refusal);
     const profile = {
       ...PROFILE,
-      ...(scenario.kind === "config" ? { provider: "hetzner", desktop: true } : {}),
-      ...(scenario.kind === "aws-profile" ? { provider: "aws" } : {}),
+      ...(kind === "config" ? { provider: "hetzner", desktop: true } : {}),
+      ...(kind === "aws-profile" ? { provider: "aws" } : {}),
     };
     useProfile(profile);
     // This replay fixture owns lifecycle commands; periodic heartbeats have separate coverage.
@@ -441,8 +435,8 @@ describe("Crabbox runtime preflight cleanup", () => {
     mockCommands((argv) => {
       calls.push(argv);
       if (argv[1] === "config") {
-        return changed && "result" in scenario
-          ? expectDefined(scenario.result, "runtime refusal")
+        return changed && refusalResult
+          ? refusalResult
           : commandResult({
               stdout: JSON.stringify({
                 coordinator: "https://coordinator.example.test",
@@ -452,8 +446,8 @@ describe("Crabbox runtime preflight cleanup", () => {
             });
       }
       if (argv[1] === "warmup") {
-        if (changed && "result" in scenario) {
-          return expectDefined(scenario.result, "runtime refusal");
+        if (changed && refusalResult) {
+          return refusalResult;
         }
         allocations += 1;
         live = true;
@@ -477,10 +471,10 @@ describe("Crabbox runtime preflight cleanup", () => {
     const prepareNodeEnrollment = vi.fn();
     const makeProvider = async (): Promise<WorkerProvider> => {
       const provider = await registerProvider();
-      if (changed && scenario.kind === "modes") {
+      if (changed && kind === "modes") {
         provider.supportedExecutionModes = ["remote-exec"];
       }
-      if (changed && scenario.kind === "timeout") {
+      if (changed && kind === "timeout") {
         provider.resolveProvisionTimeoutMs = () => Number.NaN;
       }
       return provider;
@@ -530,9 +524,7 @@ describe("Crabbox runtime preflight cleanup", () => {
     await service.destroy(original.environmentId);
     await service.reconcileOnce();
     expect(calls.slice(beforeCleanup).map((argv) => argv[1])).toEqual(["stop", "inspect", "stop"]);
-    expect(calls.filter((argv) => argv[1] === "warmup")).toHaveLength(
-      scenario.kind === "cli" ? 2 : 1,
-    );
+    expect(calls.filter((argv) => argv[1] === "warmup")).toHaveLength(kind === "cli" ? 2 : 1);
     expect(allocations).toBe(1);
     expect(stops).toBe(2);
     expect(live).toBe(false);

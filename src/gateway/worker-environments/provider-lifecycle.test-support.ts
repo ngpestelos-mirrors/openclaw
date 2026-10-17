@@ -3,6 +3,7 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { requireGit } from "../../agents/worktrees/git.js";
 import {
+  BUNDLE_ARTIFACT,
   NODE_BOOTSTRAP,
   createProvider,
   createService,
@@ -14,6 +15,20 @@ export { awaitGateBeforeSettlement as beforeSettlement } from "../../../test/hel
 
 type Service = ReturnType<typeof createService>;
 type Request = Parameters<Service["createWithRequest"]>[0];
+
+export function nodeArtifacts(enabledPluginIds = NODE_BOOTSTRAP.enabledPluginIds) {
+  return {
+    artifacts: {
+      nodeBootstrapSha256: NODE_BOOTSTRAP.sha256,
+      workerBundleHash: BUNDLE_ARTIFACT.bundleHash,
+      workerArchiveSha256: BUNDLE_ARTIFACT.tarballSha256,
+      enabledPluginIds: [...enabledPluginIds],
+      openclawVersion: BUNDLE_ARTIFACT.openclawVersion,
+      protocolFeatures: [...BUNDLE_ARTIFACT.protocolFeatures],
+    },
+    assertCurrent: () => {},
+  };
+}
 
 export async function pendingNodeEnrollment(
   record: WorkerEnvironmentRecord,

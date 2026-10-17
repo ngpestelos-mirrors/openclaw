@@ -428,10 +428,7 @@ describe("worker environment service provision replay", () => {
       message: expect.stringContaining("Worker provider provision timeout must be an integer"),
     } satisfies Partial<WorkerEnvironmentServiceError>);
     expect(provision).not.toHaveBeenCalled();
-    expect(support.testState.store.list()[0]).toMatchObject({
-      state: "failed",
-      leaseId: null,
-    });
+    expect(support.testState.store.list()[0]).toMatchObject({ state: "failed", leaseId: null });
   });
 
   it("does not invoke a late prepared allocation after replay times out", async () => {
@@ -543,9 +540,7 @@ describe("worker environment service provision replay", () => {
         (error: unknown) => ({ error }),
       );
       await vi.advanceTimersByTimeAsync(20);
-      expect(await creationResult).toMatchObject({
-        error: providerFailure,
-      });
+      expect(await creationResult).toMatchObject({ error: providerFailure });
       await beforeSettlement(intentCommitted.promise, teardownResult, "Teardown intent commit");
       expect(originalProvisionCalls).toBe(1);
       expect(destroy).not.toHaveBeenCalled();
@@ -571,39 +566,24 @@ describe("worker environment service provision replay", () => {
   });
 
   it.each([
+    [{ leaseId: "lease-invalid", node: { deviceId: " " } }, "invalid node device id"],
     [
-      "blank node device id",
-      { leaseId: "lease-invalid", node: { deviceId: " " } },
-      "invalid node device id",
-    ],
-    [
-      "malformed SSH endpoint",
       invalidSshLease({ ssh: { ...support.SSH_ENDPOINT, keyRef: "not-a-secret-ref" } }),
       "SSH key must be a valid SecretRef",
     ],
+    [invalidSshLease({ sharedHost: "yes" }), "invalid provision result"],
     [
-      "invalid shared-host declaration",
-      invalidSshLease({ sharedHost: "yes" }),
-      "invalid provision result",
-    ],
-    [
-      "unsupported desktop protocol",
       invalidSshLease({ desktop: { protocol: "rdp", port: 5900 } }),
       'desktop protocol must be "rfb"',
     ],
+    [invalidSshLease({ desktop: { protocol: "rfb", port: 0 } }), "desktop port must be an integer"],
     [
-      "invalid desktop port",
-      invalidSshLease({ desktop: { protocol: "rfb", port: 0 } }),
-      "desktop port must be an integer",
-    ],
-    [
-      "relative desktop password path",
       invalidSshLease({
         desktop: { protocol: "rfb", port: 5900, passwordFilePath: "vnc.password" },
       }),
       "desktop password file path must be absolute",
     ],
-  ])("keeps %s from a provider retryable", async (_name, result, error) => {
+  ])("keeps provider result %j retryable (%s)", async (result, error) => {
     const workerService = providerService({ provision: async () => result as never });
 
     await expect(create(workerService, "request-malformed")).rejects.toMatchObject({

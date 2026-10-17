@@ -14,7 +14,14 @@ import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { completeWorkerNodeSetupForTest } from "./node-enrollment.test-support.js";
 import { readWorkerProjectPreparation } from "./preparation-identity.schema.js";
-import { pendingNodeEnrollment, repository } from "./provider-lifecycle.test-support.js";
+import {
+  beforeSettlement,
+  create as createProject,
+  nodeArtifacts,
+  pendingNodeEnrollment,
+  providerService,
+  repository,
+} from "./provider-lifecycle.test-support.js";
 import * as support from "./service.test-support.js";
 import * as workspaceGitBase from "./workspace-git-base.js";
 
@@ -28,12 +35,8 @@ function createService(
   provider: Partial<WorkerProvider> = {},
 ) {
   let credentialIndex = 0;
-  return support.createService(
-    support.createProvider({
-      supportsProjectPreparation: () => true,
-      provision,
-      ...provider,
-    }),
+  return providerService(
+    { supportsProjectPreparation: () => true, provision, ...provider },
     {
       projectNamespace: "gateway",
       generateWorkerCredential: () => `${support.CREDENTIAL}-${++credentialIndex}`,
@@ -47,20 +50,6 @@ const nodeProvider = {
   provisionBeforeInstallation: true,
   supportedExecutionModes: ["worker-turn"],
 } satisfies Partial<WorkerProvider>;
-
-function createProject(
-  service: ReturnType<typeof support.createService>,
-  idempotencyKey: string,
-  projectPath: string,
-  options: Partial<Parameters<typeof service.createWithRequest>[0]> = {},
-) {
-  return service.createWithRequest({
-    profileId: "development",
-    idempotencyKey,
-    projectPath,
-    ...options,
-  });
-}
 
 describe("worker provider project preparation ownership", () => {
   support.setupWorkerEnvironmentServiceSuite();
@@ -93,9 +82,9 @@ describe("worker provider project preparation ownership", () => {
             hasTarget ? { machineClass: "small", platform: "linux" } : undefined,
         },
       );
-      await expect(createProject(service, "unmapped-secrets", git.root)).rejects.toThrow(
-        "unmapped setup secrets: OTHER_TOKEN, PACKAGE_TOKEN",
-      );
+      await expect(
+        createProject(service, "unmapped-secrets", { projectPath: git.root }),
+      ).rejects.toThrow("unmapped setup secrets: OTHER_TOKEN, PACKAGE_TOKEN");
       expect(provision).not.toHaveBeenCalled();
     },
   );
@@ -119,7 +108,7 @@ describe("worker provider project preparation ownership", () => {
         ownerId: `agent:main:${name}`,
       });
       roots.push(workspace.repoRoot);
-      environments.push(await createProject(service, name, workspace.path));
+      environments.push(await createProject(service, name, { projectPath: workspace.path }));
     }
     expect(roots[0]).not.toBe(roots[1]);
     expect(provision).toHaveBeenCalledTimes(2);
@@ -188,22 +177,13 @@ describe("worker provider project preparation ownership", () => {
       });
       const service = support.createService(provider, {
         projectNamespace: "gateway",
-        prepareNodeArtifacts: async () => ({
-          artifacts: {
-            nodeBootstrapSha256: support.NODE_BOOTSTRAP.sha256,
-            enabledPluginIds: [...support.NODE_BOOTSTRAP.enabledPluginIds],
-            workerBundleHash: support.BUNDLE_HASH,
-            workerArchiveSha256: support.BUNDLE_ARTIFACT.tarballSha256,
-            openclawVersion: support.BUNDLE_ARTIFACT.openclawVersion,
-            protocolFeatures: [...support.BUNDLE_ARTIFACT.protocolFeatures],
-          },
-          assertCurrent: () => {},
-        }),
+        prepareNodeArtifacts: async () => nodeArtifacts(),
         prepareNodeEnrollment: (record) => pendingNodeEnrollment(record, async () => deviceId),
         ensureNodeWorkerBundle: async () => structuredClone(support.BOOTSTRAP_RECEIPT),
         registerPreparedWorkspace,
       });
-      const creation = createProject(service, "prepared-host", git.root, {
+      const creation = createProject(service, "prepared-host", {
+        projectPath: git.root,
         executionMode: "worker-turn",
       });
       if (sharedHost !== false) {
@@ -286,7 +266,7 @@ describe("worker provider project preparation ownership", () => {
         nodeProvider,
       );
       await expect(
-        createProject(service, change, git.root, { executionMode: "worker-turn" }),
+        createProject(service, change, { projectPath: git.root, executionMode: "worker-turn" }),
       ).rejects.toThrow("runtime changed after provisioning preparation");
       expect(support.testState.store.list()[0]).toMatchObject({
         state: "provisioning",
@@ -314,12 +294,10 @@ describe("worker provider project preparation ownership", () => {
         await release.promise;
         return await original(params);
       });
-    const provision = vi.fn<WorkerProvider["provision"]>(async () => ({
-      leaseId: "unexpected-project-lease",
-      ssh: support.SSH_ENDPOINT,
-    }));
+    const provision = vi.fn<WorkerProvider["provision"]>();
     const service = createService(provision);
-    const creation = createProject(service, "cancelled-project-snapshot", git.root, {
+    const creation = createProject(service, "cancelled-project-snapshot", {
+      projectPath: git.root,
       signal: controller.signal,
     }).catch((error: unknown) => error);
     try {
@@ -372,7 +350,8 @@ describe("worker provider project preparation ownership", () => {
       });
       return { leaseId: "unexpected-transfer-lease", ssh: support.SSH_ENDPOINT };
     });
-    const creation = createProject(service, "cancelled-project-transfer", git.root, {
+    const creation = createProject(service, "cancelled-project-transfer", {
+      projectPath: git.root,
       signal: controller.signal,
     })
       .catch((error: unknown) => error)
@@ -433,9 +412,9 @@ describe("worker provider project preparation ownership", () => {
     const supportsProjectPreparation = (_profile: unknown, selectedClass?: string) =>
       selectedClass === undefined;
     const first = createService(provision, {}, { supportsProjectPreparation });
-    await expect(createProject(first, "project-replay", git.root)).rejects.toMatchObject({
-      code: "provider_failure",
-    });
+    await expect(
+      createProject(first, "project-replay", { projectPath: git.root }),
+    ).rejects.toMatchObject({ code: "provider_failure" });
     expect(projects[0]?.signal.aborted).toBe(true);
     await fs.writeFile(path.join(git.root, "input.txt"), "newer project HEAD\n");
     await requireGit(git.root, ["commit", "--quiet", "-am", "advance"]);
@@ -449,10 +428,9 @@ describe("worker provider project preparation ownership", () => {
     await support.reopenWorkerEnvironmentStore();
 
     const restarted = createService(provision, {}, { supportsProjectPreparation });
-    await expect(createProject(restarted, "project-replay", git.root)).resolves.toMatchObject({
-      state: "ready",
-      leaseId: "lease-project",
-    });
+    await expect(
+      createProject(restarted, "project-replay", { projectPath: git.root }),
+    ).resolves.toMatchObject({ state: "ready", leaseId: "lease-project" });
     expect(operationIds).toHaveLength(2);
     expect(operationIds[1]).toBe(operationIds[0]);
     expect(projects[1]).toMatchObject({ ...identity, key: projects[0]?.key });
@@ -468,7 +446,7 @@ describe("worker provider project preparation ownership", () => {
       projects.push(options?.project);
       return { leaseId: `lease-${operationId}`, ssh: support.SSH_ENDPOINT };
     });
-    const original = await createProject(service, "original", first.root);
+    const original = await createProject(service, "original", { projectPath: first.root });
     const originalRecord = expectDefined(
       support.testState.store.get(original.environmentId),
       "original allocation",
@@ -476,8 +454,9 @@ describe("worker provider project preparation ownership", () => {
     const { providerId, profileSnapshot } = originalRecord;
     const request = {
       inheritedProfile: { providerId, profileSnapshot },
+      projectPath: second.root,
     };
-    const next = await createProject(service, "fresh", second.root, request);
+    const next = await createProject(service, "fresh", request);
     const nextRecord = expectDefined(
       support.testState.store.get(next.environmentId),
       "fresh allocation",
@@ -488,7 +467,7 @@ describe("worker provider project preparation ownership", () => {
     });
     expect(projects[1]?.key).not.toBe(projects[0]?.key);
     expect(projects[1]?.baseCommit).toBe(second.baseCommit);
-    await expect(createProject(service, "fresh", second.root, request)).resolves.toMatchObject({
+    await expect(createProject(service, "fresh", request)).resolves.toMatchObject({
       environmentId: next.environmentId,
       state: "ready",
     });
@@ -496,7 +475,6 @@ describe("worker provider project preparation ownership", () => {
     expect(
       support.testState.store.get(original.environmentId)?.profileSnapshot.project,
     ).toMatchObject({ root: first.root, baseCommit: first.baseCommit });
-    expect(profileSnapshot.project).toEqual(originalRecord.profileSnapshot.project);
   });
 
   it.each(["return", "timeout"])(
@@ -521,15 +499,10 @@ describe("worker provider project preparation ownership", () => {
         { providerCallTimeoutMs: outcome === "timeout" ? 20 : undefined },
       );
       try {
-        const creation = createProject(service, "closure", git.root).catch(
+        const creation = createProject(service, "closure", { projectPath: git.root }).catch(
           (error: unknown) => error,
         );
-        await Promise.race([
-          entered.promise,
-          creation.then((result) => {
-            throw new Error("Creation ended before provider invocation", { cause: result });
-          }),
-        ]);
+        await beforeSettlement(entered.promise, creation, "provider invocation");
         if (outcome === "timeout") {
           await vi.advanceTimersByTimeAsync(20);
         }

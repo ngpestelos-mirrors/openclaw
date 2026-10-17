@@ -176,9 +176,7 @@ describe("worker provider node teardown", () => {
       const environmentId = `worker-destroyed-node-${owner}`;
       const { attached, nodeTunnels, listNodes, workspaceTransfer, start, reconnect } =
         await disconnectedNodeOwner(environmentId);
-      const service = nodeService(nodeTunnels, {
-        inspect: async () => ({ status: "destroyed" }),
-      });
+      const service = nodeService(nodeTunnels, { inspect: async () => ({ status: "destroyed" }) });
       try {
         if (owner === "retained") {
           await start();
