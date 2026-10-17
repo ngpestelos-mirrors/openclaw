@@ -29,41 +29,39 @@ type TestUpdateSchedule =
   | import("../../../packages/gateway-protocol/src/index.js").UpdateScheduleState
   | null;
 
-const getUpdateAvailableMock = vi.hoisted(() => vi.fn<() => TestUpdateAvailable>(() => null));
-const getUpdateEffectiveChannelMock = vi.hoisted(() =>
+const available = vi.hoisted(() => vi.fn<() => TestUpdateAvailable>(() => null));
+const effectiveChannel = vi.hoisted(() =>
   vi.fn<() => Promise<UpdateChannel>>(async () => "stable"),
 );
-const getUpdateScheduleMock = vi.hoisted(() => vi.fn<() => TestUpdateSchedule>(() => null));
-const refreshGatewayUpdateStatusMock = vi.hoisted(() =>
+const schedule = vi.hoisted(() => vi.fn<() => TestUpdateSchedule>(() => null));
+const refreshCheckout = vi.hoisted(() =>
   vi.fn<typeof import("../../infra/update-status-schedule.js").refreshGatewayUpdateStatus>(
     async () => {},
   ),
 );
-const getLatestUpdateRestartSentinelMock = vi.hoisted(() =>
-  vi.fn<() => TestUpdateSentinel>(() => null),
-);
-const refreshLatestUpdateRestartSentinelMock = vi.hoisted(() =>
+const cachedSentinel = vi.hoisted(() => vi.fn<() => TestUpdateSentinel>(() => null));
+const refreshSentinel = vi.hoisted(() =>
   vi.fn<() => Promise<TestUpdateSentinel>>(async () => null),
 );
 
 vi.mock("../../infra/update-status-state.js", () => ({
-  getUpdateAvailable: getUpdateAvailableMock,
-  getUpdateSchedule: getUpdateScheduleMock,
+  getUpdateAvailable: available,
+  getUpdateSchedule: schedule,
 }));
 
 vi.mock("../../infra/update-startup.js", () => ({
-  getUpdateEffectiveChannel: getUpdateEffectiveChannelMock,
+  getUpdateEffectiveChannel: effectiveChannel,
 }));
 
 vi.mock("../../infra/update-status-schedule.js", () => ({
-  getGatewayUpdateSchedule: () => getUpdateScheduleMock(),
-  refreshGatewayUpdateStatus: refreshGatewayUpdateStatusMock,
+  getGatewayUpdateSchedule: () => schedule(),
+  refreshGatewayUpdateStatus: refreshCheckout,
 }));
 
 vi.mock("../server-update-sentinel.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../server-update-sentinel.js")>()),
-  getLatestUpdateRestartSentinel: getLatestUpdateRestartSentinelMock,
-  prepareLatestUpdateRestartSentinel: refreshLatestUpdateRestartSentinelMock,
+  getLatestUpdateRestartSentinel: cachedSentinel,
+  prepareLatestUpdateRestartSentinel: refreshSentinel,
 }));
 
 vi.mock("./validation.js", () => ({
@@ -82,130 +80,95 @@ afterEach(async () => {
 beforeEach(() => {
   lifecycle = createGatewayUpdateLifecycle(createTestGatewayScheduler());
   previousDiagnostics = areDiagnosticsEnabledForProcess();
-  getUpdateAvailableMock.mockReset();
-  getUpdateAvailableMock.mockReturnValue(null);
-  getUpdateEffectiveChannelMock.mockReset();
-  getUpdateEffectiveChannelMock.mockResolvedValue("stable");
-  getUpdateScheduleMock.mockReset();
-  getUpdateScheduleMock.mockReturnValue(null);
-  refreshGatewayUpdateStatusMock.mockReset();
-  refreshGatewayUpdateStatusMock.mockResolvedValue(undefined);
-  getLatestUpdateRestartSentinelMock.mockReset();
-  getLatestUpdateRestartSentinelMock.mockReturnValue(null);
-  refreshLatestUpdateRestartSentinelMock.mockReset();
-  refreshLatestUpdateRestartSentinelMock.mockResolvedValue(null);
+  available.mockReset().mockReturnValue(null);
+  effectiveChannel.mockReset().mockResolvedValue("stable");
+  schedule.mockReset().mockReturnValue(null);
+  refreshCheckout.mockReset().mockResolvedValue(undefined);
+  cachedSentinel.mockReset().mockReturnValue(null);
+  refreshSentinel.mockReset().mockResolvedValue(null);
 });
+
+function expectStatus(respond: ReturnType<typeof vi.fn>, fields: Record<string, unknown>) {
+  expect(respond).toHaveBeenCalledWith(true, expect.objectContaining(fields));
+}
+
+async function status(
+  options: {
+    params?: Record<string, unknown>;
+    context?: Record<string, unknown>;
+    respond?: ReturnType<typeof vi.fn>;
+  } = {},
+) {
+  const { updateHandlers } = await import("./update.js");
+  const handler = updateHandlers["update.status"];
+  if (!handler) {
+    throw new Error("update.status handler is unavailable");
+  }
+  const respond = options.respond ?? vi.fn();
+  await handler({ params: {}, ...options, respond } as never);
+  return respond;
+}
 
 describe("update.status effective channel", () => {
   it("reports the lifecycle-owned channel before the startup schedule is ready", async () => {
-    getUpdateEffectiveChannelMock.mockResolvedValueOnce("extended-stable");
-    const { updateHandlers } = await import("./update.js");
-    const respond = vi.fn();
-
-    const handler = updateHandlers["update.status"];
-    if (!handler) {
-      throw new Error("update.status handler is unavailable");
-    }
-    await handler({
-      params: {},
-      respond,
+    effectiveChannel.mockResolvedValueOnce("extended-stable");
+    const respond = await status({
       context: { getRuntimeConfig: () => ({ update: {} }) },
-    } as never);
+    });
 
-    expect(respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({ effectiveChannel: "extended-stable" }),
-    );
-    expect(refreshGatewayUpdateStatusMock).not.toHaveBeenCalled();
+    expectStatus(respond, { effectiveChannel: "extended-stable" });
+    expect(refreshCheckout).not.toHaveBeenCalled();
   });
 
   it("prefers the current config channel over the startup schedule", async () => {
-    getUpdateScheduleMock.mockReturnValue({ channel: "beta", autoEnabled: true });
-    const { updateHandlers } = await import("./update.js");
-    const respond = vi.fn();
-    const handler = updateHandlers["update.status"];
-    if (!handler) {
-      throw new Error("update.status handler is unavailable");
-    }
-
-    await handler({
-      params: {},
-      respond,
+    schedule.mockReturnValue({ channel: "beta", autoEnabled: true });
+    const respond = await status({
       context: { getRuntimeConfig: () => ({ update: { channel: "dev" } }) },
-    } as never);
+    });
 
-    expect(respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({ effectiveChannel: "dev" }),
-    );
-    expect(getUpdateEffectiveChannelMock).not.toHaveBeenCalled();
+    expectStatus(respond, { effectiveChannel: "dev" });
+    expect(effectiveChannel).not.toHaveBeenCalled();
   });
 
   it("awaits the current config's checkout refresh before reporting its schedule", async () => {
-    const { updateHandlers } = await import("./update.js");
-    const handler = updateHandlers["update.status"];
-    if (!handler) {
-      throw new Error("update.status handler is unavailable");
-    }
     const config = { update: { channel: "dev" as const } };
     const context = { getRuntimeConfig: () => config };
     const refresh = createDeferred();
-    refreshGatewayUpdateStatusMock.mockReturnValueOnce(refresh.promise);
+    refreshCheckout.mockReturnValueOnce(refresh.promise);
     const respond = vi.fn();
-    const checking = handler({
-      params: { refreshCheckout: true },
-      respond,
-      context,
-    } as never);
-    const schedule = { channel: "dev" as const, autoEnabled: false };
+    const checking = status({ params: { refreshCheckout: true }, respond, context });
+    const updatedSchedule = { channel: "dev" as const, autoEnabled: false };
     try {
-      await vi.waitFor(() => expect(refreshGatewayUpdateStatusMock).toHaveBeenCalledOnce());
-      expect(refreshGatewayUpdateStatusMock.mock.calls[0]?.[0]).toBe(context.getRuntimeConfig);
-      expect(getUpdateScheduleMock).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(refreshCheckout).toHaveBeenCalledOnce());
+      expect(refreshCheckout.mock.calls[0]?.[0]).toBe(context.getRuntimeConfig);
+      expect(schedule).not.toHaveBeenCalled();
       expect(respond).not.toHaveBeenCalled();
-      getUpdateScheduleMock.mockReturnValue(schedule);
+      schedule.mockReturnValue(updatedSchedule);
     } finally {
       refresh.resolve();
       await checking;
     }
-    expect(respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({ effectiveChannel: "dev", schedule }),
-    );
+    expectStatus(respond, { effectiveChannel: "dev", schedule: updatedSchedule });
   });
 
   it("keeps status available when install identity initialization fails", async () => {
-    getUpdateEffectiveChannelMock.mockRejectedValueOnce(new Error("probe failed"));
+    effectiveChannel.mockRejectedValueOnce(new Error("probe failed"));
     const warn = vi.fn();
-    const { updateHandlers } = await import("./update.js");
-    const respond = vi.fn();
-
-    const handler = updateHandlers["update.status"];
-    if (!handler) {
-      throw new Error("update.status handler is unavailable");
-    }
-    await handler({ params: {}, respond, context: { logGateway: { warn } } } as never);
+    const respond = await status({ context: { logGateway: { warn } } });
 
     expect(warn).toHaveBeenCalledWith("update.status install identity failed: probe failed");
     expect(respond).toHaveBeenCalledWith(true, { sentinel: null, updateAvailable: null });
   });
 
   it("does not report cached status as a successful explicit refresh after a fetch error", async () => {
-    refreshGatewayUpdateStatusMock.mockRejectedValueOnce(new Error("fetch timed out"));
-    const { updateHandlers } = await import("./update.js");
-    const respond = vi.fn();
-    const handler = updateHandlers["update.status"];
-    if (!handler) {
-      throw new Error("update.status handler is unavailable");
-    }
-    await handler({
+    refreshCheckout.mockRejectedValueOnce(new Error("fetch timed out"));
+    const respond = await status({
       params: { refreshCheckout: true },
-      respond,
       context: {
         getRuntimeConfig: () => ({ update: { channel: "dev" } }),
         logGateway: { warn: vi.fn() },
       },
-    } as never);
+    });
     expect(respond).toHaveBeenCalledWith(false, undefined, {
       code: "UNAVAILABLE",
       message: "Could not check the latest update. Try again.",
@@ -213,68 +176,48 @@ describe("update.status effective channel", () => {
   });
 
   it("prepares the latest update sentinel before responding", async () => {
-    getUpdateAvailableMock.mockReturnValueOnce({
+    available.mockReturnValueOnce({
       currentVersion: "1.0.0",
       latestVersion: "2.0.0",
       channel: "latest",
     });
-    getLatestUpdateRestartSentinelMock.mockReturnValueOnce({
+    cachedSentinel.mockReturnValueOnce({
       kind: "update",
       status: "skipped",
       ts: 1,
       stats: { reason: "restart-health-pending" },
     });
-    refreshLatestUpdateRestartSentinelMock.mockResolvedValueOnce({
+    refreshSentinel.mockResolvedValueOnce({
       kind: "update",
       status: "ok",
       ts: 2,
       stats: { after: { version: "2.0.0" } },
     });
-    getUpdateScheduleMock.mockReturnValue({ channel: "beta", autoEnabled: true });
-    const { updateHandlers } = await import("./update.js");
-    const respond = vi.fn();
+    schedule.mockReturnValue({ channel: "beta", autoEnabled: true });
+    const respond = await status();
 
-    const handler = updateHandlers["update.status"];
-    if (!handler) {
-      throw new Error("update.status handler is unavailable");
-    }
-    await handler({ params: {}, respond } as never);
-
-    expect(refreshLatestUpdateRestartSentinelMock).toHaveBeenCalledTimes(1);
-    expect(respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({
-        sentinel: expect.objectContaining({ kind: "update", status: "ok" }),
-        updateAvailable: expect.objectContaining({ latestVersion: "2.0.0" }),
-        schedule: expect.objectContaining({ channel: "beta" }),
-      }),
-    );
-    expect(getUpdateEffectiveChannelMock).not.toHaveBeenCalled();
+    expect(refreshSentinel).toHaveBeenCalledTimes(1);
+    expectStatus(respond, {
+      sentinel: expect.objectContaining({ kind: "update", status: "ok" }),
+      updateAvailable: expect.objectContaining({ latestVersion: "2.0.0" }),
+      schedule: expect.objectContaining({ channel: "beta" }),
+    });
+    expect(effectiveChannel).not.toHaveBeenCalled();
   });
 
   it("falls back to the cached update sentinel when refresh fails", async () => {
-    refreshLatestUpdateRestartSentinelMock.mockRejectedValueOnce(new Error("read failed"));
-    getLatestUpdateRestartSentinelMock.mockReturnValueOnce({
+    refreshSentinel.mockRejectedValueOnce(new Error("read failed"));
+    cachedSentinel.mockReturnValueOnce({
       kind: "update",
       status: "skipped",
       ts: 1,
       stats: { reason: "restart-health-pending" },
     });
     const warn = vi.fn();
-    const { updateHandlers } = await import("./update.js");
-    const respond = vi.fn();
-
-    const handler = updateHandlers["update.status"];
-    if (!handler) {
-      throw new Error("update.status handler is unavailable");
-    }
-    await handler({ params: {}, respond, context: { logGateway: { warn } } } as never);
+    const respond = await status({ context: { logGateway: { warn } } });
 
     expect(warn).toHaveBeenCalledWith("update.status sentinel refresh failed: read failed");
-    expect(respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({ sentinel: expect.objectContaining({ status: "skipped" }) }),
-    );
+    expectStatus(respond, { sentinel: expect.objectContaining({ status: "skipped" }) });
   });
 });
 
@@ -289,14 +232,14 @@ it.each([
   let now = 0;
   vi.spyOn(performance, "now").mockImplementation(() => now);
   const createTiming = vi.spyOn(stageTiming, "createStageTimingTracker");
-  refreshLatestUpdateRestartSentinelMock.mockImplementationOnce(async () => {
+  refreshSentinel.mockImplementationOnce(async () => {
     now += elapsed - 50;
     return null;
   });
-  refreshGatewayUpdateStatusMock.mockImplementationOnce(async () => {
+  refreshCheckout.mockImplementationOnce(async () => {
     now += 20;
   });
-  getUpdateEffectiveChannelMock.mockImplementationOnce(async () => {
+  effectiveChannel.mockImplementationOnce(async () => {
     now += 30;
     return "stable";
   });
@@ -311,10 +254,7 @@ it.each([
     respond,
     context: { getRuntimeConfig: () => ({}), logGateway: { warn } },
   } as never);
-  expect(respond).toHaveBeenCalledWith(
-    true,
-    expect.objectContaining({ effectiveChannel: "stable" }),
-  );
+  expectStatus(respond, { effectiveChannel: "stable" });
   if (enabled && elapsed >= 1_000) {
     expect(warn).toHaveBeenCalledExactlyOnceWith("update.status: slow request", {
       operation: "update.status",
