@@ -4,38 +4,38 @@ import type { ProviderResolveModelRoutesContext } from "../plugin-sdk/provider-m
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import type { AgentHarnessHostCapabilities } from "./harness/host-capability-types.js";
 import type { AgentHarness } from "./harness/types.js";
-const streamSimpleMock = vi.fn();
-const parseSessionEntriesMock = vi.fn();
-const migrateSessionEntriesMock = vi.fn();
-const buildSessionContextMock = vi.fn();
-const ensureOpenClawModelsJsonMock = vi.fn();
-const loadPreparedModelRuntimeSnapshotMock = vi.fn();
-const snapshotResources: { acquire?: () => { release: () => Promise<void> } } = {};
-const discoverAuthStorageMock = vi.fn();
-const discoverModelsMock = vi.fn();
-const getModelRegistryRuntimeMock = vi.fn();
-const resolveModelWithRegistryMock = vi.fn();
-const ensureAuthProfileStoreMock = vi.fn();
-const ensureAuthProfileStoreWithoutExternalProfilesMock = vi.fn();
-const resolveModelAsyncMock = vi.fn();
-const getApiKeyForModelMock = vi.fn();
-const requireApiKeyMock = vi.fn();
-const resolveSessionAuthSelectionMock = vi.fn();
-const getActiveEmbeddedRunSnapshotMock = vi.fn();
-const resolveSessionAgentIdMock = vi.fn();
-const resolveSessionAgentIdsMock = vi.fn();
-const resolveAgentWorkspaceDirMock = vi.fn();
-const listAgentEntriesMock = vi.fn();
-const prepareProviderRuntimeAuthMock = vi.fn();
-const registerProviderStreamForModelMock = vi.fn();
-const resolveEmbeddedAgentStreamMock = vi.fn();
-const prepareCliRunContextMock = vi.fn();
-const executePreparedCliRunMock = vi.fn();
-const diagDebugMock = vi.fn();
-const ensureSelectedAgentHarnessPluginMock = vi.fn();
-const createAgentHarnessHostCapabilitiesMock = vi.fn();
-const closeAgentHarnessHostCapabilitiesMock = vi.fn();
-const agentHarnessHostCapabilitiesMock: AgentHarnessHostCapabilities = Object.freeze({
+export const streamSimpleMock = vi.fn();
+export const parseSessionEntriesMock = vi.fn();
+export const migrateSessionEntriesMock = vi.fn();
+export const buildSessionContextMock = vi.fn();
+export const ensureOpenClawModelsJsonMock = vi.fn();
+export const loadPreparedModelRuntimeSnapshotMock = vi.fn();
+export const snapshotResources: { acquire?: () => { release: () => Promise<void> } } = {};
+export const discoverAuthStorageMock = vi.fn();
+export const discoverModelsMock = vi.fn();
+export const getModelRegistryRuntimeMock = vi.fn();
+export const resolveModelWithRegistryMock = vi.fn();
+export const ensureAuthProfileStoreMock = vi.fn();
+export const ensureAuthProfileStoreWithoutExternalProfilesMock = vi.fn();
+export const resolveModelAsyncMock = vi.fn();
+export const getApiKeyForModelMock = vi.fn();
+export const requireApiKeyMock = vi.fn();
+export const resolveSessionAuthSelectionMock = vi.fn();
+export const getActiveEmbeddedRunSnapshotMock = vi.fn();
+export const resolveSessionAgentIdMock = vi.fn();
+export const resolveSessionAgentIdsMock = vi.fn();
+export const resolveAgentWorkspaceDirMock = vi.fn();
+export const listAgentEntriesMock = vi.fn();
+export const prepareProviderRuntimeAuthMock = vi.fn();
+export const registerProviderStreamForModelMock = vi.fn();
+export const resolveEmbeddedAgentStreamMock = vi.fn();
+export const prepareCliRunContextMock = vi.fn();
+export const executePreparedCliRunMock = vi.fn();
+export const diagDebugMock = vi.fn();
+export const ensureSelectedAgentHarnessPluginMock = vi.fn();
+export const createAgentHarnessHostCapabilitiesMock = vi.fn();
+export const closeAgentHarnessHostCapabilitiesMock = vi.fn();
+export const agentHarnessHostCapabilitiesMock: AgentHarnessHostCapabilities = Object.freeze({
   kind: "agent-harness-host-capability",
   version: 1,
   assertActive: vi.fn(),
@@ -44,16 +44,18 @@ const agentHarnessHostCapabilitiesMock: AgentHarnessHostCapabilities = Object.fr
   requestApproval: vi.fn(),
   waitForApproval: vi.fn(),
 });
-const listSessionEntriesCoreMock = vi.fn();
-const loadSessionEntryMock = vi.fn();
-const loadTranscriptEventsMock = vi.fn();
+export const listSessionEntriesCoreMock = vi.fn();
+export const loadSessionEntryMock = vi.fn();
+export const loadTranscriptEventsMock = vi.fn();
 const builtInOpenClawHarnesses = new WeakSet<object>();
-const shouldPreferExplicitConfigApiKeyAuthMock = vi.fn((..._args: unknown[]) => false);
-const hasUsableCustomProviderApiKeyMock = vi.fn((..._args: unknown[]) => false);
-const resolveProviderEntryApiKeyProfileReferenceMock = vi.fn((_params?: unknown): unknown => ({
-  kind: "none",
-}));
-const preparedRuntimeSnapshotState = vi.hoisted(() => ({
+export const shouldPreferExplicitConfigApiKeyAuthMock = vi.fn((..._args: unknown[]) => false);
+export const hasUsableCustomProviderApiKeyMock = vi.fn((..._args: unknown[]) => false);
+export const resolveProviderEntryApiKeyProfileReferenceMock = vi.fn(
+  (_params?: unknown): unknown => ({
+    kind: "none",
+  }),
+);
+export const preparedRuntimeSnapshotState = vi.hoisted(() => ({
   snapshot: undefined as unknown,
   useSnapshotPluginRegistry: false,
 }));
@@ -343,45 +345,3 @@ vi.mock("../config/sessions/session-entry-read-runtime.js", async (importOrigina
   readSessionEntrySummariesInWorker: async (...args: unknown[]) =>
     listSessionEntriesCoreMock(...args),
 }));
-
-export {
-  streamSimpleMock,
-  parseSessionEntriesMock,
-  migrateSessionEntriesMock,
-  buildSessionContextMock,
-  ensureOpenClawModelsJsonMock,
-  loadPreparedModelRuntimeSnapshotMock,
-  snapshotResources,
-  discoverAuthStorageMock,
-  discoverModelsMock,
-  getModelRegistryRuntimeMock,
-  resolveModelWithRegistryMock,
-  ensureAuthProfileStoreMock,
-  ensureAuthProfileStoreWithoutExternalProfilesMock,
-  resolveModelAsyncMock,
-  getApiKeyForModelMock,
-  requireApiKeyMock,
-  resolveSessionAuthSelectionMock,
-  getActiveEmbeddedRunSnapshotMock,
-  resolveSessionAgentIdMock,
-  resolveSessionAgentIdsMock,
-  resolveAgentWorkspaceDirMock,
-  listAgentEntriesMock,
-  prepareProviderRuntimeAuthMock,
-  registerProviderStreamForModelMock,
-  resolveEmbeddedAgentStreamMock,
-  prepareCliRunContextMock,
-  executePreparedCliRunMock,
-  diagDebugMock,
-  ensureSelectedAgentHarnessPluginMock,
-  createAgentHarnessHostCapabilitiesMock,
-  closeAgentHarnessHostCapabilitiesMock,
-  agentHarnessHostCapabilitiesMock,
-  listSessionEntriesCoreMock,
-  loadSessionEntryMock,
-  loadTranscriptEventsMock,
-  shouldPreferExplicitConfigApiKeyAuthMock,
-  hasUsableCustomProviderApiKeyMock,
-  resolveProviderEntryApiKeyProfileReferenceMock,
-  preparedRuntimeSnapshotState,
-};

@@ -1,7 +1,6 @@
 /** Tests diagnostic cache-trace event writing, redaction, and stream wrapping. */
 import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { OpenClawConfig } from "../config/config.js";
 import { createCacheTrace } from "./cache-trace.js";
 
 describe("createCacheTrace", () => {
@@ -11,41 +10,45 @@ describe("createCacheTrace", () => {
   const bareGoogleKey = "AIzaSyA1bC2dE3fG4hI5jK6lM7nO8pQrStUvW"; // pragma: allowlist secret
   const barePerplexityKey = "pplx-AbCdEfGhIjKlMnOpQrStUvWx"; // pragma: allowlist secret
 
-  function createMemoryTraceForTest(env: NodeJS.ProcessEnv = {}) {
+  function createMemoryTraceForTest(
+    overrides: Partial<Parameters<typeof createCacheTrace>[0]> = {},
+  ) {
     const lines: string[] = [];
     const trace = createCacheTrace({
       cfg: { diagnostics: { cacheTrace: { enabled: true } } },
-      env,
+      env: {},
       writer: {
         filePath: "memory",
         write: (line) => lines.push(line),
         flush: async () => undefined,
       },
+      ...overrides,
     });
     return { lines, trace };
   }
 
-  it("returns null when diagnostics cache tracing is disabled", () => {
-    const trace = createCacheTrace({
-      cfg: {} as OpenClawConfig,
-      env: {},
-    });
+  function readEvent(lines: string[], index = 0): Record<string, unknown> {
+    return JSON.parse(lines[index]?.trim() ?? "{}");
+  }
 
+  function expectNoSecrets(event: unknown, secrets: string[]) {
+    const serialized = JSON.stringify(event);
+    for (const secret of secrets) {
+      expect(serialized).not.toContain(secret);
+    }
+  }
+
+  it("returns null when diagnostics cache tracing is disabled", () => {
+    const { trace } = createMemoryTraceForTest({ cfg: {} });
     expect(trace).toBeNull();
   });
 
   it.each(["dashboard"])(
     "does not record Incognito %s prompts even when content tracing is enabled",
     (surface) => {
-      const lines: string[] = [];
-      const trace = createCacheTrace({
+      const { lines, trace } = createMemoryTraceForTest({
         env: { OPENCLAW_CACHE_TRACE: "1" },
         sessionKey: `agent:main:${surface}:incognito-private`,
-        writer: {
-          filePath: "memory",
-          write: (line) => lines.push(line),
-          flush: async () => undefined,
-        },
       });
       trace?.recordStage("prompt:before", { prompt: "synthetic private prompt" });
       expect(lines).toEqual([]);
@@ -75,10 +78,11 @@ describe("createCacheTrace", () => {
       {},
     );
 
-    const event = JSON.parse(lines[0]?.trim() ?? "{}") as Record<string, unknown>;
-    expect(event.stage).toBe("stream:context");
-    expect(event.system).toBe("system prompt text");
-    expect(event.systemDigest).toBeTypeOf("string");
+    expect(readEvent(lines)).toMatchObject({
+      stage: "stream:context",
+      system: "system prompt text",
+      systemDigest: expect.any(String),
+    });
   });
 
   it("sanitizes cache-trace payloads before writing", () => {
@@ -138,22 +142,18 @@ describe("createCacheTrace", () => {
       ] as unknown as [],
     });
 
-    const event = JSON.parse(lines[0]?.trim() ?? "{}") as Record<string, unknown>;
+    const event = readEvent(lines);
     const systemProvider =
       (event.system as { provider?: Record<string, unknown> } | undefined)?.provider ?? {};
     expect(systemProvider).toMatchObject({
       baseUrl: "https://api.example.com",
+      diagnosticText: expect.any(String),
     });
-    expect(systemProvider.diagnosticText).toBeTypeOf("string");
-    expect(systemProvider.diagnosticText).not.toContain(bareAwsKey);
     expect(event.model).toEqual({
       id: "test-model",
       tokenCount: 8192,
       diagnosticText: expect.any(String),
     });
-    expect((event.model as { diagnosticText?: string }).diagnosticText).not.toContain(
-      bareGoogleKey,
-    );
     expect(event.options).toEqual({
       diagnosticText: expect.any(String),
       nested: {
@@ -162,9 +162,6 @@ describe("createCacheTrace", () => {
       },
       images: "<redacted>",
     });
-    expect((event.options as { diagnosticText?: string }).diagnosticText).not.toContain(
-      bareGithubKey,
-    );
 
     const firstMessage = ((event.messages as Array<Record<string, unknown>> | undefined) ?? [])[0];
     expect(firstMessage).not.toHaveProperty("token");
@@ -178,18 +175,20 @@ describe("createCacheTrace", () => {
       type: "text",
       text: expect.any(String),
     });
-    expect(content[0]?.text).not.toContain(barePerplexityKey);
     const source = (content[1]?.source ?? {}) as Record<string, unknown>;
-    expect(source.data).toBe("<redacted>");
-    expect(source.bytes).toBe(6);
-    expect(source.sha256).toBe(crypto.createHash("sha256").update("U0VDUkVU").digest("hex"));
-    const serialized = JSON.stringify(event);
-    expect(serialized).not.toContain("providerReplay");
-    expect(serialized).not.toContain("opaque-cache-trace-compaction");
-    expect(serialized).not.toContain(bareAwsKey);
-    expect(serialized).not.toContain(bareGoogleKey);
-    expect(serialized).not.toContain(bareGithubKey);
-    expect(serialized).not.toContain(barePerplexityKey);
+    expect(source).toMatchObject({
+      data: "<redacted>",
+      bytes: 6,
+      sha256: crypto.createHash("sha256").update("U0VDUkVU").digest("hex"),
+    });
+    expectNoSecrets(event, [
+      "providerReplay",
+      "opaque-cache-trace-compaction",
+      bareAwsKey,
+      bareGoogleKey,
+      bareGithubKey,
+      barePerplexityKey,
+    ]);
   });
 
   it("redacts bare vendor keys from cache-trace prompt, note, and error fields", () => {
@@ -201,14 +200,13 @@ describe("createCacheTrace", () => {
       error: `error ${bareGoogleKey}`,
     });
 
-    const event = JSON.parse(lines[0]?.trim() ?? "{}") as Record<string, unknown>;
-    expect(event.prompt).toBeTypeOf("string");
-    expect(event.note).toBeTypeOf("string");
-    expect(event.error).toBeTypeOf("string");
-    const serialized = JSON.stringify(event);
-    expect(serialized).not.toContain(bareAnthropicKey);
-    expect(serialized).not.toContain(bareGithubKey);
-    expect(serialized).not.toContain(bareGoogleKey);
+    const event = readEvent(lines);
+    expect(event).toMatchObject({
+      prompt: expect.any(String),
+      note: expect.any(String),
+      error: expect.any(String),
+    });
+    expectNoSecrets(event, [bareAnthropicKey, bareGithubKey, bareGoogleKey]);
   });
 
   it("handles circular references in messages without stack overflow", () => {
@@ -228,7 +226,7 @@ describe("createCacheTrace", () => {
       .createHash("sha256")
       .update('{"child":{"ref":"[Circular]"},"content":"hello","role":"user"}')
       .digest("hex");
-    const event = JSON.parse(lines[0]?.trim() ?? "{}") as Record<string, unknown>;
+    const event = readEvent(lines);
     expect(event).toStrictEqual({
       ts: expect.any(String),
       seq: 1,
@@ -252,12 +250,6 @@ describe("createCacheTrace", () => {
       messages: [{ role: "user", content: "leftright", timestamp: 1 }],
     });
 
-    const malformedEvent = JSON.parse(lines[0]?.trim() ?? "{}") as {
-      messageFingerprints?: string[];
-    };
-    const normalizedEvent = JSON.parse(lines[1]?.trim() ?? "{}") as {
-      messageFingerprints?: string[];
-    };
-    expect(malformedEvent.messageFingerprints).toEqual(normalizedEvent.messageFingerprints);
+    expect(readEvent(lines).messageFingerprints).toEqual(readEvent(lines, 1).messageFingerprints);
   });
 });
