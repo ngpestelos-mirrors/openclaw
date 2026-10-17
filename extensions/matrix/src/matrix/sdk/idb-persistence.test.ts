@@ -75,7 +75,6 @@ describe("Matrix IndexedDB persistence", () => {
   });
 
   it("holds exclusive crypto-store ownership until release", async () => {
-    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
     const first = await acquireMatrixCryptoStoreOwnership(snapshotPath);
     try {
       await expect(acquireMatrixCryptoStoreOwnership(snapshotPath)).rejects.toMatchObject({
@@ -89,7 +88,6 @@ describe("Matrix IndexedDB persistence", () => {
   });
 
   it("refuses a successor after a failed final state publication", async () => {
-    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
     const owner = await acquireMatrixCryptoStoreOwnership(snapshotPath);
     await owner.armUnsafeState();
     await owner.release();
@@ -205,7 +203,6 @@ describe("Matrix IndexedDB persistence", () => {
   });
 
   it("refuses a new account engine when its durable snapshot cannot be replayed", async () => {
-    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
     await writeMatrixIdbSnapshotJson({
       storageRootDir: tmpDir,
       snapshotJson: "not valid JSON",

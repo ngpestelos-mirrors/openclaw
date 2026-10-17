@@ -129,13 +129,16 @@ describe("users model-account connection lifecycle", () => {
   });
 
   it("retains an unknown write outcome without replaying it on status or answer", async () => {
-    connectUserModelAccount.mockRejectedValueOnce(new Error("Worker outcome unknown"));
-    const flow = await startFlow();
-    await complete(flow);
-    expect(await terminal(flow, "failed")).toEqual({ status: "failed", reason: "unavailable" });
-    await complete(flow);
-    await status(flow);
-    expect(connectUserModelAccount).toHaveBeenCalledOnce();
+    auth.connectUserModelAccount.mockRejectedValueOnce(new Error("Worker outcome unknown"));
+    const flow = await auth.startFlow();
+    await auth.complete(flow);
+    expect(await auth.terminal(flow, "failed")).toEqual({
+      status: "failed",
+      reason: "unavailable",
+    });
+    await auth.complete(flow);
+    await auth.status(flow);
+    expect(auth.connectUserModelAccount).toHaveBeenCalledOnce();
   });
 
   it("records provider completion while a prompt is open without requiring an answer", async () => {

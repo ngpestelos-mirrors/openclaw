@@ -414,7 +414,7 @@ describe("Matrix encrypted startup ownership", () => {
       }
       return file;
     });
-    const makeClient = () =>
+    const makeRecoveryClient = () =>
       new MatrixClient("https://matrix.example.org", "test-token", {
         userId: "@bot:example.org",
         deviceId: "BOT",
@@ -422,13 +422,13 @@ describe("Matrix encrypted startup ownership", () => {
         autoBootstrapCrypto: false,
         idbSnapshotPath: snapshotPath,
       });
-    const owner = makeClient();
+    const owner = makeRecoveryClient();
     let successor: MatrixClient | undefined;
     try {
       await expect(owner.prepareForOneOff()).rejects.toThrow("marker sync failed");
       expect(fixture.init).not.toHaveBeenCalled();
       vi.restoreAllMocks();
-      successor = makeClient();
+      successor = makeRecoveryClient();
       await successor.prepareForOneOff();
       await successor.stopAndPersist();
     } finally {
