@@ -200,13 +200,10 @@ describe("MCP tool human-input timeouts", () => {
     await toolStarted.promise;
     await vi.advanceTimersByTimeAsync(requestTimeoutMs);
     await call.pending;
-    expect(call.respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({
-        message: expect.stringContaining("-32001: Request timed out"),
-      }),
-    );
+    expect(call.respond).toHaveBeenCalledWith(false, undefined, {
+      code: "UNAVAILABLE",
+      message: "Request timed out",
+    });
   });
 
   it("bounds repeated human questions by one allowance for the whole tool call", async () => {
@@ -235,12 +232,9 @@ describe("MCP tool human-input timeouts", () => {
     expect(call.respond).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     await call.pending;
-    expect(call.respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({
-        message: expect.stringContaining("-32001: Request timed out"),
-      }),
-    );
+    expect(call.respond).toHaveBeenCalledWith(false, undefined, {
+      code: "UNAVAILABLE",
+      message: "Request timed out",
+    });
   });
 });
