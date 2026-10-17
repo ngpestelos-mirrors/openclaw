@@ -18,6 +18,33 @@ import { deriveEnvironmentIntent } from "./service-contract.js";
 import * as support from "./service.test-support.js";
 
 type WorkerEnvironmentServiceError = support.WorkerEnvironmentServiceError;
+type Service = ReturnType<typeof support.createService>;
+const protocolFeatures = [
+  WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE,
+  WORKER_EXECUTION_AUTHORITY_PROTOCOL_FEATURE,
+];
+const ensureNodeWorkerBundle = async () => ({
+  ...support.BOOTSTRAP_RECEIPT,
+  protocolFeatures: [...protocolFeatures],
+});
+const create = (service: Service, idempotencyKey: string) =>
+  service.createWithRequest({ profileId: "development", idempotencyKey });
+const invalidSshLease = (patch: object) => ({
+  leaseId: "lease-invalid",
+  ssh: support.SSH_ENDPOINT,
+  ...patch,
+});
+const providerFailure = {
+  code: "provider_failure",
+} satisfies Partial<WorkerEnvironmentServiceError>;
+async function waitForEntry(entered: Promise<unknown>, operation: Promise<unknown>, label: string) {
+  await Promise.race([
+    entered,
+    operation.then((result) => {
+      throw new Error(`${label} ended before expected entry`, { cause: result });
+    }),
+  ]);
+}
 
 describe("worker environment service provision replay", () => {
   support.setupWorkerEnvironmentServiceSuite();
@@ -37,11 +64,7 @@ describe("worker environment service provision replay", () => {
       throw new Error("enrollment must not run");
     };
     const first = support.createService(provider, { prepareNodeEnrollment: enrollment });
-    await expect(
-      first.createWithRequest({ profileId: "development", idempotencyKey: "preflight-replay" }),
-    ).rejects.toMatchObject({
-      code: "provider_failure",
-    });
+    await expect(create(first, "preflight-replay")).rejects.toMatchObject(providerFailure);
     const original = support.testState.store.list()[0]!;
     expect(original.state).toBe("provisioning");
     await support.reopenWorkerEnvironmentStore();
@@ -196,15 +219,14 @@ describe("worker environment service provision replay", () => {
     });
     support.testState.prepareInstallation = vi.fn(async () => ({
       ...support.BUNDLE_ARTIFACT,
-      protocolFeatures: [
-        WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE,
-        WORKER_EXECUTION_AUTHORITY_PROTOCOL_FEATURE,
-      ],
+      protocolFeatures: [...protocolFeatures],
     }));
-    let placements = createWorkerSessionPlacementStore({
-      database: support.testState.stateDb,
-      now: () => support.testState.nowMs,
-    });
+    const placementStore = () =>
+      createWorkerSessionPlacementStore({
+        database: support.testState.stateDb,
+        now: () => support.testState.nowMs,
+      });
+    let placements = placementStore();
     const placement = await placements.startDispatch(REQUEST);
     const idempotencyKey = `session-dispatch:${REQUEST.sessionId}:${placement.generation}`;
     const intent = deriveEnvironmentIntent(idempotencyKey);
@@ -216,13 +238,7 @@ describe("worker environment service provision replay", () => {
       patch: { environmentId: intent.environmentId },
     });
     const first = support.createService(provider, {
-      ensureNodeWorkerBundle: async () => ({
-        ...support.BOOTSTRAP_RECEIPT,
-        protocolFeatures: [
-          WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE,
-          WORKER_EXECUTION_AUTHORITY_PROTOCOL_FEATURE,
-        ],
-      }),
+      ensureNodeWorkerBundle,
       prepareNodeEnrollment: async () => {
         throw new Error("first provision reply was lost before node enrollment");
       },
@@ -234,7 +250,7 @@ describe("worker environment service provision replay", () => {
         idempotencyKey,
         executionMode: REQUEST.executionMode,
       }),
-    ).rejects.toMatchObject({ code: "provider_failure" });
+    ).rejects.toMatchObject(providerFailure);
     events.push("first:failed");
     expect(support.testState.store.get(intent.environmentId)).toMatchObject({
       state: "provisioning",
@@ -244,19 +260,10 @@ describe("worker environment service provision replay", () => {
 
     await support.reopenWorkerEnvironmentStore();
     events.push("first:stopped");
-    placements = createWorkerSessionPlacementStore({
-      database: support.testState.stateDb,
-      now: () => support.testState.nowMs,
-    });
+    placements = placementStore();
     const { nodeTunnelManager, syncWorkspace } = createProviderReplayNodeTunnel();
     const restarted = support.createService(provider, {
-      ensureNodeWorkerBundle: async () => ({
-        ...support.BOOTSTRAP_RECEIPT,
-        protocolFeatures: [
-          WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE,
-          WORKER_EXECUTION_AUTHORITY_PROTOCOL_FEATURE,
-        ],
-      }),
+      ensureNodeWorkerBundle,
       prepareNodeEnrollment: async (record) => {
         const enrolled = await support.testState.store.ensureNodeEnrollment(record.environmentId);
         return {
@@ -369,132 +376,106 @@ describe("worker environment service provision replay", () => {
     expect(destroy).not.toHaveBeenCalled();
   });
 
-  it.each([{ released: false, verbose: true }])(
-    "recovers indeterminate cleanup (released: $released, verbose: $verbose)",
-    async ({ released, verbose }) => {
-      const leaseId = "lease:worker-provision-cleanup";
-      const provisionDiagnosis = "worker enrollment failed: tar: Unexpected EOF in archive";
-      const cleanupDiagnosis = "provider stop timed out after release was requested";
-      const secret = `synthetic-worker-auth-${"x".repeat(48)}`;
-      const progress = String.fromCodePoint(0x1f9ea).repeat(200);
-      const provisionDetail = verbose
-        ? `Crabbox worker bootstrap failed with exit code 1: ... ${progress} --provider aws --type worker\nAuthorization: Bearer ${secret}\n${provisionDiagnosis}`
-        : provisionDiagnosis;
-      const cleanupDetail = verbose
-        ? `Crabbox stop did not exit normally (timeout): ... ${progress} --provider aws --type worker\nAuthorization: Bearer ${secret}\n${cleanupDiagnosis}`
-        : cleanupDiagnosis;
-      const provision = vi.fn(async () => {
-        throw WorkerProviderError.cleanupIndeterminate(
-          leaseId,
-          new Error(provisionDetail),
-          new Error(cleanupDetail),
-        );
-      });
-      const inspect = vi.fn(async () => ({
-        status: released ? ("destroyed" as const) : ("active" as const),
-      }));
-      const destroy = vi.fn(async () => {});
-      const provider = support.createProvider({ provision, inspect, destroy });
-      const workerService = support.createService(provider);
-
-      const failure = await workerService
-        .createWithRequest({
-          profileId: "development",
-          idempotencyKey: "request-provision-cleanup",
-        })
-        .catch((error: unknown) => error);
-      expect(failure).toMatchObject({
-        code: "provider_failure",
-      } satisfies Partial<WorkerEnvironmentServiceError>);
-      if (!(failure instanceof Error)) {
-        throw new Error("expected worker creation to fail");
-      }
-      const pending = expectDefined(
-        support.testState.store.list()[0],
-        "persisted provision cleanup",
-      );
-      const diagnostic = expectDefined(pending.lastError, "persisted cleanup diagnostic");
-      for (const detail of [failure.message, diagnostic]) {
-        expect(detail).toContain(provisionDiagnosis);
-        expect(detail).toContain(cleanupDiagnosis);
-        expect(detail).not.toContain(secret);
-        expect(detail).not.toContain("x".repeat(40));
-        expect(detail).not.toMatch(/\s{2,}/u);
-        expect(Buffer.from(detail, "utf8").toString("utf8")).toBe(detail);
-        if (verbose) {
-          expect(detail).toContain("Crabbox worker bootstrap failed with exit code 1");
-          expect(detail).toContain("Crabbox stop did not exit normally (timeout)");
-        }
-      }
-      expect(diagnostic.length).toBeLessThanOrEqual(1_024);
-      expect(failure.message).toBe(
-        `Worker provider operation failed; teardown is pending: ${diagnostic}`,
-      );
-      expect(pending).toMatchObject({
-        state: "destroying",
+  it("recovers indeterminate cleanup with bounded, redacted diagnostics", async () => {
+    const leaseId = "lease:worker-provision-cleanup";
+    const provisionDiagnosis = "worker enrollment failed: tar: Unexpected EOF in archive";
+    const cleanupDiagnosis = "provider stop timed out after release was requested";
+    const secret = `synthetic-worker-auth-${"x".repeat(48)}`;
+    const progress = String.fromCodePoint(0x1f9ea).repeat(200);
+    const provisionDetail = `Crabbox worker bootstrap failed with exit code 1: ... ${progress} --provider aws --type worker\nAuthorization: Bearer ${secret}\n${provisionDiagnosis}`;
+    const cleanupDetail = `Crabbox stop did not exit normally (timeout): ... ${progress} --provider aws --type worker\nAuthorization: Bearer ${secret}\n${cleanupDiagnosis}`;
+    const provision = vi.fn(async () => {
+      throw WorkerProviderError.cleanupIndeterminate(
         leaseId,
-        destroyRequestedAtMs: expect.any(Number),
-        teardownTerminalState: "failed",
-        lastError: diagnostic,
-      });
-
-      await support.reopenWorkerEnvironmentStore();
-      const restarted = support.createService(provider);
-      restarted.start();
-      await support.waitForFast(() =>
-        expect(support.testState.store.get(pending.environmentId)).toMatchObject({
-          state: "failed",
-          leaseId: null,
-        }),
+        new Error(provisionDetail),
+        new Error(cleanupDetail),
       );
+    });
+    const inspect = vi.fn(async () => ({ status: "active" as const }));
+    const destroy = vi.fn(async () => {});
+    const provider = support.createProvider({ provision, inspect, destroy });
+    const workerService = support.createService(provider);
 
-      expect(provision).toHaveBeenCalledTimes(1);
-      expect(inspect).toHaveBeenCalledWith(
-        expect.objectContaining({ leaseId, profile: { region: "test" } }),
-      );
-      expect(destroy).toHaveBeenCalledTimes(released ? 0 : 1);
-      if (!released) {
-        expect(destroy).toHaveBeenCalledWith({ leaseId, profile: { region: "test" } });
-      }
+    const failure = await create(workerService, "request-provision-cleanup").catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toMatchObject(providerFailure);
+    if (!(failure instanceof Error)) {
+      throw new Error("expected worker creation to fail");
+    }
+    const pending = expectDefined(support.testState.store.list()[0], "persisted provision cleanup");
+    const diagnostic = expectDefined(pending.lastError, "persisted cleanup diagnostic");
+    for (const detail of [failure.message, diagnostic]) {
+      expect(detail).toContain(provisionDiagnosis);
+      expect(detail).toContain(cleanupDiagnosis);
+      expect(detail).not.toContain(secret);
+      expect(detail).not.toContain("x".repeat(40));
+      expect(detail).not.toMatch(/\s{2,}/u);
+      expect(Buffer.from(detail, "utf8").toString("utf8")).toBe(detail);
+      expect(detail).toContain("Crabbox worker bootstrap failed with exit code 1");
+      expect(detail).toContain("Crabbox stop did not exit normally (timeout)");
+    }
+    expect(diagnostic.length).toBeLessThanOrEqual(1_024);
+    expect(failure.message).toBe(
+      `Worker provider operation failed; teardown is pending: ${diagnostic}`,
+    );
+    expect(pending).toMatchObject({
+      state: "destroying",
+      leaseId,
+      destroyRequestedAtMs: expect.any(Number),
+      teardownTerminalState: "failed",
+      lastError: diagnostic,
+    });
+
+    await support.reopenWorkerEnvironmentStore();
+    const restarted = support.createService(provider);
+    restarted.start();
+    await support.waitForFast(() =>
       expect(support.testState.store.get(pending.environmentId)).toMatchObject({
         state: "failed",
         leaseId: null,
-        teardownTerminalState: "failed",
-        lastError: diagnostic,
-      });
-    },
-  );
+      }),
+    );
 
-  it.each([["timer overflow", MAX_TIMER_TIMEOUT_MS + 1]])(
-    "rejects a %s provider provision timeout before allocation",
-    async (_label, timeoutMs) => {
-      const provision = vi.fn(async () => ({
-        leaseId: "lease-invalid-timeout",
-        ssh: support.SSH_ENDPOINT,
-      }));
-      const workerService = support.createService(
-        support.createProvider({
-          provision,
-          resolveProvisionTimeoutMs: () => timeoutMs,
-        }),
-      );
+    expect(provision).toHaveBeenCalledTimes(1);
+    expect(inspect).toHaveBeenCalledWith(
+      expect.objectContaining({ leaseId, profile: { region: "test" } }),
+    );
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(destroy).toHaveBeenCalledWith({ leaseId, profile: { region: "test" } });
+    expect(support.testState.store.get(pending.environmentId)).toMatchObject({
+      state: "failed",
+      leaseId: null,
+      teardownTerminalState: "failed",
+      lastError: diagnostic,
+    });
+  });
 
-      await expect(
-        workerService.createWithRequest({
-          profileId: "development",
-          idempotencyKey: `request-invalid-provider-timeout-${String(timeoutMs)}`,
-        }),
-      ).rejects.toMatchObject({
-        code: "provider_failure",
-        message: expect.stringContaining("Worker provider provision timeout must be an integer"),
-      } satisfies Partial<WorkerEnvironmentServiceError>);
-      expect(provision).not.toHaveBeenCalled();
-      expect(support.testState.store.list()[0]).toMatchObject({
-        state: "failed",
-        leaseId: null,
-      });
-    },
-  );
+  it("rejects a timer-overflow provider provision timeout before allocation", async () => {
+    const timeoutMs = MAX_TIMER_TIMEOUT_MS + 1;
+    const provision = vi.fn(async () => ({
+      leaseId: "lease-invalid-timeout",
+      ssh: support.SSH_ENDPOINT,
+    }));
+    const workerService = support.createService(
+      support.createProvider({
+        provision,
+        resolveProvisionTimeoutMs: () => timeoutMs,
+      }),
+    );
+
+    await expect(
+      create(workerService, `request-invalid-provider-timeout-${String(timeoutMs)}`),
+    ).rejects.toMatchObject({
+      code: "provider_failure",
+      message: expect.stringContaining("Worker provider provision timeout must be an integer"),
+    } satisfies Partial<WorkerEnvironmentServiceError>);
+    expect(provision).not.toHaveBeenCalled();
+    expect(support.testState.store.list()[0]).toMatchObject({
+      state: "failed",
+      leaseId: null,
+    });
+  });
 
   it("does not invoke a late prepared allocation after replay times out", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -517,24 +498,14 @@ describe("worker environment service provision replay", () => {
       }),
       { providerCallTimeoutMs: 25 },
     );
-    await expect(
-      service.createWithRequest({
-        profileId: "development",
-        idempotencyKey: "replayed-preparation",
-      }),
-    ).rejects.toThrow("response lost after allocation");
-    const replay = service
-      .createWithRequest({ profileId: "development", idempotencyKey: "replayed-preparation" })
-      .catch((error: unknown) => error);
+    await expect(create(service, "replayed-preparation")).rejects.toThrow(
+      "response lost after allocation",
+    );
+    const replay = create(service, "replayed-preparation").catch((error: unknown) => error);
     try {
-      await Promise.race([
-        entered.promise,
-        replay.then((result) => {
-          throw new Error("Replay ended before provider preparation", { cause: result });
-        }),
-      ]);
+      await waitForEntry(entered.promise, replay, "Replay preparation");
       await vi.advanceTimersByTimeAsync(25);
-      expect(await replay).toMatchObject({ code: "provider_failure" });
+      expect(await replay).toMatchObject(providerFailure);
       expect(support.testState.store.list()[0]).toMatchObject({
         state: "provisioning",
         leaseId: null,
@@ -601,10 +572,7 @@ describe("worker environment service provision replay", () => {
       resolveProvisionTimeoutMs: () => 20,
     });
     const workerService = support.createService(provider);
-    const creation = workerService.createWithRequest({
-      profileId: "development",
-      idempotencyKey: "request-provider-timeout-race",
-    });
+    const creation = create(workerService, "request-provider-timeout-race");
     const creationResult = creation.then(
       (value) => ({ value }),
       (error: unknown) => ({ error }),
@@ -612,12 +580,7 @@ describe("worker environment service provision replay", () => {
     let environmentId: string | undefined;
     let teardownResult: Promise<unknown> | undefined;
     try {
-      await Promise.race([
-        provisionEntered.promise,
-        creationResult.then((result) => {
-          throw new Error("Creation ended before provider entry", { cause: result });
-        }),
-      ]);
+      await waitForEntry(provisionEntered.promise, creationResult, "Creation provider call");
       expect(events).toEqual(["provision:1:start"]);
       const queuedEnvironmentId = expectDefined(
         support.testState.store.list()[0],
@@ -630,14 +593,9 @@ describe("worker environment service provision replay", () => {
       );
       await vi.advanceTimersByTimeAsync(20);
       expect(await creationResult).toMatchObject({
-        error: { code: "provider_failure" } satisfies Partial<WorkerEnvironmentServiceError>,
+        error: providerFailure,
       });
-      await Promise.race([
-        intentCommitted.promise,
-        teardownResult.then((result) => {
-          throw new Error("Teardown ended before destroy intent committed", { cause: result });
-        }),
-      ]);
+      await waitForEntry(intentCommitted.promise, teardownResult, "Teardown intent commit");
       expect(originalProvisionCalls).toBe(1);
       expect(destroy).not.toHaveBeenCalled();
       expect(maxActive).toBe(1);
@@ -669,39 +627,29 @@ describe("worker environment service provision replay", () => {
     ],
     [
       "malformed SSH endpoint",
-      { leaseId: "lease-invalid", ssh: { ...support.SSH_ENDPOINT, keyRef: "not-a-secret-ref" } },
+      invalidSshLease({ ssh: { ...support.SSH_ENDPOINT, keyRef: "not-a-secret-ref" } }),
       "SSH key must be a valid SecretRef",
     ],
     [
       "invalid shared-host declaration",
-      { leaseId: "lease-invalid", ssh: support.SSH_ENDPOINT, sharedHost: "yes" },
+      invalidSshLease({ sharedHost: "yes" }),
       "invalid provision result",
     ],
     [
       "unsupported desktop protocol",
-      {
-        leaseId: "lease-invalid",
-        ssh: support.SSH_ENDPOINT,
-        desktop: { protocol: "rdp", port: 5900 },
-      },
+      invalidSshLease({ desktop: { protocol: "rdp", port: 5900 } }),
       'desktop protocol must be "rfb"',
     ],
     [
       "invalid desktop port",
-      {
-        leaseId: "lease-invalid",
-        ssh: support.SSH_ENDPOINT,
-        desktop: { protocol: "rfb", port: 0 },
-      },
+      invalidSshLease({ desktop: { protocol: "rfb", port: 0 } }),
       "desktop port must be an integer",
     ],
     [
       "relative desktop password path",
-      {
-        leaseId: "lease-invalid",
-        ssh: support.SSH_ENDPOINT,
+      invalidSshLease({
         desktop: { protocol: "rfb", port: 5900, passwordFilePath: "vnc.password" },
-      },
+      }),
       "desktop password file path must be absolute",
     ],
   ])("keeps %s from a provider retryable", async (_name, result, error) => {
@@ -709,12 +657,7 @@ describe("worker environment service provision replay", () => {
       support.createProvider({ provision: async () => result as never }),
     );
 
-    await expect(
-      workerService.createWithRequest({
-        profileId: "development",
-        idempotencyKey: "request-malformed",
-      }),
-    ).rejects.toMatchObject({
+    await expect(create(workerService, "request-malformed")).rejects.toMatchObject({
       code: "provider_failure",
       message: expect.stringContaining(error),
     } satisfies Partial<WorkerEnvironmentServiceError>);
@@ -750,14 +693,9 @@ describe("worker environment service provision replay", () => {
     });
     const workerService = support.createService(provider);
 
-    await expect(
-      workerService.createWithRequest({
-        profileId: "development",
-        idempotencyKey: "request-lost-provision",
-      }),
-    ).rejects.toMatchObject({
-      code: "provider_failure",
-    } satisfies Partial<WorkerEnvironmentServiceError>);
+    await expect(create(workerService, "request-lost-provision")).rejects.toMatchObject(
+      providerFailure,
+    );
     preparationFails = true;
     await workerService.reconcileOnce();
 

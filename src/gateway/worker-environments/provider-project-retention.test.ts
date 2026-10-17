@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createWorkerPreparationIdentity } from "./preparation-identity.js";
+import { readWorkerPreparation } from "./preparation-identity.schema.js";
 import { PROJECT_KEY, usePreparedPoolFixture } from "./prepared-pool.test-support.js";
 import { createWorkerProviderIntent } from "./provider-intent.js";
 import { prepareWorkerProviderProject } from "./provider-project-preparation.js";
@@ -23,11 +24,8 @@ describe("prepared project retention compatibility", () => {
     fixture.config.agents = { entries: { main: {} } };
     fixture.provider.requiresNodeEnrollment = true;
     fixture.provider.supportsProjectPreparation = () => true;
-    fixture.provider.resolvePreparationTarget = () => ({
-      machineClass: "standard",
-      platform: "linux",
-      arch: "x64",
-    });
+    const { target, artifacts } = readWorkerPreparation(fixture.profile())!;
+    fixture.provider.resolvePreparationTarget = () => target;
     const project: RepositoryWorkerProjectSnapshot = {
       key: PROJECT_KEY,
       baseCommit: "d".repeat(40),
@@ -42,21 +40,13 @@ describe("prepared project retention compatibility", () => {
       },
     };
     const profileSnapshot = { settings: {}, install: "bundle", executionMode: "worker-turn" };
-    const artifacts = {
-      nodeBootstrapSha256: "e".repeat(64),
-      enabledPluginIds: [],
-      workerBundleHash: "c".repeat(64),
-      workerArchiveSha256: "f".repeat(64),
-      openclawVersion: "2026.8.1",
-      protocolFeatures: [],
-    };
     const preparation = createWorkerPreparationIdentity({
       namespace: "gateway",
       providerId: fixture.provider.id,
       profileId: "development",
       profileSnapshot,
       project,
-      target: { machineClass: "standard", platform: "linux", arch: "x64" },
+      target,
       artifacts,
       setupRecipe: "e".repeat(40),
       runSetupScript: false,
@@ -83,14 +73,7 @@ describe("prepared project retention compatibility", () => {
       withLock: async (_id, run) => await run(),
       resumeProvision: async (environment) => environment,
     });
-    return {
-      record,
-      owner,
-      project,
-      artifacts,
-      prepareNodeArtifacts,
-      providerFor,
-    };
+    return { record, owner, project, artifacts, prepareNodeArtifacts, providerFor };
   }
 
   it("uses repository admission and fences a changed source owner before allocation", async () => {
@@ -134,9 +117,7 @@ describe("prepared project retention compatibility", () => {
       owner.createWithProfile(
         "development",
         "changed-repository",
-        {
-          executionMode: "worker-turn",
-        },
+        { executionMode: "worker-turn" },
         intent,
       ),
     ).rejects.toThrow("Repository owner changed");
@@ -204,9 +185,7 @@ describe("prepared project retention compatibility", () => {
       const { record, owner } = await setup();
       const retained = await owner.prepareRetention(record, fixture.abort.signal);
       expect(retained).toBeDefined();
-      if (mutation === "profile") {
-        fixture.developmentProfile.settings = { region: "changed" };
-      } else if (mutation === "provider") {
+      if (mutation === "provider") {
         fixture.developmentProfile.provider = "another-provider";
       } else if (mutation === "target") {
         fixture.provider.resolvePreparationTarget = () => ({
