@@ -122,6 +122,74 @@ async function flushActiveScheduledTimersForDelay(params: {
     ),
   );
 }
+function mediaContext(
+  messageId: number,
+  fileId: string,
+  filePath: string,
+  message: Record<string, unknown> = {},
+) {
+  return {
+    message: {
+      chat: { id: 42, type: "private" },
+      from: { id: 777, is_bot: false, first_name: "Ada" },
+      message_id: messageId,
+      date: 1736380800,
+      photo: [createTelegramPhotoForTest(fileId)],
+      ...message,
+    },
+    me: { username: "openclaw_bot" },
+    getFile: async () => ({ file_path: filePath }),
+  };
+}
+
+function holdMediaGroup() {
+  const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
+  const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+  const enqueueSpy = vi.spyOn(keyedAsyncQueue, "enqueueKeyedTask");
+  return {
+    flush: (expectedCount = 1) =>
+      flushActiveScheduledTimersForDelay({
+        setTimeoutSpy,
+        clearTimeoutSpy,
+        enqueueSpy,
+        delayMs: TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs,
+        expectedCount,
+      }),
+    restore(clearPending = false) {
+      if (clearPending) {
+        for (const timer of resolveActiveScheduledTimersForDelay(
+          setTimeoutSpy,
+          clearTimeoutSpy,
+          TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs,
+        )) {
+          clearTimeout(timer.handle);
+        }
+      }
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+      enqueueSpy.mockRestore();
+    },
+  };
+}
+
+function configureForum(requireMention: boolean) {
+  const original = telegramBotDepsForTest.getRuntimeConfig;
+  telegramBotDepsForTest.getRuntimeConfig = () => ({
+    channels: {
+      telegram: {
+        dmPolicy: "open",
+        allowFrom: ["*"],
+        groupAllowFrom: ["777"],
+        groupPolicy: "open",
+        groups: { "-10042": { allowFrom: ["777"], groupPolicy: "open", requireMention } },
+      },
+    },
+  });
+  return () => {
+    telegramBotDepsForTest.getRuntimeConfig = original;
+  };
+}
+
 describe("telegram inbound media", () => {
   it("captures pin and venue location payload fields", async () => {
     const { handler, replySpy } = await createBotHandler();
@@ -134,11 +202,7 @@ describe("telegram inbound media", () => {
           message_id: 5,
           caption: "Meet here",
           date: 1736380800,
-          location: {
-            latitude: 48.858844,
-            longitude: 2.294351,
-            horizontal_accuracy: 12,
-          },
+          location: { latitude: 48.858844, longitude: 2.294351, horizontal_accuracy: 12 },
         },
         assert: (payload: Record<string, unknown>) => {
           expect(payload.Body).toContain("Meet here");
@@ -200,25 +264,10 @@ describe("telegram media groups", () => {
     async () => {
       const laterCaption = "@openclaw_bot second album details";
       const entityType = "mention";
-      const originalLoadConfig = telegramBotDepsForTest.getRuntimeConfig;
-      telegramBotDepsForTest.getRuntimeConfig = (() => ({
-        channels: {
-          telegram: {
-            dmPolicy: "open",
-            allowFrom: ["*"],
-            groupAllowFrom: ["777"],
-            groupPolicy: "open",
-            groups: {
-              "-10042": { allowFrom: ["777"], groupPolicy: "open", requireMention: true },
-            },
-          },
-        },
-      })) as typeof telegramBotDepsForTest.getRuntimeConfig;
+      const restoreConfig = configureForum(true);
       const { handler, replySpy } = await createBotHandlerWithOptions({});
       const fetchSpy = mockTelegramPngDownload();
-      const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
-      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
-      const enqueueSpy = vi.spyOn(keyedAsyncQueue, "enqueueKeyedTask");
+      const timers = holdMediaGroup();
       const baseMessage = {
         chat: { id: -10042, type: "supergroup" as const, is_forum: true },
         from: { id: 777, is_bot: false, first_name: "Ada" },
@@ -229,49 +278,32 @@ describe("telegram media groups", () => {
 
       try {
         await Promise.all([
-          handler({
-            message: {
+          handler(
+            mediaContext(301, "album-caption-1", "photos/album-caption-1.jpg", {
               ...baseMessage,
-              message_id: 301,
-              date: 1736380800,
               caption: "First album details 💙",
-              photo: [createTelegramPhotoForTest("album-caption-1")],
-            },
-            me: { username: "openclaw_bot" },
-            getFile: async () => ({ file_path: "photos/album-caption-1.jpg" }),
-          }),
-          handler({
-            message: {
+            }),
+          ),
+          handler(
+            mediaContext(302, "album-caption-2", "photos/album-caption-2.jpg", {
               ...baseMessage,
-              message_id: 302,
               date: 1736380801,
               caption: laterCaption,
               caption_entities: [
                 { type: entityType, offset: 0, length: laterCaption.split(" ")[0]?.length ?? 0 },
               ],
-              photo: [createTelegramPhotoForTest("album-caption-2")],
-            },
-            me: { username: "openclaw_bot" },
-            getFile: async () => ({ file_path: "photos/album-caption-2.jpg" }),
-          }),
+            }),
+          ),
         ]);
 
         expect(replySpy).not.toHaveBeenCalled();
-        await flushActiveScheduledTimersForDelay({
-          setTimeoutSpy,
-          enqueueSpy,
-          clearTimeoutSpy,
-          delayMs: TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs,
-          expectedCount: 1,
-        });
+        await timers.flush(1);
         expect(replySpy).toHaveBeenCalledTimes(1);
         expect(replyPayload(replySpy).Body).toContain("First album details 💙");
         expect(replyPayload(replySpy).Body).toContain(laterCaption);
       } finally {
-        setTimeoutSpy.mockRestore();
-        clearTimeoutSpy.mockRestore();
-        enqueueSpy.mockRestore();
-        telegramBotDepsForTest.getRuntimeConfig = originalLoadConfig;
+        timers.restore();
+        restoreConfig();
         fetchSpy.mockRestore();
       }
     },
@@ -284,9 +316,7 @@ describe("telegram media groups", () => {
       const runtimeError = vi.fn();
       const { handler, replySpy } = await createBotHandlerWithOptions({ runtimeError });
       const fetchSpy = mockTelegramPngDownload();
-      const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
-      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
-      const enqueueSpy = vi.spyOn(keyedAsyncQueue, "enqueueKeyedTask");
+      const timers = holdMediaGroup();
       const savedPaths = [
         "/tmp/media/inbound/album-context-1.png",
         "/tmp/media/inbound/album-context-2.png",
@@ -298,56 +328,22 @@ describe("telegram media groups", () => {
           setNextSavedMediaPath({ path, contentType: "image/png" });
         }
 
-        for (const message of [
-          {
-            message: {
-              chat: { id: 42, type: "private" as const },
-              from: { id: 777, is_bot: false, first_name: "Ada" },
-              message_id: 301,
-              caption: "Here is the complete album",
-              date: 1736380800,
-              media_group_id: "album-context",
-              photo: [createTelegramPhotoForTest("album-photo-1")],
-            },
-            getFile: async () => ({ file_path: "photos/album-context-1.png" }),
-          },
-          {
-            message: {
-              chat: { id: 42, type: "private" as const },
-              from: { id: 777, is_bot: false, first_name: "Ada" },
-              message_id: 302,
-              date: 1736380801,
-              media_group_id: "album-context",
-              photo: [createTelegramPhotoForTest("album-photo-2")],
-            },
-            getFile: async () => ({ file_path: "photos/album-context-2.png" }),
-          },
-          {
-            message: {
-              chat: { id: 42, type: "private" as const },
-              from: { id: 777, is_bot: false, first_name: "Ada" },
-              message_id: 303,
-              date: 1736380802,
-              media_group_id: "album-context",
-              photo: [createTelegramPhotoForTest("album-photo-3")],
-            },
-            getFile: async () => ({ file_path: "photos/album-context-3.png" }),
-          },
-        ]) {
-          await handler({
-            message: message.message,
-            me: { username: "openclaw_bot" },
-            getFile: message.getFile,
-          });
+        for (const index of [1, 2, 3]) {
+          await handler(
+            mediaContext(
+              301 + index - 1,
+              `album-photo-${index}`,
+              `photos/album-context-${index}.png`,
+              {
+                date: 1736380800 + index - 1,
+                media_group_id: "album-context",
+                ...(index === 1 ? { caption: "Here is the complete album" } : {}),
+              },
+            ),
+          );
         }
 
-        await flushActiveScheduledTimersForDelay({
-          setTimeoutSpy,
-          enqueueSpy,
-          clearTimeoutSpy,
-          delayMs: TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs,
-          expectedCount: 1,
-        });
+        await timers.flush(1);
         expect(replySpy).toHaveBeenCalledTimes(1);
 
         expect(runtimeError).not.toHaveBeenCalled();
@@ -360,16 +356,7 @@ describe("telegram media groups", () => {
         expect(messagesById.get("303")?.media_path).toBe("media://inbound/album-context-3.png");
         expect(messagesById.get("303")?.media_ref).toBeUndefined();
       } finally {
-        for (const timer of resolveActiveScheduledTimersForDelay(
-          setTimeoutSpy,
-          clearTimeoutSpy,
-          TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs,
-        )) {
-          clearTimeout(timer.handle);
-        }
-        setTimeoutSpy.mockRestore();
-        clearTimeoutSpy.mockRestore();
-        enqueueSpy.mockRestore();
+        timers.restore(true);
         fetchSpy.mockRestore();
       }
     },
@@ -381,57 +368,29 @@ describe("telegram media groups", () => {
       const runtimeError = vi.fn();
       const { handler, replySpy } = await createBotHandlerWithOptions({ runtimeError });
       const fetchSpy = mockTelegramPngDownload();
-      const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
-      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
-      const enqueueSpy = vi.spyOn(keyedAsyncQueue, "enqueueKeyedTask");
+      const timers = holdMediaGroup();
 
       try {
-        const messages = [
-          {
-            chat: { id: 42, type: "private" as const },
-            from: { id: 777, is_bot: false, first_name: "Ada" },
-            message_id: 111,
-            caption: "Album A",
-            date: 1736380800,
-            media_group_id: "albumA",
-            photo: [createTelegramPhotoForTest("photoA1")],
-            filePath: "photos/photoA1.jpg",
-          },
-          {
-            chat: { id: 42, type: "private" as const },
-            from: { id: 777, is_bot: false, first_name: "Ada" },
-            message_id: 112,
-            caption: "Album B",
-            date: 1736380801,
-            media_group_id: "albumB",
-            photo: [createTelegramPhotoForTest("photoB1")],
-            filePath: "photos/photoB1.jpg",
-          },
-        ];
         await Promise.all(
-          messages.map((message) =>
-            handler({
-              message,
-              me: { username: "openclaw_bot" },
-              getFile: async () => ({ file_path: message.filePath }),
-            }),
-          ),
+          ["A", "B"].map((name, index) => {
+            const fileId = `photo${name}1`;
+            return handler(
+              mediaContext(111 + index, fileId, `photos/${fileId}.jpg`, {
+                caption: `Album ${name}`,
+                date: 1736380800 + index,
+                media_group_id: `album${name}`,
+                filePath: `photos/${fileId}.jpg`,
+              }),
+            );
+          }),
         );
 
         expect(replySpy).not.toHaveBeenCalled();
-        await flushActiveScheduledTimersForDelay({
-          setTimeoutSpy,
-          enqueueSpy,
-          clearTimeoutSpy,
-          delayMs: TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs,
-          expectedCount: 2,
-        });
+        await timers.flush(2);
         expect(replySpy).toHaveBeenCalledTimes(2);
         expect(runtimeError).not.toHaveBeenCalled();
       } finally {
-        setTimeoutSpy.mockRestore();
-        clearTimeoutSpy.mockRestore();
-        enqueueSpy.mockRestore();
+        timers.restore();
         fetchSpy.mockRestore();
       }
     },
@@ -442,9 +401,7 @@ describe("telegram media groups", () => {
     async () => {
       const runtimeError = vi.fn();
       const { handler, replySpy } = await createBotHandlerWithOptions({ runtimeError });
-      const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
-      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
-      const enqueueSpy = vi.spyOn(keyedAsyncQueue, "enqueueKeyedTask");
+      const timers = holdMediaGroup();
       const savedPaths = [
         "/tmp/media/inbound/album-partial-2.png",
         "/tmp/media/inbound/album-partial-3.png",
@@ -457,11 +414,7 @@ describe("telegram media groups", () => {
           if (url.includes("album-partial-1.png")) {
             throw new Error(`Telegram media exceeds 20 MB limit: ${url}`);
           }
-          return {
-            buffer: pngBytes,
-            contentType: "image/png",
-            fileName: params.filePathHint,
-          };
+          return { buffer: pngBytes, contentType: "image/png", fileName: params.filePathHint };
         },
       );
 
@@ -470,56 +423,22 @@ describe("telegram media groups", () => {
           setNextSavedMediaPath({ path, contentType: "image/png" });
         }
 
-        for (const message of [
-          {
-            message: {
-              chat: { id: 42, type: "private" as const },
-              from: { id: 777, is_bot: false, first_name: "Ada" },
-              message_id: 501,
-              date: 1736380800,
-              media_group_id: "album-partial-context",
-              photo: [createTelegramPhotoForTest("album-partial-photo-1")],
-            },
-            getFile: async () => ({ file_path: "photos/album-partial-1.png" }),
-          },
-          {
-            message: {
-              chat: { id: 42, type: "private" as const },
-              from: { id: 777, is_bot: false, first_name: "Ada" },
-              message_id: 502,
-              caption: "Here is a partial album",
-              date: 1736380801,
-              media_group_id: "album-partial-context",
-              photo: [createTelegramPhotoForTest("album-partial-photo-2")],
-            },
-            getFile: async () => ({ file_path: "photos/album-partial-2.png" }),
-          },
-          {
-            message: {
-              chat: { id: 42, type: "private" as const },
-              from: { id: 777, is_bot: false, first_name: "Ada" },
-              message_id: 503,
-              date: 1736380802,
-              media_group_id: "album-partial-context",
-              photo: [createTelegramPhotoForTest("album-partial-photo-3")],
-            },
-            getFile: async () => ({ file_path: "photos/album-partial-3.png" }),
-          },
-        ]) {
-          await handler({
-            message: message.message,
-            me: { username: "openclaw_bot" },
-            getFile: message.getFile,
-          });
+        for (const index of [1, 2, 3]) {
+          await handler(
+            mediaContext(
+              501 + index - 1,
+              `album-partial-photo-${index}`,
+              `photos/album-partial-${index}.png`,
+              {
+                date: 1736380800 + index - 1,
+                media_group_id: "album-partial-context",
+                ...(index === 2 ? { caption: "Here is a partial album" } : {}),
+              },
+            ),
+          );
         }
 
-        await flushActiveScheduledTimersForDelay({
-          setTimeoutSpy,
-          enqueueSpy,
-          clearTimeoutSpy,
-          delayMs: TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs,
-          expectedCount: 1,
-        });
+        await timers.flush(1);
         expect(replySpy).toHaveBeenCalledTimes(1);
 
         expect(runtimeError).not.toHaveBeenCalled();
@@ -534,16 +453,7 @@ describe("telegram media groups", () => {
           "telegram:file/album-partial-photo-1",
         );
       } finally {
-        for (const timer of resolveActiveScheduledTimersForDelay(
-          setTimeoutSpy,
-          clearTimeoutSpy,
-          TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs,
-        )) {
-          clearTimeout(timer.handle);
-        }
-        setTimeoutSpy.mockRestore();
-        clearTimeoutSpy.mockRestore();
-        enqueueSpy.mockRestore();
+        timers.restore(true);
       }
     },
     MEDIA_GROUP_TEST_TIMEOUT_MS,
@@ -552,69 +462,30 @@ describe("telegram media groups", () => {
   it(
     "buffers same-id forum topic media groups independently",
     async () => {
-      const originalLoadConfig = telegramBotDepsForTest.getRuntimeConfig;
-      telegramBotDepsForTest.getRuntimeConfig = (() => ({
-        channels: {
-          telegram: {
-            dmPolicy: "open",
-            allowFrom: ["*"],
-            groupAllowFrom: ["777"],
-            groupPolicy: "open",
-            groups: {
-              "-10042": { allowFrom: ["777"], groupPolicy: "open", requireMention: false },
-            },
-          },
-        },
-      })) as typeof telegramBotDepsForTest.getRuntimeConfig;
+      const restoreConfig = configureForum(false);
 
       const runtimeError = vi.fn();
       const { handler, replySpy } = await createBotHandlerWithOptions({ runtimeError });
       const fetchSpy = mockTelegramPngDownload();
-      const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
-      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
-      const enqueueSpy = vi.spyOn(keyedAsyncQueue, "enqueueKeyedTask");
+      const timers = holdMediaGroup();
 
       try {
-        await Promise.all([
-          handler({
-            message: {
-              chat: { id: -10042, type: "supergroup" as const, is_forum: true },
-              from: { id: 777, is_bot: false, first_name: "Ada" },
-              message_id: 131,
-              message_thread_id: 101,
-              is_topic_message: true,
-              caption: "@openclaw_bot Topic one album",
-              date: 1736380800,
-              media_group_id: "album-shared-by-telegram",
-              photo: [createTelegramPhotoForTest("topic1photo")],
-            },
-            me: { username: "openclaw_bot" },
-            getFile: async () => ({ file_path: "photos/topic1.jpg" }),
-          }),
-          handler({
-            message: {
-              chat: { id: -10042, type: "supergroup" as const, is_forum: true },
-              from: { id: 777, is_bot: false, first_name: "Ada" },
-              message_id: 132,
-              message_thread_id: 202,
-              is_topic_message: true,
-              caption: "@openclaw_bot Topic two album",
-              date: 1736380801,
-              media_group_id: "album-shared-by-telegram",
-              photo: [createTelegramPhotoForTest("topic2photo")],
-            },
-            me: { username: "openclaw_bot" },
-            getFile: async () => ({ file_path: "photos/topic2.jpg" }),
-          }),
-        ]);
+        await Promise.all(
+          [101, 202].map((threadId, index) =>
+            handler(
+              mediaContext(131 + index, `topic${index + 1}photo`, `photos/topic${index + 1}.jpg`, {
+                chat: { id: -10042, type: "supergroup", is_forum: true },
+                message_thread_id: threadId,
+                is_topic_message: true,
+                caption: `@openclaw_bot Topic ${index === 0 ? "one" : "two"} album`,
+                date: 1736380800 + index,
+                media_group_id: "album-shared-by-telegram",
+              }),
+            ),
+          ),
+        );
 
-        await flushActiveScheduledTimersForDelay({
-          setTimeoutSpy,
-          enqueueSpy,
-          clearTimeoutSpy,
-          delayMs: TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs,
-          expectedCount: 2,
-        });
+        await timers.flush(2);
         expect(replySpy).toHaveBeenCalledTimes(2);
         const firstPayload = replyPayload(replySpy, 0);
         const secondPayload = replyPayload(replySpy, 1);
@@ -628,18 +499,9 @@ describe("telegram media groups", () => {
         expect(secondPayload.MediaPaths).toHaveLength(1);
         expect(runtimeError).not.toHaveBeenCalled();
       } finally {
-        for (const timer of resolveActiveScheduledTimersForDelay(
-          setTimeoutSpy,
-          clearTimeoutSpy,
-          TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs,
-        )) {
-          clearTimeout(timer.handle);
-        }
-        setTimeoutSpy.mockRestore();
-        clearTimeoutSpy.mockRestore();
-        enqueueSpy.mockRestore();
+        timers.restore(true);
         fetchSpy.mockRestore();
-        telegramBotDepsForTest.getRuntimeConfig = originalLoadConfig;
+        restoreConfig();
       }
     },
     MEDIA_GROUP_TEST_TIMEOUT_MS,
@@ -740,9 +602,7 @@ describe("Telegram media failure notices", () => {
           groupAllowFrom: ["777", "-10042"],
           groupPolicy: "open",
           mediaMaxMb: 8,
-          groups: {
-            "-10042": { groupPolicy: "open", requireMention: false },
-          },
+          groups: { "-10042": { groupPolicy: "open", requireMention: false } },
         },
       },
     });
@@ -810,9 +670,7 @@ describe("Telegram media failure notices", () => {
       expect(telegramMediaHarnessSendMessageSpy).toHaveBeenCalledWith(
         chat.id,
         expect.stringContaining(expectedWarning),
-        expect.objectContaining({
-          reply_parameters: expect.objectContaining({ message_id: 901 }),
-        }),
+        expect.objectContaining({ reply_parameters: expect.objectContaining({ message_id: 901 }) }),
       );
       const warning = telegramMediaHarnessSendMessageSpy.mock.calls.find(
         ([, text]) => typeof text === "string" && text.includes(expectedWarning),
@@ -910,9 +768,7 @@ describe("Telegram media failure notices", () => {
       expect(warnings[0]).toEqual([
         4242,
         expect.stringContaining("0 of 2 images"),
-        expect.objectContaining({
-          reply_parameters: expect.objectContaining({ message_id: 910 }),
-        }),
+        expect.objectContaining({ reply_parameters: expect.objectContaining({ message_id: 910 }) }),
       ]);
     } finally {
       setTimeoutSpy.mockRestore();
