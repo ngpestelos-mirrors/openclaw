@@ -1,9 +1,7 @@
-import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { Model } from "openclaw/plugin-sdk/llm";
 import { createIsolatedCompletionBoundaryFixture } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { AuthProfileStore } from "openclaw/plugin-sdk/provider-auth";
@@ -76,8 +74,14 @@ it.each(["allowed", "forbidden", "revoked"] as const)(
         "openai:forbidden": credential("forbidden"),
       },
     };
-    const entered = createDeferred<void>();
-    const gate = createDeferred<void>();
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     let current = true;
     const harness = createCodexAppServerAgentHarness({
       bindingStore: {
@@ -117,8 +121,8 @@ it.each(["allowed", "forbidden", "revoked"] as const)(
       async resolveModel(call) {
         // Hold the real materializePreparedRuntimeModel await after route/auth planning.
         if (scenario === "revoked" && call === 2) {
-          entered.resolve();
-          await gate.promise;
+          enter();
+          await gate;
         }
         return call === 1 ? platform : subscription;
       },
@@ -143,29 +147,31 @@ it.each(["allowed", "forbidden", "revoked"] as const)(
     let outcome: unknown;
     try {
       if (scenario === "revoked") {
-        await awaitGateBeforeSettlement(
-          entered.promise,
-          pending,
-          "Completion skipped awaited preparation",
-        );
+        await awaitGateBeforeSettlement(entered, pending, "Completion skipped awaited preparation");
         delete store.profiles["openai:allowed"];
         current = false;
-        gate.resolve();
+        release();
       }
       if (scenario === "allowed") {
         const result = await pending;
         expect(result.text).toBe("Completed as synthetic-allowed-account");
         outcome = { text: result.text, owner: result.owner };
       } else {
-        const error: unknown = await pending.catch((failure: unknown) => failure);
-        assert(error instanceof Error, "Expected rejection");
+        const error: unknown = await pending.then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+        expect(error).toBeInstanceOf(Error);
+        if (!(error instanceof Error)) {
+          throw new Error("Expected rejection");
+        }
         expect(error.message).toMatch(
           scenario === "forbidden" ? /not configured/ : /authority revoked/,
         );
         outcome = { rejected: true, error: error.message };
       }
     } finally {
-      gate.resolve();
+      release();
       await harness.dispose?.();
     }
     const messages: Array<{ method?: string; params?: unknown }> = fs
@@ -174,13 +180,15 @@ it.each(["allowed", "forbidden", "revoked"] as const)(
       .filter(Boolean)
       .map((line) => JSON.parse(line));
     if (scenario === "allowed") {
-      const logins = messages.filter((message) => message.method === "account/login/start");
-      expect(logins).toHaveLength(1);
-      expect(logins[0]?.params).toMatchObject({
+      const login = messages.find((message) => message.method === "account/login/start");
+      expect(login?.params).toMatchObject({
         type: "chatgptAuthTokens",
         accessToken: "synthetic-allowed-access",
         chatgptAccountId: "synthetic-allowed-account",
       });
+      expect(messages.filter((message) => message.method === "account/login/start")).toHaveLength(
+        1,
+      );
       expect(messages.findIndex((message) => message.method === "turn/start")).toBeGreaterThan(
         messages.findIndex((message) => message.method === "account/login/start"),
       );
