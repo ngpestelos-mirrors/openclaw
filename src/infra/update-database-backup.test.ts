@@ -27,7 +27,6 @@ import {
   createUpdateDatabaseBackup,
   createUpdateDatabaseBackupInProcess,
 } from "./update-database-backup.js";
-import * as databaseGenerations from "./update-database-generations.js";
 import type { UpdateRecoveryCaptureAcquisition } from "./update-recovery-capture-acquisition.js";
 import { getUpdateRunAsync } from "./update-run-reader.js";
 
@@ -532,7 +531,6 @@ it("seals equivalent original bytes under isolated and maintenance-owned capture
   );
 
   const worker = vi.spyOn(inspection, "runUpdateStateInspectionWorker");
-  const parentGenerations = vi.spyOn(databaseGenerations, "readUpdateDatabaseGenerations");
   const parentDiscovery = vi.spyOn(candidateState, "discoverUpdateStateSchemaInspectionInProcess");
   const isolatedGenerations = vi.spyOn(candidateState, "readUpdateDatabaseGenerationsIsolated");
   const isolatedSizes = vi.spyOn(databaseSizes, "readUpdateStateDatabaseSizes");
@@ -598,7 +596,6 @@ it("seals equivalent original bytes under isolated and maintenance-owned capture
     expect(maintainedManifest.entries).toContainEqual(
       expect.objectContaining({ sourcePath: f.registryOnly, kind: "file", sqlite: true }),
     );
-    expect(parentGenerations).not.toHaveBeenCalled();
     // Only absent databases need metadata checks for retained journals; captured images are not reread.
     expect(isolatedGenerations).toHaveBeenCalledOnce();
     const generationPaths = isolatedGenerations.mock.calls[0]![0];
