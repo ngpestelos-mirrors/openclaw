@@ -18,10 +18,28 @@ const mod = await import("./pw-tools-core.downloads.js");
 const interactions = await import("./pw-tools-core.interactions.js");
 const { waitForViaPlaywright } = await import("./pw-tools-core.interactions.content.js");
 const target = { cdpUrl: "http://127.0.0.1:18792" };
+const session = getPwToolsCoreSessionMocks();
+function holdPreparation() {
+  const entered = createDeferred<void>();
+  const release = createDeferred<void>();
+  return {
+    release,
+    prepare: async () => {
+      entered.resolve();
+      await release.promise;
+    },
+    wait: (operation: Promise<unknown>, message: string) =>
+      Promise.race([
+        entered.promise,
+        operation.then(() => {
+          throw new Error(message);
+        }),
+      ]),
+  };
+}
 
 describe("pw-tools-core", () => {
   it("preserves an accepted download waiter when a stale successor finishes page preparation", async () => {
-    const session = getPwToolsCoreSessionMocks();
     const page = {};
     setPwToolsCoreCurrentPage(page);
     const click = vi.fn(async () => {});
@@ -33,17 +51,12 @@ describe("pw-tools-core", () => {
     };
     const captured = createDeferred<typeof result>();
     setPwToolsCoreDownloadCapture({ armed: true, promise: captured.promise, cancel: vi.fn() });
-    const accepted = mod.waitForDownloadViaPlaywright({
-      ...target,
-      targetId: "T1",
-    });
+    const accepted = mod.waitForDownloadViaPlaywright({ ...target, targetId: "T1" });
     const acceptedResult = Promise.allSettled([accepted]);
     await Promise.resolve();
-    const entered = createDeferred<void>();
-    const release = createDeferred<void>();
+    const held = holdPreparation();
     session.getPageForTargetId.mockImplementationOnce(async () => {
-      entered.resolve();
-      await release.promise;
+      await held.prepare();
       return page;
     });
     const successor = mod.downloadViaPlaywright({
@@ -57,13 +70,8 @@ describe("pw-tools-core", () => {
     });
     const successorResult = Promise.allSettled([successor]);
     try {
-      await Promise.race([
-        entered.promise,
-        successor.then(() => {
-          throw new Error("Successor skipped held page lookup");
-        }),
-      ]);
-      release.resolve();
+      await held.wait(successor, "Successor skipped held page lookup");
+      held.release.resolve();
       expect(await successorResult).toMatchObject([
         { status: "rejected", reason: { message: "Dashboard successor revoked" } },
       ]);
@@ -71,7 +79,7 @@ describe("pw-tools-core", () => {
       expect(await acceptedResult).toEqual([{ status: "fulfilled", value: result }]);
       expect(click).not.toHaveBeenCalled();
     } finally {
-      release.resolve();
+      held.release.resolve();
       captured.resolve(result);
       await Promise.all([acceptedResult, successorResult]);
     }
@@ -80,23 +88,17 @@ describe("pw-tools-core", () => {
   it.each(["page preparation", "pending-dialog lookup"] as const)(
     "checks dialog authority after %s",
     async (boundary) => {
-      const session = getPwToolsCoreSessionMocks();
       const page = {};
       setPwToolsCoreCurrentPage(page);
-      const entered = createDeferred<void>();
-      const release = createDeferred<void>();
-      const prepare = async () => {
-        entered.resolve();
-        await release.promise;
-      };
+      const held = holdPreparation();
       if (boundary === "page preparation") {
         session.getPageForTargetId.mockImplementationOnce(async () => {
-          await prepare();
+          await held.prepare();
           return page;
         });
       } else {
         session.respondToObservedDialogOnPage.mockImplementationOnce(async () => {
-          await prepare();
+          await held.prepare();
           throw new Error("No dialog is pending.");
         });
       }
@@ -112,14 +114,9 @@ describe("pw-tools-core", () => {
       });
       const settled = Promise.allSettled([operation]);
       try {
-        await Promise.race([
-          entered.promise,
-          operation.then(() => {
-            throw new Error("Dialog skipped preparation");
-          }),
-        ]);
+        await held.wait(operation, "Dialog skipped preparation");
         current = false;
-        release.resolve();
+        held.release.resolve();
         expect(await settled).toMatchObject([
           { status: "rejected", reason: { message: "Dashboard dialog revoked" } },
         ]);
@@ -128,7 +125,7 @@ describe("pw-tools-core", () => {
           expect(session.respondToObservedDialogOnPage).not.toHaveBeenCalled();
         }
       } finally {
-        release.resolve();
+        held.release.resolve();
         await settled;
       }
     },
@@ -161,14 +158,8 @@ describe("pw-tools-core", () => {
     });
 
     try {
-      await mod.armFileUploadViaPlaywright({
-        ...target,
-        paths: [firstPath],
-      });
-      await mod.armFileUploadViaPlaywright({
-        ...target,
-        paths: [secondPath],
-      });
+      await mod.armFileUploadViaPlaywright({ ...target, paths: [firstPath] });
+      await mod.armFileUploadViaPlaywright({ ...target, paths: [secondPath] });
 
       expect(waitForEvent).toHaveBeenCalledTimes(2);
       expect(waitForEvent.mock.calls[0]![1].signal.aborted).toBe(true);
@@ -191,26 +182,19 @@ describe("pw-tools-core", () => {
     }
   });
   it("arms the next dialog with the default timeout", async () => {
-    const sessionMocks = getPwToolsCoreSessionMocks();
     const page = {};
     setPwToolsCoreCurrentPage(page);
 
-    await mod.armDialogViaPlaywright({
-      ...target,
-      accept: true,
-      promptText: "x",
-    });
-
-    expect(sessionMocks.respondToObservedDialogOnPage).toHaveBeenCalledWith({
+    const response = { accept: true, promptText: "x" };
+    await mod.armDialogViaPlaywright({ ...target, ...response });
+    expect(session.respondToObservedDialogOnPage).toHaveBeenCalledWith({
       page,
-      accept: true,
-      promptText: "x",
+      ...response,
       closedBy: "agent",
     });
-    expect(sessionMocks.armObservedDialogResponseOnPage).toHaveBeenCalledWith({
+    expect(session.armObservedDialogResponseOnPage).toHaveBeenCalledWith({
       page,
-      accept: true,
-      promptText: "x",
+      ...response,
       timeoutMs: 120_000,
     });
   });
@@ -226,9 +210,7 @@ describe("pw-tools-core", () => {
 
     const page = {
       evaluateHandle: vi.fn(async () => documentHandle),
-      locator: vi.fn(() => ({
-        first: () => ({ waitFor: waitForSelector }),
-      })),
+      locator: vi.fn(() => ({ first: () => ({ waitFor: waitForSelector }) })),
       waitForURL,
       waitForLoadState,
       waitForFunction,
@@ -248,14 +230,9 @@ describe("pw-tools-core", () => {
 
     expect(waitForTimeout).toHaveBeenCalledWith(50);
     expect(page.locator).toHaveBeenCalledWith("#main");
-    expect(waitForSelector).toHaveBeenCalledWith({
-      state: "visible",
-      timeout: 1234,
-    });
+    expect(waitForSelector).toHaveBeenCalledWith({ state: "visible", timeout: 1234 });
     expect(waitForURL).toHaveBeenCalledWith("**/dash", { timeout: 1234 });
-    expect(waitForLoadState).toHaveBeenCalledWith("networkidle", {
-      timeout: 1234,
-    });
+    expect(waitForLoadState).toHaveBeenCalledWith("networkidle", { timeout: 1234 });
     expect(waitForFunction).toHaveBeenCalledWith(
       expect.any(Function),
       { document: documentHandle },
@@ -273,17 +250,12 @@ describe("pw-tools-core", () => {
 
   it("clamps interaction timeoutMs to 60000 for click steps", async () => {
     const click = vi.fn(async () => {});
-    const page = {
+    setPwToolsCoreCurrentPage({
       url: vi.fn(() => "https://example.com"),
       locator: vi.fn(() => ({ click })),
-    };
-    setPwToolsCoreCurrentPage(page);
-
-    await interactions.clickViaPlaywright({
-      ...target,
-      selector: "#main",
-      timeoutMs: 999_999,
     });
+
+    await interactions.clickViaPlaywright({ ...target, selector: "#main", timeoutMs: 999_999 });
 
     expect(click).toHaveBeenCalledWith({ timeout: 60_000, signal: expect.any(AbortSignal) });
   });

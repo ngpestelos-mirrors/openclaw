@@ -1,4 +1,4 @@
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -52,26 +52,10 @@ function createAtomicFileChooserPageMocks() {
   };
   const events = new EventEmitter();
   const waitForEvent = vi.fn(
-    async (_event: string, { signal }: { signal: AbortSignal }) =>
-      await new Promise<typeof fileChooser>((resolve, reject) => {
-        const cleanup = () => {
-          events.off("filechooser", onChooser);
-          signal.removeEventListener("abort", onAbort);
-        };
-        const onChooser = (chooser: typeof fileChooser) => {
-          cleanup();
-          resolve(chooser);
-        };
-        const onAbort = () => {
-          cleanup();
-          reject(nativeAbortError(signal));
-        };
-        events.once("filechooser", onChooser);
-        signal.addEventListener("abort", onAbort, { once: true });
-        if (signal.aborted) {
-          onAbort();
-        }
-      }),
+    async (_event: string, { signal }: { signal: AbortSignal }): Promise<typeof fileChooser> => {
+      const [chooser] = await once(events, "filechooser", { signal });
+      return chooser;
+    },
   );
   const press = vi.fn(async () => {});
   const currentPage = { waitForEvent, keyboard: { press } };
@@ -88,6 +72,32 @@ function createAtomicFileChooserPageMocks() {
 }
 
 const target = { cdpUrl: "http://127.0.0.1:18792", targetId: "T1" };
+const reportPath = "/home/user/.openclaw/media/inbound/report.pdf";
+function upload(ref: string, options: Partial<Parameters<typeof uploadViaPlaywright>[0]> = {}) {
+  return uploadViaPlaywright({ cdpUrl: target.cdpUrl, ref, paths: [reportPath], ...options });
+}
+function heldAuthority() {
+  const entered = createDeferred<void>();
+  const release = createDeferred<void>();
+  let current = true;
+  return {
+    entered,
+    release,
+    prepare: async () => {
+      entered.resolve();
+      await release.promise;
+    },
+    revoke: () => {
+      current = false;
+      release.resolve();
+    },
+    assertCurrent: async () => {
+      if (!current) {
+        throw new Error("Dashboard upload revoked");
+      }
+    },
+  };
+}
 
 describe("armFileUploadViaPlaywright upload path validation", () => {
   beforeEach(() => {
@@ -95,41 +105,32 @@ describe("armFileUploadViaPlaywright upload path validation", () => {
     interactionMocks.clickViaPlaywright.mockReset().mockResolvedValue(undefined);
     pathMocks.resolveStrictExistingUploadPaths.mockResolvedValue({
       ok: true,
-      paths: ["/home/user/.openclaw/media/inbound/report.pdf"],
+      paths: [reportPath],
     });
   });
 
   it("checks authority after upload page preparation", async () => {
     const page = createAtomicFileChooserPageMocks();
-    const entered = createDeferred<void>();
-    const release = createDeferred<void>();
+    const authority = heldAuthority();
     sessionMocks.getPageForTargetId.mockImplementationOnce(async () => {
-      entered.resolve();
-      await release.promise;
+      await authority.prepare();
       return page.currentPage;
     });
     interactionMocks.clickViaPlaywright.mockImplementationOnce(async () => page.emitChooser());
-    let current = true;
-    const options = {
+    const operation = upload("e1", {
       ...target,
       paths: ["/tmp/upload.txt"],
-      assertCurrent: async () => {
-        if (!current) {
-          throw new Error("Dashboard upload revoked");
-        }
-      },
-    };
-    const operation = uploadViaPlaywright({ ...options, ref: "e1" });
+      assertCurrent: authority.assertCurrent,
+    });
     const settled = Promise.allSettled([operation]);
     try {
       await Promise.race([
-        entered.promise,
+        authority.entered.promise,
         operation.then(() => {
           throw new Error("Upload skipped held preparation");
         }),
       ]);
-      current = false;
-      release.resolve();
+      authority.revoke();
       expect(await settled).toMatchObject([
         { status: "rejected", reason: { message: "Dashboard upload revoked" } },
       ]);
@@ -137,7 +138,7 @@ describe("armFileUploadViaPlaywright upload path validation", () => {
       expect(page.listenerCount()).toBe(0);
       expect(page.fileChooser.setFiles).not.toHaveBeenCalled();
     } finally {
-      release.resolve();
+      authority.release.resolve();
       page.emitChooser();
       await settled;
     }
@@ -164,37 +165,28 @@ describe("armFileUploadViaPlaywright upload path validation", () => {
 
   it("dismisses its acquired chooser when authority is revoked during atomic payload preparation", async () => {
     const page = createAtomicFileChooserPageMocks();
-    const entered = createDeferred<void>();
-    const release = createDeferred<void>();
+    const authority = heldAuthority();
     pathMocks.resolveStrictExistingUploadPaths.mockImplementationOnce(
       async ({ requestedPaths }) => {
-        entered.resolve();
-        await release.promise;
+        await authority.prepare();
         return { ok: true, paths: requestedPaths };
       },
     );
     interactionMocks.clickViaPlaywright.mockImplementationOnce(async () => page.emitChooser());
-    let current = true;
-    const upload = uploadViaPlaywright({
+    const operation = upload("e1", {
       ...target,
-      ref: "e1",
       paths: ["/tmp/upload.txt"],
-      assertCurrent: async () => {
-        if (!current) {
-          throw new Error("Dashboard upload revoked");
-        }
-      },
+      assertCurrent: authority.assertCurrent,
     });
-    const settled = Promise.allSettled([upload]);
+    const settled = Promise.allSettled([operation]);
     try {
       await Promise.race([
-        entered.promise,
-        upload.then(() => {
+        authority.entered.promise,
+        operation.then(() => {
           throw new Error("Upload skipped payload preparation");
         }),
       ]);
-      current = false;
-      release.resolve();
+      authority.revoke();
       expect(await settled).toMatchObject([
         { status: "rejected", reason: { message: "Dashboard upload revoked" } },
       ]);
@@ -202,7 +194,7 @@ describe("armFileUploadViaPlaywright upload path validation", () => {
       expect(page.press).toHaveBeenCalledExactlyOnceWith("Escape");
       expect(page.listenerCount()).toBe(0);
     } finally {
-      release.resolve();
+      authority.release.resolve();
       page.emitChooser();
       await settled;
     }
@@ -216,13 +208,7 @@ describe("armFileUploadViaPlaywright upload path validation", () => {
     const page = createAtomicFileChooserPageMocks();
     interactionMocks.clickViaPlaywright.mockImplementation(async () => page.emitChooser());
 
-    await expect(
-      uploadViaPlaywright({
-        cdpUrl: "http://127.0.0.1:18792",
-        ref: "e12",
-        paths: ["/home/user/.openclaw/media/inbound/report.pdf"],
-      }),
-    ).rejects.toThrow("Invalid path: upload target changed");
+    await expect(upload("e12")).rejects.toThrow("Invalid path: upload target changed");
     expect(page.press).not.toHaveBeenCalled();
     expect(page.fileChooser.setFiles).not.toHaveBeenCalled();
     expect(page.listenerCount()).toBe(0);
@@ -243,13 +229,8 @@ describe("armFileUploadViaPlaywright upload path validation", () => {
           }),
       );
       interactionMocks.clickViaPlaywright.mockImplementation(async () => page.emitChooser());
-      const upload = uploadViaPlaywright({
-        cdpUrl: "http://127.0.0.1:18792",
-        ref: "e12",
-        paths: ["/home/user/.openclaw/media/inbound/report.pdf"],
-        timeoutMs: 500,
-      });
-      const rejection = expect(upload).rejects.toThrow(
+      const operation = upload("e12", { timeoutMs: 500 });
+      const rejection = expect(operation).rejects.toThrow(
         "Timeout 500ms exceeded while completing file upload",
       );
 
@@ -279,18 +260,14 @@ describe("armFileUploadViaPlaywright upload path validation", () => {
       .mockImplementationOnce(async () => page.emitChooser())
       .mockImplementationOnce(async () => page.emitChooser());
 
-    const first = uploadViaPlaywright({
-      cdpUrl: "http://127.0.0.1:18792",
-      ref: "e1",
+    const first = upload("e1", {
       paths: ["/home/user/.openclaw/media/inbound/first.pdf"],
     });
     const firstRejection = expect(first).rejects.toThrow("superseded by another waiter");
     await vi.waitFor(() => expect(page.fileChooser.setFiles).toHaveBeenCalledTimes(1));
 
     const secondController = new AbortController();
-    const second = uploadViaPlaywright({
-      cdpUrl: "http://127.0.0.1:18792",
-      ref: "e2",
+    const second = upload("e2", {
       paths: ["/home/user/.openclaw/media/inbound/second.pdf"],
       signal: secondController.signal,
     });
@@ -298,9 +275,7 @@ describe("armFileUploadViaPlaywright upload path validation", () => {
     secondController.abort(new Error("queued upload aborted"));
     await expect(second).rejects.toThrow("queued upload aborted");
 
-    const third = uploadViaPlaywright({
-      cdpUrl: "http://127.0.0.1:18792",
-      ref: "e3",
+    const third = upload("e3", {
       paths: ["/home/user/.openclaw/media/inbound/third.pdf"],
     });
     await Promise.resolve();
@@ -329,15 +304,11 @@ describe("armFileUploadViaPlaywright upload path validation", () => {
       )
       .mockImplementationOnce(async () => page.emitChooser());
 
-    const first = uploadViaPlaywright({
-      cdpUrl: "http://127.0.0.1:18792",
-      ref: "e1",
+    const first = upload("e1", {
       paths: ["/home/user/.openclaw/media/inbound/first.pdf"],
     });
     await vi.waitFor(() => expect(interactionMocks.clickViaPlaywright).toHaveBeenCalledTimes(1));
-    const second = uploadViaPlaywright({
-      cdpUrl: "http://127.0.0.1:18792",
-      ref: "e2",
+    const second = upload("e2", {
       paths: ["/home/user/.openclaw/media/inbound/second.pdf"],
     });
     await Promise.resolve();

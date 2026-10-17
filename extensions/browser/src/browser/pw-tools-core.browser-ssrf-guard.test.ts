@@ -128,6 +128,29 @@ function documentPage<T>(waitForFunction: T, url = "https://example.com") {
   install(page);
   return { page, documentHandle };
 }
+type WaitState = { document: unknown };
+type WaitPredicate = (state: WaitState) => boolean;
+function pendingEvaluation(result: Promise<unknown> = new Promise(() => {})) {
+  const ctrl = new AbortController();
+  const entered = Promise.withResolvers<void>();
+  install({
+    url: () => "https://example.com/current",
+    evaluate: () => {
+      entered.resolve();
+      return result;
+    },
+  });
+  return { ctrl, entered };
+}
+function preservePolicyDenial(blocked: Error) {
+  session.isPolicyDenyNavigationError.mockImplementation((err: unknown) => err === blocked);
+  session.wasBrowserNavigationSourcePreservedAfterPolicyDenial.mockImplementation(
+    (err: unknown) => err === blocked,
+  );
+}
+function wait(signal?: AbortSignal, fn = "() => true") {
+  return waitForViaPlaywright({ ...strict, fn, signal });
+}
 
 async function withFakeTimers(run: () => Promise<void>): Promise<void> {
   vi.useFakeTimers();
@@ -154,21 +177,16 @@ describe("pw-tools-core browser SSRF guards", () => {
         return await action(page.url());
       });
       const documentHandle = { dispose: vi.fn(async () => {}) };
-      const waitForFunction = vi.fn(
-        async (
-          predicate: (state: { document: unknown }) => boolean,
-          state: { document: unknown },
-        ) => {
-          order.push("predicate");
-          const browserState = { ...state, document: globalThis.document };
-          expect(predicate(browserState)).toBe(!fn.startsWith("async"));
-          if (fn.startsWith("async")) {
-            await Promise.resolve();
-            expect(predicate(browserState)).toBe(true);
-          }
-          currentUrl = "https://93.184.216.34/target";
-        },
-      );
+      const waitForFunction = vi.fn(async (predicate: WaitPredicate, state: WaitState) => {
+        order.push("predicate");
+        const browserState = { ...state, document: globalThis.document };
+        expect(predicate(browserState)).toBe(!fn.startsWith("async"));
+        if (fn.startsWith("async")) {
+          await Promise.resolve();
+          expect(predicate(browserState)).toBe(true);
+        }
+        currentUrl = "https://93.184.216.34/target";
+      });
       install({
         url: () => currentUrl,
         evaluateHandle: vi.fn(async () => documentHandle),
@@ -205,21 +223,15 @@ describe("pw-tools-core browser SSRF guards", () => {
 
   it("does not recreate a wait predicate in a replacement document", async () => {
     const { documentHandle } = documentPage(
-      vi.fn(
-        async (
-          predicate: (state: { document: unknown }) => boolean,
-          state: { document: unknown },
-        ) => predicate({ ...state, document: {} }),
+      vi.fn(async (predicate: WaitPredicate, state: WaitState) =>
+        predicate({ ...state, document: {} }),
       ),
       "https://example.com/next",
     );
 
-    await expect(
-      waitForViaPlaywright({
-        ...strict,
-        fn: "() => document.cookie",
-      }),
-    ).rejects.toThrow("Wait predicate document changed");
+    await expect(wait(undefined, "() => document.cookie")).rejects.toThrow(
+      "Wait predicate document changed",
+    );
 
     expect(documentHandle.dispose).toHaveBeenCalledOnce();
   });
@@ -264,13 +276,7 @@ describe("pw-tools-core browser SSRF guards", () => {
       return documentHandle;
     });
 
-    await expect(
-      waitForViaPlaywright({
-        ...strict,
-        fn: "() => true",
-        signal: ctrl.signal,
-      }),
-    ).rejects.toThrow("aborted during document capture");
+    await expect(wait(ctrl.signal)).rejects.toThrow("aborted during document capture");
 
     expect(waitForFunction).not.toHaveBeenCalled();
     expect(documentHandle.dispose).toHaveBeenCalledOnce();
@@ -322,10 +328,7 @@ describe("pw-tools-core browser SSRF guards", () => {
       const started = Promise.withResolvers<void>();
       const blocked = policyFailure();
       if (denied) {
-        session.isPolicyDenyNavigationError.mockImplementation((err: unknown) => err === blocked);
-        session.wasBrowserNavigationSourcePreservedAfterPolicyDenial.mockImplementation(
-          (err: unknown) => err === blocked,
-        );
+        preservePolicyDenial(blocked);
       }
       guardOnce(async ({ action, onPolicyCheckStarted, onPolicyDenied, page }) => {
         const actionTask = action(page.url());
@@ -372,10 +375,7 @@ describe("pw-tools-core browser SSRF guards", () => {
     const unsafeReported = Promise.withResolvers<void>();
     const detected = Promise.withResolvers<void>();
     const blocked = policyFailure();
-    session.isPolicyDenyNavigationError.mockImplementation((err: unknown) => err === blocked);
-    session.wasBrowserNavigationSourcePreservedAfterPolicyDenial.mockImplementation(
-      (err: unknown) => err === blocked,
-    );
+    preservePolicyDenial(blocked);
     guardOnce(async ({ action, onPolicyDenied, page }) => {
       const actionTask = action(page.url());
       onPolicyDenied?.({ state: "detected", error: blocked });
@@ -545,15 +545,7 @@ describe("pw-tools-core browser SSRF guards", () => {
     expect(session.withPageNavigationRequestGuard).toHaveBeenCalledOnce();
   });
   it("disconnects a pending page evaluation on caller cancellation", async () => {
-    const ctrl = new AbortController();
-    const entered = Promise.withResolvers<void>();
-    install({
-      url: () => "https://example.com/current",
-      evaluate: () => {
-        entered.resolve();
-        return new Promise(() => {});
-      },
-    });
+    const { ctrl, entered } = pendingEvaluation();
     const task = pw.evaluateViaPlaywright({
       ...strict,
       fn: "() => 1",
@@ -569,16 +561,8 @@ describe("pw-tools-core browser SSRF guards", () => {
   });
 
   it("reconciles an observed dialog after evaluation settles without disconnecting", async () => {
-    const ctrl = new AbortController();
-    const entered = Promise.withResolvers<void>();
     const evaluation = Promise.withResolvers<boolean>();
-    install({
-      url: () => "https://example.com/current",
-      evaluate: () => {
-        entered.resolve();
-        return evaluation.promise;
-      },
-    });
+    const { ctrl, entered } = pendingEvaluation(evaluation.promise);
     const task = pw.evaluateViaPlaywright({
       ...target,
       fn: "() => alert('x')",

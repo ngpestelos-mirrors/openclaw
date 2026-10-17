@@ -1,4 +1,3 @@
-// Browser tests cover pw tools core.waits next download saves it plugin behavior.
 import "openclaw/plugin-sdk/compiled-subprocess-testing";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
@@ -38,6 +37,25 @@ let mod: Pick<
 let tmpDirModule: typeof import("openclaw/plugin-sdk/temp-path");
 
 const target = { cdpUrl: "http://127.0.0.1:18792", targetId: "T1" };
+const strictPolicy = { dangerouslyAllowPrivateNetwork: false };
+function waitForDownload(
+  options: Omit<Parameters<typeof mod.waitForDownloadViaPlaywright>[0], "cdpUrl" | "targetId"> = {},
+) {
+  return mod.waitForDownloadViaPlaywright({ ...target, timeoutMs: 1000, ...options });
+}
+function writer(content: string) {
+  return vi.fn(async (outPath: string) => {
+    await fs.writeFile(outPath, content, "utf8");
+  });
+}
+function downloadEvent(
+  saveAs: ReturnType<typeof vi.fn>,
+  filename = "file.bin",
+  url = `https://example.com/${filename}`,
+  cancel = vi.fn(async () => {}),
+) {
+  return { url: () => url, suggestedFilename: () => filename, saveAs, cancel };
+}
 
 describe("pw-tools-core", () => {
   installPwToolsCoreTestHooks();
@@ -53,13 +71,7 @@ describe("pw-tools-core", () => {
   });
 
   beforeEach(() => {
-    for (const fn of Object.values(tmpDirMocks)) {
-      fn.mockClear();
-    }
-    for (const fn of Object.values(chromeMocks)) {
-      fn.mockClear();
-    }
-    for (const fn of Object.values(clientFetchMocks)) {
+    for (const fn of Object.values({ ...tmpDirMocks, ...chromeMocks, ...clientFetchMocks })) {
       fn.mockClear();
     }
     tmpDirMocks.resolvePreferredOpenClawTmpDir.mockReturnValue("/tmp/openclaw");
@@ -91,22 +103,11 @@ describe("pw-tools-core", () => {
     suggestedFilename: string;
   }) {
     const harness = createDownloadEventHarness();
-    const saveAs = vi.fn(async (outPath: string) => {
-      await fs.writeFile(outPath, "download-content", "utf8");
-    });
-
-    const p = mod.waitForDownloadViaPlaywright({
-      ...target,
-      timeoutMs: 1000,
-    });
+    const saveAs = writer("download-content");
+    const p = waitForDownload();
 
     await Promise.resolve();
-    harness.trigger({
-      url: () => params.downloadUrl,
-      cancel: vi.fn(async () => {}),
-      suggestedFilename: () => params.suggestedFilename,
-      saveAs,
-    });
+    harness.trigger(downloadEvent(saveAs, params.suggestedFilename, params.downloadUrl));
 
     const res = await p;
     const outPath = requireSaveAsPath(saveAs);
@@ -167,21 +168,11 @@ describe("pw-tools-core", () => {
           parentSwappedBeforeFinalize = true;
         });
 
-        const p = mod.waitForDownloadViaPlaywright({
-          ...target,
-          path: targetPath,
-          rootDir,
-          timeoutMs: 1000,
-        });
+        const p = waitForDownload({ path: targetPath, rootDir });
 
         await Promise.resolve();
         harness.expectArmed();
-        harness.trigger({
-          url: () => "https://example.com/file.bin",
-          cancel: vi.fn(async () => {}),
-          suggestedFilename: () => "file.bin",
-          saveAs,
-        });
+        harness.trigger(downloadEvent(saveAs));
 
         await expect(p).rejects.toMatchObject({ code: "not-file" });
         expect(parentSwappedBeforeFinalize).toBe(true);
@@ -196,11 +187,7 @@ describe("pw-tools-core", () => {
     const harness = createDownloadEventHarness();
     const state = sessionMocks.ensurePageState();
     const controller = new AbortController();
-    const cancelled = mod.waitForDownloadViaPlaywright({
-      ...target,
-      timeoutMs: 1000,
-      signal: controller.signal,
-    });
+    const cancelled = waitForDownload({ signal: controller.signal });
 
     await Promise.resolve();
     expect(state.downloadWaiterDepth).toBe(1);
@@ -209,20 +196,10 @@ describe("pw-tools-core", () => {
     expect(state.downloadWaiterDepth).toBe(0);
     expect(harness.activeHandlerCount()).toBe(0);
 
-    const successor = mod.waitForDownloadViaPlaywright({
-      ...target,
-      timeoutMs: 1000,
-    });
-    const saveAs = vi.fn(async (outPath: string) => {
-      await fs.writeFile(outPath, "successor-content", "utf8");
-    });
+    const successor = waitForDownload();
+    const saveAs = writer("successor-content");
     await Promise.resolve();
-    harness.trigger({
-      url: () => "https://example.com/successor.bin",
-      cancel: vi.fn(async () => {}),
-      suggestedFilename: () => "successor.bin",
-      saveAs,
-    });
+    harness.trigger(downloadEvent(saveAs, "successor.bin"));
 
     await expect(successor).resolves.toMatchObject({ suggestedFilename: "successor.bin" });
     expect(saveAs).toHaveBeenCalledOnce();
@@ -232,28 +209,14 @@ describe("pw-tools-core", () => {
     const harness = createDownloadEventHarness();
     const state = sessionMocks.ensurePageState();
     const cancel = vi.fn(async () => {});
-    const saveAs = vi.fn(async (outPath: string) => {
-      await fs.writeFile(outPath, "latest-content", "utf8");
-    });
-
-    const first = mod.waitForDownloadViaPlaywright({
-      ...target,
-      timeoutMs: 1000,
-    });
+    const saveAs = writer("latest-content");
+    const first = waitForDownload();
     void first.catch(() => {});
-    const latest = mod.waitForDownloadViaPlaywright({
-      ...target,
-      timeoutMs: 1000,
-    });
+    const latest = waitForDownload();
 
     await Promise.resolve();
     expect(state.downloadWaiterDepth).toBe(2);
-    harness.trigger({
-      url: () => "https://example.com/latest.bin",
-      suggestedFilename: () => "latest.bin",
-      saveAs,
-      cancel,
-    });
+    harness.trigger(downloadEvent(saveAs, "latest.bin", undefined, cancel));
 
     await expect(first).rejects.toThrow("superseded by another waiter");
     await expect(latest).resolves.toMatchObject({ suggestedFilename: "latest.bin" });
@@ -275,15 +238,8 @@ describe("pw-tools-core", () => {
       });
       setPwToolsCoreCurrentRefLocator({ click });
 
-      const saveAs = vi.fn(async (outPath: string) => {
-        await fs.writeFile(outPath, "report-content", "utf8");
-      });
-      const download = {
-        url: () => "https://example.com/report.pdf",
-        cancel: vi.fn(async () => {}),
-        suggestedFilename: () => "report.pdf",
-        saveAs,
-      };
+      const saveAs = writer("report-content");
+      const download = downloadEvent(saveAs, "report.pdf");
 
       const targetPath = path.join(tempDir, "report.pdf");
       const p = mod.downloadViaPlaywright({
@@ -291,7 +247,7 @@ describe("pw-tools-core", () => {
         ref: "e12",
         path: targetPath,
         timeoutMs: 1000,
-        ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
+        ssrfPolicy: strictPolicy,
         assertCurrent: async () => {
           if (!current) {
             throw new Error("Dashboard revoked after click");
@@ -309,7 +265,7 @@ describe("pw-tools-core", () => {
       expect(click).toHaveBeenCalledWith({ timeout: 1000, signal: expect.any(AbortSignal) });
       expect(sessionMocks.withPageNavigationRequestGuard).toHaveBeenCalledWith(
         expect.objectContaining({
-          ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
+          ssrfPolicy: strictPolicy,
         }),
       );
 
@@ -318,7 +274,7 @@ describe("pw-tools-core", () => {
       const res = await p;
       expect(navigationGuardMocks.assertBrowserNavigationResultAllowed).toHaveBeenCalledWith({
         url: "https://example.com/report.pdf",
-        ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
+        ssrfPolicy: strictPolicy,
         browserProxyMode: undefined,
         signal: undefined,
       });
@@ -337,28 +293,20 @@ describe("pw-tools-core", () => {
         new Error("browser navigation blocked by policy"),
       );
 
-      const pending = mod.waitForDownloadViaPlaywright({
-        ...target,
-        path: targetPath,
-        timeoutMs: 1000,
-        ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
-      });
+      const pending = waitForDownload({ path: targetPath, ssrfPolicy: strictPolicy });
 
       await Promise.resolve();
       harness.expectArmed();
-      harness.trigger({
-        url: () => "http://169.254.169.254/latest/meta-data/",
-        suggestedFilename: () => "metadata.bin",
-        saveAs,
-        cancel,
-      });
+      harness.trigger(
+        downloadEvent(saveAs, "metadata.bin", "http://169.254.169.254/latest/meta-data/", cancel),
+      );
 
       await expect(pending).rejects.toThrow("browser navigation blocked by policy");
       expect(saveAs).not.toHaveBeenCalled();
       expect(cancel).toHaveBeenCalledOnce();
       expect(navigationGuardMocks.assertBrowserNavigationResultAllowed).toHaveBeenCalledWith({
         url: "http://169.254.169.254/latest/meta-data/",
-        ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
+        ssrfPolicy: strictPolicy,
         browserProxyMode: undefined,
         signal: expect.any(AbortSignal),
       });
@@ -381,17 +329,14 @@ describe("pw-tools-core", () => {
         ref: "e12",
         path: path.join(tempDir, "metadata.bin"),
         timeoutMs: 1000,
-        ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
+        ssrfPolicy: strictPolicy,
       });
 
       await Promise.resolve();
       harness.expectArmed();
-      harness.trigger({
-        url: () => "http://169.254.169.254/latest/meta-data/",
-        suggestedFilename: () => "metadata.bin",
-        saveAs,
-        cancel,
-      });
+      harness.trigger(
+        downloadEvent(saveAs, "metadata.bin", "http://169.254.169.254/latest/meta-data/", cancel),
+      );
 
       await expect(pending).rejects.toThrow("browser navigation blocked by policy");
       expect(click).toHaveBeenCalledOnce();
@@ -411,23 +356,12 @@ describe("pw-tools-core", () => {
         const outsideBefore = await fs.stat(outsidePath);
 
         const harness = createDownloadEventHarness();
-        const saveAs = vi.fn(async (outPath: string) => {
-          await fs.writeFile(outPath, "download-content", "utf8");
-        });
-        const p = mod.waitForDownloadViaPlaywright({
-          ...target,
-          path: linkedPath,
-          timeoutMs: 1000,
-        });
+        const saveAs = writer("download-content");
+        const p = waitForDownload({ path: linkedPath });
 
         await Promise.resolve();
         harness.expectArmed();
-        harness.trigger({
-          url: () => "https://example.com/file.bin",
-          cancel: vi.fn(async () => {}),
-          suggestedFilename: () => "file.bin",
-          saveAs,
-        });
+        harness.trigger(downloadEvent(saveAs));
 
         await expect(p).resolves.toMatchObject({ path: linkedPath });
         await expectAtomicDownloadSave({
@@ -485,23 +419,12 @@ describe("pw-tools-core", () => {
         tmpDirMocks.resolvePreferredOpenClawTmpDir.mockReturnValue(tempDir);
 
         const harness = createDownloadEventHarness();
-        const saveAs = vi.fn(async (outPath: string) => {
-          await fs.writeFile(outPath, "should-not-write", "utf8");
-        });
-
-        const p = mod.waitForDownloadViaPlaywright({
-          ...target,
-          timeoutMs: 1000,
-        });
+        const saveAs = writer("should-not-write");
+        const p = waitForDownload();
 
         await Promise.resolve();
         harness.expectArmed();
-        harness.trigger({
-          url: () => "https://example.com/file.bin",
-          cancel: vi.fn(async () => {}),
-          suggestedFilename: () => "file.bin",
-          saveAs,
-        });
+        harness.trigger(downloadEvent(saveAs));
 
         await expect(p).rejects.toThrow(/output directory/i);
         expect(saveAs).not.toHaveBeenCalled();

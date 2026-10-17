@@ -43,6 +43,23 @@ function captureDownloads(
   session.beginActionDownloadCaptureOnPage.mockReturnValueOnce({ drain, dispose });
   return dispose;
 }
+function holdClick(options: Partial<Parameters<typeof mod.clickViaPlaywright>[0]> = {}) {
+  const hover = vi.fn(async () => {});
+  const click = vi.fn(async () => {});
+  install({ url: vi.fn(() => "https://example.test/hold") }, { hover, click });
+  return {
+    hover,
+    click,
+    task: mod.clickViaPlaywright({ ...target, ref: "1", delayMs: 5_000, ...options }),
+  };
+}
+function expectDownloadsDrained(
+  drain: ReturnType<typeof vi.fn>,
+  dispose: ReturnType<typeof vi.fn>,
+) {
+  expect(drain).toHaveBeenCalledWith(downloadGrace);
+  expect(dispose).toHaveBeenCalledOnce();
+}
 async function withFakeTimers<T>(run: () => Promise<T>): Promise<T> {
   vi.useFakeTimers();
   return await run().finally(() => vi.useRealTimers());
@@ -332,8 +349,7 @@ describe("pw-tools-core interaction navigation guard", () => {
     expect(dispose).not.toHaveBeenCalled();
     hover.resolve();
     await expect(task).rejects.toThrow("aborted by test");
-    expect(drain).toHaveBeenCalledWith(downloadGrace);
-    expect(dispose).toHaveBeenCalledOnce();
+    expectDownloadsDrained(drain, dispose);
   });
 
   it("retains the download grace when an executable wait aborts", async () => {
@@ -354,8 +370,7 @@ describe("pw-tools-core interaction navigation guard", () => {
         signal: ctrl.signal,
       }),
     ).rejects.toThrow("aborted by test");
-    expect(drain).toHaveBeenCalledWith(downloadGrace);
-    expect(dispose).toHaveBeenCalledOnce();
+    expectDownloadsDrained(drain, dispose);
     expect(page.waitForFunction).not.toHaveBeenCalled();
   });
 
@@ -422,8 +437,7 @@ describe("resident interaction authority", () => {
         waitForFunction: effect,
       });
       const opts = {
-        cdpUrl: "http://127.0.0.1:18792",
-        targetId: "T1",
+        ...target,
         assertCurrent: () => {
           events.push("assert");
           queueMicrotask(() => events.push("yield"));
@@ -451,8 +465,7 @@ describe("resident interaction authority", () => {
     setPwToolsCoreCurrentPage({});
     setPwToolsCoreCurrentRefLocator({ click });
     const pending = mod.clickViaPlaywright({
-      cdpUrl: "http://127.0.0.1:18792",
-      targetId: "T1",
+      ...target,
       ref: "1",
       assertCurrent: () => {
         entered.resolve();
@@ -481,8 +494,7 @@ describe("resident interaction authority", () => {
     });
     await expect(
       resizeViewportViaPlaywright({
-        cdpUrl: "http://127.0.0.1:18792",
-        targetId: "T1",
+        ...target,
         width: 800,
         height: 600,
         assertCurrent: () => {
@@ -499,26 +511,13 @@ describe("resident interaction authority", () => {
 
 describe("clickViaPlaywright (hold-delay abort)", () => {
   it("unwinds the hold-delay action chain promptly when aborted mid-delay", async () => {
-    vi.useFakeTimers();
-    try {
-      const hover = vi.fn(async () => {});
-      const click = vi.fn(async () => {});
-      setPwToolsCoreCurrentRefLocator({ hover, click });
-      setPwToolsCoreCurrentPage({ url: vi.fn(() => "https://example.test/hold") });
-
+    await withFakeTimers(async () => {
       const ctrl = new AbortController();
-      const task = mod.clickViaPlaywright({
-        cdpUrl: "http://127.0.0.1:18792",
-        targetId: "T1",
-        ref: "1",
-        delayMs: 5_000,
+      const { task, hover, click } = holdClick({
         ssrfPolicy: { allowPrivateNetwork: false },
         signal: ctrl.signal,
       });
-      const settled = task.then(
-        () => ({ status: "fulfilled" as const }),
-        (reason: unknown) => ({ status: "rejected" as const, reason }),
-      );
+      const rejected = expect(task).rejects.toThrow("aborted by test");
 
       // Enter the click-and-hold delay, then abort 100ms into the 5s hold.
       await vi.advanceTimersByTimeAsync(100);
@@ -527,38 +526,17 @@ describe("clickViaPlaywright (hold-delay abort)", () => {
 
       // Join the aborted hold and navigation grace without waiting out the hold.
       await vi.advanceTimersByTimeAsync(1_000);
-      const outcome = await settled;
-      expect(outcome.status).toBe("rejected");
-      if (outcome.status === "rejected") {
-        expect(outcome.reason).toBeInstanceOf(Error);
-        expect((outcome.reason as Error).message).toContain("aborted by test");
-      }
+      await rejected;
+      await expect(task).rejects.toBeInstanceOf(Error);
       expect(click).not.toHaveBeenCalled();
-      expect(
-        getPwToolsCoreSessionMocks().forceDisconnectPlaywrightForTarget,
-      ).not.toHaveBeenCalled();
-      expect(
-        getPwToolsCoreSessionMocks().assertPageNavigationCompletedSafely,
-      ).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
+      expect(session.forceDisconnectPlaywrightForTarget).not.toHaveBeenCalled();
+      expect(complete).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("still waits the full hold delay before clicking when not aborted", async () => {
-    vi.useFakeTimers();
-    try {
-      const hover = vi.fn(async () => {});
-      const click = vi.fn(async () => {});
-      setPwToolsCoreCurrentRefLocator({ hover, click });
-      setPwToolsCoreCurrentPage({ url: vi.fn(() => "https://example.test/hold") });
-
-      const task = mod.clickViaPlaywright({
-        cdpUrl: "http://127.0.0.1:18792",
-        targetId: "T1",
-        ref: "1",
-        delayMs: 5_000,
-      });
+    await withFakeTimers(async () => {
+      const { task, hover, click } = holdClick();
 
       await vi.advanceTimersByTimeAsync(4_999);
       expect(hover).toHaveBeenCalledTimes(1);
@@ -567,8 +545,6 @@ describe("clickViaPlaywright (hold-delay abort)", () => {
       await vi.advanceTimersByTimeAsync(1);
       await task;
       expect(click).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
+    });
   });
 });
