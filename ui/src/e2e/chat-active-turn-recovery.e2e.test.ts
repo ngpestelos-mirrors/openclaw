@@ -163,7 +163,7 @@ async function openActiveTurn(scenario: Parameters<typeof installMockGateway>[1]
 
 async function recoverTurn(mode: "navigation" | "reconnect" | "reload") {
   const { page, gateway } = await openActiveTurn();
-  const title = mode[0].toUpperCase() + mode.slice(1);
+  const title = mode.charAt(0).toUpperCase() + mode.slice(1);
   const prompt = `${mode} active turn`;
   const streamText = `${title} progress is still running.`;
   const runId = await sendPrompt(page, gateway, prompt);

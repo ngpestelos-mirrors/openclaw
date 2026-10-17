@@ -139,9 +139,12 @@ describe("SQLite transcript history cache", () => {
   });
 
   it("reuses recent payloads with fresh result ownership until append or rewrite", async () => {
+    const original = historyMessage("original", null, [
+      { type: "text", text: "cache-window-original" },
+    ]);
     const events = [
       { type: "session", version: 3, id: fixtureScope.sessionId },
-      historyMessage("original", null, [{ type: "text", text: "cache-window-original" }]),
+      original,
       historyMessage("initial", "original", "reply", "assistant"),
     ];
     await replaceTranscriptEvents(fixtureScope, events);
@@ -156,15 +159,14 @@ describe("SQLite transcript history cache", () => {
         throw new Error("expected the original message content");
       }
       message.content[0].text = "caller mutation";
-      expect(asOptionalRecord(read().events[0]?.event)?.message).toEqual(events[1]?.message);
+      expect(asOptionalRecord(read().events[0]?.event)?.message).toEqual(original.message);
     }
     await persist(turn("appended", "initial", "next"));
     expect(read().events.map(historyEventId)).toEqual(["original", "initial", "appended"]);
-    const replacement = [...events, historyMessage("appended", "initial", "rewritten")];
+    const rewritten = historyMessage("appended", "initial", "rewritten");
+    const replacement = [...events, rewritten];
     await replaceTranscriptEvents(fixtureScope, replacement);
-    expect(asOptionalRecord(read().events.at(-1)?.event)?.message).toEqual(
-      replacement.at(-1)?.message,
-    );
+    expect(asOptionalRecord(read().events.at(-1)?.event)?.message).toEqual(rewritten.message);
     expect(
       readRecentSessionTranscriptHistoryEvents(fixtureScope, {
         ...limits,

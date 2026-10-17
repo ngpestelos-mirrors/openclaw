@@ -25,12 +25,15 @@ const mocks = vi.hoisted(() => ({
 }));
 const { activate } = mocks;
 
+// mock-isolation: Control activation settlement without launching or provisioning inference processes.
 vi.mock("../../system-agent/setup-inference.js", () => ({
   activateSetupInference: mocks.activate,
 }));
+// mock-isolation: Resolve scripted provider choices without real credential prompts or storage.
 vi.mock("../../plugins/provider-auth-choice.js", () => ({
   prepareAuthChoiceLoadedPluginProvider: mocks.prepareProvider,
 }));
+// mock-isolation: Resolution tests use controlled snapshots, never the operator's configuration.
 vi.mock("../../wizard/setup.shared.js", () => ({
   readSetupConfigFileSnapshot: mocks.readConfig,
 }));

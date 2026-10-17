@@ -18,6 +18,7 @@ const createDownloadCaptureForPage = vi.fn(() => ({
   cancel: vi.fn(),
 }));
 
+// mock-isolation: Snapshot fixtures own page state and references instead of a live browser session.
 vi.mock("./pw-session.js", () => ({
   assertPageNavigationCompletedSafely: vi.fn(),
   closeBlockedNavigationTarget: vi.fn(),

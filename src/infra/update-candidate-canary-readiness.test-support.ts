@@ -113,7 +113,9 @@ export function registerCanaryReadinessBudgetTests(
   const fakeTimersAfterRecovery = (step: UpdateStepResult) => {
     if (step.name === "candidate-recovery") {
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-      onTestFinished(() => vi.useRealTimers());
+      onTestFinished(() => {
+        vi.useRealTimers();
+      });
     }
   };
   const progress = async (gateway: () => FakeChild, milestone: string, delay: number) => {

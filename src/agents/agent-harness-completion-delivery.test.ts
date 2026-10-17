@@ -473,6 +473,10 @@ describe("host-owned harness completion recovery", () => {
         throw new Error("Missing real terminal target.");
       }
       switch (kind) {
+        case "cold-final":
+        case "progress":
+        case "unresolved-default-explicit-account":
+          break;
         case "casefolded-provider":
           sent.provider = "DiScOrD";
           break;

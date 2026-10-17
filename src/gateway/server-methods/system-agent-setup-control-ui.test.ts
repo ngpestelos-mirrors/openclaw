@@ -86,6 +86,7 @@ vi.mock("../../plugins/provider-install-catalog.js", async (importOriginal) => (
   ...(await importOriginal<typeof import("../../plugins/provider-install-catalog.js")>()),
   resolveProviderInstallCatalogEntries: () => [],
 }));
+// mock-isolation: Keep process discovery synthetic while exercising real config, RPC, and UI behavior.
 vi.mock("../../system-agent/setup-inference.js", () => ({
   // Replace process discovery only; keep config, RPC and UI behavior real.
   detectSetupInference: async (_deps: unknown, agentId?: string) => {

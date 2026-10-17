@@ -114,7 +114,7 @@ describe("bootstrap budget", () => {
     } as unknown as WorkspaceBootstrapFile;
     const stats = buildBootstrapInjectionStats({
       bootstrapFiles: [pathOnlyFile],
-      injectedFiles: [pathOnlyFile],
+      injectedFiles: [{ path: pathOnlyFile.path, content: "remember" }],
     });
     expect(analyze(stats).files).toMatchObject([
       {

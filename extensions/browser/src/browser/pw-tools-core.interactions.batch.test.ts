@@ -60,6 +60,7 @@ const drainDownloads = vi.fn(async () => undefined);
 const disposeDownloads = vi.fn();
 const cleanupDialogAbort = vi.fn();
 
+// mock-isolation: Exercise synthetic page actions without connecting to a live browser session.
 vi.mock("./pw-session.js", () => ({
   ...session,
   beginActionDownloadCaptureOnPage: vi.fn(() => ({

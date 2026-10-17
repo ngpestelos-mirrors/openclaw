@@ -18,9 +18,11 @@ const mocks = vi.hoisted(() => ({
   write: vi.fn(),
 }));
 
+// mock-isolation: Hold provider preparation without prompting for or storing real credentials.
 vi.mock("../../plugins/provider-auth-choice.js", () => ({
   prepareAuthChoiceLoadedPluginProvider: mocks.prepare,
 }));
+// mock-isolation: Admission tests use controlled snapshots, never the operator's configuration.
 vi.mock("../../wizard/setup.shared.js", () => ({
   readSetupConfigFileSnapshot: mocks.snapshot,
 }));

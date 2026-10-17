@@ -372,7 +372,10 @@ suite.define(() => {
         .map((row) => row.getBoundingClientRect())
         .filter((rect) => rect.bottom > rect.top)
         .toSorted((left, right) => left.top - right.top);
-      return bounds.slice(1).some((current, index) => current.top < bounds[index].bottom - 0.5);
+      return bounds.slice(1).some((current, index) => {
+        const previous = bounds[index];
+        return previous !== undefined && current.top < previous.bottom - 0.5;
+      });
     });
     expect(hasOverlap).toBe(false);
   });

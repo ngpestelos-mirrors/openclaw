@@ -17,76 +17,21 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { applySessionEntryExactReplacements } from "./session-accessor.sqlite-replacement-projection.js";
 import { prepareSessionGenerationFacts } from "./session-delivery-generation.js";
-import type { InternalSessionEntry } from "./types.js";
 
 const { getReplacementPublicationDelivery } =
   await import("./session-accessor.sqlite-replacement-publication.test-support.js");
 const delivery = getReplacementPublicationDelivery();
 
-function sessionScope(name: string) {
-  return {
-    agentId: "main",
-    storePath: openOpenClawAgentDatabase({ agentId: "main" }).path,
-    sessionKey: `agent:main:${name}`,
-  };
-}
-
-function replace(scope: ReturnType<typeof sessionScope>, entry: InternalSessionEntry) {
-  return applySessionEntryExactReplacements({
-    ...scope,
-    sessionKeys: [scope.sessionKey],
-    requireWriteSuccess: true,
-    update: () => ({ result: undefined, replacements: [{ sessionKey: scope.sessionKey, entry }] }),
-  });
-}
-
-function holdPublication() {
-  const committed = createDeferred();
-  const release = createDeferred();
-  delivery.afterResult = async () => {
-    committed.resolve();
-    await release.promise;
-  };
-  const wait = (write: Promise<unknown>, signal: AbortSignal) =>
-    withinTest(
-      awaitGateBeforeSettlement(committed.promise, write, "write did not reach publication"),
-      signal,
-    );
-  return { release, wait };
-}
-
-function memoryProvider(
-  sessionKey: string,
-  audience: Parameters<typeof assertMemoryAudienceCurrent>[0],
-) {
-  const health = vi.fn(async () => ({ status: "ready" as const }));
-  const provider = bindMemoryProvider(
-    {
-      capabilities: {
-        sources: ["memory"],
-        pagination: false,
-        candidates: [],
-        projectFilter: false,
-      },
-      health,
-      search: async () => ({ hits: [] }),
-      get: async () => ({ status: "not_found" }),
-      close: async () => {},
-    },
-    "test",
-    {
-      authority: { kind: "session", sessionKey, sandboxed: false, audience },
-      assertCurrent: () => {},
-    },
-  );
-  return { health, provider };
-}
-
 it.for(["permissionMode", "toolOverrides"] as const)(
   "fences retained %s until same-generation policy publication settles",
   async (setting, { signal }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      const scope = sessionScope("permission-readiness");
+      const database = openOpenClawAgentDatabase({ agentId: "main" });
+      const scope = {
+        agentId: "main",
+        storePath: database.path,
+        sessionKey: "agent:main:permission-readiness",
+      };
       const original = {
         sessionId: "e1234567-1234-1234-1234-123456789abc",
         lifecycleRevision: "original-lifecycle",
@@ -101,13 +46,28 @@ it.for(["permissionMode", "toolOverrides"] as const)(
           setting === "permissionMode" ? ("read-only" as const) : original.permissionMode,
         toolOverrides: setting === "toolOverrides" ? { webSearch: false } : original.toolOverrides,
       };
-      const { release, wait } = holdPublication();
+      const committed = createDeferred();
+      const release = createDeferred();
       const onAbort = () => release.resolve();
       signal.addEventListener("abort", onAbort, { once: true });
-
-      const write = replace(scope, { ...original, ...settings });
+      delivery.afterResult = async () => {
+        committed.resolve();
+        await release.promise;
+      };
+      const write = applySessionEntryExactReplacements({
+        ...scope,
+        sessionKeys: [scope.sessionKey],
+        requireWriteSuccess: true,
+        update: () => ({
+          result: undefined,
+          replacements: [{ sessionKey: scope.sessionKey, entry: { ...original, ...settings } }],
+        }),
+      });
       try {
-        await wait(write, signal);
+        await withinTest(
+          awaitGateBeforeSettlement(committed.promise, write, "policy write did not commit"),
+          signal,
+        );
         // Main's generation-only readers stay current; policy consumers cannot reuse old grants.
         generation.assertCurrent();
         expect(generation.readSessionSettings).toThrow(
@@ -132,7 +92,12 @@ it.for(["metadata", "replacement"] as const)(
   "joins admitted %s publication before checking the retained session generation",
   async (kind, { signal }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      const scope = sessionScope("generation-readiness");
+      const database = openOpenClawAgentDatabase({ agentId: "main" });
+      const scope = {
+        agentId: "main",
+        storePath: database.path,
+        sessionKey: "agent:main:generation-readiness",
+      };
       const original = {
         sessionId: "a1234567-1234-1234-1234-123456789abc",
         chatType: "direct" as const,
@@ -149,27 +114,75 @@ it.for(["metadata", "replacement"] as const)(
       if (grant.status !== "granted") {
         throw new Error(grant.reason);
       }
-      const { health, provider } = memoryProvider(scope.sessionKey, grant.audience);
+      const health = vi.fn(async () => ({ status: "ready" as const }));
+      const provider = bindMemoryProvider(
+        {
+          capabilities: {
+            sources: ["memory"],
+            pagination: false,
+            candidates: [],
+            projectFilter: false,
+          },
+          health,
+          search: async () => ({ hits: [] }),
+          get: async () => ({ status: "not_found" }),
+          close: async () => {},
+        },
+        "test",
+        {
+          authority: {
+            kind: "session",
+            sessionKey: scope.sessionKey,
+            sandboxed: false,
+            audience: grant.audience,
+          },
+          assertCurrent: () => {},
+        },
+      );
       const writes: Promise<unknown>[] = [];
       const readiness: Promise<unknown>[] = [];
       let releaseReply = () => {};
       const onAbort = () => releaseReply();
       signal.addEventListener("abort", onAbort, { once: true });
-      const replaceLabel = (label: string) =>
-        replace(scope, {
-          ...original,
-          label,
-          lifecycleRevision:
-            kind === "replacement" ? "replacement-lifecycle" : original.lifecycleRevision,
+      const replace = (label: string) =>
+        applySessionEntryExactReplacements({
+          ...scope,
+          sessionKeys: [scope.sessionKey],
+          requireWriteSuccess: true,
+          update: () => ({
+            result: undefined,
+            replacements: [
+              {
+                sessionKey: scope.sessionKey,
+                entry: {
+                  ...original,
+                  label,
+                  lifecycleRevision:
+                    kind === "replacement" ? "replacement-lifecycle" : original.lifecycleRevision,
+                },
+              },
+            ],
+          }),
         });
       try {
         for (const round of kind === "metadata" ? [0, 1] : [0]) {
-          const { release, wait } = holdPublication();
+          const committed = createDeferred();
+          const release = createDeferred();
           releaseReply = () => release.resolve();
-
-          const write = replaceLabel(`metadata-${round}`);
+          delivery.afterResult = async () => {
+            committed.resolve();
+            await release.promise;
+          };
+          const write = replace(`metadata-${round}`);
           writes.push(write);
-          await wait(write, signal);
+          await withinTest(
+            awaitGateBeforeSettlement(
+              committed.promise,
+              write,
+              "replacement did not reach publication",
+            ),
+            signal,
+          );
           // Synchronous reads stay available for an identity-preserving publication; a
           // replacement fences them. Prepared reads still join either publication.
           if (kind === "metadata") {
@@ -223,7 +236,6 @@ it.for(["metadata", "replacement"] as const)(
           if (kind === "replacement") {
             expect(await providerRead).toBeInstanceOf(Error);
             expect(health).toHaveBeenCalledTimes(priorCalls);
-            expect(() => assertMemoryAudienceCurrent(grant.audience)).toThrow("no longer current");
             expect(generation.assertCurrent).toThrow(
               expect.objectContaining({ code: "SESSION_DELIVERY_GENERATION_REVOKED" }),
             );
@@ -231,7 +243,6 @@ it.for(["metadata", "replacement"] as const)(
             await expect(providerRead).resolves.toEqual({ status: "ready" });
             expect(health).toHaveBeenCalledTimes(priorCalls + 1);
             generation.assertCurrent();
-            assertMemoryAudienceCurrent(grant.audience);
           }
         }
         delivery.afterResult = undefined;
@@ -241,7 +252,7 @@ it.for(["metadata", "replacement"] as const)(
           await runOpenClawAgentWriteAdmission(
             { agentId: scope.agentId, path: scope.storePath },
             () => {
-              successor = replaceLabel("queued-successor");
+              successor = replace("queued-successor");
               writes.push(successor);
               expect(generation.prepareRead()).toBeUndefined();
               generation.assertCurrent();
@@ -271,7 +282,12 @@ it.for(["metadata", "reset"] as const)(
   "waits on a parent %s publication before a retained child audience reaches the provider",
   async (kind, { signal }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      const parentScope = sessionScope("generation-parent");
+      const database = openOpenClawAgentDatabase({ agentId: "main" });
+      const parentScope = {
+        agentId: "main",
+        storePath: database.path,
+        sessionKey: "agent:main:generation-parent",
+      };
       const childScope = { ...parentScope, sessionKey: "agent:main:subagent:generation-child" };
       const parent = {
         sessionId: "b1234567-1234-1234-1234-123456789abc",
@@ -298,20 +314,69 @@ it.for(["metadata", "reset"] as const)(
       if (grant.status !== "granted") {
         throw new Error(grant.reason);
       }
-      const { health, provider } = memoryProvider(childScope.sessionKey, grant.audience);
-      const { release, wait } = holdPublication();
+      const health = vi.fn(async () => ({ status: "ready" as const }));
+      const provider = bindMemoryProvider(
+        {
+          capabilities: {
+            sources: ["memory"],
+            pagination: false,
+            candidates: [],
+            projectFilter: false,
+          },
+          health,
+          search: async () => ({ hits: [] }),
+          get: async () => ({ status: "not_found" }),
+          close: async () => {},
+        },
+        "test",
+        {
+          authority: {
+            kind: "session",
+            sessionKey: childScope.sessionKey,
+            sandboxed: false,
+            audience: grant.audience,
+          },
+          assertCurrent: () => {},
+        },
+      );
+      const committed = createDeferred();
+      const release = createDeferred();
       const onAbort = () => release.resolve();
       signal.addEventListener("abort", onAbort, { once: true });
-
+      delivery.afterResult = async () => {
+        committed.resolve();
+        await release.promise;
+      };
       // Hold the parent publication mid-flight; a reset keeps the session id but changes its revision.
-      const reset = replace(parentScope, {
-        ...parent,
-        label: "parent-metadata",
-        lifecycleRevision: kind === "reset" ? "parent-reset-lifecycle" : parent.lifecycleRevision,
-        updatedAt: 2,
+      const reset = applySessionEntryExactReplacements({
+        ...parentScope,
+        sessionKeys: [parentScope.sessionKey],
+        requireWriteSuccess: true,
+        update: () => ({
+          result: undefined,
+          replacements: [
+            {
+              sessionKey: parentScope.sessionKey,
+              entry: {
+                ...parent,
+                label: "parent-metadata",
+                lifecycleRevision:
+                  kind === "reset" ? "parent-reset-lifecycle" : parent.lifecycleRevision,
+                updatedAt: 2,
+              },
+            },
+          ],
+        }),
       });
       try {
-        await wait(reset, signal);
+        await withinTest(
+          awaitGateBeforeSettlement(
+            committed.promise,
+            reset,
+            "parent reset did not reach publication",
+          ),
+          signal,
+        );
         // The child audience waits on its parent's admitted publication instead of failing.
         const waiting = prepareMemoryAudienceRead(grant.audience)?.then(
           () => "current",
@@ -343,6 +408,90 @@ it.for(["metadata", "reset"] as const)(
         signal.removeEventListener("abort", onAbort);
         grant.release();
         await provider.close();
+      }
+    });
+  },
+);
+
+it.for([{ change: "metadata" }, { change: "reset" }] as const)(
+  "answers a synchronous audience check during a held $change publication",
+  async ({ change }, { signal }) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const database = openOpenClawAgentDatabase({ agentId: "main" });
+      const scope = {
+        agentId: "main",
+        storePath: database.path,
+        sessionKey: "agent:main:synchronous-check",
+      };
+      const original = {
+        sessionId: "d1234567-1234-1234-1234-123456789abc",
+        chatType: "direct" as const,
+        lifecycleRevision: "original-lifecycle",
+        updatedAt: 1,
+      };
+      replaceSessionEntrySync(scope, original);
+      const grant = await resolveMemoryAudienceFromEntry(
+        { ...scope, sessionId: original.sessionId, senderIsOwner: true },
+        original,
+      );
+      if (grant.status !== "granted") {
+        throw new Error(grant.reason);
+      }
+      const committed = createDeferred();
+      const release = createDeferred();
+      const onAbort = () => release.resolve();
+      signal.addEventListener("abort", onAbort, { once: true });
+      delivery.afterResult = async () => {
+        committed.resolve();
+        await release.promise;
+      };
+      // A turn's own bookkeeping writes look like this: same incarnation, new metadata.
+      const pending = applySessionEntryExactReplacements({
+        ...scope,
+        sessionKeys: [scope.sessionKey],
+        requireWriteSuccess: true,
+        update: () => ({
+          result: undefined,
+          replacements: [
+            {
+              sessionKey: scope.sessionKey,
+              entry: {
+                ...original,
+                label: "replaced",
+                lifecycleRevision:
+                  change === "reset" ? "reset-lifecycle" : original.lifecycleRevision,
+                updatedAt: 2,
+              },
+            },
+          ],
+        }),
+      });
+      try {
+        await withinTest(
+          awaitGateBeforeSettlement(committed.promise, pending, "write did not reach publication"),
+          signal,
+        );
+        // Memory plugins check currency synchronously between their own awaits.
+        if (change === "metadata") {
+          assertMemoryAudienceCurrent(grant.audience);
+        } else {
+          expect(() => assertMemoryAudienceCurrent(grant.audience)).toThrow(
+            "currency is unavailable",
+          );
+        }
+        release.resolve();
+        await withinTest(pending, signal);
+        if (change === "metadata") {
+          assertMemoryAudienceCurrent(grant.audience);
+        } else {
+          expect(() => assertMemoryAudienceCurrent(grant.audience)).toThrow("no longer current");
+        }
+      } finally {
+        release.resolve();
+        delivery.afterResult = undefined;
+        await Promise.allSettled([pending]);
+        signal.removeEventListener("abort", onAbort);
+        grant.release();
       }
     });
   },

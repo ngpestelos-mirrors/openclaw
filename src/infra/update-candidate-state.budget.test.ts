@@ -49,73 +49,6 @@ afterAll(async () => {
   await receipts.close();
 });
 
-function snapshot(
-  root: string,
-  signal: AbortSignal,
-  options: Partial<Parameters<typeof prepareUpdateCandidateStateSnapshot>[0]> = {},
-) {
-  return prepareUpdateCandidateStateSnapshot({
-    config: {},
-    stateDir: path.join(root, "source"),
-    candidateRoot: root,
-    env: { TMPDIR: root },
-    workerEnv: () => ({ ...process.env, OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }),
-    signal,
-    ...options,
-  });
-}
-
-function capture<T>(operation: Promise<T>) {
-  return operation.then(
-    (value) => ({ value }),
-    (error: unknown) => ({ error }),
-  );
-}
-
-function releaseAndJoin(
-  release: string,
-  operation: Promise<unknown>,
-  controller: AbortController,
-  onFinished: (cleanup: () => Promise<void>) => void,
-  signal?: AbortSignal,
-) {
-  let pending: Promise<void> | undefined;
-  const cleanup = () =>
-    (pending ??= (async () => {
-      try {
-        await fs.writeFile(release, "continue");
-      } catch (error) {
-        if (signal) {
-          controller.abort(error);
-        }
-        throw error;
-      } finally {
-        if (!signal || signal.aborted) {
-          controller.abort(signal?.reason);
-        }
-        await operation;
-      }
-    })());
-  cleanupFixture = cleanup;
-  onFinished(cleanup);
-  return cleanup;
-}
-
-const rehearsalScratch = async (root: string) =>
-  (await fs.readdir(root)).filter((name) => name.startsWith("openclaw-update-canary-"));
-
-function terminated(cleanup: "normal" | "uncertain") {
-  return {
-    stdout: "",
-    stderr: "",
-    code: null,
-    signal: null,
-    killed: true,
-    termination: "signal" as const,
-    cleanup,
-  };
-}
-
 // Receipts and command settlement travel independently. The fixture publishes the
 // complete marker before it can reply, so that record decides a settlement race.
 async function fixtureEventBeforeSettlement(
@@ -192,11 +125,28 @@ it.for([undefined, 600_000])(
       stagingRoot: root,
       timeoutMs,
       signal: controller.signal,
-    });
-    const outcome = capture(operation);
-    const cleanup = releaseAndJoin(release, outcome, controller, onTestFinished);
+    }).then(
+      (sizes) => ({ sizes }),
+      (error: unknown) => ({ error }),
+    );
+    let cleanupPromise: Promise<void> | undefined;
+    const cleanup = () =>
+      (cleanupPromise ??= (async () => {
+        try {
+          await fs.writeFile(release, "continue");
+        } finally {
+          // A failed release must still cancel and join the blocked stat worker.
+          controller.abort();
+          await operation;
+        }
+      })());
+    cleanupFixture = cleanup;
+    onTestFinished(cleanup);
     try {
-      await withinTest(fixtureEventBeforeSettlement(ready, readyReceipt.promise, outcome), signal);
+      await withinTest(
+        fixtureEventBeforeSettlement(ready, readyReceipt.promise, operation),
+        signal,
+      );
       const { pid } = JSON.parse(await fs.readFile(ready, "utf8")) as { pid: number };
       const deadlines = timers.mock.calls.flatMap(([callback, delay, ...args], index) =>
         delay !== undefined && delay >= 30_000 ? [{ callback, delay, args, index }] : [],
@@ -220,16 +170,28 @@ it.for([undefined, 600_000])(
       }
       await fs.writeFile(release, "continue");
       if (timeoutMs === undefined) {
-        const failure = await outcome;
-        for (const text of ["inventory failed (timeout", file, "then retry the update"]) {
-          expect(failure).toHaveProperty("error.message", expect.stringContaining(text));
-        }
-        expect(failure).toHaveProperty(
-          "error.message",
-          expect.stringMatching(/after \d+(?:\.\d+)? seconds during metadata inventory/),
-        );
+        expect(await operation).toMatchObject({
+          error: expect.objectContaining({
+            message: expect.stringContaining("inventory failed (timeout"),
+          }),
+        });
+        expect.soft(await operation).toMatchObject({
+          error: {
+            message: expect.stringContaining(file),
+          },
+        });
+        expect.soft(await operation).toMatchObject({
+          error: {
+            message: expect.stringMatching(/after \d+(?:\.\d+)? seconds during metadata inventory/),
+          },
+        });
+        expect.soft(await operation).toMatchObject({
+          error: {
+            message: expect.stringContaining("then retry the update"),
+          },
+        });
       } else {
-        expect(await outcome).toEqual({ value: [{ path: file, sizeBytes: 8n }] });
+        expect(await operation).toEqual({ sizes: [{ path: file, sizeBytes: 8n }] });
       }
       expect(() => process.kill(pid, 0)).toThrow();
       expect(await fs.readFile(file, "utf8")).toBe("database");
@@ -239,20 +201,31 @@ it.for([undefined, 600_000])(
   },
 );
 
-const schemaDefaults = { bytes: 4096, waits: [0], completes: true };
 it.for([
-  { ...schemaDefaults, name: "large database", bytes: 2 * 1024 ** 3, waits: [800_000] },
+  { name: "large database", bytes: 2 * 1024 ** 3, waits: [800_000], completes: true },
   {
-    ...schemaDefaults,
     name: "late-discovered database",
+    bytes: 4096,
     discoveredBytes: 2 * 1024 ** 3,
     waits: [800_000],
+    completes: true,
   },
-  { ...schemaDefaults, name: "continuing copy progress", waits: [200_000, 200_000, 200_000] },
-  { ...schemaDefaults, name: "stalled worker", waits: [400_000], completes: false },
-  { ...schemaDefaults, name: "caller allowance", waits: [400_000], timeoutMs: 600_000 },
-  { ...schemaDefaults, name: "configured cache", configuredCache: true },
-  { ...schemaDefaults, name: "large diagnostic output", diagnosticBytes: 40_000 },
+  {
+    name: "continuing copy progress",
+    bytes: 4096,
+    waits: [200_000, 200_000, 200_000],
+    completes: true,
+  },
+  { name: "stalled worker", bytes: 4096, waits: [400_000], completes: false },
+  { name: "caller allowance", bytes: 4096, waits: [400_000], completes: true, timeoutMs: 600_000 },
+  { name: "configured cache", bytes: 4096, waits: [0], completes: true, configuredCache: true },
+  {
+    name: "large diagnostic output",
+    bytes: 4096,
+    waits: [0],
+    completes: true,
+    diagnosticBytes: 40_000,
+  },
 ])(
   "budgets schema inspection for $name",
   async (
@@ -341,7 +314,23 @@ it.for([
         return { error };
       },
     );
-    const cleanup = releaseAndJoin(release, result, controller, onTestFinished, signal);
+    let cleanupPromise: Promise<void> | undefined;
+    const cleanup = () =>
+      (cleanupPromise ??= (async () => {
+        try {
+          await fs.writeFile(release, "done");
+        } catch (error) {
+          controller.abort(error);
+          throw error;
+        } finally {
+          if (signal.aborted) {
+            controller.abort(signal.reason);
+          }
+          await result;
+        }
+      })());
+    cleanupFixture = cleanup;
+    onTestFinished(cleanup);
     try {
       if (waits.some((milliseconds) => milliseconds > 0)) {
         await withinTest(
@@ -395,6 +384,7 @@ it.each(
   "retains rehearsal scratch when $source settlement is uncertain (cancelled=$cancelled)",
   async ({ source, cancelled }) => {
     const root = await fs.realpath(tempDirs.make("rehearsal-unsettled-"));
+    const stateDir = path.join(root, "source");
     vi.useFakeTimers();
     const controller = new AbortController();
     const workerEntered = createDeferred();
@@ -413,11 +403,35 @@ it.each(
       if (cancelled) {
         controller.abort(new Error("caller cancellation"));
       }
-      return terminated("uncertain");
+      return {
+        stdout: "",
+        stderr: "",
+        code: null,
+        signal: null,
+        killed: true,
+        termination: "signal",
+        cleanup: "uncertain",
+      };
     });
-    const operation = snapshot(root, controller.signal);
+    const operation = prepareUpdateCandidateStateSnapshot({
+      config: {},
+      stateDir,
+      candidateRoot: root,
+      env: { TMPDIR: root },
+      workerEnv: () => ({ ...process.env, OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }),
+      signal: controller.signal,
+    });
     const rejected = expect(operation).rejects.toThrow(/cleanup.*confirmed|settlement.*uncertain/);
-    const settleWorker = () => workerExit.resolve(terminated("normal"));
+    const settleWorker = () =>
+      workerExit.resolve({
+        stdout: "",
+        stderr: "",
+        code: null,
+        signal: null,
+        killed: true,
+        termination: "signal",
+        cleanup: "normal",
+      });
     try {
       if (source === "probe") {
         await awaitGateBeforeSettlement(
@@ -429,7 +443,9 @@ it.each(
         settleWorker();
       }
       await rejected;
-      const retained = await rehearsalScratch(root);
+      const retained = (await fs.readdir(root)).filter((name) =>
+        name.startsWith("openclaw-update-canary-"),
+      );
       expect(retained).toHaveLength(1);
       expect((await fs.stat(path.join(root, retained[0]!))).isDirectory()).toBe(true);
     } finally {
@@ -439,6 +455,20 @@ it.each(
     }
   },
 );
+
+// Insert fixture code behind the real executable, preserving argv-based Windows
+// launch and the actual process/output/cleanup owners. Progress probes run unchanged.
+function useRehearsalWorkerFixture(runner: string): void {
+  const run = commands.runUtf8CommandWithTimeout;
+  vi.spyOn(commands, "runUtf8CommandWithTimeout").mockImplementation((argv, options) =>
+    run(
+      argv.some((arg) => /[/\\]update-candidate-state\.worker\.[cm]?[jt]s$/.test(arg))
+        ? [process.execPath, runner, ...argv.slice(1)]
+        : argv,
+      options,
+    ),
+  );
+}
 
 it.each(["stdout", "stderr"] as const)(
   "terminates a rehearsal worker exceeding its %s limit",
@@ -457,16 +487,7 @@ it.each(["stdout", "stderr"] as const)(
     setInterval(() => {}, 1000);
   `,
     );
-    // Replace only the worker, preserving real probes and process cleanup.
-    const run = commands.runUtf8CommandWithTimeout;
-    vi.spyOn(commands, "runUtf8CommandWithTimeout").mockImplementation((argv, options) =>
-      run(
-        argv.some((arg) => /[/\\]update-candidate-state\.worker\.[cm]?[jt]s$/.test(arg))
-          ? [process.execPath, runner, ...argv.slice(1)]
-          : argv,
-        options,
-      ),
-    );
+    useRehearsalWorkerFixture(runner);
     const controller = new AbortController();
     let deadlineReached = false;
     const deadline = realSetTimeout(() => {
@@ -475,15 +496,22 @@ it.each(["stdout", "stderr"] as const)(
     }, 10_000);
     try {
       await expect(
-        snapshot(root, controller.signal, {
+        prepareUpdateCandidateStateSnapshot({
+          config: {},
+          stateDir: path.join(root, "source"),
+          candidateRoot: root,
+          env: { TMPDIR: root },
           workerEnv: () => ({ ...process.env }),
+          signal: controller.signal,
         }),
       ).rejects.toThrow(/^Update state snapshot failed \(output-limit\):/);
       expect(deadlineReached).toBe(false);
       // Snapshot rejection follows the command owner's process-tree settlement.
       const pid = Number(await fs.readFile(pidPath, "utf8"));
       expect(isProcessAlive(pid)).toBe(false);
-      expect(await rehearsalScratch(root)).toEqual([]);
+      expect(
+        (await fs.readdir(root)).filter((name) => name.startsWith("openclaw-update-canary-")),
+      ).toEqual([]);
     } finally {
       clearTimeout(deadline);
       controller.abort();
@@ -528,8 +556,18 @@ it("refuses a grown WAL family at the post-inventory capacity gate", async () =>
       return result;
     });
     const controller = new AbortController();
-    const operation = snapshot(root, controller.signal);
-    const outcome = capture(operation);
+    const operation = prepareUpdateCandidateStateSnapshot({
+      config: {},
+      stateDir,
+      candidateRoot: root,
+      env: { TMPDIR: root },
+      workerEnv: () => ({ ...process.env, OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }),
+      signal: controller.signal,
+    });
+    const outcome = operation.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
     try {
       expect(await outcome).toMatchObject({
         error: {
@@ -538,7 +576,9 @@ it("refuses a grown WAL family at the post-inventory capacity gate", async () =>
       });
       expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
       expect(db.prepare("SELECT length(bytes) AS n FROM payload").get()).toEqual({ n: 2097152 });
-      expect(await rehearsalScratch(root)).toEqual([]);
+      expect(
+        (await fs.readdir(root)).filter((name) => name.startsWith("openclaw-update-canary-")),
+      ).toEqual([]);
     } finally {
       controller.abort();
       await outcome;
