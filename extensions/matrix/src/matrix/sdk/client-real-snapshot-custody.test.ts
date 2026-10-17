@@ -45,26 +45,27 @@ vi.mock("matrix-js-sdk/lib/matrix.js", async (importOriginal) => {
 
 describe("Matrix client custody at the real SQLite snapshot boundary", () => {
   let clients: MatrixClient[];
-  function makeClient(
-    idbSnapshotPath: string,
-    options: ConstructorParameters<typeof MatrixClient>[2] = {},
-  ) {
+  let storageRootDir: string;
+  let snapshotPath: string;
+  function makeClient(options: ConstructorParameters<typeof MatrixClient>[2] = {}) {
     const client = new MatrixClient("https://matrix.example.org", "test-token", {
       userId: "@bot:example.org",
       deviceId: "BOT",
       encryption: true,
       autoBootstrapCrypto: false,
-      idbSnapshotPath,
+      idbSnapshotPath: snapshotPath,
+      cryptoDatabasePrefix: prefix,
       ...options,
     });
     clients.push(client);
     return client;
   }
-  async function seedSnapshot(snapshotPath: string) {
+  const records = [{ key: "durable", value: { session: "saved" } }];
+  async function seedSnapshot() {
     await seedDatabase({
       name: databaseName,
       storeName: "sessions",
-      records: [{ key: "durable", value: { session: "saved" } }],
+      records,
     });
     await persistIdbToDisk({ snapshotPath, databasePrefix: prefix });
   }
@@ -73,6 +74,8 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
     installMatrixTestRuntime();
     sdk.init.mockReset().mockResolvedValue(undefined);
     clients = [];
+    storageRootDir = tempDirs.make("matrix-real-custody-");
+    snapshotPath = path.join(storageRootDir, "snapshot.json");
     await clearAllIndexedDbState({ databasePrefix: prefix });
   });
   afterEach(async () => {
@@ -85,14 +88,12 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
   });
 
   it("refuses a malformed canonical snapshot before Rust initialization without a database prefix", async () => {
-    const storageRootDir = tempDirs.make("matrix-default-prefix-custody-");
-    const snapshotPath = path.join(storageRootDir, "snapshot.json");
     await writeMatrixIdbSnapshotJson({
       storageRootDir,
       databaseCount: 0,
       snapshotJson: "[]",
     });
-    const client = makeClient(snapshotPath);
+    const client = makeClient({ cryptoDatabasePrefix: undefined });
     await expect(client.prepareForOneOff()).rejects.toThrow("Malformed IndexedDB snapshot payload");
     expect(sdk.init).not.toHaveBeenCalled();
   });
@@ -100,7 +101,6 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
   it("retains physical custody when SDK IndexedDB connections cannot retire", async () => {
     const databasePrefix = `${prefix}-failed-retirement`;
     const name = `${databasePrefix}::matrix-sdk-crypto`;
-    const snapshotPath = path.join(tempDirs.make("matrix-failed-retirement-"), "snapshot.json");
     await seedDatabase({ name, storeName: "sessions", records: [] });
     let connection: IDBDatabase | undefined;
     sdk.init.mockImplementationOnce(async () => {
@@ -112,7 +112,7 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
         );
       });
     });
-    const client = makeClient(snapshotPath, { cryptoDatabasePrefix: databasePrefix });
+    const client = makeClient({ cryptoDatabasePrefix: databasePrefix });
     await client.prepareForOneOff();
     if (!connection) {
       throw new Error("SDK fixture did not open its crypto store");
@@ -139,11 +139,9 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
   it.each(["lost final seal", "missing guard", "malformed guard"])(
     "refuses %s before the next Rust initialization after a clean stop",
     async (fault) => {
-      const storageRootDir = tempDirs.make("matrix-sealed-custody-");
-      const snapshotPath = path.join(storageRootDir, "snapshot.json");
       const guardPath = `${snapshotPath}.owner.poisoned`;
-      await seedSnapshot(snapshotPath);
-      const owner = makeClient(snapshotPath, { cryptoDatabasePrefix: prefix });
+      await seedSnapshot();
+      const owner = makeClient();
       await owner.prepareForOneOff();
       await owner.stopAndPersist();
       if (fault === "lost final seal") {
@@ -154,8 +152,7 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
         if (!meta) {
           throw new Error("Clean stop did not publish snapshot metadata");
         }
-        // A valid WAL prefix can retain the full snapshot commit and lose only
-        // the later seal commit. Keep every snapshot byte and digest unchanged.
+        // Model losing only the seal commit, keeping snapshot bytes/digest unchanged.
         const unsealed = { ...meta };
         delete unsealed.cleanOwnerGeneration;
         await store.register("current:meta", unsealed);
@@ -164,16 +161,15 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
       } else {
         await fs.writeFile(guardPath, "torn");
       }
-      await expect(
-        makeClient(snapshotPath, { cryptoDatabasePrefix: prefix }).prepareForOneOff(),
-      ).rejects.toThrow("unresolved unsafe final state");
+      await expect(makeClient().prepareForOneOff()).rejects.toThrow(
+        "unresolved unsafe final state",
+      );
       expect(sdk.init).toHaveBeenCalledTimes(1);
     },
   );
 
   it("blocks a concurrent client before SQLite snapshot I/O, then restores after handoff", async () => {
-    const snapshotPath = path.join(tempDirs.make("matrix-real-custody-"), "snapshot.json");
-    await seedSnapshot(snapshotPath);
+    await seedSnapshot();
     await clearAllIndexedDbState({ databasePrefix: prefix });
 
     const actualOpen = getMatrixRuntime().state.openKeyedStoreV2;
@@ -190,14 +186,13 @@ describe("Matrix client custody at the real SQLite snapshot boundary", () => {
         return actualOpen(options);
       }) as typeof actualOpen,
     };
-    const makeOwner = () =>
-      makeClient(snapshotPath, { cryptoDatabasePrefix: prefix, stateRuntime });
+    const makeOwner = () => makeClient({ stateRuntime });
     const owner = makeOwner();
     await owner.prepareForOneOff();
     expect(snapshotOpens).toBeGreaterThan(0);
-    expect(await readDatabaseRecords({ name: databaseName, storeName: "sessions" })).toEqual([
-      { key: "durable", value: { session: "saved" } },
-    ]);
+    expect(await readDatabaseRecords({ name: databaseName, storeName: "sessions" })).toEqual(
+      records,
+    );
     const beforeContender = snapshotOpens;
     const contender = makeOwner();
     await expect(contender.start()).rejects.toMatchObject({

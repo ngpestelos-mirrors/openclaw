@@ -31,9 +31,7 @@ function createVerificationManagerMock(
   overrides: Partial<MatrixVerificationManager> = {},
 ): MatrixVerificationManager {
   return {
-    requestOwnUserVerification: vi.fn(async () => null),
     listVerifications: vi.fn(async () => []),
-    ensureVerificationDmTracked: vi.fn(async () => null),
     requestVerification: vi.fn(),
     acceptVerification: vi.fn(),
     cancelVerification: vi.fn(),
@@ -48,37 +46,30 @@ function createVerificationManagerMock(
   } as unknown as MatrixVerificationManager;
 }
 
-function createRecoveryKeyStoreMock(
-  summary: Awaited<ReturnType<MatrixRecoveryKeyStore["getRecoveryKeySummary"]>> = null,
-): MatrixRecoveryKeyStore {
-  return {
-    getRecoveryKeySummary: vi.fn(async () => summary),
-  } as unknown as MatrixRecoveryKeyStore;
-}
-
 function createFacadeHarness(params?: {
   crypto?: ReturnType<MatrixCryptoFacadeDeps["client"]["getCrypto"]>;
   verificationManager?: Partial<MatrixVerificationManager>;
   recoveryKeySummary?: Awaited<ReturnType<MatrixRecoveryKeyStore["getRecoveryKeySummary"]>>;
 }) {
-  const facade = createMatrixCryptoFacade({
+  return createMatrixCryptoFacade({
     client: {
       getCrypto: () => params?.crypto,
       getUserId: () => "@bot:example.org",
     },
     verificationManager: createVerificationManagerMock(params?.verificationManager),
-    recoveryKeyStore: createRecoveryKeyStoreMock(params?.recoveryKeySummary ?? null),
+    recoveryKeyStore: {
+      getRecoveryKeySummary: vi.fn(async () => params?.recoveryKeySummary ?? null),
+    } as unknown as MatrixRecoveryKeyStore,
     isRoomEncrypted: async () => false,
     downloadContent: async () => Buffer.alloc(0),
   });
-  return { facade };
 }
 
 describe("createMatrixCryptoFacade", () => {
   it("forwards verification requests and uses client crypto API", async () => {
     const crypto = createMatrixCryptoApi();
     const requestVerification = vi.fn(async () => makeSummary());
-    const { facade } = createFacadeHarness({
+    const facade = createFacadeHarness({
       crypto,
       verificationManager: {
         requestVerification,
@@ -103,11 +94,7 @@ describe("createMatrixCryptoFacade", () => {
     const request = new MockVerificationRequest({
       transactionId: "txn-dm-in-progress",
       roomId: "!dm:example.org",
-      otherUserId: "@alice:example.org",
-      initiatedByMe: false,
-      isSelfVerification: false,
       phase: 3,
-      pending: true,
     });
     const trackVerificationRequest = vi.fn(() =>
       makeSummary({
@@ -121,7 +108,7 @@ describe("createMatrixCryptoFacade", () => {
     const crypto = createMatrixCryptoApi({
       findVerificationRequestDMInProgress: vi.fn(() => request),
     });
-    const { facade } = createFacadeHarness({
+    const facade = createFacadeHarness({
       crypto,
       verificationManager: {
         trackVerificationRequest,
@@ -148,7 +135,6 @@ describe("createMatrixCryptoFacade", () => {
       initiatedByMe: true,
       isSelfVerification: true,
       phase: 2,
-      pending: true,
     });
     const tracked = makeSummary({
       transactionId: "txn-self-in-progress",
@@ -161,7 +147,7 @@ describe("createMatrixCryptoFacade", () => {
     const crypto = createMatrixCryptoApi({
       getVerificationRequestsToDeviceInProgress: vi.fn(() => [request]),
     });
-    const { facade } = createFacadeHarness({
+    const facade = createFacadeHarness({
       crypto,
       verificationManager: {
         listVerifications,
