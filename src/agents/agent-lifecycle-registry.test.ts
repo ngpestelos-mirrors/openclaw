@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -58,9 +58,9 @@ import {
 } from "./agent-lifecycle-registry.js";
 
 const tempDirs: string[] = [];
+let options: ReturnType<typeof createOptions>;
 
 async function withAgentDeletion<T>(
-  options: Parameters<typeof withAgentDeletionRuntime<T>>[2],
   run: Parameters<typeof withAgentDeletionRuntime<T>>[1],
   agentId = "main",
 ): Promise<T> {
@@ -81,71 +81,73 @@ async function withAgentDeletion<T>(
   }
 }
 
+function observeSql(...args: Parameters<typeof observeHostDataSql>) {
+  const observation = observeHostDataSql(...args);
+  return { ...observation, [Symbol.dispose]: () => observation.restore() };
+}
+
 async function withoutHostSql<T>(run: () => T | Promise<T>, failOnSql = false): Promise<T> {
-  const observation = observeHostDataSql(
+  using observation = observeSql(
     failOnSql
       ? () => {
           throw new Error("Deletion authority must not execute SQL on the parent");
         }
       : undefined,
   );
-  try {
-    const result = await run();
-    expect(observation.queries).toEqual([]);
-    return result;
-  } finally {
-    observation.restore();
-  }
+  const result = await run();
+  expect(observation.queries).toEqual([]);
+  return result;
 }
 
 function withoutHostSqlSync(run: () => void): void {
-  const observation = observeHostDataSql();
-  try {
-    run();
-    expect(observation.queries).toEqual([]);
-  } finally {
-    observation.restore();
-  }
+  using observation = observeSql();
+  run();
+  expect(observation.queries).toEqual([]);
 }
 
-function interceptAdmission(commandType: string, before: () => void, failure?: string) {
+function interceptWorker(
+  commandType: () => string | undefined,
+  hooks: { before?: () => void; after?: () => void; failure?: string },
+) {
   const runWorker = stateWorker.runOpenClawStateWorkerOperation;
   return vi
     .spyOn(stateWorker, "runOpenClawStateWorkerOperation")
     .mockImplementation((context, run, workerOptions) => {
       let selected = false;
       const createAdmission = workerOptions?.createAdmission;
+      const interceptedOptions = { ...workerOptions };
+      const failure = hooks.failure;
+      if (createAdmission && failure) {
+        interceptedOptions.createAdmission = (retained: RetainedWorkerTransactionAdmission) => {
+          const created = createAdmission(retained);
+          if (selected) {
+            created.admission.observeRequests((request) => {
+              if (request.stage === "commit") {
+                throw new Error(failure);
+              }
+            });
+          }
+          return created;
+        };
+      }
       return runWorker(
         context,
         (scope) =>
           run({
             ...scope,
             execute: async (command, executeOptions) => {
-              selected = command.type === commandType;
+              selected = command.type === commandType();
               if (selected) {
-                before();
+                hooks.before?.();
               }
-              return scope.execute(command, executeOptions);
+              const result = await scope.execute(command, executeOptions);
+              if (command.type === commandType()) {
+                hooks.after?.();
+              }
+              return result;
             },
           }),
-        {
-          ...workerOptions,
-          ...(createAdmission
-            ? {
-                createAdmission: (retained: RetainedWorkerTransactionAdmission) => {
-                  const created = createAdmission(retained);
-                  if (selected && failure) {
-                    created.admission.observeRequests((request) => {
-                      if (request.stage === "commit") {
-                        throw new Error(failure);
-                      }
-                    });
-                  }
-                  return created;
-                },
-              }
-            : {}),
-        },
+        interceptedOptions,
       );
     });
 }
@@ -155,12 +157,12 @@ function createOptions() {
     fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-agent-delete-")),
   );
   tempDirs.push(stateDir);
-  const options = { env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } };
-  openOpenClawStateDatabase(options);
-  return options;
+  const stateOptions = { env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } };
+  openOpenClawStateDatabase(stateOptions);
+  return stateOptions;
 }
 
-function createEntry(agentId: string) {
+function createEntry(agentId = "main") {
   return {
     agentId,
     agentDir: `/agents/${agentId}`,
@@ -168,6 +170,32 @@ function createEntry(agentId: string) {
     sessionsDir: `/sessions/${agentId}`,
   };
 }
+
+function activeCronRun(jobId: string, agentId: string, stateIdentityKey: string, runId = jobId) {
+  const marker = markCronJobActive(jobId, { agentId, stateIdentityKey });
+  const controller = new AbortController();
+  const unregister = registerActiveCronTaskRun({ runId, controller, activeJobMarker: marker });
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      unregister?.();
+      clearCronJobActive(jobId, marker);
+    },
+  };
+}
+
+const journal = (id = "main") => readAgentDeletionJournal(id, options);
+const readProvenance = (id = "main") => readAgentProvenance(id, options);
+const blocked = (id = "main") => isAgentDeletionBlocked(id, options);
+const setProvenance = (
+  nowMs?: number,
+  agentId = "main",
+  createdVia: "operator" | "claw" = "operator",
+) => recordAgentProvenance(agentId, { createdVia }, { ...options, nowMs });
+
+beforeEach(() => {
+  options = createOptions();
+});
 
 afterEach(async () => {
   vi.useRealTimers();
@@ -183,7 +211,6 @@ describe("agent lifecycle registry", () => {
   it.each(["openclaw", "crestodian"])(
     "rejects deletion authority for system agent %s",
     async (agentId) => {
-      const options = createOptions();
       const original = beginAgentDeletionJournal(
         { ...createEntry(agentId), operationId: "invalid-system-deletion", deleteFiles: true },
         options,
@@ -193,14 +220,13 @@ describe("agent lifecycle registry", () => {
         Promise.resolve().then(() => withAgentDeletionRuntime(agentId, cleanup, options)),
       ).rejects.toThrow(`System agent ${agentId} cannot be deleted`);
       expect(cleanup).not.toHaveBeenCalled();
-      expect(readAgentDeletionJournal(agentId, options)).toEqual(original);
+      expect(journal(agentId)).toEqual(original);
     },
   );
 
   it("keeps committed lifecycle authority through a rolled-back writer transaction", async () => {
-    const options = createOptions();
     const config = { agents: { entries: { main: {} } } };
-    await recordAgentProvenance("main", { createdVia: "operator" }, { ...options, nowMs: 1 });
+    await setProvenance(1);
     const binding = (await captureAgentLifecycleBinding(() => config, "main", options))!;
     await readAgentDeletionJournalStatusInWorker("main", options);
     const rollback = new Error("rollback authority changes");
@@ -213,28 +239,27 @@ describe("agent lifecycle registry", () => {
           createdAtMs: 2,
         });
         expect(matchesAgentLifecycleBinding(config, binding, options)).toBe(true);
-        const provenance = readAgentProvenance("main", options);
+        const provenance = readProvenance();
         expect(provenance?.createdAtMs).toBe(2);
         const currentBinding = { ...binding, provenance: provenance ?? null };
         expect(matchesAgentLifecycleBinding(config, currentBinding, options)).toBe(false);
         beginAgentDeletionJournal(
-          { ...createEntry("main"), operationId: "delete-main", deleteFiles: false },
+          { ...createEntry(), operationId: "delete-main", deleteFiles: false },
           options,
         );
-        expect(isAgentDeletionBlocked("main", options)).toBe(true);
+        expect(blocked()).toBe(true);
         expect(matchesAgentLifecycleBinding(config, binding, options)).toBe(true);
         throw rollback;
       }, options),
     ).toThrow(rollback);
     await readAgentDeletionJournalStatusInWorker("main", options);
-    expect(isAgentDeletionBlocked("main", options)).toBe(false);
+    expect(blocked()).toBe(false);
     expect(matchesAgentLifecycleBinding(config, binding, options)).toBe(true);
   });
 
   it.each(["commit", "rollback"] as const)(
     "revokes only the captured agent's cron runs after deletion journal %s",
     async (outcome) => {
-      const options = createOptions();
       const otherOptions = createOptions();
       const identity = requireOpenClawStateDatabaseIdentity(openOpenClawStateDatabase(options)).key;
       const otherIdentity = requireOpenClawStateDatabaseIdentity(
@@ -242,44 +267,36 @@ describe("agent lifecycle registry", () => {
       ).key;
       const cleanups: Array<() => void> = [];
       const admit = (jobId: string, agentId: string, stateIdentityKey: string) => {
-        const marker = markCronJobActive(jobId, { agentId, stateIdentityKey });
-        const controller = new AbortController();
-        const unregister = registerActiveCronTaskRun({
-          runId: `${jobId}-${cleanups.length}`,
-          controller,
-          activeJobMarker: marker,
-        });
-        cleanups.push(() => {
-          unregister?.();
-          clearCronJobActive(jobId, marker);
-        });
-        return controller.signal;
+        const run = activeCronRun(jobId, agentId, stateIdentityKey, `${jobId}-${cleanups.length}`);
+        cleanups.push(run.cleanup);
+        return run.signal;
       };
       const target = admit("deleted-agent-run", "main", identity);
       const otherAgent = admit("other-agent-run", "kept", identity);
       const otherState = admit("other-state-run", "main", otherIdentity);
       const retired = admit("replaced-run", "main", identity);
       let successor: AbortSignal | undefined;
-      const beforeBegin = interceptAdmission(
-        "agentDeletion.begin",
-        () => {
+      const beforeBegin = interceptWorker(() => "agentDeletion.begin", {
+        before: () => {
           expect(target.aborted).toBe(false);
           successor = admit("replaced-run", "main", identity);
         },
-        outcome === "rollback" ? "rollback journal admission" : undefined,
-      );
+        failure: outcome === "rollback" ? "rollback journal admission" : undefined,
+      });
       try {
-        await withAgentDeletion(options, async (begin) => {
+        await withAgentDeletion(async (begin) => {
           if (outcome === "rollback") {
-            await expect(begin(createEntry("main"))).rejects.toThrow("rollback journal admission");
+            await expect(begin(createEntry())).rejects.toThrow("rollback journal admission");
           } else {
-            await begin(createEntry("main"));
+            await begin(createEntry());
           }
           expect(target.aborted).toBe(outcome === "commit");
-          expect(otherAgent.aborted).toBe(false);
-          expect(otherState.aborted).toBe(false);
-          expect(retired.aborted).toBe(false);
-          expect(successor?.aborted).toBe(false);
+          expect([
+            otherAgent.aborted,
+            otherState.aborted,
+            retired.aborted,
+            successor?.aborted,
+          ]).toEqual([false, false, false, false]);
         });
       } finally {
         beforeBegin.mockRestore();
@@ -291,18 +308,8 @@ describe("agent lifecycle registry", () => {
   );
 
   it("publishes committed deletion facts and revokes cleanup even when replies are lost", async () => {
-    const options = createOptions();
     const identity = requireOpenClawStateDatabaseIdentity(openOpenClawStateDatabase(options)).key;
-    const marker = markCronJobActive("lost-delete-reply", {
-      agentId: "main",
-      stateIdentityKey: identity,
-    });
-    const controller = new AbortController();
-    const releaseRun = registerActiveCronTaskRun({
-      runId: "lost-delete-run",
-      controller,
-      activeJobMarker: marker,
-    });
+    const cron = activeCronRun("lost-delete-reply", "main", identity, "lost-delete-run");
     const changes: unknown[] = [];
     const unsubscribe = sessionChanges.subscribe((change) => {
       if (isSessionStoreTopologyChange(change)) {
@@ -310,38 +317,21 @@ describe("agent lifecycle registry", () => {
       }
     });
     let failCommand: string | undefined = "agentDeletion.begin";
-    const runWorker = stateWorker.runOpenClawStateWorkerOperation;
-    const lostReply = vi
-      .spyOn(stateWorker, "runOpenClawStateWorkerOperation")
-      .mockImplementation((context, run, workerOptions) =>
-        runWorker(
-          context,
-          (scope) =>
-            run({
-              ...scope,
-              execute: async (command, executeOptions) => {
-                const result = await scope.execute(command, executeOptions);
-                if (command.type === failCommand) {
-                  failCommand = undefined;
-                  throw new Error("synthetic reply lost after native commit");
-                }
-                return result;
-              },
-            }),
-          workerOptions,
-        ),
-      );
+    const lostReply = interceptWorker(() => failCommand, {
+      after: () => {
+        failCommand = undefined;
+        throw new Error("synthetic reply lost after native commit");
+      },
+    });
     try {
-      await withAgentDeletion(options, async (begin) => {
-        await expect(begin(createEntry("main"))).rejects.toThrow("synthetic reply lost");
-        expect(controller.signal.aborted).toBe(true);
+      await withAgentDeletion(async (begin) => {
+        await expect(begin(createEntry())).rejects.toThrow("synthetic reply lost");
+        expect(cron.signal.aborted).toBe(true);
         expect(changes).toHaveLength(1);
-        expect(readAgentDeletionJournal("main", options)).toMatchObject({
-          cleanupCompleted: false,
-        });
+        expect(journal()).toMatchObject({ cleanupCompleted: false });
       });
-      await withAgentDeletion(options, async (begin) => {
-        const deletion = await begin(createEntry("main"));
+      await withAgentDeletion(async (begin) => {
+        const deletion = await begin(createEntry());
         changes.length = 0;
         failCommand = "agentDeletion.fencePaths";
         const databasePaths = [path.join(options.env.OPENCLAW_STATE_DIR, "owned.sqlite")];
@@ -354,27 +344,21 @@ describe("agent lifecycle registry", () => {
         await expect(deletion.finish()).rejects.toThrow("synthetic reply lost");
         expect(deletion.assertCurrentHost).toThrow("no longer owns");
         expect(deletion.assertCurrentFinal).toThrow("no longer owns");
-        expect(readAgentDeletionJournal("main", options)).toMatchObject({
-          cleanupCompleted: true,
-        });
+        expect(journal()).toMatchObject({ cleanupCompleted: true });
         expect(changes).toHaveLength(2);
       });
     } finally {
       lostReply.mockRestore();
       unsubscribe();
-      releaseRun?.();
-      clearCronJobActive("lost-delete-reply", marker);
+      cron.cleanup();
     }
   });
 
   it("does not recreate a missing mandatory deletion journal while reading authority", () => {
-    const options = createOptions();
-    expect(readAgentDeletionJournal("main", options)).toBeUndefined();
+    expect(journal()).toBeUndefined();
     const database = openOpenClawStateDatabase(options);
     database.db.exec("DROP TABLE agent_deletion_journal");
-    expect(() => readAgentDeletionJournal("main", options)).toThrow(
-      "Agent deletion journal missing; run openclaw doctor --fix",
-    );
+    expect(() => journal()).toThrow("Agent deletion journal missing; run openclaw doctor --fix");
     runOpenClawStateWriteTransaction((current) => {
       expect(isAgentDeletionBlocked("main", options, current.db)).toBe(false);
       expect(tableExists(current.db, "agent_deletion_journal")).toBe(false);
@@ -383,18 +367,17 @@ describe("agent lifecycle registry", () => {
   });
 
   it("reads current deletion authority outside an inherited discovery snapshot", async () => {
-    const options = createOptions();
     const config = { agents: { entries: { main: {} } } };
-    await recordAgentProvenance("main", { createdVia: "operator" }, options);
+    await setProvenance();
     const binding = await captureAgentLifecycleBinding(() => config, "main", options);
     await withOpenClawStateDatabaseReadSnapshot(async () => {
-      await withAgentDeletion(options, async (begin) => {
-        const deletion = await begin(createEntry("main"));
+      await withAgentDeletion(async (begin) => {
+        const deletion = await begin(createEntry());
         expect(await captureAgentLifecycleBinding(() => config, "main", options)).toBeUndefined();
         expect(binding && matchesAgentLifecycleBinding(config, binding, options)).toBe(false);
         await withoutHostSql(() => deletion.assertCurrentAsync(), true);
         await deletion.rollback();
-        expect(readAgentDeletionJournal("main", options)).toBeUndefined();
+        expect(journal()).toBeUndefined();
         await expect(deletion.assertCurrentAsync()).rejects.toThrow("no longer owns");
         expect(binding && matchesAgentLifecycleBinding(config, binding, options)).toBe(true);
       });
@@ -402,9 +385,8 @@ describe("agent lifecycle registry", () => {
   });
 
   it("uses committed journal authority for filesystem effects without host SQL", async () => {
-    const options = createOptions();
-    await withAgentDeletion(options, async (begin) => {
-      const entry = createEntry("main");
+    await withAgentDeletion(async (begin) => {
+      const entry = createEntry();
       const deletion = await begin(entry);
       const effectPath = path.join(options.env.OPENCLAW_STATE_DIR, "cleanup-effect");
       const writeEffect = () => {
@@ -441,9 +423,8 @@ describe("agent lifecycle registry", () => {
   });
 
   it("rejects a current worker reply when deletion closes before the reply is consumed", async () => {
-    const options = createOptions();
-    await withAgentDeletion(options, async (begin) => {
-      const deletion = await begin(createEntry("main"));
+    await withAgentDeletion(async (begin) => {
+      const deletion = await begin(createEntry());
       const execute = stateWorker.runOpenClawStateWorkerOperation;
       const entered = createDeferredCore();
       const resume = createDeferredCore();
@@ -474,7 +455,6 @@ describe("agent lifecycle registry", () => {
   });
 
   it("preserves recovery holds through rollback and failed completion, then transfers protection to retained deletion", async () => {
-    const options = createOptions();
     const held = ["worker", "kept"].map((agentId) => ({
       agentId,
       path: openOpenClawAgentDatabase({ ...options, agentId }).path,
@@ -495,61 +475,33 @@ describe("agent lifecycle registry", () => {
       databasePaths: [target.path],
       deleteFiles: false,
     };
-    await recordAgentProvenance(target.agentId, { createdVia: "operator" }, options);
-    const provenance = readAgentProvenance(target.agentId, options);
-    await withAgentDeletion(
-      options,
-      async (begin) => {
-        await (await begin(entry)).rollback();
-      },
-      target.agentId,
-    );
-    expect(readAgentDeletionJournal(target.agentId, options)).toBeUndefined();
+    const settle = (action: "finish" | "rollback") =>
+      withAgentDeletion(async (begin) => {
+        await (await begin(entry))[action]();
+      }, target.agentId);
+    await setProvenance(undefined, target.agentId);
+    const provenance = readProvenance(target.agentId);
+    await settle("rollback");
+    expect(journal(target.agentId)).toBeUndefined();
     expect(readHolds()).toEqual(held);
-    expect(isAgentDeletionBlocked(target.agentId, options)).toBe(false);
+    expect(blocked(target.agentId)).toBe(false);
     const leaseId = claimOpenClawAgentDatabaseLease({ ...target, ...options });
     releaseOpenClawAgentDatabaseLease(leaseId, options, "read-only");
     expect(readHolds()).toEqual(held);
 
-    const refuseCompletion = interceptAdmission(
-      "agentDeletion.finish",
-      () => {},
-      "completion transaction failed",
-    );
-    try {
-      await expect(
-        withAgentDeletion(
-          options,
-          async (begin) => {
-            const deletion = await begin(entry);
-            await deletion.finish();
-          },
-          target.agentId,
-        ),
-      ).rejects.toThrow("completion transaction failed");
-    } finally {
-      refuseCompletion.mockRestore();
+    {
+      using _ = interceptWorker(() => "agentDeletion.finish", {
+        failure: "completion transaction failed",
+      });
+      await expect(settle("finish")).rejects.toThrow("completion transaction failed");
     }
-    expect(readAgentDeletionJournal(target.agentId, options)).toMatchObject({
-      cleanupCompleted: false,
-    });
+    expect(journal(target.agentId)).toMatchObject({ cleanupCompleted: false });
     expect(readHolds()).toEqual(held);
-    expect(readAgentProvenance(target.agentId, options)).toEqual(provenance);
+    expect(readProvenance(target.agentId)).toEqual(provenance);
 
-    await withoutHostSql(async () => {
-      await withAgentDeletion(
-        options,
-        async (begin) => {
-          await (await begin(entry)).finish();
-        },
-        target.agentId,
-      );
-    });
+    await withoutHostSql(() => settle("finish"));
     expect(readHolds()).toEqual(held.slice(1));
-    expect(readAgentDeletionJournal(target.agentId, options)).toMatchObject({
-      cleanupCompleted: true,
-      deleteFiles: false,
-    });
+    expect(journal(target.agentId)).toMatchObject({ cleanupCompleted: true, deleteFiles: false });
     expect(() =>
       openOpenClawAgentDatabase({ ...options, agentId: target.agentId, path: target.path }),
     ).toThrow("deleted");
@@ -559,7 +511,6 @@ describe("agent lifecycle registry", () => {
   it.each(["present", "absent"] as const)(
     "captures without host SQL and follows committed lifecycle receipts with provenance table %s",
     async (provenanceTable) => {
-      const options = createOptions();
       if (provenanceTable === "absent") {
         openOpenClawStateDatabase(options).db.exec("DROP TABLE agent_provenance");
         await closeStateDatabaseForTest();
@@ -577,25 +528,19 @@ describe("agent lifecycle registry", () => {
         });
       const assertMatches = (binding: AgentLifecycleBinding, expected: boolean) => {
         const executed: string[] = [];
-        const observation = observeHostDataSql((sql, database) => {
+        using observation = observeSql((sql, database) => {
           if (database === undefined) {
             executed.push(sql);
           }
         });
-        try {
-          expect(matchesAgentLifecycleBinding(config, binding, options)).toBe(expected);
-          const authorityReads = executed.filter((sql) =>
-            /\bagent_(?:provenance|deletion_journal)\b/i.test(sql),
-          );
-          expect(authorityReads).toHaveLength(0);
-          expect(
-            observation.queries.some((sql) =>
-              /^\s*(?:begin|commit|rollback|savepoint)\b/i.test(sql),
-            ),
-          ).toBe(false);
-        } finally {
-          observation.restore();
-        }
+        expect(matchesAgentLifecycleBinding(config, binding, options)).toBe(expected);
+        const authorityReads = executed.filter((sql) =>
+          /\bagent_(?:provenance|deletion_journal)\b/i.test(sql),
+        );
+        expect(authorityReads).toHaveLength(0);
+        expect(
+          observation.queries.some((sql) => /^\s*(?:begin|commit|rollback|savepoint)\b/i.test(sql)),
+        ).toBe(false);
       };
       const legacy = await capture();
       expect(legacy).toEqual({ agentId: "main", provenance: null });
@@ -605,7 +550,7 @@ describe("agent lifecycle registry", () => {
       expect(matchesAgentLifecycleBinding(config, legacy, options)).toBe(true);
       assertMatches(legacy, true);
 
-      await recordAgentProvenance("main", { createdVia: "operator" }, { ...options, nowMs: 42 });
+      await setProvenance(42);
       assertMatches(legacy, false);
       expect(await matchesAgentLifecycleBindingAsync(() => config, legacy, options)).toBe(false);
       const recreated = await capture();
@@ -648,12 +593,12 @@ describe("agent lifecycle registry", () => {
       } finally {
         recordAgentDatabaseAdmissions([], { env: otherEnv });
       }
-      await recordAgentProvenance("main", { createdVia: "operator" }, { ...options, nowMs: 43 });
+      await setProvenance(43);
       assertMatches(recreated, false);
-      await recordAgentProvenance("main", { createdVia: "operator" }, { ...options, nowMs: 42 });
+      await setProvenance(42);
       assertMatches(recreated, true);
       beginAgentDeletionJournal(
-        { ...createEntry("main"), operationId: "owner-deletion", deleteFiles: false },
+        { ...createEntry(), operationId: "owner-deletion", deleteFiles: false },
         options,
       );
       assertMatches(recreated, false);
@@ -675,24 +620,16 @@ describe("agent lifecycle registry", () => {
   it.each(["finish", "rollback"] as const)(
     "fences stale deletion owners and preserves provenance through recovery %s",
     async (action) => {
-      const options = createOptions();
       const config = { agents: { entries: { main: {}, kept: {} } } };
-      await recordAgentProvenance("main", { createdVia: "claw" }, { ...options, nowMs: 1 });
-      await recordAgentProvenance("kept", { createdVia: "operator" }, options);
-      const before = readAgentProvenance("main", options);
+      await setProvenance(1, "main", "claw");
+      await setProvenance(undefined, "kept");
+      const before = readProvenance();
       const binding = await captureAgentLifecycleBinding(() => config, "main", options);
-      const first = await withAgentDeletion(
-        options,
-        async (begin) => begin(createEntry("MAIN")),
-        "MAIN",
-      );
+      const first = await withAgentDeletion(async (begin) => begin(createEntry("MAIN")), "MAIN");
 
-      expect(readAgentProvenance("main", options)).toEqual(before);
-      expect(readAgentDeletionJournal("MAIN", options)).toMatchObject({
-        agentId: "main",
-        agentDir: "/agents/MAIN",
-      });
-      expect(isAgentDeletionBlocked("main", options)).toBe(true);
+      expect(readProvenance()).toEqual(before);
+      expect(journal("MAIN")).toMatchObject({ agentId: "main", agentDir: "/agents/MAIN" });
+      expect(blocked()).toBe(true);
       await expect(first.assertCurrentAsync()).rejects.toThrow("no longer owns");
       await expect(first.retire()).rejects.toThrow("no longer owns");
       await expect(first.fenceDatabasePaths([])).rejects.toThrow("no longer owns");
@@ -701,110 +638,86 @@ describe("agent lifecycle registry", () => {
       expect(binding && matchesAgentLifecycleBinding(config, binding, options)).toBe(false);
       expect(await captureAgentLifecycleBinding(() => config, "main", options)).toBeUndefined();
 
-      const recovery = await withAgentDeletion(options, async (begin) => {
-        const deletion = await begin(createEntry("main"));
+      const recovery = await withAgentDeletion(async (begin) => {
+        const deletion = await begin(createEntry());
         await expect(first[action]()).rejects.toThrow("no longer owns");
-        expect(readAgentProvenance("main", options)).toEqual(before);
-        expect(readAgentDeletionJournal("MAIN", options)).toMatchObject({
+        expect(readProvenance()).toEqual(before);
+        expect(journal("MAIN")).toMatchObject({
           agentId: "main",
           operationId: deletion.entry.operationId,
         });
-        expect(isAgentDeletionBlocked("main", options)).toBe(true);
+        expect(blocked()).toBe(true);
         await deletion[action]();
         if (action === "finish") {
-          expect(readAgentDeletionJournal("main", options)).toMatchObject({
-            cleanupCompleted: true,
-          });
-          expect(isAgentDeletionBlocked("main", options)).toBe(true);
+          expect(journal()).toMatchObject({ cleanupCompleted: true });
+          expect(blocked()).toBe(true);
         } else {
-          expect(readAgentDeletionJournal("main", options)).toBeUndefined();
-          expect(isAgentDeletionBlocked("main", options)).toBe(false);
+          expect(journal()).toBeUndefined();
+          expect(blocked()).toBe(false);
         }
         return deletion;
       });
-      expect(readAgentProvenance("main", options)).toEqual(
-        action === "rollback" ? before : undefined,
-      );
-      expect(readAgentProvenance("kept", options)?.createdVia).toBe("operator");
+      expect(readProvenance()).toEqual(action === "rollback" ? before : undefined);
+      expect(readProvenance("kept")?.createdVia).toBe("operator");
 
       if (action === "finish") {
-        expect(readAgentDeletionJournal("main", options)).toMatchObject({ cleanupCompleted: true });
-        expect(isAgentDeletionBlocked("main", options)).toBe(true);
+        expect(journal()).toMatchObject({ cleanupCompleted: true });
+        expect(blocked()).toBe(true);
         expect(await claimCompletedAgentDeletion("main", recovery.entry.operationId, options)).toBe(
           true,
         );
-        expect(readAgentDeletionJournal("main", options)).toBeUndefined();
-        expect(isAgentDeletionBlocked("main", options)).toBe(false);
+        expect(journal()).toBeUndefined();
+        expect(blocked()).toBe(false);
       }
-      await recordAgentProvenance("main", { createdVia: "operator" }, { ...options, nowMs: 2 });
+      await setProvenance(2);
       await expect(first.finish()).rejects.toThrow("no longer owns");
       await expect(recovery.finish()).rejects.toThrow("no longer owns");
-      expect(readAgentProvenance("main", options)?.createdAtMs).toBe(2);
+      expect(readProvenance()?.createdAtMs).toBe(2);
       expect(binding && matchesAgentLifecycleBinding(config, binding, options)).toBe(false);
     },
   );
 
   it("retains pre-resolved cleanup targets when recovery claims the journal", async () => {
-    const options = createOptions();
     const databasePath = path.join(options.env.OPENCLAW_STATE_DIR, "recovery-agent.sqlite");
-    const cleanupPaths = [
-      {
-        path: "/real/workspace",
-        canonicalPath: "/real/workspace",
-        parentPath: "/real",
-        kind: "target" as const,
-        sourcePaths: ["/linked/workspace"],
-        dev: 1,
-        ino: 1,
-        coversDescendants: true,
-        done: false,
-      },
-      {
-        path: "/linked/workspace",
-        canonicalPath: "/linked/workspace",
-        parentPath: "/linked",
-        kind: "symlink" as const,
-        sourcePaths: ["/linked/workspace"],
-        dev: 1,
-        ino: 2,
-        coversDescendants: false,
-        done: false,
-      },
-    ];
+    const cleanupPaths = (
+      [
+        ["/real", "target", 1],
+        ["/linked", "symlink", 2],
+      ] as const
+    ).map(([parentPath, kind, ino]) => ({
+      path: `${parentPath}/workspace`,
+      canonicalPath: `${parentPath}/workspace`,
+      parentPath,
+      kind,
+      sourcePaths: ["/linked/workspace"],
+      dev: 1,
+      ino,
+      coversDescendants: kind === "target",
+      done: false,
+    }));
     await withoutHostSql(async () => {
-      await withAgentDeletion(
-        options,
-        async (begin) => {
-          const deletion = await begin(createEntry("cleanup-recovery-agent"));
-          await deletion.fenceDatabasePaths([databasePath]);
-          await deletion.fenceCleanupPaths(cleanupPaths);
-        },
-        "cleanup-recovery-agent",
-      );
-      await withAgentDeletion(
-        options,
-        async (begin) => {
-          const recovery = await begin(createEntry("cleanup-recovery-agent"));
-          expect(recovery.entry.cleanupPaths).toEqual(cleanupPaths);
-          expect(recovery.entry.databasePaths).toEqual([databasePath]);
-          await recovery.rollback();
-        },
-        "cleanup-recovery-agent",
-      );
+      await withAgentDeletion(async (begin) => {
+        const deletion = await begin(createEntry("cleanup-recovery-agent"));
+        await deletion.fenceDatabasePaths([databasePath]);
+        await deletion.fenceCleanupPaths(cleanupPaths);
+      }, "cleanup-recovery-agent");
+      await withAgentDeletion(async (begin) => {
+        const recovery = await begin(createEntry("cleanup-recovery-agent"));
+        expect(recovery.entry.cleanupPaths).toEqual(cleanupPaths);
+        expect(recovery.entry.databasePaths).toEqual([databasePath]);
+        await recovery.rollback();
+      }, "cleanup-recovery-agent");
     });
-    expect(readAgentDeletionJournal("cleanup-recovery-agent", options)).toBeUndefined();
+    expect(journal("cleanup-recovery-agent")).toBeUndefined();
   });
 
   it("allows refusal without a journal and revokes retained admission after settlement", async () => {
-    const options = createOptions();
-    const retained = await withAgentDeletion(options, async (begin) => begin);
-    expect(readAgentDeletionJournal("main", options)).toBeUndefined();
-    await expect(retained(createEntry("main"))).rejects.toThrow("no longer owns");
-    await withAgentDeletion(options, async (begin) => {
-      const deletion = await begin(createEntry("main"));
-      await expect(begin(createEntry("main"))).rejects.toThrow(
-        "already began or has a different target",
-      );
+    const retained = await withAgentDeletion(async (begin) => begin);
+    expect(journal()).toBeUndefined();
+    await expect(retained(createEntry())).rejects.toThrow("no longer owns");
+    await withAgentDeletion(async (begin) => {
+      const deletion = await begin(createEntry());
+      await expect(begin(createEntry())).rejects.toThrow("already began or has a different target");
       await deletion.rollback();
     });
   });

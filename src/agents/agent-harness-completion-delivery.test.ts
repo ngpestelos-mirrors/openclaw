@@ -76,13 +76,14 @@ async function admit(
     lifecycleRevision: "revision-1",
     updatedAt: Date.now(),
   };
-  const claim = await captureAdmittedHarnessCompletionForTest({
+  const source = {
     agentId: "main",
     sessionKey,
     entry,
     runId: announceId,
     inputProvenance,
-  });
+  };
+  const claim = await captureAdmittedHarnessCompletionForTest(source);
   if (!claim) {
     throw new Error("real harness task did not bind at admission");
   }
@@ -108,6 +109,7 @@ async function admit(
     entry: admitted,
     claim,
     target,
+    source,
     request: { ...target, sourceRunId: announceId, taskRunId: runId },
   };
 }
@@ -203,11 +205,22 @@ function prepareCompletionAdmission(
   });
 }
 
+async function admitEffect(admission: ReturnType<typeof prepareCompletionAdmission>) {
+  const assertion = resolveAdmittedRunActiveAssertion(await admission.admit("embedded"));
+  if (!assertion) {
+    throw new Error("Source effect was not captured.");
+  }
+  return {
+    assertion,
+    effect: () => runWithAgentToolSourceExecutionScope(assertion, async () => assertion()),
+  };
+}
+
 describe("host-owned harness completion recovery", () => {
   it.each(["human", "reset", "queued-after-fence"])(
     "rechecks the admitted recovery input at %s",
-    async (phase) => {
-      await withCompletion(async ({ claim, target, entry }) => {
+    (phase) =>
+      withCompletion(async ({ claim, target, entry }) => {
         const transcript = { ...target, sessionId: entry.sessionId };
         await appendCompletionSource({ target, entry });
         const recoveryRunId = "recovery-input-guard";
@@ -217,13 +230,7 @@ describe("host-owned harness completion recovery", () => {
         });
         const admission = prepareCompletionAdmission({ claim, target }, recoveryRunId);
         try {
-          const context = await admission.admit("embedded");
-          const assertion = resolveAdmittedRunActiveAssertion(context);
-          if (!assertion) {
-            throw new Error("Source effect was not captured.");
-          }
-          const effect = () =>
-            runWithAgentToolSourceExecutionScope(assertion, async () => assertion());
+          const { effect } = await admitEffect(admission);
           await effect();
           if (phase === "reset") {
             await appendTranscriptEvent(transcript, {
@@ -259,28 +266,21 @@ describe("host-owned harness completion recovery", () => {
         } finally {
           admission.close();
         }
-      });
-    },
+      }),
   );
 
   it.each(["before-admission", "after-admission", "at-effect"])(
     "revokes requester custody %s through the execution authority",
-    async (phase) => {
-      await withCompletion(async ({ claim, target, entry }) => {
+    (phase) =>
+      withCompletion(async ({ claim, target, entry }) => {
         const admission = prepareCompletionAdmission({ claim, target });
         try {
           if (phase === "before-admission") {
             await replaceSessionEntry(target, { ...entry, lifecycleRevision: "revoked-revision" });
             await expect(admission.admit("embedded")).rejects.toThrow();
           } else {
-            const context = await admission.admit("embedded");
-            const assertion = resolveAdmittedRunActiveAssertion(context);
+            const { assertion, effect } = await admitEffect(admission);
             expect(assertion).toBeDefined();
-            if (!assertion) {
-              throw new Error("Source effect was not captured.");
-            }
-            const effect = () =>
-              runWithAgentToolSourceExecutionScope(assertion, async () => assertion());
             await effect();
             const revoke = () =>
               replaceSessionEntry(target, { ...entry, lifecycleRevision: "revoked-revision" });
@@ -299,12 +299,11 @@ describe("host-owned harness completion recovery", () => {
         } finally {
           admission.close();
         }
-      });
-    },
+      }),
   );
 
-  it("reads a long turn's exact source and rejects an intervening user outside the recent tail", async () => {
-    await withCompletion(async ({ claim, entry, target }) => {
+  it("reads a long turn's exact source and rejects an intervening user outside the recent tail", () =>
+    withCompletion(async ({ claim, entry, target }) => {
       const scope = { ...target, sessionId: entry.sessionId };
       await appendCompletionSource({ target, entry });
       for (let index = 0; index < 40; index++) {
@@ -322,13 +321,12 @@ describe("host-owned harness completion recovery", () => {
         });
       }
       expect(await readInput({ claim, entry, target }, announceId)).toBe(false);
-    });
-  });
+    }));
 
   it.each(["prior-generation", "intervening-human", "unknown-generation"])(
     "checks every admitted input after the completion: %s",
-    async (scenario) => {
-      await withCompletion(async ({ claim, entry, target }) => {
+    (scenario) =>
+      withCompletion(async ({ claim, entry, target }) => {
         const scope = { ...target, sessionId: entry.sessionId };
         await appendCompletionSource({ target, entry });
         if (scenario === "intervening-human") {
@@ -361,14 +359,13 @@ describe("host-owned harness completion recovery", () => {
         expect(
           await readInput({ claim, entry: saved, target }, saved.restartRecoveryDeliveryRunId),
         ).toBe(scenario === "prior-generation");
-      });
-    },
+      }),
   );
 
   it.each(["physical", "revision"])(
     "rejects a contradictory historical requester %s before announcement",
-    async (field) => {
-      await withCompletion(async ({ entry }) => {
+    (field) =>
+      withCompletion(async ({ entry }) => {
         const delivery = await deliver({
           sessionId: field === "physical" ? "previous-physical" : entry.sessionId,
           lifecycleRevision: field === "revision" ? "previous-revision" : entry.lifecycleRevision,
@@ -378,14 +375,13 @@ describe("host-owned harness completion recovery", () => {
           recoveryBlocked: true,
           error: "completion requester locator is missing or replaced",
         });
-      });
-    },
+      }),
   );
 
   it.each(["active-source", "input-only"])(
     "does not replay %s after claim metadata is lost",
-    async (retained) => {
-      await withCompletion(async ({ entry, target, request }) => {
+    (retained) =>
+      withCompletion(async ({ entry, target, request }) => {
         const lost = { ...entry, restartRecoveryHarnessCompletion: undefined };
         if (retained === "input-only") {
           lost.restartRecoveryDeliverySourceRunId = undefined;
@@ -396,7 +392,7 @@ describe("host-owned harness completion recovery", () => {
         expect(await reconcileHarnessCompletionDelivery(request)).toBe("blocked");
         const submittedRead = sessionAccessor.readSessionSubmittedInput;
         const queries: string[] = [];
-        const read = vi
+        using read = vi
           .spyOn(sessionAccessor, "readSessionSubmittedInput")
           .mockImplementation(async (...args) => {
             // Measure the moved read; existing requester and authority reads stay outside this boundary.
@@ -408,20 +404,15 @@ describe("host-owned harness completion recovery", () => {
               sql.restore();
             }
           });
-        try {
-          const joined = await deliver();
-          expect(joined).toMatchObject({ delivered: false, recoveryBlocked: true });
-          expect(read).toHaveBeenCalledTimes(retained === "input-only" ? 1 : 0);
-          expect(queries).toEqual([]);
-        } finally {
-          read.mockRestore();
-        }
-      });
-    },
+        const joined = await deliver();
+        expect(joined).toMatchObject({ delivered: false, recoveryBlocked: true });
+        expect(read).toHaveBeenCalledTimes(retained === "input-only" ? 1 : 0);
+        expect(queries).toEqual([]);
+      }),
   );
 
-  it("leaves completion without a saved claim or submitted input unowned", async () => {
-    await withCompletion(async ({ entry, target, request }) => {
+  it("leaves completion without a saved claim or submitted input unowned", () =>
+    withCompletion(async ({ entry, target, request }) => {
       await replaceSessionEntry(target, {
         ...entry,
         restartRecoveryHarnessCompletion: undefined,
@@ -429,11 +420,10 @@ describe("host-owned harness completion recovery", () => {
         restartRecoveryDeliveryRunId: undefined,
       });
       expect(await reconcileHarnessCompletionDelivery(request)).toBe("unowned");
-    });
-  });
+    }));
 
-  it("keeps an accepted source pending and adopts its original identity in a new operational run", async () => {
-    await withCompletion(async ({ entry, claim, target, request }) => {
+  it("keeps an accepted source pending and adopts its original identity in a new operational run", () =>
+    withCompletion(async ({ entry, claim, target, request }) => {
       await appendCompletionSource({ target, entry });
 
       expect(await reconcileHarnessCompletionDelivery(request)).toBe("pending");
@@ -453,85 +443,73 @@ describe("host-owned harness completion recovery", () => {
       expect(successor.restartRecoveryDeliverySourceRunId).toBe(announceId);
       expect(successor.restartRecoveryHarnessCompletion).toEqual(claim);
       expect(await reconcileHarnessCompletionDelivery(request)).toBe("pending");
-    });
-  });
-
-  it("settles a cold terminal receipt without a surviving native monitor or another announcement", async () => {
-    await withCompletion(async ({ entry, target, request }) => {
-      await replaceSessionEntry(target, terminalEntry(entry));
-      expect(await reconcileHarnessCompletionDelivery(request)).toBe("delivered");
-    });
-  });
+    }));
 
   it.each([
-    "default-account",
-    "unresolved-default-explicit-account",
-    "casefolded-provider",
-    "missing-provider",
-    "generic-provider",
-    "missing-account",
-    "wrong-account",
-  ])("requires explicit durable message route evidence for %s", async (kind) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const { entry, target, request } = await admit(
+    ["cold-final", "delivered"],
+    ["progress", "blocked"],
+    ["default-account", "delivered"],
+    ["unresolved-default-explicit-account", "blocked"],
+    ["casefolded-provider", "delivered"],
+    ["missing-provider", "blocked"],
+    ["generic-provider", "blocked"],
+    ["missing-account", "blocked"],
+    ["wrong-account", "blocked"],
+    ["physical", "blocked"],
+    ["revision", "blocked"],
+    ["receipt-cleared", "blocked"],
+  ] as const)("settles only current, final, exact-route durable receipts: %s", (kind, expected) =>
+    withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const { entry, claim, target, request } = await admit(
         state,
         kind === "default-account" || kind === "unresolved-default-explicit-account"
           ? { channel: "discord", to: "channel:123" }
           : deliveryContext,
       );
-      const terminal = terminalEntry(entry);
+      const terminal = terminalEntry(entry, kind !== "progress");
       const sent =
         terminal.restartRecoveryTerminalDeliveryEvidence?.[0]?.messagingToolSentTargets?.[0];
       if (!sent) {
         throw new Error("Missing real terminal target.");
       }
-      if (kind === "casefolded-provider") {
-        sent.provider = "DiScOrD";
-      } else if (kind === "missing-provider") {
-        delete sent.provider;
-      } else if (kind === "generic-provider") {
-        sent.provider = "message";
-      } else if (kind === "missing-account" || kind === "default-account") {
-        delete sent.accountId;
-      } else if (kind === "wrong-account") {
-        sent.accountId = "different-account";
+      switch (kind) {
+        case "casefolded-provider":
+          sent.provider = "DiScOrD";
+          break;
+        case "missing-provider":
+          delete sent.provider;
+          break;
+        case "generic-provider":
+          sent.provider = "message";
+          break;
+        case "default-account":
+        case "missing-account":
+          delete sent.accountId;
+          break;
+        case "wrong-account":
+          sent.accountId = "different-account";
+          break;
+        case "physical":
+          terminal.sessionId = "physical-2";
+          break;
+        case "revision":
+          terminal.lifecycleRevision = "revision-2";
+          break;
+        case "receipt-cleared":
+          terminal.restartRecoveryTerminalDeliveryEvidence = [];
+          break;
       }
       await replaceSessionEntry(target, terminal);
-      expect(await reconcileHarnessCompletionDelivery(request)).toBe(
-        ["default-account", "casefolded-provider"].includes(kind) ? "delivered" : "blocked",
-      );
-    });
-  });
-
-  it("does not promote an explicit progress receipt into a final after cold reading", async () => {
-    await withCompletion(async ({ entry, target, request }) => {
-      await replaceSessionEntry(target, terminalEntry(entry, false));
-      expect(await reconcileHarnessCompletionDelivery(request)).toBe("blocked");
-    });
-  });
-
-  it.each(["physical", "revision", "receipt-cleared"])(
-    "does not settle a %s replacement from the old receipt",
-    async (changed) => {
-      await withCompletion(async ({ entry, claim, target, request }) => {
-        const terminal = terminalEntry(entry);
-        if (changed === "physical") {
-          terminal.sessionId = "physical-2";
-        } else if (changed === "revision") {
-          terminal.lifecycleRevision = "revision-2";
-        } else {
-          terminal.restartRecoveryTerminalDeliveryEvidence = [];
-        }
-        await replaceSessionEntry(target, terminal);
+      if (kind === "physical" || kind === "revision" || kind === "receipt-cleared") {
         expect(getOwedHarnessCompletionTask(claim, terminal)).toBeUndefined();
-        expect(await reconcileHarnessCompletionDelivery(request)).toBe("blocked");
-      });
-    },
+      }
+      expect(await reconcileHarnessCompletionDelivery(request)).toBe(expected);
+    }),
   );
 
   it("requires the exact stored source and does not claim foreign or ordinary completions", async () => {
     for (const scenario of ["valid", "wrong-key", "ordinary-provenance"]) {
-      await withCompletion(async ({ claim, entry, target }) => {
+      await withCompletion(async ({ claim, entry, target, source }) => {
         await appendTranscriptMessage(
           { ...target, sessionId: entry.sessionId },
           {
@@ -548,21 +526,12 @@ describe("host-owned harness completion recovery", () => {
           },
         );
         expect(await readInput({ claim, entry, target })).toBe(scenario === "valid");
-        expect(() =>
-          captureHarnessCompletionRecovery({
-            agentId: "other",
-            sessionKey,
-            entry,
-            runId: announceId,
-            inputProvenance,
-          }),
-        ).toThrow("host-issued source admission");
+        expect(() => captureHarnessCompletionRecovery({ ...source, agentId: "other" })).toThrow(
+          "host-issued source admission",
+        );
         expect(
           captureHarnessCompletionRecovery({
-            agentId: "main",
-            sessionKey,
-            entry,
-            runId: announceId,
+            ...source,
             inputProvenance: { ...inputProvenance, sourceTool: "subagent_announce" },
           }),
         ).toBeUndefined();
@@ -570,8 +539,8 @@ describe("host-owned harness completion recovery", () => {
     }
   });
 
-  it("does not settle a same-task receipt with a different requester generation", async () => {
-    await withCompletion(async ({ entry, target, request }) => {
+  it("does not settle a same-task receipt with a different requester generation", () =>
+    withCompletion(async ({ entry, target, request }) => {
       await appendCompletionSource({ target, entry });
 
       const terminal = terminalEntry(entry);
@@ -585,11 +554,10 @@ describe("host-owned harness completion recovery", () => {
         restartRecoveryTerminalDeliveryEvidence: [receipt],
       });
       expect(await reconcileHarnessCompletionDelivery(request)).toBe("pending");
-    });
-  });
+    }));
 
-  it("rejects stored zero-count, off-target, unmarked and truncated receipts before settling", async () => {
-    await withCompletion(async ({ entry, target, request }) => {
+  it("rejects stored zero-count, off-target, unmarked and truncated receipts before settling", () =>
+    withCompletion(async ({ entry, target, request }) => {
       const terminal = terminalEntry(entry);
       await replaceSessionEntry(target, terminal);
       const receipt = getRestartRecoveryTerminalDeliveryEvidence(
@@ -599,25 +567,21 @@ describe("host-owned harness completion recovery", () => {
       if (!receipt) {
         throw new Error("terminal receipt was not persisted");
       }
+      const visibleTarget = {
+        provider: "discord",
+        accountId: "main",
+        to: "channel:123",
+        visible: true,
+      };
       const rejected = [
         { ...receipt, messagingToolSentTargetsTruncated: true as const },
         {
           ...receipt,
-          messagingToolSentTargets: [
-            {
-              provider: "discord",
-              accountId: "main",
-              to: "other",
-              visible: true,
-              sourceReplyFinal: true,
-            },
-          ],
+          messagingToolSentTargets: [{ ...visibleTarget, to: "other", sourceReplyFinal: true }],
         },
         {
           ...receipt,
-          messagingToolSentTargets: [
-            { provider: "discord", accountId: "main", to: "channel:123", visible: true },
-          ],
+          messagingToolSentTargets: [visibleTarget],
         },
         {
           ...receipt,
@@ -635,15 +599,14 @@ describe("host-owned harness completion recovery", () => {
       }
       await replaceSessionEntry(target, terminal);
       expect(await reconcileHarnessCompletionDelivery(request)).toBe("delivered");
-    });
-  });
+    }));
 });
 
 describe("review3 custody ownership", () => {
   it.each(["missing-source", "intervening-human"])(
     "retains task but releases non-executable %s custody",
-    async (kind) => {
-      await withCompletion(async ({ entry, target, request }) => {
+    (kind) =>
+      withCompletion(async ({ entry, target, request }) => {
         await replaceSessionEntry(target, {
           ...entry,
           status: "interrupted",
@@ -659,13 +622,12 @@ describe("review3 custody ownership", () => {
           );
         }
         expect(await reconcileHarnessCompletionDelivery(request)).toBe("blocked");
-      });
-    },
+      }),
   );
   it.each(["owned", "ownerless", "foreign-physical", "released"])(
     "distinguishes an actual %s source before transcript commit",
-    async (kind) => {
-      await withCompletion(async ({ entry, request }) => {
+    (kind) =>
+      withCompletion(async ({ entry, request }) => {
         const context = {
           sessionKey,
           agentId: "main",
@@ -694,8 +656,7 @@ describe("review3 custody ownership", () => {
             clearAgentRunContext(announceId);
           }
         }
-      });
-    },
+      }),
   );
 });
 
@@ -709,8 +670,8 @@ describe("review3 Gateway admission custody", () => {
     "retired-generation",
     "closed-resolver",
     "throwing-resolver",
-  ])("uses the real %s pre-execution registration", async (kind) => {
-    await withCompletion(async ({ entry, request }) => {
+  ])("uses the real %s pre-execution registration", (kind) =>
+    withCompletion(async ({ entry, request }) => {
       const chatAbortControllers: GatewayRequestContext["chatAbortControllers"] = new Map();
       const registration = registerChatAbortController({
         chatAbortControllers,
@@ -750,6 +711,6 @@ describe("review3 Gateway admission custody", () => {
       } finally {
         registration.cleanup();
       }
-    });
-  });
+    }),
+  );
 });

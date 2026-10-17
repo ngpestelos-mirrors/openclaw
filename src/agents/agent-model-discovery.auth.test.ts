@@ -1,9 +1,6 @@
-/** Tests model discovery auth storage, SecretRef placeholders, and env-backed credentials. */
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createTrackedTempDirs } from "../test-utils/tracked-temp-dirs.js";
 import {
   resolveAgentCredentialMapFromStore,
   resolveUsableAgentCredentialModes,
@@ -18,12 +15,10 @@ import {
 import { writePersistedAuthProfileStoreRaw } from "./auth-profiles/sqlite.js";
 
 vi.mock("./model-auth-env-vars.js", () => ({
-  listProviderEnvAuthLookupKeys: () => ["mistral", "workspace-cloud"],
+  listProviderEnvAuthLookupKeys: () => ["workspace-cloud"],
   resolveProviderEnvAuthLookupMaps: () => ({
     aliasMap: {},
-    envCandidateMap: {
-      mistral: ["MISTRAL_API_KEY"],
-    },
+    envCandidateMap: {},
     authEvidenceMap: {
       "workspace-cloud": [
         {
@@ -39,12 +34,9 @@ vi.mock("./model-auth-env-vars.js", () => ({
 vi.mock("./model-auth-env.js", () => ({
   resolveEnvApiKey: (
     provider: string,
-    env: NodeJS.ProcessEnv,
+    _env: NodeJS.ProcessEnv,
     options?: { workspaceDir?: string },
   ) => {
-    if (provider === "mistral" && env.MISTRAL_API_KEY?.trim()) {
-      return { apiKey: env.MISTRAL_API_KEY, source: "env: MISTRAL_API_KEY" };
-    }
     if (provider === "workspace-cloud" && options?.workspaceDir === "/tmp/workspace") {
       return {
         apiKey: "workspace-cloud-local-credentials",
@@ -55,20 +47,16 @@ vi.mock("./model-auth-env.js", () => ({
   },
 }));
 
-async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<void> {
-  const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-agent-auth-storage-"));
-  try {
-    await run(agentDir);
-  } finally {
-    await fs.rm(agentDir, { recursive: true, force: true });
-  }
-}
+const tempDirs = createTrackedTempDirs();
+afterEach(() => tempDirs.cleanup());
+const createAgentDir = () => tempDirs.make("openclaw-agent-auth-storage-");
+const apiKey = (key: string) => ({ type: "api_key", key });
 
 function writeProfiles(agentDir: string, profiles: AuthProfileStore["profiles"]): void {
   writePersistedAuthProfileStoreRaw(createAuthProfileStoreFixture(profiles), agentDir);
 }
 
-function oauth(access = "fake", refresh = "sample", expires = Date.now() + 3_600_000) {
+function oauth(expires = Date.now() + 3_600_000, access = "fake", refresh = "sample") {
   return { type: "oauth" as const, provider: "openai", access, refresh, expires };
 }
 
@@ -90,18 +78,12 @@ describe("discoverAuthStorageFacts auth storage", () => {
           provider: "anthropic",
           token: "sk-ant-runtime",
         },
-        "openai:default": oauth("oauth-access", "oauth-refresh", Date.now() + 60_000),
+        "openai:default": oauth(Date.now() + 60_000, "oauth-access", "oauth-refresh"),
       }),
     );
 
-    expect(credentials.openrouter).toEqual({
-      type: "api_key",
-      key: "sk-or-v1-runtime",
-    });
-    expect(credentials.anthropic).toEqual({
-      type: "api_key",
-      key: "sk-ant-runtime",
-    });
+    expect(credentials.openrouter).toEqual(apiKey("sk-or-v1-runtime"));
+    expect(credentials.anthropic).toEqual(apiKey("sk-ant-runtime"));
     expect(credentials.openai).toMatchObject({
       type: "oauth",
       access: "oauth-access",
@@ -130,11 +112,7 @@ describe("discoverAuthStorageFacts auth storage", () => {
           token: "sk-ant-runtime",
           expires: MAX_DATE_TIMESTAMP_MS + 1,
         },
-        "openai:bad-oauth-expiry": oauth(
-          "oauth-access",
-          "oauth-refresh",
-          MAX_DATE_TIMESTAMP_MS + 1,
-        ),
+        "openai:bad-oauth-expiry": oauth(MAX_DATE_TIMESTAMP_MS + 1),
       },
     });
 
@@ -146,7 +124,7 @@ describe("discoverAuthStorageFacts auth storage", () => {
     const resolved = resolveAgentCredentialMapFromStore(
       createAuthProfileStoreFixture({
         "openai:key": createApiKeyCredential("openai", "test-key"),
-        "openai:expired": oauth("dummy", "placeholder", Date.now() - 3_600_000),
+        "openai:expired": oauth(Date.now() - 3_600_000),
         "openai:valid": oauth(),
       }),
     );
@@ -160,22 +138,18 @@ describe("discoverAuthStorageFacts auth storage", () => {
   });
 
   it("passes configured auth order through discovery selection", async () => {
-    await withAgentDir(async (agentDir) => {
-      writeProfiles(agentDir, {
-        "openai:oauth": oauth(),
-        "openai:key": createApiKeyCredential("openai", "test-key"),
-      });
-      const { authStorage } = await discover(agentDir, {
-        config: {
-          auth: { order: { openai: ["openai:key", "openai:oauth"] } },
-        },
-      });
-
-      expect(authStorage.get("openai")).toEqual({
-        type: "api_key",
-        key: "test-key",
-      });
+    const agentDir = await createAgentDir();
+    writeProfiles(agentDir, {
+      "openai:oauth": oauth(),
+      "openai:key": createApiKeyCredential("openai", "test-key"),
     });
+    const { authStorage } = await discover(agentDir, {
+      config: {
+        auth: { order: { openai: ["openai:key", "openai:oauth"] } },
+      },
+    });
+
+    expect(authStorage.get("openai")).toEqual(apiKey("test-key"));
   });
 
   it("keeps keyRef and tokenRef profiles visible only for read-only agent discovery", () => {
@@ -211,56 +185,44 @@ describe("discoverAuthStorageFacts auth storage", () => {
   });
 
   it("marks keyRef-only auth profiles configured for read-only model discovery", async () => {
-    await withAgentDir(async (agentDir) => {
-      writeProfiles(agentDir, {
-        "fixture-ref-provider:default": {
-          type: "api_key",
-          provider: "fixture-ref-provider",
-          keyRef: { source: "exec", provider: "keychain", id: "FIXTURE_API_KEY" },
-        },
-      });
-
-      const { authStorage: readOnlyStorage } = await discover(agentDir, {
-        readOnly: true,
-      });
-      const { authStorage: runtimeStorage } = await discover(agentDir);
-
-      expect(readOnlyStorage.hasAuth("fixture-ref-provider")).toBe(true);
-      expect(runtimeStorage.hasAuth("fixture-ref-provider")).toBe(false);
+    const agentDir = await createAgentDir();
+    writeProfiles(agentDir, {
+      "fixture-ref-provider:default": {
+        type: "api_key",
+        provider: "fixture-ref-provider",
+        keyRef: { source: "exec", provider: "keychain", id: "FIXTURE_API_KEY" },
+      },
     });
+
+    const { authStorage: readOnlyStorage } = await discover(agentDir, {
+      readOnly: true,
+    });
+    const { authStorage: runtimeStorage } = await discover(agentDir);
+
+    expect(readOnlyStorage.hasAuth("fixture-ref-provider")).toBe(true);
+    expect(runtimeStorage.hasAuth("fixture-ref-provider")).toBe(false);
   });
 
   it("uses the lifecycle owner's explicit inherited auth directory", async () => {
-    await withAgentDir(async (inheritedAuthDir) => {
-      await withAgentDir(async (agentDir) => {
-        writeProfiles(inheritedAuthDir, {
-          "inherited-provider:default": createApiKeyCredential(
-            "inherited-provider",
-            "inherited-key",
-          ),
-          "shared-provider:inherited": createApiKeyCredential(
-            "shared-provider",
-            "inherited-shared-key",
-          ),
-        });
-        writeProfiles(agentDir, {
-          "shared-provider:local": createApiKeyCredential("shared-provider", "local-shared-key"),
-        });
-
-        const { authStorage: storage } = await discover(agentDir, {
-          inheritedAuthDir,
-        });
-
-        expect(storage.get("inherited-provider")).toEqual({
-          type: "api_key",
-          key: "inherited-key",
-        });
-        expect(storage.get("shared-provider")).toEqual({
-          type: "api_key",
-          key: "local-shared-key",
-        });
-      });
+    const inheritedAuthDir = await createAgentDir();
+    const agentDir = await createAgentDir();
+    writeProfiles(inheritedAuthDir, {
+      "inherited-provider:default": createApiKeyCredential("inherited-provider", "inherited-key"),
+      "shared-provider:inherited": createApiKeyCredential(
+        "shared-provider",
+        "inherited-shared-key",
+      ),
     });
+    writeProfiles(agentDir, {
+      "shared-provider:local": createApiKeyCredential("shared-provider", "local-shared-key"),
+    });
+
+    const { authStorage: storage } = await discover(agentDir, {
+      inheritedAuthDir,
+    });
+
+    expect(storage.get("inherited-provider")).toEqual(apiKey("inherited-key"));
+    expect(storage.get("shared-provider")).toEqual(apiKey("local-shared-key"));
   });
 
   it("includes workspace-scoped auth evidence in agent discovery credentials", () => {
@@ -272,9 +234,6 @@ describe("discoverAuthStorageFacts auth storage", () => {
       },
     );
 
-    expect(credentials["workspace-cloud"]).toEqual({
-      type: "api_key",
-      key: "workspace-cloud-local-credentials",
-    });
+    expect(credentials["workspace-cloud"]).toEqual(apiKey("workspace-cloud-local-credentials"));
   });
 });
