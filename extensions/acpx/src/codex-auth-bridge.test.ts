@@ -1,4 +1,3 @@
-// ACPX tests cover codex auth bridge plugin behavior.
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -13,15 +12,19 @@ import { OPENCLAW_ACPX_LEASE_ID_ARG, OPENCLAW_GATEWAY_INSTANCE_ID_ARG } from "./
 const execFileAsync = promisify(execFile);
 const WRAPPER_STDERR_LOG_MAX_CHARS = 256 * 1024;
 const createWrapperFixture = useAuthBridgeFixture();
+const apiKeyAuth = (key: string) => ({ OPENAI_API_KEY: key, tokens: null, last_refresh: null });
 
 async function adapterFixture(source = "console.log('ok');\n") {
   const fixture = createWrapperFixture();
   const bin = path.join(fixture.root, "codex-acp-bin.js");
   await fs.writeFile(bin, source, "utf8");
   await fixture.prepare({ resolveInstalledCodexAcpBinPath: async () => bin });
+  const authPath = path.join(fixture.stateDir, "acpx", "codex-home", "auth.json");
   return {
     ...fixture,
-    authPath: path.join(fixture.stateDir, "acpx", "codex-home", "auth.json"),
+    authPath,
+    writeAuth: (auth: unknown) =>
+      fs.writeFile(authPath, `${JSON.stringify(auth)}\n`, { mode: 0o600 }),
     run: (env: NodeJS.ProcessEnv, args: string[] = []) =>
       execFileAsync(process.execPath, [fixture.generated.wrapperPath, ...args], {
         cwd: fixture.root,
@@ -40,6 +43,23 @@ async function expectPathMissing(targetPath: string): Promise<void> {
   expect(error).toMatchObject({ code: "ENOENT" });
 }
 
+function runConfigured(wrapperPath: string, script: string, leaseId: string, maxBuffer?: number) {
+  return execFileAsync(
+    process.execPath,
+    [
+      wrapperPath,
+      "--openclaw-run-configured",
+      process.execPath,
+      script,
+      OPENCLAW_ACPX_LEASE_ID_ARG,
+      leaseId,
+      OPENCLAW_GATEWAY_INSTANCE_ID_ARG,
+      "gateway-test",
+    ],
+    maxBuffer === undefined ? {} : { maxBuffer },
+  );
+}
+
 async function captureGeneratedCodexWrapperStderr(
   source: string,
   expectedExitCode = 0,
@@ -52,19 +72,11 @@ async function captureGeneratedCodexWrapperStderr(
   });
 
   const leaseId = "lease-unicode";
-  const execution = execFileAsync(
-    process.execPath,
-    [
-      generated.wrapperPath,
-      "--openclaw-run-configured",
-      process.execPath,
-      stderrScript,
-      OPENCLAW_ACPX_LEASE_ID_ARG,
-      leaseId,
-      OPENCLAW_GATEWAY_INSTANCE_ID_ARG,
-      "gateway-test",
-    ],
-    { maxBuffer: WRAPPER_STDERR_LOG_MAX_CHARS * 2 },
+  const execution = runConfigured(
+    generated.wrapperPath,
+    stderrScript,
+    leaseId,
+    WRAPPER_STDERR_LOG_MAX_CHARS * 2,
   );
   if (expectedExitCode === 0) {
     await execution;
@@ -94,56 +106,54 @@ describe("prepareAcpxCodexAuthConfig", () => {
     await fs.access(generatedClaude.wrapperPath);
   });
 
-  it.each([{ agent: "codex", packageName: "codex-acp", version: "2.1.1" }] as const)(
-    "launches $agent after its captured adapter is removed",
-    async ({ packageName, version }) => {
-      const { root, generated, prepare } = createWrapperFixture();
-      const capturedBin = path.join(root, "captured-adapter.cjs");
-      await fs.writeFile(capturedBin, "console.log('captured adapter');\n");
-      await prepare({
-        resolveInstalledCodexAcpBinPath: async () => capturedBin,
-        resolveInstalledClaudeAcpBinPath: async () => capturedBin,
-      });
-      const wrapperPath = generated.wrapperPath;
-      const packageDir = path.join(root, "node_modules", "@agentclientprotocol", packageName);
-      const binDir = path.join(root, "node_modules", ".bin");
-      await fs.mkdir(packageDir, { recursive: true });
-      await fs.mkdir(binDir, { recursive: true });
+  it("launches codex after its captured adapter is removed", async () => {
+    const packageName = "codex-acp";
+    const { root, generated, prepare } = createWrapperFixture();
+    const capturedBin = path.join(root, "captured-adapter.cjs");
+    await fs.writeFile(capturedBin, "console.log('captured adapter');\n");
+    await prepare({
+      resolveInstalledCodexAcpBinPath: async () => capturedBin,
+      resolveInstalledClaudeAcpBinPath: async () => capturedBin,
+    });
+    const wrapperPath = generated.wrapperPath;
+    const packageDir = path.join(root, "node_modules", "@agentclientprotocol", packageName);
+    const binDir = path.join(root, "node_modules", ".bin");
+    await fs.mkdir(packageDir, { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({
+        name: `@agentclientprotocol/${packageName}`,
+        version: "2.1.1",
+        bin: { [packageName]: "index.cjs" },
+      }),
+    );
+    const fallbackBin = path.join(packageDir, "index.cjs");
+    await fs.writeFile(fallbackBin, "#!/usr/bin/env node\nconsole.log('fallback adapter');\n", {
+      mode: 0o755,
+    });
+    if (process.platform === "win32") {
       await fs.writeFile(
-        path.join(packageDir, "package.json"),
-        JSON.stringify({
-          name: `@agentclientprotocol/${packageName}`,
-          version,
-          bin: { [packageName]: "index.cjs" },
-        }),
+        path.join(binDir, `${packageName}.cmd`),
+        `@"${process.execPath}" "${fallbackBin}" %*\r\n`,
       );
-      const fallbackBin = path.join(packageDir, "index.cjs");
-      await fs.writeFile(fallbackBin, "#!/usr/bin/env node\nconsole.log('fallback adapter');\n", {
-        mode: 0o755,
-      });
-      if (process.platform === "win32") {
-        await fs.writeFile(
-          path.join(binDir, `${packageName}.cmd`),
-          `@"${process.execPath}" "${fallbackBin}" %*\r\n`,
-        );
-      } else {
-        await fs.symlink(fallbackBin, path.join(binDir, packageName));
-      }
-      const options = {
-        cwd: root,
-        env: {
-          ...process.env,
-          npm_config_offline: "true",
-          npm_config_cache: path.join(root, "cache"),
-        },
-      };
-      const present = await execFileAsync(process.execPath, [wrapperPath], options);
-      expect(present.stdout.trim()).toBe("captured adapter");
-      await fs.rm(capturedBin);
-      const reclaimed = await execFileAsync(process.execPath, [wrapperPath], options);
-      expect(reclaimed.stdout.trim()).toBe("fallback adapter");
-    },
-  );
+    } else {
+      await fs.symlink(fallbackBin, path.join(binDir, packageName));
+    }
+    const options = {
+      cwd: root,
+      env: {
+        ...process.env,
+        npm_config_offline: "true",
+        npm_config_cache: path.join(root, "cache"),
+      },
+    };
+    const present = await execFileAsync(process.execPath, [wrapperPath], options);
+    expect(present.stdout.trim()).toBe("captured adapter");
+    await fs.rm(capturedBin);
+    const reclaimed = await execFileAsync(process.execPath, [wrapperPath], options);
+    expect(reclaimed.stdout.trim()).toBe("fallback adapter");
+  });
 
   it.each(["before-orphan", "after-orphan"])(
     "keeps orphan cleanup owned when the direct child exits %s",
@@ -263,37 +273,27 @@ describe("prepareAcpxCodexAuthConfig", () => {
   });
 
   it("preserves existing isolated Codex auth when env auth is present", async () => {
-    const { authPath, run } = await adapterFixture();
+    const { authPath, run, writeAuth } = await adapterFixture();
     const existingAuth = {
       auth_mode: "chatgpt",
       tokens: { access_token: "existing-token" },
       last_refresh: null,
     };
-    await fs.writeFile(authPath, `${JSON.stringify(existingAuth)}\n`, { mode: 0o600 });
+    await writeAuth(existingAuth);
 
     await run({ ...process.env, OPENAI_API_KEY: "sk-test-api-key" });
     expect(JSON.parse(await fs.readFile(authPath, "utf8"))).toEqual(existingAuth);
   });
 
   it("updates existing isolated Codex API-key auth when env auth changes", async () => {
-    const { authPath, run } = await adapterFixture();
-    await fs.writeFile(
-      authPath,
-      `${JSON.stringify({
-        OPENAI_API_KEY: "sk-old-api-key",
-        tokens: null,
-        last_refresh: null,
-      })}\n`,
-      { mode: 0o600 },
-    );
+    const { authPath, run, writeAuth } = await adapterFixture();
+    await writeAuth(apiKeyAuth("sk-old-api-key"));
 
     await run({ ...process.env, CODEX_API_KEY: "sk-new-api-key", OPENAI_API_KEY: "sk-other-key" });
 
-    expect(JSON.parse(await fs.readFile(authPath, "utf8"))).toMatchObject({
-      OPENAI_API_KEY: "sk-new-api-key",
-      tokens: null,
-      last_refresh: null,
-    });
+    expect(JSON.parse(await fs.readFile(authPath, "utf8"))).toMatchObject(
+      apiKeyAuth("sk-new-api-key"),
+    );
   });
 
   it("does not copy source Codex auth", async () => {
@@ -306,7 +306,6 @@ describe("prepareAcpxCodexAuthConfig", () => {
         'model_reasoning_effort = "high"',
         'sandbox_mode = "workspace-write"',
         'notify = ["SkyComputerUseClient", "turn-ended"]',
-        "",
         "[model_providers.azure_foundry]",
         'name = "Azure Foundry"',
         'base_url = "https://example.azure.com/openai/v1"',
@@ -315,17 +314,11 @@ describe("prepareAcpxCodexAuthConfig", () => {
         'http_headers = { "api-key" = "inline-secret-key" }',
         'query_params = { "api-version" = "2026-01-01", "secret" = "inline-secret-param" }',
         'experimental_bearer_token = "inline-secret-bearer"',
-        "",
-        "[model_providers.azure_foundry.auth]",
-        'command = "bash"',
-        'args = ["-lc", "printf %s test-key"]',
-        "",
+        'auth = { command = "bash", args = ["-lc", "printf %s test-key"] }',
         "[model_providers.secret_only]",
         'experimental_bearer_token = "secret-only-token"',
-        "",
         `[projects.${JSON.stringify(path.join(root, "project-with-model-key"))}]`,
         'model = "nested-project-model"',
-        "",
       ].join("\n"),
     );
     await fs.writeFile(
@@ -478,29 +471,11 @@ describe("prepareAcpxCodexAuthConfig", () => {
       resolveInstalledCodexAcpBinPath: async () => path.join(root, "codex-acp.js"),
     });
 
-    const wrapperArgs = [
-      OPENCLAW_ACPX_LEASE_ID_ARG,
-      "quiet-lease",
-      OPENCLAW_GATEWAY_INSTANCE_ID_ARG,
-      "gateway-test",
-    ];
-    await execFileAsync(process.execPath, [
-      generated.wrapperPath,
-      "--openclaw-run-configured",
-      process.execPath,
-      noisyScript,
-      ...wrapperArgs,
-    ]);
+    await runConfigured(generated.wrapperPath, noisyScript, "quiet-lease");
     const stderrLogPath = path.join(stateDir, "acpx", "codex-acp-wrapper.stderr.quiet-lease.log");
     await expect(fs.readFile(stderrLogPath, "utf8")).resolves.toBe("previous diagnostics\n");
 
-    await execFileAsync(process.execPath, [
-      generated.wrapperPath,
-      "--openclaw-run-configured",
-      process.execPath,
-      quietScript,
-      ...wrapperArgs,
-    ]);
+    await runConfigured(generated.wrapperPath, quietScript, "quiet-lease");
 
     await expectPathMissing(stderrLogPath);
   });

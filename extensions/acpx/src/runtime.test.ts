@@ -89,18 +89,18 @@ function sessionStore(initial: Record<string, unknown> | undefined): TestSession
 }
 
 function leasedRuntime(
-  record: Record<string, unknown> | undefined,
+  record?: Record<string, unknown>,
   cleanup?: Parameters<typeof makeRuntime>[2],
   wrapperRoot = "/tmp/openclaw/acpx",
 ) {
   const baseStore = sessionStore(record);
   const leaseStore = makeLeaseStore();
   return {
-    ...(cleanup || wrapperRoot !== "/tmp/openclaw/acpx"
+    ...(cleanup || wrapperRoot !== WRAPPER_ROOT
       ? makeRuntime(
           baseStore,
           {
-            openclawGatewayInstanceId: "gateway-test",
+            ...gatewayOptions,
             openclawProcessLeaseStore: leaseStore.store,
             openclawWrapperRoot: wrapperRoot,
             agentRegistry: {
@@ -114,6 +114,13 @@ function leasedRuntime(
     baseStore,
     leaseStore,
   };
+}
+
+function mockTurn(
+  delegate: ReturnType<typeof makeRuntime>["delegate"],
+  overrides: Parameters<typeof makeTurn>[1],
+) {
+  return vi.spyOn(delegate, "startTurn").mockImplementation((input) => makeTurn(input, overrides));
 }
 
 function commandForLease(leaseId: string, gateway = "gateway-test") {
@@ -144,22 +151,6 @@ function closingRuntime(...args: Parameters<typeof leasedRuntime>) {
   const fixture = leasedRuntime(...args);
   vi.spyOn(fixture.delegate, "close").mockResolvedValue(undefined);
   return fixture;
-}
-
-function configCase(
-  name: string,
-  key: string,
-  value: string,
-  outcome: string[][] | string,
-  agent = "codex",
-) {
-  return {
-    name,
-    key,
-    value,
-    agent,
-    ...(typeof outcome === "string" ? { error: outcome } : { calls: outcome }),
-  };
 }
 
 function makeAgentRuntime(agent: string, command: AcpxAgentCommand) {
@@ -264,16 +255,14 @@ describe("AcpxRuntime fresh reset wrapper", () => {
     const promptStarted = createDeferred<void>();
     const { runtime, delegate } = await diagnosticRuntime("adapter disconnected after progress");
     const outputProgress: AcpRuntimeEvent = { ...progress, stream: "output" };
-    vi.spyOn(delegate, "startTurn").mockImplementation((input) =>
-      makeTurn(input, {
-        promptStarted: promptStarted.promise,
-        events: events(outputProgress),
-        result: Promise.resolve({
-          status: "failed",
-          error: { message: "Internal error", retryable: false },
-        }),
+    mockTurn(delegate, {
+      promptStarted: promptStarted.promise,
+      events: events(outputProgress),
+      result: Promise.resolve({
+        status: "failed",
+        error: { message: "Internal error", retryable: false },
       }),
-    );
+    });
     const turn = runtime.startTurn(turnInput);
     let submitted = false;
     const observed = turn.promptStarted.then(() => {
@@ -342,13 +331,11 @@ describe("AcpxRuntime fresh reset wrapper", () => {
         sessionStore(savedSession({ agentCommand: "claude" })),
       );
       const cancel = vi.fn(async () => {});
-      vi.spyOn(delegate, "startTurn").mockImplementation((input) =>
-        makeTurn(input, {
-          events: events(progress),
-          result: Promise.resolve(result),
-          cancel,
-        }),
-      );
+      mockTurn(delegate, {
+        events: events(progress),
+        result: Promise.resolve(result),
+        cancel,
+      });
       expect(await collectEvents(runtime.runTurn(turnInput))).toEqual([progress, event]);
       expect(cancel).not.toHaveBeenCalled();
     },
@@ -394,26 +381,26 @@ describe("AcpxRuntime fresh reset wrapper", () => {
     expect(JSON.parse(config)).toEqual({ model: "gpt-5.6-luna" });
   });
 
-  it("drops inherited max thinking for Codex", async () => {
-    const { runtime, ensure } = makeAgentRuntime("codex", "env OPENCLAW_HIDE_BANNER=1 codex-acp");
-    const handle = await runtime.ensureSession({
-      ...ensureInput,
-      thinking: "max",
-      thinkingExplicit: false,
-    });
-    expect(ensure.mock.calls[0]?.[0]).toEqual(ensureInput);
-    expect(handle.appliedThinking).toEqual({ kind: "dropped" });
-  });
-
-  it("drops an inherited unsupported model while retaining thinking", async () => {
-    const { runtime, ensure } = makeAgentRuntime("codex", CODEX_ACP_COMMAND);
-    const handle = await runtime.ensureSession({
-      ...ensureInput,
-      model: "google/gemini-3.1-flash-lite",
-      thinking: "low",
-    });
-    expect(ensure.mock.calls[0]?.[0]).toEqual({ ...ensureInput, thinking: "low" });
-    expect(handle.appliedModel).toEqual({ kind: "dropped" });
+  it.each([
+    {
+      name: "inherited max thinking",
+      input: { thinking: "max", thinkingExplicit: false },
+      forwarded: {},
+      field: "appliedThinking" as const,
+      command: "env OPENCLAW_HIDE_BANNER=1 codex-acp",
+    },
+    {
+      name: "unsupported model while retaining thinking",
+      input: { model: "google/gemini-3.1-flash-lite", thinking: "low" },
+      forwarded: { thinking: "low" },
+      field: "appliedModel" as const,
+      command: CODEX_ACP_COMMAND,
+    },
+  ])("drops $name", async ({ input, forwarded, field, command }) => {
+    const { runtime, ensure } = makeAgentRuntime("codex", command);
+    const handle = await runtime.ensureSession({ ...ensureInput, ...input });
+    expect(ensure.mock.calls[0]?.[0]).toEqual({ ...ensureInput, ...forwarded });
+    expect(handle[field]).toEqual({ kind: "dropped" });
   });
 
   it("rejects explicit unsupported models before delegation", async () => {
@@ -428,19 +415,24 @@ describe("AcpxRuntime fresh reset wrapper", () => {
     expect(ensure).not.toHaveBeenCalled();
   });
 
-  it.each([
-    configCase("bare model", "model", "gpt-5.4", [["model", "gpt-5.4"]]),
-    configCase("empty qualified model", "model", "openai//high", invalidOption),
-    configCase("reasoning suffix", "model", "openai/gpt-5.4/high", [
-      ["model", "gpt-5.4"],
-      ["reasoning_effort", "high"],
-    ]),
-    configCase("unsupported model", "model", "google/gemini-3.1-flash-lite", invalidOption),
-    configCase("reasoning alias", "reasoning_effort", "x-high", [["reasoning_effort", "xhigh"]]),
-    configCase("clearing thinking", "thought_level", "off", "ACP_BACKEND_UNSUPPORTED_CONTROL"),
-    configCase("Claude timeout", "Timeout_Seconds", "60", [], "claude"),
-    configCase("Claude model", "model", bedrockModel, [["model", bedrockModel]], "claude"),
-  ])("normalizes config control: $name", async ({ agent, key, value, calls, error }) => {
+  it.each<[string, string, string, string[][] | string, string?]>([
+    ["bare model", "model", "gpt-5.4", [["model", "gpt-5.4"]]],
+    ["empty qualified model", "model", "openai//high", invalidOption],
+    [
+      "reasoning suffix",
+      "model",
+      "openai/gpt-5.4/high",
+      [
+        ["model", "gpt-5.4"],
+        ["reasoning_effort", "high"],
+      ],
+    ],
+    ["unsupported model", "model", "google/gemini-3.1-flash-lite", invalidOption],
+    ["reasoning alias", "reasoning_effort", "x-high", [["reasoning_effort", "xhigh"]]],
+    ["clearing thinking", "thought_level", "off", "ACP_BACKEND_UNSUPPORTED_CONTROL"],
+    ["Claude timeout", "Timeout_Seconds", "60", [], "claude"],
+    ["Claude model", "model", bedrockModel, [["model", bedrockModel]], "claude"],
+  ])("normalizes config control: %s", async (_name, key, value, outcome, agent = "codex") => {
     const handle = testHandle;
     const { runtime, delegate } = makeRuntime(
       sessionStore({
@@ -451,13 +443,13 @@ describe("AcpxRuntime fresh reset wrapper", () => {
     const accepted = { configOptions: [{ id: "effort", currentValue: "high" }] };
     const update = vi.spyOn(delegate, "setConfigOption").mockResolvedValue(accepted);
     const result = runtime.setConfigOption({ handle, key, value });
-    if (error) {
-      await expect(result).rejects.toMatchObject({ code: error });
+    if (typeof outcome === "string") {
+      await expect(result).rejects.toMatchObject({ code: outcome });
       expect(update).not.toHaveBeenCalled();
     } else {
-      await expect(result).resolves.toBe(calls?.length ? accepted : undefined);
+      await expect(result).resolves.toBe(outcome.length ? accepted : undefined);
       expect(update.mock.calls).toEqual(
-        calls?.map(([controlKey, controlValue]) => [
+        outcome.map(([controlKey, controlValue]) => [
           { handle, key: controlKey, value: controlValue },
         ]),
       );
@@ -598,13 +590,11 @@ describe("AcpxRuntime fresh reset wrapper", () => {
     const cancel = vi.fn(async () => {
       cancelling.resolve();
     });
-    vi.spyOn(delegate, "startTurn").mockImplementation((input) =>
-      makeTurn(input, {
-        result: result.promise,
-        cancel,
-        events: events({ type: "text_delta", text: "Partial progress" }),
-      }),
-    );
+    mockTurn(delegate, {
+      result: result.promise,
+      cancel,
+      events: events({ type: "text_delta", text: "Partial progress" }),
+    });
     const iterator = runtime.runTurn(turnInput)[Symbol.asyncIterator]();
     await expect(iterator.next()).resolves.toMatchObject({
       done: false,
@@ -703,19 +693,13 @@ describe("AcpxRuntime fresh reset wrapper", () => {
   });
 
   it.each([
-    {
-      name: "reused wrapper root",
-      command: 'node "/tmp/other-gateway/acpx/codex-acp-wrapper.mjs"',
-      metadata: {},
-      killed: [],
-    },
-    {
-      name: "reused lease",
-      command: commandForLease("other-lease"),
-      metadata: { openclawGatewayInstanceId: "gateway-test", openclawLeaseId: "lease-record" },
-      killed: [],
-    },
-  ])("validates fallback close ownership for $name", async ({ command, metadata, killed }) => {
+    ["reused wrapper root", 'node "/tmp/other-gateway/acpx/codex-acp-wrapper.mjs"', {}],
+    [
+      "reused lease",
+      commandForLease("other-lease"),
+      { openclawGatewayInstanceId: "gateway-test", openclawLeaseId: "lease-record" },
+    ],
+  ] as const)("validates fallback close ownership for %s", async (_name, command, metadata) => {
     const killProcess = vi.fn();
     const { runtime, delegate } = makeRuntime(
       sessionStore({
@@ -738,6 +722,6 @@ describe("AcpxRuntime fresh reset wrapper", () => {
     );
     vi.spyOn(delegate, "close").mockResolvedValue(undefined);
     await runtime.close(closeInput);
-    expect(killProcess.mock.calls.slice(0, 2)).toEqual(killed);
+    expect(killProcess).not.toHaveBeenCalled();
   });
 });

@@ -13,11 +13,12 @@ const execFileAsync = promisify(execFile);
 const baseFixture = useAuthBridgeFixture();
 
 function fixture() {
-  const { root, stateDir, config, prepare } = baseFixture();
+  const { root, stateDir, config, prepare, sourceConfig } = baseFixture();
   return {
     root,
     stateDir,
     config,
+    sourceConfig,
     configPath: (dir = stateDir) => path.join(dir, "acpx", "codex-home", "config.toml"),
     wrapperPath: (agent = "codex") => path.join(stateDir, "acpx", `${agent}-acp-wrapper.mjs`),
     prepare: (pluginConfig = config(), dir = stateDir, bin?: string) =>
@@ -63,14 +64,8 @@ async function launch(command: AcpxAgentCommand | undefined, root: string, env =
 
 describe("prepareAcpxCodexAuthConfig command migration", () => {
   it("migrates an explicitly configured Zed Codex ACP command to the local wrapper", async () => {
-    const { root, config, configPath, wrapperPath, prepare } = fixture();
-    const sourceCodexHome = path.join(root, "source-codex");
-    await fs.mkdir(sourceCodexHome, { recursive: true });
-    await fs.writeFile(
-      path.join(sourceCodexHome, "config.toml"),
-      'notify = ["SkyComputerUseClient", "turn-ended"]\n',
-    );
-    process.env.CODEX_HOME = sourceCodexHome;
+    const { root, config, configPath, wrapperPath, prepare, sourceConfig } = fixture();
+    const sourceCodexHome = await sourceConfig('notify = ["SkyComputerUseClient", "turn-ended"]\n');
     const pluginConfig = config(
       'npx @zed-industries/codex-acp@0.12.0 -c=model=\'"gpt-5.4"\' -cmodel_reasoning_effort=\'"high"\' --config=\'mcp_servers."foo.bar"={ command = "node", args = ["server.js"] }\'',
     );
@@ -136,13 +131,10 @@ describe("prepareAcpxCodexAuthConfig command migration", () => {
   });
 
   it("does not carry migrated MCP config across isolated Codex homes or rebuilds", async () => {
-    const { root, config, configPath, prepare } = fixture();
-    const sourceCodexHome = path.join(root, "source-codex");
+    const { root, config, configPath, prepare, sourceConfig } = fixture();
     const legacyStateDir = path.join(root, "legacy-state");
     const maintainedStateDir = path.join(root, "maintained-state");
-    await fs.mkdir(sourceCodexHome, { recursive: true });
-    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "", "utf8");
-    process.env.CODEX_HOME = sourceCodexHome;
+    await sourceConfig("");
     const legacyConfig = config(
       "npx @zed-industries/codex-acp@0.12.0 --config='mcp_servers.legacy={ command = \"node\" }'",
     );

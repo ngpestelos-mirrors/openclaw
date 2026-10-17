@@ -133,8 +133,9 @@ describe("Pi session catalog continuation", () => {
       marker: expect.objectContaining({ offset: sessionStats.size }),
     });
     expect(createSessionEntry).toHaveBeenCalledTimes(1);
-    expect(createSessionEntry.mock.calls[0]?.[0]).not.toHaveProperty("label");
-    expect(createSessionEntry).toHaveBeenCalledWith(
+    const createParams = createSessionEntry.mock.calls[0]?.[0];
+    expect(createParams).not.toHaveProperty("label");
+    expect(createParams).toEqual(
       expect.objectContaining({
         displayName: "Pi catalog session",
         spawnedCwd: "/workspace",
@@ -162,9 +163,7 @@ describe("Pi session catalog continuation", () => {
       mirrorOrigin: "pi-catalog-import",
     });
 
-    const createParams = createSessionEntry.mock.calls[0]?.[0];
-    const adopted = createSessionEntry.mock.results[0]?.value;
-    await createParams?.afterCreate?.(await adopted);
+    await createParams?.afterCreate?.(await createSessionEntry.mock.results[0]?.value);
     expect(transcriptMocks.messages).toHaveLength(5);
   });
 

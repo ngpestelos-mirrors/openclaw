@@ -1,5 +1,4 @@
-import fs from "node:fs/promises";
-import type { FileHandle } from "node:fs/promises";
+import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -47,12 +46,8 @@ async function injectFileShortReads(filePath: string, maxBytes: number): Promise
 
 const userRow = (content: string, timestamp: string, extra: Record<string, unknown> = {}) =>
   piMessage({ role: "user", content }, { timestamp, ...extra });
-const appendUser = (
-  file: string,
-  content: string,
-  timestamp: string,
-  extra?: Record<string, unknown>,
-) => fs.appendFile(file, piJsonl([userRow(content, timestamp, extra)]));
+const appendUser = (file: string, ...row: Parameters<typeof userRow>) =>
+  fs.appendFile(file, piJsonl([userRow(...row)]));
 const activity = (fields: Record<string, unknown>) => [
   expect.objectContaining({ kind: "activity", ...fields }),
 ];
@@ -166,7 +161,7 @@ describe("Pi session upstream activity", () => {
     );
 
     const first = await checkPiUpstreamActivity([probe]);
-    expect(first).toEqual([expect.objectContaining({ kind: "activity", humanTurns: 1 })]);
+    expect(first).toEqual(activity({ humanTurns: 1 }));
     await expect(
       checkPiUpstreamActivity([
         { ...probe, marker: first[0]!.kind === "activity" ? first[0]!.nextMarker : null },

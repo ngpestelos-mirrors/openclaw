@@ -110,6 +110,10 @@ function cleanupPendingLease() {
   });
 }
 
+function skippedResult(skippedReason: string, inspectedPids: number[] = []) {
+  return { inspectedPids, terminatedPids: [], skippedReason };
+}
+
 async function expectReaped(
   killed: ReturnType<typeof cleanupDeps>["killed"],
   inspectedPids: number[],
@@ -138,11 +142,7 @@ describe("process reaper", () => {
       maxBuffer: 8 * 1024 * 1024,
       timeoutMs: 2_000,
     });
-    expect(result).toEqual({
-      inspectedPids: [],
-      terminatedPids: [],
-      skippedReason: "process-list-unavailable",
-    });
+    expect(result).toEqual(skippedResult("process-list-unavailable"));
     expect(killSpy).not.toHaveBeenCalled();
   });
 
@@ -170,11 +170,7 @@ describe("process reaper", () => {
       expectedLeaseId: "lease-1",
       expectedGatewayInstanceId: "gateway-1",
     });
-    expect(result).toEqual({
-      inspectedPids: [113],
-      terminatedPids: [],
-      skippedReason: "not-openclaw-owned",
-    });
+    expect(result).toEqual(skippedResult("not-openclaw-owned", [113]));
     expect(killed).toStrictEqual([]);
   });
 
@@ -203,11 +199,9 @@ describe("process reaper", () => {
       { pid: 130, ppid: 1, command: CODEX_WRAPPER_COMMAND_WITH_LEASE },
       { pid: 131, ppid: 1, command: CODEX_WRAPPER_COMMAND_WITH_LEASE },
     ]);
-    await expect(cleanupPendingLease()).resolves.toEqual({
-      inspectedPids: [130, 131],
-      terminatedPids: [],
-      skippedReason: "ambiguous-root",
-    });
+    await expect(cleanupPendingLease()).resolves.toEqual(
+      skippedResult("ambiguous-root", [130, 131]),
+    );
     expect(killed).toEqual([]);
     runExecMock.mockRejectedValueOnce(new Error("ps unavailable"));
     await expect(cleanupPendingLease()).resolves.toMatchObject({
@@ -221,11 +215,7 @@ describe("process reaper", () => {
     ]);
     const killProcess = vi.fn();
     mockAcpxProcessSystem({ platform: "win32", listProcesses, killProcess });
-    await expect(cleanupPendingLease()).resolves.toEqual({
-      inspectedPids: [],
-      terminatedPids: [],
-      skippedReason: "unsupported-platform",
-    });
+    await expect(cleanupPendingLease()).resolves.toEqual(skippedResult("unsupported-platform"));
     expect(listProcesses).not.toHaveBeenCalled();
     expect(killProcess).not.toHaveBeenCalled();
   });
@@ -250,11 +240,7 @@ describe("process reaper", () => {
   it("does not kill a reused adapter pid when the stored root was a generated wrapper", async () => {
     const { killed } = cleanupDeps([{ pid: 260, ppid: 1, command: PLUGIN_DEPS_CODEX_COMMAND }]);
     const result = await cleanupTree(260);
-    expect(result).toEqual({
-      inspectedPids: [260],
-      terminatedPids: [],
-      skippedReason: "not-openclaw-owned",
-    });
+    expect(result).toEqual(skippedResult("not-openclaw-owned", [260]));
     expect(killed).toStrictEqual([]);
   });
 
@@ -301,10 +287,6 @@ describe("process reaper", () => {
     mockAcpxProcessSystem();
     runExecMock.mockRejectedValueOnce(new Error("ps unavailable"));
     const result = await reapStaleOpenClawOwnedAcpxOrphans({ wrapperRoot: WRAPPER_ROOT });
-    expect(result).toEqual({
-      inspectedPids: [],
-      terminatedPids: [],
-      skippedReason: "process-list-unavailable",
-    });
+    expect(result).toEqual(skippedResult("process-list-unavailable"));
   });
 });
