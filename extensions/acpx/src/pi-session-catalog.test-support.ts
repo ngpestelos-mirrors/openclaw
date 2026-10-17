@@ -9,32 +9,45 @@ type RegisteredSessionCatalogProvider = Parameters<OpenClawPluginApi["registerSe
 type OptionalCatalogAgent<T extends { agentId?: string }> = Omit<T, "agentId"> & {
   agentId?: string;
 };
+type CatalogOperation = "list" | "read" | "continueSession" | "archive" | "openTerminal";
 export type TestSessionCatalogProvider = Omit<
   RegisteredSessionCatalogProvider,
-  "list" | "read" | "continueSession" | "archive" | "openTerminal"
+  CatalogOperation
 > & {
-  list: (
-    params: OptionalCatalogAgent<Parameters<RegisteredSessionCatalogProvider["list"]>[0]>,
-  ) => ReturnType<RegisteredSessionCatalogProvider["list"]>;
-  read: (
-    params: OptionalCatalogAgent<Parameters<RegisteredSessionCatalogProvider["read"]>[0]>,
-  ) => ReturnType<RegisteredSessionCatalogProvider["read"]>;
-  continueSession?: (
-    params: OptionalCatalogAgent<
-      Parameters<NonNullable<RegisteredSessionCatalogProvider["continueSession"]>>[0]
-    >,
-  ) => ReturnType<NonNullable<RegisteredSessionCatalogProvider["continueSession"]>>;
-  archive?: (
-    params: OptionalCatalogAgent<
-      Parameters<NonNullable<RegisteredSessionCatalogProvider["archive"]>>[0]
-    >,
-  ) => ReturnType<NonNullable<RegisteredSessionCatalogProvider["archive"]>>;
-  openTerminal?: (
-    params: OptionalCatalogAgent<
-      Parameters<NonNullable<RegisteredSessionCatalogProvider["openTerminal"]>>[0]
-    >,
-  ) => ReturnType<NonNullable<RegisteredSessionCatalogProvider["openTerminal"]>>;
+  [K in keyof Pick<RegisteredSessionCatalogProvider, CatalogOperation>]: (
+    params: OptionalCatalogAgent<Parameters<NonNullable<RegisteredSessionCatalogProvider[K]>>[0]>,
+  ) => ReturnType<NonNullable<RegisteredSessionCatalogProvider[K]>>;
 };
+
+export const piSessionHeader = (overrides: Record<string, unknown> = {}) => ({
+  type: "session",
+  version: 3,
+  id: "pi-session",
+  timestamp: "2026-07-13T10:00:00.000Z",
+  cwd: "/workspace",
+  ...overrides,
+});
+export const piMessage = (
+  message: Record<string, unknown>,
+  overrides: Record<string, unknown> = {},
+) => ({
+  type: "message",
+  timestamp: "2026-07-13T10:00:01.000Z",
+  message,
+  ...overrides,
+});
+export const piJsonl = (entries: unknown[]) =>
+  `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+
+export function restorePiEnvironment(original: NodeJS.ProcessEnv) {
+  for (const [key, value] of Object.entries(original)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}
 
 export function bindTestCatalogOwner(
   provider: RegisteredSessionCatalogProvider,
@@ -79,26 +92,13 @@ export async function createPiStoreFixture(
     process.env.PI_CODING_AGENT_SESSION_DIR = directory;
   }
   const entries = [
-    {
-      type: "session",
-      version: 3,
-      id: "pi-session",
-      timestamp: "2026-07-13T10:00:00.000Z",
-      cwd: "/workspace",
-    },
-    {
-      type: "message",
-      id: "user-1",
-      parentId: null,
-      timestamp: "2026-07-13T10:00:01.000Z",
-      message: { role: "user", content: "hello", timestamp: 1_783_938_001_000 },
-    },
-    {
-      type: "message",
-      id: "assistant-1",
-      parentId: "user-1",
-      timestamp: "2026-07-13T10:00:02.000Z",
-      message: {
+    piSessionHeader(),
+    piMessage(
+      { role: "user", content: "hello", timestamp: 1_783_938_001_000 },
+      { id: "user-1", parentId: null },
+    ),
+    piMessage(
+      {
         role: "assistant",
         provider: "anthropic",
         model: "claude",
@@ -109,20 +109,18 @@ export async function createPiStoreFixture(
           { type: "toolCall", id: "call-1", name: "bash", arguments: toolArguments },
         ],
       },
-    },
-    {
-      type: "message",
-      id: "tool-1",
-      parentId: "assistant-1",
-      timestamp: "2026-07-13T10:00:03.000Z",
-      message: {
+      { id: "assistant-1", parentId: "user-1", timestamp: "2026-07-13T10:00:02.000Z" },
+    ),
+    piMessage(
+      {
         role: "toolResult",
         toolCallId: "call-1",
         toolName: "bash",
         timestamp: 1_783_938_003_000,
         content: [{ type: "text", text: "/workspace" }],
       },
-    },
+      { id: "tool-1", parentId: "assistant-1", timestamp: "2026-07-13T10:00:03.000Z" },
+    ),
     {
       type: "session_info",
       id: "info-1",
@@ -131,10 +129,7 @@ export async function createPiStoreFixture(
       name: sessionName,
     },
   ];
-  await fs.writeFile(
-    path.join(directory, "session.jsonl"),
-    `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
-  );
+  await fs.writeFile(path.join(directory, "session.jsonl"), piJsonl(entries));
   return directory;
 }
 

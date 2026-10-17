@@ -50,7 +50,11 @@ import {
   capturePiContinuationCatalog,
   createPiStoreFixture,
   installFakePiFixture,
+  piJsonl,
+  piMessage,
+  piSessionHeader,
   registerPiNodeHostCommands,
+  restorePiEnvironment,
   type TestSessionCatalogProvider,
 } from "./pi-session-catalog.test-support.js";
 
@@ -59,11 +63,14 @@ const PI_SESSION_READ_COMMAND = "acpx.pi.sessions.read.v1";
 const PI_TERMINAL_RESUME_COMMAND = "acpx.pi.terminal.resume.v1";
 
 const temporaryDirectories: string[] = [];
-const originalSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
-const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
-const originalHome = process.env.HOME;
-const originalUserProfile = process.env.USERPROFILE;
 const originalPath = process.env.PATH;
+const originalEnvironment = {
+  PI_CODING_AGENT_SESSION_DIR: process.env.PI_CODING_AGENT_SESSION_DIR,
+  PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+  HOME: process.env.HOME,
+  USERPROFILE: process.env.USERPROFILE,
+  PATH: originalPath,
+};
 
 const createPiStore = (
   assistantText = "hi",
@@ -80,6 +87,29 @@ const createPiStore = (
   );
 const installFakePi = () => installFakePiFixture(temporaryDirectories, originalPath);
 
+function captureCatalog(
+  runtime: {
+    config?: Pick<OpenClawPluginApi["runtime"]["config"], "current">;
+    nodes: Partial<OpenClawPluginApi["runtime"]["nodes"]>;
+  } = {
+    config: { current: () => ({}) },
+    nodes: { list: vi.fn().mockResolvedValue({ nodes: [] }) },
+  },
+) {
+  let provider: TestSessionCatalogProvider | undefined;
+  const commands: Parameters<OpenClawPluginApi["registerNodeHostCommand"]>[0][] = [];
+  registerPiSessionCatalog({
+    pluginConfig: {},
+    runtime,
+    registerSessionCatalog: (value: Parameters<OpenClawPluginApi["registerSessionCatalog"]>[0]) => {
+      provider = bindTestCatalogOwner(value);
+    },
+    registerNodeHostCommand: (command: (typeof commands)[number]) => commands.push(command),
+    registerNodeInvokePolicy: vi.fn(),
+  } as unknown as OpenClawPluginApi);
+  return { provider: provider!, commands };
+}
+
 function usePiCandidateCacheClock(): () => void {
   let now = Date.now();
   vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -92,31 +122,11 @@ afterEach(async () => {
   vi.restoreAllMocks();
   acpRuntimeMocks.resolveAcpSessionAvailability.mockReset().mockReturnValue({ available: true });
   nodeHostMocks.runNodePtyCommand.mockClear();
-  process.env.PATH = originalPath;
-  if (originalSessionDir === undefined) {
-    delete process.env.PI_CODING_AGENT_SESSION_DIR;
-  } else {
-    process.env.PI_CODING_AGENT_SESSION_DIR = originalSessionDir;
-  }
-  if (originalAgentDir === undefined) {
-    delete process.env.PI_CODING_AGENT_DIR;
-  } else {
-    process.env.PI_CODING_AGENT_DIR = originalAgentDir;
-  }
-  if (originalHome === undefined) {
-    delete process.env.HOME;
-  } else {
-    process.env.HOME = originalHome;
-  }
-  if (originalUserProfile === undefined) {
-    delete process.env.USERPROFILE;
-  } else {
-    process.env.USERPROFILE = originalUserProfile;
-  }
+  restorePiEnvironment(originalEnvironment);
   await Promise.all(
-    temporaryDirectories.splice(0).map(async (directory) => {
-      await fs.rm(directory, { recursive: true, force: true });
-    }),
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => fs.rm(directory, { recursive: true, force: true })),
   );
 });
 
@@ -183,21 +193,7 @@ describe("Pi session catalog", () => {
       readLocalPiTranscriptPage({ threadId: "pi-session", cursor: 123 }),
     ).rejects.toThrow("cursor is invalid");
 
-    let provider: TestSessionCatalogProvider | undefined;
-    registerPiSessionCatalog({
-      pluginConfig: {},
-      runtime: {
-        config: { current: () => ({}) },
-        nodes: { list: vi.fn().mockResolvedValue({ nodes: [] }) },
-      },
-      registerSessionCatalog: (
-        value: Parameters<OpenClawPluginApi["registerSessionCatalog"]>[0],
-      ) => {
-        provider = bindTestCatalogOwner(value);
-      },
-      registerNodeHostCommand: vi.fn(),
-      registerNodeInvokePolicy: vi.fn(),
-    } as unknown as OpenClawPluginApi);
+    const { provider } = captureCatalog();
     await expect(
       provider!.read({
         allowProcessHomeFallback: false,
@@ -240,51 +236,23 @@ describe("Pi session catalog", () => {
   it("reads legacy linear sessions and visible extended messages", async () => {
     const directory = await createPiStore();
     const entries = [
-      {
-        type: "session",
-        version: 1,
-        id: "pi-session",
-        timestamp: "2026-07-13T10:00:00Z",
-        cwd: "/workspace",
-      },
-      {
-        type: "message",
-        timestamp: "2026-07-13T10:00:01Z",
-        message: { role: "user", content: "legacy hello" },
-      },
-      {
-        type: "message",
-        timestamp: "2026-07-13T10:00:02Z",
-        message: {
-          role: "user",
-          content: [{ type: "image", mimeType: "image/png", data: "cG5n" }],
-        },
-      },
-      {
-        type: "message",
-        timestamp: "2026-07-13T10:00:03Z",
-        message: { role: "bashExecution", command: "pwd", output: "/workspace", exitCode: 0 },
-      },
-      {
-        type: "message",
-        timestamp: "2026-07-13T10:00:04Z",
-        message: { role: "custom", customType: "review", content: "visible note", display: true },
-      },
-      {
-        type: "message",
-        timestamp: "2026-07-13T10:00:05Z",
-        message: {
+      piSessionHeader({ version: 1, timestamp: "2026-07-13T10:00:00Z" }),
+      ...[
+        { role: "user", content: "legacy hello" },
+        { role: "user", content: [{ type: "image", mimeType: "image/png", data: "cG5n" }] },
+        { role: "bashExecution", command: "pwd", output: "/workspace", exitCode: 0 },
+        { role: "custom", customType: "review", content: "visible note", display: true },
+        {
           role: "hookMessage",
           customType: "legacy-review",
           content: "legacy visible note",
           display: true,
         },
-      },
+      ].map((message, index) =>
+        piMessage(message, { timestamp: `2026-07-13T10:00:0${index + 1}Z` }),
+      ),
     ];
-    await fs.writeFile(
-      path.join(directory, "session.jsonl"),
-      `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
-    );
+    await fs.writeFile(path.join(directory, "session.jsonl"), piJsonl(entries));
 
     const transcript = await readLocalPiTranscriptPage({ threadId: "pi-session", limit: 20 });
     expect(transcript.items.map((item) => [item.type, item.text])).toEqual([
@@ -302,13 +270,7 @@ describe("Pi session catalog", () => {
     const file = path.join(directory, "session.jsonl");
     await fs.writeFile(
       file,
-      JSON.stringify({
-        type: "session",
-        version: 3,
-        id: "pi-session",
-        timestamp: "2026-07-13T10:00:00Z",
-        cwd: "/workspace",
-      }),
+      JSON.stringify(piSessionHeader({ timestamp: "2026-07-13T10:00:00Z" })),
     );
     const expireCandidates = usePiCandidateCacheClock();
     expect((await listLocalPiSessionPage({ limit: 20 })).sessions[0]?.threadId).toBe("pi-session");
@@ -338,13 +300,7 @@ describe("Pi session catalog", () => {
       Array.from({ length: 105 }, async (_, index) => {
         const file = path.join(directory, `session-${String(index)}.jsonl`);
         const entries = [
-          {
-            type: "session",
-            version: 3,
-            id: `pi-session-${String(index)}`,
-            timestamp: "2026-07-13T10:00:00Z",
-            cwd: "/workspace",
-          },
+          piSessionHeader({ id: `pi-session-${String(index)}`, timestamp: "2026-07-13T10:00:00Z" }),
           {
             type: "session_info",
             id: `info-${String(index)}`,
@@ -353,7 +309,7 @@ describe("Pi session catalog", () => {
             name: `Pi history ${String(index)}`,
           },
         ];
-        await fs.writeFile(file, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+        await fs.writeFile(file, piJsonl(entries));
         await fs.utimes(file, baseTime + index, baseTime + index);
       }),
     );
@@ -387,13 +343,7 @@ describe("Pi session catalog", () => {
     const file = path.join(sessionDirectory, "large.jsonl");
     await fs.writeFile(
       file,
-      `${JSON.stringify({
-        type: "session",
-        version: 3,
-        id: "pi-large-session",
-        timestamp: "2026-07-13T10:00:00Z",
-        cwd: "/workspace",
-      })}\n`,
+      piJsonl([piSessionHeader({ id: "pi-large-session", timestamp: "2026-07-13T10:00:00Z" })]),
     );
     const middle = await fs.open(file, "r+");
     await middle.truncate(2 * 1024 * 1024);
@@ -489,24 +439,7 @@ describe("Pi session catalog", () => {
     await createPiStore();
     const binDirectory = await installFakePi();
     const executable = path.join(binDirectory, process.platform === "win32" ? "pi.cmd" : "pi");
-    let provider: TestSessionCatalogProvider | undefined;
-    const commands: Parameters<OpenClawPluginApi["registerNodeHostCommand"]>[0][] = [];
-    registerPiSessionCatalog({
-      pluginConfig: {},
-      runtime: {
-        config: { current: () => ({}) },
-        nodes: { list: vi.fn().mockResolvedValue({ nodes: [] }) },
-      },
-      registerSessionCatalog: (
-        value: Parameters<OpenClawPluginApi["registerSessionCatalog"]>[0],
-      ) => {
-        provider = bindTestCatalogOwner(value);
-      },
-      registerNodeHostCommand: (
-        command: Parameters<OpenClawPluginApi["registerNodeHostCommand"]>[0],
-      ) => commands.push(command),
-      registerNodeInvokePolicy: vi.fn(),
-    } as unknown as OpenClawPluginApi);
+    const { provider, commands } = captureCatalog();
 
     await expect(provider!.list({ hostIds: ["gateway"] })).resolves.toEqual([
       expect.objectContaining({
@@ -602,7 +535,6 @@ describe("Pi session catalog", () => {
   });
 
   it("opens paired-node Pi sessions only through the advertised terminal command", async () => {
-    let provider: TestSessionCatalogProvider | undefined;
     const page = {
       payloadJSON: JSON.stringify({
         sessions: [
@@ -627,22 +559,7 @@ describe("Pi session catalog", () => {
     ];
     const runtimeListNodes = vi.fn().mockResolvedValue({ nodes });
     const requestListNodes = vi.fn().mockResolvedValue({ nodes });
-    registerPiSessionCatalog({
-      pluginConfig: {},
-      runtime: {
-        nodes: {
-          list: runtimeListNodes,
-          invoke,
-        },
-      },
-      registerSessionCatalog: (
-        value: Parameters<OpenClawPluginApi["registerSessionCatalog"]>[0],
-      ) => {
-        provider = bindTestCatalogOwner(value);
-      },
-      registerNodeHostCommand: vi.fn(),
-      registerNodeInvokePolicy: vi.fn(),
-    } as unknown as OpenClawPluginApi);
+    const { provider } = captureCatalog({ nodes: { list: runtimeListNodes, invoke } });
 
     await expect(
       provider!.list({
