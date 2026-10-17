@@ -1,9 +1,7 @@
-import path from "node:path";
-import type { BrowserContextOptions, Locator, Page } from "playwright";
+import type { BrowserContextOptions, Locator } from "playwright";
 import { expect, it } from "vitest";
 import { projectChatDisplayMessages } from "../../../src/gateway/chat-display-projection.js";
 import { createNestedToolActivity } from "../../../src/sessions/nested-tool-activity.js";
-import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
@@ -26,25 +24,6 @@ function transcriptMessage(
     timestamp: Date.UTC(2026, 7, 19, 12, 0, seq),
     __openclaw: role === "user" ? { id, idempotencyKey: runId, seq } : { id, runId, seq },
   };
-}
-
-function artifactDirectory(name = "chat-agent-run-transcript") {
-  const root = process.env.OPENCLAW_CONTROL_UI_E2E_ARTIFACT_DIR?.trim();
-  return root ? createControlUiE2eArtifactDir(name, root) : undefined;
-}
-
-async function capture(
-  target: Page | Locator,
-  directory: string | undefined,
-  name: string,
-  fullPage = false,
-) {
-  if (directory) {
-    await target.screenshot({
-      path: path.join(directory, `${name}.png`),
-      ...(fullPage ? { fullPage } : {}),
-    });
-  }
 }
 
 async function expectCount(target: Locator, count: number) {
@@ -90,23 +69,18 @@ async function openTranscript(
 suite.define(() => {
   it("collapses nested tool activity after commentary across history reload", async () => {
     const runId = "nested-run";
-    const artifactDir = artifactDirectory("nested-tool-collapse");
+    const commentary = "I’ll inspect the workspace first.";
     const calls = ["read", "exec", "sessions_history"].flatMap((name, index) => {
       const seq = 3 + index * 2;
       const parentId = `parent-${index}`;
       const childId = `child-${index}`;
       const idempotencyKey = `attempt:${childId}`;
+      const parentContent = [
+        { type: "toolCall", id: parentId, name: "exec", arguments: {} },
+        { type: "toolResult", toolCallId: parentId, name: "exec", content: "Done" },
+      ];
       return [
-        transcriptMessage(
-          "assistant",
-          [
-            { type: "toolCall", id: parentId, name: "exec", arguments: {} },
-            { type: "toolResult", toolCallId: parentId, name: "exec", content: "Done" },
-          ],
-          runId,
-          parentId,
-          seq,
-        ),
+        transcriptMessage("assistant", parentContent, runId, parentId, seq),
         {
           ...createNestedToolActivity({
             runId,
@@ -131,20 +105,13 @@ suite.define(() => {
       {
         historyMessages: [
           transcriptMessage("user", "Inspect the workspace.", `${runId}:user`, "user", 1),
-          transcriptMessage(
-            "assistant",
-            "I’ll inspect the workspace first.",
-            runId,
-            "commentary",
-            2,
-          ),
+          transcriptMessage("assistant", commentary, runId, "commentary", 2),
           ...projectChatDisplayMessages(calls),
         ],
       },
       { colorScheme: "light" },
     );
-    await page.getByText("I’ll inspect the workspace first.", { exact: true }).waitFor();
-    await capture(page, artifactDir, "collapsed");
+    await page.getByText(commentary, { exact: true }).waitFor();
     const activity = page.locator(".chat-activity-group:not(.chat-work-group)");
     await expect.poll(() => activity.count()).toBe(1);
     const summary = activity.locator(".chat-activity-group__summary");
@@ -153,11 +120,10 @@ suite.define(() => {
     await summary.click();
     expect(await summary.getAttribute("aria-expanded")).toBe("true");
     expect(await activity.locator(".chat-activity-group__body").isVisible()).toBe(true);
-    await capture(page, artifactDir, "expanded");
     await page.reload();
     await expect.poll(() => activity.count()).toBe(1);
     expect(await summary.getAttribute("aria-expanded")).toBe("false");
-    await expectCount(page.getByText("I’ll inspect the workspace first.", { exact: true }), 1);
+    await expectCount(page.getByText(commentary, { exact: true }), 1);
   });
 
   it("keeps restart-recovered live tool batches in one transcript row", async () => {
@@ -201,11 +167,6 @@ suite.define(() => {
 
     expect(rowKeys[0]).toMatch(/^agent-run:/u);
     expect(rowKeys).toEqual([rowKeys[0], rowKeys[0], rowKeys[0]]);
-    await capture(
-      page.locator(".chat-thread-inner"),
-      artifactDirectory(),
-      "restart-recovery-run-frame",
-    );
   });
 
   it.each([
@@ -221,6 +182,7 @@ suite.define(() => {
       const toolOnlyRunId = "run-tool-only";
       const commentaryToolRunId = "run-commentary-tool-only";
       const firstNarrationText = "I’ll create the launch card and check the existing style first.";
+      const caption = "Caption ready for the second run.";
       const entryCounts = { assistant: 0, user: 0, call: 0, result: 0 };
       const message = (role: "assistant" | "user", text: string, seq: number, run = firstRunId) =>
         transcriptMessage(
@@ -256,7 +218,7 @@ suite.define(() => {
             result("Rendered launch-card.svg", 7, "call-render", "exec"),
             message("assistant", "The launch card is ready: MEDIA:./launch-card.svg", 8),
             message("user", "Now write the caption.", 9, secondRunId),
-            message("assistant", "Caption ready for the second run.", 10, secondRunId),
+            message("assistant", caption, 10, secondRunId),
             message("user", "Check without replying.", 11, toolOnlyRunId),
             result("Tool-only result", 12, "call-tool-only", "read", toolOnlyRunId),
             message("user", "Inspect and stop after the tool.", 13, commentaryToolRunId),
@@ -273,20 +235,12 @@ suite.define(() => {
         { colorScheme: theme, hasTouch: isMobile, isMobile, viewport: { height, width } },
       );
       const transcript = page.locator(".chat-thread-inner");
-      await transcript.getByText("Caption ready for the second run.", { exact: true }).waitFor();
-      const artifactDir = artifactDirectory();
-      if (artifactDir) {
-        const firstNarration = transcript.getByText(firstNarrationText, { exact: true });
-        await firstNarration.scrollIntoViewIfNeeded();
-        await firstNarration.click();
-        await capture(transcript, artifactDir, `transcript-${viewport}`);
-      }
+      await transcript.getByText(caption, { exact: true }).waitFor();
 
       const assistantGroups = page.locator(".chat-group.assistant");
       await expectCount(assistantGroups, 4);
       const firstRun = assistantGroups.filter({ hasText: firstNarrationText });
       await expectCount(firstRun, 1);
-      await capture(firstRun, artifactDir, `agent-run-transcript-${viewport}`);
       await expectCount(firstRun.locator(".chat-sender-name"), 1);
       await expectCount(firstRun.locator(".chat-group-footer-actions"), 1);
       await expectCount(firstRun.locator(".chat-message-actions-row"), 0);
@@ -311,10 +265,7 @@ suite.define(() => {
           "The launch card is ready",
         ].map((text) => expect.stringContaining(text)),
       );
-      await expectCount(
-        firstRun.getByText("Caption ready for the second run.", { exact: true }),
-        0,
-      );
+      await expectCount(firstRun.getByText(caption, { exact: true }), 0);
       const toolOnlyRun = page.locator(
         `.chat-group.assistant[data-chat-row-key*="${toolOnlyRunId}"]`,
       );
@@ -416,27 +367,13 @@ suite.define(() => {
 
     await expect.poll(() => page.getByText(wrongSessionText, { exact: true }).count()).toBe(0);
     await expect.poll(() => page.getByText(selectedText, { exact: true }).count()).toBe(1);
-    const overlappingRows = await page.locator(".chat-virtual-row").evaluateAll((rows) => {
+    const hasOverlap = await page.locator(".chat-virtual-row").evaluateAll((rows) => {
       const bounds = rows
-        .map((row) => {
-          const rect = row.getBoundingClientRect();
-          return {
-            bottom: rect.bottom,
-            key: row.getAttribute("data-virtual-row-key"),
-            top: rect.top,
-          };
-        })
+        .map((row) => row.getBoundingClientRect())
         .filter((rect) => rect.bottom > rect.top)
         .toSorted((left, right) => left.top - right.top);
-      return bounds.slice(1).flatMap((current, index) => {
-        const previous = bounds[index];
-        return previous && current.top < previous.bottom - 0.5
-          ? [{ current: current.key, previous: previous.key }]
-          : [];
-      });
+      return bounds.slice(1).some((current, index) => current.top < bounds[index].bottom - 0.5);
     });
-    expect(overlappingRows).toEqual([]);
-
-    await capture(page, artifactDirectory(), "cross-session-run-isolation", true);
+    expect(hasOverlap).toBe(false);
   });
 });

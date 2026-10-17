@@ -1,7 +1,4 @@
-import { writeFile } from "node:fs/promises";
-import path from "node:path";
 import { expect, it } from "vitest";
-import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { openChatSidePanelType } from "./chat-side-panel.test-support.ts";
 import {
@@ -15,7 +12,6 @@ const suite = createControlUiE2eSuite({
   unavailableMessage: (executablePath) => `Playwright Chromium is unavailable at ${executablePath}`,
 });
 
-const captureUiProofEnabled = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
 type ScreenshotProof = {
   cancelCount: number;
   cancelResolvedCount: number;
@@ -132,27 +128,6 @@ suite.define(() => {
         authorization: "Bearer e2e-device-token",
         source: "/proof/missing.png",
       });
-
-      if (captureUiProofEnabled) {
-        const proofDir = createControlUiE2eArtifactDir("browser-screenshot-body-cancel");
-        await page.screenshot({
-          animations: "disabled",
-          path: path.join(proofDir, "failed-screenshot.png"),
-        });
-        const proof = {
-          error: (await alert.textContent())?.trim() ?? "",
-          mediaRequest,
-          requests,
-          stream: await readStream(),
-        };
-        await writeFile(path.join(proofDir, "proof.json"), `${JSON.stringify(proof, null, 2)}\n`);
-        console.log(
-          `CONTROL_UI_BROWSER_SCREENSHOT_PROOF=${JSON.stringify({
-            ...proof,
-            requests: requests.map((request) => request.params),
-          })}`,
-        );
-      }
     });
   });
 });

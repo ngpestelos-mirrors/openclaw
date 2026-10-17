@@ -1,20 +1,13 @@
-import { writeFile } from "node:fs/promises";
-import path from "node:path";
-import type { Locator, Page } from "playwright";
+import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { buildChannelWizardMocks } from "../../../scripts/control-ui-mock-channels.ts";
-import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
-import {
-  takeControlUiElementScreenshot,
-  waitForControlUiProofSurface,
-} from "../test-helpers/control-ui-e2e-screenshot.ts";
 import {
   installMockGateway,
   type MockGatewayControls,
   waitForConfirmModal,
 } from "../test-helpers/control-ui-e2e.ts";
 import { selectPickerValue } from "../test-helpers/select-picker-e2e.ts";
-import { configProof, configSnapshot } from "./config-composer-fixtures.test-support.ts";
+import { configSchema, configSnapshot } from "./config-composer-fixtures.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({
@@ -25,7 +18,6 @@ const suite = createControlUiE2eSuite({
 
 const QR_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlY9Z8AAAAASUVORK5CYII=";
-const proof = configProof("channels-save-failure");
 const pairing = {
   accounts: [],
   requests: [],
@@ -75,23 +67,17 @@ function withChannels(
     await run(page, gateway);
   });
 }
-async function openWhatsApp(page: Page) {
+async function openChannel(page: Page, name = "WhatsApp") {
   await page
-    .locator("button.channels-item, button.channels-item__detail", { hasText: "WhatsApp" })
+    .locator("button.channels-item, button.channels-item__detail", { hasText: name })
     .first()
     .click();
   const detail = page.locator(".channels-detail");
   await detail.waitFor();
   return detail;
 }
-async function captureDetail(page: Page, detail: Locator, target: Locator, name: string) {
-  if (proof.enabled) {
-    await writeFile(
-      path.join(proof.directory(), name),
-      await takeControlUiElementScreenshot(page, detail, [target]),
-    );
-  }
-}
+const requestCount = async (gateway: MockGatewayControls, method: string) =>
+  (await gateway.getRequests(method)).length;
 
 suite.define(() => {
   it("completes direct setup as the selected channel", async () => {
@@ -131,36 +117,22 @@ suite.define(() => {
     await withChannels(
       {
         "config.get": configSnapshot(config, "channel-config-1"),
-        "config.schema": {
-          generatedAt: "2026-08-25T00:00:00.000Z",
-          version: "e2e",
-          uiHints: { "channels.whatsapp.enabled": { advanced: false } },
-          schema: objectSchema({
+        "config.schema": configSchema(
+          objectSchema({
             channels: objectSchema({
               whatsapp: objectSchema({ enabled: { type: "boolean", title: "Enabled" } }),
             }),
           }),
-        },
+          { "channels.whatsapp.enabled": { advanced: false } },
+        ),
       },
       async (page, gateway) => {
-        const detail = await openWhatsApp(page);
-        await detail.getByRole("switch", { name: "Enabled" }).waitFor();
-        if (proof.enabled) {
-          // The native dialog owns the scale/fade around this slotted detail panel.
-          await waitForControlUiProofSurface(
-            page.locator("openclaw-modal-dialog").filter({ has: detail }).locator("dialog"),
-            [detail.getByRole("switch", { name: "Enabled" })],
-          );
-        }
-        await captureDetail(
-          page,
-          detail,
-          detail.getByRole("switch", { name: "Enabled" }),
-          "00-editor-before.png",
-        );
+        const detail = await openChannel(page);
+        const enabled = detail.getByRole("switch", { name: "Enabled" });
+        await enabled.waitFor();
 
         await gateway.deferNext("config.set");
-        await detail.getByRole("switch", { name: "Enabled" }).click();
+        await enabled.click();
         await gateway.waitForRequest("config.set");
         await gateway.rejectDeferred("config.set", {
           code: "INVALID_REQUEST",
@@ -171,8 +143,8 @@ suite.define(() => {
 
         const save = detail.getByRole("button", { name: "Save", exact: true });
         await expect.poll(() => save.isEnabled()).toBe(true);
-        const writesBefore = (await gateway.getRequests("config.set")).length;
-        const readsBefore = (await gateway.getRequests("config.get")).length;
+        const writesBefore = await requestCount(gateway, "config.set");
+        const readsBefore = await requestCount(gateway, "config.get");
         await gateway.deferNext("config.set");
         await save.click();
         const request = await gateway.waitForRequest("config.set", { after: writesBefore });
@@ -189,16 +161,12 @@ suite.define(() => {
         expect(message).not.toContain("sk-1234567890abcdef");
         expect(await alert.locator("img").count()).toBe(0);
         expect(await save.isEnabled()).toBe(true);
-        expect(await detail.getByRole("switch", { name: "Enabled" }).isChecked()).toBe(false);
+        expect(await enabled.isChecked()).toBe(false);
         expect(await gateway.getRequests("config.get")).toHaveLength(readsBefore);
-        await captureDetail(page, detail, alert, "01-visible-error.png");
       },
       {
         ...contextOptions,
         viewport: { height: 900, width: 1280 },
-        ...(proof.enabled
-          ? { recordVideo: { dir: proof.directory(), size: { height: 900, width: 1280 } } }
-          : {}),
       },
     );
   });
@@ -209,7 +177,7 @@ suite.define(() => {
         "channels.status": whatsappStatus({ channels: { whatsapp: linked } }),
       },
       async (page, gateway) => {
-        const detail = await openWhatsApp(page);
+        const detail = await openChannel(page);
         const relink = detail.getByRole("button", { name: "Relink" });
         await relink.waitFor();
         const statusReadsBefore = (await gateway.getRequests("channels.status")).length;
@@ -223,11 +191,6 @@ suite.define(() => {
           message: "WhatsApp login rejected",
         });
 
-        await proof.capture(
-          page,
-          `whatsapp-mutation-${process.env.OPENCLAW_UI_PROOF_LABEL ?? "rejected"}.png`,
-          true,
-        );
         await expect.poll(() => detail.textContent()).toContain("WhatsApp login rejected");
         await expect.poll(() => relink.isEnabled()).toBe(true);
         expect(await gateway.getRequests("channels.status")).toHaveLength(statusReadsBefore);
@@ -252,29 +215,24 @@ suite.define(() => {
         },
       },
       async (page, gateway) => {
-        const detail = await openWhatsApp(page);
+        const detail = await openChannel(page);
+        const logout = detail.getByRole("button", { name: "Logout" });
 
         await detail.getByRole("button", { name: "Relink" }).click();
         const qr = detail.getByRole("img", { name: "WhatsApp QR" });
         await qr.waitFor();
         await expect(qr.getAttribute("src")).resolves.toBe(QR_DATA_URL);
 
-        await detail.getByRole("button", { name: "Logout" }).click();
+        await logout.click();
         await expect.poll(async () => gateway.getRequests("channels.logout")).toHaveLength(0);
         const firstConfirm = await waitForConfirmModal(page);
-        await expect(firstConfirm.textContent()).resolves.toContain(
-          "Log out of WhatsApp account default?",
-        );
-        await expect(firstConfirm.textContent()).resolves.toContain(
+        const confirmation = await firstConfirm.textContent();
+        expect(confirmation).toContain("Log out of WhatsApp account default?");
+        expect(confirmation).toContain(
           "Logging out of account default stops its listener and deletes its saved credentials.",
         );
         await firstConfirm.getByRole("button", { name: "Cancel" }).focus();
         await page.keyboard.press("Escape");
-        await proof.capture(
-          page,
-          `modal-escape-${process.env.OPENCLAW_UI_PROOF_LABEL ?? "dismissed"}.png`,
-          true,
-        );
         await expect.poll(() => new URL(page.url()).pathname).toBe("/settings/channels");
         await expect.poll(() => page.locator("openclaw-modal-dialog").count()).toBe(1);
         await expect.poll(async () => gateway.getRequests("channels.logout")).toHaveLength(0);
@@ -288,7 +246,7 @@ suite.define(() => {
           )
           .toContain("Yes");
 
-        await detail.getByRole("button", { name: "Logout" }).click();
+        await logout.click();
         const secondConfirm = await waitForConfirmModal(page);
         await secondConfirm.getByRole("button", { name: "Logout" }).click();
         await expect
@@ -326,7 +284,7 @@ suite.define(() => {
         },
       },
       async (page, gateway) => {
-        const detail = await openWhatsApp(page);
+        const detail = await openChannel(page);
         await detail.getByRole("button", { name: "Logout" }).click();
         const confirm = await waitForConfirmModal(page);
         await expect(confirm.textContent()).resolves.toContain("work");
@@ -386,10 +344,10 @@ suite.define(() => {
           ...step("account", "select", {
             message: "Choose Telegram account",
             initialValue: "personal",
-            options: ["personal", "work"].map((value) => ({
-              value,
-              label: value === "work" ? "Work bot" : "Personal bot",
-            })),
+            options: [
+              { value: "personal", label: "Personal bot" },
+              { value: "work", label: "Work bot" },
+            ],
           }),
         },
         "wizard.next": {
@@ -397,10 +355,10 @@ suite.define(() => {
             step("token", "text", { message: "Telegram bot token", sensitive: true }),
             step("features", "multiselect", {
               initialValue: ["alpha"],
-              options: ["alpha", "beta"].map((value) => ({
-                value,
-                label: value === "alpha" ? "Alpha" : "Beta",
-              })),
+              options: [
+                { value: "alpha", label: "Alpha" },
+                { value: "beta", label: "Beta" },
+              ],
             }),
             step("confirm", "confirm", { message: "Apply Telegram settings?" }),
             step("progress", "progress", { executor: "gateway", message: "Finish preparation" }),
@@ -415,11 +373,7 @@ suite.define(() => {
           telegram: ["@alpha_bot", "@work_bot", "2"],
         };
         for (const [channelId, label] of channelEntries) {
-          await page
-            .locator("button.channels-item, button.channels-item__detail", { hasText: label })
-            .first()
-            .click();
-          const detail = page.locator(".channels-detail");
+          const detail = await openChannel(page, label);
           await expect
             .poll(() => detail.locator("h2.settings-section__heading").textContent())
             .toContain(label);
@@ -445,12 +399,6 @@ suite.define(() => {
         await expect.poll(() => busyButton.getAttribute("disabled")).not.toBeNull();
         await expect.poll(() => busyButton.locator(".btn__label").textContent()).toBe("Continue");
         await expect.poll(() => busyButton.locator(".btn__spinner").count()).toBe(1);
-        if (proof.enabled) {
-          const wizardUiProofArtifactDir = createControlUiE2eArtifactDir(
-            "channel-wizard-continue-spinner",
-          );
-          await wizard.screenshot({ path: path.join(wizardUiProofArtifactDir, "after.png") });
-        }
         await expect
           .poll(() => wizard.locator(".channels-wizard__spinner", { hasText: "Working…" }).count())
           .toBe(0);
