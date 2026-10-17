@@ -95,6 +95,7 @@ it.each([
   "owner-drift",
   "diagnostic-failure",
 ] as const)("sequences a root roster and nested plugin include (%s)", async (scenario) => {
+  const rotatesEnv = scenario === "environment-rotation";
   const completed = ["standalone", "update", "environment-rotation"].includes(scenario);
   const { prepareDoctorContext } = await import("../../doctor-config-flow.test-support.js");
   const { runWriteConfigHealth } =
@@ -120,10 +121,7 @@ it.each([
         ...cfg,
         gateway: {
           mode: "local",
-          auth:
-            scenario === "environment-rotation"
-              ? { mode: "token", token: "${ROOT_VALUE}" }
-              : undefined,
+          auth: rotatesEnv ? { mode: "token", token: "${ROOT_VALUE}" } : undefined,
         },
         plugins: { $include: "./plugin-parent.json" },
       });
@@ -166,10 +164,9 @@ it.each([
       if (scenario === "diagnostic-failure") {
         await expect(write()).rejects.toThrow("fixture post-roster diagnostic failure");
       } else {
-        const success =
-          scenario === "environment-rotation"
-            ? await withEnvAsync({ ROOT_VALUE: "synthetic-write" }, write)
-            : await write();
+        const success = rotatesEnv
+          ? await withEnvAsync({ ROOT_VALUE: "synthetic-write" }, write)
+          : await write();
         expect(success).toBe(completed);
       }
       expect(firstCommit).toBeDefined();
@@ -178,9 +175,9 @@ it.each([
       expect(saved.plugins).toEqual({ $include: "./plugin-parent.json" });
       await expectFile(parent, parentRaw);
       await expectFile(state.configPath + (completed ? ".bak.1" : ".bak"), rootRaw);
+      expect(saved.meta?.migrations?.webhookListeners).toBe(completed ? true : undefined);
       if (completed) {
-        expect(saved.meta.migrations.webhookListeners).toBe(true);
-        if (scenario === "environment-rotation") {
+        if (rotatesEnv) {
           expect(saved.gateway.auth.token).toBe("${ROOT_VALUE}");
         }
         expect(await readJson(leaf)).toEqual({
@@ -195,7 +192,6 @@ it.each([
           (await configModule.readConfigFileSnapshot()).hash,
         );
       } else {
-        expect(saved.meta?.migrations?.webhookListeners).toBeUndefined();
         expect(ctx.configResultWriteCommitted).not.toBe(true);
         expect(ctx.configResult.confirmedConfigSource?.hash).toBe(firstCommit?.persistedHash);
         await expectFile(leaf, leafRaw + (scenario === "include-drift" ? "\n" : ""));
