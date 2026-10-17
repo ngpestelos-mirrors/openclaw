@@ -4,42 +4,38 @@ import type { ProviderResolveModelRoutesContext } from "../plugin-sdk/provider-m
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import type { AgentHarnessHostCapabilities } from "./harness/host-capability-types.js";
 import type { AgentHarness } from "./harness/types.js";
-import type { PreparedModelRuntimeInput } from "./prepared-model-runtime.js";
-type RuntimeAliasParams = Parameters<
-  typeof import("./model-runtime-aliases.js").resolveCliRuntimeExecutionProvider
->[0];
-export const streamSimpleMock = vi.fn();
-export const parseSessionEntriesMock = vi.fn();
-export const migrateSessionEntriesMock = vi.fn();
-export const buildSessionContextMock = vi.fn();
-export const ensureOpenClawModelsJsonMock = vi.fn();
-export const loadPreparedModelRuntimeSnapshotMock = vi.fn();
-export const snapshotResources: { acquire?: () => { release: () => Promise<void> } } = {};
-export const discoverAuthStorageMock = vi.fn();
-export const discoverModelsMock = vi.fn();
-export const getModelRegistryRuntimeMock = vi.fn();
-export const resolveModelWithRegistryMock = vi.fn();
-export const ensureAuthProfileStoreMock = vi.fn();
-export const ensureAuthProfileStoreWithoutExternalProfilesMock = vi.fn();
-export const resolveModelAsyncMock = vi.fn();
-export const getApiKeyForModelMock = vi.fn();
-export const requireApiKeyMock = vi.fn();
-export const resolveSessionAuthSelectionMock = vi.fn();
-export const getActiveEmbeddedRunSnapshotMock = vi.fn();
-export const resolveSessionAgentIdMock = vi.fn();
-export const resolveSessionAgentIdsMock = vi.fn();
-export const resolveAgentWorkspaceDirMock = vi.fn();
-export const listAgentEntriesMock = vi.fn();
-export const prepareProviderRuntimeAuthMock = vi.fn();
-export const registerProviderStreamForModelMock = vi.fn();
-export const resolveEmbeddedAgentStreamMock = vi.fn();
-export const prepareCliRunContextMock = vi.fn();
-export const executePreparedCliRunMock = vi.fn();
-export const diagDebugMock = vi.fn();
-export const ensureSelectedAgentHarnessPluginMock = vi.fn();
-export const createAgentHarnessHostCapabilitiesMock = vi.fn();
-export const closeAgentHarnessHostCapabilitiesMock = vi.fn();
-export const agentHarnessHostCapabilitiesMock: AgentHarnessHostCapabilities = Object.freeze({
+const streamSimpleMock = vi.fn();
+const parseSessionEntriesMock = vi.fn();
+const migrateSessionEntriesMock = vi.fn();
+const buildSessionContextMock = vi.fn();
+const ensureOpenClawModelsJsonMock = vi.fn();
+const loadPreparedModelRuntimeSnapshotMock = vi.fn();
+const snapshotResources: { acquire?: () => { release: () => Promise<void> } } = {};
+const discoverAuthStorageMock = vi.fn();
+const discoverModelsMock = vi.fn();
+const getModelRegistryRuntimeMock = vi.fn();
+const resolveModelWithRegistryMock = vi.fn();
+const ensureAuthProfileStoreMock = vi.fn();
+const ensureAuthProfileStoreWithoutExternalProfilesMock = vi.fn();
+const resolveModelAsyncMock = vi.fn();
+const getApiKeyForModelMock = vi.fn();
+const requireApiKeyMock = vi.fn();
+const resolveSessionAuthSelectionMock = vi.fn();
+const getActiveEmbeddedRunSnapshotMock = vi.fn();
+const resolveSessionAgentIdMock = vi.fn();
+const resolveSessionAgentIdsMock = vi.fn();
+const resolveAgentWorkspaceDirMock = vi.fn();
+const listAgentEntriesMock = vi.fn();
+const prepareProviderRuntimeAuthMock = vi.fn();
+const registerProviderStreamForModelMock = vi.fn();
+const resolveEmbeddedAgentStreamMock = vi.fn();
+const prepareCliRunContextMock = vi.fn();
+const executePreparedCliRunMock = vi.fn();
+const diagDebugMock = vi.fn();
+const ensureSelectedAgentHarnessPluginMock = vi.fn();
+const createAgentHarnessHostCapabilitiesMock = vi.fn();
+const closeAgentHarnessHostCapabilitiesMock = vi.fn();
+const agentHarnessHostCapabilitiesMock: AgentHarnessHostCapabilities = Object.freeze({
   kind: "agent-harness-host-capability",
   version: 1,
   assertActive: vi.fn(),
@@ -48,18 +44,16 @@ export const agentHarnessHostCapabilitiesMock: AgentHarnessHostCapabilities = Ob
   requestApproval: vi.fn(),
   waitForApproval: vi.fn(),
 });
-export const listSessionEntriesCoreMock = vi.fn();
-export const loadSessionEntryMock = vi.fn();
-export const loadTranscriptEventsMock = vi.fn();
+const listSessionEntriesCoreMock = vi.fn();
+const loadSessionEntryMock = vi.fn();
+const loadTranscriptEventsMock = vi.fn();
 const builtInOpenClawHarnesses = new WeakSet<object>();
-export const shouldPreferExplicitConfigApiKeyAuthMock = vi.fn((..._args: unknown[]) => false);
-export const hasUsableCustomProviderApiKeyMock = vi.fn((..._args: unknown[]) => false);
-export const resolveProviderEntryApiKeyProfileReferenceMock = vi.fn(
-  (_params?: unknown): unknown => ({
-    kind: "none",
-  }),
-);
-export const preparedRuntimeSnapshotState = vi.hoisted(() => ({
+const shouldPreferExplicitConfigApiKeyAuthMock = vi.fn((..._args: unknown[]) => false);
+const hasUsableCustomProviderApiKeyMock = vi.fn((..._args: unknown[]) => false);
+const resolveProviderEntryApiKeyProfileReferenceMock = vi.fn((_params?: unknown): unknown => ({
+  kind: "none",
+}));
+const preparedRuntimeSnapshotState = vi.hoisted(() => ({
   snapshot: undefined as unknown,
   useSnapshotPluginRegistry: false,
 }));
@@ -94,16 +88,26 @@ vi.mock("./sessions/model-registry-runtime.js", () => ({
 }));
 
 vi.mock("./prepared-model-runtime.js", () => {
-  const loadSnapshot = async (params: PreparedModelRuntimeInput) => {
+  const loadSnapshot = async (params: {
+    agentId?: string;
+    agentDir: string;
+    config: unknown;
+    inheritedAuthDir?: string;
+    workspaceDir?: string;
+    allowGatewaySubagentBinding?: boolean;
+  }) => {
     loadPreparedModelRuntimeSnapshotMock(params);
     const workspaceOptions = params.workspaceDir ? { workspaceDir: params.workspaceDir } : {};
-    const configOptions = { config: params.config, ...workspaceOptions };
     await ensureOpenClawModelsJsonMock(params.config, params.agentDir, workspaceOptions);
     const authStorage = discoverAuthStorageMock(params.agentDir, {
-      ...configOptions,
+      config: params.config,
       ...(params.inheritedAuthDir ? { inheritedAuthDir: params.inheritedAuthDir } : {}),
+      ...workspaceOptions,
     });
-    const modelRegistry = discoverModelsMock(authStorage, params.agentDir, configOptions);
+    const modelRegistry = discoverModelsMock(authStorage, params.agentDir, {
+      config: params.config,
+      ...workspaceOptions,
+    });
     return {
       ...(preparedRuntimeSnapshotState.snapshot as object),
       ...(preparedRuntimeSnapshotState.useSnapshotPluginRegistry
@@ -162,21 +166,44 @@ vi.mock("./model-auth.js", () => ({
 vi.mock("./model-runtime-aliases.js", () => ({
   isCliRuntimeAliasForProvider: ({ runtime, provider }: { runtime?: string; provider?: string }) =>
     runtime === "claude-cli" && provider === "anthropic",
-  resolveCliRuntimeExecutionProvider: (params: RuntimeAliasParams) => {
-    const { provider, cfg, modelId, authProfileId } = params;
+  resolveCliRuntimeExecutionProvider: ({
+    provider,
+    cfg,
+    modelId,
+    authProfileId,
+  }: {
+    provider?: string;
+    cfg?: {
+      agents?: {
+        defaults?: {
+          models?: Record<string, { agentRuntime?: { id?: string } }>;
+        };
+      };
+      auth?: {
+        order?: Record<string, string[]>;
+        profiles?: Record<string, { provider?: string }>;
+      };
+    };
+    modelId?: string;
+    authProfileId?: string;
+  }) => {
     const key = provider && modelId ? `${provider}/${modelId}` : undefined;
     const runtime = key
       ? cfg?.agents?.defaults?.models?.[key]?.agentRuntime?.id?.trim()
       : undefined;
-    if (runtime && runtime !== "auto") {
-      return runtime === "claude-cli" ? runtime : undefined;
+    if ((!runtime || runtime === "auto") && authProfileId?.trim()) {
+      return cfg?.auth?.profiles?.[authProfileId]?.provider === "claude-cli"
+        ? "claude-cli"
+        : undefined;
     }
-    const profiles = authProfileId?.trim()
-      ? [authProfileId]
-      : (cfg?.auth?.order?.[provider ?? ""] ?? []);
-    return profiles.some((id) => cfg?.auth?.profiles?.[id]?.provider === "claude-cli")
-      ? "claude-cli"
-      : undefined;
+    if (!runtime || runtime === "auto") {
+      for (const profileId of cfg?.auth?.order?.[provider ?? ""] ?? []) {
+        if (cfg?.auth?.profiles?.[profileId]?.provider === "claude-cli") {
+          return "claude-cli";
+        }
+      }
+    }
+    return runtime === "claude-cli" ? runtime : undefined;
   },
 }));
 
@@ -209,15 +236,17 @@ vi.mock("./harness/builtin-openclaw.js", () => ({
   isBuiltInOpenClawAgentHarness: (harness: AgentHarness) => builtInOpenClawHarnesses.has(harness),
 }));
 
-vi.mock("./harness/host-capability.js", () => ({
-  createAgentHarnessHostCapabilities: (params: unknown) => {
-    createAgentHarnessHostCapabilitiesMock(params);
-    return {
-      capabilities: agentHarnessHostCapabilitiesMock,
-      close: closeAgentHarnessHostCapabilitiesMock,
-    };
-  },
-}));
+vi.mock("./harness/host-capability.js", () => {
+  return {
+    createAgentHarnessHostCapabilities: (params: unknown) => {
+      createAgentHarnessHostCapabilitiesMock(params);
+      return {
+        capabilities: agentHarnessHostCapabilitiesMock,
+        close: closeAgentHarnessHostCapabilitiesMock,
+      };
+    },
+  };
+});
 
 vi.mock("./embedded-agent-runner/runs.js", () => ({
   getActiveEmbeddedRunSnapshot: (...args: unknown[]) => getActiveEmbeddedRunSnapshotMock(...args),
@@ -237,12 +266,15 @@ vi.mock("../plugins/provider-runtime.js", () => ({
   prepareProviderRuntimeAuth: (...args: unknown[]) => prepareProviderRuntimeAuthMock(...args),
 }));
 
-// Keep plugin discovery out of BTW orchestration tests.
+// Provider ownership and public-surface loading have dedicated owner suites. BTW stubs those
+// boundaries so its orchestration tests do not rediscover every plugin.
 vi.mock("../plugins/providers.js", () => ({
   resolveProviderRefOwnership: () => ({ status: "unowned" as const }),
 }));
 
 vi.mock("../plugins/provider-policy-surface.js", () => ({
+  // Provider route policy has dedicated adapter and OpenAI owner suites. BTW needs only a
+  // deterministic route fixture so orchestration tests do not load plugin public surfaces.
   resolveDirectBundledProviderPolicySurface: (provider: string) => {
     if (provider.trim().toLowerCase() !== "openai") {
       return null;
@@ -257,18 +289,22 @@ vi.mock("../plugins/provider-policy-surface.js", () => ({
         return {
           kind: "routes" as const,
           defaultRuntimeId: requestTransportOverrides === "none" ? "codex" : "openclaw",
-          routes: (
-            [
-              ["openai-responses", "https://api.openai.com/v1", "api-key"],
-              ["openai-chatgpt-responses", "https://chatgpt.com/backend-api/codex", "subscription"],
-            ] as const
-          ).map(([api, baseUrl, authRequirement]) => ({
-            api,
-            baseUrl,
-            authRequirement,
-            requestTransportOverrides,
-            runtimePolicy: { compatibleIds },
-          })),
+          routes: [
+            {
+              api: "openai-responses" as const,
+              baseUrl: "https://api.openai.com/v1",
+              authRequirement: "api-key" as const,
+              requestTransportOverrides,
+              runtimePolicy: { compatibleIds },
+            },
+            {
+              api: "openai-chatgpt-responses" as const,
+              baseUrl: "https://chatgpt.com/backend-api/codex",
+              authRequirement: "subscription" as const,
+              requestTransportOverrides,
+              runtimePolicy: { compatibleIds },
+            },
+          ],
         };
       },
     };
@@ -307,3 +343,45 @@ vi.mock("../config/sessions/session-entry-read-runtime.js", async (importOrigina
   readSessionEntrySummariesInWorker: async (...args: unknown[]) =>
     listSessionEntriesCoreMock(...args),
 }));
+
+export {
+  streamSimpleMock,
+  parseSessionEntriesMock,
+  migrateSessionEntriesMock,
+  buildSessionContextMock,
+  ensureOpenClawModelsJsonMock,
+  loadPreparedModelRuntimeSnapshotMock,
+  snapshotResources,
+  discoverAuthStorageMock,
+  discoverModelsMock,
+  getModelRegistryRuntimeMock,
+  resolveModelWithRegistryMock,
+  ensureAuthProfileStoreMock,
+  ensureAuthProfileStoreWithoutExternalProfilesMock,
+  resolveModelAsyncMock,
+  getApiKeyForModelMock,
+  requireApiKeyMock,
+  resolveSessionAuthSelectionMock,
+  getActiveEmbeddedRunSnapshotMock,
+  resolveSessionAgentIdMock,
+  resolveSessionAgentIdsMock,
+  resolveAgentWorkspaceDirMock,
+  listAgentEntriesMock,
+  prepareProviderRuntimeAuthMock,
+  registerProviderStreamForModelMock,
+  resolveEmbeddedAgentStreamMock,
+  prepareCliRunContextMock,
+  executePreparedCliRunMock,
+  diagDebugMock,
+  ensureSelectedAgentHarnessPluginMock,
+  createAgentHarnessHostCapabilitiesMock,
+  closeAgentHarnessHostCapabilitiesMock,
+  agentHarnessHostCapabilitiesMock,
+  listSessionEntriesCoreMock,
+  loadSessionEntryMock,
+  loadTranscriptEventsMock,
+  shouldPreferExplicitConfigApiKeyAuthMock,
+  hasUsableCustomProviderApiKeyMock,
+  resolveProviderEntryApiKeyProfileReferenceMock,
+  preparedRuntimeSnapshotState,
+};

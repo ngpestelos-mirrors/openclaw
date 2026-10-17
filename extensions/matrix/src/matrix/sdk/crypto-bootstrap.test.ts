@@ -173,7 +173,9 @@ describe("MatrixCryptoBootstrapper", () => {
     const deps = createBootstrapperDeps();
     deps.getPassword = vi.fn<() => string | undefined>(() => undefined);
     const bootstrapCrossSigning = vi.fn<MatrixCryptoBootstrapApi["bootstrapCrossSigning"]>(
-      async ({ authUploadDeviceSigningKeys } = {}) => {
+      async ({
+        authUploadDeviceSigningKeys,
+      }: Parameters<MatrixCryptoBootstrapApi["bootstrapCrossSigning"]>[0] = {}) => {
         await authUploadDeviceSigningKeys?.(async (authData) => {
           if (authData === null) {
             throw new Error("need auth");

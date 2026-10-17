@@ -199,7 +199,7 @@ describe("resolveCliAuthEpoch", () => {
       skipLocalCredential: true,
     });
 
-    expectCliAuthEpoch(primary);
+    expectEpochs(primary);
     expect(primaryAfterRefresh).toBe(primary);
     expect(renamed).not.toBe(primary);
   });

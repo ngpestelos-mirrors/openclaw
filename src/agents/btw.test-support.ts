@@ -7,11 +7,50 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { createApiKeyCredential } from "./auth-profiles/credential-fixtures.test-support.js";
-import * as mocks from "./btw.mocks.test-support.js";
+import {
+  streamSimpleMock,
+  parseSessionEntriesMock,
+  migrateSessionEntriesMock,
+  buildSessionContextMock,
+  ensureOpenClawModelsJsonMock,
+  loadPreparedModelRuntimeSnapshotMock,
+  snapshotResources,
+  discoverAuthStorageMock,
+  discoverModelsMock,
+  getModelRegistryRuntimeMock,
+  resolveModelWithRegistryMock,
+  ensureAuthProfileStoreMock,
+  ensureAuthProfileStoreWithoutExternalProfilesMock,
+  resolveModelAsyncMock,
+  getApiKeyForModelMock,
+  requireApiKeyMock,
+  resolveSessionAuthSelectionMock,
+  getActiveEmbeddedRunSnapshotMock,
+  resolveSessionAgentIdMock,
+  resolveSessionAgentIdsMock,
+  resolveAgentWorkspaceDirMock,
+  listAgentEntriesMock,
+  prepareProviderRuntimeAuthMock,
+  registerProviderStreamForModelMock,
+  resolveEmbeddedAgentStreamMock,
+  prepareCliRunContextMock,
+  executePreparedCliRunMock,
+  diagDebugMock,
+  ensureSelectedAgentHarnessPluginMock,
+  createAgentHarnessHostCapabilitiesMock,
+  closeAgentHarnessHostCapabilitiesMock,
+  listSessionEntriesCoreMock,
+  loadSessionEntryMock,
+  loadTranscriptEventsMock,
+  shouldPreferExplicitConfigApiKeyAuthMock,
+  hasUsableCustomProviderApiKeyMock,
+  resolveProviderEntryApiKeyProfileReferenceMock,
+  preparedRuntimeSnapshotState,
+} from "./btw.mocks.test-support.js";
 import { guardModelFixtureWorkspace } from "./embedded-agent-runner/model.fixture.test-support.js";
 import { resetModelGenerationFixtureState } from "./embedded-agent-runner/model.generation-scope.test-support.js";
 import type { AgentHarness } from "./harness/types.js";
-export let state: OpenClawTestState;
+let state: OpenClawTestState;
 let workspaceGuard: ReturnType<typeof guardModelFixtureWorkspace>;
 beforeAll(async () => {
   state = await createOpenClawTestState({ label: "btw-model" });
@@ -35,12 +74,15 @@ const { runBtwSideQuestion } = await import("./btw.js");
 const { clearAgentHarnesses, registerAgentHarness } = await import("./harness/registry.js");
 type RunBtwSideQuestionParams = Parameters<typeof runBtwSideQuestion>[0];
 
-export const DEFAULT_AGENT_DIR = "/tmp/agent";
-export const DEFAULT_MODEL = "claude-sonnet-4-6";
-export const DEFAULT_PROVIDER = "anthropic";
-export const DEFAULT_SESSION_KEY = "agent:main:main";
-export const DEFAULT_QUESTION = "What changed?";
-export const MATH_ANSWER = "323";
+const DEFAULT_AGENT_DIR = "/tmp/agent";
+const DEFAULT_MODEL = "claude-sonnet-4-6";
+const DEFAULT_PROVIDER = "anthropic";
+const DEFAULT_REASONING_LEVEL = "off";
+const DEFAULT_SESSION_KEY = "agent:main:main";
+const DEFAULT_STORE_PATH = "/tmp/sessions.json";
+const DEFAULT_QUESTION = "What changed?";
+const MATH_QUESTION = "What is 17 * 19?";
+const MATH_ANSWER = "323";
 let defaultPluginMetadataSnapshot: ReturnType<typeof resolvePluginMetadataSnapshot> | undefined;
 
 const DEFAULT_USAGE = {
@@ -52,7 +94,9 @@ const DEFAULT_USAGE = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-export function makeAsyncEvents(events: unknown[]) {
+function makeAsyncEvents(events: unknown[]) {
+  // Minimal async iterable that matches provider stream shape without loading
+  // real model/runtime infrastructure.
   return {
     async *[Symbol.asyncIterator]() {
       for (const event of events) {
@@ -62,7 +106,7 @@ export function makeAsyncEvents(events: unknown[]) {
   };
 }
 
-export function createSessionEntry(overrides: Partial<SessionEntry> = {}) {
+function createSessionEntry(overrides: Partial<SessionEntry> = {}) {
   return {
     sessionId: "session-1",
     sessionFile: "session-1.jsonl",
@@ -71,22 +115,34 @@ export function createSessionEntry(overrides: Partial<SessionEntry> = {}) {
   };
 }
 
-export function createDoneEvent(text: string): Extract<AssistantMessageEvent, { type: "done" }> {
+function createAssistantDoneEvent(
+  content: AssistantMessage["content"],
+): Extract<AssistantMessageEvent, { type: "done" }> {
   return {
     type: "done",
     reason: "stop",
-    message: createAssistantTranscriptMessage<AssistantMessage["content"]>(
-      [{ type: "text", text }],
-      { timestamp: Date.now() },
-    ),
+    message: {
+      role: "assistant",
+      content,
+      provider: DEFAULT_PROVIDER,
+      api: "anthropic-messages",
+      model: DEFAULT_MODEL,
+      stopReason: "stop",
+      usage: DEFAULT_USAGE,
+      timestamp: Date.now(),
+    },
   };
 }
 
-export function mockDoneAnswer(text: string) {
-  mocks.streamSimpleMock.mockReturnValue(makeAsyncEvents([createDoneEvent(text)]));
+function createDoneEvent(text: string) {
+  return createAssistantDoneEvent([{ type: "text", text }]);
 }
 
-export function createCliRuntimeConfig(): Parameters<typeof runBtwSideQuestion>[0]["cfg"] {
+function mockDoneAnswer(text: string) {
+  streamSimpleMock.mockReturnValue(makeAsyncEvents([createDoneEvent(text)]));
+}
+
+function createCliRuntimeConfig(): Parameters<typeof runBtwSideQuestion>[0]["cfg"] {
   return {
     agents: {
       defaults: {
@@ -96,15 +152,15 @@ export function createCliRuntimeConfig(): Parameters<typeof runBtwSideQuestion>[
   };
 }
 
-export function mockCliOutput(output: { text: string; rawText?: string }) {
+function mockCliOutput(output: { text: string; rawText?: string }) {
   const cleanup = vi.fn(async () => undefined);
   const prepared = { prepared: true, preparedBackend: { cleanup } };
-  mocks.prepareCliRunContextMock.mockResolvedValueOnce(prepared);
-  mocks.executePreparedCliRunMock.mockResolvedValueOnce(output);
+  prepareCliRunContextMock.mockResolvedValueOnce(prepared);
+  executePreparedCliRunMock.mockResolvedValueOnce(output);
   return { cleanup, prepared };
 }
 
-export function registerCodexSideQuestionHarness(
+function registerCodexSideQuestionHarness(
   overrides: Partial<Pick<AgentHarness, "authBootstrap" | "supports">> = {},
 ) {
   const runHarnessSideQuestion = vi.fn().mockResolvedValue({ text: "Codex side answer." });
@@ -119,7 +175,7 @@ export function registerCodexSideQuestionHarness(
   return runHarnessSideQuestion;
 }
 
-export function supportsPreparedOpenAIAuth(ctx: Parameters<AgentHarness["supports"]>[0]) {
+function supportsPreparedOpenAIAuth(ctx: Parameters<AgentHarness["supports"]>[0]) {
   if (ctx.provider !== "openai") {
     return { supported: false as const, reason: "Codex only supports OpenAI providers" };
   }
@@ -140,7 +196,7 @@ export function supportsPreparedOpenAIAuth(ctx: Parameters<AgentHarness["support
   return { supported: true as const, priority: 100 };
 }
 
-export function createSideQuestionParams(
+function createSideQuestionParams(
   overrides: Partial<RunBtwSideQuestionParams> = {},
 ): RunBtwSideQuestionParams {
   return {
@@ -152,30 +208,30 @@ export function createSideQuestionParams(
     question: DEFAULT_QUESTION,
     sessionEntry: createSessionEntry(),
     sessionKey: DEFAULT_SESSION_KEY,
-    storePath: "/tmp/sessions.json",
-    resolvedReasoningLevel: "off",
+    storePath: DEFAULT_STORE_PATH,
+    resolvedReasoningLevel: DEFAULT_REASONING_LEVEL,
     opts: {},
     isNewSession: false,
     ...overrides,
   };
 }
 
-export function runSideQuestion(overrides: Partial<RunBtwSideQuestionParams> = {}) {
+function runSideQuestion(overrides: Partial<RunBtwSideQuestionParams> = {}) {
   return runBtwSideQuestion(createSideQuestionParams(overrides));
 }
 
-export function runMathSideQuestion(overrides: Partial<RunBtwSideQuestionParams> = {}) {
+function runMathSideQuestion(overrides: Partial<RunBtwSideQuestionParams> = {}) {
   return runSideQuestion({
-    question: "What is 17 * 19?",
+    question: MATH_QUESTION,
     ...overrides,
   });
 }
 
-export function clearBuiltSessionMessages() {
-  mocks.buildSessionContextMock.mockReturnValue({ messages: [] });
+function clearBuiltSessionMessages() {
+  buildSessionContextMock.mockReturnValue({ messages: [] });
 }
 
-export function createUserTranscriptMessage(content: unknown[] = [{ type: "text", text: "seed" }]) {
+function createUserTranscriptMessage(content: unknown[] = [{ type: "text", text: "seed" }]) {
   return {
     role: "user",
     content,
@@ -183,19 +239,19 @@ export function createUserTranscriptMessage(content: unknown[] = [{ type: "text"
   };
 }
 
-export function createAssistantTranscriptMessage<Content>(
-  content: Content,
+function createAssistantTranscriptMessage(
+  content: unknown,
   overrides: {
-    stopReason?: AssistantMessage["stopReason"];
+    stopReason?: string;
     output?: number;
     timestamp?: number;
   } = {},
 ) {
   return {
-    role: "assistant" as const,
+    role: "assistant",
     content,
     provider: DEFAULT_PROVIDER,
-    api: "anthropic-messages" as const,
+    api: "anthropic-messages",
     model: DEFAULT_MODEL,
     stopReason: overrides.stopReason ?? "stop",
     usage: {
@@ -207,11 +263,7 @@ export function createAssistantTranscriptMessage<Content>(
   };
 }
 
-export function createTranscriptEntry(params: {
-  id: string;
-  parentId?: string | null;
-  message: unknown;
-}) {
+function createTranscriptEntry(params: { id: string; parentId?: string | null; message: unknown }) {
   return {
     type: "message",
     id: params.id,
@@ -220,20 +272,22 @@ export function createTranscriptEntry(params: {
   };
 }
 
-export function mockTranscriptEntries(entries: unknown[]) {
-  mocks.parseSessionEntriesMock.mockReturnValue(entries);
-  mocks.loadTranscriptEventsMock.mockResolvedValue(entries);
+function mockTranscriptEntries(entries: unknown[]) {
+  parseSessionEntriesMock.mockReturnValue(entries);
+  loadTranscriptEventsMock.mockResolvedValue(entries);
 }
 
-export function mockActiveTranscript(messages: unknown[]) {
-  mocks.getActiveEmbeddedRunSnapshotMock.mockReturnValue({
+function mockActiveTranscript(messages: unknown[]) {
+  getActiveEmbeddedRunSnapshotMock.mockReturnValue({
     transcriptLeafId: "assistant-1",
     messages,
   });
 }
 
-type RecordedMock = { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } };
-export function mockCall(mockFn: RecordedMock, callIndex = 0): ReadonlyArray<unknown> {
+function mockCall(
+  mockFn: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } },
+  callIndex = 0,
+): ReadonlyArray<unknown> {
   const call = mockFn.mock.calls[callIndex];
   if (!call) {
     throw new Error(`Expected mock call ${callIndex + 1}`);
@@ -241,17 +295,22 @@ export function mockCall(mockFn: RecordedMock, callIndex = 0): ReadonlyArray<unk
   return call;
 }
 
-export function mockArg(mockFn: RecordedMock, callIndex: number, argIndex: number): unknown {
+function mockArg(
+  mockFn: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } },
+  callIndex: number,
+  argIndex: number,
+): unknown {
   return mockCall(mockFn, callIndex)[argIndex];
 }
 
-export async function runMathSideQuestionAndCaptureContext() {
+async function runMathSideQuestionAndCaptureContext() {
   mockDoneAnswer(MATH_ANSWER);
   await runMathSideQuestion();
-  return mockArg(mocks.streamSimpleMock, 0, 1);
+  const context = mockArg(streamSimpleMock, 0, 1);
+  return context;
 }
 
-export function expectRecordFields(
+function expectRecordFields(
   record: unknown,
   expected: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -265,29 +324,35 @@ export function expectRecordFields(
   return actual;
 }
 
-type StreamContext = {
+function streamContext(callIndex = 0): {
   messages?: Array<Record<string, unknown>>;
   systemPrompt?: unknown;
-};
-export function streamContext(callIndex = 0): StreamContext {
-  return (mockArg(mocks.streamSimpleMock, callIndex, 1) ?? {}) as StreamContext;
+} {
+  const call = streamSimpleMock.mock.calls[callIndex];
+  if (!call) {
+    throw new Error(`Expected streamSimple call at index ${callIndex}`);
+  }
+  return (call[1] ?? {}) as {
+    messages?: Array<Record<string, unknown>>;
+    systemPrompt?: unknown;
+  };
 }
 
-export function contextMessages(context: unknown): Array<Record<string, unknown>> {
-  const messages = (context as StreamContext).messages;
+function contextMessages(context: unknown): Array<Record<string, unknown>> {
+  const messages = (context as { messages?: Array<Record<string, unknown>> }).messages;
   if (!messages) {
     throw new Error("Expected BTW context messages");
   }
   return messages;
 }
 
-export function expectTextBlockContains(block: unknown, text: string): void {
+function expectTextBlockContains(block: unknown, text: string): void {
   const record = expectRecordFields(block, { type: "text" });
   expect(typeof record.text).toBe("string");
   expect(record.text).toContain(text);
 }
 
-export function expectNoAssistantMessages(context: unknown) {
+function expectNoAssistantMessages(context: unknown) {
   expect(
     (context as { messages?: Array<{ role?: string }> }).messages?.filter(
       (message) => message.role === "assistant",
@@ -295,7 +360,7 @@ export function expectNoAssistantMessages(context: unknown) {
   ).toHaveLength(0);
 }
 
-export function expectSanitizedAssistantContext(context: unknown, text: string) {
+function expectSanitizedAssistantContext(context: unknown, text: string) {
   const messages = contextMessages(context);
   expect(messages).toHaveLength(3);
   expectRecordFields(messages[0], { role: "user" });
@@ -306,7 +371,7 @@ export function expectSanitizedAssistantContext(context: unknown, text: string) 
   expectRecordFields(messages[2], { role: "user" });
 }
 
-export function expectSeedOnlyUserContext(context: unknown) {
+function expectSeedOnlyUserContext(context: unknown) {
   const messages = contextMessages(context);
   expect(messages).toHaveLength(2);
   expectRecordFields(messages[0], {
@@ -316,8 +381,8 @@ export function expectSeedOnlyUserContext(context: unknown) {
   expectRecordFields(messages[1], { role: "user" });
 }
 
-export function mockOpenAIPlatformProfile(): void {
-  mocks.ensureAuthProfileStoreMock.mockReturnValue({
+function mockOpenAIPlatformProfile(): void {
+  ensureAuthProfileStoreMock.mockReturnValue({
     version: 1,
     profiles: {
       "profile-1": createApiKeyCredential("openai", "platform-key"),
@@ -333,20 +398,52 @@ export function setupBtwTestHooks() {
   });
 
   beforeEach(() => {
-    for (const mock of Object.values(mocks)) {
-      if (vi.isMockFunction(mock)) {
-        mock.mockReset();
-      }
-    }
-    mocks.snapshotResources.acquire = undefined;
-    mocks.getModelRegistryRuntimeMock.mockReturnValue({
+    streamSimpleMock.mockReset();
+    parseSessionEntriesMock.mockReset();
+    migrateSessionEntriesMock.mockReset();
+    buildSessionContextMock.mockReset();
+    ensureOpenClawModelsJsonMock.mockReset();
+    loadPreparedModelRuntimeSnapshotMock.mockReset();
+    snapshotResources.acquire = undefined;
+    discoverAuthStorageMock.mockReset();
+    discoverModelsMock.mockReset();
+    getModelRegistryRuntimeMock.mockReset();
+    getModelRegistryRuntimeMock.mockReturnValue({
       apiRegistry: {},
-      llmRuntime: { streamSimple: mocks.streamSimpleMock },
+      llmRuntime: { streamSimple: streamSimpleMock },
     });
-    mocks.listSessionEntriesCoreMock.mockReturnValue([]);
-    mocks.shouldPreferExplicitConfigApiKeyAuthMock.mockReturnValue(false);
-    mocks.hasUsableCustomProviderApiKeyMock.mockReturnValue(false);
-    mocks.resolveProviderEntryApiKeyProfileReferenceMock.mockReturnValue({ kind: "none" });
+    resolveModelAsyncMock.mockReset();
+    resolveModelWithRegistryMock.mockReset();
+    ensureAuthProfileStoreMock.mockReset();
+    ensureAuthProfileStoreWithoutExternalProfilesMock.mockReset();
+    getApiKeyForModelMock.mockReset();
+    requireApiKeyMock.mockReset();
+    resolveSessionAuthSelectionMock.mockReset();
+    getActiveEmbeddedRunSnapshotMock.mockReset();
+    resolveSessionAgentIdMock.mockReset();
+    resolveSessionAgentIdsMock.mockReset();
+    resolveAgentWorkspaceDirMock.mockReset();
+    listAgentEntriesMock.mockReset();
+    prepareProviderRuntimeAuthMock.mockReset();
+    registerProviderStreamForModelMock.mockReset();
+    resolveEmbeddedAgentStreamMock.mockReset();
+    prepareCliRunContextMock.mockReset();
+    executePreparedCliRunMock.mockReset();
+    diagDebugMock.mockReset();
+    ensureSelectedAgentHarnessPluginMock.mockReset();
+    createAgentHarnessHostCapabilitiesMock.mockReset();
+    closeAgentHarnessHostCapabilitiesMock.mockReset();
+    listSessionEntriesCoreMock.mockReset();
+    listSessionEntriesCoreMock.mockReturnValue([]);
+    loadSessionEntryMock.mockReset();
+    loadSessionEntryMock.mockReturnValue(undefined);
+    loadTranscriptEventsMock.mockReset();
+    shouldPreferExplicitConfigApiKeyAuthMock.mockReset();
+    shouldPreferExplicitConfigApiKeyAuthMock.mockReturnValue(false);
+    hasUsableCustomProviderApiKeyMock.mockReset();
+    hasUsableCustomProviderApiKeyMock.mockReturnValue(false);
+    resolveProviderEntryApiKeyProfileReferenceMock.mockReset();
+    resolveProviderEntryApiKeyProfileReferenceMock.mockReturnValue({ kind: "none" });
     clearAgentHarnesses();
     if (!defaultPluginMetadataSnapshot) {
       defaultPluginMetadataSnapshot = resolvePluginMetadataSnapshot({
@@ -358,11 +455,12 @@ export function setupBtwTestHooks() {
         expect.objectContaining({ workspaceDir: state.workspaceDir }),
       );
     }
-    mocks.preparedRuntimeSnapshotState.snapshot = {
+    preparedRuntimeSnapshotState.snapshot = {
       metadataSnapshot: defaultPluginMetadataSnapshot,
     };
-    mocks.preparedRuntimeSnapshotState.useSnapshotPluginRegistry = false;
+    preparedRuntimeSnapshotState.useSnapshotPluginRegistry = false;
 
+    loadTranscriptEventsMock.mockResolvedValue([]);
     mockTranscriptEntries([
       createTranscriptEntry({
         id: "user-1",
@@ -378,45 +476,39 @@ export function setupBtwTestHooks() {
         },
       }),
     ]);
-    mocks.buildSessionContextMock.mockImplementation(
-      (entries: Array<{ message?: unknown }> = []) => {
-        return { messages: entries.flatMap((entry) => (entry.message ? [entry.message] : [])) };
-      },
-    );
-    mocks.resolveModelWithRegistryMock.mockReturnValue({
+    buildSessionContextMock.mockImplementation((entries: Array<{ message?: unknown }> = []) => {
+      return { messages: entries.flatMap((entry) => (entry.message ? [entry.message] : [])) };
+    });
+    resolveModelWithRegistryMock.mockReturnValue({
       provider: "anthropic",
       id: "claude-sonnet-4-6",
       api: "anthropic-messages",
     });
-    mocks.resolveModelAsyncMock.mockImplementation(async () => ({
-      model: mocks.resolveModelWithRegistryMock(),
+    resolveModelAsyncMock.mockImplementation(async () => ({
+      model: resolveModelWithRegistryMock(),
     }));
-    mocks.ensureAuthProfileStoreMock.mockReturnValue({ version: 1, profiles: {} });
-    mocks.ensureAuthProfileStoreWithoutExternalProfilesMock.mockReturnValue({
-      version: 1,
-      profiles: {},
-    });
-    mocks.getApiKeyForModelMock.mockImplementation(async (params: { profileId?: string } = {}) => ({
+    ensureAuthProfileStoreMock.mockReturnValue({ version: 1, profiles: {} });
+    ensureAuthProfileStoreWithoutExternalProfilesMock.mockReturnValue({ version: 1, profiles: {} });
+    getApiKeyForModelMock.mockImplementation(async (params: { profileId?: string } = {}) => ({
       apiKey: "secret",
       mode: "api-key",
       source: params.profileId ? `profile:${params.profileId}` : "test",
       ...(params.profileId ? { profileId: params.profileId } : {}),
     }));
-    mocks.requireApiKeyMock.mockReturnValue("secret");
-    mocks.resolveSessionAuthSelectionMock.mockResolvedValue({
+    requireApiKeyMock.mockReturnValue("secret");
+    resolveSessionAuthSelectionMock.mockResolvedValue({
       profileId: "profile-1",
       source: "auto",
       routeRequirement: undefined,
     });
-    mocks.resolveSessionAgentIdMock.mockReturnValue("main");
-    mocks.resolveSessionAgentIdsMock.mockReturnValue({
-      defaultAgentId: "main",
-      sessionAgentId: "main",
-    });
-    mocks.resolveAgentWorkspaceDirMock.mockReturnValue("/tmp/workspace");
-    mocks.listAgentEntriesMock.mockReturnValue([]);
-    mocks.prepareProviderRuntimeAuthMock.mockResolvedValue(undefined);
-    mocks.resolveEmbeddedAgentStreamMock.mockImplementation(
+    getActiveEmbeddedRunSnapshotMock.mockReturnValue(undefined);
+    resolveSessionAgentIdMock.mockReturnValue("main");
+    resolveSessionAgentIdsMock.mockReturnValue({ defaultAgentId: "main", sessionAgentId: "main" });
+    resolveAgentWorkspaceDirMock.mockReturnValue("/tmp/workspace");
+    listAgentEntriesMock.mockReturnValue([]);
+    prepareProviderRuntimeAuthMock.mockResolvedValue(undefined);
+    registerProviderStreamForModelMock.mockReturnValue(undefined);
+    resolveEmbeddedAgentStreamMock.mockImplementation(
       (params: { currentStreamFn: unknown; providerStreamFn?: unknown }) => {
         return {
           streamFn: params.providerStreamFn ?? params.currentStreamFn,
@@ -427,5 +519,72 @@ export function setupBtwTestHooks() {
   });
 }
 
-export { runBtwSideQuestion, registerAgentHarness };
-export * from "./btw.mocks.test-support.js";
+export {
+  state,
+  runBtwSideQuestion,
+  registerAgentHarness,
+  DEFAULT_AGENT_DIR,
+  DEFAULT_MODEL,
+  DEFAULT_PROVIDER,
+  DEFAULT_SESSION_KEY,
+  DEFAULT_QUESTION,
+  MATH_ANSWER,
+  makeAsyncEvents,
+  createSessionEntry,
+  createDoneEvent,
+  mockDoneAnswer,
+  createCliRuntimeConfig,
+  mockCliOutput,
+  registerCodexSideQuestionHarness,
+  supportsPreparedOpenAIAuth,
+  createSideQuestionParams,
+  runSideQuestion,
+  runMathSideQuestion,
+  clearBuiltSessionMessages,
+  createUserTranscriptMessage,
+  createAssistantTranscriptMessage,
+  createTranscriptEntry,
+  mockTranscriptEntries,
+  mockActiveTranscript,
+  mockCall,
+  mockArg,
+  runMathSideQuestionAndCaptureContext,
+  expectRecordFields,
+  streamContext,
+  contextMessages,
+  expectTextBlockContains,
+  expectNoAssistantMessages,
+  expectSanitizedAssistantContext,
+  expectSeedOnlyUserContext,
+  mockOpenAIPlatformProfile,
+};
+export {
+  streamSimpleMock,
+  buildSessionContextMock,
+  loadPreparedModelRuntimeSnapshotMock,
+  snapshotResources,
+  discoverAuthStorageMock,
+  discoverModelsMock,
+  resolveModelWithRegistryMock,
+  ensureAuthProfileStoreMock,
+  ensureAuthProfileStoreWithoutExternalProfilesMock,
+  resolveModelAsyncMock,
+  getApiKeyForModelMock,
+  requireApiKeyMock,
+  resolveSessionAuthSelectionMock,
+  getActiveEmbeddedRunSnapshotMock,
+  resolveSessionAgentIdMock,
+  resolveAgentWorkspaceDirMock,
+  prepareProviderRuntimeAuthMock,
+  registerProviderStreamForModelMock,
+  prepareCliRunContextMock,
+  diagDebugMock,
+  createAgentHarnessHostCapabilitiesMock,
+  closeAgentHarnessHostCapabilitiesMock,
+  agentHarnessHostCapabilitiesMock,
+  listSessionEntriesCoreMock,
+  loadSessionEntryMock,
+  loadTranscriptEventsMock,
+  resolveProviderEntryApiKeyProfileReferenceMock,
+  preparedRuntimeSnapshotState,
+} from "./btw.mocks.test-support.js";

@@ -95,10 +95,10 @@ function expectResponse(respond: ReturnType<typeof vi.fn>, fields: Record<string
   expect(respond).toHaveBeenCalledWith(true, expect.objectContaining(fields));
 }
 
-async function invoke<T>(
+async function invoke(
   method: string,
   params: Record<string, unknown>,
-  respond: (ok: boolean, value?: T) => void,
+  respond: (ok: boolean, value?: unknown) => void,
   context?: Record<string, unknown>,
 ) {
   const { updateHandlers } = await import("./update.js");

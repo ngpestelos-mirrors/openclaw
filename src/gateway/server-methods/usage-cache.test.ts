@@ -129,19 +129,21 @@ it("evicts the oldest settled entry before an in-flight entry", async () => {
   const pending = blocked();
   loader.mockReturnValueOnce(pending.promise);
   const params = query("active");
-  load(params);
+  const active = load(params);
   await Promise.resolve();
   now += 30_001;
   for (let i = 0; i < 256; i++) {
     await load(query(String(i)));
   }
-  load(params);
+  const retained = load(params);
   await Promise.resolve();
   expect(cache.size).toBe(256);
   expect(cache.has("0")).toBe(false);
   expect(cache.has("255")).toBe(true);
   expect(cache.has(params.cacheKey)).toBe(true);
   expect(loader).toHaveBeenCalledTimes(257);
+  pending.resolve(summary());
+  await Promise.all([active, retained]);
 });
 
 it("preserves a complete stale result when a refresh is partial", async () => {

@@ -71,7 +71,7 @@ function mediaContext(
   };
 }
 
-function holdMediaGroup(delayMs = TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs) {
+function holdMediaGroup(delayMs: number = TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs) {
   const setTimeoutSpy = holdTelegramMediaTimeouts(delayMs);
   const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
   const enqueueSpy = vi.spyOn(keyedAsyncQueue, "enqueueKeyedTask");
