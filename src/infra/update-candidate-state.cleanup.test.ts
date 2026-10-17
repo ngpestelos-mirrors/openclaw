@@ -77,14 +77,28 @@ async function createDatabase(file: string, sql = ""): Promise<void> {
   }
 }
 
-function workerArgv(preload?: string) {
-  return [
+function capture<T>(operation: Promise<T>) {
+  return operation.then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+}
+
+function runWorker(input: unknown, preload?: string, env?: NodeJS.ProcessEnv) {
+  const argv = [
     process.execPath,
     ...(preload ? ["--import", pathToFileURL(preload).href] : []),
     ...resolveRuntimeWorkerArgv(
       resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.updateCandidateState),
     ),
   ];
+  return runCommandBuffered(argv, {
+    input: JSON.stringify(input),
+    env,
+    timeoutMs: 30_000,
+    killGraceMs: 500,
+    maxOutputBytes: { stdout: 1024 * 1024, stderr: 20_000 },
+  });
 }
 
 it.each([
@@ -117,12 +131,7 @@ it.each([
       mode === "snapshot" ? await inventoryUpdateCandidateStateWorker(input) : undefined;
     if (scenario.readError && mode === "snapshot") {
       // Inventory succeeds first; the instrumented snapshot owns the failed read and cleanup.
-      const malformed = openNodeSqliteDatabase(source);
-      try {
-        malformed.exec("CREATE TABLE agent_databases (not_path TEXT);");
-      } finally {
-        malformed.close();
-      }
+      await createDatabase(source, "CREATE TABLE agent_databases (not_path TEXT);");
     }
     const sentinel = path.join(cache, "unrelated.txt");
     await fs.writeFile(sentinel, "unrelated preserved");
@@ -175,16 +184,8 @@ it.each([
       };
     `,
     );
-    const result = await runCommandBuffered(workerArgv(preload), {
-      input: JSON.stringify({
-        mode,
-        ...input,
-        ...admitted,
-      }),
-      env: { XDG_CACHE_HOME: cache },
-      timeoutMs: 30_000,
-      killGraceMs: 500,
-      maxOutputBytes: { stdout: 1024 * 1024, stderr: 20_000 },
+    const result = await runWorker({ mode, ...input, ...admitted }, preload, {
+      XDG_CACHE_HOME: cache,
     });
     expect(await fs.readFile(source)).toEqual(sourceBytes);
     expect(await fs.readdir(path.dirname(source))).toEqual(sourceEntries);
@@ -256,10 +257,13 @@ it.each([false, true].flatMap((legacy) => [false, true].map((expires) => ({ lega
     database.exec("PRAGMA user_version = 3; CREATE TABLE agent_databases (path TEXT);");
     database.prepare("INSERT INTO agent_databases VALUES (?)").run(external);
     database.close();
-    await fs.writeFile(external, "");
-    await fs.truncate(external, 3_489_660_928);
-    await fs.writeFile(`${external}-wal`, "");
-    await fs.truncate(`${external}-wal`, 64 * 1024 * 1024);
+    for (const [file, size] of [
+      [external, 3_489_660_928],
+      [`${external}-wal`, 64 * 1024 * 1024],
+    ] as const) {
+      await fs.writeFile(file, "");
+      await fs.truncate(file, size);
+    }
     const sharedVersion = { path: shared, userVersion: 3, contentVersion: 3 };
     const discovery = {
       files: [
@@ -304,10 +308,7 @@ it.each([false, true].flatMap((legacy) => [false, true].map((expires) => ({ lega
     let elapsed = 0;
     vi.spyOn(Date, "now").mockImplementation(() => now() + elapsed);
     const operation = readUpdateStateSchemaVersions({ stateDir, config: {} });
-    const outcome = operation.then(
-      (versions) => ({ versions }),
-      (error: unknown) => ({ error }),
-    );
+    const outcome = capture(operation);
     try {
       const signal = await Promise.race([
         inspecting.promise,
@@ -330,12 +331,9 @@ it.each([false, true].flatMap((legacy) => [false, true].map((expires) => ({ lega
       expect(fsSync.existsSync(stagingRoot)).toBe(true);
       release.resolve();
       if (expires) {
+        const message = `made no progress for ${legacy ? 4_841 : 4_540} seconds`;
         expect(await outcome).toMatchObject({
-          error: {
-            message: expect.stringContaining(
-              `made no progress for ${legacy ? 4_841 : 4_540} seconds`,
-            ),
-          },
+          error: { message: expect.stringContaining(message) },
         });
       } else {
         await expect(operation).resolves.toContainEqual({ path: external, userVersion: 7 });
@@ -396,11 +394,10 @@ it("keeps fleet progress below a released parent's stderr limit", async () => {
         ] as const,
     ),
   );
-  const result = await runCommandBuffered(workerArgv(), {
-    input: JSON.stringify({ mode: "versions", stateDir: root, config: { agents: { entries } } }),
-    timeoutMs: 30_000,
-    killGraceMs: 500,
-    maxOutputBytes: { stdout: 1024 * 1024, stderr: 20_000 },
+  const result = await runWorker({
+    mode: "versions",
+    stateDir: root,
+    config: { agents: { entries } },
   });
   expect(result.code, result.stderr.toString()).toBe(0);
   expect(result.stderr.byteLength).toBeLessThan(20_000);
@@ -533,10 +530,7 @@ it.for(["cancel", "deadline", "disk-full", "cooperative-cancel"] as const)(
       }),
       signal: controller.signal,
     });
-    const outcome = operation.then(
-      (value) => ({ value }),
-      (error: unknown) => ({ error }),
-    );
+    const outcome = capture(operation);
     workerSettlement = outcome;
     try {
       await withinTest(fixtureEventBeforeSettlement(ready, outcome), signal);

@@ -65,6 +65,72 @@ function snapshot(
   });
 }
 
+function capture<T>(operation: Promise<T>) {
+  return operation.then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+}
+
+function releaseAndJoin(
+  release: string,
+  operation: Promise<unknown>,
+  controller: AbortController,
+  onFinished: (cleanup: () => Promise<void>) => void,
+  signal?: AbortSignal,
+) {
+  let pending: Promise<void> | undefined;
+  const cleanup = () =>
+    (pending ??= (async () => {
+      try {
+        await fs.writeFile(release, "continue");
+      } catch (error) {
+        if (signal) {
+          controller.abort(error);
+        }
+        throw error;
+      } finally {
+        if (!signal || signal.aborted) {
+          controller.abort(signal?.reason);
+        }
+        await operation;
+      }
+    })());
+  cleanupFixture = cleanup;
+  onFinished(cleanup);
+  return cleanup;
+}
+
+const rehearsalScratch = async (root: string) =>
+  (await fs.readdir(root)).filter((name) => name.startsWith("openclaw-update-canary-"));
+
+function terminated(cleanup: "normal" | "uncertain") {
+  return {
+    stdout: "",
+    stderr: "",
+    code: null,
+    signal: null,
+    killed: true,
+    termination: "signal" as const,
+    cleanup,
+  };
+}
+
+function schemaCase(
+  name: string,
+  overrides: Partial<{
+    bytes: number;
+    discoveredBytes: number;
+    waits: number[];
+    completes: boolean;
+    configuredCache: boolean;
+    timeoutMs: number;
+    diagnosticBytes: number;
+  }> = {},
+) {
+  return { name, bytes: 4096, waits: [0], completes: true, ...overrides };
+}
+
 // Receipts and command settlement travel independently. The fixture publishes the
 // complete marker before it can reply, so that record decides a settlement race.
 async function fixtureEventBeforeSettlement(
@@ -141,28 +207,11 @@ it.for([undefined, 600_000])(
       stagingRoot: root,
       timeoutMs,
       signal: controller.signal,
-    }).then(
-      (sizes) => ({ sizes }),
-      (error: unknown) => ({ error }),
-    );
-    let cleanupPromise: Promise<void> | undefined;
-    const cleanup = () =>
-      (cleanupPromise ??= (async () => {
-        try {
-          await fs.writeFile(release, "continue");
-        } finally {
-          // A failed release must still cancel and join the blocked stat worker.
-          controller.abort();
-          await operation;
-        }
-      })());
-    cleanupFixture = cleanup;
-    onTestFinished(cleanup);
+    });
+    const outcome = capture(operation);
+    const cleanup = releaseAndJoin(release, outcome, controller, onTestFinished);
     try {
-      await withinTest(
-        fixtureEventBeforeSettlement(ready, readyReceipt.promise, operation),
-        signal,
-      );
+      await withinTest(fixtureEventBeforeSettlement(ready, readyReceipt.promise, outcome), signal);
       const { pid } = JSON.parse(await fs.readFile(ready, "utf8")) as { pid: number };
       const deadlines = timers.mock.calls.flatMap(([callback, delay, ...args], index) =>
         delay !== undefined && delay >= 30_000 ? [{ callback, delay, args, index }] : [],
@@ -186,23 +235,16 @@ it.for([undefined, 600_000])(
       }
       await fs.writeFile(release, "continue");
       if (timeoutMs === undefined) {
-        const outcome = await operation;
-        expect(outcome).toHaveProperty(
+        const failure = await outcome;
+        for (const text of ["inventory failed (timeout", file, "then retry the update"]) {
+          expect(failure).toHaveProperty("error.message", expect.stringContaining(text));
+        }
+        expect(failure).toHaveProperty(
           "error.message",
-          expect.stringContaining("inventory failed (timeout"),
+          expect.stringMatching(/after \d+(?:\.\d+)? seconds during metadata inventory/),
         );
-        expect.soft(outcome).toHaveProperty("error.message", expect.stringContaining(file));
-        expect
-          .soft(outcome)
-          .toHaveProperty(
-            "error.message",
-            expect.stringMatching(/after \d+(?:\.\d+)? seconds during metadata inventory/),
-          );
-        expect
-          .soft(outcome)
-          .toHaveProperty("error.message", expect.stringContaining("then retry the update"));
       } else {
-        expect(await operation).toEqual({ sizes: [{ path: file, sizeBytes: 8n }] });
+        expect(await outcome).toEqual({ value: [{ path: file, sizeBytes: 8n }] });
       }
       expect(() => process.kill(pid, 0)).toThrow();
       expect(await fs.readFile(file, "utf8")).toBe("database");
@@ -213,30 +255,13 @@ it.for([undefined, 600_000])(
 );
 
 it.for([
-  { name: "large database", bytes: 2 * 1024 ** 3, waits: [800_000], completes: true },
-  {
-    name: "late-discovered database",
-    bytes: 4096,
-    discoveredBytes: 2 * 1024 ** 3,
-    waits: [800_000],
-    completes: true,
-  },
-  {
-    name: "continuing copy progress",
-    bytes: 4096,
-    waits: [200_000, 200_000, 200_000],
-    completes: true,
-  },
-  { name: "stalled worker", bytes: 4096, waits: [400_000], completes: false },
-  { name: "caller allowance", bytes: 4096, waits: [400_000], completes: true, timeoutMs: 600_000 },
-  { name: "configured cache", bytes: 4096, waits: [0], completes: true, configuredCache: true },
-  {
-    name: "large diagnostic output",
-    bytes: 4096,
-    waits: [0],
-    completes: true,
-    diagnosticBytes: 40_000,
-  },
+  schemaCase("large database", { bytes: 2 * 1024 ** 3, waits: [800_000] }),
+  schemaCase("late-discovered database", { discoveredBytes: 2 * 1024 ** 3, waits: [800_000] }),
+  schemaCase("continuing copy progress", { waits: [200_000, 200_000, 200_000] }),
+  schemaCase("stalled worker", { waits: [400_000], completes: false }),
+  schemaCase("caller allowance", { waits: [400_000], timeoutMs: 600_000 }),
+  schemaCase("configured cache", { configuredCache: true }),
+  schemaCase("large diagnostic output", { diagnosticBytes: 40_000 }),
 ])(
   "budgets schema inspection for $name",
   async (
@@ -325,23 +350,7 @@ it.for([
         return { error };
       },
     );
-    let cleanupPromise: Promise<void> | undefined;
-    const cleanup = () =>
-      (cleanupPromise ??= (async () => {
-        try {
-          await fs.writeFile(release, "done");
-        } catch (error) {
-          controller.abort(error);
-          throw error;
-        } finally {
-          if (signal.aborted) {
-            controller.abort(signal.reason);
-          }
-          await result;
-        }
-      })());
-    cleanupFixture = cleanup;
-    onTestFinished(cleanup);
+    const cleanup = releaseAndJoin(release, result, controller, onTestFinished, signal);
     try {
       if (waits.some((milliseconds) => milliseconds > 0)) {
         await withinTest(
@@ -413,28 +422,11 @@ it.each(
       if (cancelled) {
         controller.abort(new Error("caller cancellation"));
       }
-      return {
-        stdout: "",
-        stderr: "",
-        code: null,
-        signal: null,
-        killed: true,
-        termination: "signal",
-        cleanup: "uncertain",
-      };
+      return terminated("uncertain");
     });
     const operation = snapshot(root, controller.signal);
     const rejected = expect(operation).rejects.toThrow(/cleanup.*confirmed|settlement.*uncertain/);
-    const settleWorker = () =>
-      workerExit.resolve({
-        stdout: "",
-        stderr: "",
-        code: null,
-        signal: null,
-        killed: true,
-        termination: "signal",
-        cleanup: "normal",
-      });
+    const settleWorker = () => workerExit.resolve(terminated("normal"));
     try {
       if (source === "probe") {
         await awaitGateBeforeSettlement(
@@ -446,9 +438,7 @@ it.each(
         settleWorker();
       }
       await rejected;
-      const retained = (await fs.readdir(root)).filter((name) =>
-        name.startsWith("openclaw-update-canary-"),
-      );
+      const retained = await rehearsalScratch(root);
       expect(retained).toHaveLength(1);
       expect((await fs.stat(path.join(root, retained[0]!))).isDirectory()).toBe(true);
     } finally {
@@ -507,9 +497,7 @@ it.each(["stdout", "stderr"] as const)(
       // Snapshot rejection follows the command owner's process-tree settlement.
       const pid = Number(await fs.readFile(pidPath, "utf8"));
       expect(isProcessAlive(pid)).toBe(false);
-      expect(
-        (await fs.readdir(root)).filter((name) => name.startsWith("openclaw-update-canary-")),
-      ).toEqual([]);
+      expect(await rehearsalScratch(root)).toEqual([]);
     } finally {
       clearTimeout(deadline);
       controller.abort();
@@ -555,10 +543,7 @@ it("refuses a grown WAL family at the post-inventory capacity gate", async () =>
     });
     const controller = new AbortController();
     const operation = snapshot(root, controller.signal);
-    const outcome = operation.then(
-      (value) => ({ value }),
-      (error: unknown) => ({ error }),
-    );
+    const outcome = capture(operation);
     try {
       expect(await outcome).toMatchObject({
         error: {
@@ -567,9 +552,7 @@ it("refuses a grown WAL family at the post-inventory capacity gate", async () =>
       });
       expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
       expect(db.prepare("SELECT length(bytes) AS n FROM payload").get()).toEqual({ n: 2097152 });
-      expect(
-        (await fs.readdir(root)).filter((name) => name.startsWith("openclaw-update-canary-")),
-      ).toEqual([]);
+      expect(await rehearsalScratch(root)).toEqual([]);
     } finally {
       controller.abort();
       await outcome;

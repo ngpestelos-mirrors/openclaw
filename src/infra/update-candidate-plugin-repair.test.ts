@@ -17,6 +17,16 @@ async function write(file: string, content: string) {
   await fs.writeFile(file, content);
 }
 
+async function writeTree(root: string, files: Record<string, string>) {
+  for (const [name, content] of Object.entries(files)) {
+    await write(path.join(root, name), content);
+  }
+}
+
+async function expectMissing(file: string) {
+  await expect(fs.access(file)).rejects.toMatchObject({ code: "ENOENT" });
+}
+
 async function expectOutput(
   run: () => ReturnType<typeof runCommandBuffered>,
   output = "sibling-ready",
@@ -27,13 +37,13 @@ async function expectOutput(
 }
 
 async function replaceEntries(f: Awaited<ReturnType<typeof fixture>>, content: string) {
-  await fs.writeFile(path.join(f.plugin, "index.mjs"), content);
-  await fs.writeFile(path.join(f.copiedPlugin, "index.mjs"), content);
+  await fs.writeFile(f.sourceEntry, content);
+  await fs.writeFile(f.copiedEntry, content);
 }
 
 async function expectNoRepair(f: Awaited<ReturnType<typeof fixture>>) {
-  expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBe(0);
-  await expect(fs.access(f.copiedShared)).rejects.toMatchObject({ code: "ENOENT" });
+  expect((await f.repair()).copiedFiles).toBe(0);
+  await expectMissing(f.copiedShared);
 }
 
 async function fixture(
@@ -47,30 +57,25 @@ async function fixture(
   const plugin = path.join(root, "plugins", "demo");
   const shared = path.join(root, "plugins", "shared");
   await write(path.join(candidateRoot, "package.json"), '{"name":"openclaw"}');
-  await write(
-    path.join(plugin, "package.json"),
-    JSON.stringify({
+  await writeTree(plugin, {
+    "package.json": JSON.stringify({
       name: "demo",
       type: "module",
       openclaw: { extensions: ["./index.mjs"] },
     }),
-  );
-  await write(
-    path.join(plugin, "openclaw.plugin.json"),
-    JSON.stringify({
+    "openclaw.plugin.json": JSON.stringify({
       id: "demo",
       configSchema: { type: "object", properties: {} },
       ...(surface === "doctor" ? { doctorContract: { configRepair: true } } : {}),
     }),
-  );
-  await write(
-    path.join(plugin, "index.mjs"),
-    'import value from "../shared/value.js"; console.log(value);',
-  );
-  await write(path.join(shared, "package.json"), '{"type":"module"}');
-  await write(path.join(shared, "value.js"), 'export { default } from "./nested/value.mjs";');
-  await write(path.join(shared, "nested", "value.mjs"), 'export default "sibling-ready";');
-  await write(path.join(shared, "unrelated.txt"), "not a module dependency");
+    "index.mjs": 'import value from "../shared/value.js"; console.log(value);',
+  });
+  await writeTree(shared, {
+    "package.json": '{"type":"module"}',
+    "value.js": 'export { default } from "./nested/value.mjs";',
+    "nested/value.mjs": 'export default "sibling-ready";',
+    "unrelated.txt": "not a module dependency",
+  });
   if (surface === "doctor") {
     await write(path.join(plugin, "index.mjs"), 'export default { id: "demo", register() {} };');
     await write(
@@ -110,100 +115,102 @@ async function fixture(
       ],
       { timeoutMs: 10_000, cwd: root },
     );
-  return { root, plugin, shared, copiedPlugin, copiedShared, config, env, candidateRoot, run };
+  const candidate = { config, env, candidateRoot };
+  return {
+    ...candidate,
+    root,
+    plugin,
+    shared,
+    copiedPlugin,
+    copiedShared,
+    run,
+    sourceEntry: path.join(plugin, "index.mjs"),
+    copiedEntry: path.join(copiedPlugin, "index.mjs"),
+    repair: () => completeUpdateCandidatePluginRehearsal(candidate),
+  };
 }
 
 it.each(["directory", "file", "alias", "install-record"] as const)(
   "completes a released rehearsal's %s plugin without changing existing files",
   async (locatorKind) => {
     const f = await fixture(locatorKind);
-    const entry = path.join(f.plugin, "index.mjs");
+    const entry = f.sourceEntry;
     const original = await fs.readFile(entry);
-    const copied = await fs.readFile(path.join(f.copiedPlugin, "index.mjs"));
+    const copied = await fs.readFile(f.copiedEntry);
     const before = await f.run();
     expect(before.code).not.toBe(0);
     expect(before.stderr.toString()).toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module/);
     expect(before.stderr.toString()).toContain("shared/value.js");
 
-    const repaired = await completeUpdateCandidatePluginRehearsal(f);
+    const repaired = await f.repair();
     expect(repaired.copiedFiles).toBeGreaterThan(0);
     expect(await fs.readFile(entry)).toEqual(original);
-    expect(await fs.readFile(path.join(f.copiedPlugin, "index.mjs"))).toEqual(copied);
+    expect(await fs.readFile(f.copiedEntry)).toEqual(copied);
     const plugins = path.dirname(f.plugin);
     const hidden = path.join(f.root, "source-unavailable");
     await fs.rename(plugins, hidden);
     try {
-      expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBe(0);
+      expect((await f.repair()).copiedFiles).toBe(0);
       await expectOutput(f.run);
     } finally {
       await fs.rename(hidden, plugins);
     }
-    await expect(fs.access(path.join(f.copiedShared, "unrelated.txt"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-    const repeated = await completeUpdateCandidatePluginRehearsal(f);
+    await expectMissing(path.join(f.copiedShared, "unrelated.txt"));
+    const repeated = await f.repair();
     expect(repeated.copiedFiles).toBe(0);
   },
 );
 
-it("completes a published rehearsal with import.meta retained at transformed position 1203:16", async () => {
-  const f = await fixture();
-  const content = `import value from "../shared/value.js";\n${"\n".repeat(1201)}const module1=import.meta;\nconsole.log(value);`;
-  await replaceEntries(f, content);
+it.each(["runtime", "doctor"] as const)(
+  "completes the %s entry with transformed runtime syntax at line 1203",
+  async (surface) => {
+    const f = await fixture("directory", surface);
+    await replaceEntries(
+      f,
+      surface === "runtime"
+        ? `import value from "../shared/value.js";\n${"\n".repeat(1201)}const module1=import.meta;\nconsole.log(value);`
+        : `${"\n".repeat(1202)}const module1=/(/;`,
+    );
+    const repaired = await f.repair();
+    expect(repaired.copiedFiles).toBeGreaterThan(0);
+    expect(repaired.warnings).toEqual(
+      surface === "runtime"
+        ? []
+        : [expect.stringMatching(/plugin demo .*Invalid regular expression:.*\(1203:17\)/)],
+    );
+    await expectOutput(f.run);
+  },
+);
 
-  const repaired = await completeUpdateCandidatePluginRehearsal(f);
-  expect(repaired.copiedFiles).toBeGreaterThan(0);
-  expect(repaired.warnings).toEqual([]);
-  await expectOutput(f.run);
-});
-
-it("warns about an unparseable runtime entry and completes the sibling Doctor entry", async () => {
-  const f = await fixture("directory", "doctor");
-  const content = `${"\n".repeat(1202)}const module1=/(/;`;
-  await replaceEntries(f, content);
-
-  const repaired = await completeUpdateCandidatePluginRehearsal(f);
-  expect(repaired.copiedFiles).toBeGreaterThan(0);
-  expect(repaired.warnings).toEqual([
-    expect.stringMatching(/plugin demo .*Invalid regular expression:.*\(1203:17\)/),
-  ]);
-  await expectOutput(f.run);
-});
-
-it("retains an explicit external file URL import in an already complete snapshot", async () => {
-  const f = await fixture();
-  const sharedEntry = path.join(f.shared, "value.js");
-  const specifier = pathToFileURL(sharedEntry).href;
-  const content = `import value from ${JSON.stringify(specifier)}; console.log(value);`;
-  await replaceEntries(f, content);
-  await expectOutput(f.run);
-
-  expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBe(0);
-  await expectOutput(f.run);
-  expect(await fs.readFile(path.join(f.copiedPlugin, "index.mjs"), "utf8")).toBe(content);
-});
-
-it("leaves a runnable optional-import snapshot independent of invalid source edits", async () => {
-  const f = await fixture();
-  const content = [
-    'import { createRequire } from "node:module";',
-    "const require = createRequire(import.meta.url);",
-    'try { require("#optional"); } catch { console.log("optional-fallback"); }',
-  ].join("\n");
-  const original = "invalid source {{{";
-  await fs.writeFile(path.join(f.plugin, "index.mjs"), original);
-  await fs.writeFile(path.join(f.plugin, "new-source.mjs"), "export const newSource = true;");
-  await fs.writeFile(path.join(f.copiedPlugin, "index.mjs"), content);
-  await expectOutput(f.run, "optional-fallback");
-
-  expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBe(0);
-  await expectOutput(f.run, "optional-fallback");
-  expect(await fs.readFile(path.join(f.copiedPlugin, "index.mjs"), "utf8")).toBe(content);
-  expect(await fs.readFile(path.join(f.plugin, "index.mjs"), "utf8")).toBe(original);
-  await expect(fs.access(path.join(f.copiedPlugin, "new-source.mjs"))).rejects.toMatchObject({
-    code: "ENOENT",
-  });
-});
+it.each(["external file URL", "invalid optional source"])(
+  "preserves a runnable snapshot with %s",
+  async (kind) => {
+    const f = await fixture();
+    const optional = kind === "invalid optional source";
+    const content = optional
+      ? [
+          'import { createRequire } from "node:module";',
+          "const require = createRequire(import.meta.url);",
+          'try { require("#optional"); } catch { console.log("optional-fallback"); }',
+        ].join("\n")
+      : `import value from ${JSON.stringify(pathToFileURL(path.join(f.shared, "value.js")).href)}; console.log(value);`;
+    const original = optional ? "invalid source {{{" : content;
+    const output = optional ? "optional-fallback" : "sibling-ready";
+    await fs.writeFile(f.sourceEntry, original);
+    if (optional) {
+      await fs.writeFile(path.join(f.plugin, "new-source.mjs"), "export const newSource = true;");
+    }
+    await fs.writeFile(f.copiedEntry, content);
+    await expectOutput(f.run, output);
+    expect((await f.repair()).copiedFiles).toBe(0);
+    await expectOutput(f.run, output);
+    expect(await fs.readFile(f.copiedEntry, "utf8")).toBe(content);
+    expect(await fs.readFile(f.sourceEntry, "utf8")).toBe(original);
+    if (optional) {
+      await expectMissing(path.join(f.copiedPlugin, "new-source.mjs"));
+    }
+  },
+);
 
 it("preserves staged bundled aliases while completing an external plugin", async () => {
   const f = await fixture();
@@ -221,7 +228,7 @@ it("preserves staged bundled aliases while completing an external plugin", async
   f.config.plugins!.load!.paths!.push(bundled);
   const pathsBefore = [...f.config.plugins!.load!.paths!];
 
-  expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBeGreaterThan(0);
+  expect((await f.repair()).copiedFiles).toBeGreaterThan(0);
   await expectOutput(f.run);
   expect(f.config.plugins!.load!.paths).toEqual(pathsBefore);
   expect(await fs.readFile(path.join(bundled, "index.mjs"), "utf8")).toBe(stagedBytes);
@@ -244,21 +251,19 @@ it("reports an unresolved dependency whose published projection lost the origina
   await fs.rename(f.copiedPlugin, managed);
   f.config.plugins!.load!.paths = [managed];
 
-  const result = await completeUpdateCandidatePluginRehearsal(f);
+  const result = await f.repair();
   expect(result.copiedFiles).toBe(0);
   expect(result.warnings).toContain(
     `Update checks could not recover the original plugin path for ${path.join(managed, "index.mjs")}.`,
   );
-  await expect(fs.access(path.join(path.dirname(managed), "shared"))).rejects.toMatchObject({
-    code: "ENOENT",
-  });
+  await expectMissing(path.join(path.dirname(managed), "shared"));
 });
 
 it.each(["globally disabled", "disabled entry", "denied", "allowlisted elsewhere"])(
   "does not parse a malformed %s plugin",
   async (kind) => {
     const f = await fixture();
-    await fs.writeFile(path.join(f.copiedPlugin, "index.mjs"), "not valid JavaScript {{{");
+    await fs.writeFile(f.copiedEntry, "not valid JavaScript {{{");
     f.config.plugins = {
       ...f.config.plugins,
       ...(kind === "globally disabled" ? { enabled: false } : {}),
@@ -272,19 +277,17 @@ it.each(["globally disabled", "disabled entry", "denied", "allowlisted elsewhere
 
 it("stops if repair authority ends during asynchronous source preparation", async () => {
   const f = await fixture();
-  const pending = completeUpdateCandidatePluginRehearsal(f);
+  const pending = f.repair();
   f.env.OPENCLAW_UPDATE_IN_PROGRESS = "0";
   await expect(pending).rejects.toThrow("authority changed");
-  await expect(fs.access(f.copiedShared)).rejects.toMatchObject({ code: "ENOENT" });
+  await expectMissing(f.copiedShared);
 });
 
 it("refuses an original index.mjs changed since the published snapshot", async () => {
   const f = await fixture();
-  await fs.appendFile(path.join(f.plugin, "index.mjs"), "\n ");
-  await expect(completeUpdateCandidatePluginRehearsal(f)).rejects.toThrow(
-    "changed since the update snapshot",
-  );
-  await expect(fs.access(f.copiedShared)).rejects.toMatchObject({ code: "ENOENT" });
+  await fs.appendFile(f.sourceEntry, "\n ");
+  await expect(f.repair()).rejects.toThrow("changed since the update snapshot");
+  await expectMissing(f.copiedShared);
 });
 
 it("preserves a conflicting existing dependency instead of replacing it", async () => {
@@ -293,9 +296,7 @@ it("preserves a conflicting existing dependency instead of replacing it", async 
   await fs.mkdir(f.copiedShared, { recursive: true });
   const privateContent = 'export { default } from "./nested/value.mjs"; // private changes\n';
   await fs.writeFile(conflicting, privateContent);
-  await expect(completeUpdateCandidatePluginRehearsal(f)).rejects.toThrow(
-    "changed since the update snapshot",
-  );
+  await expect(f.repair()).rejects.toThrow("changed since the update snapshot");
   expect(await fs.readFile(conflicting, "utf8")).toBe(privateContent);
 });
 
@@ -320,15 +321,13 @@ it.each(["undeclared", "dependencies"])(
       path.join(vendor, "index.cjs"),
       `exports.optional = () => { try { return require(${JSON.stringify(name)}); } catch { return 'fallback'; } };`,
     );
-    await fs.writeFile(path.join(f.copiedPlugin, "index.mjs"), 'import "vendor";');
+    await fs.writeFile(f.copiedEntry, 'import "vendor";');
 
     if (declaration !== "undeclared") {
-      await expect(completeUpdateCandidatePluginRehearsal(f)).rejects.toThrow(
-        "outside the temporary update copy",
-      );
+      await expect(f.repair()).rejects.toThrow("outside the temporary update copy");
       return;
     }
-    const result = await completeUpdateCandidatePluginRehearsal(f);
+    const result = await f.repair();
     expect(result.copiedFiles).toBe(0);
     expect(result.warnings).toEqual([
       expect.stringContaining(
@@ -337,13 +336,13 @@ it.each(["undeclared", "dependencies"])(
     ]);
     // Rehearsal inspection must never acquire or parse unrelated ancestor source.
     await fs.writeFile(path.join(ancestor, "index.cjs"), "invalid JavaScript {{{");
-    expect(await completeUpdateCandidatePluginRehearsal(f)).toEqual(result);
+    expect(await f.repair()).toEqual(result);
 
     const internal = path.join(vendor, "node_modules", name);
     await fs.mkdir(internal, { recursive: true });
     await fs.copyFile(path.join(ancestor, "package.json"), path.join(internal, "package.json"));
     await fs.writeFile(path.join(internal, "index.cjs"), "module.exports = 'private';");
-    expect(await completeUpdateCandidatePluginRehearsal(f)).toEqual({
+    expect(await f.repair()).toEqual({
       copiedFiles: 0,
       warnings: [],
     });
@@ -360,7 +359,7 @@ it.each(["relative", "package", "absolute", "file URL"])(
         const target = path.join(f.copiedShared, "value.js");
         const specifier = kind === "file URL" ? pathToFileURL(target).href : target;
         await fs.writeFile(
-          path.join(f.copiedPlugin, "index.mjs"),
+          f.copiedEntry,
           `import value from ${JSON.stringify(specifier)}; console.log(value);`,
         );
       }
@@ -369,14 +368,12 @@ it.each(["relative", "package", "absolute", "file URL"])(
       await fs.mkdir(modules);
       await fs.symlink(f.shared, path.join(modules, "proof-shared"), "junction");
       await fs.writeFile(
-        path.join(f.copiedPlugin, "index.mjs"),
+        f.copiedEntry,
         'import value from "proof-shared/value.js"; console.log(value);',
       );
     }
     const original = await fs.readFile(path.join(f.shared, "value.js"));
-    await expect(completeUpdateCandidatePluginRehearsal(f)).rejects.toThrow(
-      "outside the temporary update copy",
-    );
+    await expect(f.repair()).rejects.toThrow("outside the temporary update copy");
     expect(await fs.readFile(path.join(f.shared, "value.js"))).toEqual(original);
   },
 );

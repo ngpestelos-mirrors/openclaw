@@ -1,4 +1,3 @@
-import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { readDirectoryIdentity } from "@openclaw/fs-safe/advanced";
@@ -122,51 +121,43 @@ it.each(["auto", "off"] as const)(
   },
 );
 
-it.each(["root", "ancestor"] as const)(
-  "rejects a replaced %s before a worker can admit a new destination",
+it.each(["root", "ancestor", "destination", "source"] as const)(
+  "refuses a changed %s across the copy worker boundary",
   async (replacement) => {
     const f = await fixture();
     const retired = path.join(f.base, "retired");
     if (replacement === "root") {
       await fs.rename(f.privateRoot, retired);
       await fs.mkdir(f.destination, { recursive: true });
-    } else {
+    } else if (replacement === "ancestor") {
       await fs.rename(f.owner, retired);
       await fs.symlink(retired, f.owner, "junction");
+    } else if (replacement === "destination") {
+      await fs.writeFile(f.request.destination, "existing private bytes");
+    } else {
+      await fs.chmod(f.request.entry.path, 0o600);
+      await fs.writeFile(f.request.entry.path, "altered payload!");
     }
     await withWorker(async (worker) => {
       const reply = await worker.run(f.request, {});
       expect(reply.type).toBe("failed");
-      expect(await fs.readdir(f.destination)).toEqual([]);
-      expect(await fs.readFile(f.request.entry.path, "utf8")).toBe("plugin payload 0");
+      expect(await fs.readdir(f.destination)).toEqual(
+        replacement === "destination" ? ["0.txt"] : [],
+      );
+      if (replacement === "source") {
+        expect(reply).toMatchObject({
+          error: { message: expect.stringContaining("changed after snapshot inventory") },
+        });
+      } else {
+        expect(await fs.readFile(f.request.entry.path, "utf8")).toBe("plugin payload 0");
+      }
+      if (replacement === "destination") {
+        expect(reply).toMatchObject({ code: "already-exists" });
+        expect(await fs.readFile(f.request.destination, "utf8")).toBe("existing private bytes");
+      }
     });
   },
 );
-
-it("preserves create-only copy diagnostics across the worker boundary", async () => {
-  const f = await fixture();
-  await fs.writeFile(f.request.destination, "existing private bytes");
-  await withWorker(async (worker) => {
-    const reply = await worker.run(f.request, {});
-    expect(reply).toMatchObject({ type: "failed", code: "already-exists" });
-    expect(await fs.readFile(f.request.destination, "utf8")).toBe("existing private bytes");
-    expect(await fs.readFile(f.request.entry.path, "utf8")).toBe("plugin payload 0");
-  });
-});
-
-it("rejects source changes after the parent freezes the inventory", async () => {
-  const f = await fixture();
-  await fs.chmod(f.request.entry.path, 0o600);
-  await fs.writeFile(f.request.entry.path, "altered payload!");
-  await withWorker(async (worker) => {
-    const reply = await worker.run(f.request, {});
-    expect(reply).toMatchObject({
-      type: "failed",
-      error: { message: expect.stringContaining("changed after snapshot inventory") },
-    });
-    expect(await fs.readdir(f.destination)).toEqual([]);
-  });
-});
 
 it.each(["file", "parent"] as const)(
   "rejects a replaced source %s through the actual hash worker",
@@ -176,17 +167,7 @@ it.each(["file", "parent"] as const)(
     const request: UpdateCandidatePluginHashRequest = {
       type: "snapshot-hash",
       filePath: entry.path,
-      expected: {
-        dev: BigInt(entry.dev),
-        ino: BigInt(entry.ino),
-        size: BigInt(entry.size),
-        birthtimeNs: BigInt(entry.birthtimeNs),
-        mtimeNs: BigInt(entry.mtimeNs),
-        ctimeNs: BigInt(entry.ctimeNs),
-        mode: BigInt(entry.mode | constants.S_IFREG),
-        uid: BigInt(entry.uid),
-        gid: BigInt(entry.gid),
-      },
+      expected: await fs.lstat(entry.path, { bigint: true }),
     };
     await withWorker<UpdateCandidatePluginHashRequest, UpdateCandidatePluginHashReply>(
       async (worker) => {

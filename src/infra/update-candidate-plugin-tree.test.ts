@@ -16,7 +16,10 @@ import {
 import { linkUpdateCandidatePluginTrees } from "./update-retained-runtime-tree.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 async function expectText(file: string, text = "inventoried plugin bytes") {
   expect(await fs.readFile(file, "utf8")).toBe(text);
@@ -25,6 +28,16 @@ async function expectText(file: string, text = "inventoried plugin bytes") {
 async function write(file: string, content: string) {
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, content);
+}
+
+async function link(target: string, file: string, type?: fsSync.symlink.Type) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.symlink(target, file, type);
+}
+
+type Stat = fsSync.BigIntStats;
+function sameStatFields(actual: Stat, expected: Stat, fields: (keyof Stat)[]) {
+  expect(actual).toMatchObject(Object.fromEntries(fields.map((key) => [key, expected[key]])));
 }
 
 async function fixture(hardlink = false, beforePlan?: (source: string) => Promise<void>) {
@@ -50,6 +63,8 @@ async function fixture(hardlink = false, beforePlan?: (source: string) => Promis
   });
   return {
     file,
+    copied: path.join(destination, "payload.txt"),
+    capture: path.join(root, "native-capture"),
     destination,
     plan,
     retain: () =>
@@ -62,42 +77,41 @@ async function fixture(hardlink = false, beforePlan?: (source: string) => Promis
   };
 }
 
-function atCopyBoundary(mutate: () => void, phase: "admission" | "mutation" = "mutation") {
+type CopyIn = Awaited<ReturnType<typeof fsSafe.root>>["copyIn"];
+function interceptCopies(wrap: (copy: CopyIn) => CopyIn) {
   const openRoot = fsSafe.root;
   vi.spyOn(fsSafe, "root").mockImplementation(async (...args) => {
     const root = await openRoot(...args);
-    const copyIn = root.copyIn.bind(root);
-    vi.spyOn(root, "copyIn").mockImplementation((relative, source, options) => {
-      if (phase === "admission") {
-        mutate();
-        return copyIn(relative, source, options);
-      }
-      return copyIn(relative, source, {
-        ...options,
-        assertBeforeMutation: () => {
-          mutate();
-          options?.assertBeforeMutation?.();
-        },
-      });
-    });
+    vi.spyOn(root, "copyIn").mockImplementation(wrap(root.copyIn.bind(root)));
     return root;
   });
 }
 
-function onceAtCopyBoundary(mutate: () => void, phase?: "admission" | "mutation") {
-  let called = false;
-  atCopyBoundary(() => {
-    if (called) {
-      return;
+function onceAtCopyBoundary(mutate: () => void, phase: "admission" | "mutation" = "mutation") {
+  const mutation = vi.fn(mutate);
+  const once = () => {
+    if (!mutation.mock.calls.length) {
+      mutation();
     }
-    called = true;
-    mutate();
-  }, phase);
-  return () => expect(called).toBe(true);
+  };
+  interceptCopies((copyIn) => (relative, source, options) => {
+    if (phase === "admission") {
+      once();
+      return copyIn(relative, source, options);
+    }
+    return copyIn(relative, source, {
+      ...options,
+      assertBeforeMutation: () => {
+        once();
+        options?.assertBeforeMutation?.();
+      },
+    });
+  });
+  return () => expect(mutation).toHaveBeenCalledOnce();
 }
 
 it.for([".MODULES.YAML", ".moduleſ.yaml"])(
-  "discovers external stores through the filesystem metadata alias %s",
+  "discovers external stores through alias %s",
   async (alias, context) => {
     let store = "";
     const f = await fixture(false, async (source) => {
@@ -156,32 +170,21 @@ it.each(["auto", "off"] as const)(
     const linked = `${f.file}.linked`;
     const before = await fs.stat(f.file, { bigint: true });
     const mkdir = vi.spyOn(fs, "mkdir");
+    // FreeBSD has no native binding; "off" exercises the real portable fallback.
     vi.stubEnv("FS_SAFE_NATIVE_MODE", nativeMode);
-    try {
-      // FreeBSD has no native binding; "off" exercises the real portable fallback.
-      expect(getFsSafeNativeConfig().mode).toBe(nativeMode);
-      await f.copy();
-    } finally {
-      vi.unstubAllEnvs();
-    }
+    expect(getFsSafeNativeConfig().mode).toBe(nativeMode);
+    await f.copy();
     expect(mkdir.mock.calls.length).toBeLessThanOrEqual(
       f.plan.entries.filter((entry) => entry.kind === "directory").length + 1,
     );
     for (let index = 0; index < 8; index++) {
       await expectText(path.join(f.destination, "nested", `${index}.txt`), `payload ${index}`);
     }
-    const copied = path.join(f.destination, "payload.txt");
     const after = await fs.stat(f.file, { bigint: true });
-    const snapshot = await fs.stat(copied, { bigint: true });
-    await expectText(copied);
+    const snapshot = await fs.stat(f.copied, { bigint: true });
+    await expectText(f.copied);
     await expectText(linked);
-    expect(after).toMatchObject({
-      ino: before.ino,
-      mode: before.mode,
-      size: before.size,
-      mtimeNs: before.mtimeNs,
-      ctimeNs: before.ctimeNs,
-    });
+    sameStatFields(after, before, ["ino", "mode", "size", "mtimeNs", "ctimeNs"]);
     expect(snapshot.ino).not.toBe(before.ino);
     expect(snapshot.nlink).toBe(1n);
     if (process.platform !== "win32") {
@@ -192,8 +195,8 @@ it.each(["auto", "off"] as const)(
       "payload.txt",
       "payload.txt.linked",
     ]);
-    await fs.chmod(copied, 0o600);
-    await fs.writeFile(copied, "private candidate changes");
+    await fs.chmod(f.copied, 0o600);
+    await fs.writeFile(f.copied, "private candidate changes");
     await expectText(f.file);
     await expectText(linked);
     expect((await fs.stat(f.file, { bigint: true })).mode).toBe(before.mode);
@@ -202,10 +205,10 @@ it.each(["auto", "off"] as const)(
 );
 
 it.each(["file", "symlink"] as const)(
-  "preserves a %s that appears after planning before copy admission",
+  "preserves a %s inserted before copy admission",
   async (kind) => {
     const f = await fixture();
-    const target = path.join(f.destination, "payload.txt");
+    const target = f.copied;
     const expectInserted = onceAtCopyBoundary(() => {
       if (kind === "file") {
         fsSync.writeFileSync(target, "existing private bytes", { flag: "wx" });
@@ -230,55 +233,47 @@ it.each([
   "same-size content with changed mtime",
   "same-size content with restored mtime",
   "identity",
-] as const)(
-  "refuses %s changes at the copy mutation boundary before exposing plugin bytes",
-  async (change) => {
-    const advanceCtime = createFileMutationClock();
-    const f = await fixture(false, async (source) => {
-      // Use a representable time so restored-mtime coverage cannot pass on rounding.
-      await fs.utimes(path.join(source, "payload.txt"), 1_700_000_000, 1_700_000_000);
-    });
-    const expectMutated = onceAtCopyBoundary(() => {
-      if (change === "identity") {
-        fsSync.renameSync(f.file, `${f.file}.original`);
-        fsSync.writeFileSync(f.file, "inventoried plugin bytes", { mode: 0o444 });
-      } else if (change === "mode") {
-        fsSync.chmodSync(f.file, 0o600);
-      } else {
-        const before = fsSync.lstatSync(f.file, { bigint: true });
-        fsSync.chmodSync(f.file, 0o600);
-        fsSync.writeFileSync(f.file, "altered but equal bytes!");
-        fsSync.chmodSync(f.file, 0o444);
-        // A same-tick rewrite can retain its timestamps; force a real fingerprint change.
-        fsSync.utimesSync(
-          f.file,
-          before.atime,
-          change === "same-size content with restored mtime"
-            ? before.mtime
-            : new Date(before.mtime.getTime() + 60_000),
-        );
-        advanceCtime(before);
-        const changed = fsSync.lstatSync(f.file, { bigint: true });
-        expect(changed.ctimeNs).not.toBe(before.ctimeNs);
-        expect(changed).toMatchObject({
-          dev: before.dev,
-          ino: before.ino,
-          size: before.size,
-          mode: before.mode,
-        });
-        expect(changed.mtimeNs === before.mtimeNs).toBe(
-          change === "same-size content with restored mtime",
-        );
-      }
-    });
-    await expect(f.copy()).rejects.toThrow("changed after snapshot inventory");
-    expectMutated();
-    expect(await fs.readdir(f.destination)).toEqual([]);
-  },
-);
+] as const)("rejects %s mutation before exposing bytes", async (change) => {
+  const advanceCtime = createFileMutationClock();
+  const f = await fixture(false, async (source) => {
+    // Use a representable time so restored-mtime coverage cannot pass on rounding.
+    await fs.utimes(path.join(source, "payload.txt"), 1_700_000_000, 1_700_000_000);
+  });
+  const expectMutated = onceAtCopyBoundary(() => {
+    if (change === "identity") {
+      fsSync.renameSync(f.file, `${f.file}.original`);
+      fsSync.writeFileSync(f.file, "inventoried plugin bytes", { mode: 0o444 });
+    } else if (change === "mode") {
+      fsSync.chmodSync(f.file, 0o600);
+    } else {
+      const before = fsSync.lstatSync(f.file, { bigint: true });
+      fsSync.chmodSync(f.file, 0o600);
+      fsSync.writeFileSync(f.file, "altered but equal bytes!");
+      fsSync.chmodSync(f.file, 0o444);
+      // A same-tick rewrite can retain its timestamps; force a real fingerprint change.
+      fsSync.utimesSync(
+        f.file,
+        before.atime,
+        change === "same-size content with restored mtime"
+          ? before.mtime
+          : new Date(before.mtime.getTime() + 60_000),
+      );
+      advanceCtime(before);
+      const changed = fsSync.lstatSync(f.file, { bigint: true });
+      expect(changed.ctimeNs).not.toBe(before.ctimeNs);
+      sameStatFields(changed, before, ["dev", "ino", "size", "mode"]);
+      expect(changed.mtimeNs === before.mtimeNs).toBe(
+        change === "same-size content with restored mtime",
+      );
+    }
+  });
+  await expect(f.copy()).rejects.toThrow("changed after snapshot inventory");
+  expectMutated();
+  expect(await fs.readdir(f.destination)).toEqual([]);
+});
 
 it.each(["copy", "retain"] as const)(
-  "allows hard-link add, remove, and round-trip churn after inventory during %s",
+  "allows inventoried hard-link add/remove/round-trip during %s",
   async (materialize) => {
     const advanceCtime = createFileMutationClock();
     for (const change of ["add", "remove", "round-trip"]) {
@@ -299,7 +294,7 @@ it.each(["copy", "retain"] as const)(
       advanceCtime(before);
       const after = await fs.lstat(f.file, { bigint: true });
       expect(after.ctimeNs).not.toBe(before.ctimeNs);
-      for (const field of [
+      sameStatFields(after, before, [
         "dev",
         "ino",
         "mode",
@@ -308,34 +303,27 @@ it.each(["copy", "retain"] as const)(
         "size",
         "birthtimeNs",
         "mtimeNs",
-      ] as const) {
-        expect(after[field]).toBe(before[field]);
-      }
+      ]);
       await f[materialize]();
-      await expectText(path.join(f.destination, "payload.txt"));
+      await expectText(f.copied);
     }
   },
 );
 
 it.each(["auto", "off"] as const)(
-  "accepts a concurrent native hard-link capture at copy publication with native copying %s",
+  "accepts concurrent hard-link capture with native copying %s",
   async (nativeMode) => {
     const f = await fixture();
     const expectLinked = onceAtCopyBoundary(() => {
-      fsSync.linkSync(f.file, path.join(path.dirname(path.dirname(f.file)), "native-capture"));
+      fsSync.linkSync(f.file, f.capture);
     });
     vi.stubEnv("FS_SAFE_NATIVE_MODE", nativeMode);
-    try {
-      await f.copy();
-      expectLinked();
-      const copied = path.join(f.destination, "payload.txt");
-      await expectText(copied);
-      expect((await fs.lstat(copied, { bigint: true })).ino).not.toBe(
-        (await fs.lstat(f.file, { bigint: true })).ino,
-      );
-    } finally {
-      vi.unstubAllEnvs();
-    }
+    await f.copy();
+    expectLinked();
+    await expectText(f.copied);
+    expect((await fs.lstat(f.copied, { bigint: true })).ino).not.toBe(
+      (await fs.lstat(f.file, { bigint: true })).ino,
+    );
   },
 );
 
@@ -380,7 +368,7 @@ it.skipIf(process.platform !== "linux")(
         await fs.utimes(path.join(source, "payload.txt"), 1_700_000_000, 1_700_000_000);
       });
       const before = await fs.lstat(f.file, { bigint: true });
-      await fs.link(f.file, path.join(path.dirname(path.dirname(f.file)), "native-capture"));
+      await fs.link(f.file, f.capture);
       if (change === "content") {
         await fs.chmod(f.file, 0o600);
         await fs.writeFile(f.file, "altered but equal bytes!");
@@ -397,7 +385,7 @@ it.skipIf(process.platform !== "linux")(
       expect((await fs.lstat(f.file, { bigint: true })).ctimeNs).not.toBe(before.ctimeNs);
       if (change === "link") {
         await f.copy();
-        await expectText(path.join(f.destination, "payload.txt"));
+        await expectText(f.copied);
       } else {
         await expect(f.copy()).rejects.toThrow("changed after snapshot inventory");
       }
@@ -419,45 +407,37 @@ it("drains concurrent file copies before reporting a failure or publishing links
   const settled = new Set<string>();
   const inFlight: Promise<void>[] = [];
   let settledAtRejection: string[] = [];
-  const openRoot = fsSafe.root;
-  vi.spyOn(fsSafe, "root").mockImplementation(async (...args) => {
-    const root = await openRoot(...args);
-    const copyIn = root.copyIn.bind(root);
-    vi.spyOn(root, "copyIn").mockImplementation((relative, source, options) => {
-      const first = started.length === 0;
-      started.push(relative);
-      if (started.length === 2) {
-        peerEntered.resolve();
-      }
-      const copying = (async () => {
-        try {
-          await peerEntered.promise;
-          if (first) {
-            await fs.writeFile(
-              path.join(f.destination, path.basename(relative)),
-              "existing bytes",
-              { flag: "wx" },
-            );
-          } else {
-            await releasePeers.promise;
-          }
-          await copyIn(relative, source, options);
-          if (first) {
-            throw new Error("Expected the real copy to reject its occupied destination");
-          }
-        } catch (error) {
-          if (first) {
-            firstFailure.resolve(error);
-          }
-          throw error;
-        } finally {
-          settled.add(relative);
+  interceptCopies((copyIn) => (relative, source, options) => {
+    const first = started.length === 0;
+    started.push(relative);
+    if (started.length === 2) {
+      peerEntered.resolve();
+    }
+    const copying = (async () => {
+      try {
+        await peerEntered.promise;
+        if (first) {
+          await fs.writeFile(path.join(f.destination, path.basename(relative)), "existing bytes", {
+            flag: "wx",
+          });
+        } else {
+          await releasePeers.promise;
         }
-      })();
-      inFlight.push(copying);
-      return copying;
-    });
-    return root;
+        await copyIn(relative, source, options);
+        if (first) {
+          throw new Error("Expected the real copy to reject its occupied destination");
+        }
+      } catch (error) {
+        if (first) {
+          firstFailure.resolve(error);
+        }
+        throw error;
+      } finally {
+        settled.add(relative);
+      }
+    })();
+    inFlight.push(copying);
+    return copying;
   });
   const copying = f.copy().catch((error: unknown) => {
     settledAtRejection = [...settled];
@@ -602,36 +582,26 @@ it("copies a linked workspace dependency without reading or changing Git update 
   let abandoned = "";
   let rollback = "";
   const sdkLink = "../../../../packages/plugin-sdk";
-  const required = "store.openclaw-update-00000000-0000-4000-8000-000000000011.tmp";
+  const transaction = (name: string, id: string) => `${name}.openclaw-update-${id}.tmp`;
+  const required = transaction("store", "00000000-0000-4000-8000-000000000011");
   const f = await fixture(false, async (source) => {
     const workspace = path.join(path.dirname(source), "workspace");
     dependency = path.join(workspace, "extensions", "a2a");
     const sdk = path.join(workspace, "packages", "plugin-sdk");
-    await fs.mkdir(path.join(dependency, "node_modules", "@openclaw"), { recursive: true });
-    await fs.mkdir(sdk, { recursive: true });
-    await fs.writeFile(path.join(sdk, "package.json"), '{"name":"@openclaw/plugin-sdk"}');
-    await fs.writeFile(path.join(dependency, "package.json"), '{"name":"workspace-dependency"}');
-    await fs.writeFile(path.join(dependency, "data.txt"), "live dependency");
-    await fs.symlink(sdkLink, path.join(dependency, "node_modules", "@openclaw", "plugin-sdk"));
-    await fs.mkdir(path.join(source, "node_modules"));
-    await fs.symlink(
-      dependency,
-      path.join(source, "node_modules", "workspace-dependency"),
-      "junction",
-    );
+    await write(path.join(sdk, "package.json"), '{"name":"@openclaw/plugin-sdk"}');
+    await write(path.join(dependency, "package.json"), '{"name":"workspace-dependency"}');
+    await write(path.join(dependency, "data.txt"), "live dependency");
+    await link(sdkLink, path.join(dependency, "node_modules", "@openclaw", "plugin-sdk"));
+    await link(dependency, path.join(source, "node_modules", "workspace-dependency"), "junction");
 
     // Promotion links describe the final destination, not the intermediate candidate directory.
     abandoned = path.join(
       dependency,
-      "node_modules.openclaw-update-00000000-0000-4000-8000-000000000009.tmp",
+      transaction("node_modules", "00000000-0000-4000-8000-000000000009"),
     );
     const stagedSdk = path.join(abandoned, "candidate", "@openclaw", "plugin-sdk");
-    await fs.mkdir(path.dirname(stagedSdk), { recursive: true });
-    await fs.symlink(sdkLink, stagedSdk);
-    rollback = path.join(
-      dependency,
-      "dist.openclaw-update-00000000-0000-4000-8000-000000000010.tmp",
-    );
+    await link(sdkLink, stagedSdk);
+    rollback = path.join(dependency, transaction("dist", "00000000-0000-4000-8000-000000000010"));
     await write(path.join(rollback, "previous", "keep.txt"), "rollback bytes");
     await write(path.join(dependency, "ordinary.tmp", "asset.txt"), "plugin asset");
     await write(path.join(source, required, "required.txt"), "explicit dependency");
