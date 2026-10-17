@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../shared/deferred.js";
 import * as stateWorker from "../state/openclaw-state-worker-store.js";
+import type { DomainScope } from "../state/openclaw-state-worker-store.types.js";
 import { useStateDatabaseTempDirs } from "../test-utils/state-database-temp-dirs.js";
 import { submitGithubIssue, type RunGithubCli } from "./github-issue.js";
 import {
@@ -26,6 +27,22 @@ const authSuccess: Awaited<ReturnType<RunGithubCli>> = {
   status: 0,
   stdout: Buffer.alloc(0),
 };
+
+function wrapWorkerExecute(wrap: (execute: DomainScope["execute"]) => DomainScope["execute"]) {
+  const run = stateWorker.runOpenClawStateWorkerOperation;
+  vi.spyOn(stateWorker, "runOpenClawStateWorkerOperation").mockImplementation(
+    (context, operation, options) =>
+      run(context, (scope) => operation({ execute: wrap(scope.execute) }), options),
+  );
+}
+
+async function expectUnpublished(fixture: Awaited<ReturnType<typeof setup>>) {
+  expect(fixture.createCalls).toHaveLength(0);
+  expect(await fixture.receipt()).toBeNull();
+  await expect(fs.stat(`${fixture.stateDir}/update-reports`)).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+}
 
 async function setup() {
   const stateDir = tempDirs.make("openclaw-report-transport-");
@@ -82,29 +99,18 @@ describe("update report shared transport boundary", () => {
     "recovers $operation from its native commit receipt without replay",
     async ({ operation, publicationMode }) => {
       const fixture = await setup();
-      const run = stateWorker.runOpenClawStateWorkerOperation;
       let executions = 0;
-      vi.spyOn(stateWorker, "runOpenClawStateWorkerOperation").mockImplementation(
-        (context, operationBody, options) =>
-          run(
-            context,
-            (scope) =>
-              operationBody({
-                execute: async (command, executeOptions) => {
-                  const result = await scope.execute(command, executeOptions);
-                  if (command.type === operation) {
-                    executions += 1;
-                    throw new SqliteWorkerError(
-                      "Ordinary reply lost after native settlement",
-                      "outcome-unknown",
-                    );
-                  }
-                  return result;
-                },
-              }),
-            options,
-          ),
-      );
+      wrapWorkerExecute((execute) => async (command, options) => {
+        const result = await execute(command, options);
+        if (command.type === operation) {
+          executions += 1;
+          throw new SqliteWorkerError(
+            "Ordinary reply lost after native settlement",
+            "outcome-unknown",
+          );
+        }
+        return result;
+      });
       const result = await fixture.submit({ publicationMode });
       expect(result.status).toBe(publicationMode === "host" ? "created" : "fallback");
       expect(executions).toBe(1);
@@ -119,31 +125,17 @@ describe("update report shared transport boundary", () => {
     "retries only a proven lock refusal before mutation (%s)",
     async (failure) => {
       const fixture = await setup();
-      const run = stateWorker.runOpenClawStateWorkerOperation;
       let preparations = 0;
-      vi.spyOn(stateWorker, "runOpenClawStateWorkerOperation").mockImplementation(
-        (context, operation, options) =>
-          run(
-            context,
-            (scope) =>
-              operation({
-                execute: async (command, executeOptions) => {
-                  if (command.type === "restartSentinel.markPrepared") {
-                    preparations += 1;
-                    if (preparations === 1) {
-                      throw failure === "unknown"
-                        ? new SqliteWorkerError("Mutation outcome unavailable", "outcome-unknown")
-                        : Object.assign(new Error("Database locked before transaction admission"), {
-                            code: "SQLITE_BUSY",
-                          });
-                    }
-                  }
-                  return scope.execute(command, executeOptions);
-                },
-              }),
-            options,
-          ),
-      );
+      wrapWorkerExecute((execute) => async (command, options) => {
+        if (command.type === "restartSentinel.markPrepared" && ++preparations === 1) {
+          throw failure === "unknown"
+            ? new SqliteWorkerError("Mutation outcome unavailable", "outcome-unknown")
+            : Object.assign(new Error("Database locked before transaction admission"), {
+                code: "SQLITE_BUSY",
+              });
+        }
+        return execute(command, options);
+      });
       const result = await fixture.submit();
       expect(result.status).toBe(failure === "unknown" ? "retryable" : "created");
       expect(preparations).toBe(failure === "unknown" ? 1 : 2);
@@ -365,11 +357,7 @@ describe("update report shared transport boundary", () => {
       })
       .catch((error: unknown) => error);
     expect.soft(result).toBeInstanceOf(Error);
-    expect.soft(fixture.createCalls).toHaveLength(0);
-    expect.soft(await fixture.receipt()).toBeNull();
-    await expect(fs.stat(`${fixture.stateDir}/update-reports`)).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+    await expectUnpublished(fixture);
   });
 
   it.each(["authority", "attempt"] as const)(
@@ -404,11 +392,7 @@ describe("update report shared transport boundary", () => {
           expect(result).toMatchObject({ status: "stale" });
         }
         expect(fixture.runGh).toHaveBeenCalledOnce();
-        expect(fixture.createCalls).toHaveLength(0);
-        expect(await fixture.receipt()).toBeNull();
-        await expect(fs.stat(`${fixture.stateDir}/update-reports`)).rejects.toMatchObject({
-          code: "ENOENT",
-        });
+        await expectUnpublished(fixture);
       } finally {
         released.resolve();
         await observed;

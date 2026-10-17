@@ -16,6 +16,20 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+function inspect(root: string, inventory: string) {
+  vi.spyOn(exec, "runCommandBuffered").mockResolvedValue(result(inventory));
+  return withMockedPlatform("freebsd", () =>
+    createSystemPackageOwnershipInspection(1000).assertUnowned(root),
+  );
+}
+
+function expectWarning(onWarning: ReturnType<typeof vi.fn>, text: string) {
+  expect(onWarning).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(text));
+  expect(onWarning.mock.calls[0]?.[0]).not.toMatch(
+    /private database|private configuration|\/fixture|private path|fixture-secret|PRIVATE_CUSTOM_CODE/u,
+  );
+}
+
 describe("system package ownership", () => {
   it("uses one non-bootstrap, alias-pinned inventory for a planning snapshot", async () => {
     await withTestDir({ prefix: "openclaw-pkg-inventory-" }, async (base) => {
@@ -46,12 +60,7 @@ describe("system package ownership", () => {
         await expect(inspection.assertEntryUnowned("/fixture/launcher")).resolves.toBeUndefined();
       });
       expect(runCommand).toHaveBeenCalledOnce();
-      expect(onWarning).toHaveBeenCalledExactlyOnceWith(
-        expect.stringContaining("Continuing without verified system-package ownership"),
-      );
-      expect(onWarning.mock.calls[0]?.[0]).not.toMatch(
-        /private database|private configuration|\/fixture/u,
-      );
+      expectWarning(onWarning, "Continuing without verified system-package ownership");
     }
     expect(host).not.toHaveBeenCalled();
   });
@@ -88,13 +97,8 @@ describe("system package ownership", () => {
       const alias = path.join(base, "alias");
       await fs.symlink(prefix, alias, "dir");
       const registeredRoot = path.join(alias, "lib", "node_modules", "openclaw");
-      vi.spyOn(exec, "runCommandBuffered").mockResolvedValue(
-        result(`${registeredRoot}/package.json\n`),
-      );
-      await withMockedPlatform("freebsd", async () => {
-        await expect(
-          createSystemPackageOwnershipInspection(1000).assertUnowned(root),
-        ).rejects.toMatchObject({ reason: "pkg-owned-install" });
+      await expect(inspect(root, `${registeredRoot}/package.json\n`)).rejects.toMatchObject({
+        reason: "pkg-owned-install",
       });
     });
   });
@@ -106,10 +110,7 @@ describe("system package ownership", () => {
       await fs.writeFile(path.join(root, "openclaw.mjs"), "fixture");
       const launcher = path.join(base, "launcher");
       await fs.symlink(path.join(root, "openclaw.mjs"), launcher);
-      vi.spyOn(exec, "runCommandBuffered").mockResolvedValue(result(`${launcher}\n`));
-      await withMockedPlatform("freebsd", () =>
-        createSystemPackageOwnershipInspection(1000).assertUnowned(root),
-      );
+      await inspect(root, `${launcher}\n`);
     });
   });
 
@@ -121,13 +122,10 @@ describe("system package ownership", () => {
       await fs.mkdir(target, { recursive: true });
       await fs.symlink(target, path.join(prefix, "openclaw"), "dir");
       await fs.symlink(prefix, path.join(base, "alias"), "dir");
-      vi.spyOn(exec, "runCommandBuffered").mockResolvedValue(result(`${prefix}/openclaw\n`));
-      await withMockedPlatform("freebsd", async () => {
-        await expect(
-          createSystemPackageOwnershipInspection(1000).assertUnowned(
-            path.join(base, "alias", "openclaw"),
-          ),
-        ).rejects.toMatchObject({ reason: "pkg-owned-install" });
+      await expect(
+        inspect(path.join(base, "alias", "openclaw"), `${prefix}/openclaw\n`),
+      ).rejects.toMatchObject({
+        reason: "pkg-owned-install",
       });
     });
   });
@@ -148,10 +146,7 @@ describe("system package ownership", () => {
           ),
         ).resolves.toBeUndefined();
       });
-      expect(onWarning).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("lstat"));
-      expect(onWarning.mock.calls[0]?.[0]).not.toMatch(
-        /private path|fixture-secret|PRIVATE_CUSTOM_CODE/u,
-      );
+      expectWarning(onWarning, "lstat");
     });
   });
 
@@ -178,9 +173,7 @@ describe("system package ownership", () => {
       rejectLookup?.(Object.assign(new Error("missing"), { code: "ENOENT" }));
       await vi.advanceTimersByTimeAsync(0);
       await expect(inspection.assertUnowned("/another/root")).resolves.toBeUndefined();
-      expect(onWarning).toHaveBeenCalledExactlyOnceWith(
-        expect.stringContaining("exhausted its shared 100 ms budget"),
-      );
+      expectWarning(onWarning, "exhausted its shared 100 ms budget");
     });
     expect(query).toHaveBeenCalledTimes(1);
     expect(lookup).toHaveBeenCalledTimes(1);
@@ -208,9 +201,7 @@ describe("system package ownership", () => {
         const inspection = createSystemPackageOwnershipInspection(100, { onWarning });
         await expect(inspection.assertUnowned("/fixture/openclaw")).resolves.toBeUndefined();
         await expect(inspection.assertUnowned("/another/root")).resolves.toBeUndefined();
-        expect(onWarning).toHaveBeenCalledExactlyOnceWith(
-          expect.stringContaining("exhausted its shared 100 ms budget"),
-        );
+        expectWarning(onWarning, "exhausted its shared 100 ms budget");
         // Let the test runner observe any rejection orphaned by deadline admission.
         await new Promise<void>((resolve) => {
           setImmediate(resolve);
@@ -235,9 +226,7 @@ describe("system package ownership", () => {
         ),
       ).resolves.toBeUndefined();
       await Promise.all([pending, vi.advanceTimersByTimeAsync(30_000)]);
-      expect(onWarning).toHaveBeenCalledExactlyOnceWith(
-        expect.stringContaining("exhausted its shared 30000 ms budget during pkg query"),
-      );
+      expectWarning(onWarning, "exhausted its shared 30000 ms budget during pkg query");
     });
     expect(query).toHaveBeenCalledWith(
       expect.any(Array),

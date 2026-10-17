@@ -24,20 +24,46 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+function doctorFixture() {
+  const root = fs.realpathSync(directories.make("doctor-custody-"));
+  const privateTmp = path.join(root, "private-tmp");
+  fs.mkdirSync(privateTmp, { mode: 0o700 });
+  const { databasePath } = installPrivateUpdateHandoffStore(privateTmp);
+  const resultPath = path.join(root, "result.json");
+  vi.stubEnv(UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV, resultPath);
+  vi.spyOn(packageRoot, "resolveOpenClawPackageRoot").mockResolvedValue(root);
+  return { root, privateTmp, databasePath, resultPath, receiptPath: `${resultPath}.processes` };
+}
+
+function nativeStore(
+  native: Awaited<ReturnType<typeof nativeCustody.createManagedCommandProcessCustody>>,
+) {
+  return createManagedHandoffLeaseStore({
+    databasePath: native.databasePath,
+    existingIdentity: native.databaseIdentity,
+    serviceManagerEnv: {},
+  });
+}
+
+function readReceipt(file: string) {
+  return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+async function nativeFixture(runId: string, paired = false) {
+  const root = fs.realpathSync(directories.make("doctor-native-"));
+  const roots = paired ? [root, path.join(root, "candidate")] : [root];
+  const native = await nativeCustody.createManagedCommandProcessCustody({
+    roots,
+    runId,
+    databasePath: path.join(root, "handoffs.sqlite"),
+  });
+  return { root, roots, native, store: nativeStore(native) };
+}
+
 it.skipIf(process.platform === "win32")(
   "keeps a completed child's original reservation until its spawning owner settles it",
   async () => {
-    const root = fs.realpathSync(directories.make("doctor-terminal-before-binding-"));
-    const native = await nativeCustody.createManagedCommandProcessCustody({
-      roots: [root],
-      runId: "terminal-before-binding",
-      databasePath: path.join(root, "handoffs.sqlite"),
-    });
-    const store = createManagedHandoffLeaseStore({
-      databasePath: native.databasePath,
-      existingIdentity: native.databaseIdentity,
-      serviceManagerEnv: {},
-    });
+    const { root, native, store } = await nativeFixture("terminal-before-binding");
     const argv = [process.execPath, "-e", ""];
     const reservation = native.custody.reserve(argv);
     const child = spawnSync(argv[0]!, argv.slice(1));
@@ -59,17 +85,7 @@ it.skipIf(process.platform === "win32")(
 it.skipIf(process.platform === "win32").each([true, false])(
   "uses a captured child birth without treating a live unknown birth as complete (captured: %s)",
   async (captured) => {
-    const root = fs.realpathSync(directories.make("doctor-captured-before-binding-"));
-    const native = await nativeCustody.createManagedCommandProcessCustody({
-      roots: [root],
-      runId: "captured-before-binding",
-      databasePath: path.join(root, "handoffs.sqlite"),
-    });
-    const store = createManagedHandoffLeaseStore({
-      databasePath: native.databasePath,
-      existingIdentity: native.databaseIdentity,
-      serviceManagerEnv: {},
-    });
+    const { root, native, store } = await nativeFixture("captured-before-binding");
     const argv = [process.execPath, "-e", "process.stdin.resume()"];
     const reservation = native.custody.reserve(argv);
     const child = spawn(argv[0]!, argv.slice(1), {
@@ -114,14 +130,7 @@ it.skipIf(process.platform === "win32").each([true, false])(
 it.skipIf(process.platform === "win32").each([false, true])(
   "retains a real Doctor child's identity across a failed bind (settlement fails: %s)",
   async (settlementFails) => {
-    const root = fs.realpathSync(directories.make("doctor-failed-binding-"));
-    const privateTmp = path.join(root, "private-tmp");
-    fs.mkdirSync(privateTmp, { mode: 0o700 });
-    const { databasePath } = installPrivateUpdateHandoffStore(privateTmp);
-    const resultPath = path.join(root, "result.json");
-    const receiptPath = `${resultPath}.processes`;
-    vi.stubEnv(UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV, resultPath);
-    vi.spyOn(packageRoot, "resolveOpenClawPackageRoot").mockResolvedValue(root);
+    const { root, databasePath, receiptPath } = doctorFixture();
     const create = nativeCustody.createManagedCommandProcessCustody;
     let identity: CommandProcessIdentity | undefined;
     let releaseReservation: (() => void) | undefined;
@@ -160,7 +169,7 @@ it.skipIf(process.platform === "win32").each([false, true])(
     try {
       expect(identity).toMatchObject({ pid: expect.any(Number) });
       expect(groups.isChildProcessTreeAlive(identity!)).toBe(false);
-      const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
+      const receipt = readReceipt(receiptPath);
       expect(receipt.slots).toEqual(settlementFails ? [{ id: 1, identity }] : []);
       expect(store.readCommandChildren([root])).toHaveLength(settlementFails ? 1 : 0);
     } finally {
@@ -172,39 +181,17 @@ it.skipIf(process.platform === "win32").each([false, true])(
 );
 
 it.skipIf(process.platform === "win32").each([
-  {
-    name: "legacy updater without a run ID",
-    runId: undefined,
-    admitted: true,
-    publicationFault: false,
-  },
-  { name: "current updater", runId: "current-update-run", admitted: true, publicationFault: false },
-  {
-    name: "invalid current run ID",
-    runId: "x".repeat(4097),
-    admitted: false,
-    publicationFault: false,
-  },
-  {
-    name: "recovered IPC publication",
-    runId: "current-update-run",
-    admitted: true,
-    publicationFault: true,
-  },
-])(
-  "admits Doctor commands with $name only with valid custody",
-  async ({ runId, admitted, publicationFault }) => {
-    const root = fs.realpathSync(directories.make("doctor-run-id-custody-"));
-    const privateTmp = path.join(root, "private-tmp");
-    fs.mkdirSync(privateTmp, { mode: 0o700 });
-    const { databasePath } = installPrivateUpdateHandoffStore(privateTmp);
-    const resultPath = path.join(root, "result.json");
-    const receiptPath = `${resultPath}.processes`;
+  ["legacy updater without a run ID", undefined, true, false],
+  ["current updater", "current-update-run", true, false],
+  ["invalid current run ID", "x".repeat(4097), false, false],
+  ["recovered IPC publication", "current-update-run", true, true],
+] as const)(
+  "admits Doctor commands with %s only with valid custody",
+  async (_name, runId, admitted, publicationFault) => {
+    const { root, databasePath, receiptPath } = doctorFixture();
     const effect = path.join(root, "command-effect");
     vi.stubEnv("OPENCLAW_STATE_DIR", path.join(root, "state"));
-    vi.stubEnv(UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV, resultPath);
     vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", runId);
-    vi.spyOn(packageRoot, "resolveOpenClawPackageRoot").mockResolvedValue(root);
     const store = createManagedHandoffLeaseStore({ databasePath, serviceManagerEnv: {} });
     {
       using custody = await retainUpdateDoctorProcesses();
@@ -241,7 +228,7 @@ it.skipIf(process.platform === "win32").each([
         await expect(dispatch()).rejects.toThrow("managed handoff admission is invalid");
         expect(fs.existsSync(effect)).toBe(false);
       }
-      expect(JSON.parse(fs.readFileSync(receiptPath, "utf8"))).toMatchObject({ slots: [] });
+      expect(readReceipt(receiptPath)).toMatchObject({ slots: [] });
       expect(store.readCommandChildren([root])).toEqual([]);
     }
     expect(fs.existsSync(receiptPath)).toBe(false);
@@ -252,16 +239,10 @@ it.skipIf(process.platform === "win32").each([
 it.each(["unavailable root", "missing bound database", "inaccessible command storage"] as const)(
   "permits no-child Doctor work with %s while refusing writer admission",
   async (failure) => {
-    const root = fs.realpathSync(directories.make("doctor-unavailable-custody-"));
-    const privateTmp = path.join(root, "private-tmp");
-    fs.mkdirSync(privateTmp, { mode: 0o700 });
-    const { databasePath } = installPrivateUpdateHandoffStore(privateTmp);
-    const resultPath = path.join(root, "result.json");
-    const receiptPath = `${resultPath}.processes`;
+    const { root, privateTmp, databasePath, receiptPath } = doctorFixture();
     const effect = path.join(root, "writer-effect");
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");
-    vi.stubEnv(UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV, resultPath);
-    vi.spyOn(packageRoot, "resolveOpenClawPackageRoot").mockResolvedValue(
+    vi.mocked(packageRoot.resolveOpenClawPackageRoot).mockResolvedValue(
       failure === "unavailable root" ? null : root,
     );
     if (failure === "missing bound database") {
@@ -317,7 +298,7 @@ it.each(["unavailable root", "missing bound database", "inaccessible command sto
         await expect(dispatch).rejects.toBe(storageFailure);
       }
       expect(fs.existsSync(effect)).toBe(false);
-      expect(JSON.parse(fs.readFileSync(receiptPath, "utf8"))).toMatchObject({ slots: [] });
+      expect(readReceipt(receiptPath)).toMatchObject({ slots: [] });
     }
     expect(fs.existsSync(databasePath)).toBe(false);
     expect(fs.existsSync(receiptPath)).toBe(failure === "missing bound database");
@@ -339,9 +320,7 @@ it.skipIf(process.platform === "win32").each(["reservation-before-ipc", "retired
       roots,
       databaseIdentity: native.databaseIdentity,
     });
-    const receipt: Record<string, unknown> = JSON.parse(
-      fs.readFileSync(`${resultPath}.processes`, "utf8"),
-    );
+    const receipt: Record<string, unknown> = readReceipt(`${resultPath}.processes`);
     const nonce = receipt.nonce;
     if (typeof nonce !== "string") {
       throw new Error("Doctor custody nonce is unavailable");
@@ -369,11 +348,7 @@ it.skipIf(process.platform === "win32").each(["reservation-before-ipc", "retired
       cut === "reservation-before-ipc"
         ? doctorNative.custody.reserve([process.execPath])
         : undefined;
-    const store = createManagedHandoffLeaseStore({
-      databasePath: native.databasePath,
-      existingIdentity: native.databaseIdentity,
-      serviceManagerEnv: {},
-    });
+    const store = nativeStore(native);
     vi.spyOn(groups, "isChildProcessTreeAlive").mockReturnValue(false);
     try {
       const settlement = await parent.settle({
@@ -412,14 +387,8 @@ it.skipIf(process.platform === "win32").each(["reservation-before-ipc", "retired
 it.skipIf(process.platform === "win32")(
   "settles an exited Doctor's empty receipt while foreign live custody still blocks replacement",
   async () => {
-    const root = directories.make("doctor-foreign-custody-");
-    const roots = [root, path.join(root, "candidate")];
+    const { root, roots, native: peer, store } = await nativeFixture("doctor-b", true);
     const resultPath = path.join(root, "doctor-result.json");
-    const peer = await nativeCustody.createManagedCommandProcessCustody({
-      roots,
-      runId: "doctor-b",
-      databasePath: path.join(root, "handoffs.sqlite"),
-    });
     const parent = await createUpdateDoctorProcessCustody("doctor-a", root, resultPath, {
       roots,
       databaseIdentity: peer.databaseIdentity,
@@ -433,10 +402,7 @@ it.skipIf(process.platform === "win32")(
     ]);
     expect(doctor.error).toBeUndefined();
     expect(doctor.status).toBe(0);
-    expect(JSON.parse(fs.readFileSync(`${resultPath}.processes`, "utf8"))).toMatchObject({
-      pid: doctor.pid,
-      slots: [],
-    });
+    expect(readReceipt(`${resultPath}.processes`)).toMatchObject({ pid: doctor.pid, slots: [] });
     const argv = [process.execPath, "-e", "process.stdin.resume()"];
     const reservation = peer.custody.reserve(argv);
     const writer = spawn(process.execPath, argv.slice(1), {
@@ -444,11 +410,6 @@ it.skipIf(process.platform === "win32")(
       stdio: ["pipe", "ignore", "ignore"],
     });
     const closed = once(writer, "close");
-    const store = createManagedHandoffLeaseStore({
-      databasePath: peer.databasePath,
-      existingIdentity: peer.databaseIdentity,
-      serviceManagerEnv: {},
-    });
     try {
       await once(writer, "spawn");
       if (!writer.pid) {
@@ -492,58 +453,17 @@ it.skipIf(process.platform === "win32")(
   },
 );
 
+// name, interrupted, delegated, inputReleased, running, blocked
 it.each([
-  {
-    name: "normal completion",
-    interrupted: false,
-    delegated: false,
-    inputReleased: undefined,
-    running: false,
-    blocked: false,
-  },
-  {
-    name: "unknown interruption",
-    interrupted: true,
-    delegated: false,
-    inputReleased: undefined,
-    running: false,
-    blocked: true,
-  },
-  {
-    name: "withheld private grant",
-    interrupted: true,
-    delegated: true,
-    inputReleased: false,
-    running: false,
-    blocked: false,
-  },
-  {
-    name: "released private grant",
-    interrupted: true,
-    delegated: true,
-    inputReleased: true,
-    running: false,
-    blocked: true,
-  },
-  {
-    name: "standalone withheld input",
-    interrupted: true,
-    delegated: false,
-    inputReleased: false,
-    running: false,
-    blocked: true,
-  },
-  {
-    name: "running private child",
-    interrupted: true,
-    delegated: true,
-    inputReleased: false,
-    running: true,
-    blocked: true,
-  },
-])(
-  "preserves Windows Doctor writer custody for $name",
-  async ({ interrupted, delegated, inputReleased, running, blocked }) => {
+  ["normal completion", false, false, undefined, false, false],
+  ["unknown interruption", true, false, undefined, false, true],
+  ["withheld private grant", true, true, false, false, false],
+  ["released private grant", true, true, true, false, true],
+  ["standalone withheld input", true, false, false, false, true],
+  ["running private child", true, true, false, true, true],
+] as const)(
+  "preserves Windows Doctor writer custody for %s",
+  async (_name, interrupted, delegated, inputReleased, running, blocked) => {
     const root = directories.make("doctor-windows-custody-");
     const resultPath = path.join(root, "result.json");
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
