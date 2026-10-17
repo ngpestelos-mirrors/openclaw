@@ -2,11 +2,13 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { waitForAbortSignal } from "../../infra/abort-signal.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import type { GatewaySessionRow } from "../session-utils.types.js";
 import { writeSessionStore } from "../test-helpers.js";
 import { directSessionReq } from "../test/server-sessions.test-helpers.js";
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
+import { beforeSettlement, create, providerService } from "./provider-lifecycle.test-support.js";
 import { createProviderReplayDispatch } from "./provider-replay.test-support.js";
 import {
   BOOTSTRAP_RECEIPT,
@@ -20,39 +22,58 @@ import {
   waitForFast,
 } from "./service.test-support.js";
 
-function create(service: ReturnType<typeof createService>, idempotencyKey: string) {
-  return service.createWithRequest({ profileId: "development", idempotencyKey });
-}
+const bootstrapFailure = {
+  code: "bootstrap_failure",
+} satisfies Partial<WorkerEnvironmentServiceError>;
 
 describe("worker environment service", () => {
   setupWorkerEnvironmentServiceSuite();
 
-  it("stays bootstrapping until the SSH install receipt is durable", async () => {
-    const { promise: bootstrapPending, resolve: finishBootstrap } = createDeferred();
-    testState.bootstrapWorker = vi.fn(async () => {
-      await bootstrapPending;
+  it.each([
+    { bundle: "ordinary", advanceMs: 0 },
+    { bundle: "large", advanceMs: 35 * 60_000 + 1 },
+  ])("keeps a $bundle bundle bootstrapping until its receipt is durable", async ({ advanceMs }) => {
+    // Leave the monotonic clock on the same native epoch as the SQLite workers.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    if (advanceMs) {
+      vi.mocked(testState.prepareInstallation).mockResolvedValue({
+        ...BUNDLE_ARTIFACT,
+        tarballBytes: 243_000_000,
+      });
+    }
+    const pending = createDeferred();
+    let bootstrapSignal: AbortSignal | undefined;
+    testState.bootstrapWorker = vi.fn(async ({ signal }) => {
+      bootstrapSignal = signal;
+      await pending.promise;
       return BOOTSTRAP_RECEIPT;
     });
-    const creation = create(createService(createProvider()), "request-bootstrap");
-
-    await waitForFast(() =>
+    const creation = create(providerService(), "request-bootstrap");
+    await waitForFast(() => {
       expect(testState.store.list()[0]).toMatchObject({
         state: "bootstrapping",
         bootstrapReceipt: null,
-      }),
-    );
-    finishBootstrap();
-
+      });
+      expect(testState.bootstrapWorker).toHaveBeenCalledOnce();
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(advanceMs);
+      expect(bootstrapSignal?.aborted).toBe(false);
+    } finally {
+      pending.resolve();
+      await creation;
+    }
     await expect(creation).resolves.toMatchObject({
       state: "ready",
       bootstrapReceipt: BOOTSTRAP_RECEIPT,
     });
+    expect(testState.store.list()[0]).toMatchObject({ state: "ready" });
   });
 
   it("records installation preparation failure before allocating a lease", async () => {
-    testState.prepareInstallation = vi.fn(async () => {
-      throw new Error("npm install requires a released gateway package");
-    });
+    vi.mocked(testState.prepareInstallation).mockRejectedValue(
+      new Error("npm install requires a released gateway package"),
+    );
     const provision = vi.fn(createProvider().provision);
     const workerService = createService(createProvider({ provision }));
 
@@ -108,15 +129,10 @@ describe("worker environment service", () => {
 
   it("projects bounded bootstrap detail through sessions.describe after failed dispatch", async () => {
     // Assembled at runtime so review-bundle secret scanners do not flag a key-shaped literal.
-    const secret = [
-      String.fromCharCode(115, 107),
-      "proj",
-      "placement",
-      "abcdefghijklmnopqrstuvwxyz",
-    ].join("-");
-    testState.bootstrapWorker = vi.fn(async () => {
-      throw new Error(`remote bootstrap rejected ${secret} ${"failure ".repeat(200)}`);
-    });
+    const secret = String.fromCharCode(115, 107) + "-proj-placement-abcdefghijklmnopqrstuvwxyz";
+    vi.mocked(testState.bootstrapWorker).mockRejectedValue(
+      new Error(`remote bootstrap rejected ${secret} ${"failure ".repeat(200)}`),
+    );
     const destroy = vi.fn(async () => {});
     const workerService = createService(createProvider({ destroy }));
     const placements = createWorkerSessionPlacementStore({
@@ -185,19 +201,11 @@ describe("worker environment service", () => {
   });
 
   it("keeps an indeterminate bootstrap teardown retryable", async () => {
-    testState.bootstrapWorker = vi.fn(async () => {
-      throw new Error("remote bootstrap failed");
-    });
-    let teardownFails = true;
-    const workerService = createService(
-      createProvider({
-        destroy: async () => {
-          if (teardownFails) {
-            throw new Error("provider teardown timed out");
-          }
-        },
-      }),
-    );
+    vi.mocked(testState.bootstrapWorker).mockRejectedValue(new Error("remote bootstrap failed"));
+    const destroy = vi
+      .fn(async () => {})
+      .mockRejectedValue(new Error("provider teardown timed out"));
+    const workerService = providerService({ destroy });
 
     await expect(create(workerService, "request-bootstrap-cleanup")).rejects.toMatchObject({
       code: "bootstrap_failure",
@@ -211,7 +219,7 @@ describe("worker environment service", () => {
       lastError: "remote bootstrap failed",
     });
 
-    teardownFails = false;
+    destroy.mockResolvedValue(undefined);
     await workerService.reconcileOnce();
     expect(testState.store.list()[0]).toMatchObject({
       state: "failed",
@@ -266,19 +274,9 @@ describe("worker environment service", () => {
       (error: unknown) => ({ ok: false as const, error }),
     );
     try {
-      await Promise.race([
-        identityStarted.promise,
-        creationResult.then((result) => {
-          throw new Error("Creation ended before identity resolution", { cause: result });
-        }),
-      ]);
+      await beforeSettlement(identityStarted.promise, creationResult, "Identity resolution");
       await vi.advanceTimersByTimeAsync(5);
-      await Promise.race([
-        destroying.promise,
-        creationResult.then((result) => {
-          throw new Error("Creation ended before bootstrap teardown", { cause: result });
-        }),
-      ]);
+      await beforeSettlement(destroying.promise, creationResult, "Bootstrap teardown");
       expect(events).toEqual(["identity:start", "abort"]);
       expect(destroy).not.toHaveBeenCalled();
     } finally {
@@ -289,7 +287,7 @@ describe("worker environment service", () => {
 
     expect(await creationResult).toMatchObject({
       ok: false,
-      error: { code: "bootstrap_failure" } satisfies Partial<WorkerEnvironmentServiceError>,
+      error: bootstrapFailure,
     });
     expect(destroy).toHaveBeenCalledOnce();
     expect(events).toEqual(["identity:start", "abort", "identity:end", "destroy"]);
@@ -298,19 +296,11 @@ describe("worker environment service", () => {
 
   it("aborts a timed-out SSH bootstrap before tearing down its lease", async () => {
     const events: string[] = [];
-    testState.bootstrapWorker = vi.fn(
-      async ({ signal }) =>
-        await new Promise<never>((_resolve, reject) => {
-          signal.addEventListener(
-            "abort",
-            () => {
-              events.push("abort");
-              reject(new Error("SSH bootstrap aborted"));
-            },
-            { once: true },
-          );
-        }),
-    );
+    testState.bootstrapWorker = vi.fn(async ({ signal }) => {
+      await waitForAbortSignal(signal);
+      events.push("abort");
+      throw new Error("SSH bootstrap aborted");
+    });
     const destroy = vi.fn(async () => {
       events.push("destroy");
     });
@@ -318,43 +308,11 @@ describe("worker environment service", () => {
       bootstrapCallTimeoutMs: 10,
     });
 
-    await expect(create(workerService, "request-bootstrap-timeout")).rejects.toMatchObject({
-      code: "bootstrap_failure",
-    } satisfies Partial<WorkerEnvironmentServiceError>);
+    await expect(create(workerService, "request-bootstrap-timeout")).rejects.toMatchObject(
+      bootstrapFailure,
+    );
 
     expect(events).toEqual(["abort", "destroy"]);
     expect(testState.store.list()[0]).toMatchObject({ state: "failed", leaseId: null });
-  });
-
-  it("allows a large bundle bootstrap to outlive the former service deadline", async () => {
-    // Keep the monotonic clock shared with real SQLite workers on its native epoch.
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    testState.prepareInstallation = vi.fn(async () => ({
-      ...BUNDLE_ARTIFACT,
-      tarballBytes: 243_000_000,
-    }));
-    const { promise: bootstrapPending, resolve: finishBootstrap } = createDeferred();
-    let bootstrapSignal: AbortSignal | undefined;
-    testState.bootstrapWorker = vi.fn(async ({ signal }) => {
-      bootstrapSignal = signal;
-      await bootstrapPending;
-      return BOOTSTRAP_RECEIPT;
-    });
-    const workerService = createService(createProvider());
-
-    const creation = create(workerService, "request-large-bundle-bootstrap");
-    await waitForFast(() => expect(testState.bootstrapWorker).toHaveBeenCalledOnce());
-    let creationError: unknown;
-    try {
-      await vi.advanceTimersByTimeAsync(35 * 60_000 + 1);
-      expect(bootstrapSignal?.aborted).toBe(false);
-    } finally {
-      finishBootstrap();
-      await creation.catch((error: unknown) => {
-        creationError = error;
-      });
-    }
-    expect(creationError).toBeUndefined();
-    expect(testState.store.list()[0]).toMatchObject({ state: "ready" });
   });
 });

@@ -3,7 +3,10 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { createWorkerEnvironmentTransportLifecycle } from "./environment-access.js";
 import { createNodeWorkerTunnelManager } from "./node-worker-tunnel.js";
 import * as nodeTunnelSupport from "./node-worker-tunnel.test-support.js";
+import { providerService } from "./provider-lifecycle.test-support.js";
 import * as support from "./service.test-support.js";
+
+const retiredOwner = { state: "failed", attachedSessionIds: [], leaseId: null, nodeDeviceId: null };
 
 async function attachedNode(
   environmentId: string,
@@ -26,11 +29,8 @@ function nodeService(
   nodeTunnelManager: ReturnType<typeof createNodeWorkerTunnelManager>,
   overrides: Parameters<typeof support.createProvider>[0] = {},
 ) {
-  return support.createService(
-    support.createProvider({
-      supportedExecutionModes: ["worker-turn", "remote-exec"],
-      ...overrides,
-    }),
+  return providerService(
+    { supportedExecutionModes: ["worker-turn", "remote-exec"], ...overrides },
     { nodeTunnelManager },
   );
 }
@@ -120,22 +120,25 @@ describe("worker provider node teardown", () => {
       const destroy = vi.fn(async () => {});
       const warn = vi.fn();
       let cleanupCalls = 0;
-      const service = support.createService(support.createProvider({ destroy }), {
-        // The driver ignores cancellation and only settles when finally releases it.
-        closeEnvironmentComputers: () => {
-          cleanupCalls += 1;
-          (cleanupCalls === 1 ? cleanupStarted : finalCleanupStarted).resolve();
-          return driverFinished.promise;
+      const service = providerService(
+        { destroy },
+        {
+          // The driver ignores cancellation and only settles when finally releases it.
+          closeEnvironmentComputers: () => {
+            cleanupCalls += 1;
+            (cleanupCalls === 1 ? cleanupStarted : finalCleanupStarted).resolve();
+            return driverFinished.promise;
+          },
+          logger: { warn },
+          nodeTunnelManager: {
+            status: () => "stopped",
+            start: vi.fn(),
+            stop: async () => {},
+            stopAll: async () => {},
+            observeProcesses: vi.fn(),
+          },
         },
-        logger: { warn },
-        nodeTunnelManager: {
-          status: () => "stopped",
-          start: vi.fn(),
-          stop: async () => {},
-          stopAll: async () => {},
-          observeProcesses: vi.fn(),
-        },
-      });
+      );
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const forceAbandon = vi.fn(async () => {});
       const stopping = service.destroy(
@@ -189,10 +192,7 @@ describe("worker provider node teardown", () => {
         await service.reconcileOnce();
 
         expect(support.testState.store.get(environmentId)).toMatchObject({
-          state: "failed",
-          attachedSessionIds: [],
-          leaseId: null,
-          nodeDeviceId: null,
+          ...retiredOwner,
           lastError: "Worker environment disappeared before teardown was requested",
         });
         await nodeTunnels.stopAll();
@@ -327,10 +327,7 @@ describe("worker provider node teardown", () => {
         await service.reconcileOnce();
 
         expect(support.testState.store.get(environmentId)).toMatchObject({
-          state: "failed",
-          attachedSessionIds: [],
-          nodeDeviceId: null,
-          leaseId: null,
+          ...retiredOwner,
           lastError,
         });
         expect(destroy).toHaveBeenCalledTimes(status === "unknown" ? 1 : 0);

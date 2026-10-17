@@ -14,6 +14,7 @@ import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { completeWorkerNodeSetupForTest } from "./node-enrollment.test-support.js";
 import { readWorkerProjectPreparation } from "./preparation-identity.schema.js";
+import { pendingNodeEnrollment, repository } from "./provider-lifecycle.test-support.js";
 import * as support from "./service.test-support.js";
 import * as workspaceGitBase from "./workspace-git-base.js";
 
@@ -21,38 +22,31 @@ type ProjectPreparation = NonNullable<
   NonNullable<Parameters<WorkerProvider["provision"]>[2]>["project"]
 >;
 
-async function repository(name: string, empty = false) {
-  const root = path.join(support.testState.root, name);
-  await fs.mkdir(root);
-  await requireGit(root, ["init", "--quiet"]);
-  await requireGit(root, ["config", "user.name", "Project Test"]);
-  await requireGit(root, ["config", "user.email", "project@example.invalid"]);
-  if (!empty) {
-    await fs.writeFile(path.join(root, "input.txt"), `${name} base\n`);
-    await requireGit(root, ["add", "."]);
-  }
-  await requireGit(root, ["commit", "--quiet", "--allow-empty", "-m", "base"]);
-  return { root, baseCommit: await requireGit(root, ["rev-parse", "HEAD"]) };
-}
-
 function createService(
   provision: WorkerProvider["provision"],
-  providerCallTimeoutMs?: number,
-  supportsProjectPreparation: WorkerProvider["supportsProjectPreparation"] = () => true,
+  options: Parameters<typeof support.createService>[1] = {},
+  provider: Partial<WorkerProvider> = {},
 ) {
   let credentialIndex = 0;
   return support.createService(
     support.createProvider({
-      supportsProjectPreparation,
+      supportsProjectPreparation: () => true,
       provision,
+      ...provider,
     }),
     {
       projectNamespace: "gateway",
       generateWorkerCredential: () => `${support.CREDENTIAL}-${++credentialIndex}`,
-      ...(providerCallTimeoutMs ? { providerCallTimeoutMs } : {}),
+      ...options,
     },
   );
 }
+
+const nodeProvider = {
+  requiresNodeEnrollment: true,
+  provisionBeforeInstallation: true,
+  supportedExecutionModes: ["worker-turn"],
+} satisfies Partial<WorkerProvider>;
 
 function createProject(
   service: ReturnType<typeof support.createService>,
@@ -89,15 +83,15 @@ describe("worker provider project preparation ownership", () => {
       await requireGit(git.root, ["add", ".devcontainer.json"]);
       await requireGit(git.root, ["commit", "--quiet", "-m", "declare secrets"]);
       const provision = vi.fn<WorkerProvider["provision"]>();
-      const service = support.createService(
-        support.createProvider({
+      const service = createService(
+        provision,
+        {},
+        {
           supportsProjectPreparation: () => supported,
           runSetupCommand: async () => undefined,
           resolvePreparationTarget: () =>
             hasTarget ? { machineClass: "small", platform: "linux" } : undefined,
-          provision,
-        }),
-        { projectNamespace: "gateway" },
+        },
       );
       await expect(createProject(service, "unmapped-secrets", git.root)).rejects.toThrow(
         "unmapped setup secrets: OTHER_TOKEN, PACKAGE_TOKEN",
@@ -143,15 +137,13 @@ describe("worker provider project preparation ownership", () => {
   )(
     "requires explicit dedicated classification after prepared node provisioning (sharedHost=$sharedHost, empty workspace=$emptyWorkspace)",
     async ({ sharedHost, emptyWorkspace }) => {
-      const git = await repository("prepared-host-classification", emptyWorkspace);
+      const git = await repository("prepared-host-classification", { empty: emptyWorkspace });
       const deviceId = "prepared-node";
       const registerPreparedWorkspace = vi.fn<
         NonNullable<support.WorkerEnvironmentServiceOptions["registerPreparedWorkspace"]>
       >(async ({ assertCurrent }) => assertCurrent());
       const provider = support.createProvider({
-        requiresNodeEnrollment: true,
-        provisionBeforeInstallation: true,
-        supportedExecutionModes: ["worker-turn"],
+        ...nodeProvider,
         supportsProjectPreparation: () => true,
         resolvePreparationTarget: () => ({ machineClass: "small", platform: "linux" }),
         provision: async (_profile, _operationId, options) => {
@@ -207,18 +199,7 @@ describe("worker provider project preparation ownership", () => {
           },
           assertCurrent: () => {},
         }),
-        prepareNodeEnrollment: async (record) => {
-          const pending = await support.testState.store.ensureNodeEnrollment(record.environmentId);
-          return {
-            mode: "connect",
-            setupId: expectDefined(pending.nodeSetupId, "pending node enrollment"),
-            setupCode: "synthetic-setup",
-            displayName: "Prepared node",
-            openclawVersion: support.NODE_BOOTSTRAP.openclawVersion,
-            nodeBootstrap: support.NODE_BOOTSTRAP,
-            waitForDeviceId: async () => deviceId,
-          };
-        },
+        prepareNodeEnrollment: (record) => pendingNodeEnrollment(record, async () => deviceId),
         ensureNodeWorkerBundle: async () => structuredClone(support.BOOTSTRAP_RECEIPT),
         registerPreparedWorkspace,
       });
@@ -264,6 +245,7 @@ describe("worker provider project preparation ownership", () => {
   it.each(["runtime-bootstrap", "runtime-worker", "enrollment-bootstrap"] as const)(
     "closes changed %s grants without publishing a different prepared runtime identity",
     async (change) => {
+      const isEnrollment = change === "enrollment-bootstrap";
       const git = await repository(`runtime-${change}`);
       const changedBootstrap = { ...support.NODE_BOOTSTRAP, sha256: "c".repeat(64) };
       const runtime: WorkerNodeRuntimePreparation = {
@@ -285,33 +267,23 @@ describe("worker provider project preparation ownership", () => {
       };
       const closeNodeRuntime = vi.fn();
       const closeNodeEnrollment = vi.fn();
-      const service = support.createService(
-        support.createProvider({
-          requiresNodeEnrollment: true,
-          provisionBeforeInstallation: true,
-          supportedExecutionModes: ["worker-turn"],
-          supportsProjectPreparation: () => true,
-          provision: async (_profile, _operationId, options) => {
-            expect(options?.nodeRuntimeIdentity).toEqual({
-              nodeBootstrapSha256: support.NODE_BOOTSTRAP.sha256,
-              executionMode: "worker-turn",
-              workerBundleSha256: support.BUNDLE_ARTIFACT.tarballSha256,
-            });
-            if (change === "enrollment-bootstrap") {
-              await options!.beginNodeEnrollment!();
-            } else {
-              await options!.prepareNodeRuntime!();
-            }
-            throw new Error("changed runtime must not reach provider installation");
-          },
-        }),
+      const service = createService(
+        async (_profile, _operationId, options) => {
+          expect(options?.nodeRuntimeIdentity).toEqual({
+            nodeBootstrapSha256: support.NODE_BOOTSTRAP.sha256,
+            executionMode: "worker-turn",
+            workerBundleSha256: support.BUNDLE_ARTIFACT.tarballSha256,
+          });
+          await (isEnrollment ? options!.beginNodeEnrollment!() : options!.prepareNodeRuntime!());
+          throw new Error("changed runtime must not reach provider installation");
+        },
         {
-          projectNamespace: "gateway",
           prepareNodeRuntime: async () => runtime,
           prepareNodeEnrollment: async () => enrollment,
           closeNodeRuntime,
           closeNodeEnrollment,
         },
+        nodeProvider,
       );
       await expect(
         createProject(service, change, git.root, { executionMode: "worker-turn" }),
@@ -320,13 +292,10 @@ describe("worker provider project preparation ownership", () => {
         state: "provisioning",
         nodeDeviceId: null,
       });
-      if (change === "enrollment-bootstrap") {
-        expect(closeNodeEnrollment).toHaveBeenCalledExactlyOnceWith(enrollment);
-        expect(closeNodeRuntime).not.toHaveBeenCalled();
-      } else {
-        expect(closeNodeRuntime).toHaveBeenCalledExactlyOnceWith(runtime);
-        expect(closeNodeEnrollment).not.toHaveBeenCalled();
-      }
+      expect(isEnrollment ? closeNodeEnrollment : closeNodeRuntime).toHaveBeenCalledExactlyOnceWith(
+        isEnrollment ? enrollment : runtime,
+      );
+      expect(isEnrollment ? closeNodeRuntime : closeNodeEnrollment).not.toHaveBeenCalled();
     },
   );
 
@@ -463,7 +432,7 @@ describe("worker provider project preparation ownership", () => {
     };
     const supportsProjectPreparation = (_profile: unknown, selectedClass?: string) =>
       selectedClass === undefined;
-    const first = createService(provision, undefined, supportsProjectPreparation);
+    const first = createService(provision, {}, { supportsProjectPreparation });
     await expect(createProject(first, "project-replay", git.root)).rejects.toMatchObject({
       code: "provider_failure",
     });
@@ -479,17 +448,14 @@ describe("worker provider project preparation ownership", () => {
     expect(await requireGit(git.root, ["rev-parse", "HEAD"])).not.toBe(git.baseCommit);
     await support.reopenWorkerEnvironmentStore();
 
-    const restarted = createService(provision, undefined, supportsProjectPreparation);
+    const restarted = createService(provision, {}, { supportsProjectPreparation });
     await expect(createProject(restarted, "project-replay", git.root)).resolves.toMatchObject({
       state: "ready",
       leaseId: "lease-project",
     });
     expect(operationIds).toHaveLength(2);
     expect(operationIds[1]).toBe(operationIds[0]);
-    expect(projects[1]?.key).toBe(projects[0]?.key);
-    expect(projects[1]?.baseCommit).toBe(git.baseCommit);
-    expect(projects[1]?.root).toBe(git.root);
-    expect(projects[1]?.label).toBe(projects[0]?.label);
+    expect(projects[1]).toMatchObject({ ...identity, key: projects[0]?.key });
     expect(projects[1]).not.toBe(projects[0]);
     expect(projects[1]?.signal.aborted).toBe(true);
   });
@@ -552,7 +518,7 @@ describe("worker provider project preparation ownership", () => {
           }
           return { leaseId: "lease-closed-project", ssh: support.SSH_ENDPOINT };
         },
-        outcome === "timeout" ? 20 : undefined,
+        { providerCallTimeoutMs: outcome === "timeout" ? 20 : undefined },
       );
       try {
         const creation = createProject(service, "closure", git.root).catch(

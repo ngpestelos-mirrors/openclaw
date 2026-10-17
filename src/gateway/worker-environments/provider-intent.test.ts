@@ -5,6 +5,7 @@ import { requireGit } from "../../agents/worktrees/git.js";
 import type { WorkerProvider } from "../../plugins/types.js";
 import { readWorkerProjectPreparation } from "./preparation-identity.schema.js";
 import { createWorkerProviderIntent } from "./provider-intent.js";
+import { repository } from "./provider-lifecycle.test-support.js";
 import * as support from "./service.test-support.js";
 import type { WorkerEnvironmentRecord } from "./store.js";
 
@@ -12,23 +13,11 @@ describe("prepared worker intent admission", () => {
   support.setupWorkerEnvironmentServiceSuite();
 
   async function fixture(setup = false) {
-    const projectPath = path.join(support.testState.root, "project");
-    await fs.mkdir(projectPath);
-    await requireGit(projectPath, ["init", "--quiet"]);
-    await requireGit(projectPath, ["config", "user.name", "Project Test"]);
-    await requireGit(projectPath, ["config", "user.email", "project@example.invalid"]);
-    await requireGit(projectPath, ["config", "commit.gpgsign", "false"]);
-    await fs.writeFile(path.join(projectPath, "input.txt"), "base\n");
-    if (setup) {
-      await fs.mkdir(path.join(projectPath, ".openclaw"));
-      await fs.writeFile(
-        path.join(projectPath, ".openclaw/worktree-setup.sh"),
-        "#!/bin/sh\ntrue\n",
-        { mode: 0o755 },
-      );
-    }
-    await requireGit(projectPath, ["add", "."]);
-    await requireGit(projectPath, ["commit", "--quiet", "-m", "base"]);
+    const { root: projectPath } = await repository("project", {
+      setup,
+      disableSigning: true,
+      content: "base\n",
+    });
     const target = vi.fn<NonNullable<WorkerProvider["resolvePreparationTarget"]>>(
       (_profile, machineClass, os) => ({
         machineClass: machineClass ?? "small",

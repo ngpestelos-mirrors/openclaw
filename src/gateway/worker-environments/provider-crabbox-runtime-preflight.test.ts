@@ -12,6 +12,7 @@ import { importFreshModule } from "../../plugin-sdk/test-helpers/import-fresh.js
 import { createPluginRuntimeMock } from "../../plugin-sdk/test-helpers/plugin-runtime-mock.js";
 import { createPluginStateKeyedStore } from "../../plugin-state/plugin-state-store.js";
 import { resolvePluginModuleExport } from "../../plugins/module-export.js";
+import { create } from "./provider-lifecycle.test-support.js";
 import * as support from "./service.test-support.js";
 
 const CLASSLESS_PROFILE = {
@@ -22,6 +23,16 @@ const CLASSLESS_PROFILE = {
   setup: "true",
 };
 const PROFILE = { ...CLASSLESS_PROFILE, class: "standard" };
+const TERMINAL = {
+  backend: "digitalocean",
+  code: 4,
+  stderr: "DigitalOcean fixed lease is terminal",
+};
+const ABSENT = {
+  backend: "ascii-box",
+  code: 1,
+  stderr: "ascii-box bx_0123456789ab not found (404)",
+};
 
 function commandResult(overrides: Partial<SpawnResult> = {}): SpawnResult {
   return {
@@ -55,6 +66,20 @@ const expectProviderFailure = (operation: Promise<unknown>) =>
 
 function useProfile(settings: Record<string, unknown>) {
   Object.assign(support.getDevelopmentProfile(), { provider: "crabbox", settings });
+}
+
+type Transition = Parameters<typeof support.testState.store.transition>[0];
+function transition(
+  record: { environmentId: string; state: Transition["from"] },
+  to: Transition["to"],
+  patch?: Transition["patch"],
+) {
+  return support.testState.store.transition({
+    environmentId: record.environmentId,
+    from: record.state,
+    to,
+    patch,
+  });
 }
 
 describe("Crabbox runtime preflight cleanup", () => {
@@ -132,9 +157,7 @@ describe("Crabbox runtime preflight cleanup", () => {
         return commandResult({ code: 2, stderr: "synthetic config preflight failure" });
       });
       const service = await createService();
-      await expectProviderFailure(
-        service.createWithRequest({ profileId: "development", idempotencyKey: "fresh-preflight" }),
-      );
+      await expectProviderFailure(create(service, "fresh-preflight"));
       const failed = expectDefined(support.testState.store.list()[0], "failed fresh intent");
       expect(failed).toMatchObject({ state: "failed", leaseId: null, destroyRequestedAtMs: null });
       await expect(service.destroy(failed.environmentId)).resolves.toMatchObject({
@@ -172,12 +195,7 @@ describe("Crabbox runtime preflight cleanup", () => {
         return commandResult({ code: 1, stderr: "lease has no local claim" });
       });
       const service = await createService();
-      await expect(
-        service.createWithRequest({
-          profileId: "development",
-          idempotencyKey: "unsupported-fixed-id",
-        }),
-      ).rejects.toMatchObject({
+      await expect(create(service, "unsupported-fixed-id")).rejects.toMatchObject({
         code: refused ? "invalid_profile" : "provider_failure",
         message: expect.stringContaining(
           refused
@@ -211,101 +229,58 @@ describe("Crabbox runtime preflight cleanup", () => {
   );
 
   it.each([
-    {
-      name: "terminal fixed lease",
-      backend: "digitalocean",
-      code: 4,
-      stderr: "DigitalOcean fixed lease is terminal",
-      attached: false,
-      outcome: "destroyed",
-    },
-    {
-      name: "absent attached resource",
-      backend: "ascii-box",
-      code: 1,
-      stderr: "ascii-box bx_0123456789ab not found (404)",
-      attached: true,
-      outcome: "destroyed",
-    },
+    { name: "terminal fixed lease", result: TERMINAL, outcome: "destroyed" },
+    { name: "absent attached resource", result: ABSENT, attached: true, outcome: "destroyed" },
     {
       name: "absent resource with unconfirmed stop",
-      backend: "ascii-box",
-      code: 1,
-      stderr: "ascii-box bx_0123456789ab not found (404)",
+      result: ABSENT,
       attached: true,
       outcome: "retry-stop",
     },
     {
       name: "unresolved creation attempt",
-      backend: "digitalocean",
-      code: 4,
-      stderr:
-        "lease_id_conflict: lease cbx_0123456789ab has an unresolved or unattested creation attempt",
-      attached: false,
-      outcome: "retry-inspect",
+      result: {
+        ...TERMINAL,
+        stderr:
+          "lease_id_conflict: lease cbx_0123456789ab has an unresolved or unattested creation attempt",
+      },
     },
-    {
-      name: "terminal text with an unexpected exit code",
-      backend: "digitalocean",
-      code: 1,
-      stderr: "DigitalOcean fixed lease is terminal",
-      attached: false,
-      outcome: "retry-inspect",
-    },
+    { name: "terminal text with an unexpected exit code", result: { ...TERMINAL, code: 1 } },
     {
       name: "not-found text mixed with an auth failure",
-      backend: "ascii-box",
-      code: 1,
-      stderr: "ascii-box bx_0123456789ab not found (404)\nauthentication failed",
-      attached: false,
-      outcome: "retry-inspect",
+      result: { ...ABSENT, stderr: `${ABSENT.stderr}\nauthentication failed` },
     },
   ])("reconciles requested teardown after $name", async (scenario) => {
+    const { backend, ...result } = scenario.result;
     const environmentId = "worker-inspect-cleanup";
     const leaseId = "cbx_0123456789ab";
     const intent = await createIntent(environmentId, {
       executionMode: "worker-turn",
-      settings: { ...PROFILE, provider: scenario.backend, warmImage: false },
+      settings: { ...PROFILE, provider: backend, warmImage: false },
     });
-    await support.testState.store.transition({
-      environmentId,
-      from: intent.state,
-      to: "provisioning",
-    });
-    let record = await support.testState.store.transition({
-      environmentId,
-      from: "provisioning",
-      to: "ready",
-      patch: {
-        leaseId,
-        nodeDeviceId: "node:cleanup-fixture",
-        sharedHost: false,
-        ...support.readyPatch(environmentId),
-      },
+    let record = await transition(await transition(intent, "provisioning"), "ready", {
+      leaseId,
+      nodeDeviceId: "node:cleanup-fixture",
+      sharedHost: false,
+      ...support.readyPatch(environmentId),
     });
     if (scenario.attached) {
-      record = await support.testState.store.transition({
-        environmentId,
-        from: "ready",
-        to: "attached",
-        patch: support.attachedPatch(environmentId, "session-cleanup-fixture"),
-      });
+      record = await transition(
+        record,
+        "attached",
+        support.attachedPatch(environmentId, "session-cleanup-fixture"),
+      );
     }
     await support.testState.store.requestDestroy({ environmentId, state: record.state });
     if (!scenario.attached) {
-      await support.testState.store.transition({ environmentId, from: "ready", to: "draining" });
-      record = await support.testState.store.transition({
-        environmentId,
-        from: "draining",
-        to: "destroying",
-      });
+      record = await transition(await transition(record, "draining"), "destroying");
     }
     let stopFails = scenario.outcome === "retry-stop";
     const calls: string[][] = [];
     mockCommands((argv) => {
       calls.push(argv);
       if (argv[1] === "inspect") {
-        return commandResult({ code: scenario.code, stderr: scenario.stderr });
+        return commandResult(result);
       }
       expect(argv[1]).toBe("stop");
       return stopFails
@@ -317,18 +292,18 @@ describe("Crabbox runtime preflight cleanup", () => {
       PROFILE.binary,
       "inspect",
       "--provider",
-      scenario.backend,
+      backend,
       "--network",
       "public",
       "--id",
       leaseId,
       "--json",
     ];
-    const stopCommand = [PROFILE.binary, "stop", "--provider", scenario.backend, "--id", leaseId];
+    const stopCommand = [PROFILE.binary, "stop", "--provider", backend, "--id", leaseId];
 
     await service.reconcileOnce();
 
-    if (scenario.outcome === "retry-inspect") {
+    if (!scenario.outcome) {
       expect(support.testState.store.get(environmentId)).toMatchObject({
         state: "destroying",
         leaseId,
@@ -366,11 +341,7 @@ describe("Crabbox runtime preflight cleanup", () => {
     "retains unresolved legacy allocation responsibility after %s and cleanup restart",
     async (entrance) => {
       const intent = await createIntent("worker-legacy-provision", { settings: PROFILE });
-      const original = await support.testState.store.transition({
-        environmentId: intent.environmentId,
-        from: intent.state,
-        to: "provisioning",
-      });
+      const original = await transition(intent, "provisioning");
       const runCommand = vi
         .spyOn(processRuntime, "runCommandWithTimeout")
         .mockImplementation(async () => {
@@ -516,11 +487,7 @@ describe("Crabbox runtime preflight cleanup", () => {
     };
     let service = support.createService(await makeProvider(), { prepareNodeEnrollment });
     await expectProviderFailure(
-      service.createWithRequest({
-        profileId: "development",
-        idempotencyKey: "runtime-replay",
-        executionMode: "worker-turn",
-      }),
+      create(service, "runtime-replay", { executionMode: "worker-turn" }),
     );
     const original = expectDefined(support.testState.store.list()[0], "unreported allocation");
     expect(original).toMatchObject({ state: "provisioning", leaseId: null });
@@ -603,12 +570,7 @@ describe("Crabbox runtime preflight cleanup", () => {
         throw new Error(`Unexpected command: ${argv.join(" ")}`);
       });
       const service = await createService();
-      await expect(
-        service.createWithRequest({
-          profileId: "development",
-          idempotencyKey: "invalid-immutable",
-        }),
-      ).rejects.toMatchObject({
+      await expect(create(service, "invalid-immutable")).rejects.toMatchObject({
         code: "invalid_profile",
         message: expect.stringContaining(message),
       });

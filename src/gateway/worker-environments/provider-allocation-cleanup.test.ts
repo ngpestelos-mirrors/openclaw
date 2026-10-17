@@ -4,7 +4,12 @@ import { WorkerProviderError } from "../../plugins/types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { completeWorkerNodeSetupForTest } from "./node-enrollment.test-support.js";
 import {
-  NODE_BOOTSTRAP,
+  beforeSettlement,
+  create,
+  pendingNodeEnrollment,
+  providerService,
+} from "./provider-lifecycle.test-support.js";
+import {
   createProvider,
   createService,
   reopenWorkerEnvironmentStore,
@@ -12,8 +17,15 @@ import {
   testState,
 } from "./service.test-support.js";
 
-function create(service: ReturnType<typeof createService>, idempotencyKey: string) {
-  return service.createWithRequest({ profileId: "development", idempotencyKey });
+function blockedAllocation(leaseId: string) {
+  const entered = createDeferredCore();
+  const pending = createDeferredCore();
+  const resolveAllocation = vi.fn(async () => {
+    entered.resolve();
+    await pending.promise;
+    return { leaseId, sharedHost: false };
+  });
+  return { entered: entered.promise, release: pending.resolve, resolveAllocation };
 }
 
 describe("worker allocation cleanup", () => {
@@ -55,29 +67,14 @@ describe("worker allocation cleanup", () => {
     const provision = vi.spyOn(provider, "provision");
     const newService = () =>
       createService(provider, {
-        prepareNodeEnrollment: async (record) => ({
-          mode: "connect",
-          setupCode: "fixture-setup-code",
-          setupId: expectDefined(
-            (await testState.store.ensureNodeEnrollment(record.environmentId)).nodeSetupId,
-            "node setup identity",
-          ),
-          openclawVersion: "2026.8.1",
-          nodeBootstrap: NODE_BOOTSTRAP,
-          displayName: "Cleanup worker",
-          waitForDeviceId: async () => "cleanup-device",
-        }),
+        prepareNodeEnrollment: (record) =>
+          pendingNodeEnrollment(record, async () => "cleanup-device"),
         retireNodeEnrollment,
       });
     let service = newService();
     const creation = create(service, "confirmed-node-cleanup").catch((error: unknown) => error);
     try {
-      await Promise.race([
-        retirementEntered.promise,
-        creation.then(() => {
-          throw new Error("provisioning settled before retiring node enrollment");
-        }),
-      ]);
+      await beforeSettlement(retirementEntered.promise, creation, "Node retirement");
       expect(testState.store.list()[0]).toMatchObject({
         state: "destroying",
         leaseId: "cleanup-node-lease",
@@ -129,19 +126,16 @@ describe("worker allocation cleanup", () => {
     await reopenWorkerEnvironmentStore();
     service = createService(provider);
     await service.reconcileOnce();
-    expect(service.get(intent.environmentId)).toMatchObject({
+    const failed = {
       state: "failed",
       leaseId: null,
       lastError: primaryError.message,
-    });
+    };
+    expect(service.get(intent.environmentId)).toMatchObject(failed);
     await reopenWorkerEnvironmentStore();
     service = createService(provider);
     await service.reconcileOnce();
-    expect(service.get(intent.environmentId)).toMatchObject({
-      state: "failed",
-      leaseId: null,
-      lastError: primaryError.message,
-    });
+    expect(service.get(intent.environmentId)).toMatchObject(failed);
     expect(provision).toHaveBeenCalledTimes(2);
     expect(destroy).not.toHaveBeenCalled();
     expect(testState.bootstrapWorker).not.toHaveBeenCalled();
@@ -302,20 +296,15 @@ describe("worker allocation cleanup", () => {
     async (phase) => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const provisionEntered = createDeferredCore();
-      const resolutionEntered = createDeferredCore();
       const intentCommitted = createDeferredCore();
       const provisionPending = createDeferredCore();
-      const resolutionPending = createDeferredCore();
+      const resolution = blockedAllocation("old-allocation");
+      const { resolveAllocation } = resolution;
       const requestDestroy = testState.store.requestDestroy.bind(testState.store);
       vi.spyOn(testState.store, "requestDestroy").mockImplementation(async (input) => {
         const record = await requestDestroy(input);
         intentCommitted.resolve();
         return record;
-      });
-      const resolveAllocation = vi.fn(async () => {
-        resolutionEntered.resolve();
-        await resolutionPending.promise;
-        return { leaseId: "old-allocation", sharedHost: false };
       });
       const provision = vi.fn(async () => {
         provisionEntered.resolve();
@@ -325,23 +314,16 @@ describe("worker allocation cleanup", () => {
         throw new Error("provision response lost");
       });
       const destroy = vi.fn(async () => {});
-      const service = createService(
-        createProvider({
-          provision,
-          resolveAllocation,
-          destroy,
-          resolveProvisionTimeoutMs: () => 20,
-        }),
-      );
+      const service = providerService({
+        provision,
+        resolveAllocation,
+        destroy,
+        resolveProvisionTimeoutMs: () => 20,
+      });
       const creation = create(service, "owner-race").catch((error: unknown) => error);
       let teardownResult: Promise<unknown> | undefined;
       try {
-        await Promise.race([
-          provisionEntered.promise,
-          creation.then((result) => {
-            throw new Error("Creation ended before provider entry", { cause: result });
-          }),
-        ]);
+        await beforeSettlement(provisionEntered.promise, creation, "Provision");
         if (phase === "queued") {
           await vi.advanceTimersByTimeAsync(20);
         }
@@ -351,19 +333,9 @@ describe("worker allocation cleanup", () => {
           (value) => ({ value }),
           (error: unknown) => ({ error }),
         );
-        await Promise.race([
-          intentCommitted.promise,
-          teardownResult.then((result) => {
-            throw new Error("Teardown ended before destroy intent committed", { cause: result });
-          }),
-        ]);
+        await beforeSettlement(intentCommitted.promise, teardownResult, "Destroy intent");
         if (phase === "resolving") {
-          await Promise.race([
-            resolutionEntered.promise,
-            teardownResult.then((result) => {
-              throw new Error("Teardown ended before allocation resolution", { cause: result });
-            }),
-          ]);
+          await beforeSettlement(resolution.entered, teardownResult, "Allocation resolution");
         }
         const replacement = await testState.store.transition({
           environmentId: pending.environmentId,
@@ -376,7 +348,7 @@ describe("worker allocation cleanup", () => {
           },
         });
         provisionPending.resolve();
-        resolutionPending.resolve();
+        resolution.release();
         expect(await teardownResult).toMatchObject({ error: expect.any(Error) });
         expect(testState.store.get(pending.environmentId)).toEqual(replacement);
         expect(resolveAllocation).toHaveBeenCalledTimes(phase === "queued" ? 0 : 1);
@@ -384,7 +356,7 @@ describe("worker allocation cleanup", () => {
         expect(destroy).not.toHaveBeenCalled();
       } finally {
         provisionPending.resolve();
-        resolutionPending.resolve();
+        resolution.release();
         await Promise.all([creation, teardownResult]);
       }
     },
@@ -392,20 +364,18 @@ describe("worker allocation cleanup", () => {
 
   it("keeps timed-out allocation resolution owned until settlement, including shutdown", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const resolutionEntered = createDeferredCore();
-    const resolutionPending = createDeferredCore();
-    const resolveAllocation = vi.fn(async () => {
-      resolutionEntered.resolve();
-      await resolutionPending.promise;
-      return { leaseId: "late-allocation", sharedHost: false };
-    });
+    const resolution = blockedAllocation("late-allocation");
+    const { resolveAllocation } = resolution;
     const provision = vi.fn(async () => {
       throw new Error("preflight failed");
     });
     const destroy = vi.fn(async () => {});
-    const service = createService(createProvider({ provision, resolveAllocation, destroy }), {
-      providerCallTimeoutMs: 20,
-    });
+    const service = providerService(
+      { provision, resolveAllocation, destroy },
+      {
+        providerCallTimeoutMs: 20,
+      },
+    );
     await expect(create(service, "resolution-timeout")).rejects.toMatchObject({
       code: "provider_failure",
     });
@@ -418,12 +388,7 @@ describe("worker allocation cleanup", () => {
     let stopping: Promise<void> | undefined;
     let stopped = false;
     try {
-      await Promise.race([
-        resolutionEntered.promise,
-        teardownResult.then((result) => {
-          throw new Error("Teardown ended before allocation resolution", { cause: result });
-        }),
-      ]);
+      await beforeSettlement(resolution.entered, teardownResult, "Allocation resolution");
       await vi.advanceTimersByTimeAsync(20);
       expect.soft(await teardownResult).toMatchObject({
         error: {
@@ -451,7 +416,7 @@ describe("worker allocation cleanup", () => {
         destroyRequestedAtMs: expect.any(Number),
       });
     } finally {
-      resolutionPending.resolve();
+      resolution.release();
       await Promise.all([teardownResult, retryResult, stopping]);
     }
     expect(await retryResult).toMatchObject({ value: { state: "destroyed" } });
