@@ -9,6 +9,14 @@ import { createNativeConversationBridge } from "./native-conversation-bridge.ts"
 vi.mock("../lib/toast.ts", () => ({ showToast: vi.fn() }));
 
 const cleanups: Array<() => void> = [];
+const nextSession = "agent:main:next";
+const target = (sessionKey: string) => ({ agentId: "main", sessionKey });
+const result = (ok: boolean, requestId = "request-1", error?: string) => ({
+  type: "command-result",
+  requestId,
+  ok,
+  ...(error ? { error } : {}),
+});
 afterEach(() => {
   cleanups.splice(0).forEach((cleanup) => cleanup());
   vi.useRealTimers();
@@ -93,6 +101,13 @@ function fixture(features: string[] = []) {
     bridge,
     documentId,
     command,
+    navigate: (sessionKey = nextSession, requestId = "request-1") =>
+      command("navigate", target(sessionKey), { requestId }),
+    select(sessionKey: string) {
+      data.sessionKey = sessionKey;
+      changed();
+    },
+    expectLast: (shape: Record<string, unknown>) => expect(messages.at(-1)).toMatchObject(shape),
     data,
     snapshot,
     row,
@@ -141,7 +156,7 @@ describe("native conversation contract", () => {
     ]);
     f.bridge.publishSessionFacts([]);
     await flush();
-    expect(f.messages.at(-1)).toMatchObject({ revision: 2, sessions: [] });
+    f.expectLast({ revision: 2, sessions: [] });
     for (const invalid of [
       [{ ...row, outboxAttentionCount: -1 }],
       [{ ...row, outboxAttentionCount: Number.MAX_SAFE_INTEGER + 1 }],
@@ -154,7 +169,7 @@ describe("native conversation contract", () => {
     ]) {
       f.bridge.publishSessionFacts(invalid);
       await flush();
-      expect(f.messages.at(-1)).toMatchObject({ type: "session-facts", sessions: null });
+      f.expectLast({ type: "session-facts", sessions: null });
     }
     f.bridge.dispose();
     const count = f.messages.length;
@@ -204,18 +219,14 @@ describe("native conversation contract", () => {
       page.append(pane);
       document.body.append(page);
       const results = () => f.messagesOf("command-result");
-      f.command("open-session-actions", {
-        agentId: f.data.agentId,
-        sessionKey: f.data.sessionKey,
-      });
+      f.command("open-session-actions", target(f.data.sessionKey));
       await flush();
       await vi.dynamicImportSettled();
       await flush();
       expect(results()).toEqual([]);
 
       if (owner === "superseded") {
-        f.data.sessionKey = "agent:main:other";
-        f.changed();
+        f.select("agent:main:other");
         // The pane cache retains the prior session's pane and moves only its class.
         pane.classList.remove("chat-pane-cache__pane--active");
       } else if (owner === "detached") {
@@ -332,47 +343,12 @@ describe("native conversation contract", () => {
     await flush();
     expect(f.messagesOf("command-result")).toEqual([
       {
+        ...result(false, "request-1", "stale-document"),
         contract: 1,
         documentId: "retired-document",
-        type: "command-result",
-        requestId: "request-1",
-        ok: false,
-        error: "stale-document",
       },
-      {
-        contract: 1,
-        documentId: f.documentId,
-        type: "command-result",
-        requestId: "request-1",
-        ok: true,
-      },
+      { ...result(true), contract: 1, documentId: f.documentId },
     ]);
-  });
-
-  it("switches through the in-page owner once and publishes state before answering once", async () => {
-    const f = fixture();
-    const gate = createDeferred();
-    f.navigateAndWait.mockImplementation(async () => {
-      await gate.promise;
-      f.data.sessionKey = "agent:main:next";
-      f.changed();
-    });
-    f.command("navigate", { agentId: "main", sessionKey: "agent:main:next" });
-    f.command("navigate", { agentId: "main", sessionKey: "agent:main:next" });
-    await flush();
-    expect(f.navigateAndWait).toHaveBeenCalledTimes(1);
-    expect(f.navigateAndWait).toHaveBeenCalledWith(
-      "chat",
-      expect.objectContaining({ pathname: expect.stringContaining("/chat/") }),
-    );
-    expect(f.messagesOf("command-result")).toEqual([]);
-    gate.resolve();
-    await flush();
-    expect(f.messages.slice(-2)).toMatchObject([
-      { type: "state", context: { agentId: "main", sessionKey: "agent:main:next" } },
-      { type: "command-result", ok: true },
-    ]);
-    expect(f.messagesOf("route-changed")).toEqual([]);
   });
 
   it.each(["accepted", "rejected", "timeout"] as const)(
@@ -385,16 +361,27 @@ describe("native conversation contract", () => {
       f.reply.mockImplementation((message) =>
         message.type === "state" ? delivery.promise : Promise.resolve({ ok: true }),
       );
-      const target = { agentId: "main", sessionKey: "agent:main:next" };
+      const destination = target(nextSession);
       f.navigateAndWait.mockImplementation(async () => {
-        f.data.sessionKey = target.sessionKey;
-        f.changed();
+        f.select(destination.sessionKey);
       });
-      f.command("navigate", target);
+      f.navigate(destination.sessionKey);
+      if (deliveryResult === "accepted") {
+        f.navigate(destination.sessionKey);
+      }
       await flush();
-      expect(f.messages.at(-1)).toMatchObject({
+      if (deliveryResult === "accepted") {
+        expect(f.navigateAndWait).toHaveBeenCalledTimes(1);
+        expect(f.navigateAndWait).toHaveBeenCalledWith(
+          "chat",
+          expect.objectContaining({
+            pathname: expect.stringContaining("/chat/"),
+          }),
+        );
+      }
+      f.expectLast({
         type: "state",
-        context: { sessionKey: target.sessionKey },
+        context: { sessionKey: destination.sessionKey },
       });
       expect(f.messagesOf("command-result")).toEqual([]);
       if (deliveryResult === "timeout") {
@@ -405,7 +392,7 @@ describe("native conversation contract", () => {
         );
         await flush();
       }
-      expect(f.messages.at(-1)).toMatchObject({
+      f.expectLast({
         type: "command-result",
         ok: deliveryResult === "accepted",
         ...(deliveryResult === "accepted"
@@ -413,28 +400,29 @@ describe("native conversation contract", () => {
           : { error: deliveryResult === "timeout" ? "navigate-timeout" : "navigate-rejected" }),
       });
       if (deliveryResult === "accepted") {
+        expect(f.messages.slice(-2)).toMatchObject([
+          { type: "state", context: destination },
+          result(true),
+        ]);
+        expect(f.messagesOf("route-changed")).toEqual([]);
         return;
       }
       f.reply.mockResolvedValue({ ok: true });
       f.changed();
       await flush();
       expect(f.messagesOf("state")).toHaveLength(2);
-      f.command("navigate", target, { requestId: "retry" });
+      f.navigate(destination.sessionKey, "retry");
       await flush();
       expect(f.messages.slice(-2)).toMatchObject([
-        { type: "state", revision: 3, context: target },
-        { type: "command-result", requestId: "retry", ok: true },
+        { type: "state", revision: 3, context: destination },
+        result(true, "retry"),
       ]);
       delivery.resolve({ ok: false, error: "late-rejection" });
       await flush();
-      f.command("navigate", target, { requestId: "confirmed" });
+      f.navigate(destination.sessionKey, "confirmed");
       await flush();
       expect(f.messagesOf("state")).toHaveLength(3);
-      expect(f.messages.at(-1)).toMatchObject({
-        type: "command-result",
-        requestId: "confirmed",
-        ok: true,
-      });
+      f.expectLast(result(true, "confirmed"));
     },
   );
 
@@ -443,7 +431,7 @@ describe("native conversation contract", () => {
     async (failure) => {
       const f = fixture();
       const gate = createDeferred();
-      const target =
+      const sessionKey =
         failure === "missing target"
           ? "agent:main:missing"
           : failure === "superseded"
@@ -459,29 +447,20 @@ describe("native conversation contract", () => {
       } else if (failure === "superseded") {
         f.navigateAndWait.mockReturnValue(gate.promise);
       }
-      f.command(
-        "navigate",
-        { agentId: "main", sessionKey: target },
-        { requestId: failure === "non-chat route" ? "face" : "request-1" },
-      );
+      f.navigate(sessionKey, failure === "non-chat route" ? "face" : "request-1");
       await flush();
       if (failure === "superseded") {
-        f.data.sessionKey = "agent:main:web";
-        f.changed();
+        f.select("agent:main:web");
         gate.resolve();
         await flush();
-        f.expectMessage({
-          type: "command-result",
-          ok: false,
-          error: "navigate-rejected",
-        });
+        f.expectMessage(result(false, "request-1", "navigate-rejected"));
         f.expectMessage({
           type: "route-changed",
           agentId: "main",
           sessionKey: "agent:main:web",
         });
       } else {
-        expect(f.messages.at(-1)).toMatchObject({
+        f.expectLast({
           type: "command-result",
           ok: false,
           error: "navigate-rejected",
@@ -529,28 +508,14 @@ describe("native conversation contract", () => {
     const f = fixture();
     await flush();
     f.navigateAndWait.mockReturnValue(new Promise(() => {}));
-    f.command("navigate", { agentId: "main", sessionKey: "agent:main:first" });
+    f.navigate("agent:main:first");
     await flush();
     await vi.advanceTimersByTimeAsync(5_000);
-    f.command(
-      "navigate",
-      { agentId: "main", sessionKey: "agent:main:second" },
-      { requestId: "second" },
-    );
+    f.navigate("agent:main:second", "second");
     await vi.advanceTimersByTimeAsync(10_000);
-    f.expectMessage({
-      type: "command-result",
-      requestId: "request-1",
-      ok: false,
-      error: "navigate-timeout",
-    });
+    f.expectMessage(result(false, "request-1", "navigate-timeout"));
     await vi.advanceTimersByTimeAsync(5_000);
-    f.expectMessage({
-      type: "command-result",
-      requestId: "second",
-      ok: false,
-      error: "navigate-timeout",
-    });
+    f.expectMessage(result(false, "second", "navigate-timeout"));
   });
 
   it.each(["ready", "state"] as const)(
@@ -565,18 +530,12 @@ describe("native conversation contract", () => {
         message.type === stalledType ? new Promise(() => {}) : Promise.resolve({ ok: true }),
       );
       f.navigateAndWait.mockImplementation(async () => {
-        f.data.sessionKey = "agent:main:next";
-        f.changed();
+        f.select(nextSession);
       });
-      f.command("navigate", { agentId: "main", sessionKey: "agent:main:next" });
+      f.navigate(nextSession);
       await flush();
       await vi.advanceTimersByTimeAsync(15_000);
-      f.expectMessage({
-        type: "command-result",
-        requestId: "request-1",
-        ok: false,
-        error: "navigate-timeout",
-      });
+      f.expectMessage(result(false, "request-1", "navigate-timeout"));
     },
   );
 
@@ -588,8 +547,8 @@ describe("native conversation contract", () => {
       const first = createDeferred();
       const second = createDeferred();
       f.navigateAndWait.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
-      const target = { agentId: "main", sessionKey: "agent:main:next" };
-      f.command("navigate", target);
+      const destination = target(nextSession);
+      f.navigate(destination.sessionKey);
       await flush();
       if (retirement === "document retirement") {
         f.bridge.dispose();
@@ -600,10 +559,9 @@ describe("native conversation contract", () => {
         return;
       }
       await vi.advanceTimersByTimeAsync(15_000);
-      f.command("navigate", target, { requestId: "second" });
+      f.navigate(destination.sessionKey, "second");
       await flush();
-      f.data.sessionKey = target.sessionKey;
-      f.changed();
+      f.select(destination.sessionKey);
       const beforeLateCompletion = [...f.messages];
       first.resolve();
       await flush();
@@ -611,8 +569,8 @@ describe("native conversation contract", () => {
       second.resolve();
       await flush();
       expect(f.messages.slice(-2)).toMatchObject([
-        { type: "state", context: target },
-        { type: "command-result", requestId: "second", ok: true },
+        { type: "state", context: destination },
+        result(true, "second"),
       ]);
       expect(
         f.messages.filter(
@@ -674,7 +632,7 @@ describe("native conversation contract", () => {
         document.querySelector("a")!.dispatchEvent(click);
         await flush();
         expect(click.defaultPrevented).toBe(true);
-        expect(f.messages.at(-1)).toMatchObject({
+        f.expectLast({
           type: "open-dashboard",
           path: "/settings",
           search: "?section=general",
@@ -726,7 +684,7 @@ describe("native conversation contract", () => {
       sessionKey: "agent:main:linked",
       reason: "other",
     });
-    expect(f.messages.at(-1)).toMatchObject({
+    f.expectLast({
       type: "open-dashboard",
       path: "/settings",
       search: "?section=general",
@@ -747,10 +705,6 @@ describe("native conversation contract", () => {
     f.command("focus-composer", {}, { requestId: "focus" });
     await flush();
     expect(document.activeElement).toBe(document.querySelector("textarea"));
-    expect(f.messages.at(-1)).toMatchObject({
-      type: "command-result",
-      requestId: "focus",
-      ok: true,
-    });
+    f.expectLast(result(true, "focus"));
   });
 });

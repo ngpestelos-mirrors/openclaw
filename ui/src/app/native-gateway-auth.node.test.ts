@@ -58,6 +58,18 @@ class RecordingSocket extends MockWebSocket {
       this.connect.resolve(frame);
     }
   }
+  hello(id: string, deviceToken?: string) {
+    this.emitMessage({
+      type: "res",
+      id,
+      ok: true,
+      payload: {
+        type: "hello-ok",
+        protocol: 3,
+        auth: { role: "operator", scopes, ...(deviceToken ? { deviceToken } : {}) },
+      },
+    });
+  }
   override close(code?: number, reason?: string) {
     super.close(code, reason);
     this.closed.resolve();
@@ -163,20 +175,30 @@ describe("native authenticated Control UI", () => {
     wsInstances.length = 0;
   });
 
+  function createGateway(settings = makeUiSettings(gatewayUrl)) {
+    const startup = resolveApplicationStartupSettings(settings, {
+      pathname: window.location.pathname,
+      search: "",
+      hash: window.location.hash,
+    });
+    gateway = createApplicationGateway(startup.settings, "", "", undefined, {
+      persistDefaultConnectionSettings: false,
+      clientOptions: startup.nativeClient ?? undefined,
+    });
+    return startup;
+  }
+  function usePortTransport() {
+    Reflect.deleteProperty(window, "__OPENCLAW_NATIVE_CONTROL_AUTH__");
+    Object.assign(window, { OpenClawNativeGatewayAuth: undefined });
+    window.location.hash = `nativeControlAuth=${encodeURIComponent(gatewayUrl)}`;
+  }
   function connect(
     target = gatewayUrl,
     cachedToken = "obsolete-browser-secret",
     challenge = { nonce: "challenge-1", ts: signedAt },
   ) {
-    const startup = resolveApplicationStartupSettings(
-      makeUiSettings(gatewayUrl, { token: cachedToken }),
-      { pathname: "/work/dashboard/main", search: "", hash: window.location.hash },
-    );
-    gateway = createApplicationGateway(startup.settings, "", "", undefined, {
-      persistDefaultConnectionSettings: false,
-      clientOptions: startup.nativeClient ?? undefined,
-    });
-    gateway.connect({ gatewayUrl: target });
+    createGateway(makeUiSettings(gatewayUrl, { token: cachedToken }));
+    gateway!.connect({ gatewayUrl: target });
     const socket = wsInstances.at(-1);
     if (!(socket instanceof RecordingSocket)) {
       throw new Error("missing socket");
@@ -188,9 +210,7 @@ describe("native authenticated Control UI", () => {
   it.each(["before challenge", "after challenge"])(
     "uses the approved native identity on older WebViews when the port arrives %s",
     async (arrival) => {
-      Reflect.deleteProperty(window, "__OPENCLAW_NATIVE_CONTROL_AUTH__");
-      Object.assign(window, { OpenClawNativeGatewayAuth: undefined });
-      window.location.hash = `nativeControlAuth=${encodeURIComponent(gatewayUrl)}`;
+      usePortTransport();
       const channel = new MessageChannel();
       ports.push(channel.port1, channel.port2);
       const sendToNative = vi.spyOn(channel.port2, "postMessage");
@@ -201,18 +221,10 @@ describe("native authenticated Control UI", () => {
         deliverPort(channel.port2, source, origin, target);
       if (arrival === "before challenge") {
         // Startup owns the listener, before the Gateway opens or sends a challenge.
-        const startup = resolveApplicationStartupSettings(makeUiSettings(gatewayUrl), {
-          pathname: window.location.pathname,
-          search: "",
-          hash: window.location.hash,
-        });
+        const startup = createGateway();
         expect(startup.nativeClient?.nativeConnectAuth).toBeTypeOf("function");
-        gateway = createApplicationGateway(startup.settings, "", "", undefined, {
-          persistDefaultConnectionSettings: false,
-          clientOptions: startup.nativeClient ?? undefined,
-        });
         deliver(null, "");
-        gateway.connect();
+        gateway!.connect();
         const socket = wsInstances.at(-1) as RecordingSocket;
         challengeSocket(socket);
       } else {
@@ -245,9 +257,7 @@ describe("native authenticated Control UI", () => {
     async (transport) => {
       let request: Challenge | undefined;
       if (transport === "legacy port") {
-        Reflect.deleteProperty(window, "__OPENCLAW_NATIVE_CONTROL_AUTH__");
-        Object.assign(window, { OpenClawNativeGatewayAuth: undefined });
-        window.location.hash = `nativeControlAuth=${encodeURIComponent(gatewayUrl)}`;
+        usePortTransport();
       } else {
         bridge.postMessage.mockImplementation((message) => {
           request = JSON.parse(message);
@@ -311,8 +321,7 @@ describe("native authenticated Control UI", () => {
           throw new Error("native method rejected before connect");
         }),
       ]);
-      expect(frame.params.device?.id).toBe(deviceId);
-      expect(frame.params.client).toMatchObject(nativeClient);
+      expect(frame.params).toMatchObject({ device: { id: deviceId }, client: nativeClient });
       expect(frame.params.scopes).toEqual(scopes);
       expect(frame.params.auth).toEqual({ [kind]: secret });
       if (transport !== "WebKit") {
@@ -340,16 +349,7 @@ describe("native authenticated Control UI", () => {
         ),
       ).toBe(true);
       expect(localStorage.getItem(identityKey)).toBeNull();
-      socket.emitMessage({
-        type: "res",
-        id: frame.id,
-        ok: true,
-        payload: {
-          type: "hello-ok",
-          protocol: 3,
-          auth: { role: "operator", deviceToken: "synthetic-hello-grant", scopes },
-        },
-      });
+      socket.hello(frame.id, "synthetic-hello-grant");
       await vi.advanceTimersByTimeAsync(0);
       expect(localStorage.getItem(identityKey)).toBeNull();
       expect(localStorage.getItem(authKey)).toBeNull();
@@ -441,8 +441,7 @@ describe("native authenticated Control UI", () => {
     challengeSocket(second, "challenge-2", signedAt + 1);
     const frame = await second.connect.promise;
     expect(frame.params.auth).toEqual({ deviceToken: "rotated-native-grant" });
-    expect(frame.params.device?.id).toBe(deviceId);
-    expect(frame.params.device?.nonce).toBe("challenge-2");
+    expect(frame.params.device).toMatchObject({ id: deviceId, nonce: "challenge-2" });
     expect(bridge.postMessage).toHaveBeenCalledTimes(2);
   });
 
@@ -498,12 +497,7 @@ describe("native authenticated Control UI", () => {
       });
       expect(frame.params.scopes).toEqual(scopes);
       expect(bridge.postMessage).toHaveBeenCalledTimes(2);
-      second.emitMessage({
-        type: "res",
-        id: frame.id,
-        ok: true,
-        payload: { type: "hello-ok", protocol: 3, auth: { role: "operator", scopes } },
-      });
+      second.hello(frame.id);
       await vi.advanceTimersByTimeAsync(0);
       expect(gateway!.snapshot.phase).toBe("connected");
       expect(localStorage.getItem(identityKey)).toBeNull();
