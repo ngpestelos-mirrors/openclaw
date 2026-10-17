@@ -36,6 +36,24 @@ const fixtureFiles = [
 ];
 const literalEntries = ["private-entry", "private_entry", "Private.entry-Ü"];
 
+function declarationPaths(prefix: string, entries: string[] = []) {
+  const declaration = `${prefix}packages/plugin-sdk/dist/src/plugin-sdk/`;
+  return {
+    "openclaw/plugin-sdk/*": [`${prefix}dist/plugin-sdk/*.d.ts`],
+    "openclaw/plugin-sdk/custom": [`${declaration}custom.d.ts`, "./override.d.ts"],
+    ...Object.fromEntries(
+      entries.map((entry) => [`openclaw/plugin-sdk/${entry}`, [`${declaration}${entry}.d.ts`]]),
+    ),
+  };
+}
+
+function publicExport(entry: string, privateEntry = false) {
+  return {
+    ...(!privateEntry && { types: `./dist/plugin-sdk/${entry}.d.ts` }),
+    default: `./dist/plugin-sdk/${entry}.js`,
+  };
+}
+
 function writeJson(root: string, file: string, value: unknown) {
   fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
   fs.writeFileSync(path.join(root, file), `${JSON.stringify(value, null, 2)}\n`);
@@ -158,10 +176,7 @@ describe("plugin SDK registration CLI", () => {
     expect(runSync(root).status).toBe(0);
     expect(readPackage(root)).toEqual({ ...manifest, files: [...manifest.files, exclusion] });
     expect(readOutputs(root).slice(1)).toEqual(before.slice(1));
-    const synced = readOutputs(root);
-    expect(runSync(root).status).toBe(0);
-    expect(runSync(root, "--check").status).toBe(0);
-    expect(readOutputs(root)).toEqual(synced);
+    expectStableSync(root);
   });
 
   it("packs literal entry names without private types or test-only exports", () => {
@@ -214,34 +229,15 @@ describe("plugin SDK registration CLI", () => {
     ]);
     expect(readPackage(root).exports).toEqual({
       ".": "./index.js",
-      "./plugin-sdk/public-entry": {
-        types: "./dist/plugin-sdk/public-entry.d.ts",
-        default: "./dist/plugin-sdk/public-entry.js",
-      },
+      "./plugin-sdk/public-entry": publicExport("public-entry"),
       ...Object.fromEntries(
-        literalEntries.map((entry) => [
-          `./plugin-sdk/${entry}`,
-          { default: `./dist/plugin-sdk/${entry}.js` },
-        ]),
+        literalEntries.map((entry) => [`./plugin-sdk/${entry}`, publicExport(entry, true)]),
       ),
     });
     for (const { file, prefix } of declarationConfigs) {
-      expect(readConfig(root, file).compilerOptions.paths).toEqual({
-        "openclaw/plugin-sdk/*": [`${prefix}dist/plugin-sdk/*.d.ts`],
-        "openclaw/plugin-sdk/custom": [
-          `${prefix}packages/plugin-sdk/dist/src/plugin-sdk/custom.d.ts`,
-          "./override.d.ts",
-        ],
-        ...Object.fromEntries(
-          literalEntries.map((entry) => [
-            `openclaw/plugin-sdk/${entry}`,
-            [`${prefix}packages/plugin-sdk/dist/src/plugin-sdk/${entry}.d.ts`],
-          ]),
-        ),
-        "openclaw/plugin-sdk/test-fixtures": [
-          `${prefix}packages/plugin-sdk/dist/src/plugin-sdk/test-fixtures.d.ts`,
-        ],
-      });
+      expect(readConfig(root, file).compilerOptions.paths).toEqual(
+        declarationPaths(prefix, [...literalEntries, "test-fixtures"]),
+      );
     }
     expectStableSync(root);
   });
@@ -278,26 +274,13 @@ describe("plugin SDK registration CLI", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(readPackage(root).files).toEqual(retained);
     for (const { file, prefix } of declarationConfigs) {
-      expect(readConfig(root, file).compilerOptions.paths).toEqual({
-        "openclaw/plugin-sdk/*": [`${prefix}dist/plugin-sdk/*.d.ts`],
-        "openclaw/plugin-sdk/custom": [
-          `${prefix}packages/plugin-sdk/dist/src/plugin-sdk/custom.d.ts`,
-          "./override.d.ts",
-        ],
-        "openclaw/plugin-sdk/private-entry": [
-          `${prefix}packages/plugin-sdk/dist/src/plugin-sdk/private-entry.d.ts`,
-        ],
-        "openclaw/plugin-sdk/test-fixtures": [
-          `${prefix}packages/plugin-sdk/dist/src/plugin-sdk/test-fixtures.d.ts`,
-        ],
-      });
+      expect(readConfig(root, file).compilerOptions.paths).toEqual(
+        declarationPaths(prefix, ["private-entry", "test-fixtures"]),
+      );
     }
     const exports = readPackage(root).exports;
     for (const entry of formerEntries) {
-      expect(exports[`./plugin-sdk/${entry}`]).toEqual({
-        types: `./dist/plugin-sdk/${entry}.d.ts`,
-        default: `./dist/plugin-sdk/${entry}.js`,
-      });
+      expect(exports[`./plugin-sdk/${entry}`]).toEqual(publicExport(entry));
     }
     expectStableSync(root);
     writeJson(root, entryList, ["private-entry", "test-fixtures", ...formerEntries]);
@@ -308,16 +291,12 @@ describe("plugin SDK registration CLI", () => {
       ...formerEntries.map((entry) => `!dist/plugin-sdk/${entry}.d.ts`),
     ]);
     for (const { file, prefix } of declarationConfigs) {
-      for (const entry of formerEntries) {
-        expect(
-          readConfig(root, file).compilerOptions.paths[`openclaw/plugin-sdk/${entry}`],
-        ).toEqual([`${prefix}packages/plugin-sdk/dist/src/plugin-sdk/${entry}.d.ts`]);
-      }
+      expect(readConfig(root, file).compilerOptions.paths).toEqual(
+        declarationPaths(prefix, ["private-entry", "test-fixtures", ...formerEntries]),
+      );
     }
     for (const entry of formerEntries) {
-      expect(readPackage(root).exports[`./plugin-sdk/${entry}`]).toEqual({
-        default: `./dist/plugin-sdk/${entry}.js`,
-      });
+      expect(readPackage(root).exports[`./plugin-sdk/${entry}`]).toEqual(publicExport(entry, true));
     }
     expectStableSync(root);
   });

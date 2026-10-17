@@ -1,4 +1,3 @@
-// Targeted Docker Lane Groups tests cover targeted docker lane groups script behavior.
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -32,6 +31,27 @@ function expandedPlan(
   });
 }
 
+type Group = ReturnType<typeof planTargetedDockerLaneGroups>[number];
+function groupPlan(group: Group, baselines = "", scenarios = "", targetRoot?: string) {
+  return expandedPlan(
+    group.docker_lanes,
+    group.published_upgrade_survivor_baselines ?? baselines,
+    group.published_upgrade_survivor_scenarios ?? scenarios,
+    targetRoot,
+  );
+}
+
+function survivorGroup(version: string, scenario?: string, index = 1): Group {
+  return {
+    docker_lanes: scenario ? "update-migration" : "published-upgrade-survivor",
+    label: scenario
+      ? `update-migration-${version}-scenarios-${index}`
+      : `published-upgrade-survivor-${version}`,
+    published_upgrade_survivor_baselines: `openclaw@${version}`,
+    ...(scenario && { published_upgrade_survivor_scenarios: scenario, timeout_minutes: 90 }),
+  };
+}
+
 describe("scripts/plan-targeted-docker-lane-groups", () => {
   it("retains the reported 9.4 sibling-import cell when current-version baselines are omitted", () => {
     const groups = planTargetedDockerLaneGroups({
@@ -42,13 +62,7 @@ describe("scripts/plan-targeted-docker-lane-groups", () => {
       upgradeSurvivorBaselineScope: "legacy-operator-state",
     });
     expect(
-      groups.flatMap((group) =>
-        expandedPlan(
-          group.docker_lanes,
-          group.published_upgrade_survivor_baselines ?? "",
-          group.published_upgrade_survivor_scenarios ?? "",
-        ).scheduledLanes.map((entry) => entry.name),
-      ),
+      groups.flatMap((group) => groupPlan(group).scheduledLanes.map((entry) => entry.name)),
     ).toEqual([
       "published-upgrade-survivor-2026.9.3",
       "published-upgrade-survivor-2026.9.3-legacy-operator-state",
@@ -125,26 +139,9 @@ describe("scripts/plan-targeted-docker-lane-groups", () => {
         docker_lanes: "doctor-switch update-channel-switch",
         label: "doctor-switch--update-channel-switch",
       },
-      {
-        docker_lanes: "published-upgrade-survivor",
-        label: "published-upgrade-survivor-2026.6.11-1",
-        published_upgrade_survivor_baselines: "openclaw@2026.6.11-1",
-      },
-      {
-        docker_lanes: "published-upgrade-survivor",
-        label: "published-upgrade-survivor-2026.6.11",
-        published_upgrade_survivor_baselines: "openclaw@2026.6.11",
-      },
-      {
-        docker_lanes: "published-upgrade-survivor",
-        label: "published-upgrade-survivor-2026.6.2",
-        published_upgrade_survivor_baselines: "openclaw@2026.6.2",
-      },
-      {
-        docker_lanes: "published-upgrade-survivor",
-        label: "published-upgrade-survivor-2026.6.1",
-        published_upgrade_survivor_baselines: "openclaw@2026.6.1",
-      },
+      ...["2026.6.11-1", "2026.6.11", "2026.6.2", "2026.6.1"].map((version) =>
+        survivorGroup(version),
+      ),
       { docker_lanes: "plugins-offline plugin-update", label: "plugins-offline--plugin-update" },
     ]);
   });
@@ -189,11 +186,7 @@ describe("scripts/plan-targeted-docker-lane-groups", () => {
       "openclaw@2026.6.34",
     ]);
     const actual = groups.flatMap((group) =>
-      expandedPlan(
-        group.docker_lanes,
-        group.published_upgrade_survivor_baselines ?? baselines,
-        group.published_upgrade_survivor_scenarios ?? scenarios,
-      ).scheduledLanes.map((lane) => lane.name),
+      groupPlan(group, baselines, scenarios).scheduledLanes.map((lane) => lane.name),
     );
     const expected = expandedPlan(lanes, baselines, scenarios).scheduledLanes.map(
       (lane) => lane.name,
@@ -210,36 +203,12 @@ describe("scripts/plan-targeted-docker-lane-groups", () => {
       upgradeSurvivorBaselines: baselines,
       upgradeSurvivorScenarios: scenarios,
     });
-    const plans = groups.map((group) =>
-      expandedPlan(
-        group.docker_lanes,
-        group.published_upgrade_survivor_baselines ?? baselines,
-        group.published_upgrade_survivor_scenarios ?? scenarios,
-      ),
-    );
+    const plans = groups.map((group) => groupPlan(group, baselines, scenarios));
 
     expect(groups).toEqual([
-      {
-        docker_lanes: "update-migration",
-        label: "update-migration-2026.8.1-scenarios-1",
-        published_upgrade_survivor_baselines: "openclaw@2026.8.1",
-        published_upgrade_survivor_scenarios: "mobile-pairing-reconnect",
-        timeout_minutes: 90,
-      },
-      {
-        docker_lanes: "update-migration",
-        label: "update-migration-2026.8.1-scenarios-2",
-        published_upgrade_survivor_baselines: "openclaw@2026.8.1",
-        published_upgrade_survivor_scenarios: "watchos-direct-node",
-        timeout_minutes: 90,
-      },
-      {
-        docker_lanes: "update-migration",
-        label: "update-migration-2026.7.1-scenarios-1",
-        published_upgrade_survivor_baselines: "openclaw@2026.7.1",
-        published_upgrade_survivor_scenarios: "mobile-pairing-reconnect",
-        timeout_minutes: 90,
-      },
+      survivorGroup("2026.8.1", "mobile-pairing-reconnect"),
+      survivorGroup("2026.8.1", "watchos-direct-node", 2),
+      survivorGroup("2026.7.1", "mobile-pairing-reconnect"),
     ]);
     expect(plans.flatMap((plan) => plan.scheduledLanes.map((lane) => lane.name))).toEqual([
       "update-migration-2026.8.1-mobile-pairing-reconnect",
@@ -267,11 +236,7 @@ describe("scripts/plan-targeted-docker-lane-groups", () => {
     });
     const expanded = groups.map((group) => ({
       group,
-      plan: expandedPlan(
-        group.docker_lanes,
-        group.published_upgrade_survivor_baselines ?? baselines,
-        group.published_upgrade_survivor_scenarios ?? scenarios,
-      ),
+      plan: groupPlan(group, baselines, scenarios),
     }));
     const actual = expanded.flatMap(({ plan }) => plan.scheduledLanes);
     const expected = expandedPlan(lanes, baselines, scenarios).scheduledLanes;
@@ -311,14 +276,7 @@ describe("scripts/plan-targeted-docker-lane-groups", () => {
         upgradeSurvivorBaselines: baselines,
         upgradeSurvivorScenarios: scenarios,
       });
-      const expanded = groups.map((group) =>
-        expandedPlan(
-          group.docker_lanes,
-          group.published_upgrade_survivor_baselines ?? baselines,
-          group.published_upgrade_survivor_scenarios ?? scenarios,
-          targetRoot,
-        ),
-      );
+      const expanded = groups.map((group) => groupPlan(group, baselines, scenarios, targetRoot));
       const expected = expandedPlan(lanes, baselines, scenarios, targetRoot);
       expect(
         expanded
