@@ -68,5 +68,9 @@ export function holdExit(worker: Pick<FakeWorker, "emit" | "terminate">) {
     worker.emit("exit", 0);
     return 0;
   });
-  return { entered: entered.promise, release: () => exit.resolve() };
+  return {
+    entered: entered.promise,
+    release: () => exit.resolve(),
+    reject: (error: Error) => exit.reject(error),
+  };
 }

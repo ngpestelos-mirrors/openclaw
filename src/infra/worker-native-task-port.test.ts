@@ -5,11 +5,7 @@ import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getWorkerMessageMetrics } from "./worker-message-metrics.js";
 import { NativeWorker } from "./worker-native-handle.js";
-import type {
-  NativeWorkerReply,
-  NativeWorkerRequest,
-  NativeWorkerRuntime,
-} from "./worker-native-lifecycle.types.js";
+import type { NativeWorkerRequest, NativeWorkerRuntime } from "./worker-native-lifecycle.types.js";
 
 // These endpoints run on the Gateway main thread; Vitest itself runs in a worker.
 vi.mock("node:worker_threads", async (importOriginal) => ({
@@ -30,24 +26,18 @@ afterEach(() => {
 });
 
 function fixture() {
-  const { port1, port2 } = new MessageChannel();
+  const { port1: port, port2: peer } = new MessageChannel();
   const context = new AsyncLocalStorage<string>();
-  const controls: NativeWorkerReply[] = [];
   const sent: NativeWorkerRequest[] = [];
   const references: boolean[] = [];
   const handles = new Set([1]);
   const runtime: NativeWorkerRuntime = {
     handles,
-    service() {
-      for (let reply = controls.shift(); reply; reply = controls.shift()) {
-        worker.receive(reply);
-      }
-      worker.serviceTaskPort();
-    },
-    post(message) {
+    service: () => worker.serviceTaskPort(),
+    post: (message) => {
       sent.push(message);
     },
-    refreshReference() {
+    refreshReference: () => {
       references.push(worker.needsReference);
     },
     resourceBroker() {
@@ -56,20 +46,19 @@ function fixture() {
   };
   const worker = context.run(
     "constructor",
-    () => new NativeWorker(runtime, 1, workerUrl, false, false, undefined, port1),
+    () => new NativeWorker(runtime, 1, workerUrl, false, false, undefined, port),
   );
   worker.on("error", () => {});
   cleanups.push(() => {
     worker.ownerJoined(new Error("Fixture native owner joined"));
-    port1.close();
-    port2.close();
+    port.close();
+    peer.close();
   });
   return {
     worker,
-    port: port1,
-    peer: port2,
+    port,
+    peer,
     context,
-    controls,
     sent,
     handles,
     runtime,
@@ -79,7 +68,7 @@ function fixture() {
 
 describe("retained worker direct task transport", () => {
   it("retains pre-start messages and permits synchronous delivery from the started callback", async () => {
-    const { worker, port, peer, context, controls } = fixture();
+    const { worker, port, peer, context } = fixture();
     const before = messageMetrics();
     const events: unknown[] = [];
     worker.on("message", (message) => events.push([message, context.getStore()]));
@@ -93,8 +82,7 @@ describe("retained worker direct task transport", () => {
     await buffered;
     expect(events).toEqual([]);
     peer.postMessage("queued", []);
-    controls.push({ type: "created", id: 1, threadId: 101 });
-    context.run("servicing", () => worker.service());
+    context.run("servicing", () => worker.receive({ type: "created", id: 1, threadId: 101 }));
     expect(events).toEqual([
       ["started", "constructor"],
       ["buffered", "constructor"],
@@ -132,9 +120,8 @@ describe("retained worker direct task transport", () => {
   });
 
   it("reports task-port loss without stopping native work or inventing its exit receipt", async () => {
-    const { worker, peer, controls, sent } = fixture();
-    controls.push({ type: "created", id: 1, threadId: 103 });
-    worker.service();
+    const { worker, peer, sent } = fixture();
+    worker.receive({ type: "created", id: 1, threadId: 103 });
     const failed = once(worker, "error");
     peer.close();
     const [failure] = await failed;
@@ -144,15 +131,14 @@ describe("retained worker direct task transport", () => {
     expect(sent.some((message) => message.type === "stop")).toBe(false);
     const stopping = worker.stop();
     expect(stopping.read().status).toBe("pending");
-    controls.push({ type: "execution-exit", id: 1, code: 0 }, { type: "stopped", id: 1, code: 0 });
-    worker.service();
+    worker.receive({ type: "execution-exit", id: 1, code: 0 });
+    worker.receive({ type: "stopped", id: 1, code: 0 });
     expect(stopping.read()).toEqual({ status: "fulfilled", value: undefined });
   });
 
   it("sends reference transitions while retaining pending samples and checking repeated admission", async () => {
-    const { worker, controls, sent, runtime, references } = fixture();
-    controls.push({ type: "created", id: 1, threadId: 104 });
-    worker.service();
+    const { worker, sent, runtime, references } = fixture();
+    worker.receive({ type: "created", id: 1, threadId: 104 });
     worker.ref();
     worker.ref();
     worker.unref();
@@ -166,13 +152,12 @@ describe("retained worker direct task transport", () => {
     );
     worker.unref();
     expect(references.at(-1)).toBe(true);
-    controls.push({
+    worker.receive({
       type: "cpu",
       id: 1,
       requestId: sample.requestId,
       value: { user: 3, system: 1 },
     });
-    worker.service();
     await expect(cpu).resolves.toEqual({ user: 3, system: 1 });
     expect(references.at(-1)).toBe(false);
 

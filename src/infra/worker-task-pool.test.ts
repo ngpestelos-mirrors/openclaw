@@ -15,6 +15,7 @@ import { getTrackedWorkerCpuSources, getTrackedWorkerPoolSnapshot } from "./work
 import { workerTaskPoolEntrypoints } from "./worker-task-pool-runtime.test-support.js";
 import { WorkerTaskPool } from "./worker-task-pool.js";
 import type { PoolFixtureInput, PoolFixtureResult } from "./worker-task-pool.test-support.js";
+import type { WorkerTaskPoolOptions } from "./worker-task-pool.types.js";
 
 const workerUrl = resolveRuntimeWorkerUrl(workerTaskPoolEntrypoints.worker);
 const pools: WorkerTaskPool<PoolFixtureInput, PoolFixtureResult>[] = [];
@@ -37,11 +38,7 @@ vi.mock("node:worker_threads", async (importOriginal) => {
     },
   };
 });
-function createPool(
-  options: Partial<
-    ConstructorParameters<typeof WorkerTaskPool<PoolFixtureInput, PoolFixtureResult>>[0]
-  > = {},
-) {
+function createPool(options: Partial<WorkerTaskPoolOptions<PoolFixtureResult>> = {}) {
   const pool = new WorkerTaskPool<PoolFixtureInput, PoolFixtureResult>({
     workerUrl,
     maxWorkers: 1,
@@ -50,6 +47,9 @@ function createPool(
   pools.push(pool);
   return pool;
 }
+const fixtureArgv = (entrypoint: Parameters<typeof resolveRuntimeWorkerUrl>[0]) =>
+  resolveRuntimeWorkerArgv(resolveRuntimeWorkerUrl(entrypoint));
+const writeJson = (file: string, value: unknown) => fs.writeFileSync(file, JSON.stringify(value));
 afterEach(async () => {
   await Promise.all(pools.splice(0).map((pool) => pool.close()));
   vi.useRealTimers();
@@ -196,20 +196,14 @@ it("requests a host checkpoint when compute contention arrives during an exchang
   const waiting = createPool({ sharedCompute: true });
   const gate = createDeferredCore<PoolFixtureInput>();
   const entered = createDeferredCore();
-  const checkpoint = createDeferredCore();
-  let checkpointRequested = false;
-  let checkpointContext: string | undefined;
+  const checkpoint = createDeferredCore<string | undefined>();
   const blockers = Array.from({ length: limit - 1 }, () => owner.run(() => gate.promise, {}));
   const host = context.run("host owner", () =>
     owner.run(
       { label: "host", exchanges: 1 },
       {
         onRequest: async (_input, { yieldSignal }) => {
-          const requestCheckpoint = () => {
-            checkpointContext = context.getStore();
-            checkpointRequested = true;
-            checkpoint.resolve();
-          };
+          const requestCheckpoint = () => checkpoint.resolve(context.getStore());
           if (yieldSignal.aborted) {
             requestCheckpoint();
           } else {
@@ -226,11 +220,10 @@ it("requests a host checkpoint when compute contention arrives during an exchang
   await entered.promise;
   const next = context.run("contender", () => waiting.run({ label: "next" }, {}));
   try {
-    await expect.poll(() => checkpointRequested).toBe(true);
-    expect(checkpointContext).toBe("host owner");
+    expect(await checkpoint.promise).toBe("host owner");
     expect(await next).toMatchObject({ label: "next" });
   } finally {
-    checkpoint.resolve();
+    checkpoint.resolve(undefined);
     gate.resolve({ label: "blocker" });
     await Promise.allSettled([settled, next]);
   }
@@ -240,6 +233,7 @@ it("keeps host cancellation callbacks in the admitted caller context", async () 
   const context = new AsyncLocalStorage<string>();
   const pool = createPool();
   const entered = createDeferredCore();
+  const canceled = createDeferredCore<never>();
   const abort = new AbortController();
   const observed = vi.fn(() => context.getStore());
   const run = context.run("owner", () =>
@@ -247,18 +241,17 @@ it("keeps host cancellation callbacks in the admitted caller context", async () 
       { label: "cancel", exchanges: 1 },
       {
         signal: abort.signal,
-        onRequest: async (_value, { signal }) => {
+        onRequest: (_value, { signal }) => {
           entered.resolve();
-          return await new Promise((_, reject) => {
-            signal.addEventListener(
-              "abort",
-              () => {
-                observed();
-                reject(new Error("closed"));
-              },
-              { once: true },
-            );
-          });
+          signal.addEventListener(
+            "abort",
+            () => {
+              observed();
+              canceled.reject(new Error("closed"));
+            },
+            { once: true },
+          );
+          return canceled.promise;
         },
       },
     ),
@@ -378,11 +371,10 @@ it("rejects a clean exit before a response and recovers capacity", async () => {
 
 it("rejects active and queued callers after worker exit and OOM without unhandled rejections", async () => {
   // CI's process-wide V8 heap setting overrides Worker resourceLimits.
-  await exec(
-    process.execPath,
-    resolveRuntimeWorkerArgv(resolveRuntimeWorkerUrl(workerTaskPoolEntrypoints.failure)),
-    { env: { ...process.env, NODE_OPTIONS: "" }, timeout: 20_000 },
-  );
+  await exec(process.execPath, fixtureArgv(workerTaskPoolEntrypoints.failure), {
+    env: { ...process.env, NODE_OPTIONS: "" },
+    timeout: 20_000,
+  });
 });
 
 it("closes a generation before a rejected result can dispatch its successor", async () => {
@@ -415,35 +407,28 @@ it("arms idle retirement on the clock the pool was created under", async () => {
 });
 
 it.each([
-  {
-    name: "releases parent inputs while worker copies execute",
-    entrypoint: workerTaskPoolEntrypoints.inputRetention,
-  },
-  {
-    name: "releases delivered replies while their worker remains warm",
-    entrypoint: workerTaskPoolEntrypoints.replyRetention,
-  },
-])(
-  "$name",
-  async ({ entrypoint }) => {
-    await exec(
-      process.execPath,
-      ["--expose-gc", ...resolveRuntimeWorkerArgv(resolveRuntimeWorkerUrl(entrypoint))],
-      { timeout: 20_000 },
-    );
+  ["releases parent inputs while worker copies execute", workerTaskPoolEntrypoints.inputRetention],
+  [
+    "releases delivered replies while their worker remains warm",
+    workerTaskPoolEntrypoints.replyRetention,
+  ],
+] as const)(
+  "%s",
+  async (_name, entrypoint) => {
+    await exec(process.execPath, ["--expose-gc", ...fixtureArgv(entrypoint)], { timeout: 20_000 });
   },
   25_000,
 );
 
 it("keeps import-only dependency exports when a source worker requires compiled ESM", async () => {
   const directory = directories.make("worker-import-only-");
-  fs.writeFileSync(path.join(directory, "package.json"), '{"type":"module"}');
+  writeJson(path.join(directory, "package.json"), { type: "module" });
   const dependency = path.join(directory, "node_modules", "import-only-fixture");
   fs.mkdirSync(dependency, { recursive: true });
-  fs.writeFileSync(
-    path.join(dependency, "package.json"),
-    JSON.stringify({ type: "module", exports: { node: { import: "./index.js" } } }),
-  );
+  writeJson(path.join(dependency, "package.json"), {
+    type: "module",
+    exports: { node: { import: "./index.js" } },
+  });
   fs.writeFileSync(path.join(dependency, "index.js"), "export const marker = 37;");
   fs.writeFileSync(
     path.join(directory, "bridge.js"),
@@ -472,13 +457,10 @@ it("keeps import-only dependency exports when a source worker requires compiled 
 it("keeps SQLite worker diagnostics off the parent JSON stdout", async () => {
   const home = directories.make("worker-json-logging-");
   const configPath = path.join(home, "openclaw.json");
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({ logging: { file: path.join(home, "worker.log") } }),
-  );
+  writeJson(configPath, { logging: { file: path.join(home, "worker.log") } });
   const { stdout, stderr } = await exec(
     process.execPath,
-    resolveRuntimeWorkerArgv(resolveRuntimeWorkerUrl(workerTaskPoolEntrypoints.logging)),
+    fixtureArgv(workerTaskPoolEntrypoints.logging),
     {
       timeout: 15_000,
       env: {

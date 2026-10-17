@@ -15,11 +15,13 @@ import { getTrackedWorkerLifecycleSnapshot } from "./worker-cpu.js";
 import {
   captureRetainedNativeWorkerSource,
   createRetainedNativeWorker,
+  type RetainedNativeWorkerSource,
 } from "./worker-native-lifecycle.js";
 import {
   assertNativeWorkerDiagnosticMatches,
   runNativeResourceLifecycle,
 } from "./worker-native-lifecycle.runtime.test-support.js";
+import type { RetainedNativeWorker } from "./worker-native-lifecycle.types.js";
 
 const sqliteChild = `
   const { DatabaseSync } = require("node:sqlite");
@@ -57,9 +59,42 @@ const echoWorkerSource = `
   parentPort.on("message", (value) => parentPort.postMessage(value + 1));
 `;
 
-function serviceNativeUntil(label: string, service: () => void, done: () => boolean) {
+function fixtureWorker(source?: RetainedNativeWorkerSource, databasePath?: string) {
+  const workerData = databasePath ? { childSource: sqliteChild, databasePath } : undefined;
+  return createRetainedNativeWorker(
+    databasePath ? workerSource : echoWorkerSource,
+    { eval: true, execArgv: [], workerData },
+    source,
+  );
+}
+
+function observe(worker: Worker | RetainedNativeWorker, context?: AsyncLocalStorage<string>) {
+  const messages: unknown[] = [],
+    errors: Error[] = [],
+    exits: (number | undefined)[] = [];
+  const seen: { event: string; context: string | undefined }[] = [];
+  const record =
+    <T>(event: string, values: T[]) =>
+    (value: T) => {
+      seen.push({ event, context: context?.getStore() });
+      values.push(value);
+    };
+  worker.on("message", record("message", messages));
+  worker.on("error", (error) => {
+    assert.ok(error instanceof Error);
+    record("error", errors)(error);
+  });
+  worker.once("exit", record("exit", exits));
+  return { messages, errors, exits, seen };
+}
+
+function serviceNativeUntil(
+  label: string,
+  service: () => void,
+  done: () => boolean,
+  deadline = performance.now() + 10_000,
+) {
   const pause = new Int32Array(new SharedArrayBuffer(4));
-  const deadline = performance.now() + 10_000;
   process.stderr.write(`native lifecycle fixture pid=${process.pid}: ${label}\n`);
   for (;;) {
     service();
@@ -97,30 +132,18 @@ async function runCallbackContext() {
     event,
     context: "constructor-A",
   }));
-  const directSeen: { event: string; context: string | undefined }[] = [];
-  const directErrors: Error[] = [];
   const directMessage = createDeferredCore<unknown>();
   const directExit = createDeferredCore<number>();
   const direct = context.run(
     "constructor-A",
     () => new Worker(source, { eval: true, execArgv: [] }),
   );
-  context.run("service-B", () => {
-    direct.on("message", (value) => {
-      directSeen.push({ event: "message", context: context.getStore() });
-      directMessage.resolve(value);
-    });
-    direct.on("error", (error) => {
-      directSeen.push({ event: "error", context: context.getStore() });
-      assert.ok(error instanceof Error);
-      directErrors.push(error);
-      directMessage.reject(error);
-    });
-    direct.once("exit", (code) => {
-      directSeen.push({ event: "exit", context: context.getStore() });
-      directExit.resolve(code);
-    });
-  });
+  direct.on("message", directMessage.resolve);
+  direct.on("error", directMessage.reject);
+  direct.once("exit", directExit.resolve);
+  const { seen: directSeen, errors: directErrors } = context.run("service-B", () =>
+    observe(direct, context),
+  );
   try {
     direct.postMessage(41, []);
     assert.equal(await directMessage.promise, 42);
@@ -153,29 +176,15 @@ async function runCallbackContext() {
     assert.equal(members[0], members[1]);
   }
 
-  const retainedSeen: { event: string; context: string | undefined }[] = [];
-  const replies: unknown[] = [];
-  const errors: Error[] = [];
-  let exited = false;
-  let exitCode: number | undefined;
   const retained = context.run("constructor-A", () =>
     createRetainedNativeWorker(source, { eval: true, execArgv: [] }),
   );
-  context.run("service-B", () => {
-    retained.on("message", (value) => {
-      retainedSeen.push({ event: "message", context: context.getStore() });
-      replies.push(value);
-    });
-    retained.on("error", (error) => {
-      retainedSeen.push({ event: "error", context: context.getStore() });
-      errors.push(error);
-    });
-    retained.once("exit", (code) => {
-      retainedSeen.push({ event: "exit", context: context.getStore() });
-      exitCode = code;
-      exited = true;
-    });
-  });
+  const {
+    seen: retainedSeen,
+    messages: replies,
+    errors,
+    exits,
+  } = context.run("service-B", () => observe(retained, context));
   try {
     context.run("service-B", () => {
       retained.postMessage(41, []);
@@ -190,13 +199,13 @@ async function runCallbackContext() {
       serviceNativeUntil(
         "retained callback context native exit",
         () => retained.service(),
-        () => exited,
+        () => exits.length > 0,
       );
     });
     assert.equal(errors.length, 1);
     assert.match(String(errors[0]), /synthetic callback context error/);
     assertNativeWorkerDiagnosticMatches(errors[0], directError);
-    assert.equal(exitCode, 1);
+    assert.deepEqual(exits, [1]);
     assert.equal(retained.threadId, -1);
     assert.deepEqual(retained.stop().read(), { status: "fulfilled", value: undefined });
     assert.deepEqual(retainedSeen, expected);
@@ -215,36 +224,24 @@ async function runCallbackContext() {
 }
 
 async function runBlockedLifecycle(ending: "terminate" | "natural-exit", databasePath: string) {
-  const worker = createRetainedNativeWorker(workerSource, {
-    eval: true,
-    execArgv: [],
-    workerData: { childSource: sqliteChild, databasePath },
-  });
-  const messages: unknown[] = [];
-  const exits: (number | undefined)[] = [];
-  const errors: Error[] = [];
-  worker.on("message", (message) => messages.push(message));
-  worker.on("error", (error) => errors.push(error));
+  const worker = fixtureWorker(undefined, databasePath);
+  const { messages, errors, exits } = observe(worker);
   worker.on("messageerror", (error) => errors.push(error));
-  worker.once("exit", (code) => exits.push(code));
-  const pause = new Int32Array(new SharedArrayBuffer(4));
   const deadline = performance.now() + 10_000;
 
   function serviceUntil(label: string, service: () => void, done: () => boolean): void {
-    process.stderr.write(`native lifecycle fixture pid=${process.pid}: ${label}\n`);
-    for (;;) {
-      service();
-      const error = errors[0];
-      if (error) {
-        throw error;
-      }
-      if (done()) {
-        return;
-      }
-      assert.ok(performance.now() < deadline, `Deadline waiting for ${label}`);
-      // Only the named producer's port is serviced; main never pumps its event loop.
-      Atomics.wait(pause, 0, 0, 1);
-    }
+    // Service only the named producer; preserve the shared blocked-lifecycle deadline.
+    serviceNativeUntil(
+      label,
+      service,
+      () => {
+        if (errors[0]) {
+          throw errors[0];
+        }
+        return done();
+      },
+      deadline,
+    );
   }
 
   let observer: DatabaseSync | undefined;
@@ -346,15 +343,7 @@ async function runGenerationLifecycle(directory: string, databasePath: string) {
           order.push("owner-close-start");
           await nextTurn();
           assert.equal(getTrackedWorkerLifecycleSnapshot().workerCount, initialWorkers);
-          const worker = createRetainedNativeWorker(
-            workerSource,
-            {
-              eval: true,
-              execArgv: [],
-              workerData: { childSource: sqliteChild, databasePath },
-            },
-            queuedOwner.source,
-          );
+          const worker = fixtureWorker(queuedOwner.source, databasePath);
           let reply = createDeferredCore<unknown>();
           worker.on("message", (value) => reply.resolve(value));
           worker.on("error", (error) => reply.reject(error));
@@ -396,11 +385,7 @@ async function runGenerationLifecycle(directory: string, databasePath: string) {
         assert.equal(nativeJoined, true);
         assert.equal(getTrackedWorkerLifecycleSnapshot().workerCount, initialWorkers + 1);
         order.push("sibling-owner-close");
-        const sibling = createRetainedNativeWorker(
-          echoWorkerSource,
-          { eval: true, execArgv: [] },
-          siblingOwner.source,
-        );
+        const sibling = fixtureWorker(siblingOwner.source);
         const reply = createDeferredCore<unknown>();
         sibling.on("message", reply.resolve);
         sibling.on("error", reply.reject);
@@ -467,7 +452,7 @@ async function runExplicitUnboundLifecycle() {
   );
   assert.equal(ambientReleased, true);
   process.stderr.write(`native lifecycle fixture pid=${process.pid}: explicit unbound source\n`);
-  const worker = createRetainedNativeWorker(echoWorkerSource, { eval: true, execArgv: [] }, source);
+  const worker = fixtureWorker(source);
   const reply = createDeferredCore<unknown>();
   worker.on("message", reply.resolve);
   worker.on("error", reply.reject);
@@ -486,11 +471,7 @@ async function runExplicitUnboundLifecycle() {
   let ownerClosed = false;
   source.retain({}, async () => {
     // Already admitted owners may finish queued work while shutdown drains them.
-    const queued = createRetainedNativeWorker(
-      echoWorkerSource,
-      { eval: true, execArgv: [] },
-      idleSource,
-    );
+    const queued = fixtureWorker(idleSource);
     const queuedReply = createDeferredCore<unknown>();
     queued.on("message", queuedReply.resolve);
     queued.on("error", queuedReply.reject);
@@ -521,31 +502,22 @@ async function runExplicitUnboundLifecycle() {
 
 assert.equal(isMainThread, true, "the fixture must block the process main thread");
 const ending = process.argv[2];
-assert.ok(
-  ending === "terminate" ||
-    ending === "natural-exit" ||
-    ending === "generation" ||
-    ending === "explicit-unbound" ||
-    ending === "native-resource" ||
-    ending === "resource-idle-broker" ||
-    ending === "resource-late-attachment" ||
-    ending === "callback-context",
-);
 const directory = process.argv[3];
 assert.ok(directory);
 const databasePath = path.join(directory, "nested.sqlite");
-if (ending === "generation") {
-  await runGenerationLifecycle(directory, databasePath);
-} else if (ending === "explicit-unbound") {
-  await runExplicitUnboundLifecycle();
-} else if (ending === "native-resource") {
-  await runNativeResourceLifecycle(directory, serviceNativeUntil);
-} else if (ending === "resource-idle-broker") {
-  await runNativeResourceLifecycle(directory, serviceNativeUntil, "idle-broker");
-} else if (ending === "resource-late-attachment") {
-  await runNativeResourceLifecycle(directory, serviceNativeUntil, "late-attachment");
-} else if (ending === "callback-context") {
-  await runCallbackContext();
-} else {
-  await runBlockedLifecycle(ending, databasePath);
-}
+const scenarios: Record<string, () => Promise<void>> = {
+  terminate: () => runBlockedLifecycle("terminate", databasePath),
+  "natural-exit": () => runBlockedLifecycle("natural-exit", databasePath),
+  generation: () => runGenerationLifecycle(directory, databasePath),
+  "explicit-unbound": runExplicitUnboundLifecycle,
+  "native-resource": () => runNativeResourceLifecycle(directory, serviceNativeUntil),
+  "resource-idle-broker": () =>
+    runNativeResourceLifecycle(directory, serviceNativeUntil, "idle-broker"),
+  "resource-late-attachment": () =>
+    runNativeResourceLifecycle(directory, serviceNativeUntil, "late-attachment"),
+  "callback-context": runCallbackContext,
+};
+assert.ok(ending && Object.hasOwn(scenarios, ending));
+const run = scenarios[ending];
+assert.ok(run);
+await run();

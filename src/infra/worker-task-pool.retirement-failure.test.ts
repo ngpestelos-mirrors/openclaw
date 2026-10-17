@@ -7,7 +7,7 @@ import { resolveSessionHistoryUnavailableMessage } from "../gateway/session-hist
 import { createDeferredCore } from "../shared/deferred.js";
 import { createOwnedWorkerTaskPool, WorkerTaskError, WorkerTaskPool } from "./worker-task-pool.js";
 import { holdExit, type MockWorker } from "./worker-task-pool.owned.test-support.js";
-import type { WorkerTaskPoolOptions } from "./worker-task-pool.types.js";
+import type { WorkerTaskOptions, WorkerTaskPoolOptions } from "./worker-task-pool.types.js";
 
 type PostedTask = { taskId: number; responseId?: number; nativeSections?: SharedArrayBuffer };
 
@@ -32,13 +32,13 @@ vi.mock("./runtime-worker-url.js", () => ({ resolveRuntimeWorkerThreadExecArgv: 
 vi.mock("./temp-artifact-cleanup.js", () => ({ removeTemporaryArtifacts: cleanup }));
 
 const pools: WorkerTaskPool<string, string>[] = [];
+const poolOptions = {
+  workerUrl: new URL("data:text/javascript,"),
+  maxWorkers: 1,
+  idleTimeoutMs: 0,
+};
 function publicPool(options: Partial<WorkerTaskPoolOptions<string>> = {}) {
-  const pool = new WorkerTaskPool<string, string>({
-    workerUrl: new URL("data:text/javascript,"),
-    maxWorkers: 1,
-    idleTimeoutMs: 0,
-    ...options,
-  });
+  const pool = new WorkerTaskPool<string, string>({ ...poolOptions, ...options });
   pools.push(pool);
   return pool;
 }
@@ -46,6 +46,35 @@ const createPool = (validateResult?: (value: string) => void) =>
   publicPool({ maxPendingBytes: 10, sharedCompute: true, validateResult });
 function taskId(worker: FakeWorker) {
   return expectDefined(worker.posted.mock.calls[0]?.[0].taskId, "posted task");
+}
+const caught = (promise: Promise<unknown>) => promise.catch((error: unknown) => error);
+function send(worker: FakeWorker, message: { status: string; value?: string; id?: number }) {
+  worker.emit("message", { taskId: taskId(worker), ...message });
+}
+function expectCalls(count: number, ...callbacks: ReturnType<typeof vi.fn>[]) {
+  expect(callbacks.map((callback) => callback.mock.calls.length)).toEqual(
+    callbacks.map(() => count),
+  );
+}
+function expectAggregate(failure: unknown, errors: Error[], cause: Error) {
+  const aggregate = expectDefined(
+    failure instanceof AggregateError ? failure : undefined,
+    "aggregate failure",
+  );
+  expect(aggregate.errors).toHaveLength(errors.length);
+  errors.forEach((error, index) => expect(aggregate.errors[index]).toBe(error));
+  expect(aggregate.cause).toBe(cause);
+  return aggregate;
+}
+function cancelable(pool: WorkerTaskPool<string, string>, options: WorkerTaskOptions<string> = {}) {
+  const controller = new AbortController();
+  const released = vi.fn();
+  const result = pool.run("input", {
+    signal: controller.signal,
+    onInputConsumed: released,
+    ...options,
+  });
+  return { controller, released, result };
 }
 
 beforeEach(() => {
@@ -59,17 +88,13 @@ afterEach(async () => {
 
 describe("worker task retirement failures", () => {
   it("settles cancellation when native work finishes before its settlement wait is registered", async () => {
-    const pool = createOwnedWorkerTaskPool<string, string>({
-      workerUrl: new URL("data:text/javascript,"),
-      maxWorkers: 1,
-      idleTimeoutMs: 0,
-    });
+    const pool = createOwnedWorkerTaskPool<string, string>(poolOptions);
     const controller = new AbortController();
     const reason = new Error("cancel native work");
     const executionSettled = vi.fn();
-    const result = pool
-      .run("input", { signal: controller.signal, onExecutionSettled: executionSettled })
-      .catch((error: unknown) => error);
+    const result = caught(
+      pool.run("input", { signal: controller.signal, onExecutionSettled: executionSettled }),
+    );
     const worker = expectDefined(workers[0], "task worker");
     const state = new Int32Array(
       expectDefined(worker.posted.mock.calls[0]?.[0].nativeSections, "native section state"),
@@ -111,12 +136,7 @@ describe("worker task retirement failures", () => {
     "joins every retirement retry and its artifacts before rejecting (second retry fails: %s)",
     async (secondRetryFails) => {
       const admitted = createDeferredCore();
-      let pendingAdmissions = 2;
-      taskPosted.mockImplementation(() => {
-        if (--pendingAdmissions === 0) {
-          admitted.resolve();
-        }
-      });
+      taskPosted.mockImplementationOnce(() => {}).mockImplementationOnce(() => admitted.resolve());
       const pool = publicPool({
         maxWorkers: 2,
         prepareWorker: () => ({
@@ -124,20 +144,16 @@ describe("worker task retirement failures", () => {
           temporaryDirectory: `/fixture/worker-${workers.length}`,
         }),
       });
-      const released = [vi.fn(), vi.fn()];
-      const controllers = [new AbortController(), new AbortController()];
-      const tasks = controllers.map((controller, index) =>
-        pool
-          .run(`input-${index}`, { signal: controller.signal, onInputConsumed: released[index] })
-          .catch((error: unknown) => error),
-      );
+      const tasks = [cancelable(pool), cancelable(pool)];
+      const results = tasks.map(({ result }) => caught(result));
+      const released = tasks.map((task) => task.released);
       await admitted.promise;
       expect(workers).toHaveLength(2);
       for (const [index, worker] of workers.entries()) {
         worker.terminate.mockRejectedValueOnce(new Error("initial exit uncertain"));
-        controllers[index]!.abort(new Error("task canceled"));
+        tasks[index]!.controller.abort(new Error("task canceled"));
       }
-      await Promise.all(tasks);
+      await Promise.all(results);
       const firstWorker = expectDefined(workers[0], "first failed worker");
       const secondWorker = expectDefined(workers[1], "second failed worker");
       const firstFailure = new Error("first retry failed");
@@ -160,34 +176,25 @@ describe("worker task retirement failures", () => {
         cleanupEntered.resolve();
         await cleanupReleased.promise;
       });
-      let settled = false;
-      const retry = pool
-        .retryFailedRetirements()
-        .catch((error: unknown) => error)
-        .finally(() => {
-          settled = true;
-        });
+      const settled = vi.fn();
+      const retry = caught(pool.retryFailedRetirements()).finally(settled);
       try {
         await entered.promise;
         await yieldToEventLoop();
-        expect(settled).toBe(false);
-        expect(released.every((release) => release.mock.calls.length === 0)).toBe(true);
+        expect(settled).not.toHaveBeenCalled();
+        expectCalls(0, ...released);
         expect(pool.getSnapshot().pendingTasks).toBe(2);
         exit.resolve();
         if (!secondRetryFails) {
           await cleanupEntered.promise;
           await yieldToEventLoop();
-          expect(settled).toBe(false);
+          expect(settled).not.toHaveBeenCalled();
           expect(released[1]).toHaveBeenCalledOnce();
         }
         cleanupReleased.resolve();
         const failure = await retry;
         if (secondRetryFails) {
-          expect(failure).toBeInstanceOf(AggregateError);
-          expect(failure).toMatchObject({
-            errors: [firstFailure, secondFailure],
-            cause: firstFailure,
-          });
+          expectAggregate(failure, [firstFailure, secondFailure], firstFailure);
         } else {
           expect(failure).toBe(firstFailure);
           expect(cleanup).toHaveBeenCalledExactlyOnceWith("/fixture/worker-1", "Worker task");
@@ -195,7 +202,7 @@ describe("worker task retirement failures", () => {
         expect(released[0]).not.toHaveBeenCalled();
         expect(pool.getSnapshot().pendingTasks).toBe(secondRetryFails ? 2 : 1);
         await pool.retryFailedRetirements();
-        expect(released.every((release) => release.mock.calls.length === 1)).toBe(true);
+        expectCalls(1, ...released);
         expect(pool.getSnapshot().pendingTasks).toBe(0);
       } finally {
         exit.resolve();
@@ -207,20 +214,10 @@ describe("worker task retirement failures", () => {
 
   it("retries failed retirement without terminating or waiting for a healthy sibling", async () => {
     const pool = publicPool({ maxWorkers: 2 });
-    const controller = new AbortController();
-    const released = vi.fn();
-    const failed = pool.run("failed", {
-      signal: controller.signal,
-      onInputConsumed: released,
-    });
-    const rejected = expect(failed).rejects.toThrow("exit uncertain");
-    let healthySettled = false;
-    const healthy = pool
-      .run("healthy", {})
-      .catch((error: unknown) => error)
-      .finally(() => {
-        healthySettled = true;
-      });
+    const { controller, released, result } = cancelable(pool);
+    const rejected = expect(result).rejects.toThrow("exit uncertain");
+    const healthySettled = vi.fn();
+    const healthy = caught(pool.run("healthy", {})).finally(healthySettled);
     const failedWorker = expectDefined(workers[0], "failed worker");
     const healthyWorker = expectDefined(workers[1], "healthy sibling worker");
     failedWorker.terminate.mockRejectedValueOnce(new Error("exit uncertain"));
@@ -239,33 +236,25 @@ describe("worker task retirement failures", () => {
     }
     expect(released).toHaveBeenCalledOnce();
     expect(pool.getSnapshot().pendingTasks).toBe(1);
-    expect(healthySettled).toBe(false);
+    expect(healthySettled).not.toHaveBeenCalled();
     expect(healthyWorker.terminate).not.toHaveBeenCalled();
-    healthyWorker.emit("message", {
-      status: "ok",
-      taskId: taskId(healthyWorker),
-      value: "healthy result",
-    });
+    send(healthyWorker, { status: "ok", value: "healthy result" });
     expect(await healthy).toBe("healthy result");
     expect(pool.getSnapshot().pendingTasks).toBe(0);
   });
 
   it("does not turn a consumption receipt into native exit when later cancellation cannot retire", async () => {
     const pool = createPool();
-    const released = vi.fn();
-    const controller = new AbortController();
-    const result = pool.run("input", {
-      onInputConsumed: released,
+    const { controller, released, result } = cancelable(pool, {
       onRequest: async () => {
         throw new Error("Consumption-only task must not request host work");
       },
-      signal: controller.signal,
     });
     const rejected = expect(result).rejects.toThrow("exit uncertain");
     const worker = expectDefined(workers[0], "task worker");
     const exited = vi.fn();
     worker.on("exit", exited);
-    worker.emit("message", { status: "consumed", taskId: taskId(worker), id: 0 });
+    send(worker, { status: "consumed", id: 0 });
     worker.terminate.mockRejectedValueOnce(new Error("exit uncertain"));
     controller.abort(new Error("canceled after consumption"));
     await rejected;
@@ -290,8 +279,8 @@ describe("worker task retirement failures", () => {
       const context = new AsyncLocalStorage<string>();
       const executionSettled = vi.fn(() => context.getStore());
       const responsePosted = createDeferredCore();
-      const result = context
-        .run("admitted", () =>
+      const result = caught(
+        context.run("admitted", () =>
           pool.run("input", {
             inputBytes: 8,
             onInputConsumed: inputReleased,
@@ -302,74 +291,58 @@ describe("worker task retirement failures", () => {
               onConsumed: responseReleased,
             }),
           }),
-        )
-        .catch((error: unknown) => error);
+        ),
+      );
       const worker = expectDefined(workers[0], "task worker");
       worker.posted.mockImplementation((message) => {
         if (message.responseId !== undefined) {
           responsePosted.resolve();
         }
       });
-      worker.emit("message", {
-        status: "request",
-        taskId: taskId(worker),
-        id: 1,
-        value: "request",
-      });
+      send(worker, { status: "request", id: 1, value: "request" });
       await responsePosted.promise;
       worker.terminate.mockRejectedValueOnce(retirementFailure);
-      worker.emit("message", { status: "ok", taskId: taskId(worker), value: "result" });
+      send(worker, { status: "ok", value: "result" });
       const failure = await result;
-      expect(failure).toBeInstanceOf(AggregateError);
-      const aggregate = expectDefined(
-        failure instanceof AggregateError ? failure : undefined,
-        "both task and retirement failures",
+      const aggregate = expectAggregate(
+        failure,
+        [taskFailure, retirementFailure],
+        retirementFailure,
       );
-      expect(aggregate.errors).toHaveLength(2);
-      expect(aggregate.errors[0]).toBe(taskFailure);
-      expect(aggregate.errors[1]).toBe(retirementFailure);
-      expect(aggregate.cause).toBe(retirementFailure);
       expect(aggregate.message).toMatch(/exit uncertain.*original task failure/);
       expect(failure).not.toBeInstanceOf(WorkerTaskError);
       expect(resolveSessionHistoryUnavailableMessage(taskFailure)).toBeDefined();
       expect(resolveSessionHistoryUnavailableMessage(failure)).toBeUndefined();
-      expect(inputReleased).not.toHaveBeenCalled();
-      expect(responseReleased).not.toHaveBeenCalled();
-      expect(executionSettled).not.toHaveBeenCalled();
+      expectCalls(0, inputReleased, responseReleased, executionSettled);
       expect(pool.getSnapshot().pendingTasks).toBe(1);
       await expect(pool.run("too large", { inputBytes: 3 })).rejects.toMatchObject({
         code: "overloaded",
       });
 
       const waitingPool = createPool();
-      const waitingResult = waitingPool.run("waiting", {}).catch((error: unknown) => error);
+      const waitingResult = caught(waitingPool.run("waiting", {}));
       expect(workers).toHaveLength(1);
       const native = holdExit(worker);
       const joined = pool[join]();
       try {
         await native.entered;
-        expect(inputReleased).not.toHaveBeenCalled();
-        expect(responseReleased).not.toHaveBeenCalled();
-        expect(executionSettled).not.toHaveBeenCalled();
+        expectCalls(0, inputReleased, responseReleased, executionSettled);
         expect(pool.getSnapshot().pendingTasks).toBe(1);
         expect(workers).toHaveLength(1);
       } finally {
         native.release();
         await joined;
       }
-      expect(inputReleased).toHaveBeenCalledOnce();
-      expect(responseReleased).toHaveBeenCalledOnce();
+      expectCalls(1, inputReleased, responseReleased);
       expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: true });
       expect(executionSettled.mock.results[0]?.value).toBe("admitted");
       expect(pool.getSnapshot().pendingTasks).toBe(0);
       expect(await result).toBe(failure);
       const successor = expectDefined(workers[1], "waiting pool worker after exit");
-      successor.emit("message", { status: "ok", taskId: taskId(successor), value: "completed" });
+      send(successor, { status: "ok", value: "completed" });
       expect(await waitingResult).toBe("completed");
       await pool[join]();
-      expect(inputReleased).toHaveBeenCalledOnce();
-      expect(responseReleased).toHaveBeenCalledOnce();
-      expect(executionSettled).toHaveBeenCalledOnce();
+      expectCalls(1, inputReleased, responseReleased, executionSettled);
       expect(worker.terminate).toHaveBeenCalledTimes(2);
     },
   );
@@ -381,28 +354,24 @@ describe("worker task retirement failures", () => {
       order.push(`settled:${retired}`);
     });
     const options = Object.freeze({ onExecutionSettled: executionSettled });
-    const first = pool.run("first", options).catch((error: unknown) => error);
+    const first = caught(pool.run("first", options));
     const worker = expectDefined(workers[0], "task worker");
     const nextPosted = createDeferredCore<{ taskId: number }>();
     worker.posted.mockImplementation((message) => nextPosted.resolve(message));
-    const queued = pool
-      .run(() => {
+    const queued = caught(
+      pool.run(() => {
         order.push("successor");
         return "next";
-      }, options)
-      .catch((error: unknown) => error);
+      }, options),
+    );
     worker.emit("message", { status: "failed", taskId: taskId(worker), error: "handler failure" });
     expect(await first).toMatchObject({ message: "handler failure", code: "failed" });
     expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: false });
     expect(order).toEqual(["settled:false", "successor"]);
-    expect(workers).toHaveLength(1);
-    expect(worker.terminate).not.toHaveBeenCalled();
     const message = await nextPosted.promise;
     worker.emit("message", { status: "ok", taskId: message.taskId, value: "next-completed" });
     expect(await queued).toBe("next-completed");
-    expect(executionSettled).toHaveBeenCalledTimes(2);
     expect(order).toEqual(["settled:false", "successor", "settled:false"]);
-    expect(options.onExecutionSettled).toBe(executionSettled);
     expect(workers).toHaveLength(1);
     expect(worker.terminate).not.toHaveBeenCalled();
   });

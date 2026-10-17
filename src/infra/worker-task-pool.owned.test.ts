@@ -2,7 +2,7 @@ import { channel as diagnosticsChannel } from "node:diagnostics_channel";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import type { MessagePort } from "node:worker_threads";
 import { expectDefined } from "@openclaw/normalization-core/expect";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../shared/deferred.js";
 import { runQueuedStoreWrite } from "../shared/store-writer-queue.js";
 import { SQLITE_SESSION_WRITER_QUEUES } from "../state/openclaw-agent-write-admission-state.js";
@@ -78,38 +78,35 @@ function cleanupReceipt(worker: FakeWorker) {
   return expectDefined(worker.posted.mock.calls.at(-1)?.[0].resourcePort, "cleanup receipt");
 }
 
-beforeEach(() => {
-  workers.splice(0);
+beforeEach(() => workers.splice(0));
+afterEach(async () => {
+  await Promise.all(pools.splice(0).map((pool) => pool.close()));
+  vi.useRealTimers();
 });
 
 it("retires burst workers without extending the first worker's idle lifetime", async () => {
   vi.useFakeTimers();
   const pool = createPool({ maxWorkers: 2, idleTimeoutMs: 60_000, burstIdleTimeoutMs: 5_000 });
-  try {
-    const first = pool.run("first", {});
-    const burst = pool.run("burst", {});
-    const primary = workerFor("first");
-    const surplus = workerFor("burst");
-    reply(primary, "first");
-    reply(surplus, "burst");
-    await Promise.all([first, burst]);
+  const first = pool.run("first", {});
+  const burst = pool.run("burst", {});
+  const primary = workerFor("first");
+  const surplus = workerFor("burst");
+  reply(primary, "first");
+  reply(surplus, "burst");
+  await Promise.all([first, burst]);
 
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(surplus.terminate).toHaveBeenCalledOnce();
-    expect(primary.terminate).not.toHaveBeenCalled();
-    expect(pool.getSnapshot().workers).toBe(1);
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(surplus.terminate).toHaveBeenCalledOnce();
+  expect(primary.terminate).not.toHaveBeenCalled();
+  expect(pool.getSnapshot().workers).toBe(1);
 
-    const reused = pool.run("reused", {});
-    expect(workerFor("reused")).toBe(primary);
-    reply(primary, "reused");
-    await reused;
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(primary.terminate).toHaveBeenCalledOnce();
-    expect(pool.getSnapshot().workers).toBe(0);
-  } finally {
-    await pool.close();
-    vi.useRealTimers();
-  }
+  const reused = pool.run("reused", {});
+  expect(workerFor("reused")).toBe(primary);
+  reply(primary, "reused");
+  await reused;
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(primary.terminate).toHaveBeenCalledOnce();
+  expect(pool.getSnapshot().workers).toBe(0);
 });
 
 it("keeps the remaining worker's original idle deadline while the first worker stops", async () => {
@@ -140,7 +137,6 @@ it("keeps the remaining worker's original idle deadline while the first worker s
     native.release();
     await pool.close();
     await cancellation;
-    vi.useRealTimers();
   }
 });
 
@@ -191,9 +187,6 @@ it("retires only idle slots on critical pressure, after result and resource cust
   const replacement = workerFor("next");
   expect(replacement).not.toBe(worker);
   await finishTask(next, "next");
-});
-afterEach(async () => {
-  await Promise.all(pools.splice(0).map((pool) => pool.close()));
 });
 
 it("reaches a cooperative exchange when earlier shared pressure has not released capacity", async () => {
@@ -280,51 +273,37 @@ it.each([false, true])(
     const worker = await completedWorker(pool);
     const listeners = worker.listenerCount("exit");
     const cleanup = pool.closeResources("source");
-    let cleanupSettled = false;
-    void cleanup.then(
-      () => {
-        cleanupSettled = true;
-      },
-      () => {
-        cleanupSettled = true;
-      },
-    );
+    const cleanupSettled = vi.fn();
+    void cleanup.then(cleanupSettled, cleanupSettled);
     const receipt = cleanupReceipt(worker);
     const receiver = expectDefined(messageChannelReceivers.get(receipt), "cleanup receiver");
     const portClosed = createDeferredCore();
     receiver.once("close", portClosed.resolve);
-    const terminationEntered = createDeferredCore();
-    const nativeExit = createDeferredCore();
-    worker.terminate.mockImplementationOnce(async () => {
-      terminationEntered.resolve();
-      await nativeExit.promise;
-      worker.emit("exit", 0);
-      return 0;
-    });
+    const native = holdExit(worker);
     const rotation = pool.rotate();
     void rotation.catch(() => {});
     try {
-      await terminationEntered.promise;
+      await native.entered;
       receipt.close();
       await portClosed.promise;
       await nextTurn();
-      expect(cleanupSettled).toBe(false);
+      expect(cleanupSettled).not.toHaveBeenCalled();
       expect(worker.listenerCount("exit")).toBe(listeners + 1);
       expect(worker.terminate).toHaveBeenCalledOnce();
       if (fails) {
         const failure = new Error("native retirement did not settle");
         const cleanupFailed = expect(cleanup).rejects.toMatchObject({ errors: [failure] });
         const retirementFailed = expect(rotation).rejects.toBe(failure);
-        nativeExit.reject(failure);
+        native.reject(failure);
         await Promise.all([cleanupFailed, retirementFailed]);
         expect(worker.listenerCount("exit")).toBe(listeners);
       } else {
-        nativeExit.resolve();
+        native.release();
         await Promise.all([cleanup, rotation]);
         expect(worker.listenerCount("exit")).toBe(0);
       }
     } finally {
-      nativeExit.resolve();
+      native.release();
       await Promise.allSettled([cleanup, rotation]);
     }
   },
@@ -375,355 +354,344 @@ it.each(["receipts", "exit"] as const)(
   },
 );
 
-describe("owned worker tasks", () => {
-  it("holds a completed reply until acceptance and never retires its successor on late close", async () => {
-    const pool = createPool();
-    const order: string[] = [];
-    const executionSettled = vi.fn(({ retired }: { retired: boolean }) => {
-      order.push(`settled:${retired}`);
-    });
-    const options = Object.freeze({ onExecutionSettled: executionSettled });
-    const first = pool.runTask("first", options);
-    const worker = workerFor("first");
-    const prepareNext = vi.fn(() => {
-      order.push("successor");
-      return "next";
-    });
-    const next = pool.runTask(prepareNext, options);
-    void next.result.catch(() => {});
-
-    reply(worker, "first", "accepted reply");
-    await expect(first.result).resolves.toBe("accepted reply");
-    expect(executionSettled).not.toHaveBeenCalled();
-    expect(prepareNext).not.toHaveBeenCalled();
-    expect(worker.posted).toHaveBeenCalledOnce();
-    expect(pool.getSnapshot().pendingTasks).toBe(2);
-
-    await first.close();
-    expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: false });
-    expect(order).toEqual(["settled:false", "successor"]);
-    expect(prepareNext).toHaveBeenCalledOnce();
-    expect(workerFor("next")).toBe(worker);
-    await first.close({ retire: true });
-    await first.close();
-    expect(worker.terminate).not.toHaveBeenCalled();
-    await finishTask(next, "next");
-    expect(executionSettled).toHaveBeenCalledTimes(2);
-    expect(order).toEqual(["settled:false", "successor", "settled:false"]);
-    expect(options.onExecutionSettled).toBe(executionSettled);
-    expect(pool.getSnapshot().pendingTasks).toBe(0);
+it("holds a completed reply until acceptance and never retires its successor on late close", async () => {
+  const pool = createPool();
+  const order: string[] = [];
+  const executionSettled = vi.fn(({ retired }: { retired: boolean }) => {
+    order.push(`settled:${retired}`);
   });
+  const options = Object.freeze({ onExecutionSettled: executionSettled });
+  const first = pool.runTask("first", options);
+  const worker = workerFor("first");
+  const prepareNext = vi.fn(() => {
+    order.push("successor");
+    return "next";
+  });
+  const next = pool.runTask(prepareNext, options);
+  void next.result.catch(() => {});
 
-  it("cancels a queued task without preparing its input or stopping the occupied worker", async () => {
-    const pool = createPool();
-    const active = pool.runTask("active", {});
-    void active.result.catch(() => {});
-    const worker = workerFor("active");
-    const controller = new AbortController();
-    const reason = new Error("queued owner closed");
-    const prepare = vi.fn(() => "must not dispatch");
-    const consumed = vi.fn();
-    const executionSettled = vi.fn();
-    const queued = pool.runTask(prepare, {
+  reply(worker, "first", "accepted reply");
+  await expect(first.result).resolves.toBe("accepted reply");
+  expect(order).toEqual([]);
+  expect(worker.posted).toHaveBeenCalledOnce();
+  expect(pool.getSnapshot().pendingTasks).toBe(2);
+
+  await first.close();
+  expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: false });
+  expect(order).toEqual(["settled:false", "successor"]);
+  expect(workerFor("next")).toBe(worker);
+  await first.close({ retire: true });
+  await first.close();
+  expect(worker.terminate).not.toHaveBeenCalled();
+  await finishTask(next, "next");
+  expect(order).toEqual(["settled:false", "successor", "settled:false"]);
+  expect(options.onExecutionSettled).toBe(executionSettled);
+  expect(pool.getSnapshot().pendingTasks).toBe(0);
+});
+
+it("cancels a queued task without preparing its input or stopping the occupied worker", async () => {
+  const pool = createPool();
+  const active = pool.runTask("active", {});
+  void active.result.catch(() => {});
+  const worker = workerFor("active");
+  const controller = new AbortController();
+  const reason = new Error("queued owner closed");
+  const prepare = vi.fn(() => "must not dispatch");
+  const consumed = vi.fn();
+  const executionSettled = vi.fn();
+  const queued = pool.runTask(prepare, {
+    signal: controller.signal,
+    onInputConsumed: consumed,
+    onExecutionSettled: executionSettled,
+  });
+  const rejected = expect(queued.result).rejects.toBe(reason);
+  controller.abort(reason);
+  await rejected;
+  await queued.close();
+
+  expect(prepare).not.toHaveBeenCalled();
+  expect(consumed).toHaveBeenCalledOnce();
+  expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: false });
+  expect(worker.terminate).not.toHaveBeenCalled();
+  expect(worker.posted).toHaveBeenCalledOnce();
+  await finishTask(active, "active");
+});
+
+it("joins cancelled asynchronous preparation before releasing input custody", async () => {
+  const pool = createPool({ maxPendingBytes: 8 });
+  const preparing = createDeferredCore();
+  const prepared = createDeferredCore<string>();
+  const controller = new AbortController();
+  const reason = new Error("preparation owner closed");
+  const consumed = vi.fn();
+  const executionSettled = vi.fn();
+  const task = pool.runTask(
+    async () => {
+      preparing.resolve();
+      return await prepared.promise;
+    },
+    {
+      inputBytes: 8,
       signal: controller.signal,
       onInputConsumed: consumed,
       onExecutionSettled: executionSettled,
-    });
-    const rejected = expect(queued.result).rejects.toBe(reason);
-    controller.abort(reason);
+    },
+  );
+  await preparing.promise;
+  const rejected = expect(task.result).rejects.toBe(reason);
+  controller.abort(reason);
+  const closed = vi.fn();
+  const closing = task.close().then(closed);
+  try {
     await rejected;
-    await queued.close();
+    expect(closed).not.toHaveBeenCalled();
+    expect(consumed).not.toHaveBeenCalled();
+    expect(pool.getSnapshot().pendingTasks).toBe(1);
+    expect(workers).toHaveLength(0);
+    expect(executionSettled).not.toHaveBeenCalled();
+  } finally {
+    prepared.resolve("must not dispatch");
+    await closing;
+  }
+  expect(closed).toHaveBeenCalledOnce();
+  expect(consumed).toHaveBeenCalledOnce();
+  expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: true });
+  expect(pool.getSnapshot().pendingTasks).toBe(0);
+  expect(workers).toHaveLength(0);
+});
 
-    expect(prepare).not.toHaveBeenCalled();
-    expect(consumed).toHaveBeenCalledOnce();
-    expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: false });
-    expect(worker.terminate).not.toHaveBeenCalled();
-    expect(worker.posted).toHaveBeenCalledOnce();
-    await finishTask(active, "active");
-  });
-
-  it("joins cancelled asynchronous preparation before releasing input custody", async () => {
-    const pool = createPool({ maxPendingBytes: 8 });
-    const preparing = createDeferredCore();
-    const prepared = createDeferredCore<string>();
-    const controller = new AbortController();
-    const reason = new Error("preparation owner closed");
+it.each(["message", "error", "exit"] as const)(
+  "retains failed retirement custody until explicit close despite a late %s event",
+  async (lateEvent) => {
+    const primary = new Error("result rejected by its owner");
+    const cleanup = new Error("native exit not confirmed");
+    const retirementFailed = createDeferredCore();
+    const pool = createPool({
+      maxWorkers: 2,
+      maxPendingBytes: 10,
+      validateResult(value) {
+        if (value === "invalid") {
+          throw primary;
+        }
+      },
+      onRetirementFailure: () => retirementFailed.resolve(),
+    });
     const consumed = vi.fn();
     const executionSettled = vi.fn();
-    const task = pool.runTask(
-      async () => {
-        preparing.resolve();
-        return await prepared.promise;
-      },
-      {
-        inputBytes: 8,
-        signal: controller.signal,
-        onInputConsumed: consumed,
-        onExecutionSettled: executionSettled,
-      },
-    );
-    await preparing.promise;
-    const rejected = expect(task.result).rejects.toBe(reason);
-    controller.abort(reason);
-    let closed = false;
-    const closing = task.close().then(() => {
-      closed = true;
+    const failed = pool.runTask("failed", {
+      inputBytes: 8,
+      onInputConsumed: consumed,
+      onExecutionSettled: executionSettled,
     });
-    try {
-      await rejected;
-      expect(closed).toBe(false);
+    const sibling = pool.runTask("sibling", { inputBytes: 1 });
+    const worker = workerFor("failed");
+    const siblingWorker = workerFor("sibling");
+    const expectRetained = () => {
       expect(consumed).not.toHaveBeenCalled();
-      expect(pool.getSnapshot().pendingTasks).toBe(1);
-      expect(workers).toHaveLength(0);
       expect(executionSettled).not.toHaveBeenCalled();
+      expect(pool.getSnapshot().pendingTasks).toBe(2);
+      expect(siblingWorker.terminate).not.toHaveBeenCalled();
+      expect(worker.terminate).toHaveBeenCalledOnce();
+    };
+    worker.terminate.mockRejectedValueOnce(cleanup);
+    const rejected = expect(failed.result).rejects.toBe(primary);
+    reply(worker, "failed", "invalid");
+    await rejected;
+    await retirementFailed.promise;
+    // Both the cached owner failure and the slot retirement rejection must have settled.
+    await nextTurn();
+    const emitLateEvent = () => {
+      if (lateEvent === "message") {
+        reply(worker, "failed", "late reply from the same task");
+      } else if (lateEvent === "error") {
+        worker.emit("error", new Error("late worker error"));
+      } else if (lateEvent === "exit") {
+        worker.emit("exit", 1);
+      }
+    };
+    emitLateEvent();
+    await nextTurn();
+    expectRetained();
+    await expect(failed.result).rejects.toBe(primary);
+    await expect(failed.close()).rejects.toBe(cleanup);
+    // Observing the failure permits an explicit retry, never a retry from a late event.
+    emitLateEvent();
+    await nextTurn();
+    expectRetained();
+    await expect(failed.result).rejects.toBe(primary);
+    const excess = pool.runTask("over capacity", { inputBytes: 2 });
+    await expect(excess.result).rejects.toMatchObject({ code: "overloaded" });
+    await excess.close();
+
+    await finishTask(sibling, "sibling");
+    const native = holdExit(worker);
+    const closing = failed.close();
+    const alsoClosing = failed.close();
+    try {
+      await native.entered;
+      expect(consumed).not.toHaveBeenCalled();
+      expect(executionSettled).not.toHaveBeenCalled();
+      const next = pool.runTask("sibling successor", { inputBytes: 2 });
+      expect(workerFor("sibling successor")).toBe(siblingWorker);
+      expect(workers).toHaveLength(2);
+      await finishTask(next, "sibling successor");
+      expect(siblingWorker.terminate).not.toHaveBeenCalled();
     } finally {
-      prepared.resolve("must not dispatch");
-      await closing;
+      native.release();
+      await Promise.all([closing, alsoClosing]);
     }
-    expect(closed).toBe(true);
+    expect(worker.terminate).toHaveBeenCalledTimes(2);
     expect(consumed).toHaveBeenCalledOnce();
     expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: true });
     expect(pool.getSnapshot().pendingTasks).toBe(0);
-    expect(workers).toHaveLength(0);
-  });
+    await expect(failed.result).rejects.toBe(primary);
+    await failed.close({ retire: true });
+    expect(executionSettled).toHaveBeenCalledOnce();
+    expect(worker.terminate).toHaveBeenCalledTimes(2);
+  },
+);
 
-  it.each(["message", "error", "exit"] as const)(
-    "retains failed retirement custody until explicit close despite a late %s event",
-    async (lateEvent) => {
-      const primary = new Error("result rejected by its owner");
-      const cleanup = new Error("native exit not confirmed");
-      const retirementFailed = createDeferredCore();
-      const pool = createPool({
-        maxWorkers: 2,
-        maxPendingBytes: 10,
-        validateResult(value) {
-          if (value === "invalid") {
-            throw primary;
-          }
-        },
-        onRetirementFailure: () => retirementFailed.resolve(),
-      });
-      const consumed = vi.fn();
-      const executionSettled = vi.fn();
-      const failed = pool.runTask("failed", {
-        inputBytes: 8,
-        onInputConsumed: consumed,
-        onExecutionSettled: executionSettled,
-      });
-      const sibling = pool.runTask("sibling", { inputBytes: 1 });
-      const worker = workerFor("failed");
-      const siblingWorker = workerFor("sibling");
-      const expectRetained = () => {
-        expect(consumed).not.toHaveBeenCalled();
-        expect(executionSettled).not.toHaveBeenCalled();
-        expect(pool.getSnapshot().pendingTasks).toBe(2);
-        expect(siblingWorker.terminate).not.toHaveBeenCalled();
-        expect(worker.terminate).toHaveBeenCalledOnce();
-      };
-      worker.terminate.mockRejectedValueOnce(cleanup);
-      const rejected = expect(failed.result).rejects.toBe(primary);
-      reply(worker, "failed", "invalid");
-      await rejected;
-      await retirementFailed.promise;
-      // Both the cached owner failure and the slot retirement rejection must have settled.
-      await nextTurn();
-      const emitLateEvent = () => {
-        if (lateEvent === "message") {
-          reply(worker, "failed", "late reply from the same task");
-        } else if (lateEvent === "error") {
-          worker.emit("error", new Error("late worker error"));
-        } else if (lateEvent === "exit") {
-          worker.emit("exit", 1);
-        }
-      };
-      emitLateEvent();
-      await nextTurn();
-      expectRetained();
-      await expect(failed.result).rejects.toBe(primary);
-      await expect(failed.close()).rejects.toBe(cleanup);
-      // Observing the failure permits an explicit retry, never a retry from a late event.
-      emitLateEvent();
-      await nextTurn();
-      expectRetained();
-      await expect(failed.result).rejects.toBe(primary);
-      const excess = pool.runTask("over capacity", { inputBytes: 2 });
-      await expect(excess.result).rejects.toMatchObject({ code: "overloaded" });
-      await excess.close();
-
-      await finishTask(sibling, "sibling");
-      const native = holdExit(worker);
-      const closing = failed.close();
-      const alsoClosing = failed.close();
-      try {
-        await native.entered;
-        expect(consumed).not.toHaveBeenCalled();
-        expect(executionSettled).not.toHaveBeenCalled();
-        const next = pool.runTask("sibling successor", { inputBytes: 2 });
-        expect(workerFor("sibling successor")).toBe(siblingWorker);
-        expect(workers).toHaveLength(2);
-        await finishTask(next, "sibling successor");
-        expect(siblingWorker.terminate).not.toHaveBeenCalled();
-      } finally {
-        native.release();
-        await Promise.all([closing, alsoClosing]);
-      }
-      expect(worker.terminate).toHaveBeenCalledTimes(2);
-      expect(consumed).toHaveBeenCalledOnce();
-      expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: true });
-      expect(pool.getSnapshot().pendingTasks).toBe(0);
-      await expect(failed.result).rejects.toBe(primary);
-      await failed.close({ retire: true });
-      expect(executionSettled).toHaveBeenCalledOnce();
-      expect(worker.terminate).toHaveBeenCalledTimes(2);
+it("observes each failed stop once before a global close retries an owned task", async () => {
+  const primary = new Error("original task failure");
+  const firstStop = new Error("automatic stop failed");
+  const secondStop = new Error("explicit retry failed");
+  const automaticFailure = createDeferredCore();
+  const pool = createPool({
+    maxPendingBytes: 8,
+    validateResult() {
+      throw primary;
     },
-  );
+    onRetirementFailure(error) {
+      if (error === firstStop) {
+        // Let automatic retirement finish caching its rejection before close observes it.
+        setImmediate(() => automaticFailure.resolve());
+      }
+    },
+  });
+  const consumed = vi.fn();
+  const task = pool.runTask("failed", { inputBytes: 8, onInputConsumed: consumed });
+  const worker = workerFor("failed");
+  const expectHeld = (attempts: number) => {
+    expect(worker.terminate).toHaveBeenCalledTimes(attempts);
+    expect(consumed).not.toHaveBeenCalled();
+    expect(pool.getSnapshot().pendingTasks).toBe(1);
+  };
+  worker.terminate.mockRejectedValueOnce(firstStop).mockRejectedValueOnce(secondStop);
+  const native = holdExit(worker);
+  const rejected = expect(task.result).rejects.toBe(primary);
+  reply(worker, "failed");
+  try {
+    await rejected;
+    await automaticFailure.promise;
+    expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(consumed).not.toHaveBeenCalled();
+    const excess = pool.runTask("capacity remains held", { inputBytes: 1 });
+    await expect(excess.result).rejects.toMatchObject({ code: "overloaded" });
+    await excess.close();
 
-  it("observes each failed stop once before a global close retries an owned task", async () => {
-    const primary = new Error("original task failure");
-    const firstStop = new Error("automatic stop failed");
-    const secondStop = new Error("explicit retry failed");
-    const automaticFailure = createDeferredCore();
-    const pool = createPool({
-      maxPendingBytes: 8,
-      validateResult() {
-        throw primary;
-      },
-      onRetirementFailure(error) {
-        if (error === firstStop) {
-          // Let automatic retirement finish caching its rejection before close observes it.
-          setImmediate(() => automaticFailure.resolve());
-        }
-      },
-    });
+    await expect(pool.close()).rejects.toBe(firstStop);
+    expectHeld(1);
+
+    const resources = closeWorkerTaskPoolResources("retained-after-failed-close");
+    const receipt = cleanupReceipt(worker);
+    receipt.postMessage({ ok: true }, []);
+    receipt.close();
+    await resources;
+
+    await expect(pool.close()).rejects.toBe(secondStop);
+    expectHeld(2);
+    await expect(task.result).rejects.toBe(primary);
+
+    const closing = pool.close();
+    await native.entered;
+    expectHeld(3);
+    const resourcesClosed = vi.fn();
+    const closingResources = closeWorkerTaskPoolResources("closing-pool").then(resourcesClosed);
+    await nextTurn();
+    expect(resourcesClosed).not.toHaveBeenCalled();
+    native.release();
+    await closing;
+    await closingResources;
+    expect(consumed).toHaveBeenCalledOnce();
+    expect(pool.getSnapshot().pendingTasks).toBe(0);
+    await expect(task.result).rejects.toBe(primary);
+    await Promise.all([task.close(), pool.close()]);
+    expect(worker.terminate).toHaveBeenCalledTimes(3);
+  } finally {
+    native.release();
+  }
+});
+
+it("joins native exit when global close reenters healthy task completion", async () => {
+  const pool = createPool();
+  const task = pool.runTask("completed", {});
+  const worker = workerFor("completed");
+  reply(worker, "completed", "accepted reply");
+  await expect(task.result).resolves.toBe("accepted reply");
+  const native = holdExit(worker);
+  const diagnostics = diagnosticsChannel("openclaw.worker.task");
+  let globalClose: Promise<void> | undefined;
+  const globallyClosed = vi.fn();
+  let completions = 0;
+  const onCompletion = (message: unknown) => {
+    if (
+      !message ||
+      typeof message !== "object" ||
+      !("worker" in message) ||
+      message.worker !== "owned-worker.js"
+    ) {
+      return;
+    }
+    completions++;
+    globalClose ??= pool.close().then(globallyClosed);
+  };
+  diagnostics.subscribe(onCompletion);
+  const closingTask = task.close();
+  try {
+    await closingTask;
+    // A healthy task is detached before its completion observer reenters pool.close().
+    await nextTurn();
+    expect(completions).toBe(1);
+    expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(globallyClosed).not.toHaveBeenCalled();
+    await expect(task.result).resolves.toBe("accepted reply");
+  } finally {
+    diagnostics.unsubscribe(onCompletion);
+    native.release();
+    await closingTask;
+    await globalClose;
+  }
+  expect(globallyClosed).toHaveBeenCalledOnce();
+  await Promise.all([task.close(), pool.close()]);
+  expect(worker.terminate).toHaveBeenCalledOnce();
+  expect(completions).toBe(1);
+  expect(pool.getSnapshot().pendingTasks).toBe(0);
+  await expect(task.result).resolves.toBe("accepted reply");
+});
+
+it.each(["task-first", "pool-first"] as const)(
+  "joins one native stop when global and task close overlap (%s)",
+  async (order) => {
+    const pool = createPool();
     const consumed = vi.fn();
-    const task = pool.runTask("failed", { inputBytes: 8, onInputConsumed: consumed });
-    const worker = workerFor("failed");
-    const expectHeld = (attempts: number) => {
-      expect(worker.terminate).toHaveBeenCalledTimes(attempts);
-      expect(consumed).not.toHaveBeenCalled();
-      expect(pool.getSnapshot().pendingTasks).toBe(1);
-    };
-    worker.terminate.mockRejectedValueOnce(firstStop).mockRejectedValueOnce(secondStop);
+    const task = pool.runTask("active", { onInputConsumed: consumed });
+    const worker = workerFor("active");
     const native = holdExit(worker);
-    const rejected = expect(task.result).rejects.toBe(primary);
-    reply(worker, "failed");
+    const rejected = expect(task.result).rejects.toBeInstanceOf(Error);
+    const closing =
+      order === "task-first" ? [task.close(), pool.close()] : [pool.close(), task.close()];
     try {
       await rejected;
-      await automaticFailure.promise;
+      await native.entered;
       expect(worker.terminate).toHaveBeenCalledOnce();
       expect(consumed).not.toHaveBeenCalled();
-      const excess = pool.runTask("capacity remains held", { inputBytes: 1 });
-      await expect(excess.result).rejects.toMatchObject({ code: "overloaded" });
-      await excess.close();
-
-      await expect(pool.close()).rejects.toBe(firstStop);
-      expectHeld(1);
-
-      const resources = closeWorkerTaskPoolResources("retained-after-failed-close");
-      const receipt = cleanupReceipt(worker);
-      receipt.postMessage({ ok: true }, []);
-      receipt.close();
-      await resources;
-
-      await expect(pool.close()).rejects.toBe(secondStop);
-      expectHeld(2);
-      await expect(task.result).rejects.toBe(primary);
-
-      const closing = pool.close();
-      await native.entered;
-      expectHeld(3);
-      let resourcesClosed = false;
-      const closingResources = closeWorkerTaskPoolResources("closing-pool").then(() => {
-        resourcesClosed = true;
-      });
-      await nextTurn();
-      expect(resourcesClosed).toBe(false);
-      native.release();
-      await closing;
-      await closingResources;
-      expect(consumed).toHaveBeenCalledOnce();
-      expect(pool.getSnapshot().pendingTasks).toBe(0);
-      await expect(task.result).rejects.toBe(primary);
-      await Promise.all([task.close(), pool.close()]);
-      expect(worker.terminate).toHaveBeenCalledTimes(3);
     } finally {
       native.release();
+      await Promise.all(closing);
     }
-  });
-
-  it("joins native exit when global close reenters healthy task completion", async () => {
-    const pool = createPool();
-    const task = pool.runTask("completed", {});
-    const worker = workerFor("completed");
-    reply(worker, "completed", "accepted reply");
-    await expect(task.result).resolves.toBe("accepted reply");
-    const native = holdExit(worker);
-    const diagnostics = diagnosticsChannel("openclaw.worker.task");
-    let globalClose: Promise<void> | undefined;
-    let globallyClosed = false;
-    let completions = 0;
-    const onCompletion = (message: unknown) => {
-      if (
-        !message ||
-        typeof message !== "object" ||
-        !("worker" in message) ||
-        message.worker !== "owned-worker.js"
-      ) {
-        return;
-      }
-      completions++;
-      globalClose ??= pool.close().then(() => {
-        globallyClosed = true;
-      });
-    };
-    diagnostics.subscribe(onCompletion);
-    const closingTask = task.close();
-    try {
-      await closingTask;
-      // A healthy task is detached before its completion observer reenters pool.close().
-      await nextTurn();
-      expect(completions).toBe(1);
-      expect(worker.terminate).toHaveBeenCalledOnce();
-      expect(globallyClosed).toBe(false);
-      await expect(task.result).resolves.toBe("accepted reply");
-    } finally {
-      diagnostics.unsubscribe(onCompletion);
-      native.release();
-      await closingTask;
-      await globalClose;
-    }
-    expect(globallyClosed).toBe(true);
+    expect(consumed).toHaveBeenCalledOnce();
+    expect(pool.getSnapshot().pendingTasks).toBe(0);
     await Promise.all([task.close(), pool.close()]);
     expect(worker.terminate).toHaveBeenCalledOnce();
-    expect(completions).toBe(1);
-    expect(pool.getSnapshot().pendingTasks).toBe(0);
-    await expect(task.result).resolves.toBe("accepted reply");
-  });
-
-  it.each(["task-first", "pool-first"] as const)(
-    "joins one native stop when global and task close overlap (%s)",
-    async (order) => {
-      const pool = createPool();
-      const consumed = vi.fn();
-      const task = pool.runTask("active", { onInputConsumed: consumed });
-      const worker = workerFor("active");
-      const native = holdExit(worker);
-      const rejected = expect(task.result).rejects.toBeInstanceOf(Error);
-      const closing =
-        order === "task-first" ? [task.close(), pool.close()] : [pool.close(), task.close()];
-      try {
-        await rejected;
-        await native.entered;
-        expect(worker.terminate).toHaveBeenCalledOnce();
-        expect(consumed).not.toHaveBeenCalled();
-      } finally {
-        native.release();
-        await Promise.all(closing);
-      }
-      expect(consumed).toHaveBeenCalledOnce();
-      expect(pool.getSnapshot().pendingTasks).toBe(0);
-      await Promise.all([task.close(), pool.close()]);
-      expect(worker.terminate).toHaveBeenCalledOnce();
-    },
-  );
-});
+  },
+);

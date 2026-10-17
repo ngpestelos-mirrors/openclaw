@@ -70,6 +70,56 @@ function diagnosticRequests() {
   return { events, unsubscribe };
 }
 
+class Preparation {
+  preparation = createDeferredCore();
+  captured = ["retained request"];
+  observed?: string[];
+  controller = new AbortController();
+  consumed;
+  active;
+  constructor(
+    pool: WorkerTaskPool<string, string>,
+    options: { rejects?: boolean; onConsumed?: () => void; onExecutionSettled?: () => void } = {},
+  ) {
+    this.consumed = vi.fn(() => {
+      options.onConsumed?.();
+      this.captured.length = 0;
+    });
+    this.active = pool.run(
+      async () => {
+        await this.preparation.promise;
+        this.observed = [...this.captured];
+        if (options.rejects) {
+          throw new Error("late preparation failure");
+        }
+        return this.captured.join(",");
+      },
+      {
+        signal: this.controller.signal,
+        inputBytes: 8,
+        onInputConsumed: this.consumed,
+        onExecutionSettled: options.onExecutionSettled,
+      },
+    );
+  }
+}
+
+function contend() {
+  const contender = vi.fn(() => "next pool");
+  return { contender, next: createPool({ sharedCompute: true }).run(contender, {}) };
+}
+
+function expectRetained(
+  fixture: Preparation,
+  pool: WorkerTaskPool<string, string>,
+  contender: ReturnType<typeof vi.fn>,
+) {
+  expect(fixture.captured).toEqual(["retained request"]);
+  expect(fixture.consumed).not.toHaveBeenCalled();
+  expect(contender).not.toHaveBeenCalled();
+  expect(pool.getSnapshot().pendingTasks).toBe(1);
+}
+
 it.each<{
   cpus: number;
   workerClass: WorkerPoolClass;
@@ -167,56 +217,43 @@ describe("public worker task preparation custody", () => {
     },
   );
 
-  it("attributes owned tasks before input preparation without exporting private operation suffixes", async () => {
+  it.each([true, false])("attributes private worker requests (owned=%s)", async (owned) => {
     const { events, unsubscribe } = diagnosticRequests();
-    const pool = createOwnedWorkerTaskPool<string, string>({
-      workerUrl: new URL("file:///fixture/openclaw-state-read.worker.js"),
-      maxWorkers: 1,
-      idleTimeoutMs: 0,
-    });
+    const pool = owned
+      ? createOwnedWorkerTaskPool<string, string>({
+          workerUrl: new URL("file:///fixture/openclaw-state-read.worker.js"),
+          maxWorkers: 1,
+          idleTimeoutMs: 0,
+        })
+      : createPool({
+          workerUrl: new URL("file:///synthetic-private-root/synthetic-private-worker.js"),
+        });
     const gate = createDeferredCore<string>();
     try {
-      const task = pool.runTask(() => gate.promise, {
-        diagnosticOperation: "cron.synthetic-private-suffix",
-      });
-      await waitForDiagnosticEventsDrained();
-      expect(events[0]).toMatchObject({ phase: "queued", requestClass: "cron" });
+      const task =
+        "runTask" in pool
+          ? pool.runTask(() => gate.promise, {
+              diagnosticOperation: "cron.synthetic-private-suffix",
+            })
+          : undefined;
+      const result = task?.result ?? pool.run("synthetic-private-input", {});
+      if (owned) {
+        await waitForDiagnosticEventsDrained();
+        expect(events[0]).toMatchObject({ phase: "queued", requestClass: "cron" });
+      }
       gate.resolve("synthetic-private-input");
-      await expect(task.result).resolves.toBe("synthetic-private-input");
-      await task.close();
+      await expect(result).resolves.toBe("synthetic-private-input");
+      await task?.close();
       await waitForDiagnosticEventsDrained();
-      expect(events.map((event) => [event.phase, event.requestClass])).toEqual([
-        ["queued", "cron"],
-        ["started", "cron"],
-        ["completed", "cron"],
-      ]);
+      expect(events.map((event) => (owned ? event.requestClass : event.kind))).toEqual(
+        Array(3).fill(owned ? "cron" : "extension"),
+      );
+      expect(events.map((event) => event.phase)).toEqual(["queued", "started", "completed"]);
       expect(JSON.stringify(events)).not.toContain("synthetic-private");
     } finally {
       gate.resolve("cleanup");
       await pool.close();
       await waitForDiagnosticEventsDrained();
-      unsubscribe();
-    }
-  });
-
-  it("attributes unknown workers without publishing private paths or inputs", async () => {
-    const { events, unsubscribe } = diagnosticRequests();
-    const pool = createPool({
-      workerUrl: new URL("file:///synthetic-private-root/synthetic-private-worker.js"),
-    });
-    try {
-      await expect(pool.run("synthetic-private-input", {})).resolves.toBe(
-        "synthetic-private-input",
-      );
-      await waitForDiagnosticEventsDrained();
-      expect(events.map((event) => [event.kind, event.phase])).toEqual([
-        ["extension", "queued"],
-        ["extension", "started"],
-        ["extension", "completed"],
-      ]);
-      expect(JSON.stringify(events)).not.toContain("synthetic-private");
-    } finally {
-      await pool.close();
       unsubscribe();
     }
   });
@@ -249,51 +286,29 @@ describe("public worker task preparation custody", () => {
     ]);
   });
 
-  it.each([
-    { order: "preparation-first", rejects: false },
-    { order: "exit-first", rejects: true },
-  ])(
-    "joins both lifetimes before releasing input ($order, rejects=$rejects)",
-    async ({ order, rejects }) => {
+  it.each(["preparation-first", "exit-first"] as const)(
+    "retains preparation custody until native exit (%s)",
+    async (order) => {
       const pool = createPool({ sharedCompute: true, maxPendingBytes: 8 });
       await expect(pool.run("warm", {})).resolves.toBe("warm");
       const worker = workers[0]!;
       const native = holdExit(worker);
-      const preparation = createDeferredCore();
-      const captured = ["retained request"];
-      let observed: string[] | undefined;
       const context = new AsyncLocalStorage<string>();
-      const consumed = vi.fn(() => {
-        expect(context.getStore()).toBe("input owner");
-        captured.length = 0;
-      });
-      const executionSettled = vi.fn(() => {
-        expect(context.getStore()).toBe("input owner");
-      });
-      const controller = new AbortController();
+      const assertContext = () => expect(context.getStore()).toBe("input owner");
+      const executionSettled = vi.fn(assertContext);
       const reason = new Error("preparation canceled");
-      const active = context.run("input owner", () =>
-        pool.run(
-          async () => {
-            await preparation.promise;
-            observed = [...captured];
-            if (rejects) {
-              throw new Error("late preparation failure");
-            }
-            return captured.join(",");
-          },
-          {
-            signal: controller.signal,
-            inputBytes: 8,
-            onInputConsumed: consumed,
+      const fixture = context.run(
+        "input owner",
+        () =>
+          new Preparation(pool, {
+            rejects: order === "exit-first",
+            onConsumed: assertContext,
             onExecutionSettled: executionSettled,
-          },
-        ),
+          }),
       );
+      const { preparation, captured, controller, consumed, active } = fixture;
       const rejected = expect(active).rejects.toBe(reason);
-      const waiting = createPool({ sharedCompute: true });
-      const contender = vi.fn(() => "next pool");
-      const next = waiting.run(contender, {});
+      const { contender, next } = contend();
       const rotation = pool.rotate();
       controller.abort(reason);
       try {
@@ -311,30 +326,25 @@ describe("public worker task preparation custody", () => {
         } else {
           preparation.resolve();
           await nextTurn();
-          expect(observed).toEqual(["retained request"]);
+          expect(fixture.observed).toEqual(["retained request"]);
           expect(executionSettled).not.toHaveBeenCalled();
         }
-        expect(captured).toEqual(["retained request"]);
-        expect(consumed).not.toHaveBeenCalled();
-        expect(contender).not.toHaveBeenCalled();
-        expect(pool.getSnapshot().pendingTasks).toBe(1);
-        let closed = false;
-        const closing = pool.close().then(() => {
-          closed = true;
-        });
+        expectRetained(fixture, pool, contender);
+        const closed = vi.fn();
+        const closing = pool.close().then(closed);
         await nextTurn();
-        expect(closed).toBe(false);
+        expect(closed).not.toHaveBeenCalled();
         preparation.resolve();
         native.release();
         await Promise.all([closing, rotation, rejected]);
         await expect(next).resolves.toBe("next pool");
-        expect(observed).toEqual(["retained request"]);
+        expect(fixture.observed).toEqual(["retained request"]);
         expect(captured).toEqual([]);
         expect(consumed).toHaveBeenCalledOnce();
         expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: true });
+        await expect(active).rejects.toBe(reason);
         expect(worker.posted.mock.calls.map(([message]) => message.input)).toEqual(["warm"]);
         expect(pool.getSnapshot().pendingTasks).toBe(0);
-        await expect(active).rejects.toBe(reason);
       } finally {
         preparation.resolve();
         native.release();
@@ -351,26 +361,11 @@ describe("public worker task preparation custody", () => {
     const firstFailure = new Error("automatic stop failed");
     const retryFailure = new Error("explicit stop failed");
     worker.terminate.mockRejectedValueOnce(firstFailure).mockRejectedValueOnce(retryFailure);
-    const preparation = createDeferredCore();
-    const captured = ["retained request"];
-    let observed: string[] | undefined;
-    const consumed = vi.fn(() => {
-      captured.length = 0;
-    });
-    const controller = new AbortController();
     const reason = new Error("canceled during preparation");
-    const active = pool.run(
-      async () => {
-        await preparation.promise;
-        observed = [...captured];
-        return captured.join(",");
-      },
-      { signal: controller.signal, inputBytes: 8, onInputConsumed: consumed },
-    );
+    const fixture = new Preparation(pool);
+    const { preparation, captured, consumed, controller, active } = fixture;
     const outcome = active.catch((error: unknown) => error);
-    const waiting = createPool({ sharedCompute: true });
-    const contender = vi.fn(() => "next pool");
-    const next = waiting.run(contender, {});
+    const { contender, next } = contend();
     controller.abort(reason);
     try {
       const originalFailure = await outcome;
@@ -378,15 +373,11 @@ describe("public worker task preparation custody", () => {
         cause: firstFailure,
         errors: [reason, firstFailure],
       });
-      // A failed native join reports promptly even though preparation still holds input.
       await expect(pool.close()).rejects.toBe(retryFailure);
       preparation.resolve();
       await nextTurn();
-      expect(observed).toEqual(["retained request"]);
-      expect(captured).toEqual(["retained request"]);
-      expect(consumed).not.toHaveBeenCalled();
-      expect(contender).not.toHaveBeenCalled();
-      expect(pool.getSnapshot().pendingTasks).toBe(1);
+      expect(fixture.observed).toEqual(["retained request"]);
+      expectRetained(fixture, pool, contender);
       expect(workers).toHaveLength(1);
       await pool.close();
       await expect(next).resolves.toBe("next pool");
@@ -409,35 +400,23 @@ describe("public worker task preparation custody", () => {
     "reports $failure cleanup failure through close after $ending rejects the result",
     async ({ ending, failure }) => {
       const pool = createPool({ maxPendingBytes: 8 });
-      const preparation = createDeferredCore();
       const completed = createDeferredCore();
-      const controller = new AbortController();
       const reason = new Error("original preparation cancellation");
       const cleanupError = new Error("input cleanup failed");
       const settlementError = new Error("execution receipt failed");
-      const consumed = vi.fn(() => {
+      const onConsumed = () => {
         completed.resolve();
         if (failure !== "settlement") {
           throw cleanupError;
         }
-      });
+      };
       const executionSettled = vi.fn(() => {
-        if (failure !== "input") {
-          throw settlementError;
-        }
+        throw settlementError;
       });
-      const active = pool.run(
-        async () => {
-          await preparation.promise;
-          return "must not post";
-        },
-        {
-          signal: controller.signal,
-          inputBytes: 8,
-          onInputConsumed: consumed,
-          onExecutionSettled: executionSettled,
-        },
-      );
+      const { preparation, controller, consumed, active } = new Preparation(pool, {
+        onConsumed,
+        onExecutionSettled: executionSettled,
+      });
       const rejected = expect(active).rejects.toBe(reason);
       const closing = ending === "close" ? pool.close(reason) : undefined;
       const closeOutcome = closing?.then(
@@ -471,7 +450,7 @@ describe("public worker task preparation custody", () => {
             cause: settlementError,
           });
         } else {
-          expect(closeFailure).toBe(failure === "input" ? cleanupError : settlementError);
+          expect(closeFailure).toBe(settlementError);
         }
         await pool.close();
         expect(consumed).toHaveBeenCalledOnce();
