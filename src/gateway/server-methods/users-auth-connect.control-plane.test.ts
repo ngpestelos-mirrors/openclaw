@@ -1,13 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import { awaitGateBeforeSettlement, withinTest } from "../../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement as until, withinTest } from "../../../test/helpers/promise.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { UserProfileAuthLink } from "../../state/user-model-accounts.js";
 import * as auth from "./users-auth-connect.test-support.js";
+import { expectError, expectReply, rpc, savedId } from "./users-auth-connect.test-support.js";
 
 auth.setupModelAccountConnectTest();
-
-const savedId = "personal:profile-1:saved";
 
 function expectLookup(mock: unknown, params: unknown) {
   expect(mock).toHaveBeenCalledWith(params, { context: expect.anything() });
@@ -15,49 +14,34 @@ function expectLookup(mock: unknown, params: unknown) {
 
 it("lists account pages for their owner or an identified administrator", async () => {
   const accounts = [{ authProfileId: savedId }];
-  auth.listUserModelAccounts.mockReturnValue({
+  auth.listUserModelAccounts.mockReturnValue({ accounts, nextCursor: savedId });
+  await expectReply(rpc("users.listModelAccounts", { cursor: "personal:profile-1:before" }), {
+    profileId: "profile-1",
     accounts,
     nextCursor: savedId,
+    links: [],
   });
-  await auth.expectReply(
-    auth.rpc("users.listModelAccounts", { cursor: "personal:profile-1:before" }),
-    {
-      profileId: "profile-1",
-      accounts,
-      nextCursor: savedId,
-      links: [],
-    },
-  );
   expectLookup(auth.listUserModelAccounts, {
     profileId: "profile-1",
     cursor: "personal:profile-1:before",
   });
-  await auth.expectReply(auth.rpc("users.listAuthLinks", { profileId: "profile-1" }), {
+  await expectReply(rpc("users.listAuthLinks", { profileId: "profile-1" }), {
     links: [],
   });
   auth.listUserModelAccounts.mockClear();
   auth.listUserProfileAuthLinks.mockClear();
-  await auth.expectError(
-    auth.rpc("users.listModelAccounts", { profileId: "profile-other" }),
-    "FORBIDDEN",
-  );
+  await expectError(rpc("users.listModelAccounts", { profileId: "profile-other" }), "FORBIDDEN");
   expect(auth.listUserModelAccounts).not.toHaveBeenCalled();
-  await auth.expectError(
-    auth.rpc("users.listAuthLinks", { profileId: "profile-other" }),
-    "FORBIDDEN",
-  );
+  await expectError(rpc("users.listAuthLinks", { profileId: "profile-other" }), "FORBIDDEN");
   expect(auth.listUserProfileAuthLinks).not.toHaveBeenCalled();
 
   const admin = auth.createClient("profile-admin", ["operator.admin"]);
   auth.listUserModelAccounts.mockReturnValue({ accounts: [] });
-  await auth.expectReply(
-    auth.rpc("users.listModelAccounts", { profileId: "profile-other" }, admin),
-    {
-      profileId: "profile-other",
-      accounts: [],
-      links: [],
-    },
-  );
+  await expectReply(rpc("users.listModelAccounts", { profileId: "profile-other" }, admin), {
+    profileId: "profile-other",
+    accounts: [],
+    links: [],
+  });
   expectLookup(auth.listUserModelAccounts, {
     profileId: "profile-other",
     cursor: undefined,
@@ -78,16 +62,12 @@ it.each([
     delete auth.self.authenticatedUserProfile;
     auth.self.connect.scopes = ["operator.admin"];
     auth.readUserModelAccountSummary.mockReturnValue({
-      provider: "openai",
+      ...auth.selectedAccount,
       authProfileId: "personal:profile-other:saved",
     });
 
-    await auth.expectError(
-      auth.rpc(method, { ...params, profileId: "profile-other" }),
-      "FORBIDDEN",
-    );
-    expect(auth.prepareUserProfileSelectionAuthority).not.toHaveBeenCalled();
-    expect(auth.runAuth).not.toHaveBeenCalled();
+    await expectError(rpc(method, { ...params, profileId: "profile-other" }), "FORBIDDEN");
+    auth.expectNoCalls(auth.prepareUserProfileSelectionAuthority, auth.runAuth);
     expect(auth.writes).toEqual([]);
     expect(auth.linksByOwner.size).toBe(0);
   },
@@ -95,16 +75,13 @@ it.each([
 
 it("selects a retained owned account and cancels an older sign-in without rewriting credentials", async () => {
   const flow = await auth.startFlow();
-  await auth.expectError(
-    auth.rpc("users.selectModelAccount", { authProfileId: "personal:profile-other:missing" }),
+  await expectError(
+    rpc("users.selectModelAccount", { authProfileId: "personal:profile-other:missing" }),
     "INVALID_REQUEST",
   );
   expect(await auth.status(flow)).toMatchObject({ status: "pending" });
-  auth.readUserModelAccountSummary.mockReturnValue({
-    provider: "openai",
-    authProfileId: savedId,
-  });
-  await auth.expectReply(auth.rpc("users.selectModelAccount", { authProfileId: savedId }), {
+  auth.readUserModelAccountSummary.mockReturnValue(auth.selectedAccount);
+  await expectReply(rpc("users.selectModelAccount", { authProfileId: savedId }), {
     links: [{ provider: "openai", authProfileId: savedId, updatedAt: 2 }],
   });
   expectLookup(auth.readUserModelAccountSummary, {
@@ -112,15 +89,11 @@ it("selects a retained owned account and cancels an older sign-in without rewrit
     authProfileId: "personal:profile-1:saved",
   });
   expect(await auth.status(flow)).toEqual({ status: "cancelled" });
-  await auth.expectReply(auth.complete(flow), { status: "cancelled" });
+  await expectReply(auth.complete(flow), { status: "cancelled" });
   expect(auth.writes).toEqual([]);
-  expect(auth.broadcast).toHaveBeenCalledExactlyOnceWith(
-    "chat.metadata.changed",
-    {},
-    { dropIfSlow: true },
-  );
-  await auth.expectReply(
-    auth.rpc("users.unlinkAuthProfile", { profileId: "profile-1", provider: "openai" }),
+  expect(auth.broadcast).toHaveBeenCalledExactlyOnceWith(...auth.metadataEvent);
+  await expectReply(
+    rpc("users.unlinkAuthProfile", { profileId: "profile-1", provider: "openai" }),
     { links: [] },
   );
   expect(auth.linksByOwner.get("profile-1")).toEqual([]);
@@ -133,7 +106,6 @@ it("orders pending selection before disconnect without cancelling a newer sign-i
   const lookupEntered = createDeferredCore();
   const releaseLookup = createDeferredCore<{ provider: string; authProfileId: string }>();
   const unlinkEntered = createDeferredCore();
-  const authProfileId = savedId;
   auth.readUserModelAccountSummary.mockImplementationOnce(() => {
     lookupEntered.resolve();
     return releaseLookup.promise;
@@ -144,30 +116,22 @@ it("orders pending selection before disconnect without cancelling a newer sign-i
     unlinkEntered.resolve();
     return result;
   });
-  const selecting = auth.rpc("users.selectModelAccount", { authProfileId });
+  const selecting = rpc("users.selectModelAccount", { authProfileId: savedId });
   try {
     await withinTest(
-      awaitGateBeforeSettlement(
-        lookupEntered.promise,
-        selecting,
-        "Selection completed before its account lookup",
-      ),
+      until(lookupEntered.promise, selecting, "Selection lookup was bypassed"),
       signal,
     );
-    const disconnecting = auth.rpc("users.unlinkAuthProfile", {
+    const disconnecting = rpc("users.unlinkAuthProfile", {
       profileId: "profile-1",
       provider: "openai",
     });
     await withinTest(
-      awaitGateBeforeSettlement(
-        unlinkEntered.promise,
-        disconnecting,
-        "Disconnect completed before reaching the service",
-      ),
+      until(unlinkEntered.promise, disconnecting, "Unlink service was bypassed"),
       signal,
     );
     const newerFlow = await auth.startFlow();
-    releaseLookup.resolve({ provider: "openai", authProfileId });
+    releaseLookup.resolve(auth.selectedAccount);
     await Promise.all([selecting, disconnecting]);
     expect(auth.setUserProfileAuthLink.mock.invocationCallOrder[0]).toBeLessThan(
       auth.clearUserProfileAuthLink.mock.invocationCallOrder[0]!,
@@ -178,7 +142,7 @@ it("orders pending selection before disconnect without cancelling a newer sign-i
     await auth.terminal(newerFlow, "connected");
     expect(auth.writes).toEqual([auth.credential]);
   } finally {
-    releaseLookup.resolve({ provider: "openai", authProfileId });
+    releaseLookup.resolve(auth.selectedAccount);
   }
 });
 
@@ -214,27 +178,17 @@ it.each([
     } else if (reason === "agent tool caller") {
       admin.internal = { agentToolCaller: { agentId: "main", sessionKey: "agent:main:test" } };
     }
-    const results = [];
     for (const [method, params] of [
       ["users.selectModelAccount", { authProfileId: savedId }],
       ["users.listAuthLinks", {}],
       ["users.linkAuthProfile", { authProfileId: "openai:shared" }],
       ["users.unlinkAuthProfile", { provider: "openai" }],
     ] as const) {
-      results.push(
-        (await auth.rpc(method, { ...params, profileId: "profile-1" }, caller)).mock.calls,
-      );
+      await expectError(rpc(method, { ...params, profileId: "profile-1" }, caller), "FORBIDDEN");
     }
-    expect(results).toEqual(
-      Array.from({ length: 4 }, () => [
-        [false, undefined, expect.objectContaining({ code: "FORBIDDEN" })],
-      ]),
-    );
     expect(auth.linksByOwner.get("profile-1")).toEqual(links);
     expect(await auth.status(flow)).toMatchObject({ status: "pending" });
-    expect(auth.setUserProfileAuthLink).not.toHaveBeenCalled();
-    expect(auth.clearUserProfileAuthLink).not.toHaveBeenCalled();
-    expect(auth.broadcast).not.toHaveBeenCalled();
+    auth.expectNoCalls(auth.setUserProfileAuthLink, auth.clearUserProfileAuthLink, auth.broadcast);
     expect(auth.writes).toEqual([]);
   },
 );
@@ -256,22 +210,16 @@ it.each(["shared", "personal", "config-declared"] as const)(
     }
     const flow = await auth.startFlow(owner, admin, provider);
     auth.readUserModelAccountSummary.mockReturnValue({ provider, authProfileId });
-    await auth.expectReply(
-      auth.rpc("users.linkAuthProfile", { profileId: owner, authProfileId }, admin),
-      {
-        links: [{ provider, authProfileId, updatedAt: 2 }],
-      },
-    );
+    await expectReply(rpc("users.linkAuthProfile", { profileId: owner, authProfileId }, admin), {
+      links: [{ provider, authProfileId, updatedAt: 2 }],
+    });
     expect(await auth.status(flow, owner, admin)).toEqual({ status: "cancelled" });
-    await auth.expectReply(auth.rpc("users.listAuthLinks", { profileId: owner }, admin), {
+    await expectReply(rpc("users.listAuthLinks", { profileId: owner }, admin), {
       links: auth.linksByOwner.get(owner),
     });
-    await auth.expectReply(
-      auth.rpc("users.unlinkAuthProfile", { profileId: owner, provider }, admin),
-      {
-        links: [],
-      },
-    );
+    await expectReply(rpc("users.unlinkAuthProfile", { profileId: owner, provider }, admin), {
+      links: [],
+    });
     expect(auth.linksByOwner.get(owner)).toEqual([]);
     expect(auth.broadcast).toHaveBeenCalledTimes(2);
     expect(auth.writes).toEqual([]);
@@ -288,15 +236,15 @@ it.each(["shared", "personal", "config-declared"] as const)(
 it("keeps failed manual attachments from changing a default or cancelling its sign-in", async () => {
   const flow = await auth.startFlow();
   const params = { profileId: "profile-1", authProfileId: "openai:shared" };
-  await auth.expectError(auth.rpc("users.linkAuthProfile", params), "FORBIDDEN");
+  await expectError(rpc("users.linkAuthProfile", params), "FORBIDDEN");
   const admin = auth.createClient("profile-admin", ["operator.admin"]);
-  await auth.expectError(
-    auth.rpc("users.linkAuthProfile", { ...params, authProfileId: "missing" }, admin),
+  await expectError(
+    rpc("users.linkAuthProfile", { ...params, authProfileId: "missing" }, admin),
     "INVALID_REQUEST",
     { message: expect.stringContaining("openclaw models auth login") },
   );
-  await auth.expectError(
-    auth.rpc(
+  await expectError(
+    rpc(
       "users.linkAuthProfile",
       {
         ...params,
@@ -326,7 +274,7 @@ it.each(["list", "status", "changed links"] as const)(
       entered.resolve();
       return release.promise;
     });
-    const reading = flow ? auth.flowRpc("status", flow) : auth.rpc("users.listModelAccounts", {});
+    const reading = flow ? auth.flowRpc("status", flow) : rpc("users.listModelAccounts", {});
     await entered.promise;
     if (kind === "changed links") {
       auth.modelAccountLinksCurrent.mockReturnValue(false);
@@ -334,6 +282,6 @@ it.each(["list", "status", "changed links"] as const)(
       auth.self.invalidated = true;
     }
     release.resolve([]);
-    await auth.expectError(reading, kind === "changed links" ? "UNAVAILABLE" : "FORBIDDEN");
+    await expectError(reading, kind === "changed links" ? "UNAVAILABLE" : "FORBIDDEN");
   },
 );

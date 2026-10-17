@@ -32,6 +32,22 @@ const listPersonalAccountAuthChoices = vi.hoisted(() => vi.fn());
 const resolvePersonalAccountAuthMethod = vi.hoisted(() => vi.fn());
 const exchange = vi.hoisted(() => vi.fn());
 const modelAccountLinksCurrent = vi.hoisted(() => vi.fn());
+export {
+  resolveProfileId,
+  prepareUserProfileSelectionAuthority,
+  connectUserModelAccount,
+  listUserProfileAuthLinks,
+  listUserModelAccounts,
+  readUserModelAccountSummary,
+  readSelectedUserModelAccount,
+  setUserProfileAuthLink,
+  clearUserProfileAuthLink,
+  ensureAuthProfileStoreWithoutExternalProfiles,
+  registerSecretValueForRedaction,
+  resolvePersonalAccountAuthMethod,
+  exchange,
+  modelAccountLinksCurrent,
+};
 
 function selectionAuthority(reference: string) {
   const profileId = resolveProfileId(reference);
@@ -87,14 +103,11 @@ vi.mock(import("../../plugins/personal-account-auth.js"), async (importOriginal)
 
 type Client = GatewayClient & { connId: string; invalidated: boolean };
 type LinkChange = { profileId: string; provider: string; assertCurrent?: () => void };
-type ConnectTestContext = Pick<
-  GatewayRequestContext,
-  | "broadcast"
-  | "logGateway"
-  | "modelAccountConnectService"
-  | "getRuntimeConfig"
-  | "getClientConnIds"
->;
+type ConnectWrite = {
+  ownerProfileId: string;
+  credential: AuthProfileCredential;
+  assertCurrent: () => void;
+};
 export const credential: OAuthCredential = {
   type: "oauth",
   provider: "openai",
@@ -108,6 +121,14 @@ export const credential: OAuthCredential = {
 export const authorized: ProviderAuthResult = {
   profiles: [{ profileId: "openai:ignored-shared-id", credential }],
 };
+export const savedId = "personal:profile-1:saved";
+export const selectedAccount = { provider: "openai", authProfileId: savedId };
+export const metadataEvent = ["chat.metadata.changed", {}, { dropIfSlow: true }] as const;
+export function expectNoCalls(...mocks: unknown[]) {
+  for (const mock of mocks) {
+    expect(mock).not.toHaveBeenCalled();
+  }
+}
 export const runAuth = vi.fn(async (ctx: ProviderAuthContext) => {
   const value = await ctx.prompter.text({
     message: "Provider credential",
@@ -116,47 +137,49 @@ export const runAuth = vi.fn(async (ctx: ProviderAuthContext) => {
   });
   return exchange(value, ctx.signal);
 });
-const oauthMethod: ProviderAuthMethod = {
-  id: "oauth",
-  label: "Browser sign-in",
-  kind: "oauth",
-  run: runAuth,
-};
 export const broadcast = vi.fn();
 export const warn = vi.fn();
 export let service: ReturnType<typeof createModelAccountConnectService>;
-let context: ConnectTestContext;
+let context: ReturnType<typeof createContext>;
 export let config: OpenClawConfig;
 export let clients: Set<Client>;
 export let self: Client;
 export let writes: AuthProfileCredential[];
 export let linksByOwner: Map<string, UserProfileAuthLink[]>;
 
+function createContext() {
+  return {
+    broadcast,
+    logGateway: { ...createSubsystemLogger("gateway"), warn },
+    modelAccountConnectService: service,
+    getRuntimeConfig: () => config,
+    getClientConnIds: (filter?: (client: GatewayClient) => boolean) =>
+      new Set(
+        [...clients].filter((c) => !c.invalidated && (!filter || filter(c))).map((c) => c.connId),
+      ),
+  };
+}
+
 export function createClient(profileId = "profile-1", scopes = ["operator.write"]): Client {
+  const clientInfo = { id: "test", mode: "test", version: "1", platform: "test" };
   const client: Client = {
     connId: `connection-${clients.size + 1}`,
     invalidated: false,
     authenticatedUserProfile: { profileId, displayName: "Ada", hasAvatar: false, updatedAt: 1 },
-    connect: {
-      role: "operator",
-      scopes,
-      minProtocol: 1,
-      maxProtocol: 1,
-      client: { id: "test", mode: "test", version: "1", platform: "test" },
-    },
+    connect: { role: "operator", scopes, minProtocol: 1, maxProtocol: 1, client: clientInfo },
   };
   clients.add(client);
   return client;
 }
 
 export async function rpc(
-  requestMethod: string,
+  method: string,
   params: Record<string, unknown> = {},
   client: Client = self,
 ) {
   const respond = vi.fn();
-  await usersAuthConnectHandlers[requestMethod]!({
-    req: { type: "req", id: "connect-test", method: requestMethod, params },
+  await usersAuthConnectHandlers[method]!({
+    req: { type: "req", id: "connect-test", method, params },
     client,
     context: context as GatewayRequestContext,
     params,
@@ -171,11 +194,8 @@ export async function expectReply(response: ReturnType<typeof rpc>, payload: unk
 }
 
 export async function expectError(response: ReturnType<typeof rpc>, code: string, details = {}) {
-  expect(await response).toHaveBeenCalledWith(
-    false,
-    undefined,
-    expect.objectContaining({ code, ...details }),
-  );
+  const error = expect.objectContaining({ code, ...details });
+  expect(await response).toHaveBeenCalledExactlyOnceWith(false, undefined, error);
 }
 export function flowRpc(
   action: "answer" | "cancel" | "status",
@@ -184,11 +204,8 @@ export function flowRpc(
   profileId = "profile-1",
   client = self,
 ) {
-  return rpc(
-    `users.authConnect.${action}`,
-    { profileId, connectId: flow.connectId, ...params },
-    client,
-  );
+  const input = { profileId, connectId: flow.connectId, ...params };
+  return rpc(`users.authConnect.${action}`, input, client);
 }
 export async function startFlow(
   profileId = "profile-1",
@@ -197,16 +214,12 @@ export async function startFlow(
   method = "oauth",
 ): Promise<Flow> {
   const respond = await rpc("users.authConnect.start", { profileId, provider, method }, client);
-  expect(respond).toHaveBeenCalledWith(
-    true,
-    expect.objectContaining({ connectId: expect.any(String) }),
-  );
   const flow = respond.mock.calls[0]?.[1] as Flow;
+  expect(respond.mock.calls[0]?.[0]).toBe(true);
+  expect(flow.connectId).toEqual(expect.any(String));
+  const pending = { status: "pending", step: { type: "text" } };
   await vi.waitFor(async () =>
-    expect(await status(flow, profileId, client)).toMatchObject({
-      status: "pending",
-      step: { type: "text" },
-    }),
+    expect(await status(flow, profileId, client)).toMatchObject(pending),
   );
   return flow;
 }
@@ -215,21 +228,21 @@ export async function complete(flow: Flow, profileId = "profile-1", client = sel
   const stepId = current.status === "pending" ? current.step!.id : "retired-step";
   return flowRpc("answer", flow, { stepId, value: "synthetic-code" }, profileId, client);
 }
-export async function terminal(
-  flow: Flow,
-  expected: string,
-  profileId = "profile-1",
-  client = self,
-) {
+export async function terminal(flow: Flow, state: string, owner = "profile-1", client = self) {
   await vi.waitFor(async () =>
-    expect(await status(flow, profileId, client)).toMatchObject({ status: expected }),
+    expect(await status(flow, owner, client)).toMatchObject({ status: state }),
   );
-  return status(flow, profileId, client);
+  return status(flow, owner, client);
 }
 export async function status(flow: Flow, profileId = "profile-1", client = self) {
   const respond = await flowRpc("status", flow, {}, profileId, client);
   expect(respond.mock.calls[0]?.[0]).toBe(true);
   return respond.mock.calls[0]?.[1];
+}
+
+function replaceLinks(owner: string, links: UserProfileAuthLink[]) {
+  linksByOwner.set(owner, links);
+  return links;
 }
 
 export function setupModelAccountConnectTest() {
@@ -243,25 +256,21 @@ export function setupModelAccountConnectTest() {
     linksByOwner = new Map();
     listUserProfileAuthLinks.mockImplementation((owner: string) => linksByOwner.get(owner) ?? []);
     listUserModelAccounts.mockReturnValue({ accounts: [] });
-    ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue({
-      version: 1,
-      profiles: { "openai:shared": credential },
-    });
+    const profiles = { "openai:shared": credential };
+    ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue({ version: 1, profiles });
     clearUserProfileAuthLink.mockImplementation((params: LinkChange) => {
-      params.assertCurrent?.();
-      const links = (linksByOwner.get(params.profileId) ?? []).filter(
-        (link) => link.provider !== params.provider,
+      const { profileId, provider, assertCurrent } = params;
+      assertCurrent?.();
+      return replaceLinks(
+        profileId,
+        (linksByOwner.get(profileId) ?? []).filter((link) => link.provider !== provider),
       );
-      linksByOwner.set(params.profileId, links);
-      return links;
     });
     setUserProfileAuthLink.mockImplementation((params: LinkChange & { authProfileId: string }) => {
       params.assertCurrent?.();
-      const links = [
+      return replaceLinks(params.profileId, [
         { provider: params.provider, authProfileId: params.authProfileId, updatedAt: 2 },
-      ];
-      linksByOwner.set(params.profileId, links);
-      return links;
+      ]);
     });
     resolveProfileId.mockImplementation((id: string) => id);
     prepareUserProfileSelectionAuthority.mockImplementation(async (reference: string) =>
@@ -276,43 +285,30 @@ export function setupModelAccountConnectTest() {
         groupLabel: "OpenAI",
       },
     ]);
-    resolvePersonalAccountAuthMethod.mockReturnValue(oauthMethod);
+    const method: ProviderAuthMethod = {
+      id: "oauth",
+      label: "Browser sign-in",
+      kind: "oauth",
+      run: runAuth,
+    };
+    resolvePersonalAccountAuthMethod.mockReturnValue(method);
     exchange.mockResolvedValue(authorized);
-    connectUserModelAccount.mockImplementation(
-      (params: {
-        ownerProfileId: string;
-        credential: AuthProfileCredential;
-        assertCurrent: () => void;
-      }) => {
-        params.assertCurrent();
-        writes.push(params.credential);
-        const authProfileId = `personal:${params.ownerProfileId}:account-1`;
-        const links = [
-          ...(linksByOwner.get(params.ownerProfileId) ?? []).filter(
-            (link) => link.provider !== params.credential.provider,
-          ),
-          { provider: params.credential.provider, authProfileId, updatedAt: 1 },
-        ];
-        linksByOwner.set(params.ownerProfileId, links);
-        return { authProfileId, links };
-      },
-    );
+    connectUserModelAccount.mockImplementation((params: ConnectWrite) => {
+      const { ownerProfileId: owner, credential: next, assertCurrent } = params;
+      assertCurrent();
+      writes.push(next);
+      const authProfileId = `personal:${owner}:account-1`;
+      const links = replaceLinks(owner, [
+        ...(linksByOwner.get(owner) ?? []).filter((link) => link.provider !== next.provider),
+        { provider: next.provider, authProfileId, updatedAt: 1 },
+      ]);
+      return { authProfileId, links };
+    });
     service = createModelAccountConnectService({
       getConfig: () => config,
       onChanged: () => broadcastChatMetadataChanged(context),
     });
-    context = {
-      broadcast,
-      logGateway: { ...createSubsystemLogger("gateway"), warn },
-      modelAccountConnectService: service,
-      getRuntimeConfig: () => config,
-      getClientConnIds: (filter?: (client: GatewayClient) => boolean) =>
-        new Set(
-          [...clients]
-            .filter((client) => !client.invalidated && (!filter || filter(client)))
-            .map((client) => client.connId),
-        ),
-    };
+    context = createContext();
   });
   afterEach(async () => {
     await service.stop();
@@ -328,20 +324,3 @@ export function restartService() {
   service = createModelAccountConnectService({ getConfig: () => config });
   context.modelAccountConnectService = service;
 }
-
-export {
-  resolveProfileId,
-  prepareUserProfileSelectionAuthority,
-  connectUserModelAccount,
-  listUserProfileAuthLinks,
-  listUserModelAccounts,
-  readUserModelAccountSummary,
-  readSelectedUserModelAccount,
-  setUserProfileAuthLink,
-  clearUserProfileAuthLink,
-  ensureAuthProfileStoreWithoutExternalProfiles,
-  registerSecretValueForRedaction,
-  resolvePersonalAccountAuthMethod,
-  exchange,
-  modelAccountLinksCurrent,
-};

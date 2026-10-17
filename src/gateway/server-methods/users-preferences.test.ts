@@ -48,18 +48,16 @@ import type { GatewayClient, GatewayRequestHandler } from "./types.js";
 import { usersHandlers } from "./users.js";
 
 async function invokePrefs(
-  method: "users.prefs.get" | "users.prefs.set",
+  method: "get" | "set",
   params: Record<string, unknown>,
   profileId?: string,
   context: Record<string, unknown> = {},
 ) {
-  let result: { ok: boolean; payload?: unknown; error?: unknown } | undefined;
-  await usersHandlers[method]!({
+  const respond = vi.fn();
+  await usersHandlers[`users.prefs.${method}`]!({
     req: {} as never,
     params,
-    respond: (ok, payload, error) => {
-      result = { ok, payload, error };
-    },
+    respond,
     context: context as never,
     client: {
       connect: { scopes: ["operator.admin"] },
@@ -67,7 +65,8 @@ async function invokePrefs(
     } as never,
     isWebchatConnect: () => false,
   });
-  return result;
+  expect(respond).toHaveBeenCalledOnce();
+  return respond.mock.calls[0];
 }
 
 let cleanupState: (() => Promise<void>) | undefined;
@@ -103,6 +102,12 @@ function attachProfile(client: GatewayClient, profileId: string, updatedAt = 1, 
   prepareGatewayRecipientProfile(client);
 }
 
+function profileClient(profile: ReturnType<typeof makeProfile>, scopes: string[]) {
+  const client = createOperatorWsClient({ connId: profile.id, scopes });
+  attachProfile(client, profile.id, profile.updatedAt);
+  return client;
+}
+
 function dispatch(
   client: GatewayClient,
   method: string,
@@ -123,15 +128,22 @@ function dispatch(
   return { respond, request };
 }
 
-const ok = (entries?: Record<string, unknown>) => [
+const response = (status: string, entries?: Record<string, unknown>) => [
   true,
-  { status: "ok", ...(entries ? { entries } : {}) },
+  { status, ...(entries ? { entries } : {}) },
   undefined,
 ];
+const ok = (entries?: Record<string, unknown>) => response("ok", entries);
 const authorityChanged = {
   code: "FORBIDDEN",
   message: "Gateway requester authority changed",
 };
+const denied = (detail: Record<string, unknown>) => [
+  false,
+  undefined,
+  expect.objectContaining(detail),
+];
+const fulfilled = [{ status: "fulfilled", value: undefined }];
 const initialTheme = { "ui.theme": "claw" };
 const darkTheme = { "ui.theme": "dark" };
 const makeProfile = (name: string) => ensureProfileForEmail(`${name}@example.test`);
@@ -184,11 +196,9 @@ test("users.prefs returns updated preferences when a write commits before read d
     return reply;
   });
 
-  expect(await invokePrefs("users.prefs.get", { keys: ["ui.accent"] }, profileId)).toEqual({
-    ok: true,
-    payload: { status: "ok", entries: { "ui.accent": "#aabbcc" } },
-    error: undefined,
-  });
+  expect(await invokePrefs("get", { keys: ["ui.accent"] }, profileId)).toEqual(
+    ok({ "ui.accent": "#aabbcc" }),
+  );
 });
 
 test("users.prefs reads merged-profile accents while an unrelated writer reply is pending", async ({
@@ -248,13 +258,9 @@ test("users.prefs reads merged-profile accents while an unrelated writer reply i
   const pendingWriter = readWriterObservation();
   try {
     await withinTest(replyReady.promise, signal);
-    expect(
-      await withinTest(invokePrefs("users.prefs.get", { keys: ["ui.accent"] }, source), signal),
-    ).toEqual({
-      ok: true,
-      payload: { status: "ok", entries: { "ui.accent": "#a1b2c3" } },
-      error: undefined,
-    });
+    expect(await withinTest(invokePrefs("get", { keys: ["ui.accent"] }, source), signal)).toEqual(
+      ok({ "ui.accent": "#a1b2c3" }),
+    );
   } finally {
     replies.mockRestore();
     requests.mockRestore();
@@ -268,10 +274,8 @@ async function withPreferenceToolTurn(
     ownerId: string;
     steer: () => Promise<void>;
     revoke: () => void;
-    request: (
-      method: "users.prefs.get" | "users.prefs.set",
-      params?: Record<string, unknown>,
-    ) => Promise<unknown>;
+    get: () => Promise<unknown>;
+    set: (entries: Record<string, unknown>) => Promise<unknown>;
   }) => Promise<void>,
 ) {
   const owner = makeProfile("prefs-owner");
@@ -279,26 +283,23 @@ async function withPreferenceToolTurn(
   const scopes = ["operator.read", "operator.write"];
   const client = createOperatorClient({ profileId: owner.id, scopes });
   const context = createContext();
-  const expectSyntheticOwnerCall = (
-    method: "users.prefs.get" | "users.prefs.set",
-  ): GatewayRequestHandler => {
-    const handler = usersHandlers[method];
-    if (!handler) {
-      throw new Error(`missing ${method} handler`);
-    }
-    return (options) => {
-      expect(options.client).toMatchObject({
-        internal: { syntheticClient: true },
-        authenticatedUserProfile: { profileId: owner.id },
-      });
-      return handler(options);
-    };
+  const handle: GatewayRequestHandler = (options) => {
+    expect(options.client).toMatchObject({
+      internal: { syntheticClient: true },
+      authenticatedUserProfile: { profileId: owner.id },
+    });
+    return usersHandlers[options.req.method]!(options);
   };
   const descriptors = createCoreGatewayMethodDescriptors({
-    "users.prefs.get": expectSyntheticOwnerCall("users.prefs.get"),
-    "users.prefs.set": expectSyntheticOwnerCall("users.prefs.set"),
+    "users.prefs.get": handle,
+    "users.prefs.set": handle,
   });
   context.getGatewayMethodRegistry = () => createGatewayMethodRegistry(descriptors);
+  const request = (method: string, params = {}) =>
+    dispatchGatewayMethodInProcess(method, params, {
+      forceSyntheticClient: true,
+      resolveGatewayContext: () => context,
+    });
   await withOperatorToolGatewayAuthority(
     { authenticatedUserProfile: client.authenticatedUserProfile!, scopes },
     () =>
@@ -313,33 +314,23 @@ async function withPreferenceToolTurn(
               ).toMatchObject({ status: "accepted" });
             },
             revoke: () => turn.revoke(owner.id),
-            request: (method, params = {}) =>
-              dispatchGatewayMethodInProcess(method, params, {
-                forceSyntheticClient: true,
-                resolveGatewayContext: () => context,
-              }),
+            get: () => request("users.prefs.get"),
+            set: (entries) => request("users.prefs.set", { entries }),
           }),
       ),
   );
 }
 
 test("users.prefs rejects mixed-person synthetic turn calls before reading or writing preferences", async () => {
-  await withPreferenceToolTurn(async ({ ownerId, steer, request }) => {
-    await expect(request("users.prefs.set", { entries: initialTheme })).resolves.toEqual({
-      status: "ok",
-    });
-    await expect(request("users.prefs.get")).resolves.toEqual({
-      status: "ok",
-      entries: initialTheme,
-    });
+  await withPreferenceToolTurn(async ({ ownerId, steer, get, set }) => {
+    await expect(set(initialTheme)).resolves.toEqual({ status: "ok" });
+    await expect(get()).resolves.toEqual({ status: "ok", entries: initialTheme });
     await steer();
     using read = vi.spyOn(preferences, "getCanonicalUserPreferences");
     using write = vi.spyOn(preferences, "setCanonicalUserPreferences");
     await withGatewayPersonalToolUser(ownerId, async () => {
-      await expect(request("users.prefs.get")).rejects.toThrow(/own Control UI turn/i);
-      await expect(request("users.prefs.set", { entries: darkTheme })).rejects.toThrow(
-        /own Control UI turn/i,
-      );
+      await expect(get()).rejects.toThrow(/own Control UI turn/i);
+      await expect(set(darkTheme)).rejects.toThrow(/own Control UI turn/i);
     });
     expect(read).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
@@ -349,8 +340,8 @@ test("users.prefs rejects mixed-person synthetic turn calls before reading or wr
 test.each(["read", "write"] as const)(
   "users.prefs rejects a steer accepted while the personal %s is pending",
   async (operation) => {
-    await withPreferenceToolTurn(async ({ ownerId, steer, request }) => {
-      await request("users.prefs.set", { entries: initialTheme });
+    await withPreferenceToolTurn(async ({ ownerId, steer, get, set }) => {
+      await set(initialTheme);
       const pause = pauseOperation();
       const readPreferences = preferences.getCanonicalUserPreferences;
       const writePreferences = preferences.setCanonicalUserPreferences;
@@ -368,10 +359,7 @@ test.each(["read", "write"] as const)(
           return writePreferences(...args);
         });
       }
-      const pending = request(
-        operation === "read" ? "users.prefs.get" : "users.prefs.set",
-        operation === "read" ? {} : { entries: darkTheme },
-      );
+      const pending = operation === "read" ? get() : set(darkTheme);
       const outcome = await pause.during(pending, async () => {
         expect(operation === "read" ? read : write).toHaveBeenCalledOnce();
         await steer();
@@ -385,10 +373,10 @@ test.each(["read", "write"] as const)(
 );
 
 test("users.prefs refuses a pending write when the participant is revoked before worker commit", async () => {
-  await withPreferenceToolTurn(async ({ ownerId, revoke, request }) => {
-    await request("users.prefs.set", { entries: initialTheme });
+  await withPreferenceToolTurn(async ({ ownerId, revoke, set }) => {
+    await set(initialTheme);
     using admission = atCommit(revoke);
-    await expect(request("users.prefs.set", { entries: darkTheme })).rejects.toThrow();
+    await expect(set(darkTheme)).rejects.toThrow();
     expect(admission.reached).toHaveBeenCalled();
     expect(await preferences.getCanonicalUserPreferences(ownerId)).toMatchObject({
       entries: initialTheme,
@@ -410,9 +398,7 @@ test.each(["current", "read", "scope", "source", "identity", "error-response", "
       ],
     });
     client.authenticatedUserId = "self-reader@github";
-    const attach = (profile: typeof owner) => {
-      attachProfile(client, profile.id, profile.updatedAt);
-    };
+    const attach = (profile: typeof owner) => attachProfile(client, profile.id, profile.updatedAt);
     if (change === "staff") {
       attach(owner);
     }
@@ -445,21 +431,17 @@ test.each(["current", "read", "scope", "source", "identity", "error-response", "
     });
     if (change === "source") {
       expect(outcome).toMatchObject([
-        { status: "rejected", reason: { message: "Gateway requester authority changed" } },
+        { status: "rejected", reason: { message: authorityChanged.message } },
       ]);
       expect(respond).not.toHaveBeenCalled();
     } else {
-      expect(outcome).toEqual([{ status: "fulfilled", value: undefined }]);
+      expect(outcome).toEqual(fulfilled);
       if (change === "current" || change === "read" || change === "staff") {
         expect(respond).toHaveBeenCalledExactlyOnceWith(true, {
           profile: expect.objectContaining({ id: owner.id }),
         });
       } else {
-        expect(respond).toHaveBeenCalledExactlyOnceWith(
-          false,
-          undefined,
-          expect.objectContaining(authorityChanged),
-        );
+        expect(respond.mock.calls).toEqual([denied(authorityChanged)]);
       }
     }
   },
@@ -469,12 +451,8 @@ test("users.prefs.get retains its original scope across the preference read", as
   setRuntimeConfigSnapshot({});
   const owner = makeProfile("retained-preferences");
   await prepareProfiles();
-  await invokePrefs("users.prefs.set", { entries: darkTheme }, owner.id);
-  const client = createOperatorWsClient({
-    connId: "preference-reader",
-    scopes: ["operator.sessions.read"],
-  });
-  attachProfile(client, owner.id);
+  await invokePrefs("set", { entries: darkTheme }, owner.id);
+  const client = profileClient(owner, ["operator.sessions.read"]);
   const pause = pauseOperation();
   const original = preferences.getCanonicalUserPreferences;
   using read = vi
@@ -489,12 +467,8 @@ test("users.prefs.get retains its original scope across the preference read", as
     expect(read).toHaveBeenCalledOnce();
     client.connect.scopes = [];
   });
-  expect(outcome).toEqual([{ status: "fulfilled", value: undefined }]);
-  expect(respond).toHaveBeenCalledExactlyOnceWith(
-    false,
-    undefined,
-    expect.objectContaining(authorityChanged),
-  );
+  expect(outcome).toEqual(fulfilled);
+  expect(respond.mock.calls).toEqual([denied(authorityChanged)]);
   expect(await original(owner.id)).toMatchObject({ entries: darkTheme });
 });
 
@@ -502,14 +476,9 @@ test("users.prefs dispatch saves guest choices only to the authenticated durable
   const ada = makeProfile("ada");
   const grace = makeProfile("grace");
   await prepareProfiles();
-  const clients = [ada, grace].map((profile) => {
-    const client = createOperatorWsClient({
-      connId: profile.id,
-      scopes: ["operator.sessions.read", "operator.sessions.write"],
-    });
-    attachProfile(client, profile.id, profile.updatedAt);
-    return client;
-  });
+  const clients = [ada, grace].map((profile) =>
+    profileClient(profile, ["operator.sessions.read", "operator.sessions.write"]),
+  );
   const adaClient = clients[0]!;
   const graceClient = clients[1]!;
   const context = createDirectChatContext({
@@ -539,11 +508,7 @@ test("users.prefs dispatch saves guest choices only to the authenticated durable
   expect(await set(selected)).toEqual(ok());
   expect(await get()).toEqual(ok(selected));
   expect(await get(graceClient)).toEqual(ok({}));
-  expect(await set({ [key]: { folder: "/stale" } }, { [key]: null })).toEqual([
-    true,
-    { status: "conflict" },
-    undefined,
-  ]);
+  expect(await set({ [key]: { folder: "/stale" } }, { [key]: null })).toEqual(response("conflict"));
   expect(await set(updated, selected)).toEqual(ok());
   expect(prepare).not.toHaveBeenCalled();
   prepare.mockRestore();
@@ -553,31 +518,21 @@ test("users.prefs dispatch saves guest choices only to the authenticated durable
       profileId: grace.id,
       entries: { [key]: { folder: "/other" } },
     }),
-  ).toMatchObject([false, undefined, { code: "INVALID_REQUEST" }]);
-  expect(await set({ "ui.background": null, [key]: null })).toMatchObject([
-    false,
-    undefined,
-    { message: expect.stringContaining("required profile scope") },
-  ]);
+  ).toEqual(denied({ code: "INVALID_REQUEST" }));
+  expect(await set({ "ui.background": null, [key]: null })).toEqual(
+    denied({ message: expect.stringContaining("required profile scope") }),
+  );
   for (const [method, scope] of [
     ["themes.set", "operator.write"],
     ["users.setRole", "operator.admin"],
   ] as const) {
-    expect(await request(method)).toMatchObject([
-      false,
-      undefined,
-      { message: `missing scope: ${scope}` },
-    ]);
+    expect(await request(method)).toEqual(denied({ message: `missing scope: ${scope}` }));
   }
   expect(await get(graceClient)).toEqual(ok({}));
   using admission = atCommit(() => {
     adaClient.connect.scopes = [];
   });
-  expect(await set({ [key]: { folder: "/revoked" } })).toMatchObject([
-    false,
-    undefined,
-    { code: "FORBIDDEN" },
-  ]);
+  expect(await set({ [key]: { folder: "/revoked" } })).toEqual(denied({ code: "FORBIDDEN" }));
   expect(admission.reached).toHaveBeenCalled();
   expect(await preferences.getCanonicalUserPreferences(ada.id)).toMatchObject({
     entries: updated,
@@ -589,12 +544,11 @@ test("users.prefs dispatch saves guest choices only to the authenticated durable
 
 test("users.prefs returns a typed result without a durable identity", async () => {
   const context = { broadcastToConnIds: vi.fn(), getClientConnIds: vi.fn() };
-  for (const method of ["users.prefs.get", "users.prefs.set"] as const) {
-    const params = method === "users.prefs.get" ? {} : { entries: { theme: "claw" } };
-    expect(await invokePrefs(method, params, undefined, context)).toMatchObject({
-      ok: true,
-      payload: { status: "no_durable_identity" },
-    });
+  for (const method of ["get", "set"] as const) {
+    const params = method === "get" ? {} : { entries: { theme: "claw" } };
+    expect(await invokePrefs(method, params, undefined, context)).toEqual(
+      response("no_durable_identity"),
+    );
   }
   expect(context.getClientConnIds).not.toHaveBeenCalled();
   expect(context.broadcastToConnIds).not.toHaveBeenCalled();
@@ -648,28 +602,26 @@ test("users.prefs.set notifies only the current merged profile without main-thre
   try {
     expect(
       await invokePrefs(
-        "users.prefs.set",
+        "set",
         { entries: { "ui.accent": "#A1B2C3", "ui.theme": null } },
         retired.id,
         context,
       ),
-    ).toMatchObject({ ok: true, payload: { status: "ok" } });
+    ).toEqual(ok());
     expect(broadcastToConnIds).toHaveBeenCalledExactlyOnceWith(
       "users.prefs.changed",
       { profileId: owner.id, keys: ["ui.accent", "ui.theme"] },
       new Set(["owner", "merged", "staff"]),
     );
-    for (const peer of connected) {
-      if (["owner", "merged", "staff"].includes(peer.client.connId)) {
-        expect(peer.frames).toHaveLength(1);
-        expect(JSON.parse(peer.frames[0]!)).toMatchObject({
-          type: "event",
-          event: "users.prefs.changed",
-          payload: { profileId: owner.id, keys: ["ui.accent", "ui.theme"] },
-        });
-      } else {
-        expect(peer.frames).toEqual([]);
-      }
+    const changed = expect.objectContaining({
+      type: "event",
+      event: "users.prefs.changed",
+      payload: expect.objectContaining({ profileId: owner.id, keys: ["ui.accent", "ui.theme"] }),
+    });
+    for (const { client, frames } of connected) {
+      expect(frames.map((frame) => JSON.parse(frame))).toEqual(
+        ["owner", "merged", "staff"].includes(client.connId) ? [changed] : [],
+      );
     }
     expect(reads.counts.profiles).toBe(0);
     expect.soft(reads.blobBytes.profiles).toBe(0);
@@ -684,25 +636,19 @@ test("users.prefs.set returns typed profile quota details", async () => {
     const entries = Object.fromEntries(
       Array.from({ length: 32 }, (_, index) => [`key-${start + index}`, true]),
     );
-    expect(await invokePrefs("users.prefs.set", { entries }, owner.id)).toMatchObject({
-      ok: true,
-      payload: { status: "ok" },
-    });
+    expect(await invokePrefs("set", { entries }, owner.id)).toEqual(ok());
   }
 
-  expect(
-    await invokePrefs("users.prefs.set", { entries: { "key-128": true } }, owner.id),
-  ).toMatchObject({
-    ok: false,
-    error: {
+  expect(await invokePrefs("set", { entries: { "key-128": true } }, owner.id)).toEqual(
+    denied({
       code: "INVALID_REQUEST",
       details: {
         code: GatewayErrorDetailCodes.USER_PREFS_LIMIT_EXCEEDED,
         limit: 128,
         currentCount: 128,
       },
-    },
-  });
+    }),
+  );
 });
 
 test("users.prefs.set compares canonical preferences atomically and publishes only committed writes", async () => {
