@@ -54,34 +54,20 @@ async function createFixture() {
   await replaceTranscriptEvents(
     { agentId: "main", sessionId: sourceSessionId, sessionKey: sourceKey, storePath },
     [
-      {
-        type: "session",
-        version: 3,
-        id: sourceSessionId,
-        timestamp: "2026-08-12T00:00:00.000Z",
-        cwd: root,
-      },
+      { type: "session", version: 3, id: sourceSessionId, cwd: root },
       {
         type: "message",
         id: "user-1",
         parentId: null,
-        timestamp: "2026-08-12T00:00:01.000Z",
         message: { role: "user", content: "finish this" },
       },
       {
         type: "message",
         id: "side-branch",
         parentId: "user-1",
-        timestamp: "2026-08-12T00:00:02.000Z",
         message: { role: "assistant", content: "preserve the whole transcript" },
       },
-      {
-        type: "leaf",
-        id: "leaf-1",
-        parentId: "side-branch",
-        timestamp: "2026-08-12T00:00:03.000Z",
-        targetId: "user-1",
-      },
+      { type: "leaf", id: "leaf-1", parentId: "side-branch", targetId: "user-1" },
     ],
   );
   const scope = (sessionKey = sourceKey) => ({ agentId: "main", storePath, sessionKey });
@@ -98,7 +84,7 @@ async function createFixture() {
     successorTarget: { canonicalKey: successorKey, storeKeys: [successorKey] },
     successorEntry: { sessionId, updatedAt: 20 },
   });
-  return { root, sourceKey, sourceSessionId, storePath, successorKey, scope, recoveryParams };
+  return { root, sourceKey, successorKey, scope, recoveryParams };
 }
 
 describe("recoverSessionEntryFromRestartTombstone", () => {
@@ -133,11 +119,8 @@ describe("recoverSessionEntryFromRestartTombstone", () => {
       expect(created).toMatchObject({ status: "created", successorKey: fixture.successorKey });
       expect(sql.queries).toEqual([]);
       expect(createdKeys).toEqual([fixture.successorKey]);
-      expect(publications).toEqual([
-        expect.objectContaining({
-          entry: expect.objectContaining(successorEntry),
-          source: expect.objectContaining({ revision: expect.any(Number) }),
-        }),
+      expect(publications).toMatchObject([
+        { entry: successorEntry, source: { revision: expect.any(Number) } },
       ]);
       expect(changedKeys).toEqual(
         expect.arrayContaining([fixture.sourceKey, fixture.successorKey]),
@@ -156,7 +139,7 @@ describe("recoverSessionEntryFromRestartTombstone", () => {
     ).toMatchObject({
       activeLeafEntryId: "user-1",
       totalMessages: 1,
-      events: [expect.objectContaining({ event: expect.objectContaining({ id: "user-1" }) })],
+      events: [{ event: { id: "user-1" } }],
     });
     expect(loadSessionEntry(fixture.scope(fixture.sourceKey))).toMatchObject({
       archivedAt: expect.any(Number),
@@ -212,21 +195,18 @@ describe("recoverSessionEntryFromRestartTombstone", () => {
   });
 
   it.each([
-    { name: "recovery", revision: 3 },
-    { name: "lifecycle", revision: 4, lifecycleRevision: "different-generation" },
-  ])(
-    "does not archive or copy when the $name revision changed",
-    async ({ name: _name, ...expected }) => {
-      const fixture = await createFixture();
-      const result = await recoverSessionEntryFromRestartTombstone({
-        ...fixture.recoveryParams(),
-        expected: { ...fixture.recoveryParams().expected, ...expected },
-      });
-      expect(result).toEqual({ status: "conflict", reason: "source-changed" });
-      expect(loadSessionEntry(fixture.scope(fixture.sourceKey))?.archivedAt).toBeUndefined();
-      expect(loadSessionEntry(fixture.scope(fixture.successorKey))).toBeUndefined();
-    },
-  );
+    ["recovery", { revision: 3 }],
+    ["lifecycle", { revision: 4, lifecycleRevision: "different-generation" }],
+  ] as const)("does not archive or copy when the %s revision changed", async (_name, expected) => {
+    const fixture = await createFixture();
+    const result = await recoverSessionEntryFromRestartTombstone({
+      ...fixture.recoveryParams(),
+      expected: { ...fixture.recoveryParams().expected, ...expected },
+    });
+    expect(result).toEqual({ status: "conflict", reason: "source-changed" });
+    expect(loadSessionEntry(fixture.scope(fixture.sourceKey))?.archivedAt).toBeUndefined();
+    expect(loadSessionEntry(fixture.scope(fixture.successorKey))).toBeUndefined();
+  });
 
   it.each(["transaction", "commit"] as const)(
     "rolls back the entire clone when host authority is revoked at %s admission",
@@ -273,31 +253,11 @@ describe("recoverSessionEntryFromRestartTombstone", () => {
   );
 
   it.each([
-    {
-      label: "fences a missing receipt and result",
-      missingReceipt: true,
-      retireOwner: false,
-      loseResult: true,
-    },
-    {
-      label: "repairs a committed recovery after result loss",
-      missingReceipt: false,
-      retireOwner: false,
-      loseResult: true,
-    },
-    {
-      label: "preserves result loss after committed owner retirement",
-      missingReceipt: false,
-      retireOwner: true,
-      loseResult: true,
-    },
-    {
-      label: "preserves recovery success after committed owner retirement",
-      missingReceipt: false,
-      retireOwner: true,
-      loseResult: false,
-    },
-  ])("$label", async ({ missingReceipt, retireOwner, loseResult }) => {
+    ["fences a missing receipt and result", true, false, true],
+    ["repairs a committed recovery after result loss", false, false, true],
+    ["preserves result loss after committed owner retirement", false, true, true],
+    ["preserves recovery success after committed owner retirement", false, true, false],
+  ] as const)("%s", async (_label, missingReceipt, retireOwner, loseResult) => {
     const fixture = await createFixture();
     await waitForSessionTranscriptIndexReconcilesInStateDir(fixture.root);
     const params = fixture.recoveryParams("settled-successor");
@@ -308,11 +268,16 @@ describe("recoverSessionEntryFromRestartTombstone", () => {
     let dropReceipt = missingReceipt;
     let verifiedCommands = 0;
     const runOperation = workerStore.runSqliteWorkerStoreOperation;
-    const captures = vi.spyOn(agentExecution, "captureOpenClawAgentDatabaseExecution");
-    const preparations = vi.spyOn(
-      agentExecution,
-      "captureOpenClawAgentDatabasePreparationExecution",
-    );
+    const captures = [
+      vi.spyOn(agentExecution, "captureOpenClawAgentDatabaseExecution"),
+      vi.spyOn(agentExecution, "captureOpenClawAgentDatabasePreparationExecution"),
+    ];
+    const restoreCaptures = () => captures.forEach((capture) => capture.mockRestore());
+    const restoreReceipts = () => {
+      for (const restore of restoreFaults.splice(0)) {
+        restore();
+      }
+    };
     const observer = vi
       .spyOn(workerStore, "runSqliteWorkerStoreOperation")
       .mockImplementation(
@@ -358,8 +323,7 @@ describe("recoverSessionEntryFromRestartTombstone", () => {
                       ),
                     );
                     void closing.catch(() => undefined);
-                    captures.mockClear();
-                    preparations.mockClear();
+                    captures.forEach((capture) => capture.mockClear());
                   }
                   if (dropReceipt) {
                     const receipt = vi
@@ -393,15 +357,9 @@ describe("recoverSessionEntryFromRestartTombstone", () => {
         },
       );
     try {
-      let delivered:
-        | Awaited<ReturnType<typeof recoverSessionEntryFromRestartTombstone>>
-        | undefined;
-      const outcome = await recoverSessionEntryFromRestartTombstone(params).then(
-        (value) => {
-          delivered = value;
-          return undefined;
-        },
-        (error: unknown) => error,
+      const { delivered, outcome } = await recoverSessionEntryFromRestartTombstone(params).then(
+        (value) => ({ delivered: value, outcome: undefined }),
+        (error: unknown) => ({ delivered: undefined, outcome: error }),
       );
       if (missingReceipt) {
         expect(isSqliteWorkerError(outcome, "outcome-unknown")).toBe(true);
@@ -413,11 +371,9 @@ describe("recoverSessionEntryFromRestartTombstone", () => {
       }
       await closing;
       if (retireOwner) {
-        expect(captures).not.toHaveBeenCalled();
-        expect(preparations).not.toHaveBeenCalled();
+        captures.forEach((capture) => expect(capture).not.toHaveBeenCalled());
       }
-      captures.mockRestore();
-      preparations.mockRestore();
+      restoreCaptures();
       expect(loadSessionEntry(fixture.scope(fixture.successorKey))).toMatchObject(
         params.successorEntry,
       );
@@ -432,9 +388,7 @@ describe("recoverSessionEntryFromRestartTombstone", () => {
       } else {
         expect(readProjection()).toMatchObject({ activeLeafEntryId: "user-1", totalMessages: 1 });
       }
-      for (const restore of restoreFaults.splice(0)) {
-        restore();
-      }
+      restoreReceipts();
       dropReceipt = false;
       if (loseResult) {
         await expect(recoverSessionEntryFromRestartTombstone(params)).rejects.toBe(deliveryFailure);
@@ -445,12 +399,9 @@ describe("recoverSessionEntryFromRestartTombstone", () => {
       }
       expect(verifiedCommands).toBe(2);
     } finally {
-      captures.mockRestore();
-      preparations.mockRestore();
+      restoreCaptures();
       observer.mockRestore();
-      for (const restore of restoreFaults) {
-        restore();
-      }
+      restoreReceipts();
       await closing;
     }
   });

@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import assert from "node:assert/strict";
+import { afterEach, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
@@ -24,7 +25,7 @@ import {
 } from "./session-accessor.sqlite-branches.worker.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import { replaceTranscriptEventsSync } from "./session-accessor.sqlite-transcript-write.test-support.js";
-import type { SessionBranchListResult, SessionBranchSummary } from "./session-accessor.types.js";
+import type { SessionBranchSummary } from "./session-accessor.types.js";
 import { prepareTranscriptPayload } from "./transcript-payload.js";
 
 const tempDirs = createTempDirTracker();
@@ -82,7 +83,7 @@ function leaf(
 const cases: Array<{
   name: string;
   events: Record<string, unknown>[];
-  expected: SessionBranchListResult;
+  branches: SessionBranchSummary[];
 }> = [
   {
     name: "validates a cycle before accepting its leaf's nonempty text",
@@ -95,10 +96,7 @@ const cases: Array<{
       }),
       leaf("selected", "root", "cycle-message"),
     ],
-    expected: {
-      status: "ok",
-      branches: [branch("cycle-message", "", 0, true), branch("root", "root", 1)],
-    },
+    branches: [branch("cycle-message", "", 0, true), branch("root", "root", 1)],
   },
   {
     name: "duplicate tip occurrences use the final record without reordering",
@@ -108,15 +106,12 @@ const cases: Array<{
       message("middle", "root", "middle", { appendMode: "side" }),
       message("duplicate", "root", "new", { appendMode: "side", timestamp: "  new time  " }),
     ],
-    expected: {
-      status: "ok",
-      branches: [
-        branch("root", "root", 1, true),
-        branch("duplicate", "new", 2, false, "  new time  "),
-        branch("middle", "middle", 2),
-        branch("duplicate", "new", 2, false, "  new time  "),
-      ],
-    },
+    branches: [
+      branch("root", "root", 1, true),
+      branch("duplicate", "new", 2, false, "  new time  "),
+      branch("middle", "middle", 2),
+      branch("duplicate", "new", 2, false, "  new time  "),
+    ],
   },
   {
     name: "duplicate IDs can change from message to leaf control",
@@ -126,13 +121,10 @@ const cases: Array<{
       leaf("duplicate", "root", "root", { timestamp: "  marker time  " }),
       message("tail", "duplicate", "tail"),
     ],
-    expected: {
-      status: "ok",
-      branches: [
-        branch("tail", "tail", 2, true),
-        branch("duplicate", "root", 1, false, "  marker time  "),
-      ],
-    },
+    branches: [
+      branch("tail", "tail", 2, true),
+      branch("duplicate", "root", 1, false, "  marker time  "),
+    ],
   },
   {
     name: "forward opaque parents and cycles keep existing summary behavior",
@@ -144,10 +136,7 @@ const cases: Array<{
       { type: "extension", id: "cycle-b", parentId: "cycle-a" },
       leaf("selected", "root", "cycle-a"),
     ],
-    expected: {
-      status: "ok",
-      branches: [branch("cycle-a", "", 0, true), branch("forward", "root", 1)],
-    },
+    branches: [branch("cycle-a", "", 0, true), branch("forward", "root", 1)],
   },
   {
     name: "parentless rows and invalid controls retain reset navigation",
@@ -168,10 +157,7 @@ const cases: Array<{
       leaf("old-control", "reset", "root"),
       message("fresh", null, "fresh"),
     ],
-    expected: {
-      status: "ok",
-      branches: [branch("fresh", "fresh", 5, true), branch("opaque", "continuation", 2)],
-    },
+    branches: [branch("fresh", "fresh", 5, true), branch("opaque", "continuation", 2)],
   },
   {
     name: "headlines count messages and preserve phase and timestamp rules",
@@ -195,10 +181,7 @@ const cases: Array<{
         timestamp: "  exact timestamp  ",
       },
     ],
-    expected: {
-      status: "ok",
-      branches: [branch("custom", "final answer", 5, true, "  exact timestamp  ")],
-    },
+    branches: [branch("custom", "final answer", 5, true, "  exact timestamp  ")],
   },
   {
     name: "headlines retain 120 code points and truncate only longer values",
@@ -216,15 +199,12 @@ const cases: Array<{
         { appendMode: "side" },
       ),
     ],
-    expected: {
-      status: "ok",
-      branches: [
-        branch("root", "root", 1, true),
-        branch("joined", "café🦞", 2),
-        branch("long", `${"🦞".repeat(119)}…`, 2),
-        branch("exact", "🦞".repeat(120), 2),
-      ],
-    },
+    branches: [
+      branch("root", "root", 1, true),
+      branch("joined", "café🦞", 2),
+      branch("long", `${"🦞".repeat(119)}…`, 2),
+      branch("exact", "🦞".repeat(120), 2),
+    ],
   },
 ];
 
@@ -267,14 +247,31 @@ async function seedStoredBranchEvents(events: Record<string, unknown>[]) {
   return scope;
 }
 
-describe("stored branch summary compatibility", () => {
-  it.each(cases)("$name", async ({ events, expected }) => {
-    const scope = await seedStoredBranchEvents(events);
-
-    await expect(listSessionBranches(scope)).resolves.toEqual(expected);
-    expect((await loadTranscriptEvents(scope)).slice(1)).toEqual(events);
-  });
+it.each(cases)("$name", async ({ events, branches }) => {
+  const scope = await seedStoredBranchEvents(events);
+  await expect(listSessionBranches(scope)).resolves.toEqual({ status: "ok", branches });
+  expect((await loadTranscriptEvents(scope)).slice(1)).toEqual(events);
 });
+
+async function seedCanonicalBranchEvents(events: Record<string, unknown>[]) {
+  const scope = await seedStoredBranchEvents([]);
+  replaceTranscriptEventsSync(scope, [
+    { type: "session", id: scope.sessionId, version: 3 },
+    ...events,
+  ]);
+  return scope;
+}
+
+function branchSnapshot(
+  scope: Awaited<ReturnType<typeof seedStoredBranchEvents>>,
+  appendSafe: boolean,
+) {
+  const database = openOpenClawAgentDatabase(scope);
+  const previous = readSessionBranchSnapshot(database, scope);
+  assert(previous.status === "ok");
+  expect(previous.appendSafe).toBe(appendSafe);
+  return { database, read: () => readSessionBranchSnapshot(database, { ...scope, previous }) };
+}
 
 it("extends a selected ancestor while retaining its inactive descendants and headline", async () => {
   const events = [
@@ -282,11 +279,7 @@ it("extends a selected ancestor while retaining its inactive descendants and hea
     message("side", "root", "side headline", { appendMode: "side" }),
     leaf("selected", "side", "root"),
   ];
-  const scope = await seedStoredBranchEvents([]);
-  replaceTranscriptEventsSync(scope, [
-    { type: "session", id: scope.sessionId, version: 3 },
-    ...events,
-  ]);
+  const scope = await seedCanonicalBranchEvents(events);
   await expect(listSessionBranches(scope)).resolves.toMatchObject({
     status: "ok",
     branches: [
@@ -316,9 +309,7 @@ it("extends a selected ancestor while retaining its inactive descendants and hea
 });
 
 it("rescans when an append resolves an older opaque forward reference", async () => {
-  const scope = await seedStoredBranchEvents([]);
-  replaceTranscriptEventsSync(scope, [
-    { type: "session", id: scope.sessionId, version: 3 },
+  const scope = await seedCanonicalBranchEvents([
     message("root", null, "root headline"),
     { type: "extension", id: "forward", parentId: "future" },
   ]);
@@ -345,20 +336,8 @@ it("rescans when an append resolves an older opaque forward reference", async ()
 });
 
 it("reads only the newest usable appended headline while retaining cached history", async () => {
-  const scope = await seedStoredBranchEvents([]);
-  replaceTranscriptEventsSync(scope, [
-    { type: "session", id: scope.sessionId, version: 3 },
-    message("root", null, "original headline"),
-  ]);
-  const database = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
-  const expected = {
-    sessionKey: scope.sessionKey,
-  };
-  const previous = readSessionBranchSnapshot(database, expected);
-  expect(previous).toMatchObject({ status: "ok", appendSafe: true });
-  if (previous.status !== "ok") {
-    throw new Error("expected an admitted branch snapshot");
-  }
+  const scope = await seedCanonicalBranchEvents([message("root", null, "original headline")]);
+  const { database, read } = branchSnapshot(scope, true);
   let parentId = "root";
   for (const [eventId, content, role, phase] of [
     ["superseded", "large superseded body ".repeat(1_000), "user", undefined],
@@ -386,7 +365,7 @@ it("reads only the newest usable appended headline while retaining cached histor
         : null,
   );
   try {
-    expect(readSessionBranchSnapshot(database, { ...expected, previous })).toMatchObject({
+    expect(read()).toMatchObject({
       status: "ok",
       appendSafe: true,
       branches: [branch("tool", "latest visible answer", 6, true)],
@@ -400,13 +379,7 @@ it("reads only the newest usable appended headline while retaining cached histor
 
 it("rescans an unindexed legacy prefix after an append reuses one of its IDs", async () => {
   const scope = await seedStoredBranchEvents([message("legacy", null, "legacy headline")]);
-  const database = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
-  const expected = { sessionKey: scope.sessionKey };
-  const previous = readSessionBranchSnapshot(database, expected);
-  expect(previous).toMatchObject({ status: "ok", appendSafe: false });
-  if (previous.status !== "ok") {
-    throw new Error("expected a legacy branch snapshot");
-  }
+  const { read } = branchSnapshot(scope, false);
 
   await appendTranscriptMessage(scope, {
     eventId: "legacy",
@@ -415,7 +388,7 @@ it("rescans an unindexed legacy prefix after an append reuses one of its IDs", a
     message: { role: "user", content: "duplicate creates a cycle" },
   });
 
-  expect(readSessionBranchSnapshot(database, { ...expected, previous })).toMatchObject({
+  expect(read()).toMatchObject({
     status: "ok",
     appendSafe: false,
     branches: [branch("legacy", "", 0, true), branch("legacy", "", 0, true)],
@@ -424,7 +397,7 @@ it("rescans an unindexed legacy prefix after an append reuses one of its IDs", a
 
 it("rejects a malformed unused row before choosing an available headline", async () => {
   const scope = await seedStoredBranchEvents([message("root", null, "available headline")]);
-  const database = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
+  const database = openOpenClawAgentDatabase(scope);
   executeSqliteQuerySync(
     database.db,
     getSessionKysely(database.db).insertInto("transcript_events").values({
@@ -443,7 +416,7 @@ it("uses one snapshot for navigation and lazy headline reads", async () => {
     message("root", null, "original headline"),
     message("tail", "root", "tool payload", { role: "toolResult" }),
   ]);
-  const database = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
+  const database = openOpenClawAgentDatabase(scope);
   const writer = sqliteRuntime.openNodeSqliteDatabase(database.path);
   admitSqliteSchema(writer);
   const request = {

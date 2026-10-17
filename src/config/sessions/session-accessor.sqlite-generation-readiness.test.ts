@@ -47,7 +47,12 @@ function holdPublication() {
     committed.resolve();
     await release.promise;
   };
-  return { committed, release };
+  const wait = (write: Promise<unknown>, signal: AbortSignal) =>
+    withinTest(
+      awaitGateBeforeSettlement(committed.promise, write, "write did not reach publication"),
+      signal,
+    );
+  return { release, wait };
 }
 
 function memoryProvider(
@@ -96,16 +101,13 @@ it.for(["permissionMode", "toolOverrides"] as const)(
           setting === "permissionMode" ? ("read-only" as const) : original.permissionMode,
         toolOverrides: setting === "toolOverrides" ? { webSearch: false } : original.toolOverrides,
       };
-      const { committed, release } = holdPublication();
+      const { release, wait } = holdPublication();
       const onAbort = () => release.resolve();
       signal.addEventListener("abort", onAbort, { once: true });
 
       const write = replace(scope, { ...original, ...settings });
       try {
-        await withinTest(
-          awaitGateBeforeSettlement(committed.promise, write, "policy write did not commit"),
-          signal,
-        );
+        await wait(write, signal);
         // Main's generation-only readers stay current; policy consumers cannot reuse old grants.
         generation.assertCurrent();
         expect(generation.readSessionSettings).toThrow(
@@ -162,19 +164,12 @@ it.for(["metadata", "replacement"] as const)(
         });
       try {
         for (const round of kind === "metadata" ? [0, 1] : [0]) {
-          const { committed, release } = holdPublication();
+          const { release, wait } = holdPublication();
           releaseReply = () => release.resolve();
 
           const write = replaceLabel(`metadata-${round}`);
           writes.push(write);
-          await withinTest(
-            awaitGateBeforeSettlement(
-              committed.promise,
-              write,
-              "replacement did not reach publication",
-            ),
-            signal,
-          );
+          await wait(write, signal);
           // Synchronous reads stay available for an identity-preserving publication; a
           // replacement fences them. Prepared reads still join either publication.
           if (kind === "metadata") {
@@ -304,7 +299,7 @@ it.for(["metadata", "reset"] as const)(
         throw new Error(grant.reason);
       }
       const { health, provider } = memoryProvider(childScope.sessionKey, grant.audience);
-      const { committed, release } = holdPublication();
+      const { release, wait } = holdPublication();
       const onAbort = () => release.resolve();
       signal.addEventListener("abort", onAbort, { once: true });
 
@@ -316,14 +311,7 @@ it.for(["metadata", "reset"] as const)(
         updatedAt: 2,
       });
       try {
-        await withinTest(
-          awaitGateBeforeSettlement(
-            committed.promise,
-            reset,
-            "parent reset did not reach publication",
-          ),
-          signal,
-        );
+        await wait(reset, signal);
         // The child audience waits on its parent's admitted publication instead of failing.
         const waiting = prepareMemoryAudienceRead(grant.audience)?.then(
           () => "current",
