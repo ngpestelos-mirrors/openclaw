@@ -201,7 +201,7 @@ export function registerOverlayPairingAccessTests() {
         try {
           await overlays.openDevicePairSetup();
           expect(overlays.snapshot.devicePairSetupOpen).toBe(true);
-          expect(list).toHaveBeenCalledTimes(1);
+          expect(pairingRequests).toBe(1);
 
           if (scoped) {
             harness.update({ hello: null });
@@ -211,7 +211,7 @@ export function registerOverlayPairingAccessTests() {
           await flushMicrotasks();
 
           expect(overlays.snapshot.devicePairSetupOpen).toBe(true);
-          expect(list).toHaveBeenCalledTimes(2);
+          expect(pairingRequests).toBe(2);
           expect(overlays.snapshot.devicePairPendingCount).toBe(2);
 
           stalePending.resolve({ pending: [{ id: "retired" }] });
