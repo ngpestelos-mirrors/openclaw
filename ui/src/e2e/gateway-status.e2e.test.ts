@@ -195,6 +195,14 @@ suite.define(() => {
       await flag.waitFor({ state: "hidden" });
       await retainedStatus.hover();
       await retry.waitFor({ state: "visible" });
+      expect(
+        await retry.evaluate((button) => {
+          const bounds = button.getBoundingClientRect();
+          return button.contains(
+            document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2),
+          );
+        }),
+      ).toBe(true);
       await captureStatus(page, "collapsed-avatar-flag", flag, [retainedStatus, flag]);
       await page.mouse.move(600, 400);
       await flag.waitFor({ state: "hidden" });
@@ -249,7 +257,7 @@ suite.define(() => {
           await expect.poll(() => composer.inputValue()).toBe("");
         }
         const footer = page.locator(".sidebar-footer-bar");
-        const connectionStatus = page.locator(".sidebar-shell__footer .gateway-status:visible");
+        const connectionStatus = page.locator(".sidebar-shell__footer .gateway-status");
         await expect.poll(() => page.locator(".chat-queue__item").count()).toBe(2);
         await connectionStatus
           .getByRole("button", { name: "Reconnecting… · 2 queued — Retry now", exact: true })
@@ -284,7 +292,19 @@ suite.define(() => {
         await page.setViewportSize({ width: 390, height: 844 });
         const mobileStatus = page.locator(".mobile-connection-status .gateway-status:visible");
         await mobileStatus.waitFor({ state: "visible" });
-        expect(await connectionStatus.isVisible()).toBe(false);
+        // The drawer stays mounted for its slide; Playwright visibility ignores off-screen placement.
+        await expect
+          .poll(() => connectionStatus.evaluate((element) => element.getBoundingClientRect().right))
+          .toBeLessThanOrEqual(0);
+        expect(
+          await connectionStatus.locator("button").evaluate((button) => {
+            button.focus();
+            return {
+              inert: button.closest("[inert]") !== null,
+              focused: document.activeElement === button,
+            };
+          }),
+        ).toEqual({ inert: true, focused: false });
         expect(await page.locator(".sidebar-connection-flag").isVisible()).toBe(false);
         expect(await mobileStatus.locator(".gateway-status__label").textContent()).toBe(
           "Reconnecting… · 2 queued",

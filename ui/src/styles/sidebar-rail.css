@@ -1,5 +1,6 @@
 .sidebar.sidebar--rail {
   flex-direction: row;
+  overflow: visible;
 }
 
 .sidebar--rail .sidebar-shell {
