@@ -12,11 +12,20 @@ type Summary = ReturnType<typeof createSummary> & { complete?: boolean };
 
 const loadSummary = vi.fn<() => Promise<Summary>>();
 let cache: Map<string, UsageCacheEntry<Summary>>;
+let configRef: object;
 let now = 1_000;
+
+function query(
+  cacheKey = "all-sessions",
+  overrides: Partial<Parameters<typeof loadUsageResultCached<Summary>>[0]> = {},
+) {
+  return { cache, cacheKey, configRef, revision: 0, load: loadSummary, ...overrides };
+}
 
 describe("usage result cache", () => {
   beforeEach(() => {
     cache = new Map();
+    configRef = {};
     now = 1_000;
     vi.useRealTimers();
     vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -28,7 +37,7 @@ describe("usage result cache", () => {
   });
 
   it("replaces previous usage revisions without retaining historical query results", async () => {
-    const params = { cache, cacheKey: "all-sessions", configRef: {}, load: loadSummary };
+    const params = query();
     for (let revision = 1; revision <= 32; revision++) {
       loadSummary.mockResolvedValueOnce(createSummary(revision));
       const revisionParams = { ...params, revision };
@@ -40,7 +49,7 @@ describe("usage result cache", () => {
 
   it("does not let a displaced revision overwrite the current result", async () => {
     const pending = createDeferredCore<Summary>();
-    const params = { cache, cacheKey: "all-sessions", configRef: {}, load: loadSummary };
+    const params = query();
     loadSummary.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(createSummary(2));
     const oldRevision = { ...params, revision: 1 };
     const currentRevision = { ...params, revision: 2 };
@@ -60,14 +69,7 @@ describe("usage result cache", () => {
   });
 
   it("retains a complete projection until its owner revision changes", async () => {
-    const params = {
-      cache,
-      cacheKey: "overview",
-      configRef: {},
-      revision: 1,
-      revisionOnly: true,
-      load: loadSummary,
-    };
+    const params = query("overview", { revision: 1, revisionOnly: true });
     const first = await loadUsageResultCached(params);
     now += 60_000;
     expect(await loadUsageResultCached(params)).toBe(first);
@@ -80,16 +82,8 @@ describe("usage result cache", () => {
   it.each([true, false])(
     "reclaims expired query variants before the count cap is reached (complete=%s)",
     async (complete) => {
-      const configRef = {};
       for (let index = 0; index < 32; index++) {
-        const params = {
-          cache,
-          cacheKey: `date-range-${index}`,
-          configRef,
-          revision: 0,
-          load: loadSummary,
-          isComplete: () => complete,
-        };
+        const params = query(`date-range-${index}`, { isComplete: () => complete });
         await loadUsageResultCached(params);
         expect(cache.size).toBe(1);
         now += 30_001;
@@ -102,7 +96,7 @@ describe("usage result cache", () => {
     const owner = new AsyncWorkScope();
     const replacementOwner = new AsyncWorkScope();
     const gate = createDeferredCore<Summary>();
-    const params = { cache, cacheKey: "stale", configRef: {}, revision: 0, load: loadSummary };
+    const params = query("stale");
     const first = await owner.track(() => loadUsageResultCached(params));
     expect(cache.get(params.cacheKey)?.updatedAt).toBe(now);
     now = 31_000;
@@ -134,24 +128,16 @@ describe("usage result cache", () => {
   });
 
   it("bounds the cache by evicting the oldest settled entry before an in-flight entry", async () => {
-    const configRef = {};
     const pending = createDeferredCore<Summary>();
     loadSummary.mockReturnValueOnce(pending.promise);
-    const params = { cache, cacheKey: "active", configRef, revision: 0, load: loadSummary };
+    const params = query("active");
     const inFlight = loadUsageResultCached(params);
     let repeated: typeof inFlight | undefined;
     try {
       await Promise.resolve();
       now += 30_001;
       for (let i = 0; i < 256; i++) {
-        const settledParams = {
-          cache,
-          cacheKey: String(i),
-          configRef,
-          revision: 0,
-          load: loadSummary,
-        };
-        await loadUsageResultCached(settledParams);
+        await loadUsageResultCached(query(String(i)));
       }
       repeated = loadUsageResultCached(params);
       await Promise.resolve();
@@ -167,14 +153,9 @@ describe("usage result cache", () => {
   });
 
   it("preserves a complete stale result when a refresh is partial", async () => {
-    const params = {
-      cache,
-      cacheKey: "partial",
-      configRef: {},
-      revision: 0,
-      load: loadSummary,
+    const params = query("partial", {
       isComplete: (summary: Summary) => summary.complete !== false,
-    };
+    });
     loadSummary.mockResolvedValueOnce(createSummary(10));
     const first = await loadUsageResultCached(params);
     expect(first.totals.totalTokens).toBe(10);

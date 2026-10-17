@@ -177,6 +177,23 @@ const save = (content: string, expectedHash: string | null = null) =>
   rpc("set", { content, expectedHash });
 const personalPath = () => path.join(workspace, "users", "alice", "USER.md");
 
+async function expectSharedDefaults() {
+  expect(await fs.readdir(workspace)).toEqual(["USER.md"]);
+  expect(await fs.readFile(path.join(workspace, "USER.md"), "utf8")).toBe("Shared defaults");
+}
+
+function ownerIngress(): GatewayClient {
+  return {
+    ...client,
+    connId: "owner-source",
+    authenticatedUserProfile: {
+      ...client.authenticatedUserProfile!,
+      profileId: GATEWAY_OWNER_PROFILE_ID,
+    },
+    internal: { authenticatedOperator: true, operatorRoleActor: { kind: "system" } },
+  };
+}
+
 describe("personal USER.md self-service", () => {
   function toolTurn() {
     const sessionKey = "agent:main:dashboard:someone-elses-project";
@@ -338,14 +355,10 @@ describe("personal USER.md self-service", () => {
         };
       }
       const ingress: GatewayClient = {
-        ...client,
+        ...ownerIngress(),
         connId: "local-owner-connection",
         connectionSignal: connection.signal,
         connect: { ...client.connect, scopes: ["operator.write"] },
-        authenticatedUserProfile: {
-          ...client.authenticatedUserProfile!,
-          profileId: GATEWAY_OWNER_PROFILE_ID,
-        },
         internal: {
           authenticatedOperator: true,
           ...(kind === "shared-secret" ? { operatorRoleActor: { kind: "system" as const } } : {}),
@@ -408,10 +421,7 @@ describe("personal USER.md self-service", () => {
         }
         await checked;
         if (boundary !== "live") {
-          expect(await fs.readdir(workspace)).toEqual(["USER.md"]);
-          expect(await fs.readFile(path.join(workspace, "USER.md"), "utf8")).toBe(
-            "Shared defaults",
-          );
+          await expectSharedDefaults();
         }
         expect(state.profileHolds).toBe(0);
       } finally {
@@ -421,45 +431,29 @@ describe("personal USER.md self-service", () => {
     },
   );
 
-  it.each(["unattested", "synthetic", "agent-tool", "unprofiled", "node", "invalidated"])(
-    "does not create owner authority for %s work",
-    async (kind) => {
-      const { identity } = toolTurn();
-      const ingress: GatewayClient = {
-        ...client,
-        connId: "owner-source",
-        authenticatedUserProfile: {
-          ...client.authenticatedUserProfile!,
-          profileId: GATEWAY_OWNER_PROFILE_ID,
-        },
-        internal: { authenticatedOperator: true, operatorRoleActor: { kind: "system" } },
-      };
-      if (kind === "unattested") {
-        delete ingress.internal!.authenticatedOperator;
-      }
-      if (kind === "synthetic") {
-        ingress.internal!.syntheticClient = true;
-      }
-      if (kind === "agent-tool") {
-        ingress.internal!.agentToolCaller = { agentId: "main", sessionKey: "agent:main:main" };
-      }
-      if (kind === "unprofiled") {
-        delete ingress.authenticatedUserProfile;
-      }
-      if (kind === "node") {
-        ingress.connect = { ...ingress.connect, role: "node" };
-      }
-      if (kind === "invalidated") {
-        ingress.invalidated = true;
-      }
-      expect(
-        await captureGatewayOperatorRunAuthority({
-          client: ingress,
-          context: identity.gatewayContextResolver(),
-        }),
-      ).toBeUndefined();
-    },
-  );
+  it.each([
+    ["unattested", (source: GatewayClient) => delete source.internal!.authenticatedOperator],
+    ["synthetic", (source: GatewayClient) => (source.internal!.syntheticClient = true)],
+    [
+      "agent-tool",
+      (source: GatewayClient) => {
+        source.internal!.agentToolCaller = { agentId: "main", sessionKey: "agent:main:main" };
+      },
+    ],
+    ["unprofiled", (source: GatewayClient) => delete source.authenticatedUserProfile],
+    ["node", (source: GatewayClient) => (source.connect = { ...source.connect, role: "node" })],
+    ["invalidated", (source: GatewayClient) => (source.invalidated = true)],
+  ] as const)("does not create owner authority for %s work", async (_kind, revoke) => {
+    const { identity } = toolTurn();
+    const ingress = ownerIngress();
+    revoke(ingress);
+    expect(
+      await captureGatewayOperatorRunAuthority({
+        client: ingress,
+        context: identity.gatewayContextResolver(),
+      }),
+    ).toBeUndefined();
+  });
 
   it.each(["different source", "unadmitted", "missing source"])(
     "rejects copied requester authority with %s",
@@ -567,21 +561,25 @@ describe("personal USER.md self-service", () => {
           ...(kind === "selected-profile" ? {} : { error: { code: "FORBIDDEN" } }),
         });
       }
-      expect(await fs.readdir(workspace)).toEqual(["USER.md"]);
-      expect(await fs.readFile(path.join(workspace, "USER.md"), "utf8")).toBe("Shared defaults");
+      await expectSharedDefaults();
     },
   );
 
   it.each([
-    "single-user",
-    "profile-merge",
-    "disconnect",
-    "scope-revocation",
-    "transport-revocation",
-    "role-revocation",
-    "workspace-change",
-    "cancellation",
-  ])("rechecks %s inside the safe writer before mutation", async (kind) => {
+    ["single-user", () => (state.multipleProfiles = false)],
+    ["profile-merge", () => (state.canonical = "bob")],
+    ["disconnect", () => (connected = false)],
+    ["scope-revocation", () => (client.connect.scopes = [])],
+    ["transport-revocation", () => (client.invalidated = true)],
+    ["role-revocation", () => (state.role = "denied")],
+    [
+      "workspace-change",
+      () => {
+        config = { agents: { defaults: { workspace: workspace + "-moved" } } };
+      },
+    ],
+    ["cancellation", () => controller.abort()],
+  ] as const)("rechecks %s inside the safe writer before mutation", async (_kind, revoke) => {
     config.gateway = {
       roles: {
         definitions: {
@@ -590,32 +588,7 @@ describe("personal USER.md self-service", () => {
         },
       },
     };
-    state.beforeMutation = () => {
-      if (kind === "single-user") {
-        state.multipleProfiles = false;
-      }
-      if (kind === "role-revocation") {
-        state.role = "denied";
-      }
-      if (kind === "profile-merge") {
-        state.canonical = "bob";
-      }
-      if (kind === "disconnect") {
-        connected = false;
-      }
-      if (kind === "transport-revocation") {
-        client.invalidated = true;
-      }
-      if (kind === "scope-revocation") {
-        client.connect.scopes = [];
-      }
-      if (kind === "workspace-change") {
-        config = { agents: { defaults: { workspace: workspace + "-moved" } } };
-      }
-      if (kind === "cancellation") {
-        controller.abort();
-      }
-    };
+    state.beforeMutation = revoke;
     expect((await save("Bad")).ok).toBe(false);
     expect(await fs.readdir(workspace)).toEqual(["USER.md"]);
   });
