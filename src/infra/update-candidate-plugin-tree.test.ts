@@ -18,6 +18,15 @@ import { linkUpdateCandidatePluginTrees } from "./update-retained-runtime-tree.j
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
 
+async function expectText(file: string, text = "inventoried plugin bytes") {
+  expect(await fs.readFile(file, "utf8")).toBe(text);
+}
+
+async function write(file: string, content: string) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, content);
+}
+
 async function fixture(hardlink = false, beforePlan?: (source: string) => Promise<void>) {
   const root = await fs.realpath(dirs.make("candidate-plugin-copy-"));
   const source = path.join(root, "source");
@@ -73,6 +82,18 @@ function atCopyBoundary(mutate: () => void, phase: "admission" | "mutation" = "m
     });
     return root;
   });
+}
+
+function onceAtCopyBoundary(mutate: () => void, phase?: "admission" | "mutation") {
+  let called = false;
+  atCopyBoundary(() => {
+    if (called) {
+      return;
+    }
+    called = true;
+    mutate();
+  }, phase);
+  return () => expect(called).toBe(true);
 }
 
 it.for([".MODULES.YAML", ".moduleſ.yaml"])(
@@ -147,15 +168,13 @@ it.each(["auto", "off"] as const)(
       f.plan.entries.filter((entry) => entry.kind === "directory").length + 1,
     );
     for (let index = 0; index < 8; index++) {
-      expect(await fs.readFile(path.join(f.destination, "nested", `${index}.txt`), "utf8")).toBe(
-        `payload ${index}`,
-      );
+      await expectText(path.join(f.destination, "nested", `${index}.txt`), `payload ${index}`);
     }
     const copied = path.join(f.destination, "payload.txt");
     const after = await fs.stat(f.file, { bigint: true });
     const snapshot = await fs.stat(copied, { bigint: true });
-    expect(await fs.readFile(copied, "utf8")).toBe("inventoried plugin bytes");
-    expect(await fs.readFile(linked, "utf8")).toBe("inventoried plugin bytes");
+    await expectText(copied);
+    await expectText(linked);
     expect(after).toMatchObject({
       ino: before.ino,
       mode: before.mode,
@@ -175,8 +194,8 @@ it.each(["auto", "off"] as const)(
     ]);
     await fs.chmod(copied, 0o600);
     await fs.writeFile(copied, "private candidate changes");
-    expect(await fs.readFile(f.file, "utf8")).toBe("inventoried plugin bytes");
-    expect(await fs.readFile(linked, "utf8")).toBe("inventoried plugin bytes");
+    await expectText(f.file);
+    await expectText(linked);
     expect((await fs.stat(f.file, { bigint: true })).mode).toBe(before.mode);
     expect((await fs.stat(linked, { bigint: true })).mode).toBe(before.mode);
   },
@@ -187,12 +206,7 @@ it.each(["file", "symlink"] as const)(
   async (kind) => {
     const f = await fixture();
     const target = path.join(f.destination, "payload.txt");
-    let inserted = false;
-    atCopyBoundary(() => {
-      if (inserted) {
-        return;
-      }
-      inserted = true;
+    const expectInserted = onceAtCopyBoundary(() => {
       if (kind === "file") {
         fsSync.writeFileSync(target, "existing private bytes", { flag: "wx" });
       } else {
@@ -200,11 +214,11 @@ it.each(["file", "symlink"] as const)(
       }
     }, "admission");
     await expect(f.copy()).rejects.toThrow();
-    expect(inserted).toBe(true);
+    expectInserted();
     expect(await fs.readdir(f.destination)).toEqual(["payload.txt"]);
-    expect(await fs.readFile(f.file, "utf8")).toBe("inventoried plugin bytes");
+    await expectText(f.file);
     if (kind === "file") {
-      expect(await fs.readFile(target, "utf8")).toBe("existing private bytes");
+      await expectText(target, "existing private bytes");
     } else {
       expect(await fs.readlink(target)).toBe(f.file);
     }
@@ -224,12 +238,7 @@ it.each([
       // Use a representable time so restored-mtime coverage cannot pass on rounding.
       await fs.utimes(path.join(source, "payload.txt"), 1_700_000_000, 1_700_000_000);
     });
-    let mutated = false;
-    atCopyBoundary(() => {
-      if (mutated) {
-        return;
-      }
-      mutated = true;
+    const expectMutated = onceAtCopyBoundary(() => {
       if (change === "identity") {
         fsSync.renameSync(f.file, `${f.file}.original`);
         fsSync.writeFileSync(f.file, "inventoried plugin bytes", { mode: 0o444 });
@@ -263,7 +272,7 @@ it.each([
       }
     });
     await expect(f.copy()).rejects.toThrow("changed after snapshot inventory");
-    expect(mutated).toBe(true);
+    expectMutated();
     expect(await fs.readdir(f.destination)).toEqual([]);
   },
 );
@@ -303,9 +312,7 @@ it.each(["copy", "retain"] as const)(
         expect(after[field]).toBe(before[field]);
       }
       await f[materialize]();
-      expect(await fs.readFile(path.join(f.destination, "payload.txt"), "utf8")).toBe(
-        "inventoried plugin bytes",
-      );
+      await expectText(path.join(f.destination, "payload.txt"));
     }
   },
 );
@@ -314,19 +321,15 @@ it.each(["auto", "off"] as const)(
   "accepts a concurrent native hard-link capture at copy publication with native copying %s",
   async (nativeMode) => {
     const f = await fixture();
-    let linked = false;
-    atCopyBoundary(() => {
-      if (!linked) {
-        fsSync.linkSync(f.file, path.join(path.dirname(path.dirname(f.file)), "native-capture"));
-        linked = true;
-      }
+    const expectLinked = onceAtCopyBoundary(() => {
+      fsSync.linkSync(f.file, path.join(path.dirname(path.dirname(f.file)), "native-capture"));
     });
     vi.stubEnv("FS_SAFE_NATIVE_MODE", nativeMode);
     try {
       await f.copy();
-      expect(linked).toBe(true);
+      expectLinked();
       const copied = path.join(f.destination, "payload.txt");
-      expect(await fs.readFile(copied, "utf8")).toBe("inventoried plugin bytes");
+      await expectText(copied);
       expect((await fs.lstat(copied, { bigint: true })).ino).not.toBe(
         (await fs.lstat(f.file, { bigint: true })).ino,
       );
@@ -394,9 +397,7 @@ it.skipIf(process.platform !== "linux")(
       expect((await fs.lstat(f.file, { bigint: true })).ctimeNs).not.toBe(before.ctimeNs);
       if (change === "link") {
         await f.copy();
-        expect(await fs.readFile(path.join(f.destination, "payload.txt"), "utf8")).toBe(
-          "inventoried plugin bytes",
-        );
+        await expectText(path.join(f.destination, "payload.txt"));
       } else {
         await expect(f.copy()).rejects.toThrow("changed after snapshot inventory");
       }
@@ -435,9 +436,7 @@ it("drains concurrent file copies before reporting a failure or publishing links
             await fs.writeFile(
               path.join(f.destination, path.basename(relative)),
               "existing bytes",
-              {
-                flag: "wx",
-              },
+              { flag: "wx" },
             );
           } else {
             await releasePeers.promise;
@@ -475,9 +474,7 @@ it("drains concurrent file copies before reporting a failure or publishing links
     expect((await fs.readdir(f.destination)).toSorted()).toEqual(
       started.map((file) => path.basename(file)).toSorted(),
     );
-    expect(await fs.readFile(path.join(f.destination, path.basename(started[0]!)), "utf8")).toBe(
-      "existing bytes",
-    );
+    await expectText(path.join(f.destination, path.basename(started[0]!)), "existing bytes");
   } finally {
     peerEntered.resolve();
     releasePeers.resolve();
@@ -635,47 +632,35 @@ it("copies a linked workspace dependency without reading or changing Git update 
       dependency,
       "dist.openclaw-update-00000000-0000-4000-8000-000000000010.tmp",
     );
-    await fs.mkdir(path.join(rollback, "previous"), { recursive: true });
-    await fs.writeFile(path.join(rollback, "previous", "keep.txt"), "rollback bytes");
-    await fs.mkdir(path.join(dependency, "ordinary.tmp"));
-    await fs.writeFile(path.join(dependency, "ordinary.tmp", "asset.txt"), "plugin asset");
-    await fs.mkdir(path.join(source, required));
-    await fs.writeFile(path.join(source, required, "required.txt"), "explicit dependency");
+    await write(path.join(rollback, "previous", "keep.txt"), "rollback bytes");
+    await write(path.join(dependency, "ordinary.tmp", "asset.txt"), "plugin asset");
+    await write(path.join(source, required, "required.txt"), "explicit dependency");
     await fs.symlink(path.join(required, "required.txt"), path.join(source, "required.txt"));
   });
   await f.copy();
-  expect(await fs.readFile(path.join(f.destination, "required.txt"), "utf8")).toBe(
-    "explicit dependency",
-  );
+  await expectText(path.join(f.destination, "required.txt"), "explicit dependency");
   const copied = path.join(f.destination, "node_modules", "workspace-dependency");
-  expect(await fs.readFile(path.join(copied, "data.txt"), "utf8")).toBe("live dependency");
-  expect(await fs.readFile(path.join(copied, "ordinary.tmp", "asset.txt"), "utf8")).toBe(
-    "plugin asset",
-  );
+  await expectText(path.join(copied, "data.txt"), "live dependency");
+  await expectText(path.join(copied, "ordinary.tmp", "asset.txt"), "plugin asset");
   expect(await fs.readdir(copied)).not.toContain(path.basename(abandoned));
   expect(await fs.readdir(copied)).not.toContain(path.basename(rollback));
   expect(await fs.readlink(path.join(abandoned, "candidate", "@openclaw", "plugin-sdk"))).toBe(
     sdkLink,
   );
-  expect(await fs.readFile(path.join(rollback, "previous", "keep.txt"), "utf8")).toBe(
-    "rollback bytes",
-  );
+  await expectText(path.join(rollback, "previous", "keep.txt"), "rollback bytes");
   await fs.writeFile(path.join(copied, "data.txt"), "private candidate data");
-  expect(await fs.readFile(path.join(dependency, "data.txt"), "utf8")).toBe("live dependency");
+  await expectText(path.join(dependency, "data.txt"), "live dependency");
 });
 
-it.each(["node_modules.openclaw-update-operator.tmp"])(
-  "still rejects a missing dependency beneath %s",
-  async (directory) => {
-    await expect(
-      fixture(false, async (source) => {
-        const nested = path.join(source, directory);
-        await fs.mkdir(nested);
-        await fs.symlink(
-          path.join(path.dirname(source), "missing-dependency"),
-          path.join(nested, "required"),
-        );
-      }),
-    ).rejects.toThrow("Cannot privately copy plugin dependency");
-  },
-);
+it("still rejects a missing dependency beneath node_modules.openclaw-update-operator.tmp", async () => {
+  await expect(
+    fixture(false, async (source) => {
+      const nested = path.join(source, "node_modules.openclaw-update-operator.tmp");
+      await fs.mkdir(nested);
+      await fs.symlink(
+        path.join(path.dirname(source), "missing-dependency"),
+        path.join(nested, "required"),
+      );
+    }),
+  ).rejects.toThrow("Cannot privately copy plugin dependency");
+});

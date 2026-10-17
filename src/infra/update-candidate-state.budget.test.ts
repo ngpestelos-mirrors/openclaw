@@ -49,6 +49,22 @@ afterAll(async () => {
   await receipts.close();
 });
 
+function snapshot(
+  root: string,
+  signal: AbortSignal,
+  options: Partial<Parameters<typeof prepareUpdateCandidateStateSnapshot>[0]> = {},
+) {
+  return prepareUpdateCandidateStateSnapshot({
+    config: {},
+    stateDir: path.join(root, "source"),
+    candidateRoot: root,
+    env: { TMPDIR: root },
+    workerEnv: () => ({ ...process.env, OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }),
+    signal,
+    ...options,
+  });
+}
+
 // Receipts and command settlement travel independently. The fixture publishes the
 // complete marker before it can reply, so that record decides a settlement race.
 async function fixtureEventBeforeSettlement(
@@ -170,26 +186,21 @@ it.for([undefined, 600_000])(
       }
       await fs.writeFile(release, "continue");
       if (timeoutMs === undefined) {
-        expect(await operation).toMatchObject({
-          error: expect.objectContaining({
-            message: expect.stringContaining("inventory failed (timeout"),
-          }),
-        });
-        expect.soft(await operation).toMatchObject({
-          error: {
-            message: expect.stringContaining(file),
-          },
-        });
-        expect.soft(await operation).toMatchObject({
-          error: {
-            message: expect.stringMatching(/after \d+(?:\.\d+)? seconds during metadata inventory/),
-          },
-        });
-        expect.soft(await operation).toMatchObject({
-          error: {
-            message: expect.stringContaining("then retry the update"),
-          },
-        });
+        const outcome = await operation;
+        expect(outcome).toHaveProperty(
+          "error.message",
+          expect.stringContaining("inventory failed (timeout"),
+        );
+        expect.soft(outcome).toHaveProperty("error.message", expect.stringContaining(file));
+        expect
+          .soft(outcome)
+          .toHaveProperty(
+            "error.message",
+            expect.stringMatching(/after \d+(?:\.\d+)? seconds during metadata inventory/),
+          );
+        expect
+          .soft(outcome)
+          .toHaveProperty("error.message", expect.stringContaining("then retry the update"));
       } else {
         expect(await operation).toEqual({ sizes: [{ path: file, sizeBytes: 8n }] });
       }
@@ -384,7 +395,6 @@ it.each(
   "retains rehearsal scratch when $source settlement is uncertain (cancelled=$cancelled)",
   async ({ source, cancelled }) => {
     const root = await fs.realpath(tempDirs.make("rehearsal-unsettled-"));
-    const stateDir = path.join(root, "source");
     vi.useFakeTimers();
     const controller = new AbortController();
     const workerEntered = createDeferred();
@@ -413,14 +423,7 @@ it.each(
         cleanup: "uncertain",
       };
     });
-    const operation = prepareUpdateCandidateStateSnapshot({
-      config: {},
-      stateDir,
-      candidateRoot: root,
-      env: { TMPDIR: root },
-      workerEnv: () => ({ ...process.env, OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }),
-      signal: controller.signal,
-    });
+    const operation = snapshot(root, controller.signal);
     const rejected = expect(operation).rejects.toThrow(/cleanup.*confirmed|settlement.*uncertain/);
     const settleWorker = () =>
       workerExit.resolve({
@@ -496,13 +499,8 @@ it.each(["stdout", "stderr"] as const)(
     }, 10_000);
     try {
       await expect(
-        prepareUpdateCandidateStateSnapshot({
-          config: {},
-          stateDir: path.join(root, "source"),
-          candidateRoot: root,
-          env: { TMPDIR: root },
+        snapshot(root, controller.signal, {
           workerEnv: () => ({ ...process.env }),
-          signal: controller.signal,
         }),
       ).rejects.toThrow(/^Update state snapshot failed \(output-limit\):/);
       expect(deadlineReached).toBe(false);
@@ -556,14 +554,7 @@ it("refuses a grown WAL family at the post-inventory capacity gate", async () =>
       return result;
     });
     const controller = new AbortController();
-    const operation = prepareUpdateCandidateStateSnapshot({
-      config: {},
-      stateDir,
-      candidateRoot: root,
-      env: { TMPDIR: root },
-      workerEnv: () => ({ ...process.env, OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }),
-      signal: controller.signal,
-    });
+    const operation = snapshot(root, controller.signal);
     const outcome = operation.then(
       (value) => ({ value }),
       (error: unknown) => ({ error }),

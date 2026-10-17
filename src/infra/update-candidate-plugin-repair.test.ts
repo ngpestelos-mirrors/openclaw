@@ -12,6 +12,30 @@ import { buildUpdateDoctorEnv } from "./update-runner-doctor.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 
+async function write(file: string, content: string) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, content);
+}
+
+async function expectOutput(
+  run: () => ReturnType<typeof runCommandBuffered>,
+  output = "sibling-ready",
+) {
+  const result = await run();
+  expect(result.code, result.stderr.toString()).toBe(0);
+  expect(result.stdout.toString().trim()).toBe(output);
+}
+
+async function replaceEntries(f: Awaited<ReturnType<typeof fixture>>, content: string) {
+  await fs.writeFile(path.join(f.plugin, "index.mjs"), content);
+  await fs.writeFile(path.join(f.copiedPlugin, "index.mjs"), content);
+}
+
+async function expectNoRepair(f: Awaited<ReturnType<typeof fixture>>) {
+  expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBe(0);
+  await expect(fs.access(f.copiedShared)).rejects.toMatchObject({ code: "ENOENT" });
+}
+
 async function fixture(
   locatorKind: "directory" | "file" | "alias" | "install-record" = "directory",
   surface: "runtime" | "doctor" = "runtime",
@@ -22,10 +46,6 @@ async function fixture(
   const candidateRoot = path.join(root, "candidate");
   const plugin = path.join(root, "plugins", "demo");
   const shared = path.join(root, "plugins", "shared");
-  const write = async (file: string, content: string) => {
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, content);
-  };
   await write(path.join(candidateRoot, "package.json"), '{"name":"openclaw"}');
   await write(
     path.join(plugin, "package.json"),
@@ -114,9 +134,7 @@ it.each(["directory", "file", "alias", "install-record"] as const)(
     await fs.rename(plugins, hidden);
     try {
       expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBe(0);
-      const after = await f.run();
-      expect(after.code, after.stderr.toString()).toBe(0);
-      expect(after.stdout.toString().trim()).toBe("sibling-ready");
+      await expectOutput(f.run);
     } finally {
       await fs.rename(hidden, plugins);
     }
@@ -131,93 +149,70 @@ it.each(["directory", "file", "alias", "install-record"] as const)(
 it("completes a published rehearsal with import.meta retained at transformed position 1203:16", async () => {
   const f = await fixture();
   const content = `import value from "../shared/value.js";\n${"\n".repeat(1201)}const module1=import.meta;\nconsole.log(value);`;
-  await fs.writeFile(path.join(f.plugin, "index.mjs"), content);
-  await fs.writeFile(path.join(f.copiedPlugin, "index.mjs"), content);
+  await replaceEntries(f, content);
 
   const repaired = await completeUpdateCandidatePluginRehearsal(f);
   expect(repaired.copiedFiles).toBeGreaterThan(0);
   expect(repaired.warnings).toEqual([]);
-  const after = await f.run();
-  expect(after.code, after.stderr.toString()).toBe(0);
-  expect(after.stdout.toString().trim()).toBe("sibling-ready");
+  await expectOutput(f.run);
 });
 
 it("warns about an unparseable runtime entry and completes the sibling Doctor entry", async () => {
   const f = await fixture("directory", "doctor");
   const content = `${"\n".repeat(1202)}const module1=/(/;`;
-  await fs.writeFile(path.join(f.plugin, "index.mjs"), content);
-  await fs.writeFile(path.join(f.copiedPlugin, "index.mjs"), content);
+  await replaceEntries(f, content);
 
   const repaired = await completeUpdateCandidatePluginRehearsal(f);
   expect(repaired.copiedFiles).toBeGreaterThan(0);
   expect(repaired.warnings).toEqual([
     expect.stringMatching(/plugin demo .*Invalid regular expression:.*\(1203:17\)/),
   ]);
-  const after = await f.run();
-  expect(after.code, after.stderr.toString()).toBe(0);
-  expect(after.stdout.toString().trim()).toBe("sibling-ready");
+  await expectOutput(f.run);
 });
 
-it.each(["file URL"])(
-  "retains an explicit external %s import in an already complete snapshot",
-  async (kind) => {
-    const f = await fixture();
-    const sharedEntry = path.join(f.shared, "value.js");
-    const specifier = kind === "file URL" ? pathToFileURL(sharedEntry).href : sharedEntry;
-    const content = `import value from ${JSON.stringify(specifier)}; console.log(value);`;
-    await fs.writeFile(path.join(f.plugin, "index.mjs"), content);
-    await fs.writeFile(path.join(f.copiedPlugin, "index.mjs"), content);
-    const before = await f.run();
-    expect(before.code, before.stderr.toString()).toBe(0);
-    expect(before.stdout.toString().trim()).toBe("sibling-ready");
+it("retains an explicit external file URL import in an already complete snapshot", async () => {
+  const f = await fixture();
+  const sharedEntry = path.join(f.shared, "value.js");
+  const specifier = pathToFileURL(sharedEntry).href;
+  const content = `import value from ${JSON.stringify(specifier)}; console.log(value);`;
+  await replaceEntries(f, content);
+  await expectOutput(f.run);
 
-    expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBe(0);
-    const after = await f.run();
-    expect(after.code, after.stderr.toString()).toBe(0);
-    expect(after.stdout.toString().trim()).toBe("sibling-ready");
-    expect(await fs.readFile(path.join(f.copiedPlugin, "index.mjs"), "utf8")).toBe(content);
-  },
-);
+  expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBe(0);
+  await expectOutput(f.run);
+  expect(await fs.readFile(path.join(f.copiedPlugin, "index.mjs"), "utf8")).toBe(content);
+});
 
-it.each(["invalid source"])(
-  "leaves a runnable optional-import snapshot independent of %s edits",
-  async (change) => {
-    const f = await fixture();
-    const content = [
-      'import { createRequire } from "node:module";',
-      "const require = createRequire(import.meta.url);",
-      'try { require("#optional"); } catch { console.log("optional-fallback"); }',
-    ].join("\n");
-    const original =
-      change === "invalid source" ? "invalid source {{{" : `${content}\nimport "./new-source.mjs";`;
-    await fs.writeFile(path.join(f.plugin, "index.mjs"), original);
-    await fs.writeFile(path.join(f.plugin, "new-source.mjs"), "export const newSource = true;");
-    await fs.writeFile(path.join(f.copiedPlugin, "index.mjs"), content);
-    const before = await f.run();
-    expect(before.code, before.stderr.toString()).toBe(0);
-    expect(before.stdout.toString().trim()).toBe("optional-fallback");
+it("leaves a runnable optional-import snapshot independent of invalid source edits", async () => {
+  const f = await fixture();
+  const content = [
+    'import { createRequire } from "node:module";',
+    "const require = createRequire(import.meta.url);",
+    'try { require("#optional"); } catch { console.log("optional-fallback"); }',
+  ].join("\n");
+  const original = "invalid source {{{";
+  await fs.writeFile(path.join(f.plugin, "index.mjs"), original);
+  await fs.writeFile(path.join(f.plugin, "new-source.mjs"), "export const newSource = true;");
+  await fs.writeFile(path.join(f.copiedPlugin, "index.mjs"), content);
+  await expectOutput(f.run, "optional-fallback");
 
-    expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBe(0);
-    const after = await f.run();
-    expect(after.code, after.stderr.toString()).toBe(0);
-    expect(after.stdout.toString().trim()).toBe("optional-fallback");
-    expect(await fs.readFile(path.join(f.copiedPlugin, "index.mjs"), "utf8")).toBe(content);
-    expect(await fs.readFile(path.join(f.plugin, "index.mjs"), "utf8")).toBe(original);
-    await expect(fs.access(path.join(f.copiedPlugin, "new-source.mjs"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-  },
-);
+  expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBe(0);
+  await expectOutput(f.run, "optional-fallback");
+  expect(await fs.readFile(path.join(f.copiedPlugin, "index.mjs"), "utf8")).toBe(content);
+  expect(await fs.readFile(path.join(f.plugin, "index.mjs"), "utf8")).toBe(original);
+  await expect(fs.access(path.join(f.copiedPlugin, "new-source.mjs"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+});
 
 it("preserves staged bundled aliases while completing an external plugin", async () => {
   const f = await fixture();
   const bundled = path.join(f.candidateRoot, "dist", "extensions", "staged");
-  await fs.mkdir(bundled, { recursive: true });
-  await fs.writeFile(
+  await write(
     path.join(bundled, "package.json"),
     JSON.stringify({ name: "staged", openclaw: { extensions: ["./index.mjs"] } }),
   );
-  await fs.writeFile(
+  await write(
     path.join(bundled, "openclaw.plugin.json"),
     JSON.stringify({ id: "staged", configSchema: { type: "object", properties: {} } }),
   );
@@ -227,24 +222,19 @@ it("preserves staged bundled aliases while completing an external plugin", async
   const pathsBefore = [...f.config.plugins!.load!.paths!];
 
   expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBeGreaterThan(0);
-  const after = await f.run();
-  expect(after.code, after.stderr.toString()).toBe(0);
-  expect(after.stdout.toString().trim()).toBe("sibling-ready");
+  await expectOutput(f.run);
   expect(f.config.plugins!.load!.paths).toEqual(pathsBefore);
   expect(await fs.readFile(path.join(bundled, "index.mjs"), "utf8")).toBe(stagedBytes);
 });
 
 it.each(["lint", "incomplete rehearsal"])("does not acquire source files for %s", async (kind) => {
   const f = await fixture();
-  if (kind === "ordinary doctor") {
-    f.env.OPENCLAW_COMPATIBILITY_HOST_VERSION = "2026.9.4";
-  } else if (kind === "lint") {
+  if (kind === "lint") {
     f.env.OPENCLAW_UPDATE_IN_PROGRESS = "0";
   } else {
     delete f.env.OPENCLAW_SKIP_CHANNELS;
   }
-  expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBe(0);
-  await expect(fs.access(f.copiedShared)).rejects.toMatchObject({ code: "ENOENT" });
+  await expectNoRepair(f);
 });
 
 it("reports an unresolved dependency whose published projection lost the original path", async () => {
@@ -276,8 +266,7 @@ it.each(["globally disabled", "disabled entry", "denied", "allowlisted elsewhere
       ...(kind === "denied" ? { deny: ["demo"] } : {}),
       ...(kind === "allowlisted elsewhere" ? { allow: ["another"] } : {}),
     };
-    expect((await completeUpdateCandidatePluginRehearsal(f)).copiedFiles).toBe(0);
-    await expect(fs.access(f.copiedShared)).rejects.toMatchObject({ code: "ENOENT" });
+    await expectNoRepair(f);
   },
 );
 
@@ -289,17 +278,14 @@ it("stops if repair authority ends during asynchronous source preparation", asyn
   await expect(fs.access(f.copiedShared)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-it.each(["index.mjs"])(
-  "refuses an original %s changed since the published snapshot",
-  async (filename) => {
-    const f = await fixture();
-    await fs.appendFile(path.join(f.plugin, filename), "\n ");
-    await expect(completeUpdateCandidatePluginRehearsal(f)).rejects.toThrow(
-      "changed since the update snapshot",
-    );
-    await expect(fs.access(f.copiedShared)).rejects.toMatchObject({ code: "ENOENT" });
-  },
-);
+it("refuses an original index.mjs changed since the published snapshot", async () => {
+  const f = await fixture();
+  await fs.appendFile(path.join(f.plugin, "index.mjs"), "\n ");
+  await expect(completeUpdateCandidatePluginRehearsal(f)).rejects.toThrow(
+    "changed since the update snapshot",
+  );
+  await expect(fs.access(f.copiedShared)).rejects.toMatchObject({ code: "ENOENT" });
+});
 
 it("preserves a conflicting existing dependency instead of replacing it", async () => {
   const f = await fixture();
@@ -319,15 +305,10 @@ it.each(["undeclared", "dependencies"])(
     const f = await fixture();
     const name = "rehearsal-optional-vendor";
     const ancestor = path.join(f.root, "node_modules", name);
-    await fs.mkdir(ancestor, { recursive: true });
-    await fs.writeFile(
-      path.join(ancestor, "package.json"),
-      JSON.stringify({ name, main: "index.cjs" }),
-    );
+    await write(path.join(ancestor, "package.json"), JSON.stringify({ name, main: "index.cjs" }));
     await fs.writeFile(path.join(ancestor, "index.cjs"), "module.exports = 'foreign';");
     const vendor = path.join(f.copiedPlugin, "node_modules", "vendor");
-    await fs.mkdir(vendor, { recursive: true });
-    await fs.writeFile(
+    await write(
       path.join(vendor, "package.json"),
       JSON.stringify({
         name: "vendor",
