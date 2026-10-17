@@ -47,6 +47,7 @@ describe("createSessionCapability message subscriptions", () => {
     const intent = { agentId: "main", mode: "narration", includeApprovals: true } as const;
     const options: SubscribeOptions = { ...intent, agentId: " Main " };
     const pending = sessions.subscribeMessages("global", options);
+    expect(request).toHaveBeenCalledOnce();
     Object.assign(options, { agentId: "work", mode: undefined, includeApprovals: false });
     const subscription = await pending;
 
@@ -55,7 +56,7 @@ describe("createSessionCapability message subscriptions", () => {
   });
 
   it.each(["reconnect", "dispose"])(
-    "does not create a wire observer when %s retires an acquisition before admission",
+    "retires a pending wire observer when %s interrupts admission",
     async (retirement) => {
       const request = vi.fn(async (_method: string, params?: Params) => ({
         key: params?.key,
@@ -69,6 +70,11 @@ describe("createSessionCapability message subscriptions", () => {
         reconcileMutation: async () => ({ status: "stale" }),
       });
       const acquisition = operations.subscribeMessages("agent:main:old");
+      expect(request).toHaveBeenCalledExactlyOnceWith(
+        "sessions.messages.subscribe",
+        { key: "agent:main:old", subscriptionId: expect.any(String) },
+        subscriptionRequestOptions,
+      );
       if (retirement === "dispose") {
         operations.dispose();
       } else {
@@ -76,7 +82,14 @@ describe("createSessionCapability message subscriptions", () => {
         operations.retireConnection(client);
       }
       await expect(acquisition).rejects.toThrow("replaced Gateway connection");
-      expect(request).not.toHaveBeenCalled();
+      if (retirement === "dispose") {
+        expect(request).toHaveBeenLastCalledWith(
+          "sessions.messages.unsubscribe",
+          { key: "agent:main:old", subscriptionId: expect.any(String) },
+          subscriptionRequestOptions,
+        );
+      }
+      request.mockClear();
       if (retirement === "reconnect") {
         const current = await operations.subscribeMessages("agent:main:current");
         expect(request.mock.calls).toEqual([wireCall("subscribe", { key: "agent:main:current" })]);
