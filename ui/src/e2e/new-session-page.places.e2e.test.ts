@@ -406,9 +406,9 @@ suite.define(() => {
     // to prove outside-pointer dismissal without opening a sibling menu.
     await page.locator(".agent-chat__welcome-avatar").click();
     await afterPointerHide;
-    expect(
-      await agentPicker.locator(".agent-select__trigger").getAttribute("aria-expanded"),
-    ).toBe("false");
+    expect(await agentPicker.locator(".agent-select__trigger").getAttribute("aria-expanded")).toBe(
+      "false",
+    );
     await expect
       .poll(() => checkoutSelect.evaluate((element) => element.matches(":popover-open")))
       .toBe(false);
