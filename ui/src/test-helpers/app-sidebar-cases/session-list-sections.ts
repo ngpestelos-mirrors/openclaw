@@ -153,7 +153,7 @@ describe("AppSidebar session section visibility", () => {
     expect(sidebar.querySelector('[data-session-section="ungrouped"]')).toBeNull();
 
     sidebar.sessionOrganizer.draggingSessionKey = "agent:main:alpha";
-    sidebar.publishPresentation();
+    sidebar.invalidate();
     await sidebar.updateComplete;
     expect(sidebar.querySelector('[data-session-section="ungrouped"]')).not.toBeNull();
   });

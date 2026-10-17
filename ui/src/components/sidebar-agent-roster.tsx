@@ -23,7 +23,7 @@ import {
 } from "./app-sidebar-session-row-render.tsx";
 import type { SidebarRecentSession } from "./app-sidebar-session-types.ts";
 import { showConfirmDialog } from "./confirm-dialog.ts";
-import { SidebarPinnedAgent } from "./sidebar-pinned-agent.tsx";
+import "../styles/sidebar-pinned-agents.css";
 import { Icon } from "./solid/icon.tsx";
 import { AgentIdentityAvatar } from "./solid/identity-avatar.tsx";
 import { Menu } from "./solid/menu.tsx";
@@ -64,7 +64,7 @@ function cachedRosterCards(host: RosterHost) {
   }));
 }
 
-function useRoster(props: RosterProps) {
+export function SidebarAgentRoster(props: RosterProps) {
   const application = useApplication();
   const hostProjection = createMemo(() =>
     projectSource(props.host, {
@@ -98,11 +98,6 @@ function useRoster(props: RosterProps) {
       }),
     );
   }, presented);
-  return { host, context, store, snapshot, cards };
-}
-
-export function SidebarAgentRoster(props: RosterProps) {
-  const roster = useRoster(props);
   const agentLinks = new Map<string, HTMLAnchorElement>();
   const createAgentLinkRef = (card: () => { id: string }) => {
     // The keyed row keeps this identity until its branch is removed.
@@ -118,31 +113,30 @@ export function SidebarAgentRoster(props: RosterProps) {
       agentLinks.set(id, element);
     };
   };
-  const presented = () => props.active;
   const parkedSections = createParkedProjection(() => props.sections, presented);
   const navigation = createMemo(() =>
-    projectOwner(roster.context().navigation, (owner) => owner.snapshot),
+    projectOwner(context().navigation, (owner) => owner.snapshot),
   );
   const pinnedIds = createParkedProjection(
     () => new Set(navigation().read().pinnedAgentIds),
     presented,
   );
-  const pinnedCards = () => roster.cards().filter((card) => pinnedIds().has(card.id));
-  const unpinnedCards = () => roster.cards().filter((card) => !pinnedIds().has(card.id));
+  const pinnedCards = () => cards().filter((card) => pinnedIds().has(card.id));
+  const unpinnedCards = () => cards().filter((card) => !pinnedIds().has(card.id));
   const hiddenAgentSections = createMemo<ReadonlySet<string>>((previous) => {
-    const next = new Set(roster.cards().map((card) => card.id));
+    const next = new Set(cards().map((card) => card.id));
     if (previous?.size === next.size && [...next].every((id) => previous.has(id))) {
       return previous;
     }
     return next;
   });
   createEffect(
-    () => [roster.store(), props.involvingMe] as const,
-    ([store, involvingMe]) => {
-      store.setInvolvingMe(involvingMe);
+    () => [store(), props.involvingMe] as const,
+    ([rosterStore, involvingMe]) => {
+      rosterStore.setInvolvingMe(involvingMe);
     },
   );
-  createEffect(roster.store, (store) => () => store.setInvolvingMe(false));
+  createEffect(store, (rosterStore) => () => rosterStore.setInvolvingMe(false));
   // Sidebar queries keep the last admitted selection while the roster is parked.
   const queryCollapsed = createMemo<ReadonlySet<string> | null>((previous) =>
     presented() ? hiddenAgentSections() : (previous ?? null),
@@ -151,31 +145,31 @@ export function SidebarAgentRoster(props: RosterProps) {
   const hostIdentity = createMemo(() => props.host);
   // The synchronous owner publishes through its own frame, not this child's dependencies.
   const readCollapsed = () => untrack(queryCollapsed);
-  createEffect(hostIdentity, (host) => {
-    host.readRosterCollapsedAgentIds = readCollapsed;
+  createEffect(hostIdentity, (currentHost) => {
+    currentHost.readRosterCollapsedAgentIds = readCollapsed;
     return () => {
-      if (host.readRosterCollapsedAgentIds === readCollapsed) {
-        host.readRosterCollapsedAgentIds = null;
-        host.publishPresentation();
+      if (currentHost.readRosterCollapsedAgentIds === readCollapsed) {
+        currentHost.readRosterCollapsedAgentIds = null;
+        currentHost.invalidate();
       }
     };
   });
   createEffect(
     () => [hostIdentity(), queryCollapsed()] as const,
-    ([host, ids]) => {
+    ([currentHost, ids]) => {
       if (ids) {
-        host.sessionData.requestSessionDataUpdate();
+        currentHost.sessionData.requestSessionDataUpdate();
       }
     },
   );
   const canDeleteAgent = (id: string) =>
-    (roster.context().agents.state.agentsList?.agents.filter((agent) => agent.kind !== "system")
-      .length ?? 0) > 1 &&
-    canCallGatewayMethod(roster.context().gateway.snapshot, "agents.delete", "operator.admin") &&
-    roster.cards().some((agent) => agent.id === id);
+    (context().agents.state.agentsList?.agents.filter((agent) => agent.kind !== "system").length ??
+      0) > 1 &&
+    canCallGatewayMethod(context().gateway.snapshot, "agents.delete", "operator.admin") &&
+    cards().some((agent) => agent.id === id);
   const deleteAgent = async (agent: { id: string; name: string }) => {
-    const context = roster.context();
-    const client = context.gateway.snapshot.client;
+    const currentContext = context();
+    const client = currentContext.gateway.snapshot.client;
     if (!client || !canDeleteAgent(agent.id)) {
       return;
     }
@@ -185,7 +179,11 @@ export function SidebarAgentRoster(props: RosterProps) {
       confirmLabel: t("common.delete"),
       danger: true,
     });
-    if (!confirmed || context.gateway.snapshot.client !== client || !canDeleteAgent(agent.id)) {
+    if (
+      !confirmed ||
+      currentContext.gateway.snapshot.client !== client ||
+      !canDeleteAgent(agent.id)
+    ) {
       return;
     }
     try {
@@ -193,7 +191,7 @@ export function SidebarAgentRoster(props: RosterProps) {
     } catch (error) {
       showToast({ message: formatUiError(error) });
     } finally {
-      await context.agents.refreshList();
+      await currentContext.agents.refreshList();
     }
   };
   const agentMenu = (card: () => { id: string; name: string; sessionCount: number }) => (
@@ -209,24 +207,24 @@ export function SidebarAgentRoster(props: RosterProps) {
         overlay.surface.dataset.chatAutotypeExempt = "";
       }}
       onBeforeShow={() => {
-        roster.host().dismissTransientMenus();
+        host().dismissTransientMenus();
       }}
       onSelect={(item) => {
         switch (item.id) {
           case "pin": {
             const id = card().id;
-            togglePinnedAgent(roster.context().navigation, id);
+            togglePinnedAgent(context().navigation, id);
             // Pinning replaces the menu trigger; keep keyboard focus on its agent.
             onSettled(() => agentLinks.get(id)?.focus());
             break;
           }
           case "sessions":
-            roster.context().agentSelection.setScope(card().id);
-            roster.host().onNavigate?.("sessions");
+            context().agentSelection.setScope(card().id);
+            host().onNavigate?.("sessions");
             break;
           case "settings":
-            roster.context().navigate("agents", {
-              pathname: pathForAgentPanel(card().id, null, roster.context().basePath),
+            context().navigate("agents", {
+              pathname: pathForAgentPanel(card().id, null, context().basePath),
             });
             break;
           case "delete":
@@ -264,21 +262,18 @@ export function SidebarAgentRoster(props: RosterProps) {
       ]}
     />
   );
-  const error = () => roster.snapshot().error ?? roster.snapshot().subscriptionError;
+  const error = () => snapshot().error ?? snapshot().subscriptionError;
   return (
     <openclaw-sidebar-agent-roster>
       {renderSessionListFrame(
-        untrack(roster.host),
+        untrack(host),
         <div class="sidebar-agent-roster">
           <Show when={error()}>
-            <button
-              class="sidebar-agent-roster__link"
-              onClick={() => void roster.store().refresh()}
-            >
+            <button class="sidebar-agent-roster__link" onClick={() => void store().refresh()}>
               {t("agentsHome.loadFailed")}
             </button>
           </Show>
-          <Show when={roster.snapshot().loading && roster.cards().length === 0}>
+          <Show when={snapshot().loading && cards().length === 0}>
             <span role="status" aria-label={t("common.loading")} class="skeleton skeleton-line" />
           </Show>
           <Show when={pinnedCards().length > 0}>
@@ -287,22 +282,61 @@ export function SidebarAgentRoster(props: RosterProps) {
                 <For each={pinnedCards()} keyed={(card) => card.id}>
                   {(card) => {
                     const linkRef = createAgentLinkRef(card);
+                    const active = () =>
+                      isSessionRouteId(host().activeRouteId) &&
+                      areUiSessionKeysEquivalent(host().getRouteSessionKey(), card().mainKey);
                     return (
-                      <SidebarPinnedAgent
-                        linkRef={linkRef}
-                        agent={card()}
-                        href={card().target.href}
-                        loading={roster.snapshot().loading}
-                        active={
-                          isSessionRouteId(roster.host().activeRouteId) &&
-                          areUiSessionKeysEquivalent(
-                            roster.host().getRouteSessionKey(),
-                            card().mainKey,
-                          )
-                        }
-                        onOpen={() => roster.host().openMainSession(card().id)}
-                        menu={agentMenu(card)}
-                      />
+                      <div
+                        class="sidebar-pinned-agent session-row-host"
+                        data-pinned-agent={card().id}
+                      >
+                        <openclaw-tooltip
+                          class="sidebar-pinned-agent__tooltip"
+                          prop:placement="right-start"
+                        >
+                          <a
+                            ref={linkRef}
+                            class="sidebar-pinned-agent__link"
+                            data-agent-id={card().id}
+                            href={card().target.href}
+                            aria-label={card().name}
+                            aria-current={active() ? "page" : undefined}
+                            onClick={(event: MouseEvent) => {
+                              if (shouldHandleNavigationClick(event)) {
+                                event.preventDefault();
+                                host().openMainSession(card().id);
+                              }
+                            }}
+                          >
+                            <span class="sidebar-pinned-agent__avatar" aria-hidden="true">
+                              <SessionGlyph
+                                circular
+                                content={<AgentIdentityAvatar agent={card()} />}
+                                running={card().activeNow}
+                                runVisibility={sessionRunVisibility}
+                              />
+                            </span>
+                            <span class="sidebar-pinned-agent__name">{card().name}</span>
+                          </a>
+                          <span slot="content" class="sidebar-pinned-agent__card">
+                            <span class="sidebar-pinned-agent__card-header">
+                              <span class="sidebar-pinned-agent__avatar" aria-hidden="true">
+                                <AgentIdentityAvatar agent={card()} />
+                              </span>
+                              <span>{card().name}</span>
+                            </span>
+                            <span class="sidebar-pinned-agent__preview">
+                              {card().assistantPreview ||
+                                t(
+                                  snapshot().loading
+                                    ? "common.loading"
+                                    : "agentsHome.noAssistantMessage",
+                                )}
+                            </span>
+                          </span>
+                        </openclaw-tooltip>
+                        {agentMenu(card)}
+                      </div>
                     );
                   }}
                 </For>
@@ -310,7 +344,7 @@ export function SidebarAgentRoster(props: RosterProps) {
               <For each={pinnedCards()} keyed={(card) => card.id}>
                 {(card) =>
                   renderPendingSessionCreateRow(
-                    roster.host,
+                    host,
                     untrack(() => card().id),
                   )
                 }
@@ -320,11 +354,11 @@ export function SidebarAgentRoster(props: RosterProps) {
           <For each={unpinnedCards()} keyed={(card) => card.id}>
             {(card) => {
               const linkRef = createAgentLinkRef(card);
-              const mainKey = () => roster.host().selectedAgentMainSessionKey(card().id);
+              const mainKey = () => host().selectedAgentMainSessionKey(card().id);
               const sections = () =>
                 parkedSections().filter((section) => section.id.startsWith(`agent:${card().id}:`));
               const main = createParkedProjection(
-                () => roster.host().visibleHomeSession(card().id),
+                () => host().visibleHomeSession(card().id),
                 presented,
               );
               const summaryRows = () => [
@@ -342,8 +376,8 @@ export function SidebarAgentRoster(props: RosterProps) {
                 statusOnly: true,
               });
               const active = () =>
-                isSessionRouteId(roster.host().activeRouteId) &&
-                areUiSessionKeysEquivalent(roster.host().getRouteSessionKey(), mainKey());
+                isSessionRouteId(host().activeRouteId) &&
+                areUiSessionKeysEquivalent(host().getRouteSessionKey(), mainKey());
               return (
                 <section
                   class="sidebar-agent-roster__group"
@@ -365,7 +399,7 @@ export function SidebarAgentRoster(props: RosterProps) {
                       onClick={(event: MouseEvent) => {
                         if (shouldHandleNavigationClick(event)) {
                           event.preventDefault();
-                          roster.host().openMainSession(card().id);
+                          host().openMainSession(card().id);
                         }
                       }}
                     >
@@ -394,7 +428,7 @@ export function SidebarAgentRoster(props: RosterProps) {
                     </span>
                     <span class="sidebar-agent-roster__actions">{agentMenu(card)}</span>
                   </div>
-                  {renderPendingSessionCreateRow(roster.host, card().id)}
+                  {renderPendingSessionCreateRow(host, card().id)}
                 </section>
               );
             }}

@@ -362,12 +362,12 @@ describe("AppSidebar session attention", () => {
     expect(sidebar.querySelector('[data-session-attention="agent"]')).not.toBeNull();
 
     const owner = getAppSidebarOwner(sidebar.hostElement)!;
-    sidebar.publishPresentation();
+    sidebar.invalidate();
     provider.remove();
     await settleLitElement(sidebar);
-    const publishPresentation = vi.spyOn(owner, "publishPresentation");
+    const invalidate = vi.spyOn(owner, "invalidate");
     await vi.advanceTimersByTimeAsync(60_001);
-    expect(publishPresentation).not.toHaveBeenCalled();
+    expect(invalidate).not.toHaveBeenCalled();
 
     document.body.append(provider);
     await settleLitElement(sidebar);

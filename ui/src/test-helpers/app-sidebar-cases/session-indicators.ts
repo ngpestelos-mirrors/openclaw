@@ -457,7 +457,7 @@ describe("AppSidebar session indicators", () => {
       numbers: [2],
       state: "merged",
     });
-    sidebar.publishPresentation();
+    sidebar.invalidate();
     await sidebar.updateComplete;
 
     await waitForFast(() => {

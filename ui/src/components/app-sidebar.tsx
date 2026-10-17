@@ -11,6 +11,7 @@ import {
   Show,
   untrack,
 } from "solid-js";
+import { rosterActivityStore } from "../lib/agents/roster-activity-store.ts";
 import { useApplication, useOptionalApplication } from "../lib/reactive/context.ts";
 import { listen } from "../lib/reactive/listener.ts";
 import { createParkedProjection } from "../lib/reactive/parked-projection.ts";
@@ -101,7 +102,7 @@ function AppSidebarContent(props: AppSidebarProps, host: HTMLElement): JSX.Eleme
         context.plugins.subscribe(current.sessionData.requestSessionDataUpdate),
         listen(window, SIDEBAR_HIDDEN_SESSION_CATALOGS_CHANGED_EVENT, () => {
           current.hiddenSessionCatalogIds = loadStoredHiddenSessionCatalogIds();
-          current.publishPresentation();
+          current.invalidate();
         }),
         listen(window, "openclaw:native-gateways-changed", () => {
           if (current.isConnected) {
@@ -144,7 +145,9 @@ function AppSidebarContent(props: AppSidebarProps, host: HTMLElement): JSX.Eleme
     { equals: false },
   );
   createSessionOwnerFilterQuery(owner.sessionOwnerFilter, prepared, () =>
-    context.sessions.listSnapshot(owner.sessionData.sessionListQuery(owner.expandedAgentId())),
+    owner.sidebarAgentsMode === "roster"
+      ? rosterActivityStore(context).snapshot
+      : context.sessions.listSnapshot(owner.sessionData.sessionListQuery(owner.expandedAgentId())),
   );
   const narrationEnabled = createMemo(() => {
     // Preparation reads narration while synchronizing the session projection.
@@ -251,7 +254,6 @@ function AppSidebarContent(props: AppSidebarProps, host: HTMLElement): JSX.Eleme
       owner.readNarration();
       scroll.capture();
     },
-    // These imperative commit hooks sample current host state without adding render dependencies.
     () =>
       untrack(() => {
         owner.sessionData.refreshPresentation();
@@ -268,7 +270,7 @@ function AppSidebarContent(props: AppSidebarProps, host: HTMLElement): JSX.Eleme
           const timer = globalThis.setTimeout(
             () => {
               owner.sessionProjection.invalidate();
-              owner.publishPresentation();
+              owner.invalidate();
             },
             Math.max(0, deadline - Date.now()),
           );
@@ -284,7 +286,7 @@ function AppSidebarContent(props: AppSidebarProps, host: HTMLElement): JSX.Eleme
       owner.sessionData.connect();
     }
     let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => host.classList.add("sidebar-r"));
+      frame = requestAnimationFrame(() => owner.classList.add("sidebar-r"));
     });
     return () => {
       cancelAnimationFrame(frame);

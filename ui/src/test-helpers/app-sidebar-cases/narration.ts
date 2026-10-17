@@ -119,7 +119,7 @@ describe("AppSidebar live narration", () => {
       } else {
         sidebar.navigationView = hidden;
       }
-      sidebar.publishPresentation();
+      sidebar.invalidate();
       await sidebar.updateComplete;
       expect(sessions.unsubscribeMessages).toHaveBeenCalledTimes(1);
 
@@ -128,7 +128,7 @@ describe("AppSidebar live narration", () => {
       sidebar.navigationCollapsed = false;
       sidebar.navigationVisible = true;
       sidebar.navigationView = "sessions";
-      sidebar.publishPresentation();
+      sidebar.invalidate();
       await sidebar.updateComplete;
       await acquired.promise;
       expect(sessions.subscribeMessages).toHaveBeenCalledTimes(2);

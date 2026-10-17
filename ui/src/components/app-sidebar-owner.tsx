@@ -61,46 +61,6 @@ import { PanelRefreshStatus } from "./solid/panel-refresh-status.tsx";
 import { SidebarCommunityInvite } from "./solid/sidebar-community-invite.tsx";
 
 export class AppSidebarOwner extends AppSidebarSessionNavigationElement implements SessionListHost {
-  private readonly listeners = new Set<() => void>();
-  private attached = false;
-  private complete: Promise<boolean> = Promise.resolve(true);
-  private finishUpdate: ((value: boolean) => void) | undefined;
-
-  get isConnected(): boolean {
-    // The bridge retains roots across moves; detached hosts cannot admit new work.
-    return this.attached && this.hostElement.isConnected;
-  }
-
-  subscribe(listener: () => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-
-  publishPresentation(): void {
-    if (!this.finishUpdate) {
-      this.complete = new Promise((resolve) => {
-        this.finishUpdate = resolve;
-      });
-    }
-    for (const listener of this.listeners) {
-      listener();
-    }
-  }
-
-  get updateComplete(): Promise<boolean> {
-    return this.complete;
-  }
-
-  commitRender(): void {
-    if (!this.isConnected) {
-      return;
-    }
-    const finish = this.finishUpdate;
-    this.finishUpdate = undefined;
-    this.commitNavigationPreferences();
-    finish?.(true);
-  }
-
   readNarration: () => ReturnType<SidebarNarration["read"]> | undefined = () => undefined;
   private readonly emptyNarrationLines = new Map<string, string>();
   private readonly emptyNarrationTools = new Map<string, SidebarToolActivity>();
@@ -115,7 +75,7 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     return this.readNarration()?.observerDigests ?? this.emptyObserverDigests;
   }
 
-  override readonly sessionOrganizer = new SessionOrganizer(this, () => this.publishPresentation());
+  override readonly sessionOrganizer = new SessionOrganizer(this, () => this.invalidate());
   // Native sidebar custody outlives provider/view roots.
   private readonly menuRoot = runWithOwner(null, () =>
     createRoot((dispose) => ({
@@ -123,7 +83,7 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
         host: this,
         element: this.hostElement,
         commit: () => {
-          this.publishPresentation();
+          this.invalidate();
           return this.updateComplete;
         },
       }),
@@ -132,7 +92,7 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
   );
   override readonly sidebarMenus = this.menuRoot.menus;
   readonly disposeMenus = this.menuRoot.dispose;
-  readonly people = new SidebarPeoplePreferences(() => this.publishPresentation());
+  readonly people = new SidebarPeoplePreferences(() => this.invalidate());
   peopleView?: ReturnType<typeof createSidebarPeople>;
   // A connected host retains its pending boot read when Solid recreates the view.
   readonly snapshot = createSidebarSnapshot(this);
@@ -266,7 +226,7 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     (module) => {
       this.catalogRenderer = module.renderSessionCatalogGroups;
       if (this.isConnected) {
-        this.publishPresentation();
+        this.invalidate();
       }
     },
   );
@@ -277,27 +237,17 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     return super.dismissTransientMenus() || hadPersonCard;
   }
 
-  detach(): void {
-    if (!this.attached) {
-      return;
-    }
-    this.attached = false;
+  override disconnectedCallback() {
     this.sidebarMenus.disconnect();
     this.sessionData.disconnect();
     this.peopleView?.dismiss();
     this.narration?.disconnect();
-    this.resetNavigationPresentation();
+    super.disconnectedCallback();
     this.snapshot.disconnect();
-    const finish = this.finishUpdate;
-    this.finishUpdate = undefined;
-    finish?.(false);
   }
 
-  prepareRender(): void {
-    if (!this.isConnected) {
-      return;
-    }
-    this.synchronizeNavigationPreferences();
+  protected override willUpdate() {
+    super.willUpdate();
     if (this.context?.plugins.registryStatus === "complete") {
       this.sidebarPluginSnapshot = null;
     }
@@ -341,15 +291,11 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     };
   }
 
-  attach(): void {
-    if (this.attached) {
-      return;
-    }
-    this.attached = true;
+  override connectedCallback() {
     this.sidebarMenus.connect();
     this.sessionData.connect();
     this.snapshot.connect();
-    this.publishPresentation();
+    super.connectedCallback();
   }
 
   toggleSessionPin(session: SidebarRecentSession): void {
@@ -402,7 +348,7 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
         sectionId,
         limit,
       );
-      this.publishPresentation();
+      this.invalidate();
     } else {
       this.sessionData.setVisibleSessionLimit(sectionId, limit);
     }
@@ -415,7 +361,7 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
   setCatalogProjectGrouping(next: CatalogProjectGrouping): void {
     storeSidebarCatalogGrouping(next);
     this.catalogProjectGrouping = next;
-    this.publishPresentation();
+    this.invalidate();
   }
 
   hideSessionCatalog(catalogId: string): void {
