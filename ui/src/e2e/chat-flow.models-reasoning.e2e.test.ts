@@ -519,7 +519,7 @@ suite.define(() => {
       const main = page.getByRole("main");
       const modelSelect = main.locator('[data-chat-model-select="true"]').first();
       await modelSelect.waitFor({ state: "visible", timeout: 10_000 });
-      expect(await modelSelect.textContent()).toContain("Claude Opus 4.5");
+      await expect.poll(() => modelSelect.textContent()).toContain("Claude Opus 4.5");
       await expect
         .poll(() =>
           main.locator('[data-chat-model-default="true"]').first().getAttribute("aria-selected"),
@@ -643,7 +643,7 @@ suite.define(() => {
       const expectedThinkingValues = thinkingLevels.map((level) => level.id).join(",");
 
       await modelSelect.waitFor({ state: "visible", timeout: 10_000 });
-      expect(await modelSelect.textContent()).toContain("GPT-5.6 Sol");
+      await expect.poll(() => modelSelect.textContent()).toContain("GPT-5.6 Sol");
       expect(await modelSelect.textContent()).not.toContain("@openai:");
       await modelSelect.click();
       await expect.poll(() => modelOption.count()).toBe(1);

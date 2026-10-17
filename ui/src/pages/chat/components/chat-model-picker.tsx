@@ -192,23 +192,36 @@ function ModelList(props: { label: string; more?: boolean; children: JSX.Element
 export function ChatModelPicker(params: ChatModelPickerParams) {
   let summary: HTMLElement;
   let searchInput: HTMLInputElement | undefined;
+  let details: HTMLDetailsElement | undefined;
+  let searchFocusFrom: Element | null | undefined;
+  const focusSearch = () => {
+    if (searchFocusFrom === undefined || !details) {
+      return;
+    }
+    if (
+      !details.isConnected ||
+      !details.open ||
+      details.ownerDocument.activeElement !== searchFocusFrom
+    ) {
+      searchFocusFrom = undefined;
+    } else if (searchInput?.isConnected) {
+      searchInput.focus({ preventScroll: true });
+      searchFocusFrom = undefined;
+    }
+  };
   const pickerOverlay = createChatPickerOverlay((target) => {
     params.onOpenChange?.(target.open);
     if (!target.open) {
+      searchFocusFrom = undefined;
       params.accountSection?.onClose();
       resetModelSearch(target);
       return;
     }
     void params.onOpen?.();
-    const active = target.ownerDocument.activeElement;
-    requestAnimationFrame(() => {
-      if (target.isConnected && target.open && target.ownerDocument.activeElement === active) {
-        searchInput?.focus({ preventScroll: true });
-      }
-    });
+    searchFocusFrom = target.ownerDocument.activeElement;
+    requestAnimationFrame(focusSearch);
   });
   const state = createMemo(() => prepareChatModelPicker(params));
-  let details: HTMLDetailsElement | undefined;
   const closeModelPickerAfterSelection = (event: MouseEvent) => {
     // Option buttons live inside the picker overlay; its summary lives outside it.
     if (event.currentTarget instanceof Element) {
@@ -496,7 +509,11 @@ export function ChatModelPicker(params: ChatModelPickerParams) {
                 <div class="chat-controls__model-search-wrap">
                   <Icon name="search" />
                   <input
-                    ref={(element) => (searchInput = element)}
+                    ref={(element) => {
+                      searchInput = element;
+                      // Catalog arrival may mount search after the opening frame.
+                      queueMicrotask(focusSearch);
+                    }}
                     class="chat-controls__model-search"
                     data-chat-model-search="true"
                     type="search"

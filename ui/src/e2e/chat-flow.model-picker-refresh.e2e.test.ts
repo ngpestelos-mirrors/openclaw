@@ -92,6 +92,9 @@ suite.define(() => {
     });
     await page.goto(`${suite.server.baseUrl}chat`);
     const picker = pickerFor(page);
+    await expect
+      .poll(() => picker.locator('[data-chat-model-select="true"]').textContent())
+      .toContain("GPT-5.6 Sol");
     await picker.locator('[data-chat-model-select="true"]').tap();
     await picker.getByRole("option", { name: "GPT-5.6 Terra", exact: true }).waitFor();
     await expect.poll(() => picker.locator("[data-chat-model-selection-target]").count()).toBe(0);
@@ -123,10 +126,10 @@ suite.define(() => {
     );
 
     await page.reload();
+    await expect.poll(() => selectedModel(picker)).toBe("openai/gpt-5.6-terra");
     await picker.locator('[data-chat-model-select="true"]').tap();
     await picker.locator('[data-chat-model-default="true"]').waitFor();
     await expect.poll(() => picker.locator("[data-chat-model-selection-target]").count()).toBe(0);
-    await expect.poll(() => selectedModel(picker)).toBe("openai/gpt-5.6-terra");
 
     await page.setViewportSize({ height: 900, width: 400 });
     const defaultRow = picker.locator('[data-chat-model-default="true"]');
