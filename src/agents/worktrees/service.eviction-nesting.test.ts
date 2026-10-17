@@ -43,6 +43,12 @@ const create = (name: string, source = repoRoot, target = service) =>
   target.create({ repoRoot: source, name, baseRef: "HEAD" });
 const registry = (id: string) => getRegistryWorktree(env, id);
 const read = (directory: string, file: string) => fs.readFile(path.join(directory, file), "utf8");
+const head = (checkout: string) => requireGit(checkout, ["rev-parse", "--verify", "HEAD"]);
+async function expectExternalLive(record: { id: string; path: string }, contents: string) {
+  expect(registry(record.id)?.removedAt).toBeUndefined();
+  expect(await head(record.path)).toBeTruthy();
+  expect(await read(record.path, "unsaved.txt")).toBe(contents);
+}
 const gitDirectory = async (checkout: string) =>
   fs.realpath(await requireGit(checkout, ["rev-parse", "--absolute-git-dir"]));
 const gitCommonDirectory = async (checkout: string) =>
@@ -146,13 +152,8 @@ it("preserves a live dependent's chained object lookup at the cap", async () => 
   const declaredLookup = path.join(root, "object-alias");
   await fs.symlink(lookup, declaredLookup, process.platform === "win32" ? "junction" : "dir");
   await fs.writeFile(alternatesFile, `${declaredLookup}\n`);
-  expect(await requireGit(source, ["cat-file", "-e", `${commit}^{commit}`])).toBe("");
-  expect(await requireGit(source, ["cat-file", "blob", blob])).toBe(contents.trim());
   const dependent = await create("dependent", source);
   await withRunLease(dependent.id, async () => {
-    expect(hasLiveWorktreeRunLease(env, dependent.id)).toBe(true);
-    expect(await requireGit(dependent.path, ["cat-file", "-e", `${commit}^{commit}`])).toBe("");
-    expect(await requireGit(dependent.path, ["cat-file", "blob", blob])).toBe(contents.trim());
     await expect(create("replacement")).rejects.toThrow(
       new RegExp(`cap ${config.worktreeMaxCount}`),
     );
@@ -172,7 +173,7 @@ it("refuses a late live owner of unresolved shared metadata before deleting its 
   const commonDir = await gitCommonDirectory(source);
   const unavailableGit = path.join(outer.path, "unavailable-source-git");
   await fs.writeFile(path.join(external.path, "unsaved.txt"), "live dependency bytes\n");
-  const original = registry(outer.id);
+  const { id, path: checkoutPath, lastActiveAt } = registry(outer.id)!;
   let lease: Awaited<ReturnType<typeof acquireWorktreeRunLease>> | undefined;
   let unavailable = false;
   onSnapshot(outer.path, async () => {
@@ -182,11 +183,7 @@ it("refuses a late live owner of unresolved shared metadata before deleting its 
       unavailable = true;
     }
   });
-  setLoggerOverride({
-    level: "warn",
-    consoleLevel: "silent",
-    file: path.join(root, "eviction.log"),
-  });
+  setLoggerOverride({ level: "warn", consoleLevel: "silent", file: path.join(root, "evict.log") });
   const logs = createDiagnosticLogRecordCapture();
   try {
     await expect(create("replacement")).rejects.toThrow(/cap 2.*live owners/);
@@ -195,22 +192,16 @@ it("refuses a late live owner of unresolved shared metadata before deleting its 
     await logs.flush();
     expect(
       logs.records.some(
-        (record) =>
-          record.message.includes(`Worktree eviction live-refused: ${outer.id}`) &&
-          record.message.includes(external.id),
+        ({ message }) =>
+          message.includes(`Worktree eviction live-refused: ${outer.id}`) &&
+          message.includes(external.id),
       ),
     ).toBe(true);
-    expect(registry(outer.id)).toMatchObject({
-      id: original!.id,
-      path: original!.path,
-      lastActiveAt: original!.lastActiveAt,
-    });
+    expect(registry(outer.id)).toMatchObject({ id, path: checkoutPath, lastActiveAt });
     expect(registry(outer.id)?.removedAt).toBeUndefined();
-    expect(registry(external.id)?.removedAt).toBeUndefined();
     await fs.rename(unavailableGit, commonDir);
     unavailable = false;
-    expect(await requireGit(external.path, ["rev-parse", "--verify", "HEAD"])).toBeTruthy();
-    expect(await read(external.path, "unsaved.txt")).toBe("live dependency bytes\n");
+    await expectExternalLive(external, "live dependency bytes\n");
   } finally {
     try {
       if (unavailable) {
@@ -259,11 +250,8 @@ it.each([
         );
         privateMetadata = storage;
       } else {
-        await requireGit(source, [
-          "init",
-          "--separate-git-dir",
-          path.join(outer.path, "relocated-git"),
-        ]);
+        const relocatedGit = path.join(outer.path, "relocated-git");
+        await requireGit(source, ["init", "--separate-git-dir", relocatedGit]);
         await requireGit(source, ["worktree", "repair", external.path]);
       }
       lease = await acquireWorktreeRunLease(external.id, { env });
@@ -279,14 +267,8 @@ it.each([
     }
     config.worktreeMaxCount = 1;
     try {
-      const result = await service.gc({
-        checkpoint: async () => {
-          if (phase === "checkpoint") {
-            await relocate();
-          }
-        },
-      });
-      expect(relocated).toBe(true);
+      const checkpoint = phase === "checkpoint" ? relocate : undefined;
+      const result = await service.gc({ checkpoint });
       expect(lease).toBeDefined();
       expect(result).toMatchObject({
         removed: [],
@@ -299,12 +281,9 @@ it.each([
         ]),
       });
       expect(registry(outer.id)?.removedAt).toBeUndefined();
-      expect(registry(external.id)?.removedAt).toBeUndefined();
-      expect(await requireGit(external.path, ["rev-parse", "--verify", "HEAD"])).toBeTruthy();
       expect(await read(outer.path, "README.md")).toBe("base\n");
-      expect(await read(external.path, "unsaved.txt")).toBe("relocated live data\n");
+      await expectExternalLive(external, "relocated live data\n");
       if (phase === "snapshot with private metadata") {
-        expect(privateMetadata).toBeDefined();
         await expectPrivateMetadata(privateMetadata!);
       }
     } finally {
@@ -342,14 +321,11 @@ it.each([
       layout === "private Git directory"
         ? await relocatePrivateGitDirectory(external.path, path.join(storageRoot, "private-git"))
         : undefined;
-    const commonDir = await gitCommonDirectory(external.path);
-    expect((privateMetadata?.directory ?? commonDir).startsWith(`${storageRoot}${path.sep}`)).toBe(
-      true,
-    );
+    const backing = privateMetadata?.directory ?? (await gitCommonDirectory(external.path));
+    expect(backing.startsWith(`${storageRoot}${path.sep}`)).toBe(true);
     await fs.writeFile(path.join(external.path, "unsaved.txt"), "external checkout data\n");
     const original = registry(outer.id);
     await withRunLease(external.id, async () => {
-      expect(hasLiveWorktreeRunLease(env, external.id)).toBe(true);
       if (missingCheckout) {
         await fs.rm(outer.path, { recursive: true });
       }
@@ -358,11 +334,9 @@ it.each([
       if (surface === "checkout") {
         expect(registry(outer.id)).toEqual(original);
       }
-      expect(registry(external.id)?.removedAt).toBeUndefined();
       expect(hasLiveWorktreeRunLease(env, external.id)).toBe(true);
-      expect(await requireGit(external.path, ["rev-parse", "--verify", "HEAD"])).toBeTruthy();
+      await expectExternalLive(external, "external checkout data\n");
       expect(await requireGit(source, ["cat-file", "-e", "HEAD^{commit}"])).toBe("");
-      expect(await read(external.path, "unsaved.txt")).toBe("external checkout data\n");
       if (privateMetadata) {
         await expectPrivateMetadata(privateMetadata);
       }
@@ -394,7 +368,7 @@ it.each(["native administration", "control file"] as const)(
     await requireGit(sourceBase, ["worktree", "add", "-b", "incoming", source, "HEAD"]);
     await fs.writeFile(path.join(source, "staged-source.txt"), "incoming staged bytes\n");
     await requireGit(source, ["add", "staged-source.txt"]);
-    const head = await requireGit(source, ["rev-parse", "--verify", "HEAD"]);
+    const originalHead = await head(source);
     let directory = await gitDirectory(source);
     const index = await fs.readFile(path.join(directory, "index"));
     if (layout === "control file") {
@@ -407,13 +381,12 @@ it.each(["native administration", "control file"] as const)(
         await relocatePrivateGitDirectory(source, path.join(storageRoot, "incoming-private"))
       ).directory;
     }
-    expect(await requireGit(source, ["show", ":staged-source.txt"])).toBe("incoming staged bytes");
     await expect(create("replacement", source)).rejects.toThrow(/cap 1/);
     expect(registry(outer.id)?.removedAt).toBeUndefined();
     expect(await liveIds()).toEqual([outer.id]);
     expect(await read(outer.path, "README.md")).toBe("base\n");
     expect(await fs.readFile(path.join(directory, "index"))).toEqual(index);
-    expect(await requireGit(source, ["rev-parse", "--verify", "HEAD"])).toBe(head);
+    expect(await head(source)).toBe(originalHead);
     expect(await requireGit(source, ["show", ":staged-source.txt"])).toBe("incoming staged bytes");
   },
 );

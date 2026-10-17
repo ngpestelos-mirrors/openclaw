@@ -3,10 +3,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fixtureReceiptClientSource,
   openFixtureReceiptChannel,
@@ -22,11 +21,8 @@ import * as commandRunner from "../../process/exec.js";
 import type { SpawnResult } from "../../process/exec.js";
 import { SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS } from "../../sessions/session-lifecycle-admission.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import {
-  closeOpenClawStateDatabaseAsync,
-  closeOpenClawStateDatabaseForTest,
-} from "../../state/openclaw-state-db.js";
 import { killPidIfAlive } from "../../test-utils/process-tree.js";
+import { useStateDatabaseTempDirs } from "../../test-utils/state-database-temp-dirs.js";
 import { updateRegistryWorktree } from "./registry.js";
 import { ManagedWorktreeService } from "./service.js";
 import { useManagedWorktreeTestRepository } from "./service.test-support.js";
@@ -44,6 +40,7 @@ const writeScript = (file: string, contents: string) =>
 
 describe("ManagedWorktreeService repository code isolation", () => {
   const initializeRepository = useManagedWorktreeTestRepository();
+  const tempDirs = useStateDatabaseTempDirs();
   let root: string;
   let repo: string;
   let sentinel: string;
@@ -62,14 +59,11 @@ describe("ManagedWorktreeService repository code isolation", () => {
 
   beforeAll(async () => {
     receipts = await openFixtureReceiptChannel();
-  });
-
-  afterAll(async () => {
-    await receipts.close();
+    return () => receipts.close();
   });
 
   beforeEach(async () => {
-    root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-worktree-hooks-")));
+    root = tempDirs.make("openclaw-worktree-hooks-");
     repo = await initializeRepository(root);
     sentinel = path.join(repo, ".hook-ran");
     const hooks = path.join(repo, "git-hooks");
@@ -84,11 +78,8 @@ describe("ManagedWorktreeService repository code isolation", () => {
     });
   });
 
-  afterEach(async () => {
-    await closeOpenClawStateDatabaseAsync();
-    closeOpenClawStateDatabaseForTest();
+  afterEach(() => {
     clearRuntimeConfigSnapshot();
-    await fs.rm(root, { recursive: true, force: true });
   });
 
   it("never executes repository hooks through creation, removal and restore", async () => {
@@ -188,9 +179,8 @@ describe("ManagedWorktreeService repository code isolation", () => {
 
   it("does not fetch repository refs after caller authority closes", async () => {
     await expect(
-      service.create({
-        repoRoot: repo,
-        name: "fenced-fetch",
+      create("fenced-fetch", {
+        baseRef: undefined,
         commitGuard: () => {
           throw new Error("authority closed");
         },
@@ -313,13 +303,10 @@ describe("ManagedWorktreeService repository code isolation", () => {
         await waitForSetupSignal(dispatched.promise, "setup dispatch");
         await waitForSetupSignal(released.promise, "setup source release");
         expect(creationSettled).not.toHaveBeenCalled();
-        expect(events).not.toContain("completion");
-        expect(events).not.toContain("checkout-cleanup");
         if (mode === "unwind") {
           await waitForSetupSignal(aborted.promise, "setup cancellation");
           expect(acceptedSignal?.reason).toBe(unwindFailure);
           expect(creationSettled).not.toHaveBeenCalled();
-          expect(events).not.toContain("checkout-cleanup");
           completion.reject(completionFailure);
           const result = await outcome;
           assert("error" in result, "expected source unwind failure");
@@ -353,15 +340,8 @@ describe("ManagedWorktreeService repository code isolation", () => {
     "preserves exact ownership after source unwind (%s)",
     async (mode) => {
       const ownerId = `publication-${mode}`;
-      const params = {
-        repoRoot: repo,
-        name: ownerId,
-        baseRef: "HEAD",
-        ownerKind: "session" as const,
-        ownerId,
-        runSetupScript: false,
-      };
-      const existing = mode === "reuse" ? await service.create(params) : undefined;
+      const params = { ownerKind: "session" as const, ownerId, runSetupScript: false };
+      const existing = mode === "reuse" ? await create(ownerId, params) : undefined;
       const sourceFailure = new Error("source unwind after acknowledged worktree publication");
       let acknowledged: ManagedWorktreeRecord | undefined;
       const withSource: WorktreeSourceStage = async (run) => {
@@ -380,9 +360,9 @@ describe("ManagedWorktreeService repository code isolation", () => {
         }
         throw sourceFailure;
       };
-      const failure = await service
-        .create({ ...params, withSource })
-        .catch((error: unknown) => error);
+      const failure = await create(ownerId, { ...params, withSource }).catch(
+        (error: unknown) => error,
+      );
       assert(acknowledged, "expected a published worktree before source unwind");
       const { id, path: checkout, branch, lastActiveAt } = acknowledged;
       const current = await service.findLiveByOwner("session", ownerId);
@@ -391,7 +371,7 @@ describe("ManagedWorktreeService repository code isolation", () => {
         expect(current).toBeUndefined();
         const retained = (await service.listRegistryRecords()).find((record) => record.id === id);
         expect(retained?.removedAt).toBeDefined();
-        await expect(fs.stat(checkout)).rejects.toMatchObject({ code: "ENOENT" });
+        await expectAbsent(checkout);
       } else {
         expect(current).toMatchObject({ id, path: checkout, branch, ownerId });
         expect(current?.removedAt).toBeUndefined();

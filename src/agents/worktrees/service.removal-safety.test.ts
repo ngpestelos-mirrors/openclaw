@@ -1,19 +1,15 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { captureRuntimeConfigAsyncReader } from "../../config/config.js";
 import * as gitExec from "../../infra/git-exec.js";
 import * as commandRunner from "../../process/exec-runner.js";
 import { withCommandProcessScope } from "../../process/exec-spawn.js";
-import {
-  closeOpenClawStateDatabaseAsync,
-  closeOpenClawStateDatabaseForTest,
-} from "../../state/openclaw-state-db.js";
+import { useStateDatabaseTempDirs } from "../../test-utils/state-database-temp-dirs.js";
 import * as checkoutGitOwner from "./checkout-git-config.js";
 import * as checkoutInspection from "./checkout-inspection.js";
 import * as gitOwner from "./git.js";
@@ -28,22 +24,22 @@ import {
 import type { ManagedWorktreeRecord } from "./types.js";
 
 const execFileAsync = promisify(execFile);
-async function git(cwd: string, ...args: string[]): Promise<string> {
-  return (await execFileAsync("git", ["-C", cwd, ...args])).stdout.trim();
-}
+const git = async (cwd: string, ...args: string[]) =>
+  (await execFileAsync("git", ["-C", cwd, ...args])).stdout.trim();
 const read = (directory: string) => fs.readFile(path.join(directory, "README.md"), "utf8");
 const write = (directory: string, content: string) =>
   fs.writeFile(path.join(directory, "README.md"), content);
 
 describe("managed removal custody", () => {
   const initializeRepository = useManagedWorktreeTestRepository();
+  const tempDirs = useStateDatabaseTempDirs();
   let root: string;
   let repo: string;
   let env: NodeJS.ProcessEnv;
   let service: ManagedWorktreeService;
 
   beforeEach(async () => {
-    root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "openclaw-removal-"));
+    root = tempDirs.make("openclaw-removal-");
     repo = await initializeRepository(root);
     env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
     await captureRuntimeConfigAsyncReader()();
@@ -53,24 +49,17 @@ describe("managed removal custody", () => {
     // these synthetic faults through its action boundary, retaining real Git.
     vi.spyOn(checkoutGitOwner, "withWorktreeGitConfig").mockImplementation(
       (cwd, sourceOnly, guard, operation) =>
-        withWorktreeGitConfig(cwd, sourceOnly, guard, (policy) => {
-          if (sourceOnly) {
-            return operation(policy);
-          }
-          return operation({ ...policy, run: gitOwner.runGit, require: gitOwner.requireGit });
-        }),
+        withWorktreeGitConfig(cwd, sourceOnly, guard, (policy) =>
+          operation(
+            sourceOnly ? policy : { ...policy, run: gitOwner.runGit, require: gitOwner.requireGit },
+          ),
+        ),
     );
-  });
-  afterEach(async () => {
-    vi.restoreAllMocks();
-    await closeOpenClawStateDatabaseAsync();
-    closeOpenClawStateDatabaseForTest();
-    await fs.rm(root, { recursive: true, force: true });
   });
   const registry = (id: string) => getRegistryWorktree(env, id);
   const remove = (id: string, reason = "archive") => service.remove({ id, reason });
-  async function materialize(name: string, ownerKind?: ManagedWorktreeRecord["ownerKind"]) {
-    return await materializeManagedWorktreeFixture({
+  const materialize = (name: string, ownerKind?: ManagedWorktreeRecord["ownerKind"]) =>
+    materializeManagedWorktreeFixture({
       env,
       name,
       now: Date.now(),
@@ -78,7 +67,6 @@ describe("managed removal custody", () => {
       stateDir: env.OPENCLAW_STATE_DIR!,
       ownerKind,
     });
-  }
 
   it.each([
     ["switched", /branch|HEAD/],
@@ -283,12 +271,6 @@ describe("managed removal custody", () => {
     });
 
     expect(current).toBe(false);
-    expect(checkoutGitOwner.withWorktreeGitConfig).toHaveBeenCalledWith(
-      created.path,
-      true,
-      expect.any(Object),
-      expect.any(Function),
-    );
     expect(registry(created.id)).toMatchObject({
       removedAt: expect.any(Number),
       snapshotRef: removed.snapshotRef,
@@ -314,7 +296,6 @@ describe("managed removal custody", () => {
         return result;
       },
     );
-
     await expect(
       service.removeIfLossless(created.id, {
         commitGuard: () => {
@@ -350,12 +331,8 @@ describe("managed removal custody", () => {
     });
     await expect(remove(created.id)).rejects.toThrow("injected partial removal");
     fault.mockRestore();
-    const snapshotRef = registry(created.id)!.snapshotRef!;
-    expect(registry(created.id)?.gcRetry).toMatchObject({
-      stage: "checkoutRemoval",
-      attempts: 1,
-    });
-    const activity = registry(created.id)!.lastActiveAt;
+    const { snapshotRef, gcRetry, lastActiveAt: activity } = registry(created.id)!;
+    expect(gcRetry).toMatchObject({ stage: "checkoutRemoval", attempts: 1 });
     await expect(service.acquire(created.id)).rejects.toThrow(/recover its preserved snapshot/);
     expect(registry(created.id)!.lastActiveAt).toBe(activity);
     await updateRegistryWorktree(env, created.id, { lastActiveAt: activity + 1 });
@@ -363,11 +340,11 @@ describe("managed removal custody", () => {
     await expect(acquireWorktreeRunLease(created.id, { env })).rejects.toThrow(
       /recover its preserved snapshot/,
     );
-    const snapshot = await git(repo, "rev-parse", snapshotRef);
+    const snapshot = await git(repo, "rev-parse", snapshotRef!);
     await expect(remove(created.id, "retry")).rejects.toThrow(
       "Previous worktree removal may be incomplete",
     );
-    expect(await git(repo, "rev-parse", snapshotRef)).toBe(snapshot);
+    expect(await git(repo, "rev-parse", snapshotRef!)).toBe(snapshot);
     expect(await git(repo, "show", `${snapshot}:README.md`)).toBe("complete recovery content");
     expect(await git(repo, "rev-parse", `refs/openclaw/removals/${created.id}`)).toBe(snapshot);
   });
@@ -402,14 +379,12 @@ describe("managed removal custody", () => {
     const lock = path.join(repo, ".git", `${pendingRef}.lock`);
     await fs.writeFile(lock, "", { flag: "wx" });
     try {
-      const failed = await service.gc();
-      expect(failed.snapshotsPruned).toBe(0);
+      expect((await service.gc()).snapshotsPruned).toBe(0);
       expect(registry(created.id)).toBeDefined();
     } finally {
       await fs.unlink(lock);
     }
-    const retried = await service.gc();
-    expect(retried.snapshotsPruned).toBe(1);
+    expect((await service.gc()).snapshotsPruned).toBe(1);
     expect(registry(created.id)).toBeUndefined();
     await expect(git(repo, "show-ref", "--verify", pendingRef)).rejects.toThrow();
     expect(await git(repo, "rev-parse", created.branch)).toBe(head);

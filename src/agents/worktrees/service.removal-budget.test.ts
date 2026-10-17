@@ -14,6 +14,7 @@ import {
   materializeManagedWorktreeFixtures,
   useManagedWorktreeTestRepository,
 } from "./service.test-support.js";
+import type { ManagedWorktreeRecord } from "./types.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
   afterEach(async () => {
@@ -29,10 +30,20 @@ const read = (directory: string, name = "README.md") =>
   fs.readFile(path.join(directory, name), "utf8");
 const makeService = (env: NodeJS.ProcessEnv, now = IDLE_GC_MS + 2) =>
   new ManagedWorktreeService({ env, now: () => now, getConfig: () => ({}) });
-async function fixture(prefix: string, partial = false) {
-  const root = tempDirs.make(prefix);
+const retryState = (env: NodeJS.ProcessEnv, id: string) => getRegistryWorktree(env, id)?.gcRetry;
+const timedOut = <T extends string | Buffer>(output: T, timeoutMs: number) => ({
+  stdout: output,
+  stderr: output,
+  code: null,
+  signal: "SIGTERM" as const,
+  killed: true,
+  termination: "timeout" as const,
+  timeoutMs,
+});
+async function fixture(mode: "full" | "partial" = "full") {
+  const root = tempDirs.make("worktree-removal-budget-");
   const source = await initializeRepository(root);
-  const repo = partial ? await partialRepository(root, source) : source;
+  const repo = mode === "partial" ? await partialRepository(root, source) : source;
   const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
   const materialize = (
     names: string[],
@@ -67,9 +78,7 @@ async function partialRepository(root: string, source: string) {
   return repo;
 }
 
-async function editRecords(
-  records: Awaited<ReturnType<typeof materializeManagedWorktreeFixtures>>,
-) {
+async function editRecords(records: readonly ManagedWorktreeRecord[]) {
   for (const record of records) {
     await fs.writeFile(path.join(record.path, "README.md"), "retained changes\n");
     // Materialized bytes do not repair the missing object in the shared store.
@@ -91,19 +100,13 @@ it.each([
 ])(
   "classifies object-storage evidence without deferring unrelated Git failures: %s",
   (message, corrupt) => {
-    expect(
-      isWorktreeRepositoryCorruptionError(
-        new Error("snapshot failed", { cause: new Error(message) }),
-      ),
-    ).toBe(corrupt);
+    const error = new Error("snapshot failed", { cause: new Error(message) });
+    expect(isWorktreeRepositoryCorruptionError(error)).toBe(corrupt);
   },
 );
 
 it("backs off shared-repository snapshots after a missing-object failure", async () => {
-  const { root, source, repo, env, materialize } = await fixture(
-    "worktree-corrupt-repository-",
-    true,
-  );
+  const { root, source, repo, env, materialize } = await fixture("partial");
   await requireGit(repo, ["checkout", "main"]);
   const records = await materialize(["broken-a", "broken-b"], {
     repoFingerprint: (await resolveRepository(repo)).fingerprint,
@@ -120,8 +123,8 @@ it("backs off shared-repository snapshots after a missing-object failure", async
   const reasons = first.issues.map((issue) => issue.reason).join("\n");
   expect(reasons).toContain("has missing or corrupt Git objects");
   expect(reasons).toMatch(/repair/i);
-  const failed = records.find((record) => getRegistryWorktree(env, record.id)?.gcRetry)!;
-  expect(getRegistryWorktree(env, failed.id)?.gcRetry).toMatchObject({
+  const failed = records.find((record) => retryState(env, record.id))!;
+  expect(retryState(env, failed.id)).toMatchObject({
     stage: "repository-corrupt",
     attempts: 1,
     retryAt: now + hour,
@@ -130,10 +133,7 @@ it("backs off shared-repository snapshots after a missing-object failure", async
 
   now += hour;
   expect((await gc()).failedCount).toBe(1);
-  expect(getRegistryWorktree(env, failed.id)?.gcRetry).toMatchObject({
-    attempts: 2,
-    retryAt: now + 4 * hour,
-  });
+  expect(retryState(env, failed.id)).toMatchObject({ attempts: 2, retryAt: now + 4 * hour });
   const [healthy] = await materialize(["healthy"], { repoRoot: source });
   expect((await gc()).removed).toEqual([healthy!.id]);
   await requireGit(repo, ["remote", "set-url", "origin", source]);
@@ -149,10 +149,7 @@ it("backs off shared-repository snapshots after a missing-object failure", async
 it.each(["promised", "promised-retry", "unpromised", "checksum", "byte-limited"] as const)(
   "consolidates healthy pack batches independently of missing snapshot objects (%s)",
   async (damage) => {
-    const { root, source, repo, env, materialize } = await fixture(
-      "worktree-partial-clone-deferral-",
-      true,
-    );
+    const { root, source, repo, env, materialize } = await fixture("partial");
     // Fixture materialization is an explicit checkout, not a Gateway inspection.
     await requireGit(repo, ["config", "gc.auto", "0"]);
     await requireGit(repo, ["config", "maintenance.auto", "false"]);
@@ -202,11 +199,8 @@ it.each(["promised", "promised-retry", "unpromised", "checksum", "byte-limited"]
       const realStat = fs.stat.bind(fs);
       vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
         const stat = await realStat(...args);
-        if (
-          stat &&
-          path.dirname(String(args[0])) === directory &&
-          String(args[0]).endsWith(".pack")
-        ) {
+        const file = String(args[0]);
+        if (stat && path.dirname(file) === directory && file.endsWith(".pack")) {
           stat.size = 40 * 1024 * 1024;
         }
         return stat;
@@ -264,7 +258,7 @@ it.each(["promised", "promised-retry", "unpromised", "checksum", "byte-limited"]
 );
 
 it("records an admitted deletion timeout after its caller cancels and loses session authority", async () => {
-  const { env, materialize } = await fixture("worktree-removal-cancelled-budget-");
+  const { env, materialize } = await fixture();
   const record = (await materialize(["cancelled"], { ownerKind: "manual" }))[0]!;
   const controller = new AbortController();
   let current = true;
@@ -274,15 +268,7 @@ it("records an admitted deletion timeout after its caller cancels and loses sess
       options?.beforeRun?.();
       current = false;
       controller.abort(new Error("caller cancelled"));
-      return {
-        stdout: "",
-        stderr: "",
-        code: null,
-        signal: "SIGTERM",
-        killed: true,
-        termination: "timeout",
-        timeoutMs: 300_000,
-      };
+      return timedOut("", 300_000);
     }
     return await execute(cwd, args, options);
   });
@@ -298,15 +284,12 @@ it("records an admitted deletion timeout after its caller cancels and loses sess
       },
     }),
   ).rejects.toThrow();
-  expect(getRegistryWorktree(env, record.id)?.gcRetry).toMatchObject({
-    stage: "checkoutRemoval",
-    attempts: 1,
-  });
+  expect(retryState(env, record.id)).toMatchObject({ stage: "checkoutRemoval", attempts: 1 });
   expect(getRegistryWorktree(env, record.id)?.removedAt).toBeUndefined();
 });
 
 it("persists timeout backoff across restart and retries only when due or explicitly requested", async () => {
-  const { env, materialize } = await fixture("worktree-removal-budget-");
+  const { env, materialize } = await fixture();
   const record = (await materialize(["timed-out"]))[0]!;
   await fs.writeFile(path.join(record.path, "README.md"), "retained changes\n");
   let now = IDLE_GC_MS + 2;
@@ -317,23 +300,14 @@ it("persists timeout backoff across restart and retries only when due or explici
     if (args.includes("write-tree")) {
       attempts++;
       if (fail) {
-        return {
-          stdout: Buffer.alloc(0),
-          stderr: Buffer.alloc(0),
-          code: null,
-          signal: "SIGTERM",
-          killed: true,
-          termination: "timeout",
-          timeoutMs: 120_000,
-          windowsEncoding: null,
-        };
+        return { ...timedOut(Buffer.alloc(0), 120_000), windowsEncoding: null };
       }
     }
     return await execute(cwd, args, options);
   });
   const gc = () => makeService(env, now).gc();
   expect((await gc()).outcome).toBe("partial");
-  const first = getRegistryWorktree(env, record.id)?.gcRetry;
+  const first = retryState(env, record.id);
   expect(first).toEqual({
     stage: "snapshot",
     elapsedMs: expect.any(Number),
@@ -346,20 +320,17 @@ it("persists timeout backoff across restart and retries only when due or explici
   now += hour;
   expect((await gc()).outcome).toBe("deferred");
   expect(attempts).toBe(1);
-  expect(getRegistryWorktree(env, record.id)?.gcRetry).toEqual(first);
+  expect(retryState(env, record.id)).toEqual(first);
 
   now += hour;
   expect((await gc()).outcome).toBe("partial");
   expect(attempts).toBe(2);
-  expect(getRegistryWorktree(env, record.id)?.gcRetry).toMatchObject({
-    attempts: 2,
-    retryAt: now + 4 * hour,
-  });
+  expect(retryState(env, record.id)).toMatchObject({ attempts: 2, retryAt: now + 4 * hour });
   fail = false;
   const retried = await makeService(env, now).gc({ retryDeferred: true });
   expect(retried.removed).toEqual([record.id]);
   expect(attempts).toBe(3);
-  expect(getRegistryWorktree(env, record.id)?.gcRetry).toBeUndefined();
+  expect(retryState(env, record.id)).toBeUndefined();
   const restored = await makeService(env, now).restore({ id: record.id });
   expect(await read(restored.path)).toBe("retained changes\n");
 });

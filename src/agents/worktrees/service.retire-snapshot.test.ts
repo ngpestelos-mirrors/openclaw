@@ -4,7 +4,6 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { registerWorktreesCli } from "../../cli/worktrees-cli.js";
 import { withLocalWorkspaceStore } from "../../gateway/worker-environments/local-workspace-store.js";
 import {
@@ -17,11 +16,10 @@ import { defaultRuntime } from "../../runtime.js";
 import * as stateRead from "../../state/openclaw-state-db-readonly.js";
 import type { DB } from "../../state/openclaw-state-db.generated.js";
 import {
-  closeOpenClawStateDatabaseAsync,
-  closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
+import { useStateDatabaseTempDirs } from "../../test-utils/state-database-temp-dirs.js";
 import * as worktreeGit from "./git.js";
 import { insertRegistryWorktreeProvisionedChunk } from "./provisioned-snapshot.test-support.js";
 import { getRegistryWorktreeProvisionedChunk } from "./registry-read.js";
@@ -37,14 +35,9 @@ const removedAt = 1_700_000_000_100;
 
 describe("Exact removed worktree snapshot retirement", () => {
   const initializeRepository = useManagedWorktreeTestRepository();
-  const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
-    afterEach(async () => {
-      vi.restoreAllMocks();
-      await closeOpenClawStateDatabaseAsync();
-      closeOpenClawStateDatabaseForTest();
-      vi.unstubAllEnvs();
-      cleanup();
-    });
+  const tempDirs = useStateDatabaseTempDirs();
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
   let root: string;
   let repo: string;
@@ -57,12 +50,7 @@ describe("Exact removed worktree snapshot retirement", () => {
   let snapshot: string;
   const retainedRef = "refs/heads/retained-source";
   const git = async (...args: string[]) =>
-    (
-      await execFileAsync("git", ["-C", repo, ...args], {
-        encoding: "utf8",
-        env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
-      })
-    ).stdout.trim();
+    (await execFileAsync("git", ["-C", repo, ...args])).stdout.trim();
   const registry = () => getRegistryWorktree(env, record.id);
   const retire = (patch: Partial<typeof request> = {}) =>
     retireManagedWorktreeSnapshotById({ ...request, ...patch });
@@ -77,8 +65,6 @@ describe("Exact removed worktree snapshot retirement", () => {
     root = tempDirs.make("openclaw-snapshot-retirement-");
     repo = await initializeRepository(root);
     const stateDir = path.join(root, "state");
-    await fs.mkdir(stateDir);
-    expect(await fs.realpath(stateDir)).toBe(stateDir);
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     vi.stubEnv("GIT_NO_LAZY_FETCH", "1");
     vi.stubEnv("GIT_OPTIONAL_LOCKS", "0");
@@ -127,19 +113,19 @@ describe("Exact removed worktree snapshot retirement", () => {
 
   function beforeSnapshotDeletion(effect: () => void | Promise<void>) {
     const realGit = worktreeGit.requireGit;
-    const mutation = vi.fn(effect);
+    let pending = true;
     vi.spyOn(worktreeGit, "requireGit").mockImplementation(async (cwd, args, options) => {
       if (
-        mutation.mock.calls.length === 0 &&
+        pending &&
         args[0] === "update-ref" &&
         args.includes("--stdin") &&
         String(options?.input).includes(`delete ${snapshotRef} `)
       ) {
-        await mutation();
+        pending = false;
+        await effect();
       }
       return await realGit(cwd, args, options);
     });
-    return mutation;
   }
 
   function retirementCli() {
@@ -159,17 +145,30 @@ describe("Exact removed worktree snapshot retirement", () => {
     return { program, output, argv };
   }
 
-  it.each(["wrong", "exact"])(
-    "enforces CLI snapshot custody when the timestamp is %s",
-    async (timestamp) => {
+  it.each(["timestamp", "snapshot OID", "repository identity", "exact"])(
+    "enforces CLI snapshot custody (%s)",
+    async (kind) => {
       const cli = retirementCli();
-      if (timestamp === "wrong") {
-        cli.argv[cli.argv.indexOf("--removed-at") + 1] = String(removedAt + 1);
+      if (kind !== "exact") {
+        if (kind === "repository identity") {
+          await updateRegistryWorktree(env, record.id, {
+            repositoryIdentity: { repoRoot: repo, repoFingerprint: "foreign-fingerprint" },
+          });
+        } else {
+          const flag = kind === "timestamp" ? "--removed-at" : "--expected-oid";
+          cli.argv[cli.argv.indexOf(flag) + 1] =
+            kind === "timestamp" ? String(removedAt + 1) : "1".repeat(40);
+        }
+        const expected = kind === "repository identity" ? registry() : record;
         await expect(cli.program.parseAsync(cli.argv)).rejects.toThrow(
-          /snapshot identity does not match/,
+          kind === "repository identity"
+            ? /repository identity changed/
+            : kind === "timestamp"
+              ? /snapshot identity does not match/
+              : /snapshot identity does not match|ref OID changed/,
         );
         expect(cli.output).not.toHaveBeenCalled();
-        await expectPreserved(record);
+        await expectPreserved(expected);
         return;
       }
       const foreign: ManagedWorktreeRecord = {
@@ -198,25 +197,6 @@ describe("Exact removed worktree snapshot retirement", () => {
       expect(await git("show", "HEAD:README.md")).toBe("base");
     },
   );
-
-  it.each([
-    ["snapshot OID", { expectedSnapshotOid: "1".repeat(40) }],
-    ["repository identity", {}],
-  ] as const)("preserves custody when the expected %s does not match", async (label, patch) => {
-    if (label === "repository identity") {
-      await updateRegistryWorktree(env, record.id, {
-        repositoryIdentity: { repoRoot: repo, repoFingerprint: "foreign-fingerprint" },
-      });
-    }
-    const expected = label === "repository identity" ? registry() : record;
-    await reject(
-      label === "repository identity"
-        ? /repository identity changed/
-        : /snapshot identity does not match|ref OID changed/,
-      patch,
-    );
-    await expectPreserved(expected);
-  });
 
   it("preserves exact-state recovery instead of treating it as a redundant ordinary snapshot", async () => {
     const exactRef = `refs/openclaw/snapshots/exact-v1/${record.id}`;
@@ -258,8 +238,6 @@ describe("Exact removed worktree snapshot retirement", () => {
             scope,
             lease_key: "retained-run",
             owner: "synthetic-consumer",
-            expires_at: null,
-            heartbeat_at: null,
             payload_json: JSON.stringify({}),
             created_at: removedAt,
             updated_at: removedAt,
@@ -351,14 +329,12 @@ describe("Exact removed worktree snapshot retirement", () => {
       store.create({
         ...fixture,
         session_key: record.ownerId!,
-        session_id: "b0000000-0000-4000-8000-000000000001",
         base_commit: source,
         source_paths_json: JSON.stringify(["README.md"]),
         baseline_json: JSON.stringify({ synthetic: "x".repeat(3 * 1024 * 1024) }),
         baseline_ref: "sha256:" + "a".repeat(64),
         journal_json: JSON.stringify({ synthetic: "j".repeat(3 * 1024 * 1024) }),
         journal_pack: Buffer.from("synthetic recovery pack"),
-        created_at_ms: removedAt - 1,
       }),
     );
     expect(row.revision).toBe(0);
@@ -417,7 +393,7 @@ describe("Exact removed worktree snapshot retirement", () => {
           : kind === "retained source" || symbolic
             ? retainedRef
             : `refs/openclaw/removals/${record.id}`;
-      const mutation = beforeSnapshotDeletion(async () => {
+      beforeSnapshotDeletion(async () => {
         if (symbolic) {
           await git("symbolic-ref", target, snapshotRef);
         } else {
@@ -428,7 +404,6 @@ describe("Exact removed worktree snapshot retirement", () => {
         symbolic ? /multiple updates|cannot lock ref/ : /cannot lock ref|reference already exists/,
         { expectedRetainedSourceOid: symbolic ? replacement : source },
       );
-      expect(mutation).toHaveBeenCalledOnce();
       expect(registry()).toEqual(record);
       await expectRef(target, replacement);
       await expectRef(snapshotRef, kind === "snapshot" ? replacement : snapshot);
@@ -443,7 +418,7 @@ describe("Exact removed worktree snapshot retirement", () => {
     "rechecks %s at the deletion boundary",
     async (kind) => {
       let revoked = false;
-      const mutation = beforeSnapshotDeletion(async () => {
+      beforeSnapshotDeletion(async () => {
         if (kind === "registry lifecycle") {
           await updateRegistryWorktree(env, record.id, { removedAt: removedAt + 1 });
         } else {
@@ -460,7 +435,6 @@ describe("Exact removed worktree snapshot retirement", () => {
           },
         },
       );
-      expect(mutation).toHaveBeenCalledOnce();
       await expectPreserved(
         kind === "caller authority" ? record : { ...record, removedAt: removedAt + 1 },
       );

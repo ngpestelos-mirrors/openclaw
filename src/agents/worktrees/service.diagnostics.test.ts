@@ -1,32 +1,27 @@
+import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import { isMainThread, threadId } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   areDiagnosticsEnabledForProcess,
-  onInternalDiagnosticEvent,
   setDiagnosticsEnabledForProcess,
   waitForDiagnosticEventsDrained,
-  type DiagnosticEventPayload,
 } from "../../infra/diagnostic-events.js";
 import { runWithDiagnosticTraceContext } from "../../infra/diagnostic-trace-context.js";
 import * as gitWorker from "../../infra/git-worker.js";
 import { flushLogger, resetLogger, setLoggerOverride } from "../../logging/logger.js";
+import { createDiagnosticLogRecordCapture } from "../../logging/test-helpers/diagnostic-log-capture.js";
 import * as commandExec from "../../process/exec.js";
 import type { SpawnResult } from "../../process/exec.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { isPidAlive } from "../../shared/pid-alive.js";
-import {
-  closeOpenClawStateDatabaseAsync,
-  closeOpenClawStateDatabaseForTest,
-} from "../../state/openclaw-state-db.js";
 import * as stateLease from "../../state/openclaw-state-lease.js";
 import { killPidIfAlive } from "../../test-utils/process-tree.js";
+import { useStateDatabaseTempDirs } from "../../test-utils/state-database-temp-dirs.js";
 import { WORKTREE_MUTATION_LEASE_SCOPE } from "./capacity-contract.js";
 import * as worktreeRunLease from "./run-lease.js";
 import { ManagedWorktreeService, WorktreeSnapshotError } from "./service.js";
@@ -50,15 +45,12 @@ const emptyFailure: SpawnResult = {
 };
 
 async function failureMessage(operation: Promise<unknown>): Promise<string> {
-  try {
-    await operation;
-  } catch (error) {
-    if (error instanceof Error) {
-      return error.message;
-    }
-    throw error;
-  }
-  throw new Error("expected worktree operation to fail");
+  const failure: unknown = await operation.then(
+    () => assert.fail("expected worktree operation to fail"),
+    (cause: unknown) => cause,
+  );
+  assert(failure instanceof Error);
+  return failure.message;
 }
 
 const expectAbsent = (file: string) =>
@@ -82,8 +74,9 @@ function gitCommandArgs(argv: readonly string[]): readonly string[] {
   return argv.slice(command);
 }
 
-describe("ManagedWorktreeService failure diagnostics", () => {
+describe("ManagedWorktreeService diagnostics", () => {
   const initializeRepository = useManagedWorktreeTestRepository();
+  const tempDirs = useStateDatabaseTempDirs();
   let root: string;
   let repo: string;
   let service: ManagedWorktreeService;
@@ -92,20 +85,13 @@ describe("ManagedWorktreeService failure diagnostics", () => {
     (await service.listRegistryRecords()).find((record) => record.id === id);
 
   beforeEach(async () => {
-    root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "openclaw-worktree-errors-"));
+    root = tempDirs.make("openclaw-worktree-errors-");
     repo = await initializeRepository(root);
     service = new ManagedWorktreeService({
       env: { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") },
       // Inject failures into the requested checkout rather than a source template.
       getConfig: () => ({ worktreeAcceleration: false }),
     });
-  });
-
-  afterEach(async () => {
-    vi.restoreAllMocks();
-    await closeOpenClawStateDatabaseAsync();
-    closeOpenClawStateDatabaseForTest();
-    await fs.rm(root, { recursive: true, force: true });
   });
 
   it.each(["create", "restore"] as const)("reports %s cleanup failures", async (phase) => {
@@ -285,220 +271,205 @@ describe("ManagedWorktreeService failure diagnostics", () => {
     expect(await git(repo, "worktree", "list", "--porcelain")).toContain(allocatedPath);
     expect(await git(allocatedPath!, "branch", "--show-current")).toBe(branch);
   });
-});
-
-describe("ManagedWorktreeService removal timing", { concurrent: false }, () => {
-  const initializeRepository = useManagedWorktreeTestRepository();
-  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-  const trace = {
-    traceId: "1234567890abcdef1234567890abcdef",
-    spanId: "1234567890abcdef",
-    parentSpanId: "abcdef1234567890",
-    traceFlags: "01",
-  };
-  const messagePrefix = "slow managed worktree removal ";
-  let clock = 120_000;
-  let root: string;
-  let service: ManagedWorktreeService;
-  let diagnosticsWereEnabled: boolean;
-  let unsubscribe: () => void;
-  let records: Array<Extract<DiagnosticEventPayload, { type: "log.record" }>>;
-  async function materialize(name: string) {
-    const stateDir = path.join(root, "private-state");
-    return materializeManagedWorktreeFixture({
-      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      stateDir,
-      repoRoot: await initializeRepository(root),
-      name,
-      now: Date.now(),
-    });
-  }
-  async function expectTiming(
-    worktree: ManagedWorktreeRecord,
-    attributes: Record<string, unknown>,
-  ) {
-    await waitForDiagnosticEventsDrained();
-    expect(records).toHaveLength(1);
-    expect(records[0]?.attributes).toEqual({
-      subsystem: "agents/worktrees",
-      pid: process.pid,
-      threadId,
-      isMainThread,
-      callbackEntered: true,
-      omittedObservations: expect.any(Number),
-      id: worktree.id,
-      path: worktree.path,
-      deferred: false,
-      ...attributes,
-    });
-    return JSON.parse(records[0]!.message.slice(messagePrefix.length));
-  }
-
-  beforeEach(() => {
-    root = tempDirs.make("openclaw-removal-timing-");
-    service = new ManagedWorktreeService({
-      env: { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "private-state") },
-    });
-    diagnosticsWereEnabled = areDiagnosticsEnabledForProcess();
-    setDiagnosticsEnabledForProcess(true);
-    resetLogger();
-    setLoggerOverride({
-      level: "info",
-      consoleLevel: "silent",
-      file: path.join(root, "runtime.log"),
-    });
-    clock += 120_000;
-    vi.spyOn(performance, "now").mockImplementation(() => clock);
-    records = [];
-    unsubscribe = onInternalDiagnosticEvent(
-      (event) => {
-        if (event.type === "log.record" && event.message.startsWith(messagePrefix)) {
-          records.push(event);
-        }
-      },
-      { include: ["log.record"] },
-    );
-  });
-
-  afterEach(async () => {
-    await waitForDiagnosticEventsDrained();
-    unsubscribe();
-    await flushLogger();
-    vi.restoreAllMocks();
-    await closeOpenClawStateDatabaseAsync();
-    closeOpenClawStateDatabaseForTest();
-    setDiagnosticsEnabledForProcess(diagnosticsWereEnabled);
-    setLoggerOverride(null);
-    resetLogger();
-  });
-
-  it("attributes admission, body and finalization without completing early", async () => {
-    const worktree = await materialize("private-removal");
-    const admissionEntered = createDeferredCore();
-    const releaseAdmission = createDeferredCore();
-    const bodyEntered = createDeferredCore();
-    const releaseBody = createDeferredCore();
-    const finalizeEntered = createDeferredCore();
-    const releaseFinalize = createDeferredCore();
-    let callbackResult: unknown;
-    const acquire = stateLease.withOpenClawStateLeaseAsync;
-    vi.spyOn(stateLease, "withOpenClawStateLeaseAsync").mockImplementation(async (...args) => {
-      // Nested reconciliation settles inside the removal body.
-      if (args[0].scope !== WORKTREE_MUTATION_LEASE_SCOPE) {
-        return await acquire(...args);
-      }
-      admissionEntered.resolve();
-      await releaseAdmission.promise;
-      const result = await acquire(...args);
-      callbackResult = result;
-      finalizeEntered.resolve();
-      await releaseFinalize.promise;
-      return result;
-    });
-    vi.spyOn(commandExec, "runCommandWithTimeout")
-      .mockImplementation(async (...args) => {
-        const command = gitCommandArgs(args[0]);
-        if (command[0] === "worktree" && command[1] === "remove") {
-          clock += 500;
-        } else if (command[0] === "branch" && command[1] === "-d") {
-          clock += 600;
-        }
-        return await realRunCommand(...args);
-      })
-      .mockImplementationOnce(async (...args) => {
-        bodyEntered.resolve();
-        await releaseBody.promise;
-        return await realRunCommand(...args);
+  describe("removal timing", { concurrent: false }, () => {
+    const trace = {
+      traceId: "1234567890abcdef1234567890abcdef",
+      spanId: "1234567890abcdef",
+      parentSpanId: "abcdef1234567890",
+      traceFlags: "01",
+    };
+    const messagePrefix = "slow managed worktree removal ";
+    let clock = 120_000;
+    let diagnosticsWereEnabled: boolean;
+    let capture: ReturnType<typeof createDiagnosticLogRecordCapture>;
+    const records = () =>
+      capture.records.filter((record) => record.message.startsWith(messagePrefix));
+    async function materialize(name: string) {
+      const stateDir = path.join(root, "private-state");
+      return materializeManagedWorktreeFixture({
+        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+        stateDir,
+        repoRoot: repo,
+        name,
+        now: Date.now(),
       });
-    vi.spyOn(gitWorker, "runGitWorkerOperation").mockImplementation(async (...args) => {
-      if (args[0].type === "worktree.snapshot") {
-        clock += 400;
-      }
-      return await realRunGitWorkerOperation(...args);
-    });
-    let completed = false;
-    const pending = runWithDiagnosticTraceContext(trace, () =>
-      service.remove({ id: worktree.id, reason: "private-removal-reason" }),
-    ).then((result) => {
-      completed = true;
-      return result;
-    });
-    try {
-      await Promise.race([admissionEntered.promise, pending]);
-      clock += 1_100;
-      releaseAdmission.resolve();
-      await Promise.race([bodyEntered.promise, pending]);
-      clock += 200;
-      releaseBody.resolve();
-      await Promise.race([finalizeEntered.promise, pending]);
-      await waitForDiagnosticEventsDrained();
-      expect(completed).toBe(false);
-      expect(records).toEqual([]);
-      clock += 300;
-      releaseFinalize.resolve();
-      const result = await pending;
-      expect(result).toBe(callbackResult);
-      expect(result.removed).toBe(true);
-      const fields = await expectTiming(worktree, {
-        durationMs: 3_100,
-        admissionMs: 1_100,
-        bodyMs: 1_700,
-        finalizeMs: 300,
-        preparationMs: 200,
-        snapshotMs: 400,
-        checkoutRemovalMs: 500,
-        bodyFinalizeMs: 600,
-        outcome: "returned",
-        tracked: 1,
-        untracked: 0,
-      });
-      expect(records[0]?.trace).toEqual(trace);
-      expect({ subsystem: "agents/worktrees", ...fields }).toEqual(records[0]!.attributes);
-    } finally {
-      releaseAdmission.resolve();
-      releaseBody.resolve();
-      releaseFinalize.resolve();
-      await Promise.allSettled([pending]);
     }
-  });
+    async function expectTiming(
+      worktree: ManagedWorktreeRecord,
+      attributes: Record<string, unknown>,
+    ) {
+      await waitForDiagnosticEventsDrained();
+      const emitted = records();
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0]?.attributes).toEqual({
+        subsystem: "agents/worktrees",
+        pid: process.pid,
+        threadId,
+        isMainThread,
+        callbackEntered: true,
+        omittedObservations: expect.any(Number),
+        id: worktree.id,
+        path: worktree.path,
+        deferred: false,
+        ...attributes,
+      });
+      return JSON.parse(emitted[0]!.message.slice(messagePrefix.length));
+    }
 
-  it("closes a failed snapshot stage and measures claim cleanup without deleting the checkout", async () => {
-    const worktree = await materialize("snapshot-timing");
-    const preservedContents = "kept until snapshot succeeds\n";
-    await fs.writeFile(readme(worktree.path), preservedContents);
-    const operationError = new Error("private snapshot input could not be read");
-    let snapshotFailed = false;
-    vi.spyOn(gitWorker, "runGitWorkerOperation").mockImplementation(async (...args) => {
-      if (args[0].type === "worktree.snapshot" && !snapshotFailed) {
-        snapshotFailed = true;
-        clock += 1_300;
-        throw operationError;
+    beforeEach(() => {
+      service = new ManagedWorktreeService({
+        env: { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "private-state") },
+      });
+      diagnosticsWereEnabled = areDiagnosticsEnabledForProcess();
+      setDiagnosticsEnabledForProcess(true);
+      resetLogger();
+      setLoggerOverride({
+        level: "info",
+        consoleLevel: "silent",
+        file: path.join(root, "runtime.log"),
+      });
+      clock += 120_000;
+      vi.spyOn(performance, "now").mockImplementation(() => clock);
+      capture = createDiagnosticLogRecordCapture();
+    });
+
+    afterEach(async () => {
+      await waitForDiagnosticEventsDrained();
+      capture.cleanup();
+      await flushLogger();
+      setDiagnosticsEnabledForProcess(diagnosticsWereEnabled);
+      setLoggerOverride(null);
+      resetLogger();
+    });
+
+    it("attributes admission, body and finalization without completing early", async () => {
+      const worktree = await materialize("private-removal");
+      const admissionEntered = createDeferredCore();
+      const releaseAdmission = createDeferredCore();
+      const bodyEntered = createDeferredCore();
+      const releaseBody = createDeferredCore();
+      const finalizeEntered = createDeferredCore();
+      const releaseFinalize = createDeferredCore();
+      let callbackResult: unknown;
+      const acquire = stateLease.withOpenClawStateLeaseAsync;
+      vi.spyOn(stateLease, "withOpenClawStateLeaseAsync").mockImplementation(async (...args) => {
+        // Nested reconciliation settles inside the removal body.
+        if (args[0].scope !== WORKTREE_MUTATION_LEASE_SCOPE) {
+          return await acquire(...args);
+        }
+        admissionEntered.resolve();
+        await releaseAdmission.promise;
+        const result = await acquire(...args);
+        callbackResult = result;
+        finalizeEntered.resolve();
+        await releaseFinalize.promise;
+        return result;
+      });
+      vi.spyOn(commandExec, "runCommandWithTimeout")
+        .mockImplementation(async (...args) => {
+          const command = gitCommandArgs(args[0]);
+          if (command[0] === "worktree" && command[1] === "remove") {
+            clock += 500;
+          } else if (command[0] === "branch" && command[1] === "-d") {
+            clock += 600;
+          }
+          return await realRunCommand(...args);
+        })
+        .mockImplementationOnce(async (...args) => {
+          bodyEntered.resolve();
+          await releaseBody.promise;
+          return await realRunCommand(...args);
+        });
+      vi.spyOn(gitWorker, "runGitWorkerOperation").mockImplementation(async (...args) => {
+        if (args[0].type === "worktree.snapshot") {
+          clock += 400;
+        }
+        return await realRunGitWorkerOperation(...args);
+      });
+      let completed = false;
+      const pending = runWithDiagnosticTraceContext(trace, () =>
+        service.remove({ id: worktree.id, reason: "private-removal-reason" }),
+      ).then((result) => {
+        completed = true;
+        return result;
+      });
+      try {
+        await Promise.race([admissionEntered.promise, pending]);
+        clock += 1_100;
+        releaseAdmission.resolve();
+        await Promise.race([bodyEntered.promise, pending]);
+        clock += 200;
+        releaseBody.resolve();
+        await Promise.race([finalizeEntered.promise, pending]);
+        await waitForDiagnosticEventsDrained();
+        expect(completed).toBe(false);
+        expect(records()).toEqual([]);
+        clock += 300;
+        releaseFinalize.resolve();
+        const result = await pending;
+        expect(result).toBe(callbackResult);
+        expect(result.removed).toBe(true);
+        const fields = await expectTiming(worktree, {
+          durationMs: 3_100,
+          admissionMs: 1_100,
+          bodyMs: 1_700,
+          finalizeMs: 300,
+          preparationMs: 200,
+          snapshotMs: 400,
+          checkoutRemovalMs: 500,
+          bodyFinalizeMs: 600,
+          outcome: "returned",
+          tracked: 1,
+          untracked: 0,
+        });
+        expect(records()[0]?.trace).toEqual(trace);
+        expect({ subsystem: "agents/worktrees", ...fields }).toEqual(records()[0]!.attributes);
+      } finally {
+        releaseAdmission.resolve();
+        releaseBody.resolve();
+        releaseFinalize.resolve();
+        await Promise.allSettled([pending]);
       }
-      return await realRunGitWorkerOperation(...args);
     });
-    vi.spyOn(worktreeRunLease, "abortWorktreeRemoval").mockImplementation((...args) => {
-      clock += 200;
-      return realAbortWorktreeRemoval(...args);
-    });
-    const error = await service
-      .remove({ id: worktree.id, reason: "private-snapshot-reason" })
-      .catch((cause: unknown) => cause);
-    expect(error).toBeInstanceOf(WorktreeSnapshotError);
-    expect(error).toMatchObject({ cause: operationError });
-    expect(await fs.readFile(readme(worktree.path), "utf8")).toBe(preservedContents);
-    const fields = await expectTiming(worktree, {
-      durationMs: 1_500,
-      admissionMs: 0,
-      bodyMs: 1_500,
-      finalizeMs: 0,
-      preparationMs: 0,
-      snapshotMs: 1_300,
-      bodyFinalizeMs: 200,
-      outcome: "threw",
-    });
-    expect(fields).toMatchObject({ tracked: null, untracked: null });
-    await expect(service.remove({ id: worktree.id, reason: "retry" })).resolves.toMatchObject({
-      removed: true,
+
+    it("closes a failed snapshot stage and measures claim cleanup without deleting the checkout", async () => {
+      const worktree = await materialize("snapshot-timing");
+      const preservedContents = "kept until snapshot succeeds\n";
+      await fs.writeFile(readme(worktree.path), preservedContents);
+      const operationError = new Error("private snapshot input could not be read");
+      let snapshotFailed = false;
+      vi.spyOn(gitWorker, "runGitWorkerOperation").mockImplementation(async (...args) => {
+        if (args[0].type === "worktree.snapshot" && !snapshotFailed) {
+          snapshotFailed = true;
+          clock += 1_300;
+          throw operationError;
+        }
+        return await realRunGitWorkerOperation(...args);
+      });
+      vi.spyOn(worktreeRunLease, "abortWorktreeRemoval").mockImplementation((...args) => {
+        clock += 200;
+        return realAbortWorktreeRemoval(...args);
+      });
+      const error = await service
+        .remove({ id: worktree.id, reason: "private-snapshot-reason" })
+        .catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(WorktreeSnapshotError);
+      expect(error).toMatchObject({ cause: operationError });
+      expect(await fs.readFile(readme(worktree.path), "utf8")).toBe(preservedContents);
+      const fields = await expectTiming(worktree, {
+        durationMs: 1_500,
+        admissionMs: 0,
+        bodyMs: 1_500,
+        finalizeMs: 0,
+        preparationMs: 0,
+        snapshotMs: 1_300,
+        bodyFinalizeMs: 200,
+        outcome: "threw",
+      });
+      expect(fields).toMatchObject({ tracked: null, untracked: null });
+      await expect(service.remove({ id: worktree.id, reason: "retry" })).resolves.toMatchObject({
+        removed: true,
+      });
     });
   });
 });
