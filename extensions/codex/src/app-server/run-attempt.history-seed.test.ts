@@ -99,9 +99,12 @@ async function runTurn(
 }
 
 describe("Codex configured assembled-history delivery", () => {
-  it("prepares history only for a fresh native thread, never its next turn", async () => {
+  it.each([false, true])("prepares only fresh native history (engine: %s)", async (engine) => {
     const { params, assemble } = seedParams();
     delete params.authoredContextTokenCap;
+    if (!engine) {
+      delete params.contextEngine;
+    }
     const harness = selectedHarness();
     const prepareBoundedSeed = vi.fn<
       NonNullable<EmbeddedRunAttemptParams["hostCapabilities"]["prepareBoundedSeed"]>
