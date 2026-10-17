@@ -1,11 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { brotliCompressSync } from "node:zlib";
 import { afterAll, describe, expect, it } from "vitest";
-import {
-  MAX_COMPRESSED_TRAJECTORY_EVENT_BYTES,
-  prepareTrajectoryPayload,
-  readTrajectoryPayload,
-} from "./runtime-payload.js";
+import { prepareTrajectoryPayload, readTrajectoryPayload } from "./runtime-payload.js";
 
 const database = new DatabaseSync(":memory:");
 afterAll(() => database.close());
@@ -24,7 +20,7 @@ describe("trajectory payload encoding", () => {
   it("keeps small, oversized and non-round-trippable values as original text", () => {
     for (const line of [
       "x".repeat(1023),
-      "x".repeat(MAX_COMPRESSED_TRAJECTORY_EVENT_BYTES + 1),
+      "x".repeat(256 * 1024 + 1),
       "x".repeat(1024) + "\ud800",
     ]) {
       const row = prepareTrajectoryPayload(database, line, "UTF-8");
@@ -57,14 +53,14 @@ describe("trajectory payload encoding", () => {
     expect(() =>
       readTrajectoryPayload({
         ...row,
-        event_utf8_bytes: MAX_COMPRESSED_TRAJECTORY_EVENT_BYTES + 1,
+        event_utf8_bytes: 256 * 1024 + 1,
       }),
     ).toThrow("bounds");
     expect(() =>
       readTrajectoryPayload({
         ...row,
-        event_payload: brotliCompressSync("x".repeat(MAX_COMPRESSED_TRAJECTORY_EVENT_BYTES + 1)),
-        event_utf8_bytes: MAX_COMPRESSED_TRAJECTORY_EVENT_BYTES,
+        event_payload: brotliCompressSync("x".repeat(256 * 1024 + 1)),
+        event_utf8_bytes: 256 * 1024,
       }),
     ).toThrow();
   });

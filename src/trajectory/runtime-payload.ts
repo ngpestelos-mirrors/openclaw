@@ -5,7 +5,7 @@ import { getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { isPostgresSqlConnection, type EngineConnection } from "../infra/sql-connection.js";
 import { getAdmittedSqliteSchemaFacts } from "../infra/sqlite-schema-facts.js";
 
-export const MAX_COMPRESSED_TRAJECTORY_EVENT_BYTES = 256 * 1024;
+const MAX_COMPRESSED_TRAJECTORY_EVENT_BYTES = 256 * 1024;
 const MIN_COMPRESS_BYTES = 1024;
 const BROTLI_CODEC = "br";
 const DECODE_FUNCTION = "openclaw_trajectory_payload_decode";
