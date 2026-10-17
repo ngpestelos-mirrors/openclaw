@@ -1,10 +1,15 @@
 import crypto from "node:crypto";
-import { EventEmitter, once } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_UPLOAD_DIR } from "./paths.js";
+import {
+  awaitStarted,
+  fileChooserPage,
+  heldAction,
+  managedDownload,
+} from "./pw-tools-core.guard-test-support.js";
 import {
   getPwToolsCoreSessionMocks,
   installPwToolsCoreTestHooks,
@@ -19,24 +24,6 @@ const interactions = await import("./pw-tools-core.interactions.js");
 const { waitForViaPlaywright } = await import("./pw-tools-core.interactions.content.js");
 const target = { cdpUrl: "http://127.0.0.1:18792" };
 const session = getPwToolsCoreSessionMocks();
-function holdPreparation() {
-  const entered = createDeferred<void>();
-  const release = createDeferred<void>();
-  return {
-    release,
-    prepare: async () => {
-      entered.resolve();
-      await release.promise;
-    },
-    wait: (operation: Promise<unknown>, message: string) =>
-      Promise.race([
-        entered.promise,
-        operation.then(() => {
-          throw new Error(message);
-        }),
-      ]),
-  };
-}
 
 describe("pw-tools-core", () => {
   it("preserves an accepted download waiter when a stale successor finishes page preparation", async () => {
@@ -44,19 +31,15 @@ describe("pw-tools-core", () => {
     setPwToolsCoreCurrentPage(page);
     const click = vi.fn(async () => {});
     setPwToolsCoreCurrentRefLocator({ click });
-    const result = {
-      url: "https://example.com/accepted.txt",
-      suggestedFilename: "accepted.txt",
-      path: "/tmp/accepted.txt",
-    };
+    const result = managedDownload("accepted.txt");
     const captured = createDeferred<typeof result>();
     setPwToolsCoreDownloadCapture({ armed: true, promise: captured.promise, cancel: vi.fn() });
     const accepted = mod.waitForDownloadViaPlaywright({ ...target, targetId: "T1" });
     const acceptedResult = Promise.allSettled([accepted]);
     await Promise.resolve();
-    const held = holdPreparation();
+    const held = heldAction();
     session.getPageForTargetId.mockImplementationOnce(async () => {
-      await held.prepare();
+      await held.run();
       return page;
     });
     const successor = mod.downloadViaPlaywright({
@@ -70,8 +53,8 @@ describe("pw-tools-core", () => {
     });
     const successorResult = Promise.allSettled([successor]);
     try {
-      await held.wait(successor, "Successor skipped held page lookup");
-      held.release.resolve();
+      await awaitStarted(held.started, successor);
+      held.resolve();
       expect(await successorResult).toMatchObject([
         { status: "rejected", reason: { message: "Dashboard successor revoked" } },
       ]);
@@ -79,7 +62,7 @@ describe("pw-tools-core", () => {
       expect(await acceptedResult).toEqual([{ status: "fulfilled", value: result }]);
       expect(click).not.toHaveBeenCalled();
     } finally {
-      held.release.resolve();
+      held.resolve();
       captured.resolve(result);
       await Promise.all([acceptedResult, successorResult]);
     }
@@ -90,15 +73,15 @@ describe("pw-tools-core", () => {
     async (boundary) => {
       const page = {};
       setPwToolsCoreCurrentPage(page);
-      const held = holdPreparation();
+      const held = heldAction();
       if (boundary === "page preparation") {
         session.getPageForTargetId.mockImplementationOnce(async () => {
-          await held.prepare();
+          await held.run();
           return page;
         });
       } else {
         session.respondToObservedDialogOnPage.mockImplementationOnce(async () => {
-          await held.prepare();
+          await held.run();
           throw new Error("No dialog is pending.");
         });
       }
@@ -114,9 +97,9 @@ describe("pw-tools-core", () => {
       });
       const settled = Promise.allSettled([operation]);
       try {
-        await held.wait(operation, "Dialog skipped preparation");
+        await awaitStarted(held.started, operation);
         current = false;
-        held.release.resolve();
+        held.resolve();
         expect(await settled).toMatchObject([
           { status: "rejected", reason: { message: "Dashboard dialog revoked" } },
         ]);
@@ -125,7 +108,7 @@ describe("pw-tools-core", () => {
           expect(session.respondToObservedDialogOnPage).not.toHaveBeenCalled();
         }
       } finally {
-        held.release.resolve();
+        held.resolve();
         await settled;
       }
     },
@@ -140,22 +123,9 @@ describe("pw-tools-core", () => {
     ]);
     const secondCanonicalPath = await fs.realpath(secondPath);
 
-    const chooserEvents = new EventEmitter();
-    const fileChooser = {
-      setFiles: vi.fn(
-        async (_paths: string[], _options: { timeout: number; signal: AbortSignal }) => {},
-      ),
-    };
-    // Native event waiters reject on abort and remove their old chooser listener.
-    const waitForEvent = vi.fn(async (_event: string, { signal }: { signal: AbortSignal }) => {
-      const [chooser] = await once(chooserEvents, "filechooser", { signal });
-      return chooser;
-    });
-
-    setPwToolsCoreCurrentPage({
-      waitForEvent,
-      keyboard: { press: vi.fn(async () => {}) },
-    });
+    const { currentPage, fileChooser, waitForEvent, emitChooser, listenerCount } =
+      fileChooserPage();
+    setPwToolsCoreCurrentPage(currentPage);
 
     try {
       await mod.armFileUploadViaPlaywright({ ...target, paths: [firstPath] });
@@ -163,8 +133,8 @@ describe("pw-tools-core", () => {
 
       expect(waitForEvent).toHaveBeenCalledTimes(2);
       expect(waitForEvent.mock.calls[0]![1].signal.aborted).toBe(true);
-      expect(chooserEvents.listenerCount("filechooser")).toBe(1);
-      chooserEvents.emit("filechooser", fileChooser);
+      expect(listenerCount()).toBe(1);
+      emitChooser();
       await vi.waitFor(() => {
         expect(fileChooser.setFiles).toHaveBeenCalledExactlyOnceWith([secondCanonicalPath], {
           timeout: expect.any(Number),
@@ -175,9 +145,9 @@ describe("pw-tools-core", () => {
       expect(timeout).toBeGreaterThan(0);
       expect(timeout).toBeLessThanOrEqual(120_000);
       expect(signal.aborted).toBe(false);
-      expect(chooserEvents.listenerCount("filechooser")).toBe(0);
+      expect(listenerCount()).toBe(0);
     } finally {
-      chooserEvents.emit("filechooser", fileChooser);
+      emitChooser();
       await Promise.all([fs.rm(firstPath, { force: true }), fs.rm(secondPath, { force: true })]);
     }
   });
@@ -228,16 +198,21 @@ describe("pw-tools-core", () => {
       timeMs: 50,
     });
 
-    expect(waitForTimeout).toHaveBeenCalledWith(50);
-    expect(page.locator).toHaveBeenCalledWith("#main");
-    expect(waitForSelector).toHaveBeenCalledWith({ state: "visible", timeout: 1234 });
-    expect(waitForURL).toHaveBeenCalledWith("**/dash", { timeout: 1234 });
-    expect(waitForLoadState).toHaveBeenCalledWith("networkidle", { timeout: 1234 });
-    expect(waitForFunction).toHaveBeenCalledWith(
-      expect.any(Function),
-      { document: documentHandle },
-      { timeout: 1234 },
-    );
+    expect({
+      delay: waitForTimeout.mock.calls,
+      selector: page.locator.mock.calls,
+      visible: waitForSelector.mock.calls,
+      url: waitForURL.mock.calls,
+      load: waitForLoadState.mock.calls,
+      predicate: waitForFunction.mock.calls,
+    }).toEqual({
+      delay: [[50]],
+      selector: [["#main"]],
+      visible: [[{ state: "visible", timeout: 1234 }]],
+      url: [["**/dash", { timeout: 1234 }]],
+      load: [["networkidle", { timeout: 1234 }]],
+      predicate: [[expect.any(Function), { document: documentHandle }, { timeout: 1234 }]],
+    });
     expect(documentHandle.dispose).toHaveBeenCalledOnce();
   });
 

@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { awaitStarted } from "./pw-tools-core.guard-test-support.js";
 import {
   getPwToolsCoreSessionMocks,
   getPwToolsCoreNavigationGuardMocks,
@@ -30,11 +31,11 @@ vi.mock("./client-fetch.js", () => clientFetchMocks);
 const sessionMocks = getPwToolsCoreSessionMocks();
 const navigationGuardMocks = getPwToolsCoreNavigationGuardMocks();
 
-let mod: Pick<
-  typeof import("./pw-tools-core.downloads.js"),
-  "downloadViaPlaywright" | "waitForDownloadViaPlaywright"
->;
-let tmpDirModule: typeof import("openclaw/plugin-sdk/temp-path");
+const tmpDirModule = await import("openclaw/plugin-sdk/temp-path");
+vi.spyOn(tmpDirModule, "resolvePreferredOpenClawTmpDir").mockImplementation(
+  tmpDirMocks.resolvePreferredOpenClawTmpDir,
+);
+const mod = await import("./pw-tools-core.downloads.js");
 
 const target = { cdpUrl: "http://127.0.0.1:18792", targetId: "T1" };
 const strictPolicy = { dangerouslyAllowPrivateNetwork: false };
@@ -60,16 +61,6 @@ function downloadEvent(
 describe("pw-tools-core", () => {
   installPwToolsCoreTestHooks();
 
-  beforeAll(async () => {
-    vi.doMock("./pw-session.js", () => sessionMocks);
-    vi.doMock("./chrome.js", () => chromeMocks);
-    tmpDirModule = await import("openclaw/plugin-sdk/temp-path");
-    vi.spyOn(tmpDirModule, "resolvePreferredOpenClawTmpDir").mockImplementation(
-      tmpDirMocks.resolvePreferredOpenClawTmpDir,
-    );
-    mod = await import("./pw-tools-core.downloads.js");
-  });
-
   beforeEach(() => {
     for (const fn of Object.values({ ...tmpDirMocks, ...chromeMocks, ...clientFetchMocks })) {
       fn.mockClear();
@@ -77,41 +68,23 @@ describe("pw-tools-core", () => {
     tmpDirMocks.resolvePreferredOpenClawTmpDir.mockReturnValue("/tmp/openclaw");
   });
 
-  async function withTempDir<T>(run: (tempDir: string) => Promise<T>): Promise<T> {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-browser-download-test-"));
-    try {
-      return await run(tempDir);
-    } finally {
-      await fs.rm(tempDir, { recursive: true, force: true });
-    }
+  function withTempDir<T>(run: (tempDir: string) => Promise<T>) {
+    return async () => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-browser-download-test-"));
+      try {
+        return await run(tempDir);
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    };
   }
 
   function requireSaveAsPath(saveAs: ReturnType<typeof vi.fn>): string {
-    const [call] = saveAs.mock.calls;
-    if (!call) {
-      throw new Error("expected download saveAs call");
-    }
-    const [savedPath] = call;
+    const savedPath = saveAs.mock.calls[0]?.[0];
     if (typeof savedPath !== "string") {
       throw new Error("expected download saveAs path");
     }
     return savedPath;
-  }
-
-  async function waitForImplicitDownloadOutput(params: {
-    downloadUrl: string;
-    suggestedFilename: string;
-  }) {
-    const harness = createDownloadEventHarness();
-    const saveAs = writer("download-content");
-    const p = waitForDownload();
-
-    await Promise.resolve();
-    harness.trigger(downloadEvent(saveAs, params.suggestedFilename, params.downloadUrl));
-
-    const res = await p;
-    const outPath = requireSaveAsPath(saveAs);
-    return { res, outPath };
   }
 
   async function expectPathMissing(targetPath: string): Promise<void> {
@@ -144,43 +117,41 @@ describe("pw-tools-core", () => {
 
   it.runIf(process.platform !== "win32")(
     "does not write outside the output root when a download parent is swapped after save",
-    async () => {
-      await withTempDir(async (tempDir) => {
-        const rootDir = path.join(tempDir, "downloads");
-        const targetParent = path.join(rootDir, "race");
-        const outsideDir = path.join(tempDir, "outside");
-        const targetPath = path.join(targetParent, "file.bin");
-        const outsideTargetPath = path.join(outsideDir, "file.bin");
-        await fs.mkdir(targetParent, { recursive: true });
-        await fs.mkdir(outsideDir);
+    withTempDir(async (tempDir) => {
+      const rootDir = path.join(tempDir, "downloads");
+      const targetParent = path.join(rootDir, "race");
+      const outsideDir = path.join(tempDir, "outside");
+      const targetPath = path.join(targetParent, "file.bin");
+      const outsideTargetPath = path.join(outsideDir, "file.bin");
+      await fs.mkdir(targetParent, { recursive: true });
+      await fs.mkdir(outsideDir);
 
-        const harness = createDownloadEventHarness();
-        let parentSwappedBeforeFinalize = false;
-        const saveAs = vi.fn(async (outPath: string) => {
-          await fs.writeFile(outPath, "race-content", "utf8");
-          const beforeSwap = await fs.lstat(targetParent);
-          expect(beforeSwap.isDirectory()).toBe(true);
-          expect(beforeSwap.isSymbolicLink()).toBe(false);
-          await fs.rm(targetParent, { recursive: true, force: true });
-          await fs.symlink(outsideDir, targetParent);
-          const afterSwap = await fs.lstat(targetParent);
-          expect(afterSwap.isSymbolicLink()).toBe(true);
-          parentSwappedBeforeFinalize = true;
-        });
-
-        const p = waitForDownload({ path: targetPath, rootDir });
-
-        await Promise.resolve();
-        harness.expectArmed();
-        harness.trigger(downloadEvent(saveAs));
-
-        await expect(p).rejects.toMatchObject({ code: "not-file" });
-        expect(parentSwappedBeforeFinalize).toBe(true);
-        expect(saveAs).toHaveBeenCalledOnce();
-        await expectPathMissing(outsideTargetPath);
-        await expect(fs.readdir(outsideDir)).resolves.toStrictEqual([]);
+      const harness = createDownloadEventHarness();
+      let parentSwappedBeforeFinalize = false;
+      const saveAs = vi.fn(async (outPath: string) => {
+        await fs.writeFile(outPath, "race-content", "utf8");
+        const beforeSwap = await fs.lstat(targetParent);
+        expect(beforeSwap.isDirectory()).toBe(true);
+        expect(beforeSwap.isSymbolicLink()).toBe(false);
+        await fs.rm(targetParent, { recursive: true, force: true });
+        await fs.symlink(outsideDir, targetParent);
+        const afterSwap = await fs.lstat(targetParent);
+        expect(afterSwap.isSymbolicLink()).toBe(true);
+        parentSwappedBeforeFinalize = true;
       });
-    },
+
+      const p = waitForDownload({ path: targetPath, rootDir });
+
+      await Promise.resolve();
+      harness.expectArmed();
+      harness.trigger(downloadEvent(saveAs));
+
+      await expect(p).rejects.toMatchObject({ code: "not-file" });
+      expect(parentSwappedBeforeFinalize).toBe(true);
+      expect(saveAs).toHaveBeenCalledOnce();
+      await expectPathMissing(outsideTargetPath);
+      await expect(fs.readdir(outsideDir)).resolves.toStrictEqual([]);
+    }),
   );
 
   it("releases a cancelled waiter before the next download", async () => {
@@ -226,8 +197,9 @@ describe("pw-tools-core", () => {
     expect(harness.activeHandlerCount()).toBe(0);
   });
 
-  it("finishes an admitted clicked download after its caller retires", async () => {
-    await withTempDir(async (tempDir) => {
+  it(
+    "finishes an admitted clicked download after its caller retires",
+    withTempDir(async (tempDir) => {
       const harness = createDownloadEventHarness();
 
       const clicked = createDeferred<void>();
@@ -255,12 +227,7 @@ describe("pw-tools-core", () => {
         },
       });
 
-      await Promise.race([
-        clicked.promise,
-        p.then(() => {
-          throw new Error("Download completed before its trigger");
-        }),
-      ]);
+      await awaitStarted(clicked.promise, p);
       harness.expectArmed();
       expect(click).toHaveBeenCalledWith({ timeout: 1000, signal: expect.any(AbortSignal) });
       expect(sessionMocks.withPageNavigationRequestGuard).toHaveBeenCalledWith(
@@ -280,116 +247,100 @@ describe("pw-tools-core", () => {
       });
       await expectAtomicDownloadSave({ saveAs, targetPath, content: "report-content" });
       await expect(fs.realpath(res.path)).resolves.toBe(await fs.realpath(targetPath));
-    });
-  });
+    }),
+  );
 
-  it("rejects a policy-denied waited download before saving it", async () => {
-    await withTempDir(async (tempDir) => {
-      const harness = createDownloadEventHarness();
-      const targetPath = path.join(tempDir, "metadata.bin");
-      const saveAs = vi.fn(async () => {});
-      const cancel = vi.fn(async () => {});
-      navigationGuardMocks.assertBrowserNavigationResultAllowed.mockRejectedValueOnce(
-        new Error("browser navigation blocked by policy"),
-      );
-
-      const pending = waitForDownload({ path: targetPath, ssrfPolicy: strictPolicy });
-
-      await Promise.resolve();
-      harness.expectArmed();
-      harness.trigger(
-        downloadEvent(saveAs, "metadata.bin", "http://169.254.169.254/latest/meta-data/", cancel),
-      );
-
-      await expect(pending).rejects.toThrow("browser navigation blocked by policy");
-      expect(saveAs).not.toHaveBeenCalled();
-      expect(cancel).toHaveBeenCalledOnce();
-      expect(navigationGuardMocks.assertBrowserNavigationResultAllowed).toHaveBeenCalledWith({
-        url: "http://169.254.169.254/latest/meta-data/",
-        ssrfPolicy: strictPolicy,
-        browserProxyMode: undefined,
-        signal: expect.any(AbortSignal),
-      });
-    });
-  });
-
-  it("propagates a policy-denied clicked download before saving it", async () => {
-    await withTempDir(async (tempDir) => {
-      const harness = createDownloadEventHarness();
-      const click = vi.fn(async () => {});
-      const saveAs = vi.fn(async () => {});
-      const cancel = vi.fn(async () => {});
-      setPwToolsCoreCurrentRefLocator({ click });
-      navigationGuardMocks.assertBrowserNavigationResultAllowed.mockRejectedValueOnce(
-        new Error("browser navigation blocked by policy"),
-      );
-
-      const pending = mod.downloadViaPlaywright({
-        ...target,
-        ref: "e12",
-        path: path.join(tempDir, "metadata.bin"),
-        timeoutMs: 1000,
-        ssrfPolicy: strictPolicy,
-      });
-
-      await Promise.resolve();
-      harness.expectArmed();
-      harness.trigger(
-        downloadEvent(saveAs, "metadata.bin", "http://169.254.169.254/latest/meta-data/", cancel),
-      );
-
-      await expect(pending).rejects.toThrow("browser navigation blocked by policy");
-      expect(click).toHaveBeenCalledOnce();
-      expect(saveAs).not.toHaveBeenCalled();
-      expect(cancel).toHaveBeenCalledOnce();
-    });
-  });
-
-  it.runIf(process.platform !== "win32")(
-    "replaces a hardlink path without overwriting the outside inode",
-    async () => {
+  it.each(["waited", "clicked"])(
+    "rejects a policy-denied %s download before saving it",
+    async (mode) => {
       await withTempDir(async (tempDir) => {
-        const outsidePath = path.join(tempDir, "outside.txt");
-        await fs.writeFile(outsidePath, "outside-before", "utf8");
-        const linkedPath = path.join(tempDir, "linked.txt");
-        await fs.link(outsidePath, linkedPath);
-        const outsideBefore = await fs.stat(outsidePath);
-
         const harness = createDownloadEventHarness();
-        const saveAs = writer("download-content");
-        const p = waitForDownload({ path: linkedPath });
+        const targetPath = path.join(tempDir, "metadata.bin");
+        const saveAs = vi.fn(async () => {});
+        const cancel = vi.fn(async () => {});
+        const click = vi.fn(async () => {});
+        setPwToolsCoreCurrentRefLocator({ click });
+        navigationGuardMocks.assertBrowserNavigationResultAllowed.mockRejectedValueOnce(
+          new Error("browser navigation blocked by policy"),
+        );
+
+        const pending =
+          mode === "waited"
+            ? waitForDownload({ path: targetPath, ssrfPolicy: strictPolicy })
+            : mod.downloadViaPlaywright({
+                ...target,
+                ref: "e12",
+                path: targetPath,
+                timeoutMs: 1000,
+                ssrfPolicy: strictPolicy,
+              });
 
         await Promise.resolve();
         harness.expectArmed();
-        harness.trigger(downloadEvent(saveAs));
+        harness.trigger(
+          downloadEvent(saveAs, "metadata.bin", "http://169.254.169.254/latest/meta-data/", cancel),
+        );
 
-        await expect(p).resolves.toMatchObject({ path: linkedPath });
-        await expectAtomicDownloadSave({
-          saveAs,
-          targetPath: linkedPath,
-          content: "download-content",
+        await expect(pending).rejects.toThrow("browser navigation blocked by policy");
+        expect(saveAs).not.toHaveBeenCalled();
+        expect(cancel).toHaveBeenCalledOnce();
+        expect(click).toHaveBeenCalledTimes(mode === "clicked" ? 1 : 0);
+        expect(navigationGuardMocks.assertBrowserNavigationResultAllowed).toHaveBeenCalledWith({
+          url: "http://169.254.169.254/latest/meta-data/",
+          ssrfPolicy: strictPolicy,
+          browserProxyMode: undefined,
+          signal: mode === "waited" ? expect.any(AbortSignal) : undefined,
         });
-        const outsideAfter = await fs.stat(outsidePath);
-        const linkedAfter = await fs.stat(linkedPath);
-        expect(await fs.readFile(outsidePath, "utf8")).toBe("outside-before");
-        expect({ dev: outsideAfter.dev, ino: outsideAfter.ino }).toEqual({
-          dev: outsideBefore.dev,
-          ino: outsideBefore.ino,
-        });
-        expect({ dev: linkedAfter.dev, ino: linkedAfter.ino }).not.toEqual({
-          dev: outsideAfter.dev,
-          ino: outsideAfter.ino,
-        });
-      });
+      })();
     },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "replaces a hardlink path without overwriting the outside inode",
+    withTempDir(async (tempDir) => {
+      const outsidePath = path.join(tempDir, "outside.txt");
+      await fs.writeFile(outsidePath, "outside-before", "utf8");
+      const linkedPath = path.join(tempDir, "linked.txt");
+      await fs.link(outsidePath, linkedPath);
+      const outsideBefore = await fs.stat(outsidePath);
+
+      const harness = createDownloadEventHarness();
+      const saveAs = writer("download-content");
+      const p = waitForDownload({ path: linkedPath });
+
+      await Promise.resolve();
+      harness.expectArmed();
+      harness.trigger(downloadEvent(saveAs));
+
+      await expect(p).resolves.toMatchObject({ path: linkedPath });
+      await expectAtomicDownloadSave({
+        saveAs,
+        targetPath: linkedPath,
+        content: "download-content",
+      });
+      const outsideAfter = await fs.stat(outsidePath);
+      const linkedAfter = await fs.stat(linkedPath);
+      expect(await fs.readFile(outsidePath, "utf8")).toBe("outside-before");
+      expect({ dev: outsideAfter.dev, ino: outsideAfter.ino }).toEqual({
+        dev: outsideBefore.dev,
+        ino: outsideBefore.ino,
+      });
+      expect({ dev: linkedAfter.dev, ino: linkedAfter.ino }).not.toEqual({
+        dev: outsideAfter.dev,
+        ino: outsideAfter.ino,
+      });
+    }),
   );
 
   it("sanitizes suggested download filenames to prevent traversal escapes", async () => {
     tmpDirMocks.resolvePreferredOpenClawTmpDir.mockReturnValue("/tmp/openclaw-preferred");
-    const { res, outPath } = await waitForImplicitDownloadOutput({
-      downloadUrl: "https://example.com/evil",
-      suggestedFilename: "../../../../etc/passwd",
-    });
+    const harness = createDownloadEventHarness();
+    const saveAs = writer("download-content");
+    const pending = waitForDownload();
+    await Promise.resolve();
+    harness.trigger(downloadEvent(saveAs, "../../../../etc/passwd", "https://example.com/evil"));
+    const res = await pending;
+    const outPath = requireSaveAsPath(saveAs);
     expect(typeof outPath).toBe("string");
     const expectedRootedDownloadsDir = await fs.realpath(
       path.resolve(path.join(path.sep, "tmp", "openclaw-preferred", "downloads")),
@@ -411,25 +362,23 @@ describe("pw-tools-core", () => {
 
   it.runIf(process.platform !== "win32")(
     "rejects implicit downloads when the output directory is a symlink",
-    async () => {
-      await withTempDir(async (tempDir) => {
-        const outsideDir = path.join(tempDir, "outside");
-        await fs.mkdir(outsideDir, { recursive: true });
-        await fs.symlink(outsideDir, path.join(tempDir, "downloads"));
-        tmpDirMocks.resolvePreferredOpenClawTmpDir.mockReturnValue(tempDir);
+    withTempDir(async (tempDir) => {
+      const outsideDir = path.join(tempDir, "outside");
+      await fs.mkdir(outsideDir, { recursive: true });
+      await fs.symlink(outsideDir, path.join(tempDir, "downloads"));
+      tmpDirMocks.resolvePreferredOpenClawTmpDir.mockReturnValue(tempDir);
 
-        const harness = createDownloadEventHarness();
-        const saveAs = writer("should-not-write");
-        const p = waitForDownload();
+      const harness = createDownloadEventHarness();
+      const saveAs = writer("should-not-write");
+      const p = waitForDownload();
 
-        await Promise.resolve();
-        harness.expectArmed();
-        harness.trigger(downloadEvent(saveAs));
+      await Promise.resolve();
+      harness.expectArmed();
+      harness.trigger(downloadEvent(saveAs));
 
-        await expect(p).rejects.toThrow(/output directory/i);
-        expect(saveAs).not.toHaveBeenCalled();
-        await expect(fs.readdir(outsideDir)).resolves.toStrictEqual([]);
-      });
-    },
+      await expect(p).rejects.toThrow(/output directory/i);
+      expect(saveAs).not.toHaveBeenCalled();
+      await expect(fs.readdir(outsideDir)).resolves.toStrictEqual([]);
+    }),
   );
 });

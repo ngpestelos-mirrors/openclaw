@@ -45,18 +45,14 @@ const locator = {
   setChecked: vi.fn(async () => {}),
 };
 
-const getPageForTargetId = vi.fn(async () => page);
-const assertPageNavigationCompletedSafely = vi.fn(async () => {});
-const quarantineBlockedNavigationTarget = vi.fn(async () => {});
-const withPageNavigationRequestGuard = vi.fn(
-  async ({
-    action,
-    page: actionPage,
-  }: {
-    action: (url: string) => Promise<unknown>;
-    page: { url: () => string };
-  }) => await action(actionPage.url()),
-);
+const session = await vi.hoisted(async () => {
+  const { createGuardSession } = await import("./pw-tools-core.guard-test-support.js");
+  return createGuardSession(
+    () => page,
+    () => locator,
+  );
+});
+const { assertPageNavigationCompletedSafely, withPageNavigationRequestGuard } = session;
 
 const closePageViaPlaywright = vi.fn(async () => {});
 const resizeViewportViaPlaywright = vi.fn(async () => {});
@@ -65,7 +61,7 @@ const disposeDownloads = vi.fn();
 const cleanupDialogAbort = vi.fn();
 
 vi.mock("./pw-session.js", () => ({
-  assertPageNavigationCompletedSafely,
+  ...session,
   beginActionDownloadCaptureOnPage: vi.fn(() => ({
     drain: drainDownloads,
     dispose: disposeDownloads,
@@ -77,16 +73,8 @@ vi.mock("./pw-session.js", () => ({
     }),
   ),
   ensurePageState: vi.fn(() => {}),
-  forceDisconnectPlaywrightForTarget: vi.fn(async () => {}),
-  getPageForTargetId,
   isBrowserObservedDialogBlockedError,
   isPolicyDenyNavigationError,
-  markObservedDialogsHandledRemotelyForPage: vi.fn(() => ({})),
-  quarantineBlockedNavigationTarget,
-  refLocator: vi.fn(() => locator),
-  restoreRoleRefsForTarget: vi.fn(() => {}),
-  wasBrowserNavigationSourcePreservedAfterPolicyDenial: vi.fn(() => false),
-  withPageNavigationRequestGuard,
 }));
 
 vi.mock("./pw-tools-core.snapshot.js", () => ({
@@ -214,6 +202,7 @@ describe("executeActViaPlaywright batches", () => {
     { kind: "select", ref: "1", values: ["one"] },
     { kind: "fill", fields: [{ ref: "1", type: "text", value: "value" }] },
     { kind: "evaluate", fn: "() => true" },
+    { kind: "batch", actions: [click] },
   ] satisfies BrowserActRequest[])(
     "guards batched $kind document requests with the proxy policy",
     async (action) => {
@@ -233,36 +222,24 @@ describe("executeActViaPlaywright batches", () => {
     },
   );
 
-  it("preserves proxy policy through nested batches", async () => {
-    const result = await batch([{ kind: "batch", actions: [click] }], {
-      evaluateEnabled: true,
-      ...proxyPolicy,
-    });
-
-    expect(result).toEqual({ targetId: "tab-1", results: [{ ok: true }] });
-    expectProxyGuard();
-  });
-
-  it("reports a nested failure after inner continue-on-error actions", async () => {
-    locator.fill.mockRejectedValueOnce(new Error("not editable"));
-    const result = await batch([nested([type, hover]), press]);
-    expect(result.results).toEqual([{ ok: false, error: "not editable" }]);
-    expect(locator.hover).toHaveBeenCalledOnce();
-    expect(page.keyboard.press).not.toHaveBeenCalled();
-  });
-
-  it("reports the first nested failure after all continue-on-error actions run", async () => {
-    locator.fill.mockRejectedValueOnce(new Error("first failure"));
-    locator.hover.mockRejectedValueOnce(new Error("second failure"));
-
-    const result = await batch([nested([type, hover, { ...press, delayMs: 0 }])]);
-
+  it.each([false, true])("reports the first nested failure (multiple=%s)", async (multiple) => {
+    const error = multiple ? "first failure" : "not editable";
+    locator.fill.mockRejectedValueOnce(new Error(error));
+    if (multiple) {
+      locator.hover.mockRejectedValueOnce(new Error("second failure"));
+    }
+    const actions = nested([type, hover, ...(multiple ? [{ ...press, delayMs: 0 }] : [])]);
+    const result = await batch([actions, ...(!multiple ? [press] : [])]);
     expect(result).toEqual({
       targetId: "tab-1",
-      results: [{ ok: false, error: "first failure" }],
+      results: [{ ok: false, error }],
     });
     expect(locator.hover).toHaveBeenCalledOnce();
-    expect(page.keyboard.press).toHaveBeenCalledExactlyOnceWith("Enter", { delay: 0 });
+    if (multiple) {
+      expect(page.keyboard.press).toHaveBeenCalledExactlyOnceWith("Enter", { delay: 0 });
+    } else {
+      expect(page.keyboard.press).not.toHaveBeenCalled();
+    }
   });
 
   it("preserves failure and aborts after a same-URL reload", async () => {
