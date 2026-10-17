@@ -7,16 +7,20 @@ import { pinExecToolTarget } from "./exec-tool-target-pinning.js";
 import { createLazyExecTool } from "./lazy-exec-tool.js";
 import { consumeTrustedToolNoStartError } from "./tool-result-error.js";
 
+function target(overrides: Partial<Parameters<typeof resolveExecTarget>[0]>) {
+  return resolveExecTarget({
+    configuredTarget: "auto",
+    elevatedRequested: false,
+    sandboxAvailable: true,
+    ...overrides,
+  });
+}
+
 describe("resolveExecTarget", () => {
   it("authenticates the sandbox escape rejection once, not copies or invalid syntax", () => {
     let denied: unknown;
     try {
-      resolveExecTarget({
-        configuredTarget: "auto",
-        requestedTarget: "gateway",
-        elevatedRequested: false,
-        sandboxAvailable: true,
-      });
+      target({ requestedTarget: "gateway" });
     } catch (error) {
       denied = error;
     }
@@ -82,21 +86,14 @@ describe("resolveExecTarget", () => {
   );
 
   it("rejects a node override from auto when sandbox is available", () => {
-    expect(() =>
-      resolveExecTarget({
-        configuredTarget: "auto",
-        requestedTarget: "node",
-        elevatedRequested: false,
-        sandboxAvailable: true,
-      }),
-    ).toThrow(
+    expect(() => target({ requestedTarget: "node" })).toThrow(
       "exec host not allowed (requested node; configured host is auto; set tools.exec.host=node to allow this override).",
     );
   });
 
   it("rejects gateway override from configured node even with elevation", () => {
     expect(() =>
-      resolveExecTarget({
+      target({
         configuredTarget: "node",
         requestedTarget: "gateway",
         elevatedRequested: true,
@@ -108,28 +105,17 @@ describe("resolveExecTarget", () => {
   });
 
   describe("required session sandbox", () => {
-    it.each(["node"] as const)(
-      "rejects explicit host=%s even when configured host matches",
-      (host) => {
-        expect(() =>
-          resolveExecTarget({
-            configuredTarget: host,
-            requestedTarget: host,
-            elevatedRequested: false,
-            sandboxAvailable: true,
-            sandboxRequired: true,
-          }),
-        ).toThrow(/sandbox|required|not allowed/i);
-      },
-    );
+    it("rejects explicit host=node even when configured host matches", () => {
+      expect(() =>
+        target({ configuredTarget: "node", requestedTarget: "node", sandboxRequired: true }),
+      ).toThrow(/sandbox|required|not allowed/i);
+    });
 
     it("keeps per-call auto sandboxed despite configured node", () => {
       expect(
-        resolveExecTarget({
+        target({
           configuredTarget: "node",
           requestedTarget: "auto",
-          elevatedRequested: false,
-          sandboxAvailable: true,
           sandboxRequired: true,
         }),
       ).toMatchObject({ configuredTarget: "auto", effectiveHost: "sandbox" });
@@ -137,10 +123,8 @@ describe("resolveExecTarget", () => {
 
     it("rejects elevated requests before they can select the gateway", () => {
       expect(() =>
-        resolveExecTarget({
-          configuredTarget: "auto",
+        target({
           elevatedRequested: true,
-          sandboxAvailable: true,
           sandboxRequired: true,
         }),
       ).toThrow(/sandbox|required|elevated/i);
@@ -148,9 +132,7 @@ describe("resolveExecTarget", () => {
 
     it("fails closed when the required sandbox is unavailable", () => {
       expect(() =>
-        resolveExecTarget({
-          configuredTarget: "auto",
-          elevatedRequested: false,
+        target({
           sandboxAvailable: false,
           sandboxRequired: true,
         }),

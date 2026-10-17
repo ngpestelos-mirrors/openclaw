@@ -92,8 +92,7 @@ import {
   createModelGenerationFixture,
   publishCurrentModelGeneration,
 } from "./embedded-agent-runner/model.generation-scope.test-support.js";
-import type { AgentHarness } from "./harness/types.js";
-import type { AgentRuntimeAuthPlan } from "./runtime-plan/types.js";
+import type { AgentHarness, AgentHarnessSideQuestionParams } from "./harness/types.js";
 
 function createSeedTranscript() {
   const userEntry = createTranscriptEntry({
@@ -115,6 +114,36 @@ function createOpenAIModel(subscription = false) {
     api: subscription ? ("openai-chatgpt-responses" as const) : ("openai-responses" as const),
     baseUrl: subscription ? "https://chatgpt.com/backend-api/codex" : "https://api.openai.com/v1",
   };
+}
+
+function expectCallFields(mock: unknown, fields: Record<string, unknown>) {
+  expect(mock).toHaveBeenCalledWith(expect.objectContaining(fields));
+}
+
+function expectUncalled(...mocks: unknown[]) {
+  for (const mock of mocks) {
+    expect(mock).not.toHaveBeenCalled();
+  }
+}
+
+function sideQuestionArgs(mock: Parameters<typeof mockArg>[0]) {
+  return mockArg(mock, 0, 0) as AgentHarnessSideQuestionParams;
+}
+
+function expectPreparedAuth(mock: unknown, preparedAuth: Record<string, unknown>) {
+  expectCallFields(mock, { modelProvider: expect.objectContaining({ preparedAuth }) });
+}
+
+function harnessConfig(id: "codex" | "openclaw") {
+  return { agents: { defaults: { models: { "openai/gpt-5.5": { agentRuntime: { id } } } } } };
+}
+
+function runOpenAISideQuestion(overrides: Parameters<typeof runSideQuestion>[0] = {}) {
+  return runSideQuestion({ provider: "openai", model: "gpt-5.5", ...overrides });
+}
+
+function runCliSideQuestion(overrides: Parameters<typeof runSideQuestion>[0] = {}) {
+  return runSideQuestion({ cfg: createCliRuntimeConfig(), model: "claude-opus-4-7", ...overrides });
 }
 
 describe("runBtwSideQuestion", () => {
@@ -162,11 +191,7 @@ describe("runBtwSideQuestion", () => {
   ])(
     "retains the selected global agent for $harness with policy $sandboxSessionKey",
     async ({ harness, sandboxSessionKey }) => {
-      // Gateway startup publishes configured owners with allowGatewaySubagentBinding
-      // (server-startup-post-attach.ts), and that flag is part of the owner key
-      // (prepared-model-runtime.owner.ts). A gateway-hosted BTW request that omits
-      // it matches no owner, and standalone activation is refused while the gateway
-      // lifecycle is active, so the side question fails with "owner was not published".
+      // Gateway-published owners require the binding flag to match their owner key.
       mockDoneAnswer("Final answer.");
       resolveSessionAgentIdMock.mockImplementation(
         (await vi.importActual<typeof import("./agent-scope.js")>("./agent-scope.js"))
@@ -190,21 +215,15 @@ describe("runBtwSideQuestion", () => {
         agentId: "work",
         allowGatewaySubagentBinding: true,
       });
-      expect(resolveSessionAuthSelectionMock).toHaveBeenCalledWith(
-        expect.objectContaining({ agentId: "work" }),
-      );
+      expectCallFields(resolveSessionAuthSelectionMock, { agentId: "work" });
       if (sideQuestion) {
-        expect(sideQuestion).toHaveBeenCalledWith(
-          expect.objectContaining({ agentId: "work", sessionKey: "global" }),
-        );
+        expectCallFields(sideQuestion, { agentId: "work", sessionKey: "global" });
       }
     },
   );
 
   it("keeps gateway subagent binding off for local callers such as the embedded TUI", async () => {
-    // The embedded TUI calls runBtwSideQuestion directly and must not borrow the
-    // active registry's subagent and node capabilities, so the flag stays unset
-    // unless a gateway-hosted caller opts in.
+    // Direct TUI calls must not borrow Gateway subagent/node capabilities.
     mockDoneAnswer("Final answer.");
 
     await runSideQuestion();
@@ -390,18 +409,15 @@ describe("runBtwSideQuestion", () => {
       runSideQuestion({ cfg, provider: "local-proxy", model: "side-model" }),
     ).resolves.toEqual({ text: "Generation A / runtime-auth-a / Stream A" });
     expect(runtimeAuthA).toHaveBeenCalledOnce();
-    expect(runtimeAuthB).not.toHaveBeenCalled();
+    expectUncalled(runtimeAuthB);
     expect(streamA).toHaveBeenCalledOnce();
     expect(streamA).toHaveBeenCalledWith(
       expect.objectContaining({ name: "Generation A" }),
       expect.any(Object),
       expect.any(Object),
     );
-    expect(streamB).not.toHaveBeenCalled();
-    expect(streamSimpleMock).not.toHaveBeenCalled();
-    expect(registerProviderStreamForModelMock).toHaveBeenCalledWith(
-      expect.objectContaining({ wrapProviderStream: true }),
-    );
+    expectUncalled(streamB, streamSimpleMock);
+    expectCallFields(registerProviderStreamForModelMock, { wrapProviderStream: true });
   });
 
   it("routes Codex-selected BTW questions through the harness side-question hook", async () => {
@@ -409,12 +425,7 @@ describe("runBtwSideQuestion", () => {
     const codexSideQuestionMock = registerCodexSideQuestionHarness({
       supports,
     });
-    resolveModelWithRegistryMock.mockReturnValue({
-      provider: "openai",
-      id: "gpt-5.5",
-      api: "openai-responses",
-      baseUrl: "https://api.openai.com/v1",
-    });
+    resolveModelWithRegistryMock.mockReturnValue(createOpenAIModel());
     resolveSessionAuthSelectionMock.mockResolvedValue({
       profileId: "openai:work",
       source: "auto",
@@ -442,12 +453,7 @@ describe("runBtwSideQuestion", () => {
       ) => ({
         model:
           options?.authProfileMode === "token"
-            ? {
-                provider: "openai",
-                id: "gpt-5.5",
-                api: "openai-chatgpt-responses",
-                baseUrl: "https://chatgpt.com/backend-api/codex",
-              }
+            ? createOpenAIModel(true)
             : resolveModelWithRegistryMock(),
       }),
     );
@@ -458,13 +464,7 @@ describe("runBtwSideQuestion", () => {
       profileId: "openai:work",
     });
 
-    const result = await runSideQuestion({
-      provider: "openai",
-      model: "gpt-5.5",
-      sessionKey: DEFAULT_SESSION_KEY,
-      authorityRunId: "btw-side-authority",
-      opts: { runId: "parent-correlation" },
-      sandboxSessionKey: "agent:main:runtime-policy",
+    const origin = {
       agentAccountId: "account-1",
       groupId: "group-1",
       groupChannel: "#ops",
@@ -474,50 +474,44 @@ describe("runBtwSideQuestion", () => {
       senderName: "Rosita",
       senderUsername: "rosita",
       senderE164: "+15550001",
+      sandboxSessionKey: "agent:main:runtime-policy",
+    };
+    const result = await runOpenAISideQuestion({
+      ...origin,
+      sessionKey: DEFAULT_SESSION_KEY,
+      authorityRunId: "btw-side-authority",
+      opts: { runId: "parent-correlation" },
     });
 
     expect(result).toEqual({ text: "Codex side answer." });
     expect(codexSideQuestionMock).toHaveBeenCalledTimes(1);
-    expect(codexSideQuestionMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        provider: "openai",
-        model: "gpt-5.5",
-        question: DEFAULT_QUESTION,
-        sessionId: "session-1",
-        agentId: "main",
-        workspaceDir: "/tmp/workspace",
-        authProfileId: "openai:work",
-        agentAccountId: "account-1",
-        sandboxSessionKey: "agent:main:runtime-policy",
-        groupId: "group-1",
-        groupChannel: "#ops",
-        groupSpace: "workspace-1",
-        spawnedBy: "agent:main:parent",
-        senderId: "sender-1",
-        senderName: "Rosita",
-        senderUsername: "rosita",
-        senderE164: "+15550001",
-        opts: { runId: "btw-side-authority" },
-        runtimeModel: expect.objectContaining({
-          api: "openai-chatgpt-responses",
-          baseUrl: "https://chatgpt.com/backend-api/codex",
-        }),
+    expectCallFields(codexSideQuestionMock, {
+      ...origin,
+      provider: "openai",
+      model: "gpt-5.5",
+      question: DEFAULT_QUESTION,
+      sessionId: "session-1",
+      agentId: "main",
+      workspaceDir: "/tmp/workspace",
+      authProfileId: "openai:work",
+      opts: { runId: "btw-side-authority" },
+      runtimeModel: expect.objectContaining({
+        api: "openai-chatgpt-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
       }),
-    );
+    });
     expect(mockArg(codexSideQuestionMock, 0, 0)).toHaveProperty(
       "hostCapabilities",
       agentHarnessHostCapabilitiesMock,
     );
-    expect(createAgentHarnessHostCapabilitiesMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        attempt: expect.objectContaining({
-          admittedRunContext: expect.objectContaining({
-            operationalRunInstance: expect.objectContaining({ runId: "btw-side-authority" }),
-          }),
-          runId: "btw-side-authority",
+    expectCallFields(createAgentHarnessHostCapabilitiesMock, {
+      attempt: expect.objectContaining({
+        admittedRunContext: expect.objectContaining({
+          operationalRunInstance: expect.objectContaining({ runId: "btw-side-authority" }),
         }),
+        runId: "btw-side-authority",
       }),
-    );
+    });
     expect(closeAgentHarnessHostCapabilitiesMock).toHaveBeenCalledOnce();
     expect(resolveModelAsyncMock).toHaveBeenCalledWith(
       "openai",
@@ -542,19 +536,8 @@ describe("runBtwSideQuestion", () => {
     expect(
       (mockArg(codexSideQuestionMock, 0, 0) as { sessionFile?: string }).sessionFile,
     ).toContain("session-1.jsonl");
-    expect(streamSimpleMock).not.toHaveBeenCalled();
-    expect(registerProviderStreamForModelMock).not.toHaveBeenCalled();
-    expect(supports).toHaveBeenCalledWith(
-      expect.objectContaining({
-        modelProvider: expect.objectContaining({
-          preparedAuth: {
-            source: "profile",
-            mode: "token",
-            requirement: "subscription",
-          },
-        }),
-      }),
-    );
+    expectUncalled(streamSimpleMock, registerProviderStreamForModelMock);
+    expectPreparedAuth(supports, { source: "profile", mode: "token", requirement: "subscription" });
   });
 
   it("exposes block-streamed side-question usage without mutating the parent session", async () => {
@@ -636,7 +619,7 @@ describe("runBtwSideQuestion", () => {
     mockDoneAnswer("OpenClaw side answer.");
 
     await expect(
-      runSideQuestion({
+      runOpenAISideQuestion({
         cfg: {
           models: {
             providers: {
@@ -644,24 +627,12 @@ describe("runBtwSideQuestion", () => {
             },
           },
         } as never,
-        provider: "openai",
-        model: "gpt-5.5",
       }),
     ).resolves.toEqual({ text: "OpenClaw side answer." });
 
     expect(codexSideQuestionMock).not.toHaveBeenCalled();
     expect(streamSimpleMock).toHaveBeenCalled();
-    expect(supports).toHaveBeenCalledWith(
-      expect.objectContaining({
-        modelProvider: expect.objectContaining({
-          preparedAuth: {
-            source: "direct",
-            mode: "token",
-            requirement: "subscription",
-          },
-        }),
-      }),
-    );
+    expectPreparedAuth(supports, { source: "direct", mode: "token", requirement: "subscription" });
   });
 
   it("lets native Codex bootstrap auth without a host profile", async () => {
@@ -689,33 +660,19 @@ describe("runBtwSideQuestion", () => {
       source: "none",
     });
 
-    await expect(runSideQuestion({ provider: "openai", model: "gpt-5.5" })).resolves.toEqual({
+    await expect(runOpenAISideQuestion()).resolves.toEqual({
       text: "Codex side answer.",
     });
 
     expect(codexSideQuestionMock).toHaveBeenCalledOnce();
-    const preparedRuntimeAuth = (
-      mockArg(codexSideQuestionMock, 0, 0) as {
-        preparedRuntimeAuth?: {
-          plan?: AgentRuntimeAuthPlan;
-          authProfileStore?: { profiles?: Record<string, unknown> };
-          resolvedApiKey?: string;
-        };
-      }
-    ).preparedRuntimeAuth;
+    const preparedRuntimeAuth = sideQuestionArgs(codexSideQuestionMock).preparedRuntimeAuth;
     expect(preparedRuntimeAuth?.plan).toMatchObject({
       harnessAuthProvider: "openai",
     });
     expect(preparedRuntimeAuth?.plan?.forwardedAuthProfileId).toBeUndefined();
     expect(preparedRuntimeAuth?.resolvedApiKey).toBeUndefined();
     expect(Object.keys(preparedRuntimeAuth?.authProfileStore?.profiles ?? {})).toEqual([]);
-    expect(supports).toHaveBeenCalledWith(
-      expect.objectContaining({
-        modelProvider: expect.objectContaining({
-          preparedAuth: { source: "harness" },
-        }),
-      }),
-    );
+    expectPreparedAuth(supports, { source: "harness" });
   });
 
   it("hands a Codex side question the resolved Platform backup after subscription failure", async () => {
@@ -764,34 +721,16 @@ describe("runBtwSideQuestion", () => {
     });
 
     await expect(
-      runSideQuestion({
+      runOpenAISideQuestion({
         cfg: {
-          auth: {
-            order: { openai: ["openai:subscription", "openai:platform"] },
-          },
-          agents: {
-            defaults: {
-              models: {
-                "openai/gpt-5.5": { agentRuntime: { id: "codex" } },
-              },
-            },
-          },
+          auth: { order: { openai: ["openai:subscription", "openai:platform"] } },
+          ...harnessConfig("codex"),
         } as never,
-        provider: "openai",
-        model: "gpt-5.5",
         sessionKey: DEFAULT_SESSION_KEY,
       }),
     ).resolves.toEqual({ text: "Codex side answer." });
 
-    const sideQuestionParams = mockArg(codexSideQuestionMock, 0, 0) as {
-      authProfileId?: string;
-      runtimeModel?: { api?: string; baseUrl?: string };
-      preparedRuntimeAuth?: {
-        resolvedApiKey?: string;
-        plan?: { modelRoute?: { authRequirement?: string } };
-        authProfileStore?: { profiles?: Record<string, unknown> };
-      };
-    };
+    const sideQuestionParams = sideQuestionArgs(codexSideQuestionMock);
     expect(sideQuestionParams.runtimeModel).toMatchObject(platformModel);
     expect(sideQuestionParams.authProfileId).toBeUndefined();
     expect(sideQuestionParams.preparedRuntimeAuth).toMatchObject({
@@ -802,17 +741,7 @@ describe("runBtwSideQuestion", () => {
       Object.keys(sideQuestionParams.preparedRuntimeAuth?.authProfileStore?.profiles ?? {}),
     ).toEqual([]);
     expect(streamSimpleMock).not.toHaveBeenCalled();
-    expect(supports).toHaveBeenCalledWith(
-      expect.objectContaining({
-        modelProvider: expect.objectContaining({
-          preparedAuth: {
-            source: "profile",
-            mode: "api-key",
-            requirement: "api-key",
-          },
-        }),
-      }),
-    );
+    expectPreparedAuth(supports, { source: "profile", mode: "api-key", requirement: "api-key" });
   });
 
   it("uses registry ownership and closes host capabilities when a BTW hook rejects", async () => {
@@ -830,9 +759,7 @@ describe("runBtwSideQuestion", () => {
 
     await expect(runSideQuestion()).rejects.toThrow("side question failed");
 
-    expect(createAgentHarnessHostCapabilitiesMock).toHaveBeenCalledWith(
-      expect.objectContaining({ pluginId: "actual-owner" }),
-    );
+    expectCallFields(createAgentHarnessHostCapabilitiesMock, { pluginId: "actual-owner" });
     expect(closeAgentHarnessHostCapabilitiesMock).toHaveBeenCalledOnce();
   });
 
@@ -843,12 +770,7 @@ describe("runBtwSideQuestion", () => {
           ? { supported: true, priority: 100 }
           : { supported: false, reason: "openai only" },
     });
-    resolveModelWithRegistryMock.mockReturnValue({
-      provider: "openai",
-      id: "gpt-5.5",
-      api: "openai-responses",
-      baseUrl: "https://api.openai.com/v1",
-    });
+    resolveModelWithRegistryMock.mockReturnValue(createOpenAIModel());
     resolveSessionAuthSelectionMock.mockResolvedValue({
       profileId: "openai-codex:user@example.test",
       source: "auto",
@@ -867,14 +789,7 @@ describe("runBtwSideQuestion", () => {
       },
       order: { openai: ["openai-codex:user@example.test"] },
     });
-    resolveModelAsyncMock.mockResolvedValue({
-      model: {
-        provider: "openai",
-        id: "gpt-5.5",
-        api: "openai-chatgpt-responses",
-        baseUrl: "https://chatgpt.com/backend-api/codex",
-      },
-    });
+    resolveModelAsyncMock.mockResolvedValue({ model: createOpenAIModel(true) });
     getApiKeyForModelMock.mockResolvedValue({
       apiKey: "subscription-token",
       mode: "oauth",
@@ -889,15 +804,7 @@ describe("runBtwSideQuestion", () => {
             openai: ["openai-codex:user@example.test"],
           },
         },
-        agents: {
-          defaults: {
-            models: {
-              "openai/gpt-5.5": {
-                agentRuntime: { id: "codex" },
-              },
-            },
-          },
-        },
+        ...harnessConfig("codex"),
       } as never,
       provider: "openai-codex",
       model: "gpt-5.5",
@@ -906,15 +813,7 @@ describe("runBtwSideQuestion", () => {
 
     expect(result).toEqual({ text: "Codex side answer." });
     expect(codexSideQuestionMock).toHaveBeenCalledTimes(1);
-    const sideQuestionParams = mockArg(codexSideQuestionMock, 0, 0) as {
-      provider?: string;
-      authProfileId?: string;
-      runtimeModel?: { api?: string; baseUrl?: string };
-      preparedRuntimeAuth?: {
-        plan?: { modelRoute?: { api?: string; baseUrl?: string; authRequirement?: string } };
-        authProfileStore?: { profiles?: Record<string, unknown> };
-      };
-    };
+    const sideQuestionParams = sideQuestionArgs(codexSideQuestionMock);
     expect(sideQuestionParams.provider).toBe("openai");
     expect(sideQuestionParams.authProfileId).toBe("openai-codex:user@example.test");
     expect(sideQuestionParams.runtimeModel).toMatchObject({
@@ -929,8 +828,7 @@ describe("runBtwSideQuestion", () => {
     expect(
       Object.keys(sideQuestionParams.preparedRuntimeAuth?.authProfileStore?.profiles ?? {}),
     ).toEqual(["openai-codex:user@example.test"]);
-    expect(streamSimpleMock).not.toHaveBeenCalled();
-    expect(registerProviderStreamForModelMock).not.toHaveBeenCalled();
+    expectUncalled(streamSimpleMock, registerProviderStreamForModelMock);
   });
 
   it("prepares deny-all sender policy before calling a plugin side-question hook", async () => {
@@ -941,14 +839,7 @@ describe("runBtwSideQuestion", () => {
       id: "gpt-5.5",
       api: "openai-responses",
     });
-    resolveModelAsyncMock.mockResolvedValue({
-      model: {
-        provider: "openai",
-        id: "gpt-5.5",
-        api: "openai-responses",
-        baseUrl: "https://api.openai.com/v1",
-      },
-    });
+    resolveModelAsyncMock.mockResolvedValue({ model: createOpenAIModel() });
     await runSideQuestion({
       cfg: {
         channels: {
@@ -983,15 +874,10 @@ describe("runBtwSideQuestion", () => {
       runAttempt: vi.fn(),
     });
 
-    await expect(
-      runSideQuestion({
-        provider: "openai",
-        model: "gpt-5.5",
-        sessionKey: DEFAULT_SESSION_KEY,
-      }),
-    ).rejects.toThrow('Selected agent harness "codex" does not support /btw side questions.');
-    expect(streamSimpleMock).not.toHaveBeenCalled();
-    expect(registerProviderStreamForModelMock).not.toHaveBeenCalled();
+    await expect(runOpenAISideQuestion({ sessionKey: DEFAULT_SESSION_KEY })).rejects.toThrow(
+      'Selected agent harness "codex" does not support /btw side questions.',
+    );
+    expectUncalled(streamSimpleMock, registerProviderStreamForModelMock);
   });
 
   it("rejects CLI session forks before backend preparation or provider I/O", async () => {
@@ -1004,10 +890,12 @@ describe("runBtwSideQuestion", () => {
     await expect(runSideQuestion({ ...params, toolCalls: "deny" })).rejects.toThrow(
       "Session forks are not supported for CLI runtime claude-cli",
     );
-    expect(prepareCliRunContextMock).not.toHaveBeenCalled();
-    expect(executePreparedCliRunMock).not.toHaveBeenCalled();
-    expect(streamSimpleMock).not.toHaveBeenCalled();
-    expect(registerProviderStreamForModelMock).not.toHaveBeenCalled();
+    expectUncalled(
+      prepareCliRunContextMock,
+      executePreparedCliRunMock,
+      streamSimpleMock,
+      registerProviderStreamForModelMock,
+    );
 
     await expect(runSideQuestion(params)).resolves.toEqual({ text: "CLI side answer." });
     expect(executePreparedCliRunMock).toHaveBeenCalledOnce();
@@ -1055,19 +943,15 @@ describe("runBtwSideQuestion", () => {
     async ({ options, expected }) => {
       mockCliOutput({ text: "CLI side answer." });
 
-      await runSideQuestion({
-        cfg: createCliRuntimeConfig(),
-        model: "claude-opus-4-7",
+      await runCliSideQuestion({
         opts: options,
         sessionKey: DEFAULT_SESSION_KEY,
       });
 
-      const prepareParams = mockArg(prepareCliRunContextMock, 0, 0) as {
-        timeoutMs?: unknown;
-        runTimeoutOverrideMs?: unknown;
-      };
-      expect(prepareParams.timeoutMs).toBe(expected);
-      expect(prepareParams.runTimeoutOverrideMs).toBe(expected);
+      expectRecordFields(mockArg(prepareCliRunContextMock, 0, 0), {
+        timeoutMs: expected,
+        runTimeoutOverrideMs: expected,
+      });
     },
   );
 
@@ -1077,13 +961,9 @@ describe("runBtwSideQuestion", () => {
       rawText: "raw untransformed answer",
     });
 
-    await expect(
-      runSideQuestion({
-        cfg: createCliRuntimeConfig(),
-        model: "claude-opus-4-7",
-        sessionKey: DEFAULT_SESSION_KEY,
-      }),
-    ).rejects.toThrow("/btw side question via claude-cli produced no answer");
+    await expect(runCliSideQuestion({ sessionKey: DEFAULT_SESSION_KEY })).rejects.toThrow(
+      "/btw side question via claude-cli produced no answer",
+    );
 
     expect(cleanup).toHaveBeenCalledTimes(1);
     expect(streamSimpleMock).not.toHaveBeenCalled();
@@ -1127,14 +1007,11 @@ describe("runBtwSideQuestion", () => {
     });
 
     expect(result).toEqual({ text: "Session Claude CLI answer." });
-    const prepareParams = mockArg(prepareCliRunContextMock, 0, 0) as {
-      provider?: string;
-      authProfileId?: string;
-      executionMode?: string;
-    };
-    expect(prepareParams.provider).toBe("claude-cli");
-    expect(prepareParams.executionMode).toBe("side-question");
-    expect(prepareParams.authProfileId).toBe("anthropic:auto-cli");
+    expectRecordFields(mockArg(prepareCliRunContextMock, 0, 0), {
+      provider: "claude-cli",
+      executionMode: "side-question",
+      authProfileId: "anthropic:auto-cli",
+    });
     expect(resolveSessionAuthSelectionMock).not.toHaveBeenCalled();
     expect(cleanup).toHaveBeenCalledTimes(1);
     expect(getApiKeyForModelMock).not.toHaveBeenCalled();
@@ -1311,13 +1188,7 @@ describe("runBtwSideQuestion", () => {
   });
 
   it("uses a same-route literal fallback only after its prepared profile tier fails", async () => {
-    const platformModel = {
-      provider: "openai",
-      id: "gpt-5.5",
-      api: "openai-responses" as const,
-      baseUrl: "https://api.openai.com/v1",
-      name: "Platform model",
-    };
+    const platformModel = { ...createOpenAIModel(), name: "Platform model" };
     const authStore = {
       version: 1 as const,
       profiles: {
@@ -1361,13 +1232,7 @@ describe("runBtwSideQuestion", () => {
               openai: { apiKey: "literal-key" },
             },
           },
-          agents: {
-            defaults: {
-              models: {
-                "openai/gpt-5.5": { agentRuntime: { id: "openclaw" } },
-              },
-            },
-          },
+          ...harnessConfig("openclaw"),
         } as never,
         provider: "openai",
         model: "gpt-5.5",
