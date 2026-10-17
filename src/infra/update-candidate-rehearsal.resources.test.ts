@@ -58,32 +58,6 @@ function capacity(available: (target: string) => number | null, totalBytes = 102
   });
 }
 
-function snapshotOperation(f: Parameters<typeof prepare>[0]) {
-  const now = Date.now.bind(Date);
-  let elapsed = 0;
-  vi.spyOn(Date, "now").mockImplementation(() => now() + elapsed);
-  const cancel = new AbortController();
-  const waitForBytes = observeUpdateCandidateIoProgress();
-  const operation = prepare(f, {
-    timeoutMs: 300_000,
-    signal: AbortSignal.any([cancel.signal, AbortSignal.timeout(10_000)]),
-  });
-  return {
-    operation,
-    waitForBytes,
-    advance: (time: number) => {
-      elapsed += time;
-    },
-    finish: async () => {
-      cancel.abort();
-      await cleanup(operation);
-    },
-    prematureExit: operation.then(() => {
-      throw new Error("Snapshot unexpectedly completed");
-    }),
-  };
-}
-
 async function expectSize(file: string, size: number) {
   expect((await fs.stat(file)).size).toBe(size);
 }
@@ -101,10 +75,7 @@ async function fixture(sizeMiB = 0) {
   return { root, stateDir, file };
 }
 
-async function withSyntheticSnapshotWorker(
-  body: string,
-  run: (fixture: { root: string; stateDir: string; receipt: string }) => Promise<void>,
-) {
+async function syntheticSnapshotWorker(body: string) {
   const root = tempDirs.make("candidate-progress-");
   const stateDir = path.join(root, "source");
   const receipt = path.join(root, "child.json");
@@ -135,11 +106,11 @@ async function withSyntheticSnapshotWorker(
       ${body}
     `,
   );
-  await run({ root, stateDir, receipt });
+  return { root, stateDir, receipt };
 }
 
 it.each(["progressing", "stalled"] as const)("settles a %s snapshot worker", async (outcome) => {
-  await withSyntheticSnapshotWorker(
+  const { root, stateDir, receipt } = await syntheticSnapshotWorker(
     outcome === "progressing"
       ? `
       for (const [index, blocks] of [4, 3, 3].entries()) {
@@ -157,46 +128,56 @@ it.each(["progressing", "stalled"] as const)("settles a %s snapshot worker", asy
       setInterval(() => {}, 1000);
       await fs.writeFile(path.join(scratch, "ready"), "ready");
     `,
-    async ({ root, stateDir, receipt }) => {
-      const { operation, advance, finish, prematureExit, waitForBytes } = snapshotOperation({
-        root,
-        stateDir,
-      });
-      const started = Date.now();
-      try {
-        if (outcome === "progressing") {
-          for (const [index, blocks] of [4, 7, 10].entries()) {
-            await Promise.race([waitForBytes(blocks * 1024), prematureExit]);
-            advance(200_000);
-            await fs.writeFile(path.join(root, `continue-${index}`), "continue");
-          }
-          const rehearsal = await operation;
-          expect(Date.now() - started).toBeGreaterThan(300_000);
-          await expectSize(
-            path.join(rehearsal.stateDir, ".sqlite-snapshot-fixture/database.sqlite"),
-            10 * 1024,
-          );
-        } else {
-          await Promise.race([
-            waitForBytes(Buffer.byteLength("partial databasepartial WALready")),
-            prematureExit,
-          ]);
-          advance(400_000);
-          await expect(operation).rejects.toThrow(
-            /snapshot made no progress.*Check storage performance/,
-          );
-          const child = z
-            .object({ pid: z.number().int().positive(), directory: z.string() })
-            .parse(JSON.parse(await fs.readFile(receipt, "utf8")));
-          expect(() => process.kill(child.pid, 0)).toThrow();
-          await expect(fs.stat(child.directory)).rejects.toMatchObject({ code: "ENOENT" });
-        }
-      } finally {
-        await finish();
-      }
-      await expect(fs.readdir(stateDir)).resolves.toEqual([]);
+  );
+  const now = Date.now.bind(Date);
+  let elapsed = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => now() + elapsed);
+  const cancel = new AbortController();
+  const waitForBytes = observeUpdateCandidateIoProgress();
+  const operation = prepare(
+    { root, stateDir },
+    {
+      timeoutMs: 300_000,
+      signal: AbortSignal.any([cancel.signal, AbortSignal.timeout(10_000)]),
     },
   );
+  const prematureExit = operation.then(() => {
+    throw new Error("Snapshot unexpectedly completed");
+  });
+  const started = Date.now();
+  try {
+    if (outcome === "progressing") {
+      for (const [index, blocks] of [4, 7, 10].entries()) {
+        await Promise.race([waitForBytes(blocks * 1024), prematureExit]);
+        elapsed += 200_000;
+        await fs.writeFile(path.join(root, `continue-${index}`), "continue");
+      }
+      const rehearsal = await operation;
+      expect(Date.now() - started).toBeGreaterThan(300_000);
+      await expectSize(
+        path.join(rehearsal.stateDir, ".sqlite-snapshot-fixture/database.sqlite"),
+        10 * 1024,
+      );
+    } else {
+      await Promise.race([
+        waitForBytes(Buffer.byteLength("partial databasepartial WALready")),
+        prematureExit,
+      ]);
+      elapsed = 400_000;
+      await expect(operation).rejects.toThrow(
+        /snapshot made no progress.*Check storage performance/,
+      );
+      const child = z
+        .object({ pid: z.number().int().positive(), directory: z.string() })
+        .parse(JSON.parse(await fs.readFile(receipt, "utf8")));
+      expect(() => process.kill(child.pid, 0)).toThrow();
+      await expect(fs.stat(child.directory)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  } finally {
+    cancel.abort();
+    await cleanup(operation);
+  }
+  await expect(fs.readdir(stateDir)).resolves.toEqual([]);
 });
 
 it("keeps the SQLite startup floor when the caller supplies a smaller timeout", async () => {

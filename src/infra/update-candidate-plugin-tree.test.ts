@@ -155,10 +155,7 @@ it.each(["auto", "off"] as const)(
     const metadataStat = vi.spyOn(fsSync, "lstatSync");
     const metadataRead = vi.spyOn(fs, "readFile");
     const f = await fixture(true, async (source) => {
-      await fs.mkdir(path.join(source, "nested"));
-      for (let index = 0; index < 8; index++) {
-        await fs.writeFile(path.join(source, "nested", `${index}.txt`), `payload ${index}`);
-      }
+      await write(path.join(source, "nested", "payload.txt"), "nested payload");
     });
     const source = path.dirname(f.file);
     expect(
@@ -177,9 +174,7 @@ it.each(["auto", "off"] as const)(
     expect(mkdir.mock.calls.length).toBeLessThanOrEqual(
       f.plan.entries.filter((entry) => entry.kind === "directory").length + 1,
     );
-    for (let index = 0; index < 8; index++) {
-      await expectText(path.join(f.destination, "nested", `${index}.txt`), `payload ${index}`);
-    }
+    await expectText(path.join(f.destination, "nested", "payload.txt"), "nested payload");
     const after = await fs.stat(f.file, { bigint: true });
     const snapshot = await fs.stat(f.copied, { bigint: true });
     await expectText(f.copied);
@@ -197,10 +192,10 @@ it.each(["auto", "off"] as const)(
     ]);
     await fs.chmod(f.copied, 0o600);
     await fs.writeFile(f.copied, "private candidate changes");
-    await expectText(f.file);
-    await expectText(linked);
-    expect((await fs.stat(f.file, { bigint: true })).mode).toBe(before.mode);
-    expect((await fs.stat(linked, { bigint: true })).mode).toBe(before.mode);
+    for (const original of [f.file, linked]) {
+      await expectText(original);
+      expect(await fs.stat(original, { bigint: true })).toMatchObject({ mode: before.mode });
+    }
   },
 );
 

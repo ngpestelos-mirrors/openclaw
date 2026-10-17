@@ -116,21 +116,6 @@ function terminated(cleanup: "normal" | "uncertain") {
   };
 }
 
-function schemaCase(
-  name: string,
-  overrides: Partial<{
-    bytes: number;
-    discoveredBytes: number;
-    waits: number[];
-    completes: boolean;
-    configuredCache: boolean;
-    timeoutMs: number;
-    diagnosticBytes: number;
-  }> = {},
-) {
-  return { name, bytes: 4096, waits: [0], completes: true, ...overrides };
-}
-
 // Receipts and command settlement travel independently. The fixture publishes the
 // complete marker before it can reply, so that record decides a settlement race.
 async function fixtureEventBeforeSettlement(
@@ -254,14 +239,20 @@ it.for([undefined, 600_000])(
   },
 );
 
+const schemaDefaults = { bytes: 4096, waits: [0], completes: true };
 it.for([
-  schemaCase("large database", { bytes: 2 * 1024 ** 3, waits: [800_000] }),
-  schemaCase("late-discovered database", { discoveredBytes: 2 * 1024 ** 3, waits: [800_000] }),
-  schemaCase("continuing copy progress", { waits: [200_000, 200_000, 200_000] }),
-  schemaCase("stalled worker", { waits: [400_000], completes: false }),
-  schemaCase("caller allowance", { waits: [400_000], timeoutMs: 600_000 }),
-  schemaCase("configured cache", { configuredCache: true }),
-  schemaCase("large diagnostic output", { diagnosticBytes: 40_000 }),
+  { ...schemaDefaults, name: "large database", bytes: 2 * 1024 ** 3, waits: [800_000] },
+  {
+    ...schemaDefaults,
+    name: "late-discovered database",
+    discoveredBytes: 2 * 1024 ** 3,
+    waits: [800_000],
+  },
+  { ...schemaDefaults, name: "continuing copy progress", waits: [200_000, 200_000, 200_000] },
+  { ...schemaDefaults, name: "stalled worker", waits: [400_000], completes: false },
+  { ...schemaDefaults, name: "caller allowance", waits: [400_000], timeoutMs: 600_000 },
+  { ...schemaDefaults, name: "configured cache", configuredCache: true },
+  { ...schemaDefaults, name: "large diagnostic output", diagnosticBytes: 40_000 },
 ])(
   "budgets schema inspection for $name",
   async (
@@ -449,20 +440,6 @@ it.each(
   },
 );
 
-// Insert fixture code behind the real executable, preserving argv-based Windows
-// launch and the actual process/output/cleanup owners. Progress probes run unchanged.
-function useRehearsalWorkerFixture(runner: string): void {
-  const run = commands.runUtf8CommandWithTimeout;
-  vi.spyOn(commands, "runUtf8CommandWithTimeout").mockImplementation((argv, options) =>
-    run(
-      argv.some((arg) => /[/\\]update-candidate-state\.worker\.[cm]?[jt]s$/.test(arg))
-        ? [process.execPath, runner, ...argv.slice(1)]
-        : argv,
-      options,
-    ),
-  );
-}
-
 it.each(["stdout", "stderr"] as const)(
   "terminates a rehearsal worker exceeding its %s limit",
   async (stream) => {
@@ -480,7 +457,16 @@ it.each(["stdout", "stderr"] as const)(
     setInterval(() => {}, 1000);
   `,
     );
-    useRehearsalWorkerFixture(runner);
+    // Replace only the worker, preserving real probes and process cleanup.
+    const run = commands.runUtf8CommandWithTimeout;
+    vi.spyOn(commands, "runUtf8CommandWithTimeout").mockImplementation((argv, options) =>
+      run(
+        argv.some((arg) => /[/\\]update-candidate-state\.worker\.[cm]?[jt]s$/.test(arg))
+          ? [process.execPath, runner, ...argv.slice(1)]
+          : argv,
+        options,
+      ),
+    );
     const controller = new AbortController();
     let deadlineReached = false;
     const deadline = realSetTimeout(() => {

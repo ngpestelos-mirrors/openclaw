@@ -36,16 +36,6 @@ async function expectOutput(
   expect(result.stdout.toString().trim()).toBe(output);
 }
 
-async function replaceEntries(f: Awaited<ReturnType<typeof fixture>>, content: string) {
-  await fs.writeFile(f.sourceEntry, content);
-  await fs.writeFile(f.copiedEntry, content);
-}
-
-async function expectNoRepair(f: Awaited<ReturnType<typeof fixture>>) {
-  expect((await f.repair()).copiedFiles).toBe(0);
-  await expectMissing(f.copiedShared);
-}
-
 async function fixture(
   locatorKind: "directory" | "file" | "alias" | "install-record" = "directory",
   surface: "runtime" | "doctor" = "runtime",
@@ -56,19 +46,20 @@ async function fixture(
   const candidateRoot = path.join(root, "candidate");
   const plugin = path.join(root, "plugins", "demo");
   const shared = path.join(root, "plugins", "shared");
+  const siblingImport = 'import value from "../shared/value.js"; console.log(value);';
   await write(path.join(candidateRoot, "package.json"), '{"name":"openclaw"}');
   await writeTree(plugin, {
-    "package.json": JSON.stringify({
-      name: "demo",
-      type: "module",
-      openclaw: { extensions: ["./index.mjs"] },
-    }),
+    "package.json": '{"name":"demo","type":"module","openclaw":{"extensions":["./index.mjs"]}}',
     "openclaw.plugin.json": JSON.stringify({
       id: "demo",
       configSchema: { type: "object", properties: {} },
       ...(surface === "doctor" ? { doctorContract: { configRepair: true } } : {}),
     }),
-    "index.mjs": 'import value from "../shared/value.js"; console.log(value);',
+    "index.mjs":
+      surface === "doctor" ? 'export default { id: "demo", register() {} };' : siblingImport,
+    ...(surface === "doctor"
+      ? { "doctor-contract-api.mjs": `${siblingImport} export const legacyConfigRules = [];` }
+      : {}),
   });
   await writeTree(shared, {
     "package.json": '{"type":"module"}',
@@ -76,13 +67,6 @@ async function fixture(
     "nested/value.mjs": 'export default "sibling-ready";',
     "unrelated.txt": "not a module dependency",
   });
-  if (surface === "doctor") {
-    await write(path.join(plugin, "index.mjs"), 'export default { id: "demo", register() {} };');
-    await write(
-      path.join(plugin, "doctor-contract-api.mjs"),
-      'import value from "../shared/value.js"; console.log(value); export const legacyConfigRules = [];',
-    );
-  }
   const copiedPlugin = resolveUpdateCandidatePluginPath(sourceState, stateDir, plugin);
   const copiedShared = resolveUpdateCandidatePluginPath(sourceState, stateDir, shared);
   // Released 9.4 copied the selected package but omitted this relative sibling.
@@ -165,12 +149,12 @@ it.each(["runtime", "doctor"] as const)(
   "completes the %s entry with transformed runtime syntax at line 1203",
   async (surface) => {
     const f = await fixture("directory", surface);
-    await replaceEntries(
-      f,
+    const content =
       surface === "runtime"
         ? `import value from "../shared/value.js";\n${"\n".repeat(1201)}const module1=import.meta;\nconsole.log(value);`
-        : `${"\n".repeat(1202)}const module1=/(/;`,
-    );
+        : `${"\n".repeat(1202)}const module1=/(/;`;
+    await fs.writeFile(f.sourceEntry, content);
+    await fs.writeFile(f.copiedEntry, content);
     const repaired = await f.repair();
     expect(repaired.copiedFiles).toBeGreaterThan(0);
     expect(repaired.warnings).toEqual(
@@ -241,7 +225,8 @@ it.each(["lint", "incomplete rehearsal"])("does not acquire source files for %s"
   } else {
     delete f.env.OPENCLAW_SKIP_CHANNELS;
   }
-  await expectNoRepair(f);
+  expect((await f.repair()).copiedFiles).toBe(0);
+  await expectMissing(f.copiedShared);
 });
 
 it("reports an unresolved dependency whose published projection lost the original path", async () => {
@@ -259,21 +244,18 @@ it("reports an unresolved dependency whose published projection lost the origina
   await expectMissing(path.join(path.dirname(managed), "shared"));
 });
 
-it.each(["globally disabled", "disabled entry", "denied", "allowlisted elsewhere"])(
-  "does not parse a malformed %s plugin",
-  async (kind) => {
-    const f = await fixture();
-    await fs.writeFile(f.copiedEntry, "not valid JavaScript {{{");
-    f.config.plugins = {
-      ...f.config.plugins,
-      ...(kind === "globally disabled" ? { enabled: false } : {}),
-      ...(kind === "disabled entry" ? { entries: { demo: { enabled: false } } } : {}),
-      ...(kind === "denied" ? { deny: ["demo"] } : {}),
-      ...(kind === "allowlisted elsewhere" ? { allow: ["another"] } : {}),
-    };
-    await expectNoRepair(f);
-  },
-);
+it.each([
+  { name: "globally disabled", policy: { enabled: false } },
+  { name: "disabled entry", policy: { entries: { demo: { enabled: false } } } },
+  { name: "denied", policy: { deny: ["demo"] } },
+  { name: "allowlisted elsewhere", policy: { allow: ["another"] } },
+])("does not parse a malformed $name plugin", async ({ policy }) => {
+  const f = await fixture();
+  await fs.writeFile(f.copiedEntry, "not valid JavaScript {{{");
+  f.config.plugins = { ...f.config.plugins, ...policy };
+  expect((await f.repair()).copiedFiles).toBe(0);
+  await expectMissing(f.copiedShared);
+});
 
 it("stops if repair authority ends during asynchronous source preparation", async () => {
   const f = await fixture();
