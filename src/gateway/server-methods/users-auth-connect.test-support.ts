@@ -1,8 +1,7 @@
-import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import type {
-  UsersAuthConnectStartResult,
-  UsersAuthConnectStatusResult,
+  UsersAuthConnectStartResult as Flow,
+  UsersAuthConnectStatusResult as Status,
 } from "../../../packages/gateway-protocol/src/schema/users.js";
 import type { AuthProfileCredential, OAuthCredential } from "../../agents/auth-profiles/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -16,7 +15,7 @@ import type { UserProfileAuthLink } from "../../state/user-model-accounts.js";
 import { createModelAccountConnectService } from "../model-account-connect.js";
 import { broadcastChatMetadataChanged } from "../server-chat-metadata-lifecycle.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
-import { usersHandlers } from "./users.js";
+import { usersAuthConnectHandlers } from "./users-auth-connect.js";
 
 const resolveProfileId = vi.hoisted(() => vi.fn());
 const prepareUserProfileSelectionAuthority = vi.hoisted(() => vi.fn());
@@ -34,46 +33,34 @@ const resolvePersonalAccountAuthMethod = vi.hoisted(() => vi.fn());
 const exchange = vi.hoisted(() => vi.fn());
 const modelAccountLinksCurrent = vi.hoisted(() => vi.fn());
 
-vi.mock("../../state/user-profile-list.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../state/user-profile-list.js")>()),
-  readResidentUserProfileIdentity: (reference: string) => {
-    const profileId = resolveProfileId(reference);
-    return profileId
-      ? { profileId, aliases: new Set([reference, profileId]), role: null }
-      : undefined;
-  },
-  captureResidentUserProfileAccess: (profileId: string) => ({
-    assertCurrent: () => ({ id: resolveProfileId(profileId), role: null, githubLogin: null }),
+function selectionAuthority(reference: string) {
+  const profileId = resolveProfileId(reference);
+  return {
+    profileId,
+    isCurrent: () =>
+      resolveProfileId(reference) === profileId && resolveProfileId(profileId) === profileId,
+  };
+}
+
+vi.mock(import("../../state/user-channel-identity-operations.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  prepareUserProfileSelectionAuthority,
+  prepareUserProfileRolePolicyAuthority: async (reference: string) => ({
+    ...selectionAuthority(reference),
+    role: null,
+    githubLogin: null,
   }),
 }));
-vi.mock("../../state/user-channel-identity-operations.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../state/user-channel-identity-operations.js")>()),
-  prepareUserProfileSelectionAuthority,
-  prepareUserProfileRolePolicyAuthority: async (reference: string) => {
-    const profileId = resolveProfileId(reference);
-    return {
-      profileId,
-      role: null,
-      githubLogin: null,
-      isCurrent: () =>
-        resolveProfileId(reference) === profileId && resolveProfileId(profileId) === profileId,
-    };
-  },
-}));
-vi.mock("../../state/user-profile-events.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../state/user-profile-events.js")>()),
+vi.mock(import("../../state/user-profile-events.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
   captureUserProfileModelAccountLinksAuthority: () => modelAccountLinksCurrent,
-}));
-vi.mock("../../state/user-profile-email.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../state/user-profile-email.js")>()),
-  ensureProfileIdForEmail: async () => "profile-1",
 }));
 vi.mock("../../state/openclaw-state-worker-context.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../state/openclaw-state-worker-context.js")>()),
   captureOpenClawStateWorkerContext: () => ({}),
 }));
-vi.mock("../../state/user-model-account-operations.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../state/user-model-account-operations.js")>()),
+vi.mock(import("../../state/user-model-account-operations.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
   connectUserModelAccountAsync: connectUserModelAccount,
   listUserProfileAuthLinksAsync: listUserProfileAuthLinks,
   listUserModelAccountsAsync: listUserModelAccounts,
@@ -82,27 +69,24 @@ vi.mock("../../state/user-model-account-operations.js", async (importOriginal) =
   setUserProfileAuthLinkAsync: setUserProfileAuthLink,
   clearUserProfileAuthLinkAsync: clearUserProfileAuthLink,
 }));
-vi.mock("../../agents/auth-profiles/shared-main-dir.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../agents/auth-profiles/shared-main-dir.js")>()),
-  resolveSharedMainAuthAgentDir: () => "/tmp/shared-main-agent",
-}));
-vi.mock("../../agents/auth-profiles/store-runtime.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../agents/auth-profiles/store-runtime.js")>()),
+vi.mock(import("../../agents/auth-profiles/store-runtime.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
   ensureAuthProfileStoreWithoutExternalProfiles,
   ensureAuthProfileStoreWithoutExternalProfilesAsync: async (...args: unknown[]) =>
     ensureAuthProfileStoreWithoutExternalProfiles(...args),
 }));
-vi.mock("../../logging/secret-redaction-registry.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../logging/secret-redaction-registry.js")>()),
+vi.mock(import("../../logging/secret-redaction-registry.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
   registerSecretValueForRedaction,
 }));
-vi.mock("../../plugins/personal-account-auth.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../plugins/personal-account-auth.js")>()),
+vi.mock(import("../../plugins/personal-account-auth.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
   listPersonalAccountAuthChoices,
   resolvePersonalAccountAuthMethod,
 }));
 
-type TestClient = GatewayClient & { connId: string; invalidated: boolean };
+type Client = GatewayClient & { connId: string; invalidated: boolean };
+type LinkChange = { profileId: string; provider: string; assertCurrent?: () => void };
 type ConnectTestContext = Pick<
   GatewayRequestContext,
   | "broadcast"
@@ -143,13 +127,13 @@ export const warn = vi.fn();
 export let service: ReturnType<typeof createModelAccountConnectService>;
 let context: ConnectTestContext;
 export let config: OpenClawConfig;
-export let clients: Set<TestClient>;
-export let self: TestClient;
+export let clients: Set<Client>;
+export let self: Client;
 export let writes: AuthProfileCredential[];
 export let linksByOwner: Map<string, UserProfileAuthLink[]>;
 
-export function createClient(profileId = "profile-1", scopes = ["operator.write"]): TestClient {
-  const client: TestClient = {
+export function createClient(profileId = "profile-1", scopes = ["operator.write"]): Client {
+  const client: Client = {
     connId: `connection-${clients.size + 1}`,
     invalidated: false,
     authenticatedUserProfile: { profileId, displayName: "Ada", hasAvatar: false, updatedAt: 1 },
@@ -167,14 +151,11 @@ export function createClient(profileId = "profile-1", scopes = ["operator.write"
 
 export async function rpc(
   requestMethod: string,
-  params: Record<string, unknown>,
-  client: TestClient = self,
+  params: Record<string, unknown> = {},
+  client: Client = self,
 ) {
   const respond = vi.fn();
-  await expectDefined(
-    usersHandlers[requestMethod],
-    `${requestMethod} test invariant`,
-  )({
+  await usersAuthConnectHandlers[requestMethod]!({
     req: { type: "req", id: "connect-test", method: requestMethod, params },
     client,
     context: context as GatewayRequestContext,
@@ -198,7 +179,7 @@ export async function expectError(response: ReturnType<typeof rpc>, code: string
 }
 export function flowRpc(
   action: "answer" | "cancel" | "status",
-  flow: UsersAuthConnectStartResult,
+  flow: Flow,
   params: Record<string, unknown> = {},
   profileId = "profile-1",
   client = self,
@@ -214,13 +195,13 @@ export async function startFlow(
   client = self,
   provider = "openai",
   method = "oauth",
-): Promise<UsersAuthConnectStartResult> {
+): Promise<Flow> {
   const respond = await rpc("users.authConnect.start", { profileId, provider, method }, client);
   expect(respond).toHaveBeenCalledWith(
     true,
     expect.objectContaining({ connectId: expect.any(String) }),
   );
-  const flow = respond.mock.calls[0]?.[1] as UsersAuthConnectStartResult;
+  const flow = respond.mock.calls[0]?.[1] as Flow;
   await vi.waitFor(async () =>
     expect(await status(flow, profileId, client)).toMatchObject({
       status: "pending",
@@ -229,25 +210,13 @@ export async function startFlow(
   );
   return flow;
 }
-export async function complete(
-  flow: UsersAuthConnectStartResult,
-  profileId = "profile-1",
-  client = self,
-) {
-  const current: UsersAuthConnectStatusResult = await status(flow, profileId, client);
-  return flowRpc(
-    "answer",
-    flow,
-    {
-      stepId: current.status === "pending" ? current.step!.id : "retired-step",
-      value: "synthetic-code",
-    },
-    profileId,
-    client,
-  );
+export async function complete(flow: Flow, profileId = "profile-1", client = self) {
+  const current: Status = await status(flow, profileId, client);
+  const stepId = current.status === "pending" ? current.step!.id : "retired-step";
+  return flowRpc("answer", flow, { stepId, value: "synthetic-code" }, profileId, client);
 }
 export async function terminal(
-  flow: UsersAuthConnectStartResult,
+  flow: Flow,
   expected: string,
   profileId = "profile-1",
   client = self,
@@ -257,20 +226,15 @@ export async function terminal(
   );
   return status(flow, profileId, client);
 }
-export async function status(
-  flow: UsersAuthConnectStartResult,
-  profileId = "profile-1",
-  client = self,
-) {
+export async function status(flow: Flow, profileId = "profile-1", client = self) {
   const respond = await flowRpc("status", flow, {}, profileId, client);
   expect(respond.mock.calls[0]?.[0]).toBe(true);
   return respond.mock.calls[0]?.[1];
 }
 
 export function setupModelAccountConnectTest() {
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    broadcast.mockReset();
+  beforeEach(() => {
+    vi.resetAllMocks();
     modelAccountLinksCurrent.mockReturnValue(true);
     config = {};
     clients = new Set();
@@ -278,50 +242,31 @@ export function setupModelAccountConnectTest() {
     writes = [];
     linksByOwner = new Map();
     listUserProfileAuthLinks.mockImplementation((owner: string) => linksByOwner.get(owner) ?? []);
-    listUserModelAccounts.mockReset().mockReturnValue({ accounts: [] });
-    readUserModelAccountSummary.mockReset();
-    readSelectedUserModelAccount.mockReset();
-    ensureAuthProfileStoreWithoutExternalProfiles
-      .mockReset()
-      .mockReturnValue({ version: 1, profiles: { "openai:shared": credential } });
-    clearUserProfileAuthLink
-      .mockReset()
-      .mockImplementation(
-        (params: { profileId: string; provider: string; assertCurrent?: () => void }) => {
-          params.assertCurrent?.();
-          const links = (linksByOwner.get(params.profileId) ?? []).filter(
-            (link) => link.provider !== params.provider,
-          );
-          linksByOwner.set(params.profileId, links);
-          return links;
-        },
-      );
-    setUserProfileAuthLink
-      .mockReset()
-      .mockImplementation(
-        (params: {
-          profileId: string;
-          provider: string;
-          authProfileId: string;
-          assertCurrent?: () => void;
-        }) => {
-          params.assertCurrent?.();
-          const links = [
-            { provider: params.provider, authProfileId: params.authProfileId, updatedAt: 2 },
-          ];
-          linksByOwner.set(params.profileId, links);
-          return links;
-        },
-      );
-    resolveProfileId.mockImplementation((id: string) => id);
-    prepareUserProfileSelectionAuthority.mockImplementation(async (reference: string) => {
-      const profileId = resolveProfileId(reference);
-      return {
-        profileId,
-        isCurrent: () =>
-          resolveProfileId(reference) === profileId && resolveProfileId(profileId) === profileId,
-      };
+    listUserModelAccounts.mockReturnValue({ accounts: [] });
+    ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue({
+      version: 1,
+      profiles: { "openai:shared": credential },
     });
+    clearUserProfileAuthLink.mockImplementation((params: LinkChange) => {
+      params.assertCurrent?.();
+      const links = (linksByOwner.get(params.profileId) ?? []).filter(
+        (link) => link.provider !== params.provider,
+      );
+      linksByOwner.set(params.profileId, links);
+      return links;
+    });
+    setUserProfileAuthLink.mockImplementation((params: LinkChange & { authProfileId: string }) => {
+      params.assertCurrent?.();
+      const links = [
+        { provider: params.provider, authProfileId: params.authProfileId, updatedAt: 2 },
+      ];
+      linksByOwner.set(params.profileId, links);
+      return links;
+    });
+    resolveProfileId.mockImplementation((id: string) => id);
+    prepareUserProfileSelectionAuthority.mockImplementation(async (reference: string) =>
+      selectionAuthority(reference),
+    );
     listPersonalAccountAuthChoices.mockReturnValue([
       {
         pluginId: "openai",

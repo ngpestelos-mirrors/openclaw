@@ -14,11 +14,7 @@ import { withPersonalToolTurn } from "../../auto-reply/reply/personal-tool-turn.
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import type {
-  PreparedUserProfileIdentity,
-  UserProfileDisplay,
-  UserProfileIdentity,
-} from "../../state/user-profiles.types.js";
+import type { PreparedUserProfileIdentity } from "../../state/user-profiles.types.js";
 import { createGatewayMethodRegistry } from "../methods/registry.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import type { GatewayClient } from "./client-types.js";
@@ -40,29 +36,13 @@ const state = vi.hoisted(() => ({
 // mock-isolation: exercise profile revocation without opening shared profile storage.
 vi.mock("../../state/user-profile-list.js", () => ({
   isUserProfileCatalogReady: () => true,
-  prepareUserProfileCatalog: async () => ({
-    hasMultipleSessionSharingIdentities: () => state.multipleProfiles,
-    readCurrentIdentity: (id: string) => ({
-      profileId: id === "alice-alias" ? state.canonical : id,
-      role: state.role,
-    }),
-    release: () => {},
-  }),
   hasMultipleSessionSharingIdentities: () => state.multipleProfiles,
   hasMultipleResidentSessionSharingIdentities: () => state.multipleProfiles,
-  readUserProfileIdentity: (id: string): UserProfileIdentity => ({
+  readUserProfileIdentity: (id: string) => ({
     profileId: id === "alice-alias" ? state.canonical : id,
-    role: state.role,
-    aliases: new Set([id]),
   }),
   readResidentUserProfileId: (id: string) => (id === "alice-alias" ? state.canonical : id),
   readResidentUserProfileIdentity: (id: string) => ({ profileId: id, role: state.role }),
-  getUserProfileDisplay: (id: string): UserProfileDisplay => ({
-    id,
-    displayName: null,
-    hasAvatar: false,
-    avatarRevision: "0",
-  }),
   prepareUserProfileIdentity: async (profileId: string): Promise<PreparedUserProfileIdentity> => {
     state.profileHolds += 1;
     let active = true;
@@ -175,7 +155,32 @@ async function rpc(method: "get" | "set", params: Record<string, unknown> = {}) 
 }
 const save = (content: string, expectedHash: string | null = null) =>
   rpc("set", { content, expectedHash });
-const personalPath = () => path.join(workspace, "users", "alice", "USER.md");
+const personalPath = (profile = "alice") => path.join(workspace, "users", profile, "USER.md");
+const readPersonal = (profile = "alice") => fs.readFile(personalPath(profile), "utf8");
+const requestParams = (
+  action: "get" | "set",
+  content = "Bad",
+  expectedHash: string | null = null,
+) => (action === "set" ? { action, content, expectedHash } : { action });
+
+function toolCalls(identity?: Parameters<typeof withGatewayToolCallerIdentity>[0]) {
+  const tool = createPersonalInstructionsTool("main");
+  const call = (params: Record<string, unknown>) => {
+    const execute = () => tool.execute("personal-call", params, controller.signal);
+    return identity ? withGatewayToolCallerIdentity(identity, execute) : execute();
+  };
+  return {
+    call,
+    get: () => call({ action: "get" }),
+    set: (content: string, expectedHash: string | null = null) =>
+      call(requestParams("set", content, expectedHash)),
+  };
+}
+
+async function expectPersonal(content: string, profile = "alice") {
+  expect(await readPersonal(profile)).toBe(content);
+  expect(await fs.readdir(path.join(workspace, "users"))).toEqual([profile]);
+}
 
 async function expectSharedDefaults() {
   expect(await fs.readdir(workspace)).toEqual(["USER.md"]);
@@ -245,26 +250,22 @@ describe("personal USER.md self-service", () => {
 
   it("routes the read-only requester's chat tool from a foreign session to their canonical file", async () => {
     const { identity } = toolTurn();
-    const tool = createPersonalInstructionsTool("main");
-    const execute = (params: Record<string, unknown>) =>
-      withGatewayToolCallerIdentity(identity, () =>
-        tool.execute("personal-call", params, controller.signal),
-      );
-    expect((await execute({ action: "get" })).details).toMatchObject({
+    const tool = toolCalls(identity);
+    expect((await tool.get()).details).toMatchObject({
       profileId: "alice",
       missing: true,
       hash: null,
     });
-    expect(
-      (await execute({ action: "set", content: "Prefer examples.", expectedHash: null })).details,
-    ).toMatchObject({ profileId: "alice", content: "Prefer examples." });
-    expect((await execute({ action: "get" })).details).toMatchObject({
+    expect((await tool.set("Prefer examples.")).details).toMatchObject({
+      profileId: "alice",
+      content: "Prefer examples.",
+    });
+    expect((await tool.get()).details).toMatchObject({
       profileId: "alice",
       missing: false,
       content: "Prefer examples.",
     });
-    expect(await fs.readFile(personalPath(), "utf8")).toBe("Prefer examples.");
-    expect(await fs.readdir(path.join(workspace, "users"))).toEqual(["alice"]);
+    await expectPersonal("Prefer examples.");
     expect(await fs.readFile(path.join(workspace, "USER.md"), "utf8")).toBe("Shared defaults");
     expect(await loadPersonalUserBootstrapFile(workspace, "alice")).toMatchObject({
       personalUser: true,
@@ -291,45 +292,31 @@ describe("personal USER.md self-service", () => {
     ),
   )("rejects personal $action when another profile steers $phase", async ({ action, phase }) => {
     await withRequesterTurn(async (turn) => {
-      const tool = createPersonalInstructionsTool("main");
-      const execute = (params: Record<string, unknown>) => tool.execute("personal-call", params);
+      const tool = toolCalls();
       const steer = async () => {
         expect(await turn.steer({ profileId: "bob", senderId: "bob", name: "Bob" })).toMatchObject({
           status: "accepted",
         });
       };
       if (phase === "before") {
-        const saved = await execute({
-          action: "set",
-          content: "Alice's preferences",
-          expectedHash: null,
-        });
+        const saved = await tool.set("Alice's preferences");
         expect(saved.details).toMatchObject({ profileId: "alice", content: "Alice's preferences" });
         const before = state.rootCalls;
         await steer();
         await expect(
           withGatewayPersonalToolUser("alice-alias", () =>
-            execute({
-              action,
-              ...(action === "set"
-                ? {
-                    content: "Bob's preferences",
-                    expectedHash: (saved.details as { hash: string }).hash,
-                  }
-                : {}),
-            }),
+            tool.call(
+              requestParams(action, "Bob's preferences", (saved.details as { hash: string }).hash),
+            ),
           ),
         ).rejects.toThrow(/own.*(turn|Control UI)/);
         expect(state.rootCalls).toBe(before);
-        expect(await fs.readFile(personalPath(), "utf8")).toBe("Alice's preferences");
+        expect(await readPersonal()).toBe("Alice's preferences");
       } else {
         state.beforeRoot = steer;
-        await expect(
-          execute({
-            action,
-            ...(action === "set" ? { content: "Ambiguous", expectedHash: null } : {}),
-          }),
-        ).rejects.toThrow(/own.*(turn|Control UI)/);
+        await expect(tool.call(requestParams(action, "Ambiguous"))).rejects.toThrow(
+          /own.*(turn|Control UI)/,
+        );
         expect(await fs.readdir(workspace)).toEqual(["USER.md"]);
       }
     });
@@ -364,40 +351,26 @@ describe("personal USER.md self-service", () => {
           ...(kind === "shared-secret" ? { operatorRoleActor: { kind: "system" as const } } : {}),
         },
       };
-      const preparation = captureGatewayOperatorRunAuthority({
-        client: ingress,
-        context: identity.gatewayContextResolver(),
-        hasCurrentClientAuthority: () => true,
-      });
       const pending = (async () => {
-        const captured = await preparation;
+        const captured = await captureGatewayOperatorRunAuthority({
+          client: ingress,
+          context: identity.gatewayContextResolver(),
+          hasCurrentClientAuthority: () => true,
+        });
         expect(captured).toBeDefined();
         if (!captured) {
           throw new Error("authenticated owner source missing");
         }
         try {
-          const tool = createPersonalInstructionsTool("main");
-          const call = (params: Record<string, unknown>) =>
-            withGatewayToolCallerIdentity(
-              { ...identity, operatorAuthority: captured.authority },
-              () => tool.execute("owner-call", params, controller.signal),
-            );
-          expect((await call({ action: "get" })).details).toMatchObject({
+          const tool = toolCalls({ ...identity, operatorAuthority: captured.authority });
+          expect((await tool.get()).details).toMatchObject({
             profileId: GATEWAY_OWNER_PROFILE_ID,
             missing: true,
           });
-          await call({ action: "set", content: "Owner preferences", expectedHash: null });
-          expect(
-            await fs.readFile(
-              path.join(workspace, "users", GATEWAY_OWNER_PROFILE_ID, "USER.md"),
-              "utf8",
-            ),
-          ).toBe("Owner preferences");
-          expect(await fs.readdir(path.join(workspace, "users"))).toEqual([
-            GATEWAY_OWNER_PROFILE_ID,
-          ]);
+          await tool.set("Owner preferences");
+          await expectPersonal("Owner preferences", GATEWAY_OWNER_PROFILE_ID);
           captured.release();
-          await expect(call({ action: "get" })).rejects.toThrow("no longer active");
+          await expect(tool.get()).rejects.toThrow("no longer active");
         } finally {
           captured.release();
         }
@@ -482,29 +455,25 @@ describe("personal USER.md self-service", () => {
     "rechecks delegated %s authority before filesystem mutation",
     async (boundary) => {
       const turn = toolTurn();
+      let current = true;
+      state.beforeMutation = () => {
+        current = false;
+      };
       if (boundary === "commit") {
-        let current = true;
         state.commitGuard = () => {
           if (!current) {
             throw new Error("dispatch revoked");
           }
         };
-        state.beforeMutation = () => {
-          current = false;
-        };
       } else if (boundary === "source") {
         state.beforeMutation = turn.revoke;
       } else {
-        let current = true;
         turn.identity.receiptAuthority = () => current;
-        state.beforeMutation = () => {
-          current = false;
-        };
       }
       expect((await withGatewayToolCallerIdentity(turn.identity, () => save("Retired"))).ok).toBe(
         false,
       );
-      await expect(fs.readFile(personalPath(), "utf8")).rejects.toThrow();
+      await expect(readPersonal()).rejects.toThrow();
     },
   );
 
@@ -525,31 +494,23 @@ describe("personal USER.md self-service", () => {
       ok: false,
       error: { details: { type: "personal_file_conflict" } },
     });
-    expect(await fs.readFile(personalPath(), "utf8")).toBe("Updated");
+    expect(await readPersonal()).toBe("Updated");
     expect(await save("", updated.result.hash)).toMatchObject({
       ok: true,
       result: { content: "", missing: false },
     });
   });
 
-  it.each(["single-user", "selected-profile", "anonymous", "synthetic", "node"])(
+  it.each([
+    ["single-user", () => (state.multipleProfiles = false)],
+    ["selected-profile", () => (client.connect.scopes = ["operator.admin"])],
+    ["anonymous", () => (client.authenticatedUserProfile = undefined)],
+    ["synthetic", () => (client.internal = { syntheticClient: true })],
+    ["node", () => (client.connect.role = "node")],
+  ] as const)(
     "rejects personal-file requests for %s before touching files",
-    async (kind) => {
-      if (kind === "single-user") {
-        state.multipleProfiles = false;
-      }
-      if (kind === "selected-profile") {
-        client.connect.scopes = ["operator.admin"];
-      }
-      if (kind === "anonymous") {
-        client.authenticatedUserProfile = undefined;
-      }
-      if (kind === "synthetic") {
-        client.internal = { syntheticClient: true };
-      }
-      if (kind === "node") {
-        client.connect.role = "node";
-      }
+    async (kind, revoke) => {
+      revoke();
       for (const method of ["get", "set"] as const) {
         expect(
           await rpc(method, {
