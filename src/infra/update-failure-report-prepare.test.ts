@@ -37,6 +37,16 @@ function expectText(body: string, includes: readonly string[], excludes: readonl
     expect(body).not.toContain(text);
   }
 }
+function makeRecordedRun(
+  steps: NonNullable<UpdateFailureReportInput["recordedRun"]>["steps"],
+  fields: Partial<NonNullable<UpdateFailureReportInput["recordedRun"]>> = {},
+) {
+  return { runId: attemptId, steps, ...fields };
+}
+const unsafeRecovery = {
+  serviceRestartSafe: false,
+  reason: "runtime-verification-failed",
+} as const;
 
 type Diagnostic = {
   name: string;
@@ -57,9 +67,7 @@ const diagnostics: Diagnostic[] = [
       check: "managed-service",
       code: "managed-service-handoff-failed",
       message:
-        "managed handoff lease database identity changed at /home/Private Operator/tmp/managed-update-handoffs.sqlite: " +
-        "path (recorded /Users/Private Operator/tmp/managed-update-handoffs.sqlite; current /home/Private Operator/tmp/managed-update-handoffs.sqlite); " +
-        "file identity (recorded 2096:3530466; current 2096:3530467). Run openclaw update repair.",
+        "managed handoff lease database identity changed at /home/Private Operator/lease.sqlite; recorded /Users/Private Operator/lease.sqlite; file identity changed. Run openclaw update repair.",
     },
     includes: ["managed-service-handoff-failed"],
     excludes: ["Private Operator", "/home/", "/Users/"],
@@ -248,9 +256,7 @@ it("preserves classified destination ownership and recovery without exposing use
   for (const recorded of [false, true]) {
     const prepared = await report(
       { reason: "global-install-foreign-destination", steps: recorded ? [] : [failed] },
-      recorded
-        ? { recordedRun: { runId: attemptId, steps: updateRunStepsFromResultStep(failed) } }
-        : {},
+      recorded ? { recordedRun: makeRecordedRun(updateRunStepsFromResultStep(failed)) } : {},
       redaction,
     );
     expectText(
@@ -276,8 +282,6 @@ it("includes every named lint finding using public diagnostic redaction", async 
     reason: "doctor-failed",
     steps: [
       step("post-plugin-doctor-lint", {
-        command: "doctor --lint --json",
-        cwd: "/candidate",
         doctorLintFindings: Array.from({ length: 40 }, (_, index) => ({
           checkId: "core/doctor/security",
           severity: index === 0 ? "error" : "warning",
@@ -303,11 +307,7 @@ it.each([
     "Package rollback launcher backup changed",
     "Package rollback verification timed out",
     "Package rollback verification failed",
-  ].map((cause) => ({
-    source: "rollback",
-    diagnostic: true,
-    cause,
-  })),
+  ].map((cause) => ({ source: "rollback", diagnostic: true, cause })),
   ...[
     { source: "stderr", diagnostic: true },
     { source: "stderr", diagnostic: false },
@@ -328,16 +328,11 @@ it.each([
       "npm ERR! log: /private/example/npm.log",
     ].join("\n");
     const failed = step(source === "rollback" ? "package-swap" : "global update", {
-      command: "npm install -g openclaw@2026.9.4",
-      cwd: "/candidate",
       stderrTail: stderr,
-      ...(source === "facts-and-stderr"
-        ? {
-            failureFacts: [
-              { check: "package-install", code: "EACCES", message: "npm warn private-package" },
-            ],
-          }
-        : {}),
+      failureFacts:
+        source === "facts-and-stderr"
+          ? [{ check: "package-install", code: "EACCES", message: "npm warn private-package" }]
+          : undefined,
     });
     const recorded = source === "rollback" || source === "recorded-detail";
     const prepared = await report(
@@ -347,17 +342,15 @@ it.each([
       },
       recorded
         ? {
-            recordedRun: {
-              runId: attemptId,
-              steps:
-                source === "rollback"
-                  ? updateRunStepsFromResultStep({
-                      name: "package-swap",
-                      exitCode: 1,
-                      stderrTail: `${cause}: /private/customer/launcher. Installation recovery is unverified; inspect the installation and backups before restarting.`,
-                    })
-                  : [{ step: "global update", status: "failed", exitCode: 1, detail: stderr }],
-            },
+            recordedRun: makeRecordedRun(
+              source === "rollback"
+                ? updateRunStepsFromResultStep({
+                    name: "package-swap",
+                    exitCode: 1,
+                    stderrTail: `${cause}: /private/customer/launcher. Installation recovery is unverified; inspect the installation and backups before restarting.`,
+                  })
+                : [{ step: "global update", status: "failed", exitCode: 1, detail: stderr }],
+            ),
           }
         : {},
     );
@@ -478,45 +471,36 @@ it.each(["step", "plugin-summary"])(
   "reports private-safe warnings from %s without changing the failed phase",
   async (source) => {
     const message = "EACCES: permission denied at /private/customer/plugin token=synthetic-token";
-    const result: Partial<UpdateRunResult> = {
-      steps: [
-        ...(source === "step"
-          ? [
-              step("post-plugin-doctor", {
-                command: "doctor --fix",
-                cwd: "/candidate",
-                advisory: { kind: "recoverable-maintenance", message },
-              }),
-            ]
-          : []),
-        step("verifying"),
-      ],
-      ...(source === "plugin-summary"
-        ? {
-            postUpdate: {
-              plugins: {
-                status: "warning",
-                changed: true,
-                warnings: ["discord", "private-customer-plugin"].map((pluginId) => ({
-                  pluginId,
-                  reason: "post-plugin-doctor-execution-failed",
-                  message,
-                  guidance: ["custom-tool private-customer-command"],
-                })),
-                sync: {
-                  changed: false,
-                  switchedToBundled: [],
-                  switchedToNpm: [],
-                  warnings: [],
-                  errors: [],
-                },
-                npm: { changed: false, outcomes: [] },
-                integrityDrifts: [],
-              },
-            },
-          }
-        : {}),
-    };
+    const result: Partial<UpdateRunResult> = { steps: [step("verifying")] };
+    if (source === "step") {
+      result.steps?.unshift(
+        step("post-plugin-doctor", {
+          advisory: { kind: "recoverable-maintenance", message },
+        }),
+      );
+    } else {
+      result.postUpdate = {
+        plugins: {
+          status: "warning",
+          changed: true,
+          warnings: ["discord", "private-customer-plugin"].map((pluginId) => ({
+            pluginId,
+            reason: "post-plugin-doctor-execution-failed",
+            message,
+            guidance: ["custom-tool private-customer-command"],
+          })),
+          sync: {
+            changed: false,
+            switchedToBundled: [],
+            switchedToNpm: [],
+            warnings: [],
+            errors: [],
+          },
+          npm: { changed: false, outcomes: [] },
+          integrityDrifts: [],
+        },
+      };
+    }
     const prepared = await report(result);
     expectText(
       prepared.body,
@@ -540,15 +524,31 @@ it.each(["step", "plugin-summary"])(
   },
 );
 
-type RecoveryCase = {
+type ReportCase = {
   name: string;
-  result: Partial<UpdateRunResult>;
+  result?: Partial<UpdateRunResult>;
   recordedRun?: UpdateFailureReportInput["recordedRun"];
   target?: string;
   includes: string[];
   excludes?: string[];
 };
-const recoveryCases: RecoveryCase[] = [
+function recoveryCase(
+  summary: string,
+  recovery: Partial<Extract<UpdateRunResult["recovery"], { serviceRestartSafe: true }>> = {},
+): ReportCase {
+  const outcome = recovery.reason
+    ? `${summary}. Run \`openclaw gateway status --deep\` to check the serving version and readiness.`
+    : summary;
+  return {
+    name: outcome,
+    result: {
+      reason: "runtime-verification-failed",
+      recovery: { serviceRestartSafe: true, version: "2026.9.4", ...recovery },
+    },
+    includes: [`- Recovery outcome: ${outcome}\n`],
+  };
+}
+const recoveryCases: ReportCase[] = [
   {
     name: "candidate repair refused before activation",
     target: "version 2026.9.4",
@@ -556,8 +556,8 @@ const recoveryCases: RecoveryCase[] = [
       reason: "repair-requires-config-change",
       before: { version: "2026.9.3" },
       after: { version: "2026.9.3" },
-      steps: [step("repairing", { command: "repair staged candidate", cwd: "/candidate" })],
-      recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+      steps: [step("repairing")],
+      recovery: unsafeRecovery,
     },
     includes: [
       "Failed phase: repairing",
@@ -566,36 +566,25 @@ const recoveryCases: RecoveryCase[] = [
     ],
     excludes: ["rollback"],
   },
-  ...[
-    { healthy: true, code: undefined, expected: "verified serving 2026.9.5" },
-    { healthy: false, code: "stopped-free", expected: "not serving (stopped-free)" },
-    {
-      healthy: false,
-      code: "private-probe-identifier",
-      expected: "recovery check failed (gateway-probe-failed)",
-    },
-  ].map(({ healthy, code, expected }): RecoveryCase => ({
+  ...(
+    [
+      [true, undefined, "verified serving 2026.9.5"],
+      [false, "stopped-free", "not serving (stopped-free)"],
+      [false, "private-probe-identifier", "recovery check failed (gateway-probe-failed)"],
+    ] as const
+  ).map(([healthy, code, expected]): ReportCase => ({
     name: `observed ${expected}`,
-    recordedRun: {
-      runId: attemptId,
-      steps: [],
-      verification: {
-        runningVersion: "2026.9.4",
-        versionMatch: true,
-        readyz: true,
-        settled: true,
-      },
-    },
+    recordedRun: makeRecordedRun([], {
+      verification: { runningVersion: "2026.9.4", versionMatch: true, readyz: true, settled: true },
+    }),
     result: {
       reason: "post-update-plugins",
       after: { version: "2026.9.5" },
       recovery: healthy
         ? { serviceRestartSafe: true, service: "healthy", version: "2026.9.5" }
-        : { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+        : unsafeRecovery,
       steps: [
         step("gateway recovery verification", {
-          command: "gateway verification",
-          cwd: "/fixture",
           exitCode: healthy ? 0 : 1,
           ...(code ? { failureFacts: [{ check: "settled", code }] } : {}),
         }),
@@ -604,44 +593,28 @@ const recoveryCases: RecoveryCase[] = [
     includes: [`Recovery outcome: ${expected}`],
     excludes: ["not verified", "private-probe-identifier"],
   })),
-  ...(
-    [
-      { service: undefined, outcome: "verified safe to restart" },
-      { service: "healthy", outcome: "Gateway serving 2026.9.4; health verified" },
-      {
-        service: "failed",
-        reason: "restart-unhealthy",
-        outcome:
-          "runtime files verified; Gateway health failed (restart-unhealthy). Run `openclaw gateway status --deep` to check the serving version and readiness.",
-      },
-      {
-        service: "healthy",
-        packageRollbackVerified: true,
-        outcome: "package rollback verified; Gateway serving 2026.9.4; health verified",
-      },
-      {
-        service: "failed",
-        packageRollbackVerified: true,
-        reason: "channel-errors",
-        outcome:
-          "package rollback verified (2026.9.4); Gateway health failed (channel-errors). Run `openclaw gateway status --deep` to check the serving version and readiness.",
-      },
-      {
-        service: undefined,
-        packageRollbackVerified: true,
-        reason: "gateway-readiness-pending",
-        outcome:
-          "package rollback verified (2026.9.4); Gateway health unverified (gateway-readiness-pending). Run `openclaw gateway status --deep` to check the serving version and readiness.",
-      },
-    ] as const
-  ).map(({ outcome, ...recovery }): RecoveryCase => ({
-    name: outcome,
-    result: {
-      reason: "runtime-verification-failed",
-      recovery: { serviceRestartSafe: true, version: "2026.9.4", ...recovery },
+  recoveryCase("verified safe to restart"),
+  recoveryCase("Gateway serving 2026.9.4; health verified", { service: "healthy" }),
+  recoveryCase("runtime files verified; Gateway health failed (restart-unhealthy)", {
+    service: "failed",
+    reason: "restart-unhealthy",
+  }),
+  recoveryCase("package rollback verified; Gateway serving 2026.9.4; health verified", {
+    service: "healthy",
+    packageRollbackVerified: true,
+  }),
+  recoveryCase("package rollback verified (2026.9.4); Gateway health failed (channel-errors)", {
+    service: "failed",
+    packageRollbackVerified: true,
+    reason: "channel-errors",
+  }),
+  recoveryCase(
+    "package rollback verified (2026.9.4); Gateway health unverified (gateway-readiness-pending)",
+    {
+      packageRollbackVerified: true,
+      reason: "gateway-readiness-pending",
     },
-    includes: [`- Recovery outcome: ${outcome}\n`],
-  })),
+  ),
 ];
 it.each(recoveryCases)(
   "reports only the observed recovery outcome: $name",
@@ -654,13 +627,7 @@ it.each(recoveryCases)(
   },
 );
 
-type PublicFieldCase = {
-  name: string;
-  result?: Partial<UpdateRunResult>;
-  target?: string;
-  includes: string[];
-};
-const publicFields: PublicFieldCase[] = [
+const publicFields: ReportCase[] = [
   ...["custom-tool private-customer-text", "custom-tool;private-customer-text"].map((value) => ({
     name: value,
     result: { reason: value },
@@ -703,14 +670,8 @@ const publicFields: PublicFieldCase[] = [
         sha: "~\\private-customer-text",
         buildId: '"PowerShell.EXE" -EncodedCommand private-customer-text',
       },
-      steps: [
-        step('ruby -e "private-customer-text"', {
-          command: "never copied",
-          cwd: "/private",
-          exitCode: 7,
-        }),
-      ],
-      recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+      steps: [step('ruby -e "private-customer-text"', { exitCode: 7 })],
+      recovery: unsafeRecovery,
     },
     includes: ["exit 7", "Update mode: npm", "Recovery outcome: not verified"],
   },

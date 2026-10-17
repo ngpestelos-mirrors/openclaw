@@ -19,6 +19,8 @@ import * as nativeCustody from "./update-managed-command-custody.js";
 import { createManagedHandoffLeaseStore } from "./update-managed-service-handoff-lease.js";
 
 const directories = useAutoCleanupTempDirTracker(afterEach);
+type NativeCustody = Awaited<ReturnType<typeof nativeCustody.createManagedCommandProcessCustody>>;
+type DoctorCustody = Awaited<ReturnType<typeof retainUpdateDoctorProcesses>>;
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -35,9 +37,7 @@ function doctorFixture() {
   return { root, privateTmp, databasePath, resultPath, receiptPath: `${resultPath}.processes` };
 }
 
-function nativeStore(
-  native: Awaited<ReturnType<typeof nativeCustody.createManagedCommandProcessCustody>>,
-) {
+function nativeStore(native: NativeCustody) {
   return createManagedHandoffLeaseStore({
     databasePath: native.databasePath,
     existingIdentity: native.databaseIdentity,
@@ -49,19 +49,41 @@ function readReceipt(file: string) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
-async function nativeFixture(runId: string, paired = false) {
+async function nativeFixture(runId: string, names = [""]) {
   const root = fs.realpathSync(directories.make("doctor-native-"));
-  const roots = paired ? [root, path.join(root, "candidate")] : [root];
+  const roots = names.map((name) => path.join(root, name));
+  const resultPath = path.join(root, "doctor-result.json");
   const native = await nativeCustody.createManagedCommandProcessCustody({
     roots,
     runId,
     databasePath: path.join(root, "handoffs.sqlite"),
   });
-  return { root, roots, native, store: nativeStore(native) };
+  const parent = (id = runId) =>
+    createUpdateDoctorProcessCustody(id, root, resultPath, {
+      roots,
+      databaseIdentity: native.databaseIdentity,
+    });
+  return { root, roots, native, resultPath, parent, store: nativeStore(native) };
+}
+function runDoctor(custody: DoctorCustody, source: string) {
+  return withCommandProcessScope(
+    () => spawnCommand([process.execPath, "-e", source]),
+    undefined,
+    custody,
+  );
+}
+function liveChild(native: NativeCustody) {
+  const argv = [process.execPath, "-e", "process.stdin.resume()"];
+  const reservation = native.custody.reserve(argv);
+  const child = spawn(argv[0]!, argv.slice(1), {
+    detached: true,
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+  return { child, reservation, closed: once(child, "close") };
 }
 
 it.skipIf(process.platform === "win32")(
-  "keeps a completed child's original reservation until its spawning owner settles it",
+  "reserves exited children until their spawning owner settles",
   async () => {
     const { root, native, store } = await nativeFixture("terminal-before-binding");
     const argv = [process.execPath, "-e", ""];
@@ -83,16 +105,10 @@ it.skipIf(process.platform === "win32")(
 );
 
 it.skipIf(process.platform === "win32").each([true, false])(
-  "uses a captured child birth without treating a live unknown birth as complete (captured: %s)",
+  "binds a live child only with captured birth identity (captured: %s)",
   async (captured) => {
     const { root, native, store } = await nativeFixture("captured-before-binding");
-    const argv = [process.execPath, "-e", "process.stdin.resume()"];
-    const reservation = native.custody.reserve(argv);
-    const child = spawn(argv[0]!, argv.slice(1), {
-      detached: true,
-      stdio: ["pipe", "ignore", "ignore"],
-    });
-    const closed = once(child, "close");
+    const { child, reservation, closed } = liveChild(native);
     await once(child, "spawn");
     const pid = child.pid!;
     const startedAt = birthIdentity.getProcessInstanceStartTime(pid);
@@ -128,7 +144,7 @@ it.skipIf(process.platform === "win32").each([true, false])(
 );
 
 it.skipIf(process.platform === "win32").each([false, true])(
-  "retains a real Doctor child's identity across a failed bind (settlement fails: %s)",
+  "retains failed-bind child identity (settlement fails: %s)",
   async (settlementFails) => {
     const { root, databasePath, receiptPath } = doctorFixture();
     const create = nativeCustody.createManagedCommandProcessCustody;
@@ -159,13 +175,9 @@ it.skipIf(process.platform === "win32").each([false, true])(
     );
     const store = createManagedHandoffLeaseStore({ databasePath, serviceManagerEnv: {} });
     using custody = await retainUpdateDoctorProcesses();
-    await expect(
-      withCommandProcessScope(
-        async () => await spawnCommand([process.execPath, "-e", "process.stdin.resume()"]),
-        undefined,
-        custody,
-      ),
-    ).rejects.toMatchObject({ code: "ERR_COMMAND_PROCESS_CLEANUP_UNCERTAIN" });
+    await expect(runDoctor(custody, "process.stdin.resume()")).rejects.toMatchObject({
+      code: "ERR_COMMAND_PROCESS_CLEANUP_UNCERTAIN",
+    });
     try {
       expect(identity).toMatchObject({ pid: expect.any(Number) });
       expect(groups.isChildProcessTreeAlive(identity!)).toBe(false);
@@ -197,23 +209,16 @@ it.skipIf(process.platform === "win32").each([
       using custody = await retainUpdateDoctorProcesses();
       expect(custody).toBeDefined();
       const dispatch = () =>
-        withCommandProcessScope(
-          async () =>
-            await spawnCommand([
-              process.execPath,
-              "-e",
-              `require('node:fs').writeFileSync(${JSON.stringify(effect)}, 'completed')`,
-            ]),
-          undefined,
+        runDoctor(
           custody,
+          "require('node:fs').writeFileSync(" + JSON.stringify(effect) + ", 'completed')",
         );
       if (publicationFault) {
         const publicationError = Object.assign(new Error("Doctor receipt publication failed"), {
           code: "EIO",
         });
         const publication = vi.spyOn(fs, "renameSync").mockImplementationOnce((from, to) => {
-          expect(from).toBe(`${receiptPath}.pending`);
-          expect(to).toBe(receiptPath);
+          expect([from, to]).toEqual([`${receiptPath}.pending`, receiptPath]);
           throw publicationError;
         });
         await expect(dispatch()).rejects.toBe(publicationError);
@@ -278,15 +283,9 @@ it.each(["unavailable root", "missing bound database", "inaccessible command sto
       await expect(
         withCommandProcessScope(async () => "diagnostics completed", undefined, custody),
       ).resolves.toBe("diagnostics completed");
-      const dispatch = withCommandProcessScope(
-        async () =>
-          await spawnCommand([
-            process.execPath,
-            "-e",
-            `require('node:fs').writeFileSync(${JSON.stringify(effect)}, 'written')`,
-          ]),
-        undefined,
+      const dispatch = runDoctor(
         custody,
+        "require('node:fs').writeFileSync(" + JSON.stringify(effect) + ", 'written')",
       );
       if (failure === "unavailable root") {
         await expect(dispatch).rejects.toThrow(
@@ -306,20 +305,17 @@ it.each(["unavailable root", "missing bound database", "inaccessible command sto
 );
 
 it.skipIf(process.platform === "win32").each(["reservation-before-ipc", "retired-before-ipc"])(
-  "reconciles durable Doctor custody across %s without trusting the IPC namespace",
+  "reconciles %s against durable custody, not the IPC namespace",
   async (cut) => {
-    const root = directories.make("doctor-native-retirement-");
-    const roots = [path.join(root, "original"), path.join(root, "candidate")];
-    const resultPath = path.join(root, "doctor-result.json");
-    const native = await nativeCustody.createManagedCommandProcessCustody({
+    const {
+      root,
       roots,
-      runId: "run",
-      databasePath: path.join(root, "handoffs.sqlite"),
-    });
-    const parent = await createUpdateDoctorProcessCustody("run", root, resultPath, {
-      roots,
-      databaseIdentity: native.databaseIdentity,
-    });
+      native,
+      resultPath,
+      parent: makeParent,
+      store,
+    } = await nativeFixture("run", ["original", "candidate"]);
+    const parent = await makeParent();
     const receipt: Record<string, unknown> = readReceipt(`${resultPath}.processes`);
     const nonce = receipt.nonce;
     if (typeof nonce !== "string") {
@@ -348,7 +344,6 @@ it.skipIf(process.platform === "win32").each(["reservation-before-ipc", "retired
       cut === "reservation-before-ipc"
         ? doctorNative.custody.reserve([process.execPath])
         : undefined;
-    const store = nativeStore(native);
     vi.spyOn(groups, "isChildProcessTreeAlive").mockReturnValue(false);
     try {
       const settlement = await parent.settle({
@@ -385,14 +380,16 @@ it.skipIf(process.platform === "win32").each(["reservation-before-ipc", "retired
 );
 
 it.skipIf(process.platform === "win32")(
-  "settles an exited Doctor's empty receipt while foreign live custody still blocks replacement",
+  "settles an exited Doctor without retiring foreign live custody",
   async () => {
-    const { root, roots, native: peer, store } = await nativeFixture("doctor-b", true);
-    const resultPath = path.join(root, "doctor-result.json");
-    const parent = await createUpdateDoctorProcessCustody("doctor-a", root, resultPath, {
+    const {
       roots,
-      databaseIdentity: peer.databaseIdentity,
-    });
+      native: peer,
+      store,
+      resultPath,
+      parent: makeParent,
+    } = await nativeFixture("doctor-b", ["", "candidate"]);
+    const parent = await makeParent("doctor-a");
     const doctor = spawnSync(process.execPath, [
       "-e",
       "const fs = require('node:fs'); const file = process.argv[1]; " +
@@ -400,16 +397,9 @@ it.skipIf(process.platform === "win32")(
         "receipt.pid = process.pid; fs.writeFileSync(file, JSON.stringify(receipt));",
       `${resultPath}.processes`,
     ]);
-    expect(doctor.error).toBeUndefined();
-    expect(doctor.status).toBe(0);
+    expect([doctor.error, doctor.status]).toEqual([undefined, 0]);
     expect(readReceipt(`${resultPath}.processes`)).toMatchObject({ pid: doctor.pid, slots: [] });
-    const argv = [process.execPath, "-e", "process.stdin.resume()"];
-    const reservation = peer.custody.reserve(argv);
-    const writer = spawn(process.execPath, argv.slice(1), {
-      detached: true,
-      stdio: ["pipe", "ignore", "ignore"],
-    });
-    const closed = once(writer, "close");
+    const { child: writer, reservation, closed } = liveChild(peer);
     try {
       await once(writer, "spawn");
       if (!writer.pid) {
@@ -491,10 +481,10 @@ it.each([
       expect(settlement).toMatchObject({
         exitCode: 1,
         failureFacts: [
-          expect.objectContaining({
+          {
             code: "doctor-processes-unsettled",
             message: expect.stringContaining("4242"),
-          }),
+          },
         ],
       });
     } else {
