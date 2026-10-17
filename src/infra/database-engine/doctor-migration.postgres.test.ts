@@ -13,6 +13,7 @@ import {
   verifyMatchedPostgresBackup,
 } from "../../snapshot/database-backup.js";
 import { agentEngineSchema, openAgentEngineStore } from "../../state/openclaw-agent-db-engine.js";
+import { withLegacyAgentPostgresMemoryRevisionTriggers } from "../../state/openclaw-agent-memory-revision-migration.js";
 import { preflightOpenClawDatabaseSchemas } from "../../state/openclaw-database-preflight.js";
 import { stateEngineSchema } from "../../state/openclaw-state-db-engine.js";
 import { withOpenClawStateReadOnlyLocation } from "../../state/openclaw-state-db-read-connection.js";
@@ -626,6 +627,9 @@ describe.skipIf(!connection)("Doctor PostgreSQL version migration", () => {
         await client.query(`SELECT fingerprint FROM "${agentNamespace}".openclaw_schema_meta`)
       ).rows[0].fingerprint;
       await client.query(`
+        BEGIN;
+        SET LOCAL search_path TO "${agentNamespace}";
+        ${withLegacyAgentPostgresMemoryRevisionTriggers("")}
         ALTER FUNCTION "${agentNamespace}".openclaw_transcript_navigation_check(text)
           CALLED ON NULL INPUT RESET search_path;
         DROP INDEX "${agentNamespace}".idx_agent_session_windows_conversation;
@@ -659,6 +663,7 @@ describe.skipIf(!connection)("Doctor PostgreSQL version migration", () => {
         INSERT INTO "${agentNamespace}".memory_entry_origins
           VALUES ('retained-memory', 'main', 'session', 'agent:main:main', 'owner', 1);
         SELECT setval('"${agentNamespace}".context_engine_turn_outbox_enqueue_sequence_seq', 71, true);
+        COMMIT;
       `);
       {
         using anchor = openNodeSqliteDatabase(agentPath);

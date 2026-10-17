@@ -14,6 +14,7 @@ import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
 import { LEGACY_CANONICAL_VALIDATION_TRIGGER_NAMES } from "./openclaw-agent-canonical-validation-migration.js";
 import {
   AGENT_INDEX_RETIREMENT_SCHEMA_VERSION,
+  AGENT_MEMORY_REVISION_SCHEMA_VERSION,
   AGENT_WRITE_LAYOUT_SCHEMA_VERSION,
   MEDIA_ROWS_MIGRATION_META_KEY,
   OPENCLAW_AGENT_SCHEMA_VERSION,
@@ -23,6 +24,7 @@ import {
   getOpenClawAgentMigrationSchema,
 } from "./openclaw-agent-db-schema-helpers.js";
 import { AGENT_JSON_PREDICATE_COLUMNS } from "./openclaw-agent-json-predicate-schema.js";
+import { LEGACY_MEMORY_REVISION_TRIGGER_NAMES } from "./openclaw-agent-memory-revision-migration.js";
 import { withoutOutboxEnqueueSequence } from "./openclaw-agent-outbox-sequence-migration.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
 import { assertCurrentStateRuntimeSchema } from "./openclaw-state-db-fast-path.js";
@@ -82,18 +84,15 @@ function parseOpenClawMigrationWitness(value: unknown): OpenClawMigrationWitness
   const witness = witnessSchema.parse(value);
   assertUnique(witness.tables.map((table) => table.name));
   for (const table of witness.tables) {
+    const isRegistryTable =
+      witness.role === "global" &&
+      witness.registryMigrationBinding &&
+      table.name === "agent_databases";
     assertUnique(table.columns);
     if (table.registryRows) {
       assertUnique(table.registryRows.map((row) => row.locator));
     }
-    if (
-      table.registryRows &&
-      !(
-        witness.role === "global" &&
-        witness.registryMigrationBinding &&
-        table.name === "agent_databases"
-      )
-    ) {
+    if (table.registryRows && !isRegistryTable) {
       throw new Error("Migration witness has unexpected registry observations");
     }
     if (
@@ -102,11 +101,7 @@ function parseOpenClawMigrationWitness(value: unknown): OpenClawMigrationWitness
         (["schema_meta", "session_key_contract", "memory_entry_origins"].includes(table.name) ||
           derivedMigrationColumns.has(table.name))
       ) &&
-      !(
-        witness.role === "global" &&
-        witness.registryMigrationBinding &&
-        table.name === "agent_databases"
-      ) &&
+      !isRegistryTable &&
       table.sha256 !== table.migrationSha256
     ) {
       throw new Error("Migration witness has an unsupported content transformation");
@@ -114,7 +109,8 @@ function parseOpenClawMigrationWitness(value: unknown): OpenClawMigrationWitness
   }
   if (
     (witness.role === "agent" &&
-      (witness.agentId === null || ![24, 25, 26, 27, 28, 29].includes(witness.schemaVersion))) ||
+      (witness.agentId === null ||
+        ![24, 25, 26, 27, 28, 29, 30, 31].includes(witness.schemaVersion))) ||
     (witness.role !== "agent" && witness.agentId !== null) ||
     (witness.role !== "agent" && witness.schemaSha256 !== witness.migrationSchemaSha256) ||
     (witness.role !== "global" && witness.registryMigrationBinding !== null) ||
@@ -424,7 +420,7 @@ export function captureOpenClawMigrationWitness(
         throw new Error("Migration witness database owner does not match the backup inventory");
       }
       if (owner.role === "agent") {
-        if (![24, 25, 26, 27, 28, 29].includes(schemaVersion)) {
+        if (![24, 25, 26, 27, 28, 29, 30, 31].includes(schemaVersion)) {
           throw new Error(`Unsupported agent migration witness schema: ${schemaVersion}`);
         }
         assertOpenClawAgentSchemaContains(
@@ -509,6 +505,9 @@ export function captureOpenClawMigrationWitness(
         ((schemaVersion === 24 &&
           object.type === "trigger" &&
           LEGACY_CANONICAL_VALIDATION_TRIGGER_NAMES.includes(object.name)) ||
+          (schemaVersion < AGENT_MEMORY_REVISION_SCHEMA_VERSION &&
+            object.type === "trigger" &&
+            LEGACY_MEMORY_REVISION_TRIGGER_NAMES.includes(object.name)) ||
           (object.type === "index" &&
             (indexKey === "session_windows.idx_agent_session_windows_conversation" ||
               (schemaVersion < AGENT_INDEX_RETIREMENT_SCHEMA_VERSION &&

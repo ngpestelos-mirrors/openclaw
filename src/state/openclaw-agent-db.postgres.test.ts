@@ -206,7 +206,7 @@ describe.skipIf(!connection)("PostgreSQL agent database owner", () => {
     });
   });
 
-  it("migrates version 27 indexes and navigation validation while retaining rows and search", async () => {
+  it("migrates version 27 indexes and revision triggers while retaining rows and search", async () => {
     const target = {
       agentId: "migration",
       sessionId: "migration-session",
@@ -304,6 +304,27 @@ describe.skipIf(!connection)("PostgreSQL agent database owner", () => {
         CREATE INDEX idx_agent_session_reactions_message
           ON session_reactions(session_key ASC NULLS FIRST,
             session_id ASC NULLS FIRST, message_id ASC NULLS FIRST);
+        ${["sources", "chunks"]
+          .map(
+            (table) => `CREATE FUNCTION openclaw_memory_index_${table}_trigger()
+              RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $trigger$
+BEGIN
+  UPDATE memory_index_state SET revision = revision + 1 WHERE id = 1;
+  RETURN NULL;
+END;
+$trigger$;
+              ${["INSERT", "UPDATE", "DELETE"]
+                .map(
+                  (
+                    event,
+                  ) => `CREATE TRIGGER memory_index_${table}_revision_after_${event.toLowerCase()}
+                    AFTER ${event} ON memory_index_${table} FOR EACH ROW
+                    EXECUTE FUNCTION openclaw_memory_index_${table}_trigger();`,
+                )
+                .join("\n")}`,
+          )
+          .join("\n")}
+        UPDATE memory_index_chunks SET text = text;
         UPDATE schema_meta SET schema_version = 27;
         UPDATE openclaw_schema_meta
           SET version = 27, fingerprint = NULL, ddl_hash = NULL, server_major = NULL;
@@ -377,6 +398,20 @@ describe.skipIf(!connection)("PostgreSQL agent database owner", () => {
           indexdef: `CREATE INDEX idx_agent_session_windows_conversation ON ${facts.namespace}.session_windows USING btree (primary_conversation_id NULLS FIRST) WHERE (primary_conversation_id IS NOT NULL)`,
         },
       ]);
+      expect(
+        (
+          await client.query(
+            `SELECT p.proname FROM pg_proc p
+              JOIN pg_namespace n ON n.oid = p.pronamespace
+              WHERE n.nspname = $1 AND p.proname IN
+                ('openclaw_memory_index_sources_trigger', 'openclaw_memory_index_chunks_trigger')`,
+            [facts.namespace],
+          )
+        ).rows,
+      ).toEqual([]);
+      expect(
+        (await client.query(`SELECT revision FROM "${facts.namespace}".memory_index_state`)).rows,
+      ).toEqual([{ revision: "1" }]);
       const navigationFunction = await client.query(
         `SELECT p.proisstrict, p.proconfig FROM pg_proc p
           JOIN pg_namespace n ON n.oid = p.pronamespace
