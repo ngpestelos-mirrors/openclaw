@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -29,9 +30,17 @@ import { killPidIfAlive } from "../../test-utils/process-tree.js";
 import { updateRegistryWorktree } from "./registry.js";
 import { ManagedWorktreeService } from "./service.js";
 import { useManagedWorktreeTestRepository } from "./service.test-support.js";
-import type { ManagedWorktreeRecord, WorktreeSourceStage } from "./types.js";
+import type {
+  CreateManagedWorktreeParams,
+  ManagedWorktreeRecord,
+  WorktreeSourceStage,
+} from "./types.js";
 
 const execFileAsync = promisify(execFile);
+const expectAbsent = (file: string) =>
+  expect(fs.access(file)).rejects.toMatchObject({ code: "ENOENT" });
+const writeScript = (file: string, contents: string) =>
+  fs.writeFile(file, contents, { mode: 0o755 });
 
 describe("ManagedWorktreeService repository code isolation", () => {
   const initializeRepository = useManagedWorktreeTestRepository();
@@ -40,6 +49,16 @@ describe("ManagedWorktreeService repository code isolation", () => {
   let sentinel: string;
   let service: ManagedWorktreeService;
   let receipts: FixtureReceiptChannel;
+  const git = async (...args: string[]) =>
+    (await execFileAsync("git", ["-C", repo, ...args])).stdout.trim();
+  const create = (name: string, options: Partial<CreateManagedWorktreeParams> = {}) =>
+    service.create({ repoRoot: repo, name, baseRef: "HEAD", ...options });
+  async function writeSetup(contents: string) {
+    const script = path.join(repo, ".openclaw", "worktree-setup.sh");
+    await fs.mkdir(path.dirname(script));
+    await writeScript(script, contents);
+    return script;
+  }
 
   beforeAll(async () => {
     receipts = await openFixtureReceiptChannel();
@@ -56,11 +75,9 @@ describe("ManagedWorktreeService repository code isolation", () => {
     const hooks = path.join(repo, "git-hooks");
     await fs.mkdir(hooks);
     for (const hook of ["reference-transaction", "post-checkout"]) {
-      await fs.writeFile(path.join(hooks, hook), `#!/bin/sh\nprintf hook >> '${sentinel}'\n`, {
-        mode: 0o755,
-      });
+      await writeScript(path.join(hooks, hook), `#!/bin/sh\nprintf hook >> '${sentinel}'\n`);
     }
-    await execFileAsync("git", ["-C", repo, "config", "core.hooksPath", "git-hooks"]);
+    await git("config", "core.hooksPath", "git-hooks");
     setRuntimeConfigSnapshot({});
     service = new ManagedWorktreeService({
       env: { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") },
@@ -75,47 +92,32 @@ describe("ManagedWorktreeService repository code isolation", () => {
   });
 
   it("never executes repository hooks through creation, removal and restore", async () => {
-    const created = await service.create({ repoRoot: repo, name: "restore", baseRef: "HEAD" });
+    const created = await create("restore");
     await service.remove({ id: created.id, reason: "test" });
 
     await expect(service.restore({ id: created.id })).resolves.toMatchObject({ id: created.id });
-    await expect(fs.access(sentinel)).rejects.toMatchObject({ code: "ENOENT" });
+    await expectAbsent(sentinel);
   });
 
   it("never executes a repository filesystem monitor during lossless removal", async () => {
-    const created = await service.create({ repoRoot: repo, name: "fsmonitor", baseRef: "HEAD" });
+    const created = await create("fsmonitor");
     await fs.rm(sentinel, { force: true });
     const monitor = path.join(repo, "fsmonitor.sh");
-    await fs.writeFile(
-      monitor,
-      `#!/bin/sh\nprintf fsmonitor >> '${sentinel}'\nprintf 'token\\0'\n`,
-      {
-        mode: 0o755,
-      },
-    );
-    await execFileAsync("git", ["-C", repo, "config", "core.fsmonitor", monitor]);
+    await writeScript(monitor, `#!/bin/sh\nprintf fsmonitor >> '${sentinel}'\nprintf 'token\\0'\n`);
+    await git("config", "core.fsmonitor", monitor);
 
     await expect(service.removeIfLossless(created.id)).resolves.toBe(true);
-    await expect(fs.access(sentinel)).rejects.toMatchObject({ code: "ENOENT" });
+    await expectAbsent(sentinel);
   });
 
   it.each([true, false])(
     "executes the repository setup script only when enabled (%s)",
     async (runSetupScript) => {
-      const setup = path.join(repo, ".openclaw");
-      await fs.mkdir(setup);
-      await fs.writeFile(
-        path.join(setup, "worktree-setup.sh"),
-        "#!/bin/sh\nprintf setup > setup-ran.txt\n",
-        { mode: 0o755 },
-      );
+      await writeSetup("#!/bin/sh\nprintf setup > setup-ran.txt\n");
 
       const progress: string[] = [];
       const onPromptReady = vi.fn(async () => {});
-      const created = await service.create({
-        repoRoot: repo,
-        name: "setup",
-        baseRef: "HEAD",
+      const created = await create("setup", {
         runSetupScript,
         onProgress: (phase) => progress.push(phase),
         onPromptReady,
@@ -125,9 +127,9 @@ describe("ManagedWorktreeService repository code isolation", () => {
       if (runSetupScript) {
         await expect(fs.readFile(setupOutput, "utf8")).resolves.toBe("setup");
       } else {
-        await expect(fs.access(setupOutput)).rejects.toMatchObject({ code: "ENOENT" });
+        await expectAbsent(setupOutput);
       }
-      await expect(fs.access(sentinel)).rejects.toMatchObject({ code: "ENOENT" });
+      await expectAbsent(sentinel);
       expect(progress).toEqual(runSetupScript ? ["checkout", "setup"] : ["checkout"]);
       if (runSetupScript) {
         expect(onPromptReady).not.toHaveBeenCalled();
@@ -140,11 +142,8 @@ describe("ManagedWorktreeService repository code isolation", () => {
   }) => {
     const setup = path.join(repo, ".openclaw");
     const pidFile = path.join(setup, "setup-pid");
-    await fs.mkdir(setup);
-    await fs.writeFile(
-      path.join(setup, "worktree-setup.sh"),
+    await writeSetup(
       `#!/bin/sh\nexec '${process.execPath.replaceAll("'", "'\\''")}' "$OPENCLAW_SOURCE_TREE_PATH/.openclaw/setup.mjs"\n`,
-      { mode: 0o755 },
     );
     await fs.writeFile(
       path.join(setup, "setup.mjs"),
@@ -156,12 +155,7 @@ describe("ManagedWorktreeService repository code isolation", () => {
       `,
     );
     const controller = new AbortController();
-    const creation = service.create({
-      repoRoot: repo,
-      name: "cancelled-setup",
-      baseRef: "HEAD",
-      signal: controller.signal,
-    });
+    const creation = create("cancelled-setup", { signal: controller.signal });
     const outcome = creation.then(
       () => undefined,
       (error: unknown) => error,
@@ -193,16 +187,8 @@ describe("ManagedWorktreeService repository code isolation", () => {
       expect(await withinTest(outcome, signal)).toBeInstanceOf(Error);
       expect(() => process.kill(pid, 0)).toThrow();
       expect(await service.list()).toEqual([]);
-      const worktrees = await execFileAsync("git", ["-C", repo, "worktree", "list", "--porcelain"]);
-      expect(worktrees.stdout).not.toContain("cancelled-setup");
-      const branches = await execFileAsync("git", [
-        "-C",
-        repo,
-        "branch",
-        "--list",
-        "openclaw/cancelled-setup",
-      ]);
-      expect(branches.stdout.trim()).toBe("");
+      expect(await git("worktree", "list", "--porcelain")).not.toContain("cancelled-setup");
+      expect(await git("branch", "--list", "openclaw/cancelled-setup")).toBe("");
     } finally {
       controller.abort(new Error("release setup if the regression failed"));
       if (existsSync(pidFile)) {
@@ -222,18 +208,14 @@ describe("ManagedWorktreeService repository code isolation", () => {
         },
       }),
     ).rejects.toThrow("authority closed");
-    await expect(fs.access(path.join(repo, ".git", "FETCH_HEAD"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+    await expectAbsent(path.join(repo, ".git", "FETCH_HEAD"));
     expect(await service.list()).toEqual([]);
   });
 
   it.each(["complete", "unwind"] as const)(
     "releases setup source before process settlement (%s)",
     async (mode) => {
-      const script = path.join(repo, ".openclaw", "worktree-setup.sh");
-      await fs.mkdir(path.dirname(script));
-      await fs.writeFile(script, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const script = await writeSetup("#!/bin/sh\nexit 0\n");
       const success: SpawnResult = {
         stdout: "",
         stderr: "",
@@ -322,12 +304,7 @@ describe("ManagedWorktreeService repository code isolation", () => {
           });
         });
       const creation = callerContext.run("setup-caller", () =>
-        service.create({
-          repoRoot: repo,
-          name: `handoff-${mode}`,
-          baseRef: "HEAD",
-          withSource,
-        }),
+        create(`handoff-${mode}`, { withSource }),
       );
       const outcome = creation.then(
         (value) => {
@@ -363,9 +340,7 @@ describe("ManagedWorktreeService repository code isolation", () => {
           expect(events).not.toContain("checkout-cleanup");
           completion.reject(completionFailure);
           const result = await outcome;
-          if (!("error" in result)) {
-            throw new Error("expected source unwind failure");
-          }
+          assert("error" in result, "expected source unwind failure");
           expect(result.error).toBe(unwindFailure);
           expect(events).toEqual([
             "dispatch",
@@ -375,14 +350,7 @@ describe("ManagedWorktreeService repository code isolation", () => {
             "checkout-cleanup",
           ]);
           expect(await service.listRegistryRecords()).toEqual([]);
-          const branches = await execFileAsync("git", [
-            "-C",
-            repo,
-            "branch",
-            "--list",
-            "openclaw/handoff-unwind",
-          ]);
-          expect(branches.stdout.trim()).toBe("");
+          expect(await git("branch", "--list", "openclaw/handoff-unwind")).toBe("");
         } else {
           expect(acceptedSignal?.aborted).toBe(false);
           completion.resolve(success);
@@ -430,15 +398,10 @@ describe("ManagedWorktreeService repository code isolation", () => {
         }
         throw sourceFailure;
       };
-      let failure: unknown;
-      try {
-        await service.create({ ...params, withSource });
-      } catch (error) {
-        failure = error;
-      }
-      if (!acknowledged) {
-        throw new Error("expected a published worktree before source unwind");
-      }
+      const failure = await service
+        .create({ ...params, withSource })
+        .catch((error: unknown) => error);
+      assert(acknowledged, "expected a published worktree before source unwind");
       const published = acknowledged;
       if (mode === "new") {
         expect(failure).toBe(sourceFailure);
@@ -463,10 +426,10 @@ describe("ManagedWorktreeService repository code isolation", () => {
           expect(failure).toBe(sourceFailure);
         } else {
           expect(current?.lastActiveAt).toBe(published.lastActiveAt + 1);
-          expect(failure).toBeInstanceOf(AggregateError);
-          if (!(failure instanceof AggregateError)) {
-            throw new Error("expected source failure with rollback refusal");
-          }
+          assert(
+            failure instanceof AggregateError,
+            "expected source failure with rollback refusal",
+          );
           expect(failure.cause).toBe(sourceFailure);
           expect(failure.errors[0]).toBe(sourceFailure);
           expect(failure.errors[1]).toMatchObject({

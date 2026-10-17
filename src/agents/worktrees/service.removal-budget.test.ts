@@ -24,6 +24,39 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
   });
 });
 const initializeRepository = useManagedWorktreeTestRepository();
+const hour = 60 * 60_000;
+const read = (directory: string, name = "README.md") =>
+  fs.readFile(path.join(directory, name), "utf8");
+const makeService = (env: NodeJS.ProcessEnv, now = IDLE_GC_MS + 2) =>
+  new ManagedWorktreeService({ env, now: () => now, getConfig: () => ({}) });
+
+async function partialRepository(root: string) {
+  const source = await initializeRepository(root);
+  await fs.writeFile(path.join(source, "missing.txt"), "omitted blob\n");
+  await requireGit(source, ["add", "missing.txt"]);
+  await requireGit(source, ["commit", "-m", "add omitted blob"]);
+  await requireGit(source, ["config", "uploadpack.allowFilter", "true"]);
+  const repo = path.join(root, "partial");
+  await requireGit(root, [
+    "clone",
+    "--filter=blob:none",
+    "--no-checkout",
+    pathToFileURL(source).href,
+    repo,
+  ]);
+  await requireGit(repo, ["sparse-checkout", "set", "--no-cone", "/README.md"]);
+  return { source, repo };
+}
+
+async function editRecords(
+  records: Awaited<ReturnType<typeof materializeManagedWorktreeFixtures>>,
+) {
+  for (const record of records) {
+    await fs.writeFile(path.join(record.path, "README.md"), "retained changes\n");
+    // Materialized bytes do not repair the missing object in the shared store.
+    await fs.writeFile(path.join(record.path, "missing.txt"), "omitted blob\n");
+  }
+}
 
 it.each([
   ["error: invalid object 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa for 'file'", true],
@@ -49,20 +82,7 @@ it.each([
 
 it("backs off shared-repository snapshots after a missing-object failure", async () => {
   const root = tempDirs.make("worktree-corrupt-repository-");
-  const source = await initializeRepository(root);
-  await fs.writeFile(path.join(source, "missing.txt"), "omitted blob\n");
-  await requireGit(source, ["add", "missing.txt"]);
-  await requireGit(source, ["commit", "-m", "add omitted blob"]);
-  await requireGit(source, ["config", "uploadpack.allowFilter", "true"]);
-  const repoRoot = path.join(root, "partial");
-  await requireGit(root, [
-    "clone",
-    "--filter=blob:none",
-    "--no-checkout",
-    pathToFileURL(source).href,
-    repoRoot,
-  ]);
-  await requireGit(repoRoot, ["sparse-checkout", "set", "--no-cone", "/README.md"]);
+  const { source, repo: repoRoot } = await partialRepository(root);
   await requireGit(repoRoot, ["checkout", "main"]);
   const stateDir = path.join(root, "state");
   const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
@@ -76,47 +96,13 @@ it("backs off shared-repository snapshots after a missing-object failure", async
     ownerKind: "session",
   });
   await requireGit(repoRoot, ["remote", "set-url", "origin", path.join(root, "unavailable")]);
-  for (const record of records) {
-    await fs.writeFile(path.join(record.path, "README.md"), "retained changes\n");
-    // Materialized bytes do not repair the missing object in the shared store.
-    await fs.writeFile(path.join(record.path, "missing.txt"), "omitted blob\n");
-  }
-  const hour = 60 * 60_000;
+  await editRecords(records);
   let now = IDLE_GC_MS + 2;
-  const commands = [
-    vi.spyOn(gitExec, "executeGitCommand"),
-    vi.spyOn(gitExec, "executeGitCommandBytes"),
-    vi.spyOn(gitExec, "executeGitCommandBuffered"),
-  ];
-  const gc = (retryDeferred = false) =>
-    new ManagedWorktreeService({ env, now: () => now, getConfig: () => ({}) }).gc({
-      retryDeferred,
-    });
-  const initialStarted = performance.now();
+  const gc = (retryDeferred = false) => makeService(env, now).gc({ retryDeferred });
   const first = await gc();
-  const initial = {
-    gitSpawns: commands.reduce((sum, command) => sum + command.mock.calls.length, 0),
-    elapsedMs: performance.now() - initialStarted,
-    rssBytes: process.memoryUsage().rss,
-  };
   await closeOpenClawStateDatabaseAsync();
   now += hour;
-  for (const command of commands) {
-    command.mockClear();
-  }
-  const started = performance.now();
   const second = await gc();
-  const gitSpawns = commands.reduce((sum, command) => sum + command.mock.calls.length, 0);
-  console.log(
-    JSON.stringify({
-      initial,
-      repositoryBackoff: {
-        gitSpawns,
-        elapsedMs: performance.now() - started,
-        rssBytes: process.memoryUsage().rss,
-      },
-    }),
-  );
   expect(first.failedCount).toBe(1);
   expect(first.deferredCount).toBe(1);
   expect(first.issues.map((issue) => issue.reason).join("\n")).toContain(
@@ -151,16 +137,8 @@ it("backs off shared-repository snapshots after a missing-object failure", async
     records.map((record) => record.id).toSorted(),
   );
   for (const record of records) {
-    const restored = await new ManagedWorktreeService({
-      env,
-      now: () => now,
-      getConfig: () => ({}),
-    }).restore({
-      id: record.id,
-    });
-    expect(await fs.readFile(path.join(restored.path, "README.md"), "utf8")).toBe(
-      "retained changes\n",
-    );
+    const restored = await makeService(env, now).restore({ id: record.id });
+    expect(await read(restored.path)).toBe("retained changes\n");
   }
 });
 
@@ -168,21 +146,8 @@ it.each(["promised", "promised-retry", "unpromised", "checksum", "byte-limited"]
   "consolidates healthy pack batches independently of missing snapshot objects (%s)",
   async (damage) => {
     const root = tempDirs.make("worktree-partial-clone-deferral-");
-    const source = await initializeRepository(root);
+    const { source, repo } = await partialRepository(root);
     const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
-    await fs.writeFile(path.join(source, "missing.txt"), "omitted blob\n");
-    await requireGit(source, ["add", "missing.txt"]);
-    await requireGit(source, ["commit", "-m", "add omitted blob"]);
-    await requireGit(source, ["config", "uploadpack.allowFilter", "true"]);
-    const repo = path.join(root, "partial");
-    await requireGit(root, [
-      "clone",
-      "--filter=blob:none",
-      "--no-checkout",
-      pathToFileURL(source).href,
-      repo,
-    ]);
-    await requireGit(repo, ["sparse-checkout", "set", "--no-cone", "/README.md"]);
     // Fixture materialization is an explicit checkout, not a Gateway inspection.
     await requireGit(repo, ["config", "gc.auto", "0"]);
     await requireGit(repo, ["config", "maintenance.auto", "false"]);
@@ -194,17 +159,10 @@ it.each(["promised", "promised-retry", "unpromised", "checksum", "byte-limited"]
       ownerKind: "session",
       now: 1,
     });
-    for (const record of records) {
-      await fs.writeFile(path.join(record.path, "README.md"), "retained changes\n");
-      await fs.writeFile(path.join(record.path, "missing.txt"), "omitted blob\n");
-    }
+    await editRecords(records);
     if (damage === "promised-retry") {
       // Persist the snapshot failure before explicitly retrying with an offline remote.
-      await new ManagedWorktreeService({
-        env,
-        now: () => IDLE_GC_MS + 2,
-        getConfig: () => ({}),
-      }).gc();
+      await makeService(env).gc();
     }
     const directory = path.join(repo, ".git", "objects", "pack");
     const objects: string[] = [];
@@ -263,11 +221,7 @@ it.each(["promised", "promised-retry", "unpromised", "checksum", "byte-limited"]
     const trace = path.join(root, "partial-trace.jsonl");
     vi.stubEnv("GIT_TRACE2_EVENT", trace);
     try {
-      const service = new ManagedWorktreeService({
-        env,
-        now: () => IDLE_GC_MS + 2,
-        getConfig: () => ({}),
-      });
+      const service = makeService(env);
       const result = await service.gc({ retryDeferred: damage === "promised-retry" });
       expect(result.removed).toEqual([]);
       expect(result.failedCount).toBe(damage === "checksum" || damage === "promised-retry" ? 2 : 1);
@@ -281,9 +235,7 @@ it.each(["promised", "promised-retry", "unpromised", "checksum", "byte-limited"]
         ...(damage === "checksum" ? {} : { packsAfter: expectedPacks }),
       });
       for (const record of records) {
-        expect(await fs.readFile(path.join(record.path, "missing.txt"), "utf8")).toBe(
-          "omitted blob\n",
-        );
+        expect(await read(record.path, "missing.txt")).toBe("omitted blob\n");
         expect(getRegistryWorktree(env, record.id)?.removedAt).toBeUndefined();
       }
       if (damage !== "checksum") {
@@ -297,9 +249,10 @@ it.each(["promised", "promised-retry", "unpromised", "checksum", "byte-limited"]
         ).not.toContain("missing");
         await requireGit(repo, ["multi-pack-index", "verify"]);
       }
-      expect(await fs.readFile(trace, "utf8")).not.toContain('"fsck"');
+      const traceOutput = await fs.readFile(trace, "utf8");
+      expect(traceOutput).not.toContain('"fsck"');
       if (damage !== "promised-retry") {
-        expect(await fs.readFile(trace, "utf8")).not.toContain("upload-pack");
+        expect(traceOutput).not.toContain("upload-pack");
       }
       if (damage === "unpromised") {
         await requireGit(repo, ["remote", "set-url", "origin", source]);
@@ -378,7 +331,6 @@ it("persists timeout backoff across restart and retries only when due or explici
     ownerKind: "session",
   });
   await fs.writeFile(path.join(record.path, "README.md"), "retained changes\n");
-  const hour = 60 * 60_000;
   let now = IDLE_GC_MS + 2;
   let attempts = 0;
   let fail = true;
@@ -401,7 +353,7 @@ it("persists timeout backoff across restart and retries only when due or explici
     }
     return await execute(cwd, args, options);
   });
-  const gc = () => new ManagedWorktreeService({ env, now: () => now, getConfig: () => ({}) }).gc();
+  const gc = () => makeService(env, now).gc();
   expect((await gc()).outcome).toBe("partial");
   const first = getRegistryWorktree(env, record.id)?.gcRetry;
   expect(first).toEqual({
@@ -410,7 +362,7 @@ it("persists timeout backoff across restart and retries only when due or explici
     attempts: 1,
     retryAt: now + 2 * hour,
   });
-  expect(await fs.readFile(path.join(record.path, "README.md"), "utf8")).toBe("retained changes\n");
+  expect(await read(record.path)).toBe("retained changes\n");
 
   await closeOpenClawStateDatabaseAsync();
   now += hour;
@@ -426,24 +378,10 @@ it("persists timeout backoff across restart and retries only when due or explici
     retryAt: now + 4 * hour,
   });
   fail = false;
-  const retried = await new ManagedWorktreeService({
-    env,
-    now: () => now,
-    getConfig: () => ({}),
-  }).gc({
-    retryDeferred: true,
-  });
+  const retried = await makeService(env, now).gc({ retryDeferred: true });
   expect(retried.removed).toEqual([record.id]);
   expect(attempts).toBe(3);
   expect(getRegistryWorktree(env, record.id)?.gcRetry).toBeUndefined();
-  const restored = await new ManagedWorktreeService({
-    env,
-    now: () => now,
-    getConfig: () => ({}),
-  }).restore({
-    id: record.id,
-  });
-  expect(await fs.readFile(path.join(restored.path, "README.md"), "utf8")).toBe(
-    "retained changes\n",
-  );
+  const restored = await makeService(env, now).restore({ id: record.id });
+  expect(await read(restored.path)).toBe("retained changes\n");
 });

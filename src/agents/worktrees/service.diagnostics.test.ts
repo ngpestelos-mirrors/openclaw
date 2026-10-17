@@ -34,6 +34,7 @@ import {
   materializeManagedWorktreeFixture,
   useManagedWorktreeTestRepository,
 } from "./service.test-support.js";
+import type { ManagedWorktreeRecord } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 const realRunCommand = commandExec.runCommandWithTimeout;
@@ -60,6 +61,10 @@ async function failureMessage(operation: Promise<unknown>): Promise<string> {
   throw new Error("expected worktree operation to fail");
 }
 
+const expectAbsent = (file: string) =>
+  expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" });
+const readme = (directory: string) => path.join(directory, "README.md");
+
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const { stdout } = await execFileAsync("git", ["-C", cwd, ...args]);
   return stdout.trim();
@@ -82,6 +87,9 @@ describe("ManagedWorktreeService failure diagnostics", () => {
   let root: string;
   let repo: string;
   let service: ManagedWorktreeService;
+  const create = (name: string) => service.create({ repoRoot: repo, name, baseRef: "HEAD" });
+  const findRecord = async (id: string) =>
+    (await service.listRegistryRecords()).find((record) => record.id === id);
 
   beforeEach(async () => {
     root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "openclaw-worktree-errors-"));
@@ -120,7 +128,7 @@ describe("ManagedWorktreeService failure diagnostics", () => {
       const branch = `openclaw/${name}`;
       let record;
       if (phase === "restore") {
-        record = await service.create({ repoRoot: repo, name, baseRef: "HEAD" });
+        record = await create(name);
         await service.remove({ id: record.id, reason: "test" });
       } else {
         await writeFailingSetup();
@@ -157,16 +165,14 @@ describe("ManagedWorktreeService failure diagnostics", () => {
       });
 
       const message = await failureMessage(
-        record
-          ? service.restore({ id: record.id })
-          : service.create({ repoRoot: repo, name, baseRef: "HEAD" }),
+        record ? service.restore({ id: record.id }) : create(name),
       );
 
       expect(restoreFailed).toBe(phase === "restore");
       expect(removalFailed).toBe(removeFails);
       expect(branchDeletionFailed).toBe(true);
       expect(cleanupPath).toBeDefined();
-      await expect(fs.stat(cleanupPath!)).rejects.toMatchObject({ code: "ENOENT" });
+      await expectAbsent(cleanupPath!);
       expect(await service.listRegistryRecords()).toEqual(registryBefore);
       expect(await git(repo, "branch", "--list", branch)).toBe(branch);
       if (record) {
@@ -185,22 +191,15 @@ describe("ManagedWorktreeService failure diagnostics", () => {
       expect.soft(/(?:exit|code|status)[^\n]*73/i.test(cleanupMessage)).toBe(true);
       expect.soft(cleanupMessage).not.toContain("worktree removal complete");
       expect.soft(cleanupMessage).not.toContain("Deleted branch");
-      if (!removeFails) {
-        expect.soft(cleanupMessage.includes(fatal)).toBe(true);
-      } else {
-        expect.soft(cleanupMessage).not.toContain(fatal);
-      }
+      expect.soft(cleanupMessage.includes(fatal)).toBe(!removeFails);
       expect.soft(cleanupMessage.length).toBeLessThanOrEqual(2_300);
     },
   );
 
   it("lets admitted deletion settle after cancellation and keeps its complete recovery snapshot", async () => {
-    const created = await service.create({
-      repoRoot: repo,
-      name: "cancel-removal",
-      baseRef: "HEAD",
-    });
-    await fs.writeFile(path.join(created.path, "README.md"), "complete recoverable edit\n");
+    const created = await create("cancel-removal");
+    const contents = "complete recoverable edit\n";
+    await fs.writeFile(readme(created.path), contents);
     const childReady = createDeferredCore<number>();
     let readinessOutput = "";
     const release = path.join(root, "release-removal");
@@ -247,31 +246,26 @@ describe("ManagedWorktreeService failure diagnostics", () => {
         }),
       ]);
       expect(isPidAlive(pid)).toBe(true);
-      await expect(fs.stat(path.join(created.path, "README.md"))).rejects.toMatchObject({
-        code: "ENOENT",
-      });
-      const snapshotRef = (await service.listRegistryRecords()).find(
-        (record) => record.id === created.id,
-      )?.snapshotRef;
+      await expectAbsent(readme(created.path));
+      const snapshotRef = (await findRecord(created.id))?.snapshotRef;
       expect(snapshotRef).toBeDefined();
       const snapshot = await git(repo, "rev-parse", snapshotRef!);
       abort.abort(new Error("fixture cancellation during deletion"));
       await fs.writeFile(release, "release");
       expect(await pending).toContain("managed worktree allocation lease operation was aborted");
       expect(isPidAlive(pid)).toBe(false);
-      await expect(fs.stat(created.path)).rejects.toMatchObject({ code: "ENOENT" });
+      await expectAbsent(created.path);
       expect(await git(repo, "rev-parse", snapshotRef!)).toBe(snapshot);
       expect(await git(repo, "show", `${snapshotRef}:README.md`)).toBe("complete recoverable edit");
-      expect(
-        (await service.listRegistryRecords()).find((record) => record.id === created.id),
-      ).toMatchObject({ removedAt: expect.any(Number), snapshotRef });
+      expect(await findRecord(created.id)).toMatchObject({
+        removedAt: expect.any(Number),
+        snapshotRef,
+      });
       await expect(
         git(repo, "show-ref", "--verify", `refs/openclaw/removals/${created.id}`),
       ).rejects.toThrow();
       const restored = await service.restore({ id: created.id });
-      expect(await fs.readFile(path.join(restored.path, "README.md"), "utf8")).toBe(
-        "complete recoverable edit\n",
-      );
+      expect(await fs.readFile(readme(restored.path), "utf8")).toBe(contents);
     } finally {
       abort.abort();
       await fs.writeFile(release, "release");
@@ -326,12 +320,7 @@ describe("ManagedWorktreeService removal timing", { concurrent: false }, () => {
     parentSpanId: "abcdef1234567890",
     traceFlags: "01",
   };
-  const identityFields = {
-    subsystem: "agents/worktrees",
-    pid: process.pid,
-    threadId,
-    isMainThread,
-  };
+  const messagePrefix = "slow managed worktree removal ";
   let clock = 120_000;
   let root: string;
   let logFile: string;
@@ -339,6 +328,36 @@ describe("ManagedWorktreeService removal timing", { concurrent: false }, () => {
   let diagnosticsWereEnabled: boolean;
   let unsubscribe: () => void;
   let records: Array<Extract<DiagnosticEventPayload, { type: "log.record" }>>;
+  async function materialize(name: string) {
+    const stateDir = path.join(root, "private-state");
+    return materializeManagedWorktreeFixture({
+      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+      stateDir,
+      repoRoot: await initializeRepository(root),
+      name,
+      now: Date.now(),
+    });
+  }
+  async function expectTiming(
+    worktree: ManagedWorktreeRecord,
+    attributes: Record<string, unknown>,
+  ) {
+    await waitForDiagnosticEventsDrained();
+    expect(records).toHaveLength(1);
+    expect(records[0]?.attributes).toEqual({
+      subsystem: "agents/worktrees",
+      pid: process.pid,
+      threadId,
+      isMainThread,
+      callbackEntered: true,
+      omittedObservations: expect.any(Number),
+      id: worktree.id,
+      path: worktree.path,
+      deferred: false,
+      ...attributes,
+    });
+    return JSON.parse(records[0]!.message.slice(messagePrefix.length));
+  }
 
   beforeEach(() => {
     root = tempDirs.make("openclaw-removal-timing-");
@@ -355,10 +374,7 @@ describe("ManagedWorktreeService removal timing", { concurrent: false }, () => {
     records = [];
     unsubscribe = onInternalDiagnosticEvent(
       (event) => {
-        if (
-          event.type === "log.record" &&
-          event.message.startsWith("slow managed worktree removal ")
-        ) {
+        if (event.type === "log.record" && event.message.startsWith(messagePrefix)) {
           records.push(event);
         }
       },
@@ -379,15 +395,7 @@ describe("ManagedWorktreeService removal timing", { concurrent: false }, () => {
   });
 
   it("attributes admission, body and finalization without completing early", async () => {
-    const repo = await initializeRepository(root);
-    const stateDir = path.join(root, "private-state");
-    const worktree = await materializeManagedWorktreeFixture({
-      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      stateDir,
-      repoRoot: repo,
-      name: "private-removal",
-      now: Date.now(),
-    });
+    const worktree = await materialize("private-removal");
     const admissionEntered = createDeferredCore();
     const releaseAdmission = createDeferredCore();
     const bodyEntered = createDeferredCore();
@@ -453,11 +461,7 @@ describe("ManagedWorktreeService removal timing", { concurrent: false }, () => {
       const result = await pending;
       expect(result).toBe(callbackResult);
       expect(result.removed).toBe(true);
-      await waitForDiagnosticEventsDrained();
-      expect(records).toHaveLength(1);
-      expect(records[0]?.trace).toEqual(trace);
-      expect(records[0]?.attributes).toEqual({
-        ...identityFields,
+      const fields = await expectTiming(worktree, {
         durationMs: 3_100,
         admissionMs: 1_100,
         bodyMs: 1_700,
@@ -466,19 +470,12 @@ describe("ManagedWorktreeService removal timing", { concurrent: false }, () => {
         snapshotMs: 400,
         checkoutRemovalMs: 500,
         bodyFinalizeMs: 600,
-        callbackEntered: true,
         outcome: "returned",
-        omittedObservations: expect.any(Number),
-        id: worktree.id,
-        path: worktree.path,
         tracked: 1,
         untracked: 0,
-        deferred: false,
       });
-      expect({
-        subsystem: "agents/worktrees",
-        ...JSON.parse(records[0]!.message.slice("slow managed worktree removal ".length)),
-      }).toEqual(records[0]!.attributes);
+      expect(records[0]?.trace).toEqual(trace);
+      expect({ subsystem: "agents/worktrees", ...fields }).toEqual(records[0]!.attributes);
     } finally {
       releaseAdmission.resolve();
       releaseBody.resolve();
@@ -488,17 +485,9 @@ describe("ManagedWorktreeService removal timing", { concurrent: false }, () => {
   });
 
   it("closes a failed snapshot stage and measures claim cleanup without deleting the checkout", async () => {
-    const repo = await initializeRepository(root);
-    const stateDir = path.join(root, "private-state");
-    const worktree = await materializeManagedWorktreeFixture({
-      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      stateDir,
-      repoRoot: repo,
-      name: "snapshot-timing",
-      now: Date.now(),
-    });
+    const worktree = await materialize("snapshot-timing");
     const preservedContents = "kept until snapshot succeeds\n";
-    await fs.writeFile(path.join(worktree.path, "README.md"), preservedContents);
+    await fs.writeFile(readme(worktree.path), preservedContents);
     const operationError = new Error("private snapshot input could not be read");
     let snapshotFailed = false;
     vi.spyOn(gitWorker, "runGitWorkerOperation").mockImplementation(async (...args) => {
@@ -518,13 +507,8 @@ describe("ManagedWorktreeService removal timing", { concurrent: false }, () => {
       .catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(WorktreeSnapshotError);
     expect(error).toMatchObject({ cause: operationError });
-    expect(await fs.readFile(path.join(worktree.path, "README.md"), "utf8")).toBe(
-      preservedContents,
-    );
-    await waitForDiagnosticEventsDrained();
-    expect(records).toHaveLength(1);
-    expect(records[0]?.attributes).toEqual({
-      ...identityFields,
+    expect(await fs.readFile(readme(worktree.path), "utf8")).toBe(preservedContents);
+    const fields = await expectTiming(worktree, {
       durationMs: 1_500,
       admissionMs: 0,
       bodyMs: 1_500,
@@ -532,16 +516,9 @@ describe("ManagedWorktreeService removal timing", { concurrent: false }, () => {
       preparationMs: 0,
       snapshotMs: 1_300,
       bodyFinalizeMs: 200,
-      callbackEntered: true,
       outcome: "threw",
-      omittedObservations: expect.any(Number),
-      id: worktree.id,
-      path: worktree.path,
-      deferred: false,
     });
-    expect(
-      JSON.parse(records[0]!.message.slice("slow managed worktree removal ".length)),
-    ).toMatchObject({ tracked: null, untracked: null });
+    expect(fields).toMatchObject({ tracked: null, untracked: null });
     await expect(service.remove({ id: worktree.id, reason: "retry" })).resolves.toMatchObject({
       removed: true,
     });
