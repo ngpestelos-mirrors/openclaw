@@ -233,7 +233,7 @@ it.each([false, true])(
         content: [{ type: "text", text: "stale persisted tail" }],
       });
       const current = makeAssistantMessageFixture({
-        content: [{ type: "text", text: "authoritative refresh handoff" }],
+        content: [{ type: "text", text: "authoritative refresh handoff".repeat(600) }],
       });
       const afterAdmission = await SessionManager.openAsync(target, state.workspaceDir);
       await afterAdmission.appendMessageAsync(stale);
@@ -241,7 +241,11 @@ it.each([false, true])(
         {
           sessionTarget: target,
           workspaceDir: state.workspaceDir,
-          config: { agents: { defaults: { compaction: { maxActiveTranscriptBytes: 8192 } } } },
+          config: {
+            agents: {
+              defaults: { compaction: { enabled: false, maxActiveTranscriptBytes: 8192 } },
+            },
+          },
           userTurnTranscriptRecorder: recorder,
           ...(refresh ? { pluginRuntimeRefreshMessages: [persisted.message, current] } : {}),
         },
@@ -260,6 +264,9 @@ it.each([false, true])(
       if (refresh) {
         expect(seed).toContainEqual(current);
         expect(seed).not.toContainEqual(stale);
+        await expect(prepare({ assertCurrent: () => {}, tokenBudget: 1024 })).rejects.toThrow(
+          "Active native continuation exceeds the history delivery allowance",
+        );
       }
     });
   },

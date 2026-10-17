@@ -99,9 +99,11 @@ host budget, while larger, invalid, or non-finite values cannot widen it.
 The bound includes restored text and image costs. Retain the returned message
 instances when calling `prepareContextMedia`: they share the prepared snapshots
 used for selection, without rereading files before injection. The host bounds
-the post-summary result again and retains the original task and completed-message
-handoff during a runtime refresh. Pass the native binding's current-authority
-assertion and cancellation signal. A retired capability
+the post-summary result again. The original task and completed-message handoff
+during a runtime refresh are active input, not discardable history: they reserve
+delivery tokens but are not trimmed by the historical byte cap. If they alone
+exceed the delivery allowance, preparation rejects instead of losing the task.
+Pass the native binding's current-authority assertion and cancellation signal. A retired capability
 rejects; it cannot target another session. Explicit context engines retain
 their own projections rather than receiving this host-history capability.
 

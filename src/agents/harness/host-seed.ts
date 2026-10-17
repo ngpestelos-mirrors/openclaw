@@ -1,4 +1,5 @@
 import { IMAGE_BLOCK_TOKENS } from "../../../packages/agent-core/src/harness/compaction/compaction-cut-point.js";
+import { estimateTokens } from "../../../packages/agent-core/src/harness/compaction/compaction.js";
 import type { AgentMessage } from "../../../packages/agent-core/src/types.js";
 import { persistCompactionBoundaryWithSessionEntryAsync } from "../../config/sessions/session-accessor.js";
 import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
@@ -98,6 +99,7 @@ export function bindBoundedSeed(
       refresh || attempt.continuation
         ? [...(refresh ?? []), ...(attempt.continuation?.messages ?? [])]
         : undefined;
+    let activeCount = 0;
     const read = async () => {
       const history = await SessionManager.readSessionContextAsync(
         sessionTarget,
@@ -107,43 +109,64 @@ export function bindBoundedSeed(
       assert();
       if (handoff) {
         const current = history.findIndex(isAdmittedUser);
-        return [
-          ...(current < 0 ? history : history.slice(0, current)),
+        const active = [
           ...(refresh && current >= 0 && !handoff.some(isAdmittedUser) ? [history[current]!] : []),
           ...handoff,
         ];
+        activeCount = active.length;
+        return [...(current < 0 ? history : history.slice(0, current)), ...active];
       }
       return history.filter((message) => !isAdmittedUser(message));
     };
     const select = async (messages: AgentMessage[]) => {
+      const history = activeCount ? messages.slice(0, -activeCount) : messages;
+      const active = activeCount ? messages.slice(-activeCount) : [];
       const bounded = boundContextEngineAssembly(
-        { messages, estimatedTokens: 0 },
+        { messages: history, estimatedTokens: 0 },
         maxSeedBytes,
         tokenBudget,
       );
-      if (!prepareMedia) {
-        return bounded;
+      if (!prepareMedia && !activeCount) {
+        return bounded.messages;
       }
       const additionalBytes = new Map<AgentMessage, number>();
-      for (const message of bounded.messages) {
-        if (message.role !== "user") {
-          continue;
+      if (prepareMedia) {
+        for (const message of activeCount ? [...bounded.messages, ...active] : bounded.messages) {
+          if (message.role !== "user") {
+            continue;
+          }
+          const prepared = await prepareMedia({ message, maxChars: tokenBudget * 4 });
+          assert();
+          preparedMedia.set(message, prepared);
+          additionalBytes.set(
+            message,
+            Buffer.byteLength(prepared.text ?? "", "utf8") +
+              (prepared.text ? 2 : 0) +
+              prepared.images.length * IMAGE_BLOCK_TOKENS * 4,
+          );
         }
-        const prepared = await prepareMedia({ message, maxChars: tokenBudget * 4 });
-        assert();
-        preparedMedia.set(message, prepared);
-        additionalBytes.set(
-          message,
-          Buffer.byteLength(prepared.text ?? "", "utf8") +
-            (prepared.text ? 2 : 0) +
-            prepared.images.length * IMAGE_BLOCK_TOKENS * 4,
-        );
       }
-      return boundContextEngineAssembly(bounded, maxSeedBytes, tokenBudget, additionalBytes);
+      // The active exchange is not discardable history, but still consumes delivery capacity.
+      const activeTokens = active.reduce(
+        (sum, message) =>
+          sum + estimateTokens(message) + Math.ceil((additionalBytes.get(message) ?? 0) / 4),
+        0,
+      );
+      if (activeTokens > tokenBudget) {
+        throw new Error("Active native continuation exceeds the history delivery allowance");
+      }
+      const remainingTokens = tokenBudget - activeTokens;
+      const retained = boundContextEngineAssembly(
+        bounded,
+        Math.min(maxBytes, remainingTokens * 4),
+        remainingTokens,
+        additionalBytes,
+      ).messages;
+      return activeCount ? [...retained, ...active] : retained;
     };
     let messages = await read();
     let bounded = await select(messages);
-    const omitted = messages.length - bounded.messages.length;
+    const omitted = messages.length - bounded.length;
     if (
       config?.agents?.defaults?.compaction?.enabled !== false &&
       messages.slice(0, omitted).some((message) => message.role !== "compactionSummary")
@@ -213,11 +236,11 @@ export function bindBoundedSeed(
       bounded = await select(messages);
     }
     assert();
-    if (bounded.messages.length < messages.length) {
+    if (bounded.length < messages.length) {
       await attempt.onAgentEvent?.({ stream: "compaction", data: { phase: "context_bounded" } });
       assert();
     }
-    return bounded.messages;
+    return bounded;
   };
   return {
     prepareBoundedSeed: (request) => withSource(() => prepare(request), request.signal),
