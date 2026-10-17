@@ -9,16 +9,26 @@ import { urlToString } from "./test-http-helpers.js";
 
 function makeParams(overrides: Partial<DirectoryConfigParams> = {}): DirectoryConfigParams {
   return {
-    cfg: {
-      channels: {
-        discord: {
-          token: "test-token",
-        },
-      },
-    } as OpenClawConfig,
+    cfg: { channels: { discord: { token: "test-token" } } },
     accountId: "default",
     ...overrides,
   };
+}
+
+const guilds = [
+  { id: "g1", name: "Guild 1" },
+  { id: "g2", name: "Guild 2" },
+];
+
+function mockDirectoryResponses(responses: Record<string, unknown>) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const { pathname, searchParams } = new URL(urlToString(input));
+    if (pathname.endsWith("/members/search")) {
+      expect(searchParams.get("query")).toBe("alice");
+      expect(searchParams.get("limit")).toBe(responses.limit ?? "25");
+    }
+    return Response.json(responses[pathname.replace(/^\/api\/v\d+/u, "")] ?? []);
+  });
 }
 
 function hangingBodyResponse(signal?: AbortSignal): Response {
@@ -84,24 +94,13 @@ describe("discord directory live lookups", () => {
   });
 
   it("filters group channels by query and respects limit", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = urlToString(input);
-      if (url.endsWith("/users/@me/guilds")) {
-        return Response.json([
-          { id: "g1", name: "Guild 1" },
-          { id: "g2", name: "Guild 2" },
-        ]);
-      }
-      if (url.endsWith("/guilds/g1/channels")) {
-        return Response.json([
-          { id: "c1", name: "general" },
-          { id: "c2", name: "random" },
-        ]);
-      }
-      if (url.endsWith("/guilds/g2/channels")) {
-        return Response.json([{ id: "c3", name: "announcements" }]);
-      }
-      return Response.json([]);
+    mockDirectoryResponses({
+      "/users/@me/guilds": guilds,
+      "/guilds/g1/channels": [
+        { id: "c1", name: "general" },
+        { id: "c2", name: "random" },
+      ],
+      "/guilds/g2/channels": [{ id: "c3", name: "announcements" }],
     });
 
     const rows = await listDiscordDirectoryGroupsLive(makeParams({ query: "an", limit: 2 }));
@@ -125,22 +124,14 @@ describe("discord directory live lookups", () => {
   });
 
   it("returns ranked peer results and caps member search by limit", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = urlToString(input);
-      if (url.endsWith("/users/@me/guilds")) {
-        return Response.json([{ id: "g1", name: "Guild 1" }]);
-      }
-      if (url.includes("/guilds/g1/members/search?")) {
-        const params = new URL(url).searchParams;
-        expect(params.get("query")).toBe("alice");
-        expect(params.get("limit")).toBe("2");
-        return Response.json([
-          { user: { id: "u1", username: "alice", bot: false }, nick: "Ali" },
-          { user: { id: "u2", username: "alice-bot", bot: true }, nick: null },
-          { user: { id: "u3", username: "ignored", bot: false }, nick: null },
-        ]);
-      }
-      return Response.json([]);
+    mockDirectoryResponses({
+      limit: "2",
+      "/users/@me/guilds": guilds.slice(0, 1),
+      "/guilds/g1/members/search": [
+        { user: { id: "u1", username: "alice", bot: false }, nick: "Ali" },
+        { user: { id: "u2", username: "alice-bot", bot: true }, nick: null },
+        { user: { id: "u3", username: "ignored", bot: false }, nick: null },
+      ],
     });
 
     const rows = await listDiscordDirectoryPeersLive(makeParams({ query: "alice", limit: 2 }));
@@ -165,34 +156,20 @@ describe("discord directory live lookups", () => {
     ]);
   });
 
-  it.each([
-    {
-      name: "does not turn one shared-guild user into ambiguous outbound matches",
-      secondGuildMembers: [{ user: { id: "101", username: "alice" }, nick: "second-alice" }],
-      limit: undefined,
-      expectedIds: ["user:101"],
-    },
-  ])("$name", async ({ secondGuildMembers, limit, expectedIds }) => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = urlToString(input);
-      if (url.endsWith("/users/@me/guilds")) {
-        return Response.json([
-          { id: "g1", name: "Guild 1" },
-          { id: "g2", name: "Guild 2" },
-        ]);
-      }
-      if (url.includes("/guilds/g1/members/search?")) {
-        return Response.json([{ user: { id: "101", username: "alice" }, nick: "first-alice" }]);
-      }
-      if (url.includes("/guilds/g2/members/search?")) {
-        return Response.json(secondGuildMembers);
-      }
-      return Response.json([]);
+  it("does not turn one shared-guild user into ambiguous outbound matches", async () => {
+    const fetchSpy = mockDirectoryResponses({
+      "/users/@me/guilds": guilds,
+      "/guilds/g1/members/search": [
+        { user: { id: "101", username: "alice" }, nick: "first-alice" },
+      ],
+      "/guilds/g2/members/search": [
+        { user: { id: "101", username: "alice" }, nick: "second-alice" },
+      ],
     });
 
-    const rows = await listDiscordDirectoryPeersLive(makeParams({ query: "alice", limit }));
+    const rows = await listDiscordDirectoryPeersLive(makeParams({ query: "alice" }));
 
-    expect(rows.map((entry) => entry.id)).toEqual(expectedIds);
+    expect(rows.map((entry) => entry.id)).toEqual(["user:101"]);
     expect(rows.filter((entry) => entry.handle === "@alice")).toHaveLength(1);
     expect(resolveDiscordDirectoryUserId({ accountId: "default", handle: "first-alice" })).toBe(
       "101",

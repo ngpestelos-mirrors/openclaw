@@ -2,7 +2,7 @@
 import { ComponentType, InteractionResponseType } from "discord-api-types/v10";
 import { describe, expect, it } from "vitest";
 import { buildDiscordComponentMessage, createDiscordFormModal } from "./components.js";
-import type { DiscordComponentBlock } from "./components.types.js";
+import type { DiscordComponentBlock, DiscordModalFieldSpec } from "./components.types.js";
 import {
   ChannelSelectMenu,
   Container,
@@ -52,6 +52,52 @@ function readFirstActionRow(result: ReturnType<typeof buildDiscordComponentMessa
     throw new Error("Expected a Discord action row");
   }
   return row;
+}
+
+function modalField(
+  type: DiscordModalFieldSpec["type"],
+  label: string,
+  overrides: Partial<DiscordModalFieldSpec> = {},
+): DiscordModalFieldSpec {
+  return {
+    type,
+    label,
+    minValues: 1,
+    maxValues: 1,
+    placeholder: `Pick ${label.toLowerCase()}`,
+    ...overrides,
+  };
+}
+
+function serializedField(
+  type: ComponentType,
+  label: string,
+  id: number,
+  overrides: Record<string, unknown> = {},
+) {
+  const { options, ...rest } = overrides;
+  return {
+    type: ComponentType.Label,
+    label,
+    component: {
+      type,
+      ...(options ? { options } : {}),
+      custom_id: `fld_${id}`,
+      placeholder: `Pick ${label.toLowerCase()}`,
+      min_values: 1,
+      max_values: 1,
+      ...rest,
+    },
+  };
+}
+
+function buttonBlock(length: number): DiscordComponentBlock[] {
+  return [
+    {
+      type: "actions",
+      buttons: Array.from({ length }, (_, index) => ({ label: `Button ${index + 1}` })),
+    },
+  ];
 }
 
 describe("discord select components", () => {
@@ -135,30 +181,11 @@ describe("discord select components", () => {
         modal: {
           title: "Select details",
           fields: [
-            {
-              type: "select",
-              label: "Priority",
+            modalField("select", "Priority", {
               options: [{ label: "High", value: "high", default: true }],
-              minValues: 1,
-              maxValues: 1,
-              placeholder: "Pick priority",
-            },
-            {
-              type: "role-select",
-              label: "Roles",
-              required: false,
-              minValues: 0,
-              maxValues: 2,
-              placeholder: "Pick roles",
-            },
-            {
-              type: "user-select",
-              label: "Owner",
-              required: true,
-              minValues: 1,
-              maxValues: 1,
-              placeholder: "Pick owner",
-            },
+            }),
+            modalField("role-select", "Roles", { required: false, minValues: 0, maxValues: 2 }),
+            modalField("user-select", "Owner", { required: true }),
           ],
         },
       },
@@ -183,42 +210,15 @@ describe("discord select components", () => {
       title: "Select details",
       custom_id: "ocmodal:mid=mdl_1",
       components: [
-        {
-          type: ComponentType.Label,
-          label: "Priority",
-          component: {
-            type: ComponentType.StringSelect,
-            options: [{ label: "High", value: "high", default: true }],
-            custom_id: "fld_1",
-            placeholder: "Pick priority",
-            min_values: 1,
-            max_values: 1,
-          },
-        },
-        {
-          type: ComponentType.Label,
-          label: "Roles",
-          component: {
-            type: ComponentType.RoleSelect,
-            custom_id: "fld_2",
-            placeholder: "Pick roles",
-            min_values: 0,
-            max_values: 2,
-            required: false,
-          },
-        },
-        {
-          type: ComponentType.Label,
-          label: "Owner",
-          component: {
-            type: ComponentType.UserSelect,
-            custom_id: "fld_3",
-            placeholder: "Pick owner",
-            min_values: 1,
-            max_values: 1,
-            required: true,
-          },
-        },
+        serializedField(ComponentType.StringSelect, "Priority", 1, {
+          options: [{ label: "High", value: "high", default: true }],
+        }),
+        serializedField(ComponentType.RoleSelect, "Roles", 2, {
+          min_values: 0,
+          max_values: 2,
+          required: false,
+        }),
+        serializedField(ComponentType.UserSelect, "Owner", 3, { required: true }),
       ],
     };
     expect(normalizeGeneratedDiscordIds(modal.serialize())).toEqual(expectedSerialized);
@@ -254,26 +254,8 @@ describe("discord select components", () => {
 
   it.each([
     ["no preceding row", [], [1]],
-    [
-      "four preceding buttons",
-      [
-        {
-          type: "actions" as const,
-          buttons: Array.from({ length: 4 }, (_, index) => ({ label: `Button ${index + 1}` })),
-        },
-      ],
-      [5],
-    ],
-    [
-      "five preceding buttons",
-      [
-        {
-          type: "actions" as const,
-          buttons: Array.from({ length: 5 }, (_, index) => ({ label: `Button ${index + 1}` })),
-        },
-      ],
-      [5, 1],
-    ],
+    ["four preceding buttons", buttonBlock(4), [5]],
+    ["five preceding buttons", buttonBlock(5), [5, 1]],
     [
       "preceding select",
       [

@@ -11,6 +11,13 @@ function createCfg(discord: Record<string, unknown>): OpenClawConfig {
   return { channels: { discord } } as OpenClawConfig;
 }
 
+function guildConfig(guild: Record<string, unknown>) {
+  return createCfg({ guilds: { guild } });
+}
+
+const denied = { requireMention: true, tools: { deny: ["exec"] } };
+const allowed = { requireMention: false, tools: { allow: ["exec"] } };
+
 describe("discord group policy", () => {
   afterEach(() => {
     setDiscordPolicyBindings("default", []);
@@ -18,18 +25,12 @@ describe("discord group policy", () => {
   });
 
   it.each(["ops", "#ops", "2026"])("binds resolved name key %s to its channel id", (channelKey) => {
-    const cfg = createCfg({
-      guilds: {
-        guild: {
-          requireMention: true,
-          tools: { deny: ["exec"] },
-          channels: {
-            [channelKey]: {
-              requireMention: false,
-              tools: { allow: ["exec"] },
-              toolsBySender: { "id:alice": { allow: ["privileged"] } },
-            },
-          },
+    const cfg = guildConfig({
+      ...denied,
+      channels: {
+        [channelKey]: {
+          ...allowed,
+          toolsBySender: { "id:alice": { allow: ["privileged"] } },
         },
       },
     });
@@ -60,9 +61,8 @@ describe("discord group policy", () => {
   it("keeps unresolved name keys matching by name within their own account", () => {
     const guilds = {
       guild: {
-        requireMention: true,
-        tools: { deny: ["exec"] },
-        channels: { ops: { requireMention: false, tools: { allow: ["exec"] } } },
+        ...denied,
+        channels: { ops: allowed },
       },
     };
     setDiscordPolicyBindings("work", [{ guildKey: "guild", channelKey: "ops", channelId: "246" }]);
@@ -85,14 +85,10 @@ describe("discord group policy", () => {
       { guildKey: "guild", channelKey: "ops", channelId: "246" },
     ]);
     const context = {
-      cfg: createCfg({
-        guilds: {
-          guild: {
-            channels: {
-              "246": { requireMention: true, tools: { deny: ["exec"] } },
-              ops: { requireMention: false, tools: { allow: ["exec"] } },
-            },
-          },
+      cfg: guildConfig({
+        channels: {
+          "246": denied,
+          ops: allowed,
         },
       }),
       groupSpace: "guild",
@@ -105,48 +101,31 @@ describe("discord group policy", () => {
   });
 
   it("prefers a channel sender policy over the guild plain policy", () => {
-    const cfg = createCfg({
-      guilds: {
-        guild: {
-          tools: { deny: ["guild"] },
-          channels: {
-            channel: {
-              toolsBySender: { "id:alice": { allow: ["channel-sender"] } },
-            },
-          },
+    const cfg = guildConfig({
+      tools: { deny: ["guild"] },
+      channels: {
+        channel: {
+          toolsBySender: { "id:alice": { allow: ["channel-sender"] } },
         },
       },
     });
 
-    expect(
-      resolveDiscordGroupToolPolicy({
-        cfg,
-        groupSpace: "guild",
-        groupId: "channel",
-        senderId: "alice",
-      }),
-    ).toEqual({ allow: ["channel-sender"] });
-    expect(
-      resolveDiscordGroupToolPolicy({
-        cfg,
-        groupSpace: "guild",
-        groupId: "channel",
-        senderId: "bob",
-      }),
-    ).toEqual({ deny: ["guild"] });
+    const context = { cfg, groupSpace: "guild", groupId: "channel" };
+    expect(resolveDiscordGroupToolPolicy({ ...context, senderId: "alice" })).toEqual({
+      allow: ["channel-sender"],
+    });
+    expect(resolveDiscordGroupToolPolicy({ ...context, senderId: "bob" })).toEqual({
+      deny: ["guild"],
+    });
   });
 
   it("does not use a channel wildcard as fallback", () => {
     expect(
       resolveDiscordGroupToolPolicy({
-        cfg: createCfg({
-          guilds: {
-            guild: {
-              tools: { allow: ["guild"] },
-              channels: {
-                "*": { tools: { deny: ["channel-wildcard"] } },
-              },
-            },
+        cfg: guildConfig({
+          tools: { allow: ["guild"] },
+          channels: {
+            "*": { tools: { deny: ["channel-wildcard"] } },
           },
         }),
         groupSpace: "guild",
@@ -175,14 +154,10 @@ describe("discord group policy", () => {
   });
 
   it("matches normalized and hash-prefixed channel slugs", () => {
-    const cfg = createCfg({
-      guilds: {
-        guild: {
-          channels: {
-            general: { tools: { allow: ["normalized"] } },
-            "#ops-room": { tools: { allow: ["hash"] } },
-          },
-        },
+    const cfg = guildConfig({
+      channels: {
+        general: { tools: { allow: ["normalized"] } },
+        "#ops-room": { tools: { allow: ["hash"] } },
       },
     });
 

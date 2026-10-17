@@ -23,6 +23,22 @@ beforeAll(async () => {
   ({ sendMessageDiscord } = await import("./send.js"));
 });
 
+function lineLimitConfig(root: number, account?: number): OpenClawConfig {
+  return {
+    channels: {
+      discord: {
+        maxLinesPerMessage: root,
+        accounts: {
+          work: {
+            token: "fixture-token",
+            ...(account === undefined ? {} : { maxLinesPerMessage: account }),
+          },
+        },
+      },
+    },
+  };
+}
+
 async function runDurableLineLimitScenario(params: {
   cfg: OpenClawConfig;
   accountId?: string;
@@ -117,19 +133,17 @@ async function runDurableLineLimitScenario(params: {
       },
       skipQueue: true,
     });
-    const posted = loopback.requests
-      .filter((request) => request.method === "POST")
-      .map(
-        (request) =>
-          JSON.parse(request.body) as {
-            content?: string;
-            message_reference?: { message_id?: string };
-          },
-      );
+    const posts = loopback.requests.filter((request) => request.method === "POST");
+    const posted = posts.map(
+      (request) =>
+        JSON.parse(request.body) as {
+          content?: string;
+          message_reference?: { message_id?: string };
+        },
+    );
     const chunks = posted.map((body) => body.content ?? "");
     const replies = posted.map((body) => body.message_reference?.message_id);
     if (params.webhook) {
-      const posts = loopback.requests.filter((request) => request.method === "POST");
       expect(posts.every((request) => request.path?.includes("/webhooks/fixture-webhook/"))).toBe(
         true,
       );
@@ -154,14 +168,7 @@ async function runDurableLineLimitScenario(params: {
 describe("durable Discord configured line limits", () => {
   it("uses the selected account limit for structured payload fallback text", async () => {
     const { chunks, result } = await runDurableLineLimitScenario({
-      cfg: {
-        channels: {
-          discord: {
-            maxLinesPerMessage: 10,
-            accounts: { work: { token: "fixture-token", maxLinesPerMessage: 50 } },
-          },
-        },
-      },
+      cfg: lineLimitConfig(10, 50),
       accountId: "work",
       structured: true,
     });
@@ -230,19 +237,7 @@ it.each([
   "preserves %s at the HTTP boundary (webhook=%s)",
   async (_name, webhook, root, account, explicit, counts) => {
     const { chunks, result } = await runDurableLineLimitScenario({
-      cfg: {
-        channels: {
-          discord: {
-            maxLinesPerMessage: root,
-            accounts: {
-              work: {
-                token: "fixture-token",
-                ...(account === undefined ? {} : { maxLinesPerMessage: account }),
-              },
-            },
-          },
-        },
-      },
+      cfg: lineLimitConfig(root, account),
       accountId: "work",
       webhook,
       formatting: explicit === undefined ? undefined : { maxLinesPerMessage: explicit },
