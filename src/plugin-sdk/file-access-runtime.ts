@@ -1,3 +1,4 @@
+// Safe local-file helpers for plugin runtime media and bridge code.
 import { removePathWithinRoot as removePathWithinRootCore } from "../infra/fs-safe-remove.js";
 import { statRegularFileSync as inspectRegularFileSync } from "../infra/fs-safe.js";
 

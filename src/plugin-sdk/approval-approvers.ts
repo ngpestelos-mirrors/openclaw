@@ -1,3 +1,6 @@
+/**
+ * Public SDK helper for deriving normalized approval approver ids.
+ */
 import { uniqueStrings } from "../../packages/normalization-core/src/string-normalization.js";
 
 type ApproverInput = string | number;

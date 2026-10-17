@@ -1,3 +1,4 @@
+// Approval auth helpers resolve actor and channel identity for approval requests.
 import { normalizeOptionalString } from "../../packages/normalization-core/src/string-coerce.js";
 import type { ChannelApprovalKind } from "../infra/approval-types.js";
 import { resolveApprovalApprovers } from "./approval-approvers.js";
