@@ -6,6 +6,8 @@ import {
   replacePersistedPluginModelCatalogs,
 } from "../../agents/plugin-model-catalog.js";
 import { CronService } from "../../cron/service.js";
+import { loadCronJobsStore, saveCronJobsStore } from "../../cron/store.js";
+import { makeStore } from "../../cron/store.test-support.js";
 import { createWorkerSessionPlacementStore } from "../../gateway/worker-environments/placement-store.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
@@ -98,6 +100,39 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
       expect(await loadPersistedPluginModelCatalogs(agentDir, ["fixture"])).toEqual([
         { pluginId: "fixture", contents: refreshed },
       ]);
+    });
+
+    it("persists cron authority and recovery on the first authority write", async () => {
+      const storePath = path.join(fixture.root, "cron", "authority.json");
+      const captured = makeStore("captured-authority", false);
+      captured.jobs[0].sessionTarget = "isolated";
+      captured.jobs[0].payload = { kind: "agentTurn", message: "synthetic scheduled turn" };
+      captured.jobs[0].runtimeAuthority = {
+        version: 1,
+        runtimeId: "codex",
+        namespace: "codex.apps",
+        payload: { apps: [{ id: "calendar" }] },
+      };
+      const recovery = makeStore("authority-recovery", false);
+      recovery.jobs[0].sessionTarget = "isolated";
+      recovery.jobs[0].payload = { kind: "agentTurn", message: "synthetic recovery turn" };
+      recovery.jobs[0].runtimeAuthorityRecoveryRequired = true;
+      await saveCronJobsStore(storePath, {
+        version: 1,
+        jobs: [...captured.jobs, ...recovery.jobs],
+      });
+      const loaded = await loadCronJobsStore(storePath);
+      expect(loaded.jobs.find((job) => job.id === "captured-authority")).toMatchObject({
+        runtimeAuthority: {
+          version: 1,
+          runtimeId: "codex",
+          namespace: "codex.apps",
+          payload: { apps: [{ id: "calendar" }] },
+        },
+      });
+      expect(loaded.jobs.find((job) => job.id === "authority-recovery")).toMatchObject({
+        runtimeAuthorityRecoveryRequired: true,
+      });
     });
 
     it("starts cron and retains a disabled job across scheduler restart", async () => {
