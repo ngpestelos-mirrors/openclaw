@@ -488,6 +488,32 @@ it("keeps status in navigation across web layouts without replacing the content 
   ).toBeNull();
 });
 
+it("keeps connection retry in the minimal footer when the Settings renderer is unavailable", async () => {
+  const { owner, runtime, view } = await mountShell();
+  vi.spyOn(owner.settingsSidebar, "renderer").mockReturnValue(null);
+  vi.spyOn(owner.settingsSidebar, "failed").mockReturnValue(true);
+  vi.spyOn(runtime.context.gateway, "snapshot", "get").mockReturnValue({
+    ...runtime.context.gateway.snapshot,
+    phase: "offline",
+    offlineStable: true,
+  });
+  const connect = vi.spyOn(runtime.context.gateway, "connect").mockImplementation(() => undefined);
+  owner.routeState = { routeId: "appearance" };
+  owner.invalidate();
+  flush();
+
+  expect(view.container.querySelector(".shell--settings")).not.toBeNull();
+  const footer = view.container.querySelector(".shell-nav > .sidebar .sidebar-shell__footer");
+  expect(footer?.textContent).toContain("Disconnected");
+  const retry = view.getByRole("button", { name: "Disconnected — Retry now" });
+  expect(footer?.contains(retry)).toBe(true);
+  expect(retry.closest("[inert], [hidden]")).toBeNull();
+  retry.focus();
+  expect(document.activeElement).toBe(retry);
+  retry.click();
+  expect(connect).toHaveBeenCalledOnce();
+});
+
 it("briefly reveals collapsed status transitions and a recovery footer without extending their timers", async () => {
   vi.stubGlobal("innerWidth", 1280);
   const { owner, runtime, view } = await mountShell();

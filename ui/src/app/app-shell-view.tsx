@@ -306,9 +306,9 @@ export function ApplicationShell(props: { host: ShellViewHost }): SolidJSX.Eleme
             </Show>
             <Show
               when={
-                !view().settingsTakeover &&
-                !isOptionalElementDefined(APP_SIDEBAR_ELEMENT) &&
-                footerStatus()
+                (view().settingsTakeover
+                  ? props.host.settingsSidebar.renderer() === null
+                  : !isOptionalElementDefined(APP_SIDEBAR_ELEMENT)) && footerStatus()
               }
             >
               <aside class="sidebar">
