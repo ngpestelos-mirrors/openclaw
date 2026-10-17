@@ -1,13 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createDeferred as deferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient, GatewayEventFrame } from "../api/gateway.ts";
 import type { ApplicationGateway, ApplicationGatewaySnapshot } from "./gateway.ts";
 import { createApplicationOverlays } from "./overlays.ts";
 
 export type RequestFn = (...args: Parameters<GatewayBrowserClient["request"]>) => Promise<unknown>;
-
-const SYSTEM_APPROVAL_TITLE = "OpenClaw change";
-const SYSTEM_APPROVAL_COMMAND = "Set gateway.port to 19001";
 
 export function approval(id: string, createdAtMs: number) {
   return {
@@ -87,9 +84,9 @@ export function createGatewayHarness(
         createdAtMs,
         expiresAtMs: Date.now() + 60_000,
         request: {
-          title: SYSTEM_APPROVAL_TITLE,
-          description: SYSTEM_APPROVAL_COMMAND,
-          command: SYSTEM_APPROVAL_COMMAND,
+          title: "OpenClaw change",
+          description: "Set gateway.port to 19001",
+          command: "Set gateway.port to 19001",
           proposalHash: "a".repeat(64),
           allowedDecisions: ["allow-once", "deny"],
         },
@@ -162,9 +159,6 @@ function pairEvent(
 function expectLifecycle(overlays: ReturnType<typeof createApplicationOverlays>, phase: string) {
   expect(overlays.snapshot.devicePairSetupLifecycle).toEqual({ phase, access: "full" });
 }
-const calls = (request: ReturnType<typeof vi.fn<RequestFn>>, method: string) =>
-  request.mock.calls.filter(([name]) => name === method);
-
 function pairingFixture(request: RequestFn, scopes?: string[] | null) {
   const f = createOverlayHarness(request, scopes);
   return {
@@ -177,211 +171,189 @@ function pairingFixture(request: RequestFn, scopes?: string[] | null) {
 }
 
 export function registerOverlayPairingAccessTests() {
-  describe("application pairing setup permissions", () => {
-    it.each([true, false])(
-      "refreshes pairing counts across legacy admin (initial scoped: %s)",
-      async (scoped) => {
-        const stalePending = deferred<{ pending: Array<{ id: string }> }>();
-        const freshPending = [{ id: "current-first" }, { id: "current-second" }];
-        let pairingRequests = 0;
-        const request = vi.fn<RequestFn>((method) => {
-          if (method !== "device.pair.list") {
-            return Promise.resolve([]);
-          }
-          pairingRequests += 1;
-          return pairingRequests === 1
-            ? stalePending.promise
-            : Promise.resolve({ pending: freshPending });
-        });
-        const { harness, overlays } = createOverlayHarness(
-          request,
-          scoped ? ["operator.admin"] : null,
-        );
-
-        try {
-          await overlays.openDevicePairSetup();
-          expect(overlays.snapshot.devicePairSetupOpen).toBe(true);
-          expect(pairingRequests).toBe(1);
-
-          if (scoped) {
-            harness.update({ hello: null });
-          } else {
-            harness.setScopes(["operator.admin"]);
-          }
-          await flushMicrotasks();
-
-          expect(overlays.snapshot.devicePairSetupOpen).toBe(true);
-          expect(pairingRequests).toBe(2);
-          expect(overlays.snapshot.devicePairPendingCount).toBe(2);
-
-          stalePending.resolve({ pending: [{ id: "retired" }] });
-          await flushMicrotasks();
-
-          expect(overlays.snapshot.devicePairPendingCount).toBe(2);
-          expect(request.mock.calls.map(([method]) => method)).not.toContain(
-            "device.pair.setupCode",
-          );
-        } finally {
-          stalePending.resolve({ pending: [] });
-          overlays.dispose();
-        }
-      },
-    );
-
-    it("refreshes legacy admin pairing counts when device-pair events arrive", async () => {
+  it.each(["to-legacy", "to-scoped", "event"] as const)(
+    "refreshes current pairing counts on %s",
+    async (trigger) => {
+      const first = deferred<{ pending: Array<{ id: string }> }>();
       let pending = [{ id: "first-pending" }];
-      const request = vi.fn<RequestFn>((method) =>
-        Promise.resolve(method === "device.pair.list" ? { pending } : []),
-      );
-      const { harness, overlays } = createOverlayHarness(request, null);
-
-      await overlays.openDevicePairSetup();
-      await flushMicrotasks();
-
-      expect(overlays.snapshot.devicePairSetupOpen).toBe(true);
-      expect(overlays.snapshot.devicePairPendingCount).toBe(1);
-      expect(request).toHaveBeenCalledWith("device.pair.list", {});
-
-      pending = [{ id: "first-pending" }, { id: "second-pending" }];
-      harness.emitDevicePairRequested();
-      await flushMicrotasks();
-
-      expect(overlays.snapshot.devicePairPendingCount).toBe(2);
-      expect(calls(request, "device.pair.list")).toHaveLength(2);
-
-      harness.setScopes(["operator.read"]);
-      expect(overlays.snapshot.devicePairSetupOpen).toBe(false);
-      expect(overlays.snapshot.devicePairPendingCount).toBe(0);
-      harness.emitDevicePairRequested();
-      await flushMicrotasks();
-
-      expect(calls(request, "device.pair.list")).toHaveLength(2);
-      expect(request.mock.calls.map(([method]) => method)).not.toContain("device.pair.setupCode");
-      overlays.dispose();
-    });
-
-    it("discards an in-flight setup credential after admin access becomes pairing-only", async () => {
-      const setup = deferred<unknown>();
-      const request = pairingRequest(() => setup.promise);
-      const { harness, overlays } = createOverlayHarness(request, ["operator.admin"]);
-      await overlays.openDevicePairSetup();
-      const mintingSetup = overlays.refreshDevicePairSetup();
-      expectLifecycle(overlays, "loading");
-
-      harness.setScopes(["operator.pairing"]);
-      expect(overlays.snapshot.devicePairSetupOpen).toBe(false);
-      expectLifecycle(overlays, "selection");
-
-      setup.resolve({
-        ...setupResult("retired-setup"),
-        setupCode: "retired-test-setup-code",
-        gatewayUrl: "ws://gateway.test",
-      });
-      await mintingSetup;
-
-      expect(overlays.snapshot.devicePairSetupOpen).toBe(false);
-      expectLifecycle(overlays, "selection");
-      expect(calls(request, "device.pair.setupCode")).toHaveLength(1);
-      overlays.dispose();
-    });
-
-    it.each(["pairing", "write", "approvals", ""])(
-      "blocks pairing setup for scope %s",
-      async (scope) => {
-        const scopes = scope ? [`operator.${scope}`] : [];
-        const request = vi.fn<RequestFn>(() => Promise.resolve({ pending: [] }));
-        const { overlays } = createOverlayHarness(request, scopes);
-
-        await expect(overlays.openDevicePairSetup()).resolves.toBe(false);
-        await overlays.refreshDevicePairSetup();
-
-        expect(request).not.toHaveBeenCalledWith("device.pair.list", {});
-        expect(request.mock.calls.map(([method]) => method)).not.toContain("device.pair.setupCode");
-        expect(overlays.snapshot.devicePairSetupOpen).toBe(false);
-        overlays.dispose();
-      },
-    );
-
-    it("completes only the active setup from the dedicated event", async () => {
-      let setupId = "setup-first";
-      const request = pairingRequest(() => setupResult(setupId));
-      const { harness, overlays, complete } = pairingFixture(request);
-
-      await overlays.openDevicePairSetup();
-      await overlays.refreshDevicePairSetup();
-      expect(overlays.snapshot.devicePairSetupLifecycle).toMatchObject({
-        phase: "waiting",
-        setup: { setupId: "setup-first" },
-      });
-
-      harness.emitEvent("device.pair.resolved", {
-        setupId: "setup-first",
-        deviceId: "phone-first",
-      });
-      complete("setup-unrelated", "phone-unrelated", "Unrelated phone", "full", 1);
-      expect(overlays.snapshot.devicePairSetupLifecycle.phase).toBe("waiting");
-
-      setupId = "setup-second";
-      await overlays.refreshDevicePairSetup();
-      complete("setup-first", "phone-stale", "Stale phone", "full", 2);
-      expect(overlays.snapshot.devicePairSetupLifecycle).toMatchObject({
-        phase: "waiting",
-        setup: { setupId: "setup-second" },
-      });
-
-      complete("setup-second", "phone-current", "  Operator's iPhone  ", "limited", 3);
-      expect(overlays.snapshot.devicePairSetupLifecycle).toEqual({
-        phase: "success",
-        deviceName: "Operator's iPhone",
-        access: "limited",
-      });
-      overlays.dispose();
-    });
-
-    it("surfaces delivery uncertainty only for the active setup", async () => {
-      const request = pairingRequest(() => setupResult("setup-current"));
-      const { overlays, uncertain } = pairingFixture(request);
-
-      await overlays.openDevicePairSetup();
-      await overlays.refreshDevicePairSetup();
-      uncertain("setup-stale", "phone-stale", undefined, "full", 1);
-      expect(overlays.snapshot.devicePairSetupLifecycle.phase).toBe("waiting");
-
-      uncertain("setup-current", "phone-current", "Phone", "full", 2);
-      expectLifecycle(overlays, "delivery-uncertain");
-      overlays.dispose();
-    });
-
-    it.each(["reconnect", "access revocation", "dispose"] as const)(
-      "retires the setup expiry timer on %s",
-      async (boundary) => {
-        vi.useFakeTimers();
-        vi.setSystemTime(10_000);
-        const request = pairingRequest(() => setupResult("setup-timer", 70_000), { pending: [] });
-        const { harness, overlays } = createOverlayHarness(request, ["operator.admin"]);
-
-        try {
-          await overlays.openDevicePairSetup();
-          await overlays.refreshDevicePairSetup();
-          expect(vi.getTimerCount()).toBe(1);
-
-          if (boundary === "reconnect") {
-            harness.update({ client: client(request) });
-          } else if (boundary === "access revocation") {
-            harness.setScopes(["operator.pairing"]);
-          } else {
-            overlays.dispose();
-          }
-
-          expect(vi.getTimerCount()).toBe(0);
-          if (boundary !== "dispose") {
-            expectLifecycle(overlays, "selection");
-          }
-        } finally {
-          overlays.dispose();
-          vi.useRealTimers();
+      let requests = 0;
+      const request = vi.fn<RequestFn>((method) => {
+        if (method !== "device.pair.list") {
+          return Promise.resolve([]);
         }
-      },
-    );
+        return ++requests === 1 && trigger !== "event"
+          ? first.promise
+          : Promise.resolve({ pending });
+      });
+      const { harness, overlays } = createOverlayHarness(
+        request,
+        trigger === "to-legacy" ? ["operator.admin"] : null,
+      );
+      try {
+        await overlays.openDevicePairSetup();
+        if (trigger === "event") {
+          await flushMicrotasks();
+        }
+        expect(overlays.snapshot.devicePairSetupOpen).toBe(true);
+        expect(requests).toBe(1);
+        if (trigger === "event") {
+          expect(overlays.snapshot.devicePairPendingCount).toBe(1);
+          expect(request).toHaveBeenCalledWith("device.pair.list", {});
+        }
+        pending = [{ id: "current-first" }, { id: "current-second" }];
+        if (trigger === "to-legacy") {
+          harness.update({ hello: null });
+        } else if (trigger === "to-scoped") {
+          harness.setScopes(["operator.admin"]);
+        } else {
+          harness.emitDevicePairRequested();
+        }
+        await flushMicrotasks();
+        expect(overlays.snapshot).toMatchObject({
+          devicePairSetupOpen: true,
+          devicePairPendingCount: 2,
+        });
+        expect(requests).toBe(2);
+        if (trigger !== "event") {
+          first.resolve({ pending: [{ id: "retired" }] });
+          await flushMicrotasks();
+          expect(overlays.snapshot.devicePairPendingCount).toBe(2);
+        } else {
+          harness.setScopes(["operator.read"]);
+          expect(overlays.snapshot).toMatchObject({
+            devicePairSetupOpen: false,
+            devicePairPendingCount: 0,
+          });
+          harness.emitDevicePairRequested();
+          await flushMicrotasks();
+          expect(requests).toBe(2);
+        }
+        expect(request.mock.calls.map(([method]) => method)).not.toContain("device.pair.setupCode");
+      } finally {
+        first.resolve({ pending: [] });
+        overlays.dispose();
+      }
+    },
+  );
+
+  it("discards an in-flight setup credential after admin access becomes pairing-only", async () => {
+    const setup = deferred<unknown>();
+    const request = pairingRequest(() => setup.promise);
+    const { harness, overlays } = createOverlayHarness(request, ["operator.admin"]);
+    await overlays.openDevicePairSetup();
+    const mintingSetup = overlays.refreshDevicePairSetup();
+    expectLifecycle(overlays, "loading");
+
+    harness.setScopes(["operator.pairing"]);
+    expect(overlays.snapshot.devicePairSetupOpen).toBe(false);
+    expectLifecycle(overlays, "selection");
+
+    setup.resolve(setupResult("retired-setup"));
+    await mintingSetup;
+
+    expect(overlays.snapshot.devicePairSetupOpen).toBe(false);
+    expectLifecycle(overlays, "selection");
+    expect(
+      request.mock.calls.filter(([method]) => method === "device.pair.setupCode"),
+    ).toHaveLength(1);
+    overlays.dispose();
   });
+
+  it.each(["pairing", "write", "approvals", ""])(
+    "blocks pairing setup for scope %s",
+    async (scope) => {
+      const request = vi.fn<RequestFn>(() => Promise.resolve({ pending: [] }));
+      const { overlays } = createOverlayHarness(request, scope ? [`operator.${scope}`] : []);
+
+      await expect(overlays.openDevicePairSetup()).resolves.toBe(false);
+      await overlays.refreshDevicePairSetup();
+
+      expect(request).not.toHaveBeenCalledWith("device.pair.list", {});
+      expect(request.mock.calls.map(([method]) => method)).not.toContain("device.pair.setupCode");
+      expect(overlays.snapshot.devicePairSetupOpen).toBe(false);
+      overlays.dispose();
+    },
+  );
+
+  it("completes only the active setup from the dedicated event", async () => {
+    let setupId = "setup-first";
+    const request = pairingRequest(() => setupResult(setupId));
+    const { harness, overlays, complete } = pairingFixture(request);
+
+    await overlays.openDevicePairSetup();
+    await overlays.refreshDevicePairSetup();
+    expect(overlays.snapshot.devicePairSetupLifecycle).toMatchObject({
+      phase: "waiting",
+      setup: { setupId: "setup-first" },
+    });
+
+    harness.emitEvent("device.pair.resolved", {
+      setupId: "setup-first",
+      deviceId: "phone-first",
+    });
+    complete("setup-unrelated", "phone-unrelated", "Unrelated phone", "full", 1);
+    expect(overlays.snapshot.devicePairSetupLifecycle.phase).toBe("waiting");
+
+    setupId = "setup-second";
+    await overlays.refreshDevicePairSetup();
+    complete("setup-first", "phone-stale", "Stale phone", "full", 2);
+    expect(overlays.snapshot.devicePairSetupLifecycle).toMatchObject({
+      phase: "waiting",
+      setup: { setupId: "setup-second" },
+    });
+
+    complete("setup-second", "phone-current", "  Operator's iPhone  ", "limited", 3);
+    expect(overlays.snapshot.devicePairSetupLifecycle).toEqual({
+      phase: "success",
+      deviceName: "Operator's iPhone",
+      access: "limited",
+    });
+    overlays.dispose();
+  });
+
+  it("surfaces delivery uncertainty only for the active setup", async () => {
+    const request = pairingRequest(() => setupResult("setup-current"));
+    const { overlays, uncertain } = pairingFixture(request);
+
+    await overlays.openDevicePairSetup();
+    await overlays.refreshDevicePairSetup();
+    uncertain("setup-stale", "phone-stale", undefined, "full", 1);
+    expect(overlays.snapshot.devicePairSetupLifecycle.phase).toBe("waiting");
+
+    uncertain("setup-current", "phone-current", "Phone", "full", 2);
+    expectLifecycle(overlays, "delivery-uncertain");
+    overlays.dispose();
+  });
+
+  it.each(["reconnect", "access revocation", "dispose"] as const)(
+    "retires the setup expiry timer on %s",
+    async (boundary) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(10_000);
+      const request = pairingRequest(() => setupResult("setup-timer", 70_000), { pending: [] });
+      const { harness, overlays } = createOverlayHarness(request, ["operator.admin"]);
+
+      try {
+        await overlays.openDevicePairSetup();
+        await overlays.refreshDevicePairSetup();
+        expect(vi.getTimerCount()).toBe(1);
+
+        if (boundary === "reconnect") {
+          harness.update({ client: client(request) });
+        } else if (boundary === "access revocation") {
+          harness.setScopes(["operator.pairing"]);
+        } else {
+          overlays.dispose();
+        }
+
+        expect(vi.getTimerCount()).toBe(0);
+        if (boundary !== "dispose") {
+          expectLifecycle(overlays, "selection");
+        }
+      } finally {
+        overlays.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
 }
