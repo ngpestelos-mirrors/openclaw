@@ -1,3 +1,4 @@
+import { GATEWAY_SERVER_CAPS } from "@openclaw/gateway-protocol/frame-guards";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { revealChatModelOption, selectChatModelOption } from "../test-helpers/select-picker-e2e.ts";
@@ -35,6 +36,7 @@ suite.define(() => {
     const prepared = { ...modelInfo("prepared", "Prepared model", "fixture"), available: true };
     const added = { ...prepared, id: "added", name: "Added model" };
     const gateway = await installMockGateway(page, {
+      connectCapabilities: [GATEWAY_SERVER_CAPS.MODEL_CATALOG_SNAPSHOT],
       sessionKey,
       models: [],
       heldMethods: ["models.list"],
