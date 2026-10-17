@@ -123,7 +123,7 @@ suite.define(() => {
         if (offline) {
           await gateway.setOnline(false);
           await page
-            .locator(".shell-connection-status")
+            .locator(".sidebar-shell__footer .gateway-status")
             .getByRole("button", { name: /Reconnecting…/ })
             .waitFor();
         }

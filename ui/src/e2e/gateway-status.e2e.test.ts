@@ -1,7 +1,10 @@
-import type { Page } from "playwright";
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
+import type { Locator, Page } from "playwright";
 import { expect, it } from "vitest";
 import { defaultControlUiFeatureMethods } from "../test-helpers/control-ui-e2e-defaults.ts";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
+import { takeControlUiScreenshotFrame } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import { controlUiSessionUrl, installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 import { installNativeWebChrome } from "./native-nav.test-support.ts";
@@ -18,20 +21,15 @@ const withPage = (
     run,
   );
 
-async function expectChipAboveComposer(page: Page): Promise<void> {
-  const chip = page.locator(".shell-connection-status");
-  await chip.waitFor({ state: "visible" });
-  const chipBounds = await chip.boundingBox();
-  const composerBounds = await page.locator(".agent-chat__composer-shell").boundingBox();
-  const footerBounds = await page.locator(".chat-footer").boundingBox();
-  expect(chipBounds).not.toBeNull();
-  expect(composerBounds).not.toBeNull();
-  expect(footerBounds).not.toBeNull();
-  expect(chipBounds!.y).toBeGreaterThanOrEqual(0);
-  expect(chipBounds!.y + chipBounds!.height).toBeLessThanOrEqual(composerBounds!.y);
-  expect(chipBounds!.y + chipBounds!.height).toBeGreaterThanOrEqual(footerBounds!.y - 32);
-  expect(chipBounds!.x).toBeGreaterThanOrEqual(0);
-  expect(chipBounds!.x + chipBounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+async function captureStatus(page: Page, name: string, surface: Locator, content: Locator[]) {
+  const frame = await takeControlUiScreenshotFrame(page, surface, content, {
+    elements: content,
+    animations: "disabled",
+  });
+  await writeFile(path.join(suite.artifactDir, `${name}.png`), frame.png);
+  for (const [index, element] of frame.elements.entries()) {
+    await writeFile(path.join(suite.artifactDir, `${name}-${index + 1}.png`), element.png);
+  }
 }
 
 suite.define(() => {
@@ -134,7 +132,7 @@ suite.define(() => {
         const initialHeaderY = await header.evaluate(
           (element) => element.getBoundingClientRect().y,
         );
-        const connectionStatus = page.locator(".shell-connection-status");
+        const connectionStatus = page.locator(".mobile-connection-status .gateway-status:visible");
         const content = page.locator("main.content");
         const initialContentBounds = await content.boundingBox();
         expect(initialContentBounds).not.toBeNull();
@@ -144,6 +142,7 @@ suite.define(() => {
         await waitForGatewayRecoveryScope(page);
         expect(await connectionStatus.count()).toBe(0);
         const readyHeaderY = await header.evaluate((element) => element.getBoundingClientRect().y);
+        const readyHeaderBounds = await header.boundingBox();
         expect(Math.abs(readyHeaderY - initialHeaderY)).toBeLessThanOrEqual(0.1);
         expect(await content.boundingBox()).toEqual(initialContentBounds);
 
@@ -157,19 +156,19 @@ suite.define(() => {
           .getByText("Restoring…", { exact: true })
           .waitFor({ state: "visible" });
         expect(await content.boundingBox()).toEqual(initialContentBounds);
-        await expectChipAboveComposer(page);
-        expect((await connectionStatus.boundingBox())!.x).toBeLessThanOrEqual(32);
+        expect(await header.boundingBox()).toEqual(readyHeaderBounds);
+        expect(await page.locator(".sidebar-connection-flag").isVisible()).toBe(false);
         await page.evaluate(() => window.dispatchEvent(new Event("test-release-status-recovery")));
         await waitForGatewayRecoveryScope(page);
-        await expect.poll(() => connectionStatus.count()).toBe(0);
+        await connectionStatus.waitFor({ state: "detached" });
         expect(await content.boundingBox()).toEqual(initialContentBounds);
       },
       { colorScheme: "dark", reducedMotion: "no-preference" },
     );
   });
 
-  it("keeps reconnect status clear of the composer in a compact native window", async () => {
-    await withPage(1000, async ({ page }) => {
+  it("briefly reveals collapsed-rail status and reopens it for pointer and keyboard access", async () => {
+    await withPage(1280, async ({ page }) => {
       await installNativeWebChrome(page);
       const gateway = await installMockGateway(page);
       await page.goto(`${suite.server.baseUrl}chat`);
@@ -179,17 +178,34 @@ suite.define(() => {
         command: { kind: "sidebar", visible: false },
       });
       await page.locator(".shell--nav-collapsed").waitFor({ state: "visible" });
+      await page.clock.install();
       await gateway.setOnline(false);
       const retainedStatus = page.locator(
         ".sidebar-identity-card[data-connection-status=reconnecting]",
       );
       await retainedStatus.waitFor({ state: "visible" });
       expect(await retainedStatus.getAttribute("aria-label")).toContain("Reconnecting…");
-      await expectChipAboveComposer(page);
-      await page
-        .locator(".shell-connection-status")
-        .getByRole("button", { name: "Reconnecting… — Retry now", exact: true })
-        .waitFor();
+      const flag = page.locator(".sidebar-connection-flag");
+      const retry = flag.getByRole("button", {
+        name: "Reconnecting… — Retry now",
+        exact: true,
+      });
+      await retry.waitFor({ state: "visible" });
+      await page.clock.runFor(4_001);
+      await flag.waitFor({ state: "hidden" });
+      await retainedStatus.hover();
+      await retry.waitFor({ state: "visible" });
+      await captureStatus(page, "collapsed-avatar-flag", flag, [retainedStatus, flag]);
+      await page.mouse.move(600, 400);
+      await flag.waitFor({ state: "hidden" });
+      await retainedStatus.focus();
+      await retry.waitFor({ state: "visible" });
+      await page.keyboard.press("Tab");
+      expect(await retry.evaluate((element) => element === document.activeElement)).toBe(true);
+      await page.setViewportSize({ width: 999, height: 900 });
+      await flag.waitFor({ state: "hidden" });
+      expect(await retainedStatus.getAttribute("aria-label")).toContain("Reconnecting…");
+      await page.clock.resume();
     });
   });
 
@@ -233,17 +249,17 @@ suite.define(() => {
           await expect.poll(() => composer.inputValue()).toBe("");
         }
         const footer = page.locator(".sidebar-footer-bar");
-        const chip = page.locator(".shell-connection-status");
+        const connectionStatus = page.locator(".sidebar-shell__footer .gateway-status:visible");
         await expect.poll(() => page.locator(".chat-queue__item").count()).toBe(2);
-        await chip
+        await connectionStatus
           .getByRole("button", { name: "Reconnecting… · 2 queued — Retry now", exact: true })
           .waitFor();
-        expect(await chip.count()).toBe(1);
-        expect(await chip.locator(".gateway-status__label").textContent()).toBe(
+        expect(await connectionStatus.count()).toBe(1);
+        expect(await connectionStatus.locator(".gateway-status__label").textContent()).toBe(
           "Reconnecting… · 2 queued",
         );
         expect(await content.boundingBox()).toEqual(connectedContentBounds);
-        await expectChipAboveComposer(page);
+        expect((await connectionStatus.boundingBox())!.height).toBe(44);
         const identityStatus = footer.locator(".sidebar-identity-card");
         expect(await identityStatus.isVisible()).toBe(true);
         expect(await identityStatus.getAttribute("data-connection-status")).toBe("reconnecting");
@@ -257,18 +273,31 @@ suite.define(() => {
         const announcement = page.locator(".shell > .sr-only[role=status]");
         expect(await announcement.count()).toBe(1);
         expect(await announcement.textContent()).toBe("Reconnecting… · 2 queued");
-        expect(await chip.locator("[role=status]").count()).toBe(0);
+        expect(await connectionStatus.getAttribute("role")).toBeNull();
         expect(await footer.textContent()).not.toContain("in outbox");
         expect(await gateway.getRequests("chat.send")).toHaveLength(0);
+        await captureStatus(page, "desktop-footer-queued", connectionStatus, [
+          identityStatus,
+          connectionStatus,
+        ]);
 
         await page.setViewportSize({ width: 390, height: 844 });
-        const mobileStatus = page.locator(".shell-connection-status");
+        const mobileStatus = page.locator(".mobile-connection-status .gateway-status:visible");
         await mobileStatus.waitFor({ state: "visible" });
-        await expectChipAboveComposer(page);
-        expect((await mobileStatus.boundingBox())!.x).toBeLessThanOrEqual(32);
+        expect(await connectionStatus.isVisible()).toBe(false);
+        expect(await page.locator(".sidebar-connection-flag").isVisible()).toBe(false);
         expect(await mobileStatus.locator(".gateway-status__label").textContent()).toBe(
           "Reconnecting… · 2 queued",
         );
+        expect(
+          await page
+            .getByRole("button", { name: "Expand sidebar" })
+            .getAttribute("data-connection-status"),
+        ).toBe("reconnecting");
+        await captureStatus(page, "mobile-header-queued", mobileStatus, [
+          page.getByRole("button", { name: "Expand sidebar" }),
+          mobileStatus,
+        ]);
         await page.setViewportSize({ width: 1280, height: 900 });
         await footer.waitFor({ state: "visible" });
 
@@ -283,8 +312,9 @@ suite.define(() => {
         await menu.waitFor({ state: "hidden" });
         await page.setViewportSize({ width: 390, height: 844 });
         await page.getByRole("button", { name: "Expand sidebar" }).click();
-        await expectChipAboveComposer(page);
-        expect(await chip.count()).toBe(1);
+        await connectionStatus.waitFor({ state: "visible" });
+        expect(await connectionStatus.count()).toBe(1);
+        expect(await mobileStatus.isVisible()).toBe(false);
         await identityStatus.click();
         await menu.getByText("Alex", { exact: true }).waitFor();
         const retry = menu.locator('[data-value="command:retry-connect"]');
@@ -300,14 +330,14 @@ suite.define(() => {
         await expect.poll(() => gateway.getSocketCount()).toBeGreaterThan(socketCount);
         await gateway.setOnline(true);
         await waitForControlUiGatewayReady(page);
-        await expect.poll(() => chip.count()).toBe(0);
+        await connectionStatus.waitFor({ state: "detached" });
         await expect
           .poll(() => identityStatus.getAttribute("data-connection-status"))
           .toBe("connected");
         expect(await announcement.textContent()).toBe("Connected");
         expect(await identityStatus.textContent()).toContain("Alex");
       },
-      { colorScheme: "dark" },
+      { colorScheme: "dark", viewport: { width: 1280, height: 808 } },
     );
   });
 });

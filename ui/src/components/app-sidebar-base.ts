@@ -17,6 +17,7 @@ import { prepareSessionNavigationHandoff } from "../lib/sessions/navigation-hand
 import { SESSION_NAVIGATION_KEY_PARAM } from "../lib/sessions/route-navigation.ts";
 import { parseAgentSessionKey, resolveUiConfiguredMainKey } from "../lib/sessions/session-key.ts";
 import type { NewSessionTarget } from "../pages/new-session/location.ts";
+import type { GatewayStatusProps } from "./gateway-status.ts";
 import type { SessionOwnerFilter } from "./session-owner-filter.ts";
 import type { ContextualSidebar } from "./sidebar-context-state.ts";
 import type { SidebarSnapshotModel } from "./sidebar-snapshot-model.ts";
@@ -29,6 +30,10 @@ export type AppSidebarProps = {
   enabledRouteIds: readonly NavigationRouteId[] | undefined;
   connected: boolean;
   connectionStatus: GatewayStatus | null;
+  gatewayStatus: GatewayStatusProps | null;
+  connectionRecovery: boolean;
+  connectionFlagVisible: boolean;
+  connectionFlagAllowed: boolean;
   storedOutboxes: SidebarOutboxSummary | undefined;
   terminalAvailable: boolean;
   catalogOpenTarget: CatalogOpenTarget;
@@ -65,6 +70,10 @@ export const appSidebarProperties = {
   enabledRouteIds: { default: undefined, attribute: false },
   connected: { default: false, attribute: false },
   connectionStatus: { default: null, attribute: false },
+  gatewayStatus: { default: null, attribute: false },
+  connectionRecovery: { default: false, attribute: false },
+  connectionFlagVisible: { default: false, attribute: false },
+  connectionFlagAllowed: { default: false, attribute: false },
   storedOutboxes: { default: undefined, attribute: false },
   terminalAvailable: { default: false, attribute: false },
   catalogOpenTarget: { default: "viewer", attribute: false },
@@ -106,6 +115,10 @@ export abstract class AppSidebarBase {
   declare enabledRouteIds: AppSidebarProps["enabledRouteIds"];
   declare connected: AppSidebarProps["connected"];
   declare connectionStatus: AppSidebarProps["connectionStatus"];
+  declare gatewayStatus: AppSidebarProps["gatewayStatus"];
+  declare connectionRecovery: AppSidebarProps["connectionRecovery"];
+  declare connectionFlagVisible: AppSidebarProps["connectionFlagVisible"];
+  declare connectionFlagAllowed: AppSidebarProps["connectionFlagAllowed"];
   declare storedOutboxes: AppSidebarProps["storedOutboxes"];
   declare terminalAvailable: AppSidebarProps["terminalAvailable"];
   declare catalogOpenTarget: AppSidebarProps["catalogOpenTarget"];

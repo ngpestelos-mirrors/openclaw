@@ -27,6 +27,7 @@ import { HOME_PANEL_TOGGLE_EVENT } from "./panel-toggle-contract.ts";
 import { SidebarAgentCard } from "./sidebar-agent-card.tsx";
 import { SidebarAttention } from "./sidebar-attention.tsx";
 import { formatSidebarBuildSubtitle } from "./sidebar-build-chip-format.ts";
+import { GatewayStatus, gatewayStatusLabel } from "./solid/gateway-status.tsx";
 import { Icon } from "./solid/icon.tsx";
 import { ShortcutHint } from "./solid/kbd.tsx";
 import { renderSessionLeadingState, SessionRowBadges } from "./solid/session-presentation.tsx";
@@ -265,7 +266,12 @@ export function renderAppSidebarFooterBar(host: AppSidebarRenderHost): JSX.Eleme
   const buildSubtitle = () => formatSidebarBuildSubtitle(CONTROL_UI_BUILD_INFO);
   const gatewayPrimaryTag = () => (gateway()?.isPrimary ? t("nav.gateway.primaryTag") : null);
   const identityMenuLabel = () => t("profilePage.identity.menuButtonLabel", { name: selfLabel() });
-  const statusLabel = () => (connectionStatus() ? t(`connection.${connectionStatus()}`) : null);
+  const statusLabel = () =>
+    host.gatewayStatus?.kind
+      ? gatewayStatusLabel(host.gatewayStatus.kind, host.gatewayStatus.queuedCount)
+      : connectionStatus()
+        ? t(`connection.${connectionStatus()}`)
+        : null;
   const identityDetail = () => {
     const status = statusLabel();
     const selectedGateway = gateway();
@@ -335,40 +341,50 @@ export function renderAppSidebarFooterBar(host: AppSidebarRenderHost): JSX.Eleme
           watchUpdateProgress={host.watchUpdateProgress}
         />
       </span>
-      <button
-        type="button"
-        class="sidebar-identity-card"
-        aria-haspopup="menu"
-        aria-expanded={host.sidebarMenus.identityMenuPosition !== null ? "true" : "false"}
-        title={
-          identityDetail() ? `${identityMenuLabel()}: ${identityDetail()}` : identityMenuLabel()
-        }
-        data-connection-status={connectionStatus() ?? (host.connected ? "connected" : undefined)}
-        aria-label={
-          identityDetail() ? `${identityMenuLabel()}: ${identityDetail()}` : identityMenuLabel()
-        }
-        onClick={(event) => host.sidebarMenus.toggleIdentityMenu(event.currentTarget)}
-      >
-        <span class="sidebar-identity-card__avatar">
-          <openclaw-viewer-avatar prop:user={avatarUser()} variant="footer" />
-          <span class="sidebar-identity-card__status" aria-hidden="true" />
-        </span>
-        <span class="sidebar-identity-card__text">
-          <HoverMarquee
-            content={selfLabel()}
-            class="sidebar-identity-card__name"
-            options={{ loop: true, delay: 300, speed: 35 }}
-          />
-          {gateway() ? (
-            <span class="sidebar-identity-card__gateway" aria-hidden="true">
-              <span class="sidebar-gateway-name">{gateway()?.name}</span>
-              {gatewayPrimaryTag() ? (
-                <span class="sidebar-gateway-primary">{gatewayPrimaryTag()}</span>
-              ) : undefined}
-            </span>
-          ) : undefined}
-        </span>
-      </button>
+      <div class="sidebar-identity-anchor">
+        <button
+          type="button"
+          class="sidebar-identity-card"
+          aria-haspopup="menu"
+          aria-expanded={host.sidebarMenus.identityMenuPosition !== null ? "true" : "false"}
+          title={
+            identityDetail() ? `${identityMenuLabel()}: ${identityDetail()}` : identityMenuLabel()
+          }
+          data-connection-status={connectionStatus() ?? (host.connected ? "connected" : undefined)}
+          aria-label={
+            identityDetail() ? `${identityMenuLabel()}: ${identityDetail()}` : identityMenuLabel()
+          }
+          onClick={(event) => host.sidebarMenus.toggleIdentityMenu(event.currentTarget)}
+        >
+          <span class="sidebar-identity-card__avatar">
+            <openclaw-viewer-avatar prop:user={avatarUser()} variant="footer" />
+            <span class="sidebar-identity-card__status" aria-hidden="true" />
+          </span>
+          <span class="sidebar-identity-card__text">
+            <HoverMarquee
+              content={selfLabel()}
+              class="sidebar-identity-card__name"
+              options={{ loop: true, delay: 300, speed: 35 }}
+            />
+            {gateway() ? (
+              <span class="sidebar-identity-card__gateway" aria-hidden="true">
+                <span class="sidebar-gateway-name">{gateway()?.name}</span>
+                {gatewayPrimaryTag() ? (
+                  <span class="sidebar-gateway-primary">{gatewayPrimaryTag()}</span>
+                ) : undefined}
+              </span>
+            ) : undefined}
+          </span>
+        </button>
+        <Show when={host.connectionFlagAllowed && host.gatewayStatus?.kind}>
+          <div
+            class="sidebar-connection-flag"
+            data-open={host.connectionFlagVisible ? "" : undefined}
+          >
+            <GatewayStatus {...host.gatewayStatus!} row />
+          </div>
+        </Show>
+      </div>
     </div>
   );
 }

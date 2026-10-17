@@ -214,13 +214,17 @@ page reload does not persist a widget’s unsaved local interaction state.
 
 Once a session is established, a dropped Gateway connection does not log you out. The dashboard
 stays visible. The sidebar avatar has a green connection dot when healthy, amber during recovery
-or suspension, and red when disconnected or a refresh is required. A bottom-left status chip
-explains the interruption without moving the page. On mobile, it stays above the composer.
-Brief disconnects keep the existing two-second grace before showing the chip.
+or suspension, and red when disconnected or a refresh is required. The sidebar footer
+explains the interruption without moving the page and briefly shows **Connected** after recovery.
+With the sidebar collapsed, a flag beside the avatar appears for four seconds on status changes;
+hover or focus the avatar to reopen it. Below 1000px, the avatar tooltip replaces the flag.
+On mobile, status replaces the header breadcrumb and badges the menu button; opening the drawer
+shows the full footer row. Brief disconnects keep the existing two-second grace.
 
-The chip includes the number of queued messages and **Retry now** when an immediate connection
-attempt is available. Hover for the redacted connection error. Settings keeps its save feedback
-visible alongside this global connection status. Native embedded views keep their own connection
+The status includes the number of queued messages and **Retry** when an immediate connection
+attempt is available. Hover or focus for the redacted connection error. Settings keeps its save feedback
+visible alongside connection status. One persistent shell region announces connection changes,
+even while the mobile drawer is closed. Native embedded views keep their own connection
 chrome, including the status in the embedded Settings header. Connection status does not replace
 the Gateway name in the account menu.
 

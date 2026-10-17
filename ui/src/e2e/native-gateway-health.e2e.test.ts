@@ -146,7 +146,7 @@ suite.define(() => {
         const identity = page.locator(".sidebar-identity-card");
         expect(await identity.locator(".sidebar-gateway-health").count()).toBe(0);
         await expect.poll(() => identity.getAttribute("data-connection-status")).toBe("connected");
-        await expect.poll(() => page.locator(".shell-connection-status").count()).toBe(0);
+        await page.locator(".sidebar-shell__footer .gateway-status").waitFor({ state: "detached" });
         await assertSelectionUnchanged(page);
         await page.mouse.move(1100, 850);
         if (proof) {
@@ -165,7 +165,7 @@ suite.define(() => {
           .poll(() => identity.getAttribute("data-connection-status"))
           .toBe("reconnecting");
         await page
-          .locator(".shell-connection-status")
+          .locator(".sidebar-shell__footer .gateway-status")
           .getByRole("button", { name: "Reconnecting… — Retry now", exact: true })
           .waitFor();
         await assertSelectionUnchanged(page);
@@ -185,7 +185,7 @@ suite.define(() => {
         await assertSelectionUnchanged(page);
         expect(await identity.locator(".sidebar-gateway-health").count()).toBe(0);
         await expect.poll(() => identity.getAttribute("data-connection-status")).toBe("connected");
-        await expect.poll(() => page.locator(".shell-connection-status").count()).toBe(0);
+        await page.locator(".sidebar-shell__footer .gateway-status").waitFor({ state: "detached" });
         const reportedHealth = await page.evaluate(() => {
           const reports = Reflect.get(window, "nativeHealthReports") as Array<{ health: string }>;
           return reports.map((report) => report.health);

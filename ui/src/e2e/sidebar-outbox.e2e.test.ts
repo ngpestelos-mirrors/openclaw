@@ -130,7 +130,7 @@ suite.define(() => {
         await gateway.setOnline(false);
         await incident.locator(".sidebar-outbox-row__offline").waitFor();
         await expectCompactRow(incident);
-        await page.locator(".shell-connection-status .gateway-status--reconnecting").waitFor();
+        await page.locator(".sidebar-shell__footer .gateway-status--reconnecting").waitFor();
         expect(
           await page
             .locator(
@@ -158,7 +158,7 @@ suite.define(() => {
         await page.getByRole("button", { name: "Send message", exact: true }).click();
         await page.locator(".chat-queue__item").waitFor();
         await page
-          .locator(".shell-connection-status")
+          .locator(".sidebar-shell__footer .gateway-status")
           .getByRole("button", { name: "Reconnecting… · 1 queued — Retry now", exact: true })
           .waitFor();
         expect(await page.locator(".sidebar-issues-button").count()).toBe(0);

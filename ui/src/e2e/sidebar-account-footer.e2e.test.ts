@@ -320,14 +320,14 @@ suite.define(() => {
       const { gateway, page, sidebar } = opened;
       const footer = sidebar.locator(".sidebar-footer-bar");
       const identity = footer.locator(".sidebar-identity-card");
-      const chip = page.locator(".shell-connection-status");
+      const connectionStatus = page.locator(".sidebar-shell__footer .gateway-status:visible");
       const announcement = page.locator(".shell > .sr-only[role=status]");
       await setSidebarProofTheme(page, "dark");
       await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
       await waitForControlUiGatewayReady(page);
       await expectRailConnectionStatus(footer, "suspended", "Suspended");
       await expect
-        .poll(() => chip.locator(".gateway-status__label").textContent())
+        .poll(() => connectionStatus.locator(".gateway-status__label").textContent())
         .toBe("Suspended");
       const inbox = footer.locator("openclaw-sidebar-attention");
       expect(await inbox.getByRole("status").count()).toBe(1);
@@ -336,7 +336,7 @@ suite.define(() => {
       );
       await gateway.emitGatewayEvent("gateway.suspension", { phase: "accepting" });
       await expect.poll(() => identity.getAttribute("data-connection-status")).toBe("connected");
-      await expect.poll(() => chip.count()).toBe(0);
+      await connectionStatus.waitFor({ state: "detached" });
       expect(await announcement.textContent()).toBe("Connected");
 
       for (const [phase, label] of [
@@ -350,34 +350,36 @@ suite.define(() => {
           phase === "prepared" ? "suspended" : "suspending",
           label,
         );
-        await expect.poll(() => chip.locator(".gateway-status__label").textContent()).toBe(label);
+        await expect
+          .poll(() => connectionStatus.locator(".gateway-status__label").textContent())
+          .toBe(label);
         expect(await announcement.textContent()).toBe(label);
         await captureUnionProof(
           suite,
           page,
           "sidebar-account-footer",
           `feature-dark-${phase}.png`,
-          [footer, chip],
+          [footer, connectionStatus],
         );
       }
       await sidebar.locator(".sidebar-identity-card").click();
       await sidebar.locator('[data-value="command:settings"]').click();
       const settingsFooter = page.locator(".settings-sidebar__footer");
       await settingsFooter.waitFor();
-      expect(await settingsFooter.locator(".gateway-status").count()).toBe(0);
+      expect(await settingsFooter.locator(".gateway-status").count()).toBe(1);
       expect(await settingsFooter.locator("openclaw-settings-save-indicator").count()).toBe(1);
       await expect
-        .poll(() => chip.locator(".gateway-status__label").textContent())
+        .poll(() => connectionStatus.locator(".gateway-status__label").textContent())
         .toBe("Suspended");
       await captureUnionProof(
         suite,
         page,
         "sidebar-account-footer",
         "feature-dark-settings-suspended.png",
-        [settingsFooter, chip],
+        [settingsFooter, connectionStatus],
       );
       await gateway.emitGatewayEvent("gateway.suspension", { phase: "accepting" });
-      await expect.poll(() => chip.count()).toBe(0);
+      await connectionStatus.waitFor({ state: "detached" });
       expect(await settingsFooter.locator("openclaw-settings-save-indicator").count()).toBe(1);
       await page.locator(".settings-sidebar__back").click();
       await sidebar.waitFor();
@@ -386,11 +388,13 @@ suite.define(() => {
 
       await gateway.setOnline(false);
       await expectRailConnectionStatus(footer, "reconnecting", "Reconnecting…");
-      await chip.getByRole("button", { name: "Reconnecting… — Retry now", exact: true }).waitFor();
+      await connectionStatus
+        .getByRole("button", { name: "Reconnecting… — Retry now", exact: true })
+        .waitFor();
       expect(await footer.getByText("Offline", { exact: true }).count()).toBe(0);
       await captureUnionProof(suite, page, "sidebar-account-footer", "feature-dark-offline.png", [
         footer,
-        chip,
+        connectionStatus,
       ]);
 
       const socketCount = await gateway.getSocketCount();
@@ -413,7 +417,7 @@ suite.define(() => {
       await expect
         .poll(() => identity.getAttribute("data-connection-status"), { timeout: 10_000 })
         .toBe("connected");
-      await expect.poll(() => chip.count()).toBe(0);
+      await connectionStatus.waitFor({ state: "detached" });
       expect(await announcement.textContent()).toBe("Connected");
       await gateway.emitGatewayEvent("gateway.suspension", { phase: "prepared" });
       await gateway.emitGatewayEvent("shutdown", {
@@ -422,14 +426,14 @@ suite.define(() => {
       });
       await expectRailConnectionStatus(footer, "restarting", "Restarting…");
       await expect
-        .poll(() => chip.locator(".gateway-status__label").textContent())
+        .poll(() => connectionStatus.locator(".gateway-status__label").textContent())
         .toBe("Restarting…");
       await captureUnionProof(
         suite,
         page,
         "sidebar-account-footer",
         "feature-dark-restarting.png",
-        [footer, chip],
+        [footer, connectionStatus],
       );
     } finally {
       await suite.closeBrowserContext(opened.context);

@@ -41,20 +41,6 @@ html:not(.openclaw-native-macos):not(.openclaw-native-nav):not(.openclaw-native-
   display: none;
 }
 
-.shell--mobile-nav .shell-connection-status {
-  z-index: 75;
-  left: calc(var(--safe-area-left, 0px) + 16px);
-}
-
-.shell--mobile-nav.shell--nav-drawer-open .shell-connection-status {
-  left: calc(var(--safe-area-left, 0px) + var(--shell-nav-rail-width) + 16px);
-  bottom: max(
-    calc(var(--shell-dock-reserve-bottom) + var(--safe-area-bottom, 0px) + 16px),
-    calc(anchor(--shell-composer top, 0px) + 16px),
-    calc(var(--shell-sidebar-footer-height) + var(--safe-area-bottom, 0px) + 16px)
-  );
-}
-
 .shell--mobile-nav .shell-nav,
 .shell--mobile-nav.shell--nav-collapsed .shell-nav {
   position: fixed;
@@ -155,9 +141,13 @@ html:not(.openclaw-native-macos):not(.openclaw-native-nav):not(.openclaw-native-
   gap: 10px;
 }
 
-.shell--mobile-nav .topnav-shell__content {
-  display: flex;
-  justify-content: center;
+.mobile-connection-status {
+  min-width: 0;
+  height: 18px;
+}
+
+:is(.topbar-nav-toggle, .chat-pane__nav-toggle) .gateway-status-dot {
+  inset: 8px 8px auto auto;
 }
 
 .shell--mobile-nav .topbar-brand {
