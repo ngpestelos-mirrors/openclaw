@@ -4,10 +4,11 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { hasNodeErrorCode } from "@openclaw/fs-safe/path";
+import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
-import { createDeferred } from "../helpers/promise.js";
+import { createDeferred, raceWithTimeoutResult } from "../helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const scriptsDir = path.resolve(".agents/skills/telegram-e2e-userbot/scripts");
@@ -20,8 +21,7 @@ function signalGroup(pgid: number, signal: NodeJS.Signals) {
   } catch (error) {
     if (
       !(error instanceof Error) ||
-      !("code" in error) ||
-      (error.code !== "ESRCH" && error.code !== "EPERM")
+      (!hasNodeErrorCode(error, "ESRCH") && !hasNodeErrorCode(error, "EPERM"))
     ) {
       throw error;
     }
@@ -84,22 +84,21 @@ type NodeTestResult = {
   error?: Error;
 };
 
-async function runNodeTests(files: string[], deadline: Promise<unknown>) {
+function startNodeTests(files: string[]) {
   // Separate reporters preserve completed files even when another file hangs.
-  const runs = files.map((file) => {
+  return files.map((file) => {
     const child = childProcess.spawn(
       testNodeExecPath,
       ["--test", "--test-isolation=none", "--test-reporter=spec", file],
       { cwd: process.cwd(), detached: true, stdio: ["ignore", "pipe", "pipe"] },
     );
     const result: NodeTestResult = { file, output: "", code: null, closed: false };
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
     const capture = (chunk: string) => {
       result.output += chunk;
     };
-    child.stdout.on("data", capture);
-    child.stderr.on("data", capture);
+    for (const stream of [child.stdout, child.stderr]) {
+      stream.setEncoding("utf8").on("data", capture);
+    }
     child.on("error", (error) => {
       result.error = error;
     });
@@ -112,22 +111,24 @@ async function runNodeTests(files: string[], deadline: Promise<unknown>) {
     });
     return { child, result, completion };
   });
+}
+
+async function runNodeTests(
+  runs: ReturnType<typeof startNodeTests>,
+  deadline: Promise<unknown> | number,
+) {
   const completed = Promise.all(runs.map((run) => run.completion));
-  const overrun = await Promise.race([completed.then(() => false), deadline.then(() => true)]);
+  const overrun = await (typeof deadline === "number"
+    ? raceWithTimeoutResult(
+        completed.then(() => false),
+        deadline,
+        true,
+      )
+    : Promise.race([completed.then(() => false), deadline.then(() => true)]));
   const unfinished = new Set(overrun ? runs.filter((run) => !run.result.closed) : []);
   if (unfinished.size) {
     await killProcessTrees([...unfinished].flatMap(({ child }) => (child.pid ? [child.pid] : [])));
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        completed,
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, 5_000);
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
-    }
+    await raceWithTimeoutResult(completed, 5_000, undefined);
   }
   const failures = runs.flatMap((run) => {
     const { file, output, code, closed, error } = run.result;
@@ -151,6 +152,14 @@ function requireSuccess(command: string, args: string[]) {
   expect(result.status, `${command} ${args.join(" ")}\n${result.stdout}${result.stderr}`).toBe(0);
 }
 
+function scriptTests(suffix: string) {
+  return fs
+    .readdirSync(scriptsDir)
+    .filter((entry) => entry.endsWith(suffix))
+    .toSorted()
+    .map((entry) => path.join(scriptsDir, entry));
+}
+
 describe("repository Telegram E2E skill", () => {
   it("registers its UI metadata through the skill interface", () => {
     const descriptor = parse(
@@ -161,48 +170,25 @@ describe("repository Telegram E2E skill", () => {
   });
 
   it("passes its Node test suite", async () => {
-    const tests = fs
-      .readdirSync(scriptsDir)
-      .filter((entry) => entry.endsWith(".test.mjs"))
-      .toSorted()
-      .map((entry) => path.join(scriptsDir, entry));
+    const tests = scriptTests(".test.mjs");
     expect(tests.length).toBeGreaterThan(0);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, 110_000);
-    });
-    try {
-      const { failure } = await runNodeTests(tests, deadline);
-      expect(failure, failure).toBe("");
-    } finally {
-      clearTimeout(timer);
-    }
+    const { failure } = await runNodeTests(startNodeTests(tests), 110_000);
+    expect(failure, failure).toBe("");
   });
 
   it("attributes unfinished files and kills detached descendants at the deadline", async () => {
     const root = tempDirs.make("telegram-suite-deadline-");
     const ok = path.join(root, "ok.test.mjs");
     const hang = path.join(root, "hang.test.mjs");
-    const okClosed = createDeferred();
-    const deadline = createDeferred();
+    const socketReady = createDeferred();
     const socketClosed = createDeferred();
-    const children: childProcess.ChildProcess[] = [];
-    const spawn = childProcess.spawn;
-    const spy = vi.spyOn(childProcess, "spawn").mockImplementation((...args) => {
-      const child = spawn(...args);
-      children.push(child);
-      if (args[1]?.includes(ok)) {
-        child.once("close", () => okClosed.resolve());
-      }
-      return child;
-    });
+    let runs: ReturnType<typeof startNodeTests> = [];
     let socket: net.Socket | undefined;
     const server = net.createServer((connection) => {
       socket = connection;
       connection.once("close", () => socketClosed.resolve());
       connection.resume();
-      // Both observable events gate the deadline, independent of child scheduling.
-      void okClosed.promise.then(() => deadline.resolve());
+      socketReady.resolve();
     });
     try {
       server.listen(0, "127.0.0.1");
@@ -223,14 +209,16 @@ describe("repository Telegram E2E skill", () => {
         });
       `,
       );
-      const { results, failure } = await runNodeTests([ok, hang], deadline.promise);
+      runs = startNodeTests([ok, hang]);
+      // Both observable events gate the deadline, independent of child scheduling.
+      const deadline = Promise.all([socketReady.promise, runs[0]!.completion]);
+      const { results, failure } = await runNodeTests(runs, deadline);
       expect(failure).toContain("hang.test.mjs: unfinished at deadline; closed=true");
       expect(results.find((result) => result.file === ok)).toMatchObject({ code: 0, closed: true });
       await socketClosed.promise;
     } finally {
-      spy.mockRestore();
       await killProcessTrees(
-        children.flatMap((child) =>
+        runs.flatMap(({ child }) =>
           child.pid && child.exitCode === null && child.signalCode === null ? [child.pid] : [],
         ),
       );
@@ -267,13 +255,10 @@ describe("repository Telegram E2E skill", () => {
   });
 
   it("passes its Python test suite", () => {
-    const tests = fs
-      .readdirSync(scriptsDir)
-      .filter((entry) => entry.endsWith(".test.py"))
-      .toSorted();
+    const tests = scriptTests(".test.py");
     expect(tests.length).toBeGreaterThan(0);
     for (const test of tests) {
-      requireSuccess("python3", [path.join(scriptsDir, test)]);
+      requireSuccess("python3", [test]);
     }
   });
 });

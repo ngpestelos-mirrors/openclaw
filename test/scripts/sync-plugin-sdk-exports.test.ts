@@ -54,6 +54,23 @@ function publicExport(entry: string, privateEntry = false) {
   };
 }
 
+function expectRegistration(root: string, publicEntries: string[], privateEntries: string[]) {
+  expect(readPackage(root).exports).toEqual({
+    ".": "./index.js",
+    ...Object.fromEntries([
+      ...publicEntries.map((entry) => [`./plugin-sdk/${entry}`, publicExport(entry)]),
+      ...privateEntries
+        .filter((entry) => entry !== "test-fixtures")
+        .map((entry) => [`./plugin-sdk/${entry}`, publicExport(entry, true)]),
+    ]),
+  });
+  for (const { file, prefix } of declarationConfigs) {
+    expect(readConfig(root, file).compilerOptions.paths).toEqual(
+      declarationPaths(prefix, privateEntries),
+    );
+  }
+}
+
 function writeJson(root: string, file: string, value: unknown) {
   fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
   fs.writeFileSync(path.join(root, file), `${JSON.stringify(value, null, 2)}\n`);
@@ -104,9 +121,7 @@ function createFixture(inventory?: { entries: string[]; privateEntries: string[]
     writeJson(root, "packages/plugin-sdk/package.json", { exports: {} });
     for (const { file, prefix } of declarationConfigs) {
       writeJson(root, file, {
-        extends: "./base.json",
         compilerOptions: {
-          strict: true,
           paths: {
             "openclaw/plugin-sdk/*": [`${prefix}dist/plugin-sdk/*.d.ts`],
             "openclaw/plugin-sdk/custom": [
@@ -115,7 +130,6 @@ function createFixture(inventory?: { entries: string[]; privateEntries: string[]
             ],
           },
         },
-        include: ["z.ts", "a.ts"],
       });
     }
   } else {
@@ -227,18 +241,7 @@ describe("plugin SDK registration CLI", () => {
       "!dist/plugin-sdk/test-fixtures.d.ts",
       "!dist/plugin-sdk/test-fixtures.js",
     ]);
-    expect(readPackage(root).exports).toEqual({
-      ".": "./index.js",
-      "./plugin-sdk/public-entry": publicExport("public-entry"),
-      ...Object.fromEntries(
-        literalEntries.map((entry) => [`./plugin-sdk/${entry}`, publicExport(entry, true)]),
-      ),
-    });
-    for (const { file, prefix } of declarationConfigs) {
-      expect(readConfig(root, file).compilerOptions.paths).toEqual(
-        declarationPaths(prefix, [...literalEntries, "test-fixtures"]),
-      );
-    }
+    expectRegistration(root, ["public-entry"], [...literalEntries, "test-fixtures"]);
     expectStableSync(root);
   });
 
@@ -249,7 +252,6 @@ describe("plugin SDK registration CLI", () => {
       privateEntries: ["private-entry", "test-fixtures", ...formerEntries],
     });
     expect(runSync(root).status).toBe(0);
-    writeJson(root, entryList, ["private-entry", "test-fixtures", ...formerEntries]);
     writeJson(root, privateList, ["private-entry", "test-fixtures"]);
     const manifest = readPackage(root);
     const retained = [
@@ -273,31 +275,15 @@ describe("plugin SDK registration CLI", () => {
 
     expect(result.status, result.stderr).toBe(0);
     expect(readPackage(root).files).toEqual(retained);
-    for (const { file, prefix } of declarationConfigs) {
-      expect(readConfig(root, file).compilerOptions.paths).toEqual(
-        declarationPaths(prefix, ["private-entry", "test-fixtures"]),
-      );
-    }
-    const exports = readPackage(root).exports;
-    for (const entry of formerEntries) {
-      expect(exports[`./plugin-sdk/${entry}`]).toEqual(publicExport(entry));
-    }
+    expectRegistration(root, formerEntries, ["private-entry", "test-fixtures"]);
     expectStableSync(root);
-    writeJson(root, entryList, ["private-entry", "test-fixtures", ...formerEntries]);
     writeJson(root, privateList, ["private-entry", "test-fixtures", ...formerEntries]);
     expect(runSync(root).status).toBe(0);
     expect(readPackage(root).files).toEqual([
       ...retained,
       ...formerEntries.map((entry) => `!dist/plugin-sdk/${entry}.d.ts`),
     ]);
-    for (const { file, prefix } of declarationConfigs) {
-      expect(readConfig(root, file).compilerOptions.paths).toEqual(
-        declarationPaths(prefix, ["private-entry", "test-fixtures", ...formerEntries]),
-      );
-    }
-    for (const entry of formerEntries) {
-      expect(readPackage(root).exports[`./plugin-sdk/${entry}`]).toEqual(publicExport(entry, true));
-    }
+    expectRegistration(root, [], ["private-entry", "test-fixtures", ...formerEntries]);
     expectStableSync(root);
   });
 
