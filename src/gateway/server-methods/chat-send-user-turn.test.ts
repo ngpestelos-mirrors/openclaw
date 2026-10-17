@@ -49,32 +49,38 @@ function prepareTurn({
   session,
   admission,
   attachments,
-  userTurn = createUserTurnInputController().controller,
+  inputText = "raw message",
   ...overrides
-}: Partial<Pick<TurnParams, "client" | "logGateway" | "admission" | "userTurn">> & {
+}: Partial<Pick<TurnParams, "client" | "logGateway" | "admission">> & {
   attachments?: Partial<TurnParams["attachments"]>;
   request?: Partial<TurnParams["request"]>;
   session?: Partial<TurnParams["session"]>;
+  inputText?: string;
 }) {
-  return prepareChatSendUserTurn({
-    request: {
-      inboundMessage: "hello",
-      clientInfo: createClientInfo(),
-      suppressCommandInterpretation: false,
-      systemInputProvenance: undefined,
-      systemProvenanceReceipt: undefined,
-      ...request,
-    },
-    session: { agentId: "main", clientRunId: "run-1", sessionKey: "agent:main:main", ...session },
-    admission: admission ?? {
-      originatingRoute: { originatingChannel: "webchat", explicitDeliverRoute: false },
-    },
-    attachments: createAttachments(attachments),
-    userTurn,
-    client: null,
-    logGateway: { warn: vi.fn() } as never,
-    ...overrides,
-  });
+  const { controller, readInput } = createUserTurnInputController(inputText);
+  return {
+    ...prepareChatSendUserTurn({
+      request: {
+        inboundMessage: "hello",
+        clientInfo: createClientInfo(),
+        suppressCommandInterpretation: false,
+        systemInputProvenance: undefined,
+        systemProvenanceReceipt: undefined,
+        ...request,
+      },
+      session: { agentId: "main", clientRunId: "run-1", sessionKey: "agent:main:main", ...session },
+      admission: admission ?? {
+        originatingRoute: { originatingChannel: "webchat", explicitDeliverRoute: false },
+      },
+      attachments: createAttachments(attachments),
+      userTurn: controller,
+      client: null,
+      logGateway: { warn: vi.fn() } as never,
+      ...overrides,
+    }),
+    readInput,
+    baseInput: controller.baseInput,
+  };
 }
 
 function uiClientInfo(mode: typeof GATEWAY_CLIENT_MODES.UI | typeof GATEWAY_CLIENT_MODES.WEBCHAT) {
@@ -99,6 +105,10 @@ function imageRef(
   };
 }
 
+function clientProfile(profileId: string, displayName: string | null, updatedAt = 1) {
+  return { profileId, displayName, hasAvatar: false, updatedAt };
+}
+
 function requesterProfile(text: string) {
   const json = text.match(/```json\n([\s\S]*?)\n```/u)?.[1];
   return json
@@ -116,8 +126,8 @@ describe("prepareChatSendUserTurn", () => {
   ])(
     "projects the verified requester without changing command allowlists: %j",
     ({ profileId, synthetic, verified, allowed }) => {
-      const { controller } = createUserTurnInputController("/status");
       const prepared = prepareTurn({
+        inputText: "/status",
         request: {
           inboundMessage: "/status",
           clientInfo: uiClientInfo(GATEWAY_CLIENT_MODES.UI),
@@ -125,12 +135,7 @@ describe("prepareChatSendUserTurn", () => {
         attachments: { parsedMessage: "/status" },
         client: {
           authenticatedUserId: verified ? "ada@example.test" : undefined,
-          authenticatedUserProfile: {
-            profileId,
-            displayName: "Ada",
-            hasAvatar: false,
-            updatedAt: 1,
-          },
+          authenticatedUserProfile: clientProfile(profileId, "Ada"),
           internal: synthetic ? { syntheticClient: true } : undefined,
           connect: {
             minProtocol: 1,
@@ -139,7 +144,6 @@ describe("prepareChatSendUserTurn", () => {
             scopes: ["operator.write"],
           },
         },
-        userTurn: controller,
       });
       expect(
         resolveCommandAuthorization({
@@ -183,12 +187,11 @@ describe("prepareChatSendUserTurn", () => {
           client: {
             ...(!kind.startsWith("profileless")
               ? {
-                  authenticatedUserProfile: {
-                    profileId: profile.id,
-                    displayName: profile.displayName,
-                    hasAvatar: false,
-                    updatedAt: profile.updatedAt,
-                  },
+                  authenticatedUserProfile: clientProfile(
+                    profile.id,
+                    profile.displayName,
+                    profile.updatedAt,
+                  ),
                 }
               : {}),
             internal: kind === "synthetic" ? { syntheticClient: true } : undefined,
@@ -294,12 +297,11 @@ describe("prepareChatSendUserTurn", () => {
           },
           client: {
             ...(systemActor ? { internal: { operatorRoleActor: { kind: "system" } } } : {}),
-            authenticatedUserProfile: {
-              profileId: profile.id,
-              displayName: profile.displayName,
-              hasAvatar: false,
-              updatedAt: profile.updatedAt,
-            },
+            authenticatedUserProfile: clientProfile(
+              profile.id,
+              profile.displayName,
+              profile.updatedAt,
+            ),
             connect: { scopes: ["operator.write"] },
           } as never,
         });
@@ -327,9 +329,9 @@ describe("prepareChatSendUserTurn", () => {
   ])(
     "separates $name command input from attachment text while preserving turn facts",
     async ({ inboundMessage, suppressed }) => {
-      const { controller, readInput } = createUserTurnInputController(inboundMessage);
       const parsedMessage = `${inboundMessage}\n[media attached: media://inbound/voice.mp3]`;
       const prepared = prepareTurn({
+        inputText: inboundMessage,
         request: {
           inboundMessage,
           clientInfo: createClientInfo({ displayName: "Gateway CLI" }),
@@ -350,10 +352,13 @@ describe("prepareChatSendUserTurn", () => {
         attachments: {
           parsedMessage,
           mediaPathOffloads: [
-            { path: "/workspace/voice.mp3", contentType: "audio/mpeg", workspaceDir: "/workspace" },
+            {
+              path: "/workspace/voice.mp3",
+              contentType: "audio/mpeg",
+              workspaceDir: "/workspace",
+            },
           ],
         },
-        userTurn: controller,
       });
 
       expect(prepared.ctx).toMatchObject({
@@ -422,12 +427,11 @@ describe("prepareChatSendUserTurn", () => {
       expect(prepared.queuedFollowupOwnerKey).toBeUndefined();
       expect(prepared.replyOptionImages).toBeUndefined();
       await expect(prepared.pluginBoundMediaPromise).resolves.toEqual([]);
-      await expect(readInput()).resolves.toEqual(controller.baseInput);
+      await expect(prepared.readInput()).resolves.toEqual(prepared.baseInput);
     },
   );
 
   it("carries pre-staged media and device ownership without UI sender decoration", async () => {
-    const { controller, readInput } = createUserTurnInputController();
     const prepared = prepareTurn({
       request: {
         clientInfo: uiClientInfo(GATEWAY_CLIENT_MODES.UI),
@@ -444,12 +448,7 @@ describe("prepareChatSendUserTurn", () => {
       },
       client: {
         connId: "conn-1",
-        authenticatedUserProfile: {
-          profileId: "profile-ada",
-          displayName: "Ada",
-          hasAvatar: false,
-          updatedAt: 1,
-        },
+        authenticatedUserProfile: clientProfile("profile-ada", "Ada"),
         connect: {
           client: createClientInfo({ id: GATEWAY_CLIENT_IDS.CONTROL_UI }),
           device: { id: "device-1" },
@@ -457,7 +456,6 @@ describe("prepareChatSendUserTurn", () => {
           caps: ["tool-events"],
         },
       } as never,
-      userTurn: controller,
     });
 
     expect(prepared.ctx).toMatchObject({
@@ -487,14 +485,14 @@ describe("prepareChatSendUserTurn", () => {
     });
     expect(prepared.ctx).not.toHaveProperty("SenderId");
     expect(prepared.queuedFollowupOwnerKey).toBe("device:device-1");
-    await expect(readInput()).resolves.toEqual(controller.baseInput);
+    await expect(prepared.readInput()).resolves.toEqual(prepared.baseInput);
   });
 
   it("preserves source receipts and image hints when approval changes the user text", async () => {
-    const { controller, readInput } = createUserTurnInputController("inspect");
     const mediaRef = "media://inbound/image-1.png";
     const receipt = "[Source Receipt]\nbridge=fixture\n[/Source Receipt]";
     const prepared = prepareTurn({
+      inputText: "inspect",
       request: {
         inboundMessage: "inspect",
         systemProvenanceReceipt: receipt,
@@ -504,7 +502,6 @@ describe("prepareChatSendUserTurn", () => {
         offloadedRefs: [imageRef("image-1.png", "/media/inbound/image-1.png")],
         parsedMessage: `inspect\n[media attached: ${mediaRef}]`,
       },
-      userTurn: controller,
     });
 
     expect(prepared.ctx.Body).toBe(`${receipt}\n\ninspect\n[media attached: ${mediaRef}]`);
@@ -523,14 +520,13 @@ describe("prepareChatSendUserTurn", () => {
         contentType: "image/png",
       },
     ]);
-    await expect(readInput()).resolves.toMatchObject({
+    await expect(prepared.readInput()).resolves.toMatchObject({
       mediaImageLayout: { slots: [{ kind: "offloaded", factIndex: 0 }] },
     });
   });
 
   it("persists video then image as claim-only facts with the image at fact index one", async () => {
-    const { controller, readInput } = createUserTurnInputController();
-    prepareTurn({
+    const prepared = prepareTurn({
       attachments: {
         imageOrder: ["offloaded"],
         offloadedRefs: [
@@ -550,10 +546,9 @@ describe("prepareChatSendUserTurn", () => {
           }),
         ],
       },
-      userTurn: controller,
     });
 
-    const input = await readInput();
+    const input = await prepared.readInput();
     expect(input.media?.map((fact) => fact.kind)).toEqual(["video", "image"]);
     expect(input.mediaImageLayout).toEqual({
       slots: [{ kind: "offloaded", factIndex: 1 }],
@@ -578,7 +573,6 @@ describe("prepareChatSendUserTurn", () => {
       .spyOn(chatAttachments, "persistInboundImagesForTranscript")
       .mockResolvedValueOnce({ entries: [], omission: "inline-image-save-failed" });
     try {
-      const { controller, readInput } = createUserTurnInputController();
       const prepared = prepareTurn({
         attachments: {
           imageOrder: ["inline"],
@@ -586,13 +580,12 @@ describe("prepareChatSendUserTurn", () => {
             { type: "image", data: "aGVsbG8=", mimeType: "image/jpeg", sourceIndex: 0 },
           ],
         },
-        userTurn: controller,
       });
 
       expect(prepared.replyOptionImages).toEqual([
         { type: "image", data: "aGVsbG8=", mimeType: "image/jpeg", sourceIndex: 0 },
       ]);
-      await expect(readInput()).resolves.toMatchObject({
+      await expect(prepared.readInput()).resolves.toMatchObject({
         text: "raw message\n[image attachment omitted: durable managed media claim unavailable]",
       });
     } finally {
@@ -713,18 +706,16 @@ describe("prepareChatSendUserTurn", () => {
     await fs.writeFile(imagePath, createSolidPngBuffer(2, 2, { r: 10, g: 20, b: 30 }));
 
     try {
-      const { controller, readInput } = createUserTurnInputController();
-      prepareTurn({
+      const prepared = prepareTurn({
         request: { inboundMessage: "inspect" },
         attachments: {
           imageOrder: ["offloaded"],
           offloadedRefs: [imageRef(id, imagePath)],
           parsedMessage: text,
         },
-        userTurn: controller,
       });
 
-      const input = await readInput();
+      const input = await prepared.readInput();
       const expectedMedia = [
         {
           url: mediaRef,

@@ -12,6 +12,7 @@ import {
 import { createMessageTool } from "../../agents/tools/message-tool-execution.js";
 import * as dispatch from "../../auto-reply/dispatch.js";
 import { mintReplyMessageActionTurnCapability } from "../../auto-reply/reply/agent-runner-utils.js";
+import { createQueueTestRun } from "../../auto-reply/reply/queue.test-helpers.js";
 import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
@@ -560,25 +561,20 @@ it.each(
             expect(context.chatQueuedTurns.has("reaction-original-source")).toBe(true);
           }
           const config = getRuntimeConfig();
+          const followupRun = createQueueTestRun({ prompt: "Original prompt" });
+          followupRun.userTurnTranscriptRecorder = initialRecorder;
+          followupRun.run = {
+            ...followupRun.run,
+            ...scope,
+            sessionFile: sessionKey,
+            agentDir: state.agentDir(),
+            workspaceDir: state.workspaceDir,
+            config,
+            messageProvider: "webchat",
+          };
           token = mintReplyMessageActionTurnCapability(
             {
-              followupRun: {
-                prompt: "Original prompt",
-                enqueuedAt: 0,
-                userTurnTranscriptRecorder: initialRecorder,
-                run: {
-                  ...scope,
-                  sessionFile: sessionKey,
-                  agentDir: state.agentDir(),
-                  workspaceDir: state.workspaceDir,
-                  config,
-                  provider: "openai",
-                  model: "test",
-                  messageProvider: "webchat",
-                  timeoutMs: 1000,
-                  blockReplyBreak: "message_end",
-                },
-              },
+              followupRun,
               sessionCtx: { Provider: "webchat" },
               // Deliberately offer the original read admission. It must not transfer to this run.
               opts: {
@@ -609,13 +605,6 @@ it.each(
             currentChannelProvider: "webchat",
             messageActionTurnCapability: token,
             runMessageAction: external,
-            getScopedChannelsCommandSecretTargets: () => ({ targetIds: new Set<string>() }),
-            resolveCommandSecretRefsViaGateway: async ({ config: resolvedConfig }) => ({
-              resolvedConfig,
-              diagnostics: [],
-              targetStatesByPath: {},
-              hadUnresolvedTargets: false,
-            }),
           });
           const react = (args: Record<string, unknown> = {}) =>
             withGatewayToolCallerIdentity(caller, () =>

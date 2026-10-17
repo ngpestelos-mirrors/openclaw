@@ -3,6 +3,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Context } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
+import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.js";
 import {
   installRuntimeContextMessageForPrompt,
   normalizeMessagesForLlmBoundary,
@@ -497,13 +498,9 @@ describe("steering input custody", () => {
           : {}),
       });
       const { scope, context, params: request, beforeApprove } = fixture;
-      const failures = new Set<unknown>();
-      const rememberFailure = (error: unknown) => {
-        failures.add(error);
-      };
       let releaseProviders = () => {};
       let backingRun: Promise<void> | undefined;
-      try {
+      const run = async () => {
         if (inputState === "browser custody workspace") {
           await patchSessionEntryCore(scope, () => ({
             pendingProjectGitUrl: "file:///synthetic/missing-project.git",
@@ -832,21 +829,15 @@ describe("steering input custody", () => {
           expect([context.chatAbortControllers.size, context.chatQueuedTurns.size]).toEqual([0, 0]);
           expect(await listSessionPendingInputs(scope)).toEqual({ items: [], total: 0 });
         }
-      } catch (error) {
-        failures.add(error);
-      } finally {
-        releaseProviders();
-        await backingRun?.catch(rememberFailure);
-        await fixture.cleanup().catch(rememberFailure);
-      }
-      if (failures.size === 1) {
-        throw failures.values().next().value;
-      }
-      if (failures.size > 1) {
-        throw new AggregateError(failures, "Backing-run fixture and cleanup failed", {
-          cause: failures.values().next().value,
-        });
-      }
+      };
+      await runQaGatewayFixture(
+        run,
+        () => {
+          releaseProviders();
+          return backingRun;
+        },
+        fixture.cleanup,
+      );
     },
   );
 });
