@@ -30,6 +30,27 @@ import { observeSessionArchivePruning } from "./session-history-archive-pruning-
 
 afterEach(() => vi.restoreAllMocks());
 
+async function withFileLog(run: (env: NodeJS.ProcessEnv) => Promise<void>) {
+  return withOpenClawTestState(
+    { scenario: "minimal", env: { OPENCLAW_TEST_FILE_LOG: "1" } },
+    async (state) => {
+      const logPath = state.path("sqlite-write.log");
+      logging.setLoggerOverride({ level: "warn", file: logPath });
+      try {
+        await run(state.env);
+        await logging.flushLogger();
+        const content = await fs.readFile(logPath, "utf8");
+        const record: unknown = JSON.parse(content.trim());
+        assert.ok(isRecord(record));
+        return { content, record };
+      } finally {
+        await logging.flushLogger();
+        logging.resetLogger();
+      }
+    },
+  );
+}
+
 test.each([undefined, "agent:main:dashboard:incognito-root"])(
   "keeps an explicit incognito root outside the ambient root (key: %s)",
   async (sessionKey) => {
@@ -59,40 +80,26 @@ test.each([undefined, "agent:main:dashboard:incognito-root"])(
 );
 
 async function readFailedWriterLog(failure: unknown, diagnostics?: SqliteSessionWriteDiagnostics) {
-  return await withOpenClawTestState(
-    { scenario: "minimal", env: { OPENCLAW_TEST_FILE_LOG: "1" } },
-    async (state) => {
-      const logPath = state.path("sqlite-write.log");
-      logging.setLoggerOverride({ level: "warn", file: logPath });
-      const operation = diagnostics?.artifactPreparation
-        ? "session.lifecycle.artifacts-prepare"
-        : "session.transcript.batch";
-      try {
-        await expect(
-          runExclusiveSqliteSessionWrite(
-            { agentId: "main", env: state.env },
-            async () => {
-              throw failure;
-            },
-            operation,
-            diagnostics,
-          ),
-        ).rejects.toBe(failure);
-        await logging.flushLogger();
-        const content = await fs.readFile(logPath, "utf8");
-        const record: unknown = JSON.parse(content.trim());
-        assert.ok(isRecord(record));
-        const details = record["1"];
-        assert.ok(isRecord(details));
-        expect(record["2"]).toBe("SQLite session write failed");
-        expect(details.operation).toBe(operation);
-        return { content, error: details.error, details };
-      } finally {
-        await logging.flushLogger();
-        logging.resetLogger();
-      }
-    },
-  );
+  const operation = diagnostics?.artifactPreparation
+    ? "session.lifecycle.artifacts-prepare"
+    : "session.transcript.batch";
+  const { content, record } = await withFileLog(async (env) => {
+    await expect(
+      runExclusiveSqliteSessionWrite(
+        { agentId: "main", env },
+        async () => {
+          throw failure;
+        },
+        operation,
+        diagnostics,
+      ),
+    ).rejects.toBe(failure);
+  });
+  const details = record["1"];
+  assert.ok(isRecord(details));
+  expect(record["2"]).toBe("SQLite session write failed");
+  expect(details.operation).toBe(operation);
+  return { content, error: details.error, details };
 }
 
 test("failed worker file logs preserve redacted error details", async () => {
@@ -185,38 +192,24 @@ test("archive pruning file logs whitelist partial stage observations", async () 
     archiveName: "synthetic-private-archive",
     content: "synthetic-private-transcript",
   };
-  const record = await withOpenClawTestState(
-    { scenario: "minimal", env: { OPENCLAW_TEST_FILE_LOG: "1" } },
-    async (state) => {
-      const logPath = state.path("archive-pruning.log");
-      logging.setLoggerOverride({ level: "warn", file: logPath });
-      const failure = new Error("synthetic pruning failure");
-      let clock = 0;
-      vi.spyOn(performance, "now").mockImplementation(() => clock);
-      try {
-        await expect(
-          observeSessionArchivePruning(archivePruning, async () => {
-            clock = 1200.4;
-            throw failure;
-          }),
-        ).rejects.toBe(failure);
-        await logging.flushLogger();
-        const content = await fs.readFile(logPath, "utf8");
-        const parsed: unknown = JSON.parse(content.trim());
-        assert.ok(isRecord(parsed));
-        assert.ok(isRecord(parsed["2"]));
-        expect(parsed["1"]).toBe("SQLite session archive pruning failed");
-        expect(parsed["2"]).toHaveProperty("elapsedMs", 1200);
-        expect(parsed["2"]).not.toHaveProperty("queueWaitMs");
-        expect(parsed["2"]).not.toHaveProperty("writerExecutionMs");
-        return { content, details: parsed["2"] };
-      } finally {
-        await logging.flushLogger();
-        logging.resetLogger();
-      }
-    },
-  );
-  expect(record.details.archivePruning).toEqual({
+  const { content, record } = await withFileLog(async () => {
+    const failure = new Error("synthetic pruning failure");
+    let clock = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    await expect(
+      observeSessionArchivePruning(archivePruning, async () => {
+        clock = 1200.4;
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+  });
+  const details = record["2"];
+  assert.ok(isRecord(details));
+  expect(record["1"]).toBe("SQLite session archive pruning failed");
+  expect(details).toHaveProperty("elapsedMs", 1200);
+  expect(details).not.toHaveProperty("queueWaitMs");
+  expect(details).not.toHaveProperty("writerExecutionMs");
+  expect(details.archivePruning).toEqual({
     trigger: "initial",
     checkpointCalls: 2,
     checkpointIncomplete: 1,
@@ -224,8 +217,8 @@ test("archive pruning file logs whitelist partial stage observations", async () 
     checkpointMaxMs: 20,
     completed: false,
   });
-  expect(record.content).not.toContain("synthetic-private-archive");
-  expect(record.content).not.toContain("synthetic-private-transcript");
+  expect(content).not.toContain("synthetic-private-archive");
+  expect(content).not.toContain("synthetic-private-transcript");
 });
 
 test.each(["ok", "error"] as const)(
@@ -355,6 +348,7 @@ test("slow writer failure separates waiting and execution", async () => {
     vi.spyOn(Date, "now").mockImplementation(() => wallStart + clock);
     const owners = new AsyncLocalStorage<string>();
     const records: Array<{ owner: string | undefined; args: unknown[] }> = [];
+    const fieldsFor = (owner: string) => records.find((entry) => entry.owner === owner)?.args[0];
     const getChildLogger = logging.getChildLogger;
     vi.spyOn(logging, "getChildLogger").mockImplementation((...args) => {
       const logger = getChildLogger(...args);
@@ -430,19 +424,13 @@ test("slow writer failure separates waiting and execution", async () => {
       expect(await settled).toEqual({ error: failure });
       expect(await queuedSuccessor).toBe("queued-successor");
       expect(order).toEqual(["first:start", "first:end", "second:start", "queued-successor"]);
-      expect(records.find((entry) => entry.owner === "first")?.args[0]).toHaveProperty(
-        "operation",
-        "session.history.archive-prune",
-      );
-      expect(records.find((entry) => entry.owner === "second")?.args[0]).toHaveProperty(
-        "operation",
-        "session.maintenance.plan",
-      );
-      expect(records.find((entry) => entry.owner === "queued-successor")?.args[0]).toHaveProperty(
+      expect(fieldsFor("first")).toHaveProperty("operation", "session.history.archive-prune");
+      expect(fieldsFor("second")).toHaveProperty("operation", "session.maintenance.plan");
+      expect(fieldsFor("queued-successor")).toHaveProperty(
         "operation",
         "session.pending-input.stage",
       );
-      expect(records.find((entry) => entry.owner === "first")?.args[0]).toEqual(
+      expect(fieldsFor("first")).toEqual(
         expect.objectContaining({
           pid: process.pid,
           threadId,
@@ -455,11 +443,9 @@ test("slow writer failure separates waiting and execution", async () => {
           completionDelayMs: 0,
         }),
       );
-      expect(records.find((entry) => entry.owner === "first")?.args[0]).not.toHaveProperty(
-        "payload",
-      );
-      const record = records.find((entry) => entry.owner === "second");
-      expect(record?.args[0]).toEqual(
+      expect(fieldsFor("first")).not.toHaveProperty("payload");
+      const record = fieldsFor("second");
+      expect(record).toEqual(
         expect.objectContaining({
           pid: process.pid,
           threadId,
@@ -470,9 +456,9 @@ test("slow writer failure separates waiting and execution", async () => {
           completionDelayMs: 0,
         }),
       );
-      expect(record?.args[0]).not.toHaveProperty("reclamationKind");
-      expect(record?.args[0]).not.toHaveProperty("workerThreadId");
-      expect(record?.args[0]).toHaveProperty("error", failure.message);
+      expect(record).not.toHaveProperty("reclamationKind");
+      expect(record).not.toHaveProperty("workerThreadId");
+      expect(record).toHaveProperty("error", failure.message);
       const warningCount = records.length;
       await expect(
         runExclusiveSqliteSessionWrite(

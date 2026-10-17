@@ -24,7 +24,7 @@ import {
 } from "./session-accessor.sqlite-branches.worker.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import { replaceTranscriptEventsSync } from "./session-accessor.sqlite-transcript-write.test-support.js";
-import type { SessionBranchListResult } from "./session-accessor.types.js";
+import type { SessionBranchListResult, SessionBranchSummary } from "./session-accessor.types.js";
 import { prepareTranscriptPayload } from "./transcript-payload.js";
 
 const tempDirs = createTempDirTracker();
@@ -54,6 +54,31 @@ function message(
   };
 }
 
+function branch(
+  leafEntryId: string,
+  headline: string,
+  messageCount: number,
+  active = false,
+  updatedAt?: string,
+): SessionBranchSummary {
+  return {
+    leafEntryId,
+    headline,
+    messageCount,
+    active,
+    ...(updatedAt === undefined ? {} : { updatedAt }),
+  };
+}
+
+function leaf(
+  id: string,
+  parentId: string,
+  targetId: string,
+  fields: Record<string, unknown> = {},
+) {
+  return { type: "leaf", id, parentId, targetId, ...fields };
+}
+
 const cases: Array<{
   name: string;
   events: Record<string, unknown>[];
@@ -68,14 +93,11 @@ const cases: Array<{
         role: "assistant",
         appendMode: "side",
       }),
-      { type: "leaf", id: "selected", parentId: "root", targetId: "cycle-message" },
+      leaf("selected", "root", "cycle-message"),
     ],
     expected: {
       status: "ok",
-      branches: [
-        { leafEntryId: "cycle-message", headline: "", messageCount: 0, active: true },
-        { leafEntryId: "root", headline: "root", messageCount: 1, active: false },
-      ],
+      branches: [branch("cycle-message", "", 0, true), branch("root", "root", 1)],
     },
   },
   {
@@ -89,22 +111,10 @@ const cases: Array<{
     expected: {
       status: "ok",
       branches: [
-        { leafEntryId: "root", headline: "root", messageCount: 1, active: true },
-        {
-          leafEntryId: "duplicate",
-          headline: "new",
-          messageCount: 2,
-          updatedAt: "  new time  ",
-          active: false,
-        },
-        { leafEntryId: "middle", headline: "middle", messageCount: 2, active: false },
-        {
-          leafEntryId: "duplicate",
-          headline: "new",
-          messageCount: 2,
-          updatedAt: "  new time  ",
-          active: false,
-        },
+        branch("root", "root", 1, true),
+        branch("duplicate", "new", 2, false, "  new time  "),
+        branch("middle", "middle", 2),
+        branch("duplicate", "new", 2, false, "  new time  "),
       ],
     },
   },
@@ -113,26 +123,14 @@ const cases: Array<{
     events: [
       message("root", null, "root"),
       message("duplicate", "root", "discarded payload", { appendMode: "side" }),
-      {
-        type: "leaf",
-        id: "duplicate",
-        parentId: "root",
-        targetId: "root",
-        timestamp: "  marker time  ",
-      },
+      leaf("duplicate", "root", "root", { timestamp: "  marker time  " }),
       message("tail", "duplicate", "tail"),
     ],
     expected: {
       status: "ok",
       branches: [
-        { leafEntryId: "tail", headline: "tail", messageCount: 2, active: true },
-        {
-          leafEntryId: "duplicate",
-          headline: "root",
-          messageCount: 1,
-          updatedAt: "  marker time  ",
-          active: false,
-        },
+        branch("tail", "tail", 2, true),
+        branch("duplicate", "root", 1, false, "  marker time  "),
       ],
     },
   },
@@ -144,14 +142,11 @@ const cases: Array<{
       { type: "extension", id: "later", parentId: "root" },
       { type: "extension", id: "cycle-a", parentId: "cycle-b" },
       { type: "extension", id: "cycle-b", parentId: "cycle-a" },
-      { type: "leaf", id: "selected", parentId: "root", targetId: "cycle-a" },
+      leaf("selected", "root", "cycle-a"),
     ],
     expected: {
       status: "ok",
-      branches: [
-        { leafEntryId: "cycle-a", headline: "", messageCount: 0, active: true },
-        { leafEntryId: "forward", headline: "root", messageCount: 1, active: false },
-      ],
+      branches: [branch("cycle-a", "", 0, true), branch("forward", "root", 1)],
     },
   },
   {
@@ -165,32 +160,17 @@ const cases: Array<{
       },
       message("invalid", "", "must stay hidden"),
       { type: "extension", id: "opaque", parentId: "parentless", payload: "opaque" },
-      {
-        type: "leaf",
-        id: "selected",
-        parentId: "opaque",
-        targetId: "parentless",
-        appendParentId: "opaque",
-      },
+      leaf("selected", "opaque", "parentless", { appendParentId: "opaque" }),
       message("next", "opaque", "next"),
-      {
-        type: "leaf",
-        id: "invalid-control",
-        parentId: "next",
-        targetId: "root",
-        appendParentId: "missing",
-      },
+      leaf("invalid-control", "next", "root", { appendParentId: "missing" }),
       message("child", "invalid-control", "child"),
       { type: "reset", id: "reset", parentId: "child" },
-      { type: "leaf", id: "old-control", parentId: "reset", targetId: "root" },
+      leaf("old-control", "reset", "root"),
       message("fresh", null, "fresh"),
     ],
     expected: {
       status: "ok",
-      branches: [
-        { leafEntryId: "fresh", headline: "fresh", messageCount: 5, active: true },
-        { leafEntryId: "opaque", headline: "continuation", messageCount: 2, active: false },
-      ],
+      branches: [branch("fresh", "fresh", 5, true), branch("opaque", "continuation", 2)],
     },
   },
   {
@@ -217,15 +197,7 @@ const cases: Array<{
     ],
     expected: {
       status: "ok",
-      branches: [
-        {
-          leafEntryId: "custom",
-          headline: "final answer",
-          messageCount: 5,
-          updatedAt: "  exact timestamp  ",
-          active: true,
-        },
-      ],
+      branches: [branch("custom", "final answer", 5, true, "  exact timestamp  ")],
     },
   },
   {
@@ -247,10 +219,10 @@ const cases: Array<{
     expected: {
       status: "ok",
       branches: [
-        { leafEntryId: "root", headline: "root", messageCount: 1, active: true },
-        { leafEntryId: "joined", headline: "café🦞", messageCount: 2, active: false },
-        { leafEntryId: "long", headline: `${"🦞".repeat(119)}…`, messageCount: 2, active: false },
-        { leafEntryId: "exact", headline: "🦞".repeat(120), messageCount: 2, active: false },
+        branch("root", "root", 1, true),
+        branch("joined", "café🦞", 2),
+        branch("long", `${"🦞".repeat(119)}…`, 2),
+        branch("exact", "🦞".repeat(120), 2),
       ],
     },
   },
@@ -308,7 +280,7 @@ it("extends a selected ancestor while retaining its inactive descendants and hea
   const events = [
     message("root", null, "root headline", { timestamp: "old time" }),
     message("side", "root", "side headline", { appendMode: "side" }),
-    { type: "leaf", id: "selected", parentId: "side", targetId: "root" },
+    leaf("selected", "side", "root"),
   ];
   const scope = await seedStoredBranchEvents([]);
   replaceTranscriptEventsSync(scope, [
@@ -337,14 +309,8 @@ it("extends a selected ancestor while retaining its inactive descendants and hea
   await expect(listSessionBranches(scope)).resolves.toEqual({
     status: "ok",
     branches: [
-      {
-        leafEntryId: "analysis",
-        headline: "root headline",
-        messageCount: 3,
-        active: true,
-        updatedAt: "1970-01-01T00:00:03.000Z",
-      },
-      { leafEntryId: "side", headline: "side headline", messageCount: 2, active: false },
+      branch("analysis", "root headline", 3, true, "1970-01-01T00:00:03.000Z"),
+      branch("side", "side headline", 2),
     ],
   });
 });
@@ -372,14 +338,8 @@ it("rescans when an append resolves an older opaque forward reference", async ()
   await expect(listSessionBranches(scope)).resolves.toEqual({
     status: "ok",
     branches: [
-      {
-        leafEntryId: "future",
-        headline: "new headline",
-        messageCount: 2,
-        active: true,
-        updatedAt: "1970-01-01T00:00:01.000Z",
-      },
-      { leafEntryId: "forward", headline: "new headline", messageCount: 2, active: false },
+      branch("future", "new headline", 2, true, "1970-01-01T00:00:01.000Z"),
+      branch("forward", "new headline", 2),
     ],
   });
 });
@@ -429,9 +389,7 @@ it("reads only the newest usable appended headline while retaining cached histor
     expect(readSessionBranchSnapshot(database, { ...expected, previous })).toMatchObject({
       status: "ok",
       appendSafe: true,
-      branches: [
-        { leafEntryId: "tool", headline: "latest visible answer", messageCount: 6, active: true },
-      ],
+      branches: [branch("tool", "latest visible answer", 6, true)],
     });
     expect(tracked.counts.headlines).toBe(3);
     expect(tracked.textBytes.headlines).toBeLessThan(1_000);
@@ -460,10 +418,7 @@ it("rescans an unindexed legacy prefix after an append reuses one of its IDs", a
   expect(readSessionBranchSnapshot(database, { ...expected, previous })).toMatchObject({
     status: "ok",
     appendSafe: false,
-    branches: [
-      { leafEntryId: "legacy", headline: "", messageCount: 0, active: true },
-      { leafEntryId: "legacy", headline: "", messageCount: 0, active: true },
-    ],
+    branches: [branch("legacy", "", 0, true), branch("legacy", "", 0, true)],
   });
 });
 
