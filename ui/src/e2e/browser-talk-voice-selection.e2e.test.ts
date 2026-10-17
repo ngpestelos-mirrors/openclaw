@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import {
@@ -16,6 +17,14 @@ const suite = createControlUiE2eSuite({
     args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
   },
 });
+type TalkWindow = Window & {
+  openclawVideoTalkE2e?: {
+    dataChannelCreated: boolean;
+    peer: { connectionState: string; channel: EventTarget };
+  };
+};
+const screenshot = (page: Page, name: string) =>
+  page.screenshot({ animations: "disabled", path: path.join(suite.artifactDir, name) });
 
 suite.define(() => {
   it("keeps the composer free of voice settings while preserving agent-requested voice changes", async () => {
@@ -26,15 +35,6 @@ suite.define(() => {
         transport: "webrtc",
         clientSecret: "test-client-secret",
         offerUrl: "https://api.openai.com/v1/realtime/calls",
-      };
-      const selection = {
-        voiceSessionId: "voice-original",
-        sessionKey: "agent:main:main",
-        provider: "openai",
-        model: "gpt-live-1",
-        voice: "marin",
-        voices: ["marin", "alloy"],
-        canChange: true,
       };
       const gateway = await installMockGateway(page, {
         historyMessages: [TALK_READY_HISTORY_MESSAGE],
@@ -49,22 +49,13 @@ suite.define(() => {
       await page.getByRole("button", { name: "Start voice input" }).click();
       const openAudio = async () => {
         await page.waitForFunction(() => {
-          const current = (
-            window as Window & {
-              openclawVideoTalkE2e?: {
-                dataChannelCreated: boolean;
-                peer: { connectionState: string };
-              };
-            }
-          ).openclawVideoTalkE2e;
+          const current = (window as TalkWindow).openclawVideoTalkE2e;
           return current?.dataChannelCreated && current.peer.connectionState !== "closed";
         });
         await page.evaluate(() => {
-          (
-            window as Window & {
-              openclawVideoTalkE2e?: { peer: { channel: EventTarget } };
-            }
-          ).openclawVideoTalkE2e?.peer.channel.dispatchEvent(new Event("open"));
+          (window as TalkWindow).openclawVideoTalkE2e?.peer.channel.dispatchEvent(
+            new Event("open"),
+          );
         });
       };
       await gateway.waitForRequest("talk.client.create");
@@ -104,29 +95,23 @@ suite.define(() => {
           ? String(send.params.idempotencyKey)
           : "";
       expect(runId).not.toBe("");
-      await gateway.resolveDeferred("chat.send", {
-        runId,
-        status: "started",
-      });
+      await gateway.resolveDeferred("chat.send", { runId, status: "started" });
       const stopRun = page.getByRole("button", { name: "Stop generating" });
       await expect.poll(() => stopRun.isVisible()).toBe(true);
-      await page.screenshot({
-        animations: "disabled",
-        path: path.join(suite.artifactDir, "01-active-call.png"),
-      });
+      await screenshot(page, "01-active-call.png");
 
       // The agent can still request a voice handoff through the Gateway event.
       await gateway.deferNext("talk.client.create");
       await gateway.emitGatewayEvent("talk.voice.change", {
-        sessionKey: selection.sessionKey,
-        voiceSessionId: selection.voiceSessionId,
+        sessionKey: "agent:main:main",
+        voiceSessionId: clientSession.voiceSessionId,
         changeId: "voice-change",
         voice: "alloy",
         phase: "requested",
       });
       const replacement = await gateway.waitForRequest("talk.client.create", { after: 1 });
       expect(replacement.params).toMatchObject({
-        sessionKey: selection.sessionKey,
+        sessionKey: "agent:main:main",
         transport: "webrtc",
         voice: "alloy",
         voiceChangeId: "voice-change",
@@ -135,25 +120,21 @@ suite.define(() => {
       expect(await stopRun.isVisible()).toBe(true);
       expect(await captions.textContent()).toContain("Keep working while I change your voice.");
 
-      const applied = { ...selection, voiceSessionId: "voice-replacement", voice: "alloy" };
       await gateway.resolveDeferred("talk.client.create", {
         ...clientSession,
-        voiceSessionId: applied.voiceSessionId,
+        voiceSessionId: "voice-replacement",
       });
       await openAudio();
       expect((await gateway.waitForRequest("talk.voice.complete")).params).toEqual({
         changeId: "voice-change",
-        voiceSessionId: applied.voiceSessionId,
+        voiceSessionId: "voice-replacement",
         outcome: "ready",
       });
       await transcript("The new voice is ready.");
       await expect.poll(() => captions.textContent()).toContain("The new voice is ready.");
       expect(await captions.textContent()).toContain("Keep working while I change your voice.");
       expect(await stopRun.isVisible()).toBe(true);
-      await page.screenshot({
-        animations: "disabled",
-        path: path.join(suite.artifactDir, "03-after-voice-change.png"),
-      });
+      await screenshot(page, "03-after-voice-change.png");
       await page.getByRole("button", { name: "Stop voice input" }).click();
       await expect
         .poll(() => page.getByRole("button", { name: "Stop voice input" }).count())
@@ -220,10 +201,7 @@ suite.define(() => {
         .toContain("Saved");
       await page.reload();
       await expect.poll(() => voice.inputValue()).toBe("alloy");
-      await page.screenshot({
-        animations: "disabled",
-        path: path.join(suite.artifactDir, "04-talk-settings.png"),
-      });
+      await screenshot(page, "04-talk-settings.png");
     });
   });
 });

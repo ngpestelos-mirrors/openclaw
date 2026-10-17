@@ -26,6 +26,26 @@ function transcriptMessage(
   };
 }
 
+function artifactDirectory(name = "chat-agent-run-transcript") {
+  const root = process.env.OPENCLAW_CONTROL_UI_E2E_ARTIFACT_DIR?.trim();
+  return root ? createControlUiE2eArtifactDir(name, root) : undefined;
+}
+
+function toolResult(
+  runId: string,
+  id: string,
+  seq: number,
+  toolCallId: string,
+  toolName: string,
+  text: string,
+) {
+  return {
+    ...transcriptMessage("toolResult", [{ type: "text", text }], runId, id, seq),
+    toolCallId,
+    toolName,
+  };
+}
+
 suite.define(() => {
   it("collapses nested tool activity after commentary across history reload", async () => {
     const context = await suite.browser.newContext({
@@ -34,10 +54,7 @@ suite.define(() => {
     });
     const page = await context.newPage();
     const runId = "nested-run";
-    const artifactRoot = process.env.OPENCLAW_CONTROL_UI_E2E_ARTIFACT_DIR?.trim();
-    const artifactDir = artifactRoot
-      ? createControlUiE2eArtifactDir("nested-tool-collapse", artifactRoot)
-      : undefined;
+    const artifactDir = artifactDirectory("nested-tool-collapse");
     const calls = ["read", "exec", "sessions_history"].flatMap((name, index) => {
       const seq = 3 + index * 2;
       const parentId = `parent-${index}`;
@@ -119,17 +136,8 @@ suite.define(() => {
     const context = await suite.browser.newContext({ viewport: { height: 900, width: 1200 } });
     const page = await context.newPage();
     const runId = "run-restart-recovery";
-    const toolResult = (id: string, seq: number, name: string) => ({
-      ...transcriptMessage(
-        "toolResult",
-        [{ type: "text", text: `${name} completed` }],
-        runId,
-        id,
-        seq,
-      ),
-      toolCallId: id,
-      toolName: name,
-    });
+    const result = (id: string, seq: number, name: string) =>
+      toolResult(runId, id, seq, id, name, `${name} completed`);
     await installMockGateway(page, {
       historyMessages: [
         {
@@ -146,14 +154,14 @@ suite.define(() => {
             sourceTool: "main_session_restart_recovery",
           },
         },
-        toolResult("process-1", 2, "process"),
-        toolResult("process-2", 3, "process"),
+        result("process-1", 2, "process"),
+        result("process-2", 3, "process"),
         transcriptMessage("assistant", "Checking the next batch.", runId, "gap-1", 4),
-        toolResult("exec-1", 5, "exec"),
-        toolResult("exec-2", 6, "exec"),
+        result("exec-1", 5, "exec"),
+        result("exec-2", 6, "exec"),
         transcriptMessage("assistant", "Checking the final batch.", runId, "gap-2", 7),
-        toolResult("process-3", 8, "process"),
-        toolResult("process-4", 9, "process"),
+        result("process-3", 8, "process"),
+        result("process-4", 9, "process"),
       ],
       inFlightRun: { runId, text: "" },
       sessionInfo: {
@@ -174,10 +182,7 @@ suite.define(() => {
 
     expect(rowKeys[0]).toMatch(/^agent-run:/u);
     expect(rowKeys).toEqual([rowKeys[0], rowKeys[0], rowKeys[0]]);
-    const artifactRoot = process.env.OPENCLAW_CONTROL_UI_E2E_ARTIFACT_DIR?.trim();
-    const artifactDir = artifactRoot
-      ? createControlUiE2eArtifactDir("chat-agent-run-transcript", artifactRoot)
-      : undefined;
+    const artifactDir = artifactDirectory();
     if (artifactDir) {
       await page.locator(".chat-thread-inner").screenshot({
         path: path.join(artifactDir, "restart-recovery-run-frame.png"),
@@ -206,145 +211,63 @@ suite.define(() => {
       const secondRunId = "run-composed-second";
       const toolOnlyRunId = "run-tool-only";
       const commentaryToolRunId = "run-commentary-tool-only";
+      const entryCounts = { assistant: 0, user: 0, call: 0, result: 0 };
+      const message = (role: "assistant" | "user", text: string, seq: number, run = firstRunId) =>
+        transcriptMessage(
+          role,
+          text,
+          role === "user" ? `${run}:user` : run,
+          `${role}-${++entryCounts[role]}`,
+          seq,
+        );
+      const call = (id: string, name: string, args: Record<string, string>, seq: number) =>
+        transcriptMessage(
+          "assistant",
+          [{ type: "toolCall", id, name, arguments: args }],
+          firstRunId,
+          `tool-call-${++entryCounts.call}`,
+          seq,
+        );
+      const result = (text: string, seq: number, id: string, name = "read", run = firstRunId) =>
+        toolResult(run, `tool-result-${++entryCounts.result}`, seq, id, name, text);
       await installMockGateway(page, {
         historyMessages: [
-          transcriptMessage("user", "Create the launch card.", `${firstRunId}:user`, "user-1", 1),
-          transcriptMessage(
+          message("user", "Create the launch card.", 1),
+          message(
             "assistant",
             "I’ll create the launch card and check the existing style first.",
-            firstRunId,
-            "assistant-1",
             2,
           ),
-          {
-            ...transcriptMessage(
-              "assistant",
-              [
-                {
-                  type: "toolCall",
-                  id: "call-read",
-                  name: "read",
-                  arguments: { path: "ui/src/styles/chat.css" },
-                },
-              ],
-              firstRunId,
-              "tool-call-1",
-              3,
-            ),
-          },
-          {
-            ...transcriptMessage(
-              "toolResult",
-              [{ type: "text", text: "Existing card styles loaded." }],
-              firstRunId,
-              "tool-result-1",
-              4,
-            ),
-            toolCallId: "call-read",
-            toolName: "read",
-          },
-          transcriptMessage(
+          call("call-read", "read", { path: "ui/src/styles/chat.css" }, 3),
+          result("Existing card styles loaded.", 4, "call-read"),
+          message(
             "assistant",
             "The first draft matches the transcript rhythm. I’ll render the asset now.",
-            firstRunId,
-            "assistant-2",
             5,
           ),
-          {
-            ...transcriptMessage(
-              "assistant",
-              [
-                {
-                  type: "toolCall",
-                  id: "call-render",
-                  name: "exec",
-                  arguments: { command: "render launch-card.svg" },
-                },
-              ],
-              firstRunId,
-              "tool-call-2",
-              6,
-            ),
-          },
-          {
-            ...transcriptMessage(
-              "toolResult",
-              [{ type: "text", text: "Rendered launch-card.svg" }],
-              firstRunId,
-              "tool-result-2",
-              7,
-            ),
-            toolCallId: "call-render",
-            toolName: "exec",
-          },
-          transcriptMessage(
-            "assistant",
-            "The launch card is ready: MEDIA:./launch-card.svg",
-            firstRunId,
-            "assistant-3",
-            8,
-          ),
-          transcriptMessage("user", "Now write the caption.", `${secondRunId}:user`, "user-2", 9),
-          transcriptMessage(
-            "assistant",
-            "Caption ready for the second run.",
-            secondRunId,
-            "assistant-4",
-            10,
-          ),
-          transcriptMessage(
-            "user",
-            "Check without replying.",
-            `${toolOnlyRunId}:user`,
-            "user-3",
-            11,
-          ),
-          {
-            ...transcriptMessage(
-              "toolResult",
-              [{ type: "text", text: "Tool-only result" }],
-              toolOnlyRunId,
-              "tool-result-3",
-              12,
-            ),
-            toolCallId: "call-tool-only",
-            toolName: "read",
-          },
-          transcriptMessage(
-            "user",
-            "Inspect and stop after the tool.",
-            `${commentaryToolRunId}:user`,
-            "user-4",
-            13,
-          ),
-          transcriptMessage(
-            "assistant",
-            "I’ll inspect the current state first.",
+          call("call-render", "exec", { command: "render launch-card.svg" }, 6),
+          result("Rendered launch-card.svg", 7, "call-render", "exec"),
+          message("assistant", "The launch card is ready: MEDIA:./launch-card.svg", 8),
+          message("user", "Now write the caption.", 9, secondRunId),
+          message("assistant", "Caption ready for the second run.", 10, secondRunId),
+          message("user", "Check without replying.", 11, toolOnlyRunId),
+          result("Tool-only result", 12, "call-tool-only", "read", toolOnlyRunId),
+          message("user", "Inspect and stop after the tool.", 13, commentaryToolRunId),
+          message("assistant", "I’ll inspect the current state first.", 14, commentaryToolRunId),
+          result(
+            "Commentary-led tool-only result",
+            15,
+            "call-commentary-tool-only",
+            "read",
             commentaryToolRunId,
-            "assistant-5",
-            14,
           ),
-          {
-            ...transcriptMessage(
-              "toolResult",
-              [{ type: "text", text: "Commentary-led tool-only result" }],
-              commentaryToolRunId,
-              "tool-result-4",
-              15,
-            ),
-            toolCallId: "call-commentary-tool-only",
-            toolName: "read",
-          },
         ],
       });
 
       await page.goto(`${suite.server.baseUrl}chat`);
       const transcript = page.locator(".chat-thread-inner");
       await transcript.getByText("Caption ready for the second run.", { exact: true }).waitFor();
-      const artifactRoot = process.env.OPENCLAW_CONTROL_UI_E2E_ARTIFACT_DIR?.trim();
-      const artifactDir = artifactRoot
-        ? createControlUiE2eArtifactDir("chat-agent-run-transcript", artifactRoot)
-        : undefined;
+      const artifactDir = artifactDirectory();
       if (artifactDir) {
         const firstNarration = transcript.getByText(
           "I’ll create the launch card and check the existing style first.",
@@ -539,10 +462,7 @@ suite.define(() => {
     });
     expect(overlappingRows).toEqual([]);
 
-    const artifactRoot = process.env.OPENCLAW_CONTROL_UI_E2E_ARTIFACT_DIR?.trim();
-    const artifactDir = artifactRoot
-      ? createControlUiE2eArtifactDir("chat-agent-run-transcript", artifactRoot)
-      : undefined;
+    const artifactDir = artifactDirectory();
     if (artifactDir) {
       await page.screenshot({
         path: path.join(artifactDir, "cross-session-run-isolation.png"),

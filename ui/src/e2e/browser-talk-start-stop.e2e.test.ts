@@ -1,3 +1,4 @@
+import type { Page } from "playwright";
 // Control UI E2E tests cover browser Talk start and stop through a real page.
 import { expect, it } from "vitest";
 import { finishElementAnimations } from "../test-helpers/animations.ts";
@@ -24,30 +25,101 @@ const suite = createControlUiE2eSuite({
   },
 });
 
+const audio = {
+  inputEncoding: "pcm16",
+  inputSampleRateHz: 16_000,
+  outputEncoding: "pcm16",
+  outputSampleRateHz: 24_000,
+};
+const googleSession = (voiceSessionId: string, token = "browser-talk-e2e") => ({
+  provider: "google",
+  voiceSessionId,
+  transport: "provider-websocket",
+  protocol: "google-live-bidi",
+  clientSecret: ["auth_tokens", token].join("/"),
+  websocketUrl:
+    "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
+  audio,
+});
+const relaySession = (relaySessionId: string) => ({
+  provider: "openai",
+  transport: "gateway-relay",
+  relaySessionId,
+  audio,
+});
+function installTalkGateway(
+  page: Page,
+  clientSession: unknown,
+  options: NonNullable<Parameters<typeof installMockGateway>[1]> = {},
+) {
+  return installMockGateway(page, {
+    historyMessages: [TALK_READY_HISTORY_MESSAGE],
+    ...options,
+    methodResponses: { "talk.client.create": clientSession, ...options.methodResponses },
+  });
+}
+type TalkWindow = Window & {
+  openclawTalkE2eState?: {
+    audioContextsClosed: number;
+    tracksStopped: number;
+    constraints: unknown[];
+    meterLevel: number;
+    inputProcessor?: {
+      onaudioprocess?: (event: { inputBuffer: { getChannelData: () => Float32Array } }) => void;
+    };
+  };
+  openclawVideoTalkE2e?: {
+    dataChannelCreated: boolean;
+    peer: { channel: EventTarget & { sent: unknown[] } };
+  };
+  openclawVideoTalkTracks?: MediaStreamTrack[];
+};
+const inputReady = (page: Page) =>
+  page.evaluate(() => (window as TalkWindow).openclawTalkE2eState?.inputProcessor != null);
+const trackStates = (page: Page) =>
+  page.evaluate(() =>
+    (window as TalkWindow).openclawVideoTalkTracks?.map((track) => track.readyState),
+  );
+async function feedAudio(page: Page, sampleLevel: number, frameCount = 1, meter = false) {
+  await page.evaluate(
+    ({ level, frames, updateMeter }) => {
+      const state = (window as TalkWindow).openclawTalkE2eState;
+      if (state && updateMeter) {
+        state.meterLevel = level;
+      }
+      for (let index = 0; index < frames; index += 1) {
+        state?.inputProcessor?.onaudioprocess?.({
+          inputBuffer: { getChannelData: () => new Float32Array(4096).fill(level) },
+        });
+      }
+    },
+    { level: sampleLevel, frames: frameCount, updateMeter: meter },
+  );
+}
+async function expectTalkRequests(gateway: Awaited<ReturnType<typeof installMockGateway>>) {
+  expect(
+    (await gateway.getRequests())
+      .filter((entry) => entry.method.startsWith("talk."))
+      .map((entry) => entry.method),
+  ).toEqual(["talk.catalog", "talk.config", "talk.config", "talk.catalog", "talk.client.create"]);
+}
+async function startCamera(page: Page) {
+  const button = page.getByRole("button", { name: "Turn camera on" });
+  await expect.poll(() => button.isEnabled()).toBe(true);
+  await button.click();
+  const preview = page.locator('video[aria-label="Camera preview"]');
+  await expect.poll(() => preview.isVisible()).toBe(true);
+  await expect
+    .poll(() => preview.evaluate((video) => (video as HTMLVideoElement).videoWidth))
+    .toBeGreaterThan(0);
+  return preview;
+}
+
 // Browser contexts preserve test isolation; keep one process warm for this file.
 suite.define(() => {
   it("starts a provider WebSocket session and stops browser audio resources", async () => {
     await suite.withPage({ permissions: ["microphone"] }, async ({ page }) => {
-      const gateway = await installMockGateway(page, {
-        historyMessages: [TALK_READY_HISTORY_MESSAGE],
-        methodResponses: {
-          "talk.client.create": {
-            provider: "google",
-            voiceSessionId: "voice-browser-talk-e2e",
-            transport: "provider-websocket",
-            protocol: "google-live-bidi",
-            clientSecret: "auth_tokens/browser-talk-e2e",
-            websocketUrl:
-              "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
-            audio: {
-              inputEncoding: "pcm16",
-              inputSampleRateHz: 16_000,
-              outputEncoding: "pcm16",
-              outputSampleRateHz: 24_000,
-            },
-          },
-        },
-      });
+      const gateway = await installTalkGateway(page, googleSession("voice-browser-talk-e2e"));
       await installTalkBrowserFixtures(page);
 
       await page.emulateMedia({ reducedMotion: "reduce" });
@@ -69,16 +141,7 @@ suite.define(() => {
       const createRequest = await gateway.waitForRequest("talk.client.create");
       expect(createRequest.params).toMatchObject({ sessionKey: "agent:main:main" });
       await expect
-        .poll(() =>
-          page.evaluate(
-            () =>
-              (
-                window as Window & {
-                  openclawTalkE2eState?: { constraints: unknown[] };
-                }
-              ).openclawTalkE2eState?.constraints,
-          ),
-        )
+        .poll(() => page.evaluate(() => (window as TalkWindow).openclawTalkE2eState?.constraints))
         .toEqual([
           {
             audio: {
@@ -140,26 +203,7 @@ suite.define(() => {
         .evaluate((element) => getComputedStyle(element).transform);
       expect(reducedMotionTransform).not.toBe(connectingReducedMotionTransform);
 
-      await page.evaluate(() => {
-        const state = (
-          window as Window & {
-            openclawTalkE2eState?: {
-              inputProcessor?: {
-                onaudioprocess?: (event: {
-                  inputBuffer: { getChannelData: () => Float32Array };
-                }) => void;
-              };
-              meterLevel?: number;
-            };
-          }
-        ).openclawTalkE2eState;
-        if (state) {
-          state.meterLevel = 0.25;
-        }
-        state?.inputProcessor?.onaudioprocess?.({
-          inputBuffer: { getChannelData: () => new Float32Array(4096).fill(0.25) },
-        });
-      });
+      await feedAudio(page, 0.25, 1, true);
       await expect
         .poll(async () =>
           Number(await page.locator(".agent-chat__voice-activity").getAttribute("data-level")),
@@ -182,11 +226,7 @@ suite.define(() => {
       await expect
         .poll(() =>
           page.evaluate(() => {
-            const state = (
-              window as Window & {
-                openclawTalkE2eState?: { audioContextsClosed: number; tracksStopped: number };
-              }
-            ).openclawTalkE2eState;
+            const state = (window as TalkWindow).openclawTalkE2eState;
             return state
               ? {
                   audioContextsClosed: state.audioContextsClosed,
@@ -207,27 +247,8 @@ suite.define(() => {
 
   it("keeps stop-voice and stop-run controls visually distinct while both are active", async () => {
     await suite.withPage({ permissions: ["microphone"] }, async ({ page }) => {
-      const gateway = await installMockGateway(page, {
+      const gateway = await installTalkGateway(page, googleSession("voice-controls-e2e"), {
         deferredMethods: ["chat.send"],
-        historyMessages: [TALK_READY_HISTORY_MESSAGE],
-        methodResponses: {
-          "talk.client.create": {
-            provider: "google",
-            voiceSessionId: "voice-controls-e2e",
-            transport: "provider-websocket",
-            protocol: "google-live-bidi",
-            // Fake harness token, assembled so secret scanners do not flag it.
-            clientSecret: ["auth_tokens", "browser-talk-e2e"].join("/"),
-            websocketUrl:
-              "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
-            audio: {
-              inputEncoding: "pcm16",
-              inputSampleRateHz: 16_000,
-              outputEncoding: "pcm16",
-              outputSampleRateHz: 24_000,
-            },
-          },
-        },
       });
       await installTalkBrowserFixtures(page);
 
@@ -254,26 +275,7 @@ suite.define(() => {
       expect(voiceAppearance.width).toBeGreaterThanOrEqual(64);
       expect(voiceAppearance.background).toBe("rgba(0, 0, 0, 0)");
       expect(voiceAppearance.meterContained).toBe(true);
-      await page.evaluate(() => {
-        const state = (
-          window as Window & {
-            openclawTalkE2eState?: {
-              inputProcessor?: {
-                onaudioprocess?: (event: {
-                  inputBuffer: { getChannelData: () => Float32Array };
-                }) => void;
-              };
-              meterLevel?: number;
-            };
-          }
-        ).openclawTalkE2eState;
-        if (state) {
-          state.meterLevel = 0.25;
-        }
-        state?.inputProcessor?.onaudioprocess?.({
-          inputBuffer: { getChannelData: () => new Float32Array(4096).fill(0.25) },
-        });
-      });
+      await feedAudio(page, 0.25, 1, true);
       await expect
         .poll(async () =>
           Number(await page.locator(".agent-chat__voice-activity").getAttribute("data-level")),
@@ -367,22 +369,12 @@ suite.define(() => {
       await expect
         .poll(() =>
           page.evaluate(() =>
-            Boolean(
-              (
-                window as Window & {
-                  openclawVideoTalkE2e?: { dataChannelCreated: boolean };
-                }
-              ).openclawVideoTalkE2e?.dataChannelCreated,
-            ),
+            Boolean((window as TalkWindow).openclawVideoTalkE2e?.dataChannelCreated),
           ),
         )
         .toBe(true);
       await page.evaluate(() => {
-        const channel = (
-          window as Window & {
-            openclawVideoTalkE2e?: { peer: { channel: EventTarget } };
-          }
-        ).openclawVideoTalkE2e?.peer.channel;
+        const channel = (window as TalkWindow).openclawVideoTalkE2e?.peer.channel;
         channel?.dispatchEvent(new Event("open"));
       });
       await dispatchOpenAiTalkEvent(page, {
@@ -415,14 +407,7 @@ suite.define(() => {
         type: "input_audio_buffer.speech_started",
         item_id: "next-input",
       });
-      const turnCameraOn = page.getByRole("button", { name: "Turn camera on" });
-      await expect.poll(() => turnCameraOn.isEnabled()).toBe(true);
-      await turnCameraOn.click();
-      const preview = page.locator('video[aria-label="Camera preview"]');
-      await expect.poll(() => preview.isVisible()).toBe(true);
-      await expect
-        .poll(() => preview.evaluate((video) => (video as HTMLVideoElement).videoWidth))
-        .toBeGreaterThan(0);
+      const preview = await startCamera(page);
       const dimensions = await preview.evaluate((video) => ({
         height: (video as HTMLVideoElement).videoHeight,
         width: (video as HTMLVideoElement).videoWidth,
@@ -454,11 +439,7 @@ suite.define(() => {
       await expect
         .poll(() =>
           page.evaluate(() => {
-            const sent = (
-              window as Window & {
-                openclawVideoTalkE2e?: { peer: { channel: { sent: unknown[] } } };
-              }
-            ).openclawVideoTalkE2e?.peer.channel.sent;
+            const sent = (window as TalkWindow).openclawVideoTalkE2e?.peer.channel.sent;
             return {
               image: sent?.some(
                 (event) =>
@@ -476,31 +457,14 @@ suite.define(() => {
           }),
         )
         .toEqual({ image: true, toolResult: true });
-      const talkRequests = (await gateway.getRequests()).filter((entry) =>
-        entry.method.startsWith("talk."),
-      );
-      expect(talkRequests.map((entry) => entry.method)).toEqual([
-        "talk.catalog",
-        "talk.config",
-        "talk.config",
-        "talk.catalog",
-        "talk.client.create",
-      ]);
+      await expectTalkRequests(gateway);
       console.info(
         "[video-talk-e2e] describe_view=input_image+function_output+response_create,gateway_frame_requests:0",
       );
 
       await page.getByRole("button", { name: "Stop voice input" }).click();
       await expect.poll(() => preview.count()).toBe(0);
-      const trackStates = await page.evaluate(() =>
-        (
-          window as Window & {
-            openclawVideoTalkTracks?: MediaStreamTrack[];
-          }
-        ).openclawVideoTalkTracks?.map((track) => track.readyState),
-      );
-      expect(trackStates).toHaveLength(2);
-      expect(trackStates?.every((state) => state === "ended")).toBe(true);
+      expect(await trackStates(page)).toEqual(["ended", "ended"]);
       await captureVideoTalkProof(suite, page, "04-after-video-talk-stop.png");
       console.info("[video-talk-e2e] stop=preview-removed,tracks:ended+ended");
     });
@@ -508,28 +472,15 @@ suite.define(() => {
 
   it("starts Gemini Live Talk, enables a fake camera, and handles describe_view", async () => {
     await suite.withPage({ permissions: ["camera", "microphone"] }, async ({ page }) => {
-      const gateway = await installMockGateway(page, {
-        historyMessages: [TALK_READY_HISTORY_MESSAGE],
-        methodResponses: {
-          "talk.catalog": videoTalkCatalog("google"),
-          "talk.client.create": {
-            provider: "google",
-            voiceSessionId: "voice-google-video-e2e",
-            transport: "provider-websocket",
-            protocol: "google-live-bidi",
-            // Fake harness token, assembled so secret scanners do not flag it.
-            clientSecret: ["auth_tokens", "browser-video-e2e"].join("/"),
-            websocketUrl:
-              "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
-            audio: {
-              inputEncoding: "pcm16",
-              inputSampleRateHz: 16_000,
-              outputEncoding: "pcm16",
-              outputSampleRateHz: 24_000,
-            },
+      const gateway = await installTalkGateway(
+        page,
+        googleSession("voice-google-video-e2e", "browser-video-e2e"),
+        {
+          methodResponses: {
+            "talk.catalog": videoTalkCatalog("google"),
           },
         },
-      });
+      );
       const googleLiveMessages: unknown[] = [];
       let describeViewSent = false;
       await page.routeWebSocket("wss://generativelanguage.googleapis.com/**", (ws) => {
@@ -565,14 +516,7 @@ suite.define(() => {
       expect(request.params).toMatchObject({
         sessionKey: "agent:main:main",
       });
-      const turnCameraOn = page.getByRole("button", { name: "Turn camera on" });
-      await expect.poll(() => turnCameraOn.isEnabled()).toBe(true);
-      await turnCameraOn.click();
-      const preview = page.locator('video[aria-label="Camera preview"]');
-      await expect.poll(() => preview.isVisible()).toBe(true);
-      await expect
-        .poll(() => preview.evaluate((video) => (video as HTMLVideoElement).videoWidth))
-        .toBeGreaterThan(0);
+      const preview = await startCamera(page);
       await expect
         .poll(() =>
           googleLiveMessages.some(
@@ -605,16 +549,7 @@ suite.define(() => {
       expect(new TextEncoder().encode(JSON.stringify(videoMessage)).length).toBeLessThanOrEqual(
         512 * 1024,
       );
-      const talkRequests = (await gateway.getRequests()).filter((entry) =>
-        entry.method.startsWith("talk."),
-      );
-      expect(talkRequests.map((entry) => entry.method)).toEqual([
-        "talk.catalog",
-        "talk.config",
-        "talk.config",
-        "talk.catalog",
-        "talk.client.create",
-      ]);
+      await expectTalkRequests(gateway);
       await captureVideoTalkProof(suite, page, "05-gemini-live-camera-preview.png");
       console.info(
         "[video-talk-e2e] gemini=realtimeInput.video+functionResponse,gateway_frame_requests:0",
@@ -622,43 +557,22 @@ suite.define(() => {
 
       await page.getByRole("button", { name: "Stop voice input" }).click();
       await expect.poll(() => preview.count()).toBe(0);
-      const trackStates = await page.evaluate(() =>
-        (
-          window as Window & {
-            openclawVideoTalkTracks?: MediaStreamTrack[];
-          }
-        ).openclawVideoTalkTracks?.map((track) => track.readyState),
-      );
-      expect(trackStates).toHaveLength(2);
-      expect(trackStates?.every((state) => state === "ended")).toBe(true);
+      expect(await trackStates(page)).toEqual(["ended", "ended"]);
       console.info("[video-talk-e2e] gemini_stop=preview-removed,tracks:ended+ended");
     });
   });
 
   it("shows actionable guidance when Video Talk camera permission is blocked", async () => {
     await suite.withPage(undefined, async ({ page }) => {
-      const gateway = await installMockGateway(page, {
-        historyMessages: [TALK_READY_HISTORY_MESSAGE],
-        methodResponses: {
-          "talk.catalog": videoTalkCatalog("google"),
-          "talk.client.create": {
-            provider: "google",
-            voiceSessionId: "voice-blocked-camera-e2e",
-            transport: "provider-websocket",
-            protocol: "google-live-bidi",
-            // Fake harness token, assembled so secret scanners do not flag it.
-            clientSecret: ["auth_tokens", "browser-video-denied"].join("/"),
-            websocketUrl:
-              "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
-            audio: {
-              inputEncoding: "pcm16",
-              inputSampleRateHz: 16_000,
-              outputEncoding: "pcm16",
-              outputSampleRateHz: 24_000,
-            },
+      const gateway = await installTalkGateway(
+        page,
+        googleSession("voice-blocked-camera-e2e", "browser-video-denied"),
+        {
+          methodResponses: {
+            "talk.catalog": videoTalkCatalog("google"),
           },
         },
-      });
+      );
       await page.routeWebSocket("wss://generativelanguage.googleapis.com/**", (ws) => {
         ws.onMessage((message) => {
           const parsed = JSON.parse(typeof message === "string" ? message : message.toString()) as {
@@ -688,14 +602,7 @@ suite.define(() => {
         .toBe(true);
       await captureVideoTalkProof(suite, page, "03-camera-permission-blocked.png");
       await page.getByRole("button", { name: "Stop voice input" }).click();
-      const trackStates = await page.evaluate(() =>
-        (
-          window as Window & {
-            openclawVideoTalkTracks?: MediaStreamTrack[];
-          }
-        ).openclawVideoTalkTracks?.map((track) => track.readyState),
-      );
-      expect(trackStates).toEqual(["ended"]);
+      expect(await trackStates(page)).toEqual(["ended"]);
       console.info("[video-talk-e2e] camera_denial=actionable,audio_track:ended");
     });
   });
@@ -703,21 +610,9 @@ suite.define(() => {
   it("renders streamed relay assistant transcript deltas as readable text", async () => {
     await suite.withPage({ permissions: ["microphone"] }, async ({ page }) => {
       const relaySessionId = "relay-e2e-transcript";
-      const gateway = await installMockGateway(page, {
+      const gateway = await installTalkGateway(page, relaySession(relaySessionId), {
         deferredMethods: ["talk.client.create"],
-        historyMessages: [TALK_READY_HISTORY_MESSAGE],
         methodResponses: {
-          "talk.client.create": {
-            provider: "openai",
-            transport: "gateway-relay",
-            relaySessionId,
-            audio: {
-              inputEncoding: "pcm16",
-              inputSampleRateHz: 16_000,
-              outputEncoding: "pcm16",
-              outputSampleRateHz: 24_000,
-            },
-          },
           "talk.session.appendAudio": {},
           "talk.session.close": {},
         },
@@ -732,11 +627,7 @@ suite.define(() => {
       // Microphone acquisition precedes relay admission and cannot prove readiness.
       expect(
         await page.evaluate(() => {
-          const state = (
-            window as Window & {
-              openclawTalkE2eState?: { constraints: unknown[]; inputProcessor: unknown };
-            }
-          ).openclawTalkE2eState;
+          const state = (window as TalkWindow).openclawTalkE2eState;
           return {
             microphoneRequests: state?.constraints.length,
             inputReady: state?.inputProcessor != null,
@@ -744,18 +635,7 @@ suite.define(() => {
         }),
       ).toEqual({ microphoneRequests: 1, inputReady: false });
       await gateway.resolveDeferred("talk.client.create");
-      await expect
-        .poll(() =>
-          page.evaluate(
-            () =>
-              (
-                window as Window & {
-                  openclawTalkE2eState?: { inputProcessor: unknown };
-                }
-              ).openclawTalkE2eState?.inputProcessor != null,
-          ),
-        )
-        .toBe(true);
+      await expect.poll(() => inputReady(page)).toBe(true);
       await gateway.emitGatewayEvent("talk.event", { relaySessionId, type: "ready" });
       await expect
         .poll(() => page.locator('.agent-chat__voice-activity[data-status="listening"]').count())
@@ -803,20 +683,8 @@ suite.define(() => {
   it("keeps the call alive while relay microphone appends stall", async () => {
     await suite.withPage({ permissions: ["microphone"] }, async ({ page }) => {
       const relaySessionId = "relay-e2e-input-backpressure";
-      const gateway = await installMockGateway(page, {
-        historyMessages: [TALK_READY_HISTORY_MESSAGE],
+      const gateway = await installTalkGateway(page, relaySession(relaySessionId), {
         methodResponses: {
-          "talk.client.create": {
-            provider: "openai",
-            transport: "gateway-relay",
-            relaySessionId,
-            audio: {
-              inputEncoding: "pcm16",
-              inputSampleRateHz: 16_000,
-              outputEncoding: "pcm16",
-              outputSampleRateHz: 24_000,
-            },
-          },
           "talk.session.appendAudio": {},
           "talk.session.close": {},
         },
@@ -830,38 +698,10 @@ suite.define(() => {
       }
       await page.getByRole("button", { name: "Start voice input" }).click();
       await gateway.waitForRequest("talk.client.create");
-      await expect
-        .poll(() =>
-          page.evaluate(
-            () =>
-              (
-                window as Window & {
-                  openclawTalkE2eState?: { inputProcessor?: unknown };
-                }
-              ).openclawTalkE2eState?.inputProcessor != null,
-          ),
-        )
-        .toBe(true);
+      await expect.poll(() => inputReady(page)).toBe(true);
       await gateway.emitGatewayEvent("talk.event", { relaySessionId, type: "ready" });
 
-      await page.evaluate(() => {
-        const processor = (
-          window as Window & {
-            openclawTalkE2eState?: {
-              inputProcessor?: {
-                onaudioprocess?: (event: {
-                  inputBuffer: { getChannelData: () => Float32Array };
-                }) => void;
-              };
-            };
-          }
-        ).openclawTalkE2eState?.inputProcessor;
-        for (let index = 0; index < 5; index += 1) {
-          processor?.onaudioprocess?.({
-            inputBuffer: { getChannelData: () => new Float32Array(4096).fill(0.1) },
-          });
-        }
-      });
+      await feedAudio(page, 0.1, 5);
 
       // Five 256 ms frames stay inside the 3 s in-flight budget, so every frame is
       // sent while the deferred appends stall and the session is not torn down.
@@ -880,21 +720,9 @@ suite.define(() => {
     await suite.withPage({ locale: "en-US", permissions: ["microphone"] }, async ({ page }) => {
       const currentRelaySessionId = "relay-current-e2e";
       const staleRelaySessionId = "relay-stale-e2e";
-      const gateway = await installMockGateway(page, {
+      const gateway = await installTalkGateway(page, relaySession(currentRelaySessionId), {
         featureCapabilities: ["talk-session-close-disposition"],
-        historyMessages: [TALK_READY_HISTORY_MESSAGE],
         methodResponses: {
-          "talk.client.create": {
-            provider: "openai",
-            transport: "gateway-relay",
-            relaySessionId: currentRelaySessionId,
-            audio: {
-              inputEncoding: "pcm16",
-              inputSampleRateHz: 16_000,
-              outputEncoding: "pcm16",
-              outputSampleRateHz: 24_000,
-            },
-          },
           "talk.session.appendAudio": {},
           "talk.session.close": {},
         },
@@ -918,15 +746,7 @@ suite.define(() => {
       await expect
         .poll(() =>
           page.evaluate(() => {
-            const state = (
-              window as Window & {
-                openclawTalkE2eState?: {
-                  constraints: unknown[];
-                  tracksStopped: number;
-                  inputProcessor?: unknown;
-                };
-              }
-            ).openclawTalkE2eState;
+            const state = (window as TalkWindow).openclawTalkE2eState;
             return {
               captures: state?.constraints.length,
               stopped: state?.tracksStopped,
@@ -943,17 +763,7 @@ suite.define(() => {
         .poll(() => page.locator('.agent-chat__voice-activity[data-status="listening"]').count())
         .toBe(1);
 
-      await gateway.resolveDeferred("talk.client.create", {
-        provider: "openai",
-        transport: "gateway-relay",
-        relaySessionId: staleRelaySessionId,
-        audio: {
-          inputEncoding: "pcm16",
-          inputSampleRateHz: 16_000,
-          outputEncoding: "pcm16",
-          outputSampleRateHz: 24_000,
-        },
-      });
+      await gateway.resolveDeferred("talk.client.create", relaySession(staleRelaySessionId));
       await expect
         .poll(() => gateway.getRequests("talk.session.close"))
         .toEqual([
@@ -962,22 +772,7 @@ suite.define(() => {
           }),
         ]);
 
-      await page.evaluate(() => {
-        const state = (
-          window as Window & {
-            openclawTalkE2eState?: {
-              inputProcessor?: {
-                onaudioprocess?: (event: {
-                  inputBuffer: { getChannelData: () => Float32Array };
-                }) => void;
-              };
-            };
-          }
-        ).openclawTalkE2eState;
-        state?.inputProcessor?.onaudioprocess?.({
-          inputBuffer: { getChannelData: () => new Float32Array(4096).fill(0.1) },
-        });
-      });
+      await feedAudio(page, 0.1);
       await expect
         .poll(() => gateway.getRequests("talk.session.appendAudio"))
         .toEqual([

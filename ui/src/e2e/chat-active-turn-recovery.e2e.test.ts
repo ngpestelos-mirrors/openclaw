@@ -43,6 +43,31 @@ async function capture(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: path.join(proofDir, `${name}.png`), fullPage: true });
 }
 
+function toolEvent(runId: unknown) {
+  return {
+    runId,
+    seq: 1,
+    stream: "tool",
+    ts: 1_000,
+    sessionKey: "agent:main:main",
+    data: {
+      toolCallId: "tool-active-turn-recovery",
+      name: "read",
+      phase: "start",
+      args: { path: "README.md" },
+    },
+  };
+}
+
+function chatMessage<Identity extends Record<string, string | number>>(
+  role: "user" | "assistant",
+  text: string,
+  identity: Identity,
+  timestamp: number,
+) {
+  return { role, content: [{ text, type: "text" }], __openclaw: identity, timestamp };
+}
+
 function activeRunSnapshot(
   runId: string,
   prompt: string,
@@ -55,29 +80,10 @@ function activeRunSnapshot(
       text: streamText,
       startedAt: opts?.startedAt,
       ...(opts?.sessionAbortable ? { sessionAbortable: true } : {}),
-      events: opts?.events ?? [
-        {
-          runId,
-          seq: 1,
-          stream: "tool",
-          ts: 1_000,
-          sessionKey: "agent:main:main",
-          data: {
-            toolCallId: "tool-active-turn-recovery",
-            name: "read",
-            phase: "start",
-            args: { path: "README.md" },
-          },
-        },
-      ],
+      events: opts?.events ?? [toolEvent(runId)],
     },
     messages: opts?.messages ?? [
-      {
-        __openclaw: { idempotencyKey: `${runId}:user` },
-        content: [{ text: prompt, type: "text" }],
-        role: "user",
-        timestamp: 900,
-      },
+      chatMessage("user", prompt, { idempotencyKey: `${runId}:user` }, 900),
       ...(opts?.persistedToolCall
         ? [
             {
@@ -134,19 +140,7 @@ async function startActiveTurn(
   });
   await page.locator(".chat-text").getByText(streamText, { exact: true }).waitFor();
   // Foreground work after a reply resumes activity under the same owned run.
-  await gateway.emitGatewayEvent("agent", {
-    runId,
-    seq: 1,
-    stream: "tool",
-    ts: 1_000,
-    sessionKey: "agent:main:main",
-    data: {
-      toolCallId: "tool-active-turn-recovery",
-      name: "read",
-      phase: "start",
-      args: { path: "README.md" },
-    },
-  });
+  await gateway.emitGatewayEvent("agent", toolEvent(runId));
   await assertActiveTurnVisible(page, streamText);
   return runId as string;
 }
@@ -242,6 +236,40 @@ async function openActiveTurn(scenario: Parameters<typeof installMockGateway>[1]
   return { context, page, gateway };
 }
 
+async function recoverTurn(
+  mode: "navigation" | "reconnect" | "reload",
+  recover: (page: Page, gateway: MockGatewayControls) => Promise<void>,
+) {
+  const { context, page, gateway } = await openActiveTurn();
+  try {
+    const title = mode[0].toUpperCase() + mode.slice(1);
+    const prompt = `${mode} active turn`;
+    const streamText = `${title} progress is still running.`;
+    const runId = await startActiveTurn(page, gateway, prompt, streamText);
+    const startedAt = Date.now() - 10 * 60_000;
+    await installActiveRunSnapshot(gateway, runId, prompt, streamText, {
+      startedAt,
+      persistedToolCall: mode === "reload",
+    });
+    const prefix = { navigation: "01", reconnect: "03", reload: "05" }[mode];
+    await capture(page, `${prefix}-${mode}-before`);
+    await recover(page, gateway);
+    await assertActiveTurnVisible(page, streamText);
+    if (mode === "navigation") {
+      await expect.poll(() => readWorkingStartedAts(page)).toContain(startedAt);
+    } else {
+      expect(await readWorkingStartedAts(page)).toContain(startedAt);
+    }
+    await expect(
+      page.locator(".chat-working-indicator openclaw-elapsed-time").filter({ hasText: "10m" }),
+    ).not.toHaveCount(0);
+    await capture(page, `${String(Number(prefix) + 1).padStart(2, "0")}-${mode}-after`);
+    await finishRecoveredTurn(page, gateway, runId, `${title} delivery complete.`);
+  } finally {
+    await suite.closeBrowserContext(context);
+  }
+}
+
 async function assertSteeredRecoveryOrder(
   page: Page,
   texts: {
@@ -266,74 +294,40 @@ async function assertSteeredRecoveryOrder(
     const visibleText = Array.from(element.querySelectorAll<HTMLElement>(".chat-bubble"));
     const bubbleWithText = (text: string) =>
       visibleText.find((bubble) => (bubble.textContent ?? "").includes(text));
-    const original = bubbleWithText(expected.original);
-    const beforeSteer = bubbleWithText(expected.beforeSteer);
-    const steer = bubbleWithText(expected.steer);
-    const tool = element.querySelector<HTMLElement>(".chat-tool-row--running");
-    const afterSteer = bubbleWithText(expected.afterSteer);
-    const latest = bubbleWithText(expected.latest);
+    const ordered = [
+      bubbleWithText(expected.original),
+      bubbleWithText(expected.beforeSteer),
+      bubbleWithText(expected.steer),
+      element.querySelector<HTMLElement>(".chat-tool-row--running"),
+      bubbleWithText(expected.afterSteer),
+      bubbleWithText(expected.latest),
+    ];
     const precedes = (upper: Element | undefined | null, lower: Element | undefined | null) =>
       Boolean(
         upper && lower && upper.compareDocumentPosition(lower) & Node.DOCUMENT_POSITION_FOLLOWING,
       );
-    return {
-      originalBeforeCommentary: precedes(original, beforeSteer),
-      commentaryBeforeSteer: precedes(beforeSteer, steer),
-      steerBeforeTool: precedes(steer, tool),
-      toolBeforeLaterCommentary: precedes(tool, afterSteer),
-      laterCommentaryBeforeLatest: precedes(afterSteer, latest),
-      steerBeforeLatest: precedes(steer, latest),
-    };
+    return [
+      ...ordered.slice(1).map((lower, index) => precedes(ordered[index], lower)),
+      precedes(ordered[2], ordered[5]),
+    ];
   }, texts);
-  expect(order).toEqual({
-    originalBeforeCommentary: true,
-    commentaryBeforeSteer: true,
-    steerBeforeTool: true,
-    toolBeforeLaterCommentary: true,
-    laterCommentaryBeforeLatest: true,
-    steerBeforeLatest: true,
-  });
+  expect(order).toEqual([true, true, true, true, true, true]);
 }
 
 suite.define(() => {
   it("restores the active assistant and tool across SPA navigation", async () => {
-    const { context, page, gateway } = await openActiveTurn();
-    try {
-      const prompt = "navigation active turn";
-      const streamText = "Navigation progress is still running.";
-      const runId = await startActiveTurn(page, gateway, prompt, streamText);
-      const startedAt = Date.now() - 10 * 60_000;
-      await installActiveRunSnapshot(gateway, runId, prompt, streamText, { startedAt });
-      await capture(page, "01-navigation-before");
-
+    await recoverTurn("navigation", async (page) => {
       const sidebar = page.locator("openclaw-app-sidebar");
       await sidebar.locator(".sidebar-identity-card").click();
       await sidebar.locator('.sidebar-identity-menu [data-value="command:usage"]').click();
       await waitForControlUiRoute(page, { pathname: "/usage", routeId: "usage" });
       await openHomeFullPage(page);
       await waitForControlUiRoute(page, { pathname: "/chat/main", routeId: "chat" });
-      await assertActiveTurnVisible(page, streamText);
-      await expect.poll(() => readWorkingStartedAts(page)).toContain(startedAt);
-      await expect(
-        page.locator(".chat-working-indicator openclaw-elapsed-time").filter({ hasText: "10m" }),
-      ).not.toHaveCount(0);
-      await capture(page, "02-navigation-after");
-      await finishRecoveredTurn(page, gateway, runId, "Navigation delivery complete.");
-    } finally {
-      await suite.closeBrowserContext(context);
-    }
+    });
   });
 
   it("restores the active assistant and tool after socket reconnect", async () => {
-    const { context, page, gateway } = await openActiveTurn();
-    try {
-      const prompt = "reconnect active turn";
-      const streamText = "Reconnect progress is still running.";
-      const runId = await startActiveTurn(page, gateway, prompt, streamText);
-      const startedAt = Date.now() - 10 * 60_000;
-      await installActiveRunSnapshot(gateway, runId, prompt, streamText, { startedAt });
-      await capture(page, "03-reconnect-before");
-
+    await recoverTurn("reconnect", async (page, gateway) => {
       const startupCount = (await gateway.getRequests("chat.startup")).length;
       await gateway.closeLatest(1001, "active-turn recovery reconnect");
       await expect.poll(() => gateway.getSocketCount(), { timeout: 15_000 }).toBe(2);
@@ -341,16 +335,7 @@ suite.define(() => {
         .poll(async () => (await gateway.getRequests("chat.startup")).length, { timeout: 15_000 })
         .toBeGreaterThan(startupCount);
       await waitForGatewayConnected(page);
-      await assertActiveTurnVisible(page, streamText);
-      expect(await readWorkingStartedAts(page)).toContain(startedAt);
-      await expect(
-        page.locator(".chat-working-indicator openclaw-elapsed-time").filter({ hasText: "10m" }),
-      ).not.toHaveCount(0);
-      await capture(page, "04-reconnect-after");
-      await finishRecoveredTurn(page, gateway, runId, "Reconnect delivery complete.");
-    } finally {
-      await suite.closeBrowserContext(context);
-    }
+    });
   });
 
   it.each([true, false])(
@@ -410,12 +395,7 @@ suite.define(() => {
           queue: [{ sendRunId: runId, sendState: "waiting-reconnect" }],
         });
         const userIdentity = { id: "reconnect-user", seq: 1, idempotencyKey: `${runId}:user` };
-        const user = {
-          role: "user",
-          content: [{ type: "text", text: prompt }],
-          timestamp: Date.now(),
-          __openclaw: userIdentity,
-        };
+        const user = chatMessage("user", prompt, userIdentity, Date.now());
         const sessionInfo = {
           key: sessionKey,
           sessionId: initial.sessionId,
@@ -480,12 +460,7 @@ suite.define(() => {
         });
 
         const assistantIdentity = { id: "reconnect-assistant", seq: 2, runId };
-        const assistant = {
-          role: "assistant",
-          content: [{ type: "text", text: reply }],
-          timestamp: Date.now(),
-          __openclaw: assistantIdentity,
-        };
+        const assistant = chatMessage("assistant", reply, assistantIdentity, Date.now());
         const replySessionInfo = {
           ...sessionInfo,
           hasActiveRun: active,
@@ -553,29 +528,9 @@ suite.define(() => {
   );
 
   it("restores the active assistant and tool after a full reload", async () => {
-    const { context, page, gateway } = await openActiveTurn();
-    try {
-      const prompt = "reload active turn";
-      const streamText = "Reload progress is still running.";
-      const runId = await startActiveTurn(page, gateway, prompt, streamText);
-      const startedAt = Date.now() - 10 * 60_000;
-      await installActiveRunSnapshot(gateway, runId, prompt, streamText, {
-        persistedToolCall: true,
-        startedAt,
-      });
-      await capture(page, "05-reload-before");
-
+    await recoverTurn("reload", async (page) => {
       await page.reload();
-      await assertActiveTurnVisible(page, streamText);
-      expect(await readWorkingStartedAts(page)).toContain(startedAt);
-      await expect(
-        page.locator(".chat-working-indicator openclaw-elapsed-time").filter({ hasText: "10m" }),
-      ).not.toHaveCount(0);
-      await capture(page, "06-reload-after");
-      await finishRecoveredTurn(page, gateway, runId, "Reload delivery complete.");
-    } finally {
-      await suite.closeBrowserContext(context);
-    }
+    });
   });
 
   it("routes recovered embedded-run Stop through the session owner", async () => {
@@ -609,81 +564,61 @@ suite.define(() => {
       latest: "Verifying the remaining work.",
     };
     const fixtureNow = Date.now();
+    const event = (
+      seq: number,
+      seconds: number,
+      data: Record<string, unknown>,
+      stream = "item",
+    ) => ({
+      runId,
+      seq,
+      stream,
+      ts: fixtureNow + seconds * 1_000,
+      sessionKey: "agent:main:main",
+      data,
+    });
+    const preamble = (seq: number, seconds: number, itemId: string, progressText: string) =>
+      event(seq, seconds, { kind: "preamble", itemId, progressText });
     const snapshot = activeRunSnapshot(runId, texts.original, "", {
       startedAt: fixtureNow,
       messages: [
-        {
-          __openclaw: {
+        chatMessage(
+          "user",
+          texts.original,
+          {
             id: "fixture-original-user",
             idempotencyKey: `${runId}:user`,
             seq: 1,
           },
-          content: [{ text: texts.original, type: "text" }],
-          role: "user",
-          timestamp: fixtureNow,
-        },
-        {
-          __openclaw: {
+          fixtureNow,
+        ),
+        chatMessage(
+          "user",
+          texts.steer,
+          {
             id: "fixture-steering-user",
             idempotencyKey: "fixture-steer:user",
             seq: 2,
             steerTargetRunId: runId,
           },
-          content: [{ text: texts.steer, type: "text" }],
-          role: "user",
-          timestamp: fixtureNow + 2_000,
-        },
+          fixtureNow + 2_000,
+        ),
       ],
       events: [
-        {
-          runId,
-          seq: 1,
-          stream: "item",
-          ts: fixtureNow + 1_000,
-          sessionKey: "agent:main:main",
-          data: {
-            kind: "preamble",
-            itemId: "fixture-preamble-before-steer",
-            progressText: texts.beforeSteer,
-          },
-        },
-        {
-          runId,
-          seq: 2,
-          stream: "tool",
-          ts: fixtureNow + 3_000,
-          sessionKey: "agent:main:main",
-          data: {
+        preamble(1, 1, "fixture-preamble-before-steer", texts.beforeSteer),
+        event(
+          2,
+          3,
+          {
             toolCallId: "fixture-active-tool",
             name: "read",
             phase: "start",
             args: { path: "fixture.txt" },
           },
-        },
-        {
-          runId,
-          seq: 3,
-          stream: "item",
-          ts: fixtureNow + 4_000,
-          sessionKey: "agent:main:main",
-          data: {
-            kind: "preamble",
-            itemId: "fixture-preamble-after-steer",
-            progressText: texts.afterSteer,
-          },
-        },
-        {
-          runId,
-          seq: 4,
-          stream: "item",
-          ts: fixtureNow + 5_000,
-          sessionKey: "agent:main:main",
-          data: {
-            kind: "preamble",
-            itemId: "fixture-latest-preamble",
-            progressText: texts.latest,
-          },
-        },
+          "tool",
+        ),
+        preamble(3, 4, "fixture-preamble-after-steer", texts.afterSteer),
+        preamble(4, 5, "fixture-latest-preamble", texts.latest),
       ],
     });
     const { context, page } = await openActiveTurn({
