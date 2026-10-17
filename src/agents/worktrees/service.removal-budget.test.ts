@@ -11,7 +11,6 @@ import { isWorktreeRepositoryCorruptionError } from "./removal-errors.js";
 import { resolveRepository } from "./repository-paths.js";
 import { IDLE_GC_MS, ManagedWorktreeService } from "./service.js";
 import {
-  materializeManagedWorktreeFixture,
   materializeManagedWorktreeFixtures,
   useManagedWorktreeTestRepository,
 } from "./service.test-support.js";
@@ -19,6 +18,7 @@ import {
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await closeOpenClawStateDatabaseAsync();
     cleanup();
   });
@@ -29,9 +29,28 @@ const read = (directory: string, name = "README.md") =>
   fs.readFile(path.join(directory, name), "utf8");
 const makeService = (env: NodeJS.ProcessEnv, now = IDLE_GC_MS + 2) =>
   new ManagedWorktreeService({ env, now: () => now, getConfig: () => ({}) });
-
-async function partialRepository(root: string) {
+async function fixture(prefix: string, partial = false) {
+  const root = tempDirs.make(prefix);
   const source = await initializeRepository(root);
+  const repo = partial ? await partialRepository(root, source) : source;
+  const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
+  const materialize = (
+    names: string[],
+    options: Partial<Parameters<typeof materializeManagedWorktreeFixtures>[0]> = {},
+  ) =>
+    materializeManagedWorktreeFixtures({
+      env,
+      repoRoot: repo,
+      stateDir: env.OPENCLAW_STATE_DIR,
+      now: 1,
+      ownerKind: "session",
+      names,
+      ...options,
+    });
+  return { root, source, repo, env, materialize };
+}
+
+async function partialRepository(root: string, source: string) {
   await fs.writeFile(path.join(source, "missing.txt"), "omitted blob\n");
   await requireGit(source, ["add", "missing.txt"]);
   await requireGit(source, ["commit", "-m", "add omitted blob"]);
@@ -45,7 +64,7 @@ async function partialRepository(root: string) {
     repo,
   ]);
   await requireGit(repo, ["sparse-checkout", "set", "--no-cone", "/README.md"]);
-  return { source, repo };
+  return repo;
 }
 
 async function editRecords(
@@ -81,21 +100,15 @@ it.each([
 );
 
 it("backs off shared-repository snapshots after a missing-object failure", async () => {
-  const root = tempDirs.make("worktree-corrupt-repository-");
-  const { source, repo: repoRoot } = await partialRepository(root);
-  await requireGit(repoRoot, ["checkout", "main"]);
-  const stateDir = path.join(root, "state");
-  const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
-  const records = await materializeManagedWorktreeFixtures({
-    env,
-    stateDir,
-    repoRoot,
-    repoFingerprint: (await resolveRepository(repoRoot)).fingerprint,
-    names: ["broken-a", "broken-b"],
-    now: 1,
-    ownerKind: "session",
+  const { root, source, repo, env, materialize } = await fixture(
+    "worktree-corrupt-repository-",
+    true,
+  );
+  await requireGit(repo, ["checkout", "main"]);
+  const records = await materialize(["broken-a", "broken-b"], {
+    repoFingerprint: (await resolveRepository(repo)).fingerprint,
   });
-  await requireGit(repoRoot, ["remote", "set-url", "origin", path.join(root, "unavailable")]);
+  await requireGit(repo, ["remote", "set-url", "origin", path.join(root, "unavailable")]);
   await editRecords(records);
   let now = IDLE_GC_MS + 2;
   const gc = (retryDeferred = false) => makeService(env, now).gc({ retryDeferred });
@@ -103,12 +116,10 @@ it("backs off shared-repository snapshots after a missing-object failure", async
   await closeOpenClawStateDatabaseAsync();
   now += hour;
   const second = await gc();
-  expect(first.failedCount).toBe(1);
-  expect(first.deferredCount).toBe(1);
-  expect(first.issues.map((issue) => issue.reason).join("\n")).toContain(
-    "has missing or corrupt Git objects",
-  );
-  expect(first.issues.map((issue) => issue.reason).join("\n")).toMatch(/repair/i);
+  expect(first).toMatchObject({ failedCount: 1, deferredCount: 1 });
+  const reasons = first.issues.map((issue) => issue.reason).join("\n");
+  expect(reasons).toContain("has missing or corrupt Git objects");
+  expect(reasons).toMatch(/repair/i);
   const failed = records.find((record) => getRegistryWorktree(env, record.id)?.gcRetry)!;
   expect(getRegistryWorktree(env, failed.id)?.gcRetry).toMatchObject({
     stage: "repository-corrupt",
@@ -123,16 +134,9 @@ it("backs off shared-repository snapshots after a missing-object failure", async
     attempts: 2,
     retryAt: now + 4 * hour,
   });
-  const healthy = await materializeManagedWorktreeFixture({
-    env,
-    stateDir,
-    repoRoot: source,
-    name: "healthy",
-    now: 1,
-    ownerKind: "session",
-  });
-  expect((await gc()).removed).toEqual([healthy.id]);
-  await requireGit(repoRoot, ["remote", "set-url", "origin", source]);
+  const [healthy] = await materialize(["healthy"], { repoRoot: source });
+  expect((await gc()).removed).toEqual([healthy!.id]);
+  await requireGit(repo, ["remote", "set-url", "origin", source]);
   expect((await gc(true)).removed.toSorted()).toEqual(
     records.map((record) => record.id).toSorted(),
   );
@@ -145,20 +149,14 @@ it("backs off shared-repository snapshots after a missing-object failure", async
 it.each(["promised", "promised-retry", "unpromised", "checksum", "byte-limited"] as const)(
   "consolidates healthy pack batches independently of missing snapshot objects (%s)",
   async (damage) => {
-    const root = tempDirs.make("worktree-partial-clone-deferral-");
-    const { source, repo } = await partialRepository(root);
-    const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
+    const { root, source, repo, env, materialize } = await fixture(
+      "worktree-partial-clone-deferral-",
+      true,
+    );
     // Fixture materialization is an explicit checkout, not a Gateway inspection.
     await requireGit(repo, ["config", "gc.auto", "0"]);
     await requireGit(repo, ["config", "maintenance.auto", "false"]);
-    const records = await materializeManagedWorktreeFixtures({
-      env,
-      repoRoot: repo,
-      stateDir: root,
-      names: ["partial-a", "partial-b"],
-      ownerKind: "session",
-      now: 1,
-    });
+    const records = await materialize(["partial-a", "partial-b"], { stateDir: root });
     await editRecords(records);
     if (damage === "promised-retry") {
       // Persist the snapshot failure before explicitly retrying with an offline remote.
@@ -220,64 +218,54 @@ it.each(["promised", "promised-retry", "unpromised", "checksum", "byte-limited"]
     await requireGit(repo, ["remote", "set-url", "origin", path.join(root, "unavailable.git")]);
     const trace = path.join(root, "partial-trace.jsonl");
     vi.stubEnv("GIT_TRACE2_EVENT", trace);
-    try {
-      const service = makeService(env);
-      const result = await service.gc({ retryDeferred: damage === "promised-retry" });
-      expect(result.removed).toEqual([]);
-      expect(result.failedCount).toBe(damage === "checksum" || damage === "promised-retry" ? 2 : 1);
-      expect(result.deferredCount).toBe(1);
-      const after = (await fs.readdir(directory)).filter((name) => name.endsWith(".pack"));
-      expect(after.length).toBe(damage === "checksum" ? before.length : expectedPacks);
-      expect(result.gitMaintenance).toMatchObject({
+    const service = makeService(env);
+    const result = await service.gc({ retryDeferred: damage === "promised-retry" });
+    const suspended = damage === "checksum" || damage === "promised-retry";
+    const after = (await fs.readdir(directory)).filter((name) => name.endsWith(".pack"));
+    expect(after.length).toBe(damage === "checksum" ? before.length : expectedPacks);
+    expect(result).toMatchObject({
+      removed: [],
+      failedCount: suspended ? 2 : 1,
+      deferredCount: 1,
+      gitMaintenance: {
         repoRoot: repo,
-        stage: damage === "checksum" || damage === "promised-retry" ? "suspended" : "completed",
+        stage: suspended ? "suspended" : "completed",
         packsBefore: before.length,
         ...(damage === "checksum" ? {} : { packsAfter: expectedPacks }),
-      });
-      for (const record of records) {
-        expect(await read(record.path, "missing.txt")).toBe("omitted blob\n");
-        expect(getRegistryWorktree(env, record.id)?.removedAt).toBeUndefined();
-      }
-      if (damage !== "checksum") {
-        expect(await requireGit(repo, ["rev-list", "--objects", "--all", "--missing=print"])).toBe(
-          missing,
-        );
-        expect(
-          await requireGit(repo, ["cat-file", "--batch-check"], {
-            input: `${objects.join("\n")}\n`,
-          }),
-        ).not.toContain("missing");
-        await requireGit(repo, ["multi-pack-index", "verify"]);
-      }
-      const traceOutput = await fs.readFile(trace, "utf8");
-      expect(traceOutput).not.toContain('"fsck"');
-      if (damage !== "promised-retry") {
-        expect(traceOutput).not.toContain("upload-pack");
-      }
-      if (damage === "unpromised") {
-        await requireGit(repo, ["remote", "set-url", "origin", source]);
-        const repaired = await service.gc({ retryDeferred: true });
-        expect(repaired.removed.toSorted()).toEqual(records.map((record) => record.id).toSorted());
-        expect(await fs.readFile(trace, "utf8")).toContain("upload-pack");
-      }
-    } finally {
-      vi.unstubAllEnvs();
+      },
+    });
+    for (const record of records) {
+      expect(await read(record.path, "missing.txt")).toBe("omitted blob\n");
+      expect(getRegistryWorktree(env, record.id)?.removedAt).toBeUndefined();
+    }
+    if (damage !== "checksum") {
+      expect(await requireGit(repo, ["rev-list", "--objects", "--all", "--missing=print"])).toBe(
+        missing,
+      );
+      expect(
+        await requireGit(repo, ["cat-file", "--batch-check"], {
+          input: `${objects.join("\n")}\n`,
+        }),
+      ).not.toContain("missing");
+      await requireGit(repo, ["multi-pack-index", "verify"]);
+    }
+    const traceOutput = await fs.readFile(trace, "utf8");
+    expect(traceOutput).not.toContain('"fsck"');
+    if (damage !== "promised-retry") {
+      expect(traceOutput).not.toContain("upload-pack");
+    }
+    if (damage === "unpromised") {
+      await requireGit(repo, ["remote", "set-url", "origin", source]);
+      const repaired = await service.gc({ retryDeferred: true });
+      expect(repaired.removed.toSorted()).toEqual(records.map((record) => record.id).toSorted());
+      expect(await fs.readFile(trace, "utf8")).toContain("upload-pack");
     }
   },
 );
 
 it("records an admitted deletion timeout after its caller cancels and loses session authority", async () => {
-  const root = tempDirs.make("worktree-removal-cancelled-budget-");
-  const repoRoot = await initializeRepository(root);
-  const stateDir = path.join(root, "state");
-  const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
-  const record = await materializeManagedWorktreeFixture({
-    env,
-    stateDir,
-    repoRoot,
-    name: "cancelled",
-    now: 1,
-  });
+  const { env, materialize } = await fixture("worktree-removal-cancelled-budget-");
+  const record = (await materialize(["cancelled"], { ownerKind: "manual" }))[0]!;
   const controller = new AbortController();
   let current = true;
   const execute = gitExec.executeGitCommand;
@@ -318,18 +306,8 @@ it("records an admitted deletion timeout after its caller cancels and loses sess
 });
 
 it("persists timeout backoff across restart and retries only when due or explicitly requested", async () => {
-  const root = tempDirs.make("worktree-removal-budget-");
-  const repoRoot = await initializeRepository(root);
-  const stateDir = path.join(root, "state");
-  const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
-  const record = await materializeManagedWorktreeFixture({
-    env,
-    stateDir,
-    repoRoot,
-    name: "timed-out",
-    now: 1,
-    ownerKind: "session",
-  });
+  const { env, materialize } = await fixture("worktree-removal-budget-");
+  const record = (await materialize(["timed-out"]))[0]!;
   await fs.writeFile(path.join(record.path, "README.md"), "retained changes\n");
   let now = IDLE_GC_MS + 2;
   let attempts = 0;

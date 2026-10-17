@@ -108,93 +108,73 @@ describe("ManagedWorktreeService failure diagnostics", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  async function writeFailingSetup(): Promise<string> {
-    const script = path.join(repo, ".openclaw", "worktree-setup.sh");
-    await fs.mkdir(path.dirname(script));
-    await fs.writeFile(script, "#!/bin/sh\nprintf 'fatal: setup failed\\n' >&2\nexit 9\n", {
-      mode: 0o755,
-    });
-    return script;
-  }
-
-  it.each([
-    { phase: "create", failedOperation: "branch" },
-    { phase: "restore", failedOperation: "both" },
-  ] as const)(
-    "reports the failed $failedOperation operation during $phase cleanup",
-    async ({ phase, failedOperation }) => {
-      const removeFails = failedOperation !== "branch";
-      const name = "cleanup-failure";
-      const branch = `openclaw/${name}`;
-      let record;
-      if (phase === "restore") {
-        record = await create(name);
-        await service.remove({ id: record.id, reason: "test" });
-      } else {
-        await writeFailingSetup();
-      }
-      const registryBefore = await service.listRegistryRecords();
-      const fatal = "fatal: branch deletion denied";
-      let cleanupPath: string | undefined;
-      let restoreFailed = false;
-      let removalFailed = false;
-      let branchDeletionFailed = false;
-      vi.spyOn(commandExec, "runCommandWithTimeout").mockImplementation(async (argv, options) => {
-        const args = gitCommandArgs(argv);
-        if (phase === "restore" && args[0] === "reset") {
-          restoreFailed = true;
-          return { ...emptyFailure, code: 45, stderr: "fatal: restore index failed" };
-        }
-        if (args[0] === "worktree" && args[1] === "remove") {
-          cleanupPath = args.at(-1);
-          const removed = await realRunCommand(argv, options);
-          expect(removed.code).toBe(0);
-          // A child can fail after applying its filesystem effects. Later branch
-          // deletion output must not mask this removal failure.
-          removalFailed = removeFails;
-          return removeFails ? emptyFailure : { ...removed, stdout: "worktree removal complete" };
-        }
-        if (args[0] === "branch" && args[1] === "-D") {
-          branchDeletionFailed = true;
-          return {
-            ...emptyFailure,
-            stderr: `${"Deleting branch\r".repeat(200)}\n${"x".repeat(8_000)}${fatal}`,
-          };
-        }
-        return await realRunCommand(argv, options);
+  it.each(["create", "restore"] as const)("reports %s cleanup failures", async (phase) => {
+    const removeFails = phase === "restore";
+    const name = "cleanup-failure";
+    const branch = `openclaw/${name}`;
+    let record;
+    if (phase === "restore") {
+      record = await create(name);
+      await service.remove({ id: record.id, reason: "test" });
+    } else {
+      const script = path.join(repo, ".openclaw", "worktree-setup.sh");
+      await fs.mkdir(path.dirname(script));
+      await fs.writeFile(script, "#!/bin/sh\nprintf 'fatal: setup failed\\n' >&2\nexit 9\n", {
+        mode: 0o755,
       });
-
-      const message = await failureMessage(
-        record ? service.restore({ id: record.id }) : create(name),
-      );
-
-      expect(restoreFailed).toBe(phase === "restore");
-      expect(removalFailed).toBe(removeFails);
-      expect(branchDeletionFailed).toBe(true);
-      expect(cleanupPath).toBeDefined();
-      await expectAbsent(cleanupPath!);
-      expect(await service.listRegistryRecords()).toEqual(registryBefore);
-      expect(await git(repo, "branch", "--list", branch)).toBe(branch);
-      if (record) {
-        expect(await git(repo, "show-ref", "--verify", registryBefore[0]!.snapshotRef!)).not.toBe(
-          "",
-        );
+    }
+    const registryBefore = await service.listRegistryRecords();
+    const fatal = "fatal: branch deletion denied";
+    let cleanupPath: string | undefined;
+    let branchDeletionFailed = false;
+    vi.spyOn(commandExec, "runCommandWithTimeout").mockImplementation(async (argv, options) => {
+      const args = gitCommandArgs(argv);
+      if (phase === "restore" && args[0] === "reset") {
+        return { ...emptyFailure, code: 45, stderr: "fatal: restore index failed" };
       }
-      expect(message).toContain(
-        phase === "restore" ? "fatal: restore index failed" : "fatal: setup failed",
-      );
-      const label =
-        phase === "restore" ? "restore cleanup failed:" : "failed to clean up worktree creation:";
-      expect(message).toContain(label);
-      const cleanupMessage = message.slice(message.indexOf(label) + label.length);
-      expect.soft(cleanupMessage).toContain(removeFails ? "git worktree remove" : "git branch -D");
-      expect.soft(/(?:exit|code|status)[^\n]*73/i.test(cleanupMessage)).toBe(true);
-      expect.soft(cleanupMessage).not.toContain("worktree removal complete");
-      expect.soft(cleanupMessage).not.toContain("Deleted branch");
-      expect.soft(cleanupMessage.includes(fatal)).toBe(!removeFails);
-      expect.soft(cleanupMessage.length).toBeLessThanOrEqual(2_300);
-    },
-  );
+      if (args[0] === "worktree" && args[1] === "remove") {
+        cleanupPath = args.at(-1);
+        const removed = await realRunCommand(argv, options);
+        expect(removed.code).toBe(0);
+        // A child can fail after applying its filesystem effects. Later branch
+        // deletion output must not mask this removal failure.
+        return removeFails ? emptyFailure : { ...removed, stdout: "worktree removal complete" };
+      }
+      if (args[0] === "branch" && args[1] === "-D") {
+        branchDeletionFailed = true;
+        return {
+          ...emptyFailure,
+          stderr: `${"Deleting branch\r".repeat(200)}\n${"x".repeat(8_000)}${fatal}`,
+        };
+      }
+      return await realRunCommand(argv, options);
+    });
+
+    const message = await failureMessage(
+      record ? service.restore({ id: record.id }) : create(name),
+    );
+
+    expect(branchDeletionFailed).toBe(true);
+    expect(cleanupPath).toBeDefined();
+    await expectAbsent(cleanupPath!);
+    expect(await service.listRegistryRecords()).toEqual(registryBefore);
+    expect(await git(repo, "branch", "--list", branch)).toBe(branch);
+    if (record) {
+      expect(await git(repo, "show-ref", "--verify", registryBefore[0]!.snapshotRef!)).not.toBe("");
+    }
+    expect(message).toContain(
+      phase === "restore" ? "fatal: restore index failed" : "fatal: setup failed",
+    );
+    const label =
+      phase === "restore" ? "restore cleanup failed:" : "failed to clean up worktree creation:";
+    expect(message).toContain(label);
+    const cleanupMessage = message.slice(message.indexOf(label) + label.length);
+    expect.soft(cleanupMessage).toContain(removeFails ? "git worktree remove" : "git branch -D");
+    expect.soft(/(?:exit|code|status)[^\n]*73/i.test(cleanupMessage)).toBe(true);
+    expect.soft(cleanupMessage).not.toMatch(/worktree removal complete|Deleted branch/);
+    expect.soft(cleanupMessage.includes(fatal)).toBe(!removeFails);
+    expect.soft(cleanupMessage.length).toBeLessThanOrEqual(2_300);
+  });
 
   it("lets admitted deletion settle after cancellation and keeps its complete recovery snapshot", async () => {
     const created = await create("cancel-removal");
@@ -274,10 +254,7 @@ describe("ManagedWorktreeService failure diagnostics", () => {
     }
   });
 
-  it.each([
-    { name: "long evidence inside the existing window", oldEvidenceVisible: true },
-    { name: "evidence outside the existing newline window", oldEvidenceVisible: false },
-  ])("preserves failed checkout evidence for $name", async ({ oldEvidenceVisible }) => {
+  it.each(["\r", "\n"])("preserves failed-checkout evidence (%j)", async (separator) => {
     await git(path.join(root, "remote.git"), "symbolic-ref", "HEAD", "refs/heads/main");
     await git(repo, "remote", "set-head", "origin", "-a");
     const name = "retry-evidence";
@@ -292,7 +269,6 @@ describe("ManagedWorktreeService failure diagnostics", () => {
         checkoutFailed = true;
         allocatedPath = args.at(-2);
         expect(result.code).toBe(0);
-        const separator = oldEvidenceVisible ? "\r" : "\n";
         return {
           ...result,
           code: 1,
@@ -323,7 +299,6 @@ describe("ManagedWorktreeService removal timing", { concurrent: false }, () => {
   const messagePrefix = "slow managed worktree removal ";
   let clock = 120_000;
   let root: string;
-  let logFile: string;
   let service: ManagedWorktreeService;
   let diagnosticsWereEnabled: boolean;
   let unsubscribe: () => void;
@@ -361,14 +336,17 @@ describe("ManagedWorktreeService removal timing", { concurrent: false }, () => {
 
   beforeEach(() => {
     root = tempDirs.make("openclaw-removal-timing-");
-    logFile = path.join(root, "runtime.log");
     service = new ManagedWorktreeService({
       env: { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "private-state") },
     });
     diagnosticsWereEnabled = areDiagnosticsEnabledForProcess();
     setDiagnosticsEnabledForProcess(true);
     resetLogger();
-    setLoggerOverride({ level: "info", consoleLevel: "silent", file: logFile });
+    setLoggerOverride({
+      level: "info",
+      consoleLevel: "silent",
+      file: path.join(root, "runtime.log"),
+    });
     clock += 120_000;
     vi.spyOn(performance, "now").mockImplementation(() => clock);
     records = [];

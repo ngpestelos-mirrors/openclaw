@@ -53,6 +53,14 @@ const liveIds = async () =>
   (await service.listRegistryRecords())
     .filter((record) => record.removedAt === undefined)
     .map((record) => record.id);
+async function withRunLease(id: string, run: () => Promise<void>) {
+  const lease = await acquireWorktreeRunLease(id, { env });
+  try {
+    await run();
+  } finally {
+    await lease.release();
+  }
+}
 async function expectPrivateMetadata(storage: { directory: string; head: Buffer; index: Buffer }) {
   expect(await fs.readFile(path.join(storage.directory, "HEAD"))).toEqual(storage.head);
   expect(await fs.readFile(path.join(storage.directory, "index"))).toEqual(storage.index);
@@ -102,46 +110,29 @@ it("cannot evict an ancestor of a live checkout and retires idle children indivi
   });
   const child = await create("child", repoRoot, nested);
   await fs.writeFile(path.join(child.path, "unsaved.txt"), "child data\n");
-  const lease = await acquireWorktreeRunLease(child.id, { env });
-  try {
+  await withRunLease(child.id, async () => {
     await expect(create("replacement")).rejects.toThrow(/cap 2.*live owners/);
     expect(await read(child.path, "unsaved.txt")).toBe("child data\n");
     expect(registry(outer.id)?.removedAt).toBeUndefined();
     expect(registry(child.id)?.removedAt).toBeUndefined();
-  } finally {
-    await lease.release();
-  }
+  });
   config.worktreeMaxCount = 1;
   await create("replacement");
   expect(registry(outer.id)?.removedAt).toEqual(expect.any(Number));
   expect(registry(child.id)?.snapshotRef).toBeTruthy();
   expect(registry(child.id)?.removedAt).toEqual(expect.any(Number));
-  expect(
-    (await service.listRegistryRecords()).filter((record) => record.removedAt === undefined),
-  ).toHaveLength(1);
+  expect(await liveIds()).toHaveLength(1);
 });
 
 it("preserves a live dependent's chained object lookup at the cap", async () => {
   const outer = await create("donor-owner");
-  const donor = path.join(root, "donor");
+  const donor = await initializeRepository(path.join(root, "donor"));
   const source = path.join(root, "shared-source");
   const filename = "borrowed-only.txt";
   const contents = "unique shared-clone object bytes for live dependent\n";
-  await fs.mkdir(donor);
-  await requireGit(donor, ["init", "--template=", "-b", "main"]);
   await fs.writeFile(path.join(donor, filename), contents);
   await requireGit(donor, ["add", filename]);
-  await requireGit(donor, [
-    "-c",
-    "user.name=OpenClaw Test",
-    "-c",
-    "user.email=openclaw-test@example.invalid",
-    "-c",
-    "commit.gpgSign=false",
-    "commit",
-    "-m",
-    "unique shared-clone donor for live dependent",
-  ]);
+  await requireGit(donor, ["commit", "-m", "unique shared-clone donor for live dependent"]);
   const commit = await requireGit(donor, ["rev-parse", "HEAD"]);
   const blob = await requireGit(donor, ["rev-parse", `HEAD:${filename}`]);
   await requireGit(root, ["clone", "--shared", "--", donor, source]);
@@ -158,8 +149,7 @@ it("preserves a live dependent's chained object lookup at the cap", async () => 
   expect(await requireGit(source, ["cat-file", "-e", `${commit}^{commit}`])).toBe("");
   expect(await requireGit(source, ["cat-file", "blob", blob])).toBe(contents.trim());
   const dependent = await create("dependent", source);
-  const lease = await acquireWorktreeRunLease(dependent.id, { env });
-  try {
+  await withRunLease(dependent.id, async () => {
     expect(hasLiveWorktreeRunLease(env, dependent.id)).toBe(true);
     expect(await requireGit(dependent.path, ["cat-file", "-e", `${commit}^{commit}`])).toBe("");
     expect(await requireGit(dependent.path, ["cat-file", "blob", blob])).toBe(contents.trim());
@@ -174,9 +164,7 @@ it("preserves a live dependent's chained object lookup at the cap", async () => 
       expect(await requireGit(repository, ["cat-file", "blob", blob])).toBe(contents.trim());
     }
     expect(hasLiveWorktreeRunLease(env, dependent.id)).toBe(true);
-  } finally {
-    await lease.release();
-  }
+  });
 });
 
 it("refuses a late live owner of unresolved shared metadata before deleting its container", async () => {
@@ -300,16 +288,16 @@ it.each([
       });
       expect(relocated).toBe(true);
       expect(lease).toBeDefined();
-      expect(result.removed).toEqual([]);
-      expect(result.limitsSatisfied).toBe(false);
-      expect(result.issues).toEqual(
-        expect.arrayContaining([
+      expect(result).toMatchObject({
+        removed: [],
+        limitsSatisfied: false,
+        issues: expect.arrayContaining([
           expect.objectContaining({
             id: outer.id,
             reason: expect.stringContaining(`repository dependency: ${external.id}`),
           }),
         ]),
-      );
+      });
       expect(registry(outer.id)?.removedAt).toBeUndefined();
       expect(registry(external.id)?.removedAt).toBeUndefined();
       expect(await requireGit(external.path, ["rev-parse", "--verify", "HEAD"])).toBeTruthy();
@@ -330,28 +318,20 @@ it.each([
 );
 
 it.each([
-  { layout: "source repository", surface: "checkout", missingCheckout: false },
-  { layout: "source repository", surface: "native administration", missingCheckout: true },
-  {
-    layout: "private Git directory",
-    surface: "symlinked native administration",
-    missingCheckout: false,
-  },
+  ["source repository", "checkout", false],
+  ["source repository", "native administration", true],
+  ["private Git directory", "symlinked native administration", false],
 ] as const)(
-  "preserves an external live checkout backed by $layout in $surface",
-  async ({ layout, surface, missingCheckout }) => {
+  "preserves an external live checkout backed by %s in %s",
+  async (layout, surface, missingCheckout) => {
     const outer = await create("outer");
     let storageRoot = outer.path;
     if (surface !== "checkout") {
       storageRoot = await gitDirectory(outer.path);
       if (surface === "symlinked native administration") {
-        const commonDirectory = await gitCommonDirectory(outer.path);
-        const relocated = path.join(root, "relocated-outer-admin");
-        await fs.rename(storageRoot, relocated);
-        await fs.symlink(relocated, storageRoot, process.platform === "win32" ? "junction" : "dir");
-        await fs.writeFile(path.join(relocated, "commondir"), `${commonDirectory}\n`);
-        await fs.writeFile(path.join(outer.path, ".git"), `gitdir: ${relocated}\n`);
-        storageRoot = relocated;
+        storageRoot = (
+          await relocatePrivateGitDirectory(outer.path, path.join(root, "relocated-outer-admin"))
+        ).directory;
       }
     }
     const source = await initializeRepository(
@@ -368,8 +348,7 @@ it.each([
     );
     await fs.writeFile(path.join(external.path, "unsaved.txt"), "external checkout data\n");
     const original = registry(outer.id);
-    const lease = await acquireWorktreeRunLease(external.id, { env });
-    try {
+    await withRunLease(external.id, async () => {
       expect(hasLiveWorktreeRunLease(env, external.id)).toBe(true);
       if (missingCheckout) {
         await fs.rm(outer.path, { recursive: true });
@@ -387,9 +366,7 @@ it.each([
       if (privateMetadata) {
         await expectPrivateMetadata(privateMetadata);
       }
-    } finally {
-      await lease.release();
-    }
+    });
     if (surface !== "checkout") {
       return;
     }

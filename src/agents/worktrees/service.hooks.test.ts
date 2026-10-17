@@ -110,36 +110,31 @@ describe("ManagedWorktreeService repository code isolation", () => {
     await expectAbsent(sentinel);
   });
 
-  it.each([true, false])(
-    "executes the repository setup script only when enabled (%s)",
-    async (runSetupScript) => {
-      await writeSetup("#!/bin/sh\nprintf setup > setup-ran.txt\n");
+  it.each([true, false])("runs setup only when enabled (%s)", async (runSetupScript) => {
+    await writeSetup("#!/bin/sh\nprintf setup > setup-ran.txt\n");
 
-      const progress: string[] = [];
-      const onPromptReady = vi.fn(async () => {});
-      const created = await create("setup", {
-        runSetupScript,
-        onProgress: (phase) => progress.push(phase),
-        onPromptReady,
-      });
+    const progress: string[] = [];
+    const onPromptReady = vi.fn(async () => {});
+    const created = await create("setup", {
+      runSetupScript,
+      onProgress: (phase) => progress.push(phase),
+      onPromptReady,
+    });
 
-      const setupOutput = path.join(created.path, "setup-ran.txt");
-      if (runSetupScript) {
-        await expect(fs.readFile(setupOutput, "utf8")).resolves.toBe("setup");
-      } else {
-        await expectAbsent(setupOutput);
-      }
-      await expectAbsent(sentinel);
-      expect(progress).toEqual(runSetupScript ? ["checkout", "setup"] : ["checkout"]);
-      if (runSetupScript) {
-        expect(onPromptReady).not.toHaveBeenCalled();
-      }
-    },
-  );
+    const setupOutput = path.join(created.path, "setup-ran.txt");
+    if (runSetupScript) {
+      await expect(fs.readFile(setupOutput, "utf8")).resolves.toBe("setup");
+    } else {
+      await expectAbsent(setupOutput);
+    }
+    await expectAbsent(sentinel);
+    expect(progress).toEqual(runSetupScript ? ["checkout", "setup"] : ["checkout"]);
+    if (runSetupScript) {
+      expect(onPromptReady).not.toHaveBeenCalled();
+    }
+  });
 
-  it("stops setup and removes the unbound worktree when creation is aborted", async ({
-    signal,
-  }) => {
+  it("cancels setup and removes its unbound checkout", async ({ signal }) => {
     const setup = path.join(repo, ".openclaw");
     const pidFile = path.join(setup, "setup-pid");
     await writeSetup(
@@ -166,18 +161,11 @@ describe("ManagedWorktreeService repository code isolation", () => {
         Promise.race([
           receipts.waitFor(pidFile, "ready"),
           // A child can exit before its side-channel receipt reaches the test.
-          creation.then(
-            () => {
-              if (!hasPid()) {
-                throw new Error(`Child exited before writing ${pidFile}`);
-              }
-            },
-            (error: unknown) => {
-              if (!hasPid()) {
-                throw new Error(`Child failed before writing ${pidFile}`, { cause: error });
-              }
-            },
-          ),
+          outcome.then((cause) => {
+            if (!hasPid()) {
+              throw new Error(`Child settled before writing ${pidFile}`, { cause });
+            }
+          }),
         ]),
         signal,
       );
@@ -237,7 +225,7 @@ describe("ManagedWorktreeService repository code isolation", () => {
       let currentSource: SourceScope | undefined;
       let setupSource: SourceScope | undefined;
       let acceptedSignal: AbortSignal | undefined;
-      let creationSettled = false;
+      const creationSettled = vi.fn();
       const withSource: WorktreeSourceStage = async (run) => {
         const scope: SourceScope = { active: true, checks: 0 };
         const previous = currentSource;
@@ -246,9 +234,7 @@ describe("ManagedWorktreeService repository code isolation", () => {
           try {
             const result = await run({
               assertCurrent: () => {
-                if (!scope.active) {
-                  throw new Error("source scope is closed");
-                }
+                assert(scope.active, "source scope is closed");
                 scope.checks += 1;
               },
             });
@@ -306,37 +292,33 @@ describe("ManagedWorktreeService repository code isolation", () => {
       const creation = callerContext.run("setup-caller", () =>
         create(`handoff-${mode}`, { withSource }),
       );
+      const markSettled = <T>(result: T) => {
+        creationSettled();
+        return result;
+      };
       const outcome = creation.then(
-        (value) => {
-          creationSettled = true;
-          return { value };
-        },
-        (error: unknown) => {
-          creationSettled = true;
-          return { error };
-        },
+        (value) => markSettled({ value }),
+        (error: unknown) => markSettled({ error }),
       );
+      const premature = creation.then(() => {
+        throw new Error("Worktree creation completed before setup readiness");
+      });
       const waitForSetupSignal = (ready: Promise<void>, label: string) =>
         withTimeout(
-          Promise.race([
-            ready,
-            creation.then(() => {
-              throw new Error(`Worktree creation completed before ${label}`);
-            }),
-          ]),
+          Promise.race([ready, premature]),
           SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
           label,
         );
       try {
         await waitForSetupSignal(dispatched.promise, "setup dispatch");
         await waitForSetupSignal(released.promise, "setup source release");
-        expect(creationSettled).toBe(false);
+        expect(creationSettled).not.toHaveBeenCalled();
         expect(events).not.toContain("completion");
         expect(events).not.toContain("checkout-cleanup");
         if (mode === "unwind") {
           await waitForSetupSignal(aborted.promise, "setup cancellation");
           expect(acceptedSignal?.reason).toBe(unwindFailure);
-          expect(creationSettled).toBe(false);
+          expect(creationSettled).not.toHaveBeenCalled();
           expect(events).not.toContain("checkout-cleanup");
           completion.reject(completionFailure);
           const result = await outcome;
@@ -368,7 +350,7 @@ describe("ManagedWorktreeService repository code isolation", () => {
   );
 
   it.each(["new", "reuse", "changed"] as const)(
-    "retains exact worktree ownership after acknowledged source unwind (%s)",
+    "preserves exact ownership after source unwind (%s)",
     async (mode) => {
       const ownerId = `publication-${mode}`;
       const params = {
@@ -402,34 +384,24 @@ describe("ManagedWorktreeService repository code isolation", () => {
         .create({ ...params, withSource })
         .catch((error: unknown) => error);
       assert(acknowledged, "expected a published worktree before source unwind");
-      const published = acknowledged;
+      const { id, path: checkout, branch, lastActiveAt } = acknowledged;
+      const current = await service.findLiveByOwner("session", ownerId);
       if (mode === "new") {
         expect(failure).toBe(sourceFailure);
-        expect(await service.findLiveByOwner("session", ownerId)).toBeUndefined();
-        const retained = (await service.listRegistryRecords()).find(
-          (record) => record.id === published.id,
-        );
+        expect(current).toBeUndefined();
+        const retained = (await service.listRegistryRecords()).find((record) => record.id === id);
         expect(retained?.removedAt).toBeDefined();
-        await expect(fs.stat(published.path)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fs.stat(checkout)).rejects.toMatchObject({ code: "ENOENT" });
       } else {
-        const current = await service.findLiveByOwner("session", ownerId);
-        expect(current).toMatchObject({
-          id: published.id,
-          path: published.path,
-          branch: published.branch,
-          ownerId,
-        });
+        expect(current).toMatchObject({ id, path: checkout, branch, ownerId });
         expect(current?.removedAt).toBeUndefined();
-        expect(await fs.readFile(path.join(published.path, "README.md"), "utf8")).toBe("base\n");
+        expect(await fs.readFile(path.join(checkout, "README.md"), "utf8")).toBe("base\n");
         if (mode === "reuse") {
-          expect(published.id).toBe(existing?.id);
+          expect(id).toBe(existing?.id);
           expect(failure).toBe(sourceFailure);
         } else {
-          expect(current?.lastActiveAt).toBe(published.lastActiveAt + 1);
-          assert(
-            failure instanceof AggregateError,
-            "expected source failure with rollback refusal",
-          );
+          expect(current?.lastActiveAt).toBe(lastActiveAt + 1);
+          assert(failure instanceof AggregateError);
           expect(failure.cause).toBe(sourceFailure);
           expect(failure.errors[0]).toBe(sourceFailure);
           expect(failure.errors[1]).toMatchObject({

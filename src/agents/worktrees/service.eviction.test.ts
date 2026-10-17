@@ -20,7 +20,7 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { observeMainThreadReads } from "../../test-utils/main-thread-sql-spies.test-support.js";
-import { withWorktreeAllocationLease } from "./allocation.js";
+import { type WorktreeAllocationGuard, withWorktreeAllocationLease } from "./allocation.js";
 import * as checkout from "./checkout-materialize.js";
 import * as eviction from "./eviction.js";
 import * as cleanupLimits from "./gc-limits.js";
@@ -71,10 +71,7 @@ describe("managed worktree cap eviction", () => {
 
   async function createFixture(
     name: string,
-    options: Pick<
-      Parameters<typeof materializeManagedWorktreeFixture>[0],
-      "ownerKind" | "ownerId"
-    > = {},
+    options: Partial<Pick<ManagedWorktreeRecord, "ownerKind" | "ownerId">> = {},
   ) {
     repository ??= await resolveRepository(repoRoot);
     return materializeManagedWorktreeFixture({
@@ -101,6 +98,15 @@ describe("managed worktree cap eviction", () => {
     openOpenClawStateDatabase({ env })
       .db.prepare("SELECT lease_key FROM state_leases WHERE scope = ?")
       .all(worktreeRunLeaseScope(id));
+  const evict = (record: ManagedWorktreeRecord, guard: WorktreeAllocationGuard) =>
+    eviction.evictManagedWorktree({
+      env,
+      record,
+      guard,
+      reason: "idle-age",
+      now: Date.now,
+      getConfig: () => config,
+    });
   async function removeExact(record: ManagedWorktreeRecord, target = service, unsaved?: string) {
     const head = await requireGit(record.path, ["rev-parse", "HEAD"]);
     await requireGit(record.path, ["checkout", "--detach", "HEAD"]);
@@ -157,20 +163,13 @@ describe("managed worktree cap eviction", () => {
       const failure: unknown = await withWorktreeAllocationLease(
         { env, signal: cancellation.signal },
         (guard) =>
-          eviction.evictManagedWorktree({
-            env,
-            record,
-            reason: "idle-age",
-            now: Date.now,
-            getConfig: () => config,
-            guard: {
-              ...guard,
-              commitGuard: () => {
-                if (unsettled) {
-                  throw primary;
-                }
-                guard.commitGuard();
-              },
+          evict(record, {
+            ...guard,
+            commitGuard: () => {
+              if (unsettled) {
+                throw primary;
+              }
+              guard.commitGuard();
             },
           }),
       ).catch((error: unknown) => error);
@@ -204,14 +203,7 @@ describe("managed worktree cap eviction", () => {
     );
     await expect(
       withWorktreeAllocationLease({ env, signal: cancellation.signal }, (guard) =>
-        eviction.evictManagedWorktree({
-          env,
-          record,
-          reason: "idle-age",
-          now: Date.now,
-          getConfig: () => config,
-          guard,
-        }),
+        evict(record, guard),
       ),
     ).rejects.toMatchObject({ code: "OPENCLAW_STATE_LEASE_ABORTED" });
     expect(cancellation.signal.aborted).toBe(true);
@@ -475,17 +467,12 @@ describe("managed worktree cap eviction", () => {
           ...options,
         ),
       );
-    const replacement = await (async () => {
-      try {
-        const created = await create("replacement");
-        expect(grants).toBeGreaterThan(0);
-        expect(worktreeReads).toEqual([]);
-        return created;
-      } finally {
-        admission.mockRestore();
-        reads.restore();
-      }
-    })();
+    const replacement = await create("replacement").finally(() => {
+      admission.mockRestore();
+      reads.restore();
+    });
+    expect(grants).toBeGreaterThan(0);
+    expect(worktreeReads).toEqual([]);
     const archived = registry(dirty.id)!;
     expect(archived.removedAt).toEqual(expect.any(Number));
     expect(archived.snapshotRef).toMatch(/^refs\/openclaw\/snapshots\//);
@@ -516,85 +503,66 @@ describe("managed worktree cap eviction", () => {
     expect(await liveIds()).toEqual([dirty.id]);
   });
 
-  it("refuses an advanced retained branch before evicting unrelated data", async () => {
-    const archived = await createFixture("retained");
+  it.each([
+    ["advanced branch", /Recorded branch moved/],
+    ["missing repository", /source repository no longer exists/],
+    ["occupied destination", /occupied/],
+    ["missing snapshot", /rev-parse|single revision|snapshot/],
+    ["retained exact", /occupied|identity/],
+    ["fallback exact", /occupied|identity/],
+  ] as const)("preserves the full fleet when %s prevents restoration", async (failure, error) => {
+    const archived = await createFixture("archived");
+    const exact = failure === "retained exact" || failure === "fallback exact";
+    const removed = exact
+      ? await removeExact(archived)
+      : failure !== "advanced branch"
+        ? await service.remove({ id: archived.id, reason: "fixture" })
+        : undefined;
+    if (failure === "fallback exact") {
+      await requireGit(repoRoot, ["worktree", "remove", "--force", "--", removed!.recoveryPath!]);
+    }
     const live = await create("live");
     await fs.writeFile(path.join(live.path, "README.md"), "unrelated unsaved data\n");
     const liveBefore = registry(live.id);
     const branch = `refs/heads/${archived.branch}`;
-    const parent = await requireGit(repoRoot, ["rev-parse", branch]);
-    const advanced = await requireGit(repoRoot, [
-      "commit-tree",
-      `${parent}^{tree}`,
-      "-p",
-      parent,
-      "-m",
-      "synthetic retained branch advance",
-    ]);
-    await requireGit(repoRoot, ["update-ref", branch, advanced, parent]);
-    await expect(service.restore({ id: archived.id })).rejects.toThrow("Recorded branch moved");
-    expect(await requireGit(repoRoot, ["rev-parse", branch])).toBe(advanced);
-    expect(registry(live.id)).toEqual(liveBefore);
-    expect(await read(live.path)).toBe("unrelated unsaved data\n");
-  });
-
-  it.each([
-    ["missing repository", "restore"],
-    ["occupied destination", "restore"],
-    ["missing snapshot", "same-name create"],
-  ] as const)("preserves the full fleet when %s prevents %s", async (failure, entrypoint) => {
-    const archived = await createFixture("archived");
-    const removed = await service.remove({ id: archived.id, reason: "fixture" });
-    const live = await create("live");
-    await fs.writeFile(path.join(live.path, "README.md"), "unrelated unsaved data\n");
-    const liveBefore = registry(live.id);
-    if (failure === "missing snapshot") {
-      await requireGit(repoRoot, ["update-ref", "-d", removed.snapshotRef!]);
+    let advanced: string | undefined;
+    if (failure === "advanced branch") {
+      const parent = await requireGit(repoRoot, ["rev-parse", branch]);
+      advanced = await requireGit(repoRoot, [
+        "commit-tree",
+        `${parent}^{tree}`,
+        "-p",
+        parent,
+        "-m",
+        "synthetic retained branch advance",
+      ]);
+      await requireGit(repoRoot, ["update-ref", branch, advanced, parent]);
+    } else if (failure === "missing snapshot") {
+      await requireGit(repoRoot, ["update-ref", "-d", removed!.snapshotRef!]);
     } else if (failure === "missing repository") {
       await fs.rename(repoRoot, path.join(root, "unavailable-repository"));
     } else {
       await fs.mkdir(archived.path, { recursive: true });
       await fs.writeFile(path.join(archived.path, "occupied"), "preserve destination\n");
     }
-    const restore =
-      entrypoint === "restore" ? service.restore({ id: archived.id }) : create(archived.name);
-    await expect(restore).rejects.toThrow(
-      failure === "missing repository"
-        ? /source repository no longer exists/
-        : failure === "occupied destination"
-          ? /occupied/
-          : /rev-parse|single revision|snapshot/,
-    );
+    await expect(
+      failure === "missing snapshot" ? create(archived.name) : service.restore({ id: archived.id }),
+    ).rejects.toThrow(error);
+    if (advanced) {
+      expect(await requireGit(repoRoot, ["rev-parse", branch])).toBe(advanced);
+    }
     expect(registry(live.id)).toEqual(liveBefore);
     expect(await read(live.path)).toBe("unrelated unsaved data\n");
     expect(await liveIds()).toEqual([live.id]);
-  });
-
-  it.each(["retained", "fallback"] as const)(
-    "admits a validated exact-state %s restore once",
-    async (kind) => {
-      const archived = await createFixture("exact");
-      const removed = await removeExact(archived);
-      if (kind === "fallback") {
-        await requireGit(repoRoot, ["worktree", "remove", "--force", "--", removed.recoveryPath!]);
-      }
-      const live = await create("live");
-      await fs.writeFile(path.join(live.path, "README.md"), "unrelated unsaved data\n");
-      const liveBefore = registry(live.id);
-      await fs.mkdir(archived.path, { recursive: true });
-      await fs.writeFile(path.join(archived.path, "occupied"), "preserve destination\n");
-      await expect(service.restore({ id: archived.id })).rejects.toThrow(/occupied|identity/);
-      expect(registry(live.id)).toEqual(liveBefore);
-      expect(await read(live.path)).toBe("unrelated unsaved data\n");
+    if (exact) {
       await fs.rm(archived.path, { recursive: true });
-
       const restored = await service.restore({ id: archived.id });
       expect(await read(restored.path)).toBe("base\n");
       expect(registry(live.id)?.removedAt).toEqual(expect.any(Number));
       expect(await service.restore({ id: archived.id })).toEqual(restored);
       expect(await liveIds()).toEqual([archived.id]);
-    },
-  );
+    }
+  });
 
   it("refuses a create at the cap when the remaining checkout has a live owner", async () => {
     const active = await createFixture("active", {
