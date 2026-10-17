@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as exec from "../process/exec.js";
 import { pkgQueryResult as result } from "./update-freebsd-pkg-ownership.test-support.js";
@@ -118,18 +119,13 @@ it("warns after lstat failure without private details", async () => {
 });
 it("does not continue an ancestor walk or reset the snapshot after a late ENOENT", async () => {
   const { inspect, query, onWarning } = fixture("/registered/file\n");
-  let rejectLookup: ((error: Error) => void) | undefined;
-  const lookup = vi.spyOn(fs, "lstat").mockImplementationOnce(
-    () =>
-      new Promise<never>((_resolve, reject) => {
-        rejectLookup = reject;
-      }),
-  );
+  const lookupResult = createDeferred<never>();
+  const lookup = vi.spyOn(fs, "lstat").mockImplementationOnce(() => lookupResult.promise);
   const canonical = vi.spyOn(fs, "realpath");
   vi.useFakeTimers();
   const pending = expect(inspect("/fixture/missing/openclaw")).resolves.toBeUndefined();
   await Promise.all([pending, vi.advanceTimersByTimeAsync(100)]);
-  rejectLookup?.(Object.assign(new Error("missing"), { code: "ENOENT" }));
+  lookupResult.reject(Object.assign(new Error("missing"), { code: "ENOENT" }));
   await vi.advanceTimersByTimeAsync(0);
   await expect(inspect("/another/root")).resolves.toBeUndefined();
   expectWarning(onWarning, "exhausted its shared 100 ms budget");

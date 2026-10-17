@@ -700,22 +700,19 @@ it("does not publish a fallback after its preparation lease is replaced", async 
   }
 });
 
-it.each([
-  ["returns false", () => false],
-  [
-    "throws",
-    () => {
-      throw new Error("receipt database unavailable");
-    },
-  ],
-])(
+it.each(["returns false", "throws"])(
   "returns a created URL without replaying unknown finalization when it %s",
-  async (failure, fail) => {
+  async (failure) => {
     const { submit } = await prepareFailedReport();
     const createIssue = mockCreatedIssue(issueUrl);
     const finalizeReceipt = vi
       .fn(finalizeUpdateFailureReportReceipt)
-      .mockImplementationOnce(async () => fail());
+      .mockImplementationOnce(async () => {
+        if (failure === "throws") {
+          throw new Error("receipt database unavailable");
+        }
+        return false;
+      });
 
     const first = await submit({ createIssue, finalizeReceipt });
     const second = await submit({ createIssue });

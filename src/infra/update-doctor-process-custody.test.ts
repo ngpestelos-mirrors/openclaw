@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { installPrivateUpdateHandoffStore } from "../../test/helpers/private-update-handoff-store.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as groups from "../process/child-process-tree.js";
@@ -53,6 +53,7 @@ async function nativeFixture(runId: string, names = [""]) {
   const root = fs.realpathSync(directories.make("doctor-native-"));
   const roots = names.map((name) => path.join(root, name));
   const resultPath = path.join(root, "doctor-result.json");
+  const receiptPath = `${resultPath}.processes`;
   const native = await nativeCustody.createManagedCommandProcessCustody({
     roots,
     runId,
@@ -63,14 +64,11 @@ async function nativeFixture(runId: string, names = [""]) {
       roots,
       databaseIdentity: native.databaseIdentity,
     });
-  return { root, roots, native, resultPath, parent, store: nativeStore(native) };
+  return { root, roots, native, receiptPath, parent, store: nativeStore(native) };
 }
 function runDoctor(custody: DoctorCustody, source: string) {
-  return withCommandProcessScope(
-    () => spawnCommand([process.execPath, "-e", source]),
-    undefined,
-    custody,
-  );
+  const command = () => spawnCommand([process.execPath, "-e", source]);
+  return withCommandProcessScope(command, undefined, custody);
 }
 function liveChild(native: NativeCustody) {
   const argv = [process.execPath, "-e", "process.stdin.resume()"];
@@ -82,9 +80,8 @@ function liveChild(native: NativeCustody) {
   return { child, reservation, closed: once(child, "close") };
 }
 
-it.skipIf(process.platform === "win32")(
-  "reserves exited children until their spawning owner settles",
-  async () => {
+describe.skipIf(process.platform === "win32")("Unix command custody", () => {
+  it("reserves exited children until their spawning owner settles", async () => {
     const { root, native, store } = await nativeFixture("terminal-before-binding");
     const argv = [process.execPath, "-e", ""];
     const reservation = native.custody.reserve(argv);
@@ -101,145 +98,145 @@ it.skipIf(process.platform === "win32")(
       native.releaseAnchors();
     }
     expect(store.readCommandChildren([root])).toEqual([]);
-  },
-);
+  });
 
-it.skipIf(process.platform === "win32").each([true, false])(
-  "binds a live child only with captured birth identity (captured: %s)",
-  async (captured) => {
-    const { root, native, store } = await nativeFixture("captured-before-binding");
-    const { child, reservation, closed } = liveChild(native);
-    await once(child, "spawn");
-    const pid = child.pid!;
-    const startedAt = birthIdentity.getProcessInstanceStartTime(pid);
-    expect(startedAt).not.toBeNull();
-    const readBirth = birthIdentity.getFileLockProcessStartTime;
-    const probe = vi
-      .spyOn(birthIdentity, "getFileLockProcessStartTime")
-      .mockImplementation((queried, ...args) =>
-        queried === pid ? null : readBirth(queried, ...args),
-      );
-    try {
-      const bind = () => reservation.spawned({ pid, startedAt: captured ? startedAt : null });
-      if (captured) {
-        expect(bind).not.toThrow();
-        expect(store.readCommandChildren([root])).toMatchObject([
-          { executor: { pid }, action: { custody: "bound" } },
-        ]);
-      } else {
-        expect(bind).toThrow("managed handoff process start identity is unavailable");
-        expect(store.readCommandChildren([root])).toMatchObject([
-          { action: { custody: "reserved" } },
-        ]);
-      }
-    } finally {
-      probe.mockRestore();
-      child.stdin!.end();
-      await closed;
-      reservation.settled();
-      native.releaseAnchors();
-    }
-    expect(store.readCommandChildren([root])).toEqual([]);
-  },
-);
-
-it.skipIf(process.platform === "win32").each([false, true])(
-  "retains failed-bind child identity (settlement fails: %s)",
-  async (settlementFails) => {
-    const { root, databasePath, receiptPath } = doctorFixture();
-    const create = nativeCustody.createManagedCommandProcessCustody;
-    let identity: CommandProcessIdentity | undefined;
-    let releaseReservation: (() => void) | undefined;
-    vi.spyOn(nativeCustody, "createManagedCommandProcessCustody").mockImplementation(
-      async (options) => {
-        const native = await create(options);
-        const reserve = native.custody.reserve.bind(native.custody);
-        native.custody.reserve = (argv) => {
-          const reservation = reserve(argv);
-          releaseReservation = () => reservation.settled();
-          return {
-            spawned(childIdentity) {
-              identity = childIdentity;
-              throw new Error("Native command binding failed");
-            },
-            settled() {
-              if (settlementFails) {
-                throw new Error("Native command settlement failed");
-              }
-              reservation.settled();
-            },
-          };
-        };
-        return native;
-      },
-    );
-    const store = createManagedHandoffLeaseStore({ databasePath, serviceManagerEnv: {} });
-    using custody = await retainUpdateDoctorProcesses();
-    await expect(runDoctor(custody, "process.stdin.resume()")).rejects.toMatchObject({
-      code: "ERR_COMMAND_PROCESS_CLEANUP_UNCERTAIN",
-    });
-    try {
-      expect(identity).toMatchObject({ pid: expect.any(Number) });
-      expect(groups.isChildProcessTreeAlive(identity!)).toBe(false);
-      const receipt = readReceipt(receiptPath);
-      expect(receipt.slots).toEqual(settlementFails ? [{ id: 1, identity }] : []);
-      expect(store.readCommandChildren([root])).toHaveLength(settlementFails ? 1 : 0);
-    } finally {
-      if (settlementFails) {
-        releaseReservation?.();
-      }
-    }
-  },
-);
-
-it.skipIf(process.platform === "win32").each([
-  ["legacy updater without a run ID", undefined, true, false],
-  ["current updater", "current-update-run", true, false],
-  ["invalid current run ID", "x".repeat(4097), false, false],
-  ["recovered IPC publication", "current-update-run", true, true],
-] as const)(
-  "admits Doctor commands with %s only with valid custody",
-  async (_name, runId, admitted, publicationFault) => {
-    const { root, databasePath, receiptPath } = doctorFixture();
-    const effect = path.join(root, "command-effect");
-    vi.stubEnv("OPENCLAW_STATE_DIR", path.join(root, "state"));
-    vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", runId);
-    const store = createManagedHandoffLeaseStore({ databasePath, serviceManagerEnv: {} });
-    {
-      using custody = await retainUpdateDoctorProcesses();
-      expect(custody).toBeDefined();
-      const dispatch = () =>
-        runDoctor(
-          custody,
-          "require('node:fs').writeFileSync(" + JSON.stringify(effect) + ", 'completed')",
+  it.each([true, false])(
+    "binds a live child only with captured birth identity (captured: %s)",
+    async (captured) => {
+      const { root, native, store } = await nativeFixture("captured-before-binding");
+      const { child, reservation, closed } = liveChild(native);
+      await once(child, "spawn");
+      const pid = child.pid!;
+      const startedAt = birthIdentity.getProcessInstanceStartTime(pid);
+      expect(startedAt).not.toBeNull();
+      const readBirth = birthIdentity.getFileLockProcessStartTime;
+      const probe = vi
+        .spyOn(birthIdentity, "getFileLockProcessStartTime")
+        .mockImplementation((queried, ...args) =>
+          queried === pid ? null : readBirth(queried, ...args),
         );
-      if (publicationFault) {
-        const publicationError = Object.assign(new Error("Doctor receipt publication failed"), {
-          code: "EIO",
-        });
-        const publication = vi.spyOn(fs, "renameSync").mockImplementationOnce((from, to) => {
-          expect([from, to]).toEqual([`${receiptPath}.pending`, receiptPath]);
-          throw publicationError;
-        });
-        await expect(dispatch()).rejects.toBe(publicationError);
-        publication.mockRestore();
-        expect(fs.existsSync(effect)).toBe(false);
+      try {
+        const bind = () => reservation.spawned({ pid, startedAt: captured ? startedAt : null });
+        if (captured) {
+          expect(bind).not.toThrow();
+          expect(store.readCommandChildren([root])).toMatchObject([
+            { executor: { pid }, action: { custody: "bound" } },
+          ]);
+        } else {
+          expect(bind).toThrow("managed handoff process start identity is unavailable");
+          expect(store.readCommandChildren([root])).toMatchObject([
+            { action: { custody: "reserved" } },
+          ]);
+        }
+      } finally {
+        probe.mockRestore();
+        child.stdin!.end();
+        await closed;
+        reservation.settled();
+        native.releaseAnchors();
+      }
+      expect(store.readCommandChildren([root])).toEqual([]);
+    },
+  );
+
+  it.each([false, true])(
+    "retains failed-bind child identity (settlement fails: %s)",
+    async (settlementFails) => {
+      const { root, databasePath, receiptPath } = doctorFixture();
+      const create = nativeCustody.createManagedCommandProcessCustody;
+      let identity: CommandProcessIdentity | undefined;
+      let releaseReservation: (() => void) | undefined;
+      vi.spyOn(nativeCustody, "createManagedCommandProcessCustody").mockImplementation(
+        async (options) => {
+          const native = await create(options);
+          const reserve = native.custody.reserve.bind(native.custody);
+          native.custody.reserve = (argv) => {
+            const reservation = reserve(argv);
+            releaseReservation = () => reservation.settled();
+            return {
+              spawned(childIdentity) {
+                identity = childIdentity;
+                throw new Error("Native command binding failed");
+              },
+              settled() {
+                if (settlementFails) {
+                  throw new Error("Native command settlement failed");
+                }
+                reservation.settled();
+              },
+            };
+          };
+          return native;
+        },
+      );
+      const store = createManagedHandoffLeaseStore({ databasePath, serviceManagerEnv: {} });
+      using custody = await retainUpdateDoctorProcesses();
+      await expect(runDoctor(custody, "process.stdin.resume()")).rejects.toMatchObject({
+        code: "ERR_COMMAND_PROCESS_CLEANUP_UNCERTAIN",
+      });
+      try {
+        expect(identity).toMatchObject({ pid: expect.any(Number) });
+        expect(groups.isChildProcessTreeAlive(identity!)).toBe(false);
+        const receipt = readReceipt(receiptPath);
+        expect(receipt.slots).toEqual(settlementFails ? [{ id: 1, identity }] : []);
+        expect(store.readCommandChildren([root])).toHaveLength(settlementFails ? 1 : 0);
+      } finally {
+        if (settlementFails) {
+          releaseReservation?.();
+        }
+      }
+    },
+  );
+
+  it.each([
+    ["legacy updater without a run ID", undefined, true, false],
+    ["current updater", "current-update-run", true, false],
+    ["invalid current run ID", "x".repeat(4097), false, false],
+    ["recovered IPC publication", "current-update-run", true, true],
+  ] as const)(
+    "admits Doctor commands with %s only with valid custody",
+    async (_name, runId, admitted, publicationFault) => {
+      const { root, databasePath, receiptPath } = doctorFixture();
+      const effect = path.join(root, "command-effect");
+      vi.stubEnv("OPENCLAW_STATE_DIR", path.join(root, "state"));
+      vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", runId);
+      const store = createManagedHandoffLeaseStore({ databasePath, serviceManagerEnv: {} });
+      {
+        using custody = await retainUpdateDoctorProcesses();
+        expect(custody).toBeDefined();
+        const dispatch = () =>
+          runDoctor(
+            custody,
+            "require('node:fs').writeFileSync(" + JSON.stringify(effect) + ", 'completed')",
+          );
+        if (publicationFault) {
+          const publicationError = Object.assign(new Error("Doctor receipt publication failed"), {
+            code: "EIO",
+          });
+          const publication = vi.spyOn(fs, "renameSync").mockImplementationOnce((from, to) => {
+            expect([from, to]).toEqual([`${receiptPath}.pending`, receiptPath]);
+            throw publicationError;
+          });
+          await expect(dispatch()).rejects.toBe(publicationError);
+          publication.mockRestore();
+          expect(fs.existsSync(effect)).toBe(false);
+          expect(store.readCommandChildren([root])).toEqual([]);
+        }
+        if (admitted) {
+          await dispatch();
+          expect(fs.readFileSync(effect, "utf8")).toBe("completed");
+        } else {
+          await expect(dispatch()).rejects.toThrow("managed handoff admission is invalid");
+          expect(fs.existsSync(effect)).toBe(false);
+        }
+        expect(readReceipt(receiptPath)).toMatchObject({ slots: [] });
         expect(store.readCommandChildren([root])).toEqual([]);
       }
-      if (admitted) {
-        await dispatch();
-        expect(fs.readFileSync(effect, "utf8")).toBe("completed");
-      } else {
-        await expect(dispatch()).rejects.toThrow("managed handoff admission is invalid");
-        expect(fs.existsSync(effect)).toBe(false);
-      }
-      expect(readReceipt(receiptPath)).toMatchObject({ slots: [] });
-      expect(store.readCommandChildren([root])).toEqual([]);
-    }
-    expect(fs.existsSync(receiptPath)).toBe(false);
-    expect(store.read(root).kind).toBe("absent");
-  },
-);
+      expect(fs.existsSync(receiptPath)).toBe(false);
+      expect(store.read(root).kind).toBe("absent");
+    },
+  );
+});
 
 it.each(["unavailable root", "missing bound database", "inaccessible command storage"] as const)(
   "permits no-child Doctor work with %s while refusing writer admission",
@@ -304,110 +301,96 @@ it.each(["unavailable root", "missing bound database", "inaccessible command sto
   },
 );
 
-it.skipIf(process.platform === "win32").each(["reservation-before-ipc", "retired-before-ipc"])(
-  "reconciles %s against durable custody, not the IPC namespace",
-  async (cut) => {
-    const {
-      root,
-      roots,
-      native,
-      resultPath,
-      parent: makeParent,
-      store,
-    } = await nativeFixture("run", ["original", "candidate"]);
-    const parent = await makeParent();
-    const receipt: Record<string, unknown> = readReceipt(`${resultPath}.processes`);
-    const nonce = receipt.nonce;
-    if (typeof nonce !== "string") {
-      throw new Error("Doctor custody nonce is unavailable");
-    }
-    fs.writeFileSync(
-      `${resultPath}.processes`,
-      JSON.stringify({
-        ...receipt,
-        pid: process.pid,
-        namespace: {
-          roots: [path.join(root, "unrelated")],
-          databaseIdentity: native.databaseIdentity,
-        },
-        slots:
-          cut === "retired-before-ipc" ? [{ id: 1, identity: { pid: 4242, startedAt: 1 } }] : [],
-      }),
-    );
-    const doctorNative = await nativeCustody.createManagedCommandProcessCustody({
-      roots,
-      runId: "run",
-      databaseIdentity: native.databaseIdentity,
-      anchorOwner: `doctor:${nonce}`,
-    });
-    const reservation =
-      cut === "reservation-before-ipc"
-        ? doctorNative.custody.reserve([process.execPath])
-        : undefined;
-    vi.spyOn(groups, "isChildProcessTreeAlive").mockReturnValue(false);
-    try {
-      const settlement = await parent.settle({
-        pid: process.pid,
-        code: 124,
-        cleanup: "forced",
-        termination: "timeout",
-      });
-      expect(settlement).toMatchObject({ exitCode: reservation ? 1 : 0 });
-      if (reservation) {
-        expect(settlement?.failureFacts).toContainEqual(
-          expect.objectContaining({
-            code: "doctor-processes-unsettled",
-            message: expect.stringContaining("reservation"),
-          }),
-        );
-        expect(store.readCommandChildren(roots)).toHaveLength(roots.length);
-        for (const installRoot of roots) {
-          expect(store.read(installRoot)).toMatchObject({
-            kind: "current",
-            lease: { owner: `doctor:${nonce}` },
-          });
-        }
-      } else {
-        expect(store.readCommandChildren(roots)).toEqual([]);
+describe.skipIf(process.platform === "win32")("Unix custody reconciliation", () => {
+  it.each(["reservation-before-ipc", "retired-before-ipc"])(
+    "reconciles %s against durable custody, not the IPC namespace",
+    async (cut) => {
+      const ctx = await nativeFixture("run", ["original", "candidate"]);
+      const parent = await ctx.parent();
+      const receipt: Record<string, unknown> = readReceipt(ctx.receiptPath);
+      const nonce = receipt.nonce;
+      if (typeof nonce !== "string") {
+        throw new Error("Doctor custody nonce is unavailable");
       }
-      parent.close();
-      expect(fs.existsSync(`${resultPath}.processes`)).toBe(Boolean(reservation));
-    } finally {
-      reservation?.settled();
-      doctorNative.releaseAnchors();
-    }
-  },
-);
+      fs.writeFileSync(
+        ctx.receiptPath,
+        JSON.stringify({
+          ...receipt,
+          pid: process.pid,
+          namespace: {
+            roots: [path.join(ctx.root, "unrelated")],
+            databaseIdentity: ctx.native.databaseIdentity,
+          },
+          slots:
+            cut === "retired-before-ipc" ? [{ id: 1, identity: { pid: 4242, startedAt: 1 } }] : [],
+        }),
+      );
+      const doctorNative = await nativeCustody.createManagedCommandProcessCustody({
+        roots: ctx.roots,
+        runId: "run",
+        databaseIdentity: ctx.native.databaseIdentity,
+        anchorOwner: `doctor:${nonce}`,
+      });
+      const reservation =
+        cut === "reservation-before-ipc"
+          ? doctorNative.custody.reserve([process.execPath])
+          : undefined;
+      vi.spyOn(groups, "isChildProcessTreeAlive").mockReturnValue(false);
+      try {
+        const settlement = await parent.settle({
+          pid: process.pid,
+          code: 124,
+          cleanup: "forced",
+          termination: "timeout",
+        });
+        expect(settlement).toMatchObject({ exitCode: reservation ? 1 : 0 });
+        if (reservation) {
+          expect(settlement?.failureFacts).toContainEqual(
+            expect.objectContaining({
+              code: "doctor-processes-unsettled",
+              message: expect.stringContaining("reservation"),
+            }),
+          );
+          expect(ctx.store.readCommandChildren(ctx.roots)).toHaveLength(ctx.roots.length);
+          for (const installRoot of ctx.roots) {
+            expect(ctx.store.read(installRoot)).toMatchObject({
+              kind: "current",
+              lease: { owner: `doctor:${nonce}` },
+            });
+          }
+        } else {
+          expect(ctx.store.readCommandChildren(ctx.roots)).toEqual([]);
+        }
+        parent.close();
+        expect(fs.existsSync(ctx.receiptPath)).toBe(Boolean(reservation));
+      } finally {
+        reservation?.settled();
+        doctorNative.releaseAnchors();
+      }
+    },
+  );
 
-it.skipIf(process.platform === "win32")(
-  "settles an exited Doctor without retiring foreign live custody",
-  async () => {
-    const {
-      roots,
-      native: peer,
-      store,
-      resultPath,
-      parent: makeParent,
-    } = await nativeFixture("doctor-b", ["", "candidate"]);
-    const parent = await makeParent("doctor-a");
+  it("settles an exited Doctor without retiring foreign live custody", async () => {
+    const ctx = await nativeFixture("doctor-b", ["", "candidate"]);
+    const parent = await ctx.parent("doctor-a");
     const doctor = spawnSync(process.execPath, [
       "-e",
       "const fs = require('node:fs'); const file = process.argv[1]; " +
         "const receipt = JSON.parse(fs.readFileSync(file, 'utf8')); " +
         "receipt.pid = process.pid; fs.writeFileSync(file, JSON.stringify(receipt));",
-      `${resultPath}.processes`,
+      ctx.receiptPath,
     ]);
     expect([doctor.error, doctor.status]).toEqual([undefined, 0]);
-    expect(readReceipt(`${resultPath}.processes`)).toMatchObject({ pid: doctor.pid, slots: [] });
-    const { child: writer, reservation, closed } = liveChild(peer);
+    expect(readReceipt(ctx.receiptPath)).toMatchObject({ pid: doctor.pid, slots: [] });
+    const { child: writer, reservation, closed } = liveChild(ctx.native);
     try {
       await once(writer, "spawn");
       if (!writer.pid) {
         throw new Error("Missing peer command PID");
       }
       reservation.spawned({ pid: writer.pid, startedAt: null });
-      const claims = store.readCommandChildren(roots);
-      expect(claims).toHaveLength(roots.length);
+      const claims = ctx.store.readCommandChildren(ctx.roots);
+      expect(claims).toHaveLength(ctx.roots.length);
       const settlement = await parent.settle({
         pid: doctor.pid,
         code: 0,
@@ -420,28 +403,28 @@ it.skipIf(process.platform === "win32")(
       });
       expect(settlement?.advisory).toBeUndefined();
       parent.close();
-      expect(fs.existsSync(`${resultPath}.processes`)).toBe(false);
+      expect(fs.existsSync(ctx.receiptPath)).toBe(false);
       expect(groups.isChildProcessTreeAlive({ pid: writer.pid })).toBe(true);
-      expect(store.readCommandChildren(roots)).toEqual(claims);
-      for (const installRoot of roots) {
-        expect(store.acquire(installRoot, "replacement", { kind: "update" }).kind).toBe("busy");
+      expect(ctx.store.readCommandChildren(ctx.roots)).toEqual(claims);
+      for (const installRoot of ctx.roots) {
+        expect(ctx.store.acquire(installRoot, "replacement", { kind: "update" }).kind).toBe("busy");
       }
     } finally {
       writer.stdin?.end();
       await closed;
       reservation.settled();
-      peer.releaseAnchors();
+      ctx.native.releaseAnchors();
       parent.close();
     }
-    for (const installRoot of roots) {
-      const replacement = store.acquire(installRoot, "replacement", { kind: "update" });
+    for (const installRoot of ctx.roots) {
+      const replacement = ctx.store.acquire(installRoot, "replacement", { kind: "update" });
       expect(replacement.kind).toBe("acquired");
       if (replacement.kind === "acquired") {
-        expect(store.release(replacement.lease)).toBe(true);
+        expect(ctx.store.release(replacement.lease)).toBe(true);
       }
     }
-  },
-);
+  });
+});
 
 // name, interrupted, delegated, inputReleased, running, blocked
 it.each([
