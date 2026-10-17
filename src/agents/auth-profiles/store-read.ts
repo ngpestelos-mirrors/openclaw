@@ -5,7 +5,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { warnPluginSdkDeprecation } from "../../plugins/sdk-deprecation.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import { cloneAuthProfileStore } from "./clone.js";
-import type { createExternalAuthRuntime, ExternalCliOverlayOptions } from "./external-auth.js";
+import type { createExternalAuthRuntime } from "./external-auth.js";
 import {
   loadInheritedAuthProfileStore,
   readRuntimeAuthProfileStoreFromSnapshots,
@@ -14,7 +14,10 @@ import { prepareSharedAuthStoreOwnership, resolveSharedAuthStorePath } from "./p
 import { resolveNativeSharedAuthStorePath } from "./path-resolve.native.js";
 import { mergeAuthProfileStores } from "./persisted.js";
 import { materializePersonalAuthProfile } from "./personal-profiles.js";
-import { mergeRuntimeExternalProfileReferences } from "./runtime-external-profile-references.js";
+import {
+  hasScopedExternalCliOverlay,
+  mergeRuntimeExternalProfileReferences,
+} from "./runtime-external-profile-references.js";
 import {
   resolveExternalCliOverlayOptions,
   type createAuthProfileStoreRuntimeReader,
@@ -76,12 +79,6 @@ type StoreReadHost = Pick<
   setRuntimeAuthProfileStoreSnapshot: typeof SetRuntimeAuthProfileStoreSnapshot;
   updateRuntimeAuthProfileStoreSnapshot: typeof UpdateRuntimeAuthProfileStoreSnapshot;
 };
-
-function hasScopedExternalCliOverlay(options: ExternalCliOverlayOptions): boolean {
-  return (
-    options.externalCliProviderIds !== undefined || options.externalCliProfileIds !== undefined
-  );
-}
 
 type AuthProfileStoreReadRequest =
   | { kind: "store"; agentDir?: string; options?: LoadAuthProfileStoreOptions }

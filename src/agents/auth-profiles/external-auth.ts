@@ -17,7 +17,10 @@ import {
   overlayRuntimeExternalOAuthProfiles,
   type RuntimeExternalOAuthProfile,
 } from "./oauth-shared.js";
-import { removeRuntimeExternalProfileReferences } from "./runtime-external-profile-references.js";
+import {
+  hasScopedExternalCliOverlay,
+  removeRuntimeExternalProfileReferences,
+} from "./runtime-external-profile-references.js";
 import type { AuthProfileStore } from "./types.js";
 
 type ExternalAuthProfileMap = Map<string, ProviderExternalAuthProfile>;
@@ -93,10 +96,6 @@ function resolveAllowedExternalCliAuthProfiles(params: {
       env,
     ),
   );
-}
-
-function hasScopedExternalCliOverlay(params?: ExternalCliOverlayOptions): boolean {
-  return Boolean(params?.externalCliProviderIds || params?.externalCliProfileIds);
 }
 
 /** Persist safe external CLI OAuth profiles that own their local profile slot. */

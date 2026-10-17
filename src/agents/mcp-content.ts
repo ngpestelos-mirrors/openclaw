@@ -109,12 +109,12 @@ function projectMcpCallToolResultContent(
 ): { content: AgentToolResult<unknown>["content"]; unprojectable?: true } {
   if (isRecord(structuredContent)) {
     try {
-      const isStructuredMirror = createMcpStructuredContentMirrorMatcher(structuredContent);
-      const structuredJson = JSON.stringify(
-        JSON.parse(stableStringify(structuredContent)),
-        null,
-        2,
+      const canonical = stableStringify(structuredContent);
+      const isStructuredMirror = createMcpStructuredContentMirrorMatcher(
+        structuredContent,
+        canonical,
       );
+      const structuredJson = JSON.stringify(JSON.parse(canonical), null, 2);
       const structuredText = `structuredContent:\n${structuredJson}`;
       return {
         content: [

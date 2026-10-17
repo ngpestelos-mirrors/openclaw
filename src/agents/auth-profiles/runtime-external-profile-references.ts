@@ -1,7 +1,14 @@
 import { isDeepStrictEqual } from "node:util";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import { cloneAuthProfileStore } from "./clone.js";
+import type { LoadAuthProfileStoreOptions } from "./runtime-read.types.js";
 import type { AuthProfileStore, RuntimeAuthProfileStore } from "./types.js";
+
+export function hasScopedExternalCliOverlay(
+  options?: Pick<LoadAuthProfileStoreOptions, "externalCliProviderIds" | "externalCliProfileIds">,
+): boolean {
+  return Boolean(options?.externalCliProviderIds || options?.externalCliProfileIds);
+}
 
 export function removeRuntimeExternalProfileReferences(params: {
   store: AuthProfileStore;

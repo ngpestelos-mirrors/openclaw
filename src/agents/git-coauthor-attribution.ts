@@ -107,7 +107,7 @@ async function resolveAttribution(
     resolveConfiguredGitHubToolIdentity({ ...params, scope: "agent" }) ??
     resolveConfiguredGitHubToolIdentity({ ...params, scope: "system" });
   const primaryEmail = primaryIdentity?.gitAuthor?.email?.trim().toLowerCase();
-  const contributors = new Map<string, GitCoauthorContributor>();
+  const contributors = new Map<number, GitCoauthorContributor>();
   for (const profileId of profileIds) {
     const record = profileRecords.get(profileId);
     const identity = identities.get(profileId);
@@ -129,8 +129,7 @@ async function resolveAttribution(
     if (params.excludeAccountId === undefined && email.toLowerCase() === primaryEmail) {
       continue;
     }
-    const identityKey = `${issuer}:${identity.accountId}`;
-    const contributor = contributors.get(identityKey);
+    const contributor = contributors.get(identity.accountId);
     if (contributor) {
       if (record) {
         contributor.contributionCount += record.contributionCount;
@@ -141,7 +140,7 @@ async function resolveAttribution(
       }
       continue;
     }
-    contributors.set(identityKey, {
+    contributors.set(identity.accountId, {
       accountId: identity.accountId,
       email,
       contributionCount: record?.contributionCount ?? 0,
