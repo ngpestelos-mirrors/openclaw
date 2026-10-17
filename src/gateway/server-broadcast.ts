@@ -37,6 +37,7 @@ import { MAX_BUFFERED_BYTES, WEBSOCKET_OPEN_READY_STATE } from "./server-constan
 import type { GatewayClientRegistry } from "./server/client-registry.js";
 import { closeGatewayTransportWithGrace } from "./server/connection-transport-close.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
+import { prepareSessionEventMetrics } from "./session-event-metrics.js";
 import { invalidateSharedReadResponses } from "./shared-read-responses.js";
 import { logWs, summarizeAgentEventForWsLog } from "./ws-log.js";
 
@@ -248,6 +249,12 @@ export function createGatewayBroadcaster(params: {
       payload,
       opts?.sessionKeys,
       opts?.agentId,
+    );
+    const sessionEventMetrics = prepareSessionEventMetrics(
+      event,
+      payload,
+      opts?.sessionEventSubscriptionKeys ?? sessionKeys,
+      params.sessionMessageSubscribers,
     );
     const sessionSubscriptionVerified = opts?.sessionSubscriptionVerified === true;
     const isSessionSubscriptionEvent = SESSION_SUBSCRIPTION_EVENTS.has(event);
@@ -675,7 +682,7 @@ export function createGatewayBroadcaster(params: {
         delivered?.();
         state.socket.batchWrites?.();
         state.socket.send(frame, { binary: false }, sent);
-        state.socket.recordEventSent?.(event, frame.byteLength);
+        state.socket.recordEventSent?.(event, frame.byteLength, sessionEventMetrics?.(c.connId));
       } catch (err) {
         sent(err instanceof Error ? err : new Error(String(err)));
       }
