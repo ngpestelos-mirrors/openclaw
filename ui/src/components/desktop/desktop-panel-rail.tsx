@@ -69,8 +69,16 @@ export function DesktopConnectionRail(
 ) {
   const id = createUniqueId();
   const mobile = createMemo(() => props.options.platform === "mobile");
+  const axisModes = () =>
+    mobile()
+      ? []
+      : [
+          { mode: "fit-height" as const, label: t("desktop.fitHeight") },
+          { mode: "fit-width" as const, label: t("desktop.fitWidth") },
+        ];
   const sizingMenu = createDesktopSizingMenu(() => ({
     ...props.sizing,
+    additionalModes: axisModes(),
     icons: !mobile(),
   }));
   let rail!: HTMLDivElement;
@@ -322,6 +330,7 @@ export function DesktopConnectionRail(
               <DesktopSizing
                 {...props.sizing}
                 presentation="menu"
+                additionalModes={axisModes()}
                 placement={props.options.fullscreen ? "top-end" : "bottom-end"}
               />
             </div>
