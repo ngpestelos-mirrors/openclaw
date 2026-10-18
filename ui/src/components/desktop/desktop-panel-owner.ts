@@ -26,6 +26,7 @@ import {
   type DesktopPanelInputSnapshot,
 } from "./desktop-panel-lifecycle.ts";
 import type { DesktopPanelState } from "./desktop-panel-state.ts";
+import { projectDesktopPanelView } from "./desktop-panel-view-data.ts";
 import { DesktopSessionOwner } from "./desktop-session-owner.ts";
 import { desktopSourceForEnvironment } from "./desktop-source.ts";
 
@@ -48,6 +49,9 @@ export function createDesktopPanel(
   let errorText: string | null = null;
   let noticeText: string | null = null;
   let disconnectedReason: string | null = null;
+  // Presentation facts only; connection admission and recovery remain with the native owner.
+  let connectionTransition: "connecting" | "taking-control" | "switching-to-viewing" = "connecting";
+  let connectionFailure: "error" | "lost" | "closed" | null = null;
   let desktopApps: WorkerDesktopAppId[] = [];
   let sizingMode: desktopTransport.DesktopSizingMode = "fit";
   let canResize = false;
@@ -397,6 +401,13 @@ export function createDesktopPanel(
     if (!environmentId || !client || !host.available || (host.embedded && !host.presented)) {
       return;
     }
+    connectionTransition =
+      phase === "connected" && currentId === environmentId && controlling !== control
+        ? control
+          ? "taking-control"
+          : "switching-to-viewing"
+        : "connecting";
+    connectionFailure = null;
     if (currentId !== environmentId) {
       savedCredentials = undefined;
       credentialAuth = undefined;
@@ -536,6 +547,7 @@ export function createDesktopPanel(
       return;
     }
     disconnectConnection();
+    connectionFailure = "error";
     phase = "disconnected";
     disconnectedReason = formatUiError(error);
     notify();
@@ -599,6 +611,7 @@ export function createDesktopPanel(
       void connectEnvironment(environmentId, false, true);
       return;
     }
+    connectionFailure = clean ? "closed" : "lost";
     phase = "disconnected";
     disconnectedReason =
       formatUiExternalText(reason, code ? t("desktop.closeCode", { code: String(code) }) : "") ||
@@ -624,91 +637,81 @@ export function createDesktopPanel(
       apps: desktopApps,
     }),
     get view() {
-      return {
-        documentMode: host.documentMode,
-        embedded: host.embedded,
-        surfaceRef: lifecycle.surfaceRef,
-        workspaceControls: host.workspaceControls,
-        content: {
-          state: phase,
+      return projectDesktopPanelView(
+        {
+          host,
+          surfaceRef: lifecycle.surfaceRef,
+          environments,
+          currentId,
+          phase,
           loading,
           automaticSource: usesAutomaticSource(),
-          hasTarget: host.sessionKey !== null || host.requestedSource !== null,
-          errorText: controls.launcher.feedback().error ?? errorText,
+          controlling,
+          errorText,
           noticeText,
-          availability: sessionSource.desktopAvailability,
-          picker: {
-            automatic: usesAutomaticSource() && host.embedded && host.sessionKey !== null,
-            environments,
-            onRefresh: () => void refreshEnvironments(undefined, undefined, true),
-            onConnect: (environmentId: string) => {
-              selection = "explicit";
-              notify();
-              void connectEnvironment(environmentId, false);
-            },
-          },
-          credentials: {
-            ardAccount: credentialAuth === "ard-account",
-            username: savedCredentials?.username ?? "",
-            onSubmit: handleCredentialsSubmit,
-          },
-          recovery: {
-            reason: disconnectedReason,
-            onRetry: () => {
-              if ((phase === "inventory-error" && host.documentMode) || !currentId) {
-                if (selection !== "picker") {
-                  selection = "pending";
-                }
-                phase = "picker";
-                notify();
-                void refreshEnvironments(undefined, undefined, true);
-                return;
-              }
-              if (phase === "inventory-error" && currentId) {
-                void connectRequestedEnvironment(currentId);
-                return;
-              }
-              void connectEnvironment(currentId, controlling);
-            },
-          },
+          disconnectedReason,
+          connectionTransition,
+          connectionFailure,
+          controlTakeoverRecoveryUsed,
+          desktopApps,
+          sizingMode,
+          canResize,
+          username: savedCredentials?.username ?? "",
+          ardAccount: credentialAuth === "ard-account",
+          controls,
+          sessionSource,
+          dockLayout,
         },
-        controlling,
-        desktopApps,
-        launchingApp: controls.launcher.feedback().app ?? null,
-        startup: sessionSource.startupEnvironment,
-        sizing: {
-          mode: sizingMode,
-          canResize: canResize && controlling && phase === "connected",
-          onChange: (mode: desktopTransport.DesktopSizingMode) => {
+        {
+          onRefresh: () => void refreshEnvironments(undefined, undefined, true),
+          onConnect: (environmentId) => {
+            selection = "explicit";
+            notify();
+            void connectEnvironment(environmentId, false);
+          },
+          onCredentialsSubmit: handleCredentialsSubmit,
+          onBack: selection === "explicit" ? () => returnToPicker() : undefined,
+          onRetry: () => {
+            if ((phase === "inventory-error" && host.documentMode) || !currentId) {
+              if (selection !== "picker") {
+                selection = "pending";
+              }
+              phase = "picker";
+              notify();
+              void refreshEnvironments(undefined, undefined, true);
+              return;
+            }
+            if (phase === "inventory-error" && currentId) {
+              void connectRequestedEnvironment(currentId);
+              return;
+            }
+            void connectEnvironment(currentId, controlling);
+          },
+          onSizingChange: (mode) => {
             sizingMode = mode;
             notify();
             handoff.setSizingMode(mode);
           },
+          onControlToggle: () => void connectEnvironment(currentId, !controlling),
+          onTakeControl: () => void connectEnvironment(currentId, true),
+          onLaunch: (app) => void controls.launcher.launch(app),
+          onClose: closePanel,
+          onDocumentClose: () => host.onDocumentClose?.(),
+          focusTarget: () => ({
+            basePath: host.basePath,
+            source: currentId,
+            control: controlling,
+            workspaceControls: host.workspaceControls,
+          }),
+          onDisconnect: () => {
+            if (host.embedded && (host.sessionKey !== null || host.suppliedEnvironments !== null)) {
+              handleDesktopDisconnect(currentId, { clean: true });
+            } else {
+              returnToPicker();
+            }
+          },
         },
-        mobileKeyboard: controls.mobileKeyboard,
-        pictureInPicture: controls.pictureInPicture,
-        audio: controls.audio,
-        fullscreenMode: controls.fullscreenMode,
-        dockLayout,
-        onControlToggle: () => void connectEnvironment(currentId, !controlling),
-        onTakeControl: () => void connectEnvironment(currentId, true),
-        onLaunch: (app: WorkerDesktopAppId) => void controls.launcher.launch(app),
-        onClose: closePanel,
-        onDocumentClose: () => host.onDocumentClose?.(),
-        focusTarget: () => ({
-          basePath: host.basePath,
-          source: currentId,
-          control: controlling,
-          workspaceControls: host.workspaceControls,
-        }),
-        onDisconnect: () => {
-          if (host.embedded && (host.sessionKey !== null || host.suppliedEnvironments !== null)) {
-            handleDesktopDisconnect(currentId, { clean: true });
-          } else {
-            returnToPicker();
-          }
-        },
-      };
+      );
     },
     audioTarget,
     keyboardTarget,

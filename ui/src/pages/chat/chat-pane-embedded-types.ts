@@ -63,6 +63,8 @@ export type SidebarPanelDefinitionParams = {
   preferredBrowserTab?: BrowserTabSelection;
   sessionBrowserTabs?: BrowserTabTarget[];
   desktopPresented: PresentationValue;
+  desktopExpanded?: boolean;
+  onToggleDesktopExpanded?: () => void;
   desktopRefreshOnPresentation: boolean;
   desktopAvailable: boolean;
   desktopSource: string | null;
