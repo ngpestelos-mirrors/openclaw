@@ -18,6 +18,7 @@ import { createChatProps } from "../pages/chat/chat-view.test-helpers.ts";
 import "../pages/chat/components/chat-sidebar-region.runtime.tsx";
 import { createSessionWorkspaceProps } from "../pages/chat/components/chat-session-workspace.ts";
 import type { SidebarLayout, SidebarSlotId } from "../pages/chat/sidebar-layout.ts";
+import { installResizeObserverStub } from "./resize-observer.ts";
 import { mountSolid } from "./solid-render.tsx";
 
 const panelViews = new WeakMap<
@@ -40,6 +41,7 @@ export async function renderPanelFixture(
   definitions: ReturnType<typeof sidebarPanelDefinitions>,
   closePanelSlot: (slot: SidebarSlotId) => void = vi.fn(),
 ) {
+  installResizeObserverStub();
   const existing = panelViews.get(mount);
   const primary = existing?.primary ?? ChatPanelPrimary();
   const props = renderSidebarRegion({
@@ -48,6 +50,7 @@ export async function renderPanelFixture(
     callbacks: {
       activatePanel: vi.fn(),
       togglePanelExpanded: vi.fn(),
+      setDock: vi.fn(),
       closeSlot: closePanelSlot,
       openSlot: vi.fn(),
       reorderPanel: vi.fn(),

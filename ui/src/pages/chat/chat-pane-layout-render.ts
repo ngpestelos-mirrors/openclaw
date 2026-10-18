@@ -28,6 +28,10 @@ import { resolveAssistantDisplayAvatar } from "./components/chat-welcome.ts";
 import { resolveChatLinkFaviconFetcher } from "./link-favicon-loader.ts";
 import {
   SIDEBAR_NARROW_BREAKPOINT_PX,
+  openSidebarNewTab,
+  closeSidebarNewTab,
+  activatePanel,
+  sidebarActivePanel,
   sidebarMainPanel,
   isSidebarSlotVisible,
   type SidebarLayout,
@@ -107,9 +111,19 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       catalog,
       agentWorkspace,
       workspaceGit,
-      openPanelSlot,
+      openPanelSlot: nativeOpenPanelSlot,
       closePanelSlot,
     } = params;
+    const mobileHost = this.mobileHost(savedLayout);
+    const openPanelSlot = (slot: SidebarSlotId) => {
+      nativeOpenPanelSlot(slot);
+      this.navigateMobileHost({
+        area: "panels",
+        slot,
+        ...(mobileHost?.destination.area === "details" ? { backTo: mobileHost.destination } : {}),
+      });
+    };
+
     // What the pane shows. Its controls keep working on the layout as it is saved.
     const sidebarLayout = this.presentSidebarLayout(savedLayout);
     const conversationVisible = isSidebarSlotVisible(sidebarLayout, "conversation");
@@ -340,7 +354,7 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
           currentAgentId,
         ),
       connected: state.connected,
-      onClearCompanion: () => void this.clearSessionCompanion(),
+      onClearCompanion: () => this.clearSessionCompanion(),
       discussion,
       discussionAvailable,
       discussionOpenUrl: discussion?.openUrl ?? null,
@@ -348,7 +362,7 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       pluginPanels: this.context.plugins.registrations("panels"),
       isPluginPanelPresented: (slot) => slotPresentation(slot, "active"),
     });
-    const callbacks = sidebarRegionCallbacks({
+    const nativeCallbacks = sidebarRegionCallbacks({
       state,
       layout: savedLayout,
       closePanelSlot,
@@ -357,6 +371,49 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       resizePanel: (columnId, size) => this.commitSidebarPanelResize(savedLayout, columnId, size),
       setPanelOpen: (open) => this.setChatSidePanelOpen(open, savedLayout),
     });
+    const updateMobileCatalogLayout = (next: SidebarLayout) => {
+      // Catalog navigation changes selection, not the retained desktop expansion.
+      const { expanded, expandedSide } = state.sidebarLayout;
+      state.updateSidebarLayout({ ...next, expanded, expandedSide });
+    };
+    const callbacks = mobileHost
+      ? {
+          ...nativeCallbacks,
+          newTab: nativeCallbacks.newTab
+            ? {
+                ...nativeCallbacks.newTab,
+                open: (options?: { returnPanelId?: string }) => {
+                  updateMobileCatalogLayout(openSidebarNewTab(state.sidebarLayout, options));
+                  mobileHost.navigate({ area: "panels" });
+                },
+                close: () => {
+                  updateMobileCatalogLayout(closeSidebarNewTab(state.sidebarLayout));
+                  mobileHost.navigate({ area: "panels" });
+                },
+              }
+            : undefined,
+          activatePanel: (panelId: string) => {
+            if (panelId === savedLayout.newTab?.id) {
+              updateMobileCatalogLayout(activatePanel(state.sidebarLayout, panelId));
+              state.updateSidebarActivePanel(panelId);
+              mobileHost.navigate({ area: "panels" });
+              return;
+            }
+            const panel = savedLayout.columns[0]?.panels.find((entry) => entry.id === panelId);
+            if (panel) {
+              mobileHost.navigate({ area: "panels", slot: panel.slot });
+            }
+          },
+          togglePanelExpanded: (panelId?: string) => {
+            const panel = panelId
+              ? savedLayout.columns[0]?.panels.find((entry) => entry.id === panelId)
+              : sidebarActivePanel(savedLayout);
+            if (panel) {
+              mobileHost.navigate({ area: "panels", slot: panel.slot });
+            }
+          },
+        }
+      : nativeCallbacks;
     const connectionGeneration = this.connectionGeneration;
     // Main panel actions share the task toolbar. Content roots stay in the
     // sidebar region so changing their presentation never reconnects them.
@@ -411,12 +468,14 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
         };
       },
       presentationId: this.presentationId,
+      presentation: this.compact || this.onBackToSubagents ? undefined : this.sessionPresentation,
+      mobileHost,
       conversationTab: { label: chatProps.assistantName, avatar },
       availableWidth: this.paneWidth,
       fetchFavicon: resolveChatLinkFaviconFetcher(state),
       callbacks,
       layout: sidebarLayout,
-      sideFocusLocked: sidebarLayout !== savedLayout,
+      sideFocusLocked: !mobileHost && sidebarLayout !== savedLayout,
       sideFocusManaged:
         companionPresented.isPresented() && Boolean(this.companionIntents.focusRequest),
       sideFocusOrigin: this.companionIntents.sideFocusOrigin,

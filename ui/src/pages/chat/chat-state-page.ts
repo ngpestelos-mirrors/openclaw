@@ -403,6 +403,14 @@ export function createPageState(
       transientResourceScope = scope;
     }
     const normalized = normalizeSidebarLayout(layout);
+    // New tab is a live layout fact, not a saved resource or settings schema.
+    // The persistence normalizer deliberately strips it again below.
+    if (layout.newTab && normalized.columns[0]) {
+      normalized.newTab = { ...layout.newTab };
+      if (layout.columns[0]?.activePanelId === layout.newTab.id) {
+        normalized.columns[0].activePanelId = layout.newTab.id;
+      }
+    }
     const previous = state.sidebarLayout;
     const includesResource = (value: SidebarLayout, slot: "desktop" | "browser") =>
       value.columns.some((column) => column.panels.some((panel) => panel.slot === slot));
@@ -481,6 +489,9 @@ export function createPageState(
     }
     state.sidebarFocusPanelId = normalizedPanelId;
     state.sidebarFocusVersion += 1;
+    if (state.sidebarLayout.newTab?.id === normalizedPanelId) {
+      return;
+    }
     const selected = state.sidebarLayout.columns
       .flatMap((column) => column.panels)
       .find((panel) => panel.id === normalizedPanelId)?.slot;

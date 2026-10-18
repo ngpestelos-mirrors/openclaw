@@ -34,6 +34,7 @@ export type ChatDetailSlotProps = {
 };
 
 export type SidebarPanelDefinitionParams = {
+  presentation?: "desktop" | "mobile";
   panePresentation?: PresentationValue;
   detailPresented?: PresentationValue;
   state: ChatPageHost;
@@ -84,7 +85,7 @@ export type SidebarPanelDefinitionParams = {
   onCompanionDraftChange: (draft: string) => void;
   onCompanionAttachmentsChange?: (attachments: ChatAttachment[]) => boolean | void;
   connected: boolean;
-  onClearCompanion: () => void;
+  onClearCompanion: () => Promise<boolean>;
   discussion: SessionDiscussionPanelConfig | null;
   discussionAvailable: boolean;
   discussionOpenUrl: string | null;

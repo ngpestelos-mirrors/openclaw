@@ -61,6 +61,7 @@ export function createChatPaneView(runtime: ChatPaneRuntime) {
     runtime.boardPresentation,
     runtime.pendingPanelToggles,
     runtime.workspaceConflicts,
+    runtime.mobilePresentation,
   ]) {
     projectChatFields(owner);
   }

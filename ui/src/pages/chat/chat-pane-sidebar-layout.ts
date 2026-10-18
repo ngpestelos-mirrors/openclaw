@@ -22,11 +22,17 @@ import type { SidebarRegionCallbacks } from "./components/chat-sidebar-region-ty
 import { createChatWidgetLayout } from "./session-message-cache.ts";
 import {
   activatePanel,
+  promoteSidebarPanel,
+  openSidebarNewTab,
+  closeSidebarNewTab,
+  replaceSidebarNewTab,
+  finishSidebarCloseAll,
   toggleSidebarPanelExpanded,
   closeSlot,
   fitSidebarLayout,
   openSlot,
   reorderPanel,
+  setSidebarDock,
   isSidebarSlotVisible,
   type SidebarLayout,
   type SidebarSlotId,
@@ -141,6 +147,24 @@ export function sidebarRegionCallbacks(params: {
 }): SidebarRegionCallbacks {
   const { layout, state } = params;
   return {
+    newTab: {
+      open: (options) => state.updateSidebarLayout(openSidebarNewTab(layout, options)),
+      close: () => state.updateSidebarLayout(closeSidebarNewTab(state.sidebarLayout)),
+      openPanel: (slot) => {
+        const before = layout;
+        // The native opener owns resource creation/reuse and its side effects.
+        params.openPanelSlot(slot);
+        state.updateSidebarLayout(replaceSidebarNewTab(before, state.sidebarLayout, slot));
+      },
+      finishCloseAll: () => {
+        const next = finishSidebarCloseAll(state.sidebarLayout);
+        if (!next) {
+          return false;
+        }
+        state.updateSidebarLayout(next);
+        return true;
+      },
+    },
     activatePanel: (panelId) => {
       const slot = layout.columns[0]?.panels.find((panel) => panel.id === panelId)?.slot;
       if (slot === "dashboard" && !isSidebarSlotVisible(layout, "dashboard")) {
@@ -150,12 +174,17 @@ export function sidebarRegionCallbacks(params: {
       }
       state.updateSidebarActivePanel(panelId);
     },
+    promotePanel: (panelId) => state.updateSidebarLayout(promoteSidebarPanel(layout, panelId)),
     togglePanelExpanded: (panelId) => {
       state.updateSidebarLayout(toggleSidebarPanelExpanded(layout, panelId), {
         dashboardPresentation: "personal",
       });
-      state.updateSidebarActivePanel(panelId);
+      if (panelId !== undefined) {
+        state.updateSidebarActivePanel(panelId);
+      }
     },
+    setDock: (dock) =>
+      state.updateSidebarLayout(setSidebarDock(layout, dock), { geometryOnly: true }),
     closeSlot: (slot) => {
       if (slot === "conversation") {
         params.setPanelOpen(false);

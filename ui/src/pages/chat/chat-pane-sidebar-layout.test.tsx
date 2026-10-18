@@ -42,6 +42,7 @@ function callbacks() {
   return {
     activatePanel: vi.fn(),
     togglePanelExpanded: vi.fn(),
+    setDock: vi.fn(),
     closeSlot: vi.fn(),
     openSlot: vi.fn(),
     reorderPanel: vi.fn(),
@@ -453,6 +454,34 @@ describe("chat pane sidebar layout", () => {
     expect(closePanelSlot).toHaveBeenCalledWith("dashboard");
     expect(setPanelOpen).not.toHaveBeenCalled();
     expect(state.updateSidebarLayout).not.toHaveBeenCalled();
+  });
+
+  it("routes container expansion and docking without changing the selected tab", () => {
+    const layout = setSidebarOpen({ columns: [] }, true);
+    const updateSidebarLayout = vi.fn();
+    const updateSidebarActivePanel = vi.fn();
+    const controls = sidebarRegionCallbacks({
+      state: { updateSidebarLayout, updateSidebarActivePanel } as unknown as ChatPageHost,
+      layout,
+      closePanelSlot: vi.fn(),
+      openPanelSlot: vi.fn(),
+      forgetDiscussionUrl: vi.fn(),
+      resizePanel: vi.fn(),
+      setPanelOpen: vi.fn(),
+    });
+
+    controls.togglePanelExpanded();
+    expect(updateSidebarLayout).toHaveBeenLastCalledWith(
+      expect.objectContaining({ open: true, expanded: true, expandedSide: true }),
+      { dashboardPresentation: "personal" },
+    );
+    expect(updateSidebarActivePanel).not.toHaveBeenCalled();
+    controls.setDock("bottom");
+    expect(updateSidebarLayout).toHaveBeenLastCalledWith(
+      { ...layout, dock: "bottom" },
+      { geometryOnly: true },
+    );
+    expect(updateSidebarActivePanel).not.toHaveBeenCalled();
   });
 
   it("keeps an empty dashboard open and only removes it when dashboard support is unavailable", () => {

@@ -22,7 +22,7 @@ defineSolidBridge<{ onToggle?: () => void }>(
           aria-expanded="true"
           onClick={() => props.onToggle?.()}
         >
-          <Icon name="panelLeftClose" />
+          <Icon name="sessionSidebarClose" />
         </button>
       </openclaw-tooltip>
     );
