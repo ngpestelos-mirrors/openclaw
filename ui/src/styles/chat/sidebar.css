@@ -1892,6 +1892,13 @@ openclaw-chat-files-panel,
   display: none;
 }
 
+.chat-files-panel__reader {
+  display: contents;
+}
+.chat-files-panel__fallback-rail {
+  display: none;
+}
+
 .sidebar-file-toolbar {
   display: flex;
   align-items: center;

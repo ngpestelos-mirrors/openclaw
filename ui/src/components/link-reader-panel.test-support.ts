@@ -1,4 +1,4 @@
-import { expect } from "vitest";
+import { afterEach, beforeEach, expect, vi } from "vitest";
 import type {
   ControlUiLinkReaderDocument,
   ControlUiLinkReaderDescriptor,
@@ -6,6 +6,7 @@ import type {
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import { mountSolid } from "../test-helpers/mount-solid.ts";
 import { waitForSolid as waitForFast } from "../test-helpers/solid-settle.ts";
+import { createStorageMock } from "../test-helpers/storage.ts";
 import { LINK_READER_PANEL_TOGGLE_EVENT } from "./panel-toggle-contract.ts";
 import "./link-reader-panel.tsx";
 
@@ -48,14 +49,6 @@ export function requestedItem(params: unknown): ControlUiLinkReaderDocument {
   return item(Number(new URL((params as { url: string }).url).pathname.split("/").at(-1)));
 }
 
-export function deferredDetail() {
-  let resolve!: (value: ControlUiLinkReaderDocument) => void;
-  const promise = new Promise<ControlUiLinkReaderDocument>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
-
 export async function mount(
   request: (
     method: string,
@@ -63,7 +56,7 @@ export async function mount(
     options?: { signal?: AbortSignal },
   ) => Promise<unknown>,
   options: Partial<
-    Pick<Panel, "embedded" | "presented" | "sessionKey" | "tabsInHeader" | "onClose">
+    Pick<Panel, "embedded" | "presented" | "sessionKey" | "tabsInHeader" | "onClose" | "mobile">
   > = {},
 ) {
   const panel = document.createElement("openclaw-link-reader-panel");
@@ -97,4 +90,21 @@ export async function expectTitle(panel: Panel, title: string) {
   await waitForFast(() =>
     expect(panel.querySelector(".lr-content:not([hidden]) h1")?.textContent).toBe(title),
   );
+}
+
+export function setupLinkReaderPanelTests() {
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", createStorageMock());
+    // Section selection owns these requests; no viewport preload is admitted here.
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class extends IntersectionObserver {
+        override observe() {}
+      },
+    );
+  });
+  afterEach(() => {
+    document.body.replaceChildren();
+    vi.unstubAllGlobals();
+  });
 }

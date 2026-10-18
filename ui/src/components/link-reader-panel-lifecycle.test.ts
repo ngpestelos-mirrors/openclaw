@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ControlUiLinkReaderDocument } from "../../../src/shared/control-ui-link-reader.js";
+import { createDeferred } from "../../../test/helpers/promise.ts";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import { mountSolid } from "../test-helpers/mount-solid.ts";
 import { waitForSolid as waitForFast } from "../test-helpers/solid-settle.ts";
@@ -8,7 +9,6 @@ import {
   itemUrl,
   reader,
   item,
-  deferredDetail,
   mount,
   open,
   expectTitle,
@@ -31,8 +31,8 @@ describe("Link reader publication lifecycle", () => {
   });
 
   it("coalesces replacement inputs and ignores old navigation and client responses", async () => {
-    const first = deferredDetail();
-    const second = deferredDetail();
+    const first = createDeferred<ControlUiLinkReaderDocument>();
+    const second = createDeferred<ControlUiLinkReaderDocument>();
     const request = vi
       .fn<
         (
@@ -74,7 +74,7 @@ describe("Link reader publication lifecycle", () => {
   });
 
   it("retires a pending render on removal and keeps the replacement view authoritative", async () => {
-    const stale = deferredDetail();
+    const stale = createDeferred<ControlUiLinkReaderDocument>();
     const request = vi
       .fn<
         (
