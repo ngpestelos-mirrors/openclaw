@@ -1,15 +1,9 @@
 import type { SessionsDiffResult } from "../../../../../packages/gateway-protocol/src/index.js";
 import { BROWSER_IMAGE_MIME_TYPES } from "../../../../../src/shared/browser-image-mime-types.js";
-import {
-  formatFencedCodeBlock,
-  formatInlineCodeSpan,
-} from "../../../../../src/shared/markdown-code.js";
+import { formatFencedCodeBlock } from "../../../../../src/shared/markdown-code.js";
 import { downloadArtifact, isHttpArtifactDownloadUrl } from "../../../api/artifact-download.ts";
 import { GatewayRequestError } from "../../../api/gateway.ts";
-import {
-  downloadSessionFile,
-  type SessionFileDownload,
-} from "../../../api/session-file-download.ts";
+import { downloadSessionFile } from "../../../api/session-file-download.ts";
 import type { ArtifactDownloadResult, SessionWorkspaceGetResult } from "../../../api/types.ts";
 import { hasOperatorAdminAccess } from "../../../app/operator-access.ts";
 import type { MarkdownFileLinkTarget } from "../../../components/markdown-file-links.ts";
@@ -23,6 +17,7 @@ import { pathDisplayName } from "../../../lib/path-display.ts";
 import { resolveSessionDisplayName } from "../../../lib/session-display.ts";
 import { parseAgentSessionKey } from "../../../lib/sessions/session-key.ts";
 import { sessionWorkspaceFileKey } from "../../../lib/sessions/workspace.ts";
+import { unsupportedFileSidebarContent } from "./chat-session-workspace-file-content.ts";
 import { openWorkspaceItem } from "./chat-session-workspace-preview.ts";
 import {
   captureSessionWorkspaceNavigation,
@@ -50,52 +45,6 @@ export type {
   SessionWorkspaceHost,
   SessionWorkspaceProps,
 } from "./chat-session-workspace-types.ts";
-
-function formatMarkdownCodeSpan(value: string): string {
-  // Markdown finds block boundaries before inline spans, so filenames must
-  // stay on one logical line even when the Gateway returns hostile metadata.
-  const singleLineValue = value.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
-  const hasBoundarySpaces = singleLineValue.startsWith(" ") && singleLineValue.endsWith(" ");
-  return formatInlineCodeSpan(
-    hasBoundarySpaces && !/^ +$/.test(singleLineValue) ? ` ${singleLineValue} ` : singleLineValue,
-  );
-}
-
-function formatFileUpdatedAt(updatedAtMs: number | undefined): string | null {
-  if (typeof updatedAtMs !== "number") {
-    return null;
-  }
-  const updatedAt = new Date(updatedAtMs);
-  return Number.isNaN(updatedAt.getTime()) ? null : updatedAt.toISOString();
-}
-
-function unsupportedFileSidebarContent(
-  file: SessionWorkspaceGetResult["file"],
-  fallbackPath: string,
-  download: (signal: AbortSignal) => Promise<SessionFileDownload | null>,
-): SidebarContent {
-  const filePath = file.workspacePath || file.path || fallbackPath;
-  const updatedAt = formatFileUpdatedAt(file.updatedAtMs);
-  const lines = [
-    "This file is not previewable inline.",
-    "",
-    `- Path: ${formatMarkdownCodeSpan(filePath)}`,
-    file.mimeType ? `- Type: ${formatMarkdownCodeSpan(file.mimeType)}` : null,
-    typeof file.size === "number" ? `- Size: ${file.size.toLocaleString()} bytes` : null,
-    updatedAt ? `- Updated: ${updatedAt}` : null,
-  ].filter((line): line is string => line !== null);
-  const content = lines.join("\n");
-  return {
-    kind: "markdown",
-    content,
-    rawText: content,
-    fileDownload: {
-      path: filePath,
-      name: file.name || pathDisplayName(filePath),
-      download,
-    },
-  };
-}
 
 function workspaceBrowserFilePath(root: string | undefined, filePath: string): string {
   if (!root) {
@@ -501,6 +450,8 @@ export function createSessionWorkspaceProps(
   options?: {
     presentation?: "desktop" | "mobile";
     transcriptAttachments?: SessionWorkspaceProps["transcriptAttachments"];
+    /** Mobile host owns persistent expansion on editable focus. */
+    onSearchFocus?: () => void;
     draftScope?: string;
     draftContext?: SessionWorkspaceHost["sessionWorkspaceDraftContext"];
     expanded?: boolean;
@@ -531,6 +482,14 @@ export function createSessionWorkspaceProps(
   }
   const diffContent = resolveSessionDiffSidebarContent(state);
   const navigation = captureSessionWorkspaceNavigation(workspace);
+  const mobile =
+    options?.presentation === "mobile"
+      ? (workspace.mobileNavigation ??= {
+          expandedGroups: { changed: true, read: false, artifacts: false, workspace: true },
+          scrollTop: 0,
+          locations: Object.create(null),
+        })
+      : undefined;
   const publish = () => sessionWorkspaceForHost(state).publish();
   const closeSearch = () => {
     clearWorkspaceTimer(workspace);
@@ -549,6 +508,22 @@ export function createSessionWorkspaceProps(
     transcriptAttachments: options?.transcriptAttachments,
     connected: state.connected,
     navigation,
+    mobileNavigation: mobile
+      ? { expandedGroups: { ...mobile.expandedGroups }, scrollTop: mobile.scrollTop }
+      : undefined,
+    onToggleMobileGroup: (kind) => {
+      if (!mobile) {
+        return;
+      }
+      mobile.expandedGroups[kind] = !mobile.expandedGroups[kind];
+      publish();
+    },
+    onMobileScroll: (top) => {
+      if (mobile) {
+        mobile.scrollTop = top;
+      }
+    },
+    onSearchFocus: options?.onSearchFocus,
     directories: workspace.directories,
     onToggleDirectory: (path) => {
       const tree = workspace.tree!;
@@ -611,6 +586,9 @@ export function createSessionWorkspaceProps(
       ),
     onSetFilter: (filter) => {
       workspace.filter = filter;
+      if (mobile && filter !== "all") {
+        mobile.expandedGroups[filter] = true;
+      }
       if (options?.presentation === "desktop" && (filter === "changed" || filter === "read")) {
         const paths = new Set(workspace.tree!.expandedPaths);
         for (const file of workspace.list?.files ?? []) {
@@ -641,12 +619,23 @@ export function createSessionWorkspaceProps(
     },
     onBrowsePath: (path) => {
       clearWorkspaceTimer(workspace);
+      if (mobile) {
+        mobile.locations[workspace.browserPath] = {
+          search: workspace.browserSearch,
+          filter: workspace.filter,
+          scrollTop: mobile.scrollTop,
+        };
+      }
+      const destination = mobile?.locations[path];
       workspace.browserPath = path;
-      workspace.browserSearch = "";
-      workspace.tree!.searchOpen = false;
-      workspace.filter = "all";
+      workspace.browserSearch = destination?.search ?? "";
+      workspace.tree!.searchOpen = Boolean(workspace.browserSearch);
+      workspace.filter = destination?.filter ?? "all";
+      if (mobile) {
+        mobile.scrollTop = destination?.scrollTop ?? 0;
+      }
       workspace.tree!.treeScroll = 0;
-      if (!workspace.tree!.expandedPaths.includes(path)) {
+      if (!mobile && !workspace.tree!.expandedPaths.includes(path)) {
         workspace.tree!.expandedPaths.push(path);
       }
       loadSessionWorkspace(state, workspace);
@@ -662,6 +651,12 @@ export function createSessionWorkspaceProps(
       openFile(state, workspace, path, opts);
     },
     onSearch: (search) => {
+      if (mobile && search !== workspace.browserSearch) {
+        mobile.scrollTop = 0;
+        if (!workspace.browserPath && search.trim()) {
+          mobile.expandedGroups = { changed: true, read: true, artifacts: true, workspace: true };
+        }
+      }
       workspace.browserSearch = search;
       workspace.tree!.searchOpen = true;
       sessionWorkspaceForHost(state).publish();
