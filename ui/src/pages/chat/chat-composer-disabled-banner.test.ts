@@ -128,3 +128,50 @@ describe("archived session composer banner", () => {
     expect(action?.querySelector(".btn__spinner")).not.toBeNull();
   });
 });
+
+it("keeps notice Stop focused, uses the current callback and removes it when no action is supplied", () => {
+  const initialAbort = vi.fn();
+  const currentAbort = vi.fn();
+  const { container, props } = renderComposerFixture({
+    canSend: false,
+    disabledBanner: {
+      kind: "composer-replacement",
+      text: "This subagent is working.",
+      stop: { onAbort: initialAbort },
+    },
+  });
+  document.body.append(container);
+  const stop = container.querySelector<HTMLButtonElement>(
+    '.agent-chat__disabled-banner button[aria-label="Stop generating"]',
+  )!;
+  expect(stop).not.toBeNull();
+  stop.focus();
+
+  renderComposerInto(container, {
+    ...props,
+    disabledBanner: {
+      kind: "composer-replacement",
+      text: "This subagent is still working.",
+      stop: { onAbort: currentAbort },
+    },
+  });
+  expect(
+    container.querySelector('.agent-chat__disabled-banner button[aria-label="Stop generating"]'),
+  ).toBe(stop);
+  expect(document.activeElement).toBe(stop);
+  stop.click();
+  expect(initialAbort).not.toHaveBeenCalled();
+  expect(currentAbort).toHaveBeenCalledOnce();
+
+  renderComposerInto(container, {
+    ...props,
+    disabledBanner: {
+      kind: "composer-replacement",
+      text: "This subagent finished.",
+    },
+  });
+  expect(
+    container.querySelector('.agent-chat__disabled-banner button[aria-label="Stop generating"]'),
+  ).toBeNull();
+  expect(currentAbort).toHaveBeenCalledOnce();
+});
