@@ -1,5 +1,5 @@
 import type { ControlUiLinkReaderDocument } from "openclaw/plugin-sdk/control-ui-link-reader";
-import { redactSensitiveText } from "openclaw/plugin-sdk/logging-core";
+import { redactToolPayloadText } from "openclaw/plugin-sdk/logging-core";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
   ControlUiGitHubError,
@@ -96,7 +96,7 @@ async function readLogTail(
       const newline = text.indexOf("\n");
       text = newline < 0 ? "" : text.slice(newline + 1);
     }
-    return { text: redactSensitiveText(text), totalBytes, start };
+    return { text: redactToolPayloadText(text), totalBytes, start };
   } finally {
     await discardResponse(download.response);
     await download.release();

@@ -1,3 +1,6 @@
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
+import { withEnvAsync, withTempDir } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it, vi } from "vitest";
 import { loadGitHubDetail } from "./detail.js";
 import { parseGitHubLinkParams, parseGitHubReadParams, type GitHubJobTarget } from "./targets.js";
@@ -144,6 +147,24 @@ describe("public workflow job logs", () => {
       ([input, init]) => requestUrl(input) === storage && init?.method !== "HEAD",
     );
     expect(new Headers(download?.[1]?.headers).get("range")).toBe("bytes=84486-150021");
+  });
+
+  it("keeps built-in token redaction when custom logging patterns are configured", async () => {
+    await withTempDir("github-job-log-redaction-", async (dir) => {
+      const configPath = path.join(dir, "openclaw.json");
+      await writeFile(
+        configPath,
+        JSON.stringify({ logging: { redactPatterns: ["/internal-\\d+/g"] } }),
+      );
+      const syntheticToken = "ghp_" + "a".repeat(36);
+      await withEnvAsync({ OPENCLAW_CONFIG_PATH: configPath }, async () => {
+        const fixture = setup(`internal-12345\n${syntheticToken}\nUseful failure detail\n`);
+        const result = await fixture.read();
+        expect(result.body).toContain("Useful failure detail");
+        expect(result.body).not.toContain("internal-12345");
+        expect(result.body).not.toContain(syntheticToken);
+      });
+    });
   });
 
   it.each([
