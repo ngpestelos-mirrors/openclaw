@@ -71,6 +71,8 @@ export type ChatDetailsProps = Pick<
     outputs?: ChatDetailsOutputs;
     /** Stable per native resource identity; acquire only while Details is presented. */
     retainOutputs?: () => (() => void) | undefined;
+    /** Details consumes the unfiltered progress projection, independently of Show in chat. */
+    progressCardError?: "access-denied" | "unavailable";
     onSessionSelect?: (sessionKey: string) => void;
     detailsWorkspace?: ChatDetailsWorkspace;
     onHideTaskProgress?: () => void;
