@@ -57,7 +57,7 @@ interface BrowserPanelNativeHost extends BrowserPanelNativeState {
   ): void;
   selectTab(targetId: string): Promise<void>;
   syncUrlDraft(url: string): void;
-  reportError(error: unknown): void;
+  reportError(error: unknown, retry?: () => Promise<unknown>): void;
   exitCaptureModes(): void;
 }
 
@@ -270,7 +270,7 @@ export function createBrowserPanelNative(controller: BrowserPanelNativeHost) {
       if (!reply?.ok || !reply.tabId) {
         native.cancelPendingActivation();
         if (reply && !reply.ok) {
-          controller.reportError(reply.error);
+          controller.reportError(reply.error, () => native.open(url, newTab, focusAfterOpen));
         }
         return null;
       }
