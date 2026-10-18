@@ -103,7 +103,7 @@ describe("chat pane placement restart", () => {
           await selectPlacementConfiguration("Machine", "fast");
         } else {
           const local = document.body.querySelector<HTMLButtonElement>('[data-value="gateway"]');
-          expect(local?.textContent).toContain("Gateway");
+          expect(local?.querySelector(".session-move__name")?.textContent).toBe("Gateway · local");
           local?.click();
           flush();
         }

@@ -42,6 +42,7 @@ import { registerPluginManagementEnglish } from "../../ui/src/i18n/locales/en-pl
 import { registerPortalsEnglish } from "../../ui/src/i18n/locales/en-portals.ts";
 import { registerProcessesEnglish } from "../../ui/src/i18n/locales/en-processes.ts";
 import { registerProfileEnglish } from "../../ui/src/i18n/locales/en-profile.ts";
+import { registerSessionMachineEnglish } from "../../ui/src/i18n/locales/en-session-machine.ts";
 import { registerSessionOrganizationEnglish } from "../../ui/src/i18n/locales/en-session-organization.ts";
 import { registerSessionPeopleEnglish } from "../../ui/src/i18n/locales/en-session-people.ts";
 import { registerSessionPlacementEnglish } from "../../ui/src/i18n/locales/en-session-placement.ts";
@@ -104,6 +105,7 @@ const sourceFiles = [
   "en-model-controls.ts",
   "en-model-setup.ts",
   "en-personal-instructions.ts",
+  "en-session-machine.ts",
   "en-session-organization.ts",
   "en-session-people.ts",
   "en-session-placement.ts",
@@ -226,6 +228,7 @@ export function loadControlUiSourceCatalog(): TranslationMap {
     registerModelControlsEnglish.catalog,
     registerModelSetupEnglish.catalog,
     registerPersonalInstructionsEnglish.catalog,
+    registerSessionMachineEnglish.catalog,
     registerSessionPlacementEnglish.catalog,
     registerNewSessionSetupEnglish.catalog,
     registerPluginConsentEnglish.catalog,
