@@ -10,7 +10,7 @@ import { createGitHubPublishTool } from "./github-publish-tool.js";
 import type { InProcessGatewayCaller } from "./in-process-gateway.js";
 
 describe("github_publish tool", () => {
-  it("offers current-PR editing and readiness without privileged actions", () => {
+  it("offers current-PR preparation without privileged actions", () => {
     const tool = createGitHubPublishTool();
     expect(Value.Check(tool.parameters, { action: "edit" })).toBe(true);
     expect(
@@ -23,6 +23,14 @@ describe("github_publish tool", () => {
     expect(
       Value.Check(tool.parameters, { action: "request_review", focus: "extra instructions" }),
     ).toBe(false);
+    expect(
+      Value.Check(tool.parameters, {
+        action: "upload_evidence",
+        requestId: "10000000-0000-4000-8000-000000000002",
+        expectedHeadCommit: "a".repeat(40),
+        evidence: { path: "proof.png", sha256: "b".repeat(64), sizeBytes: 68 },
+      }),
+    ).toBe(true);
     expect(
       Value.Check(tool.parameters, {
         action: "edit",
