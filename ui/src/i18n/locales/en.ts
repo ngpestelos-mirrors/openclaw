@@ -3225,11 +3225,6 @@ export const en: TranslationMap & {
       checksPending: "{count} running",
       finished: "Finished {time}",
       empty: "Answers come from this session's transcript and its project files.",
-      starters: {
-        changed: "What changed?",
-        stopped: "Why did it stop?",
-        remaining: "What's left?",
-      },
       askLabel: "Ask in side chat",
       askPlaceholder: "Ask a question",
       askImageQuestion: "What does this image show?",

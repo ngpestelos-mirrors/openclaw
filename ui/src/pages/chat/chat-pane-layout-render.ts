@@ -306,6 +306,7 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
     }
     const desktopFocus = this.desktopFocus;
     const panelDefinitions = sidebarPanelDefinitions({
+      presentation: this.sessionPresentation,
       paneId: this.paneId,
       panePresentationId: this.presentationId,
       subagentsInputRegion: this.inputRegion,

@@ -635,18 +635,16 @@ describe("ChatSessionRailElement", () => {
     expect(element.querySelector("openclaw-panel-empty-state")).toBeNull();
   });
 
-  it("offers starter questions instead of an empty thread, and asks the tapped one", async () => {
+  it("opens with the native empty state and one composer without suggested questions", async () => {
     const onSubmit = vi.fn();
     const element = await mount({ onSubmit });
+    const empty = element.querySelector("openclaw-panel-empty-state");
+    await empty?.updateComplete;
 
-    const starters = [...element.querySelectorAll(".chat-session-rail__starter")];
-    expect(starters.map((starter) => starter.textContent?.trim())).toEqual([
-      "What changed?",
-      "Why did it stop?",
-      "What's left?",
-    ]);
-
-    (starters[1] as HTMLButtonElement).click();
-    expect(onSubmit).toHaveBeenCalledExactlyOnceWith("Why did it stop?");
+    expect(empty?.querySelector(".empty-state__title")?.textContent).toBe("Side chat");
+    expect(element.textContent).not.toMatch(/What changed\?|Why did it stop\?|What's left\?/);
+    expect(element.querySelectorAll("form")).toHaveLength(1);
+    expect(element.querySelectorAll('textarea[aria-label="Ask in side chat"]')).toHaveLength(1);
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });
