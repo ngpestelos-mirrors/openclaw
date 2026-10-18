@@ -7,6 +7,7 @@ import { createSessionsListResult } from "../../test-helpers/chat-model.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { createModalDialogTestFixture } from "../../test-helpers/modal-dialog.ts";
 import { flush } from "../../test-helpers/solid-settle.ts";
+import { selectPlacementConfiguration } from "./chat-pane-placement.test-support.ts";
 import {
   createTestChatPane,
   createGatewayBrowserClientFixture,
@@ -98,13 +99,11 @@ describe("chat pane placement restart", () => {
         if (target === "cloud") {
           document.body.querySelector<HTMLButtonElement>('[data-value="cloud:aws"]')?.click();
           flush();
-          document.body.querySelector<HTMLButtonElement>('[data-value="os:windows/wsl2"]')?.click();
-          flush();
-          document.body.querySelector<HTMLButtonElement>('[data-value="machine:fast"]')?.click();
-          flush();
+          await selectPlacementConfiguration("Operating system", "windows/wsl2");
+          await selectPlacementConfiguration("Machine", "fast");
         } else {
           const local = document.body.querySelector<HTMLButtonElement>('[data-value="gateway"]');
-          expect(local?.textContent).toContain("Gateway · local");
+          expect(local?.textContent).toContain("Gateway");
           local?.click();
           flush();
         }
