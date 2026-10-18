@@ -27,11 +27,9 @@ import {
 } from "../../sessions/user-turn-transcript.js";
 import type { UserTurnOriginalInputCommit } from "../../sessions/user-turn-transcript.types.js";
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
-import {
-  INTERNAL_MESSAGE_CHANNEL,
-  isBrowserOperatorUiClient,
-} from "../../utils/message-channel.js";
-import { createChatInputRecovery, readChatInputRecoveryAdmission } from "../chat-input-recovery.js";
+import { INTERNAL_MESSAGE_CHANNEL, isBrowserOperatorUiClient } from "../../utils/message-channel.js";
+import { createChatInputRecovery } from "../chat-input-recovery-source.js";
+import { readChatInputRecoveryAdmission } from "../chat-input-recovery.js";
 import type { MentionInbox } from "../mention-inbox.types.js";
 import { hasGatewayAdminScope } from "../operator-scopes.js";
 import { captureWorkerTurnInputSource } from "../worker-environments/worker-turn-transcript-target.js";
