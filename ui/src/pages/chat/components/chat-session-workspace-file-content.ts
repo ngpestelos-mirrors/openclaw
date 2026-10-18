@@ -129,3 +129,13 @@ export async function loadArtifactSidebarContent(
     : `# ${title}\n\nArtifact download is not previewable in the sidebar.`;
   return { kind: "markdown", content, rawText: content };
 }
+
+export function readWorkspaceFileText(
+  file: SessionWorkspaceGetResult["file"] | undefined,
+): string | null {
+  return file?.previewKind === "text" &&
+    file.contentEncoding === "utf8" &&
+    typeof file.content === "string"
+    ? file.content
+    : null;
+}

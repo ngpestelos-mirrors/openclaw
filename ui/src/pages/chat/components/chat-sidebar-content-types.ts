@@ -1,4 +1,5 @@
 import type { JSX as SolidJSX } from "@solidjs/web";
+import type { SessionsDiffResult } from "../../../../../packages/gateway-protocol/src/index.js";
 import type { ChatMessageGetResult } from "../../../../../packages/gateway-protocol/src/schema/logs-chat.js";
 import type { SessionFileDownload } from "../../../api/session-file-download.ts";
 import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
@@ -10,12 +11,16 @@ import type { EmbedSandboxMode } from "../../../lib/chat/tool-display.ts";
 import type { SolidBridgeElement } from "../../../lib/solid-bridge.ts";
 import type { ChatMediaPlaybackMode } from "./chat-media-playback.ts";
 import type { ArtifactDownloadResolver } from "./chat-message-media.ts";
-import type { SessionWorkspaceProps } from "./chat-session-workspace-types.ts";
+import type {
+  SessionWorkspaceProps,
+  SessionWorkspacePreview,
+} from "./chat-session-workspace-types.ts";
 import type { MobileFileBack } from "./chat-sidebar-file-mobile.tsx";
 import type {
   SessionDiffFileTextLoader,
   SessionDiffLoader,
   SessionDiffOwner,
+  SessionDiffProps,
 } from "./session-diff-panel.tsx";
 
 type SidebarFullMessageRequest = {
@@ -122,8 +127,18 @@ type SessionDiffSidebarContent = {
   kind: "session-diff";
   owner: SessionDiffOwner;
   load: SessionDiffLoader;
+  /** Last accepted native Uncommitted result for this exact diff loader. */
+  uncommitted?: SessionsDiffResult;
+  /** Visible Environment demand shares this content's native diff loader. */
+  requestUncommitted?: () => void;
+  onResult?: SessionDiffProps["onResult"];
   loadFileText?: SessionDiffFileTextLoader;
-  openFile?: (path: string) => void;
+  openFile?: (path: string) => void | Promise<SessionWorkspacePreview | undefined>;
+  /** Native host/reader inputs, memoized by the caller for this retained content. */
+  presentation?: Pick<
+    SessionDiffProps,
+    "mobile" | "active" | "openFileView" | "onOpenMobilePage" | "scopeRequest"
+  >;
   rawText?: string | null;
 };
 
