@@ -32,6 +32,18 @@ export type HumanMentionMenuHost = {
   commitDraft: (value: string, mentions: readonly HumanMention[]) => void;
 };
 
+export type HumanMentionRead = {
+  result: UsersMentionableResult;
+  /** False means the scope/entry/editor is no longer eligible; nothing was inserted. */
+  insert: (profileId: string) => boolean;
+};
+
+export type HumanMentionAccess = {
+  read: (query?: string) => HumanMentionRead | null;
+  /** Explicit interaction only. Rejects on lookup failure; null for a retired scope. */
+  request: (query?: string) => Promise<HumanMentionRead | null>;
+};
+
 const MENTION_RESULTS_FRESH_MS = 5 * 60_000;
 const MENTION_RESULTS_MAX_AGE_MS = 30 * 60_000;
 const MENTION_REFRESH_RETRY_MS = 30_000;
@@ -105,14 +117,18 @@ export function createHumanMentionMenu(onOpenChange?: (nextOpen: boolean) => voi
   const results = new Map<string, MentionResultSnapshot>();
   const requests = new Map<string, Promise<UsersMentionableResult>>();
 
-  function syncDirectory(next: HumanMentionDirectory | undefined) {
-    // Results are query snapshots: unrelated session/presence traffic must not cancel typing.
-    // Owner changes fence them here; admission rechecks current recipient visibility.
-    if (
+  function matchesDirectory(next: HumanMentionDirectory | undefined) {
+    return (
       directory?.client === next?.client &&
       directory?.ownerKey === next?.ownerKey &&
       JSON.stringify(directory?.params) === JSON.stringify(next?.params)
-    ) {
+    );
+  }
+
+  function syncDirectory(next: HumanMentionDirectory | undefined) {
+    // Results are query snapshots: unrelated session/presence traffic must not cancel typing.
+    // Owner changes fence them here; admission rechecks current recipient visibility.
+    if (matchesDirectory(next)) {
       return;
     }
     setState(close);
@@ -193,6 +209,75 @@ export function createHumanMentionMenu(onOpenChange?: (nextOpen: boolean) => voi
     draft.search = { kind: "ready", result };
   }
 
+  function cachedResult(query: string) {
+    const cached = results.get(query);
+    if (cached && Date.now() - cached.fetchedAt >= MENTION_RESULTS_MAX_AGE_MS) {
+      results.delete(query);
+      return undefined;
+    }
+    return cached;
+  }
+
+  function requestPeople(query: string, source: HumanMentionDirectory) {
+    let request = requests.get(query);
+    if (!request) {
+      const cached = cachedResult(query);
+      // Failed refreshes do not extend data lifetime or retry on every reopen.
+      if (cached) {
+        cached.refreshAfter = Date.now() + MENTION_REFRESH_RETRY_MS;
+      }
+      request = source.client
+        .request<UsersMentionableResult>(
+          "users.mentionable",
+          { ...source.params, query },
+          { timeoutMs: MENTION_REQUEST_TIMEOUT_MS },
+        )
+        .then((result) => {
+          // Presentation may close; only this directory may inherit the snapshot.
+          if (directory === source) {
+            results.delete(query);
+            if (results.size === MAX_CACHED_MENTION_QUERIES) {
+              results.delete(results.keys().next().value!);
+            }
+            const fetchedAt = Date.now();
+            results.set(query, {
+              result,
+              fetchedAt,
+              refreshAfter: fetchedAt + MENTION_RESULTS_FRESH_MS,
+            });
+          }
+          return result;
+        })
+        .catch((error: unknown) => {
+          const rejected =
+            error instanceof GatewayRequestError &&
+            (error.gatewayCode !== "UNAVAILABLE" ||
+              resolveGatewayErrorDetailCode(error) ===
+                ConnectErrorDetailCodes.AUTHENTICATED_PROFILE_UNAVAILABLE);
+          if (directory === source && rejected) {
+            results.clear();
+            requests.clear();
+            directory = { ...source };
+            cancelSearch();
+            setState((next) => {
+              if (next.target) {
+                next.search = { kind: "error" };
+              }
+            });
+          }
+          throw error;
+        })
+        .finally(() => {
+          // A hung read releases this shared slot at the native request deadline.
+          if (directory === source) {
+            requests.delete(query);
+          }
+        });
+      requests.set(query, request);
+    }
+    return request;
+  }
+
   function searchPeople(draft: MentionMenuState) {
     const target = draft.target;
     const source = directory;
@@ -203,11 +288,7 @@ export function createHumanMentionMenu(onOpenChange?: (nextOpen: boolean) => voi
     const query = target.query;
     // Only the Gateway knows every searchable identity field and its matching rules.
     // Reuse exact snapshots; display-name filtering would lose verified-login matches.
-    let cached = results.get(query);
-    if (cached && Date.now() - cached.fetchedAt >= MENTION_RESULTS_MAX_AGE_MS) {
-      results.delete(query);
-      cached = undefined;
-    }
+    const cached = cachedResult(query);
     if (cached) {
       showResults(draft, cached.result);
       if (Date.now() < cached.refreshAfter && !requests.has(query)) {
@@ -224,68 +305,16 @@ export function createHumanMentionMenu(onOpenChange?: (nextOpen: boolean) => voi
         setState((next) => showResults(next, refreshed.result));
         return;
       }
-      let request = requests.get(query);
-      if (!request) {
-        // Failed refreshes do not extend data lifetime or retry on every reopen.
-        if (cached) {
-          cached.refreshAfter = Date.now() + MENTION_REFRESH_RETRY_MS;
-        }
-        request = source.client
-          .request<UsersMentionableResult>(
-            "users.mentionable",
-            { ...source.params, query },
-            // A hung read must release the shared slot so reopening can retry.
-            { timeoutMs: MENTION_REQUEST_TIMEOUT_MS },
-          )
-          .then((result) => {
-            // Closing or typing ahead retires presentation, not useful query snapshots.
-            // A replaced directory must never inherit the previous owner's response.
-            if (directory === source) {
-              results.delete(query);
-              if (results.size === MAX_CACHED_MENTION_QUERIES) {
-                results.delete(results.keys().next().value!);
-              }
-              const fetchedAt = Date.now();
-              results.set(query, {
-                result,
-                fetchedAt,
-                refreshAfter: fetchedAt + MENTION_RESULTS_FRESH_MS,
-              });
-            }
-            return result;
-          })
-          .finally(() => {
-            if (directory === source) {
-              requests.delete(query);
-            }
-          });
-        requests.set(query, request);
-      }
+      const request = requestPeople(query, source);
       void request.then(
         (result) => {
           if (requestGeneration === generation) {
             setState((next) => showResults(next, result));
           }
         },
-        (error: unknown) => {
-          // Transient outages keep stale suggestions usable. An authoritative
-          // rejection (including lost access) evicts this directory instead.
-          const rejected =
-            error instanceof GatewayRequestError &&
-            (error.gatewayCode !== "UNAVAILABLE" ||
-              resolveGatewayErrorDetailCode(error) ===
-                ConnectErrorDetailCodes.AUTHENTICATED_PROFILE_UNAVAILABLE);
-          if (directory === source && rejected) {
-            results.clear();
-            requests.clear();
-            directory = { ...source };
-            cancelSearch();
-            setState((next) => {
-              if (next.target) {
-                next.search = { kind: "error" };
-              }
-            });
-          } else if (requestGeneration === generation && !cached) {
+        () => {
+          // Transient outages keep stale suggestions usable; the query owner evicts rejections.
+          if (requestGeneration === generation && !cached) {
             setState((next) => {
               next.search = { kind: "error" };
             });
@@ -330,12 +359,25 @@ export function createHumanMentionMenu(onOpenChange?: (nextOpen: boolean) => voi
       draft,
       textarea ?? { value: current, selectionStart: current.length, selectionEnd: current.length },
     );
-    const target = draft.target;
-    if (!target || host.getMentions().length >= MAX_HUMAN_MENTIONS) {
-      return;
+    if (draft.target) {
+      insert(draft, person, host, draft.target);
+    }
+  }
+
+  function insert(
+    draft: MentionMenuState,
+    person: MentionPerson,
+    host: HumanMentionMenuHost,
+    target: MentionTarget,
+    prefix = "",
+  ) {
+    const textarea = host.getTextarea();
+    const current = textarea?.value ?? host.getDraft();
+    if (current !== target.value || host.getMentions().length >= MAX_HUMAN_MENTIONS) {
+      return false;
     }
     const label = `@${person.displayName}`;
-    const replacement = `${label} `;
+    const replacement = `${prefix}${label} `;
     const next = `${current.slice(0, target.start)}${replacement}${current.slice(target.end)}`;
     const mentions = [
       ...updateHumanMentions(current, next, host.getMentions(), {
@@ -344,7 +386,11 @@ export function createHumanMentionMenu(onOpenChange?: (nextOpen: boolean) => voi
         end: target.end,
         inputType: "insertReplacementText",
       }),
-      { profileId: person.profileId, start: target.start, end: target.start + label.length },
+      {
+        profileId: person.profileId,
+        start: target.start + prefix.length,
+        end: target.start + prefix.length + label.length,
+      },
     ].toSorted((a, b) => a.start - b.start);
     // Preserve only selected presentation URLs, so the shared loader reuses the
     // exact image already requested by the picker. Recipient metadata stays unchanged.
@@ -361,11 +407,98 @@ export function createHumanMentionMenu(onOpenChange?: (nextOpen: boolean) => voi
     host.commitDraft(next, mentions);
     const caret = target.start + replacement.length;
     close(draft);
+    const source = directory;
     queueMicrotask(() => {
+      if (directory !== source || host.getTextarea() !== textarea) {
+        return;
+      }
       const currentTextarea = host.getTextarea();
       currentTextarea?.focus({ preventScroll: true });
       currentTextarea?.setSelectionRange(caret, caret);
     });
+    return true;
+  }
+
+  function externalAccess(
+    getCurrent: () =>
+      | { directory: HumanMentionDirectory | undefined; host: HumanMentionMenuHost | undefined }
+      | undefined,
+  ): HumanMentionAccess {
+    const resolveHost = (sync: boolean) => {
+      const current = getCurrent();
+      if (!current) {
+        return undefined;
+      }
+      if (sync) {
+        syncDirectory(current.directory);
+      } else if (!matchesDirectory(current.directory)) {
+        return undefined;
+      }
+      return current.host;
+    };
+    const read = (query = ""): HumanMentionRead | null => {
+      // Reading never starts a request or changes the @ menu's presentation.
+      if (!resolveHost(false)) {
+        return null;
+      }
+      const source = directory;
+      const cached = cachedResult(query);
+      if (!source || !cached) {
+        return null;
+      }
+      return {
+        result: cached.result,
+        insert: (profileId) => {
+          const host = resolveHost(true);
+          if (!host || directory !== source) {
+            return false;
+          }
+          const person = cachedResult(query)?.result.users.find(
+            (user) => user.profileId === profileId,
+          );
+          const textarea = host.getTextarea();
+          if (!person || !textarea || textarea.disabled || textarea.readOnly) {
+            return false;
+          }
+          let inserted = false;
+          setState((draft) => {
+            update(draft, textarea);
+            if (draft.target) {
+              inserted = insert(draft, person, host, draft.target);
+              return;
+            }
+            const value = textarea.value;
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            const prefix = start && !/[\s([{]/u.test(value[start - 1]!) ? " " : "";
+            // Apply the native slash/code/quote rules without committing a temporary @.
+            const candidate = value.slice(0, start) + prefix + "@" + value.slice(end);
+            if (!findMentionTarget(candidate, start + prefix.length + 1)) {
+              return;
+            }
+            inserted = insert(draft, person, host, { start, end, value, query: "" }, prefix);
+          });
+          return inserted;
+        },
+      };
+    };
+    return {
+      read,
+      request: async (query = "") => {
+        if (!resolveHost(true) || !directory) {
+          return null;
+        }
+        const source = directory;
+        const cached = cachedResult(query);
+        if (!cached || Date.now() >= cached.refreshAfter || requests.has(query)) {
+          await requestPeople(query, source);
+        }
+        if (!resolveHost(false) || directory !== source) {
+          return null;
+        }
+        return read(query);
+      },
+    };
   }
 
   return {
@@ -374,6 +507,7 @@ export function createHumanMentionMenu(onOpenChange?: (nextOpen: boolean) => voi
     },
     state,
     selectedAvatarUrls,
+    externalAccess,
     syncDirectory,
     update: (input: MentionInput, intent: MentionIntent = "selection") =>
       setState((draft) => update(draft, input, intent)),
