@@ -8,6 +8,8 @@ export type PanelEmptyStateProps = {
   heading: string;
   description: string;
   action?: JSX.Element;
+  /** Explicit session presentation; omitted keeps existing consumers unchanged. */
+  presentation?: "desktop" | "mobile";
 };
 
 export type PanelEmptyStateElement = SolidBridgeElement<PanelEmptyStateProps>;
@@ -29,7 +31,7 @@ export function PanelEmptyStateContent(props: PanelEmptyStateProps & { children?
     return () => observer.disconnect();
   });
   return (
-    <div class="empty-state" role="status">
+    <div class="empty-state" data-presentation={props.presentation} role="status">
       <div
         class="empty-state__icon"
         ref={(element) => {
@@ -63,6 +65,7 @@ export const PanelEmptyState = defineSolidBridge<PanelEmptyStateProps>(
       description: { default: "" },
       icon: { default: undefined, attribute: false },
       action: { default: undefined, attribute: false },
+      presentation: { default: undefined },
     },
   },
 );

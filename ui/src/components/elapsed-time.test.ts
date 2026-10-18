@@ -59,6 +59,27 @@ describe("openclaw-elapsed-time", () => {
     },
   );
 
+  it.each([
+    [60_000, "1m", "1m 0s"],
+    [3_665_000, "1h 1m", "1h 1m 5s"],
+  ] as const)(
+    "retains seconds only when opted in at %i ms",
+    async (elapsedMs, compact, withSeconds) => {
+      element.startMs = NOW - elapsedMs;
+      element.endMs = NOW;
+      await element.updateComplete;
+      expect(element.textContent?.trim()).toBe(compact);
+
+      element.includeSeconds = true;
+      await element.updateComplete;
+      expect(element.textContent?.trim()).toBe(withSeconds);
+
+      element.includeSeconds = false;
+      await element.updateComplete;
+      expect(element.textContent?.trim()).toBe(compact);
+    },
+  );
+
   it("applies timing and format property changes even when the current label is unchanged", async () => {
     element.minimumUnit = "minute";
     element.startMs = NOW - 65_000;

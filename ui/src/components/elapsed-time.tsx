@@ -9,6 +9,7 @@ type ElapsedTimeProps = {
   endMs: number | null;
   minimumUnit: "second" | "minute";
   singleUnit: boolean;
+  includeSeconds: boolean;
 };
 
 defineSolidBridge<ElapsedTimeProps>(
@@ -30,6 +31,7 @@ defineSolidBridge<ElapsedTimeProps>(
         ? formatDurationHuman(elapsedMs)
         : formatDurationCompact(
             props.minimumUnit === "minute" ? Math.floor(elapsedMs / 60_000) * 60_000 : elapsedMs,
+            { includeSeconds: props.includeSeconds },
           );
     });
     return <>{label()}</>;
@@ -40,6 +42,7 @@ defineSolidBridge<ElapsedTimeProps>(
       endMs: { default: null, type: Number },
       minimumUnit: { default: "second" },
       singleUnit: { default: false },
+      includeSeconds: { default: false },
     },
     connected: (host) => (host.style.display = "contents"),
   },
