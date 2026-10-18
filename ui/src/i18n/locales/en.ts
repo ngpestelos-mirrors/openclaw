@@ -1217,6 +1217,12 @@ export const en: TranslationMap & {
   },
   terminal: {
     title: "Terminal",
+    availableSessions: "Available sessions",
+    inputLabel: "Terminal input",
+    sendInput: "Send terminal input",
+    closeSessionMessage: "Close this terminal session? Its running process will end.",
+    sessionsLabel: "Sessions",
+    addFilesLabel: "Add files",
     copiedToClipboard: "Copied to clipboard",
     toggle: "Toggle terminal",
     open: "Open terminal",

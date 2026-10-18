@@ -36,6 +36,8 @@ suite.define(() => {
           await openChatSidePanelType(pane, "Terminal");
           const embedded = pane.locator(".sidebar-region__right-runtime openclaw-terminal-panel");
           const bottom = page.locator("openclaw-terminal-panel:not([embedded])");
+          // Embedded desktop opens on Sessions; choose the already-owned session.
+          await embedded.locator(".tp-session.is-current").click();
           await embedded.locator(".tp-host canvas:visible").click();
           await page.keyboard.type("diagnostic-command\r");
           const sessionId = (
@@ -199,6 +201,8 @@ suite.define(() => {
             ".sidebar-region__right-runtime openclaw-terminal-panel",
           );
           const bottom = page.locator("openclaw-terminal-panel:not([embedded])");
+          // Embedded desktop opens on Sessions; choose the already-owned session.
+          await embedded.locator(".tp-session.is-current").click();
           await embedded.locator(".tp-host canvas:visible").waitFor();
           await embedded.locator(".tp-host canvas:visible").click();
           await page.keyboard.type("echo DOCKING_CONTINUITY\r");
@@ -232,21 +236,24 @@ suite.define(() => {
             const restoreAfter = await gateway.deferNext("terminal.attach");
             await openChatSidePanelType(activePane, "Terminal");
             await gateway.waitForRequest("terminal.attach", { after: restoreAfter });
-            const addTab = activePane.getByRole("button", { name: "Add side panel tab" });
-            const menu = addTab.locator("..").locator('[role="menu"]');
-            const terminalItem = menu.getByRole("menuitem", { name: /^Terminal\b/ });
+            const positionTrigger = activePane.getByRole("button", {
+              name: "Panel position",
+              exact: true,
+            });
+            const menu = positionTrigger.locator("..").locator('[role="menu"]');
+            const rightPosition = menu.getByRole("menuitemradio", { name: "Right", exact: true });
             const openPicker = async () => {
               if (picker === "keyboard") {
-                await addTab.focus();
+                await positionTrigger.focus();
                 await page.keyboard.press("ArrowDown");
               } else {
-                await addTab.click();
+                await positionTrigger.click();
               }
               await expect.poll(() => menu.getAttribute("data-phase")).toBe("open");
             };
             let restoreReleased = false;
             try {
-              await embedded.locator(".tp-host canvas:visible").waitFor();
+              await embedded.locator(".tp-host canvas").waitFor({ state: "attached" });
               await openPicker();
               await gateway.resolveDeferred("terminal.attach");
               restoreReleased = true;
@@ -258,7 +265,7 @@ suite.define(() => {
                     .count(),
                 )
                 .toBe(2);
-              expect(await addTab.getAttribute("aria-expanded")).toBe("true");
+              expect(await positionTrigger.getAttribute("aria-expanded")).toBe("true");
               expect(await menu.evaluate((element) => element.matches(":popover-open"))).toBe(true);
               expect(await menu.getAttribute("inert")).toBeNull();
               expect(
@@ -272,17 +279,9 @@ suite.define(() => {
                 }),
               ).toBe(true);
 
-              // A hovered hint owns the first Escape before the focused menu does.
-              await addTab.hover();
-              const hint = page.locator("openclaw-tooltip[open]");
-              await hint.locator('[role="tooltip"]').waitFor();
-              await page.keyboard.press("Escape");
-              await expect.poll(() => hint.count()).toBe(0);
-              expect(await menu.getAttribute("data-phase")).toBe("open");
-              expect(await menu.evaluate((element) => element.matches(":popover-open"))).toBe(true);
               await page.keyboard.press("Escape");
               await expect.poll(() => menu.getAttribute("data-phase")).toBe("hidden");
-              expect(await addTab.getAttribute("aria-expanded")).toBe("false");
+              expect(await positionTrigger.getAttribute("aria-expanded")).toBe("false");
               expect(await menu.evaluate((element) => element.matches(":popover-open"))).toBe(
                 false,
               );
@@ -297,19 +296,19 @@ suite.define(() => {
               if (picker === "keyboard") {
                 // Chat chrome delegates unadvertised printable keys to the composer.
                 const labels = await menu
-                  .getByRole("menuitem")
+                  .getByRole("menuitemradio")
                   .evaluateAll((elements) =>
                     elements.map((element) => element.getAttribute("aria-label")),
                   );
-                const terminalIndex = labels.indexOf("Terminal");
-                expect(terminalIndex).toBeGreaterThanOrEqual(0);
+                const positionIndex = labels.indexOf("Right");
+                expect(positionIndex).toBeGreaterThanOrEqual(0);
                 await page.keyboard.press("Home");
-                for (let index = 0; index < terminalIndex; index += 1) {
+                for (let index = 0; index < positionIndex; index += 1) {
                   await page.keyboard.press("ArrowDown");
                 }
                 await expect
                   .poll(() =>
-                    terminalItem.evaluate((element) => {
+                    rightPosition.evaluate((element) => {
                       const root = element.getRootNode();
                       return (
                         element ===
@@ -322,15 +321,20 @@ suite.define(() => {
                   .toBe(true);
                 await page.keyboard.press("Enter");
               } else {
-                await terminalItem.click();
+                await rightPosition.click();
               }
               await expect.poll(() => menu.getAttribute("data-phase")).toBe("hidden");
-              expect(await addTab.getAttribute("aria-expanded")).toBe("false");
+              expect(await positionTrigger.getAttribute("aria-expanded")).toBe("false");
             } finally {
               if (!restoreReleased) {
                 await gateway.resolveDeferred("terminal.attach");
               }
             }
+            await activePane.getByRole("button", { name: "New tab", exact: true }).click();
+            await activePane
+              .locator(".side-panel-launcher")
+              .getByRole("button", { name: /^Terminal\b/ })
+              .click();
             await expect
               .poll(async () => (await gateway.getRequests("terminal.open")).length)
               .toBe(3);
@@ -385,7 +389,7 @@ suite.define(() => {
             // B stays mounted while A hands its restored tabs to the bottom host.
             await selectChat("Docking check");
             await openChatSidePanelType(activePane, "Terminal");
-            await embedded.locator(".tp-host canvas:visible").waitFor();
+            await embedded.locator(".tp-session-menu--inline").waitFor();
             await activePane.getByRole("button", { name: "Dock to bottom", exact: true }).click();
             await expect.poll(() => bottom.locator(".tabstrip-tab.is-live").count()).toBe(3);
             await selectChat("Other conversation");

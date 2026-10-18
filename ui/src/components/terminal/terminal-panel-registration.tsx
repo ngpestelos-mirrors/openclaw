@@ -4,7 +4,8 @@ import { projectOwner } from "../../lib/reactive/projection.ts";
 import { defineSolidBridge, type SolidBridgeElement } from "../../lib/solid-bridge.ts";
 import { nativePanelTabStripCss as tabStyles } from "../panel-tab-strip-styles.ts";
 import type { TerminalInputs } from "./terminal-panel-session-types.ts";
-import { TerminalPanelHostedActions, TerminalPanelView } from "./terminal-panel-view.tsx";
+import { TerminalPanelHostedActions } from "./terminal-panel-view-chrome.tsx";
+import { TerminalPanelView } from "./terminal-panel-view.tsx";
 import {
   CATALOG_TERMINAL_READY_TIMEOUT_MS,
   createTerminalPanel,
@@ -58,6 +59,7 @@ export const TerminalPanelHost = defineSolidBridge<TerminalInputs, TerminalPanel
   },
   {
     properties: {
+      mobile: { default: false, type: Boolean },
       client: { default: null, attribute: false },
       gatewayConnected: { default: true, type: Boolean },
       agentId: { default: null, attribute: false },
