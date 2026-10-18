@@ -81,8 +81,41 @@ async function openMenu(root: HTMLElement) {
   return panel;
 }
 
+async function openAccess(root: HTMLElement) {
+  const panel = root.querySelector<HTMLElement>(".chat-pane__sharing-panel")!;
+  if (!panel.querySelector('[data-value="access:back"]')) {
+    const trigger = panel.querySelector<HTMLButtonElement>('[data-value="access"]');
+    expect(trigger).not.toBeNull();
+    trigger!.click();
+  }
+  await waitForSolid(() => {
+    expect(panel.matches(":popover-open")).toBe(true);
+    expect(panel.querySelector('[data-value="access:back"]')?.textContent).toBe("Back");
+    expect(panel.querySelectorAll('[data-value^="visibility:"]')).toHaveLength(4);
+    expect(panel.querySelector('[data-value="access"]')).toBeNull();
+    expect(panel.querySelector(".chat-pane__sharing-permissions")).toBeNull();
+  });
+}
+
+async function backToOverview(root: HTMLElement) {
+  const panel = root.querySelector<HTMLElement>(".chat-pane__sharing-panel")!;
+  const back = panel.querySelector<HTMLButtonElement>('[data-value="access:back"]');
+  expect(back).not.toBeNull();
+  back!.click();
+  await waitForSolid(() => {
+    expect(panel.matches(":popover-open")).toBe(true);
+    expect(panel.querySelector('[data-value="access"]')).not.toBeNull();
+    expect(panel.querySelector('[data-value="access:back"]')).toBeNull();
+    expect(panel.querySelectorAll('[data-value^="visibility:"]')).toHaveLength(0);
+    expect(document.activeElement).toBe(panel.querySelector('[data-value="access"]'));
+  });
+}
+
 async function select(root: HTMLElement, value: string) {
   await openMenu(root);
+  if (value.startsWith("visibility:")) {
+    await openAccess(root);
+  }
   const item = root.querySelector<HTMLButtonElement>(`[data-value="${value}"]`);
   if (!item) {
     throw new Error(`Expected sharing item: ${value}`);
@@ -137,7 +170,7 @@ describe("chat session sharing menu", () => {
     expect(panel.matches(":popover-open")).toBe(true);
     expect(onOpen).toHaveBeenCalledOnce();
     expect(readAvatar).toHaveBeenCalled();
-    expect(root.querySelectorAll(".chat-pane__sharing-member")).toHaveLength(101);
+    expect(root.querySelectorAll(".chat-pane__sharing-person")).toHaveLength(101);
     const member = root.querySelector('[data-value="member:person-100"]');
     const avatar = member?.querySelector("openclaw-session-owner-chip");
     expect(avatar).not.toBeNull();
@@ -154,6 +187,8 @@ describe("chat session sharing menu", () => {
     expect(panel.matches(":popover-open")).toBe(false);
     await openMenu(root);
     expect(root.querySelector('[data-value="member:person-100"]')).toBe(member);
+    root.querySelector<HTMLButtonElement>('[aria-label="Search people…"]')!.click();
+    flush();
     const search = root.querySelector<HTMLInputElement>("input[data-search]")!;
     search.focus();
     search.value = "Person 101";
@@ -161,7 +196,7 @@ describe("chat session sharing menu", () => {
     flush();
     expect(root.querySelector("input[data-search]")).toBe(search);
     expect(document.activeElement).toBe(search);
-    expect(root.querySelectorAll(".chat-pane__sharing-member")).toHaveLength(1);
+    expect(root.querySelectorAll(".chat-pane__sharing-person")).toHaveLength(1);
   });
 
   it.each(["draft"] as const)(
@@ -199,12 +234,12 @@ describe("chat session sharing menu", () => {
       panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       flush();
       expect(panel.matches(":popover-open")).toBe(false);
-      const indicator = root.querySelector(".chat-pane__public-share-indicator");
+      const indicator = root.querySelector('.chat-pane__sharing-trigger[data-public="true"]');
       expect(indicator?.textContent?.trim()).toBe("Public");
-      expect(indicator?.getAttribute("aria-label")).toContain("anyone can read");
+      expect(indicator?.getAttribute("title")).toContain("anyone can read");
 
       render(renderIndicator(false), root);
-      expect(root.querySelector(".chat-pane__public-share-indicator")).toBeNull();
+      expect(root.querySelector('.chat-pane__sharing-trigger[data-public="true"]')).toBeNull();
     },
   );
 
@@ -238,13 +273,14 @@ describe("chat session sharing menu", () => {
         onCopyPublicLink,
       }),
     );
-    expect(root.textContent).toContain("Public access");
-    expect(root.textContent).toContain("anyone can read without signing in");
+    expect(root.textContent).toContain("Link sharing");
+    expect(root.textContent).toContain("The public link stays readable in Draft.");
     await select(root, "public:disable");
     expect(onPublicShareChange).toHaveBeenCalledWith(false);
     expect(onVisibilityChange).not.toHaveBeenCalled();
     await select(root, "public:copy");
     expect(onCopyPublicLink).toHaveBeenCalledOnce();
+    expect(root.querySelector(".chat-pane__sharing-panel")?.matches(":popover-open")).toBe(true);
   });
 
   it.each(["loading", "read-only", "member"] as const)(
@@ -322,26 +358,27 @@ describe("chat session sharing menu", () => {
       }),
     );
     expect(root.querySelector(".chat-pane__sharing-panel")).not.toBeNull();
+    await openAccess(root);
     expect(root.textContent).toContain("Shared");
     expect(root.textContent).toContain("Read-only");
-    expect(root.textContent).not.toContain("Suggest");
+    expect(
+      root.querySelector<HTMLButtonElement>('[data-value="visibility:suggest"]')?.disabled,
+    ).toBe(true);
+    await backToOverview(root);
     expect(root.textContent).toContain("Alice");
     expect(root.querySelector('button[data-value="member:owner"]')).toBeNull();
-    expect(root.querySelector(".chat-pane__sharing-owner-title")?.textContent?.trim()).toBe(
+    expect(root.querySelector(".chat-pane__sharing-person--creator")?.textContent).toContain(
       "Owner",
     );
     expect(
-      root.querySelector(".chat-pane__sharing-owner .session-menu__text")?.textContent?.trim(),
-    ).toBe("Owner");
-    expect(
-      root.querySelector(".chat-pane__sharing-owner openclaw-session-owner-chip"),
+      root.querySelector(".chat-pane__sharing-person--creator openclaw-session-owner-chip"),
     ).not.toBeNull();
     const ownerLink = root.querySelector<HTMLAnchorElement>(
-      ".chat-pane__sharing-owner a.person-activity-link",
+      ".chat-pane__sharing-person--creator a.person-activity-link",
     );
     expect(ownerLink?.getAttribute("href")).toBe("/activity/owner");
     const ownerAvatarLink = root.querySelector<HTMLAnchorElement>(
-      ".chat-pane__sharing-owner a.person-activity-avatar-link",
+      ".chat-pane__sharing-person--creator a.person-activity-avatar-link",
     );
     expect(ownerAvatarLink?.tabIndex).toBe(-1);
     expect(ownerAvatarLink?.getAttribute("aria-hidden")).toBe("true");
@@ -351,9 +388,19 @@ describe("chat session sharing menu", () => {
     expect(navigate).toHaveBeenCalledWith("owner", "Owner");
 
     await select(root, "visibility:shared");
-    await select(root, "member:alice");
+    await backToOverview(root);
+    const access = root.querySelector<HTMLButtonElement>('[data-value="access"]')!;
+    const member = root.querySelector<HTMLButtonElement>('[data-value="member:alice"]')!;
+    access.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
+    );
+    await waitForSolid(() => expect(document.activeElement).toBe(member));
+    member.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+    );
+    await waitForSolid(() => expect(onMemberChange).toHaveBeenCalledExactlyOnceWith("alice", true));
     expect(onVisibilityChange).toHaveBeenCalledWith("shared");
-    expect(onMemberChange).toHaveBeenCalledWith("alice", true);
+    expect(root.querySelector(".chat-pane__sharing-panel")?.matches(":popover-open")).toBe(true);
   });
 
   it("renders member presentation from identity.type, not from ID spelling", async () => {
@@ -480,9 +527,11 @@ describe("chat session sharing menu", () => {
       }),
     );
     expect(root.querySelector(".chat-pane__sharing-panel")).not.toBeNull();
+    await openAccess(root);
     expect(
       root.querySelector<HTMLElement>('button[data-value="visibility:read-only"]')?.title,
     ).toBe("Requires write");
+    await backToOverview(root);
     expect(root.querySelector('button[data-value="member:alice"]')?.hasAttribute("disabled")).toBe(
       true,
     );
@@ -498,6 +547,7 @@ describe("chat session sharing menu", () => {
     }
 
     await select(root, "visibility:read-only");
+    await backToOverview(root);
     await select(root, "member:alice");
     await select(root, "member:bob");
 
@@ -544,10 +594,15 @@ describe("chat session sharing menu", () => {
     expect(root.querySelector<HTMLButtonElement>(".chat-pane__sharing-trigger")?.disabled).toBe(
       false,
     );
+    expect(root.querySelector(".chat-pane__sharing-permissions")).toBeNull();
+    expect(root.textContent).not.toContain("Message permissions");
+    await openAccess(root);
     expect(root.querySelector('button[data-value="visibility:read-only"]')).not.toBeNull();
-    expect(root.textContent).not.toContain("People");
 
     await select(root, "visibility:read-only");
+    await backToOverview(root);
+    expect(root.querySelector(".chat-pane__sharing-permissions")).toBeNull();
+    expect(root.textContent).not.toContain("Message permissions");
 
     expect(onOpen).toHaveBeenCalledOnce();
     expect(onVisibilityChange).toHaveBeenCalledWith("read-only");
@@ -571,9 +626,7 @@ describe("chat session sharing menu", () => {
       const error = root.querySelector(".chat-pane__sharing-status--error");
       expect(error?.textContent).toContain("Visibility update rejected");
       expect(error?.getAttribute("role")).toBe("alert");
-      expect(root.querySelectorAll(".chat-pane__sharing-title")).toHaveLength(
-        membersAvailable ? 2 : 1,
-      );
+      expect(root.textContent).toContain("Session access");
     },
   );
 });

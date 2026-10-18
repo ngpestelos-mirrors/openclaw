@@ -82,7 +82,7 @@ it.each([
   await Promise.all(request.mock.results.map((result) => result.value));
   draw();
   expect(sharingRead).toHaveBeenCalledOnce();
-  expect(container.querySelector(".chat-pane__public-share-indicator")).toBeNull();
+  expect(container.querySelector(".chat-pane__sharing-trigger[data-public='true']")).toBeNull();
 
   published = true;
   mounted.emitGatewayEvent("sessions.changed", {
@@ -92,7 +92,7 @@ it.each([
   });
   draw();
   expect(sharingRead).toHaveBeenCalledOnce();
-  expect(container.querySelector(".chat-pane__public-share-indicator")).toBeNull();
+  expect(container.querySelector(".chat-pane__sharing-trigger[data-public='true']")).toBeNull();
   mounted.emitGatewayEvent("sessions.changed", {
     reason: "sharing",
     sessionKey: row.key,
@@ -102,7 +102,7 @@ it.each([
   await Promise.all(request.mock.results.map((result) => result.value));
   draw();
   expect(
-    container.querySelector(".chat-pane__public-share-indicator")?.textContent ?? "",
+    container.querySelector(".chat-pane__sharing-trigger[data-public='true']")?.textContent ?? "",
   ).toContain("Public");
 
   const staleRead = createDeferred<SessionMembersListEvidenceResult>();
@@ -122,5 +122,5 @@ it.each([
   });
   await Promise.all(request.mock.results.map((result) => result.value));
   draw();
-  expect(container.querySelector(".chat-pane__public-share-indicator")).toBeNull();
+  expect(container.querySelector(".chat-pane__sharing-trigger[data-public='true']")).toBeNull();
 });
