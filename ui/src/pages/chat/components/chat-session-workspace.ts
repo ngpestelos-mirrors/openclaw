@@ -25,6 +25,8 @@ import { parseAgentSessionKey } from "../../../lib/sessions/session-key.ts";
 import { sessionWorkspaceFileKey } from "../../../lib/sessions/workspace.ts";
 import { openWorkspaceItem } from "./chat-session-workspace-preview.ts";
 import {
+  captureSessionWorkspaceNavigation,
+  loadSessionWorkspaceDirectory,
   clearWorkspaceTimer,
   getSessionWorkspace,
   isCurrentSessionWorkspace,
@@ -497,6 +499,8 @@ function openArtifact(
 export function createSessionWorkspaceProps(
   state: SessionWorkspaceHost,
   options?: {
+    presentation?: "desktop" | "mobile";
+    transcriptAttachments?: SessionWorkspaceProps["transcriptAttachments"];
     draftScope?: string;
     draftContext?: SessionWorkspaceHost["sessionWorkspaceDraftContext"];
     expanded?: boolean;
@@ -526,11 +530,70 @@ export function createSessionWorkspaceProps(
     loadSessionWorkspace(state, workspace);
   }
   const diffContent = resolveSessionDiffSidebarContent(state);
+  const navigation = captureSessionWorkspaceNavigation(workspace);
+  const publish = () => sessionWorkspaceForHost(state).publish();
+  const closeSearch = () => {
+    clearWorkspaceTimer(workspace);
+    workspace.browserSearch = "";
+    workspace.tree!.searchOpen = false;
+    loadSessionWorkspace(state, workspace);
+    publish();
+  };
   return {
+    presentation: options?.presentation,
+    folderView:
+      options?.presentation === "desktop" &&
+      workspace.previews.some(
+        (preview) => preview.id === workspace.activePreviewId && preview.catalogVisible === true,
+      ),
+    transcriptAttachments: options?.transcriptAttachments,
+    connected: state.connected,
+    navigation,
+    onRetry: () => loadSessionWorkspace(state, workspace, true),
+    directories: workspace.directories,
+    onToggleDirectory: (path) => {
+      const tree = workspace.tree!;
+      const expanded = tree.expandedPaths.includes(path);
+      tree.expandedPaths = expanded
+        ? tree.expandedPaths.filter((entry) => entry !== path)
+        : [...tree.expandedPaths, path];
+      if (!expanded) {
+        void loadSessionWorkspaceDirectory(state, path);
+      }
+      publish();
+    },
+    onSearchOpenChange: (open) => {
+      if (!open) {
+        closeSearch();
+        return;
+      }
+      workspace.tree!.searchOpen = true;
+      workspace.tree!.treeVisible = true;
+      publish();
+    },
+    onTreeVisibleChange: (visible) => {
+      workspace.tree!.treeVisible = visible;
+      if (!visible) {
+        closeSearch();
+      } else {
+        publish();
+      }
+    },
+    onSessionExpandedChange: (expanded) => {
+      workspace.tree!.sessionExpanded = expanded;
+      publish();
+    },
+    onNavigationScroll: (area, top) => {
+      if (area === "tree") {
+        workspace.tree!.treeScroll = top;
+      } else {
+        workspace.tree!.sessionScroll = top;
+      }
+    },
     sessionKey: state.sessionKey,
     list: workspace.list?.sessionKey === state.sessionKey ? workspace.list : null,
     loading: workspace.loading,
-    error: workspace.error,
+    error: workspace.error ?? workspace.artifacts?.error ?? null,
     activeId: workspace.activeId,
     filter: workspace.filter,
     browserPath: workspace.browserPath,
@@ -549,6 +612,28 @@ export function createSessionWorkspaceProps(
       ),
     onSetFilter: (filter) => {
       workspace.filter = filter;
+      if (options?.presentation === "desktop" && (filter === "changed" || filter === "read")) {
+        const paths = new Set(workspace.tree!.expandedPaths);
+        for (const file of workspace.list?.files ?? []) {
+          if (file.kind !== (filter === "changed" ? "modified" : "read")) {
+            continue;
+          }
+          const path = file.workspacePath;
+          if (!path || path.startsWith("/") || /^[a-z]:/i.test(path)) {
+            continue;
+          }
+          const parts = path.split("/").slice(0, -1);
+          parts.forEach((_, index) => paths.add(parts.slice(0, index + 1).join("/")));
+        }
+        workspace.tree!.expandedPaths = [...paths];
+        workspace.tree!.sessionExpanded = true;
+      }
+      if (options?.presentation === "desktop" && filter === "all") {
+        // Activity reveals ancestors without listing siblings. All fills only expanded paths.
+        for (const path of workspace.tree!.expandedPaths) {
+          void loadSessionWorkspaceDirectory(state, path);
+        }
+      }
       sessionWorkspaceForHost(state).publish();
     },
     onRetry: () => {
@@ -559,8 +644,14 @@ export function createSessionWorkspaceProps(
       clearWorkspaceTimer(workspace);
       workspace.browserPath = path;
       workspace.browserSearch = "";
-      loadSessionWorkspace(state, workspace, true);
-      sessionWorkspaceForHost(state).publish();
+      workspace.tree!.searchOpen = false;
+      workspace.filter = "all";
+      workspace.tree!.treeScroll = 0;
+      if (!workspace.tree!.expandedPaths.includes(path)) {
+        workspace.tree!.expandedPaths.push(path);
+      }
+      loadSessionWorkspace(state, workspace);
+      publish();
     },
     onOpenFile: (path, origin) => {
       // Session paths are cwd-relative; browser rows are workspace-root-relative.
@@ -573,11 +664,12 @@ export function createSessionWorkspaceProps(
     },
     onSearch: (search) => {
       workspace.browserSearch = search;
+      workspace.tree!.searchOpen = true;
       sessionWorkspaceForHost(state).publish();
       clearWorkspaceTimer(workspace);
       workspace.browserSearchTimer = globalThis.setTimeout(() => {
         workspace.browserSearchTimer = null;
-        loadSessionWorkspace(state, workspace, true);
+        loadSessionWorkspace(state, workspace);
       }, 160);
     },
     onOpenArtifact: (artifactId) => openArtifact(state, workspace, artifactId),
