@@ -32,6 +32,7 @@ import {
 } from "./server-cron.events.test-support.js";
 import type { GatewayCronState } from "./server-cron.js";
 import { expectCronJobIdFromResponse } from "./server.cron.assertions.test-support.js";
+import { expectCronRunHistoryPages } from "./server.cron.run-history.test-support.js";
 import {
   agentCommandMock,
   connectOk,
@@ -572,20 +573,12 @@ describe("gateway server cron", () => {
       deliveryStatus: "not-requested",
     });
 
-    const runsRes = await cronState.request("cron.runs", { id: jobId, limit: 50 });
-    expect(rows(runsRes).at(-1)).toMatchObject({
+    await expectCronRunHistoryPages({
+      storePath: cronState.storePath,
       jobId,
-      jobName: "log test",
-      summary: "hello",
-      deliveryStatus: "not-requested",
-      runId: manualRunId,
+      manualRunId,
+      request: (params) => cronState.request("cron.runs", params),
     });
-    const allRunsRes = await cronState.request("cron.runs", {
-      scope: "all",
-      limit: 50,
-      statuses: ["ok"],
-    });
-    expect(rows(allRunsRes)).toContainEqual(expect.objectContaining({ jobId }));
 
     const writerAddResult = await cronState.cron.add(
       makeCronJob("writer log test", {
@@ -1105,4 +1098,3 @@ describe("gateway server cron", () => {
     },
   );
 });
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

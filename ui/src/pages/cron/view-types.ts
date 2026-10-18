@@ -65,6 +65,7 @@ export type CronProps = {
   runsDeliveryStatuses: CronDeliveryStatus[];
   runsQuery: string;
   runsSortDir: CronSortDir;
+  runsSortBy?: "time" | "status";
   agentSuggestions: string[];
   modelSuggestions: string[];
   thinkingSuggestions: string[];
@@ -95,6 +96,7 @@ export type CronProps = {
     cronRunsDeliveryStatuses?: CronDeliveryStatus[];
     cronRunsQuery?: string;
     cronRunsSortDir?: CronSortDir;
+    cronRunsSortBy?: "time" | "status";
   }) => void | Promise<void>;
   /** The owner reads current entries after publication; cleanup retires the mounted row. */
   onRunMount?: (element: HTMLElement, entry: () => CronRunLogEntry) => (() => void) | undefined;
