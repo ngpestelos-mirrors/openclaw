@@ -93,7 +93,7 @@ suite.define(() => {
           current.locator(".chat-pane__branch-active svg"),
         ]);
         // Measure one DOM generation so a rerender cannot detach an icon between reads.
-        const { infoIconBox, headline, textBox, checkBox, checkIconBox } =
+        const { infoIconBox, headingBox, headline, textBox, checkBox, checkIconBox } =
           await menuSurface.evaluate((surface) => {
             const active = surface.querySelector('.chat-pane__branch-item[data-active="true"]');
             const measure = (element: Element | null) => {
@@ -108,6 +108,7 @@ suite.define(() => {
             };
             return {
               infoIconBox: measure(surface.querySelector(".chat-pane__versions-info svg")),
+              headingBox: measure(surface.querySelector(".chat-pane__versions-heading > span")),
               headline: active?.querySelector(".chat-pane__branch-headline")?.textContent,
               textBox: measure(active?.querySelector(".chat-pane__branch-copy") ?? null),
               checkBox: measure(active?.querySelector(".chat-pane__branch-active") ?? null),
@@ -115,15 +116,14 @@ suite.define(() => {
             };
           });
         expect(infoIconBox).not.toBeNull();
+        expect(headingBox).not.toBeNull();
         expect(headline).toBe("A simpler way to stay organized");
         expect(textBox).not.toBeNull();
         expect(checkBox).not.toBeNull();
         expect(checkIconBox).not.toBeNull();
-        expect(
-          Math.abs(
-            infoIconBox!.x + infoIconBox!.width / 2 - checkIconBox!.x - checkIconBox!.width / 2,
-          ),
-        ).toBeLessThanOrEqual(1);
+        // Help belongs beside the heading, independently of the trailing current check.
+        expect(infoIconBox!.x).toBeGreaterThanOrEqual(headingBox!.x + headingBox!.width);
+        expect(infoIconBox!.x - headingBox!.x - headingBox!.width).toBeLessThanOrEqual(8);
         expect(checkBox!.x).toBeGreaterThanOrEqual(textBox!.x + textBox!.width);
         expect(
           Math.abs(checkBox!.y + checkBox!.height / 2 - textBox!.y - textBox!.height / 2),

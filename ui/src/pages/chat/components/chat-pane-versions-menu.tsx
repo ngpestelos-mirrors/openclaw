@@ -40,13 +40,14 @@ function ChatPaneVersionsMenuContent(props: Props) {
               {branch.headline || t("chat.sessionHeader.untitledBranch")}
             </span>
             <span class="chat-pane__branch-meta">
+              {branch.active ? `${t("chat.sessionHeader.activeBranch")} · ` : ""}
               {t(
                 branch.messageCount === 1
                   ? "chat.sessionHeader.oneMessage"
                   : "chat.sessionHeader.messages",
                 { count: String(branch.messageCount) },
               )}
-              {relativeTime ? ` · ${relativeTime}` : ""}
+              {!branch.active && relativeTime ? ` · ${relativeTime}` : ""}
             </span>
           </span>
         ),
@@ -54,7 +55,11 @@ function ChatPaneVersionsMenuContent(props: Props) {
           <span class="chat-pane__branch-active" aria-label={t("chat.sessionHeader.activeBranch")}>
             <Icon name="check" />
           </span>
-        ) : undefined,
+        ) : (
+          <span class="chat-pane__branch-more" aria-hidden="true">
+            <Icon name="moreHorizontal" />
+          </span>
+        ),
       };
     }),
   );
@@ -65,7 +70,7 @@ function ChatPaneVersionsMenuContent(props: Props) {
         lazy
         id={id}
         class="chat-pane__branches-menu"
-        placement="bottom-end"
+        placement="bottom"
         label={t("chat.sessionHeader.branches")}
         disabled={Boolean(props.menu.branchSwitchDisabledReason)}
         triggerClass="btn btn--ghost btn--icon chat-icon-btn chat-pane__branches-trigger"
@@ -100,7 +105,7 @@ function ChatPaneVersionsMenuContent(props: Props) {
                 class="chat-pane__versions-help"
                 anchor={anchor()}
                 label={t("chat.sessionHeader.versionsHelpLabel")}
-                placement="bottom-end"
+                placement="bottom-start"
                 ref={(handle) => {
                   help = handle;
                 }}

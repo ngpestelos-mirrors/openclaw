@@ -568,7 +568,7 @@ export function createPageState(
   state.handleCloseImage = () => {
     invalidateImageLightbox(state);
   };
-  projectChatFields(chatHistoryRequests(state), ["historyLoad", "acceptedHistory"]);
+  projectChatFields(chatHistoryRequests(state), ["historyLoad", "acceptedHistory", "branchQuery"]);
   return projectChatFields(
     projectChatSessionPresentation(
       projectChatErrors(projectChatRun(projectChatOutboxQueue(state))),

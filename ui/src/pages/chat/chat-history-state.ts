@@ -6,6 +6,7 @@ import {
   isUiSelectedGlobalSessionKey,
   resolveUiSelectedSessionAgentId,
 } from "../../lib/sessions/session-key.ts";
+import type { ChatBranchesQueryReceipt } from "./chat-history-branches.ts";
 import type { ChatHistoryResult, ObservedChatHistoryResult } from "./chat-history-snapshot.ts";
 import { clearChatPendingInputs } from "./chat-pending-inputs.ts";
 import { retirePullRequestRefreshes } from "./chat-pull-request-refresh.ts";
@@ -50,6 +51,7 @@ type ChatHistoryLoadState =
 type ChatHistoryPaneRequests = {
   historyVersion: number;
   branchVersion: number;
+  branchQuery: ChatBranchesQueryReceipt | undefined;
   subscriptionGeneration: number;
   subscriptionReady?: Promise<boolean>;
   subscriptionError?: string;
@@ -88,6 +90,7 @@ export function chatHistoryRequests(owner: object): ChatHistoryPaneRequests {
     requests = {
       historyVersion: 0,
       branchVersion: 0,
+      branchQuery: undefined,
       subscriptionGeneration: 0,
       syncRetries: new Map(),
       historyLoad: { phase: "idle" },
