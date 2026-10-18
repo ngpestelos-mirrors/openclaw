@@ -147,7 +147,7 @@ describe("chat pane embedded panels", () => {
     const { file, mount, renderPanels, state, sessions } = createReviewFixture();
     state.hello = gatewayHelloForMethods(["sessions.files.get", "sessions.files.set"]);
     const text = Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join("\n");
-    openSessionWorkspaceFile(state, { path: "navigation.txt", line: 2 });
+    void openSessionWorkspaceFile(state, { path: "navigation.txt", line: 2 });
     file.resolve({
       sessionKey: state.sessionKey,
       root: "/synthetic/workspace",
@@ -183,7 +183,7 @@ describe("chat pane embedded panels", () => {
     const draft = editor.state.doc.toString();
     const scroll = vi.spyOn(EditorView, "scrollIntoView");
     onTestFinished(() => scroll.mockRestore());
-    openSessionWorkspaceFile(state, { path: "navigation.txt", line: 7 });
+    await openSessionWorkspaceFile(state, { path: "navigation.txt", line: 7 });
     await renderPanels();
     await vi.waitFor(() =>
       expect(mount.querySelector(".file-view__line--target")?.getAttribute("data-line")).toBe("7"),
@@ -192,7 +192,7 @@ describe("chat pane embedded panels", () => {
     expect(editor.state.doc.toString()).toBe(draft);
     expect(scroll).toHaveBeenCalled();
     scroll.mockClear();
-    openSessionWorkspaceFile(state, { path: "navigation.txt", line: 7 });
+    await openSessionWorkspaceFile(state, { path: "navigation.txt", line: 7 });
     await renderPanels();
     expect(scroll).toHaveBeenCalled();
     expect(editor.contentDOM.getAttribute("contenteditable")).toBe("true");
@@ -202,7 +202,7 @@ describe("chat pane embedded panels", () => {
     expect(state.sessionWorkspaceState?.previews).toHaveLength(1);
     scroll.mockClear();
     editor.scrollDOM.scrollTop = 123;
-    openSessionWorkspaceFile(state, { path: "navigation.txt" });
+    await openSessionWorkspaceFile(state, { path: "navigation.txt" });
     await renderPanels();
     expect(mount.querySelector(".cm-editor")).toBe(editorElement);
     expect(editor.scrollDOM.scrollTop).toBe(123);
@@ -222,7 +222,7 @@ describe("chat pane embedded panels", () => {
     const saved = (await file.promise)!;
     const pendingRead = createDeferred<SessionWorkspaceGetResult | null>();
     vi.mocked(sessions.getFile).mockReturnValueOnce(pendingRead.promise);
-    openSessionWorkspaceFile(state, { path: "navigation.txt" });
+    void openSessionWorkspaceFile(state, { path: "navigation.txt" });
     await renderPanels();
     editor.dispatch({ changes: { from: 0, to: 0, insert: "newer " } });
     await renderPanels();
@@ -247,21 +247,22 @@ describe("chat pane embedded panels", () => {
     );
     discard.click();
     await renderPanels();
-    const raw = expectDefined(
-      [...mount.querySelectorAll<HTMLButtonElement>("button")].find(
-        (button) => button.textContent?.trim() === "View Raw Text",
-      ),
-      "Raw action",
+    const highlighting = expectDefined(
+      mount.querySelector<HTMLButtonElement>('button[aria-label="Syntax highlighting"]'),
+      "Syntax highlighting action",
     );
-    raw.click();
+    expect(highlighting.getAttribute("aria-pressed")).toBe("true");
+    highlighting.click();
     await renderPanels();
-    const rawReader = mount.querySelector(".sidebar-markdown-reader");
-    expect(rawReader).not.toBeNull();
-    openSessionWorkspaceFile(state, { path: "navigation.txt" });
+    expect(highlighting.getAttribute("aria-pressed")).toBe("false");
+    expect(mount.querySelector(".cm-editor")).toBe(editorElement);
+    editor.scrollDOM.scrollTop = 123;
+    await openSessionWorkspaceFile(state, { path: "navigation.txt" });
     await renderPanels();
-    expect(mount.querySelector(".sidebar-markdown-reader")).toBe(rawReader);
-    expect(mount.querySelector(".cm-editor")).toBeNull();
-    openSessionWorkspaceFile(state, { path: "navigation.txt", line: 3 });
+    expect(highlighting.getAttribute("aria-pressed")).toBe("false");
+    expect(mount.querySelector(".cm-editor")).toBe(editorElement);
+    expect(editor.scrollDOM.scrollTop).toBe(123);
+    await openSessionWorkspaceFile(state, { path: "navigation.txt", line: 3 });
     await renderPanels();
     await vi.waitFor(() =>
       expect(mount.querySelector(".file-view__line--target")?.getAttribute("data-line")).toBe("3"),
@@ -535,7 +536,7 @@ describe("chat pane embedded panels", () => {
 
   it("keeps Files closed when a pending file preview completes", async () => {
     const { file, mount, preview, renderPanels, state } = createReviewFixture();
-    openSessionWorkspaceFile(state, { path: preview.file.path });
+    void openSessionWorkspaceFile(state, { path: preview.file.path });
     await renderPanels();
     const close = mount.querySelector<HTMLButtonElement>(
       'button[aria-label="Close tab: preview.png"]',
@@ -554,7 +555,7 @@ describe("chat pane embedded panels", () => {
   it("opens the requested file when an unrelated directory listing completes first", async () => {
     const { file, list, mount, preview, renderPanels, state } = createReviewFixture();
     loadSessionWorkspace(state, getSessionWorkspace(state), true);
-    openSessionWorkspaceFile(state, { path: preview.file.path });
+    void openSessionWorkspaceFile(state, { path: preview.file.path });
     await renderPanels();
     expect(mount.querySelector('[data-panel-skeleton="files"]')).not.toBeNull();
 
@@ -572,7 +573,7 @@ describe("chat pane embedded panels", () => {
     await renderPanels();
     expect(
       mount.querySelector<HTMLImageElement>(
-        ".chat-files-panel__page:not([hidden]) .chat-tool-card__preview-image",
+        ".chat-files-panel__page:not([hidden]) .sidebar-image-view img",
       )?.alt,
     ).toBe("preview.png");
   });
@@ -581,7 +582,7 @@ describe("chat pane embedded panels", () => {
     "keeps the operator's %s presentation when a pending preview completes",
     async (presentation) => {
       const { file, mount, preview, renderPanels, state } = createReviewFixture();
-      openSessionWorkspaceFile(state, { path: preview.file.path });
+      void openSessionWorkspaceFile(state, { path: preview.file.path });
       await renderPanels();
       if (presentation === "Files") {
         state.handleOpenSidebar({
@@ -611,7 +612,7 @@ describe("chat pane embedded panels", () => {
       await renderPanels();
       expect(
         mount.querySelector<HTMLImageElement>(
-          ".chat-files-panel__page:not([hidden]) .chat-tool-card__preview-image",
+          ".chat-files-panel__page:not([hidden]) .sidebar-image-view img",
         )?.alt,
       ).toBe("preview.png");
     },
@@ -619,18 +620,18 @@ describe("chat pane embedded panels", () => {
 
   it("keeps the newer file visible after an older preview request settles", async () => {
     const { file, mount, preview, renderPanels, sessions, state } = createReviewFixture();
-    openSessionWorkspaceFile(state, { path: preview.file.path });
+    void openSessionWorkspaceFile(state, { path: preview.file.path });
     const replacement = {
       ...preview,
       file: { ...preview.file, name: "replacement.png", path: "replacement.png" },
     };
     sessions.getFile = vi.fn().mockResolvedValue(replacement);
-    openSessionWorkspaceFile(state, { path: replacement.file.path });
+    await openSessionWorkspaceFile(state, { path: replacement.file.path });
     await vi.waitFor(async () => {
       await renderPanels();
       expect(
         mount.querySelector<HTMLImageElement>(
-          ".chat-files-panel__page:not([hidden]) .chat-tool-card__preview-image",
+          ".chat-files-panel__page:not([hidden]) .sidebar-image-view img",
         )?.alt,
       ).toBe("replacement.png");
     });
@@ -639,14 +640,14 @@ describe("chat pane embedded panels", () => {
     await renderPanels();
     expect(
       mount.querySelector<HTMLImageElement>(
-        ".chat-files-panel__page:not([hidden]) .chat-tool-card__preview-image",
+        ".chat-files-panel__page:not([hidden]) .sidebar-image-view img",
       )?.alt,
     ).toBe("replacement.png");
   });
 
   it("retires a preview across reconnect without refocusing Review over Files", async () => {
     const { file, mount, preview, renderPanels, state } = createReviewFixture();
-    openSessionWorkspaceFile(state, { path: preview.file.path });
+    void openSessionWorkspaceFile(state, { path: preview.file.path });
     state.handleOpenSidebar({
       kind: "attachment",
       attachmentKind: "image",
@@ -666,12 +667,12 @@ describe("chat pane embedded panels", () => {
     expect(mount.querySelector(".sidebar-attachment-preview__image")).toBeNull();
     state.updateSidebarLayout(openSlot(state.sidebarLayout, "detail"));
     await renderPanels();
-    expect(mount.querySelector(".chat-tool-card__preview-image")).toBeNull();
+    expect(mount.querySelector(".sidebar-image-view img")).toBeNull();
   });
 
   it("shows a current preview request failure without leaving Review loading", async () => {
     const { file, mount, preview, renderPanels, state } = createReviewFixture();
-    openSessionWorkspaceFile(state, { path: preview.file.path });
+    void openSessionWorkspaceFile(state, { path: preview.file.path });
     await renderPanels();
     file.reject(new Error("Preview unavailable"));
     await expect(file.promise).rejects.toThrow("Preview unavailable");
