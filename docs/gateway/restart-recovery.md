@@ -99,6 +99,7 @@ grant the recovery caller access to unrelated personal account actions.
 
 If an input exhausts the existing bounded attempts on a transient failure, later
 inputs in that session remain interrupted too, preserving their replay order.
+This also applies when the earlier input is an inter-session update.
 Other sessions continue recovery. No additional retry loop is started.
 
 Automatic chat-input recovery selects inputs accepted in the past 24 hours;

@@ -369,6 +369,9 @@ async function recoverSessionSendDeliveriesForAgents(
           context.logGateway.warn(
             `Session delivery recovery blocked after ${attempts} attempts: ${formatErrorMessageForDisplay(error, causes.join("; "))} ${JSON.stringify({ sessionKeyHash: sha256HexPrefixCore(sessionKey, 16), inputId: input.id, ageMs: Math.max(0, Date.now() - input.acceptedAt) })}`,
           );
+          if (isTransient(error)) {
+            break;
+          }
         }
       }
       if (blocked.length > 0) {

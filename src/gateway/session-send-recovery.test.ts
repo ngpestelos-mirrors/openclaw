@@ -326,9 +326,14 @@ it.each(["admitted", "reconfigured", "permission-revoked", "failed", "cancelled"
   },
 );
 
-it.each(["transient", "policy"] as const)(
-  "keeps a %s chat failure scoped to its session and eligibility",
-  async (failure) => {
+it.each([
+  ["chat", "transient"],
+  ["chat", "policy"],
+  ["peer", "transient"],
+  ["peer", "policy"],
+] as const)(
+  "keeps a %s input's %s failure scoped to its session and eligibility",
+  async (inputKind, failure) => {
     const inputs = ["first", "next", "other"].map((id): SessionPendingInput => ({
       id,
       runId: id,
@@ -342,6 +347,20 @@ it.each(["transient", "policy"] as const)(
         __openclaw: { chatInputRecovery: { version: 1 } },
       },
     }));
+    if (inputKind === "peer") {
+      inputs[0] = {
+        ...input,
+        id: "first",
+        runId: "first",
+        message: {
+          ...input.message,
+          idempotencyKey: "first:user",
+          __openclaw: {
+            sessionSendDelivery: { ...delivery, runId: "first", operatorSource: null },
+          },
+        },
+      };
+    }
     io.entries.mockResolvedValue([
       { sessionKey: delivery.target.sessionKey, entry: targetEntry },
       { sessionKey: "agent:main:other", entry: { ...targetEntry, sessionId: "other-id" } },
@@ -353,18 +372,27 @@ it.each(["transient", "policy"] as const)(
       const pending = inputs.find((entry) => entry.message.idempotencyKey === key);
       return pending ? sourceSnapshot(pending) : undefined;
     });
-    resumeChat.mockImplementation(async ({ runId }) => {
+    const attempts: string[] = [];
+    const attempt = (runId: string) => {
+      attempts.push(runId);
       if (runId === "first") {
         throw failure === "transient"
           ? new WorkerTaskError("Reader capacity exhausted", "overloaded")
           : new Error("Operator access revoked");
       }
-    });
+    };
+    resumeChat.mockImplementation(async ({ runId }) => attempt(runId));
+    dispatch.mockImplementation(async ({ idempotencyKey }) => attempt(idempotencyKey));
     await recoverWithTimers();
-    expect(resumeChat.mock.calls.map(([request]) => request.runId)).toEqual(
+    expect(attempts).toEqual(
       failure === "transient" ? ["first", "first", "first", "other"] : ["first", "next", "other"],
     );
-    expectNoCalls(dispatch, io.report, io.withdraw);
+    expectNoCalls(io.withdraw);
+    if (inputKind === "chat") {
+      expectNoCalls(dispatch, io.report);
+    } else {
+      expect(io.report).toHaveBeenCalledOnce();
+    }
   },
 );
 
