@@ -131,7 +131,13 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
         workspaceLabel: "workspace",
         sharingControl: chatPaneHeaderSharing(),
         sessionMenuAction: chatPaneHeaderSessionMenu(),
-        detailsControl: { chat: undefined, mobile: false, presentation: true, setRef: () => {} },
+        detailsControl: {
+          chat: undefined,
+          elements: undefined,
+          mobile: false,
+          presentation: true,
+          setRef: () => {},
+        },
         onToggleSidePanel: vi.fn(),
       });
       container.style.cssText = "position: fixed; top: 80px; left: 310px; width: 312px";
