@@ -10,7 +10,6 @@ import type { ConfigSnapshot } from "../../api/types.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
 import type { JsonSchema } from "../../lib/config-form-utils.ts";
 import { createRuntimeConfigCapability } from "../../lib/config/runtime-config-capability.ts";
-import { settleModelCatalogRequests } from "../../lib/model-catalog-store.ts";
 import { ApplicationProvider } from "../../lib/reactive/context.ts";
 import {
   createGatewayRequestMock,
@@ -206,12 +205,17 @@ async function mount(options: { advanced?: boolean } = {}) {
   });
   const settle = async (includeTests = false) => {
     flush();
-    await settleModelCatalogRequests(client, { agentId: "main" });
     await Promise.allSettled(reads);
     if (includeTests) {
       await Promise.allSettled(tests);
     }
-    flush();
+    await waitForSolid(() => {
+      const refresh = [...element.querySelectorAll("button")].find(
+        (candidate) => candidate.textContent?.trim() === "Refresh search status",
+      );
+      expect(refresh).toBeDefined();
+      expect(refresh?.disabled).toBe(false);
+    });
   };
   await settle();
   return {

@@ -7,7 +7,6 @@ import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/c
 import { i18n } from "../../i18n/lib/translate.ts";
 import { REDACTED_SENTINEL } from "../../lib/config-form-utils.ts";
 import { createInitialConfigState } from "../../lib/config/config-state-model.ts";
-import { settleModelCatalogRequests } from "../../lib/model-catalog-store.ts";
 import { ApplicationProvider } from "../../lib/reactive/context.ts";
 import {
   createGatewayRequestMock,
@@ -160,7 +159,6 @@ async function mount(
   const element = view.container;
   const settle = async () => {
     flush();
-    await settleModelCatalogRequests(client, { agentId: selection.state.selectedId });
     await Promise.allSettled(requested);
     await waitForSolid(() => {
       expect(button(element, i18n.t("searchPage.refresh")).disabled).toBe(false);
