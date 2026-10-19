@@ -3,7 +3,6 @@ import {
   createAssistantMessageEventStream,
   getApiProvider,
   type Context,
-  type Model,
   type SimpleStreamOptions,
 } from "openclaw/plugin-sdk/llm";
 import {
@@ -16,8 +15,8 @@ import type { ModelDefinitionConfig, OpenClawConfig } from "openclaw/plugin-sdk/
 import { buildOpenAICompletionsParams } from "openclaw/plugin-sdk/provider-transport-runtime";
 import { makeAgentAssistantMessage } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
-import { runSingleProviderCatalog } from "../test-support/provider-model-test-helpers.js";
 import { applyBasetenConfig, buildStaticBasetenModels } from "./api.js";
+import { registerModel, toolReplayMessages } from "./baseten.test-support.js";
 import basetenPlugin from "./index.js";
 
 const TEST_VALUE = "resolved-marker";
@@ -28,20 +27,7 @@ async function captureRegisteredPayloads(params: {
   reasoningLevels: readonly ("off" | "high" | "max" | undefined)[];
   context?: Context;
 }) {
-  const provider = await registerSingleProviderPlugin(basetenPlugin);
-  const catalog = await runSingleProviderCatalog(provider);
-  const catalogModel =
-    params.authoredModel ?? catalog.models.find((model) => model.id === params.modelId);
-  if (!catalogModel) {
-    throw new Error(`Baseten catalog did not provide ${params.modelId}`);
-  }
-  const model: Model = {
-    ...catalogModel,
-    input: catalogModel.input.filter((kind) => kind === "text" || kind === "image"),
-    provider: provider.id,
-    api: "openai-completions",
-    baseUrl: catalog.baseUrl,
-  };
+  const { provider, model } = await registerModel(params.modelId, undefined, params.authoredModel);
   const captured: ReturnType<typeof buildOpenAICompletionsParams>[] = [];
   const wrapped = provider.wrapStreamFn?.({
     provider: provider.id,
@@ -86,19 +72,7 @@ describe("Baseten provider registration", () => {
       "caller-affinity",
     ],
   ])("sends Baseten cache affinity in the real request: %j", async (options, expected) => {
-    const provider = await registerSingleProviderPlugin(basetenPlugin);
-    const model: Model = {
-      id: "synthetic-model",
-      name: "Synthetic model",
-      provider: "baseten",
-      api: "openai-completions",
-      baseUrl: "https://inference.baseten.co/v1",
-      reasoning: false,
-      input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 8192,
-      maxTokens: 128,
-    };
+    const { provider, model } = await registerModel("deepseek-ai/DeepSeek-V4.1-Flash");
     const registry = createApiRegistry();
     const completions = getApiProvider("openai-completions");
     if (!completions) {
@@ -183,16 +157,6 @@ describe("Baseten provider registration", () => {
     },
   );
 
-  it("preserves default-model max effort through the registered catalog and stream payload", async () => {
-    const [payload] = await captureRegisteredPayloads({
-      modelId: "deepseek-ai/DeepSeek-V4.1-Flash",
-      thinkingLevel: "max",
-      reasoningLevels: ["max"],
-    });
-    expect(payload?.reasoning_effort).toBe("max");
-    expect(payload?.chat_template_args).toEqual({ preserve_me: true });
-  });
-
   it("uses per-call thinking and the factory default through one registered wrapper", async () => {
     for (const [thinkingLevel, defaultEffort] of [
       [undefined, "none"],
@@ -230,23 +194,7 @@ describe("Baseten provider registration", () => {
         context: {
           tools: [{ name: "read", description: "Read", parameters: { type: "object" } }],
           messages: [
-            { role: "user", content: "Read the fixture.", timestamp: 0 },
-            makeAgentAssistantMessage({
-              api: "openai-completions",
-              provider: "other-provider",
-              model: "other-model",
-              content: [{ type: "toolCall", id: "call_1", name: "read", arguments: {} }],
-              stopReason: "toolUse",
-              timestamp: 1,
-            }),
-            {
-              role: "toolResult",
-              toolCallId: "call_1",
-              toolName: "read",
-              content: [{ type: "text", text: "ok" }],
-              isError: false,
-              timestamp: 2,
-            },
+            ...toolReplayMessages("read"),
             makeAgentAssistantMessage({
               api: "openai-completions",
               provider: "baseten",
@@ -268,6 +216,7 @@ describe("Baseten provider registration", () => {
       expect(payloads.map((payload) => payload.reasoning_effort)).toEqual(["none", "max", "high"]);
       for (const [index, payload] of payloads.entries()) {
         expect(payload.model).toBe(modelId);
+        expect(payload.chat_template_args).toEqual({ preserve_me: true });
         expect(payload.thinking).toEqual(
           legacy ? undefined : { type: index === 0 ? "disabled" : "enabled" },
         );

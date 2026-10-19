@@ -1,12 +1,12 @@
 import { createOpenAICompletionsTransportStreamFn } from "@openclaw/ai/transports";
 import { detectAndLoadAgentHarnessPromptImages } from "openclaw/plugin-sdk/agent-harness-runtime";
-import { streamSimple, type Context, type Model } from "openclaw/plugin-sdk/llm";
+import { streamSimple, type Model } from "openclaw/plugin-sdk/llm";
 import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { clearLiveCatalogCacheForTests } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
-import { createSolidPngBuffer, makeAgentAssistantMessage } from "openclaw/plugin-sdk/test-fixtures";
+import { createSolidPngBuffer } from "openclaw/plugin-sdk/test-fixtures";
 import { Type } from "typebox";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { runSingleProviderCatalog } from "../test-support/provider-model-test-helpers.js";
+import { registerModel, toolReplayMessages } from "./baseten.test-support.js";
 import basetenPlugin from "./index.js";
 
 const TEST_VALUE = "resolved-marker";
@@ -51,21 +51,9 @@ async function resolveSparseLiveModel(modelId = DEEPSEEK_V41_FLASH_MODEL_ID) {
       pricing: { prompt: "0.00000037", completion: "0.00000141", input_cache_read: "0.000000011" },
     },
   ]);
-  const provider = await registerSingleProviderPlugin(basetenPlugin);
-  const catalog = await runSingleProviderCatalog(provider, { resolveProviderAuth });
+  const registered = await registerModel(modelId, { resolveProviderAuth });
   expect(catalogFetch).toHaveBeenCalledOnce();
-  const definition = catalog.models.find((model) => model.id === modelId);
-  if (!definition) {
-    throw new Error(`Registered catalog omitted ${modelId}`);
-  }
-  const model: Model<"openai-completions"> = {
-    ...definition,
-    input: definition.input.filter((kind) => kind === "text" || kind === "image"),
-    provider: provider.id,
-    api: "openai-completions",
-    baseUrl: catalog.baseUrl,
-  };
-  return { provider, model };
+  return registered;
 }
 
 async function captureRegisteredRequest(params: {
@@ -73,9 +61,8 @@ async function captureRegisteredRequest(params: {
   model: Model<"openai-completions">;
   reasoning: "off" | "low" | "high" | "max";
   simple?: boolean;
-  context?: Context;
   maxTokens?: number;
-  forceTool?: boolean;
+  replay?: boolean;
   images?: Awaited<ReturnType<typeof detectAndLoadAgentHarnessPromptImages>>["images"];
 }) {
   let body: Record<string, unknown> | undefined;
@@ -108,17 +95,19 @@ async function captureRegisteredRequest(params: {
   }
   const stream = await wrapped(
     params.model,
-    params.context ?? {
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "Call live_probe with value exactly inkling." },
-            ...(params.images ?? []),
+    {
+      messages: params.replay
+        ? [
+            ...toolReplayMessages("live_probe"),
+            { role: "user", content: "Reply with exactly ok.", timestamp: 3 },
+          ]
+        : [
+            {
+              role: "user",
+              content: [{ type: "text", text: "Call live_probe." }, ...(params.images ?? [])],
+              timestamp: 0,
+            },
           ],
-          timestamp: 0,
-        },
-      ],
       tools: [probeTool],
     },
     {
@@ -126,7 +115,7 @@ async function captureRegisteredRequest(params: {
       maxTokens: params.maxTokens ?? 256,
       reasoning: params.reasoning,
       onPayload: (payload) =>
-        params.forceTool === false
+        params.replay
           ? payload
           : {
               ...(payload as Record<string, unknown>),
@@ -225,43 +214,12 @@ describe("Baseten sparse live model transport", () => {
 
   it("sends the current Pro replay through its registered transport", async () => {
     const { provider, model } = await resolveSparseLiveModel("deepseek-ai/DeepSeek-V4-Pro-0813");
-    const toolCallId = "call_baseten_live_replay_1";
     const body = await captureRegisteredRequest({
       provider,
       model,
       reasoning: "high",
       maxTokens: 512,
-      forceTool: false,
-      context: {
-        messages: [
-          { role: "user", content: "Call live_probe.", timestamp: 0 },
-          makeAgentAssistantMessage({
-            api: "openai-completions",
-            provider: "openai",
-            model: "gpt-5.5",
-            content: [
-              {
-                type: "toolCall",
-                id: toolCallId,
-                name: "live_probe",
-                arguments: { value: "replay" },
-              },
-            ],
-            stopReason: "toolUse",
-            timestamp: 1,
-          }),
-          {
-            role: "toolResult",
-            toolCallId,
-            toolName: "live_probe",
-            content: [{ type: "text", text: "ok" }],
-            isError: false,
-            timestamp: 2,
-          },
-          { role: "user", content: "Reply with exactly ok.", timestamp: 3 },
-        ],
-        tools: [probeTool],
-      },
+      replay: true,
     });
     expect(body).toMatchObject({
       model: "deepseek-ai/DeepSeek-V4-Pro-0813",
