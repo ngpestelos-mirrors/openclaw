@@ -5,15 +5,15 @@ import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from "../client-info.js";
 import { FAILOVER_REASONS } from "../failover-reasons.js";
 import {
   type WorkerAdmissionHandshake,
-  WorkerAdmissionResponseFrameSchema,
-  WorkerHeartbeatRequestFrameSchema,
-  WorkerHeartbeatResponseFrameSchema,
-  WorkerLiveEventRequestFrameSchema,
-  WorkerLiveEventResponseFrameSchema,
-  WorkerProtocolCloseReasonSchema,
-  WorkerTranscriptCommitRequestFrameSchema,
-  WorkerTranscriptCommitResponseFrameSchema,
-  WORKER_PROVIDER_REPLAY_MAX_DATA_BYTES,
+  WorkerAdmissionResponseFrameSchema as AdmissionResponse,
+  WorkerHeartbeatRequestFrameSchema as HeartbeatRequest,
+  WorkerHeartbeatResponseFrameSchema as HeartbeatResponse,
+  WorkerLiveEventRequestFrameSchema as LiveRequest,
+  WorkerLiveEventResponseFrameSchema as LiveResponse,
+  WorkerProtocolCloseReasonSchema as CloseReason,
+  WorkerTranscriptCommitRequestFrameSchema as CommitRequest,
+  WorkerTranscriptCommitResponseFrameSchema as CommitResponse,
+  WORKER_PROVIDER_REPLAY_MAX_DATA_BYTES as MAX_REPLAY_BYTES,
   WORKER_LAUNCH_V2_PROTOCOL_FEATURE,
   WORKER_PROTOCOL_FEATURES,
   WORKER_RPC_SET_VERSION,
@@ -25,14 +25,14 @@ import {
   validateWorkerTranscriptCommitParams as validateCommit,
 } from "../index.js";
 import { isWorkerTranscriptFrameWithinBudget } from "../worker-transcript-budget.js";
-import { WorkerGatewayToolResultSchema } from "./worker-gateway-tool.js";
+import { WorkerGatewayToolResultSchema as GatewayToolResult } from "./worker-gateway-tool.js";
 import {
   WORKER_INFERENCE_MAX_OUTPUT_TOKENS,
   validateWorkerInferenceEventFrame as validateInferenceEvent,
   validateWorkerInferenceStartParams as validateInferenceStart,
   validateWorkerInferenceTerminalFrame as validateInferenceTerminal,
 } from "./worker-inference.js";
-import { WORKER_PROTOCOL_MAX_PAYLOAD_BYTES } from "./worker-protocol-primitives.js";
+import { WORKER_PROTOCOL_MAX_PAYLOAD_BYTES as MAX_PAYLOAD_BYTES } from "./worker-protocol-primitives.js";
 
 const bundleHash = "a".repeat(64);
 const handshake: WorkerAdmissionHandshake = {
@@ -97,11 +97,7 @@ const assistantMessage = {
   timestamp: 2,
 };
 const transcriptMessages = [
-  {
-    role: "user" as const,
-    content: [{ type: "text" as const, text: "run the probe" }],
-    timestamp: 1,
-  },
+  { role: "user" as const, content: [{ type: "text" as const, text: "probe" }], timestamp: 1 },
   assistantMessage,
   {
     role: "toolResult" as const,
@@ -121,11 +117,7 @@ const transcriptCommit = (overrides: Record<string, unknown> = {}) => ({
 });
 const transcriptMessage = (message: unknown) => transcriptCommit({ messages: [message] });
 const commitResponse = (value: Record<string, unknown>) =>
-  Value.Check(WorkerTranscriptCommitResponseFrameSchema, {
-    type: "res",
-    id: "commit-1",
-    ...value,
-  });
+  Value.Check(CommitResponse, { type: "res", id: "commit-1", ...value });
 const commitError = (message: string, reason: string) =>
   commitResponse({
     ok: false,
@@ -147,23 +139,21 @@ const params = (liveEvent: unknown, overrides: Record<string, unknown> = {}) => 
 const tool = (phase: string, payload: Record<string, unknown>) =>
   event("tool", { phase, name: "t", toolCallId: "c", ...payload });
 
-const inferenceIdentity = {
-  runEpoch: 2,
-  sessionId: "session-1",
-  runId: "run-1",
-  turnId: "turn-1",
-};
+const inferenceIdentity = { runEpoch: 2, sessionId: "s", runId: "r", turnId: "t" };
 const inferenceStart = {
   ...inferenceIdentity,
   modelRef: { provider: "fixture-provider", model: "fixture-model" },
-  context: {
-    messages: [{ role: "user" as const, content: "Run the probe.", timestamp: 1 }],
-  },
+  context: { messages: [{ role: "user" as const, content: "probe", timestamp: 1 }] },
   options: { temperature: 0.5, maxTokens: 1_024, reasoning: "medium" as const },
 };
 const inferenceMessages = (messages: unknown[]) => ({ ...inferenceStart, context: { messages } });
-function check(validate: (value: unknown) => boolean, value: unknown, valid = true) {
+function check<T>(validate: (value: T) => boolean, value: T, valid = true) {
   expect(validate(value)).toBe(valid);
+}
+function checkAll<T>(validate: (value: T) => unknown, values: readonly T[], want: unknown = true) {
+  for (const value of values) {
+    expect(validate(value)).toEqual(want);
+  }
 }
 function checkSchema(schema: TSchema, value: unknown) {
   expect(Value.Check(schema, value)).toBe(true);
@@ -194,9 +184,9 @@ const liveError = (details: Record<string, unknown>) => ({
   error: { code: "INVALID_REQUEST", message: "x", details },
 });
 const liveRequest = (value: unknown) =>
-  Value.Check(WorkerLiveEventRequestFrameSchema, request("worker.live-event", value));
+  Value.Check(LiveRequest, request("worker.live-event", value));
 const liveResponse = (value: Record<string, unknown>) =>
-  Value.Check(WorkerLiveEventResponseFrameSchema, { type: "res", id: "l", ...value });
+  Value.Check(LiveResponse, { type: "res", id: "l", ...value });
 
 describe("worker protocol schemas", () => {
   it("accepts the bootstrap receipt and future unique feature names", () => {
@@ -209,12 +199,9 @@ describe("worker protocol schemas", () => {
     ).toBe(true);
   });
 
-  it.each([{ ...handshake, bundleHash: "short" }])(
-    "rejects malformed admission identity %#",
-    (candidate) => {
-      expect(validateHandshake(candidate)).toBe(false);
-    },
-  );
+  it("rejects malformed admission identity", () => {
+    check(validateHandshake, { ...handshake, bundleHash: "short" }, false);
+  });
   it("accepts a dedicated connect and explicit unattached session", () => {
     expect(validateConnect(request("connect", connectParams))).toBe(true);
     const missingRunId = structuredClone(connectParams);
@@ -226,35 +213,22 @@ describe("worker protocol schemas", () => {
     ]) {
       expect(validateConnect(request("connect", { ...connectParams, admission }))).toBe(false);
     }
-    checkSchema(WorkerAdmissionResponseFrameSchema, response(workerHello));
+    checkSchema(AdmissionResponse, response(workerHello));
   });
 
   it("validates heartbeat status frames", () => {
     expect(validateHeartbeat({ sentAtMs: 1, status: "ready" })).toBe(true);
     expect(validateHeartbeat({ sentAtMs: 1, status: "unknown" })).toBe(false);
-    checkSchema(
-      WorkerHeartbeatRequestFrameSchema,
-      request("worker.heartbeat", { sentAtMs: 1, status: "busy" }),
-    );
-    checkSchema(
-      WorkerHeartbeatResponseFrameSchema,
-      response({ receivedAtMs: 2, status: "ok", ownerEpoch: 1 }),
-    );
+    checkSchema(HeartbeatRequest, request("worker.heartbeat", { sentAtMs: 1, status: "busy" }));
+    checkSchema(HeartbeatResponse, response({ receivedAtMs: 2, status: "ok", ownerEpoch: 1 }));
   });
 
   it("accepts semantic transcript commits and generated-id responses", () => {
     const commitParams = transcriptCommit();
     expect(validateCommit(commitParams)).toBe(true);
-    checkSchema(
-      WorkerTranscriptCommitRequestFrameSchema,
-      request("worker.transcript.commit", commitParams),
-    );
-    expect(
-      commitResponse({
-        ok: true,
-        payload: { entryIds: ["entry-1", "entry-2", "entry-3"], newLeafId: "entry-3" },
-      }),
-    ).toBe(true);
+    checkSchema(CommitRequest, request("worker.transcript.commit", commitParams));
+    const committed = { entryIds: ["entry-1", "entry-2", "entry-3"], newLeafId: "entry-3" };
+    expect(commitResponse({ ok: true, payload: committed })).toBe(true);
     expect(commitError("worker request rejected", "credential-replaced")).toBe(true);
     expect(commitError("transcript commit rejected", "stale-base-leaf")).toBe(true);
   });
@@ -274,21 +248,16 @@ describe("worker protocol schemas", () => {
     };
 
     // Compatible providers can encode routing state in IDs longer than internal worker IDs.
-    for (const responseId of [
-      "response" + "x".repeat(477),
-      "x".repeat(WORKER_PROTOCOL_MAX_PAYLOAD_BYTES),
-    ]) {
-      expect(accepts(responseId)).toEqual([true, true, true]);
-    }
-    for (const responseId of [
-      "",
-      " ",
-      " response",
-      "response ",
-      "x".repeat(WORKER_PROTOCOL_MAX_PAYLOAD_BYTES + 1),
-    ]) {
-      expect(accepts(responseId)).toEqual([false, false, false]);
-    }
+    checkAll(
+      accepts,
+      ["response" + "x".repeat(477), "x".repeat(MAX_PAYLOAD_BYTES)],
+      [true, true, true],
+    );
+    checkAll(
+      accepts,
+      ["", " ", " response", "response ", "x".repeat(MAX_PAYLOAD_BYTES + 1)],
+      [false, false, false],
+    );
     check(
       validateCommit,
       transcriptMessage({ ...assistantMessage, model: "x".repeat(257) }),
@@ -297,7 +266,7 @@ describe("worker protocol schemas", () => {
     check(validateInferenceStart, { ...inferenceStart, runId: "x".repeat(257) }, false);
     for (const [responseId, withinBudget] of [
       ["response" + "x".repeat(477), true],
-      ["x".repeat(WORKER_PROTOCOL_MAX_PAYLOAD_BYTES), false],
+      ["x".repeat(MAX_PAYLOAD_BYTES), false],
     ] as const) {
       expect(
         isWorkerTranscriptFrameWithinBudget(
@@ -333,10 +302,8 @@ describe("worker protocol schemas", () => {
       );
     expect(validateReplay()).toBe(true);
     expect(validateReplay({ privateScratch: "drop" })).toBe(false);
-    expect(validateReplay({ data: "x".repeat(WORKER_PROVIDER_REPLAY_MAX_DATA_BYTES) })).toBe(true);
-    expect(validateReplay({ data: "x".repeat(WORKER_PROVIDER_REPLAY_MAX_DATA_BYTES + 1) })).toBe(
-      false,
-    );
+    expect(validateReplay({ data: "x".repeat(MAX_REPLAY_BYTES) })).toBe(true);
+    expect(validateReplay({ data: "x".repeat(MAX_REPLAY_BYTES + 1) })).toBe(false);
   });
 
   it("advertises only the current execution-context dialect", () => {
@@ -369,7 +336,7 @@ describe("worker protocol schemas", () => {
       lifecycle("end", { endedAt: 3 }),
       lifecycle("error", { endedAt: 4, error: "x" }),
     ]) {
-      expect(validateLive(params(validEvent))).toBe(true);
+      check(validateLive, params(validEvent));
     }
     expect(liveRequest(params(assistant))).toBe(true);
     expect(liveResponse({ ok: true, payload: { ackedSeq: 3 } })).toBe(true);
@@ -380,7 +347,7 @@ describe("worker protocol schemas", () => {
       { reason: "capacity-exceeded" },
       { reason: "resync-required", ackedSeq: 3, expectedSeq: 4 },
     ]) {
-      expect(liveResponse(liveError(details))).toBe(true);
+      check(liveResponse, liveError(details));
     }
     expect(liveResponse(liveError({ reason: "later" }))).toBe(false);
     expect(liveResponse({ ok: true, payload: { ackedSeq: -1 } })).toBe(false);
@@ -408,7 +375,7 @@ describe("worker protocol schemas", () => {
         event: assistant,
       },
     ]) {
-      expect(validateLive(invalid)).toBe(false);
+      check(validateLive, invalid, false);
     }
     const cyclic: { self?: unknown } = {};
     cyclic.self = cyclic;
@@ -422,15 +389,9 @@ describe("worker protocol schemas", () => {
   });
 
   it("keeps both worker fallback reason fields aligned with the canonical vocabulary", () => {
-    for (const reason of FAILOVER_REASONS) {
-      for (const fallbackEvent of fallbackReasonEvents(reason)) {
-        expect(validateLive(params(fallbackEvent))).toBe(true);
-      }
-    }
-
-    for (const fallbackEvent of fallbackReasonEvents("not-a-reason")) {
-      expect(validateLive(params(fallbackEvent))).toBe(false);
-    }
+    const validate = (liveEvent: unknown) => validateLive(params(liveEvent));
+    checkAll(validate, FAILOVER_REASONS.flatMap(fallbackReasonEvents));
+    checkAll(validate, fallbackReasonEvents("not-a-reason"), false);
   });
 
   it("accepts only a model reference and constrained inference options", () => {
@@ -446,25 +407,23 @@ describe("worker protocol schemas", () => {
       { ...inferenceStart, options: { ...inferenceStart.options, arbitrary: true } },
       { ...inferenceStart, options: { maxTokens: WORKER_INFERENCE_MAX_OUTPUT_TOKENS + 1 } },
     ]) {
-      expect(validateInferenceStart(candidate)).toBe(false);
+      check(validateInferenceStart, candidate, false);
     }
   });
 
-  it.each([{ type: "toolcall_start", id: "call-1", toolName: "probe" }])(
-    "keeps inference content events closed and indexed: $type",
-    (contentEvent) => {
-      const validateEvent = (value: unknown) =>
-        validateInferenceEvent({
-          type: "event",
-          event: "worker.inference.event",
-          payload: { ...inferenceIdentity, seq: 1, event: value },
-        });
-      expect(validateEvent({ ...contentEvent, contentIndex: 0 })).toBe(true);
-      expect(validateEvent(contentEvent)).toBe(false);
-      expect(validateEvent({ ...contentEvent, contentIndex: -1 })).toBe(false);
-      expect(validateEvent({ ...contentEvent, contentIndex: 0, unexpected: true })).toBe(false);
-    },
-  );
+  it("keeps inference content events closed and indexed", () => {
+    const contentEvent = { type: "toolcall_start", id: "call-1", toolName: "probe" };
+    const validateEvent = (value: unknown) =>
+      validateInferenceEvent({
+        type: "event",
+        event: "worker.inference.event",
+        payload: { ...inferenceIdentity, seq: 1, event: value },
+      });
+    expect(validateEvent({ ...contentEvent, contentIndex: 0 })).toBe(true);
+    expect(validateEvent(contentEvent)).toBe(false);
+    expect(validateEvent({ ...contentEvent, contentIndex: -1 })).toBe(false);
+    expect(validateEvent({ ...contentEvent, contentIndex: 0, unexpected: true })).toBe(false);
+  });
 
   it.each([
     transcriptCommit({ sessionId: "other" }),
@@ -495,49 +454,33 @@ describe("worker protocol schemas", () => {
   });
 
   it("keeps worker close reasons closed", () => {
-    expect(Value.Check(WorkerProtocolCloseReasonSchema, "admission-rejected")).toBe(true);
-    expect(Value.Check(WorkerProtocolCloseReasonSchema, "credential-replaced")).toBe(true);
-    expect(Value.Check(WorkerProtocolCloseReasonSchema, "placement-mismatch")).toBe(true);
-    expect(Value.Check(WorkerProtocolCloseReasonSchema, "not-a-worker-reason")).toBe(false);
+    const validate = (value: string) => Value.Check(CloseReason, value);
+    checkAll(validate, ["admission-rejected", "credential-replaced", "placement-mismatch"]);
+    check(validate, "not-a-worker-reason", false);
   });
 });
 
 describe("worker message wire boundaries", () => {
   it.each([
-    {
-      content: { type: "image", data: "encoded", mimeType: "image/png" },
-      accepts: [true, true, true],
-    },
-    {
-      content: { type: "text", text: "a".repeat(WORKER_PROTOCOL_MAX_PAYLOAD_BYTES + 1) },
-      accepts: [false, true, false],
-    },
-  ])("retains each transport's content limits ($accepts)", ({ content, accepts }) => {
+    [[true, true, true], { type: "image", data: "encoded", mimeType: "image/png" }],
+    [[false, true, false], { type: "text", text: "a".repeat(MAX_PAYLOAD_BYTES + 1) }],
+  ] as const)("retains each transport's content limits (%j)", (accepts, content) => {
     const message = { role: "user", content: [content], timestamp: 1 };
     expect([
       validateCommit(transcriptMessage(message)),
       validateInferenceStart(inferenceMessages([message])),
-      Value.Check(WorkerGatewayToolResultSchema, { content: [content] }),
+      Value.Check(GatewayToolResult, { content: [content] }),
     ]).toEqual(accepts);
   });
 
   it("admits text-only runtime context and rejects image payloads", () => {
-    const runtimeContext = {
-      role: "user",
-      content: [{ type: "text", text: "OpenClaw runtime context:\ncurrent facts" }],
-      timestamp: 1,
-      runtimeContext: { retained: true },
-    };
-    check(validateInferenceStart, inferenceMessages([runtimeContext]));
-    check(
-      validateInferenceStart,
-      inferenceMessages([
-        {
-          ...runtimeContext,
-          content: [{ type: "image", data: "encoded", mimeType: "image/png" }],
-        },
-      ]),
-      false,
-    );
+    const validateContent = (content: unknown) =>
+      validateInferenceStart(
+        inferenceMessages([
+          { ...transcriptMessages[0], content, runtimeContext: { retained: true } },
+        ]),
+      );
+    check(validateContent, [{ type: "text", text: "current facts" }]);
+    check(validateContent, [{ type: "image", data: "encoded", mimeType: "image/png" }], false);
   });
 });

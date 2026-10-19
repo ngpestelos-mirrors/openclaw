@@ -36,6 +36,12 @@ const host = {
   connected: true,
   sessions: [],
 };
+const catalog = {
+  id: "codex",
+  label: "Codex",
+  capabilities: { continueSession: true, archive: true },
+  hosts: [host],
+};
 
 describe("session catalog schemas", () => {
   it("accepts only the closed prefix-search contract", () => {
@@ -51,39 +57,28 @@ describe("session catalog schemas", () => {
   });
 
   it("accepts a closed catalog result with hosts", () => {
+    const session = {
+      threadId: "thread-1",
+      status: "idle",
+      archived: false,
+      createdActor: { type: "human", id: "profile-ada", label: "Ada" },
+      canContinue: true,
+      canArchive: false,
+      canOpenTerminal: true,
+    };
     check(SessionsCatalogListResultSchema, {
       catalogs: [
         {
-          id: "claude",
-          label: "Claude Code",
+          ...catalog,
           capabilities: {
-            continueSession: true,
+            ...catalog.capabilities,
             archive: false,
-            createSession: {
-              model: "anthropic/claude-opus-4-8",
-              startTerminal: true,
-            },
+            createSession: { model: "fixture", startTerminal: true },
             openTerminal: true,
             startTerminal: true,
           },
           shareRoute: SHARE_ROUTE,
-          hosts: [
-            {
-              ...host,
-              canStartTerminal: true,
-              sessions: [
-                {
-                  threadId: "thread-1",
-                  status: "idle",
-                  archived: false,
-                  createdActor: { type: "human", id: "profile-ada", label: "Ada" },
-                  canContinue: true,
-                  canArchive: false,
-                  canOpenTerminal: true,
-                },
-              ],
-            },
-          ],
+          hosts: [{ ...host, canStartTerminal: true, sessions: [session] }],
         },
       ],
     });
@@ -118,13 +113,7 @@ describe("session catalog schemas", () => {
   });
 
   it("accepts a locator and closed import counts, including incomplete and unchanged results", () => {
-    const params = {
-      catalogId: "claude",
-      hostId: "gateway:local",
-      threadId: "thread-1",
-      sourceHomeId: "home-1",
-      agentId: "research",
-    };
+    const params = { catalogId: "c", hostId: "h", threadId: "t", sourceHomeId: "s", agentId: "a" };
     const result = {
       sessionKey: "agent:research:imported-session",
       importedItems: 0,
@@ -166,16 +155,7 @@ describe("session catalog schemas", () => {
   });
 
   it("accepts one completed host and rejects unknown fields", () => {
-    const event = {
-      progressId: "progress-1",
-      agentId: "main",
-      catalog: {
-        id: "codex",
-        label: "Codex",
-        capabilities: { continueSession: true, archive: true },
-        hosts: [host],
-      },
-    };
+    const event = { progressId: "progress-1", agentId: "main", catalog };
 
     check(SessionsCatalogHostEventSchema, event, [
       { unexpected: true },
