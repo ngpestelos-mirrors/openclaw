@@ -380,7 +380,12 @@ function createSessionHarness(startServer: boolean, setup?: GatewaySessionsSuite
     };
   }
 
-  async function resetGlobalStores(stores: Awaited<ReturnType<typeof createGlobalStores>>) {
+  async function resetGlobalStores(
+    stores: Pick<
+      Awaited<ReturnType<typeof createGlobalStores>>,
+      "configPath" | "clearRuntimeConfigSnapshot" | "clearConfigCache"
+    >,
+  ) {
     testState.sessionStorePath = undefined;
     testState.sessionConfig = undefined;
     await fs.writeFile(stores.configPath, "{}\n", "utf-8");

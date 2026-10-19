@@ -97,7 +97,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   embeddedRunsTesting.resetActiveEmbeddedRuns();
 });
-afterEach(embeddedRunsTesting.resetActiveEmbeddedRuns);
+afterEach(() => embeddedRunsTesting.resetActiveEmbeddedRuns());
 
 it.each([
   ["promotes and consumes a yielded final exactly once", true, 1, "late final"],

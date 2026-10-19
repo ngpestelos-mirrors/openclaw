@@ -139,7 +139,7 @@ it.each([
   const hello = {
     type: "hello-ok" as const,
     protocol: 1,
-    auth: { role: "operator", scopes: ["operator.read"] },
+    auth: { role: "operator" as const, scopes: ["operator.read"] },
     controlUiTabs: [
       { group: "control" as const, id: "logbook", label: "Logbook", pluginId: "logbook", slug },
     ],

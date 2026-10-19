@@ -173,9 +173,7 @@ describe("memory manager retained worker reads", () => {
       await manager.sync({ reason: "baseline", force: true });
       const database = Reflect.get(manager, "publishedDatabase") as MemoryIndexDatabase;
       const publishedDb = database.db;
-      const chunks = (db: MemoryIndexDatabase["db"]) =>
-        db.prepare("SELECT text FROM memory_index_chunks ORDER BY id").all();
-      const before = chunks(publishedDb);
+      const before = publishedDb.prepare("SELECT text FROM memory_index_chunks ORDER BY id").all();
       const replacement = "Replacement beta after the cache read.";
       await fs.writeFile(memoryPath, replacement);
       provider.embeddedBatchTexts = [];
@@ -202,7 +200,9 @@ describe("memory manager retained worker reads", () => {
         await Promise.race([delivered.promise, sync]);
         expect(readDelivered).toBe(true);
         expect(provider.embeddedBatchTexts).toEqual([]);
-        expect(chunks(publishedDb)).toEqual(before);
+        expect(
+          publishedDb.prepare("SELECT text FROM memory_index_chunks ORDER BY id").all(),
+        ).toEqual(before);
         release.resolve();
         if (outcome === "ready") {
           await sync;
@@ -211,9 +211,11 @@ describe("memory manager retained worker reads", () => {
           await expect(sync).rejects.toThrow("controlled cache read rejection");
           expect(provider.embeddedBatchTexts).toEqual([]);
         }
-        expect(chunks(openOpenClawAgentDatabase({ agentId: "main" }).db)).toEqual(
-          outcome === "ready" ? [{ text: replacement }] : before,
-        );
+        expect(
+          openOpenClawAgentDatabase({ agentId: "main" })
+            .db.prepare("SELECT text FROM memory_index_chunks ORDER BY id")
+            .all(),
+        ).toEqual(outcome === "ready" ? [{ text: replacement }] : before);
       } finally {
         release.resolve();
         await sync.catch(() => undefined);

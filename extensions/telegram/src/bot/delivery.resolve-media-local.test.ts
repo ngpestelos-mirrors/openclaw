@@ -60,7 +60,8 @@ describe("Telegram media acquisition through grammY and the media store", () => 
     }
     return ctx;
   };
-  const pngFetch = async () => new Response(bytes, { headers: { "content-type": "image/png" } });
+  const pngFetch = async () =>
+    new Response(new Uint8Array(bytes), { headers: { "content-type": "image/png" } });
   const transport = (sourceFetch: typeof fetch = pngFetch) => ({
     fetch: sourceFetch,
     sourceFetch,

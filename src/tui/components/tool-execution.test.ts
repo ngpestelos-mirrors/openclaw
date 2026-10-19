@@ -8,7 +8,7 @@ const MAX_COLLAPSED_COMPONENT_LINES = 17;
 const plain = (lines: string[]) => lines.map(normalizeTestText).join("\n");
 const render = (component: ToolExecutionComponent, width = 80) => plain(component.render(width));
 const content = (text: string) => ({ content: [{ type: "text", text }] });
-const toolActivity = { itemId: "tool:test", kind: "tool", title: "Code Mode" };
+const toolActivity = { itemId: "tool:test", kind: "tool", title: "Code Mode" } as const;
 function codeMode(text: string, status: string, isError = false) {
   const component = new ToolExecutionComponent("wait", { runId: "synthetic-run" });
   const details = { status, telemetry: { visibleTools: ["exec", "wait"] } };
