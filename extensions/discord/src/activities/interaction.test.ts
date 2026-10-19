@@ -20,11 +20,14 @@ import {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
   setDiscordActivitiesRuntime(undefined);
 });
 
-function componentContext(): AgentComponentContext {
-  const cfg = createActivityTestConfig();
+const widgetId = "AAAAAAAAAAAAAAAAAAAAAA";
+const applicationId = "123456789012345678";
+
+function componentContext(cfg = createActivityTestConfig()): AgentComponentContext {
   return {
     cfg,
     accountId: "default",
@@ -37,7 +40,7 @@ function componentContext(): AgentComponentContext {
 function createLaunchFixture(userId = "42") {
   const runtime = createActivityTestRuntime();
   setDiscordActivitiesRuntime(runtime);
-  const button = createDiscordActivityButton(componentContext(), "123456789012345678");
+  const button = createDiscordActivityButton(componentContext(), applicationId);
   if (!button) {
     throw new Error("expected activity button");
   }
@@ -49,37 +52,28 @@ function createLaunchFixture(userId = "42") {
     rawData: { channel_id: "777" },
     userId,
   } as unknown as BaseComponentInteraction;
-  return { runtime, button, launchActivity, reply, interaction };
+  const run = () => button.run(interaction, { widgetId });
+  return { runtime, button, launchActivity, reply, interaction, run };
 }
 
 describe("Discord Activity interaction", () => {
   it("does not claim unrelated component custom IDs", () => {
-    setDiscordActivitiesRuntime(createActivityTestRuntime());
-    const button = createDiscordActivityButton(componentContext(), "123456789012345678");
-    expect(button?.customIdParser("other:key=value").key).toBe("other");
+    expect(createLaunchFixture().button.customIdParser("other:key=value").key).toBe("other");
   });
 
   it("learns the startup application ID before resolving Activity availability", () => {
     const cfg = createActivityTestConfig({ applicationId: "" });
     const runtime = createActivityTestRuntime(cfg);
     setDiscordActivitiesRuntime(runtime);
-    const context = { ...componentContext(), cfg, discordConfig: cfg.channels?.discord };
+    const context = componentContext(cfg);
 
     expect(createDiscordActivityButton(context)).toBeNull();
-    expect(createDiscordActivityButton(context, "123456789012345678")).not.toBeNull();
-    expect(runtime.resolveHttpAccount()?.applicationId).toBe("123456789012345678");
+    expect(createDiscordActivityButton(context, applicationId)).not.toBeNull();
+    expect(runtime.resolveHttpAccount()?.applicationId).toBe(applicationId);
 
     const disabledDiscordConfig = { ...context.discordConfig, enabled: false };
-    expect(
-      createDiscordActivityButton(
-        {
-          ...context,
-          cfg: { ...cfg, channels: { ...cfg.channels, discord: disabledDiscordConfig } },
-          discordConfig: disabledDiscordConfig,
-        },
-        "123456789012345678",
-      ),
-    ).toBeNull();
+    const disabledCfg = { ...cfg, channels: { ...cfg.channels, discord: disabledDiscordConfig } };
+    expect(createDiscordActivityButton(componentContext(disabledCfg), applicationId)).toBeNull();
   });
 
   it("posts a raw LAUNCH_ACTIVITY callback", async () => {
@@ -91,10 +85,7 @@ describe("Discord Activity interaction", () => {
       createInternalComponentInteractionPayload({
         id: "interaction-1",
         token: "itoken",
-        data: {
-          component_type: ComponentType.Button,
-          custom_id: "ocactivity1_AAAAAAAAAAAAAAAAAAAAAA",
-        },
+        data: { component_type: ComponentType.Button, custom_id: `ocactivity1_${widgetId}` },
       }),
     ) as BaseComponentInteraction;
 
@@ -107,37 +98,28 @@ describe("Discord Activity interaction", () => {
 
   it("launches for a channel member outside the agent allowlist", async () => {
     const { runtime, button, launchActivity, reply, interaction } = createLaunchFixture("99");
+    const action = { type: "web-app", widgetId } as const;
     const rendered = buildDiscordPresentationComponents({
-      blocks: [
-        {
-          type: "buttons",
-          buttons: [
-            {
-              label: "Open widget",
-              action: { type: "web-app", widgetId: "AAAAAAAAAAAAAAAAAAAAAA" },
-            },
-          ],
-        },
-      ],
+      blocks: [{ type: "buttons", buttons: [{ label: "Open widget", action }] }],
     });
     const actionBlock = rendered?.blocks?.find((block) => block.type === "actions");
     const customId =
       actionBlock?.type === "actions" ? actionBlock.buttons?.[0]?.internalCustomId : "";
-    const data = button?.customIdParser(customId ?? "").data ?? {};
+    const data = button.customIdParser(customId ?? "").data ?? {};
 
-    await button?.run(interaction, data);
+    await button.run(interaction, data);
 
     expect(launchActivity).toHaveBeenCalledOnce();
     expect(reply).not.toHaveBeenCalled();
     await expect(runtime.store.consumePendingLaunch("default", "777", "99")).resolves.toMatchObject(
-      { widgetId: "AAAAAAAAAAAAAAAAAAAAAA" },
+      { widgetId },
     );
   });
 
   it("records the pending launch before acknowledging the interaction", async () => {
-    const { runtime, button, launchActivity, interaction } = createLaunchFixture();
+    const { runtime, launchActivity, run } = createLaunchFixture();
     const recordPendingLaunch = vi.spyOn(runtime.store, "recordPendingLaunch");
-    await button.run(interaction, { widgetId: "AAAAAAAAAAAAAAAAAAAAAA" });
+    await run();
 
     expect(recordPendingLaunch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -147,54 +129,30 @@ describe("Discord Activity interaction", () => {
       }),
     );
     expect(launchActivity).toHaveBeenCalledOnce();
-    // The bounded await establishes visibility before the Activity can query api/widget.
-    const writeOrder = recordPendingLaunch.mock.invocationCallOrder[0] ?? Number.NaN;
-    const launchOrder = launchActivity.mock.invocationCallOrder[0] ?? Number.NaN;
-    expect(writeOrder).toBeLessThan(launchOrder);
+    expect(recordPendingLaunch.mock.invocationCallOrder[0] ?? Number.NaN).toBeLessThan(
+      launchActivity.mock.invocationCallOrder[0] ?? Number.NaN,
+    );
   });
 
   it("clears the exact watchdog handle when the pending launch write wins", async () => {
-    const { button, launchActivity, interaction } = createLaunchFixture();
-    const nativeSetTimeout = globalThis.setTimeout;
-    let watchdogHandle: ReturnType<typeof setTimeout> | undefined;
-    let watchdogFired = false;
-    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
-      callback: (...args: unknown[]) => void,
-      delay?: number,
-      ...args: unknown[]
-    ): ReturnType<typeof setTimeout> => {
-      const handle = nativeSetTimeout(() => {
-        if (delay === 250) {
-          watchdogFired = true;
-        }
-        callback(...args);
-      }, delay);
-      if (delay === 250) {
-        watchdogHandle = handle;
-      }
-      return handle;
-    }) as typeof setTimeout);
+    const { launchActivity, run } = createLaunchFixture();
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
-
-    try {
-      await button.run(interaction, { widgetId: "AAAAAAAAAAAAAAAAAAAAAA" });
-
-      expect(watchdogHandle).toBeDefined();
-      expect(clearTimeoutSpy).toHaveBeenCalledWith(watchdogHandle);
-      await new Promise<void>((resolve) => {
-        nativeSetTimeout(resolve, 275);
-      });
-      expect(watchdogFired).toBe(false);
-      expect(launchActivity).toHaveBeenCalledOnce();
-    } finally {
-      setTimeoutSpy.mockRestore();
-      clearTimeoutSpy.mockRestore();
-    }
+    await run();
+    const watchdogIndex = setTimeoutSpy.mock.calls.findIndex(([, delay]) => delay === 250);
+    expect(watchdogIndex).toBeGreaterThanOrEqual(0);
+    const watchdogHandle = setTimeoutSpy.mock.results[watchdogIndex]?.value;
+    expect(watchdogHandle).toBeDefined();
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(watchdogHandle);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(275);
+    expect(launchActivity).toHaveBeenCalledOnce();
   });
 
   it("launches after the write budget when the store stalls and logs once", async () => {
     const logError = vi.spyOn(loggingCore, "logError").mockImplementation(() => {});
-    const { runtime, button, launchActivity, interaction } = createLaunchFixture();
+    const { runtime, launchActivity, run } = createLaunchFixture();
     const pendingWrite = createDeferred<void>();
     let backgroundSettled = false;
     const stalledWrite = pendingWrite.promise.then(() => {
@@ -203,7 +161,7 @@ describe("Discord Activity interaction", () => {
     vi.spyOn(runtime.store, "recordPendingLaunch").mockReturnValue(stalledWrite);
     const startedAt = performance.now();
     try {
-      await button.run(interaction, { widgetId: "AAAAAAAAAAAAAAAAAAAAAA" });
+      await run();
       const elapsedMs = performance.now() - startedAt;
       expect(launchActivity).toHaveBeenCalledOnce();
       expect(logError).toHaveBeenCalledTimes(1);
@@ -220,13 +178,13 @@ describe("Discord Activity interaction", () => {
 
   it("still launches when recording the pending launch fails and logs once", async () => {
     const logError = vi.spyOn(loggingCore, "logError").mockImplementation(() => {});
-    const { runtime, button, launchActivity, interaction } = createLaunchFixture();
+    const { runtime, launchActivity, run } = createLaunchFixture();
     const recordPendingLaunch = vi
       .spyOn(runtime.store, "recordPendingLaunch")
       .mockRejectedValue(new Error("store offline"));
 
-    await button?.run(interaction, { widgetId: "AAAAAAAAAAAAAAAAAAAAAA" });
-    await button?.run(interaction, { widgetId: "AAAAAAAAAAAAAAAAAAAAAA" });
+    await run();
+    await run();
 
     expect(recordPendingLaunch).toHaveBeenCalledTimes(2);
     expect(launchActivity).toHaveBeenCalledTimes(2);
