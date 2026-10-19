@@ -7,16 +7,19 @@ import { createApplicationContextProvider } from "../../test-helpers/application
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import { flush } from "../../test-helpers/solid-settle.ts";
 import { sidebarPanelDefinitions } from "./chat-pane-embedded-panels.ts";
+import { createChatPaneRails } from "./chat-pane-rails.ts";
 import type { ResolvedBoardView } from "./chat-pane-shared.ts";
 import {
   resolveSidebarLayoutForBoard,
   sidebarRegionCallbacks,
 } from "./chat-pane-sidebar-layout.ts";
 import { SidebarRegionView } from "./chat-pane-sidebar-view.tsx";
+import { createGatewayBrowserClientFixture, createTestChatPane } from "./chat-pane.test-support.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import "./components/chat-sidebar-region.runtime.tsx";
 import {
   closeSlot,
+  isSidebarSlotVisible,
   openSlot,
   promoteSidebarPanel,
   setSidebarDock,
@@ -169,6 +172,91 @@ afterEach(() => {
 });
 
 describe("chat pane sidebar layout", () => {
+  it.each(["subagents", "processes"] as const)(
+    "keeps the selected %s after the native launcher closes and the owner refreshes",
+    async (slot) => {
+      const { pane, state } = createTestChatPane({ client: createGatewayBrowserClientFixture() });
+      state.updateSidebarLayout(openSlot({ columns: [] }, "workspace"));
+      const [layout, setLayout] = createSignal(state.sidebarLayout);
+      const mounted = mountSolid(() => {
+        const definitions = sidebarPanelDefinitions().map((definition) =>
+          Object.assign(definition, {
+            available: ["workspace", "subagents", "processes"].includes(definition.slot),
+            content: <div data-native-slot={definition.slot}>{definition.label}</div>,
+          }),
+        );
+        const controls = () => {
+          const current = layout();
+          const rails = createChatPaneRails({
+            state,
+            sidebarLayout: current,
+            presentationId: "launcher-intent",
+            presented: true,
+            gatewaySnapshot: pane.context.gateway.snapshot,
+            setObserverVisibility: vi.fn(),
+            updateSidebarLayout: state.updateSidebarLayout,
+          });
+          return sidebarRegionCallbacks({
+            state,
+            layout: current,
+            openPanelSlot: rails.openPanelSlot,
+            closePanelSlot: rails.closePanelSlot,
+            forgetDiscussionUrl: vi.fn(),
+            resizePanel: vi.fn(),
+            setPanelOpen: vi.fn(),
+          });
+        };
+        return (
+          <SidebarRegionView
+            panelIdPrefix="chat-panel-launcher-intent"
+            presentationId="launcher-intent"
+            presentation="desktop"
+            availableWidth={1400}
+            callbacks={controls()}
+            layout={layout()}
+            narrow={false}
+            panelDefinitions={definitions}
+            primary={<main>Conversation</main>}
+            regionError={undefined}
+          />
+        );
+      });
+      const draw = async () => {
+        setLayout(state.sidebarLayout);
+        flush();
+        await mounted.container.querySelector("openclaw-chat-sidebar-region")?.updateComplete;
+      };
+      await draw();
+      const newTab = mounted.container.querySelector<HTMLButtonElement>(
+        'button[aria-label="New tab"]',
+      );
+      expect(newTab).not.toBeNull();
+      newTab!.click();
+      await draw();
+      const option = [
+        ...mounted.container.querySelectorAll<HTMLButtonElement>(".side-panel-launcher button"),
+      ].find(
+        (button) =>
+          button.querySelector(".side-panel-type-option__label")?.textContent ===
+          (slot === "subagents" ? "Subagents" : "Processes"),
+      );
+      expect(option).toBeDefined();
+      option!.click();
+      // The user action must open the panel; a later owner update must not manufacture success.
+      expect(isSidebarSlotVisible(state.sidebarLayout, slot)).toBe(true);
+      await draw();
+      expect(mounted.container.querySelector(".side-panel-launcher")).toBeNull();
+      const content = mounted.container.querySelector('[data-native-slot="' + slot + '"]');
+      expect(content).not.toBeNull();
+      expect(content!.closest("[data-region]")?.hasAttribute("hidden")).toBe(false);
+
+      state.updateSidebarLayout({ ...state.sidebarLayout });
+      await draw();
+      expect(isSidebarSlotVisible(state.sidebarLayout, slot)).toBe(true);
+      expect(mounted.container.querySelector('[data-native-slot="' + slot + '"]')).toBe(content);
+    },
+  );
+
   it("keeps native content and the parent layout writable when the DOM provider changes", async () => {
     // SAFETY: the region transports application context; this fixture's panel reads no capabilities.
     const container = createApplicationContextProvider({} as ApplicationContext);

@@ -15,6 +15,7 @@ import { t } from "../../../lib/reactive/i18n.ts";
 import { listen } from "../../../lib/reactive/listener.ts";
 import { createResizeObserver } from "../../../lib/reactive/observers.ts";
 import { defineSolidBridge, type SolidBridgeElement } from "../../../lib/solid-bridge.ts";
+import type { ChatMobileHost } from "../chat-mobile-host.ts";
 import { ChatDetailsProgress } from "./chat-details-progress.tsx";
 import type { ChatDetailsProps } from "./chat-details-types.ts";
 import "../../../styles/chat/details.css";
@@ -35,6 +36,7 @@ type Props = {
   elements?: ChatDetailsElements;
   presented: boolean;
   mobile: boolean;
+  mobileHost?: ChatMobileHost;
   conversationVisible?: boolean;
   externalTrigger?: boolean;
 };
@@ -85,7 +87,13 @@ export const ChatDetails = defineSolidBridge<Props, Methods>(
     const [wideEnough, setWideEnough] = createSignal(false);
     const canDock = () => !props.mobile && props.conversationVisible !== false && wideEnough();
     const opened = () =>
-      props.presented && (intent() === "open" || (intent() === "auto" && canDock()));
+      props.presented &&
+      (props.mobileHost
+        ? props.mobileHost.open &&
+          !props.mobileHost.suspended &&
+          props.mobileHost.destination.area === "details" &&
+          (!props.mobileHost.destination.page || Boolean(props.mobileHost.destination.page.details))
+        : intent() === "open" || (intent() === "auto" && canDock()));
     // Load on first presentation, then retain disclosure state while closed.
     const [sessionOpened] = createSignal<boolean>((previous) => previous === true || opened());
     const docked = () => opened() && canDock();
@@ -112,18 +120,23 @@ export const ChatDetails = defineSolidBridge<Props, Methods>(
       externalTrigger: props.externalTrigger ?? false,
       elements: props.elements,
       presentation: presentation(),
+      mobileHost: Boolean(props.mobileHost),
+      detailsMount: props.mobileHost?.detailsMount,
     });
     const mountSurface = ({
       mobile,
       conversationVisible,
       elements,
+      detailsMount,
     }: ReturnType<typeof readLayout>) => {
       // Fullscreen panels hide the conversation frame, but not the pane or mobile header.
-      const parent = mobile
-        ? host
-        : conversationVisible
-          ? (elements?.frame ?? host)
-          : (elements?.pane ?? host);
+      const parent =
+        detailsMount ??
+        (mobile
+          ? host
+          : conversationVisible
+            ? (elements?.frame ?? host)
+            : (elements?.pane ?? host));
       if (surface.parentElement !== parent) {
         parent.append(surface);
       }
@@ -134,7 +147,11 @@ export const ChatDetails = defineSolidBridge<Props, Methods>(
       externalTrigger,
       elements,
       presentation: currentPresentation,
+      mobileHost,
     }: ReturnType<typeof readLayout>) => {
+      if (mobileHost) {
+        return;
+      }
       const footerBounds = conversationVisible
         ? elements?.footer?.getBoundingClientRect()
         : undefined;
@@ -195,6 +212,10 @@ export const ChatDetails = defineSolidBridge<Props, Methods>(
       }
     };
     const close = (restoreFocus = false) => {
+      if (props.mobileHost) {
+        props.mobileHost.close();
+        return;
+      }
       hide();
       setIntent("closed");
       if (restoreFocus && host.isConnected) {
@@ -217,12 +238,17 @@ export const ChatDetails = defineSolidBridge<Props, Methods>(
           return;
         }
         opener = { presentation: presentation(), element: source };
+        if (props.mobileHost) {
+          props.mobileHost.navigate({ area: "details" }, source);
+          return;
+        }
         setIntent("open");
       },
     });
     const outside = (event: Event) => {
       if (
         opened() &&
+        !props.mobileHost &&
         !docked() &&
         !event.composedPath().includes(host) &&
         !event.composedPath().includes(panel)
@@ -253,14 +279,14 @@ export const ChatDetails = defineSolidBridge<Props, Methods>(
           mountSurface(layout);
         }
         panel.hidden = !open;
-        panel.popover = dock ? null : "manual";
+        panel.popover = dock || layout.mobileHost ? null : "manual";
         panel.style.cssText = "";
         panel.classList.toggle("chat-details--docked", dock);
         layout.elements?.frame?.style.setProperty(
           "--chat-details-space",
           dock ? DETAILS_WIDTH + "px" : "0px",
         );
-        if (open && !dock) {
+        if (open && !dock && !layout.mobileHost) {
           position(layout);
           // Keep native Tab entry beside its header trigger after portaling the content.
           panel.showPopover({
@@ -333,7 +359,7 @@ export const ChatDetails = defineSolidBridge<Props, Methods>(
             role={docked() ? "complementary" : "dialog"}
             aria-label={t("chat.sessionDetails.title")}
           >
-            <Show when={props.mobile || props.externalTrigger}>
+            <Show when={!props.mobileHost && (props.mobile || props.externalTrigger)}>
               <div class="chat-details__toolbar">
                 <span>{t("chat.sessionDetails.title")}</span>
                 <button
@@ -359,7 +385,9 @@ export const ChatDetails = defineSolidBridge<Props, Methods>(
                       <ChatDetailsSession
                         props={props.props}
                         presented={props.presented && opened()}
-                        dismissed={intent() === "closed"}
+                        dismissed={
+                          props.mobileHost ? !props.mobileHost.open : intent() === "closed"
+                        }
                       />
                     </Loading>
                   </Show>
@@ -392,6 +420,7 @@ export const ChatDetails = defineSolidBridge<Props, Methods>(
       elements: { default: undefined, attribute: false },
       presented: { default: false, type: Boolean },
       mobile: { default: false, type: Boolean, reflect: true },
+      mobileHost: { default: undefined, attribute: false },
       conversationVisible: { default: true, type: Boolean },
       externalTrigger: { default: false, type: Boolean },
     },

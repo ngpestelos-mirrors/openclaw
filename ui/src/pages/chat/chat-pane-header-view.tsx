@@ -3,6 +3,7 @@ import { Icon } from "../../components/solid/icon.tsx";
 import type { PresentationValue } from "../../lib/presentation.ts";
 import { t } from "../../lib/reactive/i18n.ts";
 import type { ElementProperties } from "../../types/solid-elements.d.ts";
+import type { ChatMobileHost } from "./chat-mobile-host.ts";
 import { usePanePresentation } from "./chat-pane-presentation.ts";
 import type { ChatDetails } from "./components/chat-details.tsx";
 
@@ -10,6 +11,7 @@ export type PaneDetailsProps = {
   chat: ChatDetails["props"];
   elements: ChatDetails["elements"];
   mobile: boolean;
+  mobileHost?: ChatMobileHost;
   conversationVisible?: boolean;
   externalTrigger?: boolean;
   presentation: PresentationValue;
@@ -25,6 +27,7 @@ export function PaneDetails(props: PaneDetailsProps) {
       prop:props={props.chat}
       prop:elements={props.elements}
       prop:mobile={props.mobile}
+      prop:mobileHost={props.mobileHost}
       prop:conversationVisible={props.conversationVisible ?? true}
       prop:externalTrigger={props.externalTrigger ?? false}
       prop:presented={presented()}
@@ -111,6 +114,7 @@ declare module "@solidjs/web" {
             | "elements"
             | "presented"
             | "mobile"
+            | "mobileHost"
             | "conversationVisible"
             | "externalTrigger"
           >

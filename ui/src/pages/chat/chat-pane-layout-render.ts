@@ -222,6 +222,7 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       ? {
           chat: paneChatProps,
           elements: this.detailsElements,
+          mobileHost,
           mobile: this.mergedChrome && !this.onBackToSubagents,
           presentation: panePresentation,
           conversationVisible,
