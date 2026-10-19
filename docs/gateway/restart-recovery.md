@@ -92,6 +92,10 @@ original submission ID and approved input, then rechecks current operator
 authority and the original session before admission. It never restores the old
 execution authority or starts the same consumed input twice.
 
+If an input exhausts the existing bounded attempts on a transient failure, later
+inputs in that session remain interrupted too, preserving their replay order.
+Other sessions continue recovery. No additional retry loop is started.
+
 Automatic chat-input recovery selects inputs accepted in the past 24 hours;
 the existing bounded recovery attempts may finish after that window. Cancelled
 inputs and reset, archived, or replaced sessions do not resume. Inputs whose

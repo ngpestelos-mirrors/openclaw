@@ -326,6 +326,48 @@ it.each(["admitted", "reconfigured", "permission-revoked", "failed", "cancelled"
   },
 );
 
+it.each(["transient", "policy"] as const)(
+  "keeps a %s chat failure scoped to its session and eligibility",
+  async (failure) => {
+    const inputs = ["first", "next", "other"].map((id): SessionPendingInput => ({
+      id,
+      runId: id,
+      acceptedAt: Date.now(),
+      state: "interrupted",
+      message: {
+        role: "user",
+        content: id,
+        timestamp: Date.now(),
+        idempotencyKey: `${id}:user`,
+        __openclaw: { chatInputRecovery: { version: 1 } },
+      },
+    }));
+    io.entries.mockResolvedValue([
+      { sessionKey: delivery.target.sessionKey, entry: targetEntry },
+      { sessionKey: "agent:main:other", entry: { ...targetEntry, sessionId: "other-id" } },
+    ]);
+    io.pending.mockImplementation(async ({ sessionKey }) => ({
+      items: sessionKey === delivery.target.sessionKey ? inputs.slice(0, 2) : inputs.slice(2),
+    }));
+    io.source.mockImplementation(async (_scope, key) => {
+      const pending = inputs.find((entry) => entry.message.idempotencyKey === key);
+      return pending ? sourceSnapshot(pending) : undefined;
+    });
+    resumeChat.mockImplementation(async ({ runId }) => {
+      if (runId === "first") {
+        throw failure === "transient"
+          ? new WorkerTaskError("Reader capacity exhausted", "overloaded")
+          : new Error("Operator access revoked");
+      }
+    });
+    await recoverWithTimers();
+    expect(resumeChat.mock.calls.map(([request]) => request.runId)).toEqual(
+      failure === "transient" ? ["first", "first", "first", "other"] : ["first", "next", "other"],
+    );
+    expectNoCalls(dispatch, io.report, io.withdraw);
+  },
+);
+
 it("resumes chat inputs in acceptance order across pages, excluding expired and withdrawn inputs", async () => {
   const chat = (id: string, ageMs = 0, state: SessionPendingInput["state"] = "interrupted") => ({
     ...input,

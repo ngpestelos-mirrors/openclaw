@@ -409,7 +409,9 @@ uncertain-delivery warning without sending the message again. The browser keeps 
 payload until consumption or cancellation is confirmed. If delivery is still unknown,
 the review warning remains. Confirmed server custody does not block later browser-queued
 chat sends, including when the accepted input is too old for automatic recovery.
-Local commands such as `/compact` and `/reset` still wait behind that input.
+Local commands such as `/compact` and `/reset` in the same browser outbox still wait
+behind that input. An independent authorized reset from another client can cancel
+pending work, as with other session resets.
 If the Gateway is holding that input for a later turn, it appears in the queue
 above the composer. Removing that row withdraws the exact queued message without
 stopping the active turn. Once cancellation is confirmed, the removed prompt and

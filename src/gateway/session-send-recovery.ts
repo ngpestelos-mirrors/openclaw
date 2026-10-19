@@ -336,6 +336,9 @@ async function recoverSessionSendDeliveriesForAgents(
             context.logGateway.warn(
               `Chat input recovery blocked: ${formatErrorMessageForDisplay(error, formatErrorMessageWithCode(error))} ${JSON.stringify({ sessionKeyHash: sha256HexPrefixCore(sessionKey, 16), inputId: input.id, ageMs: Math.max(0, Date.now() - input.acceptedAt) })}`,
             );
+            if (isTransient(error)) {
+              break;
+            }
             continue;
           }
           blockedCount++;
