@@ -19,7 +19,7 @@ import { DesktopStatusSurface, DesktopViewerHint } from "./desktop-panel-status.
 import { desktopSourceForEnvironment } from "./desktop-source.ts";
 
 export { DesktopSizing } from "./desktop-panel-rail.tsx";
-export type { DesktopSizingOptions, DesktopSizingMenuMode } from "./desktop-panel-rail.tsx";
+export type { DesktopSizingOptions } from "./desktop-panel-rail.tsx";
 
 registerEnglishCatalog(registerDesktopEnglish);
 
