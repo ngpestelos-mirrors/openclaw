@@ -16,6 +16,7 @@ import type { ExecutionDecisionWork } from "./execution-decision-work.types.js";
 import type { ExecutionIdentityAdmissionWork } from "./execution-identity-admission.js";
 
 const MAX_PENDING_AUDIT_EVENTS = 4_096;
+const MAX_AUDIT_BATCH_SIZE = 32;
 const AUDIT_MAINTENANCE_INTERVAL_MS = 60 * 60_000;
 const AUDIT_LOCK_RETRY_DELAY_MS = 25;
 const AUDIT_LOCK_RETRY_MAX_DELAY_MS = 1_000;
@@ -123,14 +124,15 @@ export function createAuditEventWriter(options: {
     }
     return more ? "more" : "settled";
   };
-  const processRequest = async (request: AuditWriterRequest): Promise<AuditWriterResult> => {
+  const processRequests = async (requests: AuditWriterRequest[]): Promise<AuditWriterResult[]> => {
     try {
-      return (
-        (await execute({ type: "audit.writer.process", input: request })) ?? { status: "settled" }
-      );
+      return (await execute({ type: "audit.writer.process", input: requests })) ?? [];
     } catch (error) {
-      // Rejected transport/settlement can follow a commit; never replay that request.
-      return { status: "settled", error: formatAuditWriterRequestError(request, error) };
+      // Any prefix may have committed before transport failed; never replay the submitted batch.
+      return requests.map((request) => ({
+        status: "settled",
+        error: formatAuditWriterRequestError(request, error),
+      }));
     }
   };
   const finishStop = () => {
@@ -205,18 +207,22 @@ export function createAuditEventWriter(options: {
       if (shutdownExpired) {
         return;
       }
-      // Keep the in-flight head in the bounded queue until native settlement.
-      const request = queue[0];
-      if (request) {
-        const result = await processRequest(request);
-        if (result.status === "retry") {
-          lockRetryAttempt += 1;
-          retry = true;
-        } else {
-          // Release settled capacity before an error observer can enqueue or throw.
-          queue.shift();
+      // Keep submitted items in the bounded queue until their native attempts settle.
+      const requests = queue.slice(0, MAX_AUDIT_BATCH_SIZE);
+      if (requests.length > 0) {
+        const results = await processRequests(requests);
+        retry = results.at(-1)?.status === "retry";
+        const settled = results.length - (retry ? 1 : 0);
+        // Release the whole settled prefix before an error observer can enqueue or throw.
+        queue.splice(0, settled);
+        if (settled > 0) {
           resetLockContention();
-          if (result.error !== undefined) {
+        }
+        if (retry) {
+          lockRetryAttempt += 1;
+        }
+        for (const result of results) {
+          if (result.status === "settled" && result.error !== undefined) {
             fail(result.error);
           }
         }

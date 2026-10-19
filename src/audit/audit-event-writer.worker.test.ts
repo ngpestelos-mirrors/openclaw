@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSqliteWorkerFault } from "../../test/helpers/sqlite-worker-fault.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { onInternalDiagnosticEvent } from "../infra/diagnostic-events.js";
 import { openNodeSqliteDatabase, requireNodeSqlite } from "../infra/node-sqlite.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -81,6 +82,19 @@ describe("audit writer shared worker", () => {
       expect(nativeOpens).toBe(1);
       nativeOpens = 0;
       const counters = observeMainThreadSql({ includeClose: true });
+      let processRequests = 0;
+      const stopObserving = onInternalDiagnosticEvent(
+        (event) => {
+          if (
+            event.type === "worker.request" &&
+            event.phase === "queued" &&
+            event.requestClass === "audit.writer.process"
+          ) {
+            processRequests += 1;
+          }
+        },
+        { include: ["worker.request"] },
+      );
       const writer = createAuditEventWriter({
         scheduler: createTestGatewayScheduler(),
         stateDir,
@@ -134,12 +148,14 @@ describe("audit writer shared worker", () => {
           expect(nativeOpens).toBe(0);
           counters.expectIdle();
         } finally {
+          stopObserving();
           counters.restore();
           restoreConstructor();
         }
       }
 
       expect(errors).toEqual([]);
+      expect(processRequests).toBe(1);
       const owner = openOpenClawStateDatabase(database).db;
       expect(
         owner.prepare("SELECT run_id FROM audit_events WHERE kind = 'agent_run'").get(),

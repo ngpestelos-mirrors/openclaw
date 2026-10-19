@@ -16,20 +16,14 @@ import type { AuditWriterOperations } from "./audit-event-writer.worker.js";
 
 const { execute } = vi.hoisted(() => ({
   execute:
-    vi.fn<
-      (
-        command: SqliteWorkerCommand<AuditWriterOperations>,
-      ) => Promise<AuditWriterResult | AuditWriterResult[]>
-    >(),
+    vi.fn<(command: SqliteWorkerCommand<AuditWriterOperations>) => Promise<AuditWriterResult[]>>(),
 }));
 
 // mock-isolation: Exercise FIFO scheduling without opening the shared-state worker.
 vi.mock("../state/openclaw-state-worker-store.js", () => ({
   runOpenClawStateWorkerOperation: (
     _context: OpenClawStateWorkerContext,
-    operation: (scope: {
-      execute: typeof execute;
-    }) => Promise<AuditWriterResult | AuditWriterResult[] | undefined>,
+    operation: (scope: { execute: typeof execute }) => Promise<AuditWriterResult[] | undefined>,
   ) => operation({ execute }),
 }));
 
@@ -64,12 +58,20 @@ function mockEventRequests(handler: (sourceId: string) => Promise<AuditWriterRes
     if (command.type === "audit.writer.prune") {
       return [];
     }
-    if (command.input.type !== "record-event") {
-      throw new Error("Unexpected audit request in event lifecycle test");
+    const results: AuditWriterResult[] = [];
+    for (const request of command.input) {
+      if (request.type !== "record-event") {
+        throw new Error("Unexpected audit request in event lifecycle test");
+      }
+      const sourceId = request.input.sourceId;
+      requests.push(sourceId);
+      const result = await handler(sourceId);
+      results.push(result);
+      if (result.status === "retry") {
+        break;
+      }
     }
-    const sourceId = command.input.input.sourceId;
-    requests.push(sourceId);
-    return await handler(sourceId);
+    return results;
   });
   return requests;
 }
@@ -98,7 +100,7 @@ describe("audit writer async settlement", () => {
           pruned.resolve();
           return [];
         }
-        return { status: "settled" };
+        return [{ status: "settled" }];
       });
       await clock.advanceBy(60 * 60_000 - 1);
       expect(execute).not.toHaveBeenCalled();
@@ -243,7 +245,38 @@ describe("audit writer async settlement", () => {
     }
   });
 
-  it.each(["queued", "error observer"] as const)(
+  it("retries only the uncommitted suffix before newer queued events", async () => {
+    let contended = false;
+    const requests = mockEventRequests(async (sourceId) => {
+      if (sourceId === "blocked" && !contended) {
+        contended = true;
+        return { status: "retry" };
+      }
+      return { status: "settled" };
+    });
+    const writer = createAuditEventWriter({
+      scheduler: createTestGatewayScheduler(),
+      stateDir: tempDirs.make("audit-writer-batch-retry-"),
+    });
+    try {
+      await advanceDispatch();
+      await writer.ready;
+      for (const sourceId of ["committed", "blocked", "tail"]) {
+        expect(writer.record(event(sourceId))).toBe(true);
+      }
+      await advanceDispatch();
+      expect(requests).toEqual(["committed", "blocked"]);
+      expect(writer.record(event("newer"))).toBe(true);
+      await vi.advanceTimersByTimeAsync(25);
+      expect(requests).toEqual(["committed", "blocked", "blocked", "tail", "newer"]);
+    } finally {
+      const stopping = writer.stop();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await stopping;
+    }
+  });
+
+  it.each(["queued", "error observer", "submitted batch"] as const)(
     "settles an unknown transport outcome before processing the %s follow-up",
     async (followUp) => {
       const submitted = createDeferred();
@@ -276,12 +309,15 @@ describe("audit writer async settlement", () => {
         await advanceDispatch();
         await writer.ready;
         expect(writer.record(event("unknown-outcome"))).toBe(true);
-        if (!fromObserver) {
-          expect(writer.record(event(next))).toBe(true);
+        if (followUp === "submitted batch") {
+          expect(writer.record(event("uncommitted-tail"))).toBe(true);
         }
         await advanceDispatch();
         await submitted.promise;
         expect(requests).toEqual(["unknown-outcome"]);
+        if (!fromObserver) {
+          expect(writer.record(event(next))).toBe(true);
+        }
         const stopping = fromObserver ? undefined : writer.stop();
         const failure = Object.assign(
           new SqliteWorkerError(
@@ -300,10 +336,12 @@ describe("audit writer async settlement", () => {
         const stopped = stopping ?? writer.stop();
         await vi.advanceTimersByTimeAsync(10_000);
         await stopped;
-        expect(errors).toEqual([failure.message]);
+        const expectedErrors =
+          followUp === "submitted batch" ? [failure.message, failure.message] : [failure.message];
+        expect(errors).toEqual(expectedErrors);
         expect(requests).toEqual(["unknown-outcome", next]);
         await vi.advanceTimersByTimeAsync(60 * 60_000);
-        expect(errors).toEqual([failure.message]);
+        expect(errors).toEqual(expectedErrors);
         expect(requests).toEqual(["unknown-outcome", next]);
       } finally {
         firstResult.resolve({ status: "settled" });
