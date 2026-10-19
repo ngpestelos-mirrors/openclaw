@@ -3,6 +3,25 @@ import {
   normalizeModelCatalog,
   normalizeModelCatalogProviderRows,
 } from "./model-catalog-normalize.js";
+import type {
+  ModelCatalogModel,
+  ModelCatalogProvider,
+  ModelCatalogSource,
+} from "./model-catalog-types.js";
+
+const normalize = (value: unknown, ownedProviders = ["OpenAI"]) =>
+  normalizeModelCatalog(structuredClone(value), { ownedProviders: new Set(ownedProviders) });
+const normalizeModels = (models: unknown[]) =>
+  normalize({ providers: { OpenAI: { models } } }, [" OpenAI "])?.providers?.openai?.models;
+const normalizeRows = (
+  providerCatalog: ModelCatalogProvider,
+  source: ModelCatalogSource = "manifest",
+) =>
+  normalizeModelCatalogProviderRows({
+    provider: " OpenAI ",
+    providerCatalog: structuredClone(providerCatalog),
+    source,
+  });
 
 describe("model catalog normalization", () => {
   it("normalizes catalog ownership, aliases, suppressions, and row fields", () => {
@@ -62,71 +81,68 @@ describe("model catalog normalization", () => {
       defaultUtilityModel: "gpt-5.6-luna",
       models: [model],
     };
-    const catalog = normalizeModelCatalog(
-      structuredClone({
-        providers: {
-          OpenAI: {
-            ...provider,
-            defaultModel: " gpt-5.4 ",
-            defaultUtilityModel: " gpt-5.6-luna ",
-            models: [
-              {
-                ...model,
-                input: [...model.input, "audio"],
-                contextWindows: [
-                  { id: "1m", label: " 1M ", contextWindow: 1_000_000 },
-                  { id: "invalid", label: "Invalid", contextWindow: 0 },
-                  { id: "200k", label: " 200K ", contextWindow: 200_000 },
+    const catalog = normalize({
+      providers: {
+        OpenAI: {
+          ...provider,
+          defaultModel: " gpt-5.4 ",
+          defaultUtilityModel: " gpt-5.6-luna ",
+          models: [
+            {
+              ...model,
+              input: [...model.input, "audio"],
+              contextWindows: [
+                { id: "1m", label: " 1M ", contextWindow: 1_000_000 },
+                { id: "invalid", label: "Invalid", contextWindow: 0 },
+                { id: "200k", label: " 200K ", contextWindow: 200_000 },
+              ],
+              contextWindowDefault: " 1m ",
+              thinkingLevelMap: { off: null, minimal: " low ", max: "max", adaptive: "high" },
+              cost: {
+                ...model.cost,
+                tieredPricing: [
+                  ...model.cost.tieredPricing,
+                  { input: 1, output: 2, range: [0, 1000] },
                 ],
-                contextWindowDefault: " 1m ",
-                thinkingLevelMap: { off: null, minimal: " low ", max: "max", adaptive: "high" },
-                cost: {
-                  ...model.cost,
-                  tieredPricing: [
-                    ...model.cost.tieredPricing,
-                    { input: 1, output: 2, range: [0, 1000] },
-                  ],
-                },
-                compat: {
-                  ...model.compat,
-                  codeMode: " preferred ",
-                  openRouterRouting: {
-                    only: [" anthropic ", "", 1],
-                    allow_fallbacks: false,
-                    require_parameters: "no",
-                  },
-                  vercelGatewayRouting: { order: [" anthropic ", "", 1], only: "openai" },
-                  supportsStore: "yes",
-                  unknownFlag: true,
-                },
-                replaces: [" gpt-5.3 ", ""],
-                tags: [" default ", ""],
               },
-              { id: "" },
-            ],
-          },
-          anthropic: { models: [{ id: "claude-sonnet-4.6" }] },
-        },
-        aliases: {
-          "Azure-OpenAI-Responses": { provider: "OpenAI", api: "azure-openai-responses" },
-          "anthropic-alias": { provider: "anthropic" },
-        },
-        suppressions: [
-          {
-            provider: "Azure-OpenAI-Responses",
-            model: "gpt-5.3-codex-spark",
-            reason: "not available",
-            when: {
-              baseUrlHosts: ["CODING-INTL.DASHSCOPE.ALIYUNCS.COM"],
-              providerConfigApiIn: ["Qwen", "ModelStudio"],
+              compat: {
+                ...model.compat,
+                codeMode: " preferred ",
+                openRouterRouting: {
+                  only: [" anthropic ", "", 1],
+                  allow_fallbacks: false,
+                  require_parameters: "no",
+                },
+                vercelGatewayRouting: { order: [" anthropic ", "", 1], only: "openai" },
+                supportsStore: "yes",
+                unknownFlag: true,
+              },
+              replaces: [" gpt-5.3 ", ""],
+              tags: [" default ", ""],
             },
+            { id: "" },
+          ],
+        },
+        anthropic: { models: [{ id: "claude-sonnet-4.6" }] },
+      },
+      aliases: {
+        "Azure-OpenAI-Responses": { provider: "OpenAI", api: "azure-openai-responses" },
+        "anthropic-alias": { provider: "anthropic" },
+      },
+      suppressions: [
+        {
+          provider: "Azure-OpenAI-Responses",
+          model: "gpt-5.3-codex-spark",
+          reason: "not available",
+          when: {
+            baseUrlHosts: ["CODING-INTL.DASHSCOPE.ALIYUNCS.COM"],
+            providerConfigApiIn: ["Qwen", "ModelStudio"],
           },
-        ],
-        discovery: { OpenAI: "static", anthropic: "static", bad: "unknown" },
-        runtimeAugment: true,
-      }),
-      { ownedProviders: new Set(["OpenAI"]) },
-    );
+        },
+      ],
+      discovery: { OpenAI: "static", anthropic: "static", bad: "unknown" },
+      runtimeAugment: true,
+    });
 
     expect(catalog).toEqual({
       providers: { openai: provider },
@@ -151,7 +167,7 @@ describe("model catalog normalization", () => {
 
   it("keeps only explicit owned models.dev mappings without creating provider rows", () => {
     expect(
-      normalizeModelCatalog(
+      normalize(
         {
           modelsDev: {
             " Example ": " Upstream-ID ",
@@ -162,7 +178,7 @@ describe("model catalog normalization", () => {
           providers: { example: { models: [] } },
           aliases: { alias: { provider: "example" } },
         },
-        { ownedProviders: new Set([" EXAMPLE ", "constructor"]) },
+        [" EXAMPLE ", "constructor"],
       ),
     ).toEqual({
       modelsDev: { example: "Upstream-ID" },
@@ -171,55 +187,42 @@ describe("model catalog normalization", () => {
   });
 
   it("builds normalized rows with provider defaults and stable refs", () => {
-    const rows = normalizeModelCatalogProviderRows({
-      provider: "OpenAI",
-      providerCatalog: {
-        baseUrl: "https://api.openai.com/v1",
-        api: "openai-responses",
-        headers: {
-          "x-provider": "openai",
+    const model = {
+      id: "GPT-5.4",
+      headers: { "x-model": "gpt-5.4" },
+      input: ["image"],
+      contextTokens: 64_000,
+      maxTokens: 4096,
+      thinkingLevelMap: { off: null, high: "high" },
+      cost: { input: 0, output: 2 },
+      compat: { supportsTools: false },
+    } satisfies ModelCatalogModel;
+    const rows = normalizeRows({
+      baseUrl: "https://api.openai.com/v1",
+      api: "openai-responses",
+      headers: { "x-provider": "openai" },
+      models: [
+        {
+          ...model,
+          thinkingLevelMap: { off: null, high: " high " },
+          upstreamModel: "other/gpt-5.4",
         },
-        models: [
-          {
-            id: "GPT-5.4",
-            headers: {
-              "x-model": "gpt-5.4",
-            },
-            input: ["image"],
-            contextTokens: 64_000,
-            maxTokens: 4096,
-            thinkingLevelMap: { off: null, high: " high " },
-            cost: { input: 0, output: 2 },
-            compat: { supportsTools: false },
-            upstreamModel: "other/gpt-5.4",
-          },
-        ],
-      },
-      source: "manifest",
+      ],
     });
 
     expect(rows).toEqual([
       {
+        ...model,
         provider: "openai",
-        id: "GPT-5.4",
         ref: "openai/GPT-5.4",
         mergeKey: "openai::gpt-5.4",
         name: "GPT-5.4",
         source: "manifest",
-        input: ["image"],
-        contextTokens: 64_000,
-        maxTokens: 4096,
-        thinkingLevelMap: { off: null, high: "high" },
-        cost: { input: 0, output: 2 },
-        compat: { supportsTools: false },
         reasoning: false,
         status: "available",
         api: "openai-responses",
         baseUrl: "https://api.openai.com/v1",
-        headers: {
-          "x-provider": "openai",
-          "x-model": "gpt-5.4",
-        },
+        headers: { "x-provider": "openai", "x-model": "gpt-5.4" },
       },
     ]);
   });
@@ -267,65 +270,49 @@ describe("model catalog normalization", () => {
         vercelGatewayRouting: { only: ["openai"], order: ["anthropic"] },
       },
     };
-    const catalog = normalizeModelCatalog(
-      structuredClone({
-        providers: {
-          OpenAI: {
-            models: [
-              {
-                ...model,
-                id: " gpt-5.4 ",
-                headers: Object.fromEntries([
-                  ["x-safe", " value "],
-                  ["__proto__", "polluted"],
-                  ["constructor", "polluted"],
-                  ["prototype", "polluted"],
-                ]),
-                cost: {
-                  ...model.cost,
-                  tieredPricing: [tier, { ...tier, range: [-1] }, { input: 1, range: [0, 2] }],
-                },
-                compat: {
-                  ...model.compat,
-                  toolSchemaProfile: " strict ",
-                  toolCallArgumentsEncoding: " json ",
-                  visibleReasoningDetailTypes: [" summary ", ""],
-                  supportedReasoningEfforts: [" low ", " high "],
-                  unsupportedToolSchemaKeywords: [" pattern ", ""],
-                  reasoningEffortMap: { " low ": " minimal ", empty: "  " },
-                  openRouterRouting: {
-                    ...model.compat.openRouterRouting,
-                    order: [" openai ", ""],
-                    only: [" anthropic "],
-                    ignore: [" bad "],
-                    quantizations: [" fp8 "],
-                    sort: { by: " throughput ", partition: null },
-                    max_price: { prompt: " 0.5 ", completion: 2, image: 0, audio: 3, request: 4 },
-                  },
-                  vercelGatewayRouting: { only: [" openai "], order: [" anthropic "] },
-                },
-              },
-            ],
-          },
+    const models = normalizeModels([
+      {
+        ...model,
+        id: " gpt-5.4 ",
+        headers: Object.fromEntries([
+          ["x-safe", " value "],
+          ["__proto__", "polluted"],
+          ["constructor", "polluted"],
+          ["prototype", "polluted"],
+        ]),
+        cost: {
+          ...model.cost,
+          tieredPricing: [tier, { ...tier, range: [-1] }, { input: 1, range: [0, 2] }],
         },
-      }),
-      { ownedProviders: new Set([" OpenAI "]) },
-    );
+        compat: {
+          ...model.compat,
+          toolSchemaProfile: " strict ",
+          toolCallArgumentsEncoding: " json ",
+          visibleReasoningDetailTypes: [" summary ", ""],
+          supportedReasoningEfforts: [" low ", " high "],
+          unsupportedToolSchemaKeywords: [" pattern ", ""],
+          reasoningEffortMap: { " low ": " minimal ", empty: "  " },
+          openRouterRouting: {
+            ...model.compat.openRouterRouting,
+            order: [" openai ", ""],
+            only: [" anthropic "],
+            ignore: [" bad "],
+            quantizations: [" fp8 "],
+            sort: { by: " throughput ", partition: null },
+            max_price: { prompt: " 0.5 ", completion: 2, image: 0, audio: 3, request: 4 },
+          },
+          vercelGatewayRouting: { only: [" openai "], order: [" anthropic "] },
+        },
+      },
+    ]);
 
-    expect(catalog?.providers?.openai?.models).toEqual([model]);
+    expect(models).toEqual([model]);
   });
 
   it("retains an explicitly empty supported reasoning effort list", () => {
-    const catalog = normalizeModelCatalog(
-      {
-        providers: {
-          example: { models: [{ id: "reasoner", compat: { supportedReasoningEfforts: [] } }] },
-        },
-      },
-      { ownedProviders: new Set(["example"]) },
-    );
-
-    expect(catalog?.providers?.example?.models[0]?.compat).toEqual({
+    expect(
+      normalizeModels([{ id: "reasoner", compat: { supportedReasoningEfforts: [] } }])?.[0]?.compat,
+    ).toEqual({
       supportedReasoningEfforts: [],
     });
   });
@@ -335,14 +322,13 @@ describe("model catalog normalization", () => {
     { name: "invalid suppression", value: { suppressions: [{ provider: "openai" }] } },
     { name: "blank models.dev source", value: { modelsDev: { openai: "  " } } },
   ])("rejects a $name instead of publishing an empty catalog", ({ value }) => {
-    expect(normalizeModelCatalog(value, { ownedProviders: new Set(["openai"]) })).toBeUndefined();
+    expect(normalize(value)).toBeUndefined();
   });
 
   it("sorts provider rows and drops invalid models while preserving model overrides", () => {
     expect(
-      normalizeModelCatalogProviderRows({
-        provider: " OpenAI ",
-        providerCatalog: {
+      normalizeRows(
+        {
           headers: { "x-provider": " default ", "x-override": " old " },
           models: [
             { id: "z-model", headers: { "x-override": " new " } },
@@ -350,8 +336,8 @@ describe("model catalog normalization", () => {
             { id: "a-model", mediaInput: { image: { tokenMode: "detail", maxBytes: 1 } } },
           ],
         },
-        source: "runtime-refresh",
-      }),
+        "runtime-refresh",
+      ),
     ).toMatchObject([
       {
         id: "a-model",
@@ -365,51 +351,33 @@ describe("model catalog normalization", () => {
     ]);
   });
 
-  it.each([{ name: "an undeclared default", contextWindowDefault: "missing" }])(
-    "drops the selection tuple with $name",
-    ({ contextWindowDefault }) => {
-      const contextWindows = Array.from({ length: 20 }, (_, index) => ({
-        id: `window-${index}`,
-        label: `Window ${index}`,
-        contextWindow: 20 - index,
-      }));
-      const [row] = normalizeModelCatalogProviderRows({
-        provider: "example",
-        providerCatalog: {
-          models: [
-            {
-              id: "model",
-              contextWindows,
-              ...(contextWindowDefault ? { contextWindowDefault } : {}),
-            },
-          ],
-        },
-        source: "manifest",
-      });
+  it("drops the selection tuple with an undeclared default", () => {
+    const contextWindows = Array.from({ length: 20 }, (_, index) => ({
+      id: `window-${index}`,
+      label: `Window ${index}`,
+      contextWindow: 20 - index,
+    }));
+    const [row] = normalizeRows({
+      models: [{ id: "model", contextWindows, contextWindowDefault: "missing" }],
+    });
 
-      // Options without a selectable default would render no picker control, so
-      // the normalized row must drop the whole tuple, not just the default.
-      expect(row?.contextWindows).toBeUndefined();
-      expect(row?.contextWindowDefault).toBeUndefined();
-    },
-  );
+    expect(row?.contextWindows).toBeUndefined();
+    expect(row?.contextWindowDefault).toBeUndefined();
+  });
 });
 
 describe("provider credential scope metadata", () => {
   it("retains ownership for providers without static model rows", () => {
     expect(
-      normalizeModelCatalog(
-        { providers: { fixture: { authScope: "plugin", models: [] } } },
-        { ownedProviders: new Set(["fixture"]) },
-      )?.providers?.fixture,
+      normalize({ providers: { fixture: { authScope: "plugin", models: [] } } }, ["fixture"])
+        ?.providers?.fixture,
     ).toEqual({ authScope: "plugin", models: [] });
   });
   it("rejects invalid ownership rather than downgrading to default agent scope", () => {
     expect(() =>
-      normalizeModelCatalog(
-        { providers: { fixture: { authScope: "global", models: [{ id: "model" }] } } },
-        { ownedProviders: new Set(["fixture"]) },
-      ),
+      normalize({ providers: { fixture: { authScope: "global", models: [{ id: "model" }] } } }, [
+        "fixture",
+      ]),
     ).toThrow("credential ownership");
   });
 });
