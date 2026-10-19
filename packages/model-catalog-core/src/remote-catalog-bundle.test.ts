@@ -80,11 +80,7 @@ const invalidV1: Rejection[] = [
   [{ pricing: { "openai/bad": { input: -1, output: 2 } } }],
   [{ pricing: { "openai/bad": { input: 1, output: 2, baseUrl: "https://bad.test" } } }],
   [
-    v1Models({
-      id: "bad-default",
-      contextWindows: [contextWindows[0]],
-      contextWindowDefault: "1m",
-    }),
+    v1Models({ id: "bad", contextWindows, contextWindowDefault: "missing" }),
     "contextWindowDefault must reference a declared contextWindows option",
   ],
   [v1Provider({ recommendedModels: ["claude-test"] }), "recommendedModels"],
@@ -158,29 +154,25 @@ it.each([versions[0], versions[1]])(
       { id: "kept" },
       { id: "last", input: ["text"] },
     ];
-    const bundle = sanitize(
-      {
-        ...base,
-        ...(version === 1
-          ? {
-              providers: {
-                first: { models: rows },
-                second: { models: [{ id: "kept" }] },
-                empty: { models: [] },
-              },
-            }
-          : {
-              providers: { first: { recommendedModels: ["bad-api", "kept"] }, second: {} },
-              models: [
-                ...rows.map((row) =>
-                  Object.assign({}, row, { provider: "first", pricing: { status: "unknown" } }),
-                ),
-                { id: "kept", provider: "second", pricing: { status: "unknown" } },
-              ],
-            }),
-      },
-      warn,
-    );
+    const patch =
+      version === 1
+        ? {
+            providers: {
+              first: { models: rows },
+              second: { models: [{ id: "kept" }] },
+              empty: { models: [] },
+            },
+          }
+        : {
+            providers: { first: { recommendedModels: ["bad-api", "kept"] }, second: {} },
+            models: [
+              ...rows.map((row) =>
+                Object.assign({}, row, { provider: "first", pricing: { status: "unknown" } }),
+              ),
+              { id: "kept", provider: "second", pricing: { status: "unknown" } },
+            ],
+          };
+    const bundle = sanitize({ ...base, ...patch }, warn);
     const models =
       bundle.schemaVersion === 1 ? (bundle.providers.first?.models ?? []) : bundle.models;
     expect(models.slice(0, 2).map(({ id, input }) => ({ id, input }))).toEqual([
@@ -195,16 +187,12 @@ it.each([versions[0], versions[1]])(
     } else {
       expect(bundle.providers).not.toHaveProperty("empty");
     }
-    expect(warn).toHaveBeenCalledTimes(9);
     const rowPath = version === 1 ? "providers.first.models" : "models";
-    expect(warn).toHaveBeenNthCalledWith(
-      1,
-      `remote model catalog: dropped unknown input modalities from ${rowPath}.0 (kept)`,
-    );
-    expect(warn).toHaveBeenNthCalledWith(
-      3,
-      `remote model catalog: skipped invalid row ${rowPath}.2 (bad-input)`,
-    );
+    expect([warn.mock.calls.length, warn.mock.calls[0], warn.mock.calls[2]]).toEqual([
+      9,
+      [`remote model catalog: dropped unknown input modalities from ${rowPath}.0 (kept)`],
+      [`remote model catalog: skipped invalid row ${rowPath}.2 (bad-input)`],
+    ]);
     warn.mockClear();
     expect(sanitize(bundle, warn)).toEqual(bundle);
     expect(warn).not.toHaveBeenCalled();
@@ -229,26 +217,7 @@ it.each([versions[0], versions[1]])(
   },
 );
 
-it("preserves ordered v2 recommendations and provider-scoped model identities and prices", () => {
-  const bundle = parseV2({
-    ...validBundleV2,
-    providers: {
-      first: { ...validBundleV2.providers.first, recommendedModels: [" other ", "vendor/model"] },
-      second: validBundleV2.providers.second,
-    },
-    models: [
-      ...validBundleV2.models,
-      { id: "other", provider: "first", pricing: { status: "unknown" } },
-    ],
-  });
-  expect(bundle.providers).toEqual({
-    ...validBundleV2.providers,
-    first: { ...validBundleV2.providers.first, recommendedModels: ["other", "vendor/model"] },
-  });
-  expect(bundle.models.slice(0, 2)).toEqual(validBundleV2.models);
-});
-
-it("preserves partial rates, context tiers, and authoritative unavailable prices", () => {
+it("preserves v2 recommendations, scoped identities, and all pricing states", () => {
   const tiers = [
     { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0, range: [0, 200_000] },
     { input: 4, output: 12, cacheRead: 1, cacheWrite: 0, range: [200_000] },
@@ -258,15 +227,25 @@ it("preserves partial rates, context tiers, and authoritative unavailable prices
     { ...knownPrice, tieredPricing: tiers },
     { status: "unavailable", source: "native-feed" },
   ];
-  const bundle = parseV2({
-    ...validBundleV2,
-    models: pricing.map((price, index) => ({
-      id: `model-${index}`,
-      provider: "first",
-      pricing: price,
-    })),
-  });
-  expect(bundle.models.map((model) => model.pricing)).toEqual(pricing);
+  const models = [
+    ...validBundleV2.models,
+    { id: "other", provider: "first", pricing: { status: "unknown" } },
+    ...pricing.map((price, index) => ({ id: `model-${index}`, provider: "first", pricing: price })),
+  ];
+  const providers = {
+    ...validBundleV2.providers,
+    first: { ...validBundleV2.providers.first, recommendedModels: ["other", "vendor/model"] },
+  };
+  expect(
+    parseV2({
+      ...validBundleV2,
+      models,
+      providers: {
+        ...providers,
+        first: { ...providers.first, recommendedModels: [" other ", "vendor/model"] },
+      },
+    }),
+  ).toEqual({ ...validBundleV2, models, providers });
 });
 
 it("strips v2 transport metadata while preserving transport-like provider identities", () => {
@@ -287,12 +266,10 @@ it("strips v2 transport metadata while preserving transport-like provider identi
   });
   expect(Object.keys(bundle.providers)).toEqual(["headers", "baseUrl"]);
   expect(bundle.models.map((model) => model.provider)).toEqual(["headers", "baseUrl"]);
-  expect(bundle.models[0]).toMatchObject({
-    contextWindows,
-    contextWindowDefault: "1m",
+  expect(bundle.models[0]).toEqual({
+    ...models[0],
     compat: { supportsTools: true, nested: {} },
   });
-  expect(bundle.models[0]?.compat).toEqual({ supportsTools: true, nested: {} });
   expect(() => parseV2(bundle)).not.toThrow();
 });
 
@@ -312,23 +289,12 @@ it("negotiates task metadata only on v3 and rejects malformed declarations per r
   expect(() => parseV2({ ...candidate, schemaVersion: 2 })).toThrow();
   expect(parseV3(candidate).models[0]?.inference).toEqual(inference);
   const warn = vi.fn();
-  const admitted = sanitizeV3(
-    {
-      ...candidate,
-      models: [
-        native,
-        {
-          ...native,
-          id: "invalid",
-          inference: {
-            ...inference,
-            decision: { ...inference.decision, protocol: "invalid protocol" },
-          },
-        },
-      ],
-    },
-    warn,
-  );
+  const invalid = {
+    ...native,
+    id: "invalid",
+    inference: { ...inference, decision: { ...inference.decision, protocol: "invalid protocol" } },
+  };
+  const admitted = sanitizeV3({ ...candidate, models: [native, invalid] }, warn);
   expect(admitted.models).toHaveLength(1);
   expect(admitted.models[0]).toMatchObject({ inference, compat: { nested: {} } });
   expect(warn).toHaveBeenCalledOnce();
