@@ -21,7 +21,11 @@ import type { SqliteWorkerOperationContext } from "../sqlite-worker-operation-se
 import { PostgresSyncConnection } from "./connection.js";
 
 const anchors: DatabaseSync[] = [];
+const admissions: ReturnType<typeof createSqliteWorkerOperationAdmission>[] = [];
 afterEach(() => {
+  for (const admission of admissions.splice(0)) {
+    admission.finish();
+  }
   vi.restoreAllMocks();
   for (const anchor of anchors.splice(0)) {
     anchor.close();
@@ -35,11 +39,10 @@ function nativeDatabase(): DatabaseSync {
 }
 
 function postgresFixture() {
-  // The transaction owner sees the real connection type; bridge/server behavior
-  // is covered separately. Record its SQL protocol without starting a worker.
+  // Record the real connection's transaction protocol without starting its bridge.
   const db = Object.create(PostgresSyncConnection.prototype) as PostgresSyncConnection;
-  Object.defineProperty(db, Symbol.for("openclaw.postgres-sync-connection"), { value: true });
   Object.defineProperties(db, {
+    [Symbol.for("openclaw.postgres-sync-connection")]: { value: true },
     anchor: { value: nativeDatabase() },
     advisoryLockKey: { value: -42n },
   });
@@ -70,6 +73,7 @@ describe("experimental PostgreSQL transaction protocol", () => {
     ({ rollback, sourceReservations }) => {
       const { db } = postgresFixture();
       const admission = createSqliteWorkerOperationAdmission((_request, grant) => grant());
+      admissions.push(admission);
       const owner: SqliteWorkerOperationContext = {
         port: admission.port,
         sourceReservations: sourceReservations ? true : undefined,
@@ -88,22 +92,14 @@ describe("experimental PostgreSQL transaction protocol", () => {
             }
           }),
         );
-      try {
-        if (rollback) {
-          expect(write).toThrow("cancel receipt");
-        } else {
-          write();
-        }
-        admission.service();
-        if (rollback) {
-          expect(receipts).toEqual([]);
-        } else {
-          expect(receipts).toEqual([{ value: 7 }]);
-        }
-        expect(owner.pendingReceipts?.size).toBe(0);
-      } finally {
-        admission.finish();
+      if (rollback) {
+        expect(write).toThrow("cancel receipt");
+      } else {
+        write();
       }
+      admission.service();
+      expect(receipts).toEqual(rollback ? [] : [{ value: 7 }]);
+      expect(owner.pendingReceipts?.size).toBe(0);
     },
   );
 
@@ -120,34 +116,31 @@ describe("experimental PostgreSQL transaction protocol", () => {
         stages.push(request.stage);
         grant();
       });
+      admissions.push(admission);
       vi.spyOn(Atomics, "wait").mockImplementation(() => {
         admission.service();
         return "ok";
       });
-      try {
-        const result = withSqliteWorkerOperationAdmission({ port: admission.port }, () => {
-          requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: "domain write" });
-          return runSqliteImmediateTransactionSync(
-            db,
-            () => {
-              db.exec("INSERT INTO proof (value) VALUES (7)");
-              return 7;
+      const result = withSqliteWorkerOperationAdmission({ port: admission.port }, () => {
+        requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: "domain write" });
+        return runSqliteImmediateTransactionSync(
+          db,
+          () => {
+            db.exec("INSERT INTO proof (value) VALUES (7)");
+            return 7;
+          },
+          {
+            withCommit(commit) {
+              requestSqliteWorkerOperationAdmission({ stage: "commit", facts: "domain write" });
+              commit();
             },
-            {
-              withCommit(commit) {
-                requestSqliteWorkerOperationAdmission({ stage: "commit", facts: "domain write" });
-                commit();
-              },
-            },
-          );
-        });
-        expect(result).toBe(7);
-        expect(db.isTransaction).toBe(false);
-        expect(stages).toEqual(["transaction", "commit"]);
-        expect(admission.failure).toBeUndefined();
-      } finally {
-        admission.finish();
-      }
+          },
+        );
+      });
+      expect(result).toBe(7);
+      expect(db.isTransaction).toBe(false);
+      expect(stages).toEqual(["transaction", "commit"]);
+      expect(admission.failure).toBeUndefined();
     },
   );
 
@@ -155,33 +148,26 @@ describe("experimental PostgreSQL transaction protocol", () => {
     "uses one locked read-committed transaction for %s writes",
     (mode) => {
       const { db, statements } = postgresFixture();
-      const admit = vi.fn((stage: string) => statements.push(`admit:${stage}`));
+      const admit = (stage: string) => statements.push(`admit:${stage}`);
       const operation = () => {
         statements.push("body");
         return 7;
       };
-      const result =
-        mode === "immediate"
-          ? runSqliteImmediateTransactionSync(db, operation)
-          : mode === "deferred"
-            ? runSqliteDeferredTransactionSync(db, operation)
-            : mode === "reserved"
-              ? runSqliteReservedTransactionSync(db, operation, {})
-              : mode === "single-statement"
-                ? runSqliteSingleStatementSync(db, operation)
-                : runSqliteWorkerTransactionSync(
-                    { database: db, databasePath: "", admit },
-                    operation,
-                  );
+      const run = {
+        immediate: () => runSqliteImmediateTransactionSync(db, operation),
+        deferred: () => runSqliteDeferredTransactionSync(db, operation),
+        reserved: () => runSqliteReservedTransactionSync(db, operation, {}),
+        "single-statement": () => runSqliteSingleStatementSync(db, operation),
+        worker: () =>
+          runSqliteWorkerTransactionSync({ database: db, databasePath: "", admit }, operation),
+      };
+      const result = run[mode]();
       expect(result).toBe(7);
       expect(statements).toEqual(
         mode === "worker"
           ? ["admit:transaction", writeBegin, "body", "admit:commit", "COMMIT"]
           : [writeBegin, "body", "COMMIT"],
       );
-      if (mode === "worker") {
-        expect(admit.mock.calls).toEqual([["transaction"], ["commit"]]);
-      }
     },
   );
 

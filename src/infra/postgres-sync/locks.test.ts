@@ -88,9 +88,7 @@ describe.skipIf(!connection)("PostgreSQL transaction lock ordering", () => {
   const workers: ReturnType<typeof launch>[] = [];
   const anchors: ReturnType<typeof openNodeSqliteDatabase>[] = [];
   const schemas: string[] = [];
-  beforeAll(async () => {
-    await admin.connect();
-  });
+  beforeAll(() => admin.connect());
   afterEach(async () => {
     await admin.query("ROLLBACK");
     await admin.query("SELECT pg_advisory_unlock_all()");
@@ -108,9 +106,20 @@ describe.skipIf(!connection)("PostgreSQL transaction lock ordering", () => {
       await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
     }
   });
-  afterAll(async () => {
-    await admin.end();
-  });
+  afterAll(() => admin.end());
+
+  const rows = async (sql: string) => (await admin.query(sql)).rows;
+  async function lockIsFree(key: string) {
+    const result = await admin.query<{ acquired: boolean }>(
+      "SELECT pg_try_advisory_lock($1::bigint) AS acquired",
+      [key],
+    );
+    const acquired = result.rows[0]?.acquired;
+    if (acquired) {
+      await admin.query("SELECT pg_advisory_unlock($1::bigint)", [key]);
+    }
+    return acquired;
+  }
 
   async function fixture() {
     const storeId = randomUUID();
@@ -144,20 +153,17 @@ describe.skipIf(!connection)("PostgreSQL transaction lock ordering", () => {
     await admin.query("COMMIT");
     await writer.events.statement.promise;
     // This is a live lock check while the actual statement callback is gated, not a timing guess.
-    const lock = await admin.query<{ acquired: boolean }>(
-      "SELECT pg_try_advisory_lock($1::bigint) AS acquired",
-      [identity.key],
-    );
-    expect(lock.rows[0]?.acquired).toBe(false);
+    expect(await lockIsFree(identity.key)).toBe(false);
     writer.release(2);
     const committed = await writer.events.done.promise;
     expect(before).toBeDefined();
     expect(readSqliteDatabaseWriteTokenForPath(identity.path)).not.toBe(before);
     expect(committed.before).toBeDefined();
     expect(committed.after).not.toBe(committed.before);
-    expect(
-      (await admin.query(`SELECT id FROM "${identity.schema}".events ORDER BY id`)).rows,
-    ).toEqual([{ id: "first" }, { id: "second" }]);
+    expect(await rows(`SELECT id FROM "${identity.schema}".events ORDER BY id`)).toEqual([
+      { id: "first" },
+      { id: "second" },
+    ]);
   });
 
   it("admits concurrent worker writers before locking, so host admission cannot deadlock them", async () => {
@@ -168,14 +174,7 @@ describe.skipIf(!connection)("PostgreSQL transaction lock ordering", () => {
     await Promise.all([first.events.ready.promise, second.events.ready.promise]);
     first.release(0);
     await first.events.admission.promise;
-    const lock = await admin.query<{ acquired: boolean }>(
-      "SELECT pg_try_advisory_lock($1::bigint) AS acquired",
-      [identity.key],
-    );
-    const freeDuringAdmission = lock.rows[0]?.acquired === true;
-    if (freeDuringAdmission) {
-      await admin.query("SELECT pg_advisory_unlock($1::bigint)", [identity.key]);
-    }
+    const freeDuringAdmission = await lockIsFree(identity.key);
     // Old order holds the lock here. Drain it before asserting, rather than hanging on the cycle.
     if (!freeDuringAdmission) {
       first.release(1);
@@ -195,9 +194,9 @@ describe.skipIf(!connection)("PostgreSQL transaction lock ordering", () => {
     expect(firstCommit.after).not.toBe(firstCommit.before);
     expect(firstCommit.after).not.toBe(secondCommit.after);
     expect(readSqliteDatabaseWriteTokenForPath(identity.path)).toBe(firstCommit.after);
-    expect(
-      (await admin.query(`SELECT count(*)::int AS count FROM "${identity.schema}".events`)).rows,
-    ).toEqual([{ count: 2 }]);
+    expect(await rows(`SELECT count(*)::int AS count FROM "${identity.schema}".events`)).toEqual([
+      { count: 2 },
+    ]);
   });
 
   it("locks deferred transactions before reading so concurrent increments cannot lose updates", async () => {
@@ -217,14 +216,7 @@ describe.skipIf(!connection)("PostgreSQL transaction lock ordering", () => {
     await Promise.all([first.events.ready.promise, second.events.ready.promise]);
     first.release(0);
     await first.events.statement.promise;
-    const lock = await admin.query<{ acquired: boolean }>(
-      "SELECT pg_try_advisory_lock($1::bigint) AS acquired",
-      [identity.key],
-    );
-    const lockedBeforeRead = lock.rows[0]?.acquired === false;
-    if (!lockedBeforeRead) {
-      await admin.query("SELECT pg_advisory_unlock($1::bigint)", [identity.key]);
-    }
+    const lockedBeforeRead = (await lockIsFree(identity.key)) === false;
     first.release(2);
     const firstRead = await first.events.read.promise;
     second.release(0);
@@ -234,8 +226,6 @@ describe.skipIf(!connection)("PostgreSQL transaction lock ordering", () => {
     expect(lockedBeforeRead).toBe(true);
     expect(firstRead.value).toBe(0);
     expect((await second.events.read.promise).value).toBe(1);
-    expect((await admin.query(`SELECT value FROM "${identity.schema}".counter`)).rows).toEqual([
-      { value: 2 },
-    ]);
+    expect(await rows(`SELECT value FROM "${identity.schema}".counter`)).toEqual([{ value: 2 }]);
   });
 });

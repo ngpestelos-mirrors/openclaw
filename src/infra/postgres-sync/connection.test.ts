@@ -17,11 +17,30 @@ import type { BridgeReply, BridgeRequest, PostgresErrorData } from "./protocol.j
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
-  for (const cleanup of cleanups.splice(0)) {
+  for (const cleanup of cleanups.splice(0).toReversed()) {
     cleanup();
   }
   vi.restoreAllMocks();
 });
+
+function nativeDatabase() {
+  const anchor = new DatabaseSync(":memory:");
+  cleanups.push(() => anchor.close());
+  return anchor;
+}
+
+function observeStatements(run: () => void) {
+  const statements = channel("openclaw.database.statement");
+  const events: unknown[] = [];
+  const subscriber = (event: unknown) => events.push(event);
+  statements.subscribe(subscriber);
+  try {
+    run();
+    return events;
+  } finally {
+    statements.unsubscribe(subscriber);
+  }
+}
 
 function transportFixture(
   initialMode: "normal" | "spurious" | "mismatched" | "missing" | "timeout",
@@ -81,10 +100,7 @@ function transportFixture(
     if (mode !== "missing" || pending.operation !== "query") {
       const reply: BridgeReply =
         queryError && pending.operation === "query"
-          ? {
-              id,
-              error: queryError,
-            }
+          ? { id, error: queryError }
           : {
               id: mode === "mismatched" && pending.operation === "query" ? id + 1 : id,
               result: {
@@ -133,25 +149,21 @@ function transportFixture(
 
 describe("PostgreSQL bridge request correlation", () => {
   it("reports an invalid DSN promptly with connection repair guidance", () => {
-    const anchor = new DatabaseSync(":memory:");
+    const anchor = nativeDatabase();
     const started = performance.now();
-    try {
-      expect(() =>
-        withEngineStoreAdmission(
-          () => new PostgresSyncConnection("postgresql://[invalid", "unused", anchor, "unused"),
+    expect(() =>
+      withEngineStoreAdmission(
+        () => new PostgresSyncConnection("postgresql://[invalid", "unused", anchor, "unused"),
+      ),
+    ).toThrowError(
+      expect.objectContaining({
+        name: "PostgresConnectionError",
+        message: expect.stringContaining(
+          "Check database.postgres.connection, network, and credentials",
         ),
-      ).toThrowError(
-        expect.objectContaining({
-          name: "PostgresConnectionError",
-          message: expect.stringContaining(
-            "Check database.postgres.connection, network, and credentials",
-          ),
-        }),
-      );
-      expect(performance.now() - started).toBeLessThan(10_000);
-    } finally {
-      anchor.close();
-    }
+      }),
+    );
+    expect(performance.now() - started).toBeLessThan(10_000);
   });
 
   it.each(["COMMIT", "ROLLBACK"])(
@@ -162,8 +174,7 @@ describe("PostgreSQL bridge request correlation", () => {
       fixture.db.isTransaction = true;
       const before = readSqliteDatabaseScopedWriteToken(fixture.db.anchor, "entry");
       fixture.db.exec(command);
-      const after = readSqliteDatabaseScopedWriteToken(fixture.db.anchor, "entry");
-      expect(after).toBe(before);
+      expect(readSqliteDatabaseScopedWriteToken(fixture.db.anchor, "entry")).toBe(before);
     },
   );
 
@@ -181,6 +192,7 @@ describe("PostgreSQL bridge request correlation", () => {
     (mode) => {
       const fixture = transportFixture("normal");
       const admission = createSqliteWorkerOperationAdmission((_request, grant) => grant());
+      cleanups.push(() => admission.finish());
       const receipts: unknown[] = [];
       observeSqliteWorkerCommittedFacts(admission, ({ facts }) => receipts.push(facts));
       const run = () =>
@@ -212,17 +224,13 @@ describe("PostgreSQL bridge request correlation", () => {
             },
           ),
         );
-      try {
-        if (mode === "rollback") {
-          expect(run).toThrow("cancel write");
-        } else {
-          run();
-        }
-        admission.service();
-        expect(receipts).toEqual(mode === "write" || mode === "inner-rollback" ? [{}] : []);
-      } finally {
-        admission.finish();
+      if (mode === "rollback") {
+        expect(run).toThrow("cancel write");
+      } else {
+        run();
       }
+      admission.service();
+      expect(receipts).toEqual(mode === "write" || mode === "inner-rollback" ? [{}] : []);
     },
   );
 
@@ -246,39 +254,29 @@ describe("PostgreSQL bridge request correlation", () => {
     "rejects opening a workload connection on the main thread before starting its bridge",
     () => {
       expect(threadId).toBe(0);
-      const anchor = new DatabaseSync(":memory:");
-      try {
-        expect(
-          () =>
-            new PostgresSyncConnection("postgres:///unused", "unused", anchor, "unused", {
-              lockTimeoutMs: 60_000,
-              statementTimeoutMs: 90_000,
-            }),
-        ).toThrow("PostgreSQL connections must run in a worker");
-      } finally {
-        anchor.close();
-      }
+      const anchor = nativeDatabase();
+      expect(
+        () =>
+          new PostgresSyncConnection("postgres:///unused", "unused", anchor, "unused", {
+            lockTimeoutMs: 60_000,
+            statementTimeoutMs: 90_000,
+          }),
+      ).toThrow("PostgreSQL connections must run in a worker");
     },
   );
 
   it("publishes executed PostgreSQL statements without literal or binding values", () => {
     const { db } = transportFixture("normal");
-    const statements = channel("openclaw.database.statement");
-    const events: unknown[] = [];
-    const subscriber = (event: unknown) => events.push(event);
-    statements.subscribe(subscriber);
-    try {
+    const events = observeStatements(() => {
       db.prepare("SELECT ? AS value, 'literal-secret' AS text").get("binding-secret");
-      expect(events).toEqual([
-        expect.objectContaining({
-          engine: "postgres",
-          sql: "SELECT ? AS value, ? AS text",
-          outcome: "ok",
-        }),
-      ]);
-    } finally {
-      statements.unsubscribe(subscriber);
-    }
+    });
+    expect(events).toEqual([
+      expect.objectContaining({
+        engine: "postgres",
+        sql: "SELECT ? AS value, ? AS text",
+        outcome: "ok",
+      }),
+    ]);
   });
 
   it("observes a PostgreSQL invalid-text error without publishing the NUL-containing binding", () => {
@@ -288,21 +286,15 @@ describe("PostgreSQL bridge request correlation", () => {
       message: 'invalid byte sequence for encoding "UTF8": 0x00',
       code: "22021",
     });
-    const statements = channel("openclaw.database.statement");
-    const events: unknown[] = [];
-    const subscriber = (event: unknown) => events.push(event);
-    statements.subscribe(subscriber);
-    try {
+    const events = observeStatements(() => {
       expect(() => fixture.db.prepare("SELECT ?::text").get("private\0text")).toThrow(
         "invalid byte sequence",
       );
-      expect(events).toEqual([
-        expect.objectContaining({ engine: "postgres", sql: "SELECT ?::text", outcome: "error" }),
-      ]);
-      expect(JSON.stringify(events)).not.toContain("private");
-    } finally {
-      statements.unsubscribe(subscriber);
-    }
+    });
+    expect(events).toEqual([
+      expect.objectContaining({ engine: "postgres", sql: "SELECT ?::text", outcome: "error" }),
+    ]);
+    expect(JSON.stringify(events)).not.toContain("private");
   });
 
   it("waits through a late notify until its own completion and preserves increasing ids", () => {
