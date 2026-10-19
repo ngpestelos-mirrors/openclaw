@@ -19,7 +19,7 @@ import {
 } from "openclaw/plugin-sdk/process-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { EvalFlags, QuickJS, type Snapshot } from "quickjs-wasi";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   createQuickJsTestConfig,
   runQuickJsExecutor as runCodeModeWorker,
@@ -34,7 +34,6 @@ const config = createQuickJsTestConfig();
 const sleep = "await new Promise(resolve => setTimeout(resolve, 0));";
 type Pool = WorkerTaskPool<unknown, CodeModeWorkerResult>;
 type OnRequest = Parameters<Pool["run"]>[1]["onRequest"];
-const pools: Pool[] = [];
 const resolveModule = createRequire(import.meta.url).resolve;
 const modules = Promise.all([
   readFile(resolveModule("quickjs-wasi/quickjs.wasm")).then((bytes) => WebAssembly.compile(bytes)),
@@ -62,18 +61,12 @@ function resume(state: CodeModeWorkerBoundary, deadline: number): CodeModeWorker
   };
 }
 function pool(maxWorkers = 1, workerUrl = productionWorkerUrl) {
-  const value = new WorkerTaskPool<unknown, CodeModeWorkerResult>({
-    workerUrl,
-    maxWorkers,
-  });
-  pools.push(value);
+  const value = new WorkerTaskPool<unknown, CodeModeWorkerResult>({ workerUrl, maxWorkers });
+  onTestFinished(() => value.close());
   return value;
 }
-async function payload(source: string) {
-  return { ...input(source), ...(await modules) };
-}
 async function runCell(workers: Pool, source: string, onRequest?: OnRequest, timeoutMs = 15_000) {
-  return workers.run(await payload(source), { timeoutMs, onRequest });
+  return workers.run({ ...input(source), ...(await modules) }, { timeoutMs, onRequest });
 }
 async function waitForAbort(...signals: AbortSignal[]) {
   const signal = AbortSignal.any(signals);
@@ -99,10 +92,6 @@ function response(
 ): WorkerTaskResponse {
   return { input: command, timeoutMs: 10_000, onConsumed };
 }
-afterEach(async () => {
-  await Promise.all(pools.splice(0).map((value) => value.close()));
-});
-
 function input(source: string, limits = config) {
   return { kind: "exec" as const, source, config: limits, catalog: [], namespaces: [] };
 }
@@ -111,26 +100,33 @@ type RunArgs = Parameters<typeof runCodeModeWorker>;
 function run(task: RunArgs[0], inlineHost?: RunArgs[4], timeoutMs = 10_000) {
   return runCodeModeWorker(task, timeoutMs, undefined, undefined, inlineHost);
 }
-function assertWaiting(result: { status: string }): asserts result is { status: "waiting" } {
+function parkedResult<T extends { status: "waiting" }>(
+  result: T | { status: "completed" | "failed" },
+): T {
   expect(result).toMatchObject({ status: "waiting" });
   if (result.status !== "waiting") {
     throw new Error("expected a suspended guest");
   }
-}
-function parkedResult<T extends { status: string }>(result: T) {
-  assertWaiting(result);
   return result;
 }
-function settled(state: { pendingRequests: { id: string }[] }) {
-  return state.pendingRequests.map(({ id }) => ({ id, ok: true, json: "null" }));
+function settled(
+  state: { pendingRequests: { id: string }[] },
+  pendingRequests: readonly { id: string }[] = [],
+) {
+  return state.pendingRequests
+    .filter((request) => !pendingRequests.includes(request))
+    .map(({ id }) => ({ id, ok: true, json: "null" }));
 }
-function restore(state: Extract<CodeModeWorkerResult, { status: "waiting" }>) {
+function restore(
+  state: Extract<CodeModeWorkerResult, { status: "waiting" }>,
+  pendingRequests: typeof state.pendingRequests = [],
+) {
   return {
     kind: "resume" as const,
     config,
     continuation: state.continuation,
-    settledRequests: settled(state),
-    pendingRequests: [],
+    settledRequests: settled(state, pendingRequests),
+    pendingRequests,
   };
 }
 
@@ -145,7 +141,7 @@ async function executionInput(source: string, kind: "exec" | "resume", limits = 
 async function instrumentedWorker(prefix: string, source: string) {
   const dir = useAutoCleanupTempDirTracker(onTestFinished).make(prefix);
   const workerPath = path.join(dir, `worker.${fixtureExtension}`);
-  const quickJsUrl = pathToFileURL(createRequire(import.meta.url).resolve("quickjs-wasi"));
+  const quickJsUrl = pathToFileURL(resolveModule("quickjs-wasi"));
   await writeFile(path.join(dir, "package.json"), '{"type":"module"}');
   await writeFile(
     workerPath,
@@ -224,9 +220,9 @@ describe("Code Mode worker lifecycle", () => {
 
   it("preserves legacy snapshot errors without source-location metadata", async () => {
     const { wasmModule: wasm } = await modules;
-    const vm = await QuickJS.create({ wasm, memoryLimit: config.memoryLimitBytes });
     let snapshot: Snapshot;
-    try {
+    {
+      using vm = await QuickJS.create({ wasm, memoryLimit: config.memoryLimitBytes });
       vm.newFunction("__openclawHostRequest", (_method, _args, id) =>
         vm.newString(id.toString()),
       ).consume((handle) => vm.global.setProp("__openclawHostRequest", handle));
@@ -235,15 +231,9 @@ describe("Code Mode worker lifecycle", () => {
           vm.global.setProp(name, handle),
         );
       }
-      for (const [name, value] of Object.entries({
-        __openclawCatalog: [],
-        __openclawNamespaces: [],
-        __openclawApiFiles: [],
-        __openclawSwarmEnabled: false,
-        __openclawMaxPendingToolCalls: config.maxPendingToolCalls,
-      })) {
-        vm.hostToHandle(value).consume((handle) => vm.global.setProp(name, handle));
-      }
+      vm.hostToHandle(config.maxPendingToolCalls).consume((handle) =>
+        vm.global.setProp("__openclawMaxPendingToolCalls", handle),
+      );
       vm.evalCode(CODE_MODE_CONTROLLER_SOURCE, "openclaw-code-mode:controller.js").dispose();
       // The previous worker wrapped the same program without recording its source coordinates.
       vm.evalCode(
@@ -253,8 +243,6 @@ describe("Code Mode worker lifecycle", () => {
       ).dispose();
       vm.executePendingJobs();
       snapshot = vm.snapshot();
-    } finally {
-      vm.dispose();
     }
     const result = await runQuickJsWire(
       {
@@ -267,24 +255,16 @@ describe("Code Mode worker lifecycle", () => {
     );
     expect(result).toMatchObject({
       status: "failed",
-      error: expect.stringContaining("Error: legacy failure"),
+      error: expect.stringMatching(/Error: legacy failure[\s\S]*openclaw-code-mode:user\.js:3:\d+/),
     });
-    expect(result).toHaveProperty(
-      "error",
-      expect.stringMatching(/openclaw-code-mode:user\.js:3:\d+/),
-    );
   });
 
   it("accounts for a same-line Unicode prelude in syntax locations", async () => {
     const result = await run({ ...input("const value = ;"), prelude: "const helper = 'é🦞';" });
     expect(result).toMatchObject({
       status: "failed",
-      error: expect.stringContaining("SyntaxError"),
+      error: expect.stringMatching(/SyntaxError[\s\S]*openclaw-code-mode:user\.js:1:15/),
     });
-    expect(result).toHaveProperty(
-      "error",
-      expect.stringContaining("openclaw-code-mode:user.js:1:15"),
-    );
   });
 
   it("does not attribute a prelude failure to submitted source", async () => {
@@ -398,19 +378,7 @@ describe("Code Mode worker lifecycle", () => {
         expect(siblingRequests[0]?.id).toBe(siblingId);
       }
       const pendingRequests = leg === 0 ? siblingRequests : [];
-      result = await runCodeModeWorker(
-        {
-          kind: "resume",
-          continuation: parked.continuation,
-          config,
-          pendingRequests,
-          settledRequests: parked.pendingRequests
-            .filter((request) => !pendingRequests.includes(request))
-            .map(({ id }) => ({ id, ok: true, json: "null" })),
-        },
-        10_000,
-        workerUrl,
-      );
+      result = await runCodeModeWorker(restore(parked, pendingRequests), 10_000, workerUrl);
       const resumed = sent.mock.calls.findLast(([message]) => message.input?.kind === "resume");
       expect(resumed?.[0].input.continuation.memory.buffer.byteLength).toBe(0);
     }
@@ -507,14 +475,11 @@ describe("Code Mode worker lifecycle", () => {
   );
 
   it("honors an already-aborted execution before starting a worker", async () => {
-    const controller = new AbortController();
-    controller.abort();
-
     const result = await runCodeModeWorker(
       input("return true;"),
       10_000,
       undefined,
-      controller.signal,
+      AbortSignal.abort(),
     );
 
     expectFailed(result, "aborted", {
