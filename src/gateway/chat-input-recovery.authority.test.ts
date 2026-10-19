@@ -6,8 +6,9 @@ import fs from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core/expect";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import { stageSessionPendingInput } from "../config/sessions/session-accessor.pending-inputs.js";
@@ -31,6 +32,7 @@ import {
   normalizeChatSendRequest,
 } from "./server-methods/chat-send-request.js";
 import { createContext } from "./server-plugin-in-process-dispatch.test-support.js";
+import * as deliveryRecovery from "./session-send-recovery.js";
 import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.e2e.js";
 import { KERNEL_TEST_ENV } from "./test-helpers.env.js";
 import { buildMockOpenAiResponsesProvider } from "./test-openai-responses-model.js";
@@ -74,6 +76,16 @@ it(
       });
     });
     let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
+    const recoveryStarted = createDeferred();
+    const releaseRecovery = createDeferred();
+    const recover = deliveryRecovery.recoverSessionSendDeliveries;
+    const recoverySpy = vi
+      .spyOn(deliveryRecovery, "recoverSessionSendDeliveries")
+      .mockImplementation(async (...args) => {
+        recoveryStarted.resolve();
+        await releaseRecovery.promise;
+        return recover(...args);
+      });
     try {
       const provider = buildMockOpenAiResponsesProvider(
         await listenProvider(providerServer),
@@ -239,6 +251,22 @@ it(
         token: "synthetic-replay-token",
       });
       await gateway.server.startupSettled;
+      await recoveryStarted.promise;
+      const successor = {
+        sessionKey: "agent:main:replay-unchanged",
+        message: "SUCCESSOR_MUST_WAIT",
+        idempotencyKey: "replay-successor",
+        deliver: false,
+      };
+      try {
+        await expect(gateway.client.request("chat.send", successor)).rejects.toMatchObject({
+          code: "UNAVAILABLE",
+          retryable: true,
+        });
+        expect(requests).toEqual([]);
+      } finally {
+        releaseRecovery.resolve();
+      }
       await expect(
         gateway.client.request("agent.wait", { runId: "replay-unchanged", timeoutMs: 30_000 }),
       ).resolves.toMatchObject({ status: "ok" });
@@ -257,7 +285,22 @@ it(
           ]);
         }
       }
+      const client = gateway.client;
+      await vi.waitFor(async () => {
+        await expect(client.request("chat.send", successor)).resolves.toMatchObject({
+          runId: "replay-successor",
+          status: "started",
+        });
+      });
+      await expect(
+        client.request("agent.wait", { runId: "replay-successor", timeoutMs: 30_000 }),
+      ).resolves.toMatchObject({ status: "ok" });
+      expect(requests).toHaveLength(3);
+      expect(requests.slice(0, 2).join("\n")).not.toContain(successor.message);
+      expect(requests.slice(2).every((body) => body.includes(successor.message))).toBe(true);
     } finally {
+      releaseRecovery.resolve();
+      recoverySpy.mockRestore();
       try {
         if (gateway) {
           await disconnectGatewayClient(gateway.client);

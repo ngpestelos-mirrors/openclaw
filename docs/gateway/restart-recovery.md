@@ -111,7 +111,11 @@ The Control UI retains accepted text and attachments in its outbox until the
 Gateway confirms transcript consumption. Reconnect and manual retries reconcile
 the same saved receipt and submission ID, so a retry cannot duplicate server
 recovery. Browser-local messages that the Gateway never accepted still belong
-to the outbox.
+to the outbox. During startup recovery, new `chat.send` requests receive the
+existing retryable startup-unavailable response. This keeps reconnecting clients
+from sending successors ahead of saved inputs. The gate opens when the startup
+recovery pass settles, including when inputs are excluded or recovery fails;
+unresumable inputs retain their interrupted notice.
 
 Requests refused before dispatch and chat sends interrupted while waiting for
 session admission return a retryable `UNAVAILABLE` error with
