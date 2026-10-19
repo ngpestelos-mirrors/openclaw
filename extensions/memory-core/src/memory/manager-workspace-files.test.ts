@@ -21,6 +21,7 @@ import {
 import { runInMemoryTestBackgroundContext } from "./background-context.test-support.js";
 import type { MemoryIndexDatabase } from "./manager-database-context.js";
 import { createManagerIndexFixture } from "./manager-index.test-support.js";
+import type { MemoryIndexManager } from "./manager.js";
 
 const { closeAllMemorySearchManagers, getMemorySearchManager } = await import("./index.js");
 
@@ -36,6 +37,35 @@ describe("Gateway index over Harness workspace files", () => {
       vectorEnabled: false,
       ...overrides,
     });
+  const write = (root: string, file: string, text: string) =>
+    fs.writeFile(path.join(root, file), text);
+  const seedSession = (sessionId: string, content: string) =>
+    fixture.seedSessionTranscript({
+      sessionId,
+      messages: [{ role: "user", content, senderIsOwner: true, timestamp: Date.now() }],
+    });
+  async function createIndexedManager(
+    overrides: Parameters<typeof createConfig>[0] = {},
+    persistent = false,
+  ) {
+    const cfg = createConfig(overrides);
+    const manager = await (persistent
+      ? fixture.getPersistentManager(cfg)
+      : fixture.getFreshManager(cfg, "cli"));
+    await manager.sync({ reason: "initial", force: true });
+    return { cfg, manager };
+  }
+  const search = (manager: MemoryIndexManager, query: string, maxResults?: number) =>
+    manager.search(query, { minScore: 0, ...(maxResults === undefined ? {} : { maxResults }) });
+  async function expectFile(
+    manager: MemoryIndexManager,
+    cfg: ReturnType<typeof createConfig>,
+    relPath: string,
+    text: string,
+  ) {
+    expect((await manager.readFile({ relPath })).text).toContain(text);
+    expect((await readAgentMemoryFile({ cfg, agentId: "main", relPath })).text).toContain(text);
+  }
   let release: (() => void) | undefined;
   afterEach(() => {
     release?.();
@@ -115,41 +145,23 @@ describe("Gateway index over Harness workspace files", () => {
 
   it("indexes Harness bytes beside Gateway sessions and never indexes the local decoy", async () => {
     const { harness } = await registerHarness();
-    await fs.writeFile(path.join(harness, "memory/notes.md"), "alpha Harness canonical notes.");
-    await fs.writeFile(path.join(fixture.paths.memory, "notes.md"), "beta Gateway decoy notes.");
-    await fixture.seedSessionTranscript({
-      sessionId: "gateway-session",
-      messages: [
-        {
-          role: "user",
-          content: "alpha original Gateway conversation.",
-          senderIsOwner: true,
-          timestamp: Date.now(),
-        },
-      ],
-    });
-    const cfg = createConfig({
+    await write(harness, "memory/notes.md", "alpha Harness canonical notes.");
+    await write(fixture.paths.memory, "notes.md", "beta Gateway decoy notes.");
+    await seedSession("gateway-session", "alpha original Gateway conversation.");
+    const { cfg, manager } = await createIndexedManager({
       sources: ["memory", "sessions"],
       sessionMemory: true,
     });
-    const manager = await fixture.getFreshManager(cfg, "cli");
-    await manager.sync({ reason: "split-storage", force: true });
-    const results = await manager.search("alpha", { minScore: 0, maxResults: 20 });
     expect(
-      results.some((hit) => hit.source === "memory" && hit.snippet.includes("Harness canonical")),
-    ).toBe(true);
-    expect(
-      results.some(
-        (hit) => hit.source === "sessions" && hit.snippet.includes("Gateway conversation"),
-      ),
-    ).toBe(true);
-    expect(await manager.search("decoy", { minScore: 0 })).toEqual([]);
-    expect((await manager.readFile({ relPath: "memory/notes.md" })).text).toContain(
-      "Harness canonical",
+      (await search(manager, "alpha", 20)).map(({ source, snippet }) => [source, snippet]),
+    ).toEqual(
+      expect.arrayContaining([
+        ["memory", expect.stringContaining("Harness canonical")],
+        ["sessions", expect.stringContaining("Gateway conversation")],
+      ]),
     );
-    expect(
-      (await readAgentMemoryFile({ cfg, agentId: "main", relPath: "memory/notes.md" })).text,
-    ).toContain("Harness canonical");
+    expect(await search(manager, "decoy")).toEqual([]);
+    await expectFile(manager, cfg, "memory/notes.md", "Harness canonical");
     expect(manager.status().dbPath).toContain(fixture.paths.stateDir);
     expect(await fs.readdir(harness)).toEqual(["memory"]);
     release?.();
@@ -160,46 +172,30 @@ describe("Gateway index over Harness workspace files", () => {
 
   it("keeps session-only search on Gateway after Harness file access stops", async () => {
     await registerHarness();
-    await fs.writeFile(path.join(fixture.paths.memory, "notes.md"), "Gateway decoy.");
-    await fixture.seedSessionTranscript({
-      sessionId: "gateway-only",
-      messages: [
-        {
-          role: "user",
-          content: "alpha Gateway session.",
-          senderIsOwner: true,
-          timestamp: Date.now(),
-        },
-      ],
-    });
-    const cfg = createConfig({
+    await write(fixture.paths.memory, "notes.md", "Gateway decoy.");
+    await seedSession("gateway-only", "alpha Gateway session.");
+    const { cfg, manager } = await createIndexedManager({
       sources: ["sessions"],
       sessionMemory: true,
     });
-    const manager = await fixture.getFreshManager(cfg, "cli");
-    await manager.sync({ reason: "session-only", force: true });
     release?.();
-    expect((await manager.search("alpha", { minScore: 0 }))[0]?.source).toBe("sessions");
+    expect((await search(manager, "alpha"))[0]?.source).toBe("sessions");
     await expect(manager.readFile({ relPath: "memory/notes.md" })).rejects.toMatchObject({
       code: "WORKSPACE_ACCESS_UNAVAILABLE",
     });
-    expect(
-      (
-        await getMemorySearchManager({
-          runInBackgroundContext: runInMemoryTestBackgroundContext,
-          cfg,
-          agentId: "main",
-        })
-      ).manager,
-    ).not.toBeNull();
+    const reopened = await getMemorySearchManager({
+      runInBackgroundContext: runInMemoryTestBackgroundContext,
+      cfg,
+      agentId: "main",
+    });
+    expect(reopened.manager).not.toBeNull();
   });
 
   it("drains host edits arriving during indexing into the next watch generation", async () => {
     const { harness, files, changed } = await registerHarness();
-    await fs.writeFile(path.join(harness, "memory/first.md"), "alpha first.");
-    await fs.writeFile(path.join(harness, "memory/second.md"), "alpha second.");
-    const manager = await fixture.getPersistentManager(createConfig());
-    await manager.sync({ reason: "initial", force: true });
+    await write(harness, "memory/first.md", "alpha first.");
+    await write(harness, "memory/second.md", "alpha second.");
+    const { manager } = await createIndexedManager({}, true);
     const entered = Promise.withResolvers<void>();
     const resume = Promise.withResolvers<void>();
     const read = files.readForIndexing;
@@ -210,7 +206,7 @@ describe("Gateway index over Harness workspace files", () => {
       return read(file);
     });
     const sync = vi.spyOn(manager, "sync");
-    await fs.writeFile(path.join(harness, "memory/first.md"), "beta first updated.");
+    await write(harness, "memory/first.md", "beta first updated.");
     changed();
     await entered.promise;
     try {
@@ -218,7 +214,7 @@ describe("Gateway index over Harness workspace files", () => {
       expect(inspections.mock.calls.map(([file]) => file)).toContain(
         path.join(fixture.paths.memory, "second.md"),
       );
-      await fs.writeFile(path.join(harness, "memory/second.md"), "beta second updated.");
+      await write(harness, "memory/second.md", "beta second updated.");
       changed();
     } finally {
       resume.resolve();
@@ -245,9 +241,8 @@ describe("Gateway index over Harness workspace files", () => {
     "bounds joined watch generations when an active pass ends with %s",
     async (outcome) => {
       const { harness, files, changed } = await registerHarness();
-      await fs.writeFile(path.join(harness, "memory/first.md"), "alpha first.");
-      const manager = await fixture.getPersistentManager(createConfig());
-      await manager.sync({ reason: "initial", force: true });
+      await write(harness, "memory/first.md", "alpha first.");
+      const { manager } = await createIndexedManager({}, true);
       if (outcome === "newer-index") {
         const database = Reflect.get(manager, "publishedDatabase") as MemoryIndexDatabase;
         const meta = database.facts.meta;
@@ -309,8 +304,7 @@ describe("Gateway index over Harness workspace files", () => {
       // The node transport finishes cancellation with this exact signal reason.
       signal.throwIfAborted();
     };
-    const cfg = createConfig();
-    const manager = await fixture.getPersistentManager(cfg);
+    const manager = await fixture.getPersistentManager(createConfig());
     try {
       await manager.sync({ reason: "initial", force: true });
       expect(changed).toBeTypeOf("function");
@@ -325,9 +319,7 @@ describe("Gateway index over Harness workspace files", () => {
       changed?.();
       expect(sync).toHaveBeenCalledWith({ reason: "watch" });
       await sync.mock.results.at(-1)!.value;
-      expect((await manager.search("beta", { minScore: 0 }))[0]?.snippet).toContain(
-        "changed host note",
-      );
+      expect((await search(manager, "beta"))[0]?.snippet).toContain("changed host note");
       let closed = false;
       const closing = manager.close().then(() => {
         closed = true;
@@ -349,28 +341,19 @@ describe("Gateway index over Harness workspace files", () => {
     }
   });
   it("keeps local Memory with a stopped document-only bridge", async () => {
-    await fs.writeFile(path.join(fixture.paths.workspace, "MEMORY.md"), "alpha local Memory.");
+    const workspace = fixture.paths.workspace;
+    await write(workspace, "MEMORY.md", "alpha local Memory.");
     release = registerAgentWorkspaceAccess(fixture.paths.workspace, {
       bridge: { readFile: vi.fn(), writeFile: vi.fn(), stat: vi.fn() },
     });
     release();
-    const cfg = createConfig();
-    const manager = await fixture.getFreshManager(cfg, "cli");
-    await manager.sync({ reason: "document-only", force: true });
-    expect((await manager.search("alpha", { minScore: 0 }))[0]?.snippet).toContain("local Memory");
-    expect((await manager.readFile({ relPath: "MEMORY.md" })).text).toContain("local Memory");
-    expect(
-      (await readAgentMemoryFile({ cfg, agentId: "main", relPath: "MEMORY.md" })).text,
-    ).toContain("local Memory");
-    expect(await listWorkspaceMemoryFiles(fixture.paths.workspace)).toContain(
-      path.join(fixture.paths.workspace, "MEMORY.md"),
+    const { cfg, manager } = await createIndexedManager();
+    expect((await search(manager, "alpha"))[0]?.snippet).toContain("local Memory");
+    await expectFile(manager, cfg, "MEMORY.md", "local Memory");
+    expect(await listWorkspaceMemoryFiles(workspace)).toContain(path.join(workspace, "MEMORY.md"));
+    expect(await readWorkspaceText(workspace, path.join(workspace, "MEMORY.md"))).toContain(
+      "local Memory",
     );
-    expect(
-      await readWorkspaceText(
-        fixture.paths.workspace,
-        path.join(fixture.paths.workspace, "MEMORY.md"),
-      ),
-    ).toContain("local Memory");
   });
 
   it("ranks remote extra paths by indexed host mtime despite absent or stale Gateway files", async () => {
@@ -378,14 +361,12 @@ describe("Gateway index over Harness workspace files", () => {
     await fs.mkdir(path.join(harness, "imports"));
     const old = path.join(harness, "imports/old.md");
     await fs.writeFile(old, "alpha imported knowledge.");
-    await fs.writeFile(path.join(harness, "imports/new.md"), "alpha imported knowledge.");
+    await write(harness, "imports/new.md", "alpha imported knowledge.");
     const oldTime = new Date(Date.now() - 90 * 86_400_000);
     await fs.utimes(old, oldTime, oldTime);
-    const cfg = createConfig({ extraPaths: ["imports"] });
     // Native search applies a 30-day half-life; the Gateway has no copy of these files.
-    const manager = await fixture.getFreshManager(cfg, "cli");
-    await manager.sync({ reason: "remote-mtime", force: true });
-    const before = await manager.search("alpha", { minScore: 0, maxResults: 10 });
+    const { manager } = await createIndexedManager({ extraPaths: ["imports"] });
+    const before = await search(manager, "alpha", 10);
     const oldScore = before.find((hit) => hit.path === "imports/old.md")?.score;
     const newScore = before.find((hit) => hit.path === "imports/new.md")?.score;
     if (oldScore === undefined || newScore === undefined) {
@@ -393,8 +374,8 @@ describe("Gateway index over Harness workspace files", () => {
     }
     expect(oldScore).toBeLessThan(newScore / 4);
     await fs.mkdir(path.join(fixture.paths.workspace, "imports"));
-    await fs.writeFile(path.join(fixture.paths.workspace, "imports/old.md"), "Gateway decoy.");
-    const after = await manager.search("alpha", { minScore: 0, maxResults: 10 });
+    await write(fixture.paths.workspace, "imports/old.md", "Gateway decoy.");
+    const after = await search(manager, "alpha", 10);
     expect(after.find((hit) => hit.path === "imports/old.md")?.score).toBeCloseTo(oldScore, 5);
   });
 
@@ -402,7 +383,7 @@ describe("Gateway index over Harness workspace files", () => {
     const { harness, files } = await registerHarness();
     const note = path.join(harness, "memory/notes.md");
     await fs.writeFile(note, "alpha first remote version.");
-    await fs.writeFile(path.join(fixture.paths.memory, "notes.md"), "alpha Gateway decoy.");
+    await write(fixture.paths.memory, "notes.md", "alpha Gateway decoy.");
     const read = files.readForIndexing;
     let changed = false;
     files.readForIndexing = async (file) => {
@@ -413,13 +394,9 @@ describe("Gateway index over Harness workspace files", () => {
       }
       return result;
     };
-    const cfg = createConfig();
-    const manager = await fixture.getFreshManager(cfg, "cli");
-    await manager.sync({ reason: "changed-source", force: true });
+    const { manager } = await createIndexedManager();
     await manager.sync({ reason: "retry-current-source" });
-    expect(await manager.search("alpha", { minScore: 0 })).toEqual([]);
-    expect((await manager.search("beta", { minScore: 0 }))[0]?.snippet).toContain(
-      "newer remote version",
-    );
+    expect(await search(manager, "alpha")).toEqual([]);
+    expect((await search(manager, "beta"))[0]?.snippet).toContain("newer remote version");
   });
 });

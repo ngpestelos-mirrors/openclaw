@@ -11,6 +11,14 @@ import { createManagerIndexFixture } from "./manager-index.test-support.js";
 const { closeAllMemorySearchManagers, getMemorySearchManager } = await import("./index.js");
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
+function replaceFtsWithView() {
+  openOpenClawAgentDatabase({ agentId: "main" }).db.exec(`
+    DROP TABLE memory_index_chunks_fts;
+    CREATE VIEW memory_index_chunks_fts AS
+      SELECT text, id, path, source, model, start_line, end_line FROM memory_index_chunks;
+  `);
+}
+
 describe("memory source temporal ranking", () => {
   const fixture = createManagerIndexFixture({
     getMemorySearchManager,
@@ -35,11 +43,7 @@ describe("memory source temporal ranking", () => {
       await manager.sync({ reason: "test", force: true });
       if (mode === "vector-only") {
         await manager.close();
-        openOpenClawAgentDatabase({ agentId: "main" }).db.exec(`
-          DROP TABLE memory_index_chunks_fts;
-          CREATE VIEW memory_index_chunks_fts AS
-            SELECT text, id, path, source, model, start_line, end_line FROM memory_index_chunks;
-        `);
+        replaceFtsWithView();
         manager = await fixture.getFreshManager(cfg, "cli");
         expect(manager.status().fts?.available).toBe(false);
       }
@@ -53,57 +57,21 @@ describe("memory source temporal ranking", () => {
   );
 
   it.each([
-    {
-      name: "keyword-only",
-      provider: "none",
-      lexicalOnly: false,
-      archived: false,
-      ftsUnavailable: false,
-      zeroScoreLike: false,
-    },
-    {
-      name: "lexical recall",
-      provider: "openai",
-      lexicalOnly: true,
-      archived: false,
-      ftsUnavailable: false,
-      zeroScoreLike: false,
-    },
-    {
-      name: "hybrid",
-      provider: "openai",
-      lexicalOnly: false,
-      archived: false,
-      ftsUnavailable: false,
-      zeroScoreLike: false,
-    },
-    {
-      name: "retained archives",
-      provider: "none",
-      lexicalOnly: false,
-      archived: true,
-      ftsUnavailable: false,
-      zeroScoreLike: false,
-    },
-    {
-      name: "FTS unavailable",
-      provider: "openai",
-      lexicalOnly: false,
-      archived: false,
-      ftsUnavailable: true,
-      zeroScoreLike: false,
-    },
-    {
-      name: "LIKE-only hybrid",
-      provider: "openai",
-      lexicalOnly: false,
-      archived: false,
-      ftsUnavailable: false,
-      zeroScoreLike: true,
-    },
+    { name: "keyword-only", provider: "none" },
+    { name: "lexical recall", lexicalOnly: true },
+    { name: "hybrid" },
+    { name: "retained archives", provider: "none", archived: true },
+    { name: "FTS unavailable", ftsUnavailable: true },
+    { name: "LIKE-only hybrid", zeroScoreLike: true },
   ])(
     "decays SQLite session hits by recorded source activity through $name",
-    async ({ provider, lexicalOnly, archived, ftsUnavailable, zeroScoreLike }) => {
+    async ({
+      provider = "openai",
+      lexicalOnly = false,
+      archived = false,
+      ftsUnavailable = false,
+      zeroScoreLike = false,
+    }) => {
       fixture.provider.forceNoProvider = provider === "none";
       const cfg = fixture.createConfig({
         provider,
@@ -122,34 +90,23 @@ describe("memory source temporal ranking", () => {
       const freshSession = { sessionId: "z-fresh", updatedAt: now, fileName: "z-fresh.jsonl" };
       const sessions = [oldSession, freshSession];
       const storePath = path.join(resolveSessionTranscriptsDirForAgent("main"), "sessions.json");
+      const content = zeroScoreLike
+        ? "记忆 彩色 潮池 偏好。"
+        : "Alpha cobalt orchid tidepool preference.";
       for (const session of sessions) {
         const sessionKey = `agent:main:memory:${session.sessionId}`;
+        const target = { agentId: "main", sessionKey, storePath };
         await fixture.seedSessionTranscript({
           sessionId: session.sessionId,
           sessionKey,
-          messages: [
-            {
-              role: "user",
-              content: zeroScoreLike
-                ? "记忆 彩色 潮池 偏好。"
-                : "Alpha cobalt orchid tidepool preference.",
-              timestamp: now - 60 * DAY_MS,
-            },
-          ],
+          messages: [{ role: "user", content, timestamp: now - 60 * DAY_MS }],
         });
         await upsertSessionEntry({
-          agentId: "main",
-          sessionKey,
-          storePath,
+          ...target,
           entry: { sessionId: session.sessionId, updatedAt: session.updatedAt },
         });
         if (archived) {
-          await deleteSessionEntry({
-            agentId: "main",
-            sessionKey,
-            storePath,
-            archiveTranscript: true,
-          });
+          await deleteSessionEntry({ ...target, archiveTranscript: true });
           const files = await fs.readdir(path.dirname(storePath));
           const archiveName = files.find((name) =>
             name.startsWith(`${session.sessionId}.jsonl.deleted.`),
@@ -183,11 +140,7 @@ describe("memory source temporal ranking", () => {
       if (ftsUnavailable) {
         await manager.close();
         // Matching row counts must not make a non-FTS view look like an available index.
-        openOpenClawAgentDatabase({ agentId: "main" }).db.exec(`
-          DROP TABLE memory_index_chunks_fts;
-          CREATE VIEW memory_index_chunks_fts AS
-            SELECT text, id, path, source, model, start_line, end_line FROM memory_index_chunks;
-        `);
+        replaceFtsWithView();
         manager = await fixture.getFreshManager(cfg, "cli");
         expect(manager.status().fts).toMatchObject({
           enabled: true,
@@ -201,20 +154,13 @@ describe("memory source temporal ranking", () => {
         ).toEqual({ type: "view" });
       }
 
-      const searchOptions = {
-        maxResults: 2,
-        minScore: 0,
-        lexicalOnly,
-      };
       const query = zeroScoreLike ? "记忆" : "alpha cobalt orchid tidepool preference";
-      const search = () => manager.search(query, { ...searchOptions, sources: ["sessions"] });
+      const search = (maxResults = 2) =>
+        manager.search(query, { maxResults, minScore: 0, lexicalOnly, sources: ["sessions"] });
+      const sourcePath = (session: typeof oldSession) => `sessions/main/${session.fileName}`;
       const expectSourceRecency = (results: MemorySearchResult[]) => {
-        const old = results.find((entry) => entry.path === `sessions/main/${oldSession.fileName}`);
-        const fresh = results.find(
-          (entry) => entry.path === `sessions/main/${freshSession.fileName}`,
-        );
-        expect(old).toBeDefined();
-        expect(fresh).toBeDefined();
+        const old = results.find((entry) => entry.path === sourcePath(oldSession));
+        const fresh = results.find((entry) => entry.path === sourcePath(freshSession));
         if (!old || !fresh) {
           throw new Error("Expected both indexed session sources");
         }
@@ -233,10 +179,7 @@ describe("memory source temporal ranking", () => {
       };
       expectSourceRecency(await search());
       expect(fixture.provider.embedQueryCalls).toBe(provider === "none" || lexicalOnly ? 0 : 1);
-      expect(
-        (await manager.search(query, { ...searchOptions, maxResults: 1, sources: ["sessions"] }))[0]
-          ?.path,
-      ).toBe(`sessions/main/${freshSession.fileName}`);
+      expect((await search(1))[0]?.path).toBe(sourcePath(freshSession));
 
       if (!lexicalOnly && !archived) {
         const tool = createMemorySearchToolOrThrow({

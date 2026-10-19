@@ -21,26 +21,42 @@ describe("memory manager retained worker reads", () => {
     getMemorySearchManager,
     closeAllMemorySearchManagers,
   });
+  const seedSession = (sessionId: string, content: string) =>
+    fixture.seedSessionTranscript({
+      sessionId,
+      messages: [{ role: "user", timestamp: 1, content }],
+    });
+  const sessionConfig = () =>
+    fixture.createConfig({ provider: "none", sources: ["sessions"], sessionMemory: true });
+  const writeMemory = (name: string, content: string) =>
+    fs.writeFile(path.join(fixture.paths.memory, name), content);
+  async function observeSql(
+    check: (observed: ReturnType<typeof observeHostDataSql>) => Promise<void>,
+  ) {
+    const observed = observeHostDataSql();
+    try {
+      await check(observed);
+    } finally {
+      observed.restore();
+    }
+  }
 
   it("reopens invalidated source state without host data reads", async () => {
-    await fs.writeFile(path.join(fixture.paths.memory, "cold.md"), "Alpha cold source.");
+    await writeMemory("cold.md", "Alpha cold source.");
     const config = fixture.createConfig({ provider: "none", sources: ["memory"] });
     const initial = await fixture.getFreshManager(config, "cli");
     await initial.sync({ reason: "baseline", force: true });
     memoryIndexFixtureWriter(initial).prepare("UPDATE memory_index_sources SET hash = ''").run();
     await initial.close();
-    const observed = observeHostDataSql();
-    try {
+    await observeSql(async (observed) => {
       const manager = await fixture.getFreshManager(config, "cli");
       expect(Reflect.get(manager, "memorySourceProvenanceRepairPending")).toBe(true);
       expect(observed.queries.filter((sql) => /memory_index_sources/iu.test(sql))).toEqual([]);
-    } finally {
-      observed.restore();
-    }
+    });
   });
 
   it("keeps async status off host SQLite and warns once for legacy status", async () => {
-    await fs.writeFile(path.join(fixture.paths.memory, "vectors.md"), "Alpha vector source.");
+    await writeMemory("vectors.md", "Alpha vector source.");
     const config = fixture.createConfig({
       provider: "openai",
       sources: ["memory"],
@@ -97,17 +113,10 @@ describe("memory manager retained worker reads", () => {
   });
 
   it("keeps transcript statistics off the host during session catch-up", async () => {
-    await fixture.seedSessionTranscript({
-      sessionId: "startup-stats",
-      messages: [{ role: "user", timestamp: 1, content: "Published startup statistics." }],
-    });
-    const manager = await fixture.getFreshManager(
-      fixture.createConfig({ provider: "none", sources: ["sessions"], sessionMemory: true }),
-      "cli",
-    );
+    await seedSession("startup-stats", "Published startup statistics.");
+    const manager = await fixture.getFreshManager(sessionConfig(), "cli");
     await manager.sync({ reason: "baseline", force: true });
-    const observed = observeHostDataSql();
-    try {
+    await observeSql(async (observed) => {
       await manager.sync({ reason: "cli" });
       expect(
         observed.queries.filter(
@@ -120,16 +129,11 @@ describe("memory manager retained worker reads", () => {
         ),
       ).toEqual([]);
       expect(manager.status().dirty).toBe(false);
-    } finally {
-      observed.restore();
-    }
+    });
   });
 
   it("preserves grouped statistics, duplicate ordering, and missing stores across the worker", async () => {
-    await fixture.seedSessionTranscript({
-      sessionId: "stats-parity",
-      messages: [{ role: "user", timestamp: 1, content: "Worker statistics parity." }],
-    });
+    await seedSession("stats-parity", "Worker statistics parity.");
     const source = { agentId: "main", sessionId: "stats-parity" };
     const scopes = [
       source,
@@ -141,24 +145,18 @@ describe("memory manager retained worker reads", () => {
       { agentId: "missing", sessionId: "missing" },
     ];
     const expected = readTranscriptStatsBatchReadOnlySync(scopes);
-    const observed = observeHostDataSql();
-    try {
+    await observeSql(async (observed) => {
       const actual = await cpuRuntime.readMemoryTranscriptStatsInWorker(scopes);
       expect(actual).toEqual(expected);
       expect(actual[0]?.eventCount).toBeGreaterThan(0);
       expect(actual.at(-2)).toEqual(actual[0]);
       expect(actual.at(-1)).toBeNull();
       expect(observed.queries).toEqual([]);
-    } finally {
-      observed.restore();
-    }
+    });
   });
 
   it("joins a startup statistics read before closing without scheduling late sync", async () => {
-    await fixture.seedSessionTranscript({
-      sessionId: "startup-close",
-      messages: [{ role: "user", timestamp: 1, content: "Unindexed startup statistics." }],
-    });
+    await seedSession("startup-close", "Unindexed startup statistics.");
     const delivered = createDeferred<void>();
     const release = createDeferred<void>();
     const read = cpuRuntime.readMemoryTranscriptStatsInWorker;
@@ -170,9 +168,7 @@ describe("memory manager retained worker reads", () => {
         await release.promise;
         return result;
       });
-    const manager = await fixture.getFreshManager(
-      fixture.createConfig({ provider: "none", sources: ["sessions"], sessionMemory: true }),
-    );
+    const manager = await fixture.getFreshManager(sessionConfig());
     const sync = vi.spyOn(manager, "sync");
     let closed = false;
     let closing: Promise<void> | undefined;
@@ -211,7 +207,9 @@ describe("memory manager retained worker reads", () => {
       await manager.sync({ reason: "baseline", force: true });
       const database = Reflect.get(manager, "publishedDatabase") as MemoryIndexDatabase;
       const publishedDb = database.db;
-      const before = publishedDb.prepare("SELECT text FROM memory_index_chunks ORDER BY id").all();
+      const chunks = (db: MemoryIndexDatabase["db"]) =>
+        db.prepare("SELECT text FROM memory_index_chunks ORDER BY id").all();
+      const before = chunks(publishedDb);
       const replacement = "Replacement beta after the cache read.";
       await fs.writeFile(memoryPath, replacement);
       fixture.provider.embeddedBatchTexts = [];
@@ -239,9 +237,7 @@ describe("memory manager retained worker reads", () => {
         await Promise.race([delivered.promise, sync]);
         expect(readDelivered).toBe(true);
         expect(fixture.provider.embeddedBatchTexts).toEqual([]);
-        expect(
-          publishedDb.prepare("SELECT text FROM memory_index_chunks ORDER BY id").all(),
-        ).toEqual(before);
+        expect(chunks(publishedDb)).toEqual(before);
         release.resolve();
         if (outcome === "ready") {
           await sync;
@@ -250,8 +246,7 @@ describe("memory manager retained worker reads", () => {
           await expect(sync).rejects.toThrow("controlled cache read rejection");
           expect(fixture.provider.embeddedBatchTexts).toEqual([]);
         }
-        const current = openOpenClawAgentDatabase({ agentId: "main" }).db;
-        expect(current.prepare("SELECT text FROM memory_index_chunks ORDER BY id").all()).toEqual(
+        expect(chunks(openOpenClawAgentDatabase({ agentId: "main" }).db)).toEqual(
           outcome === "ready" ? [{ text: replacement }] : before,
         );
       } finally {
