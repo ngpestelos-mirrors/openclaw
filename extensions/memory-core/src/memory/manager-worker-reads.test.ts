@@ -28,108 +28,90 @@ describe("memory manager retained worker reads", () => {
     });
   const sessionConfig = () =>
     fixture.createConfig({ provider: "none", sources: ["sessions"], sessionMemory: true });
+  const memoryConfig = (overrides: Parameters<typeof fixture.createConfig>[0] = {}) =>
+    fixture.createConfig({ provider: "none", sources: ["memory"], ...overrides });
   const writeMemory = (name: string, content: string) =>
     fs.writeFile(path.join(fixture.paths.memory, name), content);
-  async function observeSql(
-    check: (observed: ReturnType<typeof observeHostDataSql>) => Promise<void>,
-  ) {
+  function observeSql() {
     const observed = observeHostDataSql();
-    try {
-      await check(observed);
-    } finally {
-      observed.restore();
-    }
+    return { ...observed, [Symbol.dispose]: () => observed.restore() };
   }
 
   it("reopens invalidated source state without host data reads", async () => {
     await writeMemory("cold.md", "Alpha cold source.");
-    const config = fixture.createConfig({ provider: "none", sources: ["memory"] });
+    const config = memoryConfig();
     const initial = await fixture.getFreshManager(config, "cli");
     await initial.sync({ reason: "baseline", force: true });
     memoryIndexFixtureWriter(initial).prepare("UPDATE memory_index_sources SET hash = ''").run();
     await initial.close();
-    await observeSql(async (observed) => {
-      const manager = await fixture.getFreshManager(config, "cli");
-      expect(Reflect.get(manager, "memorySourceProvenanceRepairPending")).toBe(true);
-      expect(observed.queries.filter((sql) => /memory_index_sources/iu.test(sql))).toEqual([]);
-    });
+    using observed = observeSql();
+    const manager = await fixture.getFreshManager(config, "cli");
+    expect(Reflect.get(manager, "memorySourceProvenanceRepairPending")).toBe(true);
+    expect(observed.queries.filter((sql) => /memory_index_sources/iu.test(sql))).toEqual([]);
   });
 
   it("keeps async status off host SQLite and warns once for legacy status", async () => {
     await writeMemory("vectors.md", "Alpha vector source.");
-    const config = fixture.createConfig({
-      provider: "openai",
-      sources: ["memory"],
-      vectorEnabled: true,
-    });
-    const observed = observeHostDataSql();
-    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const config = memoryConfig({ provider: "openai", vectorEnabled: true });
+    using observed = observeSql();
+    using emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     const warn = memoryStorage.warnPluginSdkDeprecation;
     // Isolate the warning budget from fixture writers that also use legacy status.
-    const scopedWarning = vi
-      .spyOn(memoryStorage, "warnPluginSdkDeprecation")
-      .mockImplementation((params) => warn({ ...params, pluginId: "memory-status-compat" }));
+    using scopedWarning = vi.spyOn(memoryStorage, "warnPluginSdkDeprecation");
+    scopedWarning.mockImplementation((params) =>
+      warn({ ...params, pluginId: "memory-status-compat" }),
+    );
     const statusWarnings = () =>
       emitWarning.mock.calls.filter(([message]) =>
         String(message).includes("MemorySearchManager.status"),
       );
-    try {
-      const manager = await fixture.getFreshManager(config, "cli");
-      expect(await manager.statusAsync()).toMatchObject({ files: 0, chunks: 0 });
-      expect(await manager.probeVectorStoreAvailability()).toBe(true);
-      await manager.sync({ reason: "cold-vectors", force: true });
-      const indexed = await manager.statusAsync();
-      expect(indexed.files).toBe(2);
-      expect(indexed.chunks).toBeGreaterThan(0);
-      expect((await manager.search("alpha", { minScore: 0 })).length).toBeGreaterThan(0);
-      await manager.close();
-      const reopened = await fixture.getFreshManager(config, "status");
-      expect(await reopened.statusAsync()).toMatchObject({
-        files: 2,
-        chunks: indexed.chunks,
-        sourceCounts: indexed.sourceCounts,
-      });
-      expect(observed.queries).toEqual([]);
-      expect(statusWarnings()).toEqual([]);
-      expect(reopened.status()).toMatchObject({ files: 2, chunks: indexed.chunks });
-      reopened.status();
-      await reopened.close();
-      expect(() => reopened.status()).toThrow("Memory index manager is closed");
-      expect(statusWarnings()).toEqual([
-        [
-          expect.stringContaining(
-            "MemorySearchManager.status is deprecated; use MemorySearchManager.statusAsync instead.",
-          ),
-          { code: "DEP_PLUGIN_SDK", type: "DeprecationWarning" },
-        ],
-      ]);
-      expect(String(statusWarnings()[0]?.[0])).toContain("Final compatibility day: 2026-12-31");
-      expect(String(statusWarnings()[0]?.[0])).toContain("first January 2027 stable release");
-    } finally {
-      observed.restore();
-      scopedWarning.mockRestore();
-      emitWarning.mockRestore();
-    }
+    const manager = await fixture.getFreshManager(config, "cli");
+    expect(await manager.statusAsync()).toMatchObject({ files: 0, chunks: 0 });
+    expect(await manager.probeVectorStoreAvailability()).toBe(true);
+    await manager.sync({ reason: "cold-vectors", force: true });
+    const indexed = await manager.statusAsync();
+    expect(indexed.files).toBe(2);
+    expect(indexed.chunks).toBeGreaterThan(0);
+    expect((await manager.search("alpha", { minScore: 0 })).length).toBeGreaterThan(0);
+    await manager.close();
+    const reopened = await fixture.getFreshManager(config, "status");
+    expect(await reopened.statusAsync()).toMatchObject({
+      files: 2,
+      chunks: indexed.chunks,
+      sourceCounts: indexed.sourceCounts,
+    });
+    expect(observed.queries).toEqual([]);
+    expect(statusWarnings()).toEqual([]);
+    expect(reopened.status()).toMatchObject({ files: 2, chunks: indexed.chunks });
+    reopened.status();
+    await reopened.close();
+    expect(() => reopened.status()).toThrow("Memory index manager is closed");
+    expect(statusWarnings()).toEqual([
+      [
+        expect.stringContaining(
+          "MemorySearchManager.status is deprecated; use MemorySearchManager.statusAsync instead.",
+        ),
+        { code: "DEP_PLUGIN_SDK", type: "DeprecationWarning" },
+      ],
+    ]);
+    expect(String(statusWarnings()[0]?.[0])).toContain("Final compatibility day: 2026-12-31");
+    expect(String(statusWarnings()[0]?.[0])).toContain("first January 2027 stable release");
   });
 
   it("keeps transcript statistics off the host during session catch-up", async () => {
     await seedSession("startup-stats", "Published startup statistics.");
     const manager = await fixture.getFreshManager(sessionConfig(), "cli");
     await manager.sync({ reason: "baseline", force: true });
-    await observeSql(async (observed) => {
-      await manager.sync({ reason: "cli" });
-      expect(
-        observed.queries.filter(
-          (sql) => /transcript_events/i.test(sql) && /\b(?:count|sum)\s*\(/i.test(sql),
-        ),
-      ).toEqual([]);
-      expect(
-        observed.queries.filter(
-          (sql) => /^select\b/i.test(sql) && /memory_index_sources/i.test(sql),
-        ),
-      ).toEqual([]);
-      expect(manager.status().dirty).toBe(false);
-    });
+    using observed = observeSql();
+    await manager.sync({ reason: "cli" });
+    expect(
+      observed.queries.filter(
+        (sql) =>
+          (/transcript_events/i.test(sql) && /\b(?:count|sum)\s*\(/i.test(sql)) ||
+          (/^select\b/i.test(sql) && /memory_index_sources/i.test(sql)),
+      ),
+    ).toEqual([]);
+    expect(manager.status().dirty).toBe(false);
   });
 
   it("preserves grouped statistics, duplicate ordering, and missing stores across the worker", async () => {
@@ -137,22 +119,18 @@ describe("memory manager retained worker reads", () => {
     const source = { agentId: "main", sessionId: "stats-parity" };
     const scopes = [
       source,
-      ...Array.from({ length: 401 }, (_, index) => ({
-        agentId: "main",
-        sessionId: `absent-${index}`,
-      })),
+      ...Array.from({ length: 401 }, (_, index) => ({ ...source, sessionId: `absent-${index}` })),
       source,
       { agentId: "missing", sessionId: "missing" },
     ];
     const expected = readTranscriptStatsBatchReadOnlySync(scopes);
-    await observeSql(async (observed) => {
-      const actual = await cpuRuntime.readMemoryTranscriptStatsInWorker(scopes);
-      expect(actual).toEqual(expected);
-      expect(actual[0]?.eventCount).toBeGreaterThan(0);
-      expect(actual.at(-2)).toEqual(actual[0]);
-      expect(actual.at(-1)).toBeNull();
-      expect(observed.queries).toEqual([]);
-    });
+    using observed = observeSql();
+    const actual = await cpuRuntime.readMemoryTranscriptStatsInWorker(scopes);
+    expect(actual).toEqual(expected);
+    expect(actual[0]?.eventCount).toBeGreaterThan(0);
+    expect(actual.at(-2)).toEqual(actual[0]);
+    expect(actual.at(-1)).toBeNull();
+    expect(observed.queries).toEqual([]);
   });
 
   it("joins a startup statistics read before closing without scheduling late sync", async () => {
@@ -160,33 +138,28 @@ describe("memory manager retained worker reads", () => {
     const delivered = createDeferred<void>();
     const release = createDeferred<void>();
     const read = cpuRuntime.readMemoryTranscriptStatsInWorker;
-    const reading = vi
-      .spyOn(cpuRuntime, "readMemoryTranscriptStatsInWorker")
-      .mockImplementationOnce(async (...args) => {
-        const result = await read(...args);
-        delivered.resolve();
-        await release.promise;
-        return result;
-      });
+    using reading = vi.spyOn(cpuRuntime, "readMemoryTranscriptStatsInWorker");
+    reading.mockImplementationOnce(async (...args) => {
+      const result = await read(...args);
+      delivered.resolve();
+      await release.promise;
+      return result;
+    });
     const manager = await fixture.getFreshManager(sessionConfig());
-    const sync = vi.spyOn(manager, "sync");
-    let closed = false;
+    using sync = vi.spyOn(manager, "sync");
+    const closed = vi.fn();
     let closing: Promise<void> | undefined;
     try {
       await delivered.promise;
-      closing = manager.close().then(() => {
-        closed = true;
-      });
+      closing = manager.close().then(closed);
       await setImmediate();
-      expect(closed).toBe(false);
+      expect(closed).not.toHaveBeenCalled();
       release.resolve();
       await closing;
       expect(sync).not.toHaveBeenCalled();
     } finally {
       release.resolve();
       await closing;
-      sync.mockRestore();
-      reading.mockRestore();
     }
   });
 
@@ -196,12 +169,7 @@ describe("memory manager retained worker reads", () => {
       const memoryPath = path.join(fixture.paths.memory, "2026-01-12.md");
       await fs.writeFile(memoryPath, "Published alpha cache-read source.");
       const manager = await fixture.getFreshManager(
-        fixture.createConfig({
-          provider: "openai",
-          sources: ["memory"],
-          cacheEnabled: true,
-          vectorEnabled: false,
-        }),
+        memoryConfig({ provider: "openai", cacheEnabled: true, vectorEnabled: false }),
         "cli",
       );
       await manager.sync({ reason: "baseline", force: true });
@@ -217,20 +185,19 @@ describe("memory manager retained worker reads", () => {
       const release = createDeferred<void>();
       let readDelivered = false;
       const read = database.read.bind(database);
-      const reading = vi
-        .spyOn(database, "read")
-        .mockImplementation(async (command, assertCurrent) => {
-          const result = await read(command, assertCurrent);
-          if (command.type === "cache.read") {
-            readDelivered = true;
-            delivered.resolve();
-            await release.promise;
-            if (outcome === "rejected") {
-              throw new Error("controlled cache read rejection");
-            }
+      using reading = vi.spyOn(database, "read");
+      reading.mockImplementation(async (command, assertCurrent) => {
+        const result = await read(command, assertCurrent);
+        if (command.type === "cache.read") {
+          readDelivered = true;
+          delivered.resolve();
+          await release.promise;
+          if (outcome === "rejected") {
+            throw new Error("controlled cache read rejection");
           }
-          return result;
-        });
+        }
+        return result;
+      });
       const sync = manager.sync({ reason: "delayed-cache", force: true });
       void sync.catch(() => undefined);
       try {
@@ -252,7 +219,6 @@ describe("memory manager retained worker reads", () => {
       } finally {
         release.resolve();
         await sync.catch(() => undefined);
-        reading.mockRestore();
       }
     },
   );

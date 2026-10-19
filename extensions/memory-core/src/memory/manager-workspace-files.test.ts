@@ -5,7 +5,6 @@ import { registerAgentWorkspaceAccess } from "openclaw/plugin-sdk/agent-workspac
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
   buildFileEntry,
-  buildMultimodalChunkForIndexing,
   listMemoryFiles,
   MEMORY_INDEX_CHUNKS_TABLE,
   readMemoryFile,
@@ -79,6 +78,9 @@ describe("Gateway index over Harness workspace files", () => {
     const remote = (file: string) => path.join(harness, path.relative(gateway, file));
     const local = (file: string) => path.join(gateway, path.relative(harness, file));
     let changed: Parameters<MemoryWorkspaceFiles["watch"]>[1] | undefined;
+    const unexpectedAccess = () => {
+      throw new Error("Unexpected document or multimodal access");
+    };
     const files: MemoryWorkspaceFiles = {
       assertCurrent() {},
       async listFiles(_workspace, extraPaths, multimodal, skipped) {
@@ -95,15 +97,7 @@ describe("Gateway index over Harness workspace files", () => {
           canonicalRelativePath: path.relative(harness, await fs.realpath(remote(file))),
         };
       },
-      async buildMultimodalChunk(entry) {
-        const result = await buildMultimodalChunkForIndexing({
-          ...entry,
-          absPath: remote(entry.absPath),
-        });
-        return result
-          ? { ...result, canonicalRelativePath: path.relative(gateway, entry.absPath) }
-          : null;
-      },
+      buildMultimodalChunk: unexpectedAccess,
       async watch(_request, onChange, signal) {
         changed = onChange;
         if (!signal.aborted) {
@@ -113,15 +107,12 @@ describe("Gateway index over Harness workspace files", () => {
         }
       },
     };
-    const rejectUnexpectedDocumentAccess = () => {
-      throw new Error("Unexpected document bridge access");
-    };
     release = registerAgentWorkspaceAccess(gateway, {
       memoryFiles: files,
       bridge: {
-        readFile: rejectUnexpectedDocumentAccess,
-        writeFile: rejectUnexpectedDocumentAccess,
-        stat: rejectUnexpectedDocumentAccess,
+        readFile: unexpectedAccess,
+        writeFile: unexpectedAccess,
+        stat: unexpectedAccess,
       },
     });
     return {
@@ -143,53 +134,50 @@ describe("Gateway index over Harness workspace files", () => {
     );
   });
 
-  it("indexes Harness bytes beside Gateway sessions and never indexes the local decoy", async () => {
-    const { harness } = await registerHarness();
-    await write(harness, "memory/notes.md", "alpha Harness canonical notes.");
-    await write(fixture.paths.memory, "notes.md", "beta Gateway decoy notes.");
-    await seedSession("gateway-session", "alpha original Gateway conversation.");
-    const { cfg, manager } = await createIndexedManager({
-      sources: ["memory", "sessions"],
-      sessionMemory: true,
-    });
-    expect(
-      (await search(manager, "alpha", 20)).map(({ source, snippet }) => [source, snippet]),
-    ).toEqual(
-      expect.arrayContaining([
-        ["memory", expect.stringContaining("Harness canonical")],
-        ["sessions", expect.stringContaining("Gateway conversation")],
-      ]),
-    );
-    expect(await search(manager, "decoy")).toEqual([]);
-    await expectFile(manager, cfg, "memory/notes.md", "Harness canonical");
-    expect(manager.status().dbPath).toContain(fixture.paths.stateDir);
-    expect(await fs.readdir(harness)).toEqual(["memory"]);
-    release?.();
-    await expect(manager.readFile({ relPath: "memory/notes.md" })).rejects.toMatchObject({
-      code: "WORKSPACE_ACCESS_UNAVAILABLE",
-    });
-  });
-
-  it("keeps session-only search on Gateway after Harness file access stops", async () => {
-    await registerHarness();
-    await write(fixture.paths.memory, "notes.md", "Gateway decoy.");
-    await seedSession("gateway-only", "alpha Gateway session.");
-    const { cfg, manager } = await createIndexedManager({
-      sources: ["sessions"],
-      sessionMemory: true,
-    });
-    release?.();
-    expect((await search(manager, "alpha"))[0]?.source).toBe("sessions");
-    await expect(manager.readFile({ relPath: "memory/notes.md" })).rejects.toMatchObject({
-      code: "WORKSPACE_ACCESS_UNAVAILABLE",
-    });
-    const reopened = await getMemorySearchManager({
-      runInBackgroundContext: runInMemoryTestBackgroundContext,
-      cfg,
-      agentId: "main",
-    });
-    expect(reopened.manager).not.toBeNull();
-  });
+  it.each([true, false])(
+    "keeps Gateway sessions separate from Harness files (index memory: %s)",
+    async (indexMemory) => {
+      const { harness } = await registerHarness();
+      await write(harness, "memory/notes.md", "alpha Harness canonical notes.");
+      await write(fixture.paths.memory, "notes.md", "beta Gateway decoy notes.");
+      await seedSession("gateway-session", "alpha original Gateway conversation.");
+      const { cfg, manager } = await createIndexedManager({
+        sources: indexMemory ? ["memory", "sessions"] : ["sessions"],
+        sessionMemory: true,
+      });
+      if (indexMemory) {
+        const hits = (await search(manager, "alpha", 20)).map(({ source, snippet }) => [
+          source,
+          snippet,
+        ]);
+        expect(hits).toEqual(
+          expect.arrayContaining([
+            ["memory", expect.stringContaining("Harness canonical")],
+            ["sessions", expect.stringContaining("Gateway conversation")],
+          ]),
+        );
+        expect(await search(manager, "decoy")).toEqual([]);
+        await expectFile(manager, cfg, "memory/notes.md", "Harness canonical");
+        expect(manager.status().dbPath).toContain(fixture.paths.stateDir);
+        expect(await fs.readdir(harness)).toEqual(["memory"]);
+      }
+      release?.();
+      if (!indexMemory) {
+        expect((await search(manager, "alpha"))[0]?.source).toBe("sessions");
+      }
+      await expect(manager.readFile({ relPath: "memory/notes.md" })).rejects.toMatchObject({
+        code: "WORKSPACE_ACCESS_UNAVAILABLE",
+      });
+      if (!indexMemory) {
+        const reopened = await getMemorySearchManager({
+          runInBackgroundContext: runInMemoryTestBackgroundContext,
+          cfg,
+          agentId: "main",
+        });
+        expect(reopened.manager).not.toBeNull();
+      }
+    },
+  );
 
   it("drains host edits arriving during indexing into the next watch generation", async () => {
     const { harness, files, changed } = await registerHarness();
@@ -220,21 +208,17 @@ describe("Gateway index over Harness workspace files", () => {
       resume.resolve();
     }
     await Promise.all(sync.mock.results.map((result) => result.value));
-    const index = new DatabaseSync(manager.status().dbPath!, { readOnly: true });
-    try {
-      // Search can synchronize a dirty index and hide a stranded watch generation.
-      // Observe publication before any consumer can repair the missing update.
-      expect(
-        index
-          .prepare(`SELECT path, text FROM ${MEMORY_INDEX_CHUNKS_TABLE} ORDER BY path, start_line`)
-          .all(),
-      ).toEqual([
-        { path: "memory/first.md", text: "beta first updated." },
-        { path: "memory/second.md", text: "beta second updated." },
-      ]);
-    } finally {
-      index.close();
-    }
+    using index = new DatabaseSync(manager.status().dbPath!, { readOnly: true });
+    // Search can synchronize a dirty index and hide a stranded watch generation.
+    // Observe publication before any consumer can repair the missing update.
+    expect(
+      index
+        .prepare(`SELECT path, text FROM ${MEMORY_INDEX_CHUNKS_TABLE} ORDER BY path, start_line`)
+        .all(),
+    ).toEqual([
+      { path: "memory/first.md", text: "beta first updated." },
+      { path: "memory/second.md", text: "beta second updated." },
+    ]);
   });
 
   it.each(["newer-index", "discovery-error"] as const)(
@@ -320,21 +304,19 @@ describe("Gateway index over Harness workspace files", () => {
       expect(sync).toHaveBeenCalledWith({ reason: "watch" });
       await sync.mock.results.at(-1)!.value;
       expect((await search(manager, "beta"))[0]?.snippet).toContain("changed host note");
-      let closed = false;
-      const closing = manager.close().then(() => {
-        closed = true;
-      });
+      const closed = vi.fn();
+      const closing = manager.close().then(closed);
       try {
         await cancellation.promise;
         expect(watchSignal?.aborted).toBe(true);
         await Promise.resolve();
-        expect(closed).toBe(false);
+        expect(closed).not.toHaveBeenCalled();
         changed?.();
       } finally {
         retired.resolve();
         await closing;
       }
-      expect(closed).toBe(true);
+      expect(closed).toHaveBeenCalledOnce();
     } finally {
       retired.resolve();
       await manager.close();

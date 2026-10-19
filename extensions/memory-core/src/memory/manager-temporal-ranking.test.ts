@@ -82,24 +82,19 @@ describe("memory source temporal ranking", () => {
         ftsTokenizer: zeroScoreLike ? "trigram" : "unicode61",
       });
       const now = Date.now();
-      const oldSession = {
-        sessionId: "a-old",
-        updatedAt: now - 15 * DAY_MS,
-        fileName: "a-old.jsonl",
-      };
+      const observedAt = now - 60 * DAY_MS;
+      const stale = { sessionId: "a-old", updatedAt: now - 15 * DAY_MS, fileName: "a-old.jsonl" };
       const freshSession = { sessionId: "z-fresh", updatedAt: now, fileName: "z-fresh.jsonl" };
-      const sessions = [oldSession, freshSession];
+      const sessions = [stale, freshSession];
       const storePath = path.join(resolveSessionTranscriptsDirForAgent("main"), "sessions.json");
-      const content = zeroScoreLike
-        ? "记忆 彩色 潮池 偏好。"
-        : "Alpha cobalt orchid tidepool preference.";
+      const content = zeroScoreLike ? "记忆 彩色 潮池 偏好。" : "Alpha cobalt orchid.";
       for (const session of sessions) {
         const sessionKey = `agent:main:memory:${session.sessionId}`;
         const target = { agentId: "main", sessionKey, storePath };
         await fixture.seedSessionTranscript({
           sessionId: session.sessionId,
           sessionKey,
-          messages: [{ role: "user", content, timestamp: now - 60 * DAY_MS }],
+          messages: [{ role: "user", content, timestamp: observedAt }],
         });
         await upsertSessionEntry({
           ...target,
@@ -154,28 +149,24 @@ describe("memory source temporal ranking", () => {
         ).toEqual({ type: "view" });
       }
 
-      const query = zeroScoreLike ? "记忆" : "alpha cobalt orchid tidepool preference";
+      const query = zeroScoreLike ? "记忆" : "alpha cobalt orchid";
       const search = (maxResults = 2) =>
         manager.search(query, { maxResults, minScore: 0, lexicalOnly, sources: ["sessions"] });
-      const sourcePath = (session: typeof oldSession) => `sessions/main/${session.fileName}`;
+      const sourcePath = (session: typeof stale) => `sessions/main/${session.fileName}`;
       const expectSourceRecency = (results: MemorySearchResult[]) => {
-        const old = results.find((entry) => entry.path === sourcePath(oldSession));
+        const old = results.find((entry) => entry.path === sourcePath(stale));
         const fresh = results.find((entry) => entry.path === sourcePath(freshSession));
         if (!old || !fresh) {
           throw new Error("Expected both indexed session sources");
         }
         if (zeroScoreLike) {
-          expect(results).toEqual([
-            expect.objectContaining({ score: 0, vectorScore: 0, textScore: 0 }),
-            expect.objectContaining({ score: 0, vectorScore: 0, textScore: 0 }),
-          ]);
+          const zero = expect.objectContaining({ score: 0, vectorScore: 0, textScore: 0 });
+          expect(results).toEqual([zero, zero]);
         } else {
           expect(old.score / fresh.score).toBeCloseTo(Math.SQRT1_2, 5);
         }
         expect(results[0]?.path).toBe(fresh.path);
-        expect(results.every((entry) => entry.provenance?.observedAt === now - 60 * DAY_MS)).toBe(
-          true,
-        );
+        expect(results.every((entry) => entry.provenance?.observedAt === observedAt)).toBe(true);
       };
       expectSourceRecency(await search());
       expect(fixture.provider.embedQueryCalls).toBe(provider === "none" || lexicalOnly ? 0 : 1);
@@ -197,7 +188,7 @@ describe("memory source temporal ranking", () => {
       }
 
       // A decoy is deliberately outside the canonical source; it must not become its timestamp owner.
-      const decoyPath = path.join(fixture.paths.workspace, "sessions", "main", oldSession.fileName);
+      const decoyPath = path.join(fixture.paths.workspace, "sessions", "main", stale.fileName);
       await fs.mkdir(path.dirname(decoyPath), { recursive: true });
       await fs.writeFile(decoyPath, "not the indexed transcript");
       expectSourceRecency(await search());
