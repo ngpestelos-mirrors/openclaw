@@ -1,11 +1,11 @@
 import { expect, it, vi } from "vitest";
 import {
-  parseRemoteModelCatalogBundle,
-  parseRemoteModelCatalogBundleV2,
-  parseRemoteModelCatalogBundleV3,
-  validateAndSanitizeRemoteModelCatalogBundle,
-  validateAndSanitizeRemoteModelCatalogBundleV2,
-  validateAndSanitizeRemoteModelCatalogBundleV3,
+  parseRemoteModelCatalogBundle as parseV1,
+  parseRemoteModelCatalogBundleV2 as parseV2,
+  parseRemoteModelCatalogBundleV3 as parseV3,
+  validateAndSanitizeRemoteModelCatalogBundle as sanitizeV1,
+  validateAndSanitizeRemoteModelCatalogBundleV2 as sanitizeV2,
+  validateAndSanitizeRemoteModelCatalogBundleV3 as sanitizeV3,
 } from "./remote-catalog-bundle.js";
 
 const contextWindows = [
@@ -13,6 +13,18 @@ const contextWindows = [
   { id: "1m", label: "1M", contextWindow: 1_000_000 },
 ];
 const transport = { baseUrl: "https://evil.test", headers: { Authorization: "bad" } };
+const cleanModel = {
+  id: "claude-test",
+  input: ["text", "image", "video"],
+  contextWindows,
+  contextWindowDefault: "1m",
+  compat: { nested: {} },
+};
+const cleanProvider = {
+  defaultModel: "claude-test",
+  defaultUtilityModel: "claude-test",
+  models: [cleanModel],
+};
 const validBundle = {
   schemaVersion: 1,
   generatedAt: 1_753_500_000_000,
@@ -20,19 +32,9 @@ const validBundle = {
   sourceCommit: "abc123",
   providers: {
     anthropic: {
+      ...cleanProvider,
       ...transport,
-      defaultModel: "claude-test",
-      defaultUtilityModel: "claude-test",
-      models: [
-        {
-          id: "claude-test",
-          input: ["text", "image", "video"],
-          ...transport,
-          contextWindows,
-          contextWindowDefault: "1m",
-          compat: { nested: transport },
-        },
-      ],
+      models: [{ ...cleanModel, ...transport, compat: { nested: transport } }],
     },
   },
   pricing: { "openai/gpt-external": { input: 2.5, output: 10, cacheRead: 1.25 } },
@@ -55,22 +57,15 @@ const validBundleV2 = {
   models: [firstModel, { id: "vendor/model", provider: "second", pricing: { status: "unknown" } }],
 };
 const versions = [
-  {
-    version: 1,
-    parse: parseRemoteModelCatalogBundle,
-    sanitize: validateAndSanitizeRemoteModelCatalogBundle,
-    bundle: validBundle,
-    rows: (models: unknown[]) => ({ providers: { first: { models } } }),
-  },
-  {
-    version: 2,
-    parse: parseRemoteModelCatalogBundleV2,
-    sanitize: validateAndSanitizeRemoteModelCatalogBundleV2,
-    bundle: validBundleV2,
-    rows: (models: unknown[]) => ({ models }),
-  },
+  [1, parseV1, sanitizeV1, validBundle],
+  [2, parseV2, sanitizeV2, validBundleV2],
 ] as const;
-const v1Models = (...models: unknown[]) => ({ providers: { anthropic: { models } } });
+const v1Provider = (patch: Record<string, unknown>) => ({
+  providers: { anthropic: { ...cleanProvider, ...patch } },
+});
+const v1Models = (...models: unknown[]) => v1Provider({ models });
+const rowsFor = (version: number, models: unknown[]) =>
+  version === 1 ? { providers: { first: { models } } } : { models };
 
 type Rejection = [Record<string, unknown>, string?];
 const invalidV1: Rejection[] = [
@@ -92,14 +87,7 @@ const invalidV1: Rejection[] = [
     }),
     "contextWindowDefault must reference a declared contextWindows option",
   ],
-  [
-    {
-      providers: {
-        anthropic: { ...validBundle.providers.anthropic, recommendedModels: ["claude-test"] },
-      },
-    },
-    "recommendedModels",
-  ],
+  [v1Provider({ recommendedModels: ["claude-test"] }), "recommendedModels"],
   [validBundleV2],
 ];
 const invalidV2: Rejection[] = [
@@ -139,8 +127,8 @@ for (const pricing of [
   }
 }
 it.each([versions[0], versions[1]])(
-  "rejects malformed v$version catalogs",
-  ({ version, parse, bundle }) => {
+  "rejects malformed v%i catalogs",
+  (version, parse, _sanitize, bundle) => {
     const cases = version === 1 ? invalidV1 : invalidV2;
     for (const [patch, error] of cases) {
       expect(() => parse({ ...bundle, ...patch }), JSON.stringify(patch)).toThrow(error);
@@ -149,30 +137,14 @@ it.each([versions[0], versions[1]])(
 );
 
 it("accepts v1 metadata while deeply stripping transport overrides", () => {
-  const parsed = validateAndSanitizeRemoteModelCatalogBundle(validBundle);
-  expect(parsed.providers.anthropic).toEqual({
-    defaultModel: "claude-test",
-    defaultUtilityModel: "claude-test",
-    models: [
-      {
-        id: "claude-test",
-        input: ["text", "image", "video"],
-        contextWindows,
-        contextWindowDefault: "1m",
-        compat: { nested: {} },
-      },
-    ],
-  });
-  expect(parsed.pricing?.["openai/gpt-external"]).toEqual({
-    input: 2.5,
-    output: 10,
-    cacheRead: 1.25,
-  });
+  const parsed = sanitizeV1(validBundle);
+  expect(parsed.providers.anthropic).toEqual(cleanProvider);
+  expect(parsed.pricing).toEqual(validBundle.pricing);
 });
 
 it.each([versions[0], versions[1]])(
-  "ingests v$version rows independently and warns once per affected row",
-  ({ version, sanitize, bundle: base }) => {
+  "ingests v%i rows independently and warns once per affected row",
+  (version, _parse, sanitize, base) => {
     const warn = vi.fn();
     const rows = [
       { id: "kept", input: ["text", "audio", "image", "future", "video", "document"] },
@@ -240,8 +212,8 @@ it.each([versions[0], versions[1]])(
 );
 
 it.each([versions[0], versions[1]])(
-  "rejects invalid envelopes and catalogs with no usable rows",
-  ({ sanitize, bundle, rows }) => {
+  "rejects invalid v%i envelopes and catalogs with no usable rows",
+  (version, _parse, sanitize, bundle) => {
     for (const patch of [
       { sourceCommit: undefined },
       { generatedAt: "today" },
@@ -250,13 +222,15 @@ it.each([versions[0], versions[1]])(
       expect(() => sanitize({ ...bundle, ...patch })).toThrow();
     }
     for (const models of [[], [{ id: "" }]]) {
-      expect(() => sanitize({ ...bundle, ...rows(models) }, vi.fn())).toThrow("no valid models");
+      expect(() => sanitize({ ...bundle, ...rowsFor(version, models) }, vi.fn())).toThrow(
+        "no valid models",
+      );
     }
   },
 );
 
 it("preserves ordered v2 recommendations and provider-scoped model identities and prices", () => {
-  const bundle = parseRemoteModelCatalogBundleV2({
+  const bundle = parseV2({
     ...validBundleV2,
     providers: {
       first: { ...validBundleV2.providers.first, recommendedModels: [" other ", "vendor/model"] },
@@ -284,7 +258,7 @@ it("preserves partial rates, context tiers, and authoritative unavailable prices
     { ...knownPrice, tieredPricing: tiers },
     { status: "unavailable", source: "native-feed" },
   ];
-  const bundle = parseRemoteModelCatalogBundleV2({
+  const bundle = parseV2({
     ...validBundleV2,
     models: pricing.map((price, index) => ({
       id: `model-${index}`,
@@ -306,7 +280,7 @@ it("strips v2 transport metadata while preserving transport-like provider identi
     },
     { ...validBundleV2.models[1], provider: "baseUrl" },
   ];
-  const bundle = validateAndSanitizeRemoteModelCatalogBundleV2({
+  const bundle = sanitizeV2({
     ...validBundleV2,
     providers: { headers: {}, baseUrl: {} },
     models,
@@ -319,7 +293,7 @@ it("strips v2 transport metadata while preserving transport-like provider identi
     compat: { supportsTools: true, nested: {} },
   });
   expect(bundle.models[0]?.compat).toEqual({ supportsTools: true, nested: {} });
-  expect(() => parseRemoteModelCatalogBundleV2(bundle)).not.toThrow();
+  expect(() => parseV2(bundle)).not.toThrow();
 });
 
 it("negotiates task metadata only on v3 and rejects malformed declarations per row", () => {
@@ -334,11 +308,11 @@ it("negotiates task metadata only on v3 and rejects malformed declarations per r
   };
   const native = { ...firstModel, inference, compat: { nested: transport } };
   const candidate = { ...validBundleV2, schemaVersion: 3, models: [native] };
-  expect(() => parseRemoteModelCatalogBundleV2(candidate)).toThrow();
-  expect(() => parseRemoteModelCatalogBundleV2({ ...candidate, schemaVersion: 2 })).toThrow();
-  expect(parseRemoteModelCatalogBundleV3(candidate).models[0]?.inference).toEqual(inference);
+  expect(() => parseV2(candidate)).toThrow();
+  expect(() => parseV2({ ...candidate, schemaVersion: 2 })).toThrow();
+  expect(parseV3(candidate).models[0]?.inference).toEqual(inference);
   const warn = vi.fn();
-  const admitted = validateAndSanitizeRemoteModelCatalogBundleV3(
+  const admitted = sanitizeV3(
     {
       ...candidate,
       models: [
