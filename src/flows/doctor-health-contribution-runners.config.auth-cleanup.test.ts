@@ -72,6 +72,21 @@ function createContext(): DoctorHealthFlowContext {
   };
 }
 
+function expectReceipt(ctx: DoctorHealthFlowContext, hash: string | null) {
+  expect(ctx.configResult.confirmedConfigSource).toEqual({ path: ctx.configPath, hash });
+}
+
+function expectWrite(ctx: DoctorHealthFlowContext, call: number, baseHash: string) {
+  expect(mocks.replaceConfigFile).toHaveBeenNthCalledWith(
+    call,
+    expect.objectContaining({
+      nextConfig: ctx.cfg,
+      baseHash,
+      writeOptions: expect.objectContaining({ expectedConfigPath: ctx.configPath }),
+    }),
+  );
+}
+
 describe("Doctor retired auth profile cleanup", () => {
   beforeEach(() => {
     mocks.removeAuthProfilesAcrossOwnerStores.mockClear().mockResolvedValue(true);
@@ -79,50 +94,6 @@ describe("Doctor retired auth profile cleanup", () => {
       path: "/tmp/openclaw.json",
       persistedHash: "committed-revision",
     });
-  });
-
-  it("uses each committed receipt for the next write", async () => {
-    const ctx = createContext();
-    mocks.replaceConfigFile
-      .mockResolvedValueOnce({ path: ctx.configPath, persistedHash: "first-revision" })
-      .mockResolvedValueOnce({ path: ctx.configPath, persistedHash: "second-revision" });
-
-    expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(true);
-    expect(ctx.configResult.confirmedConfigSource).toEqual({
-      path: ctx.configPath,
-      hash: "first-revision",
-    });
-    ctx.cfg = { gateway: { mode: "local", port: 19090 } };
-    expect(await runWriteConfigHealth(ctx)).toBe(true);
-
-    expect(mocks.replaceConfigFile).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        baseHash: "planning-revision",
-        writeOptions: expect.objectContaining({ expectedConfigPath: ctx.configPath }),
-      }),
-    );
-    expect(mocks.replaceConfigFile).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        baseHash: "first-revision",
-        writeOptions: expect.objectContaining({ expectedConfigPath: ctx.configPath }),
-      }),
-    );
-    expect(ctx.configResult.confirmedConfigSource).toEqual({
-      path: ctx.configPath,
-      hash: "second-revision",
-    });
-    expect(ctx.cfgForPersistence).toEqual(ctx.cfg);
-    expect(mocks.removeAuthProfilesAcrossOwnerStores).toHaveBeenCalledOnce();
-    expect(mocks.removeAuthProfilesAcrossOwnerStores).toHaveBeenCalledWith({
-      agentDir: "/tmp/openclaw/agents/main",
-      cfg: ctx.cfg,
-      profileIds: ["anthropic:claude-cli"],
-    });
-    expect(mocks.replaceConfigFile.mock.invocationCallOrder[1]).toBeLessThan(
-      mocks.removeAuthProfilesAcrossOwnerStores.mock.invocationCallOrder[0]!,
-    );
   });
 
   it.each(["missing", "null", "conflict", "write failed"] as const)(
@@ -164,7 +135,7 @@ describe("Doctor retired auth profile cleanup", () => {
     expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(true);
     const baseline = ctx.cfgForPersistence;
     expect(baseline).toEqual(ctx.cfg);
-    expect(ctx.configResult.confirmedConfigSource).toEqual({ path: ctx.configPath, hash: null });
+    expectReceipt(ctx, null);
     expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(true);
     ctx.cfg = { gateway: { mode: "local", port: 19090 } };
 
@@ -181,10 +152,7 @@ describe("Doctor retired auth profile cleanup", () => {
     async (publication) => {
       const ctx = createContext();
       expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(true);
-      expect(ctx.configResult.confirmedConfigSource).toEqual({
-        path: ctx.configPath,
-        hash: "committed-revision",
-      });
+      expectReceipt(ctx, "committed-revision");
       expect(ctx.cfgForPersistence).toEqual(ctx.cfg);
       const receipt = structuredClone(ctx.configResult.confirmedConfigSource);
       const baseline = structuredClone(ctx.cfgForPersistence);
@@ -247,33 +215,26 @@ describe("Doctor retired auth profile cleanup", () => {
     expect(await runWriteConfigHealth(ctx, { runPostWriteRepairs: false })).toBe(true);
     expect(ctx.cfg.session).toBeUndefined();
     expect(ctx.cfgForPersistence.session?.store).toBe("/tmp/legacy-sessions.json");
-    expect(ctx.configResult.confirmedConfigSource).toEqual({
-      path: ctx.configPath,
-      hash: "retained-revision",
-    });
+    expectReceipt(ctx, "retained-revision");
+    expectWrite(ctx, 1, "planning-revision");
     expect(mocks.removeAuthProfilesAcrossOwnerStores).not.toHaveBeenCalled();
 
     // The runtime config is unchanged, but its persisted retained input must be removed.
     expect(await runWriteConfigHealth(ctx)).toBe(true);
-    expect(mocks.replaceConfigFile).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        nextConfig: ctx.cfg,
-        baseHash: "retained-revision",
-        writeOptions: expect.objectContaining({ expectedConfigPath: ctx.configPath }),
-      }),
-    );
+    expectWrite(ctx, 2, "retained-revision");
     expect(ctx.cfgForPersistence).toEqual(ctx.cfg);
     expect(ctx.cfgForPersistence.session).toBeUndefined();
-    expect(ctx.configResult.confirmedConfigSource).toEqual({
-      path: ctx.configPath,
-      hash: "clean-revision",
-    });
+    expectReceipt(ctx, "clean-revision");
     expect(mocks.replaceConfigFile.mock.invocationCallOrder[1]).toBeLessThan(
       mocks.removeAuthProfilesAcrossOwnerStores.mock.invocationCallOrder[0]!,
     );
     expect(await runWriteConfigHealth(ctx)).toBe(true);
     expect(mocks.replaceConfigFile).toHaveBeenCalledTimes(2);
     expect(mocks.removeAuthProfilesAcrossOwnerStores).toHaveBeenCalledOnce();
+    expect(mocks.removeAuthProfilesAcrossOwnerStores).toHaveBeenCalledWith({
+      agentDir: "/tmp/openclaw/agents/main",
+      cfg: ctx.cfg,
+      profileIds: ["anthropic:claude-cli"],
+    });
   });
 });

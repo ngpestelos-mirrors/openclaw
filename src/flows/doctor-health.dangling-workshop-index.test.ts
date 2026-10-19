@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { doctorCommand } from "../commands/doctor.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
@@ -30,12 +31,40 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-async function seedState(state: OpenClawTestState) {
-  await state.writeConfig({
+function writeConfig(state: OpenClawTestState, session?: { store: string }) {
+  return state.writeConfig({
     agents: { ownership: "explicit", entries: { main: { workspace: state.workspaceDir } } },
     gateway: { mode: "local" },
     plugins: { enabled: false },
+    ...(session ? { session } : {}),
   });
+}
+
+function editDatabase(file: string, edit: (db: DatabaseSync) => void) {
+  const { DatabaseSync } = requireNodeSqlite();
+  using db = new DatabaseSync(file);
+  edit(db);
+}
+
+function expectDatabase(file: string, queries: Record<string, unknown>) {
+  const { DatabaseSync } = requireNodeSqlite();
+  using db = new DatabaseSync(file, { readOnly: true });
+  for (const [sql, expected] of Object.entries(queries)) {
+    expect(db.prepare(sql).all(), sql).toEqual(expected);
+  }
+}
+
+function recoveryDirs(file: string) {
+  return fs
+    .readdirSync(path.dirname(file))
+    .filter((name) => name.startsWith("openclaw-task-delivery-recovery-"));
+}
+
+const runtimeMock = () => ({ log: vi.fn(), error: vi.fn(), exit: vi.fn() });
+const repairOptions = { repair: true, nonInteractive: true };
+
+async function seedState(state: OpenClawTestState) {
+  await writeConfig(state);
   const database = openOpenClawStateDatabase({ env: state.env });
   database.db.exec(`
     CREATE TABLE IF NOT EXISTS skill_workshop_collection_reviews (review_id TEXT NOT NULL PRIMARY KEY, owner_agent_id TEXT NOT NULL, backup_id TEXT NOT NULL, create_time INTEGER NOT NULL, kept_names_json TEXT NOT NULL, written_names_json TEXT NOT NULL, dropped_json TEXT NOT NULL) STRICT;
@@ -47,9 +76,7 @@ async function seedState(state: OpenClawTestState) {
 }
 
 function damageWorkshopIndex(databasePath: string): void {
-  const { DatabaseSync } = requireNodeSqlite();
-  const database = new DatabaseSync(databasePath);
-  try {
+  editDatabase(databasePath, (database) => {
     database.exec(
       "CREATE TABLE IF NOT EXISTS skill_workshop_collection_reviews (review_id TEXT NOT NULL PRIMARY KEY, owner_agent_id TEXT NOT NULL, backup_id TEXT NOT NULL, create_time INTEGER NOT NULL, kept_names_json TEXT NOT NULL, written_names_json TEXT NOT NULL, dropped_json TEXT NOT NULL) STRICT; CREATE INDEX idx_skill_workshop_collection_reviews_workspace_time ON skill_workshop_collection_reviews(review_id, create_time DESC);",
     );
@@ -65,45 +92,28 @@ function damageWorkshopIndex(databasePath: string): void {
       .run();
     const schemaVersion = readSqliteNumberPragma(database, "schema_version");
     database.exec(`PRAGMA writable_schema = OFF; PRAGMA schema_version = ${schemaVersion + 1};`);
-  } finally {
-    database.close();
-  }
+  });
 }
 
 describe("Doctor state readability recovery", () => {
   it("adopts native version-zero state without requiring orphan-recovery metadata", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      await state.writeConfig({
-        agents: { ownership: "explicit", entries: { main: { workspace: state.workspaceDir } } },
-        gateway: { mode: "local" },
-        plugins: { enabled: false },
-      });
+      await writeConfig(state);
       const databasePath = resolveOpenClawStateSqlitePath(state.env);
       fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-      const { DatabaseSync } = requireNodeSqlite();
-      const native = new DatabaseSync(databasePath);
-      try {
-        seedNativeVersionZeroState(native, true);
-      } finally {
-        native.close();
-      }
-      const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+      editDatabase(databasePath, (db) => seedNativeVersionZeroState(db, true));
+      const runtime = runtimeMock();
 
-      await doctorCommand(runtime, { repair: true, nonInteractive: true });
+      await doctorCommand(runtime, repairOptions);
 
       expect(runtime.exit).not.toHaveBeenCalled();
       expect(mocks.outro).toHaveBeenCalledWith("Doctor complete.");
-      const repaired = new DatabaseSync(databasePath, { readOnly: true });
-      try {
-        expect(readSqliteNumberPragma(repaired, "user_version")).toBe(
-          OPENCLAW_STATE_SCHEMA_VERSION,
-        );
-        expect(
-          repaired
-            .prepare("SELECT role, schema_version FROM schema_meta WHERE meta_key = 'primary'")
-            .get(),
-        ).toEqual({ role: "global", schema_version: OPENCLAW_STATE_SCHEMA_VERSION });
-        expect(repaired.prepare("SELECT * FROM device_identities").all()).toEqual([
+      expectDatabase(databasePath, {
+        "PRAGMA user_version": [{ user_version: OPENCLAW_STATE_SCHEMA_VERSION }],
+        "SELECT role, schema_version FROM schema_meta WHERE meta_key = 'primary'": [
+          { role: "global", schema_version: OPENCLAW_STATE_SCHEMA_VERSION },
+        ],
+        "SELECT * FROM device_identities": [
           {
             identity_key: "node",
             device_id: "native-device",
@@ -112,31 +122,21 @@ describe("Doctor state readability recovery", () => {
             created_at_ms: 1,
             updated_at_ms: 1,
           },
-        ]);
-        expect(
-          repaired
-            .prepare("SELECT raw_json FROM exec_approvals_config WHERE config_key = 'current'")
-            .get(),
-        ).toEqual({ raw_json: "{}" });
-      } finally {
-        repaired.close();
-      }
-      expect(
-        fs
-          .readdirSync(path.dirname(databasePath))
-          .filter((name) => name.startsWith("openclaw-task-delivery-recovery-")),
-      ).toEqual([]);
+        ],
+        "SELECT raw_json FROM exec_approvals_config WHERE config_key = 'current'": [
+          { raw_json: "{}" },
+        ],
+      });
+      expect(recoveryDirs(databasePath)).toEqual([]);
     });
   });
 
   it("preserves known damaged state before backing up and migrating an older agent", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const database = await seedState(state);
-      const { DatabaseSync } = requireNodeSqlite();
       const agentPath = resolveOpenClawAgentSqlitePath({ agentId: "main", env: state.env });
       fs.mkdirSync(path.dirname(agentPath), { recursive: true });
-      const agent = new DatabaseSync(agentPath);
-      try {
+      editDatabase(agentPath, (agent) => {
         agent.exec(
           fs.readFileSync(
             new URL("../../test/fixtures/sqlite/openclaw-agent-schema-v19.sql", import.meta.url),
@@ -151,9 +151,7 @@ describe("Doctor state readability recovery", () => {
           INSERT INTO cache_entries(scope,key,value_json,expires_at,updated_at)
             VALUES ('upgrade-proof','retained','{"keep":true}',NULL,7);
         `);
-      } finally {
-        agent.close();
-      }
+      });
       registerOpenClawAgentDatabase({
         agentId: "main",
         path: agentPath,
@@ -169,110 +167,63 @@ describe("Doctor state readability recovery", () => {
       `);
       await closeOpenClawStateDatabaseAsync();
       damageWorkshopIndex(database.path);
-      const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+      const runtime = runtimeMock();
 
-      await doctorCommand(runtime, { repair: true, nonInteractive: true });
+      await doctorCommand(runtime, repairOptions);
 
       expect(runtime.exit).not.toHaveBeenCalled();
       expect(mocks.outro).toHaveBeenCalledWith("Doctor complete.");
       expect(runtime.log).toHaveBeenCalledWith(
         "Removed dangling legacy Skill Workshop review index",
       );
-      const repaired = new DatabaseSync(database.path, { readOnly: true });
-      try {
-        // Doctor removes the dangling index first, then retires the proposal tables.
-        expect(
-          repaired
-            .prepare(
-              "SELECT name FROM sqlite_schema WHERE name = 'skill_workshop_collection_reviews'",
-            )
-            .get(),
-        ).toBeUndefined();
-        expect(
-          repaired
-            .prepare(
-              "SELECT name FROM sqlite_schema WHERE name = 'idx_skill_workshop_collection_reviews_workspace_time'",
-            )
-            .get(),
-        ).toBeUndefined();
-        expect(
-          repaired.prepare("SELECT name FROM pragma_index_info('idx_task_runs_runtime_run')").all(),
-        ).toEqual([
+      // Doctor removes the dangling index first, then retires the proposal tables.
+      expectDatabase(database.path, {
+        "SELECT name FROM sqlite_schema WHERE name IN ('skill_workshop_collection_reviews', 'idx_skill_workshop_collection_reviews_workspace_time')":
+          [],
+        "SELECT name FROM pragma_index_info('idx_task_runs_runtime_run')": [
           { name: "runtime" },
           { name: "run_id" },
           { name: "source_id" },
           { name: "created_at" },
           { name: "task_id" },
-        ]);
-        expect(readSqliteNumberPragma(repaired, "user_version")).toBe(
-          OPENCLAW_STATE_SCHEMA_VERSION,
-        );
-        expect(repaired.prepare("PRAGMA integrity_check").all()).toEqual([
-          { integrity_check: "ok" },
-        ]);
-        expect(repaired.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-        const recoveryDirs = fs
-          .readdirSync(path.dirname(database.path))
-          .filter((name) => name.startsWith("openclaw-task-delivery-recovery-"));
-        expect(recoveryDirs).toHaveLength(1);
-        const recovered = fs.readFileSync(
-          path.join(path.dirname(database.path), recoveryDirs[0]!, "orphan-rows.jsonl"),
-          "utf8",
-        );
-        expect(JSON.parse(recovered)).toMatchObject({
-          task_id: "orphan-preserved",
-          requester_origin_json: "preserve orphan payload",
-        });
-        const preserved = new DatabaseSync(
-          path.join(path.dirname(database.path), recoveryDirs[0]!, "database.sqlite"),
-          { readOnly: true },
-        );
-        try {
-          expect(
-            preserved
-              .prepare("SELECT task_id, requester_origin_json FROM task_delivery_state")
-              .all(),
-          ).toEqual([
-            { task_id: "orphan-preserved", requester_origin_json: "preserve orphan payload" },
-          ]);
-        } finally {
-          preserved.close();
-        }
-      } finally {
-        repaired.close();
-      }
+        ],
+        "PRAGMA user_version": [{ user_version: OPENCLAW_STATE_SCHEMA_VERSION }],
+        "PRAGMA integrity_check": [{ integrity_check: "ok" }],
+        "PRAGMA foreign_key_check": [],
+      });
+      const dirs = recoveryDirs(database.path);
+      expect(dirs).toHaveLength(1);
+      const recovered = fs.readFileSync(
+        path.join(path.dirname(database.path), dirs[0]!, "orphan-rows.jsonl"),
+        "utf8",
+      );
+      expect(JSON.parse(recovered)).toMatchObject({
+        task_id: "orphan-preserved",
+        requester_origin_json: "preserve orphan payload",
+      });
+      expectDatabase(path.join(path.dirname(database.path), dirs[0]!, "database.sqlite"), {
+        "SELECT task_id, requester_origin_json FROM task_delivery_state": [
+          { task_id: "orphan-preserved", requester_origin_json: "preserve orphan payload" },
+        ],
+      });
       for (const sourcePath of [database.path, agentPath]) {
         const backups = fs
           .readdirSync(path.dirname(sourcePath))
           .filter((name) => name.startsWith(`${path.basename(sourcePath)}.pre-startup-migration-`));
         expect(backups).toHaveLength(1);
-        const backup = new DatabaseSync(path.join(path.dirname(sourcePath), backups[0]!), {
-          readOnly: true,
+        expectDatabase(path.join(path.dirname(sourcePath), backups[0]!), {
+          "PRAGMA foreign_key_check": [],
+          "PRAGMA user_version": [
+            { user_version: sourcePath === agentPath ? 19 : OPENCLAW_STATE_SCHEMA_VERSION },
+          ],
         });
-        try {
-          expect(backup.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-          expect(readSqliteNumberPragma(backup, "user_version")).toBe(
-            sourcePath === agentPath ? 19 : OPENCLAW_STATE_SCHEMA_VERSION,
-          );
-        } finally {
-          backup.close();
-        }
       }
-      const migrated = new DatabaseSync(agentPath, { readOnly: true });
-      try {
-        expect(readSqliteNumberPragma(migrated, "user_version")).toBe(
-          OPENCLAW_AGENT_SCHEMA_VERSION,
-        );
-        expect(
-          migrated
-            .prepare(
-              "SELECT value_json, updated_at FROM cache_entries WHERE scope = 'upgrade-proof'",
-            )
-            .all(),
-        ).toEqual([{ value_json: '{"keep":true}', updated_at: 7 }]);
-      } finally {
-        migrated.close();
-      }
+      expectDatabase(agentPath, {
+        "PRAGMA user_version": [{ user_version: OPENCLAW_AGENT_SCHEMA_VERSION }],
+        "SELECT value_json, updated_at FROM cache_entries WHERE scope = 'upgrade-proof'": [
+          { value_json: '{"keep":true}', updated_at: 7 },
+        ],
+      });
     });
   });
 
@@ -281,31 +232,20 @@ describe("Doctor state readability recovery", () => {
       const database = await seedState(state);
       const customPath = state.path("custom", "sessions.sqlite");
       fs.mkdirSync(path.dirname(customPath));
-      const { DatabaseSync } = requireNodeSqlite();
-      const custom = new DatabaseSync(customPath);
-      custom.exec(`
+      editDatabase(customPath, (custom) =>
+        custom.exec(`
             PRAGMA user_version = ${OPENCLAW_AGENT_SCHEMA_VERSION + 1};
             CREATE TABLE schema_meta (meta_key TEXT PRIMARY KEY, agent_id TEXT);
             INSERT INTO schema_meta VALUES ('primary', 'main');
-          `);
-      custom.close();
-      await state.writeConfig({
-        agents: { ownership: "explicit", entries: { main: { workspace: state.workspaceDir } } },
-        session: { store: customPath },
-        gateway: { mode: "local" },
-        plugins: { enabled: false },
-      });
+          `),
+      );
+      await writeConfig(state, { store: customPath });
       await closeOpenClawStateDatabaseAsync();
       damageWorkshopIndex(database.path);
       const before = fs.readFileSync(database.path);
       const configBefore = fs.readFileSync(state.configPath);
 
-      await expect(
-        doctorCommand(
-          { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
-          { repair: true, nonInteractive: true },
-        ),
-      ).rejects.toThrow(/newer/);
+      await expect(doctorCommand(runtimeMock(), repairOptions)).rejects.toThrow(/newer/);
 
       expect(fs.readFileSync(database.path)).toEqual(before);
       expect(fs.readFileSync(state.configPath)).toEqual(configBefore);
