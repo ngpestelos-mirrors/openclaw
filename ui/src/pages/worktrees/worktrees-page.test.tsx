@@ -7,13 +7,16 @@ import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/c
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
 import { i18n } from "../../i18n/index.ts";
 import { SESSION_FACE_PREFERENCE_PARAM } from "../../lib/sessions/route-navigation.ts";
-import { mountSolid } from "../../test-helpers/mount-solid.ts";
+import { cleanupSolid, mountSolid } from "../../test-helpers/mount-solid.ts";
 import { flush, waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { WorktreesModel } from "./worktrees-model.ts";
 import { renderWorktreesView } from "./worktrees-page.tsx";
 
 // mock-isolation: Replace the imperative dialog so confirmations remain deterministic.
 vi.mock("../../components/confirm-dialog.ts", () => ({ showConfirmDialog: vi.fn() }));
+
+type Request = ReturnType<typeof vi.fn>;
+type ModelState = Parameters<WorktreesModel["update"]>[0];
 
 function worktree(id = "worktree-1", overrides: Partial<WorktreeRecord> = {}): WorktreeRecord {
   return {
@@ -43,13 +46,10 @@ function gatewayWithSnapshot(client: GatewayBrowserClient | null, connected: boo
     lastError: null,
     lastErrorCode: null,
   };
-  return {
-    snapshot,
-    subscribe: () => () => undefined,
-  } as unknown as ApplicationContext["gateway"];
+  return { snapshot, subscribe: () => () => undefined } as unknown as ApplicationContext["gateway"];
 }
 
-function requestGateway(request: ReturnType<typeof vi.fn>) {
+function requestGateway(request: Request) {
   return gatewayWithSnapshot({ request } as unknown as GatewayBrowserClient, true);
 }
 
@@ -57,7 +57,13 @@ function pendingRequest(method: string, promise: Promise<unknown>) {
   return vi.fn((name: string) => (name === method ? promise : Promise.resolve({ worktrees: [] })));
 }
 
-function mutableGateway(request: ReturnType<typeof vi.fn>) {
+function listRequest(records: WorktreeRecord[] = []) {
+  return vi.fn(async (method: string) =>
+    method === "worktrees.list" ? { worktrees: records } : {},
+  );
+}
+
+function mutableGateway(request: Request) {
   const snapshot = requestGateway(request).snapshot;
   let listener: ((snapshot: ApplicationGatewaySnapshot) => void) | undefined;
   const gateway = {
@@ -76,12 +82,12 @@ function mutableGateway(request: ReturnType<typeof vi.fn>) {
       (snapshot as ApplicationGatewaySnapshot).phase = connected ? "connected" : "stopped";
       listener?.(snapshot as ApplicationGatewaySnapshot);
     },
-    setScopes(scopes: string[]) {
+    setScopes(scopes: string[], methods = ["worktrees.list", "worktrees.create"]) {
       snapshot.hello = {
         type: "hello-ok",
         protocol: 1,
         auth: { role: "operator", scopes },
-        features: { methods: ["worktrees.list", "worktrees.create"] },
+        features: { methods },
       } as ApplicationGatewaySnapshot["hello"];
       listener?.(snapshot);
     },
@@ -98,12 +104,7 @@ function contextWithGateway(gateway: ApplicationContext["gateway"]): Application
   } as unknown as ApplicationContext;
 }
 
-const mountedPages = new Set<{ unmount(): void }>();
-
-function createWorktreesPage(
-  request?: ReturnType<typeof vi.fn>,
-  initial: Parameters<WorktreesModel["update"]>[0] = {},
-) {
+function createWorktreesPage(request?: Request, initial: ModelState = {}) {
   const [context, setContext] = createSignal(
     contextWithGateway(request ? requestGateway(request) : gatewayWithSnapshot(null, false)),
   );
@@ -118,6 +119,8 @@ function createWorktreesPage(
     setGateway(gateway: ApplicationContext["gateway"]) {
       setContext(contextWithGateway(gateway));
     },
+    query: <T extends Element = HTMLElement>(selector: string) =>
+      element.querySelector<T>(selector),
     button(label: string) {
       return [...element.querySelectorAll<HTMLButtonElement>("button")].find(
         (button) => button.textContent?.trim() === label,
@@ -130,23 +133,18 @@ function createWorktreesPage(
       flush();
       document.body.append(element);
       dispose = mountSolid(() => renderWorktreesView(model), { container: element }).unmount;
-      mountedPages.add(page);
       return page;
     },
     unmount() {
       dispose?.();
       dispose = undefined;
       element.remove();
-      mountedPages.delete(page);
     },
   };
   return page;
 }
 
-function mutablePage(
-  request: ReturnType<typeof vi.fn>,
-  initial?: Parameters<WorktreesModel["update"]>[0],
-) {
+function mutablePage(request: Request, initial?: ModelState) {
   const source = mutableGateway(request);
   const page = createWorktreesPage(undefined, initial);
   page.setGateway(source.gateway);
@@ -158,11 +156,7 @@ function settle() {
   return Promise.resolve();
 }
 
-function waitForList(request: ReturnType<typeof vi.fn>) {
-  return waitForRead(request, "worktrees.list", {});
-}
-
-function waitForRead(request: ReturnType<typeof vi.fn>, method: string, params: object) {
+function waitForRead(request: Request, method = "worktrees.list", params: object = {}) {
   return waitForCall(
     request,
     method,
@@ -171,37 +165,12 @@ function waitForRead(request: ReturnType<typeof vi.fn>, method: string, params: 
   );
 }
 
-function waitForCall(request: ReturnType<typeof vi.fn>, ...args: unknown[]) {
+function waitForCall(request: Request, ...args: unknown[]) {
   return waitForSolid(() => expect(request).toHaveBeenCalledWith(...args));
 }
 
-async function failedRestore(refreshFails: boolean) {
-  const record = worktree();
-  let listRequests = 0;
-  const request = vi.fn((method: string) => {
-    if (method === "worktrees.list") {
-      return ++listRequests > 1 && refreshFails
-        ? Promise.reject(new Error("list failed"))
-        : Promise.resolve({ worktrees: [record] });
-    }
-    if (method === "worktrees.restore") {
-      return Promise.reject(new Error("restore failed: OPENAI_API_KEY=sk-1234567890abcdef"));
-    }
-    return Promise.resolve({});
-  });
-  const page = createWorktreesPage(request).mount();
-  await waitForSolid(() => expect(listRequests).toBe(1));
-  await waitForSolid(() => expect(page.model.loading).toBe(false));
-  await page.model.restore(record);
-  expect(listRequests).toBe(2);
-  expect(page.model.operation).toBeNull();
-  return page;
-}
-
 afterEach(() => {
-  for (const page of mountedPages) {
-    page.unmount();
-  }
+  cleanupSolid();
   document.body.replaceChildren();
   vi.mocked(showConfirmDialog).mockReset();
   vi.restoreAllMocks();
@@ -223,15 +192,15 @@ describe("WorktreesPage lifecycle", () => {
     for (const label of ["Clean up now", "Create", "Delete", "Restore"]) {
       expect(page.button(label).disabled, label).toBe(true);
     }
-    const name = page.element.querySelector<HTMLInputElement>('input[aria-label="Name"]')!;
+    const name = page.query<HTMLInputElement>('input[aria-label="Name"]')!;
     expect(name).toMatchObject({ disabled: false, value: "local draft" });
   });
 
   it("navigates the hub only after activating a tab", async () => {
     const page = createWorktreesPage().mount();
     await settle();
-    const selected = page.element.querySelector<HTMLButtonElement>("#sessions-tab-worktrees")!;
-    const sessions = page.element.querySelector<HTMLButtonElement>("#sessions-tab-sessions")!;
+    const selected = page.query<HTMLButtonElement>("#sessions-tab-worktrees")!;
+    const sessions = page.query<HTMLButtonElement>("#sessions-tab-sessions")!;
     expect(selected.getAttribute("aria-selected")).toBe("true");
     selected.focus();
     selected.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
@@ -249,13 +218,9 @@ describe("WorktreesPage lifecycle", () => {
       await i18n.setLocale("pt-BR");
       flush();
       expect(i18n.t("tabs.sessions")).not.toBe("Sessions");
-      expect(page.element.querySelector("h1.page-title")?.textContent).toBe(
-        i18n.t("tabs.worktrees"),
-      );
-      expect(page.element.querySelector(".hub-page-header--stacked")).not.toBeNull();
-      expect(page.element.querySelector(".page-subtitle")?.textContent).toContain(
-        i18n.t("subtitles.worktrees"),
-      );
+      expect(page.query("h1.page-title")?.textContent).toBe(i18n.t("tabs.worktrees"));
+      expect(page.query(".hub-page-header--stacked")).not.toBeNull();
+      expect(page.query(".page-subtitle")?.textContent).toContain(i18n.t("subtitles.worktrees"));
     } finally {
       await i18n.setLocale(locale);
     }
@@ -263,34 +228,24 @@ describe("WorktreesPage lifecycle", () => {
 
   it("keeps read-only viewers in browsing mode without branch or mutation RPCs", async () => {
     const record = worktree();
-    const request = vi.fn(async (method: string) =>
-      method === "worktrees.list" ? { worktrees: [record] } : {},
+    const request = listRequest([record]);
+    const { source, page } = mutablePage(request, { createRepoRoot: "/tmp/repo" });
+    source.setScopes(
+      ["operator.read"],
+      ["worktrees.list", "worktrees.branches", "worktrees.remove", "worktrees.gc"],
     );
-    const gateway = requestGateway(request);
-    gateway.snapshot.hello = {
-      type: "hello-ok",
-      protocol: 1,
-      auth: { role: "operator", scopes: ["operator.read"] },
-      features: {
-        methods: ["worktrees.list", "worktrees.branches", "worktrees.remove", "worktrees.gc"],
-      },
-    } as ApplicationGatewaySnapshot["hello"];
-    const page = createWorktreesPage();
-    page.setGateway(gateway);
-    page.model.createRepoRoot = "/tmp/repo";
     page.mount();
 
     await waitForSolid(() => expect(page.model.records).toEqual([record]));
     await settle();
-    expect(page.element.querySelector(".callout.info")?.textContent).toContain(
+    expect(page.query(".callout.info")?.textContent).toContain(
       "Worktree changes require operator.admin access.",
     );
     const mutationButtons = [...page.element.querySelectorAll<HTMLButtonElement>("button")].filter(
       (button) =>
         ["New worktree", "Clean up now", "Delete"].includes(button.textContent?.trim() ?? ""),
     );
-    expect(mutationButtons).toHaveLength(3);
-    expect(mutationButtons.every((button) => button.disabled)).toBe(true);
+    expect(mutationButtons.map((button) => button.disabled)).toEqual([true, true, true]);
 
     await page.model.loadCreateBranches();
     await page.model.removeWorktree(record);
@@ -300,13 +255,11 @@ describe("WorktreesPage lifecycle", () => {
   });
 
   it("closes an open create draft when admin access is lost", async () => {
-    const request = vi.fn(async (method: string) =>
-      method === "worktrees.list" ? { worktrees: [] } : {},
-    );
+    const request = listRequest();
     const { source, page } = mutablePage(request, { createRepoRoot: "/tmp/repo" });
     page.mount();
 
-    await waitForList(request);
+    await waitForRead(request);
     await waitForSolid(() => expect(page.model.loading).toBe(false));
     const newWorktreeButton = page.button("New worktree");
     expect(newWorktreeButton?.getAttribute("aria-expanded")).toBe("false");
@@ -317,7 +270,6 @@ describe("WorktreesPage lifecycle", () => {
 
     source.setScopes(["operator.read"]);
     await settle();
-
     expect(page.model.createOpen).toBe(false);
     expect(page.inputs()).toHaveLength(0);
     expect(newWorktreeButton?.disabled).toBe(true);
@@ -327,18 +279,14 @@ describe("WorktreesPage lifecycle", () => {
   });
 
   it("navigates a session-owned worktree with the face-preference marker", async () => {
-    // The owner key comes from a worktree record, not the cached session page, so its
-    // face is a guess: the in-app click must carry the marker while href stays clean.
+    // Without a cached session, only the in-app click carries the guessed-face marker.
     const record = worktree("worktree-1", {
       ownerKind: "session",
       ownerId: "agent:main:thread:12345678-90ab-cdef-1234-567890abcdef",
     });
-    const request = vi.fn(async (method: string) =>
-      method === "worktrees.list" ? { worktrees: [record] } : {},
-    );
+    const request = listRequest([record]);
     const context = {
       ...contextWithGateway(requestGateway(request)),
-      // No cached sessions: the owner key is only known to the worktree record.
       sessions: { state: { result: undefined } },
       agents: { state: { agentsList: { mainKey: "main" } } },
       agentSelection: { state: { selectedId: "main" } },
@@ -349,7 +297,7 @@ describe("WorktreesPage lifecycle", () => {
     await waitForSolid(() => expect(page.model.records.length).toBe(1));
     await settle();
 
-    const docsLink = page.element.querySelector<HTMLAnchorElement>(".page-subtitle a");
+    const docsLink = page.query<HTMLAnchorElement>(".page-subtitle a");
     expect(docsLink?.textContent?.trim()).toBe("Learn more");
     expect(docsLink?.href).toBe("https://docs.openclaw.ai/concepts/managed-worktrees");
 
@@ -367,35 +315,25 @@ describe("WorktreesPage lifecycle", () => {
 
   it("serializes list refreshes and row mutations", async () => {
     const record = worktree();
-    const removedRecord = {
-      ...record,
-      removedAt: 2,
-      snapshotRef: "refs/openclaw/worktree-snapshots/test",
-    };
+    const removedRecord = worktree("worktree-1", { removedAt: 2 });
     const pendingList = deferred<{ worktrees: WorktreeRecord[] }>();
-    let listRequests = 0;
-    const request = vi.fn((method: string) => {
-      if (method === "worktrees.list") {
-        listRequests += 1;
-        if (listRequests === 1) {
-          return Promise.resolve({ worktrees: [record] });
-        }
-        return listRequests === 2
-          ? pendingList.promise
-          : Promise.resolve({ worktrees: [removedRecord] });
-      }
-      return Promise.resolve({ removed: true });
-    });
-    const page = createWorktreesPage(request);
-    page.mount();
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce({ worktrees: [record] })
+      .mockReturnValueOnce(pendingList.promise)
+      .mockResolvedValue({ worktrees: [removedRecord] });
+    const request = vi.fn((method: string) =>
+      method === "worktrees.list" ? list() : Promise.resolve({ removed: true }),
+    );
+    const page = createWorktreesPage(request).mount();
     await waitForSolid(() => expect(page.model.records).toEqual([record]));
     await waitForSolid(() => expect(page.model.loading).toBe(false));
 
     const refreshing = page.model.load();
-    await waitForSolid(() => expect(listRequests).toBe(2));
+    await waitForSolid(() => expect(list).toHaveBeenCalledTimes(2));
     await settle();
 
-    const deleteButton = page.element.querySelector<HTMLButtonElement>("button.danger");
+    const deleteButton = page.query<HTMLButtonElement>("button.danger");
     expect(deleteButton?.disabled).toBe(true);
     vi.mocked(showConfirmDialog).mockResolvedValue(true);
     await page.model.removeWorktree(record);
@@ -408,7 +346,7 @@ describe("WorktreesPage lifecycle", () => {
     await page.model.removeWorktree(record);
     expect(showConfirmDialog).toHaveBeenCalledOnce();
     expect(request).toHaveBeenCalledWith("worktrees.remove", { id: record.id });
-    expect(listRequests).toBe(3);
+    expect(list).toHaveBeenCalledTimes(3);
     expect(page.model.records).toEqual([removedRecord]);
   });
 
@@ -422,7 +360,6 @@ describe("WorktreesPage lifecycle", () => {
 
     page.setGateway(gatewayWithSnapshot(null, false));
     await settle();
-
     expect(page.model.records).toEqual([]);
   });
 
@@ -453,7 +390,7 @@ describe("WorktreesPage lifecycle", () => {
     const page = createWorktreesPage(firstRequest);
     vi.mocked(showConfirmDialog).mockResolvedValue(true);
     page.mount();
-    await waitForList(firstRequest);
+    await waitForRead(firstRequest);
 
     const removing = page.model.removeWorktree(worktree());
     await waitForCall(firstRequest, "worktrees.remove", { id: "worktree-1" });
@@ -471,121 +408,136 @@ describe("WorktreesPage lifecycle", () => {
     expect(page.model).toMatchObject({ error: null, operation: null });
   });
 
-  it("does not remove through a replacement gateway after confirmation", async () => {
-    const confirmation = deferred<boolean>();
-    vi.mocked(showConfirmDialog).mockReturnValueOnce(confirmation.promise);
-    const firstRequest = vi.fn(async () => ({ worktrees: [] }));
-    const secondRequest = vi.fn(async () => ({ worktrees: [] }));
-    const page = createWorktreesPage(firstRequest).mount();
-    await waitForSolid(() => expect(firstRequest).toHaveBeenCalledOnce());
-
-    const removing = page.model.removeWorktree(worktree());
-    await waitForSolid(() => expect(showConfirmDialog).toHaveBeenCalledOnce());
-    page.setGateway(requestGateway(secondRequest));
-    await settle();
-    confirmation.resolve(true);
-    await removing;
-
-    expect(firstRequest).not.toHaveBeenCalledWith("worktrees.remove", { id: "worktree-1" });
-    expect(secondRequest).not.toHaveBeenCalledWith("worktrees.remove", { id: "worktree-1" });
-  });
-
-  it("does not remove after admin access is lost during confirmation", async () => {
-    const confirmation = deferred<boolean>();
-    vi.mocked(showConfirmDialog).mockReturnValueOnce(confirmation.promise);
-    const request = vi.fn(async (method: string) =>
-      method === "worktrees.list" ? { worktrees: [] } : {},
-    );
-    const { source, page } = mutablePage(request);
-    page.mount();
-    await waitForSolid(() => expect(request).toHaveBeenCalledOnce());
-
-    const removing = page.model.removeWorktree(worktree());
-    await waitForSolid(() => expect(showConfirmDialog).toHaveBeenCalledOnce());
-    source.setScopes(["operator.read"]);
-    confirmation.resolve(true);
-    await removing;
-
-    expect(request).not.toHaveBeenCalledWith("worktrees.remove", { id: "worktree-1" });
-  });
-
-  it("does not force-remove after admin access is lost during confirmation", async () => {
-    const forceConfirmation = deferred<boolean>();
-    vi.mocked(showConfirmDialog)
-      .mockResolvedValueOnce(true)
-      .mockReturnValueOnce(forceConfirmation.promise);
-    const request = vi.fn((method: string, params?: Record<string, unknown>) => {
-      if (method === "worktrees.remove" && !params?.force) {
-        return Promise.resolve({ removed: false, snapshotError: "nested gitlink" });
+  it.each(["replacement", "admin loss", "admin loss before force"])(
+    "does not remove after %s during confirmation",
+    async (transition) => {
+      const force = transition === "admin loss before force";
+      const confirmation = deferred<boolean>();
+      if (force) {
+        vi.mocked(showConfirmDialog).mockResolvedValueOnce(true);
       }
-      return Promise.resolve({ worktrees: [] });
-    });
-    const { source, page } = mutablePage(request);
-    page.mount();
-    await waitForSolid(() => expect(request).toHaveBeenCalledOnce());
-
-    const removing = page.model.removeWorktree(worktree());
-    await waitForSolid(() => expect(showConfirmDialog).toHaveBeenCalledTimes(2));
-    source.setScopes(["operator.read"]);
-    forceConfirmation.resolve(true);
-    await removing;
-
-    expect(request).not.toHaveBeenCalledWith("worktrees.remove", {
-      id: "worktree-1",
-      force: true,
-    });
-  });
+      vi.mocked(showConfirmDialog).mockReturnValueOnce(confirmation.promise);
+      const request = force
+        ? vi.fn(async (method: string, params?: Record<string, unknown>) =>
+            method === "worktrees.remove" && !params?.force
+              ? { removed: false, snapshotError: "nested gitlink" }
+              : { worktrees: [] },
+          )
+        : listRequest();
+      const replacement = vi.fn(async () => ({ worktrees: [] }));
+      const { source, page } = mutablePage(request);
+      page.mount();
+      await waitForSolid(() => expect(request).toHaveBeenCalledOnce());
+      const removing = page.model.removeWorktree(worktree());
+      await waitForSolid(() => expect(showConfirmDialog).toHaveBeenCalledTimes(force ? 2 : 1));
+      if (transition === "replacement") {
+        page.setGateway(requestGateway(replacement));
+        await settle();
+      } else {
+        source.setScopes(["operator.read"]);
+      }
+      confirmation.resolve(true);
+      await removing;
+      const params = { id: "worktree-1", ...(force ? { force: true } : {}) };
+      expect(request).not.toHaveBeenCalledWith("worktrees.remove", params);
+      if (transition === "replacement") {
+        expect(replacement).not.toHaveBeenCalledWith("worktrees.remove", params);
+      }
+    },
+  );
 
   it("surfaces the snapshot failure after a forced removal", async () => {
-    const request = vi.fn((method: string, params?: Record<string, unknown>) => {
-      if (method === "worktrees.remove") {
-        return params?.force
-          ? Promise.resolve({ removed: true, snapshotError: "nested gitlink" })
-          : Promise.resolve({ removed: false, snapshotError: "nested gitlink" });
-      }
-      return Promise.resolve({ worktrees: [] });
-    });
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>) =>
+      method === "worktrees.remove"
+        ? { removed: Boolean(params?.force), snapshotError: "nested gitlink" }
+        : { worktrees: [] },
+    );
     const page = createWorktreesPage(request);
     vi.mocked(showConfirmDialog).mockResolvedValue(true);
     page.mount();
-    await waitForList(request);
+    await waitForRead(request);
 
     await page.model.removeWorktree(worktree());
-
     expect(request).toHaveBeenCalledWith("worktrees.remove", { id: "worktree-1" });
     expect(request).toHaveBeenCalledWith("worktrees.remove", { id: "worktree-1", force: true });
     expect(showConfirmDialog).toHaveBeenCalledTimes(2);
     expect(page.model.error).toBe("nested gitlink");
     await settle();
-    expect(page.element.querySelector(".callout.danger")?.textContent).toContain("nested gitlink");
+    expect(page.query(".callout.danger")?.textContent).toContain("nested gitlink");
   });
 
-  it("discards a restore error across a same-client reconnect", async () => {
-    const pendingRestore = deferred<unknown>();
-    const request = pendingRequest("worktrees.restore", pendingRestore.promise);
-    const { source, page } = mutablePage(request);
-    page.mount();
-    await waitForList(request);
+  it.each(["restore", "create", "gc"] as const)(
+    "retires pending %s across a same-client reconnect",
+    async (operation) => {
+      const pending = deferred<unknown>();
+      const list = vi.fn(async () => ({ worktrees: [] }));
+      const request = vi.fn((method: string) =>
+        method === `worktrees.${operation}` ? pending.promise : list(),
+      );
+      const { source, page } = mutablePage(request, { createRepoRoot: "/tmp/repo" });
+      page.mount();
+      await waitForRead(request);
+      expect(list).toHaveBeenCalledOnce();
+      const running =
+        operation === "restore"
+          ? page.model.restore(worktree())
+          : operation === "create"
+            ? page.model.createWorktree()
+            : page.model.gc();
+      await waitForCall(
+        request,
+        `worktrees.${operation}`,
+        operation === "restore"
+          ? { id: "worktree-1" }
+          : operation === "create"
+            ? { repoRoot: "/tmp/repo" }
+            : {},
+      );
+      expect(page.model).toMatchObject({
+        operation: operation === "restore" ? "row" : operation,
+        loading: operation === "gc",
+      });
+      source.emit(false);
+      source.emit(true);
+      expect(page.model.operation).not.toBe("create");
+      if (operation === "gc") {
+        await waitForSolid(() => expect(list).toHaveBeenCalledTimes(2));
+        await waitForSolid(() => expect(page.model.loading).toBe(false));
+        pending.resolve({});
+      } else {
+        pending.reject(new Error("stale operation error"));
+      }
+      await running;
+      expect(page.model).toMatchObject({ error: null, operation: null, loading: false });
+    },
+  );
 
-    const restoring = page.model.restore(worktree());
-    await waitForCall(request, "worktrees.restore", { id: "worktree-1" });
-    source.emit(false);
-    source.emit(true);
-    pendingRestore.reject(new Error("stale restore error"));
-    await restoring;
-
-    expect(page.model).toMatchObject({ error: null, operation: null });
-  });
-
-  it("keeps a restore error after the reconciliation refresh succeeds", async () => {
-    const page = await failedRestore(false);
-    expect(page.model.error).toBe("restore failed: OPENAI_API_KEY=sk-123...cdef");
-  });
-
-  it("replaces a mutation error when the reconciliation refresh also fails", async () => {
-    const page = await failedRestore(true);
-    expect(page.model.error).toBe("list failed");
-  });
+  it.each([
+    { refreshFails: false, error: "restore failed: OPENAI_API_KEY=sk-123...cdef" },
+    { refreshFails: true, error: "list failed" },
+  ])(
+    "reconciles a restore failure (refresh fails: $refreshFails)",
+    async ({ refreshFails, error }) => {
+      const record = worktree();
+      let listRequests = 0;
+      const request = vi.fn((method: string) => {
+        if (method === "worktrees.list") {
+          return ++listRequests > 1 && refreshFails
+            ? Promise.reject(new Error("list failed"))
+            : Promise.resolve({ worktrees: [record] });
+        }
+        return method === "worktrees.restore"
+          ? Promise.reject(new Error("restore failed: OPENAI_API_KEY=sk-1234567890abcdef"))
+          : Promise.resolve({});
+      });
+      const page = createWorktreesPage(request).mount();
+      await waitForSolid(() => expect(listRequests).toBe(1));
+      await waitForSolid(() => expect(page.model.loading).toBe(false));
+      await page.model.restore(record);
+      expect(listRequests).toBe(2);
+      expect(page.model).toMatchObject({ error, operation: null });
+    },
+  );
 
   it("surfaces an operation failure after an earlier list failure", async () => {
     let listRequests = 0;
@@ -610,65 +562,15 @@ describe("WorktreesPage lifecycle", () => {
     expect(page.model.error).toBe("restore failed");
   });
 
-  it("clears pending create state across a same-client reconnect", async () => {
-    const pendingCreate = deferred<unknown>();
-    const request = pendingRequest("worktrees.create", pendingCreate.promise);
-    const { source, page } = mutablePage(request, { createRepoRoot: "/tmp/repo" });
-    page.mount();
-    await waitForList(request);
-
-    const creating = page.model.createWorktree();
-    await waitForCall(request, "worktrees.create", { repoRoot: "/tmp/repo" });
-    expect(page.model.operation).toBe("create");
-
-    source.emit(false);
-    source.emit(true);
-    expect(page.model.operation === "create").toBe(false);
-
-    pendingCreate.reject(new Error("gateway closed"));
-    await creating;
-    expect(page.model.operation === "create").toBe(false);
-    expect(page.model.error).toBeNull();
-  });
-
-  it("clears GC loading across a same-client reconnect", async () => {
-    const pendingGc = deferred<unknown>();
-    let listRequests = 0;
-    const request = vi.fn((method: string) => {
-      if (method === "worktrees.gc") {
-        return pendingGc.promise;
-      }
-      listRequests += 1;
-      return Promise.resolve({ worktrees: [] });
-    });
-    const { source, page } = mutablePage(request);
-    page.mount();
-    await waitForSolid(() => expect(listRequests).toBe(1));
-
-    const collecting = page.model.gc();
-    await waitForCall(request, "worktrees.gc", {});
-    expect(page.model.loading).toBe(true);
-    source.emit(false);
-    source.emit(true);
-
-    await waitForSolid(() => expect(listRequests).toBe(2));
-    await waitForSolid(() => expect(page.model.loading).toBe(false));
-    pendingGc.resolve({});
-    await collecting;
-    expect(page.model.loading).toBe(false);
-  });
-
   it("keeps an in-progress repository draft when the list refresh completes", async () => {
     const pendingList = deferred<unknown>();
     const request = vi.fn((method: string) =>
       method === "worktrees.list" ? pendingList.promise : Promise.resolve({ branches: [] }),
     );
     const page = createWorktreesPage(request, { createOpen: true }).mount();
-    await waitForList(request);
+    await waitForRead(request);
 
-    const repository = page.element.querySelector<HTMLInputElement>(
-      'input[aria-label="Repository"]',
-    )!;
+    const repository = page.query<HTMLInputElement>('input[aria-label="Repository"]')!;
     repository.value = "/tmp/new-repo";
     repository.dispatchEvent(new Event("input", { bubbles: true }));
     pendingList.resolve({ worktrees: [] });
@@ -689,7 +591,7 @@ describe("WorktreesPage lifecycle", () => {
       createName: "submitted-name",
       createBaseRef: "main",
     }).mount();
-    await waitForList(request);
+    await waitForRead(request);
     await waitForSolid(() => expect(page.model.loading).toBe(false));
 
     const toggleButton = page.button("New worktree");
@@ -702,19 +604,14 @@ describe("WorktreesPage lifecycle", () => {
       repoRoot: "/tmp/repo",
     });
     await settle();
-
-    const draftInputs = page.inputs();
-    const createButton = page.element.querySelector<HTMLButtonElement>(
+    const createButton = page.query<HTMLButtonElement>(
       ".settings-group .settings-row button.btn--sm",
     );
-    expect(draftInputs).toHaveLength(3);
-    expect(draftInputs.every((input) => input.disabled)).toBe(true);
-    expect(createButton?.disabled).toBe(true);
-    expect(toggleButton?.disabled).toBe(true);
+    expect(page.inputs().map((input) => input.disabled)).toEqual([true, true, true]);
+    expect([createButton?.disabled, toggleButton?.disabled]).toEqual([true, true]);
 
     toggleButton?.click();
     expect(page.model.createOpen).toBe(true);
-
     pendingCreate.resolve({});
     await creating;
     await settle();
@@ -723,35 +620,26 @@ describe("WorktreesPage lifecycle", () => {
 
     toggleButton?.click();
     await settle();
-    const freshInputs = page.inputs();
-    expect(freshInputs).toHaveLength(3);
-    expect(freshInputs.every((input) => !input.disabled)).toBe(true);
+    expect(page.inputs().map((input) => input.disabled)).toEqual([false, false, false]);
   });
 
-  it.each([undefined, "main"])(
-    "leaves base resolution to the Gateway (remote default: %s)",
-    async (defaultBranch) => {
-      const request = vi.fn((method: string) => {
-        if (method === "worktrees.branches") {
-          return Promise.resolve({
-            branches: [{ name: "main" }],
-            headBranch: "main",
-            defaultBranch,
-          });
-        }
-        return Promise.resolve({ worktrees: [] });
-      });
-      const page = createWorktreesPage(request, { createRepoRoot: "/tmp/repo" }).mount();
-      await waitForList(request);
-
+  it.each([undefined, "main"])("leaves base resolution to the Gateway (remote default: %s)", async (defaultBranch) => {
+    const request = pendingRequest(
+      "worktrees.branches",
+      Promise.resolve({
+        branches: [{ name: "main" }],
+        headBranch: "main",
+        defaultBranch,
+      }),
+    );
+    const page = createWorktreesPage(request, { createRepoRoot: "/tmp/repo" }).mount();
+    await waitForRead(request);
     await page.model.loadCreateBranches();
-
     await waitForSolid(() => expect(page.model.createBranches).toEqual(["main"]));
     expect(page.model.createBaseRef).toBe("");
     await page.model.createWorktree();
     expect(request).toHaveBeenCalledWith("worktrees.create", { repoRoot: "/tmp/repo" });
-    },
-  );
+  });
 
   it("ignores a stale branch failure after a newer request succeeds", async () => {
     const firstBranches = deferred<unknown>();
@@ -769,7 +657,7 @@ describe("WorktreesPage lifecycle", () => {
       createRepoRoot: "/tmp/repo",
       createBaseRef: "release",
     }).mount();
-    await waitForList(request);
+    await waitForRead(request);
 
     void page.model.loadCreateBranches();
     void page.model.loadCreateBranches();
