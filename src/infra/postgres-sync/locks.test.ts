@@ -12,9 +12,9 @@ import {
 import {
   captureSqliteDatabaseAdmissions,
   readSqliteDatabaseWriteTokenForPath,
-  type SqliteDatabaseAdmissions,
 } from "../sqlite-database-admission.js";
 import { postgresLockTestEntrypoint } from "./locks-runtime.test-support.js";
+import type { PostgresLockWorkerInput } from "./locks-worker.test-support.js";
 
 const configured = getEnvironmentData("openclaw.test.workboard.connection");
 const connection = typeof configured === "string" ? configured : undefined;
@@ -22,17 +22,7 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 type Event = "ready" | "admission" | "statement" | "read" | "done";
 type Message = { event: Event; before?: string; after?: string; value?: number; error?: string };
 
-function launch(options: {
-  path: string;
-  schema: string;
-  storeId: string;
-  id: string;
-  mode: "single" | "worker" | "deferred";
-  admissions: SqliteDatabaseAdmissions;
-  holdAdmission?: boolean;
-  holdStatement?: boolean;
-  holdRead?: boolean;
-}) {
+function launch(options: Omit<PostgresLockWorkerInput, "connection" | "gates">) {
   const gates = new Int32Array(new SharedArrayBuffer(16));
   const events = {
     ready: Promise.withResolvers<Message>(),
