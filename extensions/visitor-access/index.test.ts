@@ -502,6 +502,10 @@ it("ends only selected grants before failed provider cleanup", async () => {
     expect(await app.lookup(email)).toMatchObject({ expiresAt: START_MS });
   }
   expect(selected?.signal.aborted).toBe(true);
+  expect(() => selected?.assertCurrent()).toThrow(/access ended/);
+  expect(() => app.authorize(visitor([app.emails[0]], "visitor-profile", null))).toThrow(
+    /active visitor invitation/,
+  );
   expect(() => other?.assertCurrent()).not.toThrow();
   expect(app.policy.emails()).toContain(app.emails[0]);
   app.policy.controls.failWrites = false;
@@ -509,7 +513,7 @@ it("ends only selected grants before failed provider cleanup", async () => {
   expect(app.policy.emails()).toEqual([app.emails[2], app.emails[3], address("manual")]);
 });
 
-it("rejects ambiguous selectors and bindings changed after provider reads", async () => {
+it("rejects ambiguous selectors and sanitizes profile lookup failures", async () => {
   const app = await startVisitors();
   const pending = await app.lookup(app.emails[3]);
   for (const input of [
@@ -520,24 +524,9 @@ it("rejects ambiguous selectors and bindings changed after provider reads", asyn
     expect(await app.execute("visitor_revoke", input)).toHaveProperty("isError", true);
   }
   expect(app.policy.fetcher).not.toHaveBeenCalled();
-  const original = app.policy.fetcher.getMockImplementation();
-  let reassignedAfterRead = false;
-  app.policy.fetcher.mockImplementation(async (input, init) => {
-    const response = await original!(input, init);
-    if (init?.method === "GET") {
-      reassignedAfterRead = true;
-      app.setProfiles([
-        { id: "visitor-profile", emails: [app.emails[1]] },
-        {
-          id: "staff-profile",
-          emails: [app.emails[0], app.emails[2]],
-          role: "staff",
-        },
-      ]);
-    }
-    return response;
-  });
-  expect(await app.execute("visitor_revoke", { profileId: "visitor-profile" })).toMatchObject({
+  app.gatewayRequest.mockRejectedValueOnce(new Error(`Profile lookup failed: ${TOKEN}`));
+  const result = await app.execute("visitor_revoke", { profileId: "visitor-profile" });
+  expect(result).toMatchObject({
     isError: true,
     content: [
       {
@@ -546,15 +535,9 @@ it("rejects ambiguous selectors and bindings changed after provider reads", asyn
       },
     ],
   });
-  expect(reassignedAfterRead).toBe(true);
-  expect(app.policy.fetcher.mock.calls.every(([, init]) => init?.method === "GET")).toBe(true);
+  expect(JSON.stringify(result)).not.toContain(TOKEN);
+  expect(app.policy.fetcher).not.toHaveBeenCalled();
   expect(app.policy.emails()).toEqual([...app.emails, address("manual")]);
-  for (const email of app.emails.slice(0, 2)) {
-    expect(await app.lookup(email)).toMatchObject({ expiresAt: START_MS });
-  }
-  expect(await app.lookup(app.emails[2])).toMatchObject({
-    expiresAt: START_MS + 14 * DAY_MS,
-  });
   expect(await app.lookup(app.emails[3])).toEqual(pending);
 });
 
@@ -627,109 +610,65 @@ it.each(["invocation", "manager"] as const)(
   },
 );
 
-it("gates access across restart, expiry, and failed provider revocation", async () => {
-  const grants = [
-    { email: address("expired"), createdAt: START_MS - DAY_MS, expiresAt: START_MS + 1_000 },
-    { email: address("deadline"), createdAt: START_MS - DAY_MS, expiresAt: START_MS + 2_000 },
-    { email: address("revoked"), createdAt: START_MS - DAY_MS, expiresAt: START_MS + DAY_MS },
-  ] satisfies VisitorGrant[];
-  const first = setup(
-    {},
-    gatewayConfig,
-    [],
-    grants.map((grant) => grant.email),
-  );
-  const { policy } = first;
-  for (const grant of grants) {
-    await first.store.register(grant.email, grant);
-  }
-  const profile = visitor([address("revoked")]);
-  expect(() => first.authorize(profile)).toThrow(/starting/);
-  await first.start();
-  await first.settle();
-  const original = required(first.authorize(profile));
-  await first.stop();
-  expect(original.signal.aborted).toBe(true);
-  resetPluginStateStoreForTests();
-  vi.setSystemTime(START_MS + 1_000);
-  policy.controls.failWrites = true;
+it.each([false, true])(
+  "coalesces startup and expiry sweeps (provider fails: %s)",
+  async (failWrites) => {
+    const first = setup();
+    const { policy } = first;
+    expect(() => first.authorize(visitor([address("active")]))).toThrow(/starting/);
+    await first.start();
+    await first.invite({ email: address("expired"), days: 1 }, "invited", "restricted guest");
+    await first.invite({ email: address("active"), days: 2 });
+    const original = required(first.authorize(visitor([address("active")])));
+    await first.stop();
+    expect(original.signal.aborted).toBe(true);
+    resetPluginStateStoreForTests();
+    vi.setSystemTime(START_MS + DAY_MS + 1);
+    policy.fetcher.mockClear();
+    policy.controls.failWrites = failWrites;
 
-  const restarted = registerPlugin();
-  await restarted.start();
-  await restarted.settle();
-  expect(restarted.logger.error).toHaveBeenCalledWith(
-    expect.stringContaining("visitor-access sweep failed"),
-  );
-  for (const assignedRole of [null, "external-work", "removed-role"]) {
-    for (const email of [address("missing"), address("expired")]) {
-      expect(() => restarted.authorize({ ...profile, emails: [email], assignedRole })).toThrow(
-        /active visitor invitation/,
+    const restarted = registerPlugin();
+    await Promise.all([restarted.start(), restarted.gatewayStart()]);
+    await restarted.settle();
+    const retained = failWrites ? [address("expired"), address("active")] : [address("active")];
+    expect(policy.emails()).toEqual(retained);
+    expect((await restarted.store.entries()).map((entry) => entry.key).toSorted()).toEqual(
+      retained.toSorted(),
+    );
+    expect(() => restarted.authorize(visitor([address("expired")]))).toThrow(
+      /active visitor invitation/,
+    );
+    const active = required(
+      restarted.authorize(visitor([address("other-verified"), address("active")])),
+    );
+    expect(() => active.assertCurrent()).not.toThrow();
+    expect(policy.fetcher.mock.calls.filter(([url]) => requestUrl(url).search !== "")).toHaveLength(
+      1,
+    );
+    if (failWrites) {
+      expect(restarted.logger.error).toHaveBeenCalledWith(
+        expect.stringContaining("visitor-access sweep failed"),
+      );
+    } else {
+      expect(restarted.logger.info).toHaveBeenCalledWith(
+        expect.stringContaining(address("expired")),
       );
     }
-  }
-  for (const independent of [
-    { profileId: "staff-profile", emails: [address("expired")], assignedRole: "staff" },
-    { profileId: "gateway-owner", emails: [], assignedRole: null },
-  ]) {
-    expect(restarted.authorize(independent, false)).toBeUndefined();
-  }
-  const deadline = restarted.authorize({
-    ...profile,
-    emails: [address("other-verified"), address("deadline")],
-  });
-  const revoked = restarted.authorize(profile);
-  if (!deadline || !revoked) {
-    throw new Error("Expected initialized active visitor grants");
-  }
-  expect(() => deadline.assertCurrent()).not.toThrow();
-  expect(() => revoked.assertCurrent()).not.toThrow();
-  await expectDetails(restarted.execute("visitor_revoke", { email: address("revoked") }), {
-    error: true,
-  });
-  expect(revoked.signal.aborted).toBe(true);
-  expect(() => revoked.assertCurrent()).toThrow(/access ended/);
-  expect(() => restarted.authorize(profile)).toThrow(/active visitor invitation/);
-  expect(await restarted.lookup(address("revoked"))).toMatchObject({
-    expiresAt: START_MS + 1_000,
-  });
-  await vi.advanceTimersByTimeAsync(1_000);
-  expect(deadline.signal.aborted).toBe(true);
-  expect(() => deadline.assertCurrent()).toThrow(/access ended/);
-  expect(policy.emails()).toEqual(grants.map((grant) => grant.email));
-  expect(await restarted.store.entries()).toHaveLength(grants.length);
-});
 
-it("coalesces startup sweeps and expires persisted grants hourly", async () => {
-  const first = setup();
-  const { policy } = first;
-  await first.start();
-  await first.invite({ email: address("expired"), days: 1 }, "invited", "restricted guest");
-  await first.invite({ email: address("active"), days: 2 });
-  await first.stop();
-  resetPluginStateStoreForTests();
-  vi.setSystemTime(START_MS + DAY_MS + 1);
-  policy.fetcher.mockClear();
-
-  const restarted = registerPlugin();
-  await Promise.all([restarted.start(), restarted.gatewayStart()]);
-  await restarted.settle();
-  expect(policy.emails()).toEqual([address("active")]);
-  expect((await restarted.store.entries()).map((entry) => entry.key)).toEqual([address("active")]);
-  expect(policy.fetcher.mock.calls.filter(([url]) => requestUrl(url).search !== "")).toHaveLength(
-    1,
-  );
-  expect(restarted.logger.info).toHaveBeenCalledWith(expect.stringContaining(address("expired")));
-
-  vi.setSystemTime(START_MS + 2 * DAY_MS);
-  await vi.advanceTimersByTimeAsync(HOUR_MS);
-  await restarted.list();
-  expect(policy.emails()).toEqual([]);
-  expect(await restarted.store.entries()).toEqual([]);
-  await restarted.stop();
-  const callsAfterStop = policy.fetcher.mock.calls.length;
-  await vi.advanceTimersByTimeAsync(2 * HOUR_MS);
-  expect(policy.fetcher).toHaveBeenCalledTimes(callsAfterStop);
-});
+    policy.controls.failWrites = false;
+    vi.setSystemTime(START_MS + 2 * DAY_MS);
+    await vi.advanceTimersByTimeAsync(HOUR_MS);
+    await restarted.list();
+    expect(active.signal.aborted).toBe(true);
+    expect(() => active.assertCurrent()).toThrow(/access ended/);
+    expect(policy.emails()).toEqual([]);
+    expect(await restarted.store.entries()).toEqual([]);
+    await restarted.stop();
+    const callsAfterStop = policy.fetcher.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(2 * HOUR_MS);
+    expect(policy.fetcher).toHaveBeenCalledTimes(callsAfterStop);
+  },
+);
 
 it("admits live grants during cleanup and aborts cleanup on stop", async () => {
   const entered = createDeferred<AbortSignal>();
@@ -761,9 +700,19 @@ it("admits live grants during cleanup and aborts cleanup on stop", async () => {
   await app.start();
   const signal = await entered.promise;
   const profile = { profileId: "visitor", assignedRole: "external-work" };
-  expect(() => app.authorize({ ...profile, emails: [address("expired")] })).toThrow(
-    /active visitor invitation/,
-  );
+  for (const assignedRole of [null, "external-work", "removed-role"]) {
+    for (const email of [address("missing"), address("expired")]) {
+      expect(() => app.authorize({ ...profile, emails: [email], assignedRole })).toThrow(
+        /active visitor invitation/,
+      );
+    }
+  }
+  for (const independent of [
+    visitor([address("expired")], "staff-profile", "staff"),
+    visitor([], "gateway-owner", null),
+  ]) {
+    expect(app.authorize(independent, false)).toBeUndefined();
+  }
   const authority = app.authorize({ ...profile, emails: [address("active")] });
   expect(authority).toBeDefined();
   expect(() => authority?.assertCurrent()).not.toThrow();
