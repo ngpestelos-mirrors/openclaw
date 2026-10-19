@@ -223,7 +223,7 @@ describe("PortalsPage", () => {
       return { portals: listed };
     });
     const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
-    const writeText = vi.fn(async () => {});
+    const writeText = vi.fn<Clipboard["writeText"]>().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     try {
       const page = await mountPage(source.context, portal.id);
