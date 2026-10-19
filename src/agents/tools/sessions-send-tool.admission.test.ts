@@ -51,6 +51,10 @@ import { createEmbeddedRunHandle } from "../embedded-agent-runner/runs.test-supp
 import { withPreparedEmbeddedRunToolAuthority } from "../harness/tool-authority.runtime.js";
 import { createOpenClawTools } from "../openclaw-tools.js";
 import {
+  createSessionsSendTestCaller,
+  setSessionsSendTestActiveRun,
+} from "../openclaw-tools.sessions-steering.test-support.js";
+import {
   readFollowupRequest,
   SessionFollowupCompletion,
 } from "../subagents/completion/session-followup-completion.js";
@@ -420,27 +424,15 @@ describe("sessions_send dispatch admission", () => {
 
   it("queues an unsupported durable steer once without injecting volatile guidance", async () => {
     const context = createContext([], () => config);
+    const caller = createSessionsSendTestCaller(requesterSessionKey);
     const queueMessage = vi.fn(async () => {});
     const handle = createEmbeddedRunHandle({ guarded: true, queueMessage });
-    const operation = createReplyOperation({
-      sessionKey: targetSessionKey,
-      sessionId: "target-session",
-      agentId: "main",
-      resetTriggered: false,
-      target: captureSessionTarget({
-        storeScope: resolveSessionStorePathCore(undefined, { agentId: "main" }),
-        sessionKey: targetSessionKey,
-        agentId: "main",
-        incarnation: "target-session",
-      }),
-    });
-    attachActiveEmbeddedRun(
+    const close = await setSessionsSendTestActiveRun(
       "target-session",
       handle,
       targetSessionKey,
-      undefined,
-      "main",
-      operation,
+      requesterSessionKey,
+      config,
     );
     const callGateway = vi.fn();
     callGateway.mockImplementation(
@@ -468,8 +460,7 @@ describe("sessions_send dispatch admission", () => {
     try {
       const result = await withGatewayToolCallerIdentity(
         {
-          agentId: "main",
-          sessionKey: requesterSessionKey,
+          ...caller,
           gatewayContextResolver: () => context,
           receiptAuthority: () => true,
         },
@@ -492,8 +483,7 @@ describe("sessions_send dispatch admission", () => {
         1,
       );
     } finally {
-      detachActiveEmbeddedRun("target-session", handle, targetSessionKey);
-      operation.complete();
+      await close();
     }
   });
 
