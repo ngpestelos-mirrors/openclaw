@@ -387,6 +387,7 @@ export function createChatInputRecovery(params: {
       request.suppressCommandInterpretation ||
       !shouldComputeCommandAuthorized(request.inboundMessage),
     request: {
+      ...(request.reconnectResumeRequested ? { __controlUiReconnectResume: true } : {}),
       thinking: p.thinking,
       fastMode: p.fastMode,
       fastAutoOnSeconds: p.fastAutoOnSeconds,

@@ -43,15 +43,15 @@ afterEach(() => {
 async function withInput(
   run: (input: Awaited<ReturnType<typeof prepareInput>>) => Promise<void>,
   approvedText = "Approved redacted input",
-  withProvenance = false,
+  withOptions = false,
 ) {
   return withOpenClawTestState({ scenario: "minimal" }, async ({ stateDir }) => {
-    const input = await prepareInput(stateDir, approvedText, withProvenance);
+    const input = await prepareInput(stateDir, approvedText, withOptions);
     await run(input);
   });
 }
 
-async function prepareInput(stateDir: string, approvedText: string, withProvenance: boolean) {
+async function prepareInput(stateDir: string, approvedText: string, withOptions: boolean) {
   await loadOrCreateDeviceIdentityAsync();
   const profile = ensureProfileForEmail("input-recovery@example.test");
   const fixture = await createOperatorRecoveryFixture({
@@ -65,13 +65,18 @@ async function prepareInput(stateDir: string, approvedText: string, withProvenan
     client: fixture.client,
     params: {
       sessionKey: fixture.target.sessionKey,
+      sessionId: fixture.target.sessionId,
       idempotencyKey: fixture.target.sourceRunId,
       message: "Original private input",
       fastMode: true,
       timeoutMs: 42_000,
       queueMode: "followup",
-      ...(withProvenance
-        ? { systemInputProvenance: externalProvenance, systemProvenanceReceipt: sourceReceipt }
+      ...(withOptions
+        ? {
+            systemInputProvenance: externalProvenance,
+            systemProvenanceReceipt: sourceReceipt,
+            __controlUiReconnectResume: true,
+          }
         : {}),
     },
   });
@@ -217,6 +222,7 @@ describe("interrupted chat input recovery", () => {
               requestIdentity: message["__openclaw"]?.chatRequestIdentity,
               systemInputProvenance: externalProvenance,
               systemProvenanceReceipt: sourceReceipt,
+              reconnectResumeRequested: true,
             },
           });
           requestOptions.sessionMutationCommitGuard();

@@ -90,7 +90,9 @@ in acceptance order within each session. This includes queued inputs left by a
 process kill, without waiting for a client or history read. Recovery uses the
 original submission ID and approved input, then rechecks current operator
 authority and the original session before admission. It never restores the old
-execution authority or starts the same consumed input twice.
+execution authority or starts the same consumed input twice. Control UI inputs
+that requested reconnect resumption retain that behavior, including when the
+session has crossed its idle or daily reset cutoff.
 
 If an input exhausts the existing bounded attempts on a transient failure, later
 inputs in that session remain interrupted too, preserving their replay order.
