@@ -14,7 +14,7 @@ import {
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { ModelDefinitionConfig, OpenClawConfig } from "openclaw/plugin-sdk/provider-onboard";
 import { buildOpenAICompletionsParams } from "openclaw/plugin-sdk/provider-transport-runtime";
-import { createZeroUsageFixture } from "openclaw/plugin-sdk/test-fixtures";
+import { makeAgentAssistantMessage } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import { runSingleProviderCatalog } from "../test-support/provider-model-test-helpers.js";
 import { applyBasetenConfig, buildStaticBasetenModels } from "./api.js";
@@ -79,25 +79,13 @@ async function captureRegisteredPayloads(params: {
 }
 
 describe("Baseten provider registration", () => {
-  it.each<{
-    name: string;
-    options: SimpleStreamOptions;
-    expected: string;
-  }>([
-    {
-      name: "native session",
-      options: { sessionId: "synthetic-session" },
-      expected: "synthetic-session",
-    },
-    {
-      name: "request header",
-      options: {
-        sessionId: "synthetic-session",
-        headers: { "X-Session-Affinity": "caller-affinity" },
-      },
-      expected: "caller-affinity",
-    },
-  ])("sends Baseten cache affinity in the real request: $name", async ({ options, expected }) => {
+  it.each<[SimpleStreamOptions, string]>([
+    [{ sessionId: "synthetic-session" }, "synthetic-session"],
+    [
+      { sessionId: "synthetic-session", headers: { "X-Session-Affinity": "caller-affinity" } },
+      "caller-affinity",
+    ],
+  ])("sends Baseten cache affinity in the real request: %j", async (options, expected) => {
     const provider = await registerSingleProviderPlugin(basetenPlugin);
     const model: Model = {
       id: "synthetic-model",
@@ -217,15 +205,10 @@ describe("Baseten provider registration", () => {
         thinkingLevel,
         reasoningLevels: ["off", "max", undefined],
       });
-      expect(payloads.map((payload) => payload.chat_template_args)).toEqual([
-        { preserve_me: true, enable_thinking: false },
-        { preserve_me: true, enable_thinking: true },
-        { preserve_me: true, enable_thinking: defaultEffort !== "none" },
-      ]);
-      expect(payloads.map((payload) => payload.reasoning_effort)).toEqual([
-        "none",
-        "max",
-        defaultEffort,
+      expect(payloads.map((p) => [p.chat_template_args, p.reasoning_effort])).toEqual([
+        [{ preserve_me: true, enable_thinking: false }, "none"],
+        [{ preserve_me: true, enable_thinking: true }, "max"],
+        [{ preserve_me: true, enable_thinking: defaultEffort !== "none" }, defaultEffort],
       ]);
     }
   });
@@ -248,16 +231,14 @@ describe("Baseten provider registration", () => {
           tools: [{ name: "read", description: "Read", parameters: { type: "object" } }],
           messages: [
             { role: "user", content: "Read the fixture.", timestamp: 0 },
-            {
-              role: "assistant",
+            makeAgentAssistantMessage({
               api: "openai-completions",
               provider: "other-provider",
               model: "other-model",
               content: [{ type: "toolCall", id: "call_1", name: "read", arguments: {} }],
-              usage: createZeroUsageFixture(),
               stopReason: "toolUse",
               timestamp: 1,
-            },
+            }),
             {
               role: "toolResult",
               toolCallId: "call_1",
@@ -266,8 +247,7 @@ describe("Baseten provider registration", () => {
               isError: false,
               timestamp: 2,
             },
-            {
-              role: "assistant",
+            makeAgentAssistantMessage({
               api: "openai-completions",
               provider: "baseten",
               model: modelId,
@@ -279,10 +259,8 @@ describe("Baseten provider registration", () => {
                 },
                 { type: "text", text: "done" },
               ],
-              usage: createZeroUsageFixture(),
-              stopReason: "stop",
               timestamp: 3,
-            },
+            }),
           ],
         },
       });
@@ -294,10 +272,8 @@ describe("Baseten provider registration", () => {
           legacy ? undefined : { type: index === 0 ? "disabled" : "enabled" },
         );
         if (index === 0) {
-          expect(payload.messages).not.toEqual(
-            expect.arrayContaining([
-              expect.objectContaining({ reasoning_content: expect.any(String) }),
-            ]),
+          expect(payload.messages).not.toContainEqual(
+            expect.objectContaining({ reasoning_content: expect.any(String) }),
           );
         } else {
           expect(payload.messages).toEqual(
@@ -321,64 +297,28 @@ describe("Baseten provider registration", () => {
 
   it("exposes opt-in thinking without duplicate reasoning levels", async () => {
     const provider = await registerSingleProviderPlugin(basetenPlugin);
-
-    expect(
-      provider.resolveThinkingProfile?.({
-        provider: "baseten",
-        modelId: "deepseek-ai/DeepSeek-V4.1-Flash",
-        reasoning: true,
-      } as never),
-    ).toEqual({
-      levels: [{ id: "off" }, { id: "low" }, { id: "high" }, { id: "max" }],
-      defaultLevel: "high",
-    });
-
-    expect(
-      provider.resolveThinkingProfile?.({
-        provider: "baseten",
-        modelId: "deepseek-ai/DeepSeek-V4-Pro-0813",
-        reasoning: true,
-      } as never),
-    ).toEqual({
-      levels: [{ id: "off" }, { id: "low" }, { id: "high" }, { id: "max" }],
-    });
-
-    expect(
-      provider.resolveThinkingProfile?.({
-        provider: "baseten",
-        modelId: "moonshotai/Kimi-K2.6",
-        reasoning: true,
-      } as never),
-    ).toEqual({
-      levels: [{ id: "off" }, { id: "low", label: "on" }],
-      defaultLevel: "off",
-    });
-    expect(
-      provider.resolveThinkingProfile?.({
-        provider: "baseten",
-        modelId: "zai-org/GLM-5.2",
-        reasoning: true,
-      } as never),
-    ).toEqual({
+    const profile = (modelId: string) =>
+      provider.resolveThinkingProfile?.({ provider: "baseten", modelId, reasoning: true } as never);
+    const deepseekLevels = [{ id: "off" }, { id: "low" }, { id: "high" }, { id: "max" }];
+    const glmProfile = {
       levels: [{ id: "off" }, { id: "high" }, { id: "max" }],
       defaultLevel: "off",
-    });
-    expect(
-      provider.resolveThinkingProfile?.({
-        provider: "baseten",
-        modelId: "zai-org/GLM-5.2-Fast",
-        reasoning: true,
-      } as never),
-    ).toEqual({
-      levels: [{ id: "off" }, { id: "high" }, { id: "max" }],
-      defaultLevel: "off",
-    });
-    expect(
-      provider.resolveThinkingProfile?.({
-        provider: "baseten",
-        modelId: "thinkingmachines/inkling",
-        reasoning: true,
-      } as never),
-    ).toBeUndefined();
+    };
+    for (const [modelId, expected] of [
+      ["deepseek-ai/DeepSeek-V4.1-Flash", { levels: deepseekLevels, defaultLevel: "high" }],
+      ["deepseek-ai/DeepSeek-V4-Pro-0813", { levels: deepseekLevels }],
+      [
+        "moonshotai/Kimi-K2.6",
+        {
+          levels: [{ id: "off" }, { id: "low", label: "on" }],
+          defaultLevel: "off",
+        },
+      ],
+      ["zai-org/GLM-5.2", glmProfile],
+      ["zai-org/GLM-5.2-Fast", glmProfile],
+      ["thinkingmachines/inkling", undefined],
+    ] as const) {
+      expect(profile(modelId), modelId).toEqual(expected);
+    }
   });
 });

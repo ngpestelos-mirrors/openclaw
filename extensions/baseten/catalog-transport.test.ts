@@ -3,7 +3,7 @@ import { detectAndLoadAgentHarnessPromptImages } from "openclaw/plugin-sdk/agent
 import { streamSimple, type Context, type Model } from "openclaw/plugin-sdk/llm";
 import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { clearLiveCatalogCacheForTests } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
-import { createSolidPngBuffer, createZeroUsageFixture } from "openclaw/plugin-sdk/test-fixtures";
+import { createSolidPngBuffer, makeAgentAssistantMessage } from "openclaw/plugin-sdk/test-fixtures";
 import { Type } from "typebox";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { runSingleProviderCatalog } from "../test-support/provider-model-test-helpers.js";
@@ -11,44 +11,48 @@ import basetenPlugin from "./index.js";
 
 const TEST_VALUE = "resolved-marker";
 const DEEPSEEK_V41_FLASH_MODEL_ID = "deepseek-ai/DeepSeek-V4.1-Flash";
+const probeTool = {
+  name: "live_probe",
+  description: "Return the supplied value.",
+  parameters: Type.Object({ value: Type.String() }, { additionalProperties: false }),
+};
+const resolveProviderAuth = () => ({
+  apiKey: TEST_VALUE,
+  discoveryApiKey: TEST_VALUE,
+  profileId: "baseten:fixture",
+  mode: "api_key" as const,
+  source: "profile" as const,
+});
 
-async function resolveSparseLiveModel(modelId = DEEPSEEK_V41_FLASH_MODEL_ID) {
+function mockCatalog(data: Record<string, unknown>[]) {
   clearLiveCatalogCacheForTests();
   const catalogFetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const request = new Request(input, init);
     expect(request.url).toBe("https://inference.baseten.co/v1/models");
     expect(request.method).toBe("GET");
-    return Response.json({
-      data: [
-        {
-          id: modelId,
-          object: "model",
-          name: modelId,
-          supported_features: ["tools", "reasoning", "json_mode", "structured_outputs"],
-          context_length: 900_000,
-          max_completion_tokens: 120_000,
-          pricing: {
-            prompt: "0.00000037",
-            completion: "0.00000141",
-            input_cache_read: "0.000000011",
-          },
-        },
-      ],
-    });
+    return Response.json({ data });
   });
   onTestFinished(() => {
     catalogFetch.mockRestore();
     clearLiveCatalogCacheForTests();
   });
+  return catalogFetch;
+}
+
+async function resolveSparseLiveModel(modelId = DEEPSEEK_V41_FLASH_MODEL_ID) {
+  const catalogFetch = mockCatalog([
+    {
+      id: modelId,
+      object: "model",
+      name: modelId,
+      supported_features: ["tools", "reasoning", "json_mode", "structured_outputs"],
+      context_length: 900_000,
+      max_completion_tokens: 120_000,
+      pricing: { prompt: "0.00000037", completion: "0.00000141", input_cache_read: "0.000000011" },
+    },
+  ]);
   const provider = await registerSingleProviderPlugin(basetenPlugin);
-  const catalog = await runSingleProviderCatalog(provider, {
-    resolveProviderAuth: () => ({
-      apiKey: TEST_VALUE,
-      discoveryApiKey: TEST_VALUE,
-      mode: "api_key",
-      source: "env",
-    }),
-  });
+  const catalog = await runSingleProviderCatalog(provider, { resolveProviderAuth });
   expect(catalogFetch).toHaveBeenCalledOnce();
   const definition = catalog.models.find((model) => model.id === modelId);
   if (!definition) {
@@ -115,13 +119,7 @@ async function captureRegisteredRequest(params: {
           timestamp: 0,
         },
       ],
-      tools: [
-        {
-          name: "live_probe",
-          description: "Return the supplied value.",
-          parameters: Type.Object({ value: Type.String() }, { additionalProperties: false }),
-        },
-      ],
+      tools: [probeTool],
     },
     {
       apiKey: TEST_VALUE,
@@ -144,16 +142,7 @@ async function captureRegisteredRequest(params: {
 
 describe("Baseten sparse live model transport", () => {
   it("forwards configured references through the registered live catalog", async () => {
-    clearLiveCatalogCacheForTests();
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      Response.json({
-        data: [{ id: "chat-local", object: "model" }],
-      }),
-    );
-    onTestFinished(() => {
-      fetchMock.mockRestore();
-      clearLiveCatalogCacheForTests();
-    });
+    const fetchMock = mockCatalog([{ id: "chat-local", object: "model" }]);
     const provider = await registerSingleProviderPlugin(basetenPlugin);
     if (!provider.catalog) {
       throw new Error("Registered Baseten catalog is missing");
@@ -162,13 +151,7 @@ describe("Baseten sparse live model transport", () => {
       config: { agents: { defaults: { model: "baseten/chat-typo" } } },
       env: {},
       resolveProviderApiKey: () => ({ apiKey: TEST_VALUE }),
-      resolveProviderAuth: () => ({
-        apiKey: TEST_VALUE,
-        discoveryApiKey: TEST_VALUE,
-        profileId: "baseten:fixture",
-        mode: "api_key",
-        source: "profile",
-      }),
+      resolveProviderAuth,
     });
     expect(result?.outcomes).toEqual([
       {
@@ -230,34 +213,14 @@ describe("Baseten sparse live model transport", () => {
       reasoning: "low",
       images: prepared.images,
     });
-    expect(body?.messages).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: "user",
-          content: expect.arrayContaining([
-            { type: "image_url", image_url: { url: `data:image/png;base64,${image.data}` } },
-          ]),
-        }),
-      ]),
+    expect(body?.messages).toContainEqual(
+      expect.objectContaining({
+        role: "user",
+        content: expect.arrayContaining([
+          { type: "image_url", image_url: { url: `data:image/png;base64,${image.data}` } },
+        ]),
+      }),
     );
-  });
-
-  it("disables the current Pro thinking envelope when thinking is off", async () => {
-    const { provider, model } = await resolveSparseLiveModel("deepseek-ai/DeepSeek-V4-Pro-0813");
-    const body = await captureRegisteredRequest({
-      provider,
-      model,
-      reasoning: "off",
-      maxTokens: 64,
-      forceTool: false,
-      context: { messages: [{ role: "user", content: "Reply with exactly ok.", timestamp: 0 }] },
-    });
-    // Baseten rejects effort "none" next to an enabled envelope with a 400.
-    expect(body).toMatchObject({
-      model: "deepseek-ai/DeepSeek-V4-Pro-0813",
-      reasoning_effort: "none",
-      thinking: { type: "disabled" },
-    });
   });
 
   it("sends the current Pro replay through its registered transport", async () => {
@@ -272,8 +235,7 @@ describe("Baseten sparse live model transport", () => {
       context: {
         messages: [
           { role: "user", content: "Call live_probe.", timestamp: 0 },
-          {
-            role: "assistant",
+          makeAgentAssistantMessage({
             api: "openai-completions",
             provider: "openai",
             model: "gpt-5.5",
@@ -285,10 +247,9 @@ describe("Baseten sparse live model transport", () => {
                 arguments: { value: "replay" },
               },
             ],
-            usage: createZeroUsageFixture(),
             stopReason: "toolUse",
             timestamp: 1,
-          },
+          }),
           {
             role: "toolResult",
             toolCallId,
@@ -299,13 +260,7 @@ describe("Baseten sparse live model transport", () => {
           },
           { role: "user", content: "Reply with exactly ok.", timestamp: 3 },
         ],
-        tools: [
-          {
-            name: "live_probe",
-            description: "Return the supplied value.",
-            parameters: Type.Object({ value: Type.String() }, { additionalProperties: false }),
-          },
-        ],
+        tools: [probeTool],
       },
     });
     expect(body).toMatchObject({
@@ -315,14 +270,12 @@ describe("Baseten sparse live model transport", () => {
       thinking: { type: "enabled" },
     });
     expect(body).not.toHaveProperty("tool_choice");
-    expect(body?.messages).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: "assistant",
-          reasoning_content: "",
-          tool_calls: expect.any(Array),
-        }),
-      ]),
+    expect(body?.messages).toContainEqual(
+      expect.objectContaining({
+        role: "assistant",
+        reasoning_content: "",
+        tool_calls: expect.any(Array),
+      }),
     );
   });
 });
