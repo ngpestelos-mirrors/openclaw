@@ -119,8 +119,7 @@ function createWorktreesPage(request?: Request, initial: ModelState = {}) {
     setGateway(gateway: ApplicationContext["gateway"]) {
       setContext(contextWithGateway(gateway));
     },
-    query: <T extends Element = HTMLElement>(selector: string) =>
-      element.querySelector<T>(selector),
+    query: element.querySelector.bind(element),
     button(label: string) {
       return [...element.querySelectorAll<HTMLButtonElement>("button")].find(
         (button) => button.textContent?.trim() === label,

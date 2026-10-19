@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -186,7 +187,14 @@ describe("bedrock mantle discovery", () => {
             throw new Error("Missing discovery abort signal");
           }
           started.resolve(signal);
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          signal.addEventListener(
+            "abort",
+            () => {
+              assert(signal.reason instanceof Error);
+              reject(signal.reason);
+            },
+            { once: true },
+          );
         }),
     );
     try {

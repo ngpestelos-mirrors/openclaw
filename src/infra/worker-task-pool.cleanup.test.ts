@@ -59,6 +59,7 @@ it("retries failed idle retirement without releasing artifacts before native exi
   const terminate = vi.fn<() => Promise<number>>().mockResolvedValue(0);
   terminate.mockRejectedValueOnce(failure);
   const loadCleanup = vi.fn(() => ({ removeTemporaryArtifacts: cleanup }));
+  // mock-isolation: Observe lazy cleanup loading without deleting fixture artifacts.
   vi.doMock("./temp-artifact-cleanup.js", loadCleanup);
   const { created, Pool } = await mockWorker(terminate);
   const cleanupOrder: string[] = [];

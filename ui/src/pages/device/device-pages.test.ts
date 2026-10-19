@@ -49,12 +49,12 @@ function createCapability(
   } satisfies NativeDeviceSettingsCapability;
   return {
     capability,
-    settle(index: number, next = createNativeDeviceSettingsSnapshot(), error?: Error) {
+    settle(this: void, index: number, next = createNativeDeviceSettingsSnapshot(), error?: Error) {
       capability.snapshot = next;
       capability.set.mock.calls[index]?.[2]?.(error);
       listeners.forEach((listener) => listener(next));
     },
-    publish(next: NativeDeviceSettingsSnapshot) {
+    publish(this: void, next: NativeDeviceSettingsSnapshot) {
       capability.snapshot = next;
       listeners.forEach((listener) => listener(next));
     },
@@ -150,11 +150,16 @@ async function mountProfileEditor() {
   return {
     ...fixture,
     input,
-    async type(value: string, delay = 400) {
+    async type(this: void, value: string, delay = 400) {
       typeInput(input, value);
       await vi.advanceTimersByTimeAsync(delay);
     },
-    reply(index: number, snapshot: ReturnType<typeof cookieSnapshot>, expected: string) {
+    reply(
+      this: void,
+      index: number,
+      snapshot: ReturnType<typeof cookieSnapshot>,
+      expected: string,
+    ) {
       fixture.settle(index, snapshot);
       flush();
       expect(input.value).toBe(expected);

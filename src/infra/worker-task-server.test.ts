@@ -166,7 +166,7 @@ it.each([false, true])(
       expect(boundary.closeMemory).toHaveBeenCalledBefore(admission.close);
       expect(admission.close).toHaveBeenCalledBefore(port.close);
       expect(cancelWorkerIdleGc).toHaveBeenCalledTimes(3);
-      expectCalls(0, scheduleWorkerIdleGc);
+      expect(scheduleWorkerIdleGc).not.toHaveBeenCalled();
       expect(process.exitCode).toBe(1);
       port.emit("message", { taskId: 2 });
       expectCalls(1, handler);
@@ -176,6 +176,26 @@ it.each([false, true])(
     }
   },
 );
+
+it("keeps ordinary task errors reusable", async () => {
+  const { port, task, expectResult, serveWorkerTasks } = await workerFixture();
+  const handler = vi.fn<() => string>().mockImplementationOnce(() => {
+    throw new Error("ordinary failure");
+  });
+  handler.mockReturnValue("next task");
+  serveWorkerTasks(handler);
+  await task(1);
+  expect(port.postMessage).toHaveBeenCalledWith({
+    status: "failed",
+    taskId: 1,
+    error: "ordinary failure",
+  });
+  await task(2);
+  expectResult(2, "next task");
+  expectCalls(2, handler);
+  expectCalls(0, port.close, boundary.closeMemory);
+  expect(process.exitCode).toBe(exitCode);
+});
 
 it("scopes the complete selection to each generic worker task", async () => {
   const { task, expectResult, serveWorkerTasks } = await workerFixture();

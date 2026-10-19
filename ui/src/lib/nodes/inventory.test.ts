@@ -86,7 +86,7 @@ describe("buildDeviceInventory", () => {
       workerSlots: { total: 2, available: 1 },
       workerBundle: { status: "installed", version: "2026.8.9" },
       hostStats,
-    } satisfies Parameters<typeof inventory>[1][number];
+    } satisfies NonNullable<Parameters<typeof inventory>[1]>[number];
     const groups = inventory(
       [duplicate("node-1", { roles: ["operator", "node"], connected: true, lastSeenAtMs: 1_000 })],
       [node],
@@ -113,7 +113,7 @@ describe("buildDeviceInventory", () => {
       connected: true,
       paired: true,
       workerBundle: { status: "missing" },
-    } satisfies Parameters<typeof inventory>[1][number];
+    } satisfies NonNullable<Parameters<typeof inventory>[1]>[number];
     expect(firstGroup(inventory([], [node])).primary.node?.workerBundle).toEqual({
       status: "missing",
     });

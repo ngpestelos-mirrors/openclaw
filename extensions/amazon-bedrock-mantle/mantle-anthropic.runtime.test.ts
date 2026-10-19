@@ -175,9 +175,10 @@ describe("createMantleAnthropicStreamFn", () => {
   });
 
   it("preserves Mantle's xhigh legacy budget independently of high", () => {
+    const thinkingBudgets = { high: 4096, xhigh: 6144 };
     const options = captureStreamOptions(
       createReasoningModel("claude-haiku-4-5", "Claude Haiku 4.5"),
-      { reasoning: "xhigh", thinkingBudgets: { high: 4096, xhigh: 6144 }, maxTokens: 2048 },
+      { reasoning: "xhigh", thinkingBudgets, maxTokens: 2048 },
     );
     expect(options).toMatchObject({
       maxTokens: 2048 + 6144,
