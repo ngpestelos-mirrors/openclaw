@@ -16,23 +16,9 @@ import {
 import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import * as diffSyntax from "./chat-diff-highlight.runtime.ts";
 import { SessionDiffPanel } from "./session-diff-panel.tsx";
-import type {
-  SessionDiffFileTextLoader,
-  SessionDiffLoader,
-  SessionDiffOwner,
-} from "./session-diff-panel.tsx";
+import type { SessionDiffFileTextLoader, SessionDiffLoader } from "./session-diff-panel.tsx";
 
-type SessionDiffElement = HTMLElement & {
-  mobile: boolean | null;
-  active: boolean;
-  owner: SessionDiffOwner | null;
-  openFile: ((path: string) => void) | null;
-  revealFile: ((path: string) => void) | null;
-  execNode: string | null;
-  loadFileText: SessionDiffFileTextLoader | null;
-  loader: SessionDiffLoader | null;
-  readonly updateComplete: Promise<boolean>;
-};
+type SessionDiffElement = HTMLElementTagNameMap["openclaw-session-diff"];
 
 function mountPanel() {
   let panel!: SessionDiffElement;
@@ -61,7 +47,9 @@ function setupDesktopResizeObserver() {
       disconnect() {}
     },
   );
-  onTestFinished(() => vi.unstubAllGlobals());
+  onTestFinished(() => {
+    vi.unstubAllGlobals();
+  });
 }
 
 function result(branch: string): SessionsDiffResult {
