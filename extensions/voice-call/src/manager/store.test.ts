@@ -1,4 +1,3 @@
-// Voice Call tests cover store plugin behavior.
 import fs from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
@@ -20,7 +19,7 @@ import {
   makePersistedCall,
 } from "../manager.test-harness.js";
 import { setVoiceCallStateRuntime } from "../runtime-state.js";
-import { CallRecordSchema } from "../types.js";
+import { CallRecordSchema, type CallRecord } from "../types.js";
 import { MAX_CALL_REPLAY_KEYS } from "./replay-keys.js";
 import {
   findCallInStore,
@@ -43,12 +42,14 @@ const MANAGER_REPLAY_KEY_LIMIT = 10_000;
 
 function installStateRuntime({
   beforeOperation,
+  onChunkRead,
 }: {
   beforeOperation?: (
     namespace: string,
     operation: "register" | "entries" | "count",
     key?: string,
   ) => Promise<void>;
+  onChunkRead?: (keys: readonly string[]) => void;
 } = {}): void {
   const state = createVoiceCallStateRuntimeForTests();
   setVoiceCallStateRuntime({
@@ -56,6 +57,16 @@ function installStateRuntime({
       ...state,
       openKeyedStoreV2: <T>(options: OpenAsyncKeyedStoreOptions) => {
         const backingStore = state.openKeyedStoreV2<T>(options);
+        if (onChunkRead && options.namespace === CALL_RECORD_EVENT_CHUNKS_NAMESPACE) {
+          return {
+            ...backingStore,
+            async lookupMany(keys: readonly string[]) {
+              const rows = await backingStore.lookupMany(keys);
+              onChunkRead(keys);
+              return rows;
+            },
+          };
+        }
         return beforeOperation
           ? {
               ...backingStore,
@@ -97,10 +108,32 @@ async function mutateOfflineCallStore(
   }
 }
 
+const makeCall = (overrides: Parameters<typeof makePersistedCall>[0] = {}) =>
+  CallRecordSchema.parse(makePersistedCall(overrides));
+const transcript = (text: string, timestamp = Date.now()): CallRecord["transcript"] => [
+  { timestamp, speaker: "user", text, isFinal: true },
+];
+
 describe("voice-call call record store", () => {
+  let storePath: string;
+  const saveCall = (overrides: Parameters<typeof makePersistedCall>[0]) =>
+    persistCallRecord(storePath, makeCall(overrides));
+  const openStore = <T>(namespace: string, maxEntries: number) =>
+    createPluginStateKeyedStoreForTests<T>("voice-call", {
+      namespace,
+      maxEntries,
+      env: { ...process.env, OPENCLAW_STATE_DIR: storePath },
+    });
+  const corruptRow = (namespace: string, key: string, value: unknown) =>
+    mutateOfflineCallStore(storePath, (db) => {
+      db.prepare(
+        "UPDATE plugin_state_entries SET value_json = ? WHERE plugin_id = 'voice-call' AND namespace = ? AND entry_key = ?",
+      ).run(JSON.stringify(value), namespace, key);
+    });
   beforeEach(() => {
     resetPluginStateStoreForTests();
     installStateRuntime();
+    storePath = createTestStorePath();
   });
 
   afterEach(async () => {
@@ -110,11 +143,8 @@ describe("voice-call call record store", () => {
   });
 
   it.each([0, 1])("honors SQLite tail --since %s before following new snapshots", async (since) => {
-    const storePath = createTestStorePath();
-    const calls = ["first", "second", "third"].map((callId) =>
-      CallRecordSchema.parse(makePersistedCall({ callId })),
-    );
-    const added = CallRecordSchema.parse(makePersistedCall({ callId: "new" }));
+    const calls = ["first", "second", "third"].map((callId) => makeCall({ callId }));
+    const added = makeCall({ callId: "new" });
     for (const call of calls) {
       await persistCallRecord(storePath, call);
     }
@@ -148,169 +178,110 @@ describe("voice-call call record store", () => {
       ).toEqual(since === 0 ? ["new"] : ["third", "new"]);
     } finally {
       stdout.mockRestore();
-      await closeOpenClawStateDatabaseAsync();
-      fs.rmSync(storePath, { recursive: true, force: true });
     }
   });
 
   it("bounds bulk chunk reads across retained call snapshots", async () => {
-    const storePath = createTestStorePath();
     const calls = Array.from({ length: 129 }, (_, index) =>
-      CallRecordSchema.parse(
-        makePersistedCall({
-          callId: `call-batch-${index}`,
-          providerCallId: `provider-batch-${index}`,
-          processedEventIds: [`event-${index}`],
-          transcript:
-            index === 127
-              ? [{ timestamp: 1, speaker: "user", text: "x".repeat(110_000), isFinal: true }]
-              : [],
-        }),
-      ),
+      makeCall({
+        callId: `call-batch-${index}`,
+        providerCallId: `provider-batch-${index}`,
+        processedEventIds: [`event-${index}`],
+        transcript: index === 127 ? transcript("x".repeat(110_000), 1) : [],
+      }),
     );
-    try {
-      for (const call of calls) {
-        await persistCallRecord(storePath, call);
-      }
-      resetPluginStateStoreForTests();
-      const chunkQueries: string[][] = [];
-      const state = createVoiceCallStateRuntimeForTests();
-      setVoiceCallStateRuntime({
-        state: {
-          ...state,
-          openKeyedStoreV2: <T>(options: OpenAsyncKeyedStoreOptions) => {
-            const store = state.openKeyedStoreV2<T>(options);
-            if (options.namespace !== CALL_RECORD_EVENT_CHUNKS_NAMESPACE) {
-              return store;
-            }
-            return {
-              ...store,
-              async lookupMany(keys: readonly string[]) {
-                const rows = await store.lookupMany(keys);
-                chunkQueries.push([...keys]);
-                return rows;
-              },
-            };
-          },
-        },
-      });
-      await expect(getCallHistoryFromStore(storePath, calls.length)).resolves.toEqual(calls);
-      expect(chunkQueries.length).toBeLessThanOrEqual(2);
-      expect(chunkQueries.flat()).toHaveLength(131);
-      const eventQueries = new Map<string, number>();
-      for (const [queryIndex, keys] of chunkQueries.entries()) {
-        expect(keys.length).toBeLessThanOrEqual(128);
-        for (const key of keys) {
-          const eventKey = key.slice(0, key.lastIndexOf(":chunk:"));
-          expect(eventQueries.get(eventKey) ?? queryIndex).toBe(queryIndex);
-          eventQueries.set(eventKey, queryIndex);
-        }
-      }
-      const restored = await loadActiveCallsFromStore(storePath);
-      expect([...restored.activeCalls.values()]).toEqual(calls);
-      expect([...restored.processedEventIds]).toEqual(
-        calls.flatMap((call) => call.processedEventIds),
-      );
-      await expect(findCallInStore(storePath, "provider-batch-127")).resolves.toEqual(calls[127]);
-    } finally {
-      await closeOpenClawStateDatabaseAsync();
-      resetPluginStateStoreForTests();
-      fs.rmSync(storePath, { recursive: true, force: true });
+    for (const call of calls) {
+      await persistCallRecord(storePath, call);
     }
+    resetPluginStateStoreForTests();
+    const chunkQueries: string[][] = [];
+    installStateRuntime({ onChunkRead: (keys) => chunkQueries.push([...keys]) });
+    await expect(getCallHistoryFromStore(storePath, calls.length)).resolves.toEqual(calls);
+    expect(chunkQueries.length).toBeLessThanOrEqual(2);
+    expect(chunkQueries.flat()).toHaveLength(131);
+    const eventQueries = new Map<string, number>();
+    for (const [queryIndex, keys] of chunkQueries.entries()) {
+      expect(keys.length).toBeLessThanOrEqual(128);
+      for (const key of keys) {
+        const eventKey = key.slice(0, key.lastIndexOf(":chunk:"));
+        expect(eventQueries.get(eventKey) ?? queryIndex).toBe(queryIndex);
+        eventQueries.set(eventKey, queryIndex);
+      }
+    }
+    const restored = await loadActiveCallsFromStore(storePath);
+    expect([...restored.activeCalls.values()]).toEqual(calls);
+    expect([...restored.processedEventIds]).toEqual(
+      calls.flatMap((call) => call.processedEventIds),
+    );
+    await expect(findCallInStore(storePath, "provider-batch-127")).resolves.toEqual(calls[127]);
   });
 
   it("preserves errors before later malformed metadata", async () => {
-    const storePath = createTestStorePath();
-    const env = { ...process.env, OPENCLAW_STATE_DIR: storePath };
-    try {
-      for (const callId of ["earlier", "later"]) {
-        await persistCallRecord(storePath, CallRecordSchema.parse(makePersistedCall({ callId })));
-      }
-      const events = createPluginStateKeyedStoreForTests<{
-        chunkCount: number;
-        sequence: number;
-      }>("voice-call", {
-        namespace: CALL_RECORD_EVENTS_NAMESPACE,
-        maxEntries: 1100,
-        env,
-      });
-      const rows = (await events.entries()).toSorted((a, b) => a.value.sequence - b.value.sequence);
-      const first = expectDefined(rows[0], "earlier persisted event");
-      const second = expectDefined(rows[1], "later persisted event");
-      await mutateOfflineCallStore(storePath, (db) => {
-        const update = db.prepare(
-          "UPDATE plugin_state_entries SET value_json = ? WHERE plugin_id = 'voice-call' AND namespace = ? AND entry_key = ?",
-        );
-        db.prepare(
-          "UPDATE plugin_state_entries SET created_at = ? WHERE namespace = ? AND entry_key = ?",
-        ).run(1, CALL_RECORD_EVENTS_NAMESPACE, first.key);
-        db.prepare(
-          "UPDATE plugin_state_entries SET created_at = ? WHERE namespace = ? AND entry_key = ?",
-        ).run(2, CALL_RECORD_EVENTS_NAMESPACE, second.key);
-        update.run("null", CALL_RECORD_EVENTS_NAMESPACE, second.key);
-        update.run("invalid JSON", CALL_RECORD_EVENT_CHUNKS_NAMESPACE, `${first.key}:chunk:0000`);
-      });
-      await expect(findCallInStore(storePath, "later")).rejects.toThrowError(
-        expect.objectContaining({ code: "PLUGIN_STATE_CORRUPT" }),
-      );
-      await mutateOfflineCallStore(storePath, (db) => {
-        db.prepare(
-          "UPDATE plugin_state_entries SET value_json = ? WHERE plugin_id = 'voice-call' AND namespace = ? AND entry_key = ?",
-        ).run(
-          JSON.stringify({ index: -1, dataBase64: "" }),
-          CALL_RECORD_EVENT_CHUNKS_NAMESPACE,
-          `${first.key}:chunk:0000`,
-        );
-      });
-      await expect(findCallInStore(storePath, "later")).rejects.toBeInstanceOf(TypeError);
-      await mutateOfflineCallStore(storePath, (db) => {
-        db.prepare(
-          "UPDATE plugin_state_entries SET value_json = ? WHERE plugin_id = 'voice-call' AND namespace = ? AND entry_key = ?",
-        ).run(
-          JSON.stringify({ chunkCount: 0, byteLength: 0 }),
-          CALL_RECORD_EVENTS_NAMESPACE,
-          second.key,
-        );
-      });
-      await expect(getCallHistoryFromStore(storePath)).resolves.toEqual([]);
-    } finally {
-      await closeOpenClawStateDatabaseAsync();
-      resetPluginStateStoreForTests();
-      fs.rmSync(storePath, { recursive: true, force: true });
+    for (const callId of ["earlier", "later"]) {
+      await saveCall({ callId });
     }
+    const events = openStore<{ chunkCount: number; sequence: number }>(
+      CALL_RECORD_EVENTS_NAMESPACE,
+      1100,
+    );
+    const rows = (await events.entries()).toSorted((a, b) => a.value.sequence - b.value.sequence);
+    const first = expectDefined(rows[0], "earlier persisted event");
+    const second = expectDefined(rows[1], "later persisted event");
+    await mutateOfflineCallStore(storePath, (db) => {
+      const update = db.prepare(
+        "UPDATE plugin_state_entries SET value_json = ? WHERE plugin_id = 'voice-call' AND namespace = ? AND entry_key = ?",
+      );
+      db.prepare(
+        "UPDATE plugin_state_entries SET created_at = ? WHERE namespace = ? AND entry_key = ?",
+      ).run(1, CALL_RECORD_EVENTS_NAMESPACE, first.key);
+      db.prepare(
+        "UPDATE plugin_state_entries SET created_at = ? WHERE namespace = ? AND entry_key = ?",
+      ).run(2, CALL_RECORD_EVENTS_NAMESPACE, second.key);
+      update.run("null", CALL_RECORD_EVENTS_NAMESPACE, second.key);
+      update.run("invalid JSON", CALL_RECORD_EVENT_CHUNKS_NAMESPACE, `${first.key}:chunk:0000`);
+    });
+    await expect(findCallInStore(storePath, "later")).rejects.toThrowError(
+      expect.objectContaining({ code: "PLUGIN_STATE_CORRUPT" }),
+    );
+    await corruptRow(CALL_RECORD_EVENT_CHUNKS_NAMESPACE, `${first.key}:chunk:0000`, {
+      index: -1,
+      dataBase64: "",
+    });
+    await expect(findCallInStore(storePath, "later")).rejects.toBeInstanceOf(TypeError);
+    await corruptRow(CALL_RECORD_EVENTS_NAMESPACE, second.key, {
+      chunkCount: 0,
+      byteLength: 0,
+    });
+    await expect(getCallHistoryFromStore(storePath)).resolves.toEqual([]);
   });
 
   it("restores complete chunked call transcripts", async () => {
-    const storePath = createTestStorePath();
-    const call = CallRecordSchema.parse(
-      makePersistedCall({
-        callId: "call-chunked",
-        transcript: [
-          { timestamp: Date.now(), speaker: "user", text: "🦞".repeat(180_000), isFinal: true },
-        ],
-      }),
-    );
+    const call = makeCall({
+      callId: "call-chunked",
+      transcript: transcript("🦞".repeat(180_000)),
+    });
     await persistCallRecord(storePath, call);
     resetPluginStateStoreForTests();
     expect(
       (await loadActiveCallsFromStore(storePath)).activeCalls.get(call.callId)?.transcript,
     ).toEqual(call.transcript);
     await expect(getCallHistoryFromStore(storePath)).resolves.toEqual([call]);
-    const env = { ...process.env, OPENCLAW_STATE_DIR: storePath };
     const openChunks = () =>
-      createPluginStateKeyedStoreForTests<{ index: number; dataBase64: string }>("voice-call", {
-        namespace: CALL_RECORD_EVENT_CHUNKS_NAMESPACE,
-        maxEntries: CALL_RECORD_CHUNK_MAX_ENTRIES,
-        env,
-      });
+      openStore<{ index: number; dataBase64: string }>(
+        CALL_RECORD_EVENT_CHUNKS_NAMESPACE,
+        CALL_RECORD_CHUNK_MAX_ENTRIES,
+      );
     let chunks = openChunks();
     const rows = await chunks.entries();
-    const first = rows.find((row) => row.value.index === 0);
-    const later = rows.find((row) => row.value.index === 1);
-    if (!first || !later) {
-      throw new Error("expected call transcript chunks");
-    }
-    const good = CallRecordSchema.parse(makePersistedCall({ callId: "good-call", transcript: [] }));
+    const first = expectDefined(
+      rows.find((row) => row.value.index === 0),
+      "first chunk",
+    );
+    const later = expectDefined(
+      rows.find((row) => row.value.index === 1),
+      "later chunk",
+    );
+    const good = makeCall({ callId: "good-call", transcript: [] });
     await persistCallRecord(storePath, good);
     await mutateOfflineCallStore(storePath, (db) => {
       db.prepare("UPDATE plugin_state_entries SET value_json = ? WHERE entry_key = ?").run(
@@ -333,11 +304,9 @@ describe("voice-call call record store", () => {
   it.each([1, 2])(
     "stops at failed chunk write %s without publishing metadata",
     async (failedWrite) => {
-      const call = CallRecordSchema.parse(
-        makePersistedCall({
-          transcript: [{ timestamp: 1, speaker: "user", text: "x".repeat(100_000), isFinal: true }],
-        }),
-      );
+      const call = makeCall({
+        transcript: transcript("x".repeat(100_000), 1),
+      });
       const failure = new Error("chunk write failed");
       let writes = 0;
       const beforeWrite = vi.fn((_namespace: string) => {
@@ -352,7 +321,6 @@ describe("voice-call call record store", () => {
           }
         },
       });
-      const storePath = createTestStorePath();
       const toString = vi.spyOn(Buffer.prototype, "toString");
       try {
         await expect(persistCallRecord(storePath, call)).rejects.toBe(failure);
@@ -380,29 +348,16 @@ describe("voice-call call record store", () => {
         expect((await loadActiveCallsFromStore(storePath)).activeCalls.size).toBe(0);
       } finally {
         toString.mockRestore();
-        await closeOpenClawStateDatabaseAsync();
-        resetPluginStateStoreForTests();
-        fs.rmSync(storePath, { recursive: true, force: true });
       }
     },
   );
 
   it("persists oversized records in SQLite without creating a JSONL fallback", async () => {
-    const storePath = createTestStorePath();
-    const call = CallRecordSchema.parse(
-      makePersistedCall({
-        callId: "call-large",
-        metadata: { mode: "conversation", numberRouteKey: "+15550000001" },
-        transcript: [
-          {
-            timestamp: Date.now(),
-            speaker: "user",
-            text: "x".repeat(3 * 1024 * 1024),
-            isFinal: true,
-          },
-        ],
-      }),
-    );
+    const call = makeCall({
+      callId: "call-large",
+      metadata: { mode: "conversation", numberRouteKey: "+15550000001" },
+      transcript: transcript("x".repeat(3 * 1024 * 1024)),
+    });
 
     await persistCallRecord(storePath, call);
 
@@ -418,27 +373,9 @@ describe("voice-call call record store", () => {
     expect(fs.existsSync(path.join(storePath, "calls.jsonl"))).toBe(false);
   });
 
-  it("replays same-millisecond snapshots in write order", async () => {
-    vi.useFakeTimers({ now: new Date("2026-05-31T10:00:00.000Z") });
-    const storePath = createTestStorePath();
-    const first = CallRecordSchema.parse(
-      makePersistedCall({ callId: "call-order", state: "ringing" }),
-    );
-    const second = CallRecordSchema.parse(
-      makePersistedCall({ callId: "call-order", state: "answered" }),
-    );
-
-    await persistCallRecord(storePath, first);
-    await persistCallRecord(storePath, second);
-
-    const restored = await loadActiveCallsFromStore(storePath);
-    expect(restored.activeCalls.get("call-order")?.state).toBe("answered");
-  });
-
   it("prunes old snapshot chunks while retaining later in-process call updates", async () => {
-    const storePath = createTestStorePath();
     const env = { OPENCLAW_STATE_DIR: storePath };
-    const seeded = CallRecordSchema.parse(makePersistedCall({ callId: "call-seeded" }));
+    const seeded = makeCall({ callId: "call-seeded" });
     const bytes = Buffer.from(JSON.stringify(seeded));
     const eventRows = Array.from({ length: 1_000 }, (_, index) => ({
       key: `seed:${String(index).padStart(4, "0")}`,
@@ -470,9 +407,7 @@ describe("voice-call call record store", () => {
     await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
 
-    const first = CallRecordSchema.parse(
-      makePersistedCall({ callId: "call-current", state: "ringing" }),
-    );
+    const first = makeCall({ callId: "call-current", state: "ringing" });
     await persistCallRecord(storePath, first);
     await expect(findCallInStore(storePath, first.callId)).resolves.toEqual(first);
     const latest = { ...first, state: "answered" as const };
@@ -500,7 +435,6 @@ describe("voice-call call record store", () => {
 
   it("captures call bytes and write order before a delayed chunk publishes", async () => {
     vi.useFakeTimers({ now: new Date("2026-05-31T10:00:00.000Z") });
-    const storePath = createTestStorePath();
     const blocked = createDeferred<void>();
     const release = createDeferred<void>();
     let delayed = false;
@@ -517,15 +451,11 @@ describe("voice-call call record store", () => {
         }
       },
     });
-    const first = CallRecordSchema.parse(
-      makePersistedCall({
-        callId: "call-delayed",
-        state: "ringing",
-        transcript: [
-          { timestamp: Date.now(), speaker: "user", text: "🦞".repeat(30_000), isFinal: true },
-        ],
-      }),
-    );
+    const first = makeCall({
+      callId: "call-delayed",
+      state: "ringing",
+      transcript: transcript("🦞".repeat(30_000)),
+    });
     const expectedFirst = structuredClone(first);
     const pending = persistCallRecord(storePath, first);
     try {
@@ -550,7 +480,6 @@ describe("voice-call call record store", () => {
   it.each([CALL_RECORD_EVENT_CHUNKS_NAMESPACE, CALL_RECORD_EVENTS_NAMESPACE])(
     "does not publish a call after a rejected %s write",
     async (failedNamespace) => {
-      const storePath = createTestStorePath();
       const failure = new Error("delayed SQLite write rejected");
       installStateRuntime({
         beforeOperation: async (namespace, operation, key) => {
@@ -564,13 +493,9 @@ describe("voice-call call record store", () => {
           }
         },
       });
-      const call = CallRecordSchema.parse(
-        makePersistedCall({
-          transcript: [
-            { timestamp: Date.now(), speaker: "user", text: "🦞".repeat(30_000), isFinal: true },
-          ],
-        }),
-      );
+      const call = makeCall({
+        transcript: transcript("🦞".repeat(30_000)),
+      });
       await expect(persistCallRecord(storePath, call)).rejects.toBe(failure);
       installStateRuntime();
       resetPluginStateStoreForTests();
@@ -580,8 +505,7 @@ describe("voice-call call record store", () => {
   );
 
   it("propagates pruning rejection and preserves restore versus status read errors", async () => {
-    const storePath = createTestStorePath();
-    const call = CallRecordSchema.parse(makePersistedCall({ callId: "call-read-error" }));
+    const call = makeCall({ callId: "call-read-error" });
     const failure = new Error("delayed SQLite read rejected");
     installStateRuntime({
       beforeOperation: async (_namespace, operation) => {
@@ -601,17 +525,14 @@ describe("voice-call call record store", () => {
   });
 
   it("persists and restores only the newest per-call replay keys", async () => {
-    const storePath = createTestStorePath();
     const replayKeys = Array.from(
       { length: MAX_CALL_REPLAY_KEYS + 2 },
       (_, index) => `evt-${index}`,
     );
-    const call = CallRecordSchema.parse(
-      makePersistedCall({
-        callId: "call-bounded-replay",
-        processedEventIds: replayKeys,
-      }),
-    );
+    const call = makeCall({
+      callId: "call-bounded-replay",
+      processedEventIds: replayKeys,
+    });
 
     await persistCallRecord(storePath, call);
 
@@ -622,46 +543,30 @@ describe("voice-call call record store", () => {
   });
 
   it("hydrates manager replay keys in latest-snapshot call order", async () => {
-    const storePath = createTestStorePath();
-    await persistCallRecord(
-      storePath,
-      CallRecordSchema.parse(
-        makePersistedCall({
-          callId: "call-latest",
-          providerCallId: "provider-latest",
-          processedEventIds: ["evt-latest-old"],
-        }),
-      ),
-    );
+    await saveCall({
+      callId: "call-latest",
+      providerCallId: "provider-latest",
+      processedEventIds: ["evt-latest-old"],
+    });
     for (
       let callIndex = 0;
       callIndex < MANAGER_REPLAY_KEY_LIMIT / MAX_CALL_REPLAY_KEYS;
       callIndex++
     ) {
-      await persistCallRecord(
-        storePath,
-        CallRecordSchema.parse(
-          makePersistedCall({
-            callId: `call-fill-${callIndex}`,
-            providerCallId: `provider-fill-${callIndex}`,
-            processedEventIds: Array.from(
-              { length: MAX_CALL_REPLAY_KEYS },
-              (_, eventIndex) => `evt-fill-${callIndex}-${eventIndex}`,
-            ),
-          }),
+      await saveCall({
+        callId: `call-fill-${callIndex}`,
+        providerCallId: `provider-fill-${callIndex}`,
+        processedEventIds: Array.from(
+          { length: MAX_CALL_REPLAY_KEYS },
+          (_, eventIndex) => `evt-fill-${callIndex}-${eventIndex}`,
         ),
-      );
+      });
     }
-    await persistCallRecord(
-      storePath,
-      CallRecordSchema.parse(
-        makePersistedCall({
-          callId: "call-latest",
-          providerCallId: "provider-latest",
-          processedEventIds: ["evt-latest-old", "evt-latest-new"],
-        }),
-      ),
-    );
+    await saveCall({
+      callId: "call-latest",
+      providerCallId: "provider-latest",
+      processedEventIds: ["evt-latest-old", "evt-latest-new"],
+    });
 
     const restored = await loadActiveCallsFromStore(storePath);
 
@@ -673,33 +578,17 @@ describe("voice-call call record store", () => {
   });
 
   it("finds retained snapshots outside recent history and preserves internal-id precedence", async () => {
-    const storePath = createTestStorePath();
-    await persistCallRecord(
-      storePath,
-      CallRecordSchema.parse(
-        makePersistedCall({ callId: "call-target", providerCallId: "provider-target" }),
-      ),
-    );
-    await persistCallRecord(
-      storePath,
-      CallRecordSchema.parse(
-        makePersistedCall({
-          callId: "call-target",
-          providerCallId: "provider-target",
-          state: "completed",
-        }),
-      ),
-    );
+    await saveCall({ callId: "call-target", providerCallId: "provider-target" });
+    await saveCall({
+      callId: "call-target",
+      providerCallId: "provider-target",
+      state: "completed",
+    });
     for (let index = 0; index < 101; index += 1) {
-      await persistCallRecord(
-        storePath,
-        CallRecordSchema.parse(
-          makePersistedCall({
-            callId: `noise-${index}`,
-            providerCallId: index === 100 ? "call-target" : `provider-noise-${index}`,
-          }),
-        ),
-      );
+      await saveCall({
+        callId: `noise-${index}`,
+        providerCallId: index === 100 ? "call-target" : `provider-noise-${index}`,
+      });
     }
     expect(await getCallHistoryFromStore(storePath, 100)).toHaveLength(100);
     expect(await findCallInStore(storePath, "call-target")).toMatchObject({
