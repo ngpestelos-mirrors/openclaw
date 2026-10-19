@@ -8,14 +8,13 @@ import {
   type OpenClawTestInstance,
 } from "../../../test/helpers/openclaw-test-instance.js";
 import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.js";
-import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../config/config.js";
+import { captureRuntimeConfigAsyncReader } from "../../config/config.js";
 import type { CronJob } from "../../cron/types.js";
 import type { AgentRuntimeIdentity } from "../../gateway/agent-runtime-identity-token.js";
 import {
   claimAgentRunDelegatedAuthority,
   releaseAgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
-import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
 import { createTestAdmittedRunContext } from "../admitted-run-context.test-support.js";
 import {
   createCronCreatorAuthorityCapability,
@@ -198,15 +197,11 @@ describe("cron stream agent authority final effects", () => {
         cron: { enabled: true, triggers: { enabled: true } },
       },
     });
-    const env = captureEnv(["HOME", "OPENCLAW_CONFIG_PATH", "OPENCLAW_STATE_DIR"]);
     await runQaGatewayFixture(
       async () => {
         await instance.startGateway();
-        setTestEnvValue("HOME", instance.homeDir);
-        setTestEnvValue("OPENCLAW_CONFIG_PATH", instance.configPath);
-        setTestEnvValue("OPENCLAW_STATE_DIR", instance.stateDir);
-        clearConfigCache();
-        clearRuntimeConfigSnapshot();
+        instance.state.applyEnv();
+        await captureRuntimeConfigAsyncReader()();
 
         const pidPath = path.join(instance.state.workspaceDir, "stream-source.pid");
         const source = [
@@ -451,12 +446,7 @@ describe("cron stream agent authority final effects", () => {
         expect(stillExhausted.state.streamRestartExhausted).toBe(true);
         expect(Number(await fs.readFile(pidPath, "utf8"))).toBe(thirdPid);
       },
-      async () => {
-        env.restore();
-        clearConfigCache();
-        clearRuntimeConfigSnapshot();
-        await instance.cleanup();
-      },
+      () => instance.cleanup(),
     );
   });
 });
