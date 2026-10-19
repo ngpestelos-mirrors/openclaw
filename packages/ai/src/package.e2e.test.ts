@@ -48,6 +48,15 @@ const compatibility = {
       AnthropicToolProjection AnthropicProjectedToolChoice AnthropicCacheWriteUsage
       AnthropicPromptUsageSnapshot AnthropicIterationUsageSnapshot AnthropicIterationUsageResult`),
   },
+  "@openclaw/ai/internal/model-request-body": {
+    values: [
+      "encodedModelRequestBodyStream",
+      "modelRequestBodyState",
+      "prepareModelRequestBody",
+      "serializeModelRequestBody",
+    ],
+    types: ["EncodedModelRequestBody"],
+  },
   "@openclaw/ai/internal/openai": {
     values: names(`streamOpenAICompletions streamSimpleOpenAICompletions convertMessages
       parseAzureDeploymentNameMap resolveAzureDeploymentNameFromMap isTraditionalAzureOpenAIHost
@@ -61,7 +70,8 @@ const compatibility = {
       isAzureResponsesTextDeltaEvent resolveResponsesMessageSnapshotCollapse mapResponsesTerminalUsage
       readResponsesReasoningTokens resolveResponsesTerminalStopReason readResponsesToolCallItemIdentity
       createResponsesToolCallTracker mapOpenAIStopReason projectOpenAITools
-      reconcileOpenAIResponsesToolChoice reconcileOpenAICompletionsToolChoice responsesPromptObserver`),
+      reconcileOpenAIResponsesToolChoice reconcileOpenAICompletionsToolChoice responsesPromptObserver
+      encodedModelRequestBodyStream modelRequestBodyState`),
     types:
       names(`OpenAICompletionsOptions OpenAIReasoningEffort OpenAIApiReasoningEffort OpenAIResponsesOptions
       ResponsesTextContentPartType ResponsesTextDeltaEventType AzureResponsesTextContentPart
@@ -222,6 +232,24 @@ it("@openclaw/ai packed package installs externally and preserves every publishe
         if (missing.length > 0) {
           throw new Error(specifier + " missing runtime exports: " + missing.join(", "));
         }
+      }
+      const body = await import("@openclaw/ai/internal/model-request-body");
+      const legacy = await import("@openclaw/ai/internal/openai");
+      const options = {};
+      let encodings = 0;
+      legacy.modelRequestBodyState(options).encode = async (payload) => {
+        encodings++;
+        return body.serializeModelRequestBody(payload);
+      };
+      const prepared = await body.prepareModelRequestBody(options)({ stream: true, input: "hello" });
+      if (encodings !== 1 || !legacy.modelRequestBodyState(options).enabled) {
+        throw new Error("request-body option state was split across package entries");
+      }
+      if (legacy.encodedModelRequestBodyStream(prepared.body) !== true) {
+        throw new Error("encoded request-body stream metadata was split across package entries");
+      }
+      if (await prepared.body.text() !== '{"stream":true,"input":"hello"}') {
+        throw new Error("request-body encoding changed across package entries");
       }
     `;
   await runCommand(process.execPath, createNodeEvalArgs(importScript, { evalFlag: "-e" }), {

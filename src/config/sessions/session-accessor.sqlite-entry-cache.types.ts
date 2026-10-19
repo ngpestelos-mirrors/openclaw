@@ -48,6 +48,21 @@ function selectSessionSharingEntry(entry: InternalSessionEntry) {
     lifecycleRevision: entry.lifecycleRevision,
     lifecycleRunId: entry.lifecycleRunId,
     activeWriterRunId: entry.activeWriterRunId,
+    sandboxMode: entry.sandboxMode,
+    execHost: entry.execHost,
+    execCwd: entry.execCwd,
+    providerOverride: entry.providerOverride,
+    modelOverride: entry.modelOverride,
+    modelOverrideSource: entry.modelOverrideSource,
+    modelOverrideRouteResolution: entry.modelOverrideRouteResolution,
+    modelOverrideFallbackOriginProvider: entry.modelOverrideFallbackOriginProvider,
+    modelOverrideFallbackOriginModel: entry.modelOverrideFallbackOriginModel,
+    subagentRole: entry.subagentRole,
+    subagentControlScope: entry.subagentControlScope,
+    completionOwnerSessionKey: entry.completionOwnerSessionKey,
+    inheritedToolPolicyVersion: entry.inheritedToolPolicyVersion,
+    inheritedToolAllow: entry.inheritedToolAllow ? [...entry.inheritedToolAllow] : undefined,
+    inheritedToolDeny: entry.inheritedToolDeny ? [...entry.inheritedToolDeny] : undefined,
     ...(entry.subagentRecovery
       ? {
           subagentRecovery: {

@@ -14,6 +14,17 @@ import * as embeddedAgent from "../agents/embedded-agent.js";
 import type { EmbeddedAgentRunResult } from "../agents/embedded-agent.js";
 import { resolveAgentRunErrorLifecycleFields } from "../agents/run-termination.js";
 import { runAnnounceAgentCall } from "../agents/subagents/announce/subagent-announce-completion-delivery.js";
+import { listRunsForControllerFromRuns } from "../agents/subagents/registry/subagent-registry-queries.js";
+import { loadSubagentRegistryFromSqlite } from "../agents/subagents/registry/subagent-registry-state.fixture.test-support.js";
+import {
+  createCanonicalSubagentRunFixture,
+  settleSubagentRegistryPersistenceWork,
+} from "../agents/subagents/registry/subagent-registry.persistence.test-support.js";
+import {
+  addSubagentRunForTests,
+  getSubagentRunByChildSessionKey,
+  releaseSubagentRun,
+} from "../agents/subagents/registry/subagent-registry.test-helpers.js";
 import { withGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
 import { getReplyFromConfig } from "../auto-reply/reply/get-reply.js";
 import { captureSessionEventTargetForHost } from "../auto-reply/reply/session-event-handoff.js";
@@ -482,6 +493,77 @@ describe("private subagent completion processing receipts", () => {
       await expect(dispatch("changed child result")).rejects.toThrow("conflicts");
     },
   );
+
+  it("preserves a paused owner when replaying a completed private settle input", async () => {
+    const settleRequest = {
+      ...request(),
+      inputProvenance: {
+        ...request().inputProvenance,
+        sourceTool: "subagent_settle",
+      },
+    };
+    const dispatchSettle = () =>
+      dispatchGatewayMethodInProcess<Record<string, unknown>>("agent", settleRequest, {
+        privateCompletion: true,
+        expectFinal: true,
+        forceSyntheticClient: true,
+        operatorRoleActor: { kind: "system" },
+        resolveGatewayContext: () => kernel.gatewayRequestContext,
+      });
+    agentCommandMock.mockImplementationOnce(async (input) => {
+      await recorder(input).persistApproved();
+      return { payloads: [], meta: { durationMs: 1 } };
+    });
+    expect(await dispatchSettle()).toMatchObject({ status: "ok", inputProcessingCompleted: true });
+    const completed = completions();
+    expect(completed).toMatchObject([{ run_id: runId, succeeded: 1 }]);
+    const committed = transcript();
+    const previousRunId = `paused-after-${runId}`;
+    const previous = createCanonicalSubagentRunFixture({
+      runId: previousRunId,
+      childSessionKey: sessionKey,
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "A later paused orchestration",
+      cleanup: "keep",
+      createdAt: Date.now(),
+      startedAt: Date.now(),
+      endedAt: Date.now(),
+      pauseReason: "sessions_yield",
+      expectsCompletionMessage: false,
+    });
+    await addSubagentRunForTests(previous);
+    const paused = structuredClone(await getSubagentRunByChildSessionKey(sessionKey));
+    const stored = listRunsForControllerFromRuns(
+      loadSubagentRegistryFromSqlite(),
+      "agent:main:main",
+    );
+    expect(paused).toMatchObject({ runId: previousRunId, pauseReason: "sessions_yield" });
+    expect(stored.find((run) => run.runId === previousRunId)).toMatchObject({
+      pauseReason: "sessions_yield",
+    });
+    // Evict only the transport replay: the actual completed SQLite input must
+    // prevent this old delivery from adopting the target's newer paused run.
+    kernel.gatewayRequestContext.dedupe.delete(`agent:${runId}`);
+    try {
+      expect(await dispatchSettle()).toMatchObject({
+        status: "ok",
+        inputProcessingCompleted: true,
+      });
+      expect(agentCommandMock).toHaveBeenCalledOnce();
+      expect(await getSubagentRunByChildSessionKey(sessionKey)).toEqual(paused);
+      expect(
+        listRunsForControllerFromRuns(loadSubagentRegistryFromSqlite(), "agent:main:main"),
+      ).toEqual(stored);
+      expect(completions()).toEqual(completed);
+      expect(transcript()).toEqual(committed);
+      expect(pending()).toEqual([]);
+    } finally {
+      await releaseSubagentRun(previousRunId);
+      await releaseSubagentRun(runId);
+      await settleSubagentRegistryPersistenceWork();
+    }
+  });
 
   it.for(["source changed", "provider failed"] as const)(
     "settles private execution without confusing cancellation and failure: %s",

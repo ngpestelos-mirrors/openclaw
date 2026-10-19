@@ -538,9 +538,7 @@ describe("subagent announce formatting", () => {
       if (!text?.trim()) {
         return { messages: [] };
       }
-      return {
-        messages: [{ role: "assistant", content: [{ type: "text", text }] }],
-      };
+      return { messages: [textAssistant(text)] };
     });
     sessionStore = {};
     sessionBindingServiceTesting.resetSessionBindingAdaptersForTests();
