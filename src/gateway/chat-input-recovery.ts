@@ -76,7 +76,6 @@ export async function resumeChatInput(
     await chatInputRecoveryAdmission.run(
       {
         target,
-        message,
         requestFingerprint: requestHash.slice("request:".length),
         suppressCommandInterpretation: metadata.suppressCommandInterpretation === true,
       },

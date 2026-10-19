@@ -134,7 +134,7 @@ describe("interrupted chat input recovery", () => {
           });
           expect(JSON.stringify(params)).not.toContain("Original private input");
           expect(readChatInputRecoveryAdmission(target.runId)).toMatchObject({
-            message,
+            target: { message },
             requestFingerprint: "original-request-fingerprint",
           });
           expect(requestOptions.client.connect.client).toEqual(fixture.client.connect.client);

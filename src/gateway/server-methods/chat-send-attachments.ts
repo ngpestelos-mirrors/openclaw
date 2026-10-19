@@ -255,7 +255,7 @@ export async function prepareChatSendAttachments(params: {
     const recoveredInput = readChatInputRecoveryAdmission(clientRunId);
     if (recoveredInput) {
       // Accepted media retains its managed sources; the normal prompt owner hydrates them.
-      mediaPathOffloads = readPersistedMediaFacts(recoveredInput.message) ?? [];
+      mediaPathOffloads = readPersistedMediaFacts(recoveredInput.target.message) ?? [];
     }
 
     if (normalizedAttachments.length > 0) {

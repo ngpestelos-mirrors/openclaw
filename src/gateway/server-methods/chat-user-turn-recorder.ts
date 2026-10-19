@@ -27,7 +27,10 @@ import {
 } from "../../sessions/user-turn-transcript.js";
 import type { UserTurnOriginalInputCommit } from "../../sessions/user-turn-transcript.types.js";
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
-import { INTERNAL_MESSAGE_CHANNEL, isBrowserOperatorUiClient } from "../../utils/message-channel.js";
+import {
+  INTERNAL_MESSAGE_CHANNEL,
+  isBrowserOperatorUiClient,
+} from "../../utils/message-channel.js";
 import {
   createChatInputRecovery,
   readChatInputRecoveryAdmission,
@@ -106,7 +109,8 @@ export function createGatewayChatUserTurnController(params: {
   const mentionInbox = params.mentionInbox;
   const sourceId = buildRunUserTurnIdempotencyKey(session.clientRunId);
   const recoveredInput = readChatInputRecoveryAdmission(session.clientRunId);
-  const selectedMentions = recoveredInput?.message["__openclaw"]?.humanMentions ?? request.mentions;
+  const selectedMentions =
+    recoveredInput?.target.message["__openclaw"]?.humanMentions ?? request.mentions;
   const recoveryEntry = admission.admittedSessionEntry ?? admission.initialSessionEntry;
   const recovery =
     recoveredInput || admission.restartSafeAdmission || !recoveryEntry
@@ -192,7 +196,7 @@ export function createGatewayChatUserTurnController(params: {
     : undefined;
   const recorder: UserTurnTranscriptRecorder = createUserTurnTranscriptRecorder({
     onMessagePersisted: params.onMessagePersisted,
-    ...(recoveredInput ? { message: recoveredInput.message } : {}),
+    ...(recoveredInput ? { message: recoveredInput.target.message } : {}),
     // Attribution and submitted bytes survive reconnect; generated state does not.
     pendingInputRequestFingerprint:
       recoveredInput?.requestFingerprint ??

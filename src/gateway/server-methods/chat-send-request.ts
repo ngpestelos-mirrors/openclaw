@@ -330,7 +330,7 @@ export function normalizeChatSendRequest(params: {
   }
   if (recoveredInput) {
     // Approved text may differ from the submitted bytes; retries keep their original identity.
-    const requestIdentity = recoveredInput.message["__openclaw"]?.chatRequestIdentity;
+    const requestIdentity = recoveredInput.target.message["__openclaw"]?.chatRequestIdentity;
     return {
       ok: true,
       value: { ...value, ...(typeof requestIdentity === "string" ? { requestIdentity } : {}) },

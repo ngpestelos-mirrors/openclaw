@@ -14,7 +14,6 @@ import {
   assertAdmittedRunOperatorAuthority,
   type AdmittedRunOperatorAuthority,
 } from "./admitted-run-context.js";
-
 import type { RequesterOrigin } from "./requester-origin.js";
 
 type OperatorInputRecoverySourceParams = {
@@ -60,7 +59,10 @@ export function createOperatorInputRecoverySource(
 
 /** Main-turn recovery excludes execution lineage that has a different continuation owner. */
 export function createRestartRecoveryOperatorSource(
-  params: OperatorInputRecoverySourceParams & { inputProvenance?: InputProvenance; requesterOrigin?: RequesterOrigin },
+  params: OperatorInputRecoverySourceParams & {
+    inputProvenance?: InputProvenance;
+    requesterOrigin?: RequesterOrigin;
+  },
 ): RestartRecoveryOperatorSource | undefined {
   const { entry, sessionKey } = params;
   const requesterSettle =
@@ -81,10 +83,12 @@ export function createRestartRecoveryOperatorSource(
     entry.cronRunContinuation ||
     (params.inputProvenance &&
       params.inputProvenance.kind !== "external_user" &&
-      !(params.inputProvenance.kind === "inter_session" &&
+      !(
+        params.inputProvenance.kind === "inter_session" &&
         (params.requesterOrigin
           ? params.requesterOrigin.operatorProfileId === params.authority?.profileId
-          : requesterSettle))) ||
+          : requesterSettle)
+      )) ||
     isCronSessionKey(sessionKey) ||
     isSubagentSessionKey(sessionKey) ||
     isAcpSessionKey(sessionKey) ||

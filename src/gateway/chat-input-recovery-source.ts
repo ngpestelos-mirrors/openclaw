@@ -19,7 +19,6 @@ export type ChatInputRecoveryTarget = {
 
 type ChatInputRecoveryAdmission = {
   target: ChatInputRecoveryTarget;
-  message: PersistedUserTurnMessage;
   requestFingerprint: string;
   suppressCommandInterpretation: boolean;
 };
