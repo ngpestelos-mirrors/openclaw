@@ -38,6 +38,7 @@ const pruneFault = useSqliteWorkerFault([
     sql: `CREATE TEMP TRIGGER fail_audit_identity_prune BEFORE DELETE ON main.execution_identity_contexts
       BEGIN SELECT RAISE(ABORT, 'synthetic identity prune failure'); END;`,
   },
+  { match: /^insert into audit_events\b/u, exitOnMatch: 2 },
 ]);
 
 let restoreConstructor: (() => void) | undefined;
@@ -49,7 +50,7 @@ afterEach(async () => {
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("audit writer shared worker", () => {
-  it.each(["cold", "existing shared actor"] as const)(
+  it.each(["cold", "existing shared actor", "worker death after committed prefix"] as const)(
     "flushes the %s audit FIFO without host SQLite",
     async (mode) => {
       const stateDir = tempDirs.make("openclaw-audit-writer-");
@@ -108,6 +109,9 @@ describe("audit writer shared worker", () => {
       const clearSink = configureExecutionIdentityAdmissionSink(writer.recordExecutionIdentity);
       try {
         await writer.ready;
+        if (mode === "worker death after committed prefix") {
+          pruneFault.enable(1);
+        }
         expect(
           enqueueExecutionIdentityContextAtAdmission(
             {
@@ -138,9 +142,13 @@ describe("audit writer shared worker", () => {
             refs: { target: { namespace: "session", value: "private-session-target" } },
           }),
         ).toBe(true);
-        expect(writer.record(input())).toBe(true);
         recorder.recordMessage(messageEvent("message.outbound.queued"));
-        recorder.recordMessage(messageEvent("message.outbound.finished"));
+        recorder.recordMessage({
+          ...messageEvent("message.outbound.finished"),
+          runId: receipt.runId,
+          executionIdentityToken: token,
+        });
+        expect(writer.record(input())).toBe(true);
       } finally {
         clearSink();
         try {
@@ -154,9 +162,16 @@ describe("audit writer shared worker", () => {
         }
       }
 
-      expect(errors).toEqual([]);
-      expect(processRequests).toBe(1);
+      const replayed = mode === "worker death after committed prefix";
       const owner = openOpenClawStateDatabase(database).db;
+      expect(owner.prepare("SELECT COUNT(*) AS count FROM audit_events").get()).toEqual({
+        count: 2,
+      });
+      expect(
+        owner.prepare("SELECT COUNT(*) AS count FROM outbound_message_execution_bindings").get(),
+      ).toEqual({ count: 1 });
+      expect(errors).toHaveLength(replayed ? 1 : 0);
+      expect(processRequests).toBe(replayed ? 2 : 1);
       expect(
         owner.prepare("SELECT run_id FROM audit_events WHERE kind = 'agent_run'").get(),
       ).toEqual({
@@ -177,6 +192,7 @@ describe("audit writer shared worker", () => {
         limit: 10,
         now: receipt.occurredAt + 1,
       }).receipts;
+      expect(decisions).toHaveLength(2);
       expect(decisions).toContainEqual(receipt);
       expect(decisions).toContainEqual(
         expect.objectContaining({

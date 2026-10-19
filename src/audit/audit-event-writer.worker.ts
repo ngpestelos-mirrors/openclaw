@@ -88,7 +88,7 @@ export const auditOperations = {
             if (isOutboundMessageProgressInput(request.input)) {
               recordOutboundMessageProgressInDatabase(request.input, database);
             } else {
-              recordAuditEventInDatabase(request.input, database);
+              recordAuditEventInDatabase(request.input, database, request.eventId);
             }
           } else if (request.type === "record-execution-identity") {
             processExecutionIdentityAdmissionWorkInDatabase(request.work, database);

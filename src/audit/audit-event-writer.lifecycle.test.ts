@@ -16,7 +16,11 @@ import type { AuditWriterOperations } from "./audit-event-writer.worker.js";
 
 const { execute } = vi.hoisted(() => ({
   execute:
-    vi.fn<(command: SqliteWorkerCommand<AuditWriterOperations>) => Promise<AuditWriterResult[]>>(),
+    vi.fn<
+      (
+        command: SqliteWorkerCommand<AuditWriterOperations>,
+      ) => Promise<AuditWriterResult[] | undefined>
+    >(),
 }));
 
 // mock-isolation: Exercise FIFO scheduling without opening the shared-state worker.
@@ -276,79 +280,66 @@ describe("audit writer async settlement", () => {
     }
   });
 
-  it.each(["queued", "error observer", "submitted batch"] as const)(
-    "settles an unknown transport outcome before processing the %s follow-up",
-    async (followUp) => {
-      const submitted = createDeferred();
-      const firstResult = createDeferred<AuditWriterResult>();
-      const fromObserver = followUp === "error observer";
-      const next = fromObserver ? "from-error-observer" : "next";
-      const requests = mockEventRequests(async (sourceId) => {
-        if (sourceId === "unknown-outcome") {
-          submitted.resolve();
-          return await firstResult.promise;
-        }
-        return { status: "settled" };
-      });
-      const errors: string[] = [];
-      let offered = false;
-      let followUpAccepted: boolean | undefined;
-      const writer = createAuditEventWriter({
-        scheduler: createTestGatewayScheduler(),
-        stateDir: tempDirs.make("audit-writer-unknown-outcome-"),
-        maxPending: fromObserver ? 1 : undefined,
-        onError: (error) => {
-          errors.push(error);
-          if (fromObserver && !offered) {
-            offered = true;
-            followUpAccepted = writer.record(event(next));
-          }
-        },
-      });
-      try {
-        await advanceDispatch();
-        await writer.ready;
-        expect(writer.record(event("unknown-outcome"))).toBe(true);
-        if (followUp === "submitted batch") {
-          expect(writer.record(event("uncommitted-tail"))).toBe(true);
-        }
-        await advanceDispatch();
-        await submitted.promise;
-        expect(requests).toEqual(["unknown-outcome"]);
-        if (!fromObserver) {
-          expect(writer.record(event(next))).toBe(true);
-        }
-        const stopping = fromObserver ? undefined : writer.stop();
-        const failure = Object.assign(
-          new SqliteWorkerError(
-            fromObserver
-              ? "Audit write outcome is unknown"
-              : "Audit write outcome is unknown: database is locked",
-            "outcome-unknown",
-          ),
-          fromObserver ? {} : { errcode: 5, errstr: "SQLITE_BUSY" },
-        );
-        firstResult.reject(failure);
-        if (fromObserver) {
-          await advanceDispatch();
-          expect(followUpAccepted).toBe(true);
-        }
-        const stopped = stopping ?? writer.stop();
-        await vi.advanceTimersByTimeAsync(10_000);
-        await stopped;
-        const expectedErrors =
-          followUp === "submitted batch" ? [failure.message, failure.message] : [failure.message];
-        expect(errors).toEqual(expectedErrors);
-        expect(requests).toEqual(["unknown-outcome", next]);
-        await vi.advanceTimersByTimeAsync(60 * 60_000);
-        expect(errors).toEqual(expectedErrors);
-        expect(requests).toEqual(["unknown-outcome", next]);
-      } finally {
-        firstResult.resolve({ status: "settled" });
-        const stopping = writer.stop();
-        await vi.advanceTimersByTimeAsync(10_000);
-        await stopping;
+  it("replays an unknown batch outcome before newer queued events", async () => {
+    let failed = false;
+    const requests = mockEventRequests(async (sourceId) => {
+      if (sourceId === "unknown-outcome" && !failed) {
+        failed = true;
+        throw new SqliteWorkerError("Audit write outcome is unknown", "outcome-unknown");
       }
-    },
-  );
+      return { status: "settled" };
+    });
+    const errors: string[] = [];
+    const writer = createAuditEventWriter({
+      scheduler: createTestGatewayScheduler(),
+      stateDir: tempDirs.make("audit-writer-unknown-outcome-"),
+      onError: (error) => errors.push(error),
+    });
+    try {
+      await advanceDispatch();
+      await writer.ready;
+      expect(writer.record(event("unknown-outcome"))).toBe(true);
+      expect(writer.record(event("tail"))).toBe(true);
+      await advanceDispatch();
+      expect(requests).toEqual(["unknown-outcome"]);
+      expect(writer.record(event("newer"))).toBe(true);
+      await vi.advanceTimersByTimeAsync(25);
+      expect(requests).toEqual(["unknown-outcome", "unknown-outcome", "tail", "newer"]);
+      const batches = execute.mock.calls.flatMap(([command]) =>
+        command.type === "audit.writer.process" ? [command.input] : [],
+      );
+      expect(batches[0]?.[0]).toMatchObject({ eventId: expect.any(String) });
+      expect(batches[1]?.slice(0, 2)).toEqual(batches[0]);
+      expect(errors).toEqual(["Audit write outcome is unknown"]);
+    } finally {
+      const stopping = writer.stop();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await stopping;
+    }
+  });
+
+  it("settles an absent-database batch once without rescheduling", async () => {
+    execute.mockResolvedValue(undefined);
+    const writer = createAuditEventWriter({
+      scheduler: createTestGatewayScheduler(),
+      stateDir: tempDirs.make("audit-writer-absent-database-"),
+    });
+    try {
+      await advanceDispatch();
+      await writer.ready;
+      execute.mockClear();
+      expect(writer.record(event("first"))).toBe(true);
+      expect(writer.record(event("second"))).toBe(true);
+      await advanceDispatch();
+      const attempts = execute.mock.calls.length;
+      // The absent existing-only attempt falls back to the normal worker open once.
+      expect(attempts).toBe(2);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(execute).toHaveBeenCalledTimes(attempts);
+    } finally {
+      const stopping = writer.stop();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await stopping;
+    }
+  });
 });

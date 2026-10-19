@@ -480,11 +480,11 @@ what was recorded, not as proof of what happened:
   and log one operational warning.
   A rejected metadata record does not stop the queue from accepting later records.
 - Shutdown drops waiting metadata at its existing deadline but joins submitted
-  worker operations before releasing the writer. Unknown worker outcomes are
-  not replayed; ordinary native lock contention keeps the existing FIFO retry.
+  worker operations before releasing the writer.
   The writer submits up to 32 already-queued items together, preserving each
   item's independent commit. Lock contention retains the unprocessed suffix;
-  an unknown worker outcome can lose any uncommitted items in that submitted batch.
+  an unknown worker outcome replays the unacknowledged batch with its original
+  identities, so already committed records and their bindings are not duplicated.
 - Crash-ambiguous outbound sends are recorded as `unknown` rather than
   invented outcomes.
 

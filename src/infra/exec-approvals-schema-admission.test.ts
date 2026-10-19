@@ -112,6 +112,7 @@ async function useFeature(surface: Surface, env: NodeJS.ProcessEnv, id: string) 
     };
     await audit(env, {
       type: "record-event",
+      eventId: `admission-${surface}`,
       input:
         surface === "message progress"
           ? {
