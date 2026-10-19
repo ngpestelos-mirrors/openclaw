@@ -24,16 +24,12 @@ async function createDeepgramRealtimeServer(params: {
   await new Promise<void>((resolve) => {
     wss.once("listening", resolve);
   });
-  const port = (wss.address() as AddressInfo).port;
-  cleanup = async () => {
-    for (const ws of wss.clients) {
-      ws.terminate();
-    }
-    await new Promise<void>((resolve) => {
+  cleanup = () =>
+    new Promise<void>((resolve) => {
+      wss.clients.forEach((ws) => ws.terminate());
       wss.close(() => resolve());
     });
-  };
-  return { baseUrl: `http://127.0.0.1:${port}/deepgram/v1` };
+  return { baseUrl: `http://127.0.0.1:${(wss.address() as AddressInfo).port}/deepgram/v1` };
 }
 
 function sendResult(
@@ -95,6 +91,24 @@ async function createScenario(onConnection: (ws: WebSocket) => void, endpointing
 function sendDeliveryMarker(ws: WebSocket) {
   // Observe delivery without creating another speech turn.
   ws.send(JSON.stringify({ type: "Error", message: "frames delivered" }));
+}
+
+async function createFinalizationScenario(reply: boolean) {
+  const onFinalize = vi.fn();
+  const scenario = await createScenario((ws) => {
+    sendResult(ws, { text: "good", isFinal: true });
+    sendResult(ws, { text: "bye" });
+    ws.on("message", (data) => {
+      if (parseClientMessage(data).type !== "Finalize") {
+        return;
+      }
+      onFinalize();
+      if (reply) {
+        sendResult(ws, { text: "bye", isFinal: true, fromFinalize: true });
+      }
+    });
+  }, 10_000);
+  return { ...scenario, onFinalize };
 }
 
 describe("buildDeepgramRealtimeTranscriptionProvider", () => {
@@ -212,31 +226,14 @@ describe("buildDeepgramRealtimeTranscriptionProvider", () => {
   });
 
   it("flushes finalized text returned after a client finalize request", async () => {
-    using scenario = await createScenario((ws) => {
-      sendResult(ws, { text: "good", isFinal: true });
-      sendResult(ws, { text: "bye" });
-      ws.on("message", (data) => {
-        if (parseClientMessage(data).type === "Finalize") {
-          sendResult(ws, { text: "bye", isFinal: true, fromFinalize: true });
-        }
-      });
-    }, 10_000);
+    using scenario = await createFinalizationScenario(true);
     const { session, onTranscript } = scenario;
     session.close();
     await vi.waitFor(() => expect(onTranscript).toHaveBeenCalledExactlyOnceWith("good bye"));
   });
 
   it("flushes finalized text once when finalize produces no result", async () => {
-    let finalizeRequests = 0;
-    using scenario = await createScenario((ws) => {
-      sendResult(ws, { text: "good", isFinal: true });
-      sendResult(ws, { text: "bye" });
-      ws.on("message", (data) => {
-        if (parseClientMessage(data).type === "Finalize") {
-          finalizeRequests += 1;
-        }
-      });
-    }, 10_000);
+    using scenario = await createFinalizationScenario(false);
     const { session, onPartial, onTranscript } = scenario;
 
     try {
@@ -246,7 +243,7 @@ describe("buildDeepgramRealtimeTranscriptionProvider", () => {
       session.close();
       await vi.advanceTimersByTimeAsync(5_000);
 
-      expect(finalizeRequests).toBe(1);
+      expect(scenario.onFinalize).toHaveBeenCalledTimes(1);
       expect(onTranscript).toHaveBeenCalledExactlyOnceWith("good");
     } finally {
       if (vi.isFakeTimers()) {
