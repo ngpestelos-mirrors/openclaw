@@ -147,13 +147,13 @@ describe("workspace listing ownership", () => {
       createSessionWorkspaceProps(state, { expanded: true });
       await vi.waitFor(() => expect(createSessionWorkspaceProps(state).loading).toBe(false));
       if (reopen) {
-        openSessionWorkspaceFile(state, { path: "reports/inventory.csv" });
+        await openSessionWorkspaceFile(state, { path: "reports/inventory.csv" });
         await vi.waitFor(() =>
           expect(state.sessionWorkspaceState?.previews[0]?.content.kind).toBe("file"),
         );
       }
       loadSessionWorkspace(state, getSessionWorkspace(state), true);
-      openSessionWorkspaceFile(state, { path: "reports/inventory.csv" });
+      await openSessionWorkspaceFile(state, { path: "reports/inventory.csv" });
       await vi.waitFor(() =>
         expect(state.sessionWorkspaceState?.previews[0]?.content.kind).toBe("file"),
       );
