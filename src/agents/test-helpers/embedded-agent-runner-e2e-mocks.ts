@@ -83,6 +83,7 @@ export function installEmbeddedRunnerBaseE2eMocks(options?: {
   vi.doMock("../../context-engine/init.js", () => ({
     ensureContextEnginesInitialized: vi.fn(),
   }));
+  // mock-isolation: Synthetic context engines keep live registry state outside runner fixtures.
   vi.doMock("../../context-engine/registry.js", () => ({
     hasSameContextEngineInstance: vi.fn(
       (left: ContextEngine, right: ContextEngine) => left === right,
