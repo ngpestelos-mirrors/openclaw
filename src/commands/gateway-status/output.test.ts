@@ -1,41 +1,8 @@
-// Gateway-status warnings distinguish transport aliases from distinct Gateway identities.
 import { describe, expect, it } from "vitest";
 import type { GatewayProbeResult } from "../../gateway/probe.js";
 import { buildGatewayStatusWarnings } from "./output.js";
 import type { GatewayStatusProbedTarget } from "./probe-run.js";
-
-function createProbe(
-  capability: GatewayProbeResult["auth"]["capability"],
-  params: {
-    ok: boolean;
-    connectLatencyMs: number | null;
-    gatewayReached?: true;
-    error?: string | null;
-  },
-): GatewayProbeResult {
-  return {
-    ok: params.ok,
-    url: "ws://127.0.0.1:18789",
-    connectLatencyMs: params.connectLatencyMs,
-    gatewayReached: params.gatewayReached,
-    error: params.error ?? null,
-    close: null,
-    auth: {
-      role: "operator",
-      scopes: capability === "admin_capable" ? ["operator.admin"] : ["operator.read"],
-      capability,
-    },
-    server: {
-      version: "2026.4.24",
-      buildId: "build-test",
-      connId: "conn-test",
-    },
-    health: null,
-    status: null,
-    presence: null,
-    configSnapshot: null,
-  };
-}
+import { createUnreachableGatewayProbe } from "./test-support.js";
 
 function createTarget(id: string, probe: GatewayProbeResult): GatewayStatusProbedTarget {
   return {
@@ -56,15 +23,14 @@ function createReachableTarget(
   id: string,
   self: GatewayStatusProbedTarget["self"],
   target?: Partial<GatewayStatusProbedTarget["target"]>,
-  configPath = "/tmp/openclaw/config.json",
 ): GatewayStatusProbedTarget {
-  const probe = createProbe("admin_capable", {
+  const probe: GatewayProbeResult = {
+    ...createUnreachableGatewayProbe(target?.url ?? "ws://127.0.0.1:18789", ""),
     ok: true,
     connectLatencyMs: 20,
-  });
-  if (target?.url) {
-    probe.url = target.url;
-  }
+    error: null,
+    auth: { role: "operator", scopes: ["operator.admin"], capability: "admin_capable" },
+  };
   const base = createTarget(id, probe);
   return {
     ...base,
@@ -73,30 +39,6 @@ function createReachableTarget(
       ...target,
     },
     self,
-    configSummary: {
-      path: configPath,
-      exists: true,
-      valid: true,
-      issues: [],
-      legacyIssues: [],
-      gateway: {
-        mode: null,
-        bind: null,
-        port: null,
-        controlUiEnabled: null,
-        controlUiBasePath: null,
-        authMode: null,
-        authTokenConfigured: false,
-        authPasswordConfigured: false,
-        remoteUrl: null,
-        remoteTokenConfigured: false,
-        remotePasswordConfigured: false,
-        tailscaleMode: null,
-      },
-      discovery: {
-        wideAreaEnabled: null,
-      },
-    },
   };
 }
 
@@ -115,10 +57,8 @@ const GATEWAY_SELF = {
 };
 
 const GATEWAY_SELF_NO_PROCESS_ID = {
-  host: "gateway-host",
-  ip: "192.0.2.10",
-  version: "2026.5.22",
-  platform: "linux",
+  ...GATEWAY_SELF,
+  instanceId: undefined,
 };
 
 describe("gateway status output", () => {
@@ -127,11 +67,7 @@ describe("gateway status output", () => {
       probed: [
         createTarget(
           "localLoopback",
-          createProbe("unknown", {
-            ok: false,
-            connectLatencyMs: null,
-            error: "connection refused",
-          }),
+          createUnreachableGatewayProbe("ws://127.0.0.1:18789", "connection refused"),
         ),
       ],
       sshTarget: null,
@@ -209,17 +145,14 @@ describe("gateway status output", () => {
       name: "warns when probes report distinct identities",
       probed: [
         createReachableTarget("sshTunnel", {
+          ...GATEWAY_SELF,
           host: "gateway-a",
-          ip: "192.0.2.10",
-          version: "2026.5.22",
-          platform: "linux",
           instanceId: "gateway-instance-a",
         }),
         createReachableTarget("configRemote", {
+          ...GATEWAY_SELF,
           host: "gateway-b",
           ip: "192.0.2.11",
-          version: "2026.5.22",
-          platform: "linux",
           instanceId: "gateway-instance-b",
         }),
       ],
