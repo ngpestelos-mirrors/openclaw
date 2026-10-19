@@ -549,7 +549,6 @@ export function createSessionWorkspaceProps(
     transcriptAttachments: options?.transcriptAttachments,
     connected: state.connected,
     navigation,
-    onRetry: () => loadSessionWorkspace(state, workspace, true),
     directories: workspace.directories,
     onToggleDirectory: (path) => {
       const tree = workspace.tree!;
