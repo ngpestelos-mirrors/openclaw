@@ -76,7 +76,7 @@ describe("createMantleAnthropicStreamFn", () => {
       const events = await createMantleAnthropicStreamFn()(
         createTestModel(),
         {
-          systemPrompt: `Stable workspace${SYSTEM_PROMPT_CACHE_BOUNDARY}${suffix}`,
+          systemPrompt: `Stable${SYSTEM_PROMPT_CACHE_BOUNDARY}${suffix}`,
           messages: [{ role: "user", content: "Hello", timestamp: 0 }],
         },
         {
@@ -92,11 +92,7 @@ describe("createMantleAnthropicStreamFn", () => {
       const request = requireRecord(payload, "Mantle payload");
       expect(JSON.stringify(request)).not.toContain("OPENCLAW_CACHE_BOUNDARY");
       expect(request.system).toEqual([
-        {
-          type: "text",
-          text: "Stable workspace",
-          cache_control: { type: "ephemeral", ttl: "1h" },
-        },
+        { type: "text", text: "Stable", cache_control: { type: "ephemeral", ttl: "1h" } },
         { type: "text", text: suffix },
       ]);
       expect(JSON.stringify(request).match(/"cache_control"/g)?.length).toBeLessThanOrEqual(4);
@@ -153,26 +149,21 @@ describe("createMantleAnthropicStreamFn", () => {
     expect(options).toMatchObject({ thinkingEnabled: true, effort });
   });
 
-  it("uses the Opus 5 contract for max reasoning", () => {
-    const options = captureStreamOptions(createReasoningModel("claude-opus-5", "Claude Opus 5"), {
-      reasoning: "max",
-      temperature: 0.2,
-    });
-    expect(options).toMatchObject({ thinkingEnabled: true, effort: "max", maxTokens: 128_000 });
-    expect(options).not.toHaveProperty("temperature");
-  });
-
   it.each([
-    { reasoning: undefined, effort: "high" },
-    { reasoning: "off" as const, effort: "low" },
-  ])("keeps Sonnet 5 adaptive for reasoning=$reasoning", ({ reasoning, effort }) => {
-    const options = captureStreamOptions(
-      createReasoningModel("claude-sonnet-5", "Claude Sonnet 5"),
-      { reasoning, temperature: 0.2 },
-    );
-    expect(options).toMatchObject({ thinkingEnabled: true, effort, maxTokens: 128_000 });
-    expect(options).not.toHaveProperty("temperature");
-  });
+    { id: "opus", name: "Opus", reasoning: "max", effort: "max" },
+    { id: "sonnet", name: "Sonnet", reasoning: undefined, effort: "high" },
+    { id: "sonnet", name: "Sonnet", reasoning: "off", effort: "low" },
+  ] as const)(
+    "keeps $name 5 adaptive for reasoning=$reasoning",
+    ({ id, name, reasoning, effort }) => {
+      const options = captureStreamOptions(
+        createReasoningModel(`claude-${id}-5`, `Claude ${name} 5`),
+        { reasoning, temperature: 0.2 },
+      );
+      expect(options).toMatchObject({ thinkingEnabled: true, effort, maxTokens: 128_000 });
+      expect(options).not.toHaveProperty("temperature");
+    },
+  );
 
   it("disables legacy thinking when the adjusted budget is below 1024", () => {
     const options = captureStreamOptions(
