@@ -235,17 +235,20 @@ export function selectMatchingSessionRows<T extends SessionRowScopeTarget>(
         : new Set(storePaths.flatMap((storePath) => Array.from(byStore.get(storePath) ?? [])))
       : query.agentId
         ? byAgent.get(query.agentId)
-        : rows.keys();
+        : rows;
   if (!candidates) {
     return [];
   }
-  const selected: T[] = [];
-  for (const id of candidates) {
+  // oxlint-disable-next-line unicorn/no-new-array -- Exact capacity avoids growing a buffer for each keyed lookup.
+  const selected = new Array<T>(candidates.size);
+  let selectedCount = 0;
+  for (const id of candidates.keys()) {
     const row = rows.get(id);
     if (row !== undefined && matchesSessionRowScope(row, query, storePaths)) {
-      selected.push(row);
+      selected[selectedCount++] = row;
     }
   }
+  selected.length = selectedCount;
   return selected;
 }
 
@@ -429,10 +432,10 @@ function selectSessionRowEntries(
   const { cfg, scope, byAgent, byParent, rows, matching, acquire } = params;
   const paths = resolveSessionRowScopePaths(query, scope);
   const parent = query.parentSessionKey;
-  const owner = parent && parseAgentSessionKey(parent)?.agentId;
-  const agents = owner ? [owner] : query.agentId ? [query.agentId] : byAgent.keys();
   let keys: Set<string> | undefined;
   if (parent) {
+    const owner = parseAgentSessionKey(parent)?.agentId;
+    const agents = owner ? [owner] : query.agentId ? [query.agentId] : byAgent.keys();
     keys = new Set<string>();
     const sentinel = parent === "global" || parent === "unknown";
     const references = sentinel
