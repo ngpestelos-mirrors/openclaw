@@ -7,7 +7,10 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { assertSignalSocketEndpoint, prepareSignalSocketPath } from "./socket-path.js";
+import {
+  assertSignalSocketEndpoint as assertEndpoint,
+  prepareSignalSocketPath as prepare,
+} from "./socket-path.js";
 
 const execFileAsync = promisify(execFile);
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -19,6 +22,24 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   fsMocks.lstat.mockImplementation(actual.lstat);
   return { ...actual, lstat: fsMocks.lstat };
 });
+
+function mockSocketStat(socketPath: string, property: "uid" | "ino", onRead?: number) {
+  let reads = 0;
+  fsMocks.lstat.mockImplementation(async (entryPath, ...args) => {
+    const stat = await fsMocks.actualLstat(entryPath, ...args);
+    if (entryPath !== socketPath || (onRead !== undefined && ++reads !== onRead)) {
+      return stat;
+    }
+    return new Proxy(stat, {
+      get: (target, key, receiver) =>
+        key === property
+          ? property === "uid"
+            ? (process.getuid?.() ?? 0) + 1
+            : Number(target.ino) + 1
+          : Reflect.get(target, key, receiver),
+    });
+  });
+}
 
 async function withSocket(socketPath: string, run: (server: Server) => Promise<void>) {
   const server = createServer();
@@ -60,22 +81,22 @@ async function withStaleSocket(socketPath: string, run: () => Promise<void>) {
   }
 }
 
-describe.skipIf(process.platform === "win32")("Signal socket filesystem boundary", () => {
-  let root: string;
-  beforeEach(async () => {
-    root = tempDirs.make("oc-sig-", await realpath(os.tmpdir()));
-  });
-  afterEach(() => {
-    fsMocks.lstat.mockImplementation(fsMocks.actualLstat);
-  });
+let root: string;
+beforeEach(async () => {
+  root = tempDirs.make("oc-sig-", await realpath(os.tmpdir()));
+});
+afterEach(() => {
+  fsMocks.lstat.mockImplementation(fsMocks.actualLstat);
+});
 
+describe.skipIf(process.platform === "win32")("Signal socket filesystem boundary", () => {
   it("creates a private immediate parent and accepts only an owned socket endpoint", async () => {
     const socketPath = path.join(root, "private", "rpc");
-    await prepareSignalSocketPath(socketPath);
+    await prepare(socketPath);
     expect((await lstat(path.dirname(socketPath))).mode & 0o777).toBe(0o700);
     await withSocket(socketPath, async (server) => {
-      await expect(assertSignalSocketEndpoint(socketPath)).resolves.toBeUndefined();
-      await expect(prepareSignalSocketPath(socketPath)).rejects.toThrow("already exists");
+      await expect(assertEndpoint(socketPath)).resolves.toBeUndefined();
+      await expect(prepare(socketPath)).rejects.toThrow("already exists");
       expect(server.listening).toBe(true);
     });
   });
@@ -93,11 +114,9 @@ describe.skipIf(process.platform === "win32")("Signal socket filesystem boundary
       }
       await chmod(root, mode);
       if (privateChild) {
-        await expect(assertSignalSocketEndpoint(path.join(parent, "rpc"))).rejects.toThrow(
-          "ancestors",
-        );
+        await expect(assertEndpoint(path.join(parent, "rpc"))).rejects.toThrow("ancestors");
       } else {
-        await expect(prepareSignalSocketPath(path.join(parent, "rpc"))).rejects.toThrow();
+        await expect(prepare(path.join(parent, "rpc"))).rejects.toThrow();
       }
       expect((await lstat(root)).mode & 0o777).toBe(mode);
     },
@@ -107,38 +126,23 @@ describe.skipIf(process.platform === "win32")("Signal socket filesystem boundary
     const target = path.join(root, "target");
     await mkdir(target, { mode: 0o700 });
     await symlink(target, path.join(root, "alias"));
-    await expect(prepareSignalSocketPath(path.join(root, "alias", "rpc"))).rejects.toThrow(
-      "symlinks",
-    );
+    await expect(prepare(path.join(root, "alias", "rpc"))).rejects.toThrow("symlinks");
     expect((await lstat(target)).mode & 0o777).toBe(0o700);
   });
 
   it("preserves existing files and rejects them as socket endpoints", async () => {
     const socketPath = path.join(root, "rpc");
     await writeFile(socketPath, "not a socket");
-    await expect(prepareSignalSocketPath(socketPath)).rejects.toThrow("already exists");
-    await expect(assertSignalSocketEndpoint(socketPath)).rejects.toThrow("must name a socket");
+    await expect(prepare(socketPath)).rejects.toThrow("already exists");
+    await expect(assertEndpoint(socketPath)).rejects.toThrow("must name a socket");
     expect((await lstat(socketPath)).isFile()).toBe(true);
   });
 
   it("rejects a socket endpoint reported as owned by another uid", async () => {
     const socketPath = path.join(root, "rpc");
     await withSocket(socketPath, async () => {
-      fsMocks.lstat.mockImplementation(async (entryPath, ...args) => {
-        const stat = await fsMocks.actualLstat(entryPath, ...args);
-        if (entryPath !== socketPath) {
-          return stat;
-        }
-        return new Proxy(stat, {
-          get: (target, property, receiver) =>
-            property === "uid"
-              ? (process.getuid?.() ?? 0) + 1
-              : Reflect.get(target, property, receiver),
-        });
-      });
-      await expect(assertSignalSocketEndpoint(socketPath)).rejects.toThrow(
-        "socket owned by the current user",
-      );
+      mockSocketStat(socketPath, "uid");
+      await expect(assertEndpoint(socketPath)).rejects.toThrow("socket owned by the current user");
     });
   });
 
@@ -148,22 +152,10 @@ describe.skipIf(process.platform === "win32")("Signal socket filesystem boundary
       const socketPath = path.join(root, "rpc");
       await withStaleSocket(socketPath, async () => {
         expect((await lstat(socketPath)).isSocket()).toBe(true);
-        let endpointStats = 0;
         if (replaced) {
-          fsMocks.lstat.mockImplementation(async (entryPath, ...args) => {
-            const stat = await fsMocks.actualLstat(entryPath, ...args);
-            if (entryPath !== socketPath || ++endpointStats !== 2) {
-              return stat;
-            }
-            return new Proxy(stat, {
-              get: (target, property, receiver) =>
-                property === "ino"
-                  ? Number(target.ino) + 1
-                  : Reflect.get(target, property, receiver),
-            });
-          });
+          mockSocketStat(socketPath, "ino", 2);
         }
-        const preparation = prepareSignalSocketPath(socketPath);
+        const preparation = prepare(socketPath);
         if (replaced) {
           await expect(preparation).rejects.toThrow("changed during its ownership check");
           expect((await fsMocks.actualLstat(socketPath)).isSocket()).toBe(true);
@@ -180,29 +172,17 @@ describe.skipIf(process.platform === "win32")("Signal socket filesystem boundary
     await writeFile(socketPath, "preserve");
     const abort = new AbortController();
     abort.abort(new Error("cancelled"));
-    await expect(prepareSignalSocketPath(socketPath, abort.signal)).rejects.toThrow("cancelled");
+    await expect(prepare(socketPath, abort.signal)).rejects.toThrow("cancelled");
     expect((await lstat(socketPath)).isFile()).toBe(true);
   });
 
   it("rejects traversal syntax and oversized paths before creating anything", async () => {
-    await expect(prepareSignalSocketPath(`${root}/child/../rpc`)).rejects.toThrow(
-      "normalized absolute",
-    );
-    await expect(prepareSignalSocketPath(`${root}/${"x".repeat(104)}`)).rejects.toThrow(
-      "103 UTF-8 bytes",
-    );
+    await expect(prepare(`${root}/child/../rpc`)).rejects.toThrow("normalized absolute");
+    await expect(prepare(`${root}/${"x".repeat(104)}`)).rejects.toThrow("103 UTF-8 bytes");
   });
 });
 
 describe.skipIf(process.platform !== "darwin")("Signal socket macOS ACL boundary", () => {
-  let root: string;
-  beforeEach(async () => {
-    root = tempDirs.make("oc-sig-acl-", await realpath(os.tmpdir()));
-  });
-  afterEach(() => {
-    fsMocks.lstat.mockImplementation(fsMocks.actualLstat);
-  });
-
   it.each([false, true])("rejects parent ACL access (inherited=%s)", async (inherited) => {
     await execFileAsync("/bin/chmod", [
       "+a",
@@ -210,7 +190,7 @@ describe.skipIf(process.platform !== "darwin")("Signal socket macOS ACL boundary
       root,
     ]);
     const parent = inherited ? path.join(root, "private") : root;
-    await expect(prepareSignalSocketPath(path.join(parent, "rpc"))).rejects.toThrow("ACL access");
+    await expect(prepare(path.join(parent, "rpc"))).rejects.toThrow("ACL access");
     if (inherited) {
       await expect(lstat(parent)).rejects.toMatchObject({ code: "ENOENT" });
     } else {
@@ -222,7 +202,7 @@ describe.skipIf(process.platform !== "darwin")("Signal socket macOS ACL boundary
     const socketPath = path.join(root, "rpc");
     await withSocket(socketPath, async () => {
       await execFileAsync("/bin/chmod", ["+a", "everyone allow write", socketPath]);
-      await expect(assertSignalSocketEndpoint(socketPath)).rejects.toThrow("ACL access");
+      await expect(assertEndpoint(socketPath)).rejects.toThrow("ACL access");
     });
   });
 });
