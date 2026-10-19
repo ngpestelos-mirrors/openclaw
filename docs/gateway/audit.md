@@ -485,6 +485,8 @@ what was recorded, not as proof of what happened:
   item's independent commit. Lock contention retains the unprocessed suffix;
   an unknown worker outcome replays the unacknowledged batch with its original
   identities, so already committed records and their bindings are not duplicated.
+  After the third consecutive unknown outcome, the writer reports and drops that
+  batch so later queued work can proceed. Previously committed records remain.
 - Crash-ambiguous outbound sends are recorded as `unknown` rather than
   invented outcomes.
 

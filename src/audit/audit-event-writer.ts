@@ -19,6 +19,7 @@ import type { ExecutionIdentityAdmissionWork } from "./execution-identity-admiss
 
 const MAX_PENDING_AUDIT_EVENTS = 4_096;
 const MAX_AUDIT_BATCH_SIZE = 32;
+const MAX_CONSECUTIVE_UNKNOWN_OUTCOMES = 3;
 const AUDIT_MAINTENANCE_INTERVAL_MS = 60 * 60_000;
 const AUDIT_RETRY_DELAY_MS = 25;
 const AUDIT_RETRY_MAX_DELAY_MS = 1_000;
@@ -62,6 +63,7 @@ export function createAuditEventWriter(options: {
   let retryAttempt = 0;
   let retryDelayMs = 0;
   let retryReported = false;
+  let consecutiveUnknownOutcomes = 0;
   let resolveReady!: () => void;
   const ready = new Promise<void>((resolve) => {
     resolveReady = resolve;
@@ -128,16 +130,22 @@ export function createAuditEventWriter(options: {
   };
   const processRequests = async (requests: AuditWriterRequest[]): Promise<AuditWriterResult[]> => {
     try {
-      return (
-        (await execute({ type: "audit.writer.process", input: requests })) ??
-        requests.map(() => ({ status: "settled" as const }))
-      );
+      const results = await execute({ type: "audit.writer.process", input: requests });
+      consecutiveUnknownOutcomes = 0;
+      return results ?? requests.map(() => ({ status: "settled" as const }));
     } catch (error) {
       if (isSqliteWorkerError(error, "outcome-unknown")) {
-        // Replay the unacknowledged batch with its original IDs; committed items are no-ops.
+        consecutiveUnknownOutcomes += 1;
         fail(error);
-        return [{ status: "retry" }];
+        if (consecutiveUnknownOutcomes < MAX_CONSECUTIVE_UNKNOWN_OUTCOMES) {
+          // Replay original IDs; committed items are no-ops.
+          return [{ status: "retry" }];
+        }
+        // Drop a repeatedly crashing batch so later queued work can proceed.
+        consecutiveUnknownOutcomes = 0;
+        return requests.map(() => ({ status: "settled" }));
       }
+      consecutiveUnknownOutcomes = 0;
       return requests.map((request) => ({
         status: "settled",
         error: formatAuditWriterRequestError(request, error),

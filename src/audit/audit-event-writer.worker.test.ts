@@ -39,6 +39,7 @@ const pruneFault = useSqliteWorkerFault([
       BEGIN SELECT RAISE(ABORT, 'synthetic identity prune failure'); END;`,
   },
   { match: /^insert into audit_events\b/u, exitOnMatch: 2 },
+  { match: /^insert into audit_events\b/u, exitOnMatch: 1 },
 ]);
 
 let restoreConstructor: (() => void) | undefined;
@@ -206,6 +207,47 @@ describe("audit writer shared worker", () => {
       expect(owner.prepare("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
     },
   );
+
+  it("drops a repeatedly crashing batch and persists later queued work", async () => {
+    const stateDir = tempDirs.make("openclaw-audit-poison-batch-");
+    const errors: string[] = [];
+    const writer = createAuditEventWriter({
+      scheduler: createTestGatewayScheduler(),
+      stateDir,
+      onError: (error) => {
+        errors.push(error);
+        // Every attempt to insert an audit event kills the real worker again.
+        pruneFault.enable(2);
+      },
+    });
+    const recorder = createAuditEventRecorder({
+      scheduler: createTestGatewayScheduler(),
+      getConfig: () => ({ logging: { audit: { messages: "all" } } }),
+      writer,
+    });
+    try {
+      await writer.ready;
+      pruneFault.enable(2);
+      for (let index = 0; index < 32; index++) {
+        expect(writer.record({ ...input(), sourceId: `poison-${index}` })).toBe(true);
+      }
+      recorder.recordMessage(messageEvent("message.outbound.queued"));
+      await recorder.stop();
+
+      const owner = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: stateDir } }).db;
+      expect(owner.prepare("SELECT COUNT(*) AS count FROM audit_events").get()).toEqual({
+        count: 0,
+      });
+      expect(
+        owner.prepare("SELECT COUNT(*) AS count FROM outbound_message_progress").get(),
+      ).toEqual({
+        count: 1,
+      });
+      expect(errors).toHaveLength(3);
+    } finally {
+      await recorder.stop();
+    }
+  });
 
   it("keeps earlier family commits and later cleanup when one prune transaction fails", async () => {
     const database = {
