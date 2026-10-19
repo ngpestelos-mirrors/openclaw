@@ -32,7 +32,9 @@ const fixtureExtension = productionWorkerUrl.pathname.endsWith(".ts") ? "ts" : "
 const config = createQuickJsTestConfig();
 
 const sleep = "await new Promise(resolve => setTimeout(resolve, 0));";
-const pools: WorkerTaskPool<unknown, CodeModeWorkerResult>[] = [];
+type Pool = WorkerTaskPool<unknown, CodeModeWorkerResult>;
+type OnRequest = Parameters<Pool["run"]>[1]["onRequest"];
+const pools: Pool[] = [];
 const resolveModule = createRequire(import.meta.url).resolve;
 const modules = Promise.all([
   readFile(resolveModule("quickjs-wasi/quickjs.wasm")).then((bytes) => WebAssembly.compile(bytes)),
@@ -59,9 +61,9 @@ function resume(state: CodeModeWorkerBoundary, deadline: number): CodeModeWorker
     pendingRequests: [],
   };
 }
-function pool(maxWorkers = 1) {
+function pool(maxWorkers = 1, workerUrl = productionWorkerUrl) {
   const value = new WorkerTaskPool<unknown, CodeModeWorkerResult>({
-    workerUrl: productionWorkerUrl,
+    workerUrl,
     maxWorkers,
   });
   pools.push(value);
@@ -69,6 +71,23 @@ function pool(maxWorkers = 1) {
 }
 async function payload(source: string) {
   return { ...input(source), ...(await modules) };
+}
+async function runCell(workers: Pool, source: string, onRequest?: OnRequest, timeoutMs = 15_000) {
+  return workers.run(await payload(source), { timeoutMs, onRequest });
+}
+async function waitForAbort(...signals: AbortSignal[]) {
+  const signal = AbortSignal.any(signals);
+  if (!signal.aborted) {
+    await new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+  }
+}
+function expectFailed(result: unknown, code: string, fields: object = {}) {
+  expect(result).toMatchObject({ status: "failed", code, ...fields });
+}
+function expectCompleted(result: unknown, value: object) {
+  expect(result).toMatchObject({ status: "completed", value });
 }
 function boundary(value: unknown): CodeModeWorkerBoundary {
   expect(value).toMatchObject({ status: "boundary" });
@@ -139,51 +158,42 @@ async function instrumentedWorker(prefix: string, source: string) {
   return pathToFileURL(workerPath);
 }
 
-function failure(
-  name: string,
-  source: string,
-  phase: string,
-  options: {
-    code?: string;
-    calls?: number;
-    resumeTimeoutMs?: number;
-    prelude?: string;
-    rejectBridge?: boolean;
-    timeoutMs?: number;
-  } = {},
-) {
-  return { name, source, phase, code: "internal_error", calls: 0, ...options };
-}
+type FailureOptions = {
+  resumeTimeoutMs?: number;
+  prelude?: string;
+  rejectBridge?: boolean;
+  timeoutMs?: number;
+};
+type FailureCase = [string, string, string, string, number, FailureOptions?];
+const internal = "internal_error";
+const yieldControl = "await yield_control();";
 
 describe("Code Mode worker lifecycle", () => {
-  it.each([
-    failure("host continuation", "await yield_control();", "host", {
-      calls: 1,
-      resumeTimeoutMs: Number.NaN,
-    }),
-    failure(
+  it.each<FailureCase>([
+    ["host continuation", yieldControl, "host", internal, 1, { resumeTimeoutMs: Number.NaN }],
+    [
       "guest same-message exception",
       'throw new Error("invalid code mode continuation budget");',
       "guest",
-    ),
-    failure("host source wrapper", "return true;", "host", { prelude: "}" }),
-    failure("guest syntax", "return (", "input", { code: "invalid_input" }),
-    failure("guest pending promise", "await new Promise(() => {});", "input", {
-      code: "invalid_input",
-    }),
-    failure("bridge rejection", "await yield_control();", "bridge", {
-      calls: 1,
-      rejectBridge: true,
-    }),
-    failure("guest deadline", "await yield_control(); while (true) {}", "guest", {
-      code: "timeout",
-      calls: 1,
-      resumeTimeoutMs: 30,
-    }),
-    failure("host admission deadline", "return true;", "host", { code: "timeout", timeoutMs: 0 }),
+      internal,
+      0,
+    ],
+    ["host source wrapper", "return true;", "host", internal, 0, { prelude: "}" }],
+    ["guest syntax", "return (", "input", "invalid_input", 0],
+    ["guest pending promise", "await new Promise(() => {});", "input", "invalid_input", 0],
+    ["bridge rejection", yieldControl, "bridge", internal, 1, { rejectBridge: true }],
+    [
+      "guest deadline",
+      `${yieldControl} while (true) {}`,
+      "guest",
+      "timeout",
+      1,
+      { resumeTimeoutMs: 30 },
+    ],
+    ["host admission deadline", "return true;", "host", "timeout", 0, { timeoutMs: 0 }],
   ])(
-    "preserves $name failure provenance without replay",
-    async ({ source, phase, code, calls, ...options }) => {
+    "preserves %s failure provenance without replay",
+    async (_name, source, phase, code, calls, options = {}) => {
       const onFailure = vi.fn();
       const onBoundary = vi.fn(async (state: CodeModeWorkerBoundary) => ({
         kind: "continue" as const,
@@ -202,11 +212,7 @@ describe("Code Mode worker lifecycle", () => {
         },
         { onBoundary, onFailure },
       );
-      expect(result).toMatchObject({
-        status: "failed",
-        code,
-        failurePhase: phase,
-      });
+      expectFailed(result, code, { failurePhase: phase });
       expect(onFailure).toHaveBeenCalledExactlyOnceWith(
         expect.anything(),
         phase,
@@ -263,10 +269,10 @@ describe("Code Mode worker lifecycle", () => {
       status: "failed",
       error: expect.stringContaining("Error: legacy failure"),
     });
-    if (result.status !== "failed") {
-      throw new Error("Expected legacy guest failure");
-    }
-    expect(result.error).toMatch(/openclaw-code-mode:user\.js:3:\d+/);
+    expect(result).toHaveProperty(
+      "error",
+      expect.stringMatching(/openclaw-code-mode:user\.js:3:\d+/),
+    );
   });
 
   it("accounts for a same-line Unicode prelude in syntax locations", async () => {
@@ -275,10 +281,10 @@ describe("Code Mode worker lifecycle", () => {
       status: "failed",
       error: expect.stringContaining("SyntaxError"),
     });
-    if (result.status !== "failed") {
-      throw new Error("Expected guest syntax failure");
-    }
-    expect(result.error).toContain("openclaw-code-mode:user.js:1:15");
+    expect(result).toHaveProperty(
+      "error",
+      expect.stringContaining("openclaw-code-mode:user.js:1:15"),
+    );
   });
 
   it("does not attribute a prelude failure to submitted source", async () => {
@@ -290,8 +296,7 @@ describe("Code Mode worker lifecycle", () => {
   });
 
   it("transfers snapshot heaps and releases consumed copies across resumes", async () => {
-    // The dependency's storage codec copies the whole heap in both directions.
-    // Exercise real snapshots and restores while allowing metadata-only accounting.
+    // Real snapshots must transfer heaps without storage-codec copies or retained inputs.
     const workerUrl = await instrumentedWorker(
       "code-mode-snapshot-transfer-",
       `
@@ -328,7 +333,6 @@ describe("Code Mode worker lifecycle", () => {
       QuickJS.restore = async (snapshot, options) => {
         consumed = {
           memory: new WeakRef(snapshot.memory.buffer),
-          bytes: snapshot.memory.buffer.byteLength,
           control: new WeakRef(new ArrayBuffer(1)),
         };
         const vm = await restore(snapshot, options);
@@ -342,7 +346,7 @@ describe("Code Mode worker lifecycle", () => {
           gc();
           assert.equal(consumed.control.deref(), undefined, "unowned buffer must collect");
           assert.equal(consumed.memory.deref()?.byteLength ?? 0, 0,
-            "resumed VM retained its consumed " + consumed.bytes + " byte snapshot");
+            "resumed VM retained its consumed snapshot");
           assert.ok(settlements.every((reference) => reference.deref() === undefined),
             "resumed VM retained delivered settlement values");
           consumed = undefined;
@@ -402,7 +406,7 @@ describe("Code Mode worker lifecycle", () => {
           pendingRequests,
           settledRequests: parked.pendingRequests
             .filter((request) => !pendingRequests.includes(request))
-            .map(({ id }) => ({ id, ok: true, json: JSON.stringify({ leg }) })),
+            .map(({ id }) => ({ id, ok: true, json: "null" })),
         },
         10_000,
         workerUrl,
@@ -410,10 +414,7 @@ describe("Code Mode worker lifecycle", () => {
       const resumed = sent.mock.calls.findLast(([message]) => message.input?.kind === "resume");
       expect(resumed?.[0].input.continuation.memory.buffer.byteLength).toBe(0);
     }
-    expect(result).toMatchObject({
-      status: "completed",
-      value: { kind: "complete", json: '[1048576,7,9,"sibling"]' },
-    });
+    expectCompleted(result, { kind: "complete", json: '[1048576,7,9,"sibling"]' });
   });
 
   it("isolates guest globals, bridge failures, and cancellations across warm executions", async () => {
@@ -437,9 +438,9 @@ describe("Code Mode worker lifecycle", () => {
       canceledRequestIds: [],
       pendingRequests: [{ id: "bridge:yield:1", method: "yield" }],
     });
-    expect(await execute("return typeof globalThis.previousRun;")).toMatchObject({
-      status: "completed",
-      value: { kind: "complete", json: '"undefined"' },
+    expectCompleted(await execute("return typeof globalThis.previousRun;"), {
+      kind: "complete",
+      json: '"undefined"',
     });
   });
 
@@ -448,9 +449,7 @@ describe("Code Mode worker lifecycle", () => {
     async (kind) => {
       const recursion = "function recurse() { return recurse(); } return recurse();";
       const result = await run(await executionInput(recursion, kind));
-      expect(result).toMatchObject({
-        status: "failed",
-        code: "internal_error",
+      expectFailed(result, "internal_error", {
         error: expect.stringContaining("RangeError: Maximum call stack size exceeded"),
         failurePhase: "guest",
       });
@@ -518,9 +517,7 @@ describe("Code Mode worker lifecycle", () => {
       controller.signal,
     );
 
-    expect(result).toMatchObject({
-      status: "failed",
-      code: "aborted",
+    expectFailed(result, "aborted", {
       error: "code mode execution aborted",
       output: EMPTY_CODE_MODE_OUTPUT,
     });
@@ -539,9 +536,7 @@ describe("Code Mode worker lifecycle", () => {
     const encodedBytes = QuickJS.serializeSnapshot(probe.continuation).byteLength;
 
     expect(await execute(encodedBytes)).toMatchObject({ status: "waiting" });
-    expect(await execute(encodedBytes - 1)).toMatchObject({
-      status: "failed",
-      code: "snapshot_limit_exceeded",
+    expectFailed(await execute(encodedBytes - 1), "snapshot_limit_exceeded", {
       error: "code mode snapshot limit exceeded",
     });
   });
@@ -551,7 +546,7 @@ describe("Code Mode worker lifecycle", () => {
       500,
       new URL("./missing-code-mode.worker.js", import.meta.url),
     );
-    expect(result).toMatchObject({ status: "failed", code: "runtime_unavailable" });
+    expectFailed(result, "runtime_unavailable");
   });
 });
 
@@ -568,11 +563,7 @@ describe("Code Mode live VM", () => {
           parentPort.postMessage({ status: 'request', taskId: message.taskId + ${stale === "task" ? 1 : 0}, id: ${stale === "task" ? 2 : 1}, value: null });
         }
       });`;
-      const workers = new WorkerTaskPool<unknown, CodeModeWorkerResult>({
-        workerUrl: new URL("data:text/javascript," + encodeURIComponent(source)),
-        maxWorkers: 1,
-      });
-      pools.push(workers);
+      const workers = pool(1, new URL("data:text/javascript," + encodeURIComponent(source)));
       const consumed = vi.fn();
       const onRequest = vi.fn(async () => response({ kind: "checkpoint" }, consumed));
       await expect(workers.run({}, { timeoutMs: 2000, onRequest })).rejects.toMatchObject({
@@ -590,7 +581,7 @@ describe("Code Mode live VM", () => {
     );
     const consumed = vi.fn();
     const result = await run(restore(parked), { ...checkpoint, onInputConsumed: consumed }, 15_000);
-    expect(result).toMatchObject({ status: "completed", value: { json: "42" } });
+    expectCompleted(result, { json: "42" });
     expect(consumed).toHaveBeenCalledTimes(1);
     await parked.continuation.dispose();
     expect(
@@ -620,14 +611,14 @@ describe("Code Mode live VM", () => {
       15_000,
     );
     output.push(...completeOutput(result.output));
-    expect(result).toMatchObject({ status: "completed", value: { json: "7" } });
+    expectCompleted(result, { json: "7" });
     expect(boundaries).toBe(8);
     expect(receipts).toHaveBeenCalledTimes(8);
     expect(output).toEqual(
       Array.from({ length: 8 }, (_, i) => ({ type: "text", text: String(i) })),
     );
     const next = await run(input("return typeof privateCell;"), undefined, 15_000);
-    expect(next).toMatchObject({ status: "completed", value: { json: '"undefined"' } });
+    expectCompleted(next, { json: '"undefined"' });
   });
 
   it("checkpoints a slow host waiter under contention so queued cells can run within the same capacity", async () => {
@@ -638,31 +629,18 @@ describe("Code Mode live VM", () => {
     const hostCompleted = releaseHost.promise.then(() => {
       events.push("host completed");
     });
-    const waiting = workers
-      .run(await payload(`${sleep} return 1;`), {
-        timeoutMs: 15_000,
-        onRequest: async (value, { yieldSignal }) => {
-          entered.resolve();
-          const checkpoint = new Promise<WorkerTaskResponse>((resolve) => {
-            const yieldVm = () => resolve(response({ kind: "checkpoint" }));
-            if (yieldSignal.aborted) {
-              yieldVm();
-            } else {
-              yieldSignal.addEventListener("abort", yieldVm, { once: true });
-            }
-          });
-          return Promise.race([
-            checkpoint,
-            hostCompleted.then(() => response(resume(boundary(value), performance.now() + 1000))),
-          ]);
-        },
-      })
-      .then((result) => {
-        events.push(`waiter ${result.status}`);
-        return result;
-      });
+    const waiting = runCell(workers, `${sleep} return 1;`, async (value, { yieldSignal }) => {
+      entered.resolve();
+      return Promise.race([
+        waitForAbort(yieldSignal).then(() => response({ kind: "checkpoint" })),
+        hostCompleted.then(() => response(resume(boundary(value), performance.now() + 1000))),
+      ]);
+    }).then((result) => {
+      events.push(`waiter ${result.status}`);
+      return result;
+    });
     await entered.promise;
-    const quick = workers.run(await payload("return 2;"), { timeoutMs: 2000 }).then((result) => {
+    const quick = runCell(workers, "return 2;", undefined, 2000).then((result) => {
       events.push(`queued ${result.status}`);
       return result;
     });
@@ -674,7 +652,7 @@ describe("Code Mode live VM", () => {
         pendingRequests: [{ method: "sleep" }],
         settlementMode: { kind: "awaiting" },
       });
-      expect(completed).toMatchObject({ status: "completed", value: { json: "2" } });
+      expectCompleted(completed, { json: "2" });
     } finally {
       releaseHost.resolve();
       await hostCompleted;
@@ -690,40 +668,33 @@ describe("Code Mode live VM", () => {
     const releaseFirst = Promise.withResolvers<void>();
     const secondEntered = Promise.withResolvers<void>();
     let secondBoundaries = 0;
-    const first = workers.run(await payload(`${sleep} return 1;`), {
-      timeoutMs: 15_000,
-      onRequest: async (_value, { yieldSignal }) => {
-        yieldSignal.addEventListener("abort", () => firstPressured.resolve(), { once: true });
-        firstEntered.resolve();
-        await releaseFirst.promise;
-        return response({ kind: "checkpoint" });
-      },
+    const first = runCell(workers, `${sleep} return 1;`, async (_value, { yieldSignal }) => {
+      yieldSignal.addEventListener("abort", () => firstPressured.resolve(), { once: true });
+      firstEntered.resolve();
+      await releaseFirst.promise;
+      return response({ kind: "checkpoint" });
     });
     await firstEntered.promise;
-    const second = workers.run(await payload(`${sleep} ${sleep} return 2;`), {
-      timeoutMs: 15_000,
-      onRequest: async (value, { signal, yieldSignal }) => {
+    const second = runCell(
+      workers,
+      `${sleep} ${sleep} return 2;`,
+      async (value, { signal, yieldSignal }) => {
         if (++secondBoundaries === 1) {
           secondEntered.resolve();
           await firstPressured.promise;
           return response(resume(boundary(value), performance.now() + config.timeoutMs));
         }
-        if (!yieldSignal.aborted && !signal.aborted) {
-          await new Promise<void>((resolve) => {
-            yieldSignal.addEventListener("abort", () => resolve(), { once: true });
-            signal.addEventListener("abort", () => resolve(), { once: true });
-          });
-        }
+        await waitForAbort(yieldSignal, signal);
         return response({ kind: "checkpoint" });
       },
-    });
-    // Cold worker startup completes before measuring queued work under pressure.
+    );
+    // Finish cold startup before queueing the work that pressures existing waiters.
     await secondEntered.promise;
-    const quick = workers.run(await payload("return 3;"), { timeoutMs: 2000 });
+    const quick = runCell(workers, "return 3;", undefined, 2000);
     const outcomes = Promise.allSettled([first, second, quick]);
     try {
       await firstPressured.promise;
-      await expect(quick).resolves.toMatchObject({ status: "completed", value: { json: "3" } });
+      expectCompleted(await quick, { json: "3" });
       expect(await second).toMatchObject({ status: "waiting" });
       expect(secondBoundaries).toBe(2);
     } finally {
