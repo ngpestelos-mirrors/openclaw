@@ -368,6 +368,13 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       currentAgentId,
       !catalogKey && !sessionParticipationBlocked,
     );
+    const detailsProgressRefresh =
+      canWriteProgressCard &&
+      composerAvailability.canSend &&
+      nativeConversation &&
+      this.detailsProgressCardPresentation
+        ? this.captureProgressCardRefreshAction()
+        : undefined;
     const props: ChatProps = {
       applicationContext: this.context,
       registerBrowserAnnotationFocus: this.registerBrowserAnnotationFocus,
@@ -415,13 +422,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       progressCardLifetime: progressPresentation?.lifetime,
       gatewayScope: gatewayPresentationScope(this.context.gateway),
       progressCardInitialLoading: this.progressCardInitialLoading,
-      progressCardRefresh:
-        canWriteProgressCard &&
-        composerAvailability.canSend &&
-        nativeConversation &&
-        progressPresentation
-          ? this.captureProgressCardRefreshAction()
-          : undefined,
+      progressCardRefresh: progressPresentation ? detailsProgressRefresh : undefined,
       collapseTaskProgress: state.settings.chatCollapseTaskProgress === true,
       ...this.captureProgressCardActions(canWriteProgressCard),
       readingHistory: state.chatReadingHistory,
@@ -699,6 +700,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
         sidebarLayout,
         sessionWorkspace,
         chatProps: props,
+        detailsActions: { progressCardRefresh: detailsProgressRefresh },
         observerDigest,
         observerRunId,
         catalog,

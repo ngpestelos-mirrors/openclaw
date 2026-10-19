@@ -46,6 +46,7 @@ type ChatPaneLayoutRenderParams = {
   sidebarLayout: SidebarLayout;
   sessionWorkspace: ReturnType<typeof createChatPaneRails>["sessionWorkspace"];
   chatProps: ChatProps;
+  detailsActions: Pick<ChatProps, "progressCardRefresh">;
   observerDigest: SessionObserverDigest | null;
   observerRunId: string | null;
   catalog: boolean;
@@ -115,6 +116,7 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       sidebarLayout: savedLayout,
       sessionWorkspace,
       chatProps,
+      detailsActions,
       observerDigest,
       observerRunId,
       catalog,
@@ -219,9 +221,17 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       latestBrowserTabs: this.active && this.presented ? latestBrowserTabs : undefined,
       historyState: catalog ? undefined : state,
     };
+    const detailsProgress = this.detailsProgressCardPresentation;
     const headerDetails: PaneDetailsProps | undefined = ownsSubagentsPanel
       ? {
-          chat: paneChatProps,
+          chat: {
+            ...paneChatProps,
+            ...detailsActions,
+            progressCard: detailsProgress?.card ?? null,
+            progressCardIdentity: detailsProgress?.identity,
+            progressCardLifetime: detailsProgress?.lifetime,
+            progressCardInitialLoading: this.detailsProgressCardInitialLoading,
+          },
           elements: this.detailsElements,
           mobileHost,
           mobile: this.mergedChrome && !this.onBackToSubagents,
