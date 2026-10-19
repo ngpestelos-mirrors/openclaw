@@ -88,7 +88,8 @@ function createDoctorContext(
   };
 }
 
-function migrationById(id: string) {
+function migrationById(name: string) {
+  const id = `reef-${name}-to-plugin-state`;
   const migration = stateMigrations.find((entry) => entry.id === id);
   if (!migration) {
     throw new Error(`missing migration ${id}`);
@@ -129,6 +130,32 @@ function reefKeys(): ReefKeys {
   };
 }
 
+function reviewRequest(id = "review-id"): ReviewRequest {
+  return {
+    id,
+    from: "alice#1",
+    to: "bob#1",
+    direction: "outbound",
+    bodyHash: "b".repeat(64),
+    approvalDigest: "c".repeat(64),
+    verdict: {
+      decision: "review",
+      category: "ambiguous",
+      reason: "Owner review.",
+      model: "test-model",
+      policyVersion: "v1",
+    },
+  };
+}
+
+const jsonLines = (entries: readonly unknown[]) =>
+  `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+const incompleteMigration =
+  "Reef durable state migration is incomplete; repair the legacy state files and rerun openclaw doctor --fix";
+const identityBinding = { handle: "molty", relayUrl: "https://reefwire.ai" };
+const pendingIdentity = { pending: true, identityBindingRequired: true };
+const unchanged = { changes: [], warnings: [] };
+
 function legacyConfig(): OpenClawConfig {
   const identity = generateIdentity();
   return {
@@ -157,12 +184,14 @@ function legacyConfig(): OpenClawConfig {
 describe("Reef doctor contract", () => {
   let stateDir = "";
   let env: NodeJS.ProcessEnv;
+  let context: PluginDoctorStateMigrationContext;
 
   beforeEach(() => {
     resetPluginStateStoreForTests();
     stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-reef-doctor-"));
     vi.spyOn(os, "homedir").mockReturnValue(stateDir);
     env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    context = createDoctorContext(env);
   });
 
   afterEach(async () => {
@@ -172,8 +201,89 @@ describe("Reef doctor contract", () => {
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
 
-  function migrationParams(config: OpenClawConfig = {}, context = createDoctorContext(env)) {
-    return { config, env, stateDir, oauthDir: path.join(stateDir, "oauth"), context };
+  function migrationParams(config: OpenClawConfig = {}, migrationContext = context) {
+    return {
+      config,
+      env,
+      stateDir,
+      oauthDir: path.join(stateDir, "oauth"),
+      context: migrationContext,
+    };
+  }
+
+  function migrate(name: string, params = migrationParams()) {
+    return migrationById(name).migrateLegacyState(params);
+  }
+
+  function expectBlocked(
+    operation: "load" | "generate" | "audit",
+    message: string | RegExp = /migration is incomplete/,
+  ) {
+    const runtime = createRuntime(env);
+    const result =
+      operation === "load"
+        ? loadKeys(runtime)
+        : operation === "generate"
+          ? generateAndStoreKeys(runtime)
+          : openStores(runtime, reefKeys());
+    return expectReefStateOperationError(result, message);
+  }
+
+  function openStore<T>(namespace: string, maxEntries: number, defaultTtlMs?: number) {
+    return context.openPluginStateKeyedStore<T>({
+      namespace,
+      maxEntries,
+      overflowPolicy: "reject-new",
+      ...(defaultTtlMs === undefined ? {} : { defaultTtlMs }),
+    });
+  }
+
+  function identityMigrationStore() {
+    return openStore<ReefIdentityMigrationRecord>(
+      REEF_KEYS_MIGRATION_NAMESPACE,
+      REEF_KEYS_MIGRATION_MAX_ENTRIES,
+    );
+  }
+
+  function writeLegacy(filename: string, value: unknown, raw = false) {
+    const filePath = path.join(createLegacyDir(), filename);
+    fs.writeFileSync(filePath, raw ? String(value) : JSON.stringify(value));
+    return filePath;
+  }
+
+  async function auditFixture() {
+    const audit = new MemoryAuditStore(new Uint8Array(32).fill(1));
+    await audit.appendEvent("one", { id: 1 }, 10);
+    await audit.appendEvent("two", { id: 2 }, 11);
+    const entries = await audit.entries();
+    const source = jsonLines(entries);
+    return { entries, source, filePath: writeLegacy("audit.jsonl", source, true) };
+  }
+
+  function isolatedIdentity() {
+    const homeDir = path.join(stateDir, "home");
+    const isolatedStateDir = path.join(stateDir, "isolated");
+    const legacyDir = path.join(homeDir, ".openclaw", "data", "reef");
+    const homeKeysPath = path.join(legacyDir, "keys.json");
+    const keys = reefKeys();
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.mkdirSync(isolatedStateDir, { recursive: true });
+    fs.writeFileSync(homeKeysPath, JSON.stringify(keys));
+    vi.mocked(os.homedir).mockReturnValue(homeDir);
+    const isolatedEnv = { ...env, OPENCLAW_STATE_DIR: isolatedStateDir };
+    context = createDoctorContext(isolatedEnv);
+    return {
+      keys,
+      homeKeysPath,
+      legacyDir,
+      params: {
+        config: {},
+        env: isolatedEnv,
+        stateDir: isolatedStateDir,
+        oauthDir: path.join(isolatedStateDir, "oauth"),
+        context,
+      },
+    };
   }
 
   function createLegacyDir() {
@@ -199,74 +309,35 @@ describe("Reef doctor contract", () => {
   });
 
   it("does not import the default home's Reef identity into an isolated state", async () => {
-    const homeDir = path.join(stateDir, "home");
-    const isolatedStateDir = path.join(stateDir, "isolated");
-    const homeKeysPath = path.join(homeDir, ".openclaw", "data", "reef", "keys.json");
-    fs.mkdirSync(path.dirname(homeKeysPath), { recursive: true });
-    fs.mkdirSync(isolatedStateDir, { recursive: true });
-    fs.writeFileSync(homeKeysPath, JSON.stringify(reefKeys()));
-    vi.mocked(os.homedir).mockReturnValue(homeDir);
-    const isolatedEnv = { ...env, OPENCLAW_STATE_DIR: isolatedStateDir };
-    const migration = migrationById("reef-keys-json-to-plugin-state");
-    const params = {
-      config: {},
-      env: isolatedEnv,
-      stateDir: isolatedStateDir,
-      oauthDir: path.join(isolatedStateDir, "oauth"),
-      context: createDoctorContext(isolatedEnv),
-    };
+    const { homeKeysPath, params } = isolatedIdentity();
+    const migration = migrationById("keys-json");
 
     await expect(migration.detectLegacyState(params)).resolves.toBeNull();
-    await expect(migration.migrateLegacyState(params)).resolves.toEqual({
-      changes: [],
-      warnings: [],
-    });
+    await expect(migration.migrateLegacyState(params)).resolves.toEqual(unchanged);
     expect(fs.existsSync(homeKeysPath)).toBe(true);
   });
 
   it("imports an explicitly configured default-home Reef identity into isolated state", async () => {
-    const homeDir = path.join(stateDir, "explicit-home");
-    const isolatedStateDir = path.join(stateDir, "explicit-isolated");
-    const legacyDir = path.join(homeDir, ".openclaw", "data", "reef");
-    const homeKeysPath = path.join(legacyDir, "keys.json");
-    const keys = reefKeys();
-    fs.mkdirSync(legacyDir, { recursive: true });
-    fs.mkdirSync(isolatedStateDir, { recursive: true });
-    fs.writeFileSync(homeKeysPath, JSON.stringify(keys));
-    vi.mocked(os.homedir).mockReturnValue(homeDir);
-    const isolatedEnv = { ...env, OPENCLAW_STATE_DIR: isolatedStateDir };
-    const context = createDoctorContext(isolatedEnv);
-    const migration = migrationById("reef-keys-json-to-plugin-state");
-    const params = {
-      config: { channels: { reef: { stateDir: legacyDir } } },
-      env: isolatedEnv,
-      stateDir: isolatedStateDir,
-      oauthDir: path.join(isolatedStateDir, "oauth"),
-      context,
-    };
+    const { keys, homeKeysPath, legacyDir, params: isolatedParams } = isolatedIdentity();
+    const migration = migrationById("keys-json");
+    const params = { ...isolatedParams, config: { channels: { reef: { stateDir: legacyDir } } } };
 
     await expect(migration.detectLegacyState(params)).resolves.toEqual({
       preview: ["- Reef identity keys -> plugin state (identity)"],
     });
     await expect(migration.migrateLegacyState(params)).resolves.toMatchObject({ warnings: [] });
     await expect(
-      context
-        .openPluginStateKeyedStore<ReefKeys>({
-          namespace: REEF_KEYS_NAMESPACE,
-          maxEntries: REEF_KEYS_MAX_ENTRIES,
-          overflowPolicy: "reject-new",
-        })
-        .lookup(REEF_KEYS_KEY),
+      openStore<ReefKeys>(REEF_KEYS_NAMESPACE, REEF_KEYS_MAX_ENTRIES).lookup(REEF_KEYS_KEY),
     ).resolves.toEqual(keys);
     expect(fs.existsSync(homeKeysPath)).toBe(false);
     expect(fs.existsSync(`${homeKeysPath}.migrated`)).toBe(true);
   });
 
   it("retains refused identity imports and keeps runtime blocked", async () => {
-    const filePath = path.join(createLegacyDir(), "keys.json");
     const source = JSON.stringify(reefKeys());
-    fs.writeFileSync(filePath, source);
-    const result = await migrationById("reef-keys-json-to-plugin-state").migrateLegacyState(
+    const filePath = writeLegacy("keys.json", source, true);
+    const result = await migrate(
+      "keys-json",
       migrationParams({}, createDoctorContext(env, REEF_KEYS_NAMESPACE)),
     );
 
@@ -276,14 +347,12 @@ describe("Reef doctor contract", () => {
     ]);
     expect(fs.readFileSync(filePath, "utf8")).toBe(source);
     expect(fs.existsSync(`${filePath}.migrated`)).toBe(false);
-    await expectReefStateOperationError(loadKeys(createRuntime(env)), /migration is incomplete/);
+    await expectBlocked("load");
   });
 
   it("blocks identity regeneration after a failed keys.json import", async () => {
-    const legacyDir = createLegacyDir();
-    const filePath = path.join(legacyDir, "keys.json");
-    fs.writeFileSync(filePath, "{broken");
-    const migration = migrationById("reef-keys-json-to-plugin-state");
+    const filePath = writeLegacy("keys.json", "{broken", true);
+    const migration = migrationById("keys-json");
     const params = migrationParams();
 
     const result = await migration.migrateLegacyState(params);
@@ -296,169 +365,101 @@ describe("Reef doctor contract", () => {
     expect(missingSourceResult.warnings).toEqual([
       expect.stringContaining("migration is incomplete and keys.json is missing"),
     ]);
-    await expectReefStateOperationError(
-      generateAndStoreKeys(createRuntime(env)),
-      /migration is incomplete/,
-    );
+    await expectBlocked("generate");
   });
 
   it("keeps legacy identity keys blocked until their handle binding is canonical", async () => {
-    const legacyDir = createLegacyDir();
     const keys = reefKeys();
-    fs.writeFileSync(path.join(legacyDir, "keys.json"), JSON.stringify(keys));
-    fs.writeFileSync(
-      path.join(legacyDir, "identity.json"),
-      JSON.stringify({ handle: "molty", relayUrl: "https://reefwire.ai" }),
-    );
-    const context = createDoctorContext(env);
-    const params = migrationParams({}, context);
-
-    const keysResult = await migrationById("reef-keys-json-to-plugin-state").migrateLegacyState(
-      params,
-    );
+    writeLegacy("keys.json", keys);
+    writeLegacy("identity.json", identityBinding);
+    const keysResult = await migrate("keys-json");
 
     expect(keysResult.warnings).toEqual([]);
-    const migrationStore = context.openPluginStateKeyedStore<ReefIdentityMigrationRecord>({
-      namespace: REEF_KEYS_MIGRATION_NAMESPACE,
-      maxEntries: REEF_KEYS_MIGRATION_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-    });
-    await expect(migrationStore.lookup(REEF_KEYS_MIGRATION_KEY)).resolves.toEqual({
-      pending: true,
-      identityBindingRequired: true,
-    });
-    await expectReefStateOperationError(
-      loadKeys(createRuntime(env)),
-      "Reef durable state migration is incomplete; repair the legacy state files and rerun openclaw doctor --fix",
-    );
+    const migrationStore = identityMigrationStore();
+    await expect(migrationStore.lookup(REEF_KEYS_MIGRATION_KEY)).resolves.toEqual(pendingIdentity);
+    await expectBlocked("load", incompleteMigration);
 
-    const registrationResult = await migrationById(
-      "reef-registration-json-to-plugin-state",
-    ).migrateLegacyState(params);
+    const registrationResult = await migrate("registration-json");
 
     expect(registrationResult.warnings).toEqual([]);
     expect(registrationResult.changes).toContain(
       "Verified Reef identity keys and binding; cleared migration marker",
     );
     await expect(migrationStore.lookup(REEF_KEYS_MIGRATION_KEY)).resolves.toBeUndefined();
-    await expectReefStateOperationError(
-      loadKeys(createRuntime(env)),
-      "Reef durable state migration is incomplete; repair the legacy state files and rerun openclaw doctor --fix",
-    );
-    await migrationById("reef-runtime-files-to-plugin-state").migrateLegacyState(params);
+    await expectBlocked("load", incompleteMigration);
+    await migrate("runtime-files");
     await expect(loadKeys(createRuntime(env))).resolves.toEqual(keys);
   });
 
   it("binds wizard-created legacy keys when unrelated Reef config is invalid", async () => {
-    const legacyDir = createLegacyDir();
-    const keys = reefKeys();
-    fs.writeFileSync(path.join(legacyDir, "keys.json"), JSON.stringify(keys));
-    const context = createDoctorContext(env);
-    const params = migrationParams(
-      {
-        channels: {
-          reef: {
-            handle: "molty",
-            relayUrl: "https://reefwire.ai/",
-            email: "not-an-email",
-          },
+    writeLegacy("keys.json", reefKeys());
+    const params = migrationParams({
+      channels: {
+        reef: {
+          handle: "molty",
+          relayUrl: "https://reefwire.ai/",
+          email: "not-an-email",
         },
       },
-      context,
-    );
+    });
 
-    await expect(
-      migrationById("reef-registration-json-to-plugin-state").detectLegacyState(params),
-    ).resolves.toEqual({
+    await expect(migrationById("registration-json").detectLegacyState(params)).resolves.toEqual({
       preview: ["- Reef configured identity binding -> plugin state"],
     });
 
-    await migrationById("reef-keys-json-to-plugin-state").migrateLegacyState(params);
-    const migrationStore = context.openPluginStateKeyedStore<ReefIdentityMigrationRecord>({
-      namespace: REEF_KEYS_MIGRATION_NAMESPACE,
-      maxEntries: REEF_KEYS_MIGRATION_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-    });
-    await expect(migrationStore.lookup(REEF_KEYS_MIGRATION_KEY)).resolves.toEqual({
-      pending: true,
-      identityBindingRequired: true,
-    });
+    await migrate("keys-json", params);
+    const migrationStore = identityMigrationStore();
+    await expect(migrationStore.lookup(REEF_KEYS_MIGRATION_KEY)).resolves.toEqual(pendingIdentity);
 
-    const registrationResult = await migrationById(
-      "reef-registration-json-to-plugin-state",
-    ).migrateLegacyState(params);
+    const registrationResult = await migrate("registration-json", params);
 
     expect(registrationResult.warnings).toEqual([]);
     expect(registrationResult.changes).toContain(
       "Migrated Reef identity binding from config -> plugin state",
     );
-    const registrationStore = context.openPluginStateKeyedStore<ReefIdentityBinding>({
-      namespace: REEF_REGISTRATION_NAMESPACE,
-      maxEntries: REEF_REGISTRATION_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-    });
-    await expect(registrationStore.lookup(REEF_REGISTRATION_IDENTITY_KEY)).resolves.toEqual({
-      handle: "molty",
-      relayUrl: "https://reefwire.ai",
-    });
+    const registrationStore = openStore<ReefIdentityBinding>(
+      REEF_REGISTRATION_NAMESPACE,
+      REEF_REGISTRATION_MAX_ENTRIES,
+    );
+    await expect(registrationStore.lookup(REEF_REGISTRATION_IDENTITY_KEY)).resolves.toEqual(
+      identityBinding,
+    );
     await expect(migrationStore.lookup(REEF_KEYS_MIGRATION_KEY)).resolves.toBeUndefined();
   });
 
   it("keeps identity migration blocked when config conflicts with the imported binding", async () => {
-    const legacyDir = createLegacyDir();
-    fs.writeFileSync(path.join(legacyDir, "keys.json"), JSON.stringify(reefKeys()));
-    fs.writeFileSync(
-      path.join(legacyDir, "identity.json"),
-      JSON.stringify({ handle: "canonical", relayUrl: "https://reefwire.ai" }),
-    );
-    const context = createDoctorContext(env);
-    const params = migrationParams(
-      {
-        channels: {
-          reef: { handle: "conflict", relayUrl: "https://reefwire.ai" },
-        },
+    writeLegacy("keys.json", reefKeys());
+    writeLegacy("identity.json", { handle: "canonical", relayUrl: "https://reefwire.ai" });
+    const params = migrationParams({
+      channels: {
+        reef: { handle: "conflict", relayUrl: "https://reefwire.ai" },
       },
-      context,
-    );
+    });
 
-    await migrationById("reef-keys-json-to-plugin-state").migrateLegacyState(params);
-    const result = await migrationById("reef-registration-json-to-plugin-state").migrateLegacyState(
-      params,
-    );
+    await migrate("keys-json", params);
+    const result = await migrate("registration-json", params);
 
     expect(result.warnings).toEqual([
       expect.stringContaining("configured handle or relay differs"),
       expect.stringContaining("identity migration is incomplete"),
     ]);
-    const migrationStore = context.openPluginStateKeyedStore<ReefIdentityMigrationRecord>({
-      namespace: REEF_KEYS_MIGRATION_NAMESPACE,
-      maxEntries: REEF_KEYS_MIGRATION_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-    });
-    await expect(migrationStore.lookup(REEF_KEYS_MIGRATION_KEY)).resolves.toEqual({
-      pending: true,
-      identityBindingRequired: true,
-    });
+    const migrationStore = identityMigrationStore();
+    await expect(migrationStore.lookup(REEF_KEYS_MIGRATION_KEY)).resolves.toEqual(pendingIdentity);
   });
 
   it.each(["file", "config"])(
     "keeps identity binding migration blocked after a refused %s import",
     async (sourceKind) => {
-      const legacyDir = createLegacyDir();
-      fs.writeFileSync(path.join(legacyDir, "keys.json"), JSON.stringify(reefKeys()));
-      const binding = { handle: "molty", relayUrl: "https://reefwire.ai" };
-      const identityPath = path.join(legacyDir, "identity.json");
+      writeLegacy("keys.json", reefKeys());
+      const identityPath = path.join(createLegacyDir(), "identity.json");
       if (sourceKind === "file") {
-        fs.writeFileSync(identityPath, JSON.stringify(binding));
+        fs.writeFileSync(identityPath, JSON.stringify(identityBinding));
       }
-      const config = sourceKind === "config" ? { channels: { reef: binding } } : {};
-      await migrationById("reef-keys-json-to-plugin-state").migrateLegacyState(
-        migrationParams(config),
-      );
+      const config = sourceKind === "config" ? { channels: { reef: identityBinding } } : {};
+      await migrate("keys-json", migrationParams(config));
 
-      const result = await migrationById(
-        "reef-registration-json-to-plugin-state",
-      ).migrateLegacyState(
+      const result = await migrate(
+        "registration-json",
         migrationParams(config, createDoctorContext(env, REEF_REGISTRATION_NAMESPACE)),
       );
 
@@ -467,23 +468,18 @@ describe("Reef doctor contract", () => {
         expect.stringContaining("Failed importing Reef identity"),
       );
       if (sourceKind === "file") {
-        expect(fs.readFileSync(identityPath, "utf8")).toBe(JSON.stringify(binding));
+        expect(fs.readFileSync(identityPath, "utf8")).toBe(JSON.stringify(identityBinding));
         expect(fs.existsSync(`${identityPath}.migrated`)).toBe(false);
       }
-      await expectReefStateOperationError(loadKeys(createRuntime(env)), /migration is incomplete/);
+      await expectBlocked("load");
     },
   );
 
   it.each([REEF_AUDIT_NAMESPACE, REEF_AUDIT_HEAD_NAMESPACE])(
     "retains the audit source after a refused %s insert and resumes safely",
     async (refusedNamespace) => {
-      const filePath = path.join(createLegacyDir(), "audit.jsonl");
-      const audit = new MemoryAuditStore(new Uint8Array(32).fill(1));
-      await audit.appendEvent("one", { id: 1 }, 10);
-      await audit.appendEvent("two", { id: 2 }, 11);
-      const source = `${(await audit.entries()).map((entry) => JSON.stringify(entry)).join("\n")}\n`;
-      fs.writeFileSync(filePath, source);
-      const migration = migrationById("reef-audit-jsonl-to-plugin-state");
+      const { filePath, entries, source } = await auditFixture();
+      const migration = migrationById("audit-jsonl");
 
       const failed = await migration.migrateLegacyState(
         migrationParams({}, createDoctorContext(env, refusedNamespace)),
@@ -495,51 +491,34 @@ describe("Reef doctor contract", () => {
       ]);
       expect(fs.readFileSync(filePath, "utf8")).toBe(source);
       expect(fs.existsSync(`${filePath}.migrated`)).toBe(false);
-      await expectReefStateOperationError(
-        openStores(createRuntime(env), reefKeys()),
-        /migration is incomplete/,
-      );
+      await expectBlocked("audit");
 
       const recovered = await migration.migrateLegacyState(migrationParams());
       expect(recovered.warnings).toEqual([]);
       expect(fs.readFileSync(`${filePath}.migrated`, "utf8")).toBe(source);
-      await migrationById("reef-runtime-files-to-plugin-state").migrateLegacyState(
-        migrationParams(),
-      );
+      await migrate("runtime-files");
       const stores = await openStores(createRuntime(env), reefKeys());
-      await expect(stores.audit.entries()).resolves.toEqual(await audit.entries());
+      await expect(stores.audit.entries()).resolves.toEqual(entries);
     },
   );
 
   it("imports and verifies the append-only audit chain", async () => {
-    const legacyDir = createLegacyDir();
-    const filePath = path.join(legacyDir, "audit.jsonl");
-    const audit = new MemoryAuditStore(new Uint8Array(32).fill(1));
-    await audit.appendEvent("one", { id: 1 }, 10);
-    await audit.appendEvent("two", { id: 2 }, 11);
-    const entries = await audit.entries();
-    fs.writeFileSync(filePath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
-    const migration = migrationById("reef-audit-jsonl-to-plugin-state");
-    const context = createDoctorContext(env);
-    const params = migrationParams({}, context);
-
-    const result = await migration.migrateLegacyState(params);
+    const { filePath, entries } = await auditFixture();
+    const result = await migrate("audit-jsonl");
 
     expect(result.warnings).toEqual([]);
     expect(result.changes).toEqual([
       "Migrated 2 Reef audit entries -> plugin state",
       expect.stringContaining("Archived Reef audit trail legacy source"),
     ]);
-    const store = context.openPluginStateKeyedStore<ReefAuditStateRecord>({
-      namespace: REEF_AUDIT_NAMESPACE,
-      maxEntries: REEF_AUDIT_STORE_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-    });
-    const headStore = context.openPluginStateKeyedStore<ReefAuditHeadRecord>({
-      namespace: REEF_AUDIT_HEAD_NAMESPACE,
-      maxEntries: REEF_AUDIT_HEAD_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-    });
+    const store = openStore<ReefAuditStateRecord>(
+      REEF_AUDIT_NAMESPACE,
+      REEF_AUDIT_STORE_MAX_ENTRIES,
+    );
+    const headStore = openStore<ReefAuditHeadRecord>(
+      REEF_AUDIT_HEAD_NAMESPACE,
+      REEF_AUDIT_HEAD_MAX_ENTRIES,
+    );
     await expect(headStore.lookup(REEF_AUDIT_HEAD_KEY)).resolves.toEqual({
       kind: "head",
       hash: entries[1]!.entryHash,
@@ -555,25 +534,18 @@ describe("Reef doctor contract", () => {
   });
 
   it("finishes an interrupted migration of an empty audit trail", async () => {
-    const legacyDir = createLegacyDir();
-    const filePath = path.join(legacyDir, "audit.jsonl");
-    fs.writeFileSync(filePath, "");
-    const migration = migrationById("reef-audit-jsonl-to-plugin-state");
-    const context = createDoctorContext(env);
-    const params = migrationParams({}, context);
+    const filePath = writeLegacy("audit.jsonl", "", true);
+    const migration = migrationById("audit-jsonl");
+    const params = migrationParams();
 
     const imported = await migration.migrateLegacyState(params);
     expect(imported.warnings).toEqual([]);
     expect(fs.existsSync(filePath)).toBe(false);
 
-    const migrationStore = context.openPluginStateKeyedStore<{
+    const migrationStore = openStore<{
       pending: true;
       expectedEntries: number;
-    }>({
-      namespace: REEF_AUDIT_MIGRATION_NAMESPACE,
-      maxEntries: REEF_AUDIT_MIGRATION_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-    });
+    }>(REEF_AUDIT_MIGRATION_NAMESPACE, REEF_AUDIT_MIGRATION_MAX_ENTRIES);
     await migrationStore.register(REEF_AUDIT_MIGRATION_KEY, {
       pending: true,
       expectedEntries: 0,
@@ -589,90 +561,62 @@ describe("Reef doctor contract", () => {
   });
 
   it("blocks runtime audit writes until a failed legacy import is repaired", async () => {
-    const legacyDir = createLegacyDir();
-    const filePath = path.join(legacyDir, "audit.jsonl");
-    fs.writeFileSync(filePath, "{broken\n");
-    const migration = migrationById("reef-audit-jsonl-to-plugin-state");
-    const context = createDoctorContext(env);
-    const params = migrationParams({}, context);
+    const filePath = writeLegacy("audit.jsonl", "{broken\n", true);
+    const migration = migrationById("audit-jsonl");
+    const params = migrationParams();
 
     const failed = await migration.migrateLegacyState(params);
 
     expect(failed.warnings).toEqual([expect.stringContaining("Failed importing Reef audit trail")]);
-    const migrationStore = context.openPluginStateKeyedStore<{ pending: true }>({
-      namespace: REEF_AUDIT_MIGRATION_NAMESPACE,
-      maxEntries: REEF_AUDIT_MIGRATION_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-    });
+    const migrationStore = openStore<{ pending: true }>(
+      REEF_AUDIT_MIGRATION_NAMESPACE,
+      REEF_AUDIT_MIGRATION_MAX_ENTRIES,
+    );
     await expect(migrationStore.lookup(REEF_AUDIT_MIGRATION_KEY)).resolves.toEqual({
       pending: true,
     });
-    await expectReefStateOperationError(
-      openStores(createRuntime(env), reefKeys()),
-      "Reef durable state migration is incomplete; repair the legacy state files and rerun openclaw doctor --fix",
-    );
+    await expectBlocked("audit", incompleteMigration);
 
     const audit = new MemoryAuditStore(new Uint8Array(32).fill(1));
     await audit.appendEvent("repaired", { id: 1 }, 10);
     const entries = await audit.entries();
-    fs.writeFileSync(filePath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    fs.writeFileSync(filePath, jsonLines(entries));
 
     const repaired = await migration.migrateLegacyState(params);
 
     expect(repaired.warnings).toEqual([]);
     await expect(migrationStore.lookup(REEF_AUDIT_MIGRATION_KEY)).resolves.toBeUndefined();
-    await migrationById("reef-runtime-files-to-plugin-state").migrateLegacyState(params);
+    await migrate("runtime-files", params);
     await expect(openStores(createRuntime(env), reefKeys())).resolves.toBeDefined();
   });
 
   it("imports registration and durable runtime state before archiving files", async () => {
     const legacyDir = createLegacyDir();
-    fs.writeFileSync(
-      path.join(legacyDir, "identity.json"),
-      JSON.stringify({ handle: "molty", relayUrl: "https://reefwire.ai" }),
-    );
-    fs.writeFileSync(
-      path.join(legacyDir, "setup-session.json"),
-      JSON.stringify({
-        session: "setup-secret",
-        relayUrl: "https://reefwire.ai",
-        email: "molty@example.com",
-      }),
-    );
+    writeLegacy("identity.json", identityBinding);
+    writeLegacy("setup-session.json", {
+      session: "setup-secret",
+      relayUrl: "https://reefwire.ai",
+      email: "molty@example.com",
+    });
     const replayId = "01JZ0000000000000000000000";
     const secondReplayId = "01JZ0000000000000000000001";
-    fs.writeFileSync(
-      path.join(legacyDir, "replay.jsonl"),
-      `${JSON.stringify({ op: "claim", peer: "alice", id: replayId, envelopeHash: "a".repeat(64) })}\n${JSON.stringify({ op: "consume", peer: "alice", id: replayId })}\n${JSON.stringify({ op: "claim", peer: "bob", id: secondReplayId, envelopeHash: "d".repeat(64) })}\n`,
+    writeLegacy(
+      "replay.jsonl",
+      jsonLines([
+        { op: "claim", peer: "alice", id: replayId, envelopeHash: "a".repeat(64) },
+        { op: "consume", peer: "alice", id: replayId },
+        { op: "claim", peer: "bob", id: secondReplayId, envelopeHash: "d".repeat(64) },
+      ]),
+      true,
     );
-    const review: ReviewRequest = {
-      id: replayId,
-      from: "alice#1",
-      to: "bob#1",
-      direction: "outbound",
-      bodyHash: "b".repeat(64),
-      approvalDigest: "c".repeat(64),
-      verdict: {
-        decision: "review",
-        category: "ambiguous",
-        reason: "Owner review.",
-        model: "test-model",
-        policyVersion: "v1",
-      },
-    };
-    fs.writeFileSync(
-      path.join(legacyDir, "reviews.json"),
-      JSON.stringify({ [review.approvalDigest]: { review, approved: true } }),
+    const review = reviewRequest(replayId);
+    writeLegacy("reviews.json", { [review.approvalDigest]: { review, approved: true } });
+    writeLegacy("delivered.json", [replayId]);
+    const partiallyImportedReplay = openStore<ReefReplayRecord>(
+      REEF_REPLAY_NAMESPACE,
+      REEF_REPLAY_MAX_ENTRIES,
+      REEF_REPLAY_TTL_MS,
     );
-    fs.writeFileSync(path.join(legacyDir, "delivered.json"), JSON.stringify([replayId]));
-    const context = createDoctorContext(env);
-    const params = migrationParams({}, context);
-    const partiallyImportedReplay = context.openPluginStateKeyedStore<ReefReplayRecord>({
-      namespace: REEF_REPLAY_NAMESPACE,
-      maxEntries: REEF_REPLAY_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-      defaultTtlMs: REEF_REPLAY_TTL_MS,
-    });
     await partiallyImportedReplay.register(reefReplayStoreKey("alice", replayId), {
       peer: "alice",
       id: replayId,
@@ -680,16 +624,9 @@ describe("Reef doctor contract", () => {
       state: "consumed",
     });
 
-    const registration = await migrationById(
-      "reef-registration-json-to-plugin-state",
-    ).migrateLegacyState(params);
-    const runtimeState = await migrationById(
-      "reef-runtime-files-to-plugin-state",
-    ).migrateLegacyState(params);
-    await expectReefStateOperationError(
-      generateAndStoreKeys(createRuntime(env)),
-      /has no stored keys/,
-    );
+    const registration = await migrate("registration-json");
+    const runtimeState = await migrate("runtime-files");
+    await expectBlocked("generate", /has no stored keys/);
 
     expect(registration.warnings).toEqual([]);
     expect(registration.changes).toHaveLength(4);
@@ -705,12 +642,11 @@ describe("Reef doctor contract", () => {
       expect(fs.existsSync(path.join(legacyDir, filename))).toBe(false);
       expect(fs.existsSync(path.join(legacyDir, `${filename}.migrated`))).toBe(true);
     }
-    const replayStore = context.openPluginStateKeyedStore<ReefReplayRecord>({
-      namespace: REEF_REPLAY_NAMESPACE,
-      maxEntries: REEF_REPLAY_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-      defaultTtlMs: REEF_REPLAY_TTL_MS,
-    });
+    const replayStore = openStore<ReefReplayRecord>(
+      REEF_REPLAY_NAMESPACE,
+      REEF_REPLAY_MAX_ENTRIES,
+      REEF_REPLAY_TTL_MS,
+    );
     await expect(replayStore.lookup(reefReplayStoreKey("alice", replayId))).resolves.toMatchObject({
       state: "consumed",
       envelopeHash: "a".repeat(64),
@@ -721,21 +657,19 @@ describe("Reef doctor contract", () => {
       state: "available",
       envelopeHash: "d".repeat(64),
     });
-    const reviewStore = context.openPluginStateKeyedStore<ReefReviewRecord>({
-      namespace: REEF_REVIEWS_NAMESPACE,
-      maxEntries: REEF_REVIEWS_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-    });
+    const reviewStore = openStore<ReefReviewRecord>(
+      REEF_REVIEWS_NAMESPACE,
+      REEF_REVIEWS_MAX_ENTRIES,
+    );
     await expect(reviewStore.lookup(review.approvalDigest)).resolves.toEqual({
       review,
       approved: true,
     });
-    const deliveredStore = context.openPluginStateKeyedStore<{ id: string }>({
-      namespace: REEF_DELIVERED_NAMESPACE,
-      maxEntries: REEF_DELIVERED_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-      defaultTtlMs: REEF_DELIVERED_TTL_MS,
-    });
+    const deliveredStore = openStore<{ id: string }>(
+      REEF_DELIVERED_NAMESPACE,
+      REEF_DELIVERED_MAX_ENTRIES,
+      REEF_DELIVERED_TTL_MS,
+    );
     await expect(deliveredStore.lookup(replayId)).resolves.toEqual({ id: replayId });
   });
 
@@ -745,21 +679,7 @@ describe("Reef doctor contract", () => {
     ["delivered.json", REEF_DELIVERED_NAMESPACE, "Reef delivered markers"],
   ])("retains %s after a refused runtime insert", async (filename, namespace, label) => {
     const legacyDir = createLegacyDir();
-    const review: ReviewRequest = {
-      id: "review-id",
-      from: "alice#1",
-      to: "bob#1",
-      direction: "outbound",
-      bodyHash: "b".repeat(64),
-      approvalDigest: "c".repeat(64),
-      verdict: {
-        decision: "review",
-        category: "ambiguous",
-        reason: "Owner review.",
-        model: "test-model",
-        policyVersion: "v1",
-      },
-    };
+    const review = reviewRequest();
     const sources = {
       "replay.jsonl": `${JSON.stringify({ op: "claim", peer: "alice", id: "replay-id", envelopeHash: "a".repeat(64) })}\n`,
       "reviews.json": JSON.stringify({ [review.approvalDigest]: { review } }),
@@ -769,7 +689,8 @@ describe("Reef doctor contract", () => {
       fs.writeFileSync(path.join(legacyDir, name), source);
     }
 
-    const result = await migrationById("reef-runtime-files-to-plugin-state").migrateLegacyState(
+    const result = await migrate(
+      "runtime-files",
       migrationParams({}, createDoctorContext(env, namespace)),
     );
 
@@ -784,7 +705,7 @@ describe("Reef doctor contract", () => {
       );
       expect(fs.existsSync(name === filename ? `${filePath}.migrated` : filePath)).toBe(false);
     }
-    await expectReefStateOperationError(loadKeys(createRuntime(env)), /migration is incomplete/);
+    await expectBlocked("load");
   });
 
   it("leaves oversized replay and delivered sources blocked and unarchived", async () => {
@@ -807,10 +728,7 @@ describe("Reef doctor contract", () => {
         Array.from({ length: REEF_DELIVERED_MAX_ENTRIES + 1 }, (_, index) => `delivered-${index}`),
       ),
     );
-    const migration = migrationById("reef-runtime-files-to-plugin-state");
-    const params = migrationParams();
-
-    const result = await migration.migrateLegacyState(params);
+    const result = await migrate("runtime-files");
 
     expect(result.changes).toEqual([]);
     expect(result.warnings).toEqual([
@@ -830,9 +748,8 @@ describe("Reef doctor contract", () => {
 
   it("imports config-backed trust into scoped plugin state without overwriting canonical rows", async () => {
     const cfg = legacyConfig();
-    const migration = migrationById("reef-config-trust-to-plugin-state");
-    const context = createDoctorContext(env);
-    const params = migrationParams(cfg, context);
+    const migration = migrationById("config-trust");
+    const params = migrationParams(cfg);
 
     await expect(migration.detectLegacyState(params)).resolves.toEqual({
       preview: ["- Reef peer trust: config -> plugin state (1 peer(s), 0 invalid)"],
@@ -847,29 +764,19 @@ describe("Reef doctor contract", () => {
       relayUrl: "https://reefwire.ai",
       requestPolicy: "code-only",
     });
-    const store = context.openPluginStateKeyedStore<{
+    const store = openStore<{
       revision: number;
       trust: { autonomy: string; approvedAt: number };
-    }>({
-      namespace: REEF_TRUST_STORE_NAMESPACE,
-      maxEntries: REEF_TRUST_STORE_MAX_ENTRIES,
-      overflowPolicy: "reject-new",
-    });
+    }>(REEF_TRUST_STORE_NAMESPACE, REEF_TRUST_STORE_MAX_ENTRIES);
     const peerKey = resolveReefTrustStoreKey(canonical, "peer");
     await expect(store.lookup(peerKey)).resolves.toMatchObject({
       revision: 1,
       trust: { autonomy: "extended", approvedAt: 0 },
     });
     await expect(migration.detectLegacyState(params)).resolves.toBeNull();
-    await expect(migration.migrateLegacyState(params)).resolves.toEqual({
-      changes: [],
-      warnings: [],
-    });
+    await expect(migration.migrateLegacyState(params)).resolves.toEqual(unchanged);
     await store.delete(peerKey);
-    await expect(migration.migrateLegacyState(params)).resolves.toEqual({
-      changes: [],
-      warnings: [],
-    });
+    await expect(migration.migrateLegacyState(params)).resolves.toEqual(unchanged);
     await expect(store.lookup(peerKey)).resolves.toBeUndefined();
   });
 
@@ -880,9 +787,8 @@ describe("Reef doctor contract", () => {
       ...(reef.friends as Record<string, unknown>),
       broken: { autonomy: "extended" },
     };
-    const migration = migrationById("reef-config-trust-to-plugin-state");
-    const context = createDoctorContext(env);
-    const params = migrationParams(cfg, context);
+    const migration = migrationById("config-trust");
+    const params = migrationParams(cfg);
 
     await expect(migration.detectLegacyState(params)).resolves.toEqual({
       preview: ["- Reef peer trust: config -> plugin state (1 peer(s), 1 invalid)"],
@@ -901,7 +807,7 @@ describe("Reef doctor contract", () => {
   it("does not partially migrate when the trust namespace is full", async () => {
     const cfg = legacyConfig();
     const registerIfAbsent = vi.fn();
-    const context = {
+    const fullContext = {
       openPluginStateKeyedStore() {
         return {
           entries: async () =>
@@ -915,11 +821,7 @@ describe("Reef doctor contract", () => {
       },
     } as PluginDoctorStateMigrationContext;
 
-    await expect(
-      migrationById("reef-config-trust-to-plugin-state").migrateLegacyState(
-        migrationParams(cfg, context),
-      ),
-    ).resolves.toEqual({
+    await expect(migrate("config-trust", migrationParams(cfg, fullContext))).resolves.toEqual({
       changes: [],
       warnings: [
         "Skipped Reef peer trust migration because plugin state has room for 0 of 1 trust row(s) and 0 of 1 import marker(s); left legacy friends config in place",
