@@ -55,11 +55,7 @@ export type {
   SessionDiffFileTextLoader,
   SessionDiffOwner,
   SessionDiffFileView,
-  SessionDiffMobilePageRequest,
   SessionDiffProps,
-  FileSource,
-  FileView,
-  DiffValue,
 } from "./session-diff-types.ts";
 
 function shellArgument(value: string) {
