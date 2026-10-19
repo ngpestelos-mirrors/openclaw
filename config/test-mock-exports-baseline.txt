@@ -7159,7 +7159,6 @@
 ["src/infra/windows-diagnostic-env.test.ts","../process/exec.js","fcc21acc756cd3e486f04db7d609acc74052253d99316d8083c28931c837fa15",1]
 ["src/infra/worker-task-pool.cleanup.test.ts","./temp-artifact-cleanup.js","0ff0c0b0da42f80c7c504d64a56807a06a5aa6c83277ce1830d5c28e77bfa898",1]
 ["src/infra/worker-task-pool.cleanup.test.ts","./temp-artifact-cleanup.js","0ff0c0b0da42f80c7c504d64a56807a06a5aa6c83277ce1830d5c28e77bfa898",2]
-["src/infra/worker-task-pool.cleanup.test.ts","./temp-artifact-cleanup.js","f129422dec2b34b27c8880c8ba7b43bb89675708830fc3ad9cadf2fbf184f4a7",1]
 ["src/infra/worker-task-pool.owned.test.ts","./runtime-worker-url.js","71ceb2402386f8ecba22ab4b1ebe94f8a2070f45a1a507035cac3328eb4aca20",1]
 ["src/infra/worker-task-pool.preparation.test.ts","./runtime-worker-url.js","71ceb2402386f8ecba22ab4b1ebe94f8a2070f45a1a507035cac3328eb4aca20",1]
 ["src/infra/worker-task-pool.retirement-failure.test.ts","./runtime-worker-url.js","71ceb2402386f8ecba22ab4b1ebe94f8a2070f45a1a507035cac3328eb4aca20",1]
