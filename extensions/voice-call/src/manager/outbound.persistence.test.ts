@@ -24,18 +24,17 @@ function delayedOperation<T>() {
   return { ...result, started: started.promise, invoke };
 }
 
+const WEBHOOK = "https://example.com/voice/webhook";
+const CANONICAL_ID = "canonical-call-uuid";
 const contextWith = (overrides: Parameters<typeof createProvider>[0]) =>
-  createContext({
-    provider: createProvider(overrides),
-    webhookUrl: "https://example.com/voice/webhook",
-  });
+  createContext({ provider: createProvider(overrides), webhookUrl: WEBHOOK });
 
 it.each([
-  { phase: "active", requestUuid: undefined, payload: "CallUUID-only parser control" },
-  { phase: "active", requestUuid: "request-uuid", payload: "complete callback" },
-  { phase: "ended", requestUuid: "request-uuid", payload: "complete callback" },
+  { phase: "active", requestUuid: undefined },
+  { phase: "active", requestUuid: "request-uuid" },
+  { phase: "ended", requestUuid: "request-uuid" },
 ])(
-  "preserves callback-owned identity when initiation settles after the call is $phase ($payload)",
+  "preserves callback-owned identity after $phase (request=$requestUuid)",
   async ({ phase, requestUuid }) => {
     const placement = delayedOperation<InitiateCallResult>();
     const playback = vi.fn(async () => {});
@@ -49,22 +48,20 @@ it.each([
         const parsed = parser.parseWebhookEvent({
           headers: {},
           method: "POST",
-          url: `https://example.com/voice/webhook?callId=${call.callId}`,
+          url: `${WEBHOOK}?callId=${call.callId}`,
           query: { callId: call.callId },
           rawBody: new URLSearchParams({
-            CallUUID: "canonical-call-uuid",
+            CallUUID: CANONICAL_ID,
             ...(requestUuid ? { RequestUUID: requestUuid } : {}),
             Direction: "outbound",
             ...fields,
           }).toString(),
         });
         expect(parsed.events).toHaveLength(1);
-        for (const event of parsed.events) {
-          await processEvent(ctx, event);
-        }
+        await processEvent(ctx, expectDefined(parsed.events[0], "callback event"));
       };
       await deliver({ CallStatus: "in-progress" });
-      expect(call.providerCallId).toBe("canonical-call-uuid");
+      expect(call.providerCallId).toBe(CANONICAL_ID);
       if (phase === "ended") {
         await deliver({ CallStatus: "completed" });
       }
@@ -72,7 +69,7 @@ it.each([
 
       placement.resolve({ providerCallId: "request-uuid", status: "initiated" });
       await expect(pending).resolves.toEqual({ callId: call.callId, success: true });
-      expect(call.providerCallId).toBe("canonical-call-uuid");
+      expect(call.providerCallId).toBe(CANONICAL_ID);
 
       if (phase === "active") {
         await deliver({ CallStatus: "in-progress", Speech: "Continue the connected call." });
@@ -80,9 +77,9 @@ it.each([
           success: true,
         });
         expect(playback).toHaveBeenCalledWith(
-          expect.objectContaining({ callId: call.callId, providerCallId: "canonical-call-uuid" }),
+          expect.objectContaining({ callId: call.callId, providerCallId: CANONICAL_ID }),
         );
-        expect(ctx.providerCallIdMap).toEqual(new Map([["canonical-call-uuid", call.callId]]));
+        expect(ctx.providerCallIdMap).toEqual(new Map([[CANONICAL_ID, call.callId]]));
       } else {
         expect(await getCallHistoryFromStore(ctx.storePath)).toEqual(beforeResult);
         expect([ctx.activeCalls.size, ctx.providerCallIdMap.size]).toEqual([0, 0]);
@@ -124,12 +121,8 @@ it("keeps outbound capacity available after storage failure without dialing", as
   expect(result.success).toBe(true);
   expect(ctx.activeCalls.size).toBe(1);
   expect(ctx.providerCallIdMap.get("provider-recovered")).toBe(result.callId);
-  expect(
-    (await loadActiveCallsFromStore(ctx.storePath)).activeCalls.get(result.callId),
-  ).toMatchObject({
-    providerCallId: "provider-recovered",
-    state: "initiated",
-  });
+  const stored = (await loadActiveCallsFromStore(ctx.storePath)).activeCalls.get(result.callId);
+  expect(stored).toMatchObject({ providerCallId: "provider-recovered", state: "initiated" });
 });
 
 it.each([
@@ -138,7 +131,7 @@ it.each([
   { phase: "replaced", playbackFails: false },
   { phase: "replaced", playbackFails: true },
 ] as const)(
-  "does not rewrite a $phase call after delayed playback (failure=$playbackFails)",
+  "ignores delayed playback on $phase calls (failure=$playbackFails)",
   async ({ phase, playbackFails }) => {
     const playback = delayedOperation<void>();
     const ctx = contextWith({ playTts: playback.invoke });
@@ -181,8 +174,7 @@ it.each([
       expect(call.state).toBe("completed");
     } else {
       expect(ctx.activeCalls.get(call.callId)).toBe(replacement);
-      expect(replacement.state).toBe("active");
-      expect(replacement.transcript).toEqual([]);
+      expect(replacement).toMatchObject({ state: "active", transcript: [] });
     }
   },
 );
