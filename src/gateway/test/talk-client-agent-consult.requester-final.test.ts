@@ -15,18 +15,11 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
 import type { ReplyToolAuthorityOverlay } from "../../sessions/session-controller.contracts.js";
 import { getCurrentSessionControllerOwner } from "../../sessions/session-controller.lifecycle.js";
+import { createDeferredCore, type Deferred } from "../../shared/deferred.js";
 
 type ConsultParams = Parameters<
   typeof import("../../talk/agent-consult-runtime.js").consultRealtimeVoiceAgent
 >[0];
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
 
 const mocks = vi.hoisted(() => ({
   close: vi.fn(),
@@ -54,6 +47,11 @@ vi.mock("../../talk/agent-consult-runtime.js", async (importOriginal) => ({
 import { createTalkClientAgentConsultRunner } from "../talk/client-agent-consult.js";
 
 const config = {} as OpenClawConfig;
+const requester = {
+  requesterAgentId: "researcher",
+  requesterSessionKey: "agent:researcher:talk",
+};
+const batchRunIds = ["run-child"];
 const coreParams = {
   config,
   prompt: "check",
@@ -89,6 +87,42 @@ function createRunner(isRunCurrent: (runId: string) => boolean = () => true) {
   });
 }
 
+async function startPromotedFinal(
+  core: Deferred<{ payloads: never[] }>,
+  rearmGeneration: number,
+  isRunCurrent?: (runId: string) => boolean,
+) {
+  const append = vi.fn(() => true);
+  const runner = createRunner(isRunCurrent);
+  runner.runPrompt.adoptCompletionClaims();
+  const run = runner.runPrompt({ prompt: "investigate", requesterFinal: { append } });
+  await vi.waitFor(() => expect(mocks.runEmbeddedAgentCore).toHaveBeenCalledOnce());
+  expect(
+    promoteRequesterFinalAttachment({
+      ...requester,
+      requesterTurnRunId: "run-talk",
+      batchRunIds,
+      rearmGeneration,
+    }),
+  ).toBe(true);
+  core.resolve({ payloads: [] });
+  await expect(run).resolves.toEqual({ text: "done" });
+  return { runner, append };
+}
+
+function finalize(rearmGeneration: number, finalAssistantVisibleText: string) {
+  finalizeRequesterFinalAttachment({
+    ...requester,
+    requesterSessionId: "session-talk",
+    batchRunIds,
+    rearmGeneration,
+    requesterYieldBatch: true,
+    pause: false,
+    delivered: true,
+    finalAssistantVisibleText,
+  });
+}
+
 describe("Talk requester-final consult ownership", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -116,12 +150,10 @@ describe("Talk requester-final consult ownership", () => {
     });
   });
 
-  afterEach(() => {
-    embeddedRunsTesting.resetActiveEmbeddedRuns();
-  });
+  afterEach(embeddedRunsTesting.resetActiveEmbeddedRuns);
 
   it("promotes and consumes a yielded final exactly once", async () => {
-    const core = deferred<{ payloads: never[] }>();
+    const core = createDeferredCore<{ payloads: never[] }>();
     const handle = createEmbeddedRunHandle({ runId: "run-talk" });
     const operationalRunInstance = {
       instanceId: "instance:yielded-final",
@@ -165,73 +197,20 @@ describe("Talk requester-final consult ownership", () => {
         clearActiveEmbeddedRun("session-talk", handle, "agent:researcher:talk");
       }
     });
-    const append = vi.fn(() => true);
-    const runner = createRunner();
-    runner.runPrompt.adoptCompletionClaims();
-
-    const run = runner.runPrompt({ prompt: "investigate", requesterFinal: { append } });
-    await vi.waitFor(() => expect(mocks.runEmbeddedAgentCore).toHaveBeenCalledOnce());
-    expect(
-      promoteRequesterFinalAttachment({
-        requesterAgentId: "researcher",
-        requesterSessionKey: "agent:researcher:talk",
-        requesterTurnRunId: "run-talk",
-        batchRunIds: ["run-child"],
-        rearmGeneration: 1,
-      }),
-    ).toBe(true);
-    core.resolve({ payloads: [] });
-    await expect(run).resolves.toEqual({ text: "done" });
+    const { runner, append } = await startPromotedFinal(core, 1);
     expect(runner.runPrompt.claimAppend()).toBe(true);
-    finalizeRequesterFinalAttachment({
-      requesterAgentId: "researcher",
-      requesterSessionKey: "agent:researcher:talk",
-      requesterSessionId: "session-talk",
-      batchRunIds: ["run-child"],
-      rearmGeneration: 1,
-      requesterYieldBatch: true,
-      pause: false,
-      delivered: true,
-      finalAssistantVisibleText: "late final",
-    });
+    finalize(1, "late final");
     expect(append).toHaveBeenCalledExactlyOnceWith("late final");
   });
 
   it("revokes a promoted final when its run owner is stale", async () => {
-    const core = deferred<{ payloads: never[] }>();
+    const core = createDeferredCore<{ payloads: never[] }>();
     mocks.runEmbeddedAgentCore.mockReturnValueOnce(core.promise);
-    const append = vi.fn(() => true);
     let runCurrent = true;
-    const runner = createRunner(() => runCurrent);
-    runner.runPrompt.adoptCompletionClaims();
-
-    const run = runner.runPrompt({ prompt: "investigate", requesterFinal: { append } });
-    await vi.waitFor(() => expect(mocks.runEmbeddedAgentCore).toHaveBeenCalledOnce());
-    expect(
-      promoteRequesterFinalAttachment({
-        requesterAgentId: "researcher",
-        requesterSessionKey: "agent:researcher:talk",
-        requesterTurnRunId: "run-talk",
-        batchRunIds: ["run-child"],
-        rearmGeneration: 2,
-      }),
-    ).toBe(true);
-    core.resolve({ payloads: [] });
-    await expect(run).resolves.toEqual({ text: "done" });
-
+    const { runner, append } = await startPromotedFinal(core, 2, () => runCurrent);
     runCurrent = false;
     expect(runner.runPrompt.claimAppend()).toBe(false);
-    finalizeRequesterFinalAttachment({
-      requesterAgentId: "researcher",
-      requesterSessionKey: "agent:researcher:talk",
-      requesterSessionId: "session-talk",
-      batchRunIds: ["run-child"],
-      rearmGeneration: 2,
-      requesterYieldBatch: true,
-      pause: false,
-      delivered: true,
-      finalAssistantVisibleText: "stale final",
-    });
+    finalize(2, "stale final");
     expect(append).not.toHaveBeenCalled();
   });
 });
