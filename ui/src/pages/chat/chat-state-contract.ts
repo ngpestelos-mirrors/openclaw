@@ -3,6 +3,7 @@ import type { AgentsListResult, GatewaySessionRow, SessionBranch } from "../../a
 import type { ApplicationChatSubmissions } from "../../app/chat-submissions.ts";
 import type { ApplicationConfigCapability } from "../../app/config.ts";
 import type { ExecApprovalRequest } from "../../app/exec-approval.ts";
+import type { ApplicationOverlays } from "../../app/overlays-types.ts";
 import type { AuthenticatedUser } from "../../app/user-profile.ts";
 import type {
   ChatAttachment,
@@ -15,6 +16,7 @@ import type { ChatHistoryCursor, ChatHistoryPagination } from "./chat-history-pa
 import type { ChatPendingInputView } from "./chat-pending-inputs.types.ts";
 import type { ChatRunStartupState } from "./chat-run-startup.ts";
 import type { ChatRunError, LocalTerminalReconcile } from "./run-lifecycle.ts";
+import type { SessionApprovalReplayState } from "./session-approval-projection.ts";
 import type { ChatMessageCache } from "./session-message-cache.ts";
 import type { StreamCausalBoundaryState } from "./stream-causal-boundary.ts";
 import type {
@@ -37,6 +39,7 @@ export type ChatState = StreamCausalBoundaryState & {
   client: GatewayBrowserClient | null;
   connected: boolean;
   chatSubmissions?: ApplicationChatSubmissions;
+  reconcileApprovalTerminals?: ApplicationOverlays["reconcileApprovalTerminals"];
   hasPendingInitialTurn?: (sessionKey: string) => boolean;
   /** Monotonic owner epoch; reconnects can reuse the same client object. */
   connectionEpoch: number;
@@ -95,6 +98,7 @@ export type ChatState = StreamCausalBoundaryState & {
   chatSessionMessageSubscriptionRequestedKey?: string | null;
   chatSessionMessageSubscription?: SessionMessageSubscription | null;
   chatSessionApprovalQueue?: ExecApprovalRequest[];
+  chatSessionApprovalReplay?: SessionApprovalReplayState;
   chatBranches?: SessionBranch[];
   chatBranchesSessionKey?: string | null;
   chatBranchesConnectionEpoch?: number | null;

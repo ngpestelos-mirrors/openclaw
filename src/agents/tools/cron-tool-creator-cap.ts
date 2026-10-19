@@ -1,3 +1,8 @@
+import {
+  cronCreateRequiresStreamExecAuthority,
+  cronUpdateNeedsCurrentJobForStreamAuthority,
+  cronUpdateRequiresStreamExecAuthority,
+} from "../../cron/stream-exec-authority.js";
 import { isRecord } from "../../utils.js";
 import { readCronScheduledToolProjection } from "../exec-tool-target-pinning.js";
 import { createToolPolicyMatcher } from "../tool-policy-match.js";
@@ -121,6 +126,7 @@ export function replaceWithEffectiveCronCreatorToolAllowlist<T extends { name: s
       name,
       ...(pluginId ? { pluginId } : {}),
       ...(aliasName && aliasName !== name ? { aliasName } : {}),
+      ...(name === "exec" ? { execOrigin: "openclaw" as const } : {}),
       ...(projection?.execTarget ? { execTarget: { ...projection.execTarget } } : {}),
     });
   }
@@ -135,8 +141,12 @@ export function replaceWithEffectiveCronCreatorToolAllowlist<T extends { name: s
     }
     captured.set(
       name,
-      name === "exec" && options.nativeExecTarget
-        ? { name, execTarget: { ...options.nativeExecTarget } }
+      name === "exec"
+        ? {
+            name,
+            execOrigin: "native" as const,
+            ...(options.nativeExecTarget ? { execTarget: { ...options.nativeExecTarget } } : {}),
+          }
         : { name },
     );
   }
@@ -171,6 +181,8 @@ function normalizeCronCreatorToolsAllow(
       typeof tool.pluginId === "string" ? normalizeToolPolicyName(tool.pluginId) : undefined;
     const aliasName =
       typeof tool.aliasName === "string" ? normalizeToolPolicyName(tool.aliasName) : undefined;
+    const execOrigin: NormalizedCronCreatorTool["execOrigin"] =
+      tool.execOrigin === "openclaw" || tool.execOrigin === "native" ? tool.execOrigin : undefined;
     const execTarget: NormalizedCronCreatorTool["execTarget"] =
       tool.execTarget?.host === "gateway"
         ? {
@@ -182,6 +194,7 @@ function normalizeCronCreatorToolsAllow(
       name,
       ...(pluginId ? { pluginId } : {}),
       ...(aliasName && aliasName !== name ? { aliasName } : {}),
+      ...(execOrigin ? { execOrigin } : {}),
       ...(execTarget ? { execTarget } : {}),
     });
   }
@@ -196,6 +209,18 @@ export function resolveCronCreatorExecToolTarget(
     (tool) => tool.name === "exec",
   );
   return execEntry?.execTarget ? { ...execEntry.execTarget } : undefined;
+}
+
+/** Requires exec authority whose captured runtime can actually target the Gateway. */
+export function hasCronCreatorGatewayExecTool(
+  entries: readonly CronCreatorToolAllowlistEntry[] | undefined,
+): boolean {
+  return normalizeCronCreatorToolsAllow(entries ?? []).some(
+    (tool) =>
+      tool.name === "exec" &&
+      (tool.execOrigin === "openclaw" ||
+        (tool.execOrigin === "native" && tool.execTarget?.host === "gateway")),
+  );
 }
 
 function hasCronTriggerScript(value: unknown): boolean {
@@ -251,6 +276,9 @@ export function cronCreateRequiresCreatorAuthority(
 ): boolean {
   if (!isRecord(value)) {
     return false;
+  }
+  if (cronCreateRequiresStreamExecAuthority(value)) {
+    return true;
   }
   const payload = isRecord(value.payload) ? value.payload : undefined;
   const explicitToolsAllow = classifyExplicitToolsAllow(payload);
@@ -365,6 +393,16 @@ export function planCronJobUpdatePatch(params: {
   const payload = isRecord(patch.payload) ? { ...patch.payload } : undefined;
   if (payload) {
     patch.payload = payload;
+  }
+  if (cronUpdateNeedsCurrentJobForStreamAuthority(patch) && !params.currentJob) {
+    return { kind: "needs-current-job" };
+  }
+  if (
+    params.creatorAuthorityComplete === false &&
+    params.currentJob &&
+    cronUpdateRequiresStreamExecAuthority(patch, params.currentJob)
+  ) {
+    return { kind: "needs-creator-authority" };
   }
   const explicitPayloadKind = readCronPayloadKind(payload);
   const explicitToolsAllow = classifyExplicitToolsAllow(payload);

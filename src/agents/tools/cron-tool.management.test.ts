@@ -28,6 +28,7 @@ async function withAdminTool(
   origin: "unknown" | "channel-owner",
   payload: Record<string, unknown> | undefined,
   run: (tool: ReturnType<typeof createCronTool>, calls: Array<[string, unknown]>) => Promise<void>,
+  storedJob?: Record<string, unknown>,
 ) {
   const runId = "admin-management-tool-run";
   const sessionKey = "agent:main:control-ui";
@@ -58,13 +59,19 @@ async function withAdminTool(
     return withCronManagementGrant(caller!.cronManagementGrant!, identity, method, async () => {
       getCronManagementAuthority(identity)!();
       calls.push([method, params]);
-      return (method === "cron.get" ? { id: jobId, configRevision, payload } : { id: jobId }) as T;
+      return (
+        method === "cron.get" ? { id: jobId, configRevision, payload, ...storedJob } : { id: jobId }
+      ) as T;
     });
   }
   try {
     await runWithCronCreatorAuthorityCapability(capability, () =>
       withGatewayToolCallerIdentity({ ...identity, approvalAuthority: authority }, async () => {
-        const options = { runId, agentSessionKey: sessionKey, resolveCreatorToolAuthority };
+        const options = {
+          runId,
+          agentSessionKey: sessionKey,
+          resolveCreatorToolAuthority,
+        };
         using _ = vi.spyOn(gatewayModule, "callGatewayTool").mockImplementation(callGatewayTool);
         const tool = createCronTool(options);
         await run(tool, calls);
@@ -96,6 +103,52 @@ it.each([
       ["cron.update", params],
     ]);
   });
+});
+
+it("permits explicit on-exit edits through admitted management", async () => {
+  await withAdminTool("unknown", undefined, async (tool, calls) => {
+    const patch = { schedule: { kind: "on-exit", command: "make", cwd: "/repo" } };
+    await tool.execute("on-exit-update", { action: "update", jobId, job: patch });
+    expect(calls).toEqual([["cron.update", { id: jobId, patch }]]);
+  });
+});
+
+it("does not expose stream creation through a management grant", async () => {
+  await withAdminTool("unknown", undefined, async (tool, calls) => {
+    await expect(
+      tool.execute("stream-add", {
+        action: "add",
+        job: {
+          name: "watch events",
+          schedule: { kind: "stream", command: ["node", "events.mjs"] },
+          payload: { kind: "agentTurn", message: "handle events" },
+        },
+      }),
+    ).rejects.toThrow("can only list, get, update, run, or remove automations");
+    expect(calls).toEqual([]);
+  });
+});
+
+it("requires stream exec authority for management-grant activation", async () => {
+  await withAdminTool(
+    "unknown",
+    undefined,
+    async (tool, calls) => {
+      await expect(
+        tool.execute("stream-enable", {
+          action: "update",
+          jobId,
+          job: { enabled: true },
+        }),
+      ).rejects.toThrow("Gateway exec authority");
+      expect(calls).toEqual([["cron.get", { id: jobId }]]);
+    },
+    {
+      enabled: false,
+      schedule: { kind: "stream", command: ["node", "events.mjs"] },
+      state: {},
+    },
+  );
 });
 
 it("visibly refuses unsupported next_check", async () => {

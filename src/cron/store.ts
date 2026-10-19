@@ -173,7 +173,7 @@ type CronStoreCommit<Value> = {
   runtimeFingerprint?: string;
 };
 
-function publishCronStoreSaveRevision(storeKey: string, observedRevision: number): number {
+export function publishCronStoreSaveRevision(storeKey: string, observedRevision: number): number {
   const unchanged = getCronJobsStoreRevision(storeKey) === observedRevision;
   noteCronJobsStoreCommit(storeKey);
   // A host write across worker admission leaves the returned snapshot conservatively stale.
