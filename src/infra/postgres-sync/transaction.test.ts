@@ -20,6 +20,23 @@ import { usePostgresFixture } from "./fixture.test-support.js";
 
 const fixture = usePostgresFixture();
 
+it.each([
+  ["immediate", "BEGIN IMMEDIATE"],
+  ["deferred", "BEGIN"],
+  ["snapshot", "BEGIN"],
+] as const)("preserves the %s transaction's exact statement bytes", (mode, begin) => {
+  const db = fixture.nativeDatabase();
+  const exec = vi.spyOn(db, "exec");
+  const run = mode === "immediate" ? immediate : mode === "deferred" ? deferred : snapshot;
+  run(db, () => immediate(db, () => undefined));
+  expect(exec.mock.calls).toEqual([
+    [begin],
+    ["SAVEPOINT openclaw_tx_nested"],
+    ["RELEASE SAVEPOINT openclaw_tx_nested"],
+    ["COMMIT"],
+  ]);
+});
+
 function postgresFixture() {
   const db = fixture.connection();
   const statements: string[] = [];

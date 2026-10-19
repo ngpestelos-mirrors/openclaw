@@ -371,6 +371,11 @@ describe("withDurableMessageSendContext", () => {
       ],
       payloadOutcomes: [
         {
+          index: 0,
+          status: "sent",
+          results: [{ channel: "telegram", messageId: "msg-1" }],
+        },
+        {
           index: 1,
           status: "failed",
           error: cause,
