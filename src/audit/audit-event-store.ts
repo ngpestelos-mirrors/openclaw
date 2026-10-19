@@ -626,7 +626,7 @@ function pruneAfterInsert(db: EngineConnection, now: number, at: number, sequenc
 export function recordAuditEventInDatabase(
   input: AuditEventInput,
   options: OpenClawStateDatabaseOptions & { database: OpenClawStateDatabase },
-  eventId = randomUUID(),
+  eventId: string = randomUUID(),
 ): AuditEventRecord | undefined {
   const executionToken =
     input.kind === "message" && input.direction === "outbound"
