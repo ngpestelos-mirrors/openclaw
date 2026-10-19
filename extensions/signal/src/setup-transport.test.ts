@@ -229,16 +229,16 @@ describe("writeSignalAccountTransport", () => {
     });
   });
 
-  it("rejects explicit non-HTTP endpoint schemes", () => {
-    expect(() => write({}, external("ftp://signal.example"), "default")).toThrow(
-      "Signal transport URL unsupported protocol: ftp:",
-    );
-  });
-
-  it.each(["http:/localhost:8080"])("rejects malformed HTTP endpoint %s", (url) => {
-    expect(() => write({}, external(url), "default")).toThrow(
-      "Signal transport URL has a malformed HTTP scheme",
-    );
+  it.each([
+    [external("ftp://signal.example"), "Signal transport URL unsupported protocol: ftp:"],
+    [external("http:/localhost:8080"), "Signal transport URL has a malformed HTTP scheme"],
+    [native({ httpHost: "bad host" }), "Signal transport host must be a hostname or IP address"],
+    [
+      native({ httpHost: "localhost:8181" }),
+      "Signal transport host must be a hostname or IP address",
+    ],
+  ] as const)("rejects invalid transport %j", (transport, error) => {
+    expect(() => write({}, transport, "default")).toThrow(error);
   });
 
   it("rejects a local external endpoint on an enabled sibling managed bind", () => {
@@ -266,21 +266,6 @@ describe("writeSignalAccountTransport", () => {
       "Signal container transport requires an account number for an enabled account.",
     );
   });
-
-  it("rejects invalid managed native hosts", () => {
-    expect(() => write({}, native({ httpHost: "bad host" }), "default")).toThrow(
-      "Signal transport host must be a hostname or IP address",
-    );
-  });
-
-  it.each(["localhost:8181"])(
-    "rejects a managed native host containing a non-IPv6 colon: %s",
-    (httpHost) => {
-      expect(() => write({}, native({ httpHost }), "default")).toThrow(
-        "Signal transport host must be a hostname or IP address",
-      );
-    },
-  );
 
   it("rejects a managed bind on a sibling local endpoint", () => {
     const cfg = signalConfig({

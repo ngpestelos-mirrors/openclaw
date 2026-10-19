@@ -1,10 +1,8 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SignalSseEvent } from "./client-adapter.js";
 import { startSignalIngressMonitor } from "./signal-ingress.js";
@@ -12,6 +10,10 @@ import { startSignalIngressMonitor } from "./signal-ingress.js";
 type SignalIngressQueue = NonNullable<Parameters<typeof startSignalIngressMonitor>[0]["queue"]>;
 type SignalIngressPayload = Parameters<SignalIngressQueue["enqueue"]>[1];
 type SignalIngressDispatch = Parameters<typeof startSignalIngressMonitor>[0]["dispatch"];
+const defer = (_event: SignalSseEvent, lifecycle: Parameters<SignalIngressDispatch>[1]) => {
+  lifecycle.onDeferred();
+  return { kind: "deferred" } as const;
+};
 
 function signalEvent(params?: {
   senderNumber?: string;
@@ -29,7 +31,6 @@ function signalEvent(params?: {
         ...(params?.senderUuid ? { sourceUuid: params.senderUuid } : {}),
         timestamp,
         dataMessage: {
-          timestamp,
           message: params?.message ?? "hello",
           ...(params?.groupId ? { groupInfo: { groupId: params.groupId } } : {}),
         },
@@ -39,32 +40,29 @@ function signalEvent(params?: {
 }
 
 type Monitor = Awaited<ReturnType<typeof startSignalIngressMonitor>>;
-let stateDir: string;
 let queue: SignalIngressQueue;
 const monitors = new Set<Monitor>();
-
-beforeEach(async () => {
-  stateDir = await fs.realpath(
-    await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-signal-ingress-")),
-  );
+beforeEach(() => {
   queue = createChannelIngressQueueForTests<SignalIngressPayload>({
     channelId: "signal",
     accountId: "default",
-    stateDir,
+    stateDir: tempDirs.make("openclaw-signal-ingress-"),
   });
 });
-afterEach(async () => {
-  try {
-    for (const monitor of monitors) {
-      await monitor.stop();
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    try {
+      for (const monitor of monitors) {
+        await monitor.stop();
+      }
+    } finally {
+      monitors.clear();
+      closeOpenClawStateDatabaseForTest();
+      cleanup();
+      vi.restoreAllMocks();
     }
-  } finally {
-    monitors.clear();
-    closeOpenClawStateDatabaseForTest();
-    await fs.rm(stateDir, { recursive: true, force: true });
-    vi.restoreAllMocks();
-  }
-});
+  }),
+);
 async function start(dispatch: SignalIngressDispatch, target = queue) {
   const monitor = await startSignalIngressMonitor({
     accountId: "default",
@@ -79,7 +77,6 @@ async function start(dispatch: SignalIngressDispatch, target = queue) {
 describe("Signal durable ingress", () => {
   it("propagates durable append failure before dispatch scheduling", async () => {
     const appendError = new Error("sqlite unavailable");
-    // An idle monitor admits a fresh singleton through the fused append-and-claim.
     const failingQueue = {
       ...queue,
       enqueue: vi.fn().mockRejectedValue(appendError),
@@ -93,11 +90,7 @@ describe("Signal durable ingress", () => {
 
   it("recovers an uncompleted append with a fresh drain and dispatches exactly once", async () => {
     const event = signalEvent();
-    const interruptedDispatch = vi.fn((_event, lifecycle) => {
-      lifecycle.onDeferred();
-      return { kind: "deferred" } as const;
-    });
-    const interrupted = await start(interruptedDispatch);
+    const interrupted = await start(defer);
     await interrupted.receive(event);
     await interrupted.waitForIdle();
     expect(await queue.listClaims()).toHaveLength(1);
@@ -108,9 +101,7 @@ describe("Signal durable ingress", () => {
     const recovered = await start(recoveredDispatch);
     await recovered.waitForIdle();
     expect(recoveredDispatch).toHaveBeenCalledTimes(1);
-    const [recoveredEvent, recoveredLifecycle] = recoveredDispatch.mock.calls[0] ?? [];
-    expect(recoveredEvent).toEqual(event);
-    expect(recoveredLifecycle).toEqual(expect.any(Object));
+    expect(recoveredDispatch.mock.calls[0]?.slice(0, 2)).toEqual([event, expect.any(Object)]);
   });
 
   it("completes only when deferred dispatch adoption becomes durable", async () => {
@@ -118,8 +109,7 @@ describe("Signal durable ingress", () => {
     let adopt: (() => void | Promise<void>) | undefined;
     const dispatch = vi.fn((_event, lifecycle) => {
       adopt = lifecycle.onAdopted;
-      lifecycle.onDeferred();
-      return { kind: "deferred" } as const;
+      return defer(_event, lifecycle);
     });
     const started = await start(dispatch);
     await started.receive(event);
@@ -148,9 +138,9 @@ describe("Signal durable ingress", () => {
     const dispatch = vi.fn();
     const started = await start(dispatch);
     await started.waitForIdle();
-    expect((await queue.enqueue("malformed-event", {} as SignalIngressPayload)).kind).toBe(
-      "failed",
-    );
+    await expect(
+      queue.enqueue("malformed-event", {} as SignalIngressPayload),
+    ).resolves.toMatchObject({ kind: "failed" });
     expect(dispatch).not.toHaveBeenCalled();
   });
 
@@ -165,8 +155,7 @@ describe("Signal durable ingress", () => {
     const dispatch = vi.fn<SignalIngressDispatch>((_event, lifecycle, payload) => {
       if (payload.envelope?.dataMessage?.message === "first") {
         adoptFirst = lifecycle.onAdopted;
-        lifecycle.onDeferred();
-        return { kind: "deferred" } as const;
+        return defer(_event, lifecycle);
       }
       return undefined;
     });
@@ -189,24 +178,16 @@ describe("Signal durable ingress", () => {
   it("uses a direct-sender or group-conversation lane and stores the raw event", async () => {
     const direct = signalEvent({ senderUuid: "123e4567-e89b-12d3-a456-426614174000" });
     const group = signalEvent({ groupId: "group-123", timestamp: 1_700_000_000_002 });
-    const dispatch = vi.fn((_event, lifecycle) => {
-      lifecycle.onDeferred();
-      return { kind: "deferred" } as const;
-    });
-    const started = await start(dispatch);
+    const started = await start(defer);
     await started.receive(direct);
     await started.receive(group);
     await started.waitForIdle();
-    expect(await queue.listClaims()).toEqual(
+    expect(
+      (await queue.listClaims()).map(({ laneKey, payload }) => [laneKey, payload.event]),
+    ).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          laneKey: "direct:uuid:123e4567-e89b-12d3-a456-426614174000",
-          payload: expect.objectContaining({ event: direct }),
-        }),
-        expect.objectContaining({
-          laneKey: "group:group-123",
-          payload: expect.objectContaining({ event: group }),
-        }),
+        ["direct:uuid:123e4567-e89b-12d3-a456-426614174000", direct],
+        ["group:group-123", group],
       ]),
     );
   });
