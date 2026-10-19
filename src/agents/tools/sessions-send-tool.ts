@@ -184,16 +184,15 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
           }
         }
 
-        const resolveParams: Record<string, unknown> = {
-          label: labelParam,
-          ...(requestedAgentId ? { agentId: requestedAgentId } : {}),
-          ...(restrictToSpawned ? { spawnedBy: effectiveRequesterKey } : {}),
-        };
         let resolvedKey = "";
         try {
           const resolved = await gatewayCall<{ agentId?: string; key: string }>({
             method: "sessions.resolve",
-            params: resolveParams,
+            params: {
+              label: labelParam,
+              ...(explicitTargetAgentId ? { agentId: explicitTargetAgentId } : {}),
+              ...(restrictToSpawned ? { spawnedBy: effectiveRequesterKey } : {}),
+            },
             timeoutMs: 10_000,
           });
           resolvedKey = normalizeOptionalString(resolved?.key) ?? "";
@@ -349,8 +348,6 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
         sessionKey: resolvedKey,
         storeAgentId: targetAgentId,
       });
-      const mayUseRequesterForLiteralSentinel =
-        isLiteralUnscopedMainTarget && normalizeAgentId(targetAgentId) === requesterAgentId;
       const requesterSession = await readRequester(effectiveRequesterKey, requesterAgentId);
       if (!requesterSession) {
         return sendFailure("forbidden", "The requesting session is no longer available.");
@@ -394,11 +391,12 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
           unresolvedDisplayKey,
         );
       }
-      const authorizationTargetKey = mayUseRequesterForLiteralSentinel
-        ? effectiveRequesterKey
-        : targetAgentId && !parseAgentSessionKey(resolvedKey)
-          ? `agent:${targetAgentId}:${resolvedKey}`
-          : resolvedKey;
+      const authorizationTargetKey =
+        isLiteralUnscopedMainTarget && normalizeAgentId(targetAgentId) === requesterAgentId
+          ? effectiveRequesterKey
+          : !parseAgentSessionKey(resolvedKey)
+            ? `agent:${targetAgentId}:${resolvedKey}`
+            : resolvedKey;
       const access = await resolveSessionToolAccess({
         action: "send",
         watch: params.watch === true,
@@ -555,7 +553,6 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
                 inputProvenance,
                 sessionKey: resolvedKey,
                 targetAgentId,
-                idempotencyKey: runId,
                 runId,
                 displayKey,
                 assertCurrent: communication.assertCurrent,

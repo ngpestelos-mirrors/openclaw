@@ -26,8 +26,8 @@ import {
 } from "../state/agent-database-admission.js";
 import { waitForAgentDatabasePreparation } from "../state/agent-database-preparation-context.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
+import { CHAT_INPUT_RECOVERY_MAX_AGE_MS } from "./chat-input-recovery-source.js";
 import type { RestoredGatewayOperatorAuthority } from "./operator-run-recovery.js";
-import { CHAT_INPUT_RECOVERY_MAX_AGE_MS } from "./chat-input-recovery.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { measureStartup, type GatewayStartupTrace } from "./server-startup-trace.js";
 import { readSessionSendDelivery, withSessionSendDelivery } from "./session-send-delivery.js";
@@ -175,32 +175,11 @@ async function recoverSessionSendDeliveriesForAgents(
         if (input.state !== "interrupted") {
           continue;
         }
-        if (!delivery) {
-          if (
-            !input.message["__openclaw"]?.chatInputRecovery ||
-            Date.now() - input.acceptedAt > CHAT_INPUT_RECOVERY_MAX_AGE_MS
-          ) {
-            continue;
-          }
-          try {
-            await retry(
-              () =>
-                runtime.resumeChatInput(
-                  { ...scope, inputId: input.id, runId: input.runId },
-                  { signal, assertCurrent },
-                ),
-              "sidecars.delivery-replay",
-            );
-          } catch (error) {
-            if (signal.aborted) {
-              return;
-            }
-            // The pending input remains interrupted in every client, including
-            // clients without an outbox. Current policy may forbid old work.
-            context.logGateway.warn(
-              `Chat input recovery blocked: ${formatErrorMessageForDisplay(error, formatErrorMessageWithCode(error))} ${JSON.stringify({ sessionKeyHash: sha256HexPrefixCore(sessionKey, 16), inputId: input.id, ageMs: Math.max(0, Date.now() - input.acceptedAt) })}`,
-            );
-          }
+        if (
+          !delivery &&
+          (!input.message["__openclaw"]?.chatInputRecovery ||
+            Date.now() - input.acceptedAt > CHAT_INPUT_RECOVERY_MAX_AGE_MS)
+        ) {
           continue;
         }
         let attempts = 0;
@@ -224,10 +203,27 @@ async function recoverSessionSendDeliveriesForAgents(
                 !retained?.snapshot.current ||
                 !row ||
                 row.input_id !== input.id ||
+                row.run_id !== input.runId ||
                 row.state !== "interrupted" ||
                 row.consumed_event_id != null ||
                 row.message_json !== JSON.stringify(input.message)
               ) {
+                return;
+              }
+              const assertInputCurrent = () => {
+                assertCurrent();
+                retained.assertCurrent();
+              };
+              if (!delivery) {
+                await runtime.resumeChatInput(
+                  {
+                    ...scope,
+                    runId: input.runId,
+                    message: input.message,
+                    requestHash: row.request_hash,
+                  },
+                  { signal, assertCurrent: assertInputCurrent },
+                );
                 return;
               }
               communication = await prepareSessionSendRecoveryCommunication({
@@ -235,10 +231,7 @@ async function recoverSessionSendDeliveriesForAgents(
                 delivery,
                 inputProvenance: input.message.provenance,
                 target: scope,
-                assertCurrent: () => {
-                  assertCurrent();
-                  retained.assertCurrent();
-                },
+                assertCurrent: assertInputCurrent,
                 signal,
               });
               if (!communication) {
@@ -249,8 +242,7 @@ async function recoverSessionSendDeliveriesForAgents(
               }
               await communication.refresh();
               const guard = () => {
-                assertCurrent();
-                retained.assertCurrent();
+                assertInputCurrent();
                 communication!.assertCurrent();
               };
               guard();
@@ -338,6 +330,13 @@ async function recoverSessionSendDeliveriesForAgents(
         } catch (error) {
           if (signal.aborted) {
             return;
+          }
+          if (!delivery) {
+            // Retain the existing interrupted notice when current policy blocks replay.
+            context.logGateway.warn(
+              `Chat input recovery blocked: ${formatErrorMessageForDisplay(error, formatErrorMessageWithCode(error))} ${JSON.stringify({ sessionKeyHash: sha256HexPrefixCore(sessionKey, 16), inputId: input.id, ageMs: Math.max(0, Date.now() - input.acceptedAt) })}`,
+            );
+            continue;
           }
           blockedCount++;
           if (error instanceof SessionSendEndpointChangedError) {

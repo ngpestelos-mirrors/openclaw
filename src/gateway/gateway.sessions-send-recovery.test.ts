@@ -28,6 +28,7 @@ it.for(["SIGTERM", "SIGKILL"] as const)(
   async (shutdownSignal, test) => {
     await runQaGatewayTestFixture(test, async ({ signal, verifyCleanup }) => {
       const observed: string[] = [];
+      const providerRequests: unknown[] = [];
       const accepted = new Map<string, string>();
       const target = "agent:main:dashboard:peer-target";
       const steerTarget = "agent:main:dashboard:steer-target";
@@ -64,6 +65,23 @@ it.for(["SIGTERM", "SIGKILL"] as const)(
           );
           const text = JSON.stringify(input[userIndex]?.content ?? "");
           const outputIndex = input.findLastIndex((item) => item.type === "function_call_output");
+          providerRequests.push({
+            hold,
+            userIndex,
+            selected: text.slice(0, 3000),
+            frames: input.map((item, index) => ({
+              index,
+              role: item.role,
+              type: item.type,
+              markers: JSON.stringify(item).match(
+                /(?:SEND_)?(?:PEER_UPDATE_[0-9]+|CHAT_UPDATE_[0-9]+|STEER_UPDATE)|HOLD_TARGET|HOLD_STEER/gu,
+              ),
+            })),
+          });
+          if (providerRequests.length > 24) {
+            providerRequests.shift();
+          }
+
           const sendMarker = text.match(
             /SEND_(STEER_UPDATE|PEER_UPDATE_[0-9]+|CANCELLED_UPDATE|RESET_SOURCE_UPDATE|REVOKED_UPDATE|ARCHIVED_SOURCE_UPDATE)/u,
           )?.[1];
@@ -258,6 +276,7 @@ it.for(["SIGTERM", "SIGKILL"] as const)(
       try {
         const provider = buildMockOpenAiResponsesProvider(baseUrl);
         const config = {
+          diagnostics: { enabled: true },
           logging: { file: gateway.state.path("gateway.log") },
           gateway: {
             port: gateway.port,
@@ -436,7 +455,7 @@ it.for(["SIGTERM", "SIGKILL"] as const)(
           await vi.waitFor(() => expect(recoveredResponse).toBeDefined(), { timeout: 60_000 });
         } catch (error) {
           throw new Error(
-            `Recovery did not reach the first chat input. Observed: ${JSON.stringify(observed)}\n${gateway.logs()}`,
+            `Recovery did not reach the first chat input: ${JSON.stringify({ observed, providerRequests })}\n${gateway.logs()}`,
             { cause: error },
           );
         }
@@ -451,10 +470,13 @@ it.for(["SIGTERM", "SIGKILL"] as const)(
           messageId: randomUUID(),
           responseId: randomUUID(),
         });
-        await vi.waitFor(() => expect(observed).toEqual(expectedDelivery), {
-          timeout: 60_000,
-          interval: 200,
-        });
+        await vi.waitFor(
+          () => expect(observed, JSON.stringify(providerRequests)).toEqual(expectedDelivery),
+          {
+            timeout: 60_000,
+            interval: 200,
+          },
+        );
         await vi.waitFor(
           () => expect(gateway.logs()).toContain("Session delivery recovery blocked for "),
           { timeout: 30_000 },
@@ -481,11 +503,13 @@ it.for(["SIGTERM", "SIGKILL"] as const)(
           "cancelled",
           "interrupted",
           "cancelled",
+          "cancelled",
         ]);
         expect(after.pendingInputs.items.map((item) => item.runId)).toEqual([
           accepted.get("RESET_SOURCE_UPDATE"),
           accepted.get("REVOKED_UPDATE"),
           accepted.get("ARCHIVED_SOURCE_UPDATE"),
+          cancelledChatId,
         ]);
         await client.stopAndWait();
         client = undefined;
@@ -518,7 +542,7 @@ it.for(["SIGTERM", "SIGKILL"] as const)(
         expect(finalHistory).toContain("session was reset or replaced");
         expect(finalHistory).not.toContain(`From ${archivedSource}`);
         expect(gateway.logs()).not.toContain('"archived":true');
-        expect(observed).toEqual(expectedDelivery);
+        expect(observed, JSON.stringify(providerRequests)).toEqual(expectedDelivery);
       } finally {
         await client?.stopAndWait();
         await gateway.cleanup();

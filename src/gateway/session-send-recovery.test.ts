@@ -149,6 +149,8 @@ const sourceSnapshot = (
     current: true,
     pending: {
       input_id: pending.id,
+      run_id: pending.runId,
+      request_hash: "request:original-request-fingerprint",
       state,
       consumed_event_id,
       message_json: JSON.stringify(pending.message),
@@ -331,7 +333,19 @@ it("resumes chat inputs in acceptance order across pages, excluding expired and 
     runId: id,
     acceptedAt: Date.now() - ageMs,
     state,
-    message: { ...input.message, __openclaw: { chatInputRecovery: { version: 1 } } },
+    message: {
+      ...input.message,
+      idempotencyKey: `${id}:user`,
+      __openclaw: { chatInputRecovery: { version: 1 } },
+    },
+  });
+  io.source.mockImplementation(async (_scope, idempotencyKey: string) => {
+    const id = idempotencyKey.slice(0, -":user".length);
+    return sourceSnapshot(
+      chat(id),
+      id === "withdrawn" ? "cancelled" : "interrupted",
+      id === "consumed" ? "collected-event" : null,
+    );
   });
   io.pending
     .mockResolvedValueOnce({ items: [chat("second")], nextBefore: 1 })
@@ -340,6 +354,8 @@ it("resumes chat inputs in acceptance order across pages, excluding expired and 
         chat("expired", 24 * 60 * 60_000 + 1),
         chat("cancelled", 0, "cancelled"),
         chat("live", 0, "queued"),
+        chat("withdrawn"),
+        chat("consumed"),
         chat("first"),
       ],
     });

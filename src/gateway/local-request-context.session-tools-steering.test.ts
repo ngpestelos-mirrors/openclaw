@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   clearTestEmbeddedRun,
