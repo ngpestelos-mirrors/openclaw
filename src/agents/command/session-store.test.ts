@@ -491,38 +491,43 @@ describe("updateSessionStoreAfterAgentRun", () => {
     expect(s.read()).not.toHaveProperty("mainRestartRecovery");
   });
 
-  it("preserves the visible runtime model during a heartbeat using another model", async ({ s }) => {
-      const visible = {
-        modelProvider: "anthropic",
+  it("preserves the visible runtime model during a heartbeat using another model", async ({
+    s,
+  }) => {
+    const visible = {
+      modelProvider: "anthropic",
+      model: "claude-opus-4-6",
+      agentHarnessId: "openclaw",
+      contextTokens: 1_000_000,
+      cliSessionBindings: { "claude-cli": { sessionId: "existing-cli-session" } },
+      cliSessionIds: { "claude-cli": "existing-cli-session" },
+      claudeCliSessionId: "existing-cli-session",
+      contextBudgetStatus: contextBudgetStatusFixture({
+        provider: "anthropic",
         model: "claude-opus-4-6",
-        agentHarnessId: "openclaw",
-        contextTokens: 1_000_000,
-        cliSessionBindings: { "claude-cli": { sessionId: "existing-cli-session" } },
-        cliSessionIds: { "claude-cli": "existing-cli-session" },
-        claudeCliSessionId: "existing-cli-session",
-        contextBudgetStatus: contextBudgetStatus({
-          provider: "anthropic",
-          model: "claude-opus-4-6",
-          estimatedPromptTokens: 640_000,
-          contextTokenBudget: 1_000_000,
+        estimatedPromptTokens: 640_000,
+        contextTokenBudget: 1_000_000,
+      }),
+    };
+    await s.seed(visible);
+    await s.update({
+      preserveRuntimeModel: true,
+      result: createRunResult({
+        sessionId,
+        provider: "claude-cli",
+        model: "claude-sonnet-4-6",
+        agentHarnessId: "codex",
+        contextTokens: 128_000,
+        cliSessionBinding: { sessionId: "heartbeat-cli-session" },
+        contextBudgetStatus: contextBudgetStatusFixture({
+          provider: "ollama",
+          model: "llama3.2:1b",
         }),
-      };
-      await s.seed(visible);
-      await s.update({
-        preserveRuntimeModel: true,
-        result: createRunResult({
-          sessionId,
-          provider: "claude-cli",
-          model: "claude-sonnet-4-6",
-          agentHarnessId: "codex",
-          contextTokens: 128_000,
-          cliSessionBinding: { sessionId: "heartbeat-cli-session" },
-          contextBudgetStatus: contextBudgetStatus({ provider: "ollama", model: "llama3.2:1b" }),
-        }),
-      });
-      for (const entry of [s.sessionStore[sessionKey], s.read()]) {
-        expect(entry).toMatchObject(visible);
-      }
+      }),
+    });
+    for (const entry of [s.sessionStore[sessionKey], s.read()]) {
+      expect(entry).toMatchObject(visible);
+    }
   });
 
   it("preserves current accounting during session touch", async ({ s }) => {

@@ -623,23 +623,26 @@ describe("WorktreesPage lifecycle", () => {
     expect(page.inputs().map((input) => input.disabled)).toEqual([false, false, false]);
   });
 
-  it.each([undefined, "main"])("leaves base resolution to the Gateway (remote default: %s)", async (defaultBranch) => {
-    const request = pendingRequest(
-      "worktrees.branches",
-      Promise.resolve({
-        branches: [{ name: "main" }],
-        headBranch: "main",
-        defaultBranch,
-      }),
-    );
-    const page = createWorktreesPage(request, { createRepoRoot: "/tmp/repo" }).mount();
-    await waitForRead(request);
-    await page.model.loadCreateBranches();
-    await waitForSolid(() => expect(page.model.createBranches).toEqual(["main"]));
-    expect(page.model.createBaseRef).toBe("");
-    await page.model.createWorktree();
-    expect(request).toHaveBeenCalledWith("worktrees.create", { repoRoot: "/tmp/repo" });
-  });
+  it.each([undefined, "main"])(
+    "leaves base resolution to the Gateway (remote default: %s)",
+    async (defaultBranch) => {
+      const request = pendingRequest(
+        "worktrees.branches",
+        Promise.resolve({
+          branches: [{ name: "main" }],
+          headBranch: "main",
+          defaultBranch,
+        }),
+      );
+      const page = createWorktreesPage(request, { createRepoRoot: "/tmp/repo" }).mount();
+      await waitForRead(request);
+      await page.model.loadCreateBranches();
+      await waitForSolid(() => expect(page.model.createBranches).toEqual(["main"]));
+      expect(page.model.createBaseRef).toBe("");
+      await page.model.createWorktree();
+      expect(request).toHaveBeenCalledWith("worktrees.create", { repoRoot: "/tmp/repo" });
+    },
+  );
 
   it("ignores a stale branch failure after a newer request succeeds", async () => {
     const firstBranches = deferred<unknown>();
