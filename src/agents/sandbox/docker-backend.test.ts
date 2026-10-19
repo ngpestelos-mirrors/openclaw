@@ -29,6 +29,14 @@ vi.mock("./container-engine.js", async (importOriginal) => ({
   execContainer: mocks.execContainer,
 }));
 
+// These fixtures exercise ordinary engine execution; persistent transport ownership
+// has its own protocol and real-container boundary proof.
+vi.mock("./docker-persistent-target.js", () => ({
+  captureDockerPersistentTarget: async () => undefined,
+  bindDockerPersistentTarget: vi.fn(),
+  readDockerPersistentContainer: vi.fn(),
+}));
+
 const {
   createDockerSandboxBackend,
   createPodmanSandboxBackend,

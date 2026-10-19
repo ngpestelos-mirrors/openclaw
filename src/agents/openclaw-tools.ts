@@ -477,6 +477,7 @@ function* createOpenClawToolsSteps(
             agentId: sessionAgentId,
             agentAccountId: gatewayCallerAccountId,
             currentDeliveryContext: deliveryContext,
+            sandboxContext: options?.cronSandboxContext,
             creatorToolAllowlist: options?.cronCreatorToolAllowlist,
             creatorToolAllowlistCaptureRef: options?.cronCreatorToolAllowlistCaptureRef,
             resolveCreatorToolAuthority: options?.resolveCronCreatorToolAuthority,

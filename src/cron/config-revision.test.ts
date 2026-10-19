@@ -1,9 +1,13 @@
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
 import { describe, expect, it } from "vitest";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { resolveCronJobConfigRevision } from "./config-revision.js";
 import { setupCronServiceSuite } from "./service.test-harness.js";
 import { loadCronStore, saveCronStore } from "./store.js";
-import type { CronJob } from "./types.js";
+import { cronStoreKey } from "./store/key.js";
+import { loadedCronStoreFromRows, loadCronRows } from "./store/row-codec.js";
+import { makeCronStreamSandboxTarget } from "./stream-sandbox.test-support.js";
+import type { CronJob, CronStoredJob } from "./types.js";
 
 const { makeStorePath } = setupCronServiceSuite({ prefix: "cron-config-revision-" });
 
@@ -24,6 +28,32 @@ function makeJob(): CronJob {
 }
 
 describe("resolveCronJobConfigRevision", () => {
+  it.each([
+    { sessionId: "replacement-session" },
+    { lifecycleRevision: "replacement-generation" },
+    { scopeKey: "different-sandbox" },
+    { workspaceDir: "/other/workspace" },
+    { configLabel: "changed-policy" },
+    {
+      operator: {
+        profileId: "profile-ada",
+        githubLogin: null,
+        scopes: ["operator.write"],
+        assignedRole: null,
+        gatewayAccessGrant: { pluginId: "access", grantId: "replacement-grant" },
+      },
+    },
+  ])("binds sandbox target and original authority changes: %j", (change) => {
+    const job: CronStoredJob = {
+      ...makeJob(),
+      schedule: { kind: "stream", command: ["watch-source"] },
+      streamSandbox: makeCronStreamSandboxTarget(),
+    };
+    expect(
+      resolveCronJobConfigRevision({ ...job, streamSandbox: makeCronStreamSandboxTarget(change) }),
+    ).not.toBe(resolveCronJobConfigRevision(job));
+  });
+
   it("preserves order when case-insensitive command env keys collide on Windows", () => {
     const firstWinsLast: CronJob = {
       ...makeJob(),
@@ -96,7 +126,13 @@ describe("resolveCronJobConfigRevision", () => {
 
   it("matches SQLite normalization across schedule, payload, trigger, and alert variants", async () => {
     const { storePath } = await makeStorePath();
-    const jobs: CronJob[] = [
+    const jobs: CronStoredJob[] = [
+      {
+        ...makeJob(),
+        id: "sandbox-stream",
+        schedule: { kind: "stream", command: ["watch-source"] },
+        streamSandbox: makeCronStreamSandboxTarget(),
+      },
       {
         ...makeJob(),
         id: "command-empty-env",
@@ -148,6 +184,22 @@ describe("resolveCronJobConfigRevision", () => {
     ];
 
     await saveCronStore(storePath, { version: 1, jobs });
+    const sandboxRow = loadCronRows(openOpenClawStateDatabase().db, cronStoreKey(storePath)).find(
+      (row) => row.job_id === "sandbox-stream",
+    );
+    if (!sandboxRow) {
+      throw new Error("expected persisted sandbox stream row");
+    }
+    expect(JSON.parse(sandboxRow.job_json)).toMatchObject({
+      schedule: { kind: "sandbox-stream", command: ["watch-source"] },
+      streamSandbox: makeCronStreamSandboxTarget(),
+    });
+    expect(loadedCronStoreFromRows([sandboxRow]).configJobs[0]).toMatchObject({
+      schedule: { kind: "sandbox-stream" },
+    });
+    expect(
+      loadedCronStoreFromRows([{ ...sandboxRow, state_json: "invalid" }]).invalidConfigRows[0],
+    ).toMatchObject({ reason: "invalid-state", job: { schedule: { kind: "sandbox-stream" } } });
     const reloadedById = new Map((await loadCronStore(storePath)).jobs.map((job) => [job.id, job]));
 
     for (const job of jobs) {
