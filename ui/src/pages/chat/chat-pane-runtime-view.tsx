@@ -69,6 +69,7 @@ export function createChatPaneView(runtime: ChatPaneRuntime) {
     ...chatPanePropertyKeys,
     "paneWidth",
     "desktopFocus",
+    "dashboardControls",
     "replyNavigationSessionKey",
     "replyNavigationId",
   ]);

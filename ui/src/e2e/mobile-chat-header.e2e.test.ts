@@ -3,7 +3,7 @@ import path from "node:path";
 import type { Locator, Page } from "playwright";
 import { expect, it } from "vitest";
 import { takeControlUiScreenshotFrame } from "../test-helpers/control-ui-e2e-screenshot.ts";
-import { openChatDetails } from "./chat-details.test-support.ts";
+import { closeChatDetails, openChatDetails } from "./chat-details.test-support.ts";
 import {
   captureUiProofEnabled,
   chatSessionListResponse,
@@ -29,7 +29,7 @@ async function capture(page: Page, header: Locator, name: string, content: Locat
 }
 
 async function installFixture(page: Page) {
-  await installMockGateway(page, {
+  return installMockGateway(page, {
     sessionKey,
     methodResponses: {
       "sessions.list": chatSessionListResponse([
@@ -53,39 +53,30 @@ async function installFixture(page: Page) {
 }
 
 suite.define(() => {
-  it("opens Details when its offline trigger retires during the click", async () => {
+  it("opens native Details while disconnected and after reconnecting", async () => {
     await suite.withPage({ viewport: { width: 560, height: 900 } }, async ({ page }) => {
-      page.setDefaultTimeout(1_000);
-      await page.setContent("<button id=offline>Details</button>");
-      await page.evaluate(() => {
-        const offline = document.getElementById("offline")!;
-        offline.addEventListener(
-          "pointerover",
-          () => {
-            const menu = document.createElement("button");
-            menu.className = "chat-header-session-menu__trigger";
-            menu.textContent = "Actions";
-            menu.addEventListener("click", () => {
-              const item = document.createElement("button");
-              item.setAttribute("role", "menuitem");
-              item.textContent = "Session details";
-              item.addEventListener("click", () => {
-                const details = document.createElement("aside");
-                details.setAttribute("role", "complementary");
-                details.setAttribute("aria-label", "Details");
-                details.textContent = "Session details content";
-                document.body.append(details);
-                item.remove();
-              });
-              document.body.append(item);
-            });
-            offline.replaceWith(menu);
-          },
-          { once: true },
-        );
-      });
-      const details = await openChatDetails(page);
-      expect(await details.textContent()).toBe("Session details content");
+      const gateway = await installFixture(page);
+      await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
+      const header = page.locator(".chat-pane-cache__pane--active .agent-chat__header--mobile");
+      await header.getByRole("button", { name: title + " — Details", exact: true }).waitFor();
+      await gateway.setOnline(false);
+      await header.locator(".mobile-header__notices").waitFor();
+      const offlineDetails = await openChatDetails(page);
+      expect(
+        await offlineDetails
+          .getByRole("button", { name: "Details", exact: true })
+          .getAttribute("aria-pressed"),
+      ).toBe("true");
+      await closeChatDetails(page);
+      await gateway.setOnline(true);
+      await expect.poll(() => header.locator(".mobile-header__notices").isVisible()).toBe(false);
+      const reconnectedDetails = await openChatDetails(page);
+      expect(
+        await reconnectedDetails
+          .getByRole("button", { name: "Details", exact: true })
+          .getAttribute("aria-pressed"),
+      ).toBe("true");
+      await closeChatDetails(page);
     });
   });
 
@@ -94,7 +85,7 @@ suite.define(() => {
     { width: 320, height: 700, colorScheme: "dark" },
     { width: 852, height: 393, colorScheme: "light" },
   ] as const) {
-    it(`keeps two mobile toolbar actions at ${viewport.width}px`, async () => {
+    it(`keeps native mobile header actions at ${viewport.width}px`, async () => {
       const context = await suite.newBrowserContext({
         colorScheme: viewport.colorScheme,
         hasTouch: true,
@@ -106,28 +97,30 @@ suite.define(() => {
       await installFixture(page);
       try {
         await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
-        const header = page.locator(".chat-pane-cache__pane--active .chat-pane__header");
-        await header.locator(".chat-pane__session-title-text", { hasText: title }).waitFor();
+        const header = page.locator(".chat-pane-cache__pane--active .agent-chat__header--mobile");
+        await header.locator(".mobile-header__title-text", { hasText: title }).waitFor();
         await capture(page, header, "mobile-header-" + viewport.width);
         const panels = header.getByRole("button", { name: "Panels", exact: true });
         await panels.waitFor();
+        const actions = header.locator(".chat-header-session-menu__trigger");
+        await actions.waitFor();
         expect(
-          await header.locator(".chat-pane__actions").getByRole("button").allTextContents(),
+          await header.locator(".mobile-header__capsule").getByRole("button").allTextContents(),
         ).toHaveLength(2);
         expect(await header.locator(".header-new-session").count()).toBe(0);
         expect(await header.getByRole("button", { name: "Details", exact: true }).count()).toBe(0);
         const geometry = await header.evaluate((element) => {
-          const titleText = element.querySelector(".chat-pane__session-title-text")!;
-          const actions = element.querySelector(".chat-pane__actions")!;
+          const titleText = element.querySelector(".mobile-header__title-text")!;
+          const capsule = element.querySelector(".mobile-header__capsule")!;
           return {
             titleWidth: titleText.getBoundingClientRect().width,
             headerRight: element.getBoundingClientRect().right,
-            actionsRight: actions.getBoundingClientRect().right,
+            actionsRight: capsule.getBoundingClientRect().right,
             bodyWidth: document.documentElement.scrollWidth,
             viewportWidth: innerWidth,
             buttons: Array.from(
               element.querySelectorAll<HTMLButtonElement>(
-                ".chat-pane__nav-toggle, .chat-pane__actions button",
+                ".mobile-header__navigation, .mobile-header__capsule button",
               ),
             )
               .filter((button) => button.checkVisibility())
@@ -143,61 +136,68 @@ suite.define(() => {
         expect(geometry.bodyWidth).toBe(geometry.viewportWidth);
         expect(geometry.buttons.map((button) => button.label)).toEqual([
           "Expand sidebar",
-          "Actions for " + title,
           "Panels",
+          "Actions for " + title,
         ]);
         for (const button of geometry.buttons) {
-          expect(button.width).toBeGreaterThanOrEqual(44);
-          expect(button.height).toBeGreaterThanOrEqual(44);
+          expect(button.width).toBeGreaterThanOrEqual(40);
+          expect(button.height).toBeGreaterThanOrEqual(40);
         }
 
-        const menu = header.locator(".chat-panel-layout-menu");
-        const actions = header.locator(".chat-header-session-menu__trigger");
-        await actions.click();
-        await page.getByRole("menuitem", { name: "Session details", exact: true }).click();
-        const details = page.getByRole("dialog", { name: "Details", exact: true });
-        await details.waitFor();
-        const detailsBox = await details.boundingBox();
-        expect(detailsBox!.width).toBeGreaterThanOrEqual(viewport.width - 32);
+        const details = await openChatDetails(page);
+        expect((await details.boundingBox())!.width).toBeGreaterThanOrEqual(viewport.width - 24);
         await capture(page, header, "mobile-details-" + viewport.width, [details]);
+        await details.getByRole("button", { name: "Details", exact: true }).focus();
         await page.keyboard.press("Escape");
         await details.waitFor({ state: "hidden" });
-        expect(await actions.evaluate((element) => element === document.activeElement)).toBe(true);
+        expect(
+          await header
+            .locator(".mobile-header__title")
+            .evaluate((element) => element === document.activeElement),
+        ).toBe(true);
 
         await panels.click();
-        await menu
-          .getByRole("menuitemcheckbox", { name: "Show session files", exact: true })
+        const host = page.locator(".chat-pane-cache__pane--active .chat-mobile-host");
+        await host.getByRole("button", { name: "Panels", exact: true }).click();
+        await host
+          .locator(".chat-panel-launcher-mobile")
+          .getByRole("button", { name: "Files", exact: true })
           .click();
         const files = page.locator('[data-panel-slot="workspace"]:not([hidden])');
         await files
-          .locator(".chat-workspace-rail__file-name", { hasText: "README.md" })
+          .locator(".chat-workspace-mobile__name", { hasText: "README.md" })
           .first()
           .waitFor();
         expect((await files.boundingBox())!.width).toBeGreaterThanOrEqual(viewport.width - 24);
+        const filesRoot = await files.elementHandle();
         await capture(page, header, "mobile-files-" + viewport.width, [files]);
-        await actions.click();
-        await page.getByRole("menuitem", { name: "Session details", exact: true }).click();
-        await details.waitFor();
-        expect(await files.isVisible()).toBe(true);
-        expect((await details.boundingBox())!.width).toBeGreaterThanOrEqual(viewport.width - 32);
-        await capture(page, header, "mobile-files-details-" + viewport.width, [files, details]);
-        await page.keyboard.press("Escape");
-        await details.waitFor({ state: "hidden" });
+        await openChatDetails(page);
+        expect(await files.isVisible()).toBe(false);
+        expect(await filesRoot?.evaluate((element) => element.isConnected)).toBe(true);
+        await host.getByRole("button", { name: "Panels", exact: true }).click();
+        await files.waitFor();
+        await capture(page, header, "mobile-files-details-" + viewport.width, [files, host]);
+
         await page.setViewportSize({ width: 1280, height: 900 });
-        await header.getByRole("button", { name: "Layout", exact: true }).waitFor();
+        await page
+          .locator(".chat-pane-cache__pane--active .chat-pane__header")
+          .locator(".chat-header-session-menu__trigger")
+          .waitFor();
         await expect.poll(async () => (await files.boundingBox())!.width).toBeLessThan(800);
         await page.setViewportSize({ width: viewport.width, height: viewport.height });
         await panels.waitFor();
         await expect
           .poll(async () => (await files.boundingBox())!.width)
           .toBeGreaterThanOrEqual(viewport.width - 24);
-        await page.getByRole("button", { name: "Close Files", exact: true }).click();
+        expect(await filesRoot?.evaluate((element) => element.isConnected)).toBe(true);
+        await filesRoot?.dispose();
+        await host.getByRole("button", { name: "Close Files", exact: true }).click();
+        await host.waitFor({ state: "hidden" });
 
-        await header.getByRole("button", { name: "Actions for " + title, exact: true }).click();
-        const sessionMenu = header.locator("openclaw-chat-header-session-menu");
-        await sessionMenu.getByRole("menuitem", { name: "Rename…", exact: true }).waitFor();
+        await actions.click();
+        await page.getByRole("menuitem", { name: "Rename", exact: true }).waitFor();
         await page.keyboard.press("Escape");
-        await header.locator(".chat-pane__nav-toggle").click();
+        await header.locator(".mobile-header__navigation").click();
         await page.getByRole("link", { name: "New conversation", exact: true }).waitFor();
       } finally {
         await suite.closeBrowserContext(context);
@@ -205,7 +205,7 @@ suite.define(() => {
     });
   }
 
-  it("preserves desktop Layout and Details controls", async () => {
+  it("preserves native desktop Actions, Details and frame Panels controls", async () => {
     const context = await suite.newBrowserContext({
       locale: "en-US",
       serviceWorkers: "block",
@@ -216,9 +216,13 @@ suite.define(() => {
     try {
       await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
       const header = page.locator(".chat-pane-cache__pane--active .chat-pane__header");
-      await header.getByRole("button", { name: "Layout", exact: true }).waitFor();
+      await header.locator(".chat-header-session-menu__trigger").waitFor();
       await header.getByRole("button", { name: "Details", exact: true }).waitFor();
-      expect(await header.getByRole("button", { name: "Panels", exact: true }).count()).toBe(0);
+      const panels = page
+        .locator(".chat-pane-cache__pane--active .sidebar-region__panels-toggle")
+        .getByRole("button", { name: "Panels", exact: true });
+      expect(await panels.count()).toBe(1);
+      expect(await panels.isVisible()).toBe(true);
       await capture(page, header, "desktop-header");
     } finally {
       await suite.closeBrowserContext(context);

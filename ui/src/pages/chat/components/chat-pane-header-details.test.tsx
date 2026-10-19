@@ -5,13 +5,13 @@ import type { ChatDetails } from "./chat-details.tsx";
 import { mountChatPaneHeader } from "./chat-pane-header.test-support.ts";
 import "./chat-details.tsx";
 
-it("retains Details directly in the header while pane props change", () => {
+it("retains Details in the header actions while pane props change", () => {
   const setRef = vi.fn();
   const elements = { frame: document.createElement("div") };
   const detailsControl = { chat: undefined, elements, mobile: false, presentation: true, setRef };
   const mounted = mountChatPaneHeader([], { detailsControl });
   onTestFinished(mounted.unmount);
-  const selector = ".chat-pane__header-trailing > openclaw-chat-details";
+  const selector = ".chat-pane__header-trailing > .chat-pane__actions > openclaw-chat-details";
   const details = mounted.container.querySelector<ChatDetails>(selector);
   expect(details).not.toBeNull();
   expect(setRef).toHaveBeenCalledWith(details);

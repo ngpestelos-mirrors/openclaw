@@ -11,7 +11,8 @@
     "scripts/**/*",
     "src/**/*.d.ts",
     "packages/**/*.d.ts",
-    "ui/src/i18n/virtual-locale.d.ts"
+    "ui/src/i18n/virtual-locale.d.ts",
+    "ui/src/types/novnc.d.ts"
   ],
   "exclude": [
     "node_modules",

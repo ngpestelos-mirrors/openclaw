@@ -1,5 +1,5 @@
 import { dynamic, type JSX as SolidJSX } from "@solidjs/web";
-import { Match, Show, Switch, onCleanup } from "solid-js";
+import { Match, Show, Switch, onCleanup, createMemo } from "solid-js";
 import { resolveControlUiAuthToken } from "../../app/control-ui-auth.ts";
 import { isBrowserPanelAvailable } from "../../app/panel-availability.ts";
 import { EMPTY_LINK_READERS } from "../../components/link-reader-target.ts";
@@ -7,6 +7,7 @@ import { Icon } from "../../components/solid/icon.tsx";
 import { LazyViewError } from "../../components/solid/lazy-view-error.tsx";
 import { PanelLoadingSkeleton } from "../../components/solid/panel-loading-skeleton.tsx";
 import { t } from "../../lib/reactive/i18n.ts";
+import { ContentPresentation } from "../../lib/solid/presentation.ts";
 import type { ElementProperties } from "../../types/solid-elements.d.ts";
 import type { SidebarPanelDefinitionParams, SidebarPanelData } from "./chat-pane-embedded-types.ts";
 import { EmbeddedPluginPanel } from "./chat-pane-plugin-panel.tsx";
@@ -16,7 +17,10 @@ import { resolveChatAttachmentLimits } from "./components/chat-attachment-admiss
 import { ChatDetailSlot } from "./components/chat-detail-slot-view.tsx";
 import { SessionWorkspaceRail } from "./components/chat-session-workspace-rail-solid.tsx";
 import {
-  closeSessionWorkspacePreview,
+  requestCloseSessionWorkspacePreview,
+  pinSessionWorkspacePreview,
+  setSessionWorkspacePreviewDraft,
+  browseSessionWorkspacePreviewPath,
   selectSessionWorkspacePreview,
 } from "./components/chat-session-workspace-state.ts";
 import type { SessionWorkspaceState } from "./components/chat-session-workspace-types.ts";
@@ -26,6 +30,7 @@ import type {
   SidebarPanelHost,
   SidebarPanelHostRegistration,
 } from "./components/chat-sidebar-region-types.ts";
+import { resolveChatLinkFaviconFetcher } from "./link-favicon-loader.ts";
 import type { SidebarSlotId } from "./sidebar-layout-types.ts";
 import { sidebarMainPanel } from "./sidebar-layout.ts";
 
@@ -43,6 +48,7 @@ function panelHostRef(register: SidebarPanelHostRegistration | undefined) {
 function TerminalPanel(props: Props) {
   return (
     <openclaw-terminal-panel
+      prop:mobile={props.presentation === "mobile"}
       data-sidebar-panel-host
       ref={[panelHostRef(props.registerPanelHost)]}
       prop:embedded={true}
@@ -75,6 +81,8 @@ function BrowserPanel(props: Props) {
       })}
       prop:presented={presented()}
       prop:tabsInHeader={props.browserTabsInHeader}
+      prop:mobilePresentation={props.presentation === "mobile"}
+      prop:fetchFavicon={resolveChatLinkFaviconFetcher(props.state)}
       prop:refreshOnPresentation={props.browserRefreshOnPresentation}
       prop:sessionKey={props.state.sessionKey}
       prop:preferredTab={props.preferredBrowserTab}
@@ -119,6 +127,8 @@ function DesktopPanel(props: Props) {
         props.presentation
           ? {
               platform: props.presentation,
+              expanded: props.desktopExpanded,
+              onToggleExpanded: props.onToggleDesktopExpanded,
               openWindowHref: props.presentation === "desktop" ? props.desktopFocusHref : undefined,
             }
           : undefined
@@ -141,6 +151,7 @@ function DesktopPanel(props: Props) {
 function DiscussionPanel(props: Props) {
   return (
     <openclaw-session-discussion
+      prop:presentation={props.presentation}
       data-sidebar-panel-host
       ref={[panelHostRef(props.registerPanelHost)]}
       prop:sessionKey={props.discussion!.sessionKey}
@@ -161,6 +172,7 @@ function PortalPanel(props: Props) {
       .find((panel) => panel.slot === "portal");
   return (
     <openclaw-portals-page
+      prop:mobile={props.presentation === "mobile"}
       data-sidebar-panel-host
       ref={[panelHostRef(props.registerPanelHost)]}
       prop:embedded={true}
@@ -172,22 +184,97 @@ function PortalPanel(props: Props) {
 }
 
 function WorkspacePanel(props: Props & { workspaceState: SessionWorkspaceState }) {
-  const browser = <SessionWorkspaceRail workspace={props.workspace} />;
-  const Detail = (detail: { content: SidebarContent }) => (
-    <ChatDetailSlot {...props.detail} content={detail.content} />
-  );
   const presented = usePanePresentation(() => props.panePresentation ?? true);
+  const workspaceVisible = usePanePresentation(
+    () => props.workspacePresented ?? props.panePresentation ?? true,
+  );
+  const browser = (
+    <ContentPresentation
+      value={() =>
+        workspaceVisible() &&
+        (props.workspace?.presentation === "desktop" ||
+          props.workspaceState.activePreviewId === null ||
+          props.workspaceState.previews.find(
+            (entry) => entry.id === props.workspaceState.activePreviewId,
+          )?.catalogVisible === true)
+      }
+    >
+      <SessionWorkspaceRail workspace={props.workspace} />
+    </ContentPresentation>
+  );
+  const Detail = (detail: { content: SidebarContent; previewId: string }) => {
+    const preview = () =>
+      props.workspaceState.previews.find((entry) => entry.id === detail.previewId);
+    const fileSource = () =>
+      detail.content.kind === "file"
+        ? detail.content
+        : detail.content.kind === "image" ||
+            detail.content.kind === "attachment" ||
+            detail.content.kind === "markdown"
+          ? detail.content.file
+          : undefined;
+    const active = () =>
+      workspaceVisible() &&
+      props.workspaceState.activePreviewId === detail.previewId &&
+      preview()?.catalogVisible !== true;
+    return (
+      <ContentPresentation value={active}>
+        <ChatDetailSlot
+          {...props.detail}
+          active={active()}
+          content={detail.content}
+          filePresentation={props.workspace?.presentation}
+          fileBack={
+            props.workspace?.presentation === "mobile"
+              ? {
+                  label: t("chat.sidePanel.files"),
+                  onBack: () => selectSessionWorkspacePreview(props.state, null),
+                }
+              : undefined
+          }
+          fileWorkspace={
+            fileSource() && (fileSource()!.root || fileSource()!.artifactId) && props.workspace
+              ? {
+                  path: fileSource()!.path,
+                  rootLabel: t("chat.workspaceFiles.root"),
+                  sourceLabel: fileSource()!.artifactId
+                    ? t("chat.workspaceFiles.desktop.sessionFiles")
+                    : undefined,
+                  catalog: props.workspace,
+                  showingFolder: preview()?.catalogVisible === true,
+                  onBrowsePath: (path) => {
+                    browseSessionWorkspacePreviewPath(props.state, detail.previewId, path);
+                  },
+                }
+              : undefined
+          }
+          onFileInteraction={(file) => {
+            if (file === detail.content) {
+              pinSessionWorkspacePreview(props.state, detail.previewId);
+            }
+          }}
+          onFileDraftChange={(draft) =>
+            setSessionWorkspacePreviewDraft(props.state, detail.previewId, draft)
+          }
+        />
+      </ContentPresentation>
+    );
+  };
   return (
     <openclaw-chat-files-panel
       data-sidebar-panel-host
       ref={[panelHostRef(props.registerPanelHost)]}
+      prop:sessionKey={props.state.sessionKey}
       prop:tabsInHeader={sidebarMainPanel(props.state.sidebarLayout)?.slot !== "workspace"}
       prop:previews={presented() ? props.workspaceState.previews : []}
       prop:activeId={presented() ? props.workspaceState.activePreviewId : null}
+      prop:presentation={props.workspace?.presentation}
+      prop:treeVisible={props.workspace?.navigation?.treeVisible !== false}
+      prop:folderView={props.workspace?.folderView === true}
       prop:browser={browser}
       prop:renderDetail={Detail}
       prop:onSelect={(id: string | null) => selectSessionWorkspacePreview(props.state, id)}
-      prop:onClose={(id: string) => closeSessionWorkspacePreview(props.state, id)}
+      prop:onClose={(id: string) => requestCloseSessionWorkspacePreview(props.state, id)}
     />
   );
 }
@@ -196,6 +283,7 @@ function SubagentsPanel(props: Props) {
   const presented = usePanePresentation(() => props.subagentsPresented);
   return (
     <openclaw-chat-subagents-panel
+      prop:mobile={props.presentation === "mobile"}
       data-sidebar-panel-host
       ref={[panelHostRef(props.registerPanelHost)]}
       prop:sessionKey={props.state.sessionKey}
@@ -214,6 +302,7 @@ function ProcessesPanel(props: Props) {
   const presented = usePanePresentation(() => props.processesPresented ?? false);
   return (
     <openclaw-chat-processes-panel
+      prop:mobile={props.presentation === "mobile"}
       data-sidebar-panel-host
       ref={[panelHostRef(props.registerPanelHost)]}
       prop:sessionKey={props.state.sessionKey}
@@ -227,6 +316,7 @@ function LinkReaderPanel(props: Props) {
   const presented = usePanePresentation(() => props.linkReaderPresented ?? false);
   return (
     <openclaw-link-reader-panel
+      prop:mobile={props.presentation === "mobile"}
       data-sidebar-panel-host
       ref={[panelHostRef(props.registerPanelHost)]}
       prop:embedded={true}
@@ -263,20 +353,34 @@ export function ExternalPanelLink(props: {
   );
 }
 
+/** Snapshot mutable native state so menu diffing can compare the previous action. */
+export function companionClearAction(
+  input: Pick<Props, "connected" | "companion" | "onClearCompanion">,
+) {
+  return {
+    id: "clear-side-chat",
+    label: t("chat.rail.clear"),
+    icon: "trash" as const,
+    disabled: !input.connected || input.companion.turns.some((turn) => turn.status === "pending"),
+    onActivate: () => {
+      void input.onClearCompanion();
+    },
+  };
+}
+
 export function ClearCompanion(
   props: Props & { actionRef?: (element: HTMLButtonElement) => void },
 ) {
+  const action = createMemo(() => companionClearAction(props));
   return (
-    <openclaw-tooltip prop:content={t("chat.rail.clear")}>
+    <openclaw-tooltip prop:content={action().label}>
       <button
         ref={props.actionRef}
         class="rail-header__action chat-session-rail__clear"
         type="button"
-        aria-label={t("chat.rail.clear")}
-        disabled={
-          !props.connected || props.companion.turns.some((turn) => turn.status === "pending")
-        }
-        onClick={() => void props.onClearCompanion()}
+        aria-label={action().label}
+        disabled={action().disabled}
+        onClick={() => action().onActivate()}
       >
         <Icon name="trash" />
       </button>
@@ -286,9 +390,10 @@ export function ClearCompanion(
 
 function DetailPanel(props: SidebarPanelData) {
   const presented = usePanePresentation(() => props.detailPresentation);
+  const active = usePanePresentation(() => props.detailPresented ?? props.detailPresentation);
   return (
     <Show when={presented()}>
-      <ChatDetailSlot {...props.detail} content={props.detailContent!} />
+      <ChatDetailSlot {...props.detail} active={active()} content={props.detailContent!} />
     </Show>
   );
 }

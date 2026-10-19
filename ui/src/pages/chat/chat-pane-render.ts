@@ -1,12 +1,7 @@
-import { resolveArtifactDownloadSource } from "../../api/artifact-download.ts";
-import { resolveControlUiAuthToken } from "../../app/control-ui-auth.ts";
 import { gatewayPresentationScope } from "../../app/gateway-presentation-scope.ts";
 import { hasOperatorAdminAccess, hasOperatorWriteAccess } from "../../app/operator-access.ts";
 import { patchSettings } from "../../app/settings.ts";
-import {
-  markdownSessionPublicOrigin,
-  navigateMarkdownSession,
-} from "../../components/markdown-session-links.ts";
+import { navigateMarkdownSession } from "../../components/markdown-session-links.ts";
 import { personActivityRouting } from "../../components/person-activity-link.ts";
 import { isCloudWorkerPlacementState } from "../../components/session-row-badges.ts";
 import { t } from "../../i18n/index.ts";
@@ -29,6 +24,7 @@ import { isInitialChatHistoryUnavailable } from "./chat-history-state.ts";
 import { resolveChatModelSetup } from "./chat-model-setup.ts";
 import { ChatPaneLayoutRender } from "./chat-pane-layout-render.ts";
 import { createChatPaneRails } from "./chat-pane-rails.ts";
+import { chatPaneResourceProps } from "./chat-pane-resource-presentation.ts";
 import {
   createChatPaneQueuedEditProps,
   createChatPaneSessionActionCallbacks,
@@ -64,7 +60,6 @@ import {
 } from "./chat-state-route.ts";
 import type { ChatProps } from "./chat-view.tsx";
 import { openSessionWorkspaceFile } from "./components/chat-session-workspace.ts";
-import { resolveChatLinkFaviconFetcher } from "./link-favicon-loader.ts";
 import { chatFailureRunId, hasAbortableSessionRun, hasDirectSessionRun } from "./run-lifecycle.ts";
 import { lockChatScroll, scheduleChatScroll } from "./scroll.ts";
 import { resolveChatProjectionRunId } from "./tool-stream-status.ts";
@@ -212,6 +207,8 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
     const { closePanelSlot, openPanelSlot, sessionWorkspace } = createChatPaneRails({
       state,
       sidebarLayout,
+      presentation: this.sessionPresentation,
+      visibleLayout: this.usesMobileHost ? this.presentSidebarLayout(sidebarLayout) : undefined,
       presentationId: this.presentationId,
       sessionTitle: this.resolveHeaderSessionTitle(selectedSession),
       paneLabel: this.paneLabel,
@@ -666,11 +663,7 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
       mainKey,
       ...userPresentation,
       personActivity: personActivityRouting(this.context),
-      mediaPolicyEpoch: state.mediaPolicyEpoch,
-      connectionEpoch: state.connectionEpoch,
-      embedSandboxMode: state.embedSandboxMode,
-      allowExternalEmbedUrls: state.allowExternalEmbedUrls,
-      fetchLinkFavicon: resolveChatLinkFaviconFetcher(state),
+      ...chatPaneResourceProps(state, this.context),
       chatMessageMaxWidth: state.settings.chatMessageMaxWidth,
       chatBubbleMode: isChatBubbleMode(
         state.settings,
@@ -679,12 +672,6 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
         mainKey,
       ),
       branding: this.context?.theme.branding,
-      assistantAttachmentAuthToken: resolveControlUiAuthToken(state),
-      resolveArtifactDownload: (params, signal) =>
-        resolveArtifactDownloadSource(state, params, signal),
-      basePath: state.basePath,
-      sessionPublicOrigin: markdownSessionPublicOrigin(this.context),
-      resourceBasePath: state.resourceBasePath,
     };
     return {
       providerReviewSource: { state, canWrite: canWriteProgressCard && !selectedSessionArchived },
@@ -701,7 +688,10 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
         sidebarLayout,
         sessionWorkspace,
         chatProps: props,
-        detailsActions: { progressCardRefresh: detailsProgressRefresh },
+        detailsActions: {
+          ...this.captureProgressCardActions(canWriteProgressCard),
+          progressCardRefresh: detailsProgressRefresh,
+        },
         observerDigest,
         observerRunId,
         catalog,

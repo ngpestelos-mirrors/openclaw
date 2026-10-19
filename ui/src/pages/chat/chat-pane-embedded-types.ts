@@ -22,11 +22,22 @@ import type {
   SessionWorkspaceProps,
   SessionWorkspaceState,
 } from "./components/chat-session-workspace-types.ts";
-import type { SidebarSelection } from "./components/chat-sidebar-content-types.ts";
+import type {
+  ChatDetailPanelProps,
+  SidebarSelection,
+} from "./components/chat-sidebar-content-types.ts";
 import type { SessionDiscussionPanelConfig } from "./components/session-discussion-panel.tsx";
 import type { SidebarSlotId } from "./sidebar-layout-types.ts";
 
 export type ChatDetailSlotProps = {
+  active?: boolean;
+  presentation?: "desktop" | "mobile";
+  fileBack?: ChatDetailPanelProps["fileBack"];
+  fileWorkspace?: ChatDetailPanelProps["fileWorkspace"];
+  onOpenMobilePage?: import("./components/session-diff-panel.tsx").SessionDiffProps["onOpenMobilePage"];
+  filePresentation?: ChatDetailPanelProps["filePresentation"];
+  onFileInteraction?: ChatDetailPanelProps["onFileInteraction"];
+  onFileDraftChange?: ChatDetailPanelProps["onFileDraftChange"];
   chat: ChatProps;
   content: SidebarSelection;
   host: ChatPageHost;

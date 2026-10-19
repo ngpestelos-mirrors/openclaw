@@ -3,8 +3,11 @@
 import { describe, expect, it } from "vitest";
 import type { GatewaySessionRow } from "../../../api/types.ts";
 import { resolveSessionWorkspace } from "../../../lib/sessions/workspace.ts";
+import {
+  canRevealSessionWorkspace,
+  resolveChatPaneParentSession,
+} from "./chat-pane-header-identity.tsx";
 import { chatPaneHeaderSessionRow as row } from "./chat-pane-header.test-support.ts";
-import { canRevealSessionWorkspace, resolveChatPaneParentSession } from "./chat-pane-header.tsx";
 
 describe("chat pane parent resolution", () => {
   it("omits unresolved and self-referential parents", () => {
