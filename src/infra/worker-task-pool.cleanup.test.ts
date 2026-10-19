@@ -13,6 +13,39 @@ vi.mock("./temp-artifact-cleanup.js", () => ({ removeTemporaryArtifacts: cleanup
 
 const workerUrl = new URL("./worker-task-pool.test-support.ts", import.meta.url);
 
+type TaskMessage = { taskId: number; input: string; responseId?: number };
+
+async function mockWorker(
+  terminate: () => Promise<number>,
+  respond: (message: TaskMessage) => unknown = ({ taskId }) => ({
+    status: "ok",
+    taskId,
+    value: 42,
+  }),
+) {
+  const created = vi.fn();
+  class MockWorker extends EventEmitter {
+    constructor() {
+      super();
+      created();
+    }
+    ref() {}
+    unref() {}
+    terminate = terminate;
+    postMessage(message: TaskMessage) {
+      const response = respond(message);
+      queueMicrotask(() => this.emit("message", response));
+    }
+  }
+  vi.doMock("node:worker_threads", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("node:worker_threads")>()),
+    Worker: MockWorker,
+  }));
+  vi.resetModules();
+  cleanup.mockReset();
+  return { created, Pool: (await import("./worker-task-pool.js")).WorkerTaskPool };
+}
+
 describe("worker task artifact lifetime", () => {
   it("retries failed idle retirement without releasing artifacts before native exit", async () => {
     const failure = new Error("mock termination did not complete");
@@ -20,25 +53,6 @@ describe("worker task artifact lifetime", () => {
       .fn<() => Promise<number>>()
       .mockRejectedValueOnce(failure)
       .mockResolvedValue(0);
-    let created = 0;
-    class MockWorker extends EventEmitter {
-      constructor() {
-        super();
-        created += 1;
-      }
-      ref() {}
-      unref() {}
-      terminate = terminate;
-      postMessage(message: { taskId: number }) {
-        queueMicrotask(() =>
-          this.emit("message", { status: "ok", taskId: message.taskId, value: 42 }),
-        );
-      }
-    }
-    vi.doMock("node:worker_threads", async (importOriginal) => ({
-      ...(await importOriginal<typeof import("node:worker_threads")>()),
-      Worker: MockWorker,
-    }));
     let retiring = false;
     vi.doMock("./temp-artifact-cleanup.js", () => {
       if (retiring) {
@@ -46,8 +60,7 @@ describe("worker task artifact lifetime", () => {
       }
       return { removeTemporaryArtifacts: cleanup };
     });
-    vi.resetModules();
-    cleanup.mockReset();
+    const { created, Pool } = await mockWorker(terminate);
     const cleanupOrder: string[] = [];
     cleanup.mockImplementation(async () => {
       await Promise.resolve();
@@ -57,12 +70,11 @@ describe("worker task artifact lifetime", () => {
       await Promise.resolve();
       cleanupOrder.push("resources");
     });
-    const { WorkerTaskPool: MockedWorkerTaskPool } = await import("./worker-task-pool.js");
     const observedCustody: number[][] = [];
     const onRetirementFailure = vi.fn(() => {
       observedCustody.push([cleanup.mock.calls.length, releaseResources.mock.calls.length]);
     });
-    const pool = new MockedWorkerTaskPool<number, number>({
+    const pool = new Pool<number, number>({
       workerUrl: new URL("file:///fixture/worker.js"),
       maxWorkers: 1,
       maxPendingTasks: 1,
@@ -85,11 +97,11 @@ describe("worker task artifact lifetime", () => {
       expect(observedCustody).toEqual([[0, 0]]);
       expect(cleanup).not.toHaveBeenCalled();
       expect(releaseResources).not.toHaveBeenCalled();
-      expect(created).toBe(1);
+      expect(created).toHaveBeenCalledTimes(1);
       await Promise.all([pool.close(), pool.close()]);
       expect(terminate).toHaveBeenCalledTimes(2);
       expect(onRetirementFailure).toHaveBeenCalledTimes(1);
-      expect(created).toBe(1);
+      expect(created).toHaveBeenCalledTimes(1);
       expect(cleanup).toHaveBeenCalledExactlyOnceWith("/fixture/worker-scratch", "Worker task");
       expect(releaseResources).toHaveBeenCalledOnce();
       expect(cleanupOrder).toEqual(["temporary-directory", "resources"]);
@@ -124,7 +136,6 @@ describe("worker task artifact lifetime", () => {
         expect(responseScope).toBe("request");
         return "next";
       });
-      let created = 0;
       const terminate = vi
         .fn<() => Promise<number>>()
         .mockRejectedValueOnce(failure)
@@ -133,36 +144,15 @@ describe("worker task artifact lifetime", () => {
           return stopped.promise;
         })
         .mockResolvedValue(0);
-      class MockWorker extends EventEmitter {
-        constructor() {
-          super();
-          created += 1;
-        }
-        ref() {}
-        unref() {}
-        terminate = terminate;
-        postMessage(message: { input: string; taskId: number; responseId?: number }) {
-          expect(message.responseId).toBeUndefined();
-          queueMicrotask(() => {
-            this.emit(
-              "message",
-              message.input === "active"
-                ? { status: "request", taskId: message.taskId, id: 1, value: "host" }
-                : { status: "ok", taskId: message.taskId, value: message.input },
-            );
-          });
-        }
-      }
-      vi.doMock("node:worker_threads", async (importOriginal) => ({
-        ...(await importOriginal<typeof import("node:worker_threads")>()),
-        Worker: MockWorker,
-      }));
-      vi.resetModules();
-      cleanup.mockReset();
+      const { created, Pool } = await mockWorker(terminate, (message) => {
+        expect(message.responseId).toBeUndefined();
+        return message.input === "active"
+          ? { status: "request", taskId: message.taskId, id: 1, value: "host" }
+          : { status: "ok", taskId: message.taskId, value: message.input };
+      });
       cleanup.mockResolvedValue();
-      const { WorkerTaskPool: MockedWorkerTaskPool } = await import("./worker-task-pool.js");
       const notified = vi.fn();
-      const pool = new MockedWorkerTaskPool<string, string>({
+      const pool = new Pool<string, string>({
         workerUrl: new URL("file:///fixture/worker.js"),
         maxWorkers: 1,
         maxPendingTasks: 2,
@@ -211,7 +201,7 @@ describe("worker task artifact lifetime", () => {
         expect(responseConsumed).not.toHaveBeenCalled();
         expect(cleanup).not.toHaveBeenCalled();
         expect(queuedFactory).not.toHaveBeenCalled();
-        expect(created).toBe(1);
+        expect(created).toHaveBeenCalledTimes(1);
         const closed = new Error("terminal pool close");
         const closing = closeDuringRotation ? pool.close(closed) : undefined;
         stopped.resolve(0);
@@ -222,12 +212,12 @@ describe("worker task artifact lifetime", () => {
         if (closeDuringRotation) {
           expect(await nextOutcome).toEqual({ error: closed });
           expect(queuedFactory).not.toHaveBeenCalled();
-          expect(created).toBe(1);
+          expect(created).toHaveBeenCalledTimes(1);
           await expect(pool.run("later", {})).rejects.toBe(closed);
         } else {
           expect(await nextOutcome).toEqual({ value: "next" });
           expect(queuedFactory).toHaveBeenCalledTimes(1);
-          expect(created).toBe(2);
+          expect(created).toHaveBeenCalledTimes(2);
         }
       } finally {
         stopped.resolve(0);

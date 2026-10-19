@@ -56,6 +56,34 @@ function taskContext(databaseAdmissionPort?: MessagePort): WorkerTaskContext {
   };
 }
 
+async function workerFixture() {
+  let result = createDeferred<string>();
+  const closed = createDeferred<string>();
+  const port = Object.assign(new EventEmitter(), {
+    postMessage: vi.fn(() => result.resolve("result")),
+    close: vi.fn(() => closed.resolve("closed")),
+  });
+  boundary.port = port;
+  return {
+    ...(await import("./worker-task-server.js")),
+    port,
+    closed: closed.promise,
+    task(taskId: number, context = taskContext(), sampleMemory = false) {
+      result = createDeferred<string>();
+      port.emit("message", {
+        taskId,
+        nativeSections: new SharedArrayBuffer(4),
+        taskContext: context,
+        sampleMemory,
+      });
+      return result.promise;
+    },
+    expectResult(taskId: number, value: unknown) {
+      expect(port.postMessage).toHaveBeenLastCalledWith({ status: "ok", value, taskId }, []);
+    },
+  };
+}
+
 // Answer on the real reply port before publishing the native completion flag; no worker or timer.
 function acknowledgeAdmissionExchanges(port: MessagePort) {
   return vi.spyOn(port, "postMessage").mockImplementation((message: unknown) => {
@@ -73,19 +101,12 @@ function acknowledgeAdmissionExchanges(port: MessagePort) {
 it.each([false, true])(
   "joins task cleanup and queued receipts before retiring admission transport (diagnostic failure: %s)",
   async (diagnosticFailure) => {
-    const closed = createDeferred<string>();
-    const result = createDeferred<string>();
+    const { port, task, closed, serveOwnedWorkerTasks } = await workerFixture();
     const entered = createDeferred();
     const cleanup = createDeferred();
-    const port = Object.assign(new EventEmitter(), {
-      postMessage: vi.fn(() => result.resolve("result")),
-      close: vi.fn(() => closed.resolve("closed")),
-    });
-    boundary.port = port;
     const { port1: admissionPort, port2: admissionPeer } = new MessageChannel();
     const closeAdmission = vi.spyOn(admissionPort, "close");
     const exchanges = acknowledgeAdmissionExchanges(admissionPort);
-    const { serveOwnedWorkerTasks } = await import("./worker-task-server.js");
     const { hasSqliteDatabaseSchemaAdmissionForPath } =
       await import("./sqlite-database-admission.js");
     const { getSqliteDatabaseAdmissionUpstream } =
@@ -109,12 +130,7 @@ it.each([false, true])(
     });
     try {
       serveOwnedWorkerTasks(handler, { retireOnError: true, closeResource });
-      port.emit("message", {
-        taskId: 1,
-        nativeSections: new SharedArrayBuffer(4),
-        taskContext: taskContext(admissionPort),
-        sampleMemory: true,
-      });
+      const result = task(1, taskContext(admissionPort), true);
       await entered.promise;
       expect(getSqliteDatabaseAdmissionUpstream()).toEqual({ port: admissionPort, closed: false });
       port.emit("message", { closeResource: true, resourcePort: receipt });
@@ -123,7 +139,7 @@ it.each([false, true])(
       expect(boundary.closeMemory).not.toHaveBeenCalled();
       expect(process.exitCode).toBe(exitCode);
       cleanup.resolve();
-      expect(await Promise.race([closed.promise, result.promise])).toBe("closed");
+      expect(await Promise.race([closed, result])).toBe("closed");
       expect(exchanges).toHaveBeenCalledOnce();
       expect(receipt.postMessage).toHaveBeenCalledWith(expect.objectContaining({ ok: false }), []);
       expect(receipt.close).toHaveBeenCalledOnce();
@@ -149,41 +165,21 @@ it.each([false, true])(
 );
 
 it("keeps ordinary task errors reusable", async () => {
-  let result = createDeferred();
-  const port = Object.assign(new EventEmitter(), {
-    postMessage: vi.fn(() => result.resolve()),
-    close: vi.fn(),
-  });
-  boundary.port = port;
-  const { serveWorkerTasks } = await import("./worker-task-server.js");
+  const { port, task, expectResult, serveWorkerTasks } = await workerFixture();
   const handler = vi.fn<() => string>();
   handler.mockImplementationOnce(() => {
     throw new Error("ordinary failure");
   });
   handler.mockReturnValue("next task");
   serveWorkerTasks(handler);
-  port.emit("message", {
-    taskId: 1,
-    nativeSections: new SharedArrayBuffer(4),
-    taskContext: taskContext(),
-  });
-  await result.promise;
+  await task(1);
   expect(port.postMessage).toHaveBeenCalledWith({
     status: "failed",
     taskId: 1,
     error: "ordinary failure",
   });
-  result = createDeferred();
-  port.emit("message", {
-    taskId: 2,
-    nativeSections: new SharedArrayBuffer(4),
-    taskContext: taskContext(),
-  });
-  await result.promise;
-  expect(port.postMessage).toHaveBeenLastCalledWith(
-    { status: "ok", value: "next task", taskId: 2 },
-    [],
-  );
+  await task(2);
+  expectResult(2, "next task");
   expect(handler).toHaveBeenCalledTimes(2);
   expect(port.close).not.toHaveBeenCalled();
   expect(boundary.closeMemory).not.toHaveBeenCalled();
@@ -191,13 +187,7 @@ it("keeps ordinary task errors reusable", async () => {
 });
 
 it("scopes the complete selection to each generic worker task", async () => {
-  let result = createDeferred();
-  const port = Object.assign(new EventEmitter(), {
-    postMessage: vi.fn(() => result.resolve()),
-    close: vi.fn(),
-  });
-  boundary.port = port;
-  const { serveWorkerTasks } = await import("./worker-task-server.js");
+  const { task, expectResult, serveWorkerTasks } = await workerFixture();
   const { getDatabaseEngineSelection } = await import("./database-engine/context.js");
   const selection = {
     effectiveEngines: {
@@ -213,43 +203,20 @@ it("scopes the complete selection to each generic worker task", async () => {
     postgres: { connection: "postgresql://localhost/synthetic", schemaPrefix: "test" },
   } as const;
   serveWorkerTasks(() => getDatabaseEngineSelection());
-  port.emit("message", {
-    taskId: 1,
-    nativeSections: new SharedArrayBuffer(4),
-    taskContext: { ...taskContext(), databaseEngineSelection: selection },
-  });
-  await result.promise;
-  expect(port.postMessage).toHaveBeenLastCalledWith(
-    { status: "ok", value: selection, taskId: 1 },
-    [],
-  );
-  result = createDeferred();
-  port.emit("message", {
-    taskId: 2,
-    nativeSections: new SharedArrayBuffer(4),
-    taskContext: taskContext(),
-  });
-  await result.promise;
-  expect(port.postMessage).toHaveBeenLastCalledWith(
-    { status: "ok", value: undefined, taskId: 2 },
-    [],
-  );
+  await task(1, { ...taskContext(), databaseEngineSelection: selection });
+  expectResult(1, selection);
+  await task(2);
+  expectResult(2, undefined);
 });
 
 it("retains admission context for asynchronous resource cleanup and successor tasks", async () => {
-  let result = createDeferred();
+  const { port, task, serveOwnedWorkerTasks } = await workerFixture();
   const cleanupEntered = createDeferred();
   const finishCleanup = createDeferred();
   const receiptClosed = createDeferred();
-  const port = Object.assign(new EventEmitter(), {
-    postMessage: vi.fn(() => result.resolve()),
-    close: vi.fn(),
-  });
-  boundary.port = port;
   const { port1: admissionPort, port2: admissionPeer } = new MessageChannel();
   const closeAdmission = vi.spyOn(admissionPort, "close");
   const exchanges = acknowledgeAdmissionExchanges(admissionPort);
-  const { serveOwnedWorkerTasks } = await import("./worker-task-server.js");
   const { hasSqliteDatabaseSchemaAdmissionForPath } =
     await import("./sqlite-database-admission.js");
   const { registerAgentDatabaseReaderCloser, isDeletedAgentDatabasePath } =
@@ -274,31 +241,21 @@ it("retains admission context for asynchronous resource cleanup and successor ta
   };
   try {
     serveOwnedWorkerTasks(handler, { closeResource });
-    port.emit("message", {
-      taskId: 1,
-      nativeSections: new SharedArrayBuffer(4),
-      taskContext: {
-        ...taskContext(admissionPort),
-        deletedAgentDatabaseFences: [["/synthetic/retired-agent.sqlite", "retired-agent"]],
-      } satisfies WorkerTaskContext,
+    await task(1, {
+      ...taskContext(admissionPort),
+      deletedAgentDatabaseFences: [["/synthetic/retired-agent.sqlite", "retired-agent"]],
     });
-    await result.promise;
     expect(isDeletedAgentDatabasePath("/synthetic/retired-agent.sqlite")).toBe(true);
     expect(exchanges).toHaveBeenCalledOnce();
     port.emit("message", { closeResource: true, key: "[]", resourcePort: receipt });
     await cleanupEntered.promise;
     expect(receipt.postMessage).not.toHaveBeenCalled();
     expect(closeAdmission).not.toHaveBeenCalled();
-    result = createDeferred();
-    port.emit("message", {
-      taskId: 2,
-      nativeSections: new SharedArrayBuffer(4),
-      taskContext: taskContext(),
-    });
+    const result = task(2);
     expect(handler).toHaveBeenCalledOnce();
     finishCleanup.resolve();
     await receiptClosed.promise;
-    await result.promise;
+    await result;
     expect(receipt.postMessage).toHaveBeenCalledWith({ ok: true }, []);
     expect(closeResource).toHaveBeenCalledExactlyOnceWith("[]");
     expect(handler).toHaveBeenCalledTimes(2);
@@ -319,15 +276,9 @@ it("retains admission context for asynchronous resource cleanup and successor ta
 });
 
 it("expires a task's admission budget without poisoning its successor or resource cleanup", async () => {
-  let result = createDeferred();
-  const port = Object.assign(new EventEmitter(), {
-    postMessage: vi.fn(() => result.resolve()),
-    close: vi.fn(),
-  });
-  boundary.port = port;
+  const { port, task, expectResult, serveOwnedWorkerTasks } = await workerFixture();
   const { port1: admissionPort, port2: admissionPeer } = new MessageChannel();
   const exchanges = acknowledgeAdmissionExchanges(admissionPort);
-  const { serveOwnedWorkerTasks } = await import("./worker-task-server.js");
   const { hasSqliteDatabaseSchemaAdmissionForPath } =
     await import("./sqlite-database-admission.js");
   const inspect = () => {
@@ -337,12 +288,7 @@ it("expires a task's admission budget without poisoning its successor or resourc
   const receipt = { postMessage: vi.fn(), close: () => receiptClosed.resolve() };
   try {
     serveOwnedWorkerTasks(inspect, { closeResource: inspect });
-    port.emit("message", {
-      taskId: 1,
-      nativeSections: new SharedArrayBuffer(4),
-      taskContext: { ...taskContext(admissionPort), databaseAdmissionDeadlineAtMs: Date.now() - 1 },
-    });
-    await result.promise;
+    await task(1, { ...taskContext(admissionPort), databaseAdmissionDeadlineAtMs: Date.now() - 1 });
     expect(port.postMessage).toHaveBeenCalledWith({
       status: "failed",
       taskId: 1,
@@ -352,17 +298,8 @@ it("expires a task's admission budget without poisoning its successor or resourc
     port.emit("message", { closeResource: true, resourcePort: receipt });
     await receiptClosed.promise;
     expect(receipt.postMessage).toHaveBeenCalledWith({ ok: true }, []);
-    result = createDeferred();
-    port.emit("message", {
-      taskId: 2,
-      nativeSections: new SharedArrayBuffer(4),
-      taskContext: taskContext(),
-    });
-    await result.promise;
-    expect(port.postMessage).toHaveBeenLastCalledWith(
-      { status: "ok", value: undefined, taskId: 2 },
-      [],
-    );
+    await task(2);
+    expectResult(2, undefined);
     expect(exchanges).toHaveBeenCalledTimes(2);
   } finally {
     admissionPort.close();
