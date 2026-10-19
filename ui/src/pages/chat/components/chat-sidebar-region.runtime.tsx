@@ -314,7 +314,7 @@ function Region(props: RegionProps, host: RegionElement) {
     });
   }
 
-  const openMobilePanel = (slot: SidebarSlotId) => {
+  const openPanelFromLauncher = (slot: SidebarSlotId) => {
     const alreadyOpen = props.layout.columns[0]?.panels.some((panel) => panel.slot === slot);
     if (props.callbacks?.newTab) {
       props.callbacks.newTab.openPanel(slot);
@@ -380,18 +380,14 @@ function Region(props: RegionProps, host: RegionElement) {
               >
                 <MobilePanelLauncher
                   definitions={props.panelDefinitions}
-                  onOpen={openMobilePanel}
+                  onOpen={openPanelFromLauncher}
                 />
               </Show>
             }
           >
             <SidebarPanelLauncher
               definitions={props.panelDefinitions}
-              onOpen={(slot) =>
-                props.callbacks?.newTab
-                  ? props.callbacks.newTab.openPanel(slot)
-                  : props.callbacks?.openSlot(slot)
-              }
+              onOpen={openPanelFromLauncher}
             />
           </Show>
         }
@@ -475,7 +471,7 @@ function Region(props: RegionProps, host: RegionElement) {
             >
               <SidebarPanelLauncher
                 definitions={props.panelDefinitions}
-                onOpen={(slot) => props.callbacks?.newTab?.openPanel(slot)}
+                onOpen={openPanelFromLauncher}
               />
             </Show>
           </div>
