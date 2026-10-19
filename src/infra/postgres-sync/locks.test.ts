@@ -46,35 +46,23 @@ function launch(options: {
     execArgv: resolveRuntimeWorkerThreadExecArgv(url),
     workerData: { ...options, connection, gates: gates.buffer },
   });
-  const fail = (error: Error) => {
-    for (const event of Object.values(events)) {
-      event.reject(error);
-    }
-  };
+  const fail = (error: Error) => Object.values(events).forEach((event) => event.reject(error));
   // Some events intentionally remain unobserved in the other scenario.
   for (const event of Object.values(events)) {
     void event.promise.catch(() => {});
   }
-  worker.on("message", (message: Message) => {
-    if (message.error) {
-      fail(new Error(message.error));
-    } else {
-      events[message.event].resolve(message);
-    }
-  });
+  worker.on("message", (message: Message) =>
+    message.error ? fail(new Error(message.error)) : events[message.event].resolve(message),
+  );
   worker.on("error", fail);
   const exited = new Promise<void>((resolve, reject) => {
-    worker.on("exit", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`PostgreSQL regression worker exited ${code}`));
-      }
-    });
+    worker.on("exit", (code) =>
+      code === 0 ? resolve() : reject(new Error(`PostgreSQL regression worker exited ${code}`)),
+    );
   });
   void exited.catch(() => {});
   return {
-    events,
+    wait: (event: Event) => events[event].promise,
     exited,
     release(index: number) {
       Atomics.store(gates, index, 1);
@@ -148,14 +136,14 @@ describe.skipIf(!connection)("PostgreSQL transaction lock ordering", () => {
     const before = readSqliteDatabaseWriteTokenForPath(identity.path);
     const writer = launch({ ...identity, mode: "single", id: "second", holdStatement: true });
     workers.push(writer);
-    await writer.events.ready.promise;
+    await writer.wait("ready");
     writer.release(0);
     await admin.query("COMMIT");
-    await writer.events.statement.promise;
+    await writer.wait("statement");
     // This is a live lock check while the actual statement callback is gated, not a timing guess.
     expect(await lockIsFree(identity.key)).toBe(false);
     writer.release(2);
-    const committed = await writer.events.done.promise;
+    const committed = await writer.wait("done");
     expect(before).toBeDefined();
     expect(readSqliteDatabaseWriteTokenForPath(identity.path)).not.toBe(before);
     expect(committed.before).toBeDefined();
@@ -171,26 +159,24 @@ describe.skipIf(!connection)("PostgreSQL transaction lock ordering", () => {
     const first = launch({ ...identity, mode: "worker", id: "first", holdAdmission: true });
     const second = launch({ ...identity, mode: "worker", id: "second" });
     workers.push(first, second);
-    await Promise.all([first.events.ready.promise, second.events.ready.promise]);
+    await Promise.all([first.wait("ready"), second.wait("ready")]);
     first.release(0);
-    await first.events.admission.promise;
+    await first.wait("admission");
     const freeDuringAdmission = await lockIsFree(identity.key);
     // Old order holds the lock here. Drain it before asserting, rather than hanging on the cycle.
     if (!freeDuringAdmission) {
       first.release(1);
     }
     second.release(0);
-    const secondCommit = await second.events.done.promise;
+    const secondCommit = await second.wait("done");
     const afterSecondCommit = readSqliteDatabaseWriteTokenForPath(identity.path);
     first.release(1);
-    const firstCommit = await first.events.done.promise;
+    const firstCommit = await first.wait("done");
     expect(freeDuringAdmission).toBe(true);
-    expect(secondCommit.before).toBeDefined();
-    expect(secondCommit.after).toBeDefined();
+    expect(secondCommit).toMatchObject({ before: expect.any(String), after: expect.any(String) });
     expect(secondCommit.after).not.toBe(secondCommit.before);
     expect(afterSecondCommit).toBe(secondCommit.after);
-    expect(firstCommit.before).toBeDefined();
-    expect(firstCommit.after).toBeDefined();
+    expect(firstCommit).toMatchObject({ before: expect.any(String), after: expect.any(String) });
     expect(firstCommit.after).not.toBe(firstCommit.before);
     expect(firstCommit.after).not.toBe(secondCommit.after);
     expect(readSqliteDatabaseWriteTokenForPath(identity.path)).toBe(firstCommit.after);
@@ -213,19 +199,19 @@ describe.skipIf(!connection)("PostgreSQL transaction lock ordering", () => {
     });
     const second = launch({ ...identity, mode: "deferred", id: "second" });
     workers.push(first, second);
-    await Promise.all([first.events.ready.promise, second.events.ready.promise]);
+    await Promise.all([first.wait("ready"), second.wait("ready")]);
     first.release(0);
-    await first.events.statement.promise;
+    await first.wait("statement");
     const lockedBeforeRead = (await lockIsFree(identity.key)) === false;
     first.release(2);
-    const firstRead = await first.events.read.promise;
+    const firstRead = await first.wait("read");
     second.release(0);
-    await second.events.admission.promise;
+    await second.wait("admission");
     first.release(3);
-    await Promise.all([first.events.done.promise, second.events.done.promise]);
+    await Promise.all([first.wait("done"), second.wait("done")]);
     expect(lockedBeforeRead).toBe(true);
     expect(firstRead.value).toBe(0);
-    expect((await second.events.read.promise).value).toBe(1);
+    expect((await second.wait("read")).value).toBe(1);
     expect(await rows(`SELECT value FROM "${identity.schema}".counter`)).toEqual([{ value: 2 }]);
   });
 });
