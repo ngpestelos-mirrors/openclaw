@@ -1,4 +1,3 @@
-// Xai tests cover xai oauth plugin behavior.
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { ProviderAuthContext } from "openclaw/plugin-sdk/plugin-entry";
 import {
@@ -7,6 +6,7 @@ import {
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { OAuthCredential } from "openclaw/plugin-sdk/provider-auth";
 import { clearLiveCatalogCacheForTests } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
+import type { ModelProviderConfig } from "openclaw/plugin-sdk/provider-onboard";
 import { withProxyFixture } from "openclaw/plugin-sdk/test-env";
 import { markdownToIR } from "openclaw/plugin-sdk/text-chunking";
 import { fetch as undiciFetch, MockAgent, type Dispatcher } from "undici";
@@ -30,6 +30,41 @@ const DEVICE_CODE = {
   expires_in: 60,
   interval: 1,
 };
+const LOGIN_DEVICE_CODE = {
+  ...DEVICE_CODE,
+  device_code: "device-code-1",
+  user_code: "ABCD-1234",
+  verification_uri: "https://accounts.x.ai/oauth2/device",
+};
+const CATALOG_MODEL = { id: "grok-4.6", api_backend: "responses" };
+
+function mockResponses(...responses: Response[]) {
+  const fetchImpl = vi.fn<typeof fetch>();
+  for (const response of responses) {
+    fetchImpl.mockResolvedValueOnce(response);
+  }
+  return fetchImpl;
+}
+
+function mockLoginFetch(deviceCode: object, tokens: object, model: object = CATALOG_MODEL) {
+  const fetchImpl = mockResponses(
+    jsonResponse({
+      ...DEVICE_DISCOVERY,
+      authorization_endpoint: "https://auth.x.ai/oauth2/authorize",
+    }),
+    jsonResponse(deviceCode),
+    jsonResponse(tokens),
+  );
+  fetchImpl.mockImplementation(async (input) => {
+    const url = requestUrl(input);
+    if (url.endsWith("/models")) {
+      return jsonResponse({ data: [model] });
+    }
+    throw new Error(`Unexpected catalog URL: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchImpl);
+  return fetchImpl;
+}
 
 function createProgress() {
   return { update: vi.fn(), stop: vi.fn() };
@@ -117,55 +152,45 @@ describe("xAI OAuth", () => {
     vi.restoreAllMocks();
   });
 
-  it.each([{ proxy: "https_proxy", noProxy: "", socks: false }])(
-    "preserves $proxy routing with no_proxy=$noProxy",
-    async ({ proxy, noProxy, socks }) => {
-      await withProxyFixture(async (fixture) => {
-        const proxyUrl = socks ? fixture.socksProxy : fixture.httpProxy;
-        for (const key of ["http_proxy", "https_proxy", "all_proxy"]) {
-          vi.stubEnv(key, key === proxy ? proxyUrl : "");
-        }
-        vi.stubEnv("no_proxy", noProxy);
-        const fetchImpl = vi.fn<typeof fetch>(
-          async (input, init?: RequestInit & { dispatcher?: Dispatcher }) => {
-            expect(requestUrl(input)).toBe("https://auth.x.ai/oauth2/token");
-            expect(init?.method).toBe("POST");
-            if (noProxy) {
-              expect(init).not.toHaveProperty("dispatcher");
-            } else {
-              if (!init?.dispatcher) {
-                throw new Error("expected proxy dispatcher");
-              }
-              // The loopback fixture records this exact destination and refuses it
-              // before opening any upstream socket; no OAuth traffic leaves the host.
-              await expect(
-                undiciFetch(requestUrl(input), {
-                  method: init.method,
-                  body: requireStringBody(init),
-                  headers: Object.fromEntries(new Headers(init.headers)),
-                  redirect: init.redirect,
-                  signal: init.signal,
-                  dispatcher: init.dispatcher,
-                }),
-              ).rejects.toMatchObject({
-                cause: { code: socks ? "UND_ERR_SOCKS5_REPLY_2" : "UND_ERR_PRX_CONN" },
-              });
-            }
-            return jsonResponse({ error: "temporarily_unavailable" }, { status: 503 });
-          },
-        );
-        await expect(refreshWithFetch(createXaiOAuthCredential(), { fetchImpl })).rejects.toThrow(
-          "temporarily_unavailable",
-        );
-        expect(fetchImpl).toHaveBeenCalledOnce();
-        expect(fixture.connections).toEqual(
-          noProxy ? [] : [`${socks ? "socks" : "http"}:auth.x.ai`],
-        );
-        expect(fixture.originRoutes).toEqual([]);
-        await fixture.waitForSocketsClosed();
-      });
-    },
-  );
+  it("preserves https_proxy routing", async () => {
+    await withProxyFixture(async (fixture) => {
+      for (const key of ["http_proxy", "https_proxy", "all_proxy"]) {
+        vi.stubEnv(key, key === "https_proxy" ? fixture.httpProxy : "");
+      }
+      vi.stubEnv("no_proxy", "");
+      const fetchImpl = vi.fn<typeof fetch>(
+        async (input, init?: RequestInit & { dispatcher?: Dispatcher }) => {
+          expect(requestUrl(input)).toBe("https://auth.x.ai/oauth2/token");
+          expect(init?.method).toBe("POST");
+          if (!init?.dispatcher) {
+            throw new Error("expected proxy dispatcher");
+          }
+          // The loopback fixture records this exact destination and refuses it
+          // before opening any upstream socket; no OAuth traffic leaves the host.
+          await expect(
+            undiciFetch(requestUrl(input), {
+              method: init.method,
+              body: requireStringBody(init),
+              headers: Object.fromEntries(new Headers(init.headers)),
+              redirect: init.redirect,
+              signal: init.signal,
+              dispatcher: init.dispatcher,
+            }),
+          ).rejects.toMatchObject({
+            cause: { code: "UND_ERR_PRX_CONN" },
+          });
+          return jsonResponse({ error: "temporarily_unavailable" }, { status: 503 });
+        },
+      );
+      await expect(refreshWithFetch(createXaiOAuthCredential(), { fetchImpl })).rejects.toThrow(
+        "temporarily_unavailable",
+      );
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(fixture.connections).toEqual(["http:auth.x.ai"]);
+      expect(fixture.originRoutes).toEqual([]);
+      await fixture.waitForSocketsClosed();
+    });
+  });
 
   it.each(["OAuth", "catalog"] as const)(
     "revalidates live authority before following a %s redirect",
@@ -406,31 +431,17 @@ describe("xAI OAuth", () => {
 
   it("retries transient HTML refresh failures before succeeding", async () => {
     vi.useFakeTimers();
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        new Response("<!DOCTYPE html><html><body>Attention Required! Cloudflare</body></html>", {
-          status: 403,
-          headers: {
-            "Content-Type": "text/html",
-            "cf-mitigated": "challenge",
-          },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response("<!DOCTYPE html><html><body>Just a moment...</body></html>", {
-          status: 403,
-          headers: {
-            "Content-Type": "text/html",
-          },
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({
-          access_token: "access-2",
-          expires_in: 120,
-        }),
-      );
+    const fetchImpl = mockResponses(
+      new Response("<!DOCTYPE html><html><body>Attention Required! Cloudflare</body></html>", {
+        status: 403,
+        headers: { "Content-Type": "text/html", "cf-mitigated": "challenge" },
+      }),
+      new Response("<!DOCTYPE html><html><body>Just a moment...</body></html>", {
+        status: 403,
+        headers: { "Content-Type": "text/html" },
+      }),
+      jsonResponse({ access_token: "access-2", expires_in: 120 }),
+    );
     const credential = createXaiOAuthCredential();
 
     const refresh = refreshWithFetch(credential, { fetchImpl, now: () => 1_000 });
@@ -472,97 +483,62 @@ describe("xAI OAuth", () => {
     async (setup) => {
       vi.stubEnv("OPENCLAW_VERSION", "2026.3.22");
       const progress = createProgress();
-      const fetchImpl = vi
-        .fn<typeof fetch>()
-        .mockResolvedValueOnce(
-          jsonResponse({
-            ...DEVICE_DISCOVERY,
-            authorization_endpoint: "https://auth.x.ai/oauth2/authorize",
-          }),
-        )
-        .mockResolvedValueOnce(
-          jsonResponse({
-            device_code: "device-code-1",
-            user_code: "ABCD-1234",
-            verification_uri: "https://accounts.x.ai/oauth2/device",
-            verification_uri_complete: "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234",
-            expires_in: 900,
-            interval: 5,
-          }),
-        )
-        .mockResolvedValueOnce(
-          jsonResponse({
-            access_token: createJwt({ exp: 4, sub: "acct-1" }),
-            refresh_token: "refresh-1",
-            id_token: createJwt({
-              sub: "acct-1",
-              email: "dev@example.com",
-              name: "Dev User",
-            }),
-            expires_in: 120,
-          }),
-        );
-      fetchImpl.mockImplementation(async (input) => {
-        const url = requestUrl(input);
-        if (url.endsWith("/models")) {
-          return jsonResponse({
-            data: [
-              {
-                id: "grok-4.6",
-                api_backend: "responses",
-                supports_reasoning_effort: true,
-                reasoning_efforts: ["low", "high", "xhigh"],
-              },
-            ],
-          });
-        }
-        throw new Error(`Unexpected catalog URL: ${url}`);
-      });
-      vi.stubGlobal("fetch", fetchImpl);
+      const fetchImpl = mockLoginFetch(
+        {
+          ...LOGIN_DEVICE_CODE,
+          verification_uri_complete: "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234",
+          expires_in: 900,
+          interval: 5,
+        },
+        {
+          access_token: createJwt({ exp: 4, sub: "acct-1" }),
+          refresh_token: "refresh-1",
+          id_token: createJwt({ sub: "acct-1", email: "dev@example.com", name: "Dev User" }),
+          expires_in: 120,
+        },
+        {
+          ...CATALOG_MODEL,
+          supports_reasoning_effort: true,
+          reasoning_efforts: ["low", "high", "xhigh"],
+        },
+      );
       const deviceCode = vi.fn(async () => {});
       const openUrl = vi.fn(async () => {});
       const log = vi.fn();
-      const runtime = { ...createRuntimeEnv(), log };
-      const ctx: ProviderAuthContext = createDeviceLoginContext({
-        config: {
-          ...applyXaiConfig({}),
-          agents: {
-            defaults: { model: { primary: "other/selected", fallbacks: ["other/fallback"] } },
-          },
-          ...(setup === "subscription"
-            ? {
-                models: {
-                  providers: {
-                    xai: {
-                      baseUrl: "https://cli-chat-proxy.grok.com/v1",
-                      api: "openai-responses",
-                      auth: "oauth",
-                      models: [
-                        {
-                          id: "grok-4.6",
-                          name: "Stale",
-                          reasoning: false,
-                          input: ["text"],
-                          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                          contextWindow: 1000,
-                          maxTokens: 100,
-                          thinkingLevelMap: { xhigh: null },
-                          compat: { supportedReasoningEfforts: ["low", "high"] },
-                        },
-                      ],
-                    },
-                  },
-                },
-              }
-            : {}),
-        },
+      const config = applyXaiConfig({});
+      config.agents = {
+        defaults: { model: { primary: "other/selected", fallbacks: ["other/fallback"] } },
+      };
+      if (setup === "subscription") {
+        const provider: ModelProviderConfig = {
+          baseUrl: "https://cli-chat-proxy.grok.com/v1",
+          api: "openai-responses",
+          auth: "oauth",
+          models: [
+            {
+              id: "grok-4.6",
+              name: "Stale",
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 1000,
+              maxTokens: 100,
+              thinkingLevelMap: { xhigh: null },
+              compat: { supportedReasoningEfforts: ["low", "high"] },
+            },
+          ],
+        };
+        config.models = { providers: { xai: provider } };
+      }
+      const ctx = createDeviceLoginContext({
+        config,
         assertCurrent: vi.fn(),
         openUrl,
         prompter: createTestWizardPrompter({
           progress: vi.fn(() => progress),
           deviceCode,
         }),
-        runtime,
+        runtime: { ...createRuntimeEnv(), log },
       });
 
       if (setup === "api" && ctx.config.models?.providers?.xai) {
@@ -625,21 +601,18 @@ describe("xAI OAuth", () => {
         primary: "other/selected",
         fallbacks: ["other/fallback"],
       });
-      expect(result.configPatch?.models?.providers?.xai).toMatchObject({
+      const savedProvider = result.configPatch?.models?.providers?.xai;
+      expect(savedProvider).toMatchObject({
         baseUrl: "https://cli-chat-proxy.grok.com/v1",
         api: "openai-responses",
         auth: "oauth",
       });
-      expect(result.configPatch?.models?.providers?.xai?.models.map((model) => model.id)).toEqual([
-        "grok-4.6",
-      ]);
+      expect(savedProvider?.models.map((model) => model.id)).toEqual(["grok-4.6"]);
       expect(
         fetchImpl.mock.calls
           .map(([input]) => requestUrl(input))
           .filter((url) => url.endsWith("/models")),
       ).toEqual(["https://cli-chat-proxy.grok.com/v1/models"]);
-      const savedProvider = result.configPatch?.models?.providers?.xai;
-      expect(savedProvider?.models.some((model) => model.id === "auto")).toBe(false);
       expect(savedProvider?.models[0]?.thinkingLevelMap).toBeUndefined();
       expect(savedProvider?.models[0]?.compat?.supportedReasoningEfforts).toBeUndefined();
       expect(savedProvider).toHaveProperty("apiKey", undefined);
@@ -655,67 +628,40 @@ describe("xAI OAuth", () => {
     },
   );
 
-  it.each([{ completeUri: undefined, expectedUrl: "https://accounts.x.ai/oauth2/device" }])(
-    "preserves the device-code note link $expectedUrl",
-    async ({ completeUri, expectedUrl }) => {
-      const progress = createProgress();
-      const fetchImpl = vi
-        .fn<typeof fetch>()
-        .mockResolvedValueOnce(
-          jsonResponse({
-            ...DEVICE_DISCOVERY,
-            authorization_endpoint: "https://auth.x.ai/oauth2/authorize",
-          }),
-        )
-        .mockResolvedValueOnce(
-          jsonResponse({
-            device_code: "device-code-1",
-            user_code: "ABCD-1234",
-            verification_uri: "https://accounts.x.ai/oauth2/device",
-            verification_uri_complete: completeUri,
-            expires_in: Number.MAX_SAFE_INTEGER,
-            interval: Number.MAX_SAFE_INTEGER,
-          }),
-        )
-        .mockResolvedValueOnce(
-          jsonResponse({
-            access_token: "access-token",
-            refresh_token: "refresh-1",
-            expires_in: 120,
-          }),
-        );
-      fetchImpl.mockImplementation(async (input) => {
-        const url = requestUrl(input);
-        if (url.endsWith("/models")) {
-          return jsonResponse({ data: [{ id: "grok-4.6", api_backend: "responses" }] });
-        }
-        throw new Error(`Unexpected catalog URL: ${url}`);
-      });
-      vi.stubGlobal("fetch", fetchImpl);
-      const note = vi.fn<(message: string, title?: string) => Promise<void>>(async () => {});
-      const ctx: ProviderAuthContext = createDeviceLoginContext({
-        openUrl: vi.fn(async () => {}),
-        prompter: createTestWizardPrompter({
-          progress: vi.fn(() => progress),
-          note,
-        }),
-      });
+  it("preserves the device-code note link without a complete URI", async () => {
+    const expectedUrl = "https://accounts.x.ai/oauth2/device";
+    const progress = createProgress();
+    mockLoginFetch(
+      {
+        ...LOGIN_DEVICE_CODE,
+        expires_in: Number.MAX_SAFE_INTEGER,
+        interval: Number.MAX_SAFE_INTEGER,
+      },
+      { access_token: "access-token", refresh_token: "refresh-1", expires_in: 120 },
+    );
+    const note = vi.fn<(message: string, title?: string) => Promise<void>>(async () => {});
+    const ctx: ProviderAuthContext = createDeviceLoginContext({
+      openUrl: vi.fn(async () => {}),
+      prompter: createTestWizardPrompter({
+        progress: vi.fn(() => progress),
+        note,
+      }),
+    });
 
-      await createXaiOAuthAuthMethod().run(ctx);
+    await createXaiOAuthAuthMethod().run(ctx);
 
-      expect(note).toHaveBeenCalledWith(
-        expect.stringContaining("Code expires in 5 minutes."),
-        "xAI OAuth",
-      );
-      const [message] = note.mock.calls[0]!;
-      expect(markdownToIR(message, { linkify: false }).links.map((link) => link.href)).toEqual([
-        expectedUrl,
-      ]);
-      expect(message).toContain("\nCode: ABCD-1234\n");
-      expect(ctx.openUrl).toHaveBeenCalledWith(expectedUrl);
-      expect(progress.stop).toHaveBeenCalledWith("xAI OAuth complete");
-    },
-  );
+    expect(note).toHaveBeenCalledWith(
+      expect.stringContaining("Code expires in 5 minutes."),
+      "xAI OAuth",
+    );
+    const [message] = note.mock.calls[0]!;
+    expect(markdownToIR(message, { linkify: false }).links.map((link) => link.href)).toEqual([
+      expectedUrl,
+    ]);
+    expect(message).toContain("\nCode: ABCD-1234\n");
+    expect(ctx.openUrl).toHaveBeenCalledWith(expectedUrl);
+    expect(progress.stop).toHaveBeenCalledWith("xAI OAuth complete");
+  });
 });
 
 describe("device token response bytes", () => {
