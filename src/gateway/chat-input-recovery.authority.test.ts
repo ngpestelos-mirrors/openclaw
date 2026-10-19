@@ -183,6 +183,8 @@ it(
             sessionKey: fixture.target.sessionKey,
             idempotencyKey: fixture.target.sourceRunId,
             message: `REPLAY_${change.toUpperCase()}`,
+            // A saved explicit steer must also run before an active turn exists.
+            ...(change === "unchanged" ? { queueMode: "steer" } : {}),
             deliver: false,
           },
         });
