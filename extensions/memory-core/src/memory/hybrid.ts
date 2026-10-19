@@ -218,6 +218,7 @@ export async function mergeHybridResults<TSource extends HybridSource>(params: {
     .filter((entry) => entry.exactPathSpecificity === 0)
     .toSorted((a, b) => b.score - a.score || compareRankingScores(a, b));
 
+  // Apply MMR re-ranking if enabled
   const mmrConfig = { ...DEFAULT_MMR_CONFIG, ...params.mmr };
   const rerankExactGroup = (entries: typeof rankable) => {
     if (!mmrConfig.enabled) {

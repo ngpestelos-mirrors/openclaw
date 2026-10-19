@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ContentBlockSchema, ToolSchema } from "@modelcontextprotocol/core";
 import type { CallToolResult, ContentBlock, Tool } from "@modelcontextprotocol/server";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+// Plugin MCP tool handlers route plugin tool calls through the active runtime.
 import {
   consumeAdjustedParamsForToolCall,
   isToolWrappedWithBeforeToolCallHook,

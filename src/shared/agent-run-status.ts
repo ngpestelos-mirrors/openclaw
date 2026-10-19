@@ -1,4 +1,5 @@
 /**
+ * Shared agent-run status predicates for gateway wait loops and delivery announcements.
  * Keep the status set aligned with the gateway protocol values that can still transition.
  */
 /** Statuses that are not final and should keep waiters/subscribers attached. */

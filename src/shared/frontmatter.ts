@@ -1,3 +1,4 @@
+// Shared frontmatter helpers parse Markdown frontmatter blocks and body text.
 import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   normalizeOptionalLowercaseString,

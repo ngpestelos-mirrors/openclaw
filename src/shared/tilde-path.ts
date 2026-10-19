@@ -1,3 +1,4 @@
+// Home-prefix expansion for user-configured loader path lists.
 import { homedir } from "node:os";
 import { join } from "node:path";
 

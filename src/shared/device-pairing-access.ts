@@ -1,3 +1,4 @@
+// Device pairing access helpers evaluate pairing scopes and role permissions.
 import { normalizeUniqueSingleOrTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { normalizeDeviceAuthScopes } from "./device-auth.js";
 

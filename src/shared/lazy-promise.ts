@@ -41,6 +41,7 @@ export function getOrCreatePromise<K, V>(
   return created;
 }
 
+/** Options for controlling lazy promise cache behavior. */
 type LazyPromiseLoaderOptions = {
   /** Keep rejected promises cached instead of allowing the next caller to retry. */
   cacheRejections?: boolean;
