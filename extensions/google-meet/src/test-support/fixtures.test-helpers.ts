@@ -15,14 +15,14 @@ export const MEET_URL_EN = `${MEET_URL}?hl=en`;
 
 const record = "conferenceRecords/rec-1";
 const times = { startTime: "2026-04-25T10:00:00Z", endTime: "2026-04-25T10:30:00Z" };
-const conferenceRecord = {
-  name: record,
-  space: "spaces/abc-defg-hij",
-  ...times,
-};
+const conferenceRecord = { name: record, space: "spaces/abc-defg-hij", ...times };
 
-function resourceList(key: string, name: string, fields: Record<string, unknown>) {
-  return { [key]: [{ name: `${record}/${name}`, ...fields }] };
+function resourceList(name: string, fields: Record<string, unknown>, key?: string) {
+  const path = name.slice(0, name.lastIndexOf("/"));
+  const collection = key ?? path.slice(path.lastIndexOf("/") + 1);
+  return {
+    [`/v2/${record}/${path}`]: { [collection]: [{ name: `${record}/${name}`, ...fields }] },
+  };
 }
 
 export function meetApiFixtures(cli?: { participantDisplayName?: string }) {
@@ -45,25 +45,23 @@ export function meetApiFixtures(cli?: { participantDisplayName?: string }) {
     },
     "/v2/conferenceRecords": { conferenceRecords: [conferenceRecord] },
     [`/v2/${record}`]: conferenceRecord,
-    [`/v2/${record}/participants`]: resourceList("participants", "participants/p1", {
+    ...resourceList("participants/p1", {
       ...(!cli ? { earliestStartTime: times.startTime, latestEndTime: times.endTime } : {}),
       signedinUser: { user: "users/alice", displayName: cli?.participantDisplayName ?? "Alice" },
     }),
-    [`/v2/${record}/participants/p1/participantSessions`]: resourceList(
-      "participantSessions",
-      "participants/p1/participantSessions/s1",
-      { ...times, ...(cli ? { endTime: "2026-04-25T10:10:00Z" } : {}) },
-    ),
-    [`/v2/${record}/recordings`]: resourceList("recordings", "recordings/r1", {
+    ...resourceList("participants/p1/participantSessions/s1", {
+      ...times,
+      ...(cli ? { endTime: "2026-04-25T10:10:00Z" } : {}),
+    }),
+    ...resourceList("recordings/r1", {
       ...(cli ? { state: "FILE_GENERATED" } : {}),
       driveDestination: { file: cli ? "drive-file-1" : "drive/file-1" },
     }),
-    [`/v2/${record}/transcripts`]: resourceList("transcripts", "transcripts/t1", {
+    ...resourceList("transcripts/t1", {
       ...(cli ? { state: "FILE_GENERATED" } : {}),
       docsDestination: { document: cli ? "doc-1" : "docs/doc-1" },
     }),
-    [`/v2/${record}/transcripts/t1/entries`]: resourceList(
-      "transcriptEntries",
+    ...resourceList(
       "transcripts/t1/entries/e1",
       {
         participant: `${record}/participants/p1`,
@@ -71,8 +69,9 @@ export function meetApiFixtures(cli?: { participantDisplayName?: string }) {
         startTime: "2026-04-25T10:01:00Z",
         ...(!cli ? { languageCode: "en-US", endTime: "2026-04-25T10:01:05Z" } : {}),
       },
+      "transcriptEntries",
     ),
-    [`/v2/${record}/smartNotes`]: resourceList("smartNotes", "smartNotes/sn1", {
+    ...resourceList("smartNotes/sn1", {
       ...(cli ? { state: "FILE_GENERATED" } : {}),
       docsDestination: { document: cli ? "notes-1" : "docs/doc-2" },
     }),
@@ -95,10 +94,7 @@ export function stubMeetArtifactsApi() {
       .pathname;
     const fixture = fixtures[path];
     if (fixture) {
-      return new Response(JSON.stringify(fixture), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      return Response.json(fixture);
     }
     const document = {
       "/drive/v3/files/doc-1/export": "Transcript document body.",
@@ -151,29 +147,9 @@ export function meetSession(overrides: SessionOverrides = {}): GoogleMeetSession
       toolPolicy: "safe-read-only",
       ...realtime,
     },
-    chrome: {
-      audioBackend: "blackhole-2ch",
-      launched: true,
-      ...chrome,
-    },
+    chrome: { audioBackend: "blackhole-2ch", launched: true, ...chrome },
     notes: [],
     ...session,
-  };
-}
-
-function emptyRealtimeAudioHealth(): MeetingRealtimeAudioEngineHealth {
-  return {
-    providerConnected: false,
-    realtimeReady: false,
-    audioInputActive: false,
-    audioOutputActive: false,
-    lastInputBytes: 0,
-    lastOutputBytes: 0,
-    suppressedInputBytes: 0,
-    realtimeTranscriptLines: 0,
-    recentRealtimeTranscript: [],
-    recentTalkEvents: [],
-    bridgeClosed: false,
   };
 }
 
@@ -184,34 +160,33 @@ export function meetAudioBridge(stop = vi.fn(async () => {})) {
     inputCommand: ["capture-meet"],
     outputCommand: ["play-meet"],
     speak: vi.fn(),
-    getHealth: vi.fn(emptyRealtimeAudioHealth),
+    getHealth: vi.fn((): MeetingRealtimeAudioEngineHealth => ({
+      providerConnected: false,
+      realtimeReady: false,
+      audioInputActive: false,
+      audioOutputActive: false,
+      lastInputBytes: 0,
+      lastOutputBytes: 0,
+      suppressedInputBytes: 0,
+      realtimeTranscriptLines: 0,
+      recentRealtimeTranscript: [],
+      recentTalkEvents: [],
+      bridgeClosed: false,
+    })),
     stop,
   };
 }
 
 export function createTestMeetRealtimeAudioTransport() {
-  let inputHandler: ((audio: Buffer) => void) | undefined;
-  const writeOutput = vi.fn(async () => {});
   const transport: MeetingRealtimeAudioTransport = {
     onFatal: vi.fn(),
-    startInput: vi.fn((handler) => {
-      inputHandler = handler;
-    }),
+    startInput: vi.fn(),
     stop: vi.fn(async () => {}),
-    writeOutput,
+    writeOutput: vi.fn(async () => {}),
     clearOutput: vi.fn(async () => {}),
     dispose: vi.fn(async () => {}),
   };
-  return {
-    transport,
-    writeOutput,
-    deliverInput: (audio: Buffer) => {
-      if (!inputHandler) {
-        throw new Error("Expected Google Meet realtime input to be started");
-      }
-      inputHandler(audio);
-    },
-  };
+  return { transport };
 }
 
 export function meetRuntime(
@@ -227,34 +202,25 @@ export function meetRuntime(
   });
 }
 
-type TestBridgeProcess = {
-  stdin?: { write(chunk: unknown): unknown } | null;
-  stdout?: PassThrough | null;
-  stderr: PassThrough;
-  killed: boolean;
-  exitCode: number | null;
-  signalCode: NodeJS.Signals | null;
-  kill: ReturnType<typeof vi.fn>;
-  on: EventEmitter["on"];
-  emit: EventEmitter["emit"];
-};
+class TestBridgeProcess extends EventEmitter {
+  killed = false;
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
+  kill = vi.fn((signal?: NodeJS.Signals) => {
+    this.killed = true;
+    this.signalCode = signal ?? "SIGTERM";
+    return true;
+  });
+}
 
 export function testBridgeProcess(stdio: {
   stdin?: { write(chunk: unknown): unknown } | null;
   stdout?: PassThrough | null;
   stderr?: PassThrough;
-}): TestBridgeProcess {
-  const proc = new EventEmitter() as unknown as TestBridgeProcess;
-  proc.stdin = stdio.stdin;
-  proc.stdout = stdio.stdout;
-  proc.stderr = stdio.stderr ?? new PassThrough();
-  proc.killed = false;
-  proc.exitCode = null;
-  proc.signalCode = null;
-  proc.kill = vi.fn((signal?: NodeJS.Signals) => {
-    proc.killed = true;
-    proc.signalCode = signal ?? "SIGTERM";
-    return true;
+}) {
+  return Object.assign(new TestBridgeProcess(), {
+    stdin: stdio.stdin,
+    stdout: stdio.stdout,
+    stderr: stdio.stderr ?? new PassThrough(),
   });
-  return proc;
 }

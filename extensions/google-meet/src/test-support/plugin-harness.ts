@@ -21,23 +21,18 @@ export { captureStdout } from "./fixtures.test-helpers.js";
 type GoogleMeetTestPluginEntry = {
   register(api: OpenClawPluginApi): void;
 };
+type NodeRuntime = OpenClawPluginApi["runtime"]["nodes"];
+type GatewayRequest = (
+  method: string,
+  params?: Record<string, unknown>,
+  options?: Record<string, unknown>,
+) => Promise<unknown>;
 
 export const noopLogger = {
   info: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
   debug: vi.fn(),
-};
-
-type GoogleMeetTestNodeListResult = {
-  nodes: Array<{
-    nodeId: string;
-    displayName?: string;
-    connected?: boolean;
-    commands?: string[];
-    caps?: string[];
-    remoteIp?: string;
-  }>;
 };
 
 type CommandResult = {
@@ -75,20 +70,11 @@ export function setupGoogleMeetPlugin(
     fullConfig?: Record<string, unknown>;
     stateEnv?: NodeJS.ProcessEnv;
     gatewayAvailable?: boolean;
-    gatewayRequestHandler?: (
-      method: string,
-      params?: Record<string, unknown>,
-      options?: Record<string, unknown>,
-    ) => Promise<unknown>;
-    nodesListResult?: GoogleMeetTestNodeListResult;
+    gatewayRequestHandler?: GatewayRequest;
+    nodesListResult?: Awaited<ReturnType<NodeRuntime["list"]>>;
     nodesInvokeResult?: unknown;
     browserActResult?: Record<string, unknown>;
-    nodesInvokeHandler?: (params: {
-      nodeId: string;
-      command: string;
-      params?: unknown;
-      timeoutMs?: number;
-    }) => Promise<unknown>;
+    nodesInvokeHandler?: NodeRuntime["invoke"];
     runCommandWithTimeoutHandler?: (
       argv: string[],
       options?: { timeoutMs?: number },
@@ -154,29 +140,23 @@ export function setupGoogleMeetPlugin(
       if (options.runCommandWithTimeoutHandler) {
         return options.runCommandWithTimeoutHandler(argv, runOptions);
       }
-      if (argv[0]?.endsWith("system_profiler")) {
-        return { code: 0, stdout: "BlackHole 2ch", stderr: "" };
-      }
-      if (
+      const isPulseAudioList =
         argv[0] === "pactl" &&
         argv[1] === "list" &&
         argv[2] === "short" &&
-        (argv[3] === "sinks" || argv[3] === "sources")
-      ) {
-        return { code: 0, stdout: "1\topenclaw_meeting_audio\n", stderr: "" };
-      }
-      return { code: 0, stdout: "", stderr: "" };
+        (argv[3] === "sinks" || argv[3] === "sources");
+      const stdout = argv[0]?.endsWith("system_profiler")
+        ? "BlackHole 2ch"
+        : isPulseAudioList
+          ? "1\topenclaw_meeting_audio\n"
+          : "";
+      return { code: 0, stdout, stderr: "" };
     },
   );
-  const gatewayRequest = vi.fn(
-    async (
-      method: string,
-      params?: Record<string, unknown>,
-      requestOptions?: Record<string, unknown>,
-    ) =>
-      options.gatewayRequestHandler
-        ? await options.gatewayRequestHandler(method, params, requestOptions)
-        : await invokeGoogleMeetGatewayMethodForTest(methods, method, params, "google-meet"),
+  const gatewayRequest = vi.fn<GatewayRequest>(async (method, params, requestOptions) =>
+    options.gatewayRequestHandler
+      ? await options.gatewayRequestHandler(method, params, requestOptions)
+      : await invokeGoogleMeetGatewayMethodForTest(methods, method, params, "google-meet"),
   );
   const stateEnv = options.stateEnv;
   const api = createTestPluginApi({

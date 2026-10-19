@@ -13,18 +13,10 @@ afterEach(() => {
 });
 
 const fetchGuardMocks = vi.hoisted(() => ({
-  fetchWithSsrFGuard: vi.fn(
-    async (params: {
-      url: string;
-      init?: RequestInit;
-    }): Promise<{
-      response: Response;
-      release: () => Promise<void>;
-    }> => ({
-      response: await fetch(params.url, params.init),
-      release: vi.fn(async () => {}),
-    }),
-  ),
+  fetchWithSsrFGuard: vi.fn(async (params: { url: string; init?: RequestInit }) => ({
+    response: await fetch(params.url, params.init),
+    release: vi.fn(async () => {}),
+  })),
 }));
 
 vi.mock("openclaw/plugin-sdk/ssrf-runtime", async (importOriginal) => {
@@ -36,13 +28,7 @@ vi.mock("openclaw/plugin-sdk/ssrf-runtime", async (importOriginal) => {
 });
 
 export function expectFields(value: unknown, expected: Record<string, unknown>): void {
-  if (!value || typeof value !== "object") {
-    throw new Error("expected fields object");
-  }
-  const record = value as Record<string, unknown>;
-  for (const [key, expectedValue] of Object.entries(expected)) {
-    expect(record[key], key).toEqual(expectedValue);
-  }
+  expect(value).toMatchObject(expected);
 }
 
 export function parseStdoutJson(stdout: { output: () => string }): Record<string, unknown> {
@@ -50,20 +36,11 @@ export function parseStdoutJson(stdout: { output: () => string }): Record<string
 }
 
 export function jsonResponse(value: unknown): Response {
-  return new Response(JSON.stringify(value), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
+  return Response.json(value);
 }
 
 export function requestUrl(input: RequestInfo | URL): URL {
-  if (typeof input === "string") {
-    return new URL(input);
-  }
-  if (input instanceof URL) {
-    return input;
-  }
-  return new URL(input.url);
+  return new URL(typeof input === "string" || input instanceof URL ? input : input.url);
 }
 
 export function stubMeetArtifactsApi(
