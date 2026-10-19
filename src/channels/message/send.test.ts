@@ -1,8 +1,10 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   OutboundDeliveryError,
   type OutboundDeliveryResult,
+  type OutboundPayloadDeliveryOutcome,
 } from "../../infra/outbound/deliver-types.js";
 import type {
   DeliverOutboundPayloadsParams,
@@ -20,7 +22,7 @@ vi.mock("../../infra/outbound/deliver.js", () => ({
 
 import {
   sendDurableMessageBatchCore as sendDurableMessageBatch,
-  type DurableMessageBatchSendResult,
+  type DurableMessageSendContext,
   type DurableMessageSendContextParams,
   withDurableMessageSendContextCore as withDurableMessageSendContext,
 } from "./send.js";
@@ -35,6 +37,13 @@ function sendParams(
 
 function sendBatch(overrides: Partial<DurableMessageSendContextParams>) {
   return sendDurableMessageBatch(sendParams(overrides));
+}
+
+function withContext<T>(
+  overrides: Partial<DurableMessageSendContextParams>,
+  run: (ctx: DurableMessageSendContext) => Promise<T>,
+) {
+  return withDurableMessageSendContext(sendParams(overrides), run);
 }
 
 function mockDeliveryIntent(
@@ -62,59 +71,44 @@ const previewReceipt = {
 
 function latestDeliveryRequest(): DeliverOutboundPayloadsParams {
   const request = deliverOutboundPayloads.mock.calls.at(-1)?.[0];
-  if (!request) {
-    throw new Error("expected delivery request");
-  }
+  assert(request, "expected delivery request");
   return request;
-}
-
-function expectBatchStatus<TStatus extends DurableMessageBatchSendResult["status"]>(
-  result: DurableMessageBatchSendResult,
-  status: TStatus,
-): asserts result is Extract<DurableMessageBatchSendResult, { status: TStatus }> {
-  expect(result.status).toBe(status);
-  if (result.status !== status) {
-    throw new Error(`expected durable batch status ${status}`);
-  }
 }
 
 describe("withDurableMessageSendContext", () => {
   it("renders and sends through a durable send context", async () => {
     mockDeliveryIntent({});
 
-    const result = await withDurableMessageSendContext(
-      sendParams({ threadId: 42, replyToId: "reply-1" }),
-      async (ctx) => {
-        expect(ctx.id).toBe("telegram:chat-1");
-        expect(ctx.channel).toBe("telegram");
-        expect(ctx.to).toBe("chat-1");
-        expect(ctx.durability).toBe("required");
-        expect(ctx.attempt).toBe(1);
-        const rendered = await ctx.render();
-        expect(rendered).toEqual({
-          payloads: [{ text: "hello" }],
-          plan: {
-            payloadCount: 1,
-            textCount: 1,
-            mediaCount: 0,
-            voiceCount: 0,
-            presentationCount: 0,
-            interactiveCount: 0,
-            channelDataCount: 0,
-            items: [{ index: 0, kinds: ["text"] as const, text: "hello", mediaUrls: [] }],
-          },
-        });
-        const send = await ctx.send(rendered);
-        expect(ctx.intent?.id).toBe("intent-1");
-        expect(ctx.intent?.channel).toBe("telegram");
-        expect(ctx.intent?.to).toBe("chat-1");
-        expect(ctx.intent?.durability).toBe("required");
-        expect(ctx.intent?.renderedBatch).toBe(rendered);
-        return send;
-      },
-    );
+    const result = await withContext({ threadId: 42, replyToId: "reply-1" }, async (ctx) => {
+      expect(ctx.id).toBe("telegram:chat-1");
+      expect(ctx.channel).toBe("telegram");
+      expect(ctx.to).toBe("chat-1");
+      expect(ctx.durability).toBe("required");
+      expect(ctx.attempt).toBe(1);
+      const rendered = await ctx.render();
+      expect(rendered).toEqual({
+        payloads: [{ text: "hello" }],
+        plan: {
+          payloadCount: 1,
+          textCount: 1,
+          mediaCount: 0,
+          voiceCount: 0,
+          presentationCount: 0,
+          interactiveCount: 0,
+          channelDataCount: 0,
+          items: [{ index: 0, kinds: ["text"] as const, text: "hello", mediaUrls: [] }],
+        },
+      });
+      const send = await ctx.send(rendered);
+      expect(ctx.intent?.id).toBe("intent-1");
+      expect(ctx.intent?.channel).toBe("telegram");
+      expect(ctx.intent?.to).toBe("chat-1");
+      expect(ctx.intent?.durability).toBe("required");
+      expect(ctx.intent?.renderedBatch).toBe(rendered);
+      return send;
+    });
 
-    expectBatchStatus(result, "sent");
+    assert(result.status === "sent");
     expect(result.deliveryIntent?.id).toBe("intent-1");
     expect(result.receipt.platformMessageIds).toEqual(["msg-1"]);
     expect(result.receipt.threadId).toBe("42");
@@ -128,8 +122,8 @@ describe("withDurableMessageSendContext", () => {
 
   it("records a replayable rendered batch plan on the durable intent", async () => {
     mockDeliveryIntent({ id: "intent-media" }, [{ channel: "telegram", messageId: "media-1" }]);
-    const renderedBatch = await withDurableMessageSendContext(
-      sendParams({
+    const renderedBatch = await withContext(
+      {
         payloads: [
           {
             text: "caption",
@@ -140,7 +134,7 @@ describe("withDurableMessageSendContext", () => {
             channelData: { native: true },
           },
         ],
-      }),
+      },
       async (ctx) => {
         const rendered = await ctx.render();
         await ctx.send(rendered);
@@ -183,7 +177,7 @@ describe("withDurableMessageSendContext", () => {
       expected: { mediaCount: 1, items: [{ mediaUrls: ["/tmp/image.png"] }] },
     },
   ])("keeps $name visible in durable live previews", async ({ payload, expected }) => {
-    await withDurableMessageSendContext(sendParams({ payloads: [payload] }), async (ctx) => {
+    await withContext({ payloads: [payload] }, async (ctx) => {
       const rendered = await ctx.render();
       expect(rendered.plan).toMatchObject(expected);
       expect((await ctx.previewUpdate(rendered)).lastRendered?.plan).toMatchObject(expected);
@@ -199,7 +193,7 @@ describe("withDurableMessageSendContext", () => {
 
     const result = await sendBatch({ signal: abortController.signal });
 
-    expectBatchStatus(result, "sent");
+    assert(result.status === "sent");
     expect(result.receipt?.platformMessageIds).toEqual(["msg-1"]);
     const request = latestDeliveryRequest();
     expect(request.abortSignal).toBe(abortController.signal);
@@ -211,7 +205,7 @@ describe("withDurableMessageSendContext", () => {
 
     const result = await sendBatch({ durability: "best_effort" });
 
-    expectBatchStatus(result, "sent");
+    assert(result.status === "sent");
     expect(result.deliveryIntent?.id).toBe("intent-best-effort");
     expect(latestDeliveryRequest().queuePolicy).toBe("best_effort");
   });
@@ -239,7 +233,7 @@ describe("withDurableMessageSendContext", () => {
       onCommitReceipt,
     });
 
-    expectBatchStatus(result, "sent");
+    assert(result.status === "sent");
     expect(result.results).toHaveLength(2);
     expect(result.receipt).toMatchObject({
       platformMessageIds: [],
@@ -267,8 +261,8 @@ describe("withDurableMessageSendContext", () => {
     );
     const onDeleteReceipt = vi.fn(async () => undefined);
 
-    await withDurableMessageSendContext(
-      sendParams({
+    await withContext(
+      {
         payloads: [{ text: "final" }],
         preview: {
           phase: "previewing",
@@ -277,7 +271,7 @@ describe("withDurableMessageSendContext", () => {
         },
         onEditReceipt,
         onDeleteReceipt,
-      }),
+      },
       async (ctx) => {
         const rendered = await ctx.render();
         const preview = await ctx.previewUpdate(rendered);
@@ -292,86 +286,58 @@ describe("withDurableMessageSendContext", () => {
     expect(onDeleteReceipt).toHaveBeenCalledWith(editedReceipt);
   });
 
-  it("fails explicit edit and delete operations without a live adapter", async () => {
-    const receipt = previewReceipt;
-
-    await withDurableMessageSendContext(
-      sendParams({ payloads: [{ text: "final" }] }),
-      async (ctx) => {
-        const rendered = await ctx.render();
-        await expect(ctx.edit(receipt, rendered)).rejects.toThrow(
-          "message send context edit is not configured",
-        );
-        await expect(ctx.delete(receipt)).rejects.toThrow(
-          "message send context delete is not configured",
-        );
-      },
-    );
+  it.each(["edit", "delete"] as const)("rejects %s without a live adapter", async (operation) => {
+    await withContext({}, async (ctx) => {
+      await expect(ctx[operation](previewReceipt, await ctx.render())).rejects.toThrow(
+        `message send context ${operation} is not configured`,
+      );
+    });
   });
 
   it("treats no visible outbound result as a committed suppressed send", async () => {
-    mockDeliveryIntent({ id: "intent-2", channel: "whatsapp", to: "jid-1" }, []);
+    mockDeliveryIntent({ id: "intent-2" }, []);
     const onCommitReceipt = vi.fn();
 
-    const result = await sendBatch({
-      channel: "whatsapp",
-      to: "jid-1",
-      payloads: [{ text: "hidden" }],
-      onCommitReceipt,
-    });
+    const result = await sendBatch({ onCommitReceipt });
 
-    expectBatchStatus(result, "suppressed");
+    assert(result.status === "suppressed");
     expect(result.reason).toBe("no_visible_result");
     expect(result.deliveryIntent?.id).toBe("intent-2");
-    expect(onCommitReceipt).toHaveBeenCalledTimes(1);
-    expect(onCommitReceipt).toHaveBeenNthCalledWith(
-      1,
+    expect(onCommitReceipt).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ platformMessageIds: [] }),
     );
   });
 
   it("forwards payload delivery outcomes to callers while collecting durable outcomes", async () => {
     const onPayloadDeliveryOutcome = vi.fn();
+    const outcome = {
+      index: 0,
+      status: "suppressed",
+      reason: "cancelled_by_message_sending_hook",
+    } satisfies OutboundPayloadDeliveryOutcome;
     deliverOutboundPayloads.mockImplementationOnce(async (params) => {
-      params.onPayloadDeliveryOutcome?.({
-        index: 0,
-        status: "suppressed",
-        reason: "cancelled_by_message_sending_hook",
-      });
+      params.onPayloadDeliveryOutcome?.({ ...outcome });
       return [];
     });
 
-    const result = await sendBatch({
-      channel: "slack",
-      to: "C123",
-      payloads: [{ text: "claimed elsewhere" }],
-      onPayloadDeliveryOutcome,
-    });
+    const result = await sendBatch({ onPayloadDeliveryOutcome });
 
-    expectBatchStatus(result, "suppressed");
-    expect(result.payloadOutcomes?.[0]).toEqual({
-      index: 0,
-      status: "suppressed",
-      reason: "cancelled_by_message_sending_hook",
-    });
-    expect(onPayloadDeliveryOutcome).toHaveBeenCalledTimes(1);
-    expect(onPayloadDeliveryOutcome).toHaveBeenNthCalledWith(1, {
-      index: 0,
-      status: "suppressed",
-      reason: "cancelled_by_message_sending_hook",
-    });
+    assert(result.status === "suppressed");
+    expect(result.payloadOutcomes?.[0]).toEqual(outcome);
+    expect(onPayloadDeliveryOutcome).toHaveBeenCalledExactlyOnceWith(outcome);
   });
 
   it("reports zero-result failed best-effort payloads as failed sends", async () => {
     const error = new Error("send failed");
+    const outcome = {
+      index: 0,
+      status: "failed",
+      error,
+      sentBeforeError: false,
+      stage: "platform_send",
+    } satisfies OutboundPayloadDeliveryOutcome;
     deliverOutboundPayloads.mockImplementationOnce(async (params) => {
-      params.onPayloadDeliveryOutcome?.({
-        index: 0,
-        status: "failed",
-        error,
-        sentBeforeError: false,
-        stage: "platform_send",
-      });
+      params.onPayloadDeliveryOutcome?.({ ...outcome });
       return [];
     });
     const onCommitReceipt = vi.fn();
@@ -379,16 +345,10 @@ describe("withDurableMessageSendContext", () => {
 
     const result = await sendBatch({ bestEffort: true, onCommitReceipt, onSendFailure });
 
-    expectBatchStatus(result, "failed");
+    assert(result.status === "failed");
     expect(result.error).toBe(error);
     expect(result.stage).toBe("platform_send");
-    expect(result.payloadOutcomes?.[0]).toEqual({
-      index: 0,
-      status: "failed",
-      error,
-      sentBeforeError: false,
-      stage: "platform_send",
-    });
+    expect(result.payloadOutcomes?.[0]).toEqual(outcome);
     expect(onCommitReceipt).not.toHaveBeenCalled();
     expect(onSendFailure).toHaveBeenCalledWith(error);
   });
@@ -411,11 +371,6 @@ describe("withDurableMessageSendContext", () => {
       ],
       payloadOutcomes: [
         {
-          index: 0,
-          status: "sent",
-          results: [{ channel: "telegram", messageId: "msg-1" }],
-        },
-        {
           index: 1,
           status: "failed",
           error: cause,
@@ -434,7 +389,7 @@ describe("withDurableMessageSendContext", () => {
       onSendFailure,
     });
 
-    expectBatchStatus(result, "partial_failed");
+    assert(result.status === "partial_failed");
     expect(result.results).toEqual(error.results);
     expect(result.receipt?.platformMessageIds).toEqual(["msg-1"]);
     expect(result.receipt?.threadId).toBe("canonical-thread");
@@ -449,7 +404,7 @@ describe("withDurableMessageSendContext", () => {
     const error = new Error("boom");
 
     await expect(
-      withDurableMessageSendContext(sendParams({ onSendFailure }), async () => {
+      withContext({ onSendFailure }, async () => {
         throw error;
       }),
     ).rejects.toThrow("boom");
