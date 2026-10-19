@@ -146,7 +146,9 @@ function addSessionListSearchModelFields(
 }
 
 function matchesSessionListSearch(fields: Array<string | undefined>, search: string): boolean {
-  return fields.some((field) => normalizeLowercaseStringOrEmpty(field).includes(search));
+  return fields.some(
+    (field) => typeof field === "string" && normalizeLowercaseStringOrEmpty(field).includes(search),
+  );
 }
 
 // Selection facts are replaced with the resident entry; weak keys release retired revisions.
@@ -179,7 +181,9 @@ export function* filterSessionEntries(
   const getRowContext = () => (rowContext ??= params.getRowContext());
   const search = normalizeLowercaseStringOrEmpty(opts.search);
   const activeMinutes =
-    opts.activeMinutes !== undefined ? Math.max(1, Math.floor(opts.activeMinutes)) : undefined;
+    typeof opts.activeMinutes === "number" && Number.isFinite(opts.activeMinutes)
+      ? Math.max(1, Math.floor(opts.activeMinutes))
+      : undefined;
   const creatorId = normalizeOptionalString(opts.creatorId);
   const ownerId = normalizeOptionalString(opts.ownerId);
   const ownerFirstActorId = normalizeOptionalString(params.ownerFirstActorId);
@@ -266,10 +270,10 @@ export function* filterSessionEntries(
     : params.entries(opts.archived);
   const includeGlobal = opts.includeGlobal === true;
   const includeUnknown = opts.includeUnknown === true;
-  const spawnedBy = opts.spawnedBy ?? "";
+  const spawnedBy = typeof opts.spawnedBy === "string" ? opts.spawnedBy : "";
   const label = normalizeOptionalString(opts.label) ?? "";
   const boardFace = opts.boardFace;
-  const agentFilter = opts.agentId === undefined ? "" : normalizeAgentId(opts.agentId);
+  const agentFilter = typeof opts.agentId === "string" ? normalizeAgentId(opts.agentId) : "";
   // Excluded rows must not participate in search or ownership resolution.
   const titleSearch = search && normalizeSessionSearchText(search);
   const matchesSearch = search

@@ -21,7 +21,7 @@ const MAX_CONCURRENT_EXACT_ROW_READS = 2;
 
 /** Refreshes borrow projection state; the projection retains revisions, rows, and archive custody. */
 export function createSessionRowRefresh(
-  owner: Omit<MaterializationOwner, "isActive" | "canMaterialize"> & {
+  owner: Omit<MaterializationOwner, "isActive"> & {
     state: () => {
       cfg: records.Inputs["cfg"];
       disposed: boolean;
@@ -39,34 +39,9 @@ export function createSessionRowRefresh(
     metadataReady: () => boolean;
   },
 ) {
-  const canMaterialize = () => {
-    const state = owner.state();
-    return !state.disposed && !state.topologyDirty && state.registryPrepared;
-  };
-  const inputsReady = (includeCatalog: boolean, includePlacement = false) =>
-    canMaterialize() &&
-    !owner.membership.needsPreparation &&
-    (!includeCatalog || !owner.catalog.needsInitialRead) &&
-    (!includePlacement || !owner.placementFacts.needsPreparation);
-  async function prepareInputs(includeCatalog: boolean, includePlacement = false) {
-    await owner.prepareRegistryFacts();
-    if (owner.state().topologyDirty) {
-      await owner.topology();
-    }
-    // Topology can publish new stores; witness those after preparing their lineage.
-    await owner.prepareRegistryFacts();
-    await owner.membership.prepare();
-    if (includeCatalog && owner.catalog.needsInitialRead) {
-      await owner.catalog.refresh();
-    }
-    if (includePlacement) {
-      await owner.placementFacts.prepare();
-    }
-  }
   const materializer = createSessionRowMaterializer({
     ...owner,
     isActive: () => !owner.state().disposed,
-    canMaterialize,
   });
   const exactReads = new Map<string, ExactRowPreparation>();
   const queuedExactReads = new Map<string, ExactRowPreparation>();
@@ -224,7 +199,12 @@ export function createSessionRowRefresh(
     if (state.disposed) {
       return false;
     }
-    if (!inputsReady(includeCatalog)) {
+    if (
+      state.topologyDirty ||
+      !state.registryPrepared ||
+      (includeCatalog && owner.catalog.needsInitialRead) ||
+      owner.membership.needsPreparation
+    ) {
       return true;
     }
     // Accepted database facts already own selection metadata, even while display is dirty.
@@ -308,27 +288,45 @@ export function createSessionRowRefresh(
         const held = new Set<Promise<void>>();
         let candidates: Iterator<string> | undefined;
         while (!owner.state().disposed) {
-          if (!inputsReady(includeCatalog)) {
+          for (
+            let pending = owner.prepareRegistryFacts();
+            pending;
+            pending = owner.prepareRegistryFacts()
+          ) {
             candidates = undefined;
-            await prepareInputs(includeCatalog);
-            if (!inputsReady(includeCatalog)) {
-              continue;
-            }
+            await pending;
           }
+          if (owner.state().topologyDirty) {
+            candidates = undefined;
+            await owner.topology();
+          }
+          if (owner.state().disposed || owner.state().topologyDirty) {
+            continue;
+          }
+          if (owner.membership.needsPreparation) {
+            candidates = undefined;
+          }
+          await owner.membership.prepare();
           if (!candidates) {
-            // Keep the live cursor across accepted batches; restart after changed inputs or joins.
-            for (const id of candidateIds?.() ?? owner.dirty) {
-              const row = owner.rows.get(id);
-              if (
-                row?.entryAcquisitionPending &&
-                row.storedEntry &&
-                row.sharingEntry === row.storedEntry &&
-                !row.unresolvedDatabaseFacts
-              ) {
-                owner.acquireEntry(row, row.storedEntry);
+            // Acquire lineage before any batch; keep the dirty cursor across accepted batches.
+            // Restart only when another preparation owner or a joined read changes readiness.
+            if (owner.state().registryPrepared) {
+              for (const id of candidateIds?.() ?? owner.dirty) {
+                const row = owner.rows.get(id);
+                if (
+                  row?.entryAcquisitionPending &&
+                  row.storedEntry &&
+                  row.sharingEntry === row.storedEntry &&
+                  !row.unresolvedDatabaseFacts
+                ) {
+                  owner.acquireEntry(row, row.storedEntry);
+                }
               }
             }
             candidates = (candidateIds?.() ?? owner.dirty)[Symbol.iterator]();
+          }
+          if (includeCatalog && owner.catalog.needsInitialRead) {
+            await owner.catalog.refresh();
           }
           const selected = new Set<string>();
           for (let next = candidates.next(); !next.done; next = candidates.next()) {
@@ -369,7 +367,7 @@ export function createSessionRowRefresh(
             candidates = undefined;
           }
         }
-        if (canMaterialize()) {
+        if (!owner.state().disposed) {
           owner.prepare();
         }
       } finally {
@@ -412,8 +410,40 @@ export function createSessionRowRefresh(
       }
       await pending.promise;
     }
-    await prepareInputs(true, true);
-    if (exactPreparations > 0 || !inputsReady(true, true)) {
+    for (
+      let pending = owner.prepareRegistryFacts();
+      pending;
+      pending = owner.prepareRegistryFacts()
+    ) {
+      await pending;
+    }
+    if (owner.state().disposed) {
+      return;
+    }
+    if (owner.state().topologyDirty) {
+      await owner.topology();
+      if (owner.state().disposed || owner.state().topologyDirty) {
+        return;
+      }
+    }
+    await owner.membership.prepare();
+    if (owner.catalog.needsInitialRead) {
+      await owner.catalog.refresh();
+    }
+    await owner.placementFacts.prepare();
+    for (
+      let pending = owner.prepareRegistryFacts();
+      pending;
+      pending = owner.prepareRegistryFacts()
+    ) {
+      await pending;
+    }
+    if (
+      exactPreparations > 0 ||
+      owner.state().topologyDirty ||
+      owner.membership.needsPreparation ||
+      owner.placementFacts.needsPreparation
+    ) {
       return;
     }
     const selected = new Set<string>();

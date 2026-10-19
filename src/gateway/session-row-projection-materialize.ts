@@ -125,7 +125,6 @@ export function createSessionRowDescriptionReader(owner: {
 /** Keyed and worker-prepared refreshes share the same bounded materialization slice. */
 export function createSessionRowMaterializer(owner: {
   isActive: () => boolean;
-  canMaterialize: () => boolean;
   rows: ReadonlyMap<string, records.Row>;
   dirty: Set<string>;
   prepare: () => records.Inputs["cfg"];
@@ -140,8 +139,7 @@ export function createSessionRowMaterializer(owner: {
   retainArchived: (row: records.MaterializedRow) => void;
 }) {
   function refresh(ids: readonly string[], accepted = false) {
-    // Canonical facts may stage during admission; display waits for its published scope.
-    if (!owner.canMaterialize()) {
+    if (!owner.isActive()) {
       return;
     }
     const started = performance.now();

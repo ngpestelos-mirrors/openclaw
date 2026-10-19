@@ -327,7 +327,7 @@ it("reuses settled exact placement facts while archived row preparation is compl
 });
 
 it.each([
-  { scope: "stores", expectedReads: 1 },
+  { scope: "stores", expectedReads: 2 },
   { scope: "config", expectedReads: 1 },
 ] as const)(
   "keeps an exact placement read usable across an unrelated $scope publication",

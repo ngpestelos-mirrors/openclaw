@@ -78,14 +78,12 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     isActive: () => !disposed && !topologyDirty,
     runAsOwner: inOwnerContext,
   });
-  const prepareRegistryFacts = (): Promise<void> | undefined => {
-    if (disposed) {
-      return undefined;
-    }
-    return !inOwnerContext(subagents.snapshotIdentity)
-      ? inOwnerContext(subagents.prepare).then(() => registryRead.prepare())
-      : registryRead.prepare();
-  };
+  const prepareRegistryFacts = (): Promise<void> | undefined =>
+    disposed
+      ? undefined
+      : !inOwnerContext(subagents.snapshotIdentity)
+        ? inOwnerContext(subagents.prepare)
+        : registryRead.prepare();
   const placementFacts = createSessionRowPlacementProjection(
     params.placementFactsReader,
     () => (!disposed && topologyDirty ? topology() : prepareRegistryFacts()),
