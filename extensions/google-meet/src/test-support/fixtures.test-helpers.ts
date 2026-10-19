@@ -13,94 +13,87 @@ import type { GoogleMeetSession } from "../transports/types.js";
 export const MEET_URL = "https://meet.google.com/abc-defg-hij";
 export const MEET_URL_EN = `${MEET_URL}?hl=en`;
 
+const record = "conferenceRecords/rec-1";
+const times = { startTime: "2026-04-25T10:00:00Z", endTime: "2026-04-25T10:30:00Z" };
 const conferenceRecord = {
-  name: "conferenceRecords/rec-1",
+  name: record,
   space: "spaces/abc-defg-hij",
-  startTime: "2026-04-25T10:00:00Z",
-  endTime: "2026-04-25T10:30:00Z",
+  ...times,
 };
 
-const meetApiFixtures: Record<string, unknown> = {
-  "/v2/spaces/abc-defg-hij": {
-    name: "spaces/abc-defg-hij",
-    meetingCode: "abc-defg-hij",
-    meetingUri: MEET_URL,
-  },
-  "/calendar/v3/calendars/primary/events": {
-    items: [
+function resourceList(key: string, name: string, fields: Record<string, unknown>) {
+  return { [key]: [{ name: `${record}/${name}`, ...fields }] };
+}
+
+export function meetApiFixtures(cli?: { participantDisplayName?: string }) {
+  return {
+    "/v2/spaces/abc-defg-hij": {
+      name: "spaces/abc-defg-hij",
+      meetingCode: "abc-defg-hij",
+      meetingUri: MEET_URL,
+    },
+    "/calendar/v3/calendars/primary/events": {
+      items: [
+        {
+          id: "event-1",
+          summary: "Project sync",
+          hangoutLink: MEET_URL,
+          start: { dateTime: times.startTime },
+          end: { dateTime: times.endTime },
+        },
+      ],
+    },
+    "/v2/conferenceRecords": { conferenceRecords: [conferenceRecord] },
+    [`/v2/${record}`]: conferenceRecord,
+    [`/v2/${record}/participants`]: resourceList("participants", "participants/p1", {
+      ...(!cli ? { earliestStartTime: times.startTime, latestEndTime: times.endTime } : {}),
+      signedinUser: { user: "users/alice", displayName: cli?.participantDisplayName ?? "Alice" },
+    }),
+    [`/v2/${record}/participants/p1/participantSessions`]: resourceList(
+      "participantSessions",
+      "participants/p1/participantSessions/s1",
+      { ...times, ...(cli ? { endTime: "2026-04-25T10:10:00Z" } : {}) },
+    ),
+    [`/v2/${record}/recordings`]: resourceList("recordings", "recordings/r1", {
+      ...(cli ? { state: "FILE_GENERATED" } : {}),
+      driveDestination: { file: cli ? "drive-file-1" : "drive/file-1" },
+    }),
+    [`/v2/${record}/transcripts`]: resourceList("transcripts", "transcripts/t1", {
+      ...(cli ? { state: "FILE_GENERATED" } : {}),
+      docsDestination: { document: cli ? "doc-1" : "docs/doc-1" },
+    }),
+    [`/v2/${record}/transcripts/t1/entries`]: resourceList(
+      "transcriptEntries",
+      "transcripts/t1/entries/e1",
       {
-        id: "event-1",
-        summary: "Project sync",
-        hangoutLink: MEET_URL,
-        start: { dateTime: "2026-04-25T10:00:00Z" },
-        end: { dateTime: "2026-04-25T10:30:00Z" },
-      },
-    ],
-  },
-  "/v2/conferenceRecords": { conferenceRecords: [conferenceRecord] },
-  "/v2/conferenceRecords/rec-1": conferenceRecord,
-  "/v2/conferenceRecords/rec-1/participants": {
-    participants: [
-      {
-        name: "conferenceRecords/rec-1/participants/p1",
-        earliestStartTime: "2026-04-25T10:00:00Z",
-        latestEndTime: "2026-04-25T10:30:00Z",
-        signedinUser: { user: "users/alice", displayName: "Alice" },
-      },
-    ],
-  },
-  "/v2/conferenceRecords/rec-1/participants/p1/participantSessions": {
-    participantSessions: [
-      {
-        name: "conferenceRecords/rec-1/participants/p1/participantSessions/s1",
-        startTime: "2026-04-25T10:00:00Z",
-        endTime: "2026-04-25T10:30:00Z",
-      },
-    ],
-  },
-  "/v2/conferenceRecords/rec-1/recordings": {
-    recordings: [
-      {
-        name: "conferenceRecords/rec-1/recordings/r1",
-        driveDestination: { file: "drive/file-1" },
-      },
-    ],
-  },
-  "/v2/conferenceRecords/rec-1/transcripts": {
-    transcripts: [
-      {
-        name: "conferenceRecords/rec-1/transcripts/t1",
-        docsDestination: { document: "docs/doc-1" },
-      },
-    ],
-  },
-  "/v2/conferenceRecords/rec-1/transcripts/t1/entries": {
-    transcriptEntries: [
-      {
-        name: "conferenceRecords/rec-1/transcripts/t1/entries/e1",
-        participant: "conferenceRecords/rec-1/participants/p1",
+        participant: `${record}/participants/p1`,
         text: "Hello from the transcript.",
-        languageCode: "en-US",
         startTime: "2026-04-25T10:01:00Z",
-        endTime: "2026-04-25T10:01:05Z",
+        ...(!cli ? { languageCode: "en-US", endTime: "2026-04-25T10:01:05Z" } : {}),
       },
-    ],
-  },
-  "/v2/conferenceRecords/rec-1/smartNotes": {
-    smartNotes: [
-      {
-        name: "conferenceRecords/rec-1/smartNotes/sn1",
-        docsDestination: { document: "docs/doc-2" },
-      },
-    ],
-  },
-};
+    ),
+    [`/v2/${record}/smartNotes`]: resourceList("smartNotes", "smartNotes/sn1", {
+      ...(cli ? { state: "FILE_GENERATED" } : {}),
+      docsDestination: { document: cli ? "notes-1" : "docs/doc-2" },
+    }),
+  } satisfies Record<string, unknown>;
+}
+
+export function captureStdout() {
+  let output = "";
+  const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+    output += String(chunk);
+    return true;
+  }) as typeof process.stdout.write);
+  return { output: () => output, restore: () => writeSpy.mockRestore() };
+}
 
 export function stubMeetArtifactsApi() {
+  const fixtures: Record<string, unknown> = meetApiFixtures();
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const path = new URL(typeof input === "string" || input instanceof URL ? input : input.url)
       .pathname;
-    const fixture = meetApiFixtures[path];
+    const fixture = fixtures[path];
     if (fixture) {
       return new Response(JSON.stringify(fixture), {
         status: 200,
