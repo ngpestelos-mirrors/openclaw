@@ -55,7 +55,7 @@ function resume(state: CodeModeWorkerBoundary, deadline: number): CodeModeWorker
   return {
     kind: "continue",
     timeoutMs: deadline - performance.now(),
-    settledRequests: state.pendingRequests.map(({ id }) => ({ id, ok: true, json: "null" })),
+    settledRequests: settled(state),
     pendingRequests: [],
   };
 }
@@ -88,24 +88,39 @@ function input(source: string, limits = config) {
   return { kind: "exec" as const, source, config: limits, catalog: [], namespaces: [] };
 }
 
+type RunArgs = Parameters<typeof runCodeModeWorker>;
+function run(task: RunArgs[0], inlineHost?: RunArgs[4], timeoutMs = 10_000) {
+  return runCodeModeWorker(task, timeoutMs, undefined, undefined, inlineHost);
+}
+function assertWaiting(result: { status: string }): asserts result is { status: "waiting" } {
+  expect(result).toMatchObject({ status: "waiting" });
+  if (result.status !== "waiting") {
+    throw new Error("expected a suspended guest");
+  }
+}
+function parkedResult<T extends { status: string }>(result: T) {
+  assertWaiting(result);
+  return result;
+}
+function settled(state: { pendingRequests: { id: string }[] }) {
+  return state.pendingRequests.map(({ id }) => ({ id, ok: true, json: "null" }));
+}
+function restore(state: Extract<CodeModeWorkerResult, { status: "waiting" }>) {
+  return {
+    kind: "resume" as const,
+    config,
+    continuation: state.continuation,
+    settledRequests: settled(state),
+    pendingRequests: [],
+  };
+}
+
 async function executionInput(source: string, kind: "exec" | "resume", limits = config) {
   if (kind === "exec") {
     return input(source, limits);
   }
-  const suspended = await runCodeModeWorker(
-    input(`await yield_control(); ${source}`, limits),
-    10_000,
-  );
-  expect(suspended.status).toBe("waiting");
-  if (suspended.status !== "waiting") {
-    throw new Error("expected a suspended guest before execution");
-  }
-  return {
-    kind,
-    config: limits,
-    continuation: suspended.continuation,
-    settledRequests: suspended.pendingRequests.map(({ id }) => ({ id, ok: true, json: "null" })),
-  };
+  const suspended = parkedResult(await run(input(`await yield_control(); ${source}`, limits)));
+  return { ...restore(suspended), config: limits };
 }
 
 async function instrumentedWorker(prefix: string, source: string) {
@@ -124,103 +139,82 @@ async function instrumentedWorker(prefix: string, source: string) {
   return pathToFileURL(workerPath);
 }
 
+function failure(
+  name: string,
+  source: string,
+  phase: string,
+  options: {
+    code?: string;
+    calls?: number;
+    resumeTimeoutMs?: number;
+    prelude?: string;
+    rejectBridge?: boolean;
+    timeoutMs?: number;
+  } = {},
+) {
+  return { name, source, phase, code: "internal_error", calls: 0, ...options };
+}
+
 describe("Code Mode worker lifecycle", () => {
   it.each([
-    {
-      name: "host continuation",
-      source: "await yield_control();",
-      phase: "host",
-      code: "internal_error",
+    failure("host continuation", "await yield_control();", "host", {
       calls: 1,
       resumeTimeoutMs: Number.NaN,
-    },
-    {
-      name: "guest same-message exception",
-      source: 'throw new Error("invalid code mode continuation budget");',
-      phase: "guest",
-      code: "internal_error",
-      calls: 0,
-    },
-    {
-      name: "host source wrapper",
-      source: "return true;",
-      prelude: "}",
-      phase: "host",
-      code: "internal_error",
-      calls: 0,
-    },
-    {
-      name: "guest syntax",
-      source: "return (",
-      phase: "input",
+    }),
+    failure(
+      "guest same-message exception",
+      'throw new Error("invalid code mode continuation budget");',
+      "guest",
+    ),
+    failure("host source wrapper", "return true;", "host", { prelude: "}" }),
+    failure("guest syntax", "return (", "input", { code: "invalid_input" }),
+    failure("guest pending promise", "await new Promise(() => {});", "input", {
       code: "invalid_input",
-      calls: 0,
-    },
-    {
-      name: "guest pending promise",
-      source: "await new Promise(() => {});",
-      phase: "input",
-      code: "invalid_input",
-      calls: 0,
-    },
-    {
-      name: "bridge rejection",
-      source: "await yield_control();",
-      phase: "bridge",
-      code: "internal_error",
+    }),
+    failure("bridge rejection", "await yield_control();", "bridge", {
       calls: 1,
       rejectBridge: true,
-    },
-    {
-      name: "guest deadline",
-      source: "await yield_control(); while (true) {}",
-      phase: "guest",
+    }),
+    failure("guest deadline", "await yield_control(); while (true) {}", "guest", {
       code: "timeout",
       calls: 1,
       resumeTimeoutMs: 30,
+    }),
+    failure("host admission deadline", "return true;", "host", { code: "timeout", timeoutMs: 0 }),
+  ])(
+    "preserves $name failure provenance without replay",
+    async ({ source, phase, code, calls, ...options }) => {
+      const onFailure = vi.fn();
+      const onBoundary = vi.fn(async (state: CodeModeWorkerBoundary) => ({
+        kind: "continue" as const,
+        timeoutMs: options.resumeTimeoutMs ?? 1_000,
+        pendingRequests: [],
+        settledRequests: state.pendingRequests.map(({ id }) => ({
+          id,
+          ok: options.rejectBridge !== true,
+          json: JSON.stringify({ message: "synthetic bridge failure", code: "tool_error" }),
+        })),
+      }));
+      const result = await run(
+        {
+          ...input(source, { ...config, timeoutMs: options.timeoutMs ?? config.timeoutMs }),
+          prelude: options.prelude,
+        },
+        { onBoundary, onFailure },
+      );
+      expect(result).toMatchObject({
+        status: "failed",
+        code,
+        failurePhase: phase,
+      });
+      expect(onFailure).toHaveBeenCalledExactlyOnceWith(
+        expect.anything(),
+        phase,
+        expect.stringMatching(/^code-mode-quickjs:/),
+      );
+      expect(onBoundary).toHaveBeenCalledTimes(calls);
     },
-    {
-      name: "host admission deadline",
-      source: "return true;",
-      phase: "host",
-      code: "timeout",
-      calls: 0,
-      timeoutMs: 0,
-    },
-  ])("preserves $name failure provenance without replay", async (fixture) => {
-    const onFailure = vi.fn();
-    const onBoundary = vi.fn(async (state: CodeModeWorkerBoundary) => ({
-      kind: "continue" as const,
-      timeoutMs: fixture.resumeTimeoutMs ?? 1_000,
-      pendingRequests: [],
-      settledRequests: state.pendingRequests.map(({ id }) => ({
-        id,
-        ok: fixture.rejectBridge !== true,
-        json: JSON.stringify({ message: "synthetic bridge failure", code: "tool_error" }),
-      })),
-    }));
-    const result = await runCodeModeWorker(
-      {
-        ...input(fixture.source, { ...config, timeoutMs: fixture.timeoutMs ?? config.timeoutMs }),
-        prelude: fixture.prelude,
-      },
-      10_000,
-      undefined,
-      undefined,
-      { onBoundary, onFailure },
-    );
-    expect(result).toMatchObject({
-      status: "failed",
-      code: fixture.code,
-      failurePhase: fixture.phase,
-    });
-    expect(onFailure).toHaveBeenCalledExactlyOnceWith(
-      expect.anything(),
-      fixture.phase,
-      expect.stringMatching(/^code-mode-quickjs:/),
-    );
-    expect(onBoundary).toHaveBeenCalledTimes(fixture.calls);
-  });
+  );
 
   it("preserves legacy snapshot errors without source-location metadata", async () => {
     const { wasmModule: wasm } = await modules;
@@ -230,12 +224,11 @@ describe("Code Mode worker lifecycle", () => {
       vm.newFunction("__openclawHostRequest", (_method, _args, id) =>
         vm.newString(id.toString()),
       ).consume((handle) => vm.global.setProp("__openclawHostRequest", handle));
-      vm.newFunction("__openclawHostCancelRequest", () => vm.undefined).consume((handle) =>
-        vm.global.setProp("__openclawHostCancelRequest", handle),
-      );
-      vm.newFunction("__openclawHostTakeBridgeReply", () => vm.undefined).consume((handle) =>
-        vm.global.setProp("__openclawHostTakeBridgeReply", handle),
-      );
+      for (const name of ["__openclawHostCancelRequest", "__openclawHostTakeBridgeReply"]) {
+        vm.newFunction(name, () => vm.undefined).consume((handle) =>
+          vm.global.setProp(name, handle),
+        );
+      }
       for (const [name, value] of Object.entries({
         __openclawCatalog: [],
         __openclawNamespaces: [],
@@ -277,13 +270,7 @@ describe("Code Mode worker lifecycle", () => {
   });
 
   it("accounts for a same-line Unicode prelude in syntax locations", async () => {
-    const result = await runCodeModeWorker(
-      {
-        ...input("const value = ;"),
-        prelude: "const helper = 'é🦞';",
-      },
-      10000,
-    );
+    const result = await run({ ...input("const value = ;"), prelude: "const helper = 'é🦞';" });
     expect(result).toMatchObject({
       status: "failed",
       error: expect.stringContaining("SyntaxError"),
@@ -295,13 +282,10 @@ describe("Code Mode worker lifecycle", () => {
   });
 
   it("does not attribute a prelude failure to submitted source", async () => {
-    const result = await runCodeModeWorker(
-      {
-        ...input("return true;"),
-        prelude: 'throw new Error("prelude failure");\n',
-      },
-      10000,
-    );
+    const result = await run({
+      ...input("return true;"),
+      prelude: 'throw new Error("prelude failure");\n',
+    });
     expect(result).toMatchObject({ status: "failed", error: "Error: prelude failure" });
   });
 
@@ -382,9 +366,7 @@ describe("Code Mode worker lifecycle", () => {
       `,
     );
     let result = await runCodeModeWorker(
-      {
-        kind: "exec",
-        source: `const bytes = new Uint8Array(1024 * 1024);
+      input(`const bytes = new Uint8Array(1024 * 1024);
           bytes[0] = 7;
           const sibling = new Promise(resolve => setTimeout(() => {
             bytes[bytes.length - 1] += 2;
@@ -394,10 +376,7 @@ describe("Code Mode worker lifecycle", () => {
           bytes[bytes.length - 1] = bytes[0];
           await yield_control();
           const siblingValue = await sibling;
-          return [bytes.length, bytes[0], bytes[bytes.length - 1], siblingValue];`,
-        config,
-        catalog: [],
-      },
+          return [bytes.length, bytes[0], bytes[bytes.length - 1], siblingValue];`),
       10_000,
       workerUrl,
     );
@@ -405,14 +384,9 @@ describe("Code Mode worker lifecycle", () => {
     onTestFinished(() => sent.mockRestore());
     let siblingId: string | undefined;
     for (let leg = 0; leg < 2; leg++) {
-      expect(result, result.status === "failed" ? result.error : undefined).toMatchObject({
-        status: "waiting",
-      });
-      if (result.status !== "waiting") {
-        throw new Error("expected a suspended guest");
-      }
+      const parked = parkedResult(result);
 
-      const siblingRequests = result.pendingRequests.filter(({ method }) => method === "sleep");
+      const siblingRequests = parked.pendingRequests.filter(({ method }) => method === "sleep");
       expect(siblingRequests).toHaveLength(1);
       if (leg === 0) {
         siblingId = siblingRequests[0]?.id;
@@ -423,10 +397,10 @@ describe("Code Mode worker lifecycle", () => {
       result = await runCodeModeWorker(
         {
           kind: "resume",
-          continuation: result.continuation,
+          continuation: parked.continuation,
           config,
           pendingRequests,
-          settledRequests: result.pendingRequests
+          settledRequests: parked.pendingRequests
             .filter((request) => !pendingRequests.includes(request))
             .map(({ id }) => ({ id, ok: true, json: JSON.stringify({ leg }) })),
         },
@@ -444,7 +418,7 @@ describe("Code Mode worker lifecycle", () => {
 
   it("isolates guest globals, bridge failures, and cancellations across warm executions", async () => {
     const limits = createQuickJsTestConfig({ maxPendingToolCalls: 1 });
-    const execute = (source: string) => runCodeModeWorker(input(source, limits), 10_000);
+    const execute = (source: string) => run(input(source, limits));
 
     expect(
       await execute(
@@ -473,7 +447,7 @@ describe("Code Mode worker lifecycle", () => {
     "bounds recursive guest execution after %s VM creation",
     async (kind) => {
       const recursion = "function recurse() { return recurse(); } return recurse();";
-      const result = await runCodeModeWorker(await executionInput(recursion, kind), 10_000);
+      const result = await run(await executionInput(recursion, kind));
       expect(result).toMatchObject({
         status: "failed",
         code: "internal_error",
@@ -561,11 +535,7 @@ describe("Code Mode worker lifecycle", () => {
         }),
         5_000,
       );
-    const probe = await execute();
-    expect(probe.status).toBe("waiting");
-    if (probe.status !== "waiting") {
-      throw new Error("expected a suspended guest to measure its snapshot");
-    }
+    const probe = parkedResult(await execute());
     const encodedBytes = QuickJS.serializeSnapshot(probe.continuation).byteLength;
 
     expect(await execute(encodedBytes)).toMatchObject({ status: "waiting" });
@@ -576,14 +546,12 @@ describe("Code Mode worker lifecycle", () => {
     });
   });
   it("classifies missing worker runtime as unavailable", async () => {
-    const missingWorkerUrl = new URL("./missing-code-mode.worker.js", import.meta.url);
-
-    const result = await runCodeModeWorker(input("return 1;"), 500, missingWorkerUrl);
-
-    expect(result.status).toBe("failed");
-    expect(result).toMatchObject({
-      code: "runtime_unavailable",
-    });
+    const result = await runCodeModeWorker(
+      input("return 1;"),
+      500,
+      new URL("./missing-code-mode.worker.js", import.meta.url),
+    );
+    expect(result).toMatchObject({ status: "failed", code: "runtime_unavailable" });
   });
 });
 
@@ -616,31 +584,12 @@ describe("Code Mode live VM", () => {
   );
 
   it("checkpoints a small VM and restores it with consumed input receipts", async () => {
-    const parked = await runCodeModeWorker(
-      input(`const value = 41; ${sleep} return value + 1;`),
-      15_000,
-      undefined,
-      undefined,
-      { onBoundary: async () => ({ kind: "checkpoint" }) },
+    const checkpoint = { onBoundary: async () => ({ kind: "checkpoint" as const }) };
+    const parked = parkedResult(
+      await run(input(`const value = 41; ${sleep} return value + 1;`), checkpoint, 15_000),
     );
-    expect(parked.status).toBe("waiting");
-    if (parked.status !== "waiting") {
-      throw new Error("expected checkpoint");
-    }
     const consumed = vi.fn();
-    const result = await runCodeModeWorker(
-      {
-        kind: "resume",
-        continuation: parked.continuation,
-        config,
-        settledRequests: parked.pendingRequests.map(({ id }) => ({ id, ok: true, json: "null" })),
-        pendingRequests: [],
-      },
-      15_000,
-      undefined,
-      undefined,
-      { onBoundary: async () => ({ kind: "checkpoint" }), onInputConsumed: consumed },
-    );
+    const result = await run(restore(parked), { ...checkpoint, onInputConsumed: consumed }, 15_000);
     expect(result).toMatchObject({ status: "completed", value: { json: "42" } });
     expect(consumed).toHaveBeenCalledTimes(1);
     await parked.continuation.dispose();
@@ -657,13 +606,10 @@ describe("Code Mode live VM", () => {
     const output: unknown[] = [];
     const receipts = vi.fn();
     let boundaries = 0;
-    const result = await runCodeModeWorker(
+    const result = await run(
       input(
         `globalThis.privateCell = 73; const bytes = new Uint8Array(12 * 1024 * 1024); for (let i = 0; i < 8; i++) { text(i); ${sleep} bytes[i] = i; } return bytes[7];`,
       ),
-      15_000,
-      undefined,
-      undefined,
       {
         onBoundary: async (value) => {
           boundaries++;
@@ -671,6 +617,7 @@ describe("Code Mode live VM", () => {
           return { ...resume(value, deadline), onConsumed: receipts };
         },
       },
+      15_000,
     );
     output.push(...completeOutput(result.output));
     expect(result).toMatchObject({ status: "completed", value: { json: "7" } });
@@ -679,7 +626,7 @@ describe("Code Mode live VM", () => {
     expect(output).toEqual(
       Array.from({ length: 8 }, (_, i) => ({ type: "text", text: String(i) })),
     );
-    const next = await runCodeModeWorker(input("return typeof privateCell;"), 15_000);
+    const next = await run(input("return typeof privateCell;"), undefined, 15_000);
     expect(next).toMatchObject({ status: "completed", value: { json: '"undefined"' } });
   });
 
