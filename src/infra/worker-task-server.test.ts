@@ -108,7 +108,7 @@ async function workerFixture() {
     ...(await import("./worker-task-server.js")),
     port,
     closed: closed.promise,
-    task(taskId: number, context = taskContext(), sampleMemory = false) {
+    task(this: void, taskId: number, context = taskContext(), sampleMemory = false) {
       result = createDeferred<string>();
       port.emit("message", {
         taskId,
@@ -118,7 +118,7 @@ async function workerFixture() {
       });
       return result.promise;
     },
-    expectResult(taskId: number, value: unknown) {
+    expectResult(this: void, taskId: number, value: unknown) {
       expect(port.postMessage).toHaveBeenLastCalledWith({ status: "ok", value, taskId }, []);
     },
   };
