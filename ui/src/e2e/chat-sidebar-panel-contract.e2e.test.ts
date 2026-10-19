@@ -50,13 +50,13 @@ type ColdOpenOutcome = {
 };
 
 const offeredSlotLabels = [
+  "Side chat",
+  "Files",
+  "Browser",
+  "Review",
   "Subagents",
   "Processes",
-  "Review",
   "Terminal",
-  "Browser",
-  "Files",
-  "Side chat",
   "Desktop",
   "Discussion",
 ] as const;
@@ -261,7 +261,7 @@ async function openColdSidebar(page: Page, scenario = coldOpenScenario()) {
   await gateway.waitForRequest("sessions.companion.state");
   expect(await gateway.getRequests("sessions.files.list")).toHaveLength(0);
   await selectChatLayoutAction(page, "Side panel");
-  const choices = page.locator(".side-panel-empty__type");
+  const choices = page.locator(".side-panel-launcher button");
   await choices.first().waitFor();
   expect(await gateway.getRequests("sessions.files.list")).toHaveLength(0);
   return choices;
@@ -448,7 +448,7 @@ suite.define(() => {
       await waitForControlUiGatewayReady(page);
 
       const panel = page.locator(".sidebar-region__right-runtime .side-panel");
-      const selector = panel.locator(".side-panel-empty--selector");
+      const selector = panel.locator(".side-panel-launcher");
       await selectChatLayoutAction(page, "Side panel");
       await selector.waitFor();
       expect(await panel.locator(".tabstrip-tab").count()).toBe(0);
@@ -954,7 +954,6 @@ suite.define(() => {
         const trailingBounds = trailingGlyph.getBoundingClientRect();
         const rtl = dir === "rtl";
         const tabStyle = getComputedStyle(node);
-        const closeStyle = getComputedStyle(close);
         return {
           leading: rtl
             ? tabBounds.right - leadingBounds.right
@@ -970,12 +969,11 @@ suite.define(() => {
           tabJoinRadius: Number.parseFloat(
             rtl ? tabStyle.borderTopLeftRadius : tabStyle.borderTopRightRadius,
           ),
-          closeJoinRadius: Number.parseFloat(
-            rtl ? closeStyle.borderTopRightRadius : closeStyle.borderTopLeftRadius,
-          ),
-          closeOuterRadius: Number.parseFloat(
-            rtl ? closeStyle.borderTopLeftRadius : closeStyle.borderTopRightRadius,
-          ),
+          closeContained:
+            closeBounds.left >= tabBounds.left - 1 &&
+            closeBounds.right <= tabBounds.right + 1 &&
+            closeBounds.top >= tabBounds.top - 1 &&
+            closeBounds.bottom <= tabBounds.bottom + 1,
         };
       }, direction);
       expect(tabPadding.trailing, `${direction} glyph insets`).toBeCloseTo(tabPadding.leading, 0);
@@ -987,10 +985,9 @@ suite.define(() => {
         tabPadding.labelBlockEndInset,
         `${direction} label block-end containment`,
       ).toBeGreaterThanOrEqual(0);
-      expect(tabPadding.tabJoinRadius, `${direction} tab join`).toBe(0);
-      expect(tabPadding.closeJoinRadius, `${direction} close join`).toBe(0);
+      expect(tabPadding.tabJoinRadius, `${direction} rounded tab`).toBeGreaterThan(0);
+      expect(tabPadding.closeContained, `${direction} close stays inside its tab`).toBe(true);
       expect(tabPadding.tabOuterRadius, `${direction} tab outer`).toBeGreaterThan(0);
-      expect(tabPadding.closeOuterRadius, `${direction} close outer`).toBeGreaterThan(0);
     }
     await tab.evaluate((node) => {
       const panel = node.closest(".side-panel");

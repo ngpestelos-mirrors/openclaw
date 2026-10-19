@@ -67,6 +67,15 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
     };
   }
 
+  protected readonly onSidebarPanelOpened = (slot: SidebarSlotId) => {
+    const destination = this.mobilePresentation.destination;
+    this.navigateMobileHost({
+      area: "panels",
+      slot,
+      ...(destination.area === "details" ? { backTo: destination } : {}),
+    });
+  };
+
   get composerReady(): boolean {
     return getChatComposerState(this.presentationId).composerTextarea?.isConnected === true;
   }
@@ -111,18 +120,10 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
       catalog,
       agentWorkspace,
       workspaceGit,
-      openPanelSlot: nativeOpenPanelSlot,
+      openPanelSlot,
       closePanelSlot,
     } = params;
     const mobileHost = this.mobileHost(savedLayout);
-    const openPanelSlot = (slot: SidebarSlotId) => {
-      nativeOpenPanelSlot(slot);
-      this.navigateMobileHost({
-        area: "panels",
-        slot,
-        ...(mobileHost?.destination.area === "details" ? { backTo: mobileHost.destination } : {}),
-      });
-    };
 
     // What the pane shows. Its controls keep working on the layout as it is saved.
     const sidebarLayout = this.presentSidebarLayout(savedLayout);
