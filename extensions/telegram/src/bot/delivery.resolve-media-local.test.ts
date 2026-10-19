@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { telegramBotInfoForTest } from "../bot.create-telegram-bot.test-support.js";
 import { useTelegramHttpFixture } from "../send.telegram-http.test-support.js";
 import { resolveMedia } from "./delivery.resolve-media.js";
-import type { TelegramContext } from "./types.js";
+import { makeCtx, requireResolvedMedia } from "./delivery.resolve-media.test-helpers.js";
 
 const { lookup } = vi.hoisted(() => ({ lookup: vi.fn() }));
 vi.mock("node:dns/promises", async (importOriginal) => ({
@@ -24,6 +24,7 @@ describe("Telegram media acquisition through grammY and the media store", () => 
   const fixture = useTelegramHttpFixture();
   let state: OpenClawTestState;
   let api: Api;
+  let bytes: Buffer;
   beforeEach(async () => {
     state = await createOpenClawTestState({ label: "telegram-media-acquisition" });
     api = new Bot(fixture.cfg.channels.telegram.botToken, {
@@ -32,6 +33,7 @@ describe("Telegram media acquisition through grammY and the media store", () => 
     lookup.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
     fixture.responseFor = (method) =>
       method === "getFile" ? { file_id: "file", file_path: "photos/file.png" } : undefined;
+    bytes = await readFile(fixture.photoPath);
   });
   afterEach(async () => {
     vi.useRealTimers();
@@ -58,32 +60,44 @@ describe("Telegram media acquisition through grammY and the media store", () => 
     }
     return ctx;
   };
+  const pngFetch = async () => new Response(bytes, { headers: { "content-type": "image/png" } });
+  const transport = (sourceFetch: typeof fetch = pngFetch) => ({
+    fetch: sourceFetch,
+    sourceFetch,
+    close: async () => {},
+  });
+  const acquire = (overrides: Partial<Parameters<typeof resolveMedia>[0]> = {}) =>
+    resolveMedia({
+      ctx: context(),
+      token: "fixture",
+      apiRoot: fixture.cfg.channels.telegram.apiRoot,
+      maxBytes: 1024,
+      transport: transport(),
+      ...overrides,
+    });
+  function onGetFile(callback: (ok: boolean) => void) {
+    api.config.use(async (previous, method, payload, signal) => {
+      const result = await previous(method, payload, signal);
+      if (method === "getFile") {
+        callback(result.ok);
+      }
+      return result;
+    });
+  }
 
   it("preserves actual bytes and the original filename after getFile recovery", async () => {
     const responses = [createDeferred<void>(), createDeferred<void>()];
     let attempts = 0;
-    api.config.use(async (previous, method, payload, signal) => {
-      const result = await previous(method, payload, signal);
-      if (method === "getFile") {
-        responses[attempts]?.resolve();
-        attempts += 1;
-      }
-      return result;
+    onGetFile(() => {
+      responses[attempts++]?.resolve();
     });
     fixture.rejections.push(
       { error_code: 502, description: "Bad Gateway" },
       { error_code: 400, description: "Bad Request: file is temporarily unavailable" },
     );
-    const bytes = await readFile(fixture.photoPath);
-    const sourceFetch = async () =>
-      new Response(bytes, { headers: { "content-type": "image/png" } });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    const acquiring = resolveMedia({
-      ctx: context(),
+    const acquiring = acquire({
       token: fixture.cfg.channels.telegram.botToken,
-      apiRoot: fixture.cfg.channels.telegram.apiRoot,
-      maxBytes: 1024,
-      transport: { fetch: sourceFetch, sourceFetch, close: async () => {} },
     });
     await responses[0]!.promise;
     await vi.advanceTimersByTimeAsync(1000);
@@ -97,9 +111,10 @@ describe("Telegram media acquisition through grammY and the media store", () => 
 
   it("does not retry a getFile size rejection", async () => {
     fixture.rejections.push({ error_code: 400, description: "Bad Request: file is too big" });
-    await expect(
-      resolveMedia({ ctx: context(), token: "fixture", maxBytes: 1024 }),
-    ).rejects.toMatchObject({ code: "max_bytes", status: 400 });
+    await expect(acquire({ apiRoot: undefined, transport: undefined })).rejects.toMatchObject({
+      code: "max_bytes",
+      status: 400,
+    });
     expect(fixture.requests.map(({ method }) => method)).toEqual(["getFile"]);
   });
 
@@ -107,12 +122,10 @@ describe("Telegram media acquisition through grammY and the media store", () => 
     "retains Telegram flood-wait custody through %s",
     async (mode) => {
       const response = createDeferred<void>();
-      api.config.use(async (previous, method, payload, signal) => {
-        const result = await previous(method, payload, signal);
-        if (method === "getFile" && !result.ok) {
+      onGetFile((ok) => {
+        if (!ok) {
           response.resolve();
         }
-        return result;
       });
       fixture.rejections.push({
         error_code: 429,
@@ -120,18 +133,8 @@ describe("Telegram media acquisition through grammY and the media store", () => 
         parameters: { retry_after: mode === "deadline" ? 1200 : 60 },
       });
       const abort = new AbortController();
-      const bytes = await readFile(fixture.photoPath);
-      const sourceFetch = async () =>
-        new Response(bytes, { headers: { "content-type": "image/png" } });
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-      const acquiring = resolveMedia({
-        ctx: context(),
-        token: "fixture",
-        apiRoot: fixture.cfg.channels.telegram.apiRoot,
-        maxBytes: 1024,
-        abortSignal: abort.signal,
-        transport: { fetch: sourceFetch, sourceFetch, close: async () => {} },
-      });
+      const acquiring = acquire({ abortSignal: abort.signal });
       const outcome = acquiring.then(
         (media) => ({ media }),
         (error: unknown) => ({ error }),
@@ -160,9 +163,7 @@ describe("Telegram media acquisition through grammY and the media store", () => 
   it("cancels an in-progress media body rather than saving partial bytes", async () => {
     const reading = createDeferred<ReadableStreamDefaultController<Uint8Array>>();
     const abort = new AbortController();
-    let downloads = 0;
-    const sourceFetch: typeof fetch = async (_url, init) => {
-      downloads++;
+    const sourceFetch = vi.fn<typeof fetch>(async (_url, init) => {
       return new Response(
         new ReadableStream<Uint8Array>({
           start(controller) {
@@ -175,44 +176,28 @@ describe("Telegram media acquisition through grammY and the media store", () => 
         }),
         { headers: { "content-type": "image/png" } },
       );
-    };
-    const acquiring = resolveMedia({
-      ctx: context(),
-      token: "fixture",
-      apiRoot: fixture.cfg.channels.telegram.apiRoot,
-      maxBytes: 1024,
-      abortSignal: abort.signal,
-      transport: { fetch: sourceFetch, sourceFetch, close: async () => {} },
     });
+    const acquiring = acquire({ abortSignal: abort.signal, transport: transport(sourceFetch) });
     const failure = expect(acquiring).rejects.toMatchObject({ code: "fetch_failed" });
     await reading.promise;
     abort.abort(new Error("session stopped"));
     await failure;
-    expect(downloads).toBe(1);
+    expect(sourceFetch).toHaveBeenCalledTimes(1);
     expect(fixture.requests.map(({ method }) => method)).toEqual(["getFile"]);
   });
 
   it.each(["default", "private-opt-in", "explicit-proxy"] as const)(
     "enforces private-address trust at the real fetch guard (%s)",
     async (policy) => {
-      const bytes = await readFile(fixture.photoPath);
-      let fetched = 0;
-      const sourceFetch = async () => {
-        fetched++;
-        return new Response(bytes, { headers: { "content-type": "image/png" } });
-      };
-      const acquiring = resolveMedia({
-        ctx: context(),
-        token: "fixture",
-        maxBytes: 1024,
+      const sourceFetch = vi.fn(pngFetch);
+      const acquiring = acquire({
+        apiRoot: undefined,
         ...(policy === "private-opt-in" ? { dangerouslyAllowPrivateNetwork: true } : {}),
         transport: {
-          fetch: sourceFetch,
-          sourceFetch,
-          close: async () => {},
-          ...(policy === "explicit-proxy"
-            ? {
-                dispatcherAttempts: [
+          ...transport(sourceFetch),
+          dispatcherAttempts:
+            policy === "explicit-proxy"
+              ? [
                   {
                     dispatcherPolicy: {
                       mode: "explicit-proxy" as const,
@@ -220,18 +205,17 @@ describe("Telegram media acquisition through grammY and the media store", () => 
                       allowPrivateProxy: true,
                     },
                   },
-                ],
-              }
-            : {}),
+                ]
+              : undefined,
         },
       });
       if (policy === "default") {
         await expect(acquiring).rejects.toThrow(/private|blocked/i);
-        expect(fetched).toBe(0);
+        expect(sourceFetch).not.toHaveBeenCalled();
       } else {
         const media = await acquiring;
         expect(await readFile(media!.path)).toEqual(bytes);
-        expect(fetched).toBe(1);
+        expect(sourceFetch).toHaveBeenCalledTimes(1);
       }
     },
   );
@@ -243,53 +227,35 @@ describe("Telegram downloaded image documents", () => {
       "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDi6KKK+ZP3E//Z",
       "base64",
     );
-    const fixture = {
-      bytes: JPEG,
-      fileName: "upload.bin",
-      mimeType: "application/octet-stream",
-      contentType: "image/jpeg",
-      kind: "image",
-    };
     await withOpenClawTestState({ label: "telegram-image-document" }, async (state) => {
-      const sourcePath = state.path(fixture.fileName);
-      await writeFile(sourcePath, fixture.bytes);
+      const sourcePath = state.path("upload.bin");
+      await writeFile(sourcePath, JPEG);
       const fileId = "document-fixture";
-      const ctx: TelegramContext = {
-        message: {
-          message_id: 1,
-          date: 0,
-          chat: { id: 1, type: "private", first_name: "Fixture" },
-          document: {
-            file_id: fileId,
-            file_unique_id: fileId,
-            file_name: fixture.fileName,
-            mime_type: fixture.mimeType,
-          },
-        },
-        getFile: async () => ({
+      const ctx = makeCtx(
+        "document",
+        async () => ({
           file_id: fileId,
           file_unique_id: fileId,
           file_path: sourcePath,
         }),
-      };
-      const result = await resolveMedia({
-        ctx,
-        token: "12345:fixture-token",
-        maxBytes: 1_024,
-        trustedLocalFileRoots: [state.root],
-      });
-
-      expect(result).not.toBeNull();
-      if (!result) {
-        throw new Error("Expected the document to be saved");
-      }
+        { file_name: "upload.bin", mime_type: "application/octet-stream" },
+      );
+      const result = requireResolvedMedia(
+        await resolveMedia({
+          ctx,
+          token: "12345:fixture-token",
+          maxBytes: 1_024,
+          trustedLocalFileRoots: [state.root],
+        }),
+        "image document",
+      );
       expect(result.path).not.toBe(sourcePath);
-      expect(await readFile(result.path)).toEqual(fixture.bytes);
+      expect(await readFile(result.path)).toEqual(JPEG);
       expect(result).toMatchObject({
-        contentType: fixture.contentType,
-        fileName: fixture.fileName,
-        size: fixture.bytes.length,
-        kind: fixture.kind,
+        contentType: "image/jpeg",
+        fileName: "upload.bin",
+        size: JPEG.length,
+        kind: "image",
       });
     });
   });
