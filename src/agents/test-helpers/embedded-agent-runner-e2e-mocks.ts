@@ -101,7 +101,7 @@ export function installEmbeddedRunnerBaseE2eMocks(options?: {
           return { messages, estimatedTokens: 0 };
         },
         async compact() {
-          return { ok: true, compacted: false };
+          return { ok: true, compacted: false, reason: "nothing to compact" };
         },
         async dispose() {},
       };
