@@ -64,7 +64,7 @@ type ChatQueuedEditProps = {
 };
 
 /** Destinations and owner facts not already carried by ChatProps. */
-export type ChatMobileActivities = {
+type ChatMobileActivities = {
   onOpenSubagents?: NonNullable<ChatActivityPillsProps["subagents"]>["onOpen"];
   goal?: Pick<
     NonNullable<ChatActivityPillsProps["goal"]>,
