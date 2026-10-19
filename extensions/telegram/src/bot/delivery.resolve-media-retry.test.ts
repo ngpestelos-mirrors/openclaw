@@ -50,7 +50,8 @@ vi.mock("openclaw/plugin-sdk/file-access-runtime", () => ({
   }),
 }));
 
-vi.mock("./delivery.resolve-media.runtime.js", () => {
+vi.mock("./delivery.resolve-media.runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./delivery.resolve-media.runtime.js")>();
   class MediaFetchError extends Error {
     code: string;
     status?: number;
@@ -63,6 +64,7 @@ vi.mock("./delivery.resolve-media.runtime.js", () => {
     }
   }
   return {
+    ...actual,
     readRemoteMediaBuffer: (...args: unknown[]) => readRemoteMediaBuffer(...args),
     formatErrorMessage: coerceErrorMessage,
     logVerbose: () => {},

@@ -24,7 +24,7 @@ function createSyncLifecycleHarness(withStopping = false) {
     statusController,
     ...(withStopping ? { isStopping: () => stopping } : {}),
   });
-  disposers.push(lifecycle.dispose);
+  disposers.push(() => lifecycle.dispose());
   return {
     client,
     lifecycle,

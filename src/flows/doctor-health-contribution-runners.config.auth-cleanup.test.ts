@@ -45,7 +45,10 @@ vi.mock("../config/config.js", async (importOriginal) => ({
   },
 }));
 
-vi.mock("../config/logging.js", () => ({ logConfigUpdated: vi.fn() }));
+vi.mock("../config/logging.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../config/logging.js")>()),
+  logConfigUpdated: vi.fn(),
+}));
 
 vi.mock("../commands/onboard-helpers.js", () => ({
   applyWizardMetadata: (cfg: OpenClawConfig) => cfg,
