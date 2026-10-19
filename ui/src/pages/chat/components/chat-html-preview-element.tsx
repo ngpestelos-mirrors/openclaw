@@ -291,3 +291,13 @@ declare global {
     "openclaw-chat-html-preview": ChatHtmlPreviewElement;
   }
 }
+
+declare module "@solidjs/web" {
+  namespace JSX {
+    interface IntrinsicElements {
+      "openclaw-chat-html-preview": HTMLAttributes<ChatHtmlPreviewElement> & {
+        [Key in keyof HtmlPreviewProps as `prop:${Key}`]?: HtmlPreviewProps[Key];
+      };
+    }
+  }
+}

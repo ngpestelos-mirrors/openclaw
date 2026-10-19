@@ -10,7 +10,6 @@ import { registerFilePreviewEnglish } from "../../../i18n/locales/en-file-previe
 import { formatUiError } from "../../../lib/format-error.ts";
 import { registerEnglishCatalog, t } from "../../../lib/reactive/i18n.ts";
 import { projectOwner } from "../../../lib/reactive/projection.ts";
-import type { SolidBridgeElement } from "../../../lib/solid-bridge.ts";
 import { defineSolidBridge } from "../../../lib/solid-bridge.ts";
 import { createSolidRenderLifecycle } from "../solid-render-lifecycle.ts";
 import { createAttachmentDownload } from "./chat-attachment-download.ts";
@@ -24,6 +23,7 @@ import { createFileCopy } from "./chat-file-copy.ts";
 import { captureFileEditorDraft, readFileDraft, setFileDraft } from "./chat-file-drafts.ts";
 import { createFileHtmlPreview } from "./chat-html-preview.ts";
 import type {
+  ChatDetailPanel,
   ChatDetailPanelProps,
   FileSidebarNavigation,
   AttachmentSidebarRuntime,
@@ -38,9 +38,7 @@ import type { FileEditorViewHandle } from "./file-editor-view.ts";
 
 registerEnglishCatalog(registerFilePreviewEnglish);
 
-export type ChatDetailPanel = SolidBridgeElement<ChatDetailPanelProps>;
-
-function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatDetailPanelProps>) {
+function DetailPanel(props: ChatDetailPanelProps, host: ChatDetailPanel) {
   const gateways = nativeGatewaysCapability();
   const nativeGateways = gateways && projectOwner(gateways, (owner) => owner);
   let disposed = false;
@@ -741,6 +739,6 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
   return <SidebarPanel {...lifecycle.snapshot()} />;
 }
 
-export const ChatDetailPanel = defineSolidBridge("openclaw-chat-detail-panel", DetailPanel, {
+defineSolidBridge("openclaw-chat-detail-panel", DetailPanel, {
   properties: chatDetailPanelProperties,
 });

@@ -1,4 +1,4 @@
-import type { JSX } from "@solidjs/web";
+import type { JSX as SolidJSX } from "@solidjs/web";
 import type { ChatMessageGetResult } from "../../../../../packages/gateway-protocol/src/schema/logs-chat.js";
 import type { SessionFileDownload } from "../../../api/session-file-download.ts";
 import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
@@ -7,6 +7,7 @@ import type { MarkdownGitHubContext } from "../../../components/markdown-render-
 import type { SessionLinkTarget } from "../../../components/markdown-session-links.ts";
 import type { ToolCard } from "../../../lib/chat/chat-types.ts";
 import type { EmbedSandboxMode } from "../../../lib/chat/tool-display.ts";
+import type { SolidBridgeElement } from "../../../lib/solid-bridge.ts";
 import type { ChatMediaPlaybackMode } from "./chat-media-playback.ts";
 import type { ArtifactDownloadResolver } from "./chat-message-media.ts";
 import type { SessionWorkspaceProps } from "./chat-session-workspace-types.ts";
@@ -107,7 +108,7 @@ type AttachmentSidebarContent = Omit<AttachmentSidebarSource, "src"> & {
   sourceIdentity?: string;
   voiceNote?: boolean;
   plainText?: boolean;
-  renderActions?: () => JSX.Element;
+  renderActions?: () => SolidJSX.Element;
   /** Authorize and read fresh bytes for each explicit download. */
   download?: (signal: AbortSignal) => Promise<Blob | null>;
   resolveSource?: (
@@ -267,3 +268,23 @@ export type FileReaderDraftState = {
   /** False while saving or after this selection has been retired. */
   discard: () => boolean;
 };
+
+export type ChatDetailPanel = SolidBridgeElement<ChatDetailPanelProps>;
+
+declare global {
+  interface HTMLElementTagNameMap {
+    "openclaw-chat-detail-panel": ChatDetailPanel;
+  }
+}
+
+declare module "@solidjs/web" {
+  namespace JSX {
+    interface IntrinsicElements {
+      "openclaw-chat-detail-panel": HTMLAttributes<
+        HTMLElementTagNameMap["openclaw-chat-detail-panel"]
+      > & {
+        [Key in keyof ChatDetailPanelProps as `prop:${Key}`]?: ChatDetailPanelProps[Key];
+      };
+    }
+  }
+}

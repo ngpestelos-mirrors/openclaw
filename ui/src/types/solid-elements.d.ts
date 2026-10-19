@@ -6,9 +6,7 @@ import type { ClawHubRecommendation } from "../../../src/shared/clawhub-recommen
 import type { ApplicationGateway } from "../app/gateway.ts";
 import type { LobsterPetProps } from "../components/lobster-pet-contract.ts";
 import type { MascotMood } from "../components/mascot-pose.ts";
-import type { ChatDetailPanel } from "../pages/chat/components/chat-detail-panel.tsx";
 import type { MessageActionDetails } from "../pages/chat/components/chat-message-markdown.types.ts";
-import type { ChatDetailPanelProps } from "../pages/chat/components/chat-sidebar-content-types.ts";
 export type { JSX } from "@solidjs/web";
 
 // Keep ambient tag contracts independent of renderer modules: SDK declarations include this file.
@@ -41,20 +39,6 @@ declare module "@solidjs/web" {
       messageActions: MessageActionDetails | null | undefined;
     }
     interface IntrinsicElements {
-      "openclaw-chat-html-preview": HTMLAttributes<
-        HTMLElementTagNameMap["openclaw-chat-html-preview"]
-      > &
-        ElementProperties<
-          Pick<
-            HTMLElementTagNameMap["openclaw-chat-html-preview"],
-            | "desktop"
-            | "html"
-            | "sourceIdentity"
-            | "sessionFileSource"
-            | "title"
-            | "embedSandboxMode"
-          >
-        >;
       "openclaw-chat-tool-content": HTMLAttributes<HTMLElement>;
       "openclaw-chat-tool-raw": HTMLAttributes<HTMLElement>;
       "openclaw-chat-tool-outcome": HTMLAttributes<HTMLElement>;
@@ -231,22 +215,6 @@ declare module "@solidjs/web" {
     }
     interface SVGAttributes<T> {
       "xml:space"?: "default" | "preserve";
-    }
-  }
-}
-
-declare global {
-  interface HTMLElementTagNameMap {
-    "openclaw-chat-detail-panel": ChatDetailPanel;
-  }
-}
-
-declare module "@solidjs/web" {
-  namespace JSX {
-    interface IntrinsicElements {
-      "openclaw-chat-detail-panel": HTMLAttributes<ChatDetailPanel> & {
-        [Key in keyof ChatDetailPanelProps as `prop:${Key}`]?: ChatDetailPanelProps[Key];
-      };
     }
   }
 }
