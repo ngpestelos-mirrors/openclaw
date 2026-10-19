@@ -174,13 +174,13 @@ if (!isMainThread) {
     worker.once("exit", () => {
       exited = true;
     });
-    const sendTask = (taskId: number, input: Input, interactive = false, buffer = native.buffer) =>
+    const sendTask = (taskId: number, input: Input, nativeSections = native.buffer) =>
       worker.postMessage(
         {
           taskId,
           input,
-          interactive,
-          nativeSections: buffer,
+          interactive: input.kind === "native-exchange",
+          nativeSections,
           taskContext: { deletedAgentDatabaseFences: [] },
         },
         [],
@@ -190,15 +190,11 @@ if (!isMainThread) {
     try {
       release(gate, 3);
       const requested = once(worker, "message");
-      sendTask(
-        1,
-        {
-          kind: "native-exchange",
-          gate: gate.buffer,
-          blockResponse: scenario === "reply-race",
-        },
-        true,
-      );
+      sendTask(1, {
+        kind: "native-exchange",
+        gate: gate.buffer,
+        blockResponse: scenario === "reply-race",
+      });
       const [request] = await requested;
       assert.equal(request.status, "request");
       const failed = once(worker, "message");
@@ -215,7 +211,7 @@ if (!isMainThread) {
       if (scenario === "reply-race") {
         const next = once(worker, "message");
         reply(request.id, "discarded late reply");
-        sendTask(2, { kind: "echo", value: 42 }, false, createWorkerNativeSectionState().buffer);
+        sendTask(2, { kind: "echo", value: 42 }, createWorkerNativeSectionState().buffer);
         assert.equal((await next)[0].value.value, 42);
         console.log(JSON.stringify({ scenario, successorCompleted: true }));
       } else {
