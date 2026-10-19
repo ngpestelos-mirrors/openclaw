@@ -23,8 +23,8 @@ import {
   createTestChatPane,
   getPaneTestRuntime,
 } from "./chat-pane.test-support.ts";
+import { chatRunPresentation } from "./chat-run-presentation.ts";
 import { handlePageGatewayEvent } from "./chat-state-events.ts";
-import { cancelChatStreamRenderFrame } from "./chat-state-render.ts";
 import { currentSessionApprovalReplay } from "./session-approval-projection.ts";
 
 describe("chat pane approval replay subscriptions", () => {
@@ -137,7 +137,7 @@ describe("chat pane approval replay subscriptions", () => {
         if (state.chatSessionMessageSubscription) {
           await state.sessions.unsubscribeMessages(state.chatSessionMessageSubscription);
         }
-        cancelChatStreamRenderFrame(state);
+        chatRunPresentation(state).cancelFrame();
       }
     },
   );

@@ -21,6 +21,10 @@ import {
   runWithCronCreatorAuthorityCapability,
 } from "../cron-creator-authority-context.js";
 import { createCronTool } from "./cron-tool.js";
+import {
+  createHostStreamApprovalProvider,
+  proveHostStreamApprovalEffects,
+} from "./cron-tool.stream-exec-policy.e2e.test-support.js";
 import type { GatewayToolCaller } from "./cron-tool.types.js";
 import {
   withGatewayToolCallerIdentity,
@@ -188,12 +192,34 @@ function seedRestartExhaustedStream(instance: OpenClawTestInstance, jobId: strin
 
 describe("cron stream agent authority final effects", () => {
   it("proves allowed, forbidden, activation, and stale authority through a real Gateway process", async () => {
+    await using provider = await createHostStreamApprovalProvider();
+    const { model } = provider;
     const instance = await createOpenClawTestInstance({
       name: "cron-stream-agent-authority",
       env: { OPENCLAW_SKIP_CRON: undefined },
       config: {
-        gateway: { mode: "local" },
-        agents: { defaults: { skipBootstrap: true, sandbox: { mode: "off" } } },
+        gateway: { mode: "local", controlUi: { allowedOrigins: ["http://localhost"] } },
+        tools: {
+          allow: ["automations", "exec"],
+          exec: { host: "gateway", security: "full", ask: "off" },
+          codeMode: false,
+          toolSearch: false,
+        },
+        agents: {
+          defaults: {
+            model: { primary: model.modelRef },
+            modelPolicy: { allow: [model.modelRef] },
+            models: {
+              [model.modelRef]: {
+                agentRuntime: { id: "openclaw" },
+                params: { transport: "sse", openaiWsWarmup: false },
+              },
+            },
+            skipBootstrap: true,
+            sandbox: { mode: "off" },
+          },
+        },
+        models: { mode: "replace", providers: { [model.providerId]: model.config } },
         cron: { enabled: true, triggers: { enabled: true } },
       },
     });
@@ -445,6 +471,8 @@ describe("cron stream agent authority final effects", () => {
         expect(stillExhausted.enabled).toBe(true);
         expect(stillExhausted.state.streamRestartExhausted).toBe(true);
         expect(Number(await fs.readFile(pidPath, "utf8"))).toBe(thirdPid);
+
+        await proveHostStreamApprovalEffects({ instance, provider, waitForPid, waitForDead });
       },
       () => instance.cleanup(),
     );

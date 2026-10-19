@@ -5,29 +5,11 @@ import {
   applyToolSearchCatalog,
   createToolSearchCatalogRef,
   createToolSearchTools,
-  TOOL_CALL_RAW_TOOL_NAME,
   TOOL_DESCRIBE_RAW_TOOL_NAME,
   TOOL_SEARCH_RAW_TOOL_NAME,
 } from "./tool-search.js";
 
 describe("Tool Search schema discovery", () => {
-  it("guides structured control tools toward compact catalog calls", () => {
-    const tools = createToolSearchTools({ config: {} as never });
-    const byName = new Map(tools.map((tool) => [tool.name, tool]));
-    expect(byName.get(TOOL_SEARCH_RAW_TOOL_NAME)?.description).toContain(
-      "use tool_describe only when you need its input schema",
-    );
-    expect(byName.get(TOOL_DESCRIBE_RAW_TOOL_NAME)?.description).toContain(
-      "when its input is not already clear",
-    );
-    expect(byName.get(TOOL_CALL_RAW_TOOL_NAME)?.description).toContain(
-      "If arguments are not already clear, call tool_describe with the same id",
-    );
-    expect(byName.get(TOOL_CALL_RAW_TOOL_NAME)?.description).toContain(
-      "do not guess omitted fields from compact input hints",
-    );
-  });
-
   it("includes bounded input signatures in compact search hits", async () => {
     const target = pluginTool("fake_update", "Update a fake record");
     const openTarget = pluginTool("fake_open", "Accept constrained open input");

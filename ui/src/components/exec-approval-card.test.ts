@@ -183,6 +183,7 @@ describe("exec approval card", () => {
               ? createComponent(ExecApprovalCard, {
                   props: {
                     approval: request,
+                    connected: true,
                     busy: false,
                     canGrant: true,
                     error: null,
@@ -192,6 +193,7 @@ describe("exec approval card", () => {
                 })
               : createComponent(SidebarApprovalRow, {
                   approval: request,
+                  connected: true,
                   busy: false,
                   canGrant: true,
                   error: null,
