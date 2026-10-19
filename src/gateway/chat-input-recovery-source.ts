@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { PreparedRequesterProfile } from "../auto-reply/requester-profile.js";
 import type { PersistedUserTurnMessage } from "../sessions/user-turn-transcript.types.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 
@@ -18,6 +19,7 @@ type ChatInputRecoveryAdmission = {
   target: ChatInputRecoveryTarget;
   requestFingerprint: string;
   suppressCommandInterpretation: boolean;
+  requesterProfile?: PreparedRequesterProfile;
 };
 
 export const chatInputRecoveryAdmission = resolveGlobalSingleton(

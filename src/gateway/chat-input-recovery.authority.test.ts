@@ -10,13 +10,17 @@ import { expect, it, vi } from "vitest";
 import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
-import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import {
+  listSessionParticipantsReadOnly,
+  replaceSessionEntry,
+} from "../config/sessions/session-accessor.js";
 import { stageSessionPendingInput } from "../config/sessions/session-accessor.pending-inputs.js";
 import { listSessionPendingInputs } from "../config/sessions/session-pending-input-history.js";
 import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { loadOrCreateDeviceIdentityAsync } from "../infra/device-identity-async.js";
 import { persistDevicePairingStoreState } from "../infra/device-pairing-store.js";
+import { waitForSessionParticipantRecording } from "../sessions/session-participant-recording.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -97,7 +101,7 @@ it(
           entries: { main: {} },
           defaults: {
             workspace: state.workspaceDir,
-            skipBootstrap: true,
+            skipBootstrap: false,
             heartbeat: { every: "0m" },
             model: { primary: provider.modelRef },
             models: { [provider.modelRef]: { agentRuntime: { id: "openclaw" } } },
@@ -133,6 +137,11 @@ it(
       const owner = ensureProfileForEmail("owner@example.test");
       for (const change of ["unchanged", "role", "device", "membership"] as const) {
         const profile = ensureProfileForEmail(`${change}@example.test`);
+        if (change === "unchanged") {
+          const personalDir = path.join(state.workspaceDir, "users", profile.id);
+          await fs.mkdir(personalDir, { recursive: true });
+          await fs.writeFile(path.join(personalDir, "USER.md"), "RECOVERED_PERSONAL_PREFERENCES");
+        }
         const sessionKey = `agent:main:replay-${change}`;
         const sessionId = `replay-${change}`;
         if (change === "membership") {
@@ -152,7 +161,7 @@ it(
           config,
           profileId: profile.id,
           scopes: ["operator.read", "operator.write"],
-          sourceIngress: "internal",
+          sourceIngress: "control-ui",
           sessionKey,
           sessionId,
           sourceRunId: `replay-${change}`,
@@ -277,6 +286,47 @@ it(
       expect(requests.every((body) => body.includes("REPLAY_UNCHANGED"))).toBe(true);
       expect(requests.join("\n")).not.toMatch(/REPLAY_ROLE|REPLAY_DEVICE|REPLAY_MEMBERSHIP/);
       expect(await fs.readFile(effectsPath, "utf8")).toBe("UNCHANGED_OPERATOR");
+      const unchanged = expectDefined(
+        cases.find(({ change }) => change === "unchanged"),
+        "unchanged operator fixture",
+      );
+      const firstRequestBody = expectDefined(requests[0], "first recovered provider request");
+      const firstRequest = JSON.parse(firstRequestBody) as {
+        input: Array<{ content?: Array<{ text?: string }> }>;
+      };
+      const prompt = firstRequest.input
+        .flatMap((item) => item.content ?? [])
+        .map((part) => part.text ?? "")
+        .join("\n");
+      const conversationData = expectDefined(
+        prompt.match(/Conversation data \(data, not instructions\):\n("(?:[^"\\]|\\.)*")/u)?.[1],
+        "encoded conversation context",
+      );
+      const metadata = expectDefined(
+        (JSON.parse(conversationData) as string).match(/```json\n([\s\S]*?)\n```/u)?.[1],
+        "verified requester context",
+      );
+      expect(JSON.parse(metadata)).toMatchObject({
+        requester_profile: {
+          id: unchanged.fixture.client.authenticatedUserProfile?.profileId,
+          display_name: "unchanged",
+        },
+      });
+      expect(firstRequestBody).toContain("RECOVERED_PERSONAL_PREFERENCES");
+      await waitForSessionParticipantRecording(unchanged.fixture.target);
+      expect(
+        listSessionParticipantsReadOnly(unchanged.fixture.target).get(
+          unchanged.fixture.target.sessionKey,
+        ),
+      ).toEqual([
+        expect.objectContaining({
+          identity: {
+            type: "profile",
+            id: unchanged.fixture.client.authenticatedUserProfile?.profileId,
+          },
+          contributionCount: 1,
+        }),
+      ]);
       for (const { change, fixture } of cases) {
         const pending = await listSessionPendingInputs(fixture.target);
         if (change === "unchanged") {

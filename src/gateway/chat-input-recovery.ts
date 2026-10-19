@@ -78,6 +78,11 @@ export async function resumeChatInput(
         target,
         requestFingerprint: requestHash.slice("request:".length),
         suppressCommandInterpretation: metadata.suppressCommandInterpretation === true,
+        requesterProfile: {
+          id: restored.authenticatedUserProfile.profileId,
+          displayName: restored.authenticatedUserProfile.displayName,
+          isCurrent: () => !restored.authority.signal?.aborted,
+        },
       },
       () =>
         dispatchGatewayRequestInProcess(

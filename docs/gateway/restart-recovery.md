@@ -93,6 +93,9 @@ authority and the original session before admission. It never restores the old
 execution authority or starts the same consumed input twice. Control UI inputs
 that requested reconnect resumption retain that behavior, including when the
 session has crossed its idle or daily reset cutoff.
+Recovered inputs retain their verified requester profile, participant attribution,
+and session personal preferences. This does not restore the old connection or
+grant the recovery caller access to unrelated personal account actions.
 
 If an input exhausts the existing bounded attempts on a transient failure, later
 inputs in that session remain interrupted too, preserving their replay order.
