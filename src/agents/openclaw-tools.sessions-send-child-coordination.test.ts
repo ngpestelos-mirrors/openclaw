@@ -105,17 +105,14 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { createSessionConversationTestRegistry } from "../test-utils/session-conversation-registry.js";
-import type { EmbeddedAgentQueueHandle } from "./embedded-agent-runner/run-state.js";
-import {
-  clearTestEmbeddedRun as clearActiveEmbeddedRun,
-  createEmbeddedRunHandle,
-} from "./embedded-agent-runner/runs.test-support.js";
+import { clearTestEmbeddedRun as clearActiveEmbeddedRun } from "./embedded-agent-runner/runs.test-support.js";
 import { createRequesterYieldCallback } from "./openclaw-tools.requester-yield.js";
 import {
   registerSessionsSendRequesterRetirementTests,
   type GatewayCall,
 } from "./openclaw-tools.sessions-send-requester-retirement.test-support.js";
 import {
+  createDurableSessionsSendTestRun,
   createSessionsSendTestCaller,
   setSessionsSendTestActiveRun,
 } from "./openclaw-tools.sessions-steering.test-support.js";
@@ -321,26 +318,7 @@ describe("sessions_send child coordination", () => {
         });
       await seed("steer-A", 1);
       const previous = () => getSubagentRunByRunId("steer-A")!;
-      const queueB = vi.fn<EmbeddedAgentQueueHandle["queueMessage"]>(async (_text, options) => {
-        const recorder = options?.userTurnTranscriptRecorder;
-        if (!recorder || !(await recorder.persistApproved())) {
-          throw new Error("Steering fixture did not commit the admitted guidance");
-        }
-      });
-      const handleB = createEmbeddedRunHandle({
-        runId: "steer-B",
-        queueMessage: queueB,
-        supportsTranscriptCommitWait: true,
-      });
-      handleB.messageInjectionV2 = {
-        version: 2,
-        isAvailable: () => true,
-        queueMessage: async (text, options, assertCurrent) => {
-          assertCurrent();
-          await queueB(text, options);
-          options?.onQueueAccepted?.(true);
-        },
-      };
+      const { handle: handleB, queueMessage: queueB } = createDurableSessionsSendTestRun("steer-B");
       const completePrevious = async (delivered = false) => {
         await mutateSubagentRuns(["steer-A"], (rows) => {
           const current = rows.get("steer-A");
@@ -382,31 +360,16 @@ describe("sessions_send child coordination", () => {
           config,
         );
       };
-      const queueA = vi.fn<EmbeddedAgentQueueHandle["queueMessage"]>(async (_text, options) => {
-        const recorder = options?.userTurnTranscriptRecorder;
-        if (!recorder || !(await recorder.persistApproved())) {
-          throw new Error("Steering fixture did not commit the admitted guidance");
-        }
-        if (timing === "after completion") {
-          await completePrevious(true);
-        } else {
-          await replace();
-        }
-      });
-      const handleA = createEmbeddedRunHandle({
-        runId: "steer-A",
-        queueMessage: queueA,
-        supportsTranscriptCommitWait: true,
-      });
-      handleA.messageInjectionV2 = {
-        version: 2,
-        isAvailable: () => true,
-        queueMessage: async (text, options, assertCurrent) => {
-          assertCurrent();
-          await queueA(text, options);
-          options?.onQueueAccepted?.(true);
+      const { handle: handleA, queueMessage: queueA } = createDurableSessionsSendTestRun(
+        "steer-A",
+        async () => {
+          if (timing === "after completion") {
+            await completePrevious(true);
+          } else {
+            await replace();
+          }
         },
-      };
+      );
       await setSessionsSendTestActiveRun(
         sessionId,
         handleA,

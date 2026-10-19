@@ -20,6 +20,7 @@ import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js"
 import { createOperatorRecoveryFixture } from "./operator-run-recovery.test-support.js";
 import { normalizeChatSendRequest } from "./server-methods/chat-send-request.js";
 import { createContext } from "./server-plugin-in-process-dispatch.test-support.js";
+import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
 
 const dispatch = vi.hoisted(() => vi.fn());
 const externalProvenance = { kind: "external_user" as const, sourceTool: "acp_bridge" };
@@ -51,7 +52,8 @@ async function prepareInput(stateDir: string, approvedText: string, withProvenan
   const fixture = await createOperatorRecoveryFixture({
     stateDir,
     context: createContext(),
-    config: {},
+    config: { agents: { ownership: "explicit", entries: { main: {}, peer: {} } } },
+    sessionKey: "recovery-input",
     profileId: profile.id,
   });
   const request = await normalizeChatSendRequest({
@@ -123,7 +125,15 @@ describe("interrupted chat input recovery", () => {
       async ({ fixture, target, message, options }) => {
         dispatch.mockImplementation(async (method, params, requestOptions) => {
           expect(method).toBe("chat.send");
+          expect(
+            resolveRequestedSessionAgentId(
+              fixture.context.getRuntimeConfig(),
+              params.sessionKey,
+              params.agentId,
+            ),
+          ).toEqual({ ok: true, agentId: target.agentId });
           expect(params).toMatchObject({
+            agentId: target.agentId,
             sessionKey: target.sessionKey,
             sessionId: target.sessionId,
             idempotencyKey: target.runId,

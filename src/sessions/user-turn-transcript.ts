@@ -148,9 +148,7 @@ export function createUserTurnTranscriptRecorder(
     resolvedMessagePromise = Promise.resolve(message);
   };
 
-  const applyReplacementText = (
-    candidate: PersistedUserTurnMessage | undefined,
-  ): PersistedUserTurnMessage | undefined => {
+  const applyReplacementText = (candidate: PersistedUserTurnMessage | undefined) => {
     if (!candidate || replacementText === undefined) {
       return candidate;
     }

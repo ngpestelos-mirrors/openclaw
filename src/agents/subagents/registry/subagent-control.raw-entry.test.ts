@@ -35,9 +35,9 @@ import {
   recordOperationBackendRunId,
 } from "../../../sessions/session-controller.state.js";
 import { AgentSelectionRequiredError, resolveSessionAgentId } from "../../agent-scope.js";
-import type { EmbeddedAgentQueueHandle } from "../../embedded-agent-runner/run-state.js";
 import { createEmbeddedRunHandle } from "../../embedded-agent-runner/runs.test-support.js";
 import {
+  createDurableSessionsSendTestRun,
   createSessionsSendTestCaller,
   setSessionsSendTestActiveRun,
 } from "../../openclaw-tools.sessions-steering.test-support.js";
@@ -438,27 +438,7 @@ it("numbers watched raw children independently and keeps their completion owner"
 it("steers its watched raw child while another agent has a newer row", async () => {
   const { cfg, children, send } = await prepareWatchedRawChildren();
   const caller = createSessionsSendTestCaller(children.get("main")!.parentKey);
-  const queueMessage = vi.fn<EmbeddedAgentQueueHandle["queueMessage"]>(async (_text, options) => {
-    const recorder = options?.userTurnTranscriptRecorder;
-    if (!recorder || !(await recorder.persistApproved())) {
-      throw new Error("Steering fixture did not commit the admitted guidance");
-    }
-  });
-  const handle: EmbeddedAgentQueueHandle = {
-    ...createEmbeddedRunHandle({
-      runId: "main-1",
-      queueMessage,
-      supportsTranscriptCommitWait: true,
-    }),
-    messageInjectionV2: {
-      version: 2,
-      isAvailable: () => true,
-      queueMessage: async (text, options, assertCurrent) => {
-        assertCurrent();
-        await queueMessage(text, options);
-      },
-    },
-  };
+  const { handle, queueMessage } = createDurableSessionsSendTestRun("main-1");
   const close = await setSessionsSendTestActiveRun(
     "main-global",
     handle,
@@ -492,7 +472,7 @@ it("steers its watched raw child while another agent has a newer row", async () 
             sourceSessionKey: children.get("main")!.parentKey,
             sourceTool: "sessions_send",
           },
-          __openclaw: { steerTargetRunId: "main-1" },
+          __openclaw: { steerTargetRunId: "main-1", requesterOrigin: caller.requesterOrigin },
         }),
       }),
     );

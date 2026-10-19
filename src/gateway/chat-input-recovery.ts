@@ -84,6 +84,7 @@ export async function resumeChatInput(
           "chat.send",
           {
             ...request,
+            agentId: target.agentId,
             sessionKey: target.sessionKey,
             sessionId: target.sessionId,
             idempotencyKey: target.runId,
