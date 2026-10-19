@@ -24,7 +24,7 @@ export type MobileFileMenuAction = {
 };
 
 export type MobileFileBack = { label: string; onBack: () => void };
-export type MobileFileReadMode = Pick<FileHtmlPreviewControls, "source" | "onToggle">;
+type MobileFileReadMode = Pick<FileHtmlPreviewControls, "source" | "onToggle">;
 export type MobileFileFindCloseReason = "close" | "escape" | "outside";
 
 export type SidebarFileMobileRailProps = {
