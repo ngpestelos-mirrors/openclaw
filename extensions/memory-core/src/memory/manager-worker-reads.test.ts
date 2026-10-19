@@ -9,29 +9,24 @@ import { observeHostDataSql } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { describe, expect, it, vi } from "vitest";
 import * as cpuRuntime from "./manager-cpu-worker-runtime.js";
 import type { MemoryIndexDatabase } from "./manager-database-context.js";
-import {
-  createManagerIndexFixture,
-  memoryIndexFixtureWriter,
-} from "./manager-index.test-support.js";
+import * as fixtures from "./manager-index.test-support.js";
 
-const { closeAllMemorySearchManagers, getMemorySearchManager } = await import("./index.js");
+const managers = await import("./index.js");
 
 describe("memory manager retained worker reads", () => {
-  const fixture = createManagerIndexFixture({
-    getMemorySearchManager,
-    closeAllMemorySearchManagers,
-  });
+  const fixture = fixtures.createManagerIndexFixture(managers);
+  const { paths, provider, createConfig, getFreshManager } = fixture;
   const seedSession = (sessionId: string, content: string) =>
     fixture.seedSessionTranscript({
       sessionId,
       messages: [{ role: "user", timestamp: 1, content }],
     });
   const sessionConfig = () =>
-    fixture.createConfig({ provider: "none", sources: ["sessions"], sessionMemory: true });
+    createConfig({ provider: "none", sources: ["sessions"], sessionMemory: true });
   const memoryConfig = (overrides: Parameters<typeof fixture.createConfig>[0] = {}) =>
-    fixture.createConfig({ provider: "none", sources: ["memory"], ...overrides });
+    createConfig({ provider: "none", sources: ["memory"], ...overrides });
   const writeMemory = (name: string, content: string) =>
-    fs.writeFile(path.join(fixture.paths.memory, name), content);
+    fs.writeFile(path.join(paths.memory, name), content);
   function observeSql() {
     const observed = observeHostDataSql();
     return { ...observed, [Symbol.dispose]: () => observed.restore() };
@@ -40,12 +35,15 @@ describe("memory manager retained worker reads", () => {
   it("reopens invalidated source state without host data reads", async () => {
     await writeMemory("cold.md", "Alpha cold source.");
     const config = memoryConfig();
-    const initial = await fixture.getFreshManager(config, "cli");
+    const initial = await getFreshManager(config, "cli");
     await initial.sync({ reason: "baseline", force: true });
-    memoryIndexFixtureWriter(initial).prepare("UPDATE memory_index_sources SET hash = ''").run();
+    fixtures
+      .memoryIndexFixtureWriter(initial)
+      .prepare("UPDATE memory_index_sources SET hash = ''")
+      .run();
     await initial.close();
     using observed = observeSql();
-    const manager = await fixture.getFreshManager(config, "cli");
+    const manager = await getFreshManager(config, "cli");
     expect(Reflect.get(manager, "memorySourceProvenanceRepairPending")).toBe(true);
     expect(observed.queries.filter((sql) => /memory_index_sources/iu.test(sql))).toEqual([]);
   });
@@ -65,7 +63,7 @@ describe("memory manager retained worker reads", () => {
       emitWarning.mock.calls.filter(([message]) =>
         String(message).includes("MemorySearchManager.status"),
       );
-    const manager = await fixture.getFreshManager(config, "cli");
+    const manager = await getFreshManager(config, "cli");
     expect(await manager.statusAsync()).toMatchObject({ files: 0, chunks: 0 });
     expect(await manager.probeVectorStoreAvailability()).toBe(true);
     await manager.sync({ reason: "cold-vectors", force: true });
@@ -74,7 +72,7 @@ describe("memory manager retained worker reads", () => {
     expect(indexed.chunks).toBeGreaterThan(0);
     expect((await manager.search("alpha", { minScore: 0 })).length).toBeGreaterThan(0);
     await manager.close();
-    const reopened = await fixture.getFreshManager(config, "status");
+    const reopened = await getFreshManager(config, "status");
     expect(await reopened.statusAsync()).toMatchObject({
       files: 2,
       chunks: indexed.chunks,
@@ -100,7 +98,7 @@ describe("memory manager retained worker reads", () => {
 
   it("keeps transcript statistics off the host during session catch-up", async () => {
     await seedSession("startup-stats", "Published startup statistics.");
-    const manager = await fixture.getFreshManager(sessionConfig(), "cli");
+    const manager = await getFreshManager(sessionConfig(), "cli");
     await manager.sync({ reason: "baseline", force: true });
     using observed = observeSql();
     await manager.sync({ reason: "cli" });
@@ -145,7 +143,7 @@ describe("memory manager retained worker reads", () => {
       await release.promise;
       return result;
     });
-    const manager = await fixture.getFreshManager(sessionConfig());
+    const manager = await getFreshManager(sessionConfig());
     using sync = vi.spyOn(manager, "sync");
     const closed = vi.fn();
     let closing: Promise<void> | undefined;
@@ -166,9 +164,9 @@ describe("memory manager retained worker reads", () => {
   it.each(["ready", "rejected"] as const)(
     "waits for a %s cache read before requesting embeddings",
     async (outcome) => {
-      const memoryPath = path.join(fixture.paths.memory, "2026-01-12.md");
+      const memoryPath = path.join(paths.memory, "2026-01-12.md");
       await fs.writeFile(memoryPath, "Published alpha cache-read source.");
-      const manager = await fixture.getFreshManager(
+      const manager = await getFreshManager(
         memoryConfig({ provider: "openai", cacheEnabled: true, vectorEnabled: false }),
         "cli",
       );
@@ -180,7 +178,7 @@ describe("memory manager retained worker reads", () => {
       const before = chunks(publishedDb);
       const replacement = "Replacement beta after the cache read.";
       await fs.writeFile(memoryPath, replacement);
-      fixture.provider.embeddedBatchTexts = [];
+      provider.embeddedBatchTexts = [];
       const delivered = createDeferred<void>();
       const release = createDeferred<void>();
       let readDelivered = false;
@@ -203,15 +201,15 @@ describe("memory manager retained worker reads", () => {
       try {
         await Promise.race([delivered.promise, sync]);
         expect(readDelivered).toBe(true);
-        expect(fixture.provider.embeddedBatchTexts).toEqual([]);
+        expect(provider.embeddedBatchTexts).toEqual([]);
         expect(chunks(publishedDb)).toEqual(before);
         release.resolve();
         if (outcome === "ready") {
           await sync;
-          expect(fixture.provider.embeddedBatchTexts).toEqual([replacement]);
+          expect(provider.embeddedBatchTexts).toEqual([replacement]);
         } else {
           await expect(sync).rejects.toThrow("controlled cache read rejection");
-          expect(fixture.provider.embeddedBatchTexts).toEqual([]);
+          expect(provider.embeddedBatchTexts).toEqual([]);
         }
         expect(chunks(openOpenClawAgentDatabase({ agentId: "main" }).db)).toEqual(
           outcome === "ready" ? [{ text: replacement }] : before,

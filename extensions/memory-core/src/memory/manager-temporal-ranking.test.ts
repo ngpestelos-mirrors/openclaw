@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { createMemorySearchToolOrThrow } from "../tools.test-helpers.js";
 import { createManagerIndexFixture } from "./manager-index.test-support.js";
 
-const { closeAllMemorySearchManagers, getMemorySearchManager } = await import("./index.js");
+const managers = await import("./index.js");
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
 function replaceFtsWithView() {
@@ -20,10 +20,7 @@ function replaceFtsWithView() {
 }
 
 describe("memory source temporal ranking", () => {
-  const fixture = createManagerIndexFixture({
-    getMemorySearchManager,
-    closeAllMemorySearchManagers,
-  });
+  const fixture = createManagerIndexFixture(managers);
 
   it.each(["keyword-only", "hybrid", "vector-only"])(
     "keeps old dated notes above the relevance threshold through %s",

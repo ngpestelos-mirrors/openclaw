@@ -22,13 +22,10 @@ import type { MemoryIndexDatabase } from "./manager-database-context.js";
 import { createManagerIndexFixture } from "./manager-index.test-support.js";
 import type { MemoryIndexManager } from "./manager.js";
 
-const { closeAllMemorySearchManagers, getMemorySearchManager } = await import("./index.js");
+const managers = await import("./index.js");
 
 describe("Gateway index over Harness workspace files", () => {
-  const fixture = createManagerIndexFixture({
-    getMemorySearchManager,
-    closeAllMemorySearchManagers,
-  });
+  const fixture = createManagerIndexFixture(managers);
   const createConfig = (overrides: Parameters<typeof fixture.createConfig>[0] = {}) =>
     fixture.createConfig({
       provider: "none",
@@ -169,7 +166,7 @@ describe("Gateway index over Harness workspace files", () => {
         code: "WORKSPACE_ACCESS_UNAVAILABLE",
       });
       if (!indexMemory) {
-        const reopened = await getMemorySearchManager({
+        const reopened = await managers.getMemorySearchManager({
           runInBackgroundContext: runInMemoryTestBackgroundContext,
           cfg,
           agentId: "main",
