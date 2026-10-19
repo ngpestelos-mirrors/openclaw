@@ -37,8 +37,28 @@ const sessionKey = "agent:main:explicit:test-session";
 type Update = Parameters<typeof updateSessionStoreAfterAgentRun>[0];
 type Compact = Parameters<typeof recordCliCompactionInStore>[0];
 
+function runResult(
+  agentMeta: Partial<Parameters<typeof createRunResult>[0]> = {},
+  meta: Parameters<typeof createRunResult>[1] = {},
+) {
+  return createRunResult({ sessionId, provider: "openai", model: "gpt-5.5", ...agentMeta }, meta);
+}
+
+function accountingFact(
+  storePath: string,
+  target: Partial<NonNullable<Update["compactionAccounting"]>["target"]> = {},
+): NonNullable<Update["compactionAccounting"]> {
+  return {
+    kind: "durable",
+    count: 0,
+    currentContextSnapshot: { tokens: 42 },
+    target: { agentId: "main", sessionId, sessionKey, storePath, ...target },
+  };
+}
+
 async function withSession(
   run: (fixture: {
+    dir: string;
     storePath: string;
     sessionStore: Record<string, SessionEntry>;
     seed: (patch?: Partial<SessionEntry>) => Promise<SessionEntry>;
@@ -49,9 +69,10 @@ async function withSession(
     read: () => SessionEntry | undefined;
   }) => Promise<void>,
 ) {
-  await withTempSessionStore(async ({ storePath }) => {
+  await withTempSessionStore(async ({ dir, storePath }) => {
     const sessionStore: Record<string, SessionEntry> = {};
     await run({
+      dir,
       storePath,
       sessionStore,
       seed: async (patch = {}) => {
@@ -69,7 +90,7 @@ async function withSession(
           sessionStore,
           defaultProvider: "openai",
           defaultModel: "gpt-5.5",
-          result: createRunResult({ sessionId, provider: "openai", model: "gpt-5.5" }),
+          result: runResult(),
           ...params,
         }),
       compact: (params) =>
@@ -85,49 +106,39 @@ async function withSession(
   });
 }
 
-function contextBudgetStatus(
-  overrides: Partial<NonNullable<SessionEntry["contextBudgetStatus"]>> = {},
-): NonNullable<SessionEntry["contextBudgetStatus"]> {
-  return {
-    schemaVersion: 1,
-    source: "pre-prompt-estimate",
-    updatedAt: 123,
-    provider: "minimax",
-    model: "MiniMax-M2.7",
-    route: "fits",
-    shouldCompact: false,
-    estimatedPromptTokens: 18_000,
-    contextTokenBudget: 32_000,
-    promptBudgetBeforeReserve: 28_000,
-    reserveTokens: 4_000,
-    effectiveReserveTokens: 4_000,
-    remainingPromptBudgetTokens: 10_000,
-    overflowTokens: 0,
-    toolResultReducibleChars: 0,
-    messageCount: 4,
-    unwindowedMessageCount: 4,
-    ...overrides,
-  };
-}
+const nativeCompactionBudget: NonNullable<SessionEntry["contextBudgetStatus"]> = {
+  schemaVersion: 1,
+  source: "pre-prompt-estimate",
+  updatedAt: 123,
+  provider: "codex",
+  model: "gpt-5.5",
+  route: "compact_only",
+  shouldCompact: true,
+  estimatedPromptTokens: 18_000,
+  contextTokenBudget: 32_000,
+  promptBudgetBeforeReserve: 28_000,
+  reserveTokens: 4_000,
+  effectiveReserveTokens: 4_000,
+  remainingPromptBudgetTokens: 10_000,
+  overflowTokens: 0,
+  toolResultReducibleChars: 0,
+  messageCount: 4,
+  unwindowedMessageCount: 4,
+};
 
 describe("updateSessionStoreAfterAgentRun", () => {
   it.each(["finalizer", "cli-compaction"] as const)(
     "publishes %s cache at commit without overwriting a subsequent writer",
     async (operation) => {
-      await withTempSessionStore(async ({ storePath }) => {
-        const publicationKey = `agent:main:commit-publication:${operation}`;
-        const owner: SessionEntry = {
-          sessionId: "committed-session",
+      await withSession(async ({ storePath, sessionStore, seed, update, compact, read }) => {
+        const owner = await seed({
           lifecycleRevision: "lifecycle",
           activeWriterRunId: "current-writer",
-          updatedAt: 1,
           compactionCount: 2,
           cliSessionBindings: { codex: { sessionId: "native-session" } },
           totalTokens: 900,
           totalTokensFresh: true,
-        };
-        await seedSessionStore(storePath, { [publicationKey]: owner });
-        const sessionStore = { [publicationKey]: owner };
+        });
         const replacement: SessionEntry = {
           ...owner,
           activeWriterRunId: "replacement-writer",
@@ -140,16 +151,16 @@ describe("updateSessionStoreAfterAgentRun", () => {
         const originalPatch = sessionAccessor.patchSessionEntryCore;
         const patch = vi
           .spyOn(sessionAccessor, "patchSessionEntryCore")
-          .mockImplementation((scope, update, options) =>
-            originalPatch(scope, update, {
+          .mockImplementation((scope, patchEntry, options) =>
+            originalPatch(scope, patchEntry, {
               ...options,
               onCommitted: (committed) => {
                 options?.onCommitted?.(committed);
-                if (scope.sessionKey !== publicationKey || scope.storePath !== storePath) {
+                if (scope.sessionKey !== sessionKey || scope.storePath !== storePath) {
                   return;
                 }
                 observed.push({
-                  cached: sessionStore[publicationKey]!,
+                  cached: sessionStore[sessionKey]!,
                   persisted: loadSessionEntry({ ...scope, readConsistency: "latest" }),
                 });
                 sessionAccessor.replaceSessionEntrySync(scope, replacement);
@@ -161,44 +172,25 @@ describe("updateSessionStoreAfterAgentRun", () => {
                   throw new Error("expected the committed replacement writer");
                 }
                 replacementSnapshot = structuredClone(canonicalReplacement);
-                sessionStore[publicationKey] = canonicalReplacement;
+                sessionStore[sessionKey] = canonicalReplacement;
               },
             }),
           );
         try {
           let recorded: SessionEntry | undefined;
           if (operation === "cli-compaction") {
-            recorded = await recordCliCompactionInStore({
-              agentId: "main",
+            recorded = await compact({
               compactionKind: "native-harness",
-              sessionKey: publicationKey,
-              sessionStore,
-              storePath,
               expectedSession: owner,
               tokensAfter: 42,
             });
           } else {
-            await updateSessionStoreAfterAgentRun({
-              cfg: {},
-              sessionId: owner.sessionId,
-              sessionKey: publicationKey,
-              sessionStore,
-              storePath,
-              defaultProvider: "openai",
+            await update({
               defaultModel: "gpt-5.6-luna",
-              compactionAccounting: {
-                kind: "durable",
-                count: 0,
-                currentContextSnapshot: { tokens: 42 },
-                target: {
-                  agentId: "main",
-                  sessionId: owner.sessionId,
-                  sessionKey: publicationKey,
-                  storePath,
-                  lifecycleRevision: owner.lifecycleRevision,
-                  activeWriterRunId: owner.activeWriterRunId,
-                },
-              },
+              compactionAccounting: accountingFact(storePath, {
+                lifecycleRevision: owner.lifecycleRevision,
+                activeWriterRunId: owner.activeWriterRunId,
+              }),
               result: { meta: { durationMs: 1 } },
             });
           }
@@ -212,8 +204,8 @@ describe("updateSessionStoreAfterAgentRun", () => {
           });
           expect(observed[0]?.cached).toEqual(observed[0]?.persisted);
           expect(replacementSnapshot).toBeDefined();
-          expect(sessionStore[publicationKey]).toEqual(replacementSnapshot);
-          expect(loadPersistedSessionEntry(storePath, publicationKey)).toEqual(replacementSnapshot);
+          expect(sessionStore[sessionKey]).toEqual(replacementSnapshot);
+          expect(read()).toEqual(replacementSnapshot);
           if (operation === "cli-compaction") {
             expect(recorded).toEqual(observed[0]?.persisted);
           }
@@ -225,59 +217,41 @@ describe("updateSessionStoreAfterAgentRun", () => {
   );
 
   it("uses the prepared agent directory for multi-agent cost accounting", async () => {
-    await withTempSessionStore(async ({ dir, storePath }) => {
+    await withSession(async ({ dir, update, sessionStore }) => {
       const costKey = "agent:marie:dashboard:cost-accounting";
       const costSessionId = "cost-accounting-session";
-      const sessionStore: Record<string, SessionEntry> = {};
       const agentDir = path.join(dir, "agents", "marie", "agent");
+      const model = {
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        reasoning: true,
+        input: ["text" as const],
+        cost: { input: 2, output: 4, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 8_192,
+      };
+      const localModel = { id: model.id, cost: { ...model.cost, input: 3, output: 5 } };
       await fs.mkdir(agentDir, { recursive: true });
       await fs.writeFile(
         path.join(agentDir, "models.json"),
-        JSON.stringify({
-          providers: {
-            openai: {
-              models: [
-                { id: "gpt-5.5", cost: { input: 3, output: 5, cacheRead: 0, cacheWrite: 0 } },
-              ],
-            },
-          },
-        }),
+        JSON.stringify({ providers: { openai: { models: [localModel] } } }),
       );
 
-      await updateSessionStoreAfterAgentRun({
+      await update({
         agentId: "marie",
         cfg: {
           agents: { ownership: "explicit", entries: { main: {}, marie: {} } },
           models: {
             providers: {
-              openai: {
-                baseUrl: "https://api.openai.com/v1",
-                models: [
-                  {
-                    id: "gpt-5.5",
-                    name: "GPT-5.5",
-                    reasoning: true,
-                    input: ["text"],
-                    cost: { input: 2, output: 4, cacheRead: 0, cacheWrite: 0 },
-                    contextWindow: 128_000,
-                    maxTokens: 8_192,
-                  },
-                ],
-              },
+              openai: { baseUrl: "https://api.openai.com/v1", models: [model] },
             },
           },
         } satisfies OpenClawConfig,
         agentDir,
         sessionId: costSessionId,
         sessionKey: costKey,
-        storePath,
-        sessionStore,
-        defaultProvider: "openai",
-        defaultModel: "gpt-5.5",
-        result: createRunResult({
+        result: runResult({
           sessionId: costSessionId,
-          provider: "openai",
-          model: "gpt-5.5",
           usage: { input: 1_000_000, output: 1_000_000 },
         }),
       });
@@ -291,10 +265,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
       await seed({ restartRecoveryForceSafeTools: true });
       await update({
         clearRestartRecoveryForceSafeTools: true,
-        result: createRunResult(
-          { sessionId, provider: "openai", model: "gpt-5.5" },
-          { aborted: true },
-        ),
+        result: runResult({}, { aborted: true }),
       });
       expect(sessionStore[sessionKey]?.restartRecoveryForceSafeTools).toBe(true);
       expect(read()?.restartRecoveryForceSafeTools).toBe(true);
@@ -325,10 +296,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
       await seedSessionStore(storePath, { [sessionKey]: concurrent });
       const sql = observeHostDataSql();
       await update({
-        result: createRunResult({
-          sessionId,
-          provider: "openai",
-          model: "gpt-5.5",
+        result: runResult({
           contextTokens: 32_000,
           contextTokensSource: "runtime",
         }),
@@ -355,11 +323,9 @@ describe("updateSessionStoreAfterAgentRun", () => {
       await seed({ sessionFile: "old-session.jsonl" });
       await update({
         sessionId: "rotated-session",
-        result: createRunResult({
+        result: runResult({
           sessionId: "rotated-session",
           sessionFile: "rotated-session.jsonl",
-          provider: "openai",
-          model: "gpt-5.5",
           compactionCount: 1,
         }),
       });
@@ -372,14 +338,9 @@ describe("updateSessionStoreAfterAgentRun", () => {
   it("stores and reloads the runtime model for explicit session-id-only runs", async () => {
     await withTempSessionStore(async ({ storePath }) => {
       const cfg = {
-        session: {
-          store: storePath,
-          mainKey: "main",
-        },
-        agents: {
-          defaults: {},
-        },
-      } as never;
+        session: { store: storePath, mainKey: "main" },
+        agents: { defaults: {} },
+      } satisfies OpenClawConfig;
 
       const first = await resolveSession({
         cfg,
@@ -396,16 +357,11 @@ describe("updateSessionStoreAfterAgentRun", () => {
         sessionStore: {},
         defaultProvider: "claude-cli",
         defaultModel: "claude-sonnet-4-6",
-        result: {
-          payloads: [],
-          meta: {
-            agentMeta: {
-              provider: "claude-cli",
-              model: "claude-sonnet-4-6",
-              sessionId: "claude-cli-session-1",
-            },
-          },
-        } as never,
+        result: runResult({
+          provider: "claude-cli",
+          model: "claude-sonnet-4-6",
+          sessionId: "claude-cli-session-1",
+        }),
       });
 
       const second = await resolveSession({
@@ -414,16 +370,12 @@ describe("updateSessionStoreAfterAgentRun", () => {
       });
 
       expect(second.sessionKey).toBe(first.sessionKey);
-      expect(second.sessionEntry).toMatchObject({
-        modelProvider: "claude-cli",
-        model: "claude-sonnet-4-6",
-      });
-
-      const persisted = loadPersistedSessionEntry(storePath, first.sessionKey!);
-      expect(persisted).toMatchObject({
-        modelProvider: "claude-cli",
-        model: "claude-sonnet-4-6",
-      });
+      for (const entry of [
+        second.sessionEntry,
+        loadPersistedSessionEntry(storePath, first.sessionKey!),
+      ]) {
+        expect(entry).toMatchObject({ modelProvider: "claude-cli", model: "claude-sonnet-4-6" });
+      }
     });
   });
 
@@ -444,20 +396,17 @@ describe("updateSessionStoreAfterAgentRun", () => {
       });
 
       const result = await resolveSession({
-        cfg: {
-          session: {
-            store: storePath,
-            mainKey: "main",
-          },
-        } as OpenClawConfig,
+        cfg: { session: { store: storePath, mainKey: "main" } },
         sessionKey: completedKey,
       });
 
       expect(result.isNewSession).toBe(false);
       expect(result.sessionId).toBe(existingSessionId);
-      expect(result.sessionEntry?.sessionId).toBe(existingSessionId);
-      expect(result.sessionEntry?.status).toBe("done");
-      expect(result.sessionEntry?.endedAt).toBe(now - 100);
+      expect(result.sessionEntry).toMatchObject({
+        sessionId: existingSessionId,
+        status: "done",
+        endedAt: now - 100,
+      });
     });
   });
 
@@ -465,8 +414,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
     await withSession(async ({ seed, update, read, sessionStore }) => {
       await seed({ totalTokens: 0, totalTokensFresh: true });
       await update({
-        result: createRunResult({
-          sessionId,
+        result: runResult({
           provider: "minimax",
           model: "MiniMax-M2.7",
           compactionCount: 1,
@@ -474,8 +422,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
         }),
       });
       for (const entry of [sessionStore[sessionKey], read()]) {
-        expect(entry?.totalTokens).toBe(0);
-        expect(entry?.totalTokensFresh).toBe(false);
+        expect(entry).toMatchObject({ totalTokens: 0, totalTokensFresh: false });
       }
     });
   });
@@ -486,8 +433,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
       await update({
         defaultProvider: "custom-openai",
         defaultModel: "responses-model",
-        result: createRunResult({
-          sessionId,
+        result: runResult({
           provider: "custom-openai",
           model: "responses-model",
           usage: {
@@ -529,22 +475,11 @@ describe("updateSessionStoreAfterAgentRun", () => {
         }
         const before = read();
         await update({
-          compactionAccounting: {
-            kind: "durable",
-            count: 0,
-            currentContextSnapshot: { tokens: 42 },
-            target: {
-              agentId: "main",
-              sessionId,
-              sessionKey,
-              storePath,
-              lifecycleRevision: "lifecycle",
-              activeWriterRunId: "previous-writer",
-            },
-          },
-          result: createRunResult({
-            sessionId,
-            provider: "openai",
+          compactionAccounting: accountingFact(storePath, {
+            lifecycleRevision: "lifecycle",
+            activeWriterRunId: "previous-writer",
+          }),
+          result: runResult({
             model: "gpt-5.6-luna",
             usage: { cost: { total: 0 } },
           }),
@@ -609,10 +544,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
         touchActivity: false,
         preserveRuntimeModel: true,
         clearRestartRecoveryForceSafeTools: true,
-        result: createRunResult(
-          { sessionId, provider: "openai", model: "gpt-5.5" },
-          { aborted: false },
-        ),
+        result: runResult({}, { aborted: false }),
       });
       for (const entry of [sessionStore[sessionKey], read()]) {
         expect(entry?.abortedLastRun).toBe(false);
@@ -702,9 +634,8 @@ describe("updateSessionStoreAfterAgentRun", () => {
       await seedSessionStore(storePath, { [sessionKey]: visible });
       await update({
         preserveUserFacingSessionModelState: true,
-        result: createRunResult(
+        result: runResult(
           {
-            sessionId,
             provider: "claude-cli",
             model: "claude-sonnet-4-6",
             contextTokens: 200_000,
@@ -729,12 +660,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
       const original = { sessionId, updatedAt: 1, modelProvider: "openai", model: "gpt-5.5" };
       sessionStore[sessionKey] = original;
       await update({
-        result: createRunResult({
-          sessionId,
-          provider: "openai",
-          model: "gpt-5.5",
-          usage: { input: 100, output: 20 },
-        }),
+        result: runResult({ usage: { input: 100, output: 20 } }),
       });
       expect(sessionStore[sessionKey]).toEqual(original);
       expect(read()).toBeUndefined();
@@ -755,11 +681,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
       await update({
         defaultProvider: "anthropic",
         defaultModel: "claude-sonnet-4-6",
-        result: createRunResult({
-          sessionId,
-          provider: "anthropic",
-          model: "claude-sonnet-4-6",
-        }),
+        result: runResult({ provider: "anthropic", model: "claude-sonnet-4-6" }),
       });
       expect(read()).toEqual(replacement);
     });
@@ -776,12 +698,7 @@ describe("recordCliCompactionInStore", () => {
         outputTokens: 100,
         cacheRead: 6_900,
         cacheWrite: 0,
-        contextBudgetStatus: contextBudgetStatus({
-          provider: "codex",
-          model: "gpt-5.5",
-          route: "compact_only",
-          shouldCompact: true,
-        }),
+        contextBudgetStatus: nativeCompactionBudget,
       });
       const sql = observeHostDataSql();
       await compact({ expectedSession: owner, compactionKind: "native-harness" }).finally(
