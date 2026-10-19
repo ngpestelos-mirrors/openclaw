@@ -171,6 +171,8 @@ function DetailsGlyph() {
 }
 
 export function ChatPaneHeader(props: ChatPaneHeaderProps) {
+  // Pane activation must not replace the pointer target before its click.
+  const detailsGlyph = <DetailsGlyph />;
   // One retained picker follows Dashboard between its side and main surfaces.
   // Its facts come directly from this reactive native header projection.
   const dashboardControls = <ChatDashboardMenu {...props} widgetMenu={props.dashboardWidgetMenu} />;
@@ -202,7 +204,7 @@ export function ChatPaneHeader(props: ChatPaneHeaderProps) {
               }
             : undefined
         }
-        triggerContent={!props.mergedChrome ? <DetailsGlyph /> : undefined}
+        triggerContent={!props.mergedChrome ? detailsGlyph : undefined}
         mobileBindings={
           props.detailsControl?.mobileBindings
             ? {

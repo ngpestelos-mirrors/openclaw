@@ -5,6 +5,7 @@ import {
   installMockGateway,
   startControlUiE2eServer,
 } from "../test-helpers/control-ui-e2e.ts";
+import { closeChatDetails, openChatDetails } from "./chat-details.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 import { captureUiProof, pollLocatorText } from "./new-session-page.test-support.ts";
 
@@ -93,9 +94,9 @@ suite.define(() => {
         const response = await page.goto(controlUiSessionUrl(suite.server.baseUrl, session.key));
         expect(response?.status()).toBe(200);
         await gateway.waitForRequest("sessions.list");
-        const chip = page.locator(".chat-pane__placement-chip");
-        await expect.poll(() => chip.textContent()).toBe("machine0 · team");
-        await chip.click();
+        const details = await openChatDetails(page);
+        const machineTrigger = details.locator(".chat-environment__machine-trigger");
+        await machineTrigger.click();
         const facts = page.locator(".chat-pane__placement-facts");
         await facts.waitFor({ state: "visible" });
         for (const [label, value] of [
@@ -109,6 +110,7 @@ suite.define(() => {
           "…d94c1a",
         );
         await page.keyboard.press("Escape");
+        await closeChatDetails(page);
         const sidebarRow = page.locator(
           `.sidebar-recent-session[data-session-key="${session.key}"]`,
         );

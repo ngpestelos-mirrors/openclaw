@@ -5,25 +5,24 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { decodeResumeHandoff } from "../../../../src/shared/resume-handoff.js";
 import type { GatewayBrowserClient, GatewayHelloOk } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
-import { openChatLayoutMenu } from "../../test-helpers/chat-layout-menu.ts";
 import { waitForSolid } from "../../test-helpers/solid-settle.ts";
 import {
   createPaneHeaderWorkspaceFixture,
   createSessionCapabilityFixture,
   createTestChatPane,
+  getPaneTestRuntime,
 } from "./chat-pane.test-support.ts";
-import { renderPaneHeaderInto } from "./components/chat-pane-header.test-support.ts";
+import {
+  openNativeMenu,
+  renderPaneHeaderInto,
+} from "./components/chat-pane-header.test-support.ts";
 import { openSlot } from "./sidebar-layout.ts";
 
 async function openPanelMenu(container: HTMLElement) {
-  return openChatLayoutMenu({
-    container,
-    click: async (element) => {
-      element.click();
-      await Promise.resolve();
-      flush();
-    },
-  });
+  const menu = container.querySelector<HTMLElement>(".chat-pane__layout-menu");
+  expect(menu).not.toBeNull();
+  await openNativeMenu(menu!);
+  return menu!;
 }
 
 async function selectPanel(container: HTMLElement, value: string) {
@@ -47,11 +46,14 @@ function desktopHello(methods: string[], scopes: string[]): GatewayHelloOk {
   };
 }
 
-function createTerminalPane(client: GatewayBrowserClient) {
+function createTerminalPane(client: GatewayBrowserClient, compact = false) {
   const { pane, state } = createTestChatPane({
     client,
     sessions: createSessionCapabilityFixture(),
   });
+  // Compact embedded panes retain the fallback Panels menu; full mobile panes use a host.
+  getPaneTestRuntime(pane).mergedChrome = compact;
+  getPaneTestRuntime(pane).compact = compact;
   const container = document.body.appendChild(document.createElement("div"));
   onTestFinished(() => container.remove());
   const paint = (
@@ -142,9 +144,9 @@ describe("chat pane terminal action", () => {
     );
   });
 
-  it("exposes the terminal as a side-panel tab only when available", async () => {
+  it("offers Terminal in the compact fallback only when available", async () => {
     const client = { request: vi.fn() } as unknown as GatewayBrowserClient;
-    const { state, container, paint } = createTerminalPane(client);
+    const { state, container, paint } = createTerminalPane(client, true);
     const session = {
       key: state.sessionKey,
       kind: "direct",
@@ -175,9 +177,9 @@ describe("chat pane terminal action", () => {
     ).toBe(false);
   });
 
-  it("exposes Desktop as a side-panel action only for observable session targets", async () => {
+  it("offers Desktop in the compact fallback only for observable session targets", async () => {
     const client = { request: vi.fn() } as unknown as GatewayBrowserClient;
-    const { pane, state, container, paint } = createTerminalPane(client);
+    const { pane, state, container, paint } = createTerminalPane(client, true);
     const localSession = {
       key: state.sessionKey,
       kind: "direct",
@@ -272,9 +274,9 @@ describe("chat pane terminal action", () => {
     }
   });
 
-  it("keeps Browser reachable in the topbar", async () => {
+  it("keeps Browser reachable through the compact fallback", async () => {
     const client = { request: vi.fn() } as unknown as GatewayBrowserClient;
-    const { state, container, paint } = createTerminalPane(client);
+    const { state, container, paint } = createTerminalPane(client, true);
     const session = {
       key: state.sessionKey,
       kind: "direct",
