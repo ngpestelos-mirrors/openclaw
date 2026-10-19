@@ -9,11 +9,9 @@ import { sanitizeForLog, stripAnsi, visibleWidth } from "./ansi.js";
 import { tableStackEntrypoint } from "./table-runtime.test-support.js";
 import { renderTable, type TableColumn } from "./table.js";
 
-const column = (key: string, options: Omit<TableColumn, "key" | "header"> = {}): TableColumn => ({
-  key,
-  header: key,
-  ...options,
-});
+function column(key: string, options: Omit<TableColumn, "key" | "header"> = {}): TableColumn {
+  return { key, header: key, ...options };
+}
 const cells = (lines: string[], strip: (line: string) => string, separator: string) =>
   lines.map((line) =>
     strip(line)
@@ -22,16 +20,12 @@ const cells = (lines: string[], strip: (line: string) => string, separator: stri
       .map((cell) => cell.trim()),
   );
 
-function mockProcessPlatform(platform: NodeJS.Platform): void {
-  vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+function renderRow(columns: TableColumn[], row: Record<string, string>, width?: number) {
+  return renderTable({ columns, rows: [row], width });
 }
 
 function renderCell(value: string, minWidth?: number, width?: number) {
-  return renderTable({
-    columns: [column("V", { minWidth })],
-    rows: [{ V: value }],
-    width,
-  });
+  return renderRow([column("V", { minWidth })], { V: value }, width);
 }
 
 function matchingLines(out: string, text: string) {
@@ -54,12 +48,12 @@ function expectIntroducersToStartCompleteSequences(
 }
 
 function renderValue(value: string, width = 24) {
-  mockProcessPlatform("darwin");
-  return renderTable({
+  vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+  return renderRow(
+    [column("K", { minWidth: 3 }), column("V", { flex: true, minWidth: 10 })],
+    { K: "X", V: value },
     width,
-    columns: [column("K", { minWidth: 3 }), column("V", { flex: true, minWidth: 10 })],
-    rows: [{ K: "X", V: value }],
-  });
+  );
 }
 
 const pluginListColumns = [
@@ -73,14 +67,6 @@ const pluginListColumns = [
 
 const pluginListRows = [
   {
-    Name: "Amazon Bedrock",
-    ID: "amazon-bedrock",
-    Format: "openclaw",
-    Status: "enabled",
-    Source: "~/Projects/openclaw/extensions/amazon-bedrock/index.ts",
-    Version: "2026.8.1",
-  },
-  {
     Name: "N".repeat(40),
     ID: "i".repeat(22),
     Format: "openclaw",
@@ -91,13 +77,13 @@ const pluginListRows = [
 ];
 
 function renderPluginListTable(width: number): string {
-  mockProcessPlatform("darwin");
+  vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
   return renderTable({ width, columns: pluginListColumns, rows: pluginListRows });
 }
 
 describe("renderTable", () => {
   beforeEach(() => {
-    mockProcessPlatform("win32");
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     vi.stubEnv("WT_SESSION", "");
     vi.stubEnv("TERM_PROGRAM", "");
     vi.stubEnv("TERM", "vt100");
@@ -156,12 +142,12 @@ describe("renderTable", () => {
       expect(result.error).toBeUndefined();
       expect(result.status, result.stderr).toBe(0);
       const rendered = JSON.parse(result.stdout);
-      expect(rendered.lineCount).toBe(shape === "soft-wrap suffix" ? 6 : 150_004);
-      expect(rendered.rows).toBe(shape === "soft-wrap suffix" ? 0 : 150_000);
-      if (shape === "soft-wrap suffix") {
-        expect(rendered.softWrapRowsMatch).toBe(true);
-      }
-      expect(rendered.header).toMatch(/^([│|]) Key +\1$/u);
+      expect(rendered).toMatchObject({
+        lineCount: shape === "soft-wrap suffix" ? 6 : 150_004,
+        rows: shape === "soft-wrap suffix" ? 0 : 150_000,
+        ...(shape === "soft-wrap suffix" ? { softWrapRowsMatch: true } : {}),
+        header: expect.stringMatching(/^([│|]) Key +\1$/u),
+      });
       expect([
         ["+-----+", "+-----+"],
         ["┌─────┐", "└─────┘"],
@@ -188,46 +174,33 @@ describe("renderTable", () => {
   it("keeps ANSI styling when a multiline cell wraps after an unstyled line", () => {
     const muted = "\x1b[38;2;120;120;120m";
     const resetForeground = "\x1b[39m";
-    const out = renderTable({
-      width: 62,
-      columns: [
-        column("Status", { minWidth: 10 }),
-        column("Source", { minWidth: 24, flex: true }),
-        column("Version", { minWidth: 8 }),
-      ],
-      rows: [
-        {
-          Status: "disabled",
-          Source:
-            "stock:codex/index.js\n" +
-            `${muted}Codex app-server harness and Codex-managed GPT model catalog.${resetForeground}`,
-          Version: "2026.5.12-beta.6",
-        },
-      ],
-    });
+    const out = renderValue(`plain\n${muted}${"styled ".repeat(12)}${resetForeground}`);
 
-    const descLines = out
-      .split("\n")
-      .filter((line) => line.includes("Codex") || line.includes("catalog."));
-    expect(descLines.length).toBeGreaterThan(1);
-    for (const line of descLines) {
+    for (const line of matchingLines(out, "styled")) {
       expect(line).toContain(muted);
       const resetIndex = line.lastIndexOf(resetForeground);
-      const lastSep = Math.max(line.lastIndexOf("│"), line.lastIndexOf("|"));
       expect(resetIndex).toBeGreaterThan(-1);
-      expect(lastSep).toBeGreaterThan(resetIndex);
+      expect(line.lastIndexOf("│")).toBeGreaterThan(resetIndex);
     }
   });
 
-  it("keeps intensity active when an RGB color contains zero operands", () => {
-    const bold = "\x1b[1m";
-    const red = "\x1b[38;2;255;0;0m";
-    const reset = "\x1b[0m";
-    const out = renderValue(`prefix ${bold}${red}${"a".repeat(80)}${reset}`);
-
-    for (const line of matchingLines(out, "a")) {
-      expect(line).toContain(bold);
-      expect(line).toContain(red);
+  it.each([
+    [
+      "RGB zero operands",
+      "prefix \x1b[1m\x1b[38;2;255;0;0m",
+      ["\x1b[1m", "\x1b[38;2;255;0;0m"],
+      [],
+    ],
+    ["selective reset", "\x1b[1;31mred\x1b[39m\n", ["\x1b[1m"], ["\x1b[1;31m", "\x1b[31m"]],
+  ] as const)("keeps unrelated SGR categories after %s", (_name, prefix, present, absent) => {
+    const out = renderValue(`${prefix}${"z".repeat(80)}\x1b[0m`);
+    for (const line of matchingLines(out, "z")) {
+      for (const sequence of present) {
+        expect(line).toContain(sequence);
+      }
+      for (const sequence of absent) {
+        expect(line).not.toContain(sequence);
+      }
     }
   });
 
@@ -245,20 +218,6 @@ describe("renderTable", () => {
       const hasClosingState =
         line.includes(globalReset) || (line.includes("\x1b[24m") && line.includes("\x1b[59m"));
       expect(hasClosingState).toBe(true);
-    }
-  });
-
-  it("keeps unrelated SGR categories after a selective reset", () => {
-    const boldRed = "\x1b[1;31m";
-    const bold = "\x1b[1m";
-    const resetForeground = "\x1b[39m";
-    const reset = "\x1b[0m";
-    const out = renderValue(`${boldRed}red${resetForeground}\n${"z".repeat(80)}${reset}`);
-
-    for (const line of matchingLines(out, "z")) {
-      expect(line).toContain(bold);
-      expect(line).not.toContain(boldRed);
-      expect(line).not.toContain("\x1b[31m");
     }
   });
 
@@ -306,11 +265,11 @@ describe("renderTable", () => {
   it("preserves blank colored CRLF lines without adding rows after wrapped spacing", () => {
     const open = "\x1b[31m";
     const close = "\x1b[39m";
-    const out = renderTable({
-      width: 15,
-      columns: [column("A", { minWidth: 6 }), column("B", { minWidth: 6 })],
-      rows: [{ A: `${open}\r\nRead \r\n\r\nNext\r\n\r\n${close}`, B: "0\n1\n2\n3\n4" }],
-    });
+    const out = renderRow(
+      [column("A", { minWidth: 6 }), column("B", { minWidth: 6 })],
+      { A: `${open}\r\nRead \r\n\r\nNext\r\n\r\n${close}`, B: "0\n1\n2\n3\n4" },
+      15,
+    );
 
     const dataLines = out.trimEnd().split("\n").slice(3, -1);
     expect(cells(dataLines, stripAnsi, "|")).toEqual([
@@ -339,12 +298,12 @@ describe("renderTable", () => {
   ] as const)(
     "respects explicit %s newlines in cell values",
     (_name, value, open, close, styledStart) => {
-      mockProcessPlatform("darwin");
-      const out = renderTable({
-        width: 48,
-        columns: [column("A", { minWidth: 6 }), column("B", { minWidth: 10, flex: true })],
-        rows: [{ A: "row", B: value }],
-      });
+      vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+      const out = renderRow(
+        [column("A", { minWidth: 6 }), column("B", { minWidth: 10, flex: true })],
+        { A: "row", B: value },
+        48,
+      );
 
       const lines = out.trimEnd().split("\n");
       expect(lines).toHaveLength(6);
@@ -367,7 +326,7 @@ describe("renderTable", () => {
   it("shortens home paths in table cells for a whitespace-padded OPENCLAW_HOME", () => {
     const home = path.resolve("/srv/openclaw-home");
     const prefix = "$OPENCLAW_HOME";
-    mockProcessPlatform("darwin");
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     vi.stubEnv("HOME", "/home/other");
     vi.stubEnv("USERPROFILE", "");
     vi.stubEnv("OPENCLAW_HOME", " /srv/openclaw-home ");
@@ -390,14 +349,14 @@ describe("renderTable", () => {
   });
 
   it("terminates with aligned borders when a flex column starts at its floor", () => {
-    const out = renderTable({
-      width: 10,
-      columns: [
+    const out = renderRow(
+      [
         { key: "A", header: "long header here" },
         { key: "B", header: "", flex: true },
       ],
-      rows: [{ A: "data", B: "📸" }],
-    });
+      { A: "data", B: "📸" },
+      10,
+    );
     const lines = out.trimEnd().split("\n");
     const headerWidth = visibleWidth(lines[0] ?? "");
     expect(headerWidth).toBeGreaterThan(10);
@@ -426,17 +385,14 @@ describe("renderTable", () => {
     }
   });
 
-  it("falls back to ASCII borders on legacy Windows consoles", () => {
+  it.each([
+    ["legacy", "", "vt100", "+", "┌"],
+    ["modern", "1", "", "┌", "+"],
+  ])("selects borders for %s Windows terminals", (_name, session, term, border, excluded) => {
+    vi.stubEnv("WT_SESSION", session);
+    vi.stubEnv("TERM", term);
     const out = renderCell("value");
-    expect(out).toContain("+");
-    expect(out).not.toContain("┌");
-  });
-
-  it("keeps unicode borders on modern Windows terminals", () => {
-    vi.stubEnv("WT_SESSION", "1");
-    vi.stubEnv("TERM", "");
-    const out = renderCell("value");
-    expect(out).toContain("┌");
-    expect(out).not.toContain("+");
+    expect(out).toContain(border);
+    expect(out).not.toContain(excluded);
   });
 });

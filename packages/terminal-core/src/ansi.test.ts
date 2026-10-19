@@ -19,26 +19,23 @@ function expectEverySplit(input: string, text: string, expected: string[]) {
   }
 }
 
-function expectChunked(chunks: string[], expected = "AB") {
-  const stripper = new AnsiSequenceStripper();
-  expect(chunks.map((chunk) => stripper.write(chunk)).join("") + stripper.finish()).toBe(expected);
-  expect(stripAnsiSequences(chunks.join(""))).toBe(expected);
-}
-
 describe("terminal ansi helpers", () => {
   it.each([
     ["ESC OSC with ESC ST", ["A\u001B]0;title", "\u001B\\B"]],
     ["C1 OSC with C1 ST", ["A\u009D0;title", "\u009CB"]],
     ["ESC compatibility bracket prefix", ["A\u001B[", "[AB"]],
     ["ESC compatibility mixed prefixes", ["A\u001B(", "[31mB"]],
+    ["trailing ESC before OSC", ["A\u001B", "]0;title\u0007B"]],
+    ["OSC with stray ESC before BEL", ["A\u001B]0;title\u001B\u0007", "B"]],
   ])("strips chunked %s sequences incrementally", (_label, chunks) => {
-    expectChunked(chunks);
+    const stripper = new AnsiSequenceStripper();
+    expect(chunks.map((chunk) => stripper.write(chunk)).join("") + stripper.finish()).toBe("AB");
+    expect(stripAnsiSequences(chunks.join(""))).toBe("AB");
   });
 
   it("dispatches complete ESC controls once across every split", () => {
-    const csi = "\u001B[";
     const expected = ["6n", "?1h", "?6n", "?1l", "31m"];
-    expectEverySplit(`A${csi}6n${csi}?1hB${csi}?6n${csi}?1l${csi}31mC`, "ABC", expected);
+    expectEverySplit("A\x1b[6n\x1b[?1hB\x1b[?6n\x1b[?1l\x1b[31mC", "ABC", expected);
   });
 
   it.each([
@@ -67,20 +64,11 @@ describe("terminal ansi helpers", () => {
     expect(controls).toEqual(["6n"]);
   });
 
-  it("keeps a trailing ESC pending until the next chunk can identify OSC", () => {
-    expectChunked(["A\u001B", "]0;title\u0007B"]);
-  });
-
   it("does not retain large unterminated OSC payloads", () => {
     const stripper = new AnsiSequenceStripper();
     const payload = "x".repeat(1024 * 1024);
     const split = stripper.write("safe\u001B]0;") + stripper.write(payload) + stripper.finish();
     expect(split).toBe("safe");
-  });
-
-  it("terminates OSC after stray ESC before BEL", () => {
-    const input = "A\u001B]0;title\u001B\u0007B";
-    expectChunked([input.slice(0, -1), input.slice(-1)]);
   });
 
   it("strips the agent output escape grammar without changing text policy", () => {
@@ -97,21 +85,19 @@ describe("terminal ansi helpers", () => {
   });
 
   it("strips every no-argument C1 CSI final byte", () => {
-    const introducer = "\u009B";
     for (let finalCode = 0x40; finalCode <= 0x7e; finalCode += 1) {
-      const sequence = introducer + String.fromCharCode(finalCode);
+      const sequence = "\u009B" + String.fromCharCode(finalCode);
       expect(stripAnsi(`before${sequence}after`)).toBe("beforeafter");
       expect(stripAnsiSequences(`before${sequence}after`)).toBe("beforeafter");
     }
   });
 
   it("handles C1 CSI cancellation, restart, and EOF", () => {
-    const introducer = "\u009B";
     for (const strip of [stripAnsi, stripAnsiSequences]) {
-      expect(strip(`before${introducer}31\u0018after`)).toBe("beforeafter");
-      expect(strip(`before${introducer}31\u001Aafter`)).toBe("beforeafter");
-      expect(strip(`before${introducer}31\u001B[0mafter`)).toBe("beforeafter");
-      expect(strip(`before${introducer}31;`)).toBe("before");
+      expect(strip("before\u009B31\u0018after")).toBe("beforeafter");
+      expect(strip("before\u009B31\u001Aafter")).toBe("beforeafter");
+      expect(strip("before\u009B31\u001B[0mafter")).toBe("beforeafter");
+      expect(strip("before\u009B31;")).toBe("before");
     }
   });
 
