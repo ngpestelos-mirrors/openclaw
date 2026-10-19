@@ -1,4 +1,4 @@
-import { ComponentType, InteractionResponseType } from "discord-api-types/v10";
+import { InteractionResponseType } from "discord-api-types/v10";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import * as loggingCore from "openclaw/plugin-sdk/logging-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +26,7 @@ afterEach(() => {
 
 const widgetId = "AAAAAAAAAAAAAAAAAAAAAA";
 const applicationId = "123456789012345678";
+const launchIdentity = { accountId: "default", channelId: "777", discordUserId: "42" };
 
 function componentContext(cfg = createActivityTestConfig()): AgentComponentContext {
   return {
@@ -66,7 +67,6 @@ describe("Discord Activity interaction", () => {
     const runtime = createActivityTestRuntime(cfg);
     setDiscordActivitiesRuntime(runtime);
     const context = componentContext(cfg);
-
     expect(createDiscordActivityButton(context)).toBeNull();
     expect(createDiscordActivityButton(context, applicationId)).not.toBeNull();
     expect(runtime.resolveHttpAccount()?.applicationId).toBe(applicationId);
@@ -77,20 +77,13 @@ describe("Discord Activity interaction", () => {
   });
 
   it("posts a raw LAUNCH_ACTIVITY callback", async () => {
-    const post = vi.fn(async () => undefined);
     const client = createInternalTestClient();
-    attachRestMock(client, { post });
+    const { post } = attachRestMock(client, {});
     const interaction = createInteraction(
       client,
-      createInternalComponentInteractionPayload({
-        id: "interaction-1",
-        token: "itoken",
-        data: { component_type: ComponentType.Button, custom_id: `ocactivity1_${widgetId}` },
-      }),
+      createInternalComponentInteractionPayload({ id: "interaction-1", token: "itoken" }),
     ) as BaseComponentInteraction;
-
     await interaction.launchActivity();
-
     expect(post).toHaveBeenCalledWith("/interactions/interaction-1/itoken/callback", {
       body: { type: InteractionResponseType.LaunchActivity },
     });
@@ -105,29 +98,18 @@ describe("Discord Activity interaction", () => {
     const actionBlock = rendered?.blocks?.find((block) => block.type === "actions");
     const customId =
       actionBlock?.type === "actions" ? actionBlock.buttons?.[0]?.internalCustomId : "";
-    const data = button.customIdParser(customId ?? "").data ?? {};
-
-    await button.run(interaction, data);
-
+    await button.run(interaction, button.customIdParser(customId ?? "").data ?? {});
     expect(launchActivity).toHaveBeenCalledOnce();
     expect(reply).not.toHaveBeenCalled();
-    await expect(runtime.store.consumePendingLaunch("default", "777", "99")).resolves.toMatchObject(
-      { widgetId },
-    );
+    const pending = runtime.store.consumePendingLaunch("default", "777", "99");
+    await expect(pending).resolves.toMatchObject({ widgetId });
   });
 
   it("records the pending launch before acknowledging the interaction", async () => {
     const { runtime, launchActivity, run } = createLaunchFixture();
     const recordPendingLaunch = vi.spyOn(runtime.store, "recordPendingLaunch");
     await run();
-
-    expect(recordPendingLaunch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        accountId: "default",
-        channelId: "777",
-        discordUserId: "42",
-      }),
-    );
+    expect(recordPendingLaunch).toHaveBeenCalledWith(expect.objectContaining(launchIdentity));
     expect(launchActivity).toHaveBeenCalledOnce();
     expect(recordPendingLaunch.mock.invocationCallOrder[0] ?? Number.NaN).toBeLessThan(
       launchActivity.mock.invocationCallOrder[0] ?? Number.NaN,
@@ -154,25 +136,22 @@ describe("Discord Activity interaction", () => {
     const logError = vi.spyOn(loggingCore, "logError").mockImplementation(() => {});
     const { runtime, launchActivity, run } = createLaunchFixture();
     const pendingWrite = createDeferred<void>();
-    let backgroundSettled = false;
-    const stalledWrite = pendingWrite.promise.then(() => {
-      backgroundSettled = true;
-    });
+    const backgroundSettled = vi.fn<() => void>();
+    const stalledWrite = pendingWrite.promise.then(backgroundSettled);
     vi.spyOn(runtime.store, "recordPendingLaunch").mockReturnValue(stalledWrite);
     const startedAt = performance.now();
     try {
       await run();
-      const elapsedMs = performance.now() - startedAt;
       expect(launchActivity).toHaveBeenCalledOnce();
       expect(logError).toHaveBeenCalledTimes(1);
       expect(String(logError.mock.calls[0]?.[0])).toContain("exceeded");
-      expect(elapsedMs).toBeGreaterThanOrEqual(240);
-      expect(backgroundSettled).toBe(false);
+      expect(performance.now() - startedAt).toBeGreaterThanOrEqual(240);
+      expect(backgroundSettled).not.toHaveBeenCalled();
     } finally {
       pendingWrite.resolve();
       await stalledWrite;
     }
-    expect(backgroundSettled).toBe(true);
+    expect(backgroundSettled).toHaveBeenCalledOnce();
     expect(logError).toHaveBeenCalledTimes(1);
   });
 
@@ -182,10 +161,8 @@ describe("Discord Activity interaction", () => {
     const recordPendingLaunch = vi
       .spyOn(runtime.store, "recordPendingLaunch")
       .mockRejectedValue(new Error("store offline"));
-
     await run();
     await run();
-
     expect(recordPendingLaunch).toHaveBeenCalledTimes(2);
     expect(launchActivity).toHaveBeenCalledTimes(2);
     await vi.waitFor(() => expect(logError).toHaveBeenCalledOnce());
@@ -193,9 +170,7 @@ describe("Discord Activity interaction", () => {
 
   it("replies ephemerally and does not launch for invalid widget data", async () => {
     const { button, launchActivity, reply, interaction } = createLaunchFixture();
-
     await button?.run(interaction, {});
-
     expect(reply).toHaveBeenCalledWith({
       content: "This widget is no longer valid.",
       ephemeral: true,

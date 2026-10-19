@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import { postRawWebhook } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -26,12 +27,7 @@ afterEach(async () => {
 
 async function startServer(
   runtime: DiscordActivitiesRuntime,
-  options: Omit<
-    Parameters<typeof createDiscordActivityHttpHandler>[0],
-    "runtime" | "vendorAssetPath"
-  > & {
-    vendorAssetPath?: string;
-  } = {},
+  options: Partial<Omit<Parameters<typeof createDiscordActivityHttpHandler>[0], "runtime">> = {},
 ): Promise<string> {
   const route = createDiscordActivityHttpHandler({
     runtime,
@@ -55,9 +51,7 @@ async function startServer(
 }
 
 function guardedJsonFetch(params?: {
-  tokenStatus?: number;
   userId?: string;
-  instanceStatus?: number;
   channelId?: string;
   instanceUsers?: string[];
   onExchange?: (code: string | null) => Promise<number | void> | number | void;
@@ -70,11 +64,6 @@ function guardedJsonFetch(params?: {
           init?.body instanceof URLSearchParams ? init.body.get("code") : null,
         )
       : undefined;
-    const status = wantsExchange
-      ? (exchangeStatus ?? params?.tokenStatus ?? 200)
-      : wantsInstance
-        ? (params?.instanceStatus ?? 200)
-        : 200;
     const body = wantsExchange
       ? { access_token: "atoken" }
       : wantsInstance
@@ -82,12 +71,9 @@ function guardedJsonFetch(params?: {
             location: { channel_id: params?.channelId ?? "777" },
             users: params?.instanceUsers ?? ["42"],
           }
-        : { id: params?.userId ?? "42", username: "alice", discriminator: "0" };
+        : { id: params?.userId ?? "42" };
     return {
-      response: new Response(JSON.stringify(body), {
-        status,
-        headers: { "Content-Type": "application/json" },
-      }),
+      response: Response.json(body, { status: exchangeStatus ?? 200 }),
       release: vi.fn(async () => undefined),
     };
   }) as unknown as typeof fetchWithSsrFGuard;
@@ -221,47 +207,37 @@ describe("Discord Activity HTTP OAuth", () => {
       },
     };
     const base = await startServer(createActivityTestRuntime(config));
-
     const response = await fetch(`${base}/discord/activity/`);
     await expect(response.text()).resolves.toBe("not found");
     expect(response.status).toBe(404);
   });
 
   it.each([
-    {
-      name: "413 when the token body exceeds its limit",
-      bodyTimeoutMs: 5_000,
-      // Declared and sent in one write: the shape whose rejection used to race the flush.
-      body: JSON.stringify({ code: "x".repeat(8 * 1024) }),
-      contentLength: undefined,
-      statusLine: "HTTP/1.1 413 Payload Too Large",
-      error: "request body too large",
+    // Send the oversized body in one write; rejection used to race the response flush.
+    [
+      "HTTP/1.1 413 Payload Too Large",
+      5_000,
+      JSON.stringify({ code: "x".repeat(8 * 1024) }),
+      undefined,
+      "request body too large",
+    ],
+    // Promise more than is sent so the read deadline fires while the request is open.
+    ["HTTP/1.1 408 Request Timeout", 50, "{", 4 * 1024, "request body timeout"],
+  ] as const)(
+    "delivers %s and closes the connection",
+    async (statusLine, bodyTimeoutMs, body, contentLength, error) => {
+      const base = await startServer(createActivityTestRuntime(), { bodyTimeoutMs });
+      const result = await postRawWebhook({
+        url: `${base}/discord/activity/api/token`,
+        body,
+        contentLength,
+        headers: { "content-type": "application/json" },
+      });
+      expect(result.statusLine).toBe(statusLine);
+      expect(JSON.parse(result.body)).toEqual({ error });
+      expect(result.closedByServer).toBe(true);
     },
-    {
-      name: "408 when the sender stalls mid-upload",
-      bodyTimeoutMs: 50,
-      // Promises more than is ever sent, so the read deadline fires with the request open.
-      body: "{",
-      contentLength: 4 * 1024,
-      statusLine: "HTTP/1.1 408 Request Timeout",
-      error: "request body timeout",
-    },
-  ])("delivers $name and then closes the connection", async (scenario) => {
-    const base = await startServer(createActivityTestRuntime(), {
-      bodyTimeoutMs: scenario.bodyTimeoutMs,
-    });
-
-    const result = await postRawWebhook({
-      url: `${base}/discord/activity/api/token`,
-      body: scenario.body,
-      contentLength: scenario.contentLength,
-      headers: { "content-type": "application/json" },
-    });
-
-    expect(result.statusLine).toBe(scenario.statusLine);
-    expect(JSON.parse(result.body)).toEqual({ error: scenario.error });
-    expect(result.closedByServer).toBe(true);
-  });
+  );
 
   it("lets a channel member outside the agent allowlist open the widget", async () => {
     const runtime = createActivityTestRuntime();
@@ -286,78 +262,59 @@ describe("Discord Activity HTTP OAuth", () => {
   it("limits token requests to ten per source IP per minute", async () => {
     const base = await startServer(createActivityTestRuntime(), { now: () => 1_000 });
     await requestTokens(base, 10, () => ({ body: "{}" }), 401);
-    const limited = await requestToken(base, { body: "{}" });
-    expect(limited.status).toBe(429);
+    expect((await requestToken(base, { body: "{}" })).status).toBe(429);
   });
 
-  it("does not charge malformed or unresolved requests to the global budget", async () => {
-    const base = await startTokenServer();
-    await requestTokens(
-      base,
-      61,
-      (index) => ({
-        body: "{}",
-        origin: `https://${100_000_000_000_000_000n + BigInt(index)}.discordsays.com`,
-        forwardedFor: `198.51.100.${index + 1}`,
-      }),
-      503,
-    );
-    await requestTokens(
-      base,
-      61,
-      (index) => ({
-        body: "{}",
-        origin: activityOrigin,
-        forwardedFor: `203.0.113.${index + 1}`,
-      }),
-      401,
-    );
-    const legitimate = await requestToken(base, tokenSource(249));
-    expect(legitimate.status).toBe(200);
-  });
-
-  it("does not charge Discord-rejected codes to the global budget", async () => {
+  it.each([
+    { kind: "unresolved", status: 503 },
+    { kind: "malformed", status: 401 },
+    { kind: "Discord-rejected", status: 401 },
+  ])("does not charge $kind requests to the global budget", async ({ kind, status }) => {
     const base = await startTokenServer(
-      guardedJsonFetch({
-        onExchange: (code) => (code === "bogus" ? 400 : 200),
-      }),
+      guardedJsonFetch({ onExchange: (code) => (code === "bogus" ? 400 : 200) }),
     );
-    await requestTokens(base, 61, (index) => tokenSource(index, "bogus"), 401);
-    const legitimate = await requestToken(base, tokenSource(249));
-    expect(legitimate.status).toBe(200);
+    await requestTokens(
+      base,
+      61,
+      (index) => ({
+        ...tokenSource(index, "bogus"),
+        ...(kind !== "Discord-rejected" ? { body: "{}" } : {}),
+        ...(kind === "unresolved"
+          ? {
+              origin: `https://${100_000_000_000_000_000n + BigInt(index)}.discordsays.com`,
+            }
+          : {}),
+      }),
+      status,
+    );
+    expect((await requestToken(base, tokenSource(249))).status).toBe(200);
   });
 
   it("limits valid token exchanges globally across rotating source IPs", async () => {
     const base = await startTokenServer();
     await requestTokens(base, 60, tokenSource, 200);
-    const limited = await requestToken(base, tokenSource(249));
-    expect(limited.status).toBe(429);
+    expect((await requestToken(base, tokenSource(249))).status).toBe(429);
   });
 
   it("reserves global capacity before concurrent exchanges complete", async () => {
-    let releaseExchanges = () => {};
-    const exchangeGate = new Promise<void>((resolve) => {
-      releaseExchanges = resolve;
-    });
+    const exchangeGate = createDeferred<void>();
     let exchangeCalls = 0;
     const guard = guardedJsonFetch({
       onExchange: async () => {
         exchangeCalls += 1;
-        await exchangeGate;
+        await exchangeGate.promise;
       },
     });
     const base = await startTokenServer(guard);
     const pending = Array.from({ length: 60 }, (_, index) =>
       requestToken(base, tokenSource(index)),
     );
-    let limited: Response;
     try {
       await vi.waitFor(() => expect(exchangeCalls).toBe(60), { timeout: 5_000 });
-      limited = await requestToken(base, tokenSource(249));
+      expect((await requestToken(base, tokenSource(249))).status).toBe(429);
     } finally {
-      releaseExchanges();
+      exchangeGate.resolve();
     }
-    expect(limited.status).toBe(429);
     const responses = await Promise.all(pending);
     expect(responses.every((response) => response.status === 200)).toBe(true);
   });
@@ -468,21 +425,10 @@ describe("Discord Activity widget routes", () => {
     expect(logError).toHaveBeenCalledOnce();
   });
 
-  it("rejects a custom ID outside the validated instance channel", async () => {
-    const fixture = await createWidgetFixture({
-      fetchGuard: guardedJsonFetch({ channelId: "777" }),
-    });
-    const widgetId = await fixture.widget({ channelId: "888" });
-    const response = await fixture.request(`custom_id=${widgetId}&instance_id=instance-1`);
-
-    expect(response.status).toBe(404);
-  });
-
   it("ignores a forged channel ID when no Activity instance is supplied", async () => {
     const fixture = await createWidgetFixture({});
     await fixture.widget();
-    const response = await fixture.request("channel_id=777");
-    expect(response.status).toBe(404);
+    expect((await fixture.request("channel_id=777")).status).toBe(404);
   });
 
   it("uses the Activity Instance API channel when exactly one widget matches", async () => {
@@ -504,11 +450,12 @@ describe("Discord Activity widget routes", () => {
     );
   });
 
-  it("returns 404 for a custom ID when the session user is absent from the Activity instance", async () => {
-    const fixture = await createWidgetFixture({
-      fetchGuard: guardedJsonFetch({ instanceUsers: ["99"] }),
-    });
-    const widgetId = await fixture.widget();
+  it.each([
+    { name: "outside the instance channel", channelId: "888", instanceUsers: ["42"] },
+    { name: "without the session user in the instance", channelId: "777", instanceUsers: ["99"] },
+  ])("rejects a custom ID $name", async ({ channelId, instanceUsers }) => {
+    const fixture = await createWidgetFixture({ fetchGuard: guardedJsonFetch({ instanceUsers }) });
+    const widgetId = await fixture.widget({ channelId });
     const response = await fixture.request(`custom_id=${widgetId}&instance_id=instance-1`);
     expect(response.status).toBe(404);
   });
