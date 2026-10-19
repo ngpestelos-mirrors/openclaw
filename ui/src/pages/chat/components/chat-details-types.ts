@@ -22,6 +22,20 @@ export type ChatDetailsDesktopSectionId =
   | "processes"
   | "outputs";
 
+type ChatDetailsDesktopDisclosures = {
+  /** Restored by the preference owner before the first render, scoped to this session. */
+  expanded: Partial<Record<ChatDetailsDesktopSectionId, boolean>>;
+  onExpandedChange: (section: ChatDetailsDesktopSectionId, expanded: boolean) => void;
+};
+
+type ChatDetailsDesktopPresentation = {
+  /** Localized section labels supplied by the host's copy owner. */
+  peopleLabel: string;
+  outputsLabel: string;
+  /** Localized Working, without the ellipsis in common.working. */
+  subagentsWorkingLabel: string;
+};
+
 type ChatDetailsEnvironmentData = Pick<
   ChatDetailsEnvironmentDesktopProps,
   | "onOpenProject"
