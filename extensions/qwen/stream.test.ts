@@ -92,7 +92,7 @@ function readToolMessage(id = "call_1", reasoningContent?: string) {
   };
 }
 
-describe("createQwenThinkingWrapper", () => {
+describe("Qwen streams", () => {
   it("uses the runtime model qwen-chat-template format when the wrapper context omits it", () => {
     const payload = { chat_template_kwargs: { enable_thinking: true }, enable_thinking: true };
     const stream: StreamFn = (model, _context, options) => {
@@ -107,9 +107,6 @@ describe("createQwenThinkingWrapper", () => {
       chat_template_kwargs: { enable_thinking: false, preserve_thinking: true },
     });
   });
-});
-
-describe("wrapQwenProviderStream", () => {
   it("maps qwen-token-plan/qwen3.8-flash medium without changing reasoning replay", () => {
     const messages = [
       { role: "assistant", content: "done", reasoning_content: "original reasoning" },
@@ -178,25 +175,18 @@ describe("wrapQwenProviderStream", () => {
   });
 
   it("backfills Kimi thinking tool-call replay", () => {
+    const user = { role: "user", content: "continue" };
+    const done = { role: "assistant", content: "done" };
+    const native = readToolMessage("call_2", "native reasoning");
     const captured = captureProviderPayload(tokenPlanModel("kimi-k2.6"), "high", {
       thinking: { type: "enabled" },
       reasoning_effort: "high",
       tool_choice: "required",
-      messages: [
-        { role: "user", content: "continue" },
-        readToolMessage(),
-        readToolMessage("call_2", "native reasoning"),
-        { role: "assistant", content: "done" },
-      ],
+      messages: structuredClone([user, readToolMessage(), native, done]),
     });
 
     expect(captured).toStrictEqual({
-      messages: [
-        { role: "user", content: "continue" },
-        readToolMessage("call_1", ""),
-        readToolMessage("call_2", "native reasoning"),
-        { role: "assistant", content: "done" },
-      ],
+      messages: [user, readToolMessage("call_1", ""), native, done],
       enable_thinking: true,
       tool_choice: "auto",
     });
