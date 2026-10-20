@@ -27,20 +27,16 @@ const cases = [
   ["argument_churn", "warning", 30, "Argument churn warning:"],
 ] as const;
 
-describe.each(["single", "batch"] as const)("%s admission Incognito logging", (entry) => {
-  beforeEach(() => {
-    resetDiagnosticSessionStateForTest();
-    resetDiagnosticEventsForTest();
-    resetAdjustedParamsByToolCallIdForTests();
-    setDiagnosticsEnabledForProcess(true);
-  });
+function resetDiagnostics(enabled: boolean) {
+  resetDiagnosticSessionStateForTest();
+  resetDiagnosticEventsForTest();
+  resetAdjustedParamsByToolCallIdForTests();
+  setDiagnosticsEnabledForProcess(enabled);
+}
 
-  afterEach(() => {
-    resetDiagnosticSessionStateForTest();
-    resetDiagnosticEventsForTest();
-    resetAdjustedParamsByToolCallIdForTests();
-    setDiagnosticsEnabledForProcess(false);
-  });
+describe.each(["single", "batch"] as const)("%s admission Incognito logging", (entry) => {
+  beforeEach(() => resetDiagnostics(true));
+  afterEach(() => resetDiagnostics(false));
 
   it.each(cases)(
     "keeps %s %s admission at count %i without private formatted output",
@@ -83,9 +79,7 @@ describe.each(["single", "batch"] as const)("%s admission Incognito logging", (e
           for (let index = 0; index < historyCount; index += 1) {
             const { name, args } = repeatedCall(index);
             const toolCallId = `prior-${index}`;
-            recordToolCall(state, name, args, toolCallId, {
-              runId: ctx.runId,
-            });
+            recordToolCall(state, name, args, toolCallId, { runId: ctx.runId });
             recordToolCallOutcome(state, {
               toolName: name,
               toolParams: args,

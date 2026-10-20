@@ -1,9 +1,4 @@
-/**
- * Regression coverage for core tool allow/deny policy helpers.
- * Verifies sandbox policy resolution, explicit lists, and tool matching.
- */
 import { describe, expect, it } from "vitest";
-import type { OpenClawConfig } from "../config/config.js";
 import { pickSandboxToolPolicy } from "./sandbox-tool-policy.js";
 import { isToolAllowed, resolveSandboxToolPolicyForAgent } from "./sandbox/tool-policy.js";
 import type { SandboxToolPolicy } from "./sandbox/types.js";
@@ -45,26 +40,22 @@ describe("tool-policy", () => {
   });
 
   it("resolves known profiles and ignores unknown ones", () => {
-    const coding = resolveToolProfilePolicy("coding");
-    expect(coding?.allow).toContain("read");
-    expect(coding?.allow).toContain("automations");
-    expect(coding?.allow).toContain("gateway");
+    expect(resolveToolProfilePolicy("coding")?.allow).toEqual(
+      expect.arrayContaining(["read", "automations", "gateway"]),
+    );
     expect(resolveToolProfilePolicy("nope")).toBeUndefined();
   });
 
-  it.each(["constructor"])("matches literal %s prefixes only when allowed", (name) => {
+  it("matches literal constructor prefixes only when allowed", () => {
+    const name = "constructor";
     expect(couldNormalizeToolNamePrefixToAllowedTool(name.slice(0, 3), new Set([name]))).toBe(true);
     expect(couldNormalizeToolNamePrefixToAllowedTool("other", new Set([name]))).toBe(false);
     expect(couldNormalizeToolNamePrefixToAllowedTool(name, new Set(["other"]))).toBe(false);
   });
 
   it.each(["ba", "cron"])("retains declared alias prefix %s", (prefix) => {
-    expect(
-      couldNormalizeToolNamePrefixToAllowedTool(
-        prefix,
-        new Set(["exec", "apply_patch", "automations"]),
-      ),
-    ).toBe(true);
+    const allowed = new Set(["exec", "apply_patch", "automations"]);
+    expect(couldNormalizeToolNamePrefixToAllowedTool(prefix, allowed)).toBe(true);
   });
 
   it("uses alsoAllow entries for plugin discovery without the synthetic allow-all", () => {
@@ -92,7 +83,8 @@ describe("tool-policy", () => {
 });
 
 describe("sandbox tool policy", () => {
-  it.each(["constructor"])("applies allow and deny to literal %s", (name) => {
+  it("applies allow and deny to literal constructor", () => {
+    const name = "constructor";
     const allow = { allow: [` ${name.toUpperCase()} `] };
     const deny = { allow: ["*"], deny: [` ${name.toUpperCase()} `] };
     for (const matches of [
@@ -108,12 +100,10 @@ describe("sandbox tool policy", () => {
 });
 
 describe("resolveSandboxToolPolicyForAgent", () => {
+  const resolve = (allow: string[], deny: string[]) =>
+    resolveSandboxToolPolicyForAgent({ tools: { sandbox: { tools: { allow, deny } } } }, undefined);
   it("keeps allow-all semantics when allow is []", () => {
-    const cfg = {
-      tools: { sandbox: { tools: { allow: [], deny: ["browser"] } } },
-    } as unknown as OpenClawConfig;
-
-    const resolved = resolveSandboxToolPolicyForAgent(cfg, undefined);
+    const resolved = resolve([], ["browser"]);
     expect(resolved.sources.allow).toEqual({
       source: "global",
       key: "tools.sandbox.tools.allow",
@@ -127,23 +117,17 @@ describe("resolveSandboxToolPolicyForAgent", () => {
   });
 
   it("auto-adds image to explicit allowlists unless denied", () => {
-    const cfg = {
-      tools: { sandbox: { tools: { allow: ["read"], deny: ["browser"] } } },
-    } as unknown as OpenClawConfig;
-
-    const resolved = resolveSandboxToolPolicyForAgent(cfg, undefined);
-    expect(resolved.allow).toEqual(["read", "view_image"]);
-    expect(resolved.deny).toEqual(["browser"]);
+    expect(resolve(["read"], ["browser"])).toMatchObject({
+      allow: ["read", "view_image"],
+      deny: ["browser"],
+    });
   });
 
   it("does not auto-add view_image when explicitly denied", () => {
-    const cfg = {
-      tools: { sandbox: { tools: { allow: ["read"], deny: ["view_image"] } } },
-    } as unknown as OpenClawConfig;
-
-    const resolved = resolveSandboxToolPolicyForAgent(cfg, undefined);
-    expect(resolved.allow).toEqual(["read"]);
-    expect(resolved.deny).toEqual(["view_image"]);
+    expect(resolve(["read"], ["view_image"])).toMatchObject({
+      allow: ["read"],
+      deny: ["view_image"],
+    });
   });
 });
 

@@ -1,15 +1,9 @@
-// Tool Search turn-taint tests drive the real tool_call control through the
-// embedded adapter chain and the agent loop that persists provenance.
-import {
-  createAssistantMessageEventStream,
-  type AssistantMessage,
-  type Model,
-} from "openclaw/plugin-sdk/llm";
+import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import { toToolDefinitions } from "./agent-tool-definition-adapter.js";
 import { Agent, type AgentMessage } from "./runtime/index.js";
 import { wrapToolDefinition } from "./sessions/tools/tool-definition-wrapper.js";
-import { createZeroUsageFixture } from "./test-helpers/usage-fixtures.js";
+import { singleToolCallStreamFn, toolSearchTestModel } from "./tool-search-loop.test-support.js";
 import {
   createToolSearchCatalogRef,
   createToolSearchTools,
@@ -18,32 +12,6 @@ import {
 } from "./tool-search.js";
 import { jsonResult, type AnyAgentTool } from "./tools/common.js";
 
-const model: Model = {
-  id: "test-model",
-  name: "Test Model",
-  api: "openai-responses",
-  provider: "test-provider",
-  baseUrl: "https://example.test",
-  reasoning: false,
-  input: ["text"],
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 1_000,
-  maxTokens: 1_000,
-};
-
-function createAssistant(content: AssistantMessage["content"]): AssistantMessage {
-  return {
-    role: "assistant",
-    content,
-    api: model.api,
-    provider: model.provider,
-    model: model.id,
-    usage: createZeroUsageFixture(),
-    stopReason: content.some((entry) => entry.type === "toolCall") ? "toolUse" : "stop",
-    timestamp: Date.now(),
-  };
-}
-
 function metadata(message: AgentMessage | undefined): unknown {
   return message ? Reflect.get(message, "__openclaw") : undefined;
 }
@@ -51,41 +19,19 @@ function metadata(message: AgentMessage | undefined): unknown {
 async function callThroughToolSearch(target: AnyAgentTool) {
   const catalogRef = createToolSearchCatalogRef();
   registerHeadlessToolSearchCatalog({ catalogRef, tools: [target] });
-  const control = createToolSearchTools({ catalogRef }).find(
-    (tool) => tool.name === TOOL_CALL_RAW_TOOL_NAME,
+  const control = expectDefined(
+    createToolSearchTools({ catalogRef }).find((tool) => tool.name === TOOL_CALL_RAW_TOOL_NAME),
+    "tool_call control",
   );
-  if (!control) {
-    throw new Error("tool_call control missing");
-  }
   // The embedded runner registers controls as definitions, then wraps them back for the loop.
   const tools = toToolDefinitions([control]).map((definition) => wrapToolDefinition(definition));
-  let turn = 0;
   const agent = new Agent({
-    initialState: { model, tools },
-    streamFn: () => {
-      const message = createAssistant(
-        turn++ === 0
-          ? [
-              {
-                type: "toolCall",
-                id: "call-tool-search",
-                name: TOOL_CALL_RAW_TOOL_NAME,
-                arguments: { id: target.name, args: {} },
-              },
-            ]
-          : [{ type: "text", text: "summarized the page" }],
-      );
-      const stream = createAssistantMessageEventStream();
-      queueMicrotask(() => {
-        stream.push({
-          type: "done",
-          reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
-          message,
-        });
-        stream.end();
-      });
-      return stream;
-    },
+    initialState: { model: toolSearchTestModel, tools },
+    streamFn: singleToolCallStreamFn({
+      id: "call-tool-search",
+      name: TOOL_CALL_RAW_TOOL_NAME,
+      arguments: { id: target.name, args: {} },
+    }),
   });
   await agent.prompt("read the page");
   const { messages } = agent.state;

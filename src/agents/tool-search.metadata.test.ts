@@ -1,6 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it } from "vitest";
-import { mcpTool, pluginTool } from "./code-mode.test-support.js";
+import { mcpTool, pluginTool, resultText as modelText } from "./code-mode.test-support.js";
 import {
   addClientToolsToToolCatalog,
   compactToolSearchCatalogEntry,
@@ -43,13 +43,6 @@ function setup(source: "mcp" | "client") {
       name,
     );
   return { catalogRef, target, entry, tool };
-}
-
-function modelText(result: { content: Array<{ type: string; text?: string }> }): string {
-  return result.content
-    .filter((part) => part.type === "text")
-    .map((part) => part.text)
-    .join("\n");
 }
 
 function expectProtected(text: string) {

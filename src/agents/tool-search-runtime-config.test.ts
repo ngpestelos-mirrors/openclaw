@@ -5,43 +5,28 @@ import { resolveAgentRuntimeToolConfig } from "./tool-runtime-config.js";
 import { resolveAgentToolSearchRuntimeConfig } from "./tool-search-runtime-config.js";
 import { resolveAgentToolSurfacePlan } from "./tool-surface-plan.js";
 
+const secretMarker = () => ({ source: "exec", provider: "example", id: "example/value" });
+const pluginConfig = (marker: unknown) => ({
+  entries: { "example-plugin": { config: { marker } } },
+});
+
 function createRuntimeConfigPair(localModelLean = true) {
   const sourceConfig = {
     agents: {
       defaults: { experimental: { localModelLean } },
       entries: { main: {} },
     },
-    plugins: {
-      entries: {
-        "example-plugin": {
-          config: {
-            marker: {
-              source: "exec",
-              provider: "example",
-              id: "example/value",
-            },
-          },
-        },
-      },
-    },
+    plugins: pluginConfig(secretMarker()),
   } as OpenClawConfig;
   const runtimeConfig = {
     ...sourceConfig,
-    plugins: {
-      entries: {
-        "example-plugin": {
-          config: { marker: "resolved" },
-        },
-      },
-    },
+    plugins: pluginConfig("resolved"),
   } as OpenClawConfig;
   return { runtimeConfig, sourceConfig };
 }
 
 describe("resolveAgentToolSearchRuntimeConfig", () => {
-  afterEach(() => {
-    resetConfigRuntimeState();
-  });
+  afterEach(() => resetConfigRuntimeState());
 
   it.each([true, false])(
     "applies Tool Search after selecting the resolved snapshot for forced replies (lean: %s)",
@@ -68,11 +53,7 @@ describe("resolveAgentToolSearchRuntimeConfig", () => {
       });
       expect(runtimeConfig.tools).toBeUndefined();
       expect(sourceConfig.plugins?.entries?.["example-plugin"]?.config).toMatchObject({
-        marker: {
-          source: "exec",
-          provider: "example",
-          id: "example/value",
-        },
+        marker: secretMarker(),
       });
     },
   );
@@ -98,11 +79,7 @@ describe("resolveAgentToolSearchRuntimeConfig", () => {
     setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
     const explicitConfig = {
       agents: { entries: { main: {} } },
-      plugins: {
-        entries: {
-          "example-plugin": { config: { marker: "explicit" } },
-        },
-      },
+      plugins: pluginConfig("explicit"),
     } as OpenClawConfig;
 
     expect(resolveAgentRuntimeToolConfig(explicitConfig)).toBe(explicitConfig);

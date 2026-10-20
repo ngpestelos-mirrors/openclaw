@@ -1,10 +1,7 @@
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Agent } from "../../packages/agent-core/src/agent.js";
-import {
-  createAssistantMessageEventStream,
-  type Model,
-} from "../../packages/agent-core/src/llm.js";
+import { createAssistantMessageEventStream } from "../../packages/agent-core/src/llm.js";
 import type { AgentTool } from "../../packages/agent-core/src/types.js";
 import { resetDiagnosticSessionStateForTest } from "../logging/diagnostic-session-state.js";
 import { enqueueCommandInLane } from "../process/command-queue.js";
@@ -15,20 +12,18 @@ import {
   installToolLoopRecoveryCleanup,
 } from "./embedded-agent-runner/run/tool-loop-recovery.js";
 import { setInternalBeforeToolBatch } from "./runtime/internal-hooks.js";
+import { makeProviderModelFixture } from "./test-helpers/provider-model-fixture.js";
 import { createZeroUsageFixture } from "./test-helpers/usage-fixtures.js";
 
-const model: Model = {
+const model = makeProviderModelFixture({
   id: "test-model",
   name: "Test",
   api: "openai-responses",
   provider: "test",
   baseUrl: "https://example.test",
-  reasoning: false,
-  input: ["text"],
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   contextWindow: 10_000,
   maxTokens: 1_000,
-};
+});
 
 afterEach(() => {
   resetCommandQueueStateForTest();

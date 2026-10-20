@@ -53,14 +53,13 @@ function createFixture() {
   return { state, execute };
 }
 
+const plan = (step: string, status: "pending" | "completed" = "pending") => [{ step, status }];
+
 describe("progress-card loop outcomes", () => {
   it.each<Params>([
     {
       markdown,
-      plan: [
-        { step: "Review", status: "pending" },
-        { step: "Verify", status: "pending" },
-      ],
+      plan: [...plan("Review"), ...plan("Verify")],
     },
     {},
   ])(
@@ -68,10 +67,10 @@ describe("progress-card loop outcomes", () => {
     async (params) => {
       const { state, execute } = createFixture();
       const hashes = new Set();
+      const detect = (runId = "run-1") =>
+        detectToolCallLoop(state, "progress_card", params, { runId });
       for (let index = 0; index < 20; index++) {
-        expect(
-          detectToolCallLoop(state, "progress_card", params, { runId: "run-1" }),
-        ).not.toMatchObject({ level: "critical" });
+        expect(detect()).not.toMatchObject({ level: "critical" });
         const { result, record } = await execute(params);
         expect(result.details).toMatchObject({
           revision: Object.keys(params).length ? index + 1 : null,
@@ -79,14 +78,12 @@ describe("progress-card loop outcomes", () => {
         hashes.add(record.resultHash);
       }
       expect(hashes.size).toBe(1);
-      expect(detectToolCallLoop(state, "progress_card", params, { runId: "run-1" })).toMatchObject({
+      expect(detect()).toMatchObject({
         stuck: true,
         level: "critical",
         count: 20,
       });
-      expect(detectToolCallLoop(state, "progress_card", params, { runId: "run-2" })).toEqual({
-        stuck: false,
-      });
+      expect(detect("run-2")).toEqual({ stuck: false });
     },
   );
   it("keeps markdown and plan changes meaningful even when counts match", async () => {
@@ -95,9 +92,9 @@ describe("progress-card loop outcomes", () => {
     const inputs: Params[] = [
       { markdown },
       { markdown: "Review completed; verification running." },
-      { plan: [{ step: "Review", status: "pending" }] },
-      { plan: [{ step: "Verify", status: "pending" }] },
-      { plan: [{ step: "Verify", status: "completed" }] },
+      { plan: plan("Review") },
+      { plan: plan("Verify") },
+      { plan: plan("Verify", "completed") },
       {},
     ];
     for (const params of inputs) {
