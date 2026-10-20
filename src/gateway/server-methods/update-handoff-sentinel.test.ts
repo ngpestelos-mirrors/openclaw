@@ -7,6 +7,7 @@ import { coreGatewayHandlers } from "./core-handlers.js";
 import type { RespondFn } from "./types.js";
 
 const owner = vi.hoisted(() => vi.fn());
+const method = "update.handoffSentinel";
 vi.mock("../../infra/update-managed-service-handoff-sentinel.js", async (importOriginal) => ({
   ...(await importOriginal<
     typeof import("../../infra/update-managed-service-handoff-sentinel.js")
@@ -28,21 +29,23 @@ const request: ManagedHandoffSentinelRequest = {
   },
   helper: { pid: 123, startIdentity: "fixture-start" },
 };
-const recordInput = {
-  ...identity,
-  expectedRevision: 123,
-  completedStatus: "error",
-  restored: true,
-  fallbackPayload: { kind: "update", status: "error", ts: 123 },
-  reason: "candidate-failed",
-  triageHint: "Run openclaw update repair",
-  serviceKind: "launchd",
-  handoffFailure: "candidate-failed",
-} as const;
-const record = {
-  ...request,
-  operation: { kind: "record", input: recordInput },
-} satisfies ManagedHandoffSentinelRequest;
+const inspect = (input: object) => ({ ...request, operation: { kind: "inspect", input } });
+function record(message?: string): ManagedHandoffSentinelRequest {
+  return {
+    ...request,
+    operation: {
+      kind: "record",
+      input: {
+        ...identity,
+        fallbackPayload: { kind: "update", status: "error", ts: 123, message },
+        reason: "candidate-failed",
+        triageHint: "Run openclaw update repair",
+        serviceKind: "launchd",
+        handoffFailure: "candidate-failed",
+      },
+    },
+  };
+}
 
 beforeEach(() => {
   owner.mockReset();
@@ -50,8 +53,8 @@ beforeEach(() => {
 
 async function invoke(params: Record<string, unknown>) {
   const respond = vi.fn<RespondFn>();
-  await coreGatewayHandlers["update.handoffSentinel"]!({
-    req: { type: "req", id: "handoff-sentinel", method: "update.handoffSentinel" },
+  await coreGatewayHandlers[method]!({
+    req: { type: "req", id: "handoff-sentinel", method },
     params,
     context: createDirectChatContext(),
     client: null,
@@ -63,14 +66,14 @@ async function invoke(params: Record<string, unknown>) {
 
 describe("internal managed handoff sentinel Gateway boundary", () => {
   it("requires administrator scope and stays out of method discovery", () => {
-    expect(authorizeOperatorScopesForMethod("update.handoffSentinel", ["operator.admin"])).toEqual({
+    expect(authorizeOperatorScopesForMethod(method, ["operator.admin"])).toEqual({
       allowed: true,
     });
-    expect(authorizeOperatorScopesForMethod("update.handoffSentinel", ["operator.write"])).toEqual({
+    expect(authorizeOperatorScopesForMethod(method, ["operator.write"])).toEqual({
       allowed: false,
       missingScope: "operator.admin",
     });
-    expect(listCoreAdvertisedGatewayMethodNames()).not.toContain("update.handoffSentinel");
+    expect(listCoreAdvertisedGatewayMethodNames()).not.toContain(method);
   });
 
   it.each([
@@ -78,16 +81,7 @@ describe("internal managed handoff sentinel Gateway boundary", () => {
     ["connection field", { ...request, connection: "postgresql://fixture.invalid/db" }],
     [
       "caller failure policy",
-      {
-        ...request,
-        operation: {
-          kind: "inspect",
-          input: {
-            ...identity,
-            nonFailureSkippedReasons: ["candidate-failed"],
-          },
-        },
-      },
+      inspect({ ...identity, nonFailureSkippedReasons: ["candidate-failed"] }),
     ],
     [
       "invalid helper identity",
@@ -96,22 +90,7 @@ describe("internal managed handoff sentinel Gateway boundary", () => {
         helper: { pid: 123, startIdentity: "fixture", startIdentitySource: "argv-sha256" },
       },
     ],
-    [
-      "oversized notice",
-      {
-        ...record,
-        operation: {
-          kind: "record",
-          input: {
-            ...recordInput,
-            fallbackPayload: {
-              ...recordInput.fallbackPayload,
-              message: "x".repeat(65_537),
-            },
-          },
-        },
-      },
-    ],
+    ["oversized notice", record("x".repeat(65_537))],
   ] as const)("rejects %s before entering the owner", async (_name, params) => {
     expect(await invoke(params)).toHaveBeenCalledWith(
       false,
@@ -123,7 +102,7 @@ describe("internal managed handoff sentinel Gateway boundary", () => {
 
   it("preserves a refused owner outcome as a successful transport response", async () => {
     owner.mockResolvedValue({ kind: "refused", sentinel: null });
-    expect(await invoke(record)).toHaveBeenCalledWith(true, { kind: "refused", sentinel: null });
+    expect(await invoke(record())).toHaveBeenCalledWith(true, { kind: "refused", sentinel: null });
     expect(owner).toHaveBeenCalledOnce();
   });
 

@@ -57,7 +57,8 @@ afterEach(() => {
   closeOpenClawStateDatabaseForTest();
   vi.unstubAllEnvs();
 });
-async function rpc(method: string, params: Record<string, unknown> = {}) {
+async function rpc(operation: string, params: Record<string, unknown> = {}) {
+  const method = `users.background.${operation}`;
   const respond = vi.fn();
   await handleGatewayRequest({
     req: { type: "req", id: method, method, params },
@@ -66,32 +67,28 @@ async function rpc(method: string, params: Record<string, unknown> = {}) {
     respond,
     isWebchatConnect: () => false,
   });
-  return respond;
+  expect(respond).toHaveBeenCalledOnce();
+  return respond.mock.calls[0]!;
 }
 
 describe("registered private background methods", () => {
   it("allows ordinary profile read/write scopes and emits only a profile-targeted invalidation", async () => {
-    const uploaded = await rpc("users.background.upload", { ...empty, imageBase64: "dGVzdA==" });
-    expect(uploaded).toHaveBeenCalledWith(
+    expect(await rpc("upload", { ...empty, imageBase64: "dGVzdA==" })).toEqual([
       true,
       expect.objectContaining({
         status: "ok",
         asset: expect.objectContaining({ mime: "image/jpeg" }),
         preference: expect.objectContaining({ showInSessions: false }),
       }),
-    );
+    ]);
     expect(broadcast).toHaveBeenCalledWith(
       "users.prefs.changed",
       { profileId: client.authenticatedUserProfile!.profileId, keys: ["ui.background"] },
       new Set([client.connId]),
     );
     client.connect.scopes = ["operator.read"];
-    expect(await rpc("users.background.get")).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({ status: "ok" }),
-    );
-    const denied = await rpc("users.background.remove", empty);
-    expect(denied.mock.calls[0]?.[0]).toBe(false);
+    expect(await rpc("get")).toEqual([true, expect.objectContaining({ status: "ok" })]);
+    expect((await rpc("remove", empty))[0]).toBe(false);
   });
 
   it.each(["disconnect", "profile-switch", "revoke-write"])(
@@ -104,7 +101,7 @@ describe("registered private background methods", () => {
         decoding.resolve();
         return decoded.promise;
       });
-      const pending = rpc("users.background.upload", { ...empty, imageBase64: "dGVzdA==" });
+      const pending = rpc("upload", { ...empty, imageBase64: "dGVzdA==" });
       await awaitGateBeforeSettlement(decoding.promise, pending, "Upload finished before decoding");
       if (revocation === "disconnect") {
         connected = false;
@@ -115,7 +112,7 @@ describe("registered private background methods", () => {
       }
       decoded.resolve(normalized);
       const response = await pending;
-      expect(response.mock.calls[0]?.[0]).toBe(false);
+      expect(response[0]).toBe(false);
       expect(await getUserBackground(owner)).toEqual({
         status: "ok",
         asset: null,
@@ -126,12 +123,8 @@ describe("registered private background methods", () => {
   );
 
   it("requires durable identity and rejects client-supplied ownership", async () => {
-    expect(
-      (await rpc("users.background.get", { profileId: "someone-else" })).mock.calls[0]?.[0],
-    ).toBe(false);
+    expect((await rpc("get", { profileId: "someone-else" }))[0]).toBe(false);
     client.authenticatedUserProfile = undefined;
-    expect(await rpc("users.background.get")).toHaveBeenCalledWith(true, {
-      status: "no_durable_identity",
-    });
+    expect(await rpc("get")).toEqual([true, { status: "no_durable_identity" }]);
   });
 });

@@ -1,4 +1,3 @@
-import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { updateHandlers } from "./update.js";
 
@@ -38,11 +37,6 @@ vi.mock("../../infra/update-status-state.js", () => ({
   getUpdateSchedule: getUpdateScheduleMock,
 }));
 
-vi.mock("./validation.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./validation.js")>()),
-  assertValidParams: () => true,
-}));
-
 beforeEach(() => {
   campaignOwner.present = true;
   holdUpdateCampaignMock.mockReset().mockReturnValue(false);
@@ -53,10 +47,7 @@ beforeEach(() => {
 async function invokeUpdateHold() {
   const respond = vi.fn();
   const logInfo = vi.fn();
-  await expectDefined(
-    updateHandlers["update.hold"],
-    'updateHandlers["update.hold"] test invariant',
-  )({
+  await updateHandlers["update.hold"]!({
     params: {},
     respond,
     client: {
@@ -95,33 +86,16 @@ describe("update.hold", () => {
     );
   });
 
-  it("returns ok=false when there is no active campaign", async () => {
-    campaignOwner.present = false;
-    const { respond, logInfo } = await invokeUpdateHold();
-
-    expect(respond).toHaveBeenCalledWith(true, { ok: false });
-    expect(holdUpdateCampaignMock).not.toHaveBeenCalled();
-    expect(logInfo).toHaveBeenCalledWith(
-      expect.stringMatching(/^update\.hold refused actor=control-ui /),
-      { reason: "no campaign" },
-    );
-  });
-
   it.each([
-    {
-      name: "an applying campaign",
-      campaign: { ...campaign, state: "applying" as const },
-      reason: "applying",
-    },
-    {
-      name: "an already-held campaign",
-      campaign: heldCampaign,
-      reason: "already held",
-    },
-  ])("logs why $name cannot be held", async ({ campaign: currentCampaign, reason }) => {
+    ["no campaign", undefined],
+    ["applying", { ...campaign, state: "applying" }],
+    ["already held", heldCampaign],
+  ] as const)("refuses a hold: %s", async (reason, currentCampaign) => {
+    campaignOwner.present = currentCampaign !== undefined;
     getUpdateCampaignStateMock.mockReturnValueOnce(currentCampaign);
-    const { logInfo } = await invokeUpdateHold();
-
+    const { respond, logInfo } = await invokeUpdateHold();
+    expect(respond).toHaveBeenCalledWith(true, { ok: false });
+    expect(holdUpdateCampaignMock).toHaveBeenCalledTimes(currentCampaign ? 1 : 0);
     expect(logInfo).toHaveBeenCalledWith(
       expect.stringMatching(/^update\.hold refused actor=control-ui /),
       { reason },
