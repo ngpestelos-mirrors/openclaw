@@ -13,7 +13,8 @@ import { createProgressCardTool } from "./tools/progress-card-tool.js";
 afterEach(() => vi.restoreAllMocks());
 
 vi.mock("./embedded-agent-messaging.js", () => ({ isMessagingToolSendAction: () => false }));
-const markdown = "Waiting for reviewer results.";
+const initialMarkdown = "Waiting for reviewer results.";
+const sessionKey = "agent:main:proof";
 const makeState = (): SessionState => ({ lastActivity: 0, state: "processing", queueDepth: 0 });
 type Params = {
   markdown?: string;
@@ -22,28 +23,24 @@ type Params = {
 function createFixture() {
   const state = makeState();
   const callGateway = vi.spyOn(gateway, "callInProcessGatewayTool");
-  const tool = createProgressCardTool({ agentSessionKey: "agent:main:proof" });
+  const tool = createProgressCardTool({ agentSessionKey: sessionKey });
+  const { name: toolName } = tool;
   let revision = 0;
-  async function execute(params: Params, runId = "run-1") {
+  async function execute(toolParams: Params, runId = "run-1") {
+    const { markdown, plan } = toolParams;
     revision++;
     const toolCallId = "call-" + revision;
     callGateway.mockResolvedValueOnce({
       card:
-        params.markdown || params.plan?.length
-          ? {
-              sessionKey: "agent:main:proof",
-              revision,
-              updatedAt: revision,
-              markdown: params.markdown,
-              steps: params.plan,
-            }
+        markdown || plan?.length
+          ? { sessionKey, revision, updatedAt: revision, markdown, steps: plan }
           : null,
     });
-    recordToolCall(state, tool.name, params, toolCallId, { runId });
-    const result = await tool.execute(toolCallId, params);
+    recordToolCall(state, toolName, toolParams, toolCallId, { runId });
+    const result = await tool.execute(toolCallId, toolParams);
     const record = recordToolCallOutcome(state, {
-      toolName: tool.name,
-      toolParams: params,
+      toolName,
+      toolParams,
       toolCallId,
       result,
       runId,
@@ -56,7 +53,7 @@ function createFixture() {
 
 const plan = (step: string, status: "pending" | "completed" = "pending") => [{ step, status }];
 
-it.each<Params>([{ markdown, plan: [...plan("Review"), ...plan("Verify")] }, {}])(
+it.each<Params>([{ markdown: initialMarkdown, plan: [...plan("Review"), ...plan("Verify")] }, {}])(
   "blocks repeated real receipts without changing revision acknowledgments: %j",
   async (params) => {
     const { state, execute } = createFixture();
@@ -72,11 +69,7 @@ it.each<Params>([{ markdown, plan: [...plan("Review"), ...plan("Verify")] }, {}]
       hashes.add(record.resultHash);
     }
     expect(hashes.size).toBe(1);
-    expect(detect()).toMatchObject({
-      stuck: true,
-      level: "critical",
-      count: 20,
-    });
+    expect(detect()).toMatchObject({ stuck: true, level: "critical", count: 20 });
     expect(detect("run-2")).toEqual({ stuck: false });
   },
 );
@@ -84,7 +77,7 @@ it("keeps markdown and plan changes meaningful even when counts match", async ()
   const { state, execute } = createFixture();
   const hashes = new Set();
   const inputs: Params[] = [
-    { markdown },
+    { markdown: initialMarkdown },
     { markdown: "Review completed; verification running." },
     { plan: plan("Review") },
     { plan: plan("Verify") },
@@ -105,7 +98,7 @@ it("feeds stable receipt outcomes to the armed post-compaction guard", async () 
   const guard = createPostCompactionLoopGuard();
   guard.armPostCompaction();
   for (let index = 0; index < 3; index++) {
-    const { record } = await execute({ markdown });
+    const { record } = await execute({ markdown: initialMarkdown });
     expect(guard.observe(record).shouldAbort).toBe(index === 2);
   }
 });
@@ -118,14 +111,14 @@ it.each(["read", "error", "rewritten", "unmarked"] as const)(
       const result =
         kind === "unmarked"
           ? jsonResult({ revision, steps: null })
-          : (await execute({ markdown })).result;
+          : (await execute({ markdown: initialMarkdown })).result;
       if (kind === "rewritten") {
         expect(Object.keys(result).toSorted()).toEqual(["content", "details"]);
         result.content = [{ type: "text", text: "New receipt wording " + revision }];
       }
       recordToolCallOutcome(state, {
         toolName: kind === "read" ? "read" : "progress_card",
-        toolParams: { markdown },
+        toolParams: { markdown: initialMarkdown },
         result: kind === "error" ? Object.assign(result, { isError: true }) : result,
       });
     }

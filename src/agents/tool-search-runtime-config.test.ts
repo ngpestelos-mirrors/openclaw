@@ -12,16 +12,10 @@ const pluginConfig = (marker: unknown) => ({
 
 function createRuntimeConfigPair(localModelLean = true) {
   const sourceConfig = {
-    agents: {
-      defaults: { experimental: { localModelLean } },
-      entries: { main: {} },
-    },
+    agents: { defaults: { experimental: { localModelLean } }, entries: { main: {} } },
     plugins: pluginConfig(secretMarker()),
   } as OpenClawConfig;
-  const runtimeConfig = {
-    ...sourceConfig,
-    plugins: pluginConfig("resolved"),
-  } as OpenClawConfig;
+  const runtimeConfig = { ...sourceConfig, plugins: pluginConfig("resolved") } as OpenClawConfig;
   setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
   return { runtimeConfig, sourceConfig };
 }

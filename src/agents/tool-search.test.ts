@@ -96,12 +96,7 @@ function catalogFixture(
     catalogRef: createToolSearchCatalogRef(),
   };
   const compacted = apply({ ...ctx, tools: [...structuredControlStubs(), ...tools] });
-  return {
-    ctx,
-    catalogRef: ctx.catalogRef,
-    compacted,
-    ...controlCalls(ctx),
-  };
+  return { ctx, catalogRef: ctx.catalogRef, compacted, ...controlCalls(ctx) };
 }
 
 function headlessFixture(tools: AnyAgentTool[]) {
@@ -358,9 +353,7 @@ describe("Tool Search", () => {
     const { search } = catalogFixture(catalogTools, { config });
 
     const scalar = await search({ query: "fake_large_0", limit: 1 });
-    expect(scalar.details).toEqual([
-      expect.objectContaining({ description: `${longDescription}0` }),
-    ]);
+    expect(scalar.details).toMatchObject([{ description: `${longDescription}0` }]);
     const fullRanking = await search({ query: "large surface", limit: 10 });
     const rankedIds = (fullRanking.details as Array<{ id: string }>).map(
       (candidate) => candidate.id,
@@ -573,9 +566,7 @@ describe("Tool Search", () => {
     expect(buildToolSchemaDirectoryPrompt(ctx)).not.toContain("- read (core)");
     expect(buildToolSchemaDirectoryPrompt(ctx)).toContain("- session_status (core)");
     const runtime = new ToolSearchRuntime(ctx, resolveToolSearchConfig(config));
-    expect(await runtime.search("read", { limit: 1 })).toEqual([
-      expect.objectContaining({ name: "read" }),
-    ]);
+    expect(await runtime.search("read", { limit: 1 })).toMatchObject([{ name: "read" }]);
     expect(await runtime.call("openclaw:core:read", { value: "file.txt" })).toHaveProperty(
       "result.details",
       { name: "read", input: { value: "file.txt" } },
@@ -628,20 +619,16 @@ describe("Tool Search", () => {
         zones: { type: "array", items: { type: "string", enum: ["north", "south"] } },
       },
     };
-    openTarget.parameters = {
-      type: "object",
-      required: ["token"],
-      additionalProperties: true,
-    };
+    openTarget.parameters = { type: "object", required: ["token"], additionalProperties: true };
     const { search } = catalogFixture([target, openTarget, mcpTarget]);
     const result = resultDetails(await search({ query: "update record" }));
 
-    expect(result).toEqual([
-      expect.objectContaining({
+    expect(result).toMatchObject([
+      {
         name: "fake_update",
         input:
           '{ id: string; mode?: "drip" | "flood"; nested?: Array<Array<Array<Array<unknown>>>>; policy?: unknown; zones?: Array<"north" | "south"> }',
-      }),
+      },
     ]);
     expect(JSON.stringify(result)).not.toContain("parameters");
 
@@ -963,10 +950,7 @@ describe("Tool Search", () => {
         message: expect.stringContaining("EXTERNAL_UNTRUSTED_CONTENT"),
       },
     });
-    expect(localResult).toMatchObject({
-      status: "rejected",
-      reason: { message: trustedMessage },
-    });
+    expect(localResult).toMatchObject({ status: "rejected", reason: { message: trustedMessage } });
   });
 
   it.each([
@@ -1216,9 +1200,7 @@ describe("Tool Search", () => {
 
       const compacted = applyToolSchemaDirectoryCatalog({
         tools,
-        config: {
-          tools: { toolSearch: { enabled, mode: "directory" } },
-        } as never,
+        config: { tools: { toolSearch: { enabled, mode: "directory" } } } as never,
       });
 
       expect(compacted).toMatchObject({
@@ -1257,8 +1239,8 @@ describe("Tool Search", () => {
     );
     expect(directory).not.toContain("Deferred names are not directly callable.");
     const runtime = new ToolSearchRuntime({ config, catalogRef }, resolveToolSearchConfig(config));
-    expect(await runtime.search("fake_directory_tool_199", { limit: 1 })).toEqual([
-      expect.objectContaining({ name: "fake_directory_tool_199" }),
+    expect(await runtime.search("fake_directory_tool_199", { limit: 1 })).toMatchObject([
+      { name: "fake_directory_tool_199" },
     ]);
   });
 
@@ -1326,9 +1308,7 @@ describe("Tool Search", () => {
     });
 
     expect(compacted.tools.map((tool) => tool.name)).toEqual(controlNames);
-    expect(catalogRef.current?.entries).toEqual([
-      expect.objectContaining({ name: "message", source: "mcp" }),
-    ]);
+    expect(catalogRef.current?.entries).toMatchObject([{ name: "message", source: "mcp" }]);
   });
 
   it("defers untrusted client schemas without traversing their properties", async () => {
@@ -1357,11 +1337,7 @@ describe("Tool Search", () => {
         tool: clientTool,
       }),
     ).not.toHaveProperty("output");
-    addClientToolsToToolCatalog({
-      enabled: true,
-      tools: [clientTool],
-      ...ctx,
-    });
+    addClientToolsToToolCatalog({ enabled: true, tools: [clientTool], ...ctx });
 
     const result = resultDetails(await search({ query: "pick file" }));
 
@@ -1430,10 +1406,7 @@ describe("Tool Search", () => {
     const second = pluginTool("fake_current_run", "Current-run capability");
     second.parameters = first.parameters;
     second.execute = vi.fn(async () => jsonResult({ marker: "second" }));
-    const reused = applyToolSearchCatalog({
-      tools: [...structuredControlStubs(), second],
-      ...ctx,
-    });
+    const reused = applyToolSearchCatalog({ tools: [...structuredControlStubs(), second], ...ctx });
 
     expect(reused.catalogReused).toBe(true);
     expect(catalogRef.current).toBe(previous);
@@ -1481,10 +1454,7 @@ describe("Tool Search", () => {
           toolName: "echo",
           description: "Reuse a remote capability",
           fallbackDescription: "Reuse a remote capability",
-          inputSchema: {
-            type: "object",
-            properties: { value: { type: "string" } },
-          },
+          inputSchema: { type: "object", properties: { value: { type: "string" } } },
         },
       ],
     } satisfies McpToolCatalog;
@@ -1507,16 +1477,16 @@ describe("Tool Search", () => {
     const secondWrapper = expectDefined(secondMaterialized.tools[0], "second MCP wrapper");
     expect(secondWrapper).not.toBe(firstWrapper);
     expect(secondWrapper.parameters).toBe(firstWrapper.parameters);
-    const firstExecute = firstWrapper.execute;
-    firstWrapper.execute = vi.fn(async (toolCallId, input, signal, onUpdate) => {
-      await firstExecute(toolCallId, input, signal, onUpdate);
-      return jsonResult({ marker: "first-run" });
-    });
-    const secondExecute = secondWrapper.execute;
-    secondWrapper.execute = vi.fn(async (toolCallId, input, signal, onUpdate) => {
-      await secondExecute(toolCallId, input, signal, onUpdate);
-      return jsonResult({ marker: "second-run" });
-    });
+    for (const [wrapper, marker] of [
+      [firstWrapper, "first-run"],
+      [secondWrapper, "second-run"],
+    ] as const) {
+      const execute = wrapper.execute;
+      wrapper.execute = vi.fn(async (toolCallId, input, signal, onUpdate) => {
+        await execute(toolCallId, input, signal, onUpdate);
+        return jsonResult({ marker });
+      });
+    }
     const first = catalogFixture([firstWrapper], {
       config,
       toolHookContext: { sessionId, runId: "run-mcp-1" },
@@ -1532,9 +1502,7 @@ describe("Tool Search", () => {
       { catalogRef: second.catalogRef },
       resolveToolSearchConfig(config),
     );
-    await expect(runtime.callValue("remoteDemo__echo")).resolves.toEqual({
-      marker: "second-run",
-    });
+    await expect(runtime.callValue("remoteDemo__echo")).resolves.toEqual({ marker: "second-run" });
     expect(firstWrapper.execute).not.toHaveBeenCalled();
     expect(secondWrapper.execute).toHaveBeenCalledOnce();
     await firstMaterialized.dispose();
@@ -1550,26 +1518,18 @@ describe("Tool Search", () => {
       "remote schema must not be traversed",
     );
 
-    const second = applyToolSearchCatalog({
-      tools: [...structuredControlStubs(), tool],
-      ...ctx,
-    });
+    const second = applyToolSearchCatalog({ tools: [...structuredControlStubs(), tool], ...ctx });
     expect(second.catalogReused).toBe(false);
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
 
-function createCatalog(count = 40) {
+function createCatalog(count: number) {
   const config = { tools: { toolSearch: { enabled: true, mode: "tools" as const } } };
   const tools = Array.from({ length: count }, (_, index) => {
     const name = `capability_${String(index).padStart(2, "0")}`;
-    const tool = pluginTool(
-      name,
-      `Inspect the archive for ${name}. ${"Preserve complete source records. ".repeat(6)}`,
-      "archive",
-    );
+    const tool = pluginTool(name, "Inspect the archive", "archive");
     tool.parameters = Type.Object({ target: Type.String(), limit: Type.Optional(Type.Integer()) });
-    tool.execute = vi.fn(async () => jsonResult({ completed: true }));
     return tool;
   });
   const { catalogRef } = headlessFixture(tools);

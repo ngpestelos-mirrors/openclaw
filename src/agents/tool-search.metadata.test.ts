@@ -91,13 +91,8 @@ it("does not taint an independent native describe after remote discovery", async
   const nativeRef = createToolSearchCatalogRef();
   registerHeadlessToolSearchCatalog({ catalogRef: nativeRef, tools: [native] });
   catalogRef.current!.entries.push(...nativeRef.current!.entries);
-  await execute(TOOL_SEARCH_RAW_TOOL_NAME, {
-    query: entry.id,
-    limit: 1,
-  });
-  const result = await execute(TOOL_DESCRIBE_RAW_TOOL_NAME, {
-    id: native.name,
-  });
+  await execute(TOOL_SEARCH_RAW_TOOL_NAME, { query: entry.id, limit: 1 });
+  const result = await execute(TOOL_DESCRIBE_RAW_TOOL_NAME, { id: native.name });
   expect(modelText(result)).not.toContain("EXTERNAL_UNTRUSTED_CONTENT");
   expect(JSON.parse(modelText(result))).toMatchObject({ description: native.description });
 });
