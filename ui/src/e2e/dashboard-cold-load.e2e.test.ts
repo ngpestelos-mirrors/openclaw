@@ -296,7 +296,7 @@ suite.define(() => {
                 revision: 2,
                 widgets: [{ ...board.widgets[0]!, revision: 2, grantState: "pending" }],
               };
-              const beforePending = (await gateway.getRequests("board.get")).length;
+              const beforePending = await gateway.deferNext("board.get");
               await gateway.emitGatewayEvent("board.changed", { sessionKey });
               await gateway.waitForRequest("board.get", { after: beforePending });
               await gateway.resolveDeferred("board.get", pendingBoard);
@@ -328,7 +328,7 @@ suite.define(() => {
                 widgets: [{ ...board.widgets[0]!, revision: 2 }],
               };
               widgetHtml = buildWidgetDocument(title, "<h1>Updated mission ready</h1>");
-              const beforeChanged = (await gateway.getRequests("board.get")).length;
+              const beforeChanged = await gateway.deferNext("board.get");
               await gateway.emitGatewayEvent("board.changed", { sessionKey });
               await gateway.waitForRequest("board.get", { after: beforeChanged });
               await gateway.resolveDeferred("board.get", changedBoard);
@@ -338,13 +338,13 @@ suite.define(() => {
                 .getByText("Updated mission ready")
                 .waitFor();
 
-              const beforeRemoved = (await gateway.getRequests("board.get")).length;
+              const beforeRemoved = await gateway.deferNext("board.get");
               await gateway.emitGatewayEvent("board.changed", { sessionKey });
               await gateway.waitForRequest("board.get", { after: beforeRemoved });
               await gateway.resolveDeferred("board.get", { ...board, revision: 3, widgets: [] });
               await frame.waitFor({ state: "detached" });
 
-              const beforeRestored = (await gateway.getRequests("board.get")).length;
+              const beforeRestored = await gateway.deferNext("board.get");
               await gateway.emitGatewayEvent("board.changed", { sessionKey });
               await gateway.waitForRequest("board.get", { after: beforeRestored });
               await gateway.resolveDeferred("board.get", changedBoard);
@@ -354,8 +354,8 @@ suite.define(() => {
                 .getByText("Updated mission ready")
                 .waitFor();
               const reconnectFrame = await frame.elementHandle();
-              const beforeReconnect = (await gateway.getRequests("connect")).length;
-              const beforeRevalidate = (await gateway.getRequests("board.get")).length;
+              const beforeReconnect = await gateway.deferNext("connect");
+              const beforeRevalidate = await gateway.deferNext("board.get");
               await gateway.setOnline(false);
               await gateway.setOnline(true);
               await gateway.waitForRequest("connect", { after: beforeReconnect });

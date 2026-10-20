@@ -77,7 +77,7 @@ type FixtureOptions = {
   transcriptMessages?: number;
   dashboardMcpApp?: { font: Buffer };
   /** Opt into a scripted HTML dashboard with an independently fetched web font. */
-  dashboardWidgetFont?: Buffer;
+  dashboardWidgetFontUrl?: string;
 };
 
 function dashboardMcpAppHtml(stylesheetUrl: string): string {
@@ -329,22 +329,14 @@ export function createControlUiTeamScaleFixture(options: FixtureOptions = {}) {
     };
   });
   const boardPath = `/__openclaw__/board/${encodeURIComponent(selectedSessionKey)}/team-overview/index.html`;
-  const dashboardFontPath = "/__openclaw__/bench/dashboard-font.woff2";
-  if (options.dashboardWidgetFont) {
-    assets.set(dashboardFontPath, {
-      contentType: "font/woff2",
-      body: options.dashboardWidgetFont,
-    });
-  }
   if (!options.dashboardMcpApp) {
     assets.set(boardPath, {
       contentType: "text/html",
-      body: options.dashboardWidgetFont
-        ? dashboardWidgetHtml(new URL(dashboardFontPath, baseUrl).href)
+      body: options.dashboardWidgetFontUrl
+        ? dashboardWidgetHtml(options.dashboardWidgetFontUrl)
         : widgetHtml(0),
     });
   }
-
   const sandbox = { sandboxUrl: options.sandboxUrl, sandboxPort: options.sandboxPort };
   const dashboardAssetPath = "/__openclaw__/fixture-dashboard";
   const dashboardAssetOrigin = options.sandboxPort
@@ -446,7 +438,7 @@ export function createControlUiTeamScaleFixture(options: FixtureOptions = {}) {
       "cron.list",
       "cron.status",
       ...(options.dashboardMcpApp ? ["board.widget.appView", "mcp.app.view"] : []),
-      ...(options.dashboardWidgetFont ? ["mcp.app.discover"] : []),
+      ...(options.dashboardWidgetFontUrl ? ["mcp.app.discover"] : []),
       ...(duplicateReads?.featureMethods ?? []),
     ],
     methodResponses: {
@@ -454,7 +446,7 @@ export function createControlUiTeamScaleFixture(options: FixtureOptions = {}) {
         ? { "session.members.listEvidence": { sessionKey: selectedSessionKey, ...sharingMembers } }
         : {}),
       "question.list": { questions: [] },
-      ...(options.dashboardWidgetFont ? { "mcp.app.discover": { servers: [] } } : {}),
+      ...(options.dashboardWidgetFontUrl ? { "mcp.app.discover": { servers: [] } } : {}),
       ...(largeHistory ? { "chat.startup": largeHistory, "chat.history": largeHistory } : {}),
       ...duplicateReads?.methodResponses,
       "agents.list": agents,

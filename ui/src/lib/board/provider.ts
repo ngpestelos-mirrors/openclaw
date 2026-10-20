@@ -121,7 +121,7 @@ export function acquireBoardProviderForSession(
       sessionKey: normalizeDefaultMainSessionAliasForUi(session.sessionKey),
     };
     entry = {
-      provider: new GatewayBoardProvider(target, client, connected, cacheSnapshot),
+      provider: new GatewayBoardProvider(target, client, connected),
       consumers: 0,
       presentationScope,
     };
@@ -145,6 +145,7 @@ export function acquireBoardProviderForSession(
       throw new Error(`Session dashboard ${action} unavailable`);
     }
   };
+  const stopCache = cacheSnapshot ? transport.subscribeCacheSnapshot(cacheSnapshot) : undefined;
   return {
     restoreSnapshot: (snapshot, receivedAtMs) => {
       if (isCurrent()) {
@@ -211,6 +212,7 @@ export function acquireBoardProviderForSession(
         return;
       }
       released = true;
+      stopCache?.();
       entry.consumers -= 1;
       if (entry.consumers > 0) {
         return;

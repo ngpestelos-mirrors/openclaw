@@ -1,7 +1,67 @@
+import type { ApplicationContext } from "../../ui/src/app/context.ts";
+
 /** Serialized before app modules; all timestamps use the host document's clock. */
 export function installWidgetReadiness() {
   const ready = new Map<string, number>();
   const boardFrames = new Map<HTMLIFrameElement, number>();
+  let helloObserverAttachedMs: number | null = null;
+  let helloPublishedMs: number | null = null;
+  let helloHandledMs: number | null = null;
+  let stopGateway: (() => void) | undefined;
+  let active = true;
+  const receiveContext = (event: Event) => {
+    const provider = event as Event & { context?: unknown; contextTarget?: HTMLElement };
+    if (
+      helloObserverAttachedMs !== null ||
+      provider.context !== "openclaw.application" ||
+      provider.contextTarget?.localName !== "openclaw-app"
+    ) {
+      return;
+    }
+    // The provider announces before connect; request its existing context before shell render.
+    const consumer = document.createElement("span");
+    provider.contextTarget.append(consumer);
+    try {
+      consumer.dispatchEvent(
+        Object.assign(new Event("context-request", { bubbles: true, composed: true }), {
+          context: "openclaw.application",
+          contextTarget: consumer,
+          subscribe: false,
+          callback: (context: ApplicationContext) => {
+            helloObserverAttachedMs = performance.now();
+            stopGateway = context.gateway.subscribe((snapshot) => {
+              if (snapshot.phase !== "connected" || helloPublishedMs !== null) {
+                return;
+              }
+              helloPublishedMs = performance.now();
+              queueMicrotask(() => {
+                if (active) {
+                  helloHandledMs = performance.now();
+                }
+                stopGateway?.();
+                stopGateway = undefined;
+              });
+            });
+          },
+        }),
+      );
+    } finally {
+      consumer.remove();
+    }
+    if (helloObserverAttachedMs !== null) {
+      window.removeEventListener("context-provider", receiveContext);
+    }
+  };
+  window.addEventListener("context-provider", receiveContext);
+  window.addEventListener(
+    "pagehide",
+    () => {
+      active = false;
+      stopGateway?.();
+      window.removeEventListener("context-provider", receiveContext);
+    },
+    { once: true },
+  );
   const stages = {
     iframeInsertedMs: null as number | null,
     sandboxDocLoadedMs: null as number | null,
@@ -103,14 +163,17 @@ export function installWidgetReadiness() {
       .map((entry) => ({ startMs: entry.startTime, endMs: entry.startTime + entry.duration }));
     return {
       measurement:
-        "host dispatch timestamps; resource-loaded follows the srcdoc load, app-ready follows the synthetic app font and two animation frames; neither is a compositor paint timestamp",
+        "host timestamps; hello-handled is the microtask after connected publication; resource-loaded follows the srcdoc load, app-ready follows the synthetic app font and two animation frames; neither is a compositor paint timestamp",
       firstInlineReadyMs: [...ready].find(([key]) => key.startsWith("inline:"))?.[1] ?? null,
       firstBoardReadyMs: [...ready].find(([key]) => key.startsWith("board:"))?.[1] ?? null,
       ready: Object.fromEntries(ready),
       dashboardStages: {
         connectSentMs:
           connectResponseMs !== null && connect ? connectResponseMs - connect.ms : null,
-        helloHandledMs: response("connect", "end"),
+        connectDispatchEndMs: response("connect", "end"),
+        helloObserverAttachedMs,
+        helloPublishedMs,
+        helloHandledMs,
         boardGetResponseMs: response("board.get", "start"),
         discoverResponseMs: response("mcp.app.discover", "start"),
         ...stages,

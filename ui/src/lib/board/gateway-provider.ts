@@ -33,6 +33,7 @@ import {
 } from "./widget-ticket-lifetime.ts";
 
 type BoardGatewayClient = Pick<GatewayBrowserClient, "request" | "addEventListener">;
+type CacheSnapshot = (snapshot: BoardSnapshot | null, receivedAtMs: number) => void;
 
 export class GatewayBoardProvider implements BoardProvider {
   readonly canPinWidgets = true;
@@ -58,12 +59,13 @@ export class GatewayBoardProvider implements BoardProvider {
   private disposed = false;
   private snapshotLoaded = false;
   private snapshotRevalidated = false;
+  private cacheReceipt: { snapshot: BoardSnapshot | null; receivedAtMs: number } | undefined;
+  private readonly cacheListeners = new Set<CacheSnapshot>();
 
   constructor(
     private readonly session: BoardGetParams,
     private client: BoardGatewayClient,
     private connected = true,
-    private readonly cacheSnapshot?: (snapshot: BoardSnapshot | null, receivedAtMs: number) => void,
   ) {
     this.snapshotSignal = new ValueSignal(emptyBoardSnapshot(this.sessionKey));
     this.snapshot$ = this.snapshotSignal;
@@ -111,6 +113,7 @@ export class GatewayBoardProvider implements BoardProvider {
     this.appViews.clear();
     this.snapshotLoaded = false;
     this.snapshotRevalidated = false;
+    this.cacheReceipt = undefined;
     this.setLoadError(null);
     this.snapshotSignal.set(emptyBoardSnapshot(this.sessionKey));
     this.attachGatewayEvents(client);
@@ -125,6 +128,18 @@ export class GatewayBoardProvider implements BoardProvider {
 
   get hasLoadedSnapshot(): boolean {
     return this.snapshotLoaded;
+  }
+
+  subscribeCacheSnapshot(listener: CacheSnapshot): () => void {
+    if (this.disposed) {
+      return () => {};
+    }
+    const notify: CacheSnapshot = (snapshot, receivedAtMs) => listener(snapshot, receivedAtMs);
+    this.cacheListeners.add(notify);
+    if (this.cacheReceipt) {
+      listener(this.cacheReceipt.snapshot, this.cacheReceipt.receivedAtMs);
+    }
+    return () => this.cacheListeners.delete(notify);
   }
 
   restoreSnapshot(snapshot: BoardSnapshot, receivedAtMs: number): void {
@@ -175,6 +190,8 @@ export class GatewayBoardProvider implements BoardProvider {
     this.userRefreshRequested = false;
     this.changedWidgets.clear();
     this.appViews.clear();
+    this.cacheListeners.clear();
+    this.cacheReceipt = undefined;
     this.wakeRetryDelay?.();
   }
 
@@ -446,7 +463,7 @@ export class GatewayBoardProvider implements BoardProvider {
             this.snapshotSignal.set(emptyBoardSnapshot(this.sessionKey));
           }
           this.snapshotRevalidated = true;
-          this.cacheSnapshot?.(null, Date.now());
+          this.cacheSnapshot(null, Date.now());
           // A definitive rejection consumes this refresh. Only a newer event,
           // connection generation, or explicit refresh can request another one.
           this.refreshRequested =
@@ -549,8 +566,15 @@ export class GatewayBoardProvider implements BoardProvider {
     this.snapshotRevalidated = true;
     const next = { ...snapshot, widgets };
     this.snapshotSignal.set(next);
-    this.cacheSnapshot?.(next, receivedAtMs);
+    this.cacheSnapshot(next, receivedAtMs);
     this.setLoadError(null);
+  }
+
+  private cacheSnapshot(snapshot: BoardSnapshot | null, receivedAtMs: number): void {
+    this.cacheReceipt = { snapshot, receivedAtMs };
+    for (const listener of this.cacheListeners) {
+      listener(snapshot, receivedAtMs);
+    }
   }
 
   private setLoadError(error: string | null): void {

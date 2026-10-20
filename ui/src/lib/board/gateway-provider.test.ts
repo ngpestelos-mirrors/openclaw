@@ -56,12 +56,8 @@ describe("gateway board provider lifecycle", () => {
     const request = vi.fn(() => response.promise);
     const client = boardClient(request);
     const persist = vi.fn();
-    const provider = new GatewayBoardProvider(
-      { sessionKey: cached.sessionKey },
-      client,
-      false,
-      persist,
-    );
+    const provider = new GatewayBoardProvider({ sessionKey: cached.sessionKey }, client, false);
+    provider.subscribeCacheSnapshot(persist);
     try {
       provider.restoreSnapshot(cached, now - 5_000);
       expect(provider.snapshot$.value.widgets[0]?.viewTicketTtlMs).toBe(25_000);
@@ -92,8 +88,8 @@ describe("gateway board provider lifecycle", () => {
       { sessionKey: cached.sessionKey },
       boardClient(request),
       false,
-      persist,
     );
+    provider.subscribeCacheSnapshot(persist);
     try {
       provider.restoreSnapshot(cached, Date.now());
       await provider.activate();
