@@ -74,14 +74,11 @@ it.each(["git", "package"] as const)(
         });
       });
       const params = { ...executionParams(kind), root };
-      params.opts = {
-        ...params.opts,
-        fullIntegrityCheck: true,
-        run: {
-          runId,
-          env,
-          requesterAuthority: { requester: {}, isCurrent: () => requesterCurrent },
-        },
+      params.opts.fullIntegrityCheck = true;
+      params.opts.run = {
+        runId,
+        env,
+        requesterAuthority: { requester: {}, isCurrent: () => requesterCurrent },
       };
       mocks.nativeSupport.mockResolvedValue(true);
       mocks.validateCanary.mockResolvedValue({

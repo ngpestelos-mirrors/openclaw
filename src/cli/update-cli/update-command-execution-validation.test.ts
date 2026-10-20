@@ -72,6 +72,15 @@ function gitCandidate(onValidated: (steps: unknown) => void = () => {}, gitMode 
     },
   );
 }
+const packageCandidate =
+  (root: string) =>
+  async (
+    params: Parameters<typeof import("./update-command-package.js").runPackageInstallUpdate>[0],
+  ) => {
+    await params.validateCandidate(root);
+    await params.beforeActivate();
+    return successfulUpdate;
+  };
 async function writeManifest(root: string, version: string, schemas = false) {
   await fs.writeFile(
     path.join(root, "package.json"),
@@ -255,19 +264,7 @@ it("reports Git candidate copy, startup and cleanup timing in the update result"
 it("reports the post-stop activation checks as a timed step", async () => {
   // Gateway readiness is outside this timed-step contract.
   vi.spyOn(readiness, "verifyPreviousGatewayForUpdate").mockResolvedValue(true);
-  mocks.runPackageUpdate.mockImplementation(
-    async ({
-      validateCandidate,
-      beforeActivate,
-    }: {
-      validateCandidate: (root: string) => Promise<unknown>;
-      beforeActivate: () => Promise<void>;
-    }) => {
-      await validateCandidate("/candidate");
-      await beforeActivate();
-      return successfulUpdate;
-    },
-  );
+  mocks.runPackageUpdate.mockImplementation(packageCandidate("/candidate"));
   const onStepComplete = vi.fn<NonNullable<UpdateStepProgress["onStepComplete"]>>();
 
   const execution = await execute({
@@ -370,20 +367,20 @@ it.each([
           auth: {},
         });
         const service = createMockGatewayService({
-          isAbsent: vi.fn(async () => false),
-          isLoaded: vi.fn(async () => true),
-          readRuntime: vi.fn(async () => ({
+          isAbsent: async () => false,
+          isLoaded: async () => true,
+          readRuntime: async () => ({
             status: "running",
             pid: 8000,
             systemd: { managerUid: 1000 },
-          })),
-          readCommand: vi.fn(async () => ({
+          }),
+          readCommand: async () => ({
             programArguments: [
               process.execPath,
               path.join(serviceRoot, "dist/index.js"),
               "gateway",
             ],
-          })),
+          }),
         });
         vi.spyOn(gatewayService, "resolveGatewayService").mockReturnValue(service);
         expect(await gatewayServiceCommandUsesRoot({ root: serviceRoot, env: managedEnv })).toBe(
@@ -450,17 +447,7 @@ it.each([
               }
             : stopped;
         });
-        mocks.runPackageUpdate.mockImplementation(
-          async (
-            params: Parameters<
-              typeof import("./update-command-package.js").runPackageInstallUpdate
-            >[0],
-          ) => {
-            await params.validateCandidate(cliRoot);
-            await params.beforeActivate();
-            return successfulUpdate;
-          },
-        );
+        mocks.runPackageUpdate.mockImplementation(packageCandidate(cliRoot));
         const params = {
           ...executionParams("package"),
           root: cliRoot,

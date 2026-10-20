@@ -170,21 +170,18 @@ async function startService() {
 }
 
 function readDatabase(file: string) {
-  const db = new DatabaseSync(file, { readOnly: true });
-  try {
-    return {
-      version: db.prepare("PRAGMA user_version").get()?.user_version,
-      rows: db.prepare("SELECT rowid, value FROM payload ORDER BY rowid").all(),
-      columns: db
-        .prepare("PRAGMA table_info(payload)")
-        .all()
-        .map((column) => column.name),
-    };
-  } finally {
-    db.close();
-  }
+  using db = new DatabaseSync(file, { readOnly: true });
+  return {
+    version: db.prepare("PRAGMA user_version").get()?.user_version,
+    rows: db.prepare("SELECT rowid, value FROM payload ORDER BY rowid").all(),
+    columns: db
+      .prepare("PRAGMA table_info(payload)")
+      .all()
+      .map((column) => column.name),
+  };
 }
 
+const writeJson = (file: string, value: unknown) => fs.writeFile(file, JSON.stringify(value));
 const expectMissing = (file: string) =>
   expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" });
 const readVersion = async (root: string) =>
@@ -259,7 +256,7 @@ it.each([
       plugins: { enabled: false },
       agents: { entries: { unused: {} } },
     };
-    await fs.writeFile(serviceEnv.OPENCLAW_CONFIG_PATH!, JSON.stringify(config));
+    await writeJson(serviceEnv.OPENCLAW_CONFIG_PATH!, config);
     const configSnapshot = await createConfigIO({
       env: serviceEnv,
       observe: false,
@@ -269,7 +266,7 @@ it.each([
       [shared, 15],
       [agent, 21],
     ] as const) {
-      const db = new DatabaseSync(file);
+      using db = new DatabaseSync(file);
       db.exec(
         `PRAGMA user_version=${version}; CREATE TABLE payload(value TEXT); INSERT INTO payload(rowid,value) VALUES(7,'first'),(42,'retained');`,
       );
@@ -277,7 +274,6 @@ it.each([
         db.exec("CREATE TABLE agent_databases(path TEXT)");
         db.prepare("INSERT INTO agent_databases VALUES (?)").run(agent);
       }
-      db.close();
     }
     const before = readState();
     let retainedSnapshotDirectory = "";
@@ -361,16 +357,13 @@ it.each([
       [packageRoot, "1.0.0", { state: 15, agent: 21 }],
       [swapFixture.params.stage.packageRoot, "2.0.0", candidateSchemas],
     ] as const) {
-      await fs.writeFile(
-        path.join(root, "package.json"),
-        JSON.stringify({
-          name: "openclaw",
-          packageManager: "pnpm@12.0.0",
-          type: "module",
-          version,
-          openclaw: { schemaVersions: versions },
-        }),
-      );
+      await writeJson(path.join(root, "package.json"), {
+        name: "openclaw",
+        packageManager: "pnpm@12.0.0",
+        type: "module",
+        version,
+        openclaw: { schemaVersions: versions },
+      });
       await fs.writeFile(path.join(root, "dist/index.js"), source);
       const worker = path.join(
         root,
@@ -390,12 +383,9 @@ it.each([
       const dist = path.join(root, "dist");
       await fs.mkdir(path.join(dist, "control-ui"), { recursive: true });
       await Promise.all([
-        fs.writeFile(
-          path.join(dist, "build-info.json"),
-          JSON.stringify({ commit: sha, buildId: sha }),
-        ),
-        fs.writeFile(path.join(dist, ".buildstamp"), JSON.stringify({ head: sha })),
-        fs.writeFile(path.join(dist, ".runtime-postbuildstamp"), JSON.stringify({ head: sha })),
+        writeJson(path.join(dist, "build-info.json"), { commit: sha, buildId: sha }),
+        writeJson(path.join(dist, ".buildstamp"), { head: sha }),
+        writeJson(path.join(dist, ".runtime-postbuildstamp"), { head: sha }),
         fs.writeFile(path.join(dist, "control-ui", "index.html"), "ready"),
         fs.writeFile(path.join(dist, "entry.js"), "import './index.js';\n"),
       ]);
@@ -571,16 +561,15 @@ it.each([
           postVerifyStep: async (root) => {
             const step = await runPackageUpdateDoctor({ ...params, root });
             if (scenario === "config-refused") {
-              await fs.writeFile(
-                serviceEnv.OPENCLAW_CONFIG_PATH!,
-                JSON.stringify({ ...config, gateway: { ...config.gateway, port } }),
-              );
+              await writeJson(serviceEnv.OPENCLAW_CONFIG_PATH!, {
+                ...config,
+                gateway: { ...config.gateway, port },
+              });
             }
             if (scenario === "post-migration-write" || scenario === "schema-neutral-write") {
               for (const file of files) {
-                const db = new DatabaseSync(file);
+                using db = new DatabaseSync(file);
                 db.exec("INSERT INTO payload(rowid,value) VALUES(99,'after-migration')");
-                db.close();
               }
             }
             return step;

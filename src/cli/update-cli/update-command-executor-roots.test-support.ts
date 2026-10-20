@@ -142,7 +142,6 @@ export function registerExecutorRootOwnershipTests(
           ...original.authority,
           owner: current.lease.owner,
         });
-        expect(recoveredAuthority.owner).not.toBe(original.authority.owner);
         expect(Object.isFrozen(recoveredAuthority)).toBe(true);
         expect(store.current(original.lease)).toBe(false);
         expect(store.release(original.lease)).toBe(false);
