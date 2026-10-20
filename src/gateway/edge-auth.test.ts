@@ -16,6 +16,12 @@ import {
   resolveEdgeAuthHeaders,
 } from "./edge-auth.js";
 
+const targetUrl = "wss://gateway.example/rpc";
+const resolveHeaders = (
+  value: Parameters<typeof resolveEdgeAuthHeaders>[0]["value"],
+  options: Partial<Parameters<typeof resolveEdgeAuthHeaders>[0]> = {},
+) => resolveEdgeAuthHeaders({ config: {}, value, targetUrl, env: {}, ...options });
+
 describe("gateway edge auth headers", () => {
   afterEach(() => {
     materializeSecretInput.mockClear();
@@ -50,10 +56,7 @@ describe("gateway edge auth headers", () => {
     });
 
     await expect(
-      resolveEdgeAuthHeaders({
-        config: {},
-        value,
-        targetUrl: "wss://gateway.example/rpc",
+      resolveHeaders(value, {
         env: { EDGE_AUTH_TOKEN: first, EDGE_AUTH_SECRET: second },
       }),
     ).resolves.toEqual({ "X-Edge-Token": first, "X-Edge-Secret": second });
@@ -62,14 +65,9 @@ describe("gateway edge auth headers", () => {
   });
 
   it("names the header when a resolved value is empty", async () => {
-    await expect(
-      resolveEdgeAuthHeaders({
-        config: {},
-        value: { "X-Empty-Edge-Auth": " " },
-        targetUrl: "wss://gateway.example/rpc",
-        env: {},
-      }),
-    ).rejects.toThrow('gateway.remote.edgeAuth header "X-Empty-Edge-Auth" resolved empty');
+    await expect(resolveHeaders({ "X-Empty-Edge-Auth": " " })).rejects.toThrow(
+      'gateway.remote.edgeAuth header "X-Empty-Edge-Auth" resolved empty',
+    );
   });
 
   it("binds configured headers to the exact configured remote Gateway scope", async () => {
@@ -77,27 +75,19 @@ describe("gateway edge auth headers", () => {
       gateway: {
         mode: "remote" as const,
         remote: {
-          url: "wss://gateway.example/rpc",
+          url: targetUrl,
           edgeAuth: { "X-Edge-Auth": "test-secret" },
         },
       },
     };
 
     const matchingConfig = normalizeEdgeAuthHeadersConfig(
-      gatewayEdgeAuthValueForTarget({
-        config,
-        targetUrl: "wss://gateway.example/rpc",
-      }),
+      gatewayEdgeAuthValueForTarget({ config, targetUrl }),
     );
     expect(matchingConfig).toEqual({ "X-Edge-Auth": "test-secret" });
-    await expect(
-      resolveEdgeAuthHeaders({
-        config,
-        value: matchingConfig,
-        targetUrl: "wss://gateway.example/rpc",
-        env: {},
-      }),
-    ).resolves.toEqual({ "X-Edge-Auth": "test-secret" });
+    await expect(resolveHeaders(matchingConfig, { config })).resolves.toEqual({
+      "X-Edge-Auth": "test-secret",
+    });
     expect(
       gatewayEdgeAuthValueForTarget({ config, targetUrl: "wss://other.example/rpc" }),
     ).toBeUndefined();
@@ -109,9 +99,7 @@ describe("gateway edge auth headers", () => {
     });
 
     await expect(
-      resolveEdgeAuthHeaders({
-        config: {},
-        value,
+      resolveHeaders(value, {
         targetUrl: "ws://gateway.example/rpc",
         env: { EDGE_AUTH_TOKEN: "test-token" },
       }),

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
-import { awaitGateBeforeSettlement, withinTest } from "../../test/helpers/promise.js";
+import { withinTest } from "../../test/helpers/promise.js";
 import { runQaGatewayFixture } from "../../test/helpers/qa-gateway-cleanup.js";
 import { getCommandOwnerAuthority } from "../auto-reply/command-owner-authority.js";
 import { getRequesterProfile } from "../auto-reply/requester-profile.js";
@@ -24,7 +24,9 @@ import {
   humanReplies,
   outbound,
   patchProofConfig,
+  proofDeliveries,
   providerErrors,
+  waitForProofGate,
   waitForProofRun,
 } from "./gateway.sessions-send-provenance.test-support.js";
 import { holdProofSend } from "./gateway.sessions-send-provenance.transport.test-support.js";
@@ -36,11 +38,12 @@ export async function verifyLinkedPrincipalDelivery(signal: AbortSignal) {
   const alice = await ensureCanonicalUserProfileForEmail("linked-alice@provenance.example.test");
   const bob = await ensureCanonicalUserProfileForEmail("linked-bob@provenance.example.test");
   const identity = { channelId: "telegram", accountId: "default", senderId: "linked-human" };
+  const { channelId, accountId, senderId } = identity;
   const refusedRecipients: string[] = [];
   let linkedProfileId: string | undefined;
   let live = true;
   const owner = {
-    channelId: identity.channelId,
+    channelId,
     isLive: () => live,
     resolveGatewayContext: gatewayContext.resolveGatewayContext,
   };
@@ -99,21 +102,22 @@ export async function verifyLinkedPrincipalDelivery(signal: AbortSignal) {
           {
             name: `linked principal ${action} during final send preparation`,
             id,
-            sender: identity.senderId,
+            sender: senderId,
             agent: "main",
             denied: action !== "current",
             targetKey: `agent:deployment:telegram:direct:provenance-target-${id}`,
           },
           sourceKey,
         );
-        using hold = holdProofSend(scenario.recipient);
+        const { recipient, sourceRecipient, targetKey } = scenario;
+        using hold = holdProofSend(recipient);
         const messageId = randomUUID();
         const channelIngress = await ingress.resolveStable({
-          channelId: identity.channelId,
-          accountId: identity.accountId,
+          channelId,
+          accountId,
           identity: { authentication: "verified" },
-          subject: { stableId: identity.senderId },
-          conversation: { kind: "direct", id: scenario.sourceRecipient },
+          subject: { stableId: senderId },
+          conversation: { kind: "direct", id: sourceRecipient },
           contextBinding: {
             agentId: "main",
             sessionKey: sourceKey,
@@ -126,37 +130,31 @@ export async function verifyLinkedPrincipalDelivery(signal: AbortSignal) {
           useDefaultPairingStore: false,
         });
         const ctx = await buildContext({
-          channel: identity.channelId,
-          accountId: identity.accountId,
+          channel: channelId,
+          accountId,
           messageId,
-          from: `telegram:${identity.senderId}`,
-          sender: { id: identity.senderId },
-          conversation: { kind: "direct", id: scenario.sourceRecipient },
+          from: `telegram:${senderId}`,
+          sender: { id: senderId },
+          conversation: { kind: "direct", id: sourceRecipient },
           route: { agentId: "main", routeSessionKey: sourceKey },
-          reply: { to: scenario.sourceRecipient },
+          reply: { to: sourceRecipient },
           message: { rawBody: scenario.sourcePrompt },
           channelIngress,
         });
         expect(getRequesterProfile(ctx)?.id).toBe(profile.id);
         expect(getCommandOwnerAuthority(ctx)?.operatorAuthority?.profileId).toBe(profile.id);
         expect(getCommandOwnerAuthority(ctx)?.isCurrent()).toBe(true);
-        await gateway.client.request("sessions.create", {
-          agentId: "deployment",
-          key: scenario.targetKey,
-        });
+        await gateway.client.request("sessions.create", { agentId: "deployment", key: targetKey });
         const firstReply = humanReplies.length;
         let completion: ReturnType<typeof waitForProofRun> | undefined;
         try {
-          await dispatchProofHuman(ctx, identity.senderId, "followup", signal);
+          await dispatchProofHuman(ctx, senderId, "followup", signal);
           scenario.sourceCompleted = true;
           expect(
             humanReplies.slice(firstReply),
-            JSON.stringify({
-              providerErrors,
-              requests: scenario.sourceRequests.length,
-            }),
+            JSON.stringify({ providerErrors, requests: scenario.sourceRequests.length }),
           ).toContainEqual({
-            sender: identity.senderId,
+            sender: senderId,
             text: `SOURCE_COMPLETE_${id}`,
           });
           expect(scenario.accepted).toMatchObject({
@@ -165,16 +163,14 @@ export async function verifyLinkedPrincipalDelivery(signal: AbortSignal) {
           });
           completion = waitForProofRun(scenario.accepted?.runId);
           scenario.releaseTarget.resolve();
-          await withinTest(
-            awaitGateBeforeSettlement(
-              hold.entered.promise,
-              completion,
-              `${id}: delegate settled before send preparation`,
-            ),
+          await waitForProofGate(
+            hold.entered.promise,
+            completion,
             signal,
+            `${id}: delegate settled before send preparation`,
           );
           expect(scenario.targetRequests[0]?.tools).toContain("message");
-          expect(outbound.filter((item) => item.to === scenario.recipient)).toEqual([]);
+          expect(proofDeliveries(recipient)).toEqual([]);
           if (action !== "current") {
             await unlink();
             if (action === "reassign") {
@@ -190,25 +186,21 @@ export async function verifyLinkedPrincipalDelivery(signal: AbortSignal) {
           });
           if (action !== "current") {
             expect(terminal.error).toContain("Channel operator authority changed");
-            refusedRecipients.push(scenario.recipient);
+            refusedRecipients.push(recipient);
           }
           await waitForGatewayActiveWork(30_000);
           expect(
             listRpcSourceEntries().some(
               ([, source]) =>
-                getRpcSourceIdentity(source).sessionKey === scenario.targetKey &&
-                isRpcSourceQueued(source),
+                getRpcSourceIdentity(source).sessionKey === targetKey && isRpcSourceQueued(source),
             ),
           ).toBe(false);
           expect(
-            (await loadUnfinishedDeliveries()).filter((entry) => entry.to === scenario.recipient),
+            (await loadUnfinishedDeliveries()).filter((entry) => entry.to === recipient),
           ).toEqual([]);
-          expect(
-            outbound.filter((item) => item.to === scenario.recipient),
-            id,
-          ).toEqual(
+          expect(proofDeliveries(recipient), id).toEqual(
             action === "current"
-              ? [{ to: scenario.recipient, text: scenario.marker, accountId: "default" }]
+              ? [{ to: recipient, text: scenario.marker, accountId: "default" }]
               : [],
           );
           expect(scenario.effectAfterSourceCompletion).toEqual(action === "current" ? [true] : []);

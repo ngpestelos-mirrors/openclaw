@@ -1,10 +1,6 @@
 import { addAbortListener } from "node:events";
 import { expect, it } from "vitest";
-import {
-  awaitGateBeforeSettlement,
-  createDeferred,
-  withinTest,
-} from "../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { waitForGatewayActiveWork } from "../infra/gateway-active-work.js";
 import { verifyLinkedPrincipalDelivery } from "./gateway.sessions-send-provenance.authority.test-support.js";
@@ -22,65 +18,59 @@ import {
   runProofIngress,
   updateSenderPolicies,
   waitForProofRun,
+  waitForProofGate,
+  proofDeliveries,
+  proofToolReply,
   type RunResult,
   type ProofCase,
   type ProofModelRequest,
 } from "./gateway.sessions-send-provenance.test-support.js";
 
-const cases: ProofCase[] = [
-  { name: "denied self-send", id: "denied", sender: "guest", agent: "main", denied: true },
-  { name: "allowed self-send", id: "allowed", sender: "trusted", agent: "main", denied: false },
-  {
-    name: "authorized more capable delegate",
-    id: "delegate",
-    sender: "trusted",
-    agent: "research",
-    denied: false,
-  },
-  {
-    name: "admitted followup retains denial while waiting despite a policy change",
-    id: "busy_followup",
+const requesterCase = (
+  id: string,
+  name: string,
+  overrides: Partial<ProofCase> = {},
+): ProofCase => ({ id, name, sender: "trusted", agent: "main", denied: false, ...overrides });
+const busyReceiver = "agent:main:telegram:direct:provenance-busy-receiver";
+const cases = [
+  requesterCase("denied", "denied self-send", { sender: "guest", denied: true }),
+  requesterCase("allowed", "allowed self-send"),
+  requesterCase("delegate", "authorized more capable delegate", { agent: "research" }),
+  requesterCase("busy_followup", "admitted followup retains denial despite a policy change", {
     sender: "guest",
-    agent: "main",
     denied: true,
     busy: true,
-    targetKey: "agent:main:telegram:direct:provenance-busy-receiver",
-  },
-  {
-    name: "later authorized work in the same receiver",
-    id: "busy_allowed",
-    sender: "trusted",
-    agent: "main",
-    denied: false,
-    targetKey: "agent:main:telegram:direct:provenance-busy-receiver",
-  },
-  {
-    name: "denied explicit steer to busy authorized receiver",
-    id: "busy_steer_denied",
+    targetKey: busyReceiver,
+  }),
+  requesterCase("busy_allowed", "later authorized work in the same receiver", {
+    targetKey: busyReceiver,
+  }),
+  requesterCase("busy_steer_denied", "denied explicit steer to busy authorized receiver", {
     sender: "guest",
-    agent: "main",
     denied: true,
     busy: true,
     mode: "steer",
     targetKey: "agent:main:telegram:direct:provenance-steer-denied",
-  },
-  {
-    name: "compatible explicit steer from the original requester",
-    id: "busy_steer_compatible",
-    sender: "trusted",
-    agent: "main",
-    denied: false,
+  }),
+  requesterCase("busy_steer_compatible", "compatible explicit steer from the original requester", {
     busy: true,
     mode: "steer",
     bootstrap: true,
-    targetKey: "agent:main:telegram:direct:provenance-busy-receiver",
-  },
+    targetKey: busyReceiver,
+  }),
 ];
 
 async function verifyRegisteredRequesterPolicy(signal: AbortSignal) {
   for (const spec of cases) {
     const sourceKey = `agent:${spec.agent}:telegram:direct:provenance-${spec.id === "allowed" ? "denied" : spec.id}`;
     const scenario = createScenario(spec, sourceKey);
+    const ingress = {
+      abortSignal: signal,
+      agentId: spec.agent,
+      sessionKey: sourceKey,
+      senderId: spec.sender,
+      to: scenario.sourceRecipient,
+    };
     using steering =
       spec.mode === "steer" && !spec.denied
         ? await observeProofSteeringAdmission(scenario.targetPrompt)
@@ -96,20 +86,13 @@ async function verifyRegisteredRequesterPolicy(signal: AbortSignal) {
       if (spec.busy) {
         if (spec.bootstrap) {
           const bootstrap = await runProofIngress({
-            abortSignal: signal,
-            agentId: spec.agent,
-            sessionKey: sourceKey,
+            ...ingress,
             message: scenario.bootstrapPrompt,
-            senderId: spec.sender,
-            to: scenario.sourceRecipient,
           });
           expect(bootstrap).toMatchObject({
             payloads: [expect.objectContaining({ text: `BOOTSTRAP_COMPLETE_${spec.id}` })],
           });
-          expect(
-            scenario.bootstrapAccepted,
-            JSON.stringify(scenario.bootstrapAccepted),
-          ).toMatchObject({
+          expect(scenario.bootstrapAccepted).toMatchObject({
             status: "accepted",
             targetDisposition: "queued",
             runId: expect.any(String),
@@ -117,7 +100,7 @@ async function verifyRegisteredRequesterPolicy(signal: AbortSignal) {
           incumbent = waitForProofRun(scenario.bootstrapAccepted?.runId);
         } else {
           incumbent = runProofIngress({
-            abortSignal: signal,
+            ...ingress,
             agentId: "main",
             sessionKey: scenario.targetKey,
             message: scenario.incumbentPrompt,
@@ -129,23 +112,14 @@ async function verifyRegisteredRequesterPolicy(signal: AbortSignal) {
           scenario.incumbentCompleted = true;
           return result;
         });
-        await withinTest(
-          awaitGateBeforeSettlement(
-            scenario.incumbentStarted.promise,
-            incumbent,
-            "Authorized receiver settled before its first delivery",
-          ),
+        await waitForProofGate(
+          scenario.incumbentStarted.promise,
+          incumbent,
           signal,
+          "Authorized receiver settled before its first delivery",
         );
       }
-      source = runProofIngress({
-        abortSignal: signal,
-        agentId: spec.agent,
-        sessionKey: sourceKey,
-        message: scenario.sourcePrompt,
-        senderId: spec.sender,
-        to: scenario.sourceRecipient,
-      });
+      source = runProofIngress({ ...ingress, message: scenario.sourcePrompt });
       if (steering) {
         await steering.waitForAdmission(source, signal);
         scenario.releaseIncumbent.resolve();
@@ -157,10 +131,7 @@ async function verifyRegisteredRequesterPolicy(signal: AbortSignal) {
         payloads: [expect.objectContaining({ text: `SOURCE_COMPLETE_${spec.id}` })],
       });
       const rejectedSteering = spec.mode === "steer" && spec.denied;
-      expect(
-        scenario.accepted,
-        JSON.stringify({ accepted: scenario.accepted, providerErrors }),
-      ).toMatchObject({
+      expect(scenario.accepted).toMatchObject({
         status: rejectedSteering ? "error" : "accepted",
         runId: expect.any(String),
       });
@@ -201,7 +172,7 @@ async function verifyRegisteredRequesterPolicy(signal: AbortSignal) {
         expect(
           scenario.incumbentRequests.every((request) => request.tools.includes("message")),
         ).toBe(true);
-        expect(outbound.filter((entry) => entry.to === `${scenario.recipient}-incumbent`)).toEqual(
+        expect(proofDeliveries(`${scenario.recipient}-incumbent`)).toEqual(
           [1, 2].map((index) => ({
             to: `${scenario.recipient}-incumbent`,
             text: `${scenario.marker}_INCUMBENT_${index}`,
@@ -212,7 +183,7 @@ async function verifyRegisteredRequesterPolicy(signal: AbortSignal) {
       if (rejectedSteering) {
         await waitForGatewayActiveWork(30_000);
         expect(scenario.targetRequests).toEqual([]);
-        expect(outbound.filter((entry) => entry.to === scenario.recipient)).toEqual([]);
+        expect(proofDeliveries(scenario.recipient)).toEqual([]);
         expect(providerErrors).toEqual([]);
         continue;
       }
@@ -223,11 +194,11 @@ async function verifyRegisteredRequesterPolicy(signal: AbortSignal) {
       scenario.releaseTarget.resolve();
       if (!spec.bootstrap) {
         const terminal = await waitForProofRun(scenario.accepted?.runId);
-        expect(terminal, JSON.stringify(terminal)).toMatchObject({ status: "ok" });
+        expect(terminal).toMatchObject({ status: "ok" });
       }
       await waitForGatewayActiveWork(30_000);
       expect(providerErrors).toEqual([]);
-      const deliveries = outbound.filter((entry) => entry.to === scenario.recipient);
+      const deliveries = proofDeliveries(scenario.recipient);
       expect
         .soft(deliveries, spec.name)
         .toEqual(
@@ -253,18 +224,13 @@ async function verifyRegisteredRequesterPolicy(signal: AbortSignal) {
           .toEqual(scenario.targetRequests.map(() => true));
       }
       if (scenario.targetKey === sourceKey) {
-        expect
-          .soft(
-            outbound.filter((entry) => entry.to === scenario.sourceRecipient),
-            spec.name,
-          )
-          .toEqual([
-            {
-              to: scenario.sourceRecipient,
-              text: `TARGET_COMPLETE_${spec.id}`,
-              accountId: "default",
-            },
-          ]);
+        expect.soft(proofDeliveries(scenario.sourceRecipient), spec.name).toEqual([
+          {
+            to: scenario.sourceRecipient,
+            text: `TARGET_COMPLETE_${spec.id}`,
+            accountId: "default",
+          },
+        ]);
       }
     } finally {
       scenario.releaseIncumbent.resolve();
@@ -307,33 +273,23 @@ async function verifyNativeSpawnRequester(signal: AbortSignal, collect: boolean)
     }
     sourceRequests++;
     if (sourceRequests === 1) {
-      return {
-        tool: {
-          name: "sessions_spawn",
-          args: {
-            task: childPrompt,
-            collect,
-            cleanup: "keep",
-            expectsCompletionMessage: false,
-          },
-        },
-      };
+      return proofToolReply("sessions_spawn", {
+        task: childPrompt,
+        collect,
+        cleanup: "keep",
+        expectsCompletionMessage: false,
+      });
     }
     if (sourceRequests === 2) {
       spawnResult = request.result;
       spawned.resolve();
       await issueSteer.promise;
-      return {
-        tool: {
-          name: "sessions_send",
-          args: {
-            sessionKey: spawnResult?.childSessionKey,
-            mode: "steer",
-            message: steerPrompt,
-            timeoutSeconds: 0,
-          },
-        },
-      };
+      return proofToolReply("sessions_send", {
+        sessionKey: spawnResult?.childSessionKey,
+        mode: "steer",
+        message: steerPrompt,
+        timeoutSeconds: 0,
+      });
     }
     steerResult = request.result;
     return { text: `PROVENANCE_COMPLETE_${marker}` };
@@ -356,24 +312,18 @@ async function verifyNativeSpawnRequester(signal: AbortSignal, collect: boolean)
     return result;
   });
   try {
-    await withinTest(
-      awaitGateBeforeSettlement(spawned.promise, source, "Spawn did not return"),
-      signal,
-    );
+    await waitForProofGate(spawned.promise, source, signal, "Spawn did not return");
     expect(spawnResult).toMatchObject({
       status: "accepted",
       childSessionKey: expect.any(String),
       runId: expect.any(String),
     });
-    await withinTest(
-      awaitGateBeforeSettlement(childStarted.promise, source, "Child did not start"),
-      signal,
-    );
+    await waitForProofGate(childStarted.promise, source, signal, "Child did not start");
     issueSteer.resolve();
     await steering.waitForAdmission(source, signal);
     releaseChild.resolve();
     await source;
-    expect(steerResult, JSON.stringify(steerResult)).toMatchObject({
+    expect(steerResult).toMatchObject({
       status: "accepted",
       targetDisposition: "steered",
     });
@@ -433,29 +383,24 @@ async function verifyQueuedCollectorAdmission(signal: AbortSignal) {
     if (request.prompt.includes(steerSourcePrompt)) {
       steeringRequests++;
       if (steeringRequests === 1) {
-        return {
-          tool: {
-            name: "sessions_send",
-            args: {
-              sessionKey: queuedResult?.childSessionKey,
-              mode: "steer",
-              message: steerInput,
-              timeoutSeconds: 0,
-            },
-          },
-        };
+        return proofToolReply("sessions_send", {
+          sessionKey: queuedResult?.childSessionKey,
+          mode: "steer",
+          message: steerInput,
+          timeoutSeconds: 0,
+        });
       }
       steerResult = request.result;
       return { text: `PROVENANCE_COMPLETE_${marker}` };
     }
     sourceRequests++;
     if (sourceRequests === 1) {
-      return {
-        tool: {
-          name: "sessions_spawn",
-          args: { task: blockerPrompt, collect: true, groupId: marker, cleanup: "keep" },
-        },
-      };
+      return proofToolReply("sessions_spawn", {
+        task: blockerPrompt,
+        collect: true,
+        groupId: marker,
+        cleanup: "keep",
+      });
     }
     if (sourceRequests === 2) {
       blockerResult = request.result;
@@ -463,12 +408,12 @@ async function verifyQueuedCollectorAdmission(signal: AbortSignal) {
         return { text: `PROVENANCE_COMPLETE_${marker}` };
       }
       await blockerStarted.promise;
-      return {
-        tool: {
-          name: "sessions_spawn",
-          args: { task: queuedPrompt, collect: true, groupId: marker, cleanup: "keep" },
-        },
-      };
+      return proofToolReply("sessions_spawn", {
+        task: queuedPrompt,
+        collect: true,
+        groupId: marker,
+        cleanup: "keep",
+      });
     }
     queuedResult = request.result;
     return { text: `PROVENANCE_COMPLETE_${marker}` };
@@ -491,10 +436,7 @@ async function verifyQueuedCollectorAdmission(signal: AbortSignal) {
       sourceCompleted = true;
       return result;
     });
-    await withinTest(
-      awaitGateBeforeSettlement(blockerStarted.promise, source, "Collector did not start"),
-      signal,
-    );
+    await waitForProofGate(blockerStarted.promise, source, signal, "Collector did not start");
     await source;
     for (const accepted of [blockerResult, queuedResult]) {
       expect(accepted).toMatchObject({
@@ -509,20 +451,18 @@ async function verifyQueuedCollectorAdmission(signal: AbortSignal) {
     await updateSenderPolicies({ [`id:${marker}`]: { deny: ["exec"] } });
     queuedCompletion = waitForProofRun(queuedResult?.runId);
     releaseBlocker.resolve();
-    await withinTest(
-      awaitGateBeforeSettlement(
-        queuedStarted.promise,
-        queuedCompletion,
-        "Queued child did not start",
-      ),
+    await waitForProofGate(
+      queuedStarted.promise,
+      queuedCompletion,
       signal,
+      "Queued child did not start",
     );
     expect(queuedRequests.every((request) => !request.tools.includes("exec"))).toBe(true);
     source = runProofIngress({ ...ingress, message: steerSourcePrompt });
     await steering.waitForAdmission(source, signal);
     releaseQueued.resolve();
     await source;
-    expect(steerResult, JSON.stringify(steerResult)).toMatchObject({
+    expect(steerResult).toMatchObject({
       status: "accepted",
       targetDisposition: "steered",
     });
@@ -578,29 +518,23 @@ async function verifyCompletedChildFollowup(signal: AbortSignal) {
     if (request.prompt.includes(sourceFollowupPrompt)) {
       sourceFollowupRequests++;
       if (sourceFollowupRequests === 1) {
-        return {
-          tool: {
-            name: "sessions_send",
-            args: {
-              sessionKey: spawnResult?.childSessionKey,
-              mode: "followup",
-              message: childFollowupPrompt,
-              timeoutSeconds: 0,
-            },
-          },
-        };
+        return proofToolReply("sessions_send", {
+          sessionKey: spawnResult?.childSessionKey,
+          mode: "followup",
+          message: childFollowupPrompt,
+          timeoutSeconds: 0,
+        });
       }
       followupResult = request.result;
       return { text: `PROVENANCE_COMPLETE_${marker}` };
     }
     spawnRequests++;
     if (spawnRequests === 1) {
-      return {
-        tool: {
-          name: "sessions_spawn",
-          args: { task: childPrompt, cleanup: "keep", expectsCompletionMessage: false },
-        },
-      };
+      return proofToolReply("sessions_spawn", {
+        task: childPrompt,
+        cleanup: "keep",
+        expectsCompletionMessage: false,
+      });
     }
     spawnResult = request.result;
     return { text: `PROVENANCE_COMPLETE_${marker}` };
@@ -693,17 +627,12 @@ async function verifySteeringPolicyCompatibility(
     const count = (sourceCalls.get(source) ?? 0) + 1;
     sourceCalls.set(source, count);
     if (count === 1) {
-      return {
-        tool: {
-          name: "sessions_send",
-          args: {
-            sessionKey: targetKey,
-            mode: "steer",
-            message: source === restrictedPrompt ? restrictedInput : compatibleInput,
-            timeoutSeconds: 0,
-          },
-        },
-      };
+      return proofToolReply("sessions_send", {
+        sessionKey: targetKey,
+        mode: "steer",
+        message: source === restrictedPrompt ? restrictedInput : compatibleInput,
+        timeoutSeconds: 0,
+      });
     }
     results.set(source, request.result);
     return { text: `PROVENANCE_COMPLETE_${marker}` };
@@ -717,10 +646,7 @@ async function verifySteeringPolicyCompatibility(
   });
   let compatible: ReturnType<typeof runProofIngress> | undefined;
   try {
-    await withinTest(
-      awaitGateBeforeSettlement(started.promise, incumbent, "DM did not start"),
-      signal,
-    );
+    await waitForProofGate(started.promise, incumbent, signal, "DM did not start");
     expect(requests[0]?.tools).toContain("exec");
     if (publishDenyAfterAdmission) {
       await patchProofConfig({
@@ -867,13 +793,11 @@ async function verifyCrossHumanAdmission(
         return result;
       },
     );
-    await withinTest(
-      awaitGateBeforeSettlement(
-        scenario.incumbentStarted.promise,
-        alice,
-        "Alice settled before her first delivery",
-      ),
+    await waitForProofGate(
+      scenario.incumbentStarted.promise,
+      alice,
       signal,
+      "Alice settled before her first delivery",
     );
     stage = "Bob steering admission";
     bob = runHuman(
@@ -965,7 +889,7 @@ async function verifyCrossHumanAdmission(
         expect(request.tools).not.toContain("sessions_history");
       }
     }
-    expect(outbound.filter((item) => item.to === scenario.recipient)).toEqual(
+    expect(proofDeliveries(scenario.recipient)).toEqual(
       collaborative
         ? [{ to: scenario.recipient, text: scenario.marker, accountId: "default" }]
         : [],

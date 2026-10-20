@@ -1,19 +1,16 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { expect, vi } from "vitest";
-import {
-  awaitGateBeforeSettlement,
-  createDeferred,
-  withinTest,
-} from "../../test/helpers/promise.js";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { waitForGatewayActiveWork } from "../infra/gateway-active-work.js";
 import {
   createScenario,
   humanReplies,
-  outbound,
   patchProofConfig,
+  proofDeliveries,
   providerErrors,
   runHuman,
+  waitForProofGate,
 } from "./gateway.sessions-send-provenance.test-support.js";
 
 export async function verifyCollaborativeCancellation(signal: AbortSignal) {
@@ -57,13 +54,11 @@ export async function verifyCollaborativeCancellation(signal: AbortSignal) {
         let bob: ReturnType<typeof runHuman> | undefined;
         let queuedPreparation: Promise<void> | undefined;
         try {
-          await withinTest(
-            awaitGateBeforeSettlement(
-              scenario.incumbentStarted.promise,
-              alice,
-              "Alice did not start",
-            ),
+          await waitForProofGate(
+            scenario.incumbentStarted.promise,
+            alice,
             signal,
+            "Alice did not start",
           );
           const loaded = await resolveGatewaySessionStoreTargetInWorker({
             cfg: getRuntimeConfig(),
@@ -98,13 +93,11 @@ export async function verifyCollaborativeCancellation(signal: AbortSignal) {
                 await resume.promise;
               },
             );
-            await withinTest(
-              awaitGateBeforeSettlement(
-                blockerEntered.promise,
-                queuedPreparation,
-                "Injection queue blocker did not start",
-              ),
+            await waitForProofGate(
+              blockerEntered.promise,
+              queuedPreparation,
               signal,
+              "Injection queue blocker did not start",
             );
           }
           let injectionStarted = false;
@@ -160,10 +153,7 @@ export async function verifyCollaborativeCancellation(signal: AbortSignal) {
             (result) => ({ result, error: undefined }),
             (error: unknown) => ({ result: undefined, error }),
           );
-          await withinTest(
-            awaitGateBeforeSettlement(entered.promise, bob, `Bob missed ${phase} preparation`),
-            signal,
-          );
+          await waitForProofGate(entered.promise, bob, signal, `Bob missed ${phase} preparation`);
           expect(scenario.sourceRequests).toEqual([]);
           if (cancel === "source") {
             source.abort();
@@ -177,11 +167,9 @@ export async function verifyCollaborativeCancellation(signal: AbortSignal) {
           await queuedPreparation;
           await waitForGatewayActiveWork(30_000);
           expect(providerErrors).toEqual([]);
-          expect(outbound.filter((entry) => entry.to === scenario.recipient)).toEqual([]);
+          expect(proofDeliveries(scenario.recipient)).toEqual([]);
           expect(
-            outbound
-              .filter((entry) => entry.to === `${scenario.recipient}-incumbent`)
-              .map((entry) => entry.text),
+            proofDeliveries(`${scenario.recipient}-incumbent`).map((entry) => entry.text),
           ).toEqual(
             (cancel === "source" ? [1, 2] : [1]).map(
               (index) => `${scenario.marker}_INCUMBENT_${index}`,

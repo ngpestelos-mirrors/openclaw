@@ -50,40 +50,35 @@ const params = {
   assertCurrent: () => {},
 };
 afterEach(() => vi.unstubAllGlobals());
-it("accepts only the exact current actor, App installation, repository and session receipt", async () => {
-  const fetcher = vi.fn(async () => Response.json(receipt()));
+const respondWith = (value: ReturnType<typeof receipt>) => {
+  const fetcher = vi.fn(async () => Response.json(value));
   vi.stubGlobal("fetch", fetcher);
+  return fetcher;
+};
+it("accepts only the exact current actor, App installation, repository and session receipt", async () => {
+  const fetcher = respondWith(receipt());
   await readFactoryRepositoryAdmission(params);
   expect(fetcher.mock.calls.length).toBe(1);
 });
-it.each(["actor", "installation", "repository", "session", "expired"])(
-  "rejects a %s mismatch before execution issuance",
-  async (changed) => {
-    const value = receipt();
-    if (changed === "actor") {
-      value.actor.accountId = 51;
-    }
-    if (changed === "installation") {
-      value.installationId = 21;
-    }
-    if (changed === "repository") {
-      value.repository.id = 41;
-    }
-    if (changed === "session") {
-      value.binding = { ...claim.binding, sessionId: "other-session" };
-    }
-    if (changed === "expired") {
-      value.expiresAtMs = Date.now() - 1;
-    }
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Response.json(value)),
-    );
-    await expect(readFactoryRepositoryAdmission(params)).rejects.toThrow(
-      "Factory repository admission failed",
-    );
-  },
-);
+it.each<[string, (value: ReturnType<typeof receipt>) => void]>([
+  ["actor", (value) => Object.assign(value.actor, { accountId: 51 })],
+  ["installation", (value) => Object.assign(value, { installationId: 21 })],
+  ["repository", (value) => Object.assign(value.repository, { id: 41 })],
+  [
+    "session",
+    (value) => {
+      value.binding = { ...value.binding, sessionId: "other-session" };
+    },
+  ],
+  ["expired", (value) => Object.assign(value, { expiresAtMs: Date.now() - 1 })],
+])("rejects a %s mismatch before execution issuance", async (_changed, mutate) => {
+  const value = receipt();
+  mutate(value);
+  respondWith(value);
+  await expect(readFactoryRepositoryAdmission(params)).rejects.toThrow(
+    "Factory repository admission failed",
+  );
+});
 it("checks current authority after the broker response", async () => {
   let current = true;
   vi.stubGlobal(
