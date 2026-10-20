@@ -76,7 +76,7 @@ function createGatewayBoardPane(sessionKey: string) {
 }
 
 describe("chat pane board loading states", () => {
-  it("persists a first-visit board under its admitted scope after transcript hydration", async () => {
+  it("persists a board acquired before pane state exists after transcript hydration", async () => {
     const sessionKey = "agent:main:warm-persistence";
     const { pane, request, snapshot, cleanup } = createGatewayBoardPane(sessionKey);
     const response = createDeferred<typeof snapshot>();
@@ -88,7 +88,11 @@ describe("chat pane board loading states", () => {
       connected: false,
       promise: hydration.promise,
     };
+    const state = pane.state;
+    Reflect.set(pane, "sessionKey", sessionKey);
+    Reflect.set(pane, "state", undefined);
     const provider = pane.resolveBoardProvider();
+    Reflect.set(pane, "state", state);
     Object.assign(pane.state.client!, {
       recoveryScope: "admitted-account",
       recoveryScopeReady: true,

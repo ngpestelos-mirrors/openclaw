@@ -303,28 +303,30 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
             canMutate,
             canGrant,
             presentationScope,
-            state
-              ? (snapshot, receivedAtMs) => {
-                  const persist = () => {
-                    if (gatewayPresentationScope(context.gateway) === presentationScope) {
-                      cacheChatBoardSnapshot(
-                        state.chatMessagesBySession,
-                        state,
-                        session,
-                        snapshot,
-                        receivedAtMs,
-                      );
-                    }
-                  };
-                  // A board write must not invalidate the transcript read sharing this record.
-                  const hydration = chatHistoryRequests(state).initialSnapshotHydration;
-                  if (hydration) {
-                    void hydration.promise.then(persist);
-                  } else {
-                    persist();
-                  }
+            (snapshot, receivedAtMs) => {
+              const state = this.state;
+              if (!state) {
+                return;
+              }
+              const persist = () => {
+                if (gatewayPresentationScope(context.gateway) === presentationScope) {
+                  cacheChatBoardSnapshot(
+                    state.chatMessagesBySession,
+                    state,
+                    session,
+                    snapshot,
+                    receivedAtMs,
+                  );
                 }
-              : undefined,
+              };
+              // A board write must not invalidate the transcript read sharing this record.
+              const hydration = chatHistoryRequests(state).initialSnapshotHydration;
+              if (hydration) {
+                void hydration.promise.then(persist);
+              } else {
+                persist();
+              }
+            },
           ),
           cacheKey: key,
         };
