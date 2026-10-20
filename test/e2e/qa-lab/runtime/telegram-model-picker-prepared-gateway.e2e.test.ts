@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import net from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { withServer, withTempDir } from "openclaw/plugin-sdk/test-env";
@@ -13,15 +14,8 @@ import type { OpenClawConfig } from "../../../../src/config/types.openclaw.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../../../src/infra/kysely-sync.js";
 import type { DB } from "../../../../src/state/openclaw-state-db.generated.js";
 import { openExistingOpenClawStateDatabaseReadOnly } from "../../../../src/state/openclaw-state-db.js";
-import { getFreePort } from "../../../../src/test-utils/ports.js";
 import { withinTest, withTestTimeout } from "../../../helpers/promise.js";
 import { stopQaGatewayFixture } from "../../../helpers/qa-gateway-cleanup.js";
-import {
-  readTelegramRequest,
-  succeedTelegram as succeed,
-  settleTelegramCleanup as settleCleanup,
-  telegramGatewayOptions,
-} from "./telegram-gateway.test-support.js";
 import { createNativeModelPickerCliFixture } from "./telegram-model-picker-native-cli-fixture.js";
 
 type JsonObject = Record<string, unknown>;
@@ -38,8 +32,15 @@ const REPLACEMENT_MODEL_REF = `${REPLACEMENT_PROVIDER}/${REPLACEMENT_MODEL}`;
 const SOURCE_GATEWAY_TIMEOUT_MS = 120_000;
 
 async function readJson(req: IncomingMessage): Promise<JsonObject> {
-  const text = await readTelegramRequest(req);
+  let text = "";
+  for await (const chunk of req) {
+    text += chunk;
+  }
   return text ? (JSON.parse(text) as JsonObject) : {};
+}
+
+function succeed(res: ServerResponse, result: unknown = true) {
+  writeJson(res, 200, { ok: true, result });
 }
 
 function callbackUpdate(updateId: number, callbackId: string, data: string) {
@@ -101,26 +102,6 @@ function hasCallback(call: TelegramCall, callbackData: string) {
   return keyboardCallbackData(call).includes(callbackData);
 }
 
-async function readPickerCall(req: IncomingMessage, res: ServerResponse, missing = "not found") {
-  const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
-  const match = pathname.match(/^\/bot([^/]+)\/([^/]+)$/);
-  if (!match) {
-    writeJson(res, 404, { ok: false, error: missing });
-    return undefined;
-  }
-  const [, token = "", method = ""] = match;
-  const body = await readJson(req);
-  if (token !== BOT_TOKEN) {
-    writeJson(res, 401, { ok: false, error: "unexpected bot token" });
-    return undefined;
-  }
-  if (method === "getMe") {
-    succeed(res, { id: 424242, is_bot: true, first_name: "QA Picker", username: "qa_picker_bot" });
-    return undefined;
-  }
-  return { method, body };
-}
-
 function configuredModel(id: string): ModelDefinitionConfig {
   return {
     id,
@@ -134,23 +115,6 @@ function configuredModel(id: string): ModelDefinitionConfig {
   };
 }
 
-function pickerTelegram(apiRoot: string) {
-  return {
-    enabled: true,
-    defaultAccount: "picker",
-    accounts: {
-      picker: {
-        enabled: true,
-        botToken: BOT_TOKEN,
-        apiRoot,
-        dmPolicy: "open" as const,
-        allowFrom: ["*"],
-        commands: { native: true },
-      },
-    },
-  };
-}
-
 function pickerConfig(apiRoot: string, modelId: string): OpenClawConfig {
   const modelRef = `${REPLACEMENT_PROVIDER}/${modelId}`;
   return {
@@ -160,7 +124,22 @@ function pickerConfig(apiRoot: string, modelId: string): OpenClawConfig {
       allow: ["telegram"],
       entries: { telegram: { enabled: true } },
     },
-    channels: { telegram: pickerTelegram(apiRoot) },
+    channels: {
+      telegram: {
+        enabled: true,
+        defaultAccount: "picker",
+        accounts: {
+          picker: {
+            enabled: true,
+            botToken: BOT_TOKEN,
+            apiRoot,
+            dmPolicy: "open",
+            allowFrom: ["*"],
+            commands: { native: true },
+          },
+        },
+      },
+    },
     agents: {
       defaults: {
         model: modelRef,
@@ -215,21 +194,44 @@ async function readTelegramIngressStatuses(stateDir: string, eventIds: string[])
   }
 }
 
-async function resolveBuiltModule(
-  distDir: string,
-  prefix: string,
-  exportMarker: string,
-): Promise<string> {
-  for (const name of await fs.readdir(distDir)) {
-    if (!name.startsWith(prefix) || !/\.m?js$/u.test(name)) {
+async function reservePort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("Could not reserve a source Gateway port");
+  }
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    });
+  });
+  return address.port;
+}
+
+async function resolveBuiltModule(params: {
+  distDir: string;
+  prefix: string;
+  exportMarker: string;
+}): Promise<string> {
+  for (const name of await fs.readdir(params.distDir)) {
+    if (!name.startsWith(params.prefix) || !/\.m?js$/u.test(name)) {
       continue;
     }
-    const filePath = path.join(distDir, name);
-    if ((await fs.readFile(filePath, "utf8")).includes(exportMarker)) {
+    const filePath = path.join(params.distDir, name);
+    if ((await fs.readFile(filePath, "utf8")).includes(params.exportMarker)) {
       return pathToFileURL(filePath).href;
     }
   }
-  throw new Error(`Could not resolve built ${prefix} module`);
+  throw new Error(`Could not resolve built ${params.prefix} module`);
 }
 
 async function startControlledSourceGateway(params: {
@@ -241,15 +243,19 @@ async function startControlledSourceGateway(params: {
   onTestFinished: (cleanup: () => Promise<void>) => void;
 }) {
   const bootstrapPath = path.join(params.fixtureRoot, "source-gateway-control.mjs");
-  const port = await getFreePort();
+  const port = await reservePort();
   const distDir = path.join(params.repoRoot, "dist");
   const [serverUrl, runtimeUrl] = await Promise.all([
-    resolveBuiltModule(distDir, "server-", "startGatewayServer, truncateCloseReason"),
-    resolveBuiltModule(
+    resolveBuiltModule({
       distDir,
-      "prepared-model-runtime-",
-      "export { PreparedModelRuntimeOwnerNotPublishedError",
-    ),
+      prefix: "server-",
+      exportMarker: "startGatewayServer, truncateCloseReason",
+    }),
+    resolveBuiltModule({
+      distDir,
+      prefix: "prepared-model-runtime-",
+      exportMarker: "export { PreparedModelRuntimeOwnerNotPublishedError",
+    }),
   ]);
   await fs.writeFile(
     bootstrapPath,
@@ -327,11 +333,12 @@ process.on("message", async (message) => {
   const exited = once(child, "exit");
   void exited.catch(() => {});
   let output = "";
-  for (const stream of [child.stdout, child.stderr]) {
-    stream?.on("data", (chunk) => {
-      output += String(chunk);
-    });
-  }
+  child.stdout?.on("data", (chunk) => {
+    output += String(chunk);
+  });
+  child.stderr?.on("data", (chunk) => {
+    output += String(chunk);
+  });
   const pending = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
   let nextId = 1;
   let isReady = false;
@@ -410,12 +417,27 @@ process.on("message", async (message) => {
   return { request, output: () => output, close };
 }
 
+async function settleCleanup(...cleanups: Array<() => Promise<void>>) {
+  const failures: unknown[] = [];
+  for (const cleanup of cleanups) {
+    await cleanup().catch((error: unknown) => failures.push(error));
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "Telegram model-picker gateway cleanup failed");
+  }
+}
+
 test("initializes unrestricted Telegram model browsing and reuses its prepared catalog", async () => {
   const telegramCalls: TelegramCall[] = [];
   const pendingUpdates: unknown[] = [];
   let nextUpdateId = 2;
-  // Initial send, provider list, model list, then two repeated provider lists.
-  let pickerStage = 0;
+  let pickerStage:
+    | "initial"
+    | "providers"
+    | "models"
+    | "repeated-providers"
+    | "repeated-providers-second"
+    | "done" = "initial";
   let discoveryFrozen = false;
   let discoveryRequests = 0;
   let postWarmDiscoveryAttempts = 0;
@@ -429,40 +451,61 @@ test("initializes unrestricted Telegram model browsing and reuses its prepared c
   const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
 
-    if (pathname === "/ollama/api/tags" || pathname === "/ollama/api/show") {
+    if (pathname === "/ollama/api/tags") {
       discoveryRequests += 1;
       if (discoveryFrozen) {
         postWarmDiscoveryAttempts += 1;
         writeJson(res, 503, { ok: false, error: "provider discovery frozen after warmup" });
         return;
       }
-      writeJson(
-        res,
-        200,
-        pathname.endsWith("/tags")
-          ? {
-              models: [
-                {
-                  name: DISCOVERED_MODEL,
-                  modified_at: "2026-08-16T00:00:00Z",
-                  digest: "prepared-model-digest",
-                  size: 1,
-                },
-              ],
-            }
-          : {
-              model_info: { "general.context_length": 8192 },
-              capabilities: ["completion", "tools"],
-            },
-      );
+      writeJson(res, 200, {
+        models: [
+          {
+            name: DISCOVERED_MODEL,
+            modified_at: "2026-08-16T00:00:00Z",
+            digest: "prepared-model-digest",
+            size: 1,
+          },
+        ],
+      });
       return;
     }
 
-    const call = await readPickerCall(req, res);
-    if (!call) {
+    if (pathname === "/ollama/api/show") {
+      discoveryRequests += 1;
+      if (discoveryFrozen) {
+        postWarmDiscoveryAttempts += 1;
+        writeJson(res, 503, { ok: false, error: "provider discovery frozen after warmup" });
+        return;
+      }
+      writeJson(res, 200, {
+        model_info: { "general.context_length": 8192 },
+        capabilities: ["completion", "tools"],
+      });
       return;
     }
-    const { method, body } = call;
+
+    const telegramMatch = pathname.match(/^\/bot([^/]+)\/([^/]+)$/);
+    if (!telegramMatch) {
+      writeJson(res, 404, { ok: false, error: "not found" });
+      return;
+    }
+    const [, token = "", method = ""] = telegramMatch;
+    const body = await readJson(req);
+    if (token !== BOT_TOKEN) {
+      writeJson(res, 401, { ok: false, error: "unexpected bot token" });
+      return;
+    }
+
+    if (method === "getMe") {
+      succeed(res, {
+        id: 424242,
+        is_bot: true,
+        first_name: "QA Picker",
+        username: "qa_picker_bot",
+      });
+      return;
+    }
     if (method === "getUpdates") {
       const update = pendingUpdates.shift();
       succeed(res, update ? [update] : []);
@@ -470,28 +513,42 @@ test("initializes unrestricted Telegram model browsing and reuses its prepared c
     }
 
     telegramCalls.push({ method, body });
-    if (method === "sendMessage" && pickerStage === 0) {
+    if (method === "sendMessage" && pickerStage === "initial") {
       expect(typeof body.text).toBe("string");
-      pickerStage = 1;
+      pickerStage = "providers";
     } else if (
       method === "editMessageText" &&
-      [1, 3, 4].includes(pickerStage) &&
+      pickerStage === "providers" &&
       typeof body.text === "string" &&
       body.text.includes("Select a provider:")
     ) {
       expect(hasCallback({ method, body }, "mdl_list_ollama_1")).toBe(true);
-      const next = pickerStage === 1 ? "mdl_list_ollama_1" : "mdl_prov";
-      if (pickerStage !== 4) {
-        queueCallback(next);
-      }
-      pickerStage += 1;
+      pickerStage = "models";
+      queueCallback("mdl_list_ollama_1");
     } else if (
       method === "editMessageText" &&
-      pickerStage === 2 &&
+      pickerStage === "models" &&
       hasCallback({ method, body }, `mdl_sel_ollama/${DISCOVERED_MODEL}`)
     ) {
-      pickerStage = 3;
+      pickerStage = "repeated-providers";
       queueCallback("mdl_prov");
+    } else if (
+      method === "editMessageText" &&
+      pickerStage === "repeated-providers" &&
+      typeof body.text === "string" &&
+      body.text.includes("Select a provider:")
+    ) {
+      expect(hasCallback({ method, body }, "mdl_list_ollama_1")).toBe(true);
+      pickerStage = "repeated-providers-second";
+      queueCallback("mdl_prov");
+    } else if (
+      method === "editMessageText" &&
+      pickerStage === "repeated-providers-second" &&
+      typeof body.text === "string" &&
+      body.text.includes("Select a provider:")
+    ) {
+      expect(hasCallback({ method, body }, "mdl_list_ollama_1")).toBe(true);
+      pickerStage = "done";
     }
 
     if (method === "answerCallbackQuery") {
@@ -508,42 +565,79 @@ test("initializes unrestricted Telegram model browsing and reuses its prepared c
       await withTempDir("openclaw-telegram-model-picker-", async () => {
         const gatewayOwner = createQaGatewayChild();
         try {
-          const gateway = await gatewayOwner.start(
-            telegramGatewayOptions({
-              apiRoot,
-              mockAuthAgentIds: [],
-              telegram: pickerTelegram(apiRoot),
-              enabledPluginIds: ["ollama"],
-              primaryModel: `ollama/${PREPARED_MODEL}`,
-              alternateModel: `ollama/${PREPARED_MODEL}`,
-              runtimeEnvPatch: {
-                OPENCLAW_SKIP_STARTUP_MODEL_PREWARM: undefined,
-                OPENCLAW_SKIP_CHANNELS: undefined,
-                OPENCLAW_SKIP_PROVIDERS: undefined,
-              },
-              mutateConfig: (cfg) => {
-                const defaults = cfg.agents!.defaults!;
-                defaults.model = `ollama/${PREPARED_MODEL}`;
-                defaults.modelPolicy = { allow: [] };
-                defaults.models = { ...defaults.models, [`ollama/${PREPARED_MODEL}`]: {} };
-                cfg.agents!.entries!.qa!.model = `ollama/${PREPARED_MODEL}`;
-                cfg.models = {
-                  ...cfg.models,
-                  mode: "merge",
-                  catalogRefresh: { enabled: false },
-                  providers: {
-                    ...cfg.models?.providers,
-                    ollama: {
-                      baseUrl: `${apiRoot}/ollama`,
-                      api: "ollama",
-                      models: [],
+          const repoRoot = path.resolve(import.meta.dirname, "../../../..");
+          const gateway = await gatewayOwner.start({
+            repoRoot,
+            mockAuthAgentIds: [],
+            transportBaseUrl: apiRoot,
+            transport: {
+              requiredPluginIds: ["telegram"],
+              createGatewayConfig: () => ({
+                channels: {
+                  telegram: {
+                    enabled: true,
+                    defaultAccount: "picker",
+                    accounts: {
+                      picker: {
+                        enabled: true,
+                        botToken: BOT_TOKEN,
+                        apiRoot,
+                        dmPolicy: "open",
+                        allowFrom: ["*"],
+                        commands: { native: true },
+                      },
                     },
                   },
-                };
-                return cfg;
+                },
+              }),
+            },
+            controlUiEnabled: false,
+            enabledPluginIds: ["ollama"],
+            primaryModel: `ollama/${PREPARED_MODEL}`,
+            alternateModel: `ollama/${PREPARED_MODEL}`,
+            runtimeEnvPatch: {
+              OPENCLAW_SKIP_STARTUP_MODEL_PREWARM: undefined,
+              OPENCLAW_SKIP_CHANNELS: undefined,
+              OPENCLAW_SKIP_PROVIDERS: undefined,
+              OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
+              TELEGRAM_BOT_TOKEN: undefined,
+            },
+            mutateConfig: (cfg) => ({
+              ...cfg,
+              agents: {
+                ...cfg.agents,
+                defaults: {
+                  ...cfg.agents?.defaults,
+                  model: `ollama/${PREPARED_MODEL}`,
+                  modelPolicy: { allow: [] },
+                  models: {
+                    ...cfg.agents?.defaults?.models,
+                    [`ollama/${PREPARED_MODEL}`]: {},
+                  },
+                },
+                entries: {
+                  ...cfg.agents?.entries,
+                  qa: {
+                    ...cfg.agents?.entries?.qa,
+                    model: `ollama/${PREPARED_MODEL}`,
+                  },
+                },
+              },
+              models: {
+                ...cfg.models,
+                mode: "merge",
+                catalogRefresh: { enabled: false },
+                providers: {
+                  ...cfg.models?.providers,
+                  ollama: {
+                    baseUrl: `${apiRoot}/ollama`,
+                    api: "ollama",
+                    models: [],
+                  },
+                },
               },
             }),
-          );
+          });
 
           pendingUpdates.push(initialModelsUpdate());
 
@@ -552,16 +646,15 @@ test("initializes unrestricted Telegram model browsing and reuses its prepared c
               interval: 50,
               timeout: 30_000,
             })
-            .toBe(1);
-          const discovered = {
-            models: expect.arrayContaining([
-              expect.objectContaining({ provider: "ollama", id: DISCOVERED_MODEL }),
-            ]),
-          };
+            .toBe("providers");
           // Startup publishes a static owner; one explicit refresh owns live discovery.
           await expect(
             gateway.call("models.list", { view: "default", refresh: true }),
-          ).resolves.toMatchObject(discovered);
+          ).resolves.toMatchObject({
+            models: expect.arrayContaining([
+              expect.objectContaining({ provider: "ollama", id: DISCOVERED_MODEL }),
+            ]),
+          });
           expect(discoveryRequests).toBeGreaterThan(0);
           const warmDiscoveryRequests = discoveryRequests;
           discoveryFrozen = true;
@@ -576,32 +669,57 @@ test("initializes unrestricted Telegram model browsing and reuses its prepared c
               }),
               { interval: 50, timeout: 30_000 },
             )
-            .toMatchObject({ stage: 5, answers: 4 });
+            .toMatchObject({ stage: "done", answers: 4 });
 
           const sendMessage = telegramCalls.find((call) => call.method === "sendMessage");
+          expect(sendMessage).toBeDefined();
           expect(hasCallback(sendMessage!, "mdl_list_ollama_1")).toBe(true);
 
           const pickerEdits = telegramCalls.filter(
             (call) => call.method === "editMessageText" && inlineKeyboard(call).length > 0,
           );
           expect(pickerEdits).toHaveLength(4);
-          for (const [index, callback] of [
-            "mdl_list_ollama_1",
-            `mdl_sel_ollama/${DISCOVERED_MODEL}`,
-            "mdl_list_ollama_1",
-            "mdl_list_ollama_1",
-          ].entries()) {
-            expect(hasCallback(pickerEdits[index]!, callback)).toBe(true);
-          }
-          expect(await gateway.call("models.list", { view: "default" })).toMatchObject(discovered);
+          expect(hasCallback(pickerEdits[0]!, "mdl_list_ollama_1")).toBe(true);
+          expect(hasCallback(pickerEdits[2]!, "mdl_list_ollama_1")).toBe(true);
+          expect(
+            pickerEdits[1] &&
+              keyboardCallbackData(pickerEdits[1]).includes(`mdl_sel_ollama/${DISCOVERED_MODEL}`),
+          ).toBe(true);
+          expect(pickerEdits[3] && hasCallback(pickerEdits[3], "mdl_list_ollama_1")).toBe(true);
+
+          expect(
+            telegramCalls.filter((call) => call.method === "answerCallbackQuery"),
+          ).toHaveLength(4);
+          const preparedModels = await gateway.call("models.list", { view: "default" });
+          expect(preparedModels).toMatchObject({
+            models: expect.arrayContaining([
+              expect.objectContaining({ provider: "ollama", id: DISCOVERED_MODEL }),
+            ]),
+          });
           expect(discoveryRequests).toBe(warmDiscoveryRequests);
           expect(postWarmDiscoveryAttempts).toBe(0);
 
           discoveryFrozen = false;
-          expect(
-            await gateway.call("models.list", { view: "default", refresh: true }),
-          ).toMatchObject(discovered);
+          const refreshedModels = await gateway.call("models.list", {
+            view: "default",
+            refresh: true,
+          });
+          expect(refreshedModels).toMatchObject({
+            models: expect.arrayContaining([
+              expect.objectContaining({ provider: "ollama", id: DISCOVERED_MODEL }),
+            ]),
+          });
           expect(discoveryRequests).toBeGreaterThan(warmDiscoveryRequests);
+          console.info(
+            "MODEL_INVENTORY_PROOF",
+            JSON.stringify({
+              scenario: "unrestricted-inventory",
+              callbacks: keyboardCallbackData(pickerEdits[1]!),
+              warmDiscoveryRequests,
+              postWarmDiscoveryAttempts,
+              refreshedDiscoveryRequests: discoveryRequests,
+            }),
+          );
         } finally {
           await settleCleanup(async () => await stopQaGatewayFixture(gatewayOwner));
         }
@@ -616,14 +734,28 @@ test("lists native CLI-bound models through Telegram polling and provider callba
   const boundRef = "anthropic/claude-sonnet-4-6";
   let providerRequests = 0;
   const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
-    if (!/^\/bot([^/]+)\/([^/]+)$/.test(new URL(req.url ?? "/", "http://127.0.0.1").pathname)) {
+    const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+    const telegramMatch = pathname.match(/^\/bot([^/]+)\/([^/]+)$/);
+    if (!telegramMatch) {
       providerRequests += 1;
-    }
-    const call = await readPickerCall(req, res, "native command must not call a model");
-    if (!call) {
+      writeJson(res, 404, { ok: false, error: "native command must not call a model" });
       return;
     }
-    const { method, body } = call;
+    const [, token = "", method = ""] = telegramMatch;
+    if (token !== BOT_TOKEN) {
+      writeJson(res, 401, { ok: false, error: "unexpected bot token" });
+      return;
+    }
+    const body = await readJson(req);
+    if (method === "getMe") {
+      succeed(res, {
+        id: 424242,
+        is_bot: true,
+        first_name: "QA Picker",
+        username: "qa_picker_bot",
+      });
+      return;
+    }
     if (method === "getUpdates") {
       const update = pendingUpdates.shift();
       succeed(res, update ? [update] : []);
@@ -646,37 +778,61 @@ test("lists native CLI-bound models through Telegram polling and provider callba
       async (apiRoot) => {
         const gatewayOwner = createQaGatewayChild();
         try {
-          const gateway = await gatewayOwner.start(
-            telegramGatewayOptions({
-              apiRoot,
-              telegram: pickerTelegram(apiRoot).accounts.picker,
-              enabledPluginIds: ["anthropic"],
-              mockAuthAgentIds: [],
-              primaryModel: primaryRef,
-              alternateModel: boundRef,
-              runtimeEnvPatch: {
-                PATH: `${fixtureRoot}${path.delimiter}${process.env.PATH ?? ""}`,
-                ANTHROPIC_API_KEY: undefined,
-                ANTHROPIC_AUTH_TOKEN: undefined,
-                CLAUDE_CODE_OAUTH_TOKEN: undefined,
-                CLAUDE_CONFIG_DIR: path.join(fixtureRoot, "claude-state"),
-                OPENCLAW_SKIP_STARTUP_MODEL_PREWARM: undefined,
+          const gateway = await gatewayOwner.start({
+            repoRoot: path.resolve(import.meta.dirname, "../../../.."),
+            transportBaseUrl: apiRoot,
+            transport: {
+              requiredPluginIds: ["telegram"],
+              createGatewayConfig: () => ({
+                channels: {
+                  telegram: {
+                    enabled: true,
+                    botToken: BOT_TOKEN,
+                    apiRoot,
+                    dmPolicy: "open",
+                    allowFrom: ["*"],
+                    commands: { native: true },
+                  },
+                },
+              }),
+            },
+            enabledPluginIds: ["anthropic"],
+            mockAuthAgentIds: [],
+            controlUiEnabled: false,
+            primaryModel: primaryRef,
+            alternateModel: boundRef,
+            runtimeEnvPatch: {
+              PATH: `${fixtureRoot}${path.delimiter}${process.env.PATH ?? ""}`,
+              ANTHROPIC_API_KEY: undefined,
+              ANTHROPIC_AUTH_TOKEN: undefined,
+              CLAUDE_CODE_OAUTH_TOKEN: undefined,
+              CLAUDE_CONFIG_DIR: path.join(fixtureRoot, "claude-state"),
+              TELEGRAM_BOT_TOKEN: undefined,
+              OPENCLAW_SKIP_STARTUP_MODEL_PREWARM: undefined,
+              OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
+            },
+            mutateConfig: (cfg) => ({
+              ...cfg,
+              auth: { profiles: {} },
+              agents: {
+                ...cfg.agents,
+                defaults: {
+                  ...cfg.agents?.defaults,
+                  model: primaryRef,
+                  modelPolicy: { allow: [] },
+                  models: {
+                    [primaryRef]: { agentRuntime: { id: "claude-cli" } },
+                    [boundRef]: { agentRuntime: { id: "claude-cli" } },
+                  },
+                },
+                entries: {
+                  ...cfg.agents?.entries,
+                  qa: { ...cfg.agents?.entries?.qa, model: primaryRef },
+                },
               },
-              mutateConfig: (cfg) => {
-                cfg.auth = { profiles: {} };
-                const defaults = cfg.agents!.defaults!;
-                defaults.model = primaryRef;
-                defaults.modelPolicy = { allow: [] };
-                defaults.models = {
-                  [primaryRef]: { agentRuntime: { id: "claude-cli" } },
-                  [boundRef]: { agentRuntime: { id: "claude-cli" } },
-                };
-                cfg.agents!.entries!.qa!.model = primaryRef;
-                cfg.models = { providers: {} };
-                return cfg;
-              },
+              models: { providers: {} },
             }),
-          );
+          });
 
           // Observe startup auth without warming provider discovery before the channel command.
           await expect
@@ -706,11 +862,34 @@ test("lists native CLI-bound models through Telegram polling and provider callba
           const providerButton = inlineKeyboard(providerMenu!)
             .flat()
             .find((button) => button.callback_data === "mdl_list_anthropic_1");
-          const gatewayModels = await gateway.call("models.list", { view: "default" });
+          const gatewayModels = (await gateway.call("models.list", { view: "default" })) as {
+            models: Array<{
+              provider: string;
+              id: string;
+              available?: boolean;
+              unavailableReason?: string;
+            }>;
+          };
+          console.info(
+            "MODEL_INVENTORY_PROOF",
+            JSON.stringify({
+              scenario: "native-cli-models",
+              providerButtonText: providerButton?.text,
+              callbacks: keyboardCallbackData(modelList!),
+              models: gatewayModels.models.filter(
+                (entry) =>
+                  `${entry.provider}/${entry.id}` === primaryRef ||
+                  `${entry.provider}/${entry.id}` === boundRef,
+              ),
+              fixtureProviderRequests: providerRequests,
+            }),
+          );
           const cliCalls = (await fs.readFile(authCallsPath, "utf8"))
             .trim()
             .split("\n")
             .map((line) => JSON.parse(line));
+          console.info("MODEL_INVENTORY_AUTH_PROOF", JSON.stringify(cliCalls));
+          expect(cliCalls.length).toBeGreaterThan(0);
           expect(providerButton?.text).toBe("anthropic (2)");
           expect(modelList?.body.text).toContain("Models (anthropic");
           expect(keyboardCallbackData(modelList!)).toContain(`mdl_sel_${boundRef}`);
@@ -724,9 +903,14 @@ test("lists native CLI-bound models through Telegram polling and provider callba
               }),
             ]),
           });
-          expect(new Set(cliCalls.map((args) => JSON.stringify(args)))).toEqual(
-            new Set([authArgs, discoveryArgs].map((args) => JSON.stringify(args))),
-          );
+          expect(cliCalls).toEqual(expect.arrayContaining([authArgs, discoveryArgs]));
+          expect(
+            cliCalls.every(
+              (args) =>
+                JSON.stringify(args) === JSON.stringify(authArgs) ||
+                JSON.stringify(args) === JSON.stringify(discoveryArgs),
+            ),
+          ).toBe(true);
           const nativeRequests = (await fs.readFile(nativeRequestsPath, "utf8"))
             .trim()
             .split("\n")
@@ -772,11 +956,27 @@ test("recovers a replaced model catalog and drains the following Telegram callba
   };
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
-    const call = await readPickerCall(req, res);
-    if (!call) {
+    const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+    const telegramMatch = pathname.match(/^\/bot([^/]+)\/([^/]+)$/);
+    if (!telegramMatch) {
+      writeJson(res, 404, { ok: false, error: "not found" });
       return;
     }
-    const { method, body } = call;
+    const [, token = "", method = ""] = telegramMatch;
+    const body = await readJson(req);
+    if (token !== BOT_TOKEN) {
+      writeJson(res, 401, { ok: false, error: "unexpected bot token" });
+      return;
+    }
+    if (method === "getMe") {
+      succeed(res, {
+        id: 424242,
+        is_bot: true,
+        first_name: "QA Picker",
+        username: "qa_picker_bot",
+      });
+      return;
+    }
     if (method === "getUpdates") {
       telegramPolls += 1;
       getUpdatesOffsets.push(typeof body.offset === "number" ? body.offset : undefined);
