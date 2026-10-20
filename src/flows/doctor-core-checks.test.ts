@@ -364,8 +364,8 @@ async function detectFindings(
 }
 
 describe("doctor gateway auth placeholder token", () => {
-  it.each(["undefined"])('reports the literal token "%s" as an error', async (token) => {
-    expect(await detectFindings(token)).toEqual([
+  it('reports the literal token "undefined" as an error', async () => {
+    expect(await detectFindings("undefined")).toEqual([
       expect.objectContaining({
         checkId: "core/doctor/gateway-auth",
         severity: "error",
@@ -376,12 +376,9 @@ describe("doctor gateway auth placeholder token", () => {
     ]);
   });
 
-  it.each(["password"] as const)(
-    "leaves %s auth authoritative over an inactive placeholder token",
-    async (mode) => {
-      expect(await detectFindings("undefined", mode)).toEqual([]);
-    },
-  );
+  it("leaves password auth authoritative over an inactive placeholder token", async () => {
+    expect(await detectFindings("undefined", "password")).toEqual([]);
+  });
 
   it("keeps a SecretRef authoritative over an ambient placeholder", async () => {
     expect(

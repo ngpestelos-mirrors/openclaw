@@ -98,18 +98,8 @@ async function runManagedRepair(
       research: { workspace: state.path("research") },
     };
     const cfg: OpenClawConfig = { agents: { ownership: "explicit", entries } };
-    await state.writeConfig(
-      current
-        ? cfg
-        : {
-            agents: {
-              list: Object.entries(entries).map(([id, entry]) => ({
-                id,
-                workspace: entry.workspace,
-              })),
-            },
-          },
-    );
+    const list = Object.entries(entries).map(([id, { workspace }]) => ({ id, workspace }));
+    await state.writeConfig(current ? cfg : { agents: { list } });
     mocks.config.mockReturnValue(cfg);
     const configBefore = fs.readFileSync(state.configPath);
     const approvalsCase = outcome.startsWith("approvals-");
@@ -153,20 +143,10 @@ async function runManagedRepair(
         .prepare(
           `INSERT INTO session_transcript_archives
            (session_id,generation,session_key,reason,encoding,archive_blob,archive_sha256,
-            archive_name,created_at,published_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+            archive_name,created_at,published_at)
+           VALUES('retained','retained-generation','agent:main:retained','deleted','identity',?,?,?,1234,1234)`,
         )
-        .run(
-          "retained",
-          "retained-generation",
-          "agent:main:retained",
-          "deleted",
-          "identity",
-          bytes,
-          sha256Hex(bytes),
-          archiveName,
-          1234,
-          1234,
-        );
+        .run(bytes, sha256Hex(bytes), archiveName);
       const archiveDirectory = resolveSqliteTranscriptArchiveDirectory({
         agentId: "main",
         path: initial.path,
@@ -230,9 +210,7 @@ async function runManagedRepair(
           expect(() => assertNoOpenClawAgentDatabaseLeases(agentId, { env })).not.toThrow();
         }
       }
-      // A refusal before schema convergence restores the captured service,
-      // whose prior runtime already served this state. Other cases prove that
-      // the candidate can reopen every migrated database before health passes.
+      // Pre-convergence refusals restore the prior runtime; otherwise all schemas must reopen.
       if (!is("repair-failed", "repair-cancelled", "config-refused")) {
         for (const agentId of ["main", "research"]) {
           const reopened = openOpenClawAgentDatabase({ agentId, env });
@@ -241,8 +219,7 @@ async function runManagedRepair(
           );
         }
       }
-      // An unhealthy restart leaves the service down; a running service with
-      // unverified readiness is a warning, covered by the readiness tests.
+      // Running-but-unverified readiness has separate coverage; this case remains stopped.
       running = outcome !== "restart-unhealthy";
       return { outcome: "completed" as const };
     });
@@ -252,15 +229,13 @@ async function runManagedRepair(
     });
     mocks.service.mockReturnValue({
       readCommand: async () => {
-        if (events.includes("repair")) {
-          if (outcome === "clean-stopped-probe-timeout") {
-            throw new ServiceInspectionError("systemd-inspection-deadline-exceeded");
-          }
-          if (outcome === "clean-stopped-owner-unknown") {
-            return null;
-          }
+        if (!events.includes("repair")) {
+          return command;
         }
-        return command;
+        if (outcome === "clean-stopped-probe-timeout") {
+          throw new ServiceInspectionError("systemd-inspection-deadline-exceeded");
+        }
+        return outcome === "clean-stopped-owner-unknown" ? null : command;
       },
       readRuntime: async () => ({
         status: running ? "running" : "stopped",
