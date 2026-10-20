@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { Model } from "openclaw/plugin-sdk/llm";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { createCopilotToolPolicyHarnessFixtureForTest } from "../extensions/copilot/test-api.js";
 import {
   createOperationalRunInstanceRef,
@@ -11,11 +11,11 @@ import {
 import type { EmbeddedRunAttemptParams } from "../src/agents/embedded-agent-runner/run/types.js";
 import { clearAgentHarnesses, registerAgentHarness } from "../src/agents/harness/registry.js";
 import { runAgentHarnessAttempt } from "../src/agents/harness/selection.js";
+import { createHarnessAttemptParams } from "../src/agents/harness/selection.test-support.js";
 import { replaceSessionEntry } from "../src/config/sessions/session-accessor.js";
 import { useSessionStoreTempDirs } from "../src/test-utils/session-state-cleanup.js";
 
 const createdFixtures: Array<ReturnType<typeof createCopilotToolPolicyHarnessFixtureForTest>> = [];
-
 afterEach(async () => {
   clearAgentHarnesses();
   await Promise.all(createdFixtures.splice(0).map((fixture) => fixture.dispose()));
@@ -46,122 +46,85 @@ function createUserTurnRecorder(message: Extract<AgentMessage, { role: "user" }>
   };
 }
 
-async function runCopilotHarnessTurn(params: {
-  policy: Pick<EmbeddedRunAttemptParams, "disableTools" | "toolsAllow">;
-  runId: string;
-  sessionId: string;
-  workspaceDir: string;
-}) {
-  const admission = prepareAgentRunAdmission({
-    cfg: {},
-    facts: {
-      runId: params.runId,
-      agentId: "copilot-policy-proof",
-      ingress: { kind: "system", boundary: "copilot-policy-handoff-test", state: "present" },
-    },
-    operationalRunInstance: createOperationalRunInstanceRef(params.runId),
-  });
-  const admittedRunContext = await admission.admit("plugin-harness", "copilot");
-  const sessionKey = `agent:copilot-policy-proof:${params.sessionId}`;
-  const message = { role: "user" as const, content: "write the proof file", timestamp: 1 };
-  try {
-    return await runAgentHarnessAttempt({
-      admittedRunContext,
-      agentDir: params.workspaceDir,
-      agentHarnessRuntimeOverride: "copilot",
-      agentId: "copilot-policy-proof",
-      auth: { useLoggedInUser: true },
-      authProfileStore: { version: 1, profiles: {} },
-      authStorage: {} as never,
-      config: {
-        plugins: { enabled: false },
-        tools: { codeMode: false, fs: { workspaceOnly: true }, toolSearch: false },
+it.each([
+  { name: "disabled tools", policy: { disableTools: true }, restricted: true },
+  { name: "empty runtime allowlist", policy: { toolsAllow: [] }, restricted: true },
+  { name: "unrestricted control", policy: {}, restricted: false },
+])("enforces $name before native create, resume, and filesystem effects", async (testCase) => {
+  const workspaceDir = sessionDirs.make();
+  const outputPath = path.join(workspaceDir, "native-write-proof.txt");
+  const fixture = createCopilotToolPolicyHarnessFixtureForTest(outputPath);
+  createdFixtures.push(fixture);
+  registerAgentHarness(fixture.harness, { ownerPluginId: "copilot" });
+  const sessionId = `session-${testCase.name.replaceAll(" ", "-")}`;
+  const target = {
+    agentId: "copilot-policy-proof",
+    sessionId,
+    sessionKey: `agent:copilot-policy-proof:${sessionId}`,
+    storePath: path.join(workspaceDir, "openclaw-agent.sqlite"),
+  };
+  await replaceSessionEntry(target, { sessionId, updatedAt: 1 });
+
+  for (const phase of ["create", "resume"]) {
+    const runId = `${sessionId}-${phase}`;
+    const admission = prepareAgentRunAdmission({
+      cfg: {},
+      facts: {
+        runId,
+        agentId: target.agentId,
+        ingress: { kind: "system", boundary: "copilot-policy-handoff-test", state: "present" },
       },
-      messages: [message],
-      model: {
-        api: "openai-responses",
-        id: "gpt-4.1",
+      operationalRunInstance: createOperationalRunInstanceRef(runId),
+    });
+    try {
+      const admitted = await admission.admit("plugin-harness", "copilot");
+      const message = { role: "user" as const, content: "write the proof file", timestamp: 1 };
+      const result = await runAgentHarnessAttempt({
+        ...createHarnessAttemptParams(admitted, {
+          plugins: { enabled: false },
+          tools: { codeMode: false, fs: { workspaceOnly: true }, toolSearch: false },
+        }),
+        ...testCase.policy,
+        agentId: target.agentId,
+        agentDir: workspaceDir,
+        agentHarnessRuntimeOverride: "copilot",
+        auth: { useLoggedInUser: true },
+        messages: [message],
+        model: { api: "openai-responses", id: "gpt-4.1", provider: "github-copilot" } as Model,
+        modelId: "gpt-4.1",
+        profileVersion: "v1",
+        prompt: message.content,
         provider: "github-copilot",
-      } as Model,
-      modelId: "gpt-4.1",
-      modelRegistry: {} as never,
-      profileVersion: "v1",
-      prompt: message.content,
-      provider: "github-copilot",
-      runId: params.runId,
-      sessionFile: path.join(params.workspaceDir, `${params.sessionId}.jsonl`),
-      sessionId: params.sessionId,
-      sessionKey,
-      sessionTarget: {
-        agentId: "copilot-policy-proof",
-        sessionId: params.sessionId,
-        sessionKey,
-        storePath: path.join(params.workspaceDir, "openclaw-agent.sqlite"),
-      },
-      thinkLevel: "low",
-      timeoutMs: 5_000,
-      userTurnTranscriptRecorder: createUserTurnRecorder(message),
-      workspaceDir: params.workspaceDir,
-      ...params.policy,
-    } as EmbeddedRunAttemptParams);
-  } finally {
-    admission.close();
-  }
-}
-
-describe("Copilot tool policy handoff", () => {
-  it.each([
-    { name: "disabled tools", policy: { disableTools: true }, restricted: true },
-    { name: "empty runtime allowlist", policy: { toolsAllow: [] }, restricted: true },
-    { name: "unrestricted control", policy: {}, restricted: false },
-  ])("enforces $name before native create, resume, and filesystem effects", async (testCase) => {
-    const workspaceDir = sessionDirs.make();
-    const outputPath = path.join(workspaceDir, "native-write-proof.txt");
-    const fixture = createCopilotToolPolicyHarnessFixtureForTest(outputPath);
-    createdFixtures.push(fixture);
-    registerAgentHarness(fixture.harness, { ownerPluginId: "copilot" });
-    const sessionId = `session-${testCase.name.replaceAll(" ", "-")}`;
-    const sessionKey = `agent:copilot-policy-proof:${sessionId}`;
-    await replaceSessionEntry(
-      {
-        agentId: "copilot-policy-proof",
-        sessionKey,
-        storePath: path.join(workspaceDir, "openclaw-agent.sqlite"),
-      },
-      { sessionId, updatedAt: 1 },
-    );
-
-    for (const phase of ["create", "resume"]) {
-      const result = await runCopilotHarnessTurn({
-        policy: testCase.policy,
-        runId: `${sessionId}-${phase}`,
+        sessionFile: path.join(workspaceDir, `${sessionId}.jsonl`),
         sessionId,
+        sessionKey: target.sessionKey,
+        sessionTarget: target,
+        userTurnTranscriptRecorder: createUserTurnRecorder(message),
         workspaceDir,
-      });
+      } as EmbeddedRunAttemptParams);
       expect(result.terminal).toEqual({ kind: "ok" });
+    } finally {
+      admission.close();
     }
-    expect(fixture.createConfigs).toHaveLength(1);
-    expect(fixture.resumeConfigs).toHaveLength(1);
-    for (const config of [...fixture.createConfigs, ...fixture.resumeConfigs]) {
-      if (testCase.restricted) {
-        expect(config).toMatchObject({ toolNames: [], availableTools: [] });
-      } else {
-        expect(config.toolNames).toContain("write");
-        expect(config.writeHandler).toBe(true);
-        expect(config.availableTools).toEqual(
-          expect.arrayContaining(["write", "builtin:ask_user"]),
-        );
-      }
-    }
+  }
+  expect([fixture.createConfigs.length, fixture.resumeConfigs.length]).toEqual([1, 1]);
+  for (const config of [...fixture.createConfigs, ...fixture.resumeConfigs]) {
     if (testCase.restricted) {
-      expect(fixture.writeResults).toEqual([]);
-      await expect(fs.readFile(outputPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(config).toMatchObject({ toolNames: [], availableTools: [] });
     } else {
-      expect(fixture.writeResults).toEqual([
-        expect.objectContaining({ resultType: "success" }),
-        expect.objectContaining({ resultType: "success" }),
-      ]);
-      await expect(fs.readFile(outputPath, "utf8")).resolves.toBe("write-1-1");
+      expect(config).toMatchObject({
+        toolNames: expect.arrayContaining(["write"]),
+        writeHandler: true,
+        availableTools: expect.arrayContaining(["write", "builtin:ask_user"]),
+      });
     }
-  });
+  }
+  if (testCase.restricted) {
+    expect(fixture.writeResults).toEqual([]);
+    await expect(fs.readFile(outputPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  } else {
+    const success = expect.objectContaining({ resultType: "success" });
+    expect(fixture.writeResults).toEqual([success, success]);
+    await expect(fs.readFile(outputPath, "utf8")).resolves.toBe("write-1-1");
+  }
 });
