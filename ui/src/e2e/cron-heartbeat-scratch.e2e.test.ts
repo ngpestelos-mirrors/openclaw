@@ -14,9 +14,6 @@ import {
 const suite = createControlUiE2eSuite({ name: "Control UI heartbeat scratch" });
 
 const job = createCronJob("heartbeat-monitor", "Heartbeat (main)", {
-  configRevision: undefined,
-  createdAtMs: 1,
-  updatedAtMs: 1,
   schedule: { kind: "every", everyMs: 1_800_000 },
   sessionTarget: "main",
   payload: { kind: "heartbeat" },
@@ -29,21 +26,15 @@ const scratchResponse = {
   maxBytes: 262_144,
 };
 
-function methodResponses(scratch: unknown = scratchResponse) {
-  return {
-    "cron.list": cronListResponseFixture(
-      cronJobsListResponse([job], { snapshotRevision: "heartbeat-scratch" }),
-    ),
-    "cron.runs": { entries: [], total: 0, offset: 0, hasMore: false },
-    "cron.scratch.get": scratch,
-    "cron.status": { enabled: true, jobs: 1, nextWakeAtMs: null },
-  };
-}
-
-async function openMonitor(page: Page, options: Parameters<typeof installMockGateway>[1] = {}) {
+async function openMonitor(page: Page, readOnly = false, scratch: unknown = scratchResponse) {
   const gateway = await installMockGateway(page, {
-    methodResponses: methodResponses(),
-    ...options,
+    ...(readOnly && { operatorScopes: ["operator.read"] }),
+    methodResponses: {
+      "cron.list": cronListResponseFixture(cronJobsListResponse([job])),
+      "cron.runs": { entries: [], total: 0, offset: 0, hasMore: false },
+      "cron.scratch.get": scratch,
+      "cron.status": { enabled: true, jobs: 1, nextWakeAtMs: null },
+    },
   });
   await page.goto(`${suite.server.baseUrl}cron`);
   const row = page.locator(`[data-test-id="cron-row-${job.id}"]`);
@@ -65,10 +56,7 @@ suite.define(() => {
         }),
       },
       async ({ page }) => {
-        const gateway = await openMonitor(
-          page,
-          readOnly ? { operatorScopes: ["operator.read"] } : {},
-        );
+        const gateway = await openMonitor(page, readOnly);
         const monitor = page.locator("#cron-payload-text");
         await expect.poll(() => monitor.inputValue()).toBe(readOnly ? "" : scratchContent);
         expect((await gateway.getRequests("cron.scratch.get")).map(({ params }) => params)).toEqual(
@@ -95,10 +83,8 @@ suite.define(() => {
   it("shows a scratch read failure instead of an empty success state", async () => {
     const errorMessage = "Heartbeat scratch is temporarily unavailable.";
     await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
-      await openMonitor(page, {
-        methodResponses: methodResponses({
-          __mockError: { code: "UNAVAILABLE", message: errorMessage },
-        }),
+      await openMonitor(page, false, {
+        __mockError: { code: "UNAVAILABLE", message: errorMessage },
       });
       await expect
         .poll(() => page.locator(".cron-error-banner").textContent())

@@ -1,5 +1,4 @@
 // Browser edits persist through the normal built Gateway and independent CLI readback.
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Locator, Page } from "playwright";
@@ -123,11 +122,6 @@ catalogSuite.define(() => {
     }
     const url = new URL("cron", browserUrl);
     url.hash = new URL(browserUrl).hash;
-    const frames: Array<{
-      direction: "sent" | "received";
-      frame: Record<string, unknown>;
-      transportFailure?: boolean;
-    }> = [];
     const catalogRequests = new Set<string>();
     const commands: unknown[] = [];
     let rejectCatalogReplies = false;
@@ -167,7 +161,6 @@ catalogSuite.define(() => {
             socket.onMessage((message) => {
               const frame = requireRecord(JSON.parse(message.toString()));
               if (frame.type === "req" && frame.method !== "connect") {
-                frames.push({ direction: "sent", frame });
                 if (frame.method === "models.list" && typeof frame.id === "string") {
                   catalogRequests.add(frame.id);
                 }
@@ -184,13 +177,6 @@ catalogSuite.define(() => {
                 if (!catalogRequests.size) {
                   catalogDrained?.();
                 }
-              }
-              if (catalogReply || catalogChange) {
-                frames.push({
-                  direction: "received",
-                  frame,
-                  transportFailure: catalogReply && rejectCatalogReplies,
-                });
               }
               // Exercise reads after real publication, not config changes during an in-flight read.
               // Keep the Gateway's notifications intact and in their original order.
@@ -279,7 +265,7 @@ catalogSuite.define(() => {
           .replaceAll(owner.hookToken, "[synthetic token]");
       await fs.writeFile(
         path.join(catalogSuite.artifactDir, "publication.json"),
-        redact(JSON.stringify({ frames, commands }, null, 2)),
+        redact(JSON.stringify({ commands }, null, 2)),
       );
       await fs.writeFile(path.join(catalogSuite.artifactDir, "gateway.log"), redact(owner.logs()));
     }
@@ -288,20 +274,17 @@ catalogSuite.define(() => {
 
 const requireRecord = createRequireRecord("record", "expected-object-value");
 type CliJson = (args: string[]) => Promise<Record<string, unknown>>;
-type ServedAsset = { path: string; status: number; sha256?: string; error?: string };
 type CronPageEvidence = {
   page: Page;
   requests: Record<string, unknown>[];
   replies: Record<string, unknown>[];
-  servedDocumentSha256: string;
-  servedAssets: Promise<ServedAsset>[];
 };
 
 async function capture(evidence: CronPageEvidence, name: string, observed: object) {
   if (!captureEnabled) {
     return;
   }
-  const { page, servedDocumentSha256, servedAssets } = evidence;
+  const { page } = evidence;
   // The form is taller than the viewport. Preserve the flow's scroll to the
   // relevant field without resizing Chromium's recording surface.
   await fs.writeFile(
@@ -312,7 +295,7 @@ async function capture(evidence: CronPageEvidence, name: string, observed: objec
   );
   await fs.writeFile(
     path.join(suite.artifactDir, `${name}.json`),
-    `${JSON.stringify({ ...observed, servedDocumentSha256, servedAssets: await Promise.all(servedAssets) }, null, 2)}\n`,
+    `${JSON.stringify(observed, null, 2)}\n`,
   );
 }
 
@@ -388,27 +371,6 @@ async function withCronJobPage(
     async ({ page }) => {
       const requests: Record<string, unknown>[] = [];
       const replies: Record<string, unknown>[] = [];
-      const servedAssets: Promise<ServedAsset>[] = [];
-      if (captureEnabled) {
-        page.on("response", (response) => {
-          const assetUrl = new URL(response.url());
-          const marker = assetUrl.pathname.indexOf("/assets/");
-          if (
-            assetUrl.origin !== issued.origin ||
-            marker < 0 ||
-            !/\.(?:js|css)$/u.test(assetUrl.pathname)
-          ) {
-            return;
-          }
-          const asset = { path: assetUrl.pathname.slice(marker + 1), status: response.status() };
-          servedAssets.push(
-            response.body().then(
-              (body) => ({ ...asset, sha256: createHash("sha256").update(body).digest("hex") }),
-              (error: unknown) => ({ ...asset, error: String(error) }),
-            ),
-          );
-        });
-      }
       page.on("websocket", (socket) => {
         socket.on("framesent", ({ payload }) => {
           const frame = requireRecord(JSON.parse(payload.toString()));
@@ -431,12 +393,9 @@ async function withCronJobPage(
         throw new Error("Gateway did not return the Control UI document");
       }
       expect(document.status()).toBe(200);
-      const servedDocumentSha256 = createHash("sha256")
-        .update(await document.body())
-        .digest("hex");
       await waitForControlUiGatewayReady(page);
       expect(new URL(page.url()).hash.length).toBe(0);
-      await run({ page, requests, replies, servedDocumentSha256, servedAssets });
+      await run({ page, requests, replies });
     },
   );
 }
@@ -489,17 +448,14 @@ async function seedAlertJob(cliJson: CliJson, name: string, failureAlert: CronJo
   return { id, stored };
 }
 
-function seedCliAutomation(cliJson: CliJson, name: string, args: string[]) {
+function seedCliAutomation(cliJson: CliJson, name: string, flags: Record<string, string | true>) {
+  const options: typeof flags = { name, agent: "main", disabled: true, ...flags, json: true };
   return cliJson([
     "automations",
     "add",
-    "--name",
-    name,
-    "--agent",
-    "main",
-    "--disabled",
-    ...args,
-    "--json",
+    ...Object.entries(options).flatMap(([key, value]) =>
+      value === true ? [`--${key}`] : [`--${key}`, value],
+    ),
   ]);
 }
 
@@ -552,17 +508,13 @@ async function openAdvanced(page: Page, name: unknown) {
 suite.define(() => {
   it("timeout override: clearing restores the default after save and reload", async () => {
     await withGatewayCommands("real-timeout-clear-commands.json", async (cliJson) => {
-      const job = await seedCliAutomation(cliJson, "Clear timeout override", [
-        "--session",
-        "isolated",
-        "--message",
-        "Synthetic paused timeout fixture",
-        "--every",
-        "2h",
-        "--timeout-seconds",
-        "90",
-        "--no-deliver",
-      ]);
+      const job = await seedCliAutomation(cliJson, "Clear timeout override", {
+        session: "isolated",
+        message: "Synthetic paused timeout fixture",
+        every: "2h",
+        "timeout-seconds": "90",
+        "no-deliver": true,
+      });
       const jobId = cronJobId(job);
       await withCronJobPage(cliJson, jobId, async (evidence) => {
         const { page } = evidence;
@@ -603,18 +555,13 @@ suite.define(() => {
 
   it("configured duration precision: saves stagger through the real Gateway and CLI readback", async () => {
     await withGatewayCommands("real-gateway-commands.json", async (cliJson) => {
-      const job = await seedCliAutomation(cliJson, "Browser stagger fixture", [
-        "--session",
-        "main",
-        "--system-event",
-        "Synthetic paused browser fixture",
-        "--cron",
-        "0 * * * *",
-        "--tz",
-        "UTC",
-        "--stagger",
-        "1001ms",
-      ]);
+      const job = await seedCliAutomation(cliJson, "Browser stagger fixture", {
+        session: "main",
+        "system-event": "Synthetic paused browser fixture",
+        cron: "0 * * * *",
+        tz: "UTC",
+        stagger: "1001ms",
+      });
       expect(job).toMatchObject({ enabled: false, schedule: { staggerMs: 1_001 } });
       const jobId = cronJobId(job);
       await withCronJobPage(cliJson, jobId, async (evidence) => {

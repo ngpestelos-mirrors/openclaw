@@ -13,8 +13,7 @@ export function defineControlUiFrameIdentityTests(createPage: () => Promise<Page
       const NativeObserver = window.IntersectionObserver;
       let inspections = 0;
       let replaced = false;
-      // Forward actual Chromium entries. A consumed intersection marks a readiness
-      // sample; layout-only observers do not read the intersection rectangle.
+      // Count native readiness samples, not layout-only observations.
       window.IntersectionObserver = class extends NativeObserver {
         constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
           super((entries, observer) => {
@@ -35,15 +34,10 @@ export function defineControlUiFrameIdentityTests(createPage: () => Promise<Page
         }
         override observe(element: Element) {
           super.observe(element);
-          // Two positive samples have agreed. Replace during the next native
-          // observation, before Chromium delivers the old element's intersection.
+          // Replace after two agreeing samples but before the next native delivery.
           if (element.id === "proof" && inspections === 2 && !replaced) {
             replaced = true;
-            const replacement = document.createElement("div");
-            replacement.id = element.id;
-            replacement.textContent = "Replacement";
-            replacement.dataset.replaced = "true";
-            element.replaceWith(replacement);
+            element.outerHTML = '<div id="proof" data-replaced="true">Replacement</div>';
           }
         }
       };
