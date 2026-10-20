@@ -29,6 +29,7 @@ describe("state-dir-gateway-check", () => {
   let root: string;
   let cliStateDir: string;
   let cliConfigPath: string;
+  const check = () => checkCliGatewayStateDir({ command: "openclaw configure", config: {} });
 
   beforeEach(async () => {
     root = tempDirs.make("openclaw-state-dir-check-");
@@ -88,9 +89,7 @@ describe("state-dir-gateway-check", () => {
       },
     });
 
-    await expect(
-      checkCliGatewayStateDir({ command: "openclaw configure", config: {} }),
-    ).resolves.toMatchObject({
+    await expect(check()).resolves.toMatchObject({
       kind: "refuse",
       message: expect.stringContaining(path.join(serviceRuntimeHome, ".openclaw")),
     });
@@ -100,17 +99,14 @@ describe("state-dir-gateway-check", () => {
   });
 
   it("allows an offline command and does not probe an ordinary transport failure", async () => {
-    await expect(
-      checkCliGatewayStateDir({ command: "openclaw configure", config: {} }),
-    ).resolves.toEqual({ kind: "allow" });
+    await expect(check()).resolves.toEqual({ kind: "allow" });
     expect(mocks.probeGateway).not.toHaveBeenCalled();
   });
 
   it("warns when service inspection is unavailable without exposing its error", async () => {
-    const error = new Error("private-service-inspection-canary");
-    mocks.readServiceCommand.mockRejectedValue(error);
+    mocks.readServiceCommand.mockRejectedValue(new Error("private-service-inspection-canary"));
 
-    const result = await checkCliGatewayStateDir({ command: "openclaw configure", config: {} });
+    const result = await check();
     expect(result).toMatchObject({
       kind: "warn",
       message: expect.stringContaining("could not be verified"),
@@ -124,9 +120,7 @@ describe("state-dir-gateway-check", () => {
       environment: { PATH: "/synthetic/bin" },
     });
 
-    await expect(
-      checkCliGatewayStateDir({ command: "openclaw configure", config: {} }),
-    ).resolves.toMatchObject({ kind: "warn" });
+    await expect(check()).resolves.toMatchObject({ kind: "warn" });
   });
 
   it("redacts credentials in remote target warnings", async () => {

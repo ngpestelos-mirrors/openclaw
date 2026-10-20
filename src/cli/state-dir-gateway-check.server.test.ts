@@ -18,6 +18,18 @@ describe("state-dir guard with a real token Gateway", () => {
   let gatewayStateDir: string;
   let cliStateDir: string;
   let hello: GatewayHello | undefined;
+  const gatewayConfig = (authenticated = true) => ({
+    gateway: {
+      mode: "local" as const,
+      port,
+      auth: { mode: "token" as const, ...(authenticated ? { token } : {}) },
+    },
+  });
+  const check = (authenticated = true) =>
+    checkCliGatewayStateDir({
+      command: "openclaw channels add",
+      config: gatewayConfig(authenticated),
+    });
 
   const setCliStateDir = (stateDir: string) => {
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
@@ -32,10 +44,7 @@ describe("state-dir guard with a real token Gateway", () => {
     await fs.mkdir(cliStateDir, { recursive: true });
     port = await getFreePort();
     const gatewayConfigPath = path.join(gatewayStateDir, "openclaw.json");
-    await fs.writeFile(
-      gatewayConfigPath,
-      `${JSON.stringify({ gateway: { mode: "local", port, auth: { mode: "token", token } } })}\n`,
-    );
+    await fs.writeFile(gatewayConfigPath, `${JSON.stringify(gatewayConfig())}\n`);
     const fixture = resolveRuntimeWorkerUrl(stateDirGatewayFixtureEntrypoint);
     // Standalone source runs retain the ESM-only preload; prepared JavaScript
     // must execute natively without installing a source transform hook.
@@ -112,12 +121,7 @@ describe("state-dir guard with a real token Gateway", () => {
 
   it("allows matching authenticated hello paths", async () => {
     setCliStateDir(gatewayStateDir);
-    await expect(
-      checkCliGatewayStateDir({
-        command: "openclaw channels add",
-        config: { gateway: { mode: "local", port, auth: { mode: "token", token } } },
-      }),
-    ).resolves.toEqual({ kind: "allow" });
+    await expect(check()).resolves.toEqual({ kind: "allow" });
     expect(hello).toMatchObject({
       snapshot: {
         stateDir: gatewayStateDir,
@@ -128,10 +132,7 @@ describe("state-dir guard with a real token Gateway", () => {
   });
 
   it("refuses mismatched authenticated hello paths", async () => {
-    const outcome = await checkCliGatewayStateDir({
-      command: "openclaw channels add",
-      config: { gateway: { mode: "local", port, auth: { mode: "token", token } } },
-    });
+    const outcome = await check();
 
     expect(outcome).toMatchObject({ kind: "refuse" });
     if (outcome.kind !== "refuse") {
@@ -142,11 +143,6 @@ describe("state-dir guard with a real token Gateway", () => {
   });
 
   it("warns when a tokenless CLI can prove only the Gateway protocol", async () => {
-    await expect(
-      checkCliGatewayStateDir({
-        command: "openclaw channels add",
-        config: { gateway: { mode: "local", port, auth: { mode: "token" } } },
-      }),
-    ).resolves.toMatchObject({ kind: "warn" });
+    await expect(check(false)).resolves.toMatchObject({ kind: "warn" });
   });
 });

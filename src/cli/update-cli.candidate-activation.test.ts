@@ -84,6 +84,24 @@ describe("update-cli", () => {
     tempDirs,
   } = createUpdateCliFixture();
 
+  async function expectPackageVersion(root: string, version: string) {
+    expect(JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"))).toMatchObject({
+      version,
+    });
+  }
+
+  const startupStep = (cwd: string, valid = true) => ({
+    name: "candidate-gateway-startup",
+    command: "openclaw gateway",
+    cwd,
+    durationMs: 1,
+    exitCode: valid ? 0 : 1,
+    ...(!valid ? { stderrTail: "candidate readiness failed" } : {}),
+  });
+  function callOrder(mock: { mock: { invocationCallOrder: number[] } }, index = 0) {
+    return requireValue(mock.mock.invocationCallOrder[index], "expected call order");
+  }
+
   it.each(["config-change", "legacy-config-change", "invalid"] as const)(
     "validates the staged candidate without inference while the previous gateway serves (%s)",
     async (outcome) => {
@@ -171,16 +189,8 @@ describe("update-cli", () => {
         expect(serviceStop).not.toHaveBeenCalled();
         expect(await serviceReadRuntime()).toMatchObject({ status: "running" });
         expect(root).not.toBe(pkgRoot);
-        expect(
-          JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")),
-        ).toMatchObject({
-          version: "9999.0.0",
-        });
-        expect(
-          JSON.parse(await fs.readFile(path.join(pkgRoot, "package.json"), "utf8")),
-        ).toMatchObject({
-          version: "1.0.0",
-        });
+        await expectPackageVersion(root, "9999.0.0");
+        await expectPackageVersion(pkgRoot, "1.0.0");
         return reportCandidateSteps(options, {
           status: valid ? "ok" : "error",
           durationMs: 1,
@@ -194,25 +204,12 @@ describe("update-cli", () => {
           ...(legacyConfigChange || outcome === "config-change"
             ? { doctorConfigChanges: doctorChanges }
             : {}),
-          steps: [
-            {
-              name: "candidate-gateway-startup",
-              command: "openclaw gateway",
-              cwd: root,
-              durationMs: 1,
-              exitCode: valid ? 0 : 1,
-              ...(!valid ? { stderrTail: "candidate readiness failed" } : {}),
-            },
-          ],
+          steps: [startupStep(root, valid)],
         });
       });
       serviceStop.mockImplementationOnce(async () => {
         events.push("stop");
-        expect(
-          JSON.parse(await fs.readFile(path.join(pkgRoot, "package.json"), "utf8")),
-        ).toMatchObject({
-          version: "1.0.0",
-        });
+        await expectPackageVersion(pkgRoot, "1.0.0");
         serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
       });
       syncPluginsForUpdateChannel.mockImplementationOnce(async ({ config }) => {
@@ -245,11 +242,7 @@ describe("update-cli", () => {
         expect(events).toEqual(["validate"]);
         expectNoSideEffects(serviceStop, serviceStart, serviceRestart);
         expect(freshRestartCalls()).toHaveLength(0);
-        expect(
-          JSON.parse(await fs.readFile(path.join(pkgRoot, "package.json"), "utf8")),
-        ).toMatchObject({
-          version: "1.0.0",
-        });
+        await expectPackageVersion(pkgRoot, "1.0.0");
         expect(lastWriteJsonCall()).toMatchObject({
           status: "error",
           reason: "runtime-verification-failed",
@@ -291,9 +284,7 @@ describe("update-cli", () => {
     "uses compatibility-checked package update without full-state startup (%s)",
     async (mode) => {
       const root = await mockPackageInstallAtCaseDir("openclaw-update-startup-admission");
-      mockCurrentProcessFreshDoctor({
-        packageRoot: root,
-      });
+      mockCurrentProcessFreshDoctor({ packageRoot: root });
       mockFileBackedPathExists();
       mockRunningManagedGateway([
         process.execPath,
@@ -333,15 +324,7 @@ describe("update-cli", () => {
       expect(store.bind(found.lease, process.pid)).not.toBeNull();
       return reportCandidateSteps(options, {
         status: "ok",
-        steps: [
-          {
-            name: "candidate-gateway-startup",
-            command: "openclaw gateway",
-            cwd: options.root,
-            durationMs: 1,
-            exitCode: 0,
-          },
-        ],
+        steps: [startupStep(options.root)],
       });
     });
     await expect(updateCommand({ yes: true, json: true })).rejects.toThrow();
@@ -364,15 +347,7 @@ describe("update-cli", () => {
           state: OPENCLAW_STATE_SCHEMA_VERSION + 1,
           agent: OPENCLAW_AGENT_SCHEMA_VERSION,
         },
-        steps: [
-          {
-            name: "candidate-gateway-startup",
-            command: "openclaw gateway",
-            cwd: root,
-            durationMs: 1,
-            exitCode: 0,
-          },
-        ],
+        steps: [startupStep(root)],
       }),
     );
 
@@ -419,75 +394,49 @@ describe("update-cli", () => {
 
     const doctorCall = doctorCommandCall();
     expect(doctorCall).toBeDefined();
-    expect(
-      (doctorCall?.[1].env as NodeJS.ProcessEnv | undefined)
-        ?.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR,
-    ).toBe("0");
-    expect(
-      (doctorCall?.[1].env as NodeJS.ProcessEnv | undefined)
-        ?.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION,
-    ).toBe("0");
+    expect(doctorCall?.[1].env).toMatchObject({
+      OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR: "0",
+      OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "0",
+    });
     expect(getLogOutput()).toContain("Gateway: restarted and verified.");
     const npmInstallCallIndex = vi
       .mocked(runCommandWithTimeout)
       .mock.calls.findIndex(
         (call) => Array.isArray(call[0]) && call[0][0] === "npm" && call[0][1] === "i",
       );
-    const npmInstallCallOrder =
-      vi.mocked(runCommandWithTimeout).mock.invocationCallOrder[npmInstallCallIndex];
     const serviceStopCall = serviceStop.mock.calls[0]?.[0] as
       | { env?: NodeJS.ProcessEnv }
       | undefined;
-    expect(serviceStopCall?.env?.OPENCLAW_SERVICE_MARKER).toBe("openclaw");
-    expect(serviceStopCall?.env?.OPENCLAW_SERVICE_KIND).toBe("gateway");
-    const serviceStopCallOrder = serviceStop.mock.invocationCallOrder[0];
-    const requiredServiceStopCallOrder = requireValue(
-      serviceStopCallOrder,
-      "service stop call order",
-    );
-    const requiredNpmInstallCallOrder = requireValue(npmInstallCallOrder, "npm install call order");
-    const suspendOrder = requireValue(
-      suspendScheduledTaskAutoStartForUpdate.mock.invocationCallOrder[0],
-      "Scheduled Task suspend order",
-    );
-    const resumeOrder = requireValue(
-      resumeScheduledTaskAutoStartAfterUpdate.mock.invocationCallOrder[0],
-      "Scheduled Task resume order",
-    );
+    expect(serviceStopCall?.env).toMatchObject({
+      OPENCLAW_SERVICE_MARKER: "openclaw",
+      OPENCLAW_SERVICE_KIND: "gateway",
+    });
+    const suspendOrder = callOrder(suspendScheduledTaskAutoStartForUpdate);
     const sigintListenerIndex = processOnSpy.mock.calls.findIndex(([event]) => event === "SIGINT");
-    const sigintListenerOrder = requireValue(
-      processOnSpy.mock.invocationCallOrder[sigintListenerIndex],
-      "SIGINT recovery listener order",
+    for (const action of [
+      suspendScheduledTaskAutoStartForUpdate,
+      resumeScheduledTaskAutoStartAfterUpdate,
+    ]) {
+      expect(action).toHaveBeenCalledWith(
+        expect.objectContaining({
+          OPENCLAW_SERVICE_MARKER: "openclaw",
+          OPENCLAW_SERVICE_KIND: "gateway",
+        }),
+        expect.objectContaining({ beforeMutation: expect.any(Function) }),
+      );
+    }
+    expect(callOrder(processOnSpy, sigintListenerIndex)).toBeLessThan(suspendOrder);
+    expect(suspendOrder).toBeLessThan(callOrder(serviceStop));
+    const validationOrder = callOrder(candidateValidation);
+    expect(callOrder(vi.mocked(runCommandWithTimeout), npmInstallCallIndex)).toBeLessThan(
+      validationOrder,
     );
-    expect(suspendScheduledTaskAutoStartForUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        OPENCLAW_SERVICE_MARKER: "openclaw",
-        OPENCLAW_SERVICE_KIND: "gateway",
-      }),
-      expect.objectContaining({ beforeMutation: expect.any(Function) }),
-    );
-    expect(resumeScheduledTaskAutoStartAfterUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        OPENCLAW_SERVICE_MARKER: "openclaw",
-        OPENCLAW_SERVICE_KIND: "gateway",
-      }),
-      expect.objectContaining({ beforeMutation: expect.any(Function) }),
-    );
-    expect(sigintListenerOrder).toBeLessThan(suspendOrder);
-    expect(suspendOrder).toBeLessThan(requiredServiceStopCallOrder);
-    const validationOrder = requireValue(
-      candidateValidation.mock.invocationCallOrder[0],
-      "candidate validation order",
-    );
-    expect(requiredNpmInstallCallOrder).toBeLessThan(validationOrder);
     expect(validationOrder).toBeLessThan(suspendOrder);
-    expect(requiredServiceStopCallOrder).toBeLessThan(resumeOrder);
-    expect(processOnSpy).toHaveBeenCalledWith("SIGINT", expect.any(Function));
-    expect(processOnSpy).toHaveBeenCalledWith("SIGTERM", expect.any(Function));
-    expect(processOnSpy).toHaveBeenCalledWith("SIGBREAK", expect.any(Function));
-    expect(processOffSpy).toHaveBeenCalledWith("SIGINT", expect.any(Function));
-    expect(processOffSpy).toHaveBeenCalledWith("SIGTERM", expect.any(Function));
-    expect(processOffSpy).toHaveBeenCalledWith("SIGBREAK", expect.any(Function));
+    expect(callOrder(serviceStop)).toBeLessThan(callOrder(resumeScheduledTaskAutoStartAfterUpdate));
+    for (const signal of ["SIGINT", "SIGTERM", "SIGBREAK"]) {
+      expect(processOnSpy).toHaveBeenCalledWith(signal, expect.any(Function));
+      expect(processOffSpy).toHaveBeenCalledWith(signal, expect.any(Function));
+    }
     processOnSpy.mockRestore();
     processOffSpy.mockRestore();
   });
@@ -534,13 +483,7 @@ describe("update-cli", () => {
           expect(serviceStop).toHaveBeenCalledOnce();
           expect(packageInstallCommandCall()).toBeDefined();
           expect(candidateValidation).toHaveBeenCalledOnce();
-          expect(
-            JSON.parse(
-              await fs.readFile(path.join(nodeModules, "openclaw", "package.json"), "utf8"),
-            ),
-          ).toMatchObject({
-            version: "2026.4.21",
-          });
+          await expectPackageVersion(path.join(nodeModules, "openclaw"), "2026.4.21");
           const pluginRecordCallsBeforeStop =
             loadInstalledPluginIndexInstallRecords.mock.calls.length;
           if (!finishStop) {
