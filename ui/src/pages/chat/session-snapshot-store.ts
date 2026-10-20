@@ -2,7 +2,6 @@ import { readSessionMessageSequence } from "@openclaw/gateway-client/browser";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { requestResult, transactionComplete } from "../../lib/chat/control-ui-database.runtime.ts";
 import { removePairingQrContent } from "../../lib/chat/pairing-qr.ts";
-import { isBoardSnapshot } from "../../lib/protocol-validators.generated/board.js";
 import {
   isChatTranscriptMetadata,
   isProgressCard,
@@ -75,9 +74,7 @@ const paginationSchema = {
 const snapshotSchema = json.object(
   {
     board: json.optional(
-      json.nullable(
-        json.object({ snapshot: json.checked(isBoardSnapshot), receivedAtMs: nonnegative }, true),
-      ),
+      json.nullable(json.object({ snapshot: json.unknown, receivedAtMs: nonnegative }, true)),
     ),
     widgetHeights: json.optional(
       json.refine(

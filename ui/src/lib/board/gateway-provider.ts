@@ -11,6 +11,7 @@ import type {
 import { sleepWithAbort } from "@openclaw/retry";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { formatUiError } from "../format-error.ts";
+import { isBoardSnapshot } from "../protocol-validators.generated/board.js";
 import {
   normalizeSessionKeyForUiComparison,
   parseAgentSessionKey,
@@ -30,6 +31,7 @@ import { canvasWidgetNameForDocument, mcpAppWidgetNameForViewId } from "./widget
 import {
   copyBoardWidgetTicketReceipt,
   recordBoardWidgetTicketReceipt,
+  remainingBoardWidgetTicketTtlMs,
 } from "./widget-ticket-lifetime.ts";
 
 type BoardGatewayClient = Pick<GatewayBrowserClient, "request" | "addEventListener">;
@@ -142,11 +144,12 @@ export class GatewayBoardProvider implements BoardProvider {
     return () => this.cacheListeners.delete(notify);
   }
 
-  restoreSnapshot(snapshot: BoardSnapshot, receivedAtMs: number): void {
+  restoreSnapshot(snapshot: unknown, receivedAtMs: number): void {
     if (
       this.disposed ||
       this.snapshotLoaded ||
       this.snapshotRevalidated ||
+      !isBoardSnapshot(snapshot) ||
       !this.matchesSession(snapshot.sessionKey)
     ) {
       return;
@@ -571,9 +574,20 @@ export class GatewayBoardProvider implements BoardProvider {
   }
 
   private cacheSnapshot(snapshot: BoardSnapshot | null, receivedAtMs: number): void {
-    this.cacheReceipt = { snapshot, receivedAtMs };
+    let expired = false;
+    // Mutation snapshots retain older ticket receipts; cache TTLs start at this publication.
+    const cached = snapshot && {
+      ...snapshot,
+      widgets: snapshot.widgets.map((widget) => {
+        const ttl = remainingBoardWidgetTicketTtlMs(widget);
+        expired ||= ttl === 0;
+        return ttl === undefined || ttl === 0 ? widget : { ...widget, viewTicketTtlMs: ttl };
+      }),
+    };
+    const persisted = expired ? null : cached;
+    this.cacheReceipt = { snapshot: persisted, receivedAtMs };
     for (const listener of this.cacheListeners) {
-      listener(snapshot, receivedAtMs);
+      listener(persisted, receivedAtMs);
     }
   }
 

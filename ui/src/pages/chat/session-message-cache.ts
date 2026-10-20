@@ -3,7 +3,7 @@ import {
   readSessionMessageSequence,
   reduceSessionProjection,
 } from "@openclaw/gateway-client/browser";
-import type { BoardSnapshot, ProgressCard } from "@openclaw/gateway-protocol";
+import type { ProgressCard } from "@openclaw/gateway-protocol";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { readPairingQrContent } from "../../lib/chat/pairing-qr.ts";
 import type { ChatHistoryCursor, ChatHistoryPagination } from "./chat-history-pagination.ts";
@@ -64,7 +64,8 @@ export function projectChatTranscriptMetadata(row: GatewaySessionRow): ChatTrans
 }
 
 export type ChatSessionSnapshot = {
-  board?: { snapshot: BoardSnapshot; receivedAtMs: number } | null;
+  // The board provider validates cached payloads before they can reach a view.
+  board?: { snapshot: unknown; receivedAtMs: number } | null;
   widgetHeights?: Record<string, number>;
   transcriptMetadata?: ChatTranscriptMetadata;
   progressCard?: ProgressCard | null;

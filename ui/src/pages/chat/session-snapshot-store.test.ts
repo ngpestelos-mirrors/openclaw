@@ -192,18 +192,18 @@ describe("persistent chat session snapshots", () => {
     expect((await new SessionSnapshotStore().read(sessionKey))?.board).toBeNull();
   });
 
-  it.each([
-    { receivedAtMs: -1, snapshot: { sessionKey: "dashboard", revision: 1, tabs: [], widgets: [] } },
-    {
-      receivedAtMs: 100,
-      snapshot: { sessionKey: "dashboard", revision: 1, tabs: [], widgets: [{}] },
-    },
-  ])("discards invalid persisted board data", async (board) => {
+  it("discards an invalid persisted board receipt", async () => {
     const sessionKey = key("agent:main:invalid-board");
     await persist(writer, sessionKey, snapshot("initialize database"));
     await putRawRecord({
       ...envelope(sessionKey, snapshot("conversation")),
-      snapshot: { ...snapshot("conversation"), board },
+      snapshot: {
+        ...snapshot("conversation"),
+        board: {
+          receivedAtMs: -1,
+          snapshot: { sessionKey: "dashboard", revision: 1, tabs: [], widgets: [] },
+        },
+      },
     });
     expect(await new SessionSnapshotStore().read(sessionKey)).toBeNull();
   });

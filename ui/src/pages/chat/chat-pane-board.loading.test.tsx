@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import { IDBFactory } from "fake-indexeddb";
 import { createSignal, flush, Show } from "solid-js";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
@@ -13,12 +14,17 @@ import { ChatBoardPanel } from "./chat-pane-surfaces.tsx";
 import { createSessionCapabilityFixture, createTestChatPane } from "./chat-pane.test-support.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { cacheChatSessionSnapshot, readChatSessionSnapshot } from "./session-message-cache.ts";
+import { clearStoredChatSnapshots } from "./session-snapshot-invalidation.ts";
+import { resolveChatSnapshotKey } from "./session-snapshot-key.ts";
+import { SessionSnapshotStore } from "./session-snapshot-store.ts";
 import { openSlot } from "./sidebar-layout.ts";
 import "../../components/board/board-view.ts";
 
 type BoardTestPane = HTMLElement & {
   context: ApplicationContext;
   state: ChatPageHost;
+  sessionSnapshotStore?: SessionSnapshotStore;
+  hydrateStoredChatSnapshot: (state: ChatPageHost, sessionKey: string) => void;
   resolveBoardProvider: () => BoardProvider;
   resolveBoardView: () => ResolvedBoardView;
   renderBoardPanel: (
@@ -76,6 +82,51 @@ function createGatewayBoardPane(sessionKey: string) {
 }
 
 describe("chat pane board loading states", () => {
+  it("hydrates the transcript without mounting an invalid persisted board", async () => {
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const sessionKey = "agent:main:invalid-cached-board";
+    const { pane, request, container, draw, cleanup } = createGatewayBoardPane(sessionKey);
+    const response = createDeferred<BoardSnapshot>();
+    request.mockReturnValue(response.promise);
+    pane.state.settings = {
+      ...pane.state.settings,
+      gatewayUrl: pane.context.gateway.connection.gatewayUrl,
+    };
+    Object.assign(pane.state.client!, {
+      recoveryScope: "admitted-account",
+      recoveryScopeReady: true,
+    });
+    Reflect.set(pane, "sessionKey", sessionKey);
+    const store = new SessionSnapshotStore(pane.state.chatMessagesBySession);
+    pane.sessionSnapshotStore = store;
+    const messages = [{ role: "assistant", content: "Retained conversation" }];
+    store.write(resolveChatSnapshotKey(pane.state, { sessionKey }), {
+      messages,
+      sessionId: "retained-session",
+      pagination: { hasMore: false },
+      board: {
+        snapshot: { sessionKey, revision: 1, tabs: [], widgets: [{}] },
+        receivedAtMs: Date.now(),
+      },
+    });
+    try {
+      await store.flush();
+      const provider = pane.resolveBoardProvider();
+      pane.hydrateStoredChatSnapshot(pane.state, sessionKey);
+      await chatHistoryRequests(pane.state).initialSnapshotHydration?.promise;
+      expect(pane.state.chatMessages).toEqual(messages);
+      expect(provider.hasLoadedSnapshot).toBe(false);
+      draw();
+      await container.querySelector("openclaw-board-view")?.updateComplete;
+      expect(container.querySelector("iframe")).toBeNull();
+      expect(container.querySelector("openclaw-panel-loading-skeleton")).not.toBeNull();
+    } finally {
+      cleanup();
+      await clearStoredChatSnapshots();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("persists a board acquired before pane state exists after transcript hydration", async () => {
     const sessionKey = "agent:main:warm-persistence";
     const { pane, request, snapshot, cleanup } = createGatewayBoardPane(sessionKey);

@@ -1,4 +1,3 @@
-import type { BoardSnapshot } from "@openclaw/gateway-protocol";
 import {
   cacheChatSessionSnapshot,
   readChatSessionSnapshot,
@@ -13,16 +12,16 @@ export function cacheChatBoardSnapshot(
   cache: ChatMessageCache,
   host: ChatMessageCacheHost,
   target: ChatMessageCacheTarget,
-  snapshot: BoardSnapshot | null,
+  snapshot: unknown,
   receivedAtMs = Date.now(),
 ): void {
   const existing = readChatSessionSnapshot(cache, host, target);
-  if (snapshot ? existing?.board?.snapshot === snapshot : existing?.board === null) {
+  if (snapshot !== null ? existing?.board?.snapshot === snapshot : existing?.board === null) {
     return;
   }
   cacheChatSessionSnapshot(cache, host, target, {
     ...(existing ?? { messages: [], pagination: { hasMore: false }, sessionId: null }),
-    board: snapshot ? { snapshot, receivedAtMs } : null,
+    board: snapshot !== null ? { snapshot, receivedAtMs } : null,
   });
 }
 
