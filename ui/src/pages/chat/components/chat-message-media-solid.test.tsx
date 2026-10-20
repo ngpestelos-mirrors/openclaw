@@ -10,6 +10,7 @@ import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import { loadAssistantAttachmentAvailability } from "./chat-message-attachment-availability.ts";
 import { AssistantAttachments, MessageAttachment } from "./chat-message-attachments-solid.tsx";
 import { MessageImages } from "./chat-message-images-solid.tsx";
+import { stubObjectUrls } from "./chat-message-media.test-helpers.ts";
 import type { AssistantAttachmentItem, AttachmentItem, ImageBlock } from "./chat-message-media.ts";
 import { MessageVideoPreview } from "./chat-message-video-preview-solid.tsx";
 import { SentCommentAttachments } from "./chat-sent-comments.tsx";
@@ -96,8 +97,7 @@ it("keeps the focused native image control and decoded node when gallery metadat
   expect(view.getByRole("button", { name: "Open image After" })).toBe(button);
   expect(document.activeElement).toBe(button);
   expect(view.container.querySelector("img")).toBe(image);
-  expect(image.alt).toBe("After");
-  expect(image.width).toBe(1600);
+  expect(image).toMatchObject({ alt: "After", width: 1600 });
 });
 
 it("retries a standalone native image after a failed preview", async () => {
@@ -142,15 +142,7 @@ it("cancels an offscreen poster request and releases a parked poster without rep
     },
   );
   const createObjectURL = vi.fn(() => "blob:video-poster");
-  const revokeObjectURL = vi.fn();
-  const NativeURL = URL;
-  vi.stubGlobal(
-    "URL",
-    class extends NativeURL {
-      static override createObjectURL = createObjectURL;
-      static override revokeObjectURL = revokeObjectURL;
-    },
-  );
+  const revokeObjectURL = stubObjectUrls(createObjectURL);
   const first = createDeferred<Blob | null>();
   const second = createDeferred<Blob | null>();
   vi.mocked(requestVideoPoster)
