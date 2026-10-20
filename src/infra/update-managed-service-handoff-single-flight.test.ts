@@ -1,5 +1,6 @@
+import type { ChildProcess } from "node:child_process";
 // Process-local handoff sharing complements the durable cross-process lease.
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -133,6 +134,47 @@ const baseParams = {
   argv1: "/opt/openclaw/openclaw.mjs",
 };
 
+const mockedChild = (index = 0) =>
+  spawnMock.mock.results[index]?.value as ReturnType<typeof createReadyChild>;
+const realChild = (index = 0) => spawnMock.mock.results[index]?.value as ChildProcess;
+
+async function readHelperParams() {
+  const [, args] = spawnMock.mock.calls[0] as [string, string[]];
+  return JSON.parse(await fs.readFile(readManagedHandoffArtifacts(args).paramsPath, "utf8")) as {
+    updateLeaseDatabasePath: string;
+    stateDatabasePath: string;
+  };
+}
+
+async function realHandoffFixture(prefix: string) {
+  vi.restoreAllMocks();
+  const { spawn } =
+    await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  spawnMock.mockImplementation(spawn);
+  const root = await fs.realpath(tempRoots.make(prefix));
+  const parent = spawn(testNodeExecPath, ["-e", "process.stdin.resume()"], {
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+  const {
+    startManagedServiceUpdateHandoff,
+    cancelManagedServiceUpdateHandoff: cancel,
+    claimManagedServiceUpdateHandoff: claim,
+    transferManagedServiceUpdateHandoff: transfer,
+    requestManagedServiceUpdateHandoffPark: park,
+  } = await import("./update-managed-service-handoff.js");
+  const start = (argv1 = process.argv[1]) =>
+    startManagedServiceUpdateHandoff({
+      ...baseParams,
+      root,
+      parentPid: parent.pid,
+      execPath: testNodeExecPath,
+      argv1,
+      env: { ...process.env, OPENCLAW_STATE_DIR: root },
+      meta: {},
+    });
+  return { root, parent, start, cancel, claim, transfer, park };
+}
+
 describe("managed service update handoff single-flight", () => {
   registerPreparedCoordinatorAdmissionTest({
     spawnMock,
@@ -160,7 +202,7 @@ describe("managed service update handoff single-flight", () => {
       if (started.status !== "started") {
         throw new Error("expected helper ownership");
       }
-      const child = spawnMock.mock.results[0]?.value as ReturnType<typeof createReadyChild>;
+      const child = mockedChild();
       const commands: string[] = [];
       child.stdin.on("data", (chunk: Buffer) => {
         commands.push(chunk.toString());
@@ -209,7 +251,7 @@ describe("managed service update handoff single-flight", () => {
       }),
     ).rejects.toThrow(/lease|helper|identity/u);
 
-    const child = spawnMock.mock.results[0]?.value as ReturnType<typeof createReadyChild>;
+    const child = mockedChild();
     expect(forceKillChildProcessTreeMock).toHaveBeenCalledExactlyOnceWith(child);
     expect(child.unref).not.toHaveBeenCalled();
     expect(claimManagedServiceUpdateHandoff(identity)).toBe(false);
@@ -274,7 +316,7 @@ describe("managed service update handoff single-flight", () => {
       }),
     ).resolves.toMatchObject({ status: "started" });
     expect(spawnMock).toHaveBeenCalledOnce();
-    const owner = spawnMock.mock.results[0]?.value as ReturnType<typeof createReadyChild>;
+    const owner = mockedChild();
     owner.emit("exit", 0, null);
   });
 
@@ -302,7 +344,7 @@ describe("managed service update handoff single-flight", () => {
     expect(outcomes[1]).not.toHaveProperty("installRoot");
     expect(spawnMock).toHaveBeenCalledOnce();
 
-    const owner = spawnMock.mock.results[0]?.value as ReturnType<typeof createReadyChild>;
+    const owner = mockedChild();
     owner.emit("exit", 0, null);
     const next = startManagedServiceUpdateHandoff({
       ...baseParams,
@@ -316,7 +358,7 @@ describe("managed service update handoff single-flight", () => {
       handoffId: "handoff-next",
     });
     expect(spawnMock).toHaveBeenCalledTimes(2);
-    const nextOwner = spawnMock.mock.results[1]?.value as ReturnType<typeof createReadyChild>;
+    const nextOwner = mockedChild(1);
     nextOwner.emit("exit", 0, null);
   });
 
@@ -345,7 +387,7 @@ describe("managed service update handoff single-flight", () => {
     if (started.status !== "started") {
       throw new Error("expected a new handoff owner");
     }
-    const child = spawnMock.mock.results[0]?.value as ReturnType<typeof createReadyChild>;
+    const child = mockedChild();
     expect("unref" in child.stdin).toBe(false);
     expect("unref" in child.stdout).toBe(false);
 
@@ -362,37 +404,18 @@ describe("managed service update handoff single-flight", () => {
     ["reuses its PID for another process", "reused"],
     ["no longer exposes its process start identity", "unknown"],
   ])("rejects a helper claim when its operating-system process %s", async (_label, failure) => {
-    vi.restoreAllMocks();
-    const { spawn } =
-      await vi.importActual<typeof import("node:child_process")>("node:child_process");
-    spawnMock.mockImplementation(spawn);
+    const { parent, start, claim, transfer, cancel } = await realHandoffFixture(
+      "openclaw-helper-process-identity-",
+    );
     const processIdentity = await import("../shared/pid-alive.js");
-    const root = await fs.realpath(tempRoots.make("openclaw-helper-process-identity-"));
-    const parent = spawn(testNodeExecPath, ["-e", "process.stdin.resume()"], {
-      stdio: ["pipe", "ignore", "ignore"],
-    });
     try {
-      const {
-        cancelManagedServiceUpdateHandoff,
-        claimManagedServiceUpdateHandoff,
-        startManagedServiceUpdateHandoff,
-        transferManagedServiceUpdateHandoff,
-      } = await import("./update-managed-service-handoff.js");
-      const started = await startManagedServiceUpdateHandoff({
-        root,
-        restartDrainTimeoutMs: 300_000,
-        parentPid: parent.pid,
-        execPath: testNodeExecPath,
-        argv1: process.argv[1],
-        env: { ...process.env, OPENCLAW_STATE_DIR: root },
-        meta: {},
-      });
+      const started = await start();
       if (started.status !== "started" || !started.pid) {
         throw new Error("expected real detached handoff ownership");
       }
       const identity = { kind: "managed-update-handoff" as const, ...started };
-      expect(claimManagedServiceUpdateHandoff(identity)).toBe(true);
-      await expect(transferManagedServiceUpdateHandoff(identity)).resolves.toBe(true);
+      expect(claim(identity)).toBe(true);
+      await expect(transfer(identity)).resolves.toBe(true);
       if (failure === "dead") {
         vi.spyOn(processIdentity, "isPidAlive").mockReturnValue(false);
       } else {
@@ -405,11 +428,9 @@ describe("managed service update handoff single-flight", () => {
           "getFileLockProcessStartTime",
         ).mockReturnValue(failure === "reused" ? helperStartIdentity + 1 : null);
       }
-      expect(claimManagedServiceUpdateHandoff(identity)).toBe(false);
+      expect(claim(identity)).toBe(false);
       vi.restoreAllMocks();
-      await expect(cancelManagedServiceUpdateHandoff(identity)).resolves.toBe(
-        "restored-in-process",
-      );
+      await expect(cancel(identity)).resolves.toBe("restored-in-process");
     } finally {
       vi.restoreAllMocks();
       parent.stdin?.end();
@@ -439,47 +460,30 @@ describe("managed service update handoff single-flight", () => {
       }),
     ).rejects.toThrow("process start identity is unavailable");
 
-    const child = spawnMock.mock.results[0]?.value as ReturnType<typeof createReadyChild>;
+    const child = mockedChild();
     expect(forceKillChildProcessTreeMock).toHaveBeenCalledExactlyOnceWith(child);
     expect(child.unref).not.toHaveBeenCalled();
     expect(claimManagedServiceUpdateHandoff(identity)).toBe(false);
   });
 
   it("reclaims only its exact dead detached helper before reopening the install root", async () => {
-    vi.restoreAllMocks();
-    const { spawn } =
-      await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const { root, parent, start, cancel } = await realHandoffFixture(
+      "openclaw-dead-handoff-owner-",
+    );
     const { DatabaseSync } = await import("node:sqlite");
     const processIdentity = await import("../shared/pid-alive.js");
     const { getFileLockProcessStartTime } = processIdentity;
-    spawnMock.mockImplementation(spawn);
-    const root = await fs.realpath(tempRoots.make("openclaw-dead-handoff-owner-"));
     const markerPath = path.join(root, "updater-ran");
     const updaterPath = path.join(root, "updater.cjs");
     await fs.writeFile(
       updaterPath,
       `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "ran")`,
     );
-    const parent = spawn(testNodeExecPath, ["-e", "process.stdin.resume()"], {
-      stdio: ["pipe", "ignore", "ignore"],
-    });
-    const { cancelManagedServiceUpdateHandoff, startManagedServiceUpdateHandoff } =
-      await import("./update-managed-service-handoff.js");
     let leaseDatabasePath: string | undefined;
     let deadOwner: string | undefined;
-    let replacement: Awaited<ReturnType<typeof startManagedServiceUpdateHandoff>> | undefined;
+    let replacement: Awaited<ReturnType<typeof start>> | undefined;
     try {
-      const start = () =>
-        startManagedServiceUpdateHandoff({
-          root,
-          restartDrainTimeoutMs: 300_000,
-          parentPid: parent.pid,
-          execPath: testNodeExecPath,
-          argv1: updaterPath,
-          env: { ...process.env, OPENCLAW_STATE_DIR: root },
-          meta: {},
-        });
-      const started = await start();
+      const started = await start(updaterPath);
       if (started.status !== "started" || !started.pid) {
         throw new Error("expected real detached handoff ownership");
       }
@@ -488,13 +492,8 @@ describe("managed service update handoff single-flight", () => {
       if (helperStartIdentity === null) {
         throw new Error("expected the detached helper to have a stable process identity");
       }
-      const helper = spawnMock.mock.results[0]?.value as import("node:child_process").ChildProcess;
-      const [, args] = spawnMock.mock.calls[0] as [string, string[]];
-      leaseDatabasePath = (
-        JSON.parse(await fs.readFile(readManagedHandoffArtifacts(args).paramsPath, "utf8")) as {
-          updateLeaseDatabasePath: string;
-        }
-      ).updateLeaseDatabasePath;
+      const helper = realChild();
+      leaseDatabasePath = (await readHelperParams()).updateLeaseDatabasePath;
       const readLease = () => {
         const db = new DatabaseSync(leaseDatabasePath!, { readOnly: true });
         try {
@@ -509,16 +508,15 @@ describe("managed service update handoff single-flight", () => {
       };
       const initialLease = readLease();
       expect(initialLease?.owner).toBe(started.handoffId);
-      expect(JSON.parse(initialLease?.payload_json ?? "null")).toEqual({
+      const originalPayload = {
         version: 2,
         executor: { pid: started.pid, startIdentity: String(helperStartIdentity) },
         helper: { pid: started.pid, startIdentity: String(helperStartIdentity) },
         action: { kind: "update" },
-      });
+      };
+      expect(JSON.parse(initialLease?.payload_json ?? "null")).toEqual(originalPayload);
 
-      const helperExited = new Promise<void>((resolve) => {
-        helper.once("exit", () => resolve());
-      });
+      const helperExited = once(helper, "exit");
       helper.kill("SIGKILL");
       await helperExited;
       expect(readLease()).toEqual(initialLease);
@@ -527,51 +525,41 @@ describe("managed service update handoff single-flight", () => {
       if (ownStartIdentity === null || !initialLease) {
         throw new Error("expected complete live-parent and dead-helper lease identities");
       }
-      const originalPayload = {
-        version: 2,
-        executor: { pid: started.pid, startIdentity: String(helperStartIdentity) },
-        helper: { pid: started.pid, startIdentity: String(helperStartIdentity) },
-        action: { kind: "update" },
-      };
       const rejectedOwners = [
-        {
-          label: "replacement owner",
-          owner: "replacement-owner",
-          payload: originalPayload,
-        },
-        {
-          label: "different live process",
-          owner: started.handoffId,
-          payload: {
+        ["replacement owner", "replacement-owner", originalPayload],
+        [
+          "different live process",
+          started.handoffId,
+          {
             ...originalPayload,
             executor: { pid: process.pid, startIdentity: String(ownStartIdentity) },
           },
-        },
-        {
-          label: "different recorded start identity",
-          owner: started.handoffId,
-          payload: {
+        ],
+        [
+          "different recorded start identity",
+          started.handoffId,
+          {
             ...originalPayload,
             executor: {
               ...originalPayload.executor,
               startIdentity: `${helperStartIdentity}-reused`,
             },
           },
-        },
-        {
-          label: "malformed process identity",
-          owner: started.handoffId,
-          payload: {
+        ],
+        [
+          "malformed process identity",
+          started.handoffId,
+          {
             ...originalPayload,
             executor: { ...originalPayload.executor, startIdentity: null },
           },
-        },
-        {
-          label: "noncanonical process identity",
-          owner: started.handoffId,
-          payload: { ...originalPayload, unexpected: true },
-        },
-      ];
+        ],
+        [
+          "noncanonical process identity",
+          started.handoffId,
+          { ...originalPayload, unexpected: true },
+        ],
+      ] as const;
       const writeLease = (owner: string, payload: unknown) => {
         if (!leaseDatabasePath) {
           throw new Error("expected the detached helper lease database path");
@@ -586,14 +574,12 @@ describe("managed service update handoff single-flight", () => {
         }
       };
       const identity = { kind: "managed-update-handoff" as const, ...started };
-      for (const rejected of rejectedOwners) {
-        writeLease(rejected.owner, rejected.payload);
-        await expect(cancelManagedServiceUpdateHandoff(identity), rejected.label).resolves.toBe(
-          false,
-        );
-        expect(readLease(), rejected.label).toEqual({
-          owner: rejected.owner,
-          payload_json: JSON.stringify(rejected.payload),
+      for (const [label, owner, payload] of rejectedOwners) {
+        writeLease(owner, payload);
+        await expect(cancel(identity), label).resolves.toBe(false);
+        expect(readLease(), label).toEqual({
+          owner,
+          payload_json: JSON.stringify(payload),
         });
       }
       writeLease(started.handoffId, originalPayload);
@@ -604,34 +590,29 @@ describe("managed service update handoff single-flight", () => {
         }
         return kill(pid, signal);
       });
-      await expect(cancelManagedServiceUpdateHandoff(identity)).resolves.toBe(false);
+      await expect(cancel(identity)).resolves.toBe(false);
       expect(readLease()).toEqual(initialLease);
       unknownDeath.mockRestore();
 
-      await expect(cancelManagedServiceUpdateHandoff(identity)).resolves.toBe(
-        "restored-in-process",
-      );
+      await expect(cancel(identity)).resolves.toBe("restored-in-process");
       expect(readLease()).toBeUndefined();
       await expect(fs.access(markerPath)).rejects.toThrow();
 
-      replacement = await start();
+      replacement = await start(updaterPath);
       if (replacement.status !== "started") {
         throw new Error("expected cancellation to reopen the install root");
       }
       expect(replacement.installRoot).toBe(root);
       expect(replacement.handoffId).not.toBe(started.handoffId);
-      await expect(
-        cancelManagedServiceUpdateHandoff({ kind: "managed-update-handoff", ...replacement }),
-      ).resolves.toBe("restored-in-process");
+      await expect(cancel({ kind: "managed-update-handoff", ...replacement })).resolves.toBe(
+        "restored-in-process",
+      );
       replacement = undefined;
       expect(readLease()).toBeUndefined();
       await expect(fs.access(markerPath)).rejects.toThrow();
     } finally {
       if (replacement?.status === "started") {
-        await cancelManagedServiceUpdateHandoff({
-          kind: "managed-update-handoff",
-          ...replacement,
-        });
+        await cancel({ kind: "managed-update-handoff", ...replacement });
       }
       if (leaseDatabasePath && deadOwner) {
         const db = new DatabaseSync(leaseDatabasePath);
@@ -646,44 +627,24 @@ describe("managed service update handoff single-flight", () => {
   });
 
   it("admits another update after a transferred no-op leaves the Gateway serving", async () => {
-    vi.restoreAllMocks();
-    const { spawn } =
-      await vi.importActual<typeof import("node:child_process")>("node:child_process");
-    spawnMock.mockImplementation(spawn);
-    const root = await fs.realpath(tempRoots.make("openclaw-handoff-noop-"));
+    const { root, parent, start, transfer } = await realHandoffFixture("openclaw-handoff-noop-");
     const updaterPath = path.join(root, "updater.cjs");
     await fs.writeFile(
       updaterPath,
       `process.stdout.write(JSON.stringify({root:${JSON.stringify(root)},status:"skipped",mode:"npm",reason:"already-current"}));`,
     );
-    const parent = spawn(testNodeExecPath, ["-e", "process.stdin.resume()"], {
-      stdio: ["pipe", "ignore", "ignore"],
-    });
-    const { startManagedServiceUpdateHandoff, transferManagedServiceUpdateHandoff } =
-      await import("./update-managed-service-handoff.js");
     try {
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const started = await startManagedServiceUpdateHandoff({
-          root,
-          restartDrainTimeoutMs: 300_000,
-          parentPid: parent.pid,
-          execPath: testNodeExecPath,
-          argv1: updaterPath,
-          env: { ...process.env, OPENCLAW_STATE_DIR: root },
-          meta: {},
-        });
+        const started = await start(updaterPath);
         expect(started.status).toBe("started");
         if (started.status !== "started") {
           throw new Error("completed no-op retained its owner");
         }
-        const child = spawnMock.mock.results.at(-1)
-          ?.value as import("node:child_process").ChildProcess;
+        const child = realChild(spawnMock.mock.results.length - 1);
         const exited = new Promise<number | null>((resolve) => {
           child.once("close", resolve);
         });
-        await expect(
-          transferManagedServiceUpdateHandoff({ kind: "managed-update-handoff", ...started }),
-        ).resolves.toBe(true);
+        await expect(transfer({ kind: "managed-update-handoff", ...started })).resolves.toBe(true);
         expect(await exited).toBe(0);
         expect(parent.exitCode).toBeNull();
         expect(parent.signalCode).toBeNull();
@@ -695,44 +656,21 @@ describe("managed service update handoff single-flight", () => {
   });
 
   it("waits for the exact helper to release its lease after an immediate control-pipe EPIPE", async () => {
-    vi.restoreAllMocks();
-    const { spawn } =
-      await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const { root, parent, start, cancel, park } = await realHandoffFixture(
+      "openclaw-handoff-control-epipe-",
+    );
     const { DatabaseSync } = await import("node:sqlite");
-    spawnMock.mockImplementation(spawn);
-    const root = await fs.realpath(tempRoots.make("openclaw-handoff-control-epipe-"));
-    const parent = spawn(testNodeExecPath, ["-e", "process.stdin.resume()"], {
-      stdio: ["pipe", "ignore", "ignore"],
-    });
-    const {
-      cancelManagedServiceUpdateHandoff,
-      requestManagedServiceUpdateHandoffPark,
-      startManagedServiceUpdateHandoff,
-    } = await import("./update-managed-service-handoff.js");
-    const started = await startManagedServiceUpdateHandoff({
-      root,
-      restartDrainTimeoutMs: 300_000,
-      parentPid: parent.pid,
-      execPath: testNodeExecPath,
-      argv1: process.argv[1],
-      env: { ...process.env, OPENCLAW_STATE_DIR: root },
-      meta: {},
-    });
+    const started = await start();
     if (started.status !== "started") {
       throw new Error("expected real detached helper ownership");
     }
     const identity = { kind: "managed-update-handoff" as const, ...started };
-    const helper = spawnMock.mock.results[0]?.value as import("node:child_process").ChildProcess;
+    const helper = realChild();
     const input = helper.stdin;
     if (!input) {
       throw new Error("expected the detached helper control pipe");
     }
-    const [, args] = spawnMock.mock.calls[0] as [string, string[]];
-    const { updateLeaseDatabasePath } = JSON.parse(
-      await fs.readFile(readManagedHandoffArtifacts(args).paramsPath, "utf8"),
-    ) as {
-      updateLeaseDatabasePath: string;
-    };
+    const { updateLeaseDatabasePath } = await readHelperParams();
     let controlDestroyed = false;
     const destroyed = vi
       .spyOn(input, "destroyed", "get")
@@ -751,10 +689,10 @@ describe("managed service update handoff single-flight", () => {
     }) as typeof input.write);
 
     try {
-      await expect(requestManagedServiceUpdateHandoffPark(identity)).resolves.toBe(false);
+      await expect(park(identity)).resolves.toBe(false);
       expect(helper.exitCode).toBeNull();
       let cancellationSettled = false;
-      const cancellation = cancelManagedServiceUpdateHandoff(identity).then((result) => {
+      const cancellation = cancel(identity).then((result) => {
         cancellationSettled = true;
         return result;
       });
@@ -834,61 +772,38 @@ describe("managed service update handoff single-flight", () => {
     ["wins a concurrent parent exit without running the updater", true, false, false, false],
     ["refuses recovery when another owner replaces the completed helper", false, true, true, false],
   ])("cancellation %s", async (_label, exitParent, replaceOwner, claimBeforeExit, disconnect) => {
-    vi.restoreAllMocks();
-    const { spawn } =
-      await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const {
+      root,
+      parent,
+      start: startWithPath,
+      cancel,
+      claim,
+    } = await realHandoffFixture("openclaw-cancel-owner-");
     const { DatabaseSync } = await import("node:sqlite");
     const { getFileLockProcessStartTime } = await import("../shared/pid-alive.js");
     const replacementStartIdentity = getFileLockProcessStartTime(process.pid);
     if (replacementStartIdentity === null) {
       throw new Error("expected the replacement owner to have a stable process identity");
     }
-    spawnMock.mockImplementation(spawn);
-    const root = await fs.realpath(tempRoots.make("openclaw-cancel-owner-"));
     const markerPath = path.join(root, "updater-ran");
     const updaterPath = path.join(root, "updater.cjs");
     await fs.writeFile(
       updaterPath,
       `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "ran")`,
     );
-    const parent = spawn(testNodeExecPath, ["-e", "process.stdin.resume()"], {
-      stdio: ["pipe", "ignore", "ignore"],
-    });
-    const {
-      cancelManagedServiceUpdateHandoff,
-      claimManagedServiceUpdateHandoff,
-      startManagedServiceUpdateHandoff,
-    } = await import("./update-managed-service-handoff.js");
-    const start = () =>
-      startManagedServiceUpdateHandoff({
-        root,
-        restartDrainTimeoutMs: 300_000,
-        parentPid: parent.pid,
-        execPath: testNodeExecPath,
-        argv1: updaterPath,
-        env: { ...process.env, OPENCLAW_STATE_DIR: root },
-        meta: {},
-      });
+    const start = () => startWithPath(updaterPath);
     const started = await start();
     if (started.status !== "started") {
       throw new Error("expected handoff ownership");
     }
     const identity = { kind: "managed-update-handoff" as const, ...started };
     if (claimBeforeExit) {
-      expect(claimManagedServiceUpdateHandoff(identity)).toBe(true);
-      expect(claimManagedServiceUpdateHandoff(identity)).toBe(true);
+      expect(claim(identity)).toBe(true);
+      expect(claim(identity)).toBe(true);
     }
-    await expect(
-      cancelManagedServiceUpdateHandoff({ ...identity, handoffId: "joined" }),
-    ).resolves.toBe(false);
-    const child = spawnMock.mock.results[0]?.value as import("node:child_process").ChildProcess;
-    const [, args] = spawnMock.mock.calls[0] as [string, string[]];
-    const helper = JSON.parse(
-      await fs.readFile(readManagedHandoffArtifacts(args).paramsPath, "utf8"),
-    ) as {
-      updateLeaseDatabasePath: string;
-      stateDatabasePath: string;
-    };
+    await expect(cancel({ ...identity, handoffId: "joined" })).resolves.toBe(false);
+    const child = realChild();
+    const helper = await readHelperParams();
     let joinedAfterExit: ReturnType<typeof start> | undefined;
     child.once("exit", () => {
       if (!exitParent) {
@@ -914,22 +829,20 @@ describe("managed service update handoff single-flight", () => {
         replacement.close();
       }
     });
-    let cancellation: ReturnType<typeof cancelManagedServiceUpdateHandoff>;
+    let cancellation: ReturnType<typeof cancel>;
     if (claimBeforeExit) {
-      const exited = new Promise<void>((resolve) => {
-        child.once("exit", () => resolve());
-      });
+      const exited = once(child, "exit");
       if (disconnect) {
         child.stdin?.end();
       } else {
         child.stdin?.write("cancel\n");
       }
       await exited;
-      expect(claimManagedServiceUpdateHandoff(identity)).toBe(false);
+      expect(claim(identity)).toBe(false);
       expect(joinedAfterExit).toBeDefined();
-      cancellation = cancelManagedServiceUpdateHandoff(identity);
+      cancellation = cancel(identity);
     } else {
-      cancellation = cancelManagedServiceUpdateHandoff(identity);
+      cancellation = cancel(identity);
       if (exitParent) {
         parent.stdin?.end();
       }
@@ -963,9 +876,9 @@ describe("managed service update handoff single-flight", () => {
       if (next.status !== "started") {
         throw new Error("expected replacement ownership");
       }
-      await expect(
-        cancelManagedServiceUpdateHandoff({ kind: "managed-update-handoff", ...next }),
-      ).resolves.toBe("restored-in-process");
+      await expect(cancel({ kind: "managed-update-handoff", ...next })).resolves.toBe(
+        "restored-in-process",
+      );
     }
     if (replaceOwner) {
       const replacement = new DatabaseSync(helper.updateLeaseDatabasePath);

@@ -33,9 +33,7 @@ afterEach(() => {
   vi.resetModules();
 });
 
-// Keep an independent fixture socket open so helper exit cannot masquerade as
-// updater cleanup, including when termination arrives during a pending write.
-// No operator service or installation is used.
+// An independent socket distinguishes helper exit from physical updater cleanup.
 it.runIf(process.platform === "linux").each(["SIGTERM", "success", "failed"] as const)(
   "requires physical helper settlement at the public replacement join (%s)",
   async (outcome) => {
@@ -46,26 +44,23 @@ it.runIf(process.platform === "linux").each(["SIGTERM", "success", "failed"] as 
     server.listen(socketPath);
     await once(server, "listening");
     const updaterPath = path.join(root, "updater.cjs");
+    const resultJson = JSON.stringify({
+      root,
+      status: outcome === "failed" ? "error" : "skipped",
+      reason: outcome === "failed" ? "candidate-validation-failed" : "already-current",
+      mode: "npm",
+    });
     await fs.writeFile(
       updaterPath,
-      [
-        'if (process.argv[2] !== "update") process.exit(0);',
-        'const socket = require("node:net").connect(' + JSON.stringify(socketPath) + ");",
-        'socket.once("connect", () => socket.write(String(process.pid)));',
-        'process.on("SIGTERM", () => socket.write("interrupted"));',
-        'socket.once("data", () => {',
-        "process.stdout.write(JSON.stringify(" +
-          JSON.stringify({
-            root,
-            status: outcome === "failed" ? "error" : "skipped",
-            reason: outcome === "failed" ? "candidate-validation-failed" : "already-current",
-            mode: "npm",
-          }) +
-          "));",
-        "process.exitCode = " + (outcome === "failed" ? 7 : 0) + ";",
-        "socket.end(); process.disconnect?.(); process.stdin.destroy();",
-        "});",
-      ].join(String.fromCharCode(10)),
+      `if (process.argv[2] !== "update") process.exit(0);
+const socket = require("node:net").connect(${JSON.stringify(socketPath)});
+socket.once("connect", () => socket.write(String(process.pid)));
+process.on("SIGTERM", () => socket.write("interrupted"));
+socket.once("data", () => {
+process.stdout.write(${JSON.stringify(resultJson)});
+process.exitCode = ${outcome === "failed" ? 7 : 0};
+socket.end(); process.disconnect?.(); process.stdin.destroy();
+});`,
     );
     const {
       startManagedServiceUpdateHandoff,
