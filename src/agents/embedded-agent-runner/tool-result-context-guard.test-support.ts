@@ -6,11 +6,7 @@ import { installToolResultContextGuard } from "./tool-result-context-guard.js";
 export const CONTEXT_LIMIT_TRUNCATION_NOTICE = "more characters truncated";
 
 export function makeUser(text: string): AgentMessage {
-  return castAgentMessage({
-    role: "user",
-    content: text,
-    timestamp: Date.now(),
-  });
+  return castAgentMessage({ role: "user", content: text, timestamp: Date.now() });
 }
 
 export function makeToolResult(id: string, text: string, toolName = "grep"): AgentMessage {
@@ -51,13 +47,9 @@ export function makeToolResultWithDetails(
   text: string,
   detailText: string,
 ): AgentMessage {
-  // details can be much larger than replay content; guards should drop them
-  // only when rewriting the visible tool result.
+  // Drop oversized details only when rewriting visible content.
   return castAgentMessage({
-    role: "toolResult",
-    toolCallId: id,
-    toolName: "read",
-    content: [{ type: "text", text }],
+    ...makeReadToolResult(id, text),
     details: {
       truncation: {
         truncated: true,
@@ -65,8 +57,6 @@ export function makeToolResultWithDetails(
         content: detailText,
       },
     },
-    isError: false,
-    timestamp: Date.now(),
   });
 }
 
@@ -111,14 +101,9 @@ export function expectOpenClawTruncation(text: string): void {
 }
 
 export function sumToolResultTextChars(messages: AgentMessage[]): number {
-  // Context-engine budget tests need deterministic text size accounting for
-  // toolResult blocks.
   return messages.reduce((sum, message) => {
-    if (message.role !== "toolResult") {
-      return sum;
-    }
     const content = (message as { content?: unknown }).content;
-    if (!Array.isArray(content)) {
+    if (message.role !== "toolResult" || !Array.isArray(content)) {
       return sum;
     }
     return (
@@ -127,10 +112,10 @@ export function sumToolResultTextChars(messages: AgentMessage[]): number {
         if (
           block &&
           typeof block === "object" &&
-          (block as { type?: unknown }).type === "text" &&
-          typeof (block as { text?: unknown }).text === "string"
+          block.type === "text" &&
+          typeof block.text === "string"
         ) {
-          return blockSum + (block as { text: string }).text.length;
+          return blockSum + block.text.length;
         }
         return blockSum;
       }, 0)

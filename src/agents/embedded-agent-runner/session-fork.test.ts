@@ -49,6 +49,37 @@ const model: Model = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };
 const identity = { agentId: "main", sessionId: "fork-test", runId: "fork-parent" };
+const sseOptions = { apiKey: "synthetic-key", transport: "sse" as const };
+
+function apiModel(api: "openai-responses" | "anthropic-messages"): Model {
+  return {
+    ...model,
+    api,
+    provider: api === "anthropic-messages" ? "anthropic" : "openai",
+    baseUrl: api === "anthropic-messages" ? "https://api.anthropic.com" : model.baseUrl,
+  };
+}
+
+async function complete(
+  parent: StreamFn,
+  requestModel = model,
+  requestContext = context,
+  options: Parameters<StreamFn>[2] = {},
+) {
+  return (await parent(requestModel, requestContext, options)).result();
+}
+
+function publishedResult(toolCallId: string, toolName: string, text: string, details?: unknown) {
+  recordEmbeddedSessionForkMessage(identity.sessionId, identity.runId, {
+    role: "toolResult",
+    toolCallId,
+    toolName,
+    content: [{ type: "text", text }],
+    isError: false,
+    timestamp: 3,
+    details,
+  });
+}
 
 function transport(payloads: Record<string, unknown>[], tools: unknown[]): StreamFn {
   return async (requestModel, requestContext, options) => {
@@ -86,13 +117,13 @@ function transport(payloads: Record<string, unknown>[], tools: unknown[]): Strea
   };
 }
 
-async function fork(requestModel = model) {
+async function fork(requestModel = model, assertCurrent = () => {}) {
   return runEmbeddedSessionFork({
     ...identity,
     model: requestModel,
     apiKey: "synthetic-key",
     question: "Review only",
-    assertCurrent: () => {},
+    assertCurrent,
   });
 }
 
@@ -208,7 +239,7 @@ describe("prepared session fork provider boundary", () => {
   it("keeps review and verification available while the next parent request is being prepared", async () => {
     const payloads: Record<string, unknown>[] = [];
     const parent = wrapStreamFnWithSessionFork(transport(payloads, []), identity);
-    await (await parent(model, context, {})).result();
+    await complete(parent);
     const review = fork();
     const preparing = createDeferredCore();
     const releasePreparation = createDeferredCore();
@@ -240,7 +271,7 @@ describe("prepared session fork provider boundary", () => {
   it("does not restore a reset parent when pending request preparation finishes", async () => {
     const payloads: Record<string, unknown>[] = [];
     const parent = wrapStreamFnWithSessionFork(transport(payloads, []), identity);
-    await (await parent(model, context, {})).result();
+    await complete(parent);
     const preparing = createDeferredCore();
     const releasePreparation = createDeferredCore();
     const nextParent = parent(model, context, {
@@ -273,7 +304,7 @@ describe("prepared session fork provider boundary", () => {
       references.push(new WeakRef(caller), new WeakRef(parentContext), new WeakRef(onPayload));
       const parent = wrapStreamFnWithSessionFork(transport(payloads, []), identity);
       await callers.run(caller, async () => {
-        await (await parent(model, parentContext, { onPayload })).result();
+        await complete(parent, model, parentContext, { onPayload });
       });
     }
 
@@ -358,6 +389,10 @@ describe("prepared session fork provider boundary", () => {
     );
     return {
       physicalFetch,
+      request(index = -1) {
+        const [url, init] = physicalFetch.mock.calls.at(index)!;
+        return new Request(url, init);
+      },
       parent: wrapStreamFnWithSessionFork(
         api === "anthropic-messages"
           ? createAnthropicMessagesTransportStreamFn()
@@ -373,9 +408,7 @@ describe("prepared session fork provider boundary", () => {
     "replays wire history without traversing transport-irrelevant %s tool metadata",
     async (kind) => {
       const { parent, physicalFetch } = guardedTransport();
-      const completed = await (
-        await parent(model, context, { apiKey: "synthetic-key", transport: "sse" })
-      ).result();
+      const completed = await complete(parent, model, context, sseOptions);
       const cyclic: { self?: unknown } = {};
       cyclic.self = cyclic;
       const parentContext: Context = {
@@ -411,13 +444,10 @@ describe("prepared session fork provider boundary", () => {
       const runningFork = expect(fork()).resolves.toBe("Answer");
       try {
         await forkSent.promise;
-        const assistant = await (
-          await parent(model, parentContext, {
-            apiKey: "synthetic-key",
-            transport: "sse",
-            onPayload,
-          })
-        ).result();
+        const assistant = await complete(parent, model, parentContext, {
+          ...sseOptions,
+          onPayload,
+        });
         expect(assistant.stopReason).toBe("stop");
         expect(onPayload).toHaveBeenCalledOnce();
         expect(physicalFetch).toHaveBeenCalledTimes(3);
@@ -432,13 +462,8 @@ describe("prepared session fork provider boundary", () => {
   it.each(["openai-responses", "anthropic-messages"] as const)(
     "replays frozen %s history and keeps later publications isolated",
     async (api) => {
-      const { parent, physicalFetch } = guardedTransport(undefined, api);
-      const requestModel = {
-        ...model,
-        api,
-        provider: api === "anthropic-messages" ? "anthropic" : "openai",
-        baseUrl: api === "anthropic-messages" ? "https://api.anthropic.com" : model.baseUrl,
-      };
+      const { parent, request } = guardedTransport(undefined, api);
+      const requestModel = apiModel(api);
       const parentContext: Context = {
         systemPrompt: "Frozen instructions 🦞",
         messages: [
@@ -453,9 +478,7 @@ describe("prepared session fork provider boundary", () => {
       Object.freeze(message);
       Object.freeze(parentContext.messages);
       Object.freeze(parentContext);
-      const assistant = await (
-        await parent(requestModel, parentContext, { apiKey: "synthetic-key", transport: "sse" })
-      ).result();
+      const assistant = await complete(parent, requestModel, parentContext, sseOptions);
       const publication = {
         ...assistant,
         content: [{ type: "text" as const, text: "Published answer" }],
@@ -465,8 +488,7 @@ describe("prepared session fork provider boundary", () => {
 
       for (let index = 0; index < 2; index++) {
         await expect(fork(requestModel)).resolves.toBe("Answer");
-        const [url, init] = physicalFetch.mock.calls[index + 1]!;
-        const body = await new Request(url, init).text();
+        const body = await request(index + 1).text();
         expect(body).toContain("Frozen question");
         expect(body).toContain("Published answer");
         expect(body).not.toContain("Changed after publication");
@@ -494,17 +516,9 @@ describe("prepared session fork provider boundary", () => {
       }
       return replay(requestModel, requestContext, options);
     }, identity);
-    await (await parent(model, context, {})).result();
+    await complete(parent);
     const bytes = new Uint8Array([7]);
-    recordEmbeddedSessionForkMessage(identity.sessionId, identity.runId, {
-      role: "toolResult",
-      toolCallId: "lookup",
-      toolName: "lookup",
-      content: [{ type: "text", text: "Result" }],
-      details: { bytes, blob: new Blob(["Opaque result"]) },
-      isError: false,
-      timestamp: 3,
-    });
+    publishedResult("lookup", "lookup", "Result", { bytes, blob: new Blob(["Opaque result"]) });
     bytes[0] = 42;
     await expect(fork()).resolves.toBe("Answer");
     await expect(fork()).resolves.toBe("Answer");
@@ -520,16 +534,9 @@ describe("prepared session fork provider boundary", () => {
     ["anthropic-messages", false],
     ["anthropic-messages", true],
   ] as const)("represents an in-flight %s tool call as pending (async=%s)", async (api, async) => {
-    const { parent, physicalFetch } = guardedTransport(undefined, api);
-    const requestModel = {
-      ...model,
-      api,
-      provider: api === "anthropic-messages" ? "anthropic" : "openai",
-      baseUrl: api === "anthropic-messages" ? "https://api.anthropic.com" : model.baseUrl,
-    };
-    const assistant = await (
-      await parent(requestModel, context, { apiKey: "synthetic-key", transport: "sse" })
-    ).result();
+    const { parent, request } = guardedTransport(undefined, api);
+    const requestModel = apiModel(api);
+    const assistant = await complete(parent, requestModel, context, sseOptions);
     recordEmbeddedSessionForkMessage(identity.sessionId, identity.runId, {
       ...assistant,
       stopReason: "toolUse",
@@ -543,34 +550,17 @@ describe("prepared session fork provider boundary", () => {
         },
       ],
     });
-    const runFork = () =>
-      runEmbeddedSessionFork({
-        ...identity,
-        model: requestModel,
-        apiKey: "synthetic-key",
-        question: "Review only",
-        assertCurrent: () => {},
-      });
-    await expect(runFork()).resolves.toBe("Answer");
-    const pendingCall = physicalFetch.mock.calls[1]!;
-    const pendingBody = await new Request(pendingCall[0], pendingCall[1]).text();
+    await expect(fork(requestModel)).resolves.toBe("Answer");
+    const pendingBody = await request(1).text();
     expect(pendingBody).toContain("pending_call");
     expect(pendingBody).toContain("still running");
     expect(pendingBody).toContain("result is not available yet");
     expect(pendingBody).not.toContain("aborted");
     expect(pendingBody).not.toContain('"is_error":true');
 
-    recordEmbeddedSessionForkMessage(identity.sessionId, identity.runId, {
-      role: "toolResult",
-      toolCallId: "pending_call",
-      toolName: "exec",
-      content: [{ type: "text", text: "3" }],
-      isError: false,
-      timestamp: 3,
-    });
-    await expect(runFork()).resolves.toBe("Answer");
-    const completedCall = physicalFetch.mock.calls[2]!;
-    const completedBody = await new Request(completedCall[0], completedCall[1]).text();
+    publishedResult("pending_call", "exec", "3");
+    await expect(fork(requestModel)).resolves.toBe("Answer");
+    const completedBody = await request(2).text();
     expect(completedBody).not.toContain("still running");
     expect(completedBody).not.toContain("aborted");
     expect(completedBody).toContain(
@@ -586,7 +576,7 @@ describe("prepared session fork provider boundary", () => {
   ] as const)(
     "keeps late %s/%s tool results paired with the captured prefix",
     async (api, provider, sourceId, wireId) => {
-      const { parent, physicalFetch } = guardedTransport(undefined, api);
+      const { parent, request } = guardedTransport(undefined, api);
       const requestModel = {
         ...model,
         api,
@@ -596,48 +586,39 @@ describe("prepared session fork provider boundary", () => {
         ...context,
         tools: [{ name: "lookup", description: "Lookup", parameters: { type: "object" } }],
       };
-      const completed = await (
-        await parent(requestModel, replayContext, { apiKey: "synthetic-key" })
-      ).result();
-      await (
-        await parent(
-          requestModel,
-          {
-            ...replayContext,
-            messages: [
-              ...replayContext.messages,
-              {
-                ...completed,
-                ...(api !== "openai-responses"
-                  ? { provider: "prior-provider", model: "prior-model" }
-                  : {}),
-                content: [
-                  { type: "text", text: "Starting lookup" },
-                  {
-                    type: "toolCall",
-                    id: sourceId,
-                    name: "lookup",
-                    arguments: {},
-                    async: true,
-                  },
-                ],
-              },
-            ],
-          },
-          { apiKey: "synthetic-key" },
-        )
-      ).result();
-      recordEmbeddedSessionForkMessage(identity.sessionId, identity.runId, {
-        role: "toolResult",
-        toolCallId: sourceId,
-        toolName: "lookup",
-        content: [{ type: "text", text: "LATE_RESULT_1119" }],
-        isError: false,
-        timestamp: 3,
+      const completed = await complete(parent, requestModel, replayContext, {
+        apiKey: "synthetic-key",
       });
+      await complete(
+        parent,
+        requestModel,
+        {
+          ...replayContext,
+          messages: [
+            ...replayContext.messages,
+            {
+              ...completed,
+              ...(api !== "openai-responses"
+                ? { provider: "prior-provider", model: "prior-model" }
+                : {}),
+              content: [
+                { type: "text", text: "Starting lookup" },
+                {
+                  type: "toolCall",
+                  id: sourceId,
+                  name: "lookup",
+                  arguments: {},
+                  async: true,
+                },
+              ],
+            },
+          ],
+        },
+        { apiKey: "synthetic-key" },
+      );
+      publishedResult(sourceId, "lookup", "LATE_RESULT_1119");
       await expect(fork(requestModel)).resolves.toBe("Answer");
-      const call = physicalFetch.mock.calls.at(-1)!;
-      const body = await new Request(call[0], call[1]).text();
+      const body = await request().text();
       expect(body).toContain("LATE_RESULT_1119");
       const replay = JSON.parse(body);
       const results =
@@ -666,20 +647,14 @@ describe("prepared session fork provider boundary", () => {
         revoked = true;
       }
     });
-    await (await parent(model, context, { apiKey: "synthetic-key", transport: "sse" })).result();
+    await complete(parent, model, context, sseOptions);
     physicalFetch.mockClear();
     withdrawDuringDns = true;
     await expect(
-      runEmbeddedSessionFork({
-        ...identity,
-        model,
-        apiKey: "synthetic-key",
-        question: "Review only",
-        assertCurrent: () => {
-          if (revoked) {
-            throw new Error("Session access withdrawn");
-          }
-        },
+      fork(model, () => {
+        if (revoked) {
+          throw new Error("Session access withdrawn");
+        }
       }),
     ).rejects.toThrow("Session access withdrawn");
     expect(physicalFetch).not.toHaveBeenCalled();
@@ -769,9 +744,7 @@ describe("prepared session fork provider boundary", () => {
         tls: { ca: "parent-ca", insecureSkipVerify: false },
       },
     });
-    await (
-      await parent(requestModel, context, { apiKey: "synthetic-key", transport: "sse" })
-    ).result();
+    await complete(parent, requestModel, context, sseOptions);
     expect(proxy).toHaveBeenCalled();
     proxy.mockClear();
     physicalFetch.mockClear();
@@ -782,15 +755,7 @@ describe("prepared session fork provider boundary", () => {
         tls: { ca: "synthetic-ca", insecureSkipVerify: false },
       },
     });
-    await expect(
-      runEmbeddedSessionFork({
-        ...identity,
-        model: currentModel,
-        apiKey: "synthetic-key",
-        question: "Review only",
-        assertCurrent: () => {},
-      }),
-    ).resolves.toBe("Answer");
+    await expect(fork(currentModel)).resolves.toBe("Answer");
     expect(proxy).toHaveBeenCalledWith(
       expect.objectContaining({
         uri: "http://proxy.example:8443",
@@ -807,13 +772,8 @@ describe("prepared session fork provider boundary", () => {
   });
 
   it("denies Anthropic hosted search while preserving the real request prefix", async () => {
-    const { parent, physicalFetch } = guardedTransport(undefined, "anthropic-messages");
-    const requestModel = {
-      ...model,
-      api: "anthropic-messages" as const,
-      provider: "anthropic",
-      baseUrl: "https://api.anthropic.com",
-    };
+    const { parent, request } = guardedTransport(undefined, "anthropic-messages");
+    const requestModel = apiModel("anthropic-messages");
     const hostedTool = { type: "web_search_20250305", name: "web_search" };
     const options = {
       apiKey: "synthetic-key",
@@ -824,28 +784,16 @@ describe("prepared session fork provider boundary", () => {
         return { ...payload, tools: [hostedTool] };
       },
     };
-    expect((await (await parent(requestModel, context, options)).result()).stopReason).toBe("stop");
+    expect((await complete(parent, requestModel, context, options)).stopReason).toBe("stop");
     const readPayload = async (index: number) => {
-      const call = physicalFetch.mock.calls[index];
-      if (!call) {
-        throw new Error("Missing physical request");
-      }
-      const payload: unknown = await new Request(call[0], call[1]).json();
+      const payload: unknown = await request(index).json();
       if (!isRecord(payload)) {
         throw new Error("Expected provider request");
       }
       return payload;
     };
     const original = await readPayload(0);
-    await expect(
-      runEmbeddedSessionFork({
-        ...identity,
-        model: requestModel,
-        apiKey: "synthetic-key",
-        question: "Review only",
-        assertCurrent: () => {},
-      }),
-    ).resolves.toBe("Answer");
+    await expect(fork(requestModel)).resolves.toBe("Answer");
     const replay = await readPayload(1);
     if (!Array.isArray(original.messages) || !Array.isArray(replay.messages)) {
       throw new Error("Expected Anthropic messages");
@@ -858,12 +806,11 @@ describe("prepared session fork provider boundary", () => {
   });
 
   it("retains the full parent prefix when HTTP continuation sends only a suffix", async () => {
-    const { parent, physicalFetch } = guardedTransport();
+    const { parent, request } = guardedTransport();
     const requestModel: Model = { ...model, compat: { supportsResponsesContinuation: true } };
     const options = {
-      apiKey: "synthetic-key",
+      ...sseOptions,
       sessionId: identity.sessionId,
-      transport: "sse" as const,
       onPayload: (payload: unknown) => {
         if (!isRecord(payload)) {
           throw new Error("Expected request");
@@ -871,28 +818,25 @@ describe("prepared session fork provider boundary", () => {
         return { ...payload, store: true };
       },
     };
-    const completed = await (await parent(requestModel, context, options)).result();
-    await (
-      await parent(
-        requestModel,
-        {
-          ...context,
-          messages: [
-            ...context.messages,
-            completed,
-            { role: "user", content: "Continue parent", timestamp: 3 },
-          ],
-        },
-        options,
-      )
-    ).result();
-    const second = physicalFetch.mock.calls[1]!;
-    const continuation = await new Request(second[0], second[1]).json();
+    const completed = await complete(parent, requestModel, context, options);
+    await complete(
+      parent,
+      requestModel,
+      {
+        ...context,
+        messages: [
+          ...context.messages,
+          completed,
+          { role: "user", content: "Continue parent", timestamp: 3 },
+        ],
+      },
+      options,
+    );
+    const continuation = await request(1).json();
     expect(continuation.previous_response_id).toBe("resp_fork");
     expect(JSON.stringify(continuation.input)).not.toContain("Parent question");
     await expect(fork(requestModel)).resolves.toBe("Answer");
-    const last = physicalFetch.mock.calls.at(-1)!;
-    const replay = await new Request(last[0], last[1]).json();
+    const replay = await request().json();
     expect(replay.previous_response_id).toBeUndefined();
     expect(JSON.stringify(replay.input)).toContain("Parent question");
     expect(JSON.stringify(replay.input)).toContain("Continue parent");
@@ -913,7 +857,7 @@ describe("prepared session fork provider boundary", () => {
   it("does not restore cleared context when an old publication arrives", async () => {
     const payloads: Record<string, unknown>[] = [];
     const parent = wrapStreamFnWithSessionFork(transport(payloads, []), identity);
-    const message = await (await parent(model, context, {})).result();
+    const message = await complete(parent);
     cleanupSessionResources(identity.sessionId);
     recordEmbeddedSessionForkMessage(identity.sessionId, identity.runId, message);
     await expect(fork()).rejects.toThrow("requires a parent turn");
@@ -923,7 +867,7 @@ describe("prepared session fork provider boundary", () => {
   it("retires optional replay if a published message cannot be retained", async () => {
     const payloads: Record<string, unknown>[] = [];
     const parent = wrapStreamFnWithSessionFork(transport(payloads, []), identity);
-    await (await parent(model, context, {})).result();
+    await complete(parent);
     expect(() =>
       recordEmbeddedSessionForkMessage(identity.sessionId, identity.runId, {
         role: "toolResult",
@@ -972,13 +916,12 @@ describe("prepared session fork provider boundary", () => {
         tools: [...payload.tools, { type: "web_search" }],
       };
     });
-    await (
-      await parent(
-        model,
-        { ...context, tools, messages: [{ role: "user", content: parentText, timestamp: 1 }] },
-        { ...codeModeOptions, apiKey: "synthetic-key", onPayload },
-      )
-    ).result();
+    await complete(
+      parent,
+      model,
+      { ...context, tools, messages: [{ role: "user", content: parentText, timestamp: 1 }] },
+      { ...codeModeOptions, apiKey: "synthetic-key", onPayload },
+    );
     expect(encodings).toBe(1);
     metadata.acknowledged = "changed after parent send";
     await expect(fork()).resolves.toBe("Answer");

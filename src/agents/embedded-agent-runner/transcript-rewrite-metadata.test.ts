@@ -3,6 +3,21 @@ import { expect, it, vi } from "vitest";
 import { SessionManager } from "../sessions/session-manager.js";
 import { rewriteTranscriptEntriesInSessionManager } from "./transcript-rewrite.js";
 
+function rewrite(manager: SessionManager, entryId: string) {
+  return rewriteTranscriptEntriesInSessionManager({
+    sessionManager: manager,
+    replacements: [{ entryId, message: { role: "user", content: "replacement", timestamp: 1 } }],
+  });
+}
+
+function userContents(manager: SessionManager) {
+  return manager
+    .getBranch()
+    .map((entry) =>
+      entry.type === "message" && entry.message.role === "user" ? entry.message.content : null,
+    );
+}
+
 it.each([false, true])(
   "services event-loop work before publication and preserves intervening writes (%s)",
   async (interveningWrite) => {
@@ -15,48 +30,27 @@ it.each([false, true])(
     const preparation = vi
       .spyOn(manager, "prepareTranscriptRewriteAsync")
       .mockImplementation(async () => {
-        const rewrite = await prepare();
+        const prepared = await prepare();
         void nextTurn().then(() => {
           observed = manager.getBranch();
           if (interveningWrite) {
             manager.appendMessage({ role: "user", content: "newer input", timestamp: 3 });
           }
         });
-        return rewrite;
+        return prepared;
       });
     let elapsed = 0;
     const clock = vi.spyOn(performance, "now").mockImplementation(() => (elapsed += 5));
     try {
-      const result = rewriteTranscriptEntriesInSessionManager({
-        sessionManager: manager,
-        replacements: [
-          { entryId: first, message: { role: "user", content: "replacement", timestamp: 1 } },
-        ],
-      });
+      const result = rewrite(manager, first);
       if (interveningWrite) {
         await expect(result).rejects.toThrow(
           "Session transcript changed before rewrite publication",
         );
-        expect(
-          manager
-            .getBranch()
-            .map((entry) =>
-              entry.type === "message" && entry.message.role === "user"
-                ? entry.message.content
-                : null,
-            ),
-        ).toEqual(["original", "tail", "newer input"]);
+        expect(userContents(manager)).toEqual(["original", "tail", "newer input"]);
       } else {
         await expect(result).resolves.toMatchObject({ changed: true, rewrittenEntries: 1 });
-        expect(
-          manager
-            .getBranch()
-            .map((entry) =>
-              entry.type === "message" && entry.message.role === "user"
-                ? entry.message.content
-                : null,
-            ),
-        ).toEqual(["replacement", "tail"]);
+        expect(userContents(manager)).toEqual(["replacement", "tail"]);
       }
       expect(observed).toEqual(original);
     } finally {
@@ -75,14 +69,7 @@ it("preserves labels targeting asynchronously replayed model and thinking entrie
   const thinkingEntryId = await manager.appendThinkingLevelChange("high");
   manager.appendLabelChange(thinkingEntryId, "thinking selection");
 
-  const rewritten = await rewriteTranscriptEntriesInSessionManager({
-    sessionManager: manager,
-    replacements: [
-      { entryId: first, message: { role: "user", content: "replacement", timestamp: 1 } },
-    ],
-  });
-
-  expect(rewritten.changed).toBe(true);
+  expect((await rewrite(manager, first)).changed).toBe(true);
   const branch = manager.getBranch();
   expect(branch.map((entry) => entry.type)).toEqual([
     "message",
