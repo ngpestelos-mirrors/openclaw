@@ -9,7 +9,7 @@ function embeddingRegistry() {
   const { config, registry } = createPluginRegistryFixture();
   return {
     registry: registry.registry,
-    register(id: string, providerId: string, declared = true) {
+    register: (id: string, providerId: string, declared = true) => {
       registerVirtualTestPlugin({
         registry,
         config,

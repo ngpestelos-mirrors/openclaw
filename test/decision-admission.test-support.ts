@@ -31,7 +31,7 @@ export async function withAdmissionFixture(
   try {
     fs.mkdirSync(bundledPluginsDir);
     await withServer(
-      async (request, response) => {
+      (request, response) => {
         const incoming = {
           url: request.url,
           method: request.method,
@@ -39,8 +39,12 @@ export async function withAdmissionFixture(
           body: undefined as unknown,
         };
         received.push(incoming);
-        incoming.body = await json(request);
-        respondJson(response, responseBody);
+        void json(request)
+          .then((body) => {
+            incoming.body = body;
+            respondJson(response, responseBody);
+          })
+          .catch((error: Error) => response.destroy(error));
       },
       (baseUrl) =>
         withEnvAsync(

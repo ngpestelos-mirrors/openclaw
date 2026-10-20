@@ -366,7 +366,7 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
   );
 
   it("omits invalid sampling, VAD and thinking options before connecting", async () => {
-    await createGoogleLiveBridge({
+    await createBridge({
       providerConfig: {
         temperature: 0,
         prefixPaddingMs: -1,
@@ -374,7 +374,7 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
         thinkingBudget: 24_576.5,
       },
     }).connect();
-    const config = lastConnectParams().config;
+    const config = connection().config;
     expect(config).not.toHaveProperty("temperature");
     expect(config).not.toHaveProperty("realtimeInputConfig");
     expect(config).not.toHaveProperty("thinkingConfig");
@@ -1197,7 +1197,7 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
   );
 
   it("preserves valid Google Live tool results and nested serialization keys", async () => {
-    const bridge = createGoogleLiveBridge({
+    const bridge = createBridge({
       onToolCall: vi.fn(),
     });
     const objectSerialization = vi.fn((key: string) => ({ key }));

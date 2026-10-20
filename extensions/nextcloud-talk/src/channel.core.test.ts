@@ -16,8 +16,8 @@ function safeParseNextcloudTalkConfig(value: unknown) {
 describe("nextcloud talk channel core", () => {
   it.each([
     ["omitted media allowlist", {}, true],
-    ["explicit sender", { mediaAllowFrom: ["users/alice"] }],
-    ["wildcard", { mediaAllowFrom: ["*"] }],
+    ["explicit sender", { mediaAllowFrom: ["users/alice"] }, false],
+    ["wildcard", { mediaAllowFrom: ["*"] }, false],
     [
       "named account with size override",
       {
@@ -25,6 +25,7 @@ describe("nextcloud talk channel core", () => {
         mediaMaxMb: 20,
         accounts: { work: { mediaAllowFrom: ["*"], mediaMaxMb: 5 } },
       },
+      false,
     ],
   ] as const)("accepts representative inbound media config: %s", (_label, input, expectOmitted) => {
     const result = safeParseNextcloudTalkConfig(input);

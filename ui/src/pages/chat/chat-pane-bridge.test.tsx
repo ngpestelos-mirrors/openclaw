@@ -62,7 +62,9 @@ const composerSelector = ".agent-chat__composer-combobox textarea";
 function stubLifecycle() {
   vi.spyOn(ChatPaneRuntime.prototype, "start").mockImplementation(() => {});
   vi.spyOn(ChatPaneRuntime.prototype, "dispose").mockImplementation(() => {});
-  onTestFinished(() => vi.restoreAllMocks());
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+  });
 }
 
 it("exposes the current navigation face through the real pane host without a gateway read", async () => {

@@ -227,6 +227,41 @@ export function mockSkillVerification(response: ClawHubSkillVerificationResponse
   fetchClawHubSkillVerificationMock.mockResolvedValueOnce(response);
 }
 
+export const unverifiedWeatherVerification: ClawHubSkillVerificationResponse = {
+  schema: "clawhub.skill.verify.v1",
+  ok: true,
+  decision: "pass",
+  reasons: [],
+  skill: null,
+  publisher: null,
+  version: null,
+  card: null,
+  artifact: null,
+  security: null,
+  signature: null,
+  provenance: {
+    source: "unavailable",
+    url: "https://github.com/openclaw/skills/tree/unverified/weather",
+  },
+};
+
+export const missingWeatherVersionVerification: ClawHubSkillVerificationResponse = {
+  ...unverifiedWeatherVerification,
+  ok: false,
+  decision: "fail",
+  reasons: ["version.not_found"],
+  slug: "weather",
+  displayName: "Weather",
+  pageUrl: "https://clawhub.ai/demo-owner/skills/weather",
+  publisherHandle: "demo-owner",
+  publisherDisplayName: "Demo Owner",
+  createdAt: 123,
+  skill: { slug: "weather", displayName: "Weather" },
+  publisher: { handle: "demo-owner", displayName: "Demo Owner" },
+  card: { available: true },
+  provenance: { source: "unavailable" },
+};
+
 export function mockInstalledSkillFile(content: string) {
   installPackageDirMock.mockImplementationOnce(async (params: { targetDir: string }) => {
     await fs.mkdir(params.targetDir, { recursive: true });

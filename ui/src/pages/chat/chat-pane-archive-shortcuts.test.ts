@@ -136,7 +136,9 @@ it.each([
   if (guard === "modal") {
     const modal = document.createElement("div");
     (document.openClawModalLayers ??= new Set()).add(modal);
-    onTestFinished(() => document.openClawModalLayers?.delete(modal));
+    onTestFinished(() => {
+      document.openClawModalLayers?.delete(modal);
+    });
   }
   if (guard === "presentation") {
     pane.presented = false;

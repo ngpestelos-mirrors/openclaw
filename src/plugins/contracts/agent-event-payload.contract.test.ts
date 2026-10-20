@@ -28,7 +28,7 @@ function subscribe(options: Omit<Subscription, "id" | "handle">) {
   });
   return {
     handle,
-    send(data: Record<string, unknown>, sessionKey?: string) {
+    send: (data: Record<string, unknown>, sessionKey?: string) => {
       const event = { runId: "run-payload", seq: 1, ts: 0, stream: "tool", sessionKey, data };
       dispatchPluginAgentEventSubscriptions({
         registry: registry.registry,
@@ -118,8 +118,8 @@ describe("agent event subscription payloads", () => {
           : { ...primitives, ...full(), result: { text: "getter output" } };
       expect(delivered).toEqual({ ...event, data: expectedData });
       expect(payloadReads).toBe(payload === "metadata" ? 0 : 1);
-      expect(delivered).not.toBe(event);
-      expect(delivered.data).not.toBe(data);
+      expect(delivered === event).toBe(false);
+      expect(delivered.data === data).toBe(false);
       delivered.data.phase = "changed";
       expect(data.phase).toBe("result");
       if (payload !== "metadata") {

@@ -210,7 +210,11 @@ describe("chat pane catalog", () => {
     const read = createDeferred<SessionsCatalogReadResult>();
     const request = vi
       .fn()
-      .mockResolvedValueOnce(catalogList(key, [{ ...catalogSession }], { capabilities: {} }))
+      .mockResolvedValueOnce(
+        catalogList(key, [{ ...catalogSession }], {
+          capabilities: { continueSession: false, archive: false },
+        }),
+      )
       .mockImplementationOnce(() => read.promise);
     const { pane, state } = createCatalogPane(request);
     state.sessionKey = pane.sessionKey;

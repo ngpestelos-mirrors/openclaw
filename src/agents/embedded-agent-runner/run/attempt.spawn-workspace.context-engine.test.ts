@@ -12,6 +12,7 @@ import type { OpenClawConfig } from "../../../config/types.js";
 import { createHookRunnerWithRegistry } from "../../../plugins/hooks.test-fixtures.js";
 import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.js";
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
+import type { WorkspaceBootstrapFile } from "../../workspace.js";
 import { sumToolResultTextChars } from "../tool-result-context-guard.test-support.js";
 import {
   completedStream,
@@ -439,7 +440,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     async (mode) => {
       const { seen, sessionPrompt } = capturePrompt();
       const workspaceDir = "/tmp/openclaw-hook-workspace";
-      const preload = {
+      const preload: WorkspaceBootstrapFile = {
         name: "BOOTSTRAP.md",
         path: `${workspaceDir}/BOOTSTRAP.md`,
         content: "Ask who I am before continuing.",
@@ -1019,4 +1020,3 @@ describe("runEmbeddedAttempt tool-result guard budget wiring", () => {
     expect(JSON.stringify(afterTurnMessages)).not.toContain("truncated");
   });
 });
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

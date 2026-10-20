@@ -703,7 +703,7 @@ async function startProofModelServer(options?: {
   });
   return {
     bodies: () => requestBodies,
-    countRequestsContaining: (marker) =>
+    countRequestsContaining: (marker: string) =>
       requestBodies.filter((entry) => entry.includes(marker)).length,
     completionResponseCount: () => completionResponses,
     requestCount: () => requestBodies.length,

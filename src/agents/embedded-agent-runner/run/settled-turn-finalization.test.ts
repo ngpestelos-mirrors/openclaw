@@ -483,10 +483,9 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       }
       expect(terminal.result).toMatchObject({
         meta: {
-          error:
-            expectation === "optional"
-              ? undefined
-              : expect.objectContaining({ kind: "incomplete_turn" }),
+          ...(expectation === "optional"
+            ? {}
+            : { error: expect.objectContaining({ kind: "incomplete_turn" }) }),
           terminalReply: { disposition: "empty" },
           finalAssistantVisibleText: expectation === "optional" ? "" : undefined,
           finalAssistantRawText: undefined,
@@ -501,6 +500,9 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
             ]
           : undefined,
       });
+      if (expectation === "optional") {
+        expect(terminal.result.meta.error).toBeUndefined();
+      }
       if (notice) {
         expect(getReplyPayloadMetadata(terminal.result.payloads?.[0] ?? {})).toMatchObject({
           assistantTranscriptOwned: true,
