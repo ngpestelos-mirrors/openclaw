@@ -1,7 +1,6 @@
 /* @vitest-environment jsdom */
 
 import { expectDefined } from "@openclaw/normalization-core";
-import type { JSX } from "@solidjs/web";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeChatHost } from "../chat-host.test-support.ts";
 import { stubAnimationFrames } from "../chat-view.test-helpers.ts";
@@ -374,76 +373,60 @@ describe("chat transcript scroll ownership", () => {
       }
     },
   );
-  it("preserves following through intermediate native movement of an active end command", async () => {
-    const { policy, transcript, container, geometry, flushFrames, dispose } =
-      await mountEndRetarget("intermediate-end-retarget", true);
-    try {
-      resize(container, 600);
-      container.scrollTop = 1300;
-      policy.chatLastScrollTop = 1300;
-      transcript.scrollToEnd({ source: "auto", behavior: "smooth" });
-      expect(transcript.isProgrammaticScroll).toBe(true);
-
-      // Rows retire and grow before the queued native offset arrives. The end
-      // journey still owns its intermediate upward movement, away from the new end.
-      geometry.height = 1800;
-      container.scrollTop = 1200;
-      geometry.height = 1920;
-      nativeScroll(container, 1250);
-      expect(policy.chatFollowLocked, "end movement must not take reader control").toBe(false);
-
-      container.dispatchEvent(new WheelEvent("wheel", { deltaY: -80 }));
-      container.scrollTop -= 80;
-      container.dispatchEvent(new Event("scroll"));
-      expect(policy.chatFollowLocked).toBe(true);
-      expect(transcript.isProgrammaticScroll).toBe(false);
-      geometry.height = 2040;
-      scheduleCommittedChatScroll(policy);
-      flushFrames();
-      expect(container.scrollTop).toBe(1170);
-    } finally {
-      dispose();
-    }
-  });
-
-  it("preserves following through an upward end retarget and no-op until real reader input takes over", async () => {
-    const { policy, transcript, container, geometry, flushFrames, dispose } =
-      await mountEndRetarget("upward-end-retarget", false);
-    try {
-      resize(container, 600);
-      transcript.scrollToEnd({ source: "auto" });
-      container.dispatchEvent(new Event("scroll"));
-      flushFrames();
-      expect(container.scrollTop).toBe(1400);
-
-      // Provisional rows retire before the next reply's measured range grows.
-      // Deliver the native offset only after both changes, as browsers can do.
-      geometry.height = 1800;
-      transcript.scrollToEnd({ source: "auto" });
-      expect(container.scrollTop).toBe(1200);
-      transcript.scrollToEnd({ source: "auto" });
-      // Retiring the completed command does not represent reader input.
-      transcript.cancelScroll();
-      geometry.height = 1920;
-      container.dispatchEvent(new Event("scroll"));
-      expect(policy.chatFollowLocked).toBe(false);
-      scheduleCommittedChatScroll(policy);
-      flushFrames();
-      expect(container.scrollTop).toBe(1320);
-      container.dispatchEvent(new Event("scroll"));
-
-      container.dispatchEvent(new WheelEvent("wheel", { deltaY: -80 }));
-      container.scrollTop -= 80;
-      container.dispatchEvent(new Event("scroll"));
-      expect(policy.chatFollowLocked).toBe(true);
-      geometry.height = 2040;
-      scheduleCommittedChatScroll(policy);
-      flushFrames();
-      expect(container.scrollTop).toBe(1240);
-    } finally {
-      dispose();
-    }
-  });
+  it.each([
+    { movement: "intermediate native movement", smooth: true, finalOffset: 1170 },
+    { movement: "upward retarget and no-op", smooth: false, finalOffset: 1240 },
+  ])(
+    "preserves following through $movement until reader takeover",
+    async ({ smooth, finalOffset }) => {
+      const { policy, transcript, container, geometry, flushFrames, dispose } =
+        await mountEndRetarget("end-retarget", smooth);
+      try {
+        resize(container, 600);
+        if (smooth) {
+          container.scrollTop = 1300;
+          policy.chatLastScrollTop = 1300;
+          transcript.scrollToEnd({ source: "auto", behavior: "smooth" });
+          expect(transcript.isProgrammaticScroll).toBe(true);
+          // Native offsets arrive only after retired rows and new measurements.
+          geometry.height = 1800;
+          container.scrollTop = 1200;
+          geometry.height = 1920;
+          nativeScroll(container, 1250);
+        } else {
+          transcript.scrollToEnd({ source: "auto" });
+          container.dispatchEvent(new Event("scroll"));
+          flushFrames();
+          expect(container.scrollTop).toBe(1400);
+          geometry.height = 1800;
+          transcript.scrollToEnd({ source: "auto" });
+          expect(container.scrollTop).toBe(1200);
+          transcript.scrollToEnd({ source: "auto" });
+          transcript.cancelScroll();
+          geometry.height = 1920;
+          container.dispatchEvent(new Event("scroll"));
+          expect(policy.chatFollowLocked).toBe(false);
+          scheduleCommittedChatScroll(policy);
+          flushFrames();
+          expect(container.scrollTop).toBe(1320);
+          container.dispatchEvent(new Event("scroll"));
+        }
+        expect(policy.chatFollowLocked, "end movement must not take reader control").toBe(false);
+        container.dispatchEvent(new WheelEvent("wheel", { deltaY: -80 }));
+        nativeScroll(container, container.scrollTop - 80);
+        expect(policy.chatFollowLocked).toBe(true);
+        if (smooth) {
+          expect(transcript.isProgrammaticScroll).toBe(false);
+        }
+        geometry.height = 2040;
+        scheduleCommittedChatScroll(policy);
+        flushFrames();
+        expect(container.scrollTop).toBe(finalOffset);
+      } finally {
+        dispose();
+      }
+    },
+  );
 
   it("cancels the active native target when the reader locks following", async () => {
     const flushFrames = stubAnimationFrames();
@@ -454,11 +437,7 @@ describe("chat transcript scroll ownership", () => {
     Object.assign(policy, {
       chatCancelScroll: () => transcript.cancelScroll(),
     });
-    const content: TestContentRow[] = Array.from({ length: 12 }, (_, index) => ({
-      kind: "content",
-      key: `row:${index}`,
-      content: <div>Row</div>,
-    }));
+    const content = numberedContentRows(12);
     const typing: TestContentRow = {
       kind: "content",
       key: "presence:typing",
@@ -510,11 +489,7 @@ describe("chat transcript scroll ownership", () => {
 
   it("preserves reader policy when row measurement clamps a positive adjustment to the end", async () => {
     transcriptDomState.measuredRowHeight = 120;
-    const policy = makeChatHost({ chatHasAutoScrolled: true });
-    const transcript = createChatTranscript(() => "measurement-reader", {
-      canFollowEnd: () => !policy.chatFollowLocked,
-      onReaderScroll: (towardEnd) => handleChatScrollTakeover(policy, towardEnd),
-    });
+    const { policy, transcript } = createPolicyTranscript("measurement-reader");
     const rows: TestContentRow[] = numberedContentRows(12);
     const { container, renderRows } = await mountTestTranscript(
       "measurement-reader",
@@ -570,25 +545,16 @@ describe("chat transcript scroll ownership", () => {
   });
 
   it.each([
-    ["wheel", null, (): JSX.Element => null, false],
-    ["downward wheel", null, (): JSX.Element => null, false],
-    ["stationary wheel", null, (): JSX.Element => null, false],
-    ["pointer", null, (): JSX.Element => null, false],
-    ["latest", null, (): JSX.Element => null, false],
-    ["automatic follow", null, (): JSX.Element => null, true],
+    ["wheel", null, () => null, false],
+    ["downward wheel", null, () => null, false],
+    ["stationary wheel", null, () => null, false],
+    ["pointer", null, () => null, false],
+    ["latest", null, () => null, false],
+    ["automatic follow", null, () => null, true],
     ["text input", "ArrowUp", () => <input />, true],
     ["range input", "Home", () => <input type="range" />, true],
     ["range Space", " ", () => <input type="range" />, false],
-    [
-      "select",
-      "ArrowUp",
-      () => (
-        <select>
-          <option>One</option>
-        </select>
-      ),
-      true,
-    ],
+    ["select", "ArrowUp", () => <select />, true],
     [
       "editable child",
       "ArrowUp",
@@ -603,29 +569,20 @@ describe("chat transcript scroll ownership", () => {
     ["button", " ", () => <button>Play</button>, true],
     ["button PageUp", "PageUp", () => <button>Play</button>, false],
     ["link Space", " ", () => <a href="#">Details</a>, false],
-    [
-      "listbox",
-      "PageUp",
-      () => (
-        <select size={2}>
-          <option>One</option>
-        </select>
-      ),
-      true,
-    ],
+    ["listbox", "PageUp", () => <select size={2} />, true],
     ["textarea", " ", () => <textarea>Text</textarea>, true],
     [
       "handled player",
       " ",
-      () => <div onKeyDown={(event: KeyboardEvent) => event.preventDefault()}>Player</div>,
+      () => <div onKeyDown={(event) => event.preventDefault()}>Player</div>,
       true,
     ],
     ["transcript text", "PageUp", () => <span>History</span>, false],
     ["readonly content", "End", () => <div contenteditable="false">History</div>, false],
     // The pane keyboard suite covers native-control/platform variants.
     // Retain downward nested scrolling and media boundaries in restoration.
-    ["native video", "End", () => <video controls></video>, true],
-    ["native audio paging", "PageDown", () => <audio controls></audio>, false],
+    ["native video", "End", () => <video controls />, true],
+    ["native audio paging", "PageDown", () => <audio controls />, false],
     ...nativeControlNavigationCases.filter(
       ([name, key]) => name.startsWith("Mac textarea ") && (key === "End" || key === "PageDown"),
     ),

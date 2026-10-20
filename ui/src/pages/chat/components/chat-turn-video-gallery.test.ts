@@ -24,10 +24,13 @@ afterEach(() => {
   resetChatThreadState();
 });
 
+const forwardedSource = { kind: "inter_session", sourceTool: "sessions_send" };
+
 function group(key: string, role = "assistant", extra: Partial<MessageGroup> = {}) {
-  return createMessageGroup({ role, content: key }, role, {
+  const message = { role, content: key };
+  return createMessageGroup(message, role, {
     key,
-    messages: [{ key, message: { role, content: key } }],
+    messages: [{ key, message }],
     ...extra,
   });
 }
@@ -72,7 +75,7 @@ it("retains turn membership across renders and stream deltas while reading fresh
 
   const replacement = {
     ...input.messages[0],
-    provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+    provenance: forwardedSource,
   };
   const replaced = projectTurnVideoMessages(
     buildCachedChatItems({ ...input, messages: [replacement], stream: "Second clip" }),
@@ -83,20 +86,17 @@ it("retains turn membership across renders and stream deltas while reading fresh
 it("projects a whole turn across run frames, but never another user turn, divider, or forwarded session", () => {
   const a = group("a", "assistant", { runId: "run-a" });
   const b = group("b", "assistant", { runId: "run-b" });
-  const c = group("c");
-  const d = group("d");
-  const e = group("e");
   const index = projectTurnVideoMessages([
     group("user", "user"),
     a,
     group("tool", "tool"),
     b,
     group("next-user", "user"),
-    c,
+    group("c"),
     { kind: "divider", key: "divider", timestamp: 1, label: "Boundary" },
-    d,
+    group("d"),
     group("forwarded", "assistant", { senderSession: { sessionKey: "other-session" } }),
-    e,
+    group("e"),
   ]);
   expect(index.get("a")?.map((entry) => entry.key)).toEqual(["a", "b"]);
   expect(index.get("b")?.map((entry) => entry.key)).toEqual(["a", "b"]);
@@ -110,11 +110,7 @@ it("projects a whole turn across run frames, but never another user turn, divide
       {
         key: "foreign",
         hasVisibleContent: true,
-        message: {
-          role: "assistant",
-          content: "Foreign video",
-          provenance: { kind: "inter_session", sourceTool: "sessions_send" },
-        },
+        message: { role: "assistant", content: "Foreign video", provenance: forwardedSource },
       },
     ],
   });
@@ -137,12 +133,9 @@ it("keeps duplicate video slots and each sibling message's source authority, but
     }),
   );
   vi.stubGlobal("fetch", fetchMock);
+  const clip = (label: string) => createAttachmentBlock(source, "video", label, "video/mp4");
   const message = createAssistantMessage(
-    [
-      createAttachmentBlock(source, "video", "Repeated", "video/mp4"),
-      { type: "text", text: "Between clips" },
-      createAttachmentBlock(source, "video", "Repeated", "video/mp4"),
-    ],
+    [clip("Repeated"), { type: "text", text: "Between clips" }, clip("Repeated")],
     {
       __openclaw: {
         id: "first-video-message",
@@ -150,10 +143,9 @@ it("keeps duplicate video slots and each sibling message's source authority, but
       },
     },
   );
-  const sibling = createAssistantMessage(
-    [createAttachmentBlock(source, "video", "Last", "video/mp4")],
-    { __openclaw: { id: "last-video-message" } },
-  );
+  const sibling = createAssistantMessage([clip("Last")], {
+    __openclaw: { id: "last-video-message" },
+  });
   const turn = [
     { key: "first", message },
     { key: "last", message: sibling },
@@ -196,9 +188,11 @@ it("keeps duplicate video slots and each sibling message's source authority, but
       await vi.advanceTimersByTimeAsync(0);
       expect(video.src).toContain("mediaTicket=gallery-ticket");
       const params = new URL(video.src).searchParams;
-      expect(params.get("source")).toBe(source);
-      expect(params.get("messageId")).toBe(expectedMessageIds[index]);
-      expect(params.get("sessionKey")).toBe("agent:main:video-gallery");
+      expect(Object.fromEntries(params)).toMatchObject({
+        source,
+        messageId: expectedMessageIds[index],
+        sessionKey: "agent:main:video-gallery",
+      });
     } finally {
       disconnect();
     }
