@@ -2,30 +2,9 @@
 import fs, { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  BaseProbeResult as ContractBaseProbeResult,
-  BaseTokenResolution as ContractBaseTokenResolution,
-  ChannelAgentTool as ContractChannelAgentTool,
-  ChannelAccountSnapshot as ContractChannelAccountSnapshot,
-  ChannelGroupContext as ContractChannelGroupContext,
-  ChannelMessageActionAdapter as ContractChannelMessageActionAdapter,
-  ChannelMessageActionContext as ContractChannelMessageActionContext,
-  ChannelMessageActionName as ContractChannelMessageActionName,
-  ChannelMessageToolDiscovery as ContractChannelMessageToolDiscovery,
-  ChannelStatusIssue as ContractChannelStatusIssue,
-  ChannelThreadingContext as ContractChannelThreadingContext,
-  ChannelThreadingToolContext as ContractChannelThreadingToolContext,
-} from "openclaw/plugin-sdk/channel-contract";
-import type {
-  ChannelMessageActionContext as CoreChannelMessageActionContext,
-  OpenClawPluginApi as CoreOpenClawPluginApi,
-  PluginRuntime as CorePluginRuntime,
-} from "openclaw/plugin-sdk/core";
-import type {
-  GetReplyOptions as ReplyRuntimeGetReplyOptions,
-  ReplyDispatchBeforeDeliverOptions as ReplyRuntimeBeforeDeliverOptions,
-  ReplyDispatcher as ReplyRuntimeDispatcher,
-} from "openclaw/plugin-sdk/reply-runtime";
+import type * as Contract from "openclaw/plugin-sdk/channel-contract";
+import type * as Core from "openclaw/plugin-sdk/core";
+import type * as Reply from "openclaw/plugin-sdk/reply-runtime";
 import * as ts from "typescript/ast";
 import { afterAll, beforeAll, describe, expect, expectTypeOf, it } from "vitest";
 import { createNativeTypeScriptParser } from "../../../scripts/lib/native-typescript.mts";
@@ -37,27 +16,10 @@ import {
   privateLocalOnlyPluginSdkEntrypoints,
   publicPluginSdkSubpaths as pluginSdkSubpaths,
 } from "../../../scripts/lib/plugin-sdk-entries.mts";
-import type {
-  ChannelMessageActionContext,
-  BaseProbeResult,
-  BaseTokenResolution,
-  ChannelAgentTool,
-  ChannelAccountSnapshot,
-  ChannelGroupContext,
-  ChannelMessageActionAdapter,
-  ChannelMessageActionName,
-  ChannelMessageToolDiscovery,
-  ChannelStatusIssue,
-  ChannelThreadingContext,
-  ChannelThreadingToolContext,
-} from "../../channels/plugins/types.public.js";
+import type * as Channel from "../../channels/plugins/types.public.js";
 import * as channelActionsDirectSdk from "../../plugin-sdk/channel-actions.js";
 import * as channelOutboundDirectSdk from "../../plugin-sdk/channel-outbound.js";
-import type {
-  ChannelMessageActionContext as SharedChannelMessageActionContext,
-  OpenClawPluginApi as SharedOpenClawPluginApi,
-  PluginRuntime as SharedPluginRuntime,
-} from "../../plugin-sdk/channel-plugin-common.js";
+import type * as Shared from "../../plugin-sdk/channel-plugin-common.js";
 import * as coreDirectSdk from "../../plugin-sdk/core.js";
 import { expectNoReaddirSyncDuring } from "../../test-utils/fs-scan-assertions.js";
 import { listGitTrackedFiles, toRepoRelativePath } from "../../test-utils/repo-files.js";
@@ -317,25 +279,8 @@ function listRepoTsFiles(dir: string): string[] {
     return cached;
   }
   const trackedFiles = listTrackedRepoTsFiles(dir);
-  if (trackedFiles) {
-    repoTsFilesCache.set(dir, trackedFiles);
-    return trackedFiles;
-  }
-
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  const files = entries.flatMap((entry) => {
-    const absolute = resolve(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === "dist" || entry.name === "node_modules") {
-        return [];
-      }
-      return listRepoTsFiles(absolute);
-    }
-    if (!entry.isFile()) {
-      return [];
-    }
-    return absolute.endsWith(".ts") ? [absolute] : [];
-  });
+  expect(trackedFiles, "boundary scans require a Git checkout").not.toBeNull();
+  const files = trackedFiles ?? [];
   repoTsFilesCache.set(dir, files);
   return files;
 }
@@ -938,34 +883,34 @@ describe("plugin-sdk subpath exports", () => {
   });
 
   it("keeps shared plugin-sdk types aligned", () => {
-    expectTypeOf<ContractBaseProbeResult>().toMatchTypeOf<BaseProbeResult>();
-    expectTypeOf<ContractBaseTokenResolution>().toMatchTypeOf<BaseTokenResolution>();
-    expectTypeOf<ContractChannelAgentTool>().toMatchTypeOf<ChannelAgentTool>();
-    expectTypeOf<ContractChannelAccountSnapshot>().toMatchTypeOf<ChannelAccountSnapshot>();
-    expectTypeOf<ContractChannelGroupContext>().toMatchTypeOf<ChannelGroupContext>();
-    expectTypeOf<ContractChannelMessageActionAdapter>().toMatchTypeOf<ChannelMessageActionAdapter>();
-    expectTypeOf<ContractChannelMessageActionContext>().toMatchTypeOf<ChannelMessageActionContext>();
-    expectTypeOf<ContractChannelMessageActionName>().toMatchTypeOf<ChannelMessageActionName>();
-    expectTypeOf<ContractChannelMessageToolDiscovery>().toMatchTypeOf<ChannelMessageToolDiscovery>();
-    expectTypeOf<ContractChannelStatusIssue>().toMatchTypeOf<ChannelStatusIssue>();
-    expectTypeOf<ContractChannelThreadingContext>().toMatchTypeOf<ChannelThreadingContext>();
-    expectTypeOf<ContractChannelThreadingToolContext>().toMatchTypeOf<ChannelThreadingToolContext>();
-    expectTypeOf<CoreOpenClawPluginApi>().toMatchTypeOf<OpenClawPluginApi>();
-    expectTypeOf<CorePluginRuntime>().toMatchTypeOf<PluginRuntime>();
-    expectTypeOf<CoreChannelMessageActionContext>().toMatchTypeOf<ChannelMessageActionContext>();
-    expectTypeOf<CoreOpenClawPluginApi>().toMatchTypeOf<SharedOpenClawPluginApi>();
-    expectTypeOf<CorePluginRuntime>().toMatchTypeOf<SharedPluginRuntime>();
-    expectTypeOf<CoreChannelMessageActionContext>().toMatchTypeOf<SharedChannelMessageActionContext>();
+    expectTypeOf<Contract.BaseProbeResult>().toMatchTypeOf<Channel.BaseProbeResult>();
+    expectTypeOf<Contract.BaseTokenResolution>().toMatchTypeOf<Channel.BaseTokenResolution>();
+    expectTypeOf<Contract.ChannelAgentTool>().toMatchTypeOf<Channel.ChannelAgentTool>();
+    expectTypeOf<Contract.ChannelAccountSnapshot>().toMatchTypeOf<Channel.ChannelAccountSnapshot>();
+    expectTypeOf<Contract.ChannelGroupContext>().toMatchTypeOf<Channel.ChannelGroupContext>();
+    expectTypeOf<Contract.ChannelMessageActionAdapter>().toMatchTypeOf<Channel.ChannelMessageActionAdapter>();
+    expectTypeOf<Contract.ChannelMessageActionContext>().toMatchTypeOf<Channel.ChannelMessageActionContext>();
+    expectTypeOf<Contract.ChannelMessageActionName>().toMatchTypeOf<Channel.ChannelMessageActionName>();
+    expectTypeOf<Contract.ChannelMessageToolDiscovery>().toMatchTypeOf<Channel.ChannelMessageToolDiscovery>();
+    expectTypeOf<Contract.ChannelStatusIssue>().toMatchTypeOf<Channel.ChannelStatusIssue>();
+    expectTypeOf<Contract.ChannelThreadingContext>().toMatchTypeOf<Channel.ChannelThreadingContext>();
+    expectTypeOf<Contract.ChannelThreadingToolContext>().toMatchTypeOf<Channel.ChannelThreadingToolContext>();
+    expectTypeOf<Core.OpenClawPluginApi>().toMatchTypeOf<OpenClawPluginApi>();
+    expectTypeOf<Core.PluginRuntime>().toMatchTypeOf<PluginRuntime>();
+    expectTypeOf<Core.ChannelMessageActionContext>().toMatchTypeOf<Channel.ChannelMessageActionContext>();
+    expectTypeOf<Core.OpenClawPluginApi>().toMatchTypeOf<Shared.OpenClawPluginApi>();
+    expectTypeOf<Core.PluginRuntime>().toMatchTypeOf<Shared.PluginRuntime>();
+    expectTypeOf<Core.ChannelMessageActionContext>().toMatchTypeOf<Shared.ChannelMessageActionContext>();
     type PrivateResumeOptionKeys = Extract<
-      keyof ReplyRuntimeGetReplyOptions,
+      keyof Reply.GetReplyOptions,
       "requestedSessionId" | "resumeRequestedSession"
     >;
     expectTypeOf<PrivateResumeOptionKeys>().toEqualTypeOf<never>();
     type ReplyRuntimeAppendBeforeDeliverOptions = Parameters<
-      NonNullable<ReplyRuntimeDispatcher["appendBeforeDeliver"]>
+      NonNullable<Reply.ReplyDispatcher["appendBeforeDeliver"]>
     >[1];
     expectTypeOf<ReplyRuntimeAppendBeforeDeliverOptions>().toEqualTypeOf<
-      ReplyRuntimeBeforeDeliverOptions | undefined
+      Reply.ReplyDispatchBeforeDeliverOptions | undefined
     >();
   });
 
@@ -1048,4 +993,3 @@ describe("plugin-sdk subpath exports", () => {
     }
   });
 });
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

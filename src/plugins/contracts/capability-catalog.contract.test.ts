@@ -1,13 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterAll, describe, expect, it, vi } from "vitest";
-import type {
-  PluginCapabilityCatalogHostEntry,
-  PluginCapabilityCatalogHostContext,
-} from "../capability-catalog-context.types.js";
+import { afterAll, expect, it, vi } from "vitest";
+import type * as Catalog from "../capability-catalog-context.types.js";
 
-// These are actual import traps: descriptor construction must never evaluate host runtime/auth.
 const rejectRuntimeImport = vi.hoisted(() => () => {
   throw new Error("cold catalog imported host runtime/auth");
 });
@@ -33,79 +29,65 @@ const fixtures = fs.readdirSync(extensions).flatMap((dir) => {
     return [];
   }
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  const contracts = Object.fromEntries(
-    families
-      .filter((key) => manifest.contracts?.[key]?.length)
-      .map((key) => [key, manifest.contracts[key]]),
-  );
-  return Object.keys(contracts).length ? [{ dir, root, manifest, contracts }] : [];
+  const contracts = families.filter((key) => manifest.contracts?.[key]?.length);
+  return contracts.length ? [{ dir, root, manifest, contracts }] : [];
 });
 
-const unavailable = () => {
-  throw new Error("catalog construction invoked host runtime");
-};
-const context: PluginCapabilityCatalogHostContext = {
-  isProviderApiKeyConfigured: unavailable,
-  isProviderApiKeyConfiguredAsync: unavailable,
-  isProviderAuthProfileConfigured: unavailable,
-  isProviderAuthProfileConfiguredAsync: unavailable,
-  resolveAgentDir: unavailable,
-  createRealtimeTranscriptionWebSocketSession: unavailable,
-  resolveProviderRequestHeaders: unavailable,
-  resolveProviderAuthProfileApiKey: unavailable,
-  resolveApiKeyForProvider: unavailable,
-  captureWsEvent: unavailable,
-  captureWsEventAsync: unavailable,
-  createDebugProxyWebSocketAgent: unavailable,
-  resolveDebugProxySettings: unavailable,
-  fetchWithSsrFGuard: unavailable,
-  createProviderHttpError: unavailable,
-  readProviderJsonResponse: unavailable,
-  readProviderTextResponse: unavailable,
-  formatErrorMessage: unavailable,
-  warn: unavailable,
-  redactSensitiveText: unavailable,
+const context: Catalog.PluginCapabilityCatalogHostContext = {
+  isProviderApiKeyConfigured: rejectRuntimeImport,
+  isProviderApiKeyConfiguredAsync: rejectRuntimeImport,
+  isProviderAuthProfileConfigured: rejectRuntimeImport,
+  isProviderAuthProfileConfiguredAsync: rejectRuntimeImport,
+  resolveAgentDir: rejectRuntimeImport,
+  createRealtimeTranscriptionWebSocketSession: rejectRuntimeImport,
+  resolveProviderRequestHeaders: rejectRuntimeImport,
+  resolveProviderAuthProfileApiKey: rejectRuntimeImport,
+  resolveApiKeyForProvider: rejectRuntimeImport,
+  captureWsEvent: rejectRuntimeImport,
+  captureWsEventAsync: rejectRuntimeImport,
+  createDebugProxyWebSocketAgent: rejectRuntimeImport,
+  resolveDebugProxySettings: rejectRuntimeImport,
+  fetchWithSsrFGuard: rejectRuntimeImport,
+  createProviderHttpError: rejectRuntimeImport,
+  readProviderJsonResponse: rejectRuntimeImport,
+  readProviderTextResponse: rejectRuntimeImport,
+  formatErrorMessage: rejectRuntimeImport,
+  warn: rejectRuntimeImport,
+  redactSensitiveText: rejectRuntimeImport,
 };
 
-describe("bundled capability catalog import boundary", () => {
-  it.each(fixtures)(
-    "constructs $dir descriptors without runtime or auth discovery",
-    async ({ root, manifest, contracts }) => {
-      expect(manifest.capabilityCatalogEntry).toEqual(expect.any(String));
-      const module = await import(
-        pathToFileURL(path.resolve(root, manifest.capabilityCatalogEntry)).href
-      );
-      const entry = module.default as PluginCapabilityCatalogHostEntry;
-      const catalog = typeof entry === "function" ? entry(context) : entry;
-      for (const [family, ids] of Object.entries(contracts)) {
-        const providers = catalog[family as keyof typeof catalog]!;
-        for (const id of ids as string[]) {
-          expect(
-            providers.some((provider) => provider.id === id || provider.aliases?.includes(id)),
-          ).toBe(true);
-        }
-        expect(providers.every((provider) => (ids as string[]).includes(provider.id))).toBe(true);
-        for (const provider of providers) {
-          expect(provider).toMatchObject({
-            label: expect.any(String),
-            isConfigured: expect.any(Function),
-          });
-        }
+it.each(fixtures)(
+  "constructs $dir descriptors without runtime or auth discovery",
+  async ({ root, manifest, contracts }) => {
+    const module = await import(
+      pathToFileURL(path.resolve(root, manifest.capabilityCatalogEntry)).href
+    );
+    const entry = module.default as Catalog.PluginCapabilityCatalogHostEntry;
+    const catalog = typeof entry === "function" ? entry(context) : entry;
+    for (const family of contracts) {
+      const ids: string[] = manifest.contracts[family];
+      const providers = catalog[family]!;
+      for (const id of ids) {
+        expect(
+          providers.some((provider) => provider.id === id || provider.aliases?.includes(id)),
+        ).toBe(true);
       }
-      // OpenAI's readiness/control methods are deliberately non-enumerable.
-      const internal = catalog.realtimeVoiceProviders?.flatMap((provider) =>
-        Object.getOwnPropertySymbols(provider),
-      );
-      if (internal?.length) {
-        const provider = catalog.realtimeVoiceProviders![0]!;
-        for (const key of internal) {
-          expect(Object.getOwnPropertyDescriptor(provider, key)?.enumerable).toBe(false);
-        }
+      expect(providers.every((provider) => ids.includes(provider.id))).toBe(true);
+      for (const provider of providers) {
+        expect(provider).toMatchObject({
+          label: expect.any(String),
+          isConfigured: expect.any(Function),
+        });
       }
-    },
-  );
-});
-
+    }
+    // OpenAI's readiness/control methods are deliberately non-enumerable.
+    for (const provider of catalog.realtimeVoiceProviders ?? []) {
+      for (const key of Object.getOwnPropertySymbols(provider)) {
+        expect(Object.getOwnPropertyDescriptor(provider, key)?.enumerable).toBe(false);
+      }
+    }
+  },
+);
 afterAll(() => {
   vi.doUnmock("../loader-runtime-load.js");
   vi.doUnmock("../capability-provider-runtime.js");
