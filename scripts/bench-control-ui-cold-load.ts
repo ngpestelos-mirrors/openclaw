@@ -761,7 +761,7 @@ try {
       );
       await writeFile(
         path.join(artifactDir, `run-${run + 1}.${phase}.cpuprofile`),
-        JSON.stringify(profile),
+        JSON.stringify(mapped.profile),
       );
       await writeFile(
         path.join(artifactDir, `run-${run + 1}.cpu-profile.json`),
@@ -780,6 +780,9 @@ try {
     const rawTrace: unknown[] = [];
     let collectedTrace = rawTrace;
     cdp.on("Tracing.dataCollected", (data) => collectedTrace.push(...data.value));
+    if (cpuProfile) {
+      await cdp.send("Performance.enable");
+    }
     if (!values.untraced || cpuProfile) {
       await cdp.send("Profiler.enable");
       await cdp.send("Profiler.setSamplingInterval", { interval: 1000 });
@@ -815,6 +818,12 @@ try {
     const warmReload = values["warm-reload"]
       ? await page.evaluate(() => Reflect.get(window, "__warmReload").read())
       : undefined;
+    if (cpuProfile) {
+      await writeFile(
+        path.join(artifactDir, `run-${run + 1}.cpu-clock.json`),
+        JSON.stringify((await cdp.send("Performance.getMetrics")).metrics),
+      );
+    }
     await writeFile(path.join(artifactDir, `run-${run + 1}.metrics.json`), JSON.stringify(metrics));
     const profile = values.untraced && !cpuProfile ? undefined : await cdp.send("Profiler.stop");
     if (!values.untraced) {
