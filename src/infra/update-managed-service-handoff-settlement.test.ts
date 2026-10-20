@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { setImmediate as immediate } from "node:timers/promises";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { waitForDead } from "../../test/helpers/process-wait.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -49,7 +50,6 @@ it.runIf(process.platform === "linux").each(["SIGTERM", "success", "failed"] as 
       root,
       status: outcome === "failed" ? "error" : "skipped",
       reason: outcome === "failed" ? "candidate-validation-failed" : "already-current",
-      mode: "npm",
     });
     await fs.writeFile(
       updaterPath,
@@ -145,9 +145,7 @@ socket.end(); process.disconnect?.(); process.stdin.destroy();
         });
         await fs.rm(path.dirname(started.logPath), { recursive: true, force: true });
       }
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
+      await promisify(server.close).call(server);
     }
   },
 );

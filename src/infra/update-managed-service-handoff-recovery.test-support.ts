@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import type { Compilable } from "kysely";
@@ -56,12 +57,9 @@ export function createManagedHandoffRecoveryFixture(root: string) {
     unverifiedPids: [],
   };
   const runCensus = new Map<string, typeof processCensus>();
-  function inspect(references: {
-    runId: string;
-    artifactPaths: readonly string[];
-  }): typeof processCensus;
+  function inspect(references: { runId: string }): typeof processCensus;
   function inspect(): { pids: number[] };
-  function inspect(references?: { runId: string; artifactPaths: readonly string[] }) {
+  function inspect(references?: { runId: string }) {
     return references
       ? (runCensus.get(references.runId) ?? processCensus)
       : { pids: processCensus.matchingPids };
@@ -72,9 +70,7 @@ export function createManagedHandoffRecoveryFixture(root: string) {
   const store = createManagedHandoffLeaseStore({ databasePath, serviceManagerEnv: {} });
   const current = (key = root) => {
     const found = store.read(key);
-    if (found.kind !== "current") {
-      throw new Error("Expected a retained handoff");
-    }
+    assert(found.kind === "current", "Expected a retained handoff");
     return found.lease;
   };
   const mutate = (

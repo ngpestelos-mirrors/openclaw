@@ -4,6 +4,7 @@ import { EventEmitter, once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { SQLInputValue } from "node:sqlite";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../test-utils/prepare-compiled-subprocesses.js";
@@ -202,6 +203,10 @@ async function realHandoffFixture(prefix: string) {
       db.close();
     }
   }
+  const readRow = (file: string, sql: string, ...values: SQLInputValue[]) =>
+    database(file, true, (db) => db.prepare(sql).get(...values));
+  const execute = (file: string, sql: string, ...values: SQLInputValue[]) =>
+    database(file, false, (db) => db.prepare(sql).run(...values));
   const {
     startManagedServiceUpdateHandoff,
     cancelManagedServiceUpdateHandoff: cancel,
@@ -219,7 +224,7 @@ async function realHandoffFixture(prefix: string) {
       env: { ...process.env, OPENCLAW_STATE_DIR: root },
       meta: {},
     });
-  return { root, parent, start, cancel, claim, transfer, park, database };
+  return { root, parent, start, cancel, claim, transfer, park, readRow, execute };
 }
 
 describe("managed service update handoff single-flight", () => {
@@ -466,7 +471,7 @@ describe("managed service update handoff single-flight", () => {
   });
 
   it("reclaims only its exact dead detached helper before reopening the install root", async () => {
-    const { root, start, cancel, database } = await realHandoffFixture(
+    const { root, start, cancel, readRow, execute } = await realHandoffFixture(
       "openclaw-dead-handoff-owner-",
     );
     const processIdentity = await import("../shared/pid-alive.js");
@@ -490,16 +495,11 @@ describe("managed service update handoff single-flight", () => {
       const helper = realChild();
       leaseDatabasePath = (await readHelperParams()).updateLeaseDatabasePath;
       const readLease = () =>
-        database(
+        readRow(
           leaseDatabasePath!,
-          true,
-          (db) =>
-            db
-              .prepare(
-                "SELECT owner, payload_json FROM managed_update_handoffs WHERE install_root = ?",
-              )
-              .get(root) as { owner: string; payload_json: string } | undefined,
-        );
+          "SELECT owner, payload_json FROM managed_update_handoffs WHERE install_root = ?",
+          root,
+        ) as { owner: string; payload_json: string } | undefined;
       const initialLease = readLease();
       expect(initialLease?.owner).toBe(started.handoffId);
       const originalPayload = {
@@ -546,11 +546,13 @@ describe("managed service update handoff single-flight", () => {
         if (!leaseDatabasePath) {
           throw new Error("expected the detached helper lease database path");
         }
-        database(leaseDatabasePath, false, (db) => {
-          db.prepare(
-            "UPDATE managed_update_handoffs SET owner = ?, payload_json = ? WHERE install_root = ?",
-          ).run(owner, JSON.stringify(payload), root);
-        });
+        execute(
+          leaseDatabasePath,
+          "UPDATE managed_update_handoffs SET owner = ?, payload_json = ? WHERE install_root = ?",
+          owner,
+          JSON.stringify(payload),
+          root,
+        );
       };
       const identity = started;
       for (const [label, owner, payload] of rejectedOwners) {
@@ -590,10 +592,11 @@ describe("managed service update handoff single-flight", () => {
         await cancel({ kind: "managed-update-handoff", ...replacement });
       }
       if (leaseDatabasePath && deadOwner) {
-        database(leaseDatabasePath, false, (db) =>
-          db
-            .prepare("DELETE FROM managed_update_handoffs WHERE install_root = ? AND owner = ?")
-            .run(root, deadOwner),
+        execute(
+          leaseDatabasePath,
+          "DELETE FROM managed_update_handoffs WHERE install_root = ? AND owner = ?",
+          root,
+          deadOwner,
         );
       }
     }
@@ -621,7 +624,7 @@ describe("managed service update handoff single-flight", () => {
   });
 
   it("waits for the exact helper to release its lease after an immediate control-pipe EPIPE", async () => {
-    const { root, start, cancel, park, database } = await realHandoffFixture(
+    const { root, start, cancel, park, readRow } = await realHandoffFixture(
       "openclaw-handoff-control-epipe-",
     );
     const identity = requireOwner(await start());
@@ -669,8 +672,10 @@ describe("managed service update handoff single-flight", () => {
       await expect(cancellation).resolves.toBe("restored-in-process");
       expect(helper.exitCode !== null || helper.signalCode !== null).toBe(true);
       expect(
-        database(updateLeaseDatabasePath, true, (db) =>
-          db.prepare("SELECT owner FROM managed_update_handoffs WHERE install_root = ?").get(root),
+        readRow(
+          updateLeaseDatabasePath,
+          "SELECT owner FROM managed_update_handoffs WHERE install_root = ?",
+          root,
         ),
       ).toBeUndefined();
     } finally {
@@ -728,7 +733,8 @@ describe("managed service update handoff single-flight", () => {
       start: startWithPath,
       cancel,
       claim,
-      database,
+      readRow,
+      execute,
     } = await realHandoffFixture("openclaw-cancel-owner-");
     const { getFileLockProcessStartTime } = await import("../shared/pid-alive.js");
     const replacementStartIdentity = getFileLockProcessStartTime(process.pid);
@@ -757,22 +763,18 @@ describe("managed service update handoff single-flight", () => {
         joinedAfterExit = start();
       }
       if (replaceOwner) {
-        database(helper.updateLeaseDatabasePath, false, (db) =>
-          db
-            .prepare(
-              "INSERT INTO managed_update_handoffs (install_root, owner, payload_json, updated_at) VALUES (?, ?, ?, ?)",
-            )
-            .run(
-              root,
-              "replacement",
-              JSON.stringify({
-                version: 2,
-                executor: { pid: process.pid, startIdentity: String(replacementStartIdentity) },
-                helper: { pid: process.pid, startIdentity: String(replacementStartIdentity) },
-                action: { kind: "update" },
-              }),
-              Date.now(),
-            ),
+        execute(
+          helper.updateLeaseDatabasePath,
+          "INSERT INTO managed_update_handoffs (install_root, owner, payload_json, updated_at) VALUES (?, ?, ?, ?)",
+          root,
+          "replacement",
+          JSON.stringify({
+            version: 2,
+            executor: { pid: process.pid, startIdentity: String(replacementStartIdentity) },
+            helper: { pid: process.pid, startIdentity: String(replacementStartIdentity) },
+            action: { kind: "update" },
+          }),
+          Date.now(),
         );
       }
     });
@@ -796,16 +798,10 @@ describe("managed service update handoff single-flight", () => {
     }
     await expect(cancellation).resolves.toBe(replaceOwner ? false : "restored-in-process");
     expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
-    const terminal = database(
+    const terminal = readRow(
       helper.stateDatabasePath,
-      true,
-      (db) =>
-        db
-          .prepare(
-            "SELECT payload_json FROM gateway_restart_sentinel WHERE sentinel_key = 'current'",
-          )
-          .get() as { payload_json: string },
-    );
+      "SELECT payload_json FROM gateway_restart_sentinel WHERE sentinel_key = 'current'",
+    ) as { payload_json: string };
     expect(JSON.parse(terminal.payload_json)).toMatchObject({
       status: "skipped",
       stats: { reason: "managed-service-handoff-cancelled" },
@@ -819,15 +815,18 @@ describe("managed service update handoff single-flight", () => {
     }
     await expect(fs.access(markerPath)).rejects.toThrow();
     if (!replaceOwner && !exitParent) {
-      database(helper.stateDatabasePath, false, (db) =>
-        db.prepare("DELETE FROM gateway_restart_sentinel WHERE sentinel_key = 'current'").run(),
+      execute(
+        helper.stateDatabasePath,
+        "DELETE FROM gateway_restart_sentinel WHERE sentinel_key = 'current'",
       );
       const next = requireOwner(await start());
       await expect(cancel(next)).resolves.toBe("restored-in-process");
     }
     if (replaceOwner) {
-      database(helper.updateLeaseDatabasePath, false, (db) =>
-        db.prepare("DELETE FROM managed_update_handoffs WHERE install_root = ?").run(root),
+      execute(
+        helper.updateLeaseDatabasePath,
+        "DELETE FROM managed_update_handoffs WHERE install_root = ?",
+        root,
       );
     }
   });
