@@ -64,6 +64,52 @@ type ProofModelServer = {
 const instances: OpenClawTestInstance[] = [];
 const modelServers: ProofModelServer[] = [];
 
+async function createFixture(name: string, options?: Parameters<typeof startProofModelServer>[0]) {
+  const modelServer = await startProofModelServer(options);
+  modelServers.push(modelServer);
+  const instance = await createOpenClawTestInstance({
+    name,
+    config: createTestConfig(modelServer.url),
+    env: { OPENCLAW_SKIP_PROVIDERS: undefined, OPENCLAW_TEST_MINIMAL_GATEWAY: undefined },
+  });
+  instances.push(instance);
+  instance.state.applyEnv();
+  return { instance, modelServer };
+}
+
+function writeSession(instance: OpenClawTestInstance, sessionKey: string, sessionId: string) {
+  return writeSubagentSessionEntry({
+    stateDir: instance.stateDir,
+    agentId: REQUESTER_AGENT_ID,
+    sessionKey,
+    sessionId,
+    defaultSessionId: sessionId,
+  });
+}
+
+type Client = Awaited<ReturnType<typeof connectGatewayClient>>;
+function startParent(client: Client, sessionKey: string, idempotencyKey: string) {
+  return client.request(
+    "agent",
+    {
+      sessionKey,
+      agentId: REQUESTER_AGENT_ID,
+      idempotencyKey,
+      message: PARENT_PROMPT,
+      deliver: false,
+    },
+    { expectFinal: true },
+  );
+}
+
+function readHistory(client: Client, sessionKey: string, agentId = REQUESTER_AGENT_ID) {
+  return client.request<{ messages: Array<{ role?: string; content?: unknown }> }>("chat.history", {
+    sessionKey,
+    agentId,
+    limit: 30,
+  });
+}
+
 afterEach(async () => {
   const results = await Promise.allSettled([
     ...instances.splice(0).map((instance) => instance.cleanup()),
@@ -83,18 +129,10 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
     async () => {
       const parentGate = createDeferred();
       const childGate = createDeferred();
-      const modelServer = await startProofModelServer({
+      const { instance, modelServer } = await createFixture("requester-owner-busy-status", {
         yieldAfterSpawn: parentGate.promise,
         childReply: childGate.promise,
       });
-      modelServers.push(modelServer);
-      const instance = await createOpenClawTestInstance({
-        name: "requester-owner-busy-status",
-        config: createTestConfig(modelServer.url),
-        env: { OPENCLAW_SKIP_PROVIDERS: undefined, OPENCLAW_TEST_MINIMAL_GATEWAY: undefined },
-      });
-      instances.push(instance);
-      instance.state.applyEnv();
       await instance.startGateway();
       const sessionKey = `agent:${REQUESTER_AGENT_ID}:${REQUESTER_KEY}`;
       const statusRunId = "busy-parent-status";
@@ -118,17 +156,7 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
       let parent: Promise<unknown> | undefined;
       let parentSettled = false;
       try {
-        parent = client.request(
-          "agent",
-          {
-            sessionKey: REQUESTER_KEY,
-            agentId: REQUESTER_AGENT_ID,
-            idempotencyKey: "busy-status-parent-turn",
-            message: PARENT_PROMPT,
-            deliver: false,
-          },
-          { expectFinal: true },
-        );
+        parent = startParent(client, REQUESTER_KEY, "busy-status-parent-turn");
         void parent.then(
           () => {
             parentSettled = true;
@@ -165,10 +193,10 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
           requesterSessionKey: sessionKey,
           requesterTurnRunId: "busy-status-parent-turn",
           completionTarget: "parent",
+          execution: { status: "running" },
+          task: CHILD_TASK,
         });
         expect(run.childSessionKey).toMatch(/^agent:beta:subagent:/);
-        expect(run.execution.status).toBe("running");
-        expect(run.task).toBe(CHILD_TASK);
         expect(runs.filter((entry) => entry.requesterAgentId === OTHER_AGENT_ID)).toEqual([]);
 
         const requestsBeforeStatus = modelServer.requestCount();
@@ -222,9 +250,7 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
           },
           { interval: 50, timeout: 30_000 },
         );
-        const history = await client.request<{
-          messages: Array<{ role?: string; content?: unknown }>;
-        }>("chat.history", { sessionKey, agentId: REQUESTER_AGENT_ID, limit: 30 });
+        const history = await readHistory(client, sessionKey);
         const visible = history.messages.map((message) => ({
           role: message.role,
           text: extractFirstTextBlock(message),
@@ -281,27 +307,13 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
     { timeout: TEST_TIMEOUT_MS },
     async (placement) => {
       const yieldGate = createDeferred();
-      const modelServer = await startProofModelServer({
+      const { instance, modelServer } = await createFixture("private-completion-before-yield", {
         yieldAfterSpawn: yieldGate.promise,
         placement,
       });
-      modelServers.push(modelServer);
-      const instance = await createOpenClawTestInstance({
-        name: "private-completion-before-yield",
-        config: createTestConfig(modelServer.url),
-        env: { OPENCLAW_SKIP_PROVIDERS: undefined, OPENCLAW_TEST_MINIMAL_GATEWAY: undefined },
-      });
-      instances.push(instance);
-      instance.state.applyEnv();
       const sessionId = "private-yield-requester-session";
       const sessionKey = `agent:${REQUESTER_AGENT_ID}:${REQUESTER_KEY}`;
-      await writeSubagentSessionEntry({
-        stateDir: instance.stateDir,
-        agentId: REQUESTER_AGENT_ID,
-        sessionKey,
-        sessionId,
-        defaultSessionId: sessionId,
-      });
+      await writeSession(instance, sessionKey, sessionId);
       closeOpenClawStateDatabaseForTest();
       await instance.startGateway();
       const chatErrors: unknown[] = [];
@@ -327,17 +339,7 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
           { agentId: REQUESTER_AGENT_ID },
         );
       try {
-        const parent = client.request(
-          "agent",
-          {
-            sessionKey,
-            agentId: REQUESTER_AGENT_ID,
-            idempotencyKey: "private-yield-parent-turn",
-            message: PARENT_PROMPT,
-            deliver: false,
-          },
-          { expectFinal: true },
-        );
+        const parent = startParent(client, sessionKey, "private-yield-parent-turn");
         void parent.catch(() => {});
         instance.state.applyEnv();
         await vi.waitFor(
@@ -396,9 +398,7 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
         });
         expect(modelServer.completionResponseCount()).toBe(1);
         expect(chatErrors).toEqual([]);
-        const history = await client.request<{
-          messages: Array<{ role?: string; content?: unknown }>;
-        }>("chat.history", { sessionKey, agentId: REQUESTER_AGENT_ID, limit: 30 });
+        const history = await readHistory(client, sessionKey);
         expect(
           history.messages.filter(
             (message) =>
@@ -425,24 +425,9 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
     "preserves the requester owner through a fresh normalized spawn",
     { timeout: TEST_TIMEOUT_MS },
     async () => {
-      const modelServer = await startProofModelServer();
-      modelServers.push(modelServer);
-      const instance = await createOpenClawTestInstance({
-        name: "requester-owner-requester-agent-id",
-        config: createTestConfig(modelServer.url),
-        env: { OPENCLAW_SKIP_PROVIDERS: undefined, OPENCLAW_TEST_MINIMAL_GATEWAY: undefined },
-      });
-      instances.push(instance);
-
-      instance.state.applyEnv();
+      const { instance, modelServer } = await createFixture("requester-owner-requester-agent-id");
       try {
-        await writeSubagentSessionEntry({
-          stateDir: instance.stateDir,
-          agentId: REQUESTER_AGENT_ID,
-          sessionKey: REQUESTER_KEY,
-          sessionId: "requester-owner-requester-session",
-          defaultSessionId: "requester-owner-requester-session",
-        });
+        await writeSession(instance, REQUESTER_KEY, "requester-owner-requester-session");
       } finally {
         closeOpenClawStateDatabaseForTest();
       }
@@ -453,17 +438,7 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
         token: instance.gatewayToken,
       });
       try {
-        const parent = client.request(
-          "agent",
-          {
-            sessionKey: REQUESTER_KEY,
-            agentId: REQUESTER_AGENT_ID,
-            idempotencyKey: "requester-owner-parent-turn",
-            message: PARENT_PROMPT,
-            deliver: false,
-          },
-          { expectFinal: true },
-        );
+        const parent = startParent(client, REQUESTER_KEY, "requester-owner-parent-turn");
         void parent.catch(() => {});
         await vi.waitFor(
           () => expect(modelServer.countRequestsContaining(CHILD_MARKER)).toBeGreaterThan(0),
@@ -479,16 +454,8 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
           },
           { interval: 50, timeout: 25_000 },
         );
-        const requester = await client.request<{ messages: unknown[] }>("chat.history", {
-          sessionKey: REQUESTER_KEY,
-          agentId: REQUESTER_AGENT_ID,
-          limit: 30,
-        });
-        const other = await client.request<{ messages: unknown[] }>("chat.history", {
-          sessionKey: REQUESTER_KEY,
-          agentId: OTHER_AGENT_ID,
-          limit: 30,
-        });
+        const requester = await readHistory(client, REQUESTER_KEY);
+        const other = await readHistory(client, REQUESTER_KEY, OTHER_AGENT_ID);
         expect(
           requester.messages.filter((message) => JSON.stringify(message).includes(CHILD_MARKER)),
         ).toHaveLength(1);
@@ -504,11 +471,12 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
         const runs = [...loadSubagentRegistryFromSqlite().values()];
         expect(runs, logs).toHaveLength(1);
         const run = runs[0]!;
-        expect(run.requesterAgentId, logs).toBe(REQUESTER_AGENT_ID);
-        expect(run.requesterSessionKey, logs).toBe(`agent:${REQUESTER_AGENT_ID}:${REQUESTER_KEY}`);
-        expect(run.execution.status, logs).toBe("terminal");
-        expect(run.execution.outcome, logs).toMatchObject({ status: "ok" });
-        expect(run.delivery?.status, logs).toBe("delivered");
+        expect(run, logs).toMatchObject({
+          requesterAgentId: REQUESTER_AGENT_ID,
+          requesterSessionKey: `agent:${REQUESTER_AGENT_ID}:${REQUESTER_KEY}`,
+          execution: { status: "terminal", outcome: { status: "ok" } },
+          delivery: { status: "delivered" },
+        });
         expect(run.requesterSettleWake, logs).toBeUndefined();
       } finally {
         closeOpenClawStateDatabaseForTest();
@@ -521,17 +489,9 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
     "delivers a restored unscoped completion once across Gateway restarts",
     { timeout: TEST_TIMEOUT_MS },
     async () => {
-      const modelServer = await startProofModelServer();
-      modelServers.push(modelServer);
-      const config = createTestConfig(modelServer.url);
-      const instance = await createOpenClawTestInstance({
-        name: "requester-owner-legacy-unscoped-requester",
-        config,
-        env: { OPENCLAW_SKIP_PROVIDERS: undefined, OPENCLAW_TEST_MINIMAL_GATEWAY: undefined },
-      });
-      instances.push(instance);
-
-      instance.state.applyEnv();
+      const { instance, modelServer } = await createFixture(
+        "requester-owner-legacy-unscoped-requester",
+      );
       const gatewayConfig = loadConfig();
       setRuntimeConfigSnapshot(gatewayConfig);
       const registry =
@@ -540,20 +500,8 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
         async () => {
           await registry.resetSubagentRegistryForTests({ persist: false });
           const childSessionKey = `agent:${REQUESTER_AGENT_ID}:subagent:requester-owner-legacy`;
-          await writeSubagentSessionEntry({
-            stateDir: instance.stateDir,
-            agentId: REQUESTER_AGENT_ID,
-            sessionKey: RESTORED_REQUESTER_KEY,
-            sessionId: "requester-owner-legacy-session",
-            defaultSessionId: "requester-owner-legacy-session",
-          });
-          await writeSubagentSessionEntry({
-            stateDir: instance.stateDir,
-            agentId: REQUESTER_AGENT_ID,
-            sessionKey: childSessionKey,
-            sessionId: "requester-owner-legacy-child-session",
-            defaultSessionId: "requester-owner-legacy-child-session",
-          });
+          await writeSession(instance, RESTORED_REQUESTER_KEY, "requester-owner-legacy-session");
+          await writeSession(instance, childSessionKey, "requester-owner-legacy-child-session");
           const requester = expectDefined(
             loadSessionEntry({
               agentId: REQUESTER_AGENT_ID,
@@ -629,9 +577,11 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
           };
           saveSubagentRegistryToSqlite(new Map([[restored.runId, restored]]));
           const seeded = loadSubagentRegistryFromSqlite().get(RESTORED_RUN_ID);
-          expect(seeded?.requesterAgentId).toBe(REQUESTER_AGENT_ID);
-          expect(seeded?.requesterSessionKey).toBe(RESTORED_REQUESTER_KEY);
-          expect(seeded?.delivery?.status).toBe("pending");
+          expect(seeded).toMatchObject({
+            requesterAgentId: REQUESTER_AGENT_ID,
+            requesterSessionKey: RESTORED_REQUESTER_KEY,
+            delivery: { status: "pending" },
+          });
         },
         () => settleSubagentRegistryPersistenceWork(),
         () => registry.resetSubagentRegistryForTests({ persist: false }),
@@ -656,16 +606,8 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
             },
             { interval: 50, timeout: 25_000 },
           );
-          const requester = await client.request<{ messages: unknown[] }>("chat.history", {
-            sessionKey: RESTORED_REQUESTER_KEY,
-            agentId: REQUESTER_AGENT_ID,
-            limit: 30,
-          });
-          const other = await client.request<{ messages: unknown[] }>("chat.history", {
-            sessionKey: RESTORED_REQUESTER_KEY,
-            agentId: OTHER_AGENT_ID,
-            limit: 30,
-          });
+          const requester = await readHistory(client, RESTORED_REQUESTER_KEY);
+          const other = await readHistory(client, RESTORED_REQUESTER_KEY, OTHER_AGENT_ID);
           expect(
             requester.messages.filter((message) =>
               JSON.stringify(message).includes(RESTORED_CHILD_RESULT),
@@ -688,9 +630,11 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
       instance.state.applyEnv();
       try {
         const run = loadSubagentRegistryFromSqlite().get(RESTORED_RUN_ID);
-        expect(run?.requesterAgentId, logs).toBe(REQUESTER_AGENT_ID);
-        expect(run?.requesterSessionKey, logs).toBe(RESTORED_REQUESTER_KEY);
-        expect(run?.delivery?.status, logs).toBe("delivered");
+        expect(run, logs).toMatchObject({
+          requesterAgentId: REQUESTER_AGENT_ID,
+          requesterSessionKey: RESTORED_REQUESTER_KEY,
+          delivery: { status: "delivered" },
+        });
       } finally {
         closeOpenClawStateDatabaseForTest();
       }

@@ -11,6 +11,25 @@ import { callGatewayHandler } from "../src/gateway/server-methods/skills.test-he
 import { createTestGatewayScheduler } from "../src/test-utils/gateway-scheduler-clock.js";
 
 type QuestionGatewayCall = { method: string; params?: Record<string, unknown> };
+const questionId = "ask_0123456789abcdef0123456789abcdef";
+
+async function renderButtons(payload: ReturnType<typeof buildAgentHarnessQuestionPromptPayload>) {
+  if (!payload.presentation) {
+    throw new Error("expected a portable question presentation");
+  }
+  const rendered = await telegramOutbound.renderPresentation?.({
+    payload,
+    presentation: payload.presentation,
+    ctx: { cfg: {}, to: "42", text: payload.text, payload },
+  });
+  return (
+    rendered?.channelData?.telegram as
+      | {
+          buttons?: Array<Array<{ text: string; url?: string; callback_data?: string }>>;
+        }
+      | undefined
+  )?.buttons;
+}
 
 const questionGatewayTransport = vi.hoisted(() => ({
   dispatch: undefined as ((request: QuestionGatewayCall) => Promise<unknown>) | undefined,
@@ -35,7 +54,6 @@ afterEach(() => {
 
 describe("Telegram question Gateway resolution", () => {
   it("opens an external step with a URL button separate from completion callbacks", async () => {
-    const questionId = "ask_0123456789abcdef0123456789abcdef";
     const url = "https://example.test/connect";
     const input = compileStructuredInputUrl({
       url,
@@ -51,18 +69,7 @@ describe("Telegram question Gateway resolution", () => {
       questionId,
       questions: [input.plan.question],
     });
-    if (!payload.presentation) {
-      throw new Error("expected a portable question presentation");
-    }
-    const rendered = await telegramOutbound.renderPresentation?.({
-      payload,
-      presentation: payload.presentation,
-      ctx: { cfg: {}, to: "42", text: payload.text, payload },
-    });
-    const telegram = rendered?.channelData?.telegram as {
-      buttons?: Array<Array<{ text: string; url?: string; callback_data?: string }>>;
-    };
-    expect(telegram.buttons?.flat()).toEqual([
+    expect((await renderButtons(payload))?.flat()).toEqual([
       { text: "Open link", url },
       { text: "I've completed this step", callback_data: `tgq1:${questionId}:0` },
       { text: "Decline", callback_data: `tgq1:${questionId}:1` },
@@ -92,8 +99,12 @@ describe("Telegram question Gateway resolution", () => {
     questionGatewayTransport.dispatch = dispatch;
 
     try {
-      const questionId = "ask_0123456789abcdef0123456789abcdef";
       const optionValues = ["A", "B", "C"];
+      const question = {
+        header: "Destination",
+        question: "Where next?",
+        options: optionValues.map((label) => ({ label })),
+      };
       await dispatch({
         method: "question.request",
         params: {
@@ -101,9 +112,7 @@ describe("Telegram question Gateway resolution", () => {
           questions: [
             {
               questionId: "destination",
-              header: "Destination",
-              question: "Where next?",
-              options: optionValues.map((label) => ({ label })),
+              ...question,
               multiSelect: false,
               isOther: false,
               isSecret: false,
@@ -128,26 +137,11 @@ describe("Telegram question Gateway resolution", () => {
       };
       const payload = buildAgentHarnessQuestionPromptPayload({
         questionId,
-        questions: [
-          {
-            id: "destination",
-            header: "Destination",
-            question: "Where next?",
-            options: optionValues.map((label) => ({ label })),
-          },
-        ],
+        questions: [{ id: "destination", ...question }],
         options: { presentation },
       });
       expect(payload.channelData.askUser).toEqual({ questionId, optionValues });
-      const rendered = await telegramOutbound.renderPresentation?.({
-        payload,
-        presentation,
-        ctx: { cfg: {}, to: "42", text: payload.text, payload },
-      });
-      const telegram = rendered?.channelData?.telegram as
-        | { buttons?: ReadonlyArray<ReadonlyArray<{ callback_data?: string }>> }
-        | undefined;
-      const rows = telegram?.buttons;
+      const rows = await renderButtons(payload);
       expect(rows?.map((row) => row.length)).toEqual([1, 1, 1, 1]);
       expect(rows?.flatMap((row) => row.map((button) => button.callback_data))).toEqual([
         `tgq1:${questionId}:2`,

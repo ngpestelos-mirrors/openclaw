@@ -33,53 +33,57 @@ const qaLabFiles = [
   "extensions/qa-lab/src/session-host-command-state.real-gateway.e2e.test.ts",
   "extensions/qa-lab/src/control-ui-openclaw-delegation.real-gateway.e2e.test.ts",
 ] as const;
+const serialGatewayNames = [
+  "background-work",
+  "chat-collaborator-scroll",
+  "chat-managed-media-order",
+  "chat-session-diff-folding",
+  "chat-steer-deferred-custody",
+  "chat-stop-owned-exec",
+  "chat-tts-supplement",
+  "chat-wait-clock",
+  "command-palette-search",
+  "deepseek-search",
+  "desktop-resize",
+  "device-platform-family",
+  "peer-followup-restart",
+  "provider-browser-login",
+  "session-pr-reader-lifetime",
+  "session-roster-request-rate",
+  "sidebar-running-counts",
+  "task-pull-requests",
+];
+const serialGatewayFiles = serialGatewayNames
+  .map((name) => `ui/src/e2e/${name}.real-gateway.e2e.test.ts`)
+  .concat("ui/src/e2e/mcp-app-conformance.e2e.test.ts", workboardFile);
 const realGatewayFiles = [
   "activity-run-inspector.real-gateway",
   "agent-file-lifecycle.real-gateway",
-  "background-work.real-gateway",
   "chat-agent-avatar.real-gateway",
-  "chat-collaborator-scroll.real-gateway",
   "chat-composer-websearch-kill-switch.real-gateway",
   "chat-flow.catalog-bootstrap",
   "chat-loading-performance.real-gateway",
-  "chat-managed-media-order.real-gateway",
   "chat-project-media.real-gateway",
   "chat-reconnect-continuity.real-gateway",
-  "chat-session-diff-folding.real-gateway",
-  "chat-steer-deferred-custody.real-gateway",
   "chat-stop-finished-run.real-gateway",
-  "chat-stop-owned-exec.real-gateway",
   "chat-thinking-metadata.real-gateway",
-  "chat-tts-supplement.real-gateway",
-  "chat-wait-clock.real-gateway",
   "chat-widget-sandbox.real-gateway",
   "command-palette-catalog.real-gateway",
-  "command-palette-search.real-gateway",
   "control-ui-auth-transports",
   "cron-duration-save.real-gateway",
-  "deepseek-search.real-gateway",
-  "desktop-resize.real-gateway",
   "device-alias-rename.real-gateway",
-  "device-platform-family.real-gateway",
   "logs-lifecycle",
-  "mcp-app-conformance",
   "model-api-keys.real-gateway",
   "model-catalog-partial-refresh.real-gateway",
   "model-picker-search.real-gateway",
-  "peer-followup-restart.real-gateway",
   "profile-page.real-gateway",
-  "provider-browser-login.real-gateway",
   "quota-reset-status.real-gateway",
-  "session-pr-reader-lifetime.real-gateway",
   "session-progress-hovercard.real-gateway",
-  "session-roster-request-rate.real-gateway",
-  "sidebar-running-counts.real-gateway",
-  "task-pull-requests.real-gateway",
   "usage-sessions-owner-attribution",
   "worker-initial-setup.real-gateway",
 ]
   .map((name) => `ui/src/e2e/${name}.e2e.test.ts`)
-  .concat(qaLabFiles, workboardFile);
+  .concat(qaLabFiles, serialGatewayFiles);
 const mcpFile = "ui/src/e2e/mcp-app-conformance.e2e.test.ts";
 const builtGatewayFile = "ui/src/e2e/chat-widget-sandbox.real-gateway.e2e.test.ts";
 const prebuiltBuildInfo = { buildId: "prepared-ui-build", version: "2026.9.23" };
@@ -94,7 +98,6 @@ type OwnershipProbe = {
   }>;
   contexts: Array<{
     name: string;
-    chromium?: { available: boolean };
     url?: string | null;
     buildInfo?: typeof prebuiltBuildInfo | null;
     bridge: boolean;
@@ -102,7 +105,6 @@ type OwnershipProbe = {
   leases: Array<{ outDir: string; closed: boolean; removed: boolean }>;
   shards: string[][];
   steps: Array<{ builds: number; previews: number; closes: number }>;
-  lifecycle: string[];
   admissions: string[];
   canonicalAssetsIntact: boolean;
   rootWorkers: number;
@@ -125,7 +127,6 @@ function probeOwnership(
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-ui-ownership-")));
   tempDirs.push(directory);
   const eventsFile = path.join(directory, "leases.jsonl");
-  const lifecycleFile = path.join(directory, "lifecycle.jsonl");
   const admissionsFile = path.join(directory, "admissions.jsonl");
   const canonicalRoot = path.join(directory, "canonical-ui");
   fs.mkdirSync(canonicalRoot);
@@ -140,9 +141,7 @@ function probeOwnership(
     export const assertUiE2ePreflight = async () => {
       if (${JSON.stringify(options.failure)} === "preflight") throw new Error("fixture preflight failed");
     };
-    const lifecycle = event => fs.appendFileSync(${JSON.stringify(lifecycleFile)}, JSON.stringify(event) + "\\n");
     export async function prepareNativeControlUiPluginFixtures() {
-      lifecycle("native-fixtures");
       return { catalog: { revision: "fixture", plugins: [], diagnostics: [] }, assets: new Map() };
     }
     export default function admission(project) {
@@ -153,7 +152,6 @@ function probeOwnership(
       });
     }
     function lease(outDir, built) {
-      lifecycle(built ? "bundle-server" : "prebuilt-server");
       const record = (closed) => fs.appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({ outDir, closed, built }) + "\\n");
       record(false);
       const failure = built ? "build" : "preview";
@@ -257,13 +255,10 @@ function probeOwnership(
         }))
           .toSorted((a, b) => a.file.localeCompare(b.file)),
         contexts: projects.map(project => ({ name: project.name,
-          chromium: project.getProvidedContext().controlUiE2eChromium,
           url: project.getProvidedContext().controlUiE2eServerBaseUrl,
           buildInfo: project.getProvidedContext().controlUiE2eServerBuildInfo,
           bridge: project.config.setupFiles.some(file => file.endsWith("/vitest.ui-e2e.setup.ts")),
         })), shards, steps, setupError, rootWorkers: ctx.config.maxWorkers,
-        lifecycle: fs.existsSync(${JSON.stringify(lifecycleFile)})
-          ? fs.readFileSync(${JSON.stringify(lifecycleFile)}, "utf8").trim().split("\\n").filter(Boolean).map(JSON.parse) : [],
         admissions: fs.existsSync(${JSON.stringify(admissionsFile)})
           ? fs.readFileSync(${JSON.stringify(admissionsFile)}, "utf8").trim().split("\\n").map(JSON.parse) : [],
       };
@@ -363,13 +358,9 @@ describe("Control UI E2E resource ownership", () => {
       | Array<{ extends?: boolean; test?: { clearMocks?: boolean } }>
       | undefined;
     expect(config.test?.clearMocks).toBe(false);
-    expect(projects?.map((project) => project.extends)).toEqual([false, false, false, false]);
-    expect(projects?.map((project) => project.test?.clearMocks)).toEqual([
-      false,
-      false,
-      false,
-      false,
-    ]);
+    expect(projects?.map((project) => [project.extends, project.test?.clearMocks])).toEqual(
+      Array.from({ length: 4 }, () => [false, false]),
+    );
     const result = probeOwnership();
     const inventory = fs
       .globSync(["ui/src/**/*.e2e.test.ts", ...qaLabFiles], { cwd: repoRoot })
@@ -438,148 +429,20 @@ describe("Control UI E2E resource ownership", () => {
       if (workers !== undefined) {
         expect(result.rootWorkers).toBe(workers);
       }
-      expect(result.files.filter((entry) => entry.phase === 1)).toEqual([
-        {
-          file: "ui/src/e2e/background-work.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
+      const bundledSerialFiles = new Set(
+        ["session-pr-reader-lifetime", "sidebar-running-counts", "task-pull-requests"].map(
+          (name) => `ui/src/e2e/${name}.real-gateway.e2e.test.ts`,
+        ),
+      );
+      expect(result.files.filter((entry) => entry.phase === 1)).toEqual(
+        serialGatewayFiles.toSorted().map((file) => ({
+          file,
+          project: bundledSerialFiles.has(file) ? "ui-e2e-serial" : "ui-e2e-serial-standalone",
           phase: 1,
           workers: 1,
           fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/chat-collaborator-scroll.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/chat-managed-media-order.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/chat-session-diff-folding.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/chat-steer-deferred-custody.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/chat-stop-owned-exec.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/chat-tts-supplement.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/chat-wait-clock.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/command-palette-search.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/deepseek-search.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/desktop-resize.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/device-platform-family.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: mcpFile,
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/peer-followup-restart.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/provider-browser-login.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/session-pr-reader-lifetime.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/session-roster-request-rate.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/sidebar-running-counts.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: "ui/src/e2e/task-pull-requests.real-gateway.e2e.test.ts",
-          project: "ui-e2e-serial",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-        {
-          file: workboardFile,
-          project: "ui-e2e-serial-standalone",
-          phase: 1,
-          workers: 1,
-          fileParallelism: false,
-        },
-      ]);
+        })),
+      );
       const parallel = result.files.filter((entry) => entry.phase === 2);
       expect(parallel).toHaveLength(28);
       expect(parallel.every((entry) => entry.fileParallelism)).toBe(true);
