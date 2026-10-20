@@ -11,7 +11,7 @@ import { loadAssistantAttachmentAvailability } from "./chat-message-attachment-a
 import { AssistantAttachments, MessageAttachment } from "./chat-message-attachments-solid.tsx";
 import { MessageImages } from "./chat-message-images-solid.tsx";
 import { stubObjectUrls } from "./chat-message-media.test-helpers.ts";
-import type { AssistantAttachmentItem, AttachmentItem, ImageBlock } from "./chat-message-media.ts";
+import type { AttachmentItem, ImageBlock } from "./chat-message-media.ts";
 import { MessageVideoPreview } from "./chat-message-video-preview-solid.tsx";
 import { SentCommentAttachments } from "./chat-sent-comments.tsx";
 
@@ -23,6 +23,21 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
+function attachment(
+  kind: AttachmentItem["attachment"]["kind"],
+  label: string,
+  url: string,
+  artifactId?: string,
+): AttachmentItem {
+  return {
+    type: "attachment",
+    attachment: { kind, label, url, ...(artifactId ? { artifactId } : {}) },
+  };
+}
+const commentResponse = (text: string) =>
+  new Response(
+    `Selected text:\n${text}\n\nSource session: agent:main:fixture\nDOM text UTF-16 range: [0, ${text.length})`,
+  );
 
 it.each(["replacement", "removal"] as const)(
   "reveals comments independently and cancels stale reads on %s",
@@ -34,10 +49,9 @@ it.each(["replacement", "removal"] as const)(
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise);
     vi.stubGlobal("fetch", fetchMock);
-    const initialComments: AttachmentItem[] = ["first", "second"].map((name) => ({
-      type: "attachment",
-      attachment: { kind: "document", label: name, url: `https://example.test/${name}.txt` },
-    }));
+    const initialComments = ["first", "second"].map((name) =>
+      attachment("document", name, `https://example.test/${name}.txt`),
+    );
     const [comments, setComments] = createSignal(initialComments);
     const view = mountSolid(() => (
       <SentCommentAttachments
@@ -53,11 +67,7 @@ it.each(["replacement", "removal"] as const)(
     expect(fetchMock).not.toHaveBeenCalled();
     view.getByRole("button").click();
     await waitForSolid(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    second.resolve(
-      new Response(
-        "Selected text:\nsecond source\n\nSource session: agent:main:fixture\nDOM text UTF-16 range: [0, 13)",
-      ),
-    );
+    second.resolve(commentResponse("second source"));
     await waitForSolid(() => expect(document.body.textContent).toContain("second source"));
     expect(document.body.textContent).toContain("Loading");
     const pendingSignal = fetchMock.mock.calls[0]![1]!.signal!;
@@ -72,11 +82,7 @@ it.each(["replacement", "removal"] as const)(
       view.unmount();
     }
     expect(pendingSignal.aborted).toBe(true);
-    first.resolve(
-      new Response(
-        "Selected text:\nfirst source\n\nSource session: agent:main:fixture\nDOM text UTF-16 range: [0, 12)",
-      ),
-    );
+    first.resolve(commentResponse("first source"));
     await first.promise;
     flush();
     expect(document.body.textContent).not.toContain("first source");
@@ -191,20 +197,13 @@ it("cancels an offscreen poster request and releases a parked poster without rep
 });
 
 it("preserves the playback element when the same attachment snapshot is refreshed", () => {
-  const attachment: AssistantAttachmentItem = {
-    type: "attachment",
-    attachment: {
-      kind: "audio",
-      label: "Recording",
-      url: "https://media.example.test/recording.mp3",
-    },
-  };
-  const [attachments, setAttachments] = createSignal([attachment]);
+  const recording = attachment("audio", "Recording", "https://media.example.test/recording.mp3");
+  const [attachments, setAttachments] = createSignal([recording]);
   const view = mountSolid(() => <AssistantAttachments attachments={attachments()} options={{}} />);
   const player = view.container.querySelector("openclaw-chat-audio-player");
   expect(player).not.toBeNull();
   setAttachments([
-    { ...attachment, attachment: { ...attachment.attachment, label: "Updated recording" } },
+    { ...recording, attachment: { ...recording.attachment, label: "Updated recording" } },
   ]);
   flush();
   expect(view.container.querySelector("openclaw-chat-audio-player")).toBe(player);
@@ -227,10 +226,7 @@ it.each(["document", "audio", "video"] as const)(
     const options = { resolveArtifactDownload };
     const view = mountSolid(() => (
       <MessageAttachment
-        item={{
-          type: "attachment",
-          attachment: { kind, label: `${kind} recording`, url, artifactId: `fixture-${kind}` },
-        }}
+        item={attachment(kind, `${kind} recording`, url, `fixture-${kind}`)}
         options={options}
         presentation="card"
       />

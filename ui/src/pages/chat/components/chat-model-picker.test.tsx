@@ -1,58 +1,16 @@
 /* @vitest-environment jsdom */
-
-import { createSignal } from "solid-js";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ModelProviderAuthLabel } from "../../../lib/model-provider-auth-label.ts";
-import { mountSolid } from "../../../test-helpers/mount-solid.ts";
-import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
-import { ChatModelPicker } from "./chat-model-picker.tsx";
+import { flush } from "../../../test-helpers/solid-settle.ts";
+import {
+  modelControl,
+  modelOption as option,
+  modelPickerProps as pickerProps,
+  mountModelPicker as mountPicker,
+  waitForModelMenu as waitForMenu,
+} from "./chat-model-picker.test-support.tsx";
 
 afterEach(() => document.body.replaceChildren());
-
-type PickerProps = Parameters<typeof ChatModelPicker>[0];
-type Option = PickerProps["modelOptions"][number];
-function option(provider: string, id: string, overrides: Partial<Option> = {}): Option {
-  return {
-    provider,
-    value: `${provider}/${id}`,
-    commitValue: `${provider}/${id}`,
-    label: id,
-    isDefault: false,
-    ...overrides,
-  };
-}
-function pickerProps(overrides: Partial<PickerProps> = {}): PickerProps {
-  return {
-    disabled: false,
-    modelSelectionLocked: false,
-    modelOptions: [],
-    selectedModelValue: "fixture/current",
-    sessionModelPinned: true,
-    sessionKey: "main",
-    triggerModelLabel: "Current",
-    onModelSelect: vi.fn(async () => {}),
-    ...overrides,
-  };
-}
-function mountPicker(params: Partial<PickerProps>) {
-  const container = document.body.appendChild(document.createElement("div"));
-  let update!: (next: PickerProps) => void;
-  mountSolid(
-    () => {
-      const [props, setProps] = createSignal(pickerProps(params));
-      update = (next) => {
-        setProps(() => next);
-        flush();
-      };
-      return <ChatModelPicker {...props()} />;
-    },
-    { container },
-  );
-  flush();
-  return { container, update };
-}
-const waitForMenu = (container: HTMLElement) =>
-  waitForSolid(() => expect(container.querySelector(".chat-controls__model-menu")).not.toBeNull());
 
 it("mounts model choices on first open and retains them across dismissal", async () => {
   const onModelSelect = vi.fn(async () => {});
@@ -60,13 +18,13 @@ it("mounts model choices on first open and retains them across dismissal", async
     modelOptions: [option("fixture", "current", { label: "Current" })],
     onModelSelect,
   });
-  expect(container.querySelector("[data-chat-model-option]")).toBeNull();
+  expect(modelControl(container, "option")).toBeNull();
   expect(container.querySelector(".chat-controls__model-menu")).toBeNull();
   const details = container.querySelector("details")!;
   details.querySelector("summary")!.click();
   flush();
   await waitForMenu(container);
-  const choice = container.querySelector<HTMLButtonElement>("[data-chat-model-option]")!;
+  const choice = modelControl<HTMLButtonElement>(container, "option")!;
   expect(choice.hidden).toBe(false);
   details.open = false;
   details.dispatchEvent(new Event("toggle"));
@@ -74,7 +32,7 @@ it("mounts model choices on first open and retains them across dismissal", async
   details.querySelector("summary")!.click();
   flush();
   await waitForMenu(container);
-  expect(container.querySelector("[data-chat-model-option]")).toBe(choice);
+  expect(modelControl(container, "option")).toBe(choice);
   choice.click();
   expect(onModelSelect).toHaveBeenCalledWith("fixture/current", "main", undefined);
 });
@@ -98,12 +56,8 @@ it.each([false, true])(
     const { container, update } = mountPicker(params);
     await waitForMenu(container);
     const details = container.querySelector<HTMLDetailsElement>("details")!;
-    const selected = container.querySelector<HTMLButtonElement>(
-      '[data-chat-model-option="selected/current"]',
-    )!;
-    const other = container.querySelector<HTMLButtonElement>(
-      '[data-chat-model-option="other/first"]',
-    )!;
+    const selected = modelControl<HTMLButtonElement>(container, "option", "selected/current")!;
+    const other = modelControl<HTMLButtonElement>(container, "option", "other/first")!;
     const toggle = selected
       .closest("section")!
       .querySelector<HTMLButtonElement>("[data-chat-model-provider-toggle]")!;
@@ -160,8 +114,8 @@ it.each([false, true])(
         : ["fixture/model-299", "fixture/model-0", "fixture/model-1"],
     );
     expect(rows[hasDefault ? 1 : 0]?.getAttribute("aria-selected")).toBe("true");
-    const more = container.querySelector<HTMLButtonElement>("[data-chat-model-more-toggle]")!;
-    const search = container.querySelector<HTMLInputElement>("[data-chat-model-search]")!;
+    const more = modelControl<HTMLButtonElement>(container, "more-toggle")!;
+    const search = modelControl<HTMLInputElement>(container, "search")!;
     search.value = "Model 298";
     search.dispatchEvent(new Event("input", { bubbles: true }));
     expect(rows.filter((row) => !row.hidden).map((row) => row.dataset.chatModelOption)).toEqual([
@@ -190,15 +144,13 @@ it.each([false, true])(
       open: true,
     });
     await waitForMenu(container);
-    const more = container.querySelector<HTMLButtonElement>("[data-chat-model-more-toggle]")!;
+    const more = modelControl<HTMLButtonElement>(container, "more-toggle")!;
     const details = container.querySelector("details")!;
     details.open = true;
     details.dispatchEvent(new Event("toggle"));
     await waitForMenu(container);
-    const rest = container.querySelector<HTMLButtonElement>(
-      '[data-chat-model-option="fixture/rest"]',
-    )!;
-    const group = container.querySelector<HTMLButtonElement>("[data-chat-model-provider-toggle]")!;
+    const rest = modelControl<HTMLButtonElement>(container, "option", "fixture/rest")!;
+    const group = modelControl<HTMLButtonElement>(container, "provider-toggle")!;
     expect(more.hidden).toBe(false);
     expect(rest.hidden).toBe(true);
 
@@ -208,9 +160,7 @@ it.each([false, true])(
     expect(more.hidden).toBe(true);
     expect(rest.hidden).toBe(false);
     // Keyboard focus lands on the first selectable revealed model, else back on search.
-    expect(document.activeElement).toBe(
-      restDisabled ? container.querySelector("[data-chat-model-search]") : rest,
-    );
+    expect(document.activeElement).toBe(restDisabled ? modelControl(container, "search") : rest);
 
     // Collapsing and reopening the provider group keeps the models inline, with no row to re-collapse.
     group.click();

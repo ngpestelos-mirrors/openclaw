@@ -4,10 +4,11 @@ import { page, userEvent } from "vitest/browser";
 import { registerMenuShortcuts } from "../../../components/menu-shortcuts.ts";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
 import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
+import { focusChatComposerFromPrintableKeydown } from "../chat-pane-shared.ts";
 import "../../../styles/base.css";
 import "../../../styles/chat/composer.css";
-import { focusChatComposerFromPrintableKeydown } from "../chat-pane-shared.ts";
 import { focusComposerFromChrome } from "./chat-composer-dom.ts";
+import { modelControl, modelOption, modelPickerProps } from "./chat-model-picker.test-support.tsx";
 import { ChatModelPicker } from "./chat-model-picker.tsx";
 import { installChatComposerPickerDismissal } from "./chat-picker-overlay.ts";
 
@@ -22,22 +23,15 @@ afterEach(() => {
 function mountPicker(optionsReady = true) {
   document.body.append(container);
   dispose = installChatComposerPickerDismissal(document);
-  const modelOptions = ["Alpha", "Beta", "Gamma"].map((label) => ({
-    label,
-    value: (label === "Gamma" ? "other/" : "example/") + label.toLowerCase(),
-    commitValue: (label === "Gamma" ? "other/" : "example/") + label.toLowerCase(),
-    provider: label === "Gamma" ? "other" : "example",
-    isDefault: false,
-  }));
+  const modelOptions = ["Alpha", "Beta", "Gamma"].map((label) =>
+    modelOption(label === "Gamma" ? "other" : "example", label.toLowerCase(), { label }),
+  );
   const params = {
-    disabled: false,
-    modelSelectionLocked: false,
-    selectedModelValue: "example/alpha",
-    sessionModelPinned: true,
-    sessionKey: "main",
-    triggerModelLabel: "Alpha",
-    modelOptions: optionsReady ? modelOptions : [],
-    onModelSelect: vi.fn(async () => {}),
+    ...modelPickerProps({
+      selectedModelValue: "example/alpha",
+      triggerModelLabel: "Alpha",
+      modelOptions: optionsReady ? modelOptions : [],
+    }),
     onOpenChange: vi.fn(),
   };
   let update!: () => void;
@@ -102,22 +96,16 @@ it("opens during activation and preserves filter focus and query across catalog 
   composer.value = "Keep this draft";
   composer.focus();
   await toggle(() => page.getByText("Alpha", { exact: true }).first().click());
-  const search = picker.querySelector<HTMLInputElement>("[data-chat-model-search]")!;
+  const search = modelControl<HTMLInputElement>(picker, "search")!;
   expect(visibleAtActivation).toBe(true);
   expect(params.onOpenChange).toHaveBeenCalledExactlyOnceWith(true);
   expect(document.activeElement).toBe(search);
   await userEvent.keyboard("beta");
   expect(search.value).toBe("beta");
   expect(composer.value).toBe("Keep this draft");
-  expect(
-    container.querySelector<HTMLButtonElement>('[data-chat-model-option="example/alpha"]')!.hidden,
-  ).toBe(true);
-  expect(
-    container.querySelector<HTMLButtonElement>('[data-chat-model-option="example/beta"]')!.hidden,
-  ).toBe(false);
-  const option = container.querySelector<HTMLButtonElement>(
-    '[data-chat-model-option="example/beta"]',
-  )!;
+  expect(modelControl<HTMLButtonElement>(container, "option", "example/alpha")!.hidden).toBe(true);
+  expect(modelControl<HTMLButtonElement>(container, "option", "example/beta")!.hidden).toBe(false);
+  const option = modelControl<HTMLButtonElement>(container, "option", "example/beta")!;
   expect(option.checkVisibility()).toBe(true);
   option.focus();
   expect(document.activeElement).toBe(option);
@@ -133,9 +121,9 @@ it("opens during activation and preserves filter focus and query across catalog 
 it("clears the active descendant when a catalog refresh removes the filtered choice", async () => {
   const { picker, toggle, params, update } = mountPicker();
   await toggle(() => page.getByText("Alpha", { exact: true }).first().click());
-  const search = picker.querySelector<HTMLInputElement>("[data-chat-model-search]")!;
+  const search = modelControl<HTMLInputElement>(picker, "search")!;
   await userEvent.keyboard("beta");
-  const highlighted = container.querySelector<HTMLElement>("[data-chat-model-highlighted]")!;
+  const highlighted = modelControl<HTMLElement>(container, "highlighted")!;
   expect(highlighted.textContent).toContain("Beta");
   expect(search.getAttribute("aria-activedescendant")).toBe(highlighted.id);
   params.modelOptions = params.modelOptions.filter((option) => option.value !== "example/beta");
@@ -143,7 +131,7 @@ it("clears the active descendant when a catalog refresh removes the filtered cho
   await Promise.resolve();
   expect(search.value).toBe("beta");
   expect(search.hasAttribute("aria-activedescendant")).toBe(false);
-  expect(container.querySelector("[data-chat-model-highlighted]")).toBeNull();
+  expect(modelControl(container, "highlighted")).toBeNull();
 });
 
 it("keeps a disabled picker closed on keyboard activation", async () => {
@@ -187,7 +175,7 @@ it("focuses the filter on keyboard open and reopen, and returns Escape to the tr
   trigger.focus();
   for (const key of ["{Enter}", " "]) {
     await toggle(() => userEvent.keyboard(key));
-    const search = picker.querySelector<HTMLInputElement>("[data-chat-model-search]")!;
+    const search = modelControl<HTMLInputElement>(picker, "search")!;
     expect(document.activeElement).toBe(search);
     await userEvent.keyboard("beta");
     await userEvent.keyboard("{Escape}");
@@ -228,7 +216,7 @@ it.each(["open", "closed", "removed", "focus moved"])(
     const { picker, trigger, composer, toggle, params, modelOptions, update } = mountPicker(false);
     trigger.focus();
     await toggle(() => userEvent.keyboard("{Enter}"));
-    expect(picker.querySelector("[data-chat-model-search]")).toBeNull();
+    expect(modelControl(picker, "search")).toBeNull();
     if (state === "closed") {
       await toggle(() => userEvent.keyboard("{Escape}"));
     } else if (state === "removed") {
@@ -241,7 +229,7 @@ it.each(["open", "closed", "removed", "focus moved"])(
     params.modelOptions = modelOptions;
     update();
     await new Promise(requestAnimationFrame);
-    const search = picker.querySelector<HTMLInputElement>("[data-chat-model-search]")!;
+    const search = modelControl<HTMLInputElement>(picker, "search")!;
     expect(search).not.toBeNull();
     expect(document.activeElement).toBe(state === "open" ? search : previousFocus);
   },
@@ -252,7 +240,7 @@ it.each(["trigger", "Escape", "selection"])(
   async (close) => {
     const { picker, trigger, toggle, update, params } = mountPicker();
     await toggle(() => page.getByText("Alpha", { exact: true }).first().click());
-    const search = picker.querySelector<HTMLInputElement>("[data-chat-model-search]")!;
+    const search = modelControl<HTMLInputElement>(picker, "search")!;
     const selectedToggle = picker.querySelector<HTMLButtonElement>(
       '[data-chat-model-provider-group="example"] [data-chat-model-provider-toggle]',
     )!;
@@ -266,9 +254,7 @@ it.each(["trigger", "Escape", "selection"])(
     // Search reveals matching rows temporarily without changing group intent.
     await userEvent.click(search);
     await userEvent.keyboard("beta");
-    expect(
-      picker.querySelector<HTMLButtonElement>('[data-chat-model-option="example/beta"]')!.hidden,
-    ).toBe(false);
+    expect(modelControl<HTMLButtonElement>(picker, "option", "example/beta")!.hidden).toBe(false);
     update();
     await Promise.resolve();
     if (close === "trigger") {
@@ -286,12 +272,8 @@ it.each(["trigger", "Escape", "selection"])(
     await toggle(() => userEvent.click(trigger));
     expect(selectedToggle.getAttribute("aria-expanded")).toBe("false");
     expect(otherToggle.getAttribute("aria-expanded")).toBe("true");
-    const hidden = picker.querySelector<HTMLButtonElement>(
-      '[data-chat-model-option="example/beta"]',
-    )!;
-    const visible = picker.querySelector<HTMLButtonElement>(
-      '[data-chat-model-option="other/gamma"]',
-    )!;
+    const hidden = modelControl<HTMLButtonElement>(picker, "option", "example/beta")!;
+    const visible = modelControl<HTMLButtonElement>(picker, "option", "other/gamma")!;
     expect(hidden.hidden).toBe(true);
     expect(hidden.checkVisibility()).toBe(false);
     expect(visible.hidden).toBe(false);
