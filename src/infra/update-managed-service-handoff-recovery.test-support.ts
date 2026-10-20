@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { Compilable } from "kysely";
 import { vi } from "vitest";
 import * as pidAlive from "../shared/pid-alive.js";
 import { executeSqliteQuerySync } from "./kysely-sync.js";
@@ -76,6 +77,13 @@ export function createManagedHandoffRecoveryFixture(root: string) {
     }
     return found.lease;
   };
+  const mutate = (
+    query: (tables: ReturnType<typeof leaseQueries>) => Compilable<unknown>,
+    key = root,
+  ) => {
+    database(true, (db) => executeSqliteQuerySync(db, query(leaseQueries(db))));
+    return current(key);
+  };
   return {
     root,
     store,
@@ -101,18 +109,16 @@ export function createManagedHandoffRecoveryFixture(root: string) {
           : { kind: "triage", phase: "uncertain", lifetime: { kind: "foreground", boot } },
       });
       facts.timeoutMs = options.timeoutMs ?? null;
-      database(true, (db) =>
-        executeSqliteQuerySync(
-          db,
-          leaseQueries(db).insertInto("managed_update_handoffs").values({
+      return mutate(
+        (tables) =>
+          tables.insertInto("managed_update_handoffs").values({
             install_root: key,
             owner: "prior-owner",
             payload_json: payload,
             updated_at: updatedAt,
           }),
-        ),
+        key,
       );
-      return current(key);
     },
     readMetadata(lease: ManagedHandoffLease) {
       return database(true, (db) =>
@@ -122,16 +128,12 @@ export function createManagedHandoffRecoveryFixture(root: string) {
       );
     },
     replaceHeartbeat(lease: ManagedHandoffLease) {
-      database(true, (db) =>
-        executeSqliteQuerySync(
-          db,
-          leaseQueries(db)
-            .updateTable("managed_update_handoffs")
-            .set({ updated_at: lease.updatedAt + 1 })
-            .where("install_root", "=", root),
-        ),
+      return mutate((tables) =>
+        tables
+          .updateTable("managed_update_handoffs")
+          .set({ updated_at: lease.updatedAt + 1 })
+          .where("install_root", "=", root),
       );
-      return current();
     },
   };
 }

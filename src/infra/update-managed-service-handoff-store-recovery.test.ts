@@ -9,12 +9,9 @@ import { createManagedHandoffLeaseStore } from "./update-managed-service-handoff
 const fixture = vi.hoisted(() => ({ root: "" }));
 vi.mock("./tmp-openclaw-dir.js", () => ({ resolvePreferredOpenClawTmpDir: () => fixture.root }));
 
-// Windows does not implement the POSIX permission bits checked by this repair.
 const unix = process.platform === "win32" ? it.skip : it;
-
 let configPath: string;
 let databasePath: string;
-
 beforeEach(() => {
   fixture.root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "handoff-store-")));
   fs.chmodSync(fixture.root, 0o700);
@@ -26,13 +23,14 @@ afterEach(() => {
   fs.rmSync(fixture.root, { recursive: true, force: true });
 });
 
-/** Stop where a crash would: `open` creates the file before the store chmods it. */
-function interruptFirstWrite() {
+// Simulate a crash between file creation and permission repair.
+function interruptFirstWrite(mode = 0o644) {
   openNodeSqliteDatabase(databasePath, { readOnly: false }).close();
-  fs.chmodSync(databasePath, 0o644);
+  fs.chmodSync(databasePath, mode);
 }
 const fileMode = () => fs.statSync(databasePath).mode & 0o777;
-
+const retainedStores = () =>
+  fs.readdirSync(fixture.root).filter((name) => name.includes(".sqlite.unsafe-file."));
 async function writeConfig() {
   const callback = vi.fn(async () => {
     fs.writeFileSync(configPath, "{}");
@@ -52,9 +50,7 @@ function acquireLease() {
 unix("recovers a store left world-readable by an interrupted first write", async () => {
   interruptFirstWrite();
   expect(fileMode()).toBe(0o644);
-
   await writeConfig();
-  // Repaired in place, not merely tolerated: the next reader finds the invariant.
   expect(fileMode()).toBe(0o600);
 });
 
@@ -63,20 +59,11 @@ unix("keeps the private mode once an ordinary lease has been admitted", () => {
   expect(fileMode()).toBe(0o600);
 });
 
-const retainedStores = () =>
-  fs.readdirSync(fixture.root).filter((name) => name.includes(".sqlite.unsafe-file."));
-
-unix.each([0o664, 0o666, 0o602])(
-  "recovers a store that was writable by others (%s)",
-  async (mode) => {
-    interruptFirstWrite();
-    // chmod cannot revoke existing descriptors: quarantine these contents, never adopt them.
-    fs.chmodSync(databasePath, mode);
-
-    await writeConfig();
-    expect(retainedStores()).toHaveLength(1);
-  },
-);
+unix.each([0o664, 0o666, 0o602])("quarantines a writable store (%s)", async (mode) => {
+  interruptFirstWrite(mode);
+  await writeConfig();
+  expect(retainedStores()).toHaveLength(1);
+});
 
 unix("recovers a store owned by another user without adopting it", async () => {
   interruptFirstWrite();
@@ -85,38 +72,29 @@ unix("recovers a store owned by another user without adopting it", async () => {
   // Only the original inode is foreign; its replacement must remain adoptable.
   vi.spyOn(fs, "lstatSync").mockImplementation(((target: fs.PathLike, ...rest: never[]) => {
     const stat = realLstatSync(target, ...rest);
-    // Keep the Stats prototype so isFile()/isSymbolicLink() stay real.
     return stat?.ino === foreignIno
       ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid: stat.uid + 1 })
       : stat;
   }) as typeof fs.lstatSync);
-
   await writeConfig();
   vi.restoreAllMocks();
   expect(retainedStores()).toHaveLength(1);
   expect(fileMode()).toBe(0o600);
 });
 
-// A private directory makes excess file read bits defense in depth.
 unix("restores a directory that stopped being private", () => {
   const store = acquireLease();
   fs.chmodSync(fixture.root, 0o755);
-
   expect(() => store.assertSourceUnborrowed(configPath)).not.toThrow();
   expect(fs.statSync(fixture.root).mode & 0o777).toBe(0o700);
 });
 
-// Pins convergence, not the cross-process repair-lock interleaving.
 unix("converges on one live store and one retained copy", () => {
-  interruptFirstWrite();
-  fs.chmodSync(databasePath, 0o666);
-
+  interruptFirstWrite(0o666);
   for (const store of [createManagedHandoffLeaseStore(), createManagedHandoffLeaseStore()]) {
     expect(() => store.assertSourceUnborrowed(configPath)).not.toThrow();
   }
-
   expect(retainedStores()).toHaveLength(1);
   expect(fileMode()).toBe(0o600);
-  // The repair lock is released, so the next caller is not left waiting on it.
   expect(fs.existsSync(`${databasePath}.lock`)).toBe(false);
 });
