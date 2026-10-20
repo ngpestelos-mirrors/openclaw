@@ -1,12 +1,9 @@
-// Isolated-gateway two-turn parent-agent/model trace. A real in-process
-// gateway plus mock OpenAI Responses provider runs two parent agent turns.
-// Between them a keep-cleanup child reaches terminal on the live registry.
-// The later model request is the assembled system prompt the parent sees.
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   loadSubagentRegistryFromSqlite,
@@ -29,25 +26,13 @@ import { clearSessionStoreCacheForTest } from "../config/sessions/store-writer-s
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.js";
 import { captureEnv, deleteTestEnvValue, setTestEnvValue } from "../test-utils/env.js";
+import {
+  closeProvider,
+  listenProvider,
+  readProviderBody,
+} from "./gateway-provider-fixture.test-support.js";
 import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.e2e.js";
 import { buildMockOpenAiResponsesProvider } from "./test-openai-responses-model.js";
-
-const ENV_KEYS = [
-  "HOME",
-  "OPENCLAW_STATE_DIR",
-  "OPENCLAW_CONFIG_PATH",
-  "OPENCLAW_GATEWAY_TOKEN",
-  "OPENCLAW_TEST_MINIMAL_GATEWAY",
-  "OPENCLAW_SKIP_CHANNELS",
-  "OPENCLAW_SKIP_GMAIL_WATCHER",
-  "OPENCLAW_SKIP_CRON",
-  "OPENCLAW_SKIP_CANVAS_HOST",
-  "OPENCLAW_SKIP_BROWSER_CONTROL_SERVER",
-  "OPENCLAW_SKIP_PROVIDERS",
-  "OPENCLAW_BUNDLED_PLUGINS_DIR",
-  "OPENCLAW_DISABLE_BUNDLED_PLUGINS",
-  "OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE",
-] as const;
 
 const RUN_ID = "run-gw-prompt-recent";
 const CHILD_SESSION_KEY = "agent:main:subagent:gw-prompt-recent";
@@ -64,14 +49,6 @@ async function resetGatewayState(): Promise<void> {
 }
 
 afterEach(resetGatewayState);
-
-function excerptRecentlyCompleted(raw: string | undefined): string | null {
-  if (!raw) {
-    return null;
-  }
-  const start = raw.indexOf("## Recently Completed Subagents");
-  return start >= 0 ? raw.slice(start, start + 700) : null;
-}
 
 async function runParentAgentTurn(
   client: Awaited<ReturnType<typeof startGatewayWithClient>>["client"],
@@ -99,7 +76,6 @@ describe("Completed child results on a real parent-agent turn", () => {
     "later parent model request includes the completed child: %s",
     { timeout: 90_000 },
     async (kind) => {
-      const env = captureEnv([...ENV_KEYS]);
       const home = tempDirs.make("openclaw-gw-subagent-prompt-recent-");
       const stateDir = path.join(home, ".openclaw");
       const workspace = path.join(home, "workspace");
@@ -110,7 +86,7 @@ describe("Completed child results on a real parent-agent turn", () => {
         fs.mkdir(bundledPluginsDir, { recursive: true }),
         fs.mkdir(stateDir, { recursive: true }),
       ]);
-      for (const [key, value] of Object.entries({
+      const environment = {
         HOME: home,
         OPENCLAW_STATE_DIR: stateDir,
         OPENCLAW_SKIP_CHANNELS: "1",
@@ -122,7 +98,14 @@ describe("Completed child results on a real parent-agent turn", () => {
         OPENCLAW_BUNDLED_PLUGINS_DIR: bundledPluginsDir,
         OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
         OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE: "1",
-      })) {
+      };
+      const env = captureEnv([
+        ...Object.keys(environment),
+        "OPENCLAW_CONFIG_PATH",
+        "OPENCLAW_GATEWAY_TOKEN",
+        "OPENCLAW_TEST_MINIMAL_GATEWAY",
+      ]);
+      for (const [key, value] of Object.entries(environment)) {
         setTestEnvValue(key, value);
       }
       deleteTestEnvValue("OPENCLAW_CONFIG_PATH");
@@ -132,51 +115,19 @@ describe("Completed child results on a real parent-agent turn", () => {
       const requests: string[] = [];
       const providerServer = createServer((request, response) => {
         void (async () => {
-          const chunks: Buffer[] = [];
-          for await (const chunk of request) {
-            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-          }
-          requests.push(Buffer.concat(chunks).toString("utf8"));
-          const message = {
-            type: "message",
-            id: randomUUID(),
-            role: "assistant",
-            status: "completed",
-            content: [{ type: "output_text", text: "ok", annotations: [] }],
-          };
-          response.writeHead(200, { "content-type": "text/event-stream" });
-          for (const event of [
-            {
-              type: "response.output_item.added",
-              item: { ...message, status: "in_progress", content: [] },
-            },
-            { type: "response.output_item.done", item: message },
-            {
-              type: "response.completed",
-              response: {
-                status: "completed",
-                usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
-              },
-            },
-          ]) {
-            response.write(`data: ${JSON.stringify(event)}\n\n`);
-          }
-          response.end("data: [DONE]\n\n");
+          requests.push(await readProviderBody(request));
+          writeOpenAiResponsesText(response, {
+            text: "ok",
+            messageId: randomUUID(),
+            responseId: randomUUID(),
+          });
         })().catch((error: unknown) => response.writeHead(500).end(String(error)));
       });
 
       let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
       try {
-        await new Promise<void>((resolve, reject) => {
-          providerServer.once("error", reject);
-          providerServer.listen(0, "127.0.0.1", resolve);
-        });
-        const address = providerServer.address();
-        if (!address || typeof address === "string") {
-          throw new Error("mock provider did not bind");
-        }
         const provider = buildMockOpenAiResponsesProvider(
-          `http://127.0.0.1:${address.port}/v1`,
+          await listenProvider(providerServer),
           "prompt-recent",
         );
         const token = `prompt-recent-${process.pid}`;
@@ -291,20 +242,6 @@ describe("Completed child results on a real parent-agent turn", () => {
             "agent:main:unrelated",
           );
           expect(requests.slice(unrelatedCursor).join("\n")).not.toContain(result);
-          console.log(
-            `OPENCLAW_ISOLATED_GATEWAY_CATCHUP_VERDICT ${JSON.stringify({
-              surface: "isolated-gateway",
-              path: "real-parent-model-request",
-              source: "seeded-registry-owner-result",
-              result,
-              resultAgeMs: 7_200_000,
-              spawnDenied: true,
-              heartbeatDisabled: true,
-              requesterSawResult: true,
-              unrelatedRequesterSawResult: false,
-              deliveryStateUnchanged: true,
-            })}`,
-          );
           return;
         }
 
@@ -350,28 +287,12 @@ describe("Completed child results on a real parent-agent turn", () => {
         expect(laterParentTurn).toContain(RUN_ID);
         expect(laterParentTurn).toContain(CHILD_SESSION_KEY);
         expect(laterParentTurn).not.toContain("## Active Subagents");
-
-        const verdict = {
-          surface: "isolated-gateway",
-          path: "parent-agent-model-turn",
-          firstParentTurn: { assembledPrompt: excerptRecentlyCompleted(firstParentTurn) },
-          completion: { runId: RUN_ID, terminal: true },
-          laterParentTurn: {
-            hasOutstandingRequesterContinuation: hasOutstanding,
-            hasRecentlyCompleted: hasRecent,
-            runId: RUN_ID,
-          },
-        };
-        console.log(`OPENCLAW_ISOLATED_GATEWAY_VERDICT ${JSON.stringify(verdict)}`);
       } finally {
         if (gateway) {
           await disconnectGatewayClient(gateway.client).catch(() => undefined);
           await gateway.server.close({ reason: "subagent prompt recent proof complete" });
         }
-        providerServer.closeAllConnections();
-        await new Promise<void>((resolve) => {
-          providerServer.close(() => resolve());
-        });
+        await closeProvider(providerServer);
         env.restore();
       }
     },

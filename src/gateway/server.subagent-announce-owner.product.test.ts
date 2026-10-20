@@ -1,66 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
 import { afterEach, expect, it } from "vitest";
-import {
-  writeOpenAiResponsesSse,
-  writeOpenAiResponsesText,
-} from "../../test/helpers/openai-responses-sse.js";
+import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { resetSubagentRegistryForTests } from "../agents/subagents/registry/subagent-registry.test-helpers.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import {
+  closeProvider,
+  listenProvider,
+  readProviderBody,
+  writeToolCall,
+} from "./gateway-provider-fixture.test-support.js";
 import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.e2e.js";
+import { buildMockOpenAiResponsesProvider } from "./test-openai-responses-model.js";
 
 const opsPrompt = "Keep the operations turn active while research finishes.";
 const parentPrompt = "Spawn the research child now.";
 const childTask = "Return the isolated research result.";
 const childResult = "RESEARCH_CHILD_RESULT_7d61b2";
-
-function toolCallEvents(name: string, args: Record<string, unknown>) {
-  // Emit the complete Responses streaming sequence consumed by production tool dispatch.
-  const responseId = `resp_${randomUUID()}`;
-  const itemId = `fc_${randomUUID()}`;
-  const callId = `call_${randomUUID()}`;
-  const argumentsText = JSON.stringify(args);
-  const item = {
-    type: "function_call",
-    id: itemId,
-    call_id: callId,
-    name,
-    arguments: argumentsText,
-  };
-  return [
-    {
-      type: "response.created",
-      response: { id: responseId, object: "response", status: "in_progress", output: [] },
-    },
-    { type: "response.output_item.added", output_index: 0, item: { ...item, arguments: "" } },
-    {
-      type: "response.function_call_arguments.delta",
-      item_id: itemId,
-      output_index: 0,
-      delta: argumentsText,
-    },
-    {
-      type: "response.function_call_arguments.done",
-      item_id: itemId,
-      output_index: 0,
-      arguments: argumentsText,
-    },
-    { type: "response.output_item.done", output_index: 0, item },
-    {
-      type: "response.completed",
-      response: {
-        id: responseId,
-        object: "response",
-        status: "completed",
-        output: [item],
-        usage: { input_tokens: 8, output_tokens: 4, total_tokens: 12 },
-      },
-    },
-  ];
-}
 
 type ChildSpawnReceipt = { childSessionKey: string; runId: string };
 
@@ -72,15 +30,6 @@ function findChildSpawnReceipt(value: unknown): ChildSpawnReceipt | undefined {
     } catch {
       return undefined;
     }
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const matched = findChildSpawnReceipt(item);
-      if (matched) {
-        return matched;
-      }
-    }
-    return undefined;
   }
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
@@ -97,14 +46,6 @@ function findChildSpawnReceipt(value: unknown): ChildSpawnReceipt | undefined {
   return undefined;
 }
 
-async function readRequestBody(request: IncomingMessage): Promise<string> {
-  let body = "";
-  for await (const chunk of request) {
-    body += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-  }
-  return body;
-}
-
 async function startModelServer() {
   const opsStarted = createDeferred();
   const releaseOps = createDeferred();
@@ -118,6 +59,8 @@ async function startModelServer() {
       response.destroy(error instanceof Error ? error : undefined);
     });
   });
+  const reply = (response: ServerResponse, text: string, id: string) =>
+    writeOpenAiResponsesText(response, { text, messageId: id, responseId: `${id}_response` });
   async function handleRequest(request: IncomingMessage, response: ServerResponse) {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/v1/models") {
@@ -129,7 +72,7 @@ async function startModelServer() {
       response.writeHead(404).end();
       return;
     }
-    const body = await readRequestBody(request);
+    const body = await readProviderBody(request);
     requests.push(body);
     // Hold the peer turn at the provider so requester activity overlaps deterministically.
     if (body.includes(opsPrompt)) {
@@ -138,32 +81,27 @@ async function startModelServer() {
         opsStarted.resolve();
         await releaseOps.promise;
       }
-      writeOpenAiResponsesText(response, {
-        text: "Operations turn complete.",
-        messageId: `ops_${opsRequests}`,
-        responseId: `ops_response_${opsRequests}`,
-      });
+      reply(response, "Operations turn complete.", `ops_${opsRequests}`);
       return;
     }
     if (body.includes(parentPrompt)) {
       // A private completion returns to the same research transcript through a new agent turn.
       if (body.includes(childResult)) {
-        writeOpenAiResponsesText(response, {
-          text: "NO_REPLY",
-          messageId: "research_completion",
-          responseId: "research_completion_response",
-        });
+        reply(response, "NO_REPLY", "research_completion");
         return;
       }
       if (!body.includes("function_call_output")) {
-        writeOpenAiResponsesSse(
+        writeToolCall(
           response,
-          toolCallEvents("sessions_spawn", {
+          "sessions_spawn",
+          {
             task: childTask,
             context: "isolated",
             completionTarget: "parent",
             cleanup: "delete",
-          }),
+          },
+          8,
+          4,
         );
         return;
       }
@@ -171,53 +109,33 @@ async function startModelServer() {
       if (childReceipt) {
         childAccepted.resolve(childReceipt);
       }
-      writeOpenAiResponsesText(response, {
-        text: "Research child accepted.",
-        messageId: "research_parent",
-        responseId: "research_parent_response",
-      });
+      reply(response, "Research child accepted.", "research_parent");
       return;
     }
     if (body.includes(childTask)) {
       // Finish the child only after the parent is idle and the peer agent is active.
       childStarted.resolve();
       await releaseChild.promise;
-      writeOpenAiResponsesText(response, {
-        text: childResult,
-        messageId: "research_child",
-        responseId: "research_child_response",
-      });
+      reply(response, childResult, "research_child");
       return;
     }
-    writeOpenAiResponsesText(response, {
-      text: "NO_REPLY",
-      messageId: `fallback_${randomUUID()}`,
-      responseId: `fallback_response_${randomUUID()}`,
-    });
+    reply(response, "NO_REPLY", `fallback_${randomUUID()}`);
   }
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address() as AddressInfo;
+  const url = await listenProvider(server);
   return {
-    url: `http://127.0.0.1:${address.port}/v1`,
+    url,
     opsStarted: opsStarted.promise,
     releaseOps: () => releaseOps.resolve(),
     childStarted: childStarted.promise,
     releaseChild: () => releaseChild.resolve(),
     childAccepted: childAccepted.promise,
     requests,
-    close: async () => {
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      });
-    },
+    close: () => closeProvider(server),
   };
 }
 
 function buildConfig(workspace: string, modelUrl: string): OpenClawConfig {
+  const { config } = buildMockOpenAiResponsesProvider(modelUrl, "announce-owner");
   return {
     agents: {
       ownership: "explicit",
@@ -235,18 +153,14 @@ function buildConfig(workspace: string, modelUrl: string): OpenClawConfig {
       mode: "replace",
       providers: {
         synthetic: {
-          api: "openai-responses",
+          ...config,
           agentRuntime: { id: "openclaw" },
-          baseUrl: modelUrl,
           apiKey: "synthetic-test-key",
           request: { allowPrivateNetwork: true },
           models: [
             {
-              id: "announce-owner",
+              ...config.models[0],
               name: "Announce owner",
-              reasoning: false,
-              input: ["text"],
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               contextWindow: 4096,
               maxTokens: 1024,
               agentRuntime: { id: "openclaw" },

@@ -1,5 +1,3 @@
-// Gateway server chat tests cover WebSocket chat flow, history construction,
-// NO_REPLY handling, agent events, and connected control-UI delivery.
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
@@ -61,6 +59,26 @@ describe("gateway server chat", () => {
         event.payload?.runId === runId,
       8_000,
     );
+  const waitForSideResult = (runId: string) =>
+    onceMessage(
+      ws,
+      (event) =>
+        event.type === "event" &&
+        event.event === "chat.side_result" &&
+        event.payload?.kind === "btw" &&
+        event.payload?.runId === runId,
+      8_000,
+    );
+  const sendChat = async (idempotencyKey: string, message: string) => {
+    const res = await rpcReq(ws, "chat.send", { sessionKey: "main", message, idempotencyKey });
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    return res;
+  };
+  const readHistory = async () => {
+    const res = await rpcReq<{ messages?: unknown[] }>(ws, "chat.history", { sessionKey: "main" });
+    expect(res.ok).toBe(true);
+    return res.payload?.messages ?? [];
+  };
 
   const loadChatHistoryWithMessages = async (
     messages: Array<Record<string, unknown>>,
@@ -68,11 +86,7 @@ describe("gateway server chat", () => {
     return withMainSessionStore(async () => {
       await replaceMainTranscriptMessages(messages);
 
-      const res = await rpcReq<{ messages?: unknown[] }>(ws, "chat.history", {
-        sessionKey: "main",
-      });
-      expect(res.ok).toBe(true);
-      return res.payload?.messages ?? [];
+      return readHistory();
     });
   };
 
@@ -217,20 +231,11 @@ describe("gateway server chat", () => {
       ]);
       const finalPromise = waitForChatEvent("idem-fenced-code-indentation");
 
-      const result = await rpcReq(ws, "chat.send", {
-        sessionKey: "main",
-        message: "show the YAML",
-        idempotencyKey: "idem-fenced-code-indentation",
-      });
-      expect(result.ok).toBe(true);
+      await sendChat("idem-fenced-code-indentation", "show the YAML");
       const finalEvent = await finalPromise;
       expect(extractFirstTextBlock(finalEvent.payload?.message)).toBe(expected);
 
-      const history = await rpcReq<{ messages?: unknown[] }>(ws, "chat.history", {
-        sessionKey: "main",
-      });
-      expect(history.ok).toBe(true);
-      expect(collectHistoryTextValues(history.payload?.messages ?? [])).toContain(expected);
+      expect(collectHistoryTextValues(await readHistory())).toContain(expected);
     });
   });
 
@@ -239,12 +244,7 @@ describe("gateway server chat", () => {
       const spy = vi.mocked(agentCommandMock);
       const callsBefore = spy.mock.calls.length;
       const eventPromise = waitForChatEvent("idem-command-1");
-      const res = await rpcReq(ws, "chat.send", {
-        sessionKey: "main",
-        message: "/context list",
-        idempotencyKey: "idem-command-1",
-      });
-      expect(res.ok).toBe(true);
+      await sendChat("idem-command-1", "/context list");
       await eventPromise;
       expect(spy.mock.calls.length).toBe(callsBefore);
     });
@@ -256,24 +256,10 @@ describe("gateway server chat", () => {
         createGatewayHistoryText("user", "main thread context", Date.now()),
       ]);
       mockDispatchedReplies("final", [{ text: "323", btw: { question: "what is 17 * 19?" } }]);
-      const sideResultPromise = onceMessage(
-        ws,
-        (o) =>
-          o.type === "event" &&
-          o.event === "chat.side_result" &&
-          o.payload?.kind === "btw" &&
-          o.payload?.runId === "idem-btw-1",
-        8000,
-      );
+      const sideResultPromise = waitForSideResult("idem-btw-1");
       const finalPromise = waitForChatEvent("idem-btw-1");
 
-      const res = await rpcReq(ws, "chat.send", {
-        sessionKey: "main",
-        message: "/btw what is 17 * 19?",
-        idempotencyKey: "idem-btw-1",
-      });
-
-      expect(res.ok).toBe(true);
+      await sendChat("idem-btw-1", "/btw what is 17 * 19?");
       await waitForFast(() => {
         expect(dispatchInboundMessageMock).toHaveBeenCalled();
       });
@@ -292,12 +278,7 @@ describe("gateway server chat", () => {
         state: "final",
       });
 
-      const historyRes = await rpcReq<{ messages?: unknown[] }>(ws, "chat.history", {
-        sessionKey: "main",
-      });
-      expect(historyRes.ok).toBe(true);
-      const historyTexts = collectHistoryTextValues(historyRes.payload?.messages ?? []);
-      expect(historyTexts).toEqual(["main thread context"]);
+      expect(collectHistoryTextValues(await readHistory())).toEqual(["main thread context"]);
     });
   });
 
@@ -307,22 +288,8 @@ describe("gateway server chat", () => {
         { text: "```yaml\nroot:\n", btw: { question: "show YAML" } },
         { text: "  nested:\n    value: true\n```", btw: { question: "show YAML" } },
       ]);
-      const sideResultPromise = onceMessage(
-        ws,
-        (event) =>
-          event.type === "event" &&
-          event.event === "chat.side_result" &&
-          event.payload?.kind === "btw" &&
-          event.payload?.runId === "idem-btw-fenced-code-indentation",
-        8_000,
-      );
-
-      const result = await rpcReq(ws, "chat.send", {
-        sessionKey: "main",
-        message: "/btw show YAML",
-        idempotencyKey: "idem-btw-fenced-code-indentation",
-      });
-      expect(result.ok).toBe(true);
+      const sideResultPromise = waitForSideResult("idem-btw-fenced-code-indentation");
+      await sendChat("idem-btw-fenced-code-indentation", "/btw show YAML");
       expectRecordFields((await sideResultPromise).payload, {
         kind: "btw",
         runId: "idem-btw-fenced-code-indentation",
@@ -344,12 +311,7 @@ describe("gateway server chat", () => {
 
         const finalPromise = waitForChatEvent("idem-managed-image-history");
         await Promise.all([
-          rpcReq(ws, "chat.send", {
-            sessionKey: "main",
-            message: "show me an image",
-            idempotencyKey: "idem-managed-image-history",
-          }).then((res) => {
-            expect(res.ok, JSON.stringify(res)).toBe(true);
+          sendChat("idem-managed-image-history", "show me an image").then((res) => {
             expect(res.payload?.runId).toBe("idem-managed-image-history");
           }),
           finalPromise,
@@ -358,16 +320,10 @@ describe("gateway server chat", () => {
         let assistantMessage: Record<string, unknown> | undefined;
         await waitForFast(
           async () => {
-            const historyRes = await rpcReq<{ messages?: unknown[] }>(ws, "chat.history", {
-              sessionKey: "main",
-            });
-            expect(historyRes.ok).toBe(true);
-            const messages = historyRes.payload?.messages ?? [];
+            const messages = await readHistory();
             assistantMessage = messages.find(
               (message): message is Record<string, unknown> =>
-                typeof message === "object" &&
-                message !== null &&
-                (message as { role?: unknown }).role === "assistant",
+                isRecord(message) && message.role === "assistant",
             );
             if (!assistantMessage) {
               throw new Error("Expected assistant history message");

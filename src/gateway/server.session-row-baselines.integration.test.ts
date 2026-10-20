@@ -1,5 +1,6 @@
 import { expect, onTestFinished, test, vi } from "vitest";
 import type { EventFrame } from "../../packages/gateway-protocol/src/index.js";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { GatewayChatEvents } from "../../ui/src/api/gateway-chat-events.ts";
 import type { dispatchInboundMessage } from "../auto-reply/dispatch.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
@@ -49,6 +50,11 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
     harness.openClient({ caps: ["session-scoped-events", "session-row-deltas"] }),
     harness.openClient({ caps: ["session-scoped-events"] }),
   ]);
+  const request = async (socket: (typeof sockets)[number], method: string, params: unknown) => {
+    const response = await rpcReq(socket.ws, method, params);
+    expect(response.ok).toBe(true);
+    return response;
+  };
   const keys = [
     "agent:main:baseline-parent",
     "agent:main:baseline-child",
@@ -63,28 +69,22 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
   const drain = async () => {
     await flushPendingSessionsChangedEvents(context);
     await drainSessionEventPublications(projection);
-    for (const { ws } of sockets) {
-      expect((await rpcReq(ws, "sessions.list", { agentId: "main", rowMode: "sidebar" })).ok).toBe(
-        true,
-      );
+    for (const socket of sockets) {
+      await request(socket, "sessions.list", { agentId: "main", rowMode: "sidebar" });
     }
   };
   for (const [index, sessionKey] of keys.entries()) {
-    expect(
-      (
-        await rpcReq(sockets[0]!.ws, "sessions.create", {
-          key: sessionKey,
-          agentId: "main",
-          visibility: "shared",
-          ...(index === 1 ? { parentSessionKey: keys[0], spawnDepth: 1 } : {}),
-        })
-      ).ok,
-    ).toBe(true);
+    await request(sockets[0]!, "sessions.create", {
+      key: sessionKey,
+      agentId: "main",
+      visibility: "shared",
+      ...(index === 1 ? { parentSessionKey: keys[0], spawnDepth: 1 } : {}),
+    });
   }
   await drain();
-  for (const { ws } of sockets) {
-    expect((await rpcReq(ws, "sessions.subscribe", {})).ok).toBe(true);
-    expect((await rpcReq(ws, "sessions.messages.subscribe", { key })).ok).toBe(true);
+  for (const socket of sockets) {
+    await request(socket, "sessions.subscribe", {});
+    await request(socket, "sessions.messages.subscribe", { key });
   }
   const streams = sockets.map(({ ws }) => collectSessionRowFrames(ws));
   const waitForPhase = async (phase: string) => {
@@ -116,10 +116,7 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
   await drain();
   const warmCount = streams[0]!.length;
   const runId = "baseline-controlled-turn";
-  let complete!: () => void;
-  const completed = new Promise<void>((resolve) => {
-    complete = resolve;
-  });
+  const completed = createDeferred();
   dispatchInboundMessageMock.mockImplementationOnce(async (args: unknown) => {
     const { dispatcher, replyOptions } = args as Parameters<typeof dispatchInboundMessage>[0];
     try {
@@ -150,19 +147,15 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
       await drain();
       return { queuedFinal, counts: dispatcher.getQueuedCounts() };
     } finally {
-      complete();
+      completed.resolve();
     }
   });
-  expect(
-    (
-      await rpcReq(sockets[0]!.ws, "chat.send", {
-        sessionKey: key,
-        message: "Synthetic baseline turn.",
-        idempotencyKey: runId,
-      })
-    ).ok,
-  ).toBe(true);
-  await completed;
+  await request(sockets[0]!, "chat.send", {
+    sessionKey: key,
+    message: "Synthetic baseline turn.",
+    idempotencyKey: runId,
+  });
+  await completed.promise;
   await vi.waitFor(() =>
     expect(
       streams[2]!.some(
@@ -235,7 +228,7 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
   await recap(key);
   await drain();
   // A deletion of another session reaches the projection's ancestor invalidation hook.
-  expect((await rpcReq(sockets[0]!.ws, "sessions.delete", { key: keys[2] })).ok).toBe(true);
+  await request(sockets[0]!, "sessions.delete", { key: keys[2] });
   await drain();
   await recap(key);
   await drain();
@@ -260,19 +253,12 @@ test("ordinary fact changes keep warm wire rows across three real sockets", asyn
             (frame.payload as { reason?: string }).reason ??
             (frame.payload as { phase?: string }).phase ??
             frame.event,
-          before: Buffer.byteLength(JSON.stringify(legacy)),
-          after: Buffer.byteLength(JSON.stringify(frame)),
           full: Object.hasOwn((frame.payload as { session: object }).session, "full"),
         });
       }
     }
   }
-  console.log(
-    "SESSION_ROW_BASELINE_BYTES",
-    JSON.stringify(measurements.slice(0, measurements.length / 2)),
-  );
   const retained = await readRetention();
-  console.log("SESSION_ROW_BASELINE_RETENTION", JSON.stringify(retained));
   expect(retained.entries).toBe(keys.length * 2);
   expect(resets).toEqual([]);
   expect(measurements.map(({ reason }) => reason)).toEqual(

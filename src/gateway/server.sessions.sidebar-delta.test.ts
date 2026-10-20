@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
 import { expect, test, vi } from "vitest";
 import { SESSION_ROWS_DELTA_PREFIX } from "../../packages/gateway-protocol/src/session-row-fields.js";
 import { sidebarSessionListQuery } from "../../ui/src/components/session-data-events.js";
@@ -30,8 +29,8 @@ import {
   connectReq,
   CONTROL_UI_CLIENT,
   installGatewayTestHooks,
-  onceMessage,
   openWs,
+  onceMessage,
   testState,
   withGatewayServer,
 } from "./server.auth.test-helpers.js";
@@ -83,7 +82,6 @@ test("sidebar wire caches retain deltas across real runtime publications", async
     baseFound: boolean;
     changedRows: number;
     outcome: "full" | "delta" | "unchanged";
-    bytes?: number;
   };
   const observations: Observation[] = [];
   const retirements: string[] = [];
@@ -140,37 +138,21 @@ test("sidebar wire caches retain deltas across real runtime publications", async
         const client: SessionRequestClient = {
           async request<T>(method: string, params?: unknown): Promise<T> {
             const id = randomUUID();
-            let bytes = 0;
-            const capture = (data: Parameters<typeof rawDataToString>[0]) => {
-              const text = rawDataToString(data);
-              const frame = JSON.parse(text) as { id?: string };
-              if (frame.id === id) {
-                bytes = Buffer.byteLength(text);
-              }
-            };
-            socket.on("message", capture);
-            try {
-              const response = onceMessage(
-                socket,
-                (frame) => frame.type === "res" && frame.id === id,
-              );
-              socket.send(JSON.stringify({ type: "req", id, method, params }));
-              const frame = await response;
-              expect(frame.ok, JSON.stringify(frame.error)).toBe(true);
-              if (method === "sessions.list") {
-                const observed = observations.at(-1)!;
-                observed.bytes = bytes;
-                observed.outcome = frame.payload?.rowsUnchanged
-                  ? "unchanged"
-                  : frame.payload?.rowsDelta
-                    ? "delta"
-                    : "full";
-              }
-              // The real transport decodes JSON; each caller owns its result contract.
-              return frame.payload as T;
-            } finally {
-              socket.off("message", capture);
+            const response = onceMessage(
+              socket,
+              (frame) => frame.type === "res" && frame.id === id,
+            );
+            socket.send(JSON.stringify({ type: "req", id, method, params }));
+            const frame = await response;
+            expect(frame.ok, JSON.stringify(frame.error)).toBe(true);
+            if (method === "sessions.list") {
+              observations.at(-1)!.outcome = frame.payload?.rowsUnchanged
+                ? "unchanged"
+                : frame.payload?.rowsDelta
+                  ? "delta"
+                  : "full";
             }
+            return frame.payload as T;
           },
         };
         const snapshot = {
@@ -206,20 +188,14 @@ test("sidebar wire caches retain deltas across real runtime publications", async
             query = entry.name;
             const result = await requestSessionListParams(client, entry.params, () => true);
             expect(result?.sessions).toHaveLength(entry.name === "general" ? 16 : 8);
-            if (label === "activity-and-usage") {
-              expect(
-                result?.sessions.find((row) => row.key === target.sessionKey)?.agentStatus?.note,
-              ).toBe("Reading the source");
-            } else if (label === "activity-expiry") {
-              expect(
-                result?.sessions.find((row) => row.key === target.sessionKey)?.agentStatus,
-              ).toBeUndefined();
-            } else if (label === "profile-presentation") {
-              expect(
-                result?.sessions.find((row) => row.key === target.sessionKey)?.createdActor?.label,
-              ).toBe("Updated sidebar reader");
-            }
             const row = result?.sessions.find((candidate) => candidate.key === target.sessionKey);
+            if (label === "activity-and-usage") {
+              expect(row?.agentStatus?.note).toBe("Reading the source");
+            } else if (label === "activity-expiry") {
+              expect(row?.agentStatus).toBeUndefined();
+            } else if (label === "profile-presentation") {
+              expect(row?.createdActor?.label).toBe("Updated sidebar reader");
+            }
             if (label.endsWith("run-start")) {
               expect(row?.hasActiveRun).toBe(true);
               expect(row?.status).toBe("running");
@@ -239,7 +215,6 @@ test("sidebar wire caches retain deltas across real runtime publications", async
                   changedRows: 1,
                 });
             }
-            console.log("SIDEBAR_DELTA_WIRE", JSON.stringify(observations.at(-1)));
           }
         };
         await read("initial", "full");
