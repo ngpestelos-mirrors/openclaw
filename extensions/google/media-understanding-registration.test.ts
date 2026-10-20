@@ -1,12 +1,19 @@
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
-import type {
-  AudioTranscriptionRequest,
-  MediaUnderstandingProvider,
-  VideoDescriptionRequest,
-} from "openclaw/plugin-sdk/media-understanding";
+import type { MediaUnderstandingProvider } from "openclaw/plugin-sdk/media-understanding";
 import { createCapturedPluginRegistration } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { expect, it, vi } from "vitest";
 import googlePlugin from "./index.js";
+
+const MODEL = "gemini-3-flash-preview";
+function mediaRequest(fileName: string, mime: string) {
+  return {
+    buffer: Buffer.from("synthetic bytes"),
+    fileName,
+    mime,
+    apiKey: "fixture-api-key",
+    timeoutMs: 15_000,
+  };
+}
 
 const runtime = vi.hoisted(() => {
   const state: { moduleLoads: number; provider?: MediaUnderstandingProvider } = { moduleLoads: 0 };
@@ -46,11 +53,7 @@ it("registers independent media metadata and defers audio/video handlers until u
   const expectedMetadata = {
     id: "google",
     capabilities: ["image", "audio", "video"],
-    defaultModels: {
-      image: "gemini-3-flash-preview",
-      audio: "gemini-3-flash-preview",
-      video: "gemini-3-flash-preview",
-    },
+    defaultModels: { image: MODEL, audio: MODEL, video: MODEL },
     autoPriority: { image: 30, audio: 40, video: 10 },
     nativeDocumentInputs: ["pdf"],
     describeImage: undefined,
@@ -67,22 +70,10 @@ it("registers independent media metadata and defers audio/video handlers until u
   expect(metadata).toEqual(expectedMetadata);
   expect(runtime.state.moduleLoads).toBe(0);
 
-  const audioRequest: AudioTranscriptionRequest = {
-    buffer: Buffer.from("synthetic audio bytes"),
-    fileName: "recording.wav",
-    mime: "audio/wav",
-    apiKey: "fixture-api-key",
-    timeoutMs: 15_000,
-  };
-  const videoRequest: VideoDescriptionRequest = {
-    buffer: Buffer.from("synthetic video bytes"),
-    fileName: "clip.mp4",
-    mime: "video/mp4",
-    apiKey: "fixture-api-key",
-    timeoutMs: 15_000,
-  };
-  const audioResult = { text: "Spoken fixture sentence.", model: "gemini-3-flash-preview" };
-  const videoResult = { text: "A fixture landscape.", model: "gemini-3-flash-preview" };
+  const audioRequest = mediaRequest("recording.wav", "audio/wav");
+  const videoRequest = mediaRequest("clip.mp4", "video/mp4");
+  const audioResult = { text: "Spoken fixture sentence.", model: MODEL };
+  const videoResult = { text: "A fixture landscape.", model: MODEL };
   runtime.transcribeAudio.mockResolvedValue(audioResult);
   runtime.describeVideo.mockResolvedValue(videoResult);
 
@@ -93,10 +84,8 @@ it("registers independent media metadata and defers audio/video handlers until u
     ]),
   ).toEqual([audioResult, videoResult]);
   expect(runtime.state.moduleLoads).toBe(1);
-  expect(runtime.transcribeAudio).toHaveBeenCalledOnce();
-  expect(runtime.transcribeAudio).toHaveBeenCalledWith(audioRequest);
-  expect(runtime.describeVideo).toHaveBeenCalledOnce();
-  expect(runtime.describeVideo).toHaveBeenCalledWith(videoRequest);
+  expect(runtime.transcribeAudio).toHaveBeenCalledExactlyOnceWith(audioRequest);
+  expect(runtime.describeVideo).toHaveBeenCalledExactlyOnceWith(videoRequest);
 
   const loaded = expectDefined(runtime.state.provider, "loaded Google media provider");
   const { transcribeAudio: _loadedAudio, describeVideo: _loadedVideo, ...loadedMetadata } = loaded;
