@@ -39,11 +39,8 @@ vi.mock("../../plugins/hook-runner-global.js", () => ({
   getGlobalHookRunner: () => undefined,
 }));
 
-const { routeReply: routeReplyRuntime } = await import("./route-reply.js");
-type RouteReplyParams = Parameters<typeof routeReplyRuntime>[0];
-const routeReply = (
-  params: Omit<RouteReplyParams, "replyKind"> & { replyKind?: RouteReplyParams["replyKind"] },
-) => routeReplyRuntime({ replyKind: "final", ...params });
+const { routeReply } = await import("./route-reply.js");
+type RouteReplyParams = Parameters<typeof routeReply>[0];
 
 const slackMessaging: ChannelMessagingAdapter = {
   hasStructuredReplyPayload: ({ payload }) => {
@@ -116,7 +113,14 @@ function routeTestReply(
   payload: RouteReplyParams["payload"],
   overrides: Partial<RouteReplyParams> = {},
 ) {
-  return routeReply({ cfg: {}, channel: "slack", to: "channel:C123", payload, ...overrides });
+  return routeReply({
+    cfg: {},
+    channel: "slack",
+    to: "channel:C123",
+    replyKind: "final",
+    payload,
+    ...overrides,
+  });
 }
 
 async function expectSlackNoDelivery(
@@ -365,33 +369,28 @@ describe("routeReply", () => {
     expect(lastDeliveryPayload()).toMatchObject(expected);
   });
 
-  it.each([{ sessionKey: "global", expectedAgentId: "finance" }])(
-    "preserves delivery and mirror ownership for $sessionKey",
-    async ({ sessionKey, expectedAgentId }) => {
-      const request = {
-        payload: { text: "hi" },
-        channel: "slack" as const,
-        to: "channel:C123",
-        sessionKey,
+  it("preserves delivery and mirror ownership for global", async () => {
+    await routeTestReply(
+      { text: "hi" },
+      {
+        sessionKey: "global",
         agentId: "finance",
-        cfg: {
-          agents: { ownership: "explicit" as const, entries: { main: {}, finance: {} } },
-        },
+        cfg: { agents: { ownership: "explicit", entries: { main: {}, finance: {} } } },
         isGroup: true,
         groupId: "channel:C123",
-      };
-      await routeTestReply(request.payload, request);
-      expect(lastDelivery().session).toMatchObject({ agentId: expectedAgentId });
-      const mirror = lastDelivery().mirror;
-      expect(mirror).toMatchObject({
-        agentId: expectedAgentId,
-        sessionKey,
+      },
+    );
+    expect(lastDelivery()).toMatchObject({
+      session: { agentId: "finance" },
+      mirror: {
+        agentId: "finance",
+        sessionKey: "global",
         text: "hi",
         isGroup: true,
         groupId: "channel:C123",
-      });
-    },
-  );
+      },
+    });
+  });
 
   it.each([
     ["throw", false, undefined, "held"],

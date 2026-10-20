@@ -12,8 +12,8 @@ import { createRecoveryControllerFixture } from "./recovery-controller.fixture.t
 
 it.each(["internal_system", "external_user"] as const)(
   "keeps %s input admission semantics while a completion owns the lane",
-  async (kind) => {
-    await withOpenClawTestState({ label: "pending-event-admission" }, async (state) => {
+  (kind) =>
+    withOpenClawTestState({ label: "pending-event-admission" }, async (state) => {
       const target = {
         agentId: "main",
         sessionKey: "agent:main:pending-event-admission",
@@ -35,7 +35,6 @@ it.each(["internal_system", "external_user"] as const)(
       const controller = actor.controller({
         inputProvenance: provenance,
         admissionRunId: "event-run",
-        executionRunId: "event-run",
       });
       const releaseCompletion = createDeferred();
       const lane = "session:" + target.sessionKey;
@@ -87,6 +86,5 @@ it.each(["internal_system", "external_user"] as const)(
         await recorder.waitForPendingInputSettlement!();
         await controller.clear();
       }
-    });
-  },
+    }),
 );

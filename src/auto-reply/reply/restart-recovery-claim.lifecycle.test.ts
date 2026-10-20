@@ -208,84 +208,75 @@ it.each([
 ] as const)(
   "settles restart readiness without adopting successor facts ($stage, confirmed=$confirmed)",
   async ({ stage, confirmed }) => {
-    await withTrackedReply(
-      async ({
-        controller,
-        operation,
-        confirmArmed,
-        replaceWithSuccessor,
-        readEntry,
-        releaseDatabase,
-        databasePath,
-      }) => {
-        if (confirmed) {
-          await confirmArmed();
-        }
-        let restore: (() => void) | undefined;
-        let assertBoundary: () => void;
-        try {
-          if (stage === "cold-registration") {
-            await releaseDatabase();
-            await closeOpenClawAgentDatabasesAsync();
-            clearOpenClawAgentDatabaseValidationCache();
-            revokeSqliteDatabaseAdmissionsForPath(databasePath);
-            let witnessed = 0;
-            const admission = probe.admission(workerAdmission, (request, grant, admit) => {
-              if (
-                request.stage === "prepare" &&
-                isRecord(request.facts) &&
-                request.facts.kind === "agent-registration-committed"
-              ) {
-                witnessed += 1;
+    await withTrackedReply(async (fixture) => {
+      const { controller, operation, readEntry } = fixture;
+      if (confirmed) {
+        await fixture.confirmArmed();
+      }
+      let restore: (() => void) | undefined;
+      let assertBoundary: () => void;
+      try {
+        if (stage === "cold-registration") {
+          await fixture.releaseDatabase();
+          await closeOpenClawAgentDatabasesAsync();
+          clearOpenClawAgentDatabaseValidationCache();
+          revokeSqliteDatabaseAdmissionsForPath(fixture.databasePath);
+          let witnessed = 0;
+          const admission = probe.admission(workerAdmission, (request, grant, admit) => {
+            if (
+              request.stage === "prepare" &&
+              isRecord(request.facts) &&
+              request.facts.kind === "agent-registration-committed"
+            ) {
+              witnessed += 1;
+              rotateAgentEventLifecycleGeneration();
+            }
+            admit(request, grant);
+          });
+          restore = () => admission.mockRestore();
+          assertBoundary = () => {
+            expect(witnessed).toBe(1);
+            expect(readEntry()).toMatchObject({ sessionId: "old-session" });
+          };
+          operation.abortForRestart();
+        } else {
+          const read = entryReads.readSessionEntryInWorker;
+          const reads = vi.spyOn(entryReads, "readSessionEntryInWorker");
+          restore = () => reads.mockRestore();
+          assertBoundary = () => {
+            expect(reads).toHaveBeenCalledTimes(stage === "before-read" ? 0 : 1);
+            expect(readEntry()).toMatchObject({
+              sessionId: "successor-session",
+              restartRecoveryDeliveryRunId: "successor-recovery",
+              abortedLastRun: true,
+            });
+          };
+          operation.abortForRestart();
+          if (stage === "before-read") {
+            rotateAgentEventLifecycleGeneration();
+            await fixture.replaceWithSuccessor();
+          } else {
+            reads.mockImplementationOnce(async (...args) => {
+              const result = await read(...args);
+              if (stage === "during-read") {
                 rotateAgentEventLifecycleGeneration();
               }
-              admit(request, grant);
+              await fixture.replaceWithSuccessor();
+              return result;
             });
-            restore = () => admission.mockRestore();
-            assertBoundary = () => {
-              expect(witnessed).toBe(1);
-              expect(readEntry()).toMatchObject({ sessionId: "old-session" });
-            };
-            operation.abortForRestart();
-          } else {
-            const read = entryReads.readSessionEntryInWorker;
-            const reads = vi.spyOn(entryReads, "readSessionEntryInWorker");
-            restore = () => reads.mockRestore();
-            assertBoundary = () => {
-              expect(reads).toHaveBeenCalledTimes(stage === "before-read" ? 0 : 1);
-              expect(readEntry()).toMatchObject({
-                sessionId: "successor-session",
-                restartRecoveryDeliveryRunId: "successor-recovery",
-                abortedLastRun: true,
-              });
-            };
-            operation.abortForRestart();
-            if (stage === "before-read") {
-              rotateAgentEventLifecycleGeneration();
-              await replaceWithSuccessor();
-            } else {
-              reads.mockImplementationOnce(async (...args) => {
-                const result = await read(...args);
-                if (stage === "during-read") {
-                  rotateAgentEventLifecycleGeneration();
-                }
-                await replaceWithSuccessor();
-                return result;
-              });
-            }
           }
-          const reply = await restartReply(controller, operation);
-          expect(reply?.text).toBe(
-            confirmed
-              ? undefined
-              : "⚠️ Gateway is restarting. Please wait a few seconds and try again.",
-          );
-          assertBoundary();
-        } finally {
-          restore?.();
         }
-      },
-    );
+        const reply = await restartReply(controller, operation);
+        expect(reply?.text).toBe(
+          confirmed
+            ? undefined
+            : "⚠️ Gateway is restarting. Please wait a few seconds and try again.",
+        );
+        assertBoundary();
+      } finally {
+        restore?.();
+      }
+    });
   },
 );
 
@@ -428,29 +419,24 @@ describe("restart recovery claim settlement", () => {
       });
       await writerEntered.promise;
       let interruptedAtCommit = false;
-      const createAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
-      const admission = vi
-        .spyOn(workerAdmission, "createSqliteWorkerOperationAdmission")
-        .mockImplementation((admit, options) =>
-          createAdmission((request, grant) => {
-            if (
-              !interruptedAtCommit &&
-              (interruption === "commit-rotation" || interruption === "commit-abort") &&
-              request.stage === "transaction" &&
-              isRecord(request.facts) &&
-              isRecord(request.facts.publication) &&
-              request.facts.publication.kind === "session-entry-patch-validated"
-            ) {
-              interruptedAtCommit = true;
-              if (interruption === "commit-rotation") {
-                rotateAgentEventLifecycleGeneration();
-              } else {
-                restartAborted = true;
-              }
-            }
-            admit(request, grant);
-          }, options),
-        );
+      const admission = probe.admission(workerAdmission, (request, grant, admit) => {
+        if (
+          !interruptedAtCommit &&
+          (interruption === "commit-rotation" || interruption === "commit-abort") &&
+          request.stage === "transaction" &&
+          isRecord(request.facts) &&
+          isRecord(request.facts.publication) &&
+          request.facts.publication.kind === "session-entry-patch-validated"
+        ) {
+          interruptedAtCommit = true;
+          if (interruption === "commit-rotation") {
+            rotateAgentEventLifecycleGeneration();
+          } else {
+            restartAborted = true;
+          }
+        }
+        admit(request, grant);
+      });
       // The old cleanup enters before shutdown; its actual write waits behind the handoff.
       const clearing = controller.clear().catch((error: unknown) => {
         expect(

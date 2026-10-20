@@ -111,11 +111,13 @@ describe("prepared reply routing", () => {
       storePath: path.join(fixtures.tmpDir(), "sessions.json"),
       sessionKey: "agent:main:prepared-route",
     };
-    await replaceSessionEntry(session, {
-      sessionId: "current-session",
-      activeWriterRunId: "original-writer",
-      updatedAt: Date.now(),
-    });
+    const setWriter = (activeWriterRunId: string) =>
+      replaceSessionEntry(session, {
+        sessionId: "current-session",
+        activeWriterRunId,
+        updatedAt: Date.now(),
+      });
+    await setWriter("original-writer");
     const payload = setReplyPayloadMetadata(
       { text: "caption", mediaUrl: "https://example.invalid/clip.ogg" },
       {
@@ -128,11 +130,7 @@ describe("prepared reply routing", () => {
     );
     const plan = prepare(payload);
     const replaceWriter = vi.fn(async () => {
-      await replaceSessionEntry(session, {
-        sessionId: "current-session",
-        activeWriterRunId: "replacement-writer",
-        updatedAt: Date.now(),
-      });
+      await setWriter("replacement-writer");
     });
     beforeDelivery = replaceWriter;
 
@@ -144,8 +142,8 @@ describe("prepared reply routing", () => {
     });
 
     expect(result).toMatchObject({ ok: false, delivered: false });
-    expect(replaceWriter).toHaveBeenCalledOnce();
     expect(result.error).toContain("Session writer changed before final reply delivery");
+    expect(replaceWriter).toHaveBeenCalledOnce();
     expect(visible).toEqual([]);
   });
 });

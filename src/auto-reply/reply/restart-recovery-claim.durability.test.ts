@@ -31,6 +31,22 @@ import {
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createRecoveryControllerFixture } from "./recovery-controller.fixture.test-support.js";
 
+function recoveryScope(sessionsDir: string, name: string) {
+  return {
+    agentId: "main",
+    storePath: path.join(sessionsDir, "sessions.json"),
+    sessionKey: "agent:main:dashboard:" + name,
+  };
+}
+async function reopen(scope: ReturnType<typeof recoveryScope>, root: string) {
+  await closeOpenClawAgentDatabasesAsync(root);
+  closeOpenClawAgentDatabasesForTest(root);
+  return expectDefined(
+    loadSessionEntry({ ...scope, readConsistency: "latest" }),
+    "session survives reopen",
+  );
+}
+
 beforeEach(() => setRuntimeConfigSnapshot({}));
 afterEach(() => clearRuntimeConfigSnapshot());
 
@@ -38,34 +54,22 @@ it.each(["new input", "accepted input"] as const)(
   "keeps %s admission durable across restart and settles the backend runtime",
   (admission) =>
     withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const scope = {
-        agentId: "main",
-        storePath: path.join(state.sessionsDir(), "sessions.json"),
-        sessionKey: "agent:main:dashboard:durable-admission",
-      };
+      const scope = recoveryScope(state.sessionsDir(), "durable-admission");
       const executionRunId = "admitted-execution";
       const lifecycleGeneration = getAgentEventLifecycleGeneration();
       const entry: InternalSessionEntry = {
         sessionId: "admitted-session",
         updatedAt: 1,
         startedAt: 1,
-        endedAt: 2,
-        runtimeMs: 1,
-        status: "done",
-        lastRunId: "previous-run",
         ...(admission === "accepted input"
           ? {
-              status: undefined,
-              endedAt: undefined,
-              runtimeMs: undefined,
-              lastRunId: undefined,
               lifecycleRunId: executionRunId,
               restartRecoveryDeliveryRunId: "admitted-input",
               restartRecoveryDeliverySourceRunId: "admitted-input",
               restartRecoverySourceIngress: "control-ui",
               restartRecoveryDeliveryRequestFingerprint: "request-fingerprint",
             }
-          : {}),
+          : { endedAt: 2, runtimeMs: 1, status: "done", lastRunId: "previous-run" }),
       };
       const fixture = await createRecoveryControllerFixture(scope, entry);
       {
@@ -85,12 +89,7 @@ it.each(["new input", "accepted input"] as const)(
         });
         await expect(controller.admitUserTurn(recorder)).resolves.toBe("admitted");
       }
-      await closeOpenClawAgentDatabasesAsync(state.root);
-      closeOpenClawAgentDatabasesForTest(state.root);
-      const admitted = expectDefined(
-        loadSessionEntry({ ...scope, readConsistency: "latest" }),
-        "admitted session survives restart",
-      );
+      const admitted = await reopen(scope, state.root);
       expect(admitted.lifecycleRunId).toBe(executionRunId);
       expect(admitted.status).toBeUndefined();
       expect(admitted.endedAt).toBeUndefined();
@@ -121,12 +120,7 @@ it.each(["new input", "accepted input"] as const)(
           data: { phase: "end", startedAt, endedAt: startedAt + 20 },
         },
       });
-      await closeOpenClawAgentDatabasesAsync(state.root);
-      closeOpenClawAgentDatabasesForTest(state.root);
-      const settled = expectDefined(
-        loadSessionEntry({ ...scope, readConsistency: "latest" }),
-        "settled session survives restart",
-      );
+      const settled = await reopen(scope, state.root);
       expect(settled).toMatchObject({
         status: "done",
         startedAt,
@@ -141,11 +135,7 @@ it.each(["new input", "accepted input"] as const)(
 
 it("keeps an authenticated peer follow-up internal while retaining its operator source", () =>
   withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const scope = {
-      agentId: "main",
-      storePath: path.join(state.sessionsDir(), "sessions.json"),
-      sessionKey: "agent:main:dashboard:peer-target",
-    };
+    const scope = recoveryScope(state.sessionsDir(), "peer-target");
     const entry: InternalSessionEntry = { sessionId: "peer-session", updatedAt: 1 };
     await using actor = await createRecoveryControllerFixture(scope, entry);
     const operatorAuthority = createAdmittedRunOperatorAuthority({
@@ -208,11 +198,7 @@ it.each([
   "source-replaced",
 ] as const)("retains accepted input custody until capacity admission (%s)", async (outcome) => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const scope = {
-      agentId: "main",
-      storePath: path.join(state.sessionsDir(), "sessions.json"),
-      sessionKey: "agent:main:dashboard:capacity-admission",
-    };
+    const scope = recoveryScope(state.sessionsDir(), "capacity-admission");
     const entry: InternalSessionEntry = {
       sessionId: "capacity-session",
       lifecycleRevision: "capacity-revision",
@@ -295,17 +281,19 @@ it.each([
             timeoutMs: 30_000,
             workspaceDir: state.workspaceDir,
           });
+        const patchEntry = (patch: Partial<InternalSessionEntry>, preserveActivity = false) =>
+          applySessionEntryOperation(
+            scope,
+            {
+              kind: "fields",
+              expected: { sessionId: entry.sessionId },
+              patch,
+            },
+            { skipMaintenance: true, preserveActivity },
+          );
         if (outcome === "execute") {
           const interleaved = expectDefined(
-            await applySessionEntryOperation(
-              scope,
-              {
-                kind: "fields",
-                expected: { sessionId: entry.sessionId },
-                patch: { label: "updated while waiting" },
-              },
-              { skipMaintenance: true },
-            ),
+            await patchEntry({ label: "updated while waiting" }),
             "activity recorded while waiting",
           );
           activityAt = interleaved.updatedAt;
@@ -324,16 +312,11 @@ it.each([
           await waitForDiagnosticEventsDrained();
           expect(writes).toEqual(["session.actor.adoptRun"]);
         } else if (outcome === "source-replaced" && completion) {
-          await applySessionEntryOperation(
-            scope,
+          await patchEntry(
             {
-              kind: "fields",
-              expected: { sessionId: entry.sessionId },
-              patch: {
-                restartRecoveryHarnessCompletion: { ...completion, taskId: "replacement-task" },
-              },
+              restartRecoveryHarnessCompletion: { ...completion, taskId: "replacement-task" },
             },
-            { skipMaintenance: true, preserveActivity: true },
+            true,
           );
           await waitForDiagnosticEventsDrained();
           writes.length = 0;
