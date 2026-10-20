@@ -4,7 +4,7 @@ import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { AgentIdentity } from "../../lib/identity-avatar-view.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import { IdentityAvatarImage, createIdentityAvatarPresentation } from "./identity-avatar-image.tsx";
-import { AgentIdentityAvatar } from "./identity-avatar.tsx";
+import { AgentIdentityAvatar as Avatar } from "./identity-avatar.tsx";
 
 const observers: MutationObserver[] = [];
 afterEach(() => observers.splice(0).forEach((observer) => observer.disconnect()));
@@ -28,9 +28,9 @@ function TestImage(props: { source: string | Promise<string | null> | null }) {
   );
 }
 
-it("retains the face subtree when a publication replaces the agent with the same ID", async () => {
+it("retains face nodes across same-ID publication", async () => {
   const [agent, publish] = createSignal<AgentIdentity>({ id: "forge", name: "Before" });
-  const view = mountSolid(() => <AgentIdentityAvatar agent={agent()} />);
+  const view = mountSolid(() => <Avatar agent={agent()} />);
   await vi.dynamicImportSettled();
   flush();
   const face = view.container.querySelector("svg.identity-avatar__agent-face")!;
@@ -47,32 +47,25 @@ it("retains the face subtree when a publication replaces the agent with the same
   expect(mutations()).toHaveLength(0);
 });
 
-it.each(["load", "error"])(
-  "keeps a settled %s image when its pending resource becomes the same URL",
-  async (event) => {
-    const pending = createDeferred<string>();
-    const [source, publish] = createSignal<{ imageUrl: string | Promise<string> }>({
-      imageUrl: pending.promise,
-    });
-    const view = mountSolid(() => <TestImage source={source().imageUrl} />);
-    pending.resolve("/avatar/settled");
-    await pending.promise;
-    const image = view.container.querySelector("img")!;
-    image.dispatchEvent(new Event(event));
-    flush();
-    const mutations = observe(view.container, { subtree: true, attributes: true, childList: true });
-    publish({ imageUrl: "/avatar/settled" });
-    flush();
-    await Promise.resolve();
-    expect(view.container.querySelector("img")).toBe(image);
-    expect(mutations()).toHaveLength(0);
-    expect(image.parentElement?.getAttribute("data-avatar-state")).toBe(
-      event === "load" ? "loaded" : "failed",
-    );
-  },
-);
+it.each(["load", "error"])("keeps settled %s state for the same URL", async (event) => {
+  const pending = createDeferred<string>();
+  const [source, publish] = createSignal<string | Promise<string>>(pending.promise);
+  const view = mountSolid(() => <TestImage source={source()} />);
+  pending.resolve("/avatar/settled");
+  await pending.promise;
+  const image = view.container.querySelector("img")!;
+  image.dispatchEvent(new Event(event));
+  flush();
+  const mutations = observe(view.container, { subtree: true, attributes: true, childList: true });
+  publish("/avatar/settled");
+  flush();
+  await Promise.resolve();
+  expect(view.container.querySelector("img")).toBe(image);
+  expect(mutations()).toHaveLength(0);
+  expect(image.parentElement?.dataset.avatarState).toBe(event === "load" ? "loaded" : "failed");
+});
 
-it("ignores retired image outcomes after a source or image-node replacement", async () => {
+it("ignores retired resource and image-node outcomes", async () => {
   const first = createDeferred<string>();
   const [source, setSource] = createSignal<string | Promise<string> | null>(first.promise);
   const view = mountSolid(() => <TestImage source={source()} />);
@@ -86,7 +79,7 @@ it("ignores retired image outcomes after a source or image-node replacement", as
   flush();
   expect(view.container.querySelector("img")).toBe(retiredImage);
   expect(retiredImage.getAttribute("src")).toBe("/avatar/current");
-  expect(retiredImage.parentElement?.getAttribute("data-avatar-state")).toBe("loaded");
+  expect(retiredImage.parentElement?.dataset.avatarState).toBe("loaded");
 
   setSource(null);
   flush();
@@ -99,28 +92,22 @@ it("ignores retired image outcomes after a source or image-node replacement", as
   retiredImage.dispatchEvent(new Event("error"));
   flush();
   expect(replacement.getAttribute("src")).toBe("/avatar/replacement");
-  expect(replacement.parentElement?.getAttribute("data-avatar-state")).toBe("loaded");
+  expect(replacement.parentElement?.dataset.avatarState).toBe("loaded");
 });
 
-it("carries prepared avatar state and image errors across Solid updates", () => {
-  const onImageError = vi.fn();
+it("preserves prepared avatar state and image errors", () => {
+  const failed = vi.fn();
   const [agent, setAgent] = createSignal<AgentIdentity>({
     id: "sidebar-person",
     name: "Synthetic assistant",
     textAvatar: "🦀",
     pending: true,
   });
-  const view = mountSolid(() => (
-    <AgentIdentityAvatar
-      agent={agent()}
-      class="sidebar-synthetic-avatar"
-      onImageError={onImageError}
-    />
-  ));
-  const face = view.container.querySelector(".sidebar-synthetic-avatar");
+  const view = mountSolid(() => <Avatar agent={agent()} class="avatar" onImageError={failed} />);
+  const face = view.container.querySelector<HTMLElement>(".avatar");
   expect(face?.getAttribute("aria-label")).toBe("Synthetic assistant");
-  expect(face?.getAttribute("data-avatar-state")).toBe("pending");
-  expect(view.container.querySelector("[data-avatar]")?.getAttribute("data-avatar")).toBe("🦀");
+  expect(face?.dataset.avatarState).toBe("pending");
+  expect(view.container.querySelector<HTMLElement>("[data-avatar]")?.dataset.avatar).toBe("🦀");
 
   const mutations = observe(face!, { attributes: true, attributeFilter: ["data-avatar-state"] });
   setAgent((current) => ({ ...current }));
@@ -131,39 +118,36 @@ it("carries prepared avatar state and image errors across Solid updates", () => 
   flush();
   const image = view.container.querySelector("img")!;
   expect(image?.getAttribute("src")).toBe("/avatar/sidebar-synthetic");
-  expect(view.container.querySelector(".sidebar-synthetic-avatar")).toBe(face);
+  expect(view.container.querySelector(".avatar")).toBe(face);
   image.dispatchEvent(new Event("error"));
   flush();
-  expect(onImageError).toHaveBeenCalledOnce();
-  expect(face?.getAttribute("data-avatar-state")).toBe("failed");
+  expect(failed).toHaveBeenCalledOnce();
+  expect(face?.dataset.avatarState).toBe("failed");
 });
 
-it.each(["emoji", "dispose"] as const)(
-  "retires pending face artwork when the native avatar changes to %s",
-  async (mode) => {
-    const [agent, setAgent] = createSignal<AgentIdentity>({ id: "retired-lazy-face" });
-    const [visible, setVisible] = createSignal(true);
-    const view = mountSolid(() => (
-      <Show when={visible()}>
-        <AgentIdentityAvatar agent={agent()} />
-      </Show>
-    ));
-    flush();
-    if (mode === "emoji") {
-      setAgent({ id: "retired-lazy-face", textAvatar: "🦀" });
-    } else {
-      setVisible(false);
-    }
-    flush();
-    await vi.dynamicImportSettled();
-    flush();
-    expect(view.container.querySelector(".identity-avatar__agent-face")).toBeNull();
-    if (mode === "emoji") {
-      expect(
-        view.container.querySelector(".identity-avatar__text")?.getAttribute("data-avatar"),
-      ).toBe("🦀");
-    } else {
-      expect(view.container.querySelector(".identity-avatar--agent")).toBeNull();
-    }
-  },
-);
+it.each(["emoji", "dispose"] as const)("retires pending face artwork on %s", async (mode) => {
+  const [agent, setAgent] = createSignal<AgentIdentity>({ id: "retired-lazy-face" });
+  const [visible, setVisible] = createSignal(true);
+  const view = mountSolid(() => (
+    <Show when={visible()}>
+      <Avatar agent={agent()} />
+    </Show>
+  ));
+  flush();
+  if (mode === "emoji") {
+    setAgent({ id: "retired-lazy-face", textAvatar: "🦀" });
+  } else {
+    setVisible(false);
+  }
+  flush();
+  await vi.dynamicImportSettled();
+  flush();
+  expect(view.container.querySelector(".identity-avatar__agent-face")).toBeNull();
+  if (mode === "emoji") {
+    expect(
+      view.container.querySelector<HTMLElement>(".identity-avatar__text")?.dataset.avatar,
+    ).toBe("🦀");
+  } else {
+    expect(view.container.querySelector(".identity-avatar--agent")).toBeNull();
+  }
+});

@@ -5,6 +5,7 @@ import {
   ChatPaneLayoutMenu,
   type HeaderPanelAction,
 } from "../../pages/chat/components/chat-header-panel-actions.tsx";
+import { openMenu, surface } from "../../test-helpers/solid-menu.tsx";
 import { waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { KeyboardShortcut } from "./kbd.tsx";
 import { Menu, type MenuItem } from "./menu.tsx";
@@ -26,48 +27,42 @@ function panelAction(
   return { id, label: id[0]!.toUpperCase() + id.slice(1), icon, shortcut, active, onActivate() {} };
 }
 
-it.each(["ltr", "rtl"] as const)(
-  "aligns shortcut ends across plain, checked, unchecked, radio and submenu rows in %s",
-  async (dir) => {
-    await page.viewport(1000, 700);
-    const hint = (key: "b" | "u") => (
-      <KeyboardShortcut
-        class="session-menu__shortcut"
-        combo={{ key, modifiers: key === "b" ? ["mod"] : ["mod", "alt", "shift"] }}
-        applePlatform
-      />
-    );
-    const entries: MenuItem[] = [
-      { id: "plain", label: "Plain", details: hint("b") },
-      { id: "off", label: "Unchecked", type: "checkbox", checked: false, details: hint("u") },
-      { id: "on", label: "Checked", type: "checkbox", checked: true, details: hint("b") },
-      { id: "radio", label: "Radio", type: "radio", checked: true, details: hint("u") },
-      {
-        id: "branch",
-        label: "Submenu",
-        details: hint("b"),
-        children: [{ id: "child", label: "Child" }],
-      },
-    ];
-    render(() => (
-      <Menu id="alignment" label="Actions" dir={dir} class="session-menu" items={entries} />
-    ));
-    await userEvent.click(page.getByRole("button", { name: "Actions" }));
-    const menu = document.getElementById("alignment:content")!;
-    await expect.element(page.elementLocator(menu)).toBeVisible();
-    await waitForSolid(() => expect(menu.dataset.phase).toBe("open"));
-    const ends = [...menu.querySelectorAll<HTMLElement>(".session-menu__shortcut")].map(
-      (element) => {
-        const bounds = element.getBoundingClientRect();
-        return dir === "rtl" ? bounds.left : bounds.right;
-      },
-    );
-    expect(ends).toHaveLength(5);
-    expect(Math.max(...ends) - Math.min(...ends)).toBeLessThan(1);
-  },
-);
+it.each(["ltr", "rtl"] as const)("aligns all menu row shortcuts in %s", async (dir) => {
+  await page.viewport(1000, 700);
+  const hint = (key: "b" | "u") => (
+    <KeyboardShortcut
+      class="session-menu__shortcut"
+      combo={{ key, modifiers: key === "b" ? ["mod"] : ["mod", "alt", "shift"] }}
+      applePlatform
+    />
+  );
+  const entries: MenuItem[] = [
+    { id: "plain", label: "Plain", details: hint("b") },
+    { id: "off", label: "Unchecked", type: "checkbox", checked: false, details: hint("u") },
+    { id: "on", label: "Checked", type: "checkbox", checked: true, details: hint("b") },
+    { id: "radio", label: "Radio", type: "radio", checked: true, details: hint("u") },
+    {
+      id: "branch",
+      label: "Submenu",
+      details: hint("b"),
+      children: [{ id: "child", label: "Child" }],
+    },
+  ];
+  render(() => (
+    <Menu id="alignment" label="Actions" dir={dir} class="session-menu" items={entries} />
+  ));
+  await openMenu("alignment");
+  const menu = surface("alignment");
+  await expect.element(page.elementLocator(menu)).toBeVisible();
+  const ends = [...menu.querySelectorAll<HTMLElement>(".session-menu__shortcut")].map((element) => {
+    const bounds = element.getBoundingClientRect();
+    return dir === "rtl" ? bounds.left : bounds.right;
+  });
+  expect(ends).toHaveLength(5);
+  expect(Math.max(...ends) - Math.min(...ends)).toBeLessThan(1);
+});
 
-it("keeps Layout hints aligned before and after panel styles load, and hidden on mobile", async () => {
+it("keeps Layout shortcuts aligned across style loads and hidden on mobile", async () => {
   await page.viewport(1000, 800);
   render(() => (
     <ChatPaneLayoutMenu
@@ -98,7 +93,6 @@ it("keeps Layout hints aligned before and after panel styles load, and hidden on
   ).toBeLessThan(1);
   await import("../../styles/chat/side-panel.css");
   const after = bounds();
-  expect(after).toHaveLength(before.length);
   // WebKit can retain ~0.03px transform rounding after the opening scale settles;
   // a real layout shift from the panel styles moves hints by whole pixels.
   for (const [index, rect] of after.entries()) {

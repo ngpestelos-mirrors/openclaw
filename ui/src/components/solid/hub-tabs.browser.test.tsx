@@ -8,7 +8,17 @@ import hubStyles from "../../styles/hub-tabs.css?inline";
 import settingsStyles from "../../styles/settings.css?inline";
 import tabsStyles from "../../styles/tabs.css?inline";
 
-it("keeps hub typography, selected ink, and compact height when native defaults load last", async () => {
+function hubProps(id: string, onSelect: (value: string) => void, labels = ["First", "Second"]) {
+  return {
+    id,
+    onSelect,
+    ariaLabel: "Sections",
+    panelId: `${id}-panel`,
+    tabs: labels.map((label) => ({ value: label.toLowerCase(), label })),
+  };
+}
+
+it("preserves hub styling when native defaults load last", async () => {
   const viewport = { width: innerWidth, height: innerHeight };
   const styles = document.createElement("style");
   styles.textContent = [baseStyles, settingsStyles, hubStyles, tabsStyles].join("\n");
@@ -17,15 +27,10 @@ it("keeps hub typography, selected ink, and compact height when native defaults 
   const view = mountSolid(() => (
     <section class="shell--settings">
       <HubTabs
-        id="parity"
+        {...hubProps("parity", setActive, ["Messages", "Voice"])}
         active={active()}
-        tabs={[
-          { value: "messages", label: "Messages" },
-          { value: "voice", label: "Voice" },
-        ]}
         ariaLabel="Communications"
         panelId="communications-content"
-        onSelect={setActive}
       />
       <button type="button">Ordinary setting action</button>
     </section>
@@ -53,32 +58,23 @@ it("keeps hub typography, selected ink, and compact height when native defaults 
         animation.finish();
       }
       const label = getComputedStyle(voice);
-      expect.soft(label.fontSize, `${width}px typography`).toBe("12px");
-      expect.soft(label.fontWeight, `${width}px typography`).toBe("550");
+      expect.soft(label.fontSize).toBe("12px");
+      expect.soft(label.fontWeight).toBe("550");
+      expect.soft(label.letterSpacing).toBe(getComputedStyle(document.body).letterSpacing);
+      expect.soft(label.color).toBe(tokenColor("muted"));
+      expect.soft(tabs.getBoundingClientRect().height).toBeCloseTo(32.6, 1);
       expect
-        .soft(label.letterSpacing, `${width}px typography`)
-        .toBe(getComputedStyle(document.body).letterSpacing);
-      expect.soft(label.color, `${width}px unselected ink`).toBe(tokenColor("muted"));
-      expect
-        .soft(tabs.getBoundingClientRect().height, `${width}px track height`)
-        .toBeCloseTo(32.6, 1);
-      expect
-        .soft(
-          messages.getBoundingClientRect().bottom + 2,
-          `${width}px selected underline stays inside the scrollport`,
-        )
+        .soft(messages.getBoundingClientRect().bottom + 2)
         .toBeLessThanOrEqual(tabs.getBoundingClientRect().bottom);
       if (width === 390) {
-        expect
-          .soft(action.getBoundingClientRect().height, "ordinary touch target")
-          .toBeGreaterThanOrEqual(44);
+        expect.soft(action.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
       }
       messages.focus();
       await userEvent.keyboard("{ArrowRight}{Enter}");
       flush();
       expect.soft(voice.getAttribute("aria-selected")).toBe("true");
       expect
-        .soft(getComputedStyle(voice).boxShadow, "selection survives the keyboard focus ring")
+        .soft(getComputedStyle(voice).boxShadow)
         .toContain(`${tokenColor("accent")} 0px 2px 0px 0px`);
     }
   } finally {
@@ -108,17 +104,7 @@ function mountShadowHub(root: ShadowRoot, id: string) {
   const container = document.createElement("div");
   root.append(container);
   const onSelect = vi.fn();
-  const props = {
-    id,
-    active: "first",
-    tabs: [
-      { value: "first", label: "First" },
-      { value: "second", label: "Second" },
-    ],
-    ariaLabel: "Sections",
-    panelId: `${id}-panel`,
-    onSelect,
-  };
+  const props = { ...hubProps(id, onSelect), active: "first" };
   const view = mountSolid(() => createComponent(HubTabs, props), { container });
   flush();
   return { container, dispose: view.unmount, onSelect };
