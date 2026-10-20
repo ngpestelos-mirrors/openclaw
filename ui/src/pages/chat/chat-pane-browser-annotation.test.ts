@@ -25,51 +25,38 @@ function annotation(id: string, modelContext = `Context ${id}`): ChatAttachment 
   };
 }
 
-function draft(modelContext: string): BrowserAnnotationDraft {
-  return {
-    modelContext,
-    dataUrl: "data:image/png;base64,aGVsbG8=",
-    fileName: "annotated-page.png",
-    card: {
-      title: "Example",
-      displayUrl: "example.com",
-      markedRegionCount: 1,
-      inspectedElement: false,
+const annotations = (count: number) => Array.from({ length: count }, (_, i) => annotation(`${i}`));
+
+function capture(modelContext: string) {
+  return new CustomEvent<BrowserAnnotationDraft>("openclaw:browser-annotation", {
+    cancelable: true,
+    detail: {
+      modelContext,
+      dataUrl: "data:image/png;base64,aGVsbG8=",
+      fileName: "annotated-page.png",
+      card: {
+        title: "Example",
+        displayUrl: "example.com",
+        markedRegionCount: 1,
+        inspectedElement: false,
+      },
     },
-  };
+  });
 }
 
 describe("browser annotation admission", () => {
   it("includes the candidate in both the four-card and 8,000-character bounds", () => {
     expect(canAdmitBrowserAnnotation([], "x".repeat(8_000))).toBe(true);
     expect(canAdmitBrowserAnnotation([], "x".repeat(8_001))).toBe(false);
-    expect(
-      canAdmitBrowserAnnotation(
-        [annotation("one"), annotation("two"), annotation("three")],
-        "fourth",
-      ),
-    ).toBe(true);
-    expect(
-      canAdmitBrowserAnnotation(
-        [annotation("one"), annotation("two"), annotation("three"), annotation("four")],
-        "fifth",
-      ),
-    ).toBe(false);
+    expect(canAdmitBrowserAnnotation(annotations(3), "fourth")).toBe(true);
+    expect(canAdmitBrowserAnnotation(annotations(4), "fifth")).toBe(false);
   });
 
   it("marks an active-pane rejection without allocating or consuming the capture", () => {
     const state = {
-      chatAttachments: [
-        annotation("one"),
-        annotation("two"),
-        annotation("three"),
-        annotation("four"),
-      ],
+      chatAttachments: annotations(4),
     } as unknown as ChatPageHost;
-    const event = new CustomEvent<BrowserAnnotationDraft>("openclaw:browser-annotation", {
-      detail: draft("Rejected context"),
-      cancelable: true,
-    });
+    const event = capture("Rejected context");
     const replaceAttachments = vi.fn();
     expect(receiveBrowserAnnotation(state, true, event, 0, replaceAttachments)).toBe(false);
     expect(replaceAttachments).not.toHaveBeenCalled();
@@ -87,16 +74,11 @@ describe("browser annotation admission", () => {
         policy: { maxPayload: 256 * 1024 + 12, attachments: { maxBytes: 100, maxImageBytes: 100 } },
       },
     } as unknown as ChatPageHost;
-    const capture = () =>
-      new CustomEvent<BrowserAnnotationDraft>("openclaw:browser-annotation", {
-        detail: draft("Page context"),
-        cancelable: true,
-      });
     const replaceAttachments = (attachments: ChatAttachment[]) => {
       state.chatAttachments = attachments;
     };
 
-    const rejected = capture();
+    const rejected = capture("Page context");
     expect(receiveBrowserAnnotation(state, true, rejected, 5, replaceAttachments)).toBe(false);
     expect(rejected.defaultPrevented).toBe(false);
     expect(state.chatAttachments).toEqual([]);
@@ -104,7 +86,9 @@ describe("browser annotation admission", () => {
       message: "Too large to send: annotated-page.png",
     });
 
-    expect(receiveBrowserAnnotation(state, true, capture(), 0, replaceAttachments)).toBe(true);
+    expect(
+      receiveBrowserAnnotation(state, true, capture("Page context"), 0, replaceAttachments),
+    ).toBe(true);
     expect(state.chatAttachments).toHaveLength(1);
   });
 });

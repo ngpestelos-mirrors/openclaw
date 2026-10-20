@@ -31,6 +31,9 @@ it("keeps A offline input with A when a same-client B hello replaces the pane be
   const write = vi
     .spyOn(drafts, "writeDurableComposerDraft")
     .mockResolvedValue({ status: "persisted" });
+  const writesFor = (owner: string) =>
+    write.mock.calls.filter(([scope]) => scope.recoveryScope === owner).map(([, draft]) => draft);
+  const privateDraft = "A newer private draft";
   let account = "account-a";
   let ready = false;
   const client = createTestGatewayClient(async () => ({}));
@@ -68,13 +71,12 @@ it("keeps A offline input with A when a same-client B hello replaces the pane be
     dataUrl: "data:text/plain;base64,QQ==",
     fileName: "a-only.txt",
   };
-  state.chatMessage = "A newer private draft";
+  state.chatMessage = privateDraft;
   state.chatAttachments = [attachment];
   persistence.schedule();
   persistence.persistNow();
   await settle();
-  const original = loadChatComposerState(state, state.sessionKey).snapshot;
-  expect(original?.draft).toBe("A newer private draft");
+  expect(loadChatComposerState(state, state.sessionKey).snapshot?.draft).toBe(privateDraft);
   // GatewayBrowserClient replaces identity before notifying hello observers. The
   // route can unmount the A pane before its persistence sees recovery readiness.
   account = "account-b";
@@ -98,25 +100,21 @@ it("keeps A offline input with A when a same-client B hello replaces the pane be
   b.start();
   b.persistChangedState();
   await settle();
-  expect(destination.chatMessage).toBe("");
-  expect(destination.chatAttachments).toEqual([]);
+  expect(destination).toMatchObject({ chatMessage: "", chatAttachments: [] });
   expect(loadChatComposerState(destination, destination.sessionKey).snapshot?.draft ?? "").toBe("");
   expect(
-    write.mock.calls
-      .filter(([scope]) => scope.recoveryScope === "account-b")
-      .some(([, draft]) => draft.text.includes("A newer") || draft.attachments.length),
+    writesFor("account-b").some(
+      (draft) => draft.text.includes("A newer") || draft.attachments.length,
+    ),
   ).toBe(false);
   account = "account-a";
   expect(loadChatComposerState(destination, destination.sessionKey).snapshot).toMatchObject({
-    draft: "A newer private draft",
+    draft: privateDraft,
     queue: [{ id: "a-queue" }],
   });
   expect(
-    write.mock.calls.some(
-      ([scope, draft]) =>
-        scope.recoveryScope === "account-a" &&
-        draft.text === "A newer private draft" &&
-        draft.attachments.length === 1,
+    writesFor("account-a").some(
+      (draft) => draft.text === privateDraft && draft.attachments.length === 1,
     ),
   ).toBe(true);
   b.stop();

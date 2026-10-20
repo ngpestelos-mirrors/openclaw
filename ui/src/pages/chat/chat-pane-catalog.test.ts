@@ -27,16 +27,54 @@ import {
   resetTranscriptTestDom,
 } from "./components/chat-transcript.test-support.ts";
 
+const catalogKey = {
+  catalogId: "codex",
+  hostId: "gateway:local",
+  threadId: "thread-101",
+} satisfies CatalogSessionKey;
+const catalogSession: SessionCatalogSession = {
+  threadId: catalogKey.threadId,
+  status: "idle",
+  archived: false,
+  canContinue: true,
+  canArchive: true,
+};
+
+function catalogPage(
+  sessions: SessionCatalogSession[],
+  nextCursor?: string,
+  capabilities: SessionsCatalogListResult["catalogs"][number]["capabilities"] = {
+    continueSession: true,
+    archive: true,
+  },
+): SessionsCatalogListResult {
+  return {
+    catalogs: [
+      {
+        id: catalogKey.catalogId,
+        label: "Codex",
+        capabilities,
+        hosts: [
+          {
+            hostId: catalogKey.hostId,
+            label: "Gateway",
+            kind: "gateway",
+            connected: true,
+            sessions,
+            nextCursor,
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function createCatalogContinuationPane(request: ReturnType<typeof vi.fn>) {
   const client = { request } as unknown as GatewayBrowserClient;
   const sessions = {} as SessionCapability;
   const { pane, state } = createTestChatPane({ client, sessions });
   Object.defineProperty(pane, "isConnected", { configurable: true, value: false });
-  const key = {
-    catalogId: "codex",
-    hostId: "gateway:local",
-    threadId: "thread-101",
-  } satisfies CatalogSessionKey;
+  const key = catalogKey;
   const sourceSessionKey = buildCatalogSessionKey(key, "main");
   state.sessionKey = sourceSessionKey;
   pane.sessionKey = sourceSessionKey;
@@ -45,16 +83,29 @@ function createCatalogContinuationPane(request: ReturnType<typeof vi.fn>) {
     state.chatMessage = draft;
   });
   state.handleSendChat = vi.fn(async () => undefined);
-  pane.history.catalogSession = {
-    threadId: key.threadId,
-    status: "idle",
-    archived: false,
-    canContinue: true,
-    canArchive: true,
-  };
+  pane.history.catalogSession = { ...catalogSession };
   pane.onPaneSessionChange = vi.fn();
   Object.defineProperty(pane, "isConnected", { configurable: true, value: true });
   return { client, key, pane, sessions, sourceSessionKey, state };
+}
+
+function startContinuation() {
+  const continued = createDeferred<{ sessionKey: string }>();
+  const request = vi.fn(() => continued.promise);
+  const fixture = createCatalogContinuationPane(request);
+  return {
+    ...fixture,
+    request,
+    continued,
+    pending: fixture.pane.continueCatalogSession(fixture.key),
+  };
+}
+
+function expectNoContinuation({ pane, state }: ReturnType<typeof createCatalogContinuationPane>) {
+  expect(pane.onPaneSessionChange).not.toHaveBeenCalled();
+  expect(state.handleChatDraftChange).not.toHaveBeenCalled();
+  expect(state.handleSendChat).not.toHaveBeenCalled();
+  expect(state.chatSending).toBe(false);
 }
 
 describe("catalog transcript cache", () => {
@@ -149,45 +200,10 @@ describe("catalog transcript cache", () => {
 
 describe("chat pane catalog session lifecycle", () => {
   it("finds continuation metadata on a later catalog page", async () => {
-    const key = {
-      catalogId: "codex",
-      hostId: "gateway:local",
-      threadId: "thread-101",
-    } satisfies CatalogSessionKey;
+    const key = catalogKey;
     const selectedSession: SessionCatalogSession = {
-      threadId: key.threadId,
+      ...catalogSession,
       sourceHomeId: "source-home-a",
-      status: "idle",
-      archived: false,
-      canContinue: true,
-      canArchive: true,
-    };
-    const firstPage: SessionsCatalogListResult = {
-      catalogs: [
-        {
-          id: key.catalogId,
-          label: "Codex",
-          capabilities: { continueSession: true, archive: true },
-          hosts: [
-            {
-              hostId: key.hostId,
-              label: "Gateway",
-              kind: "gateway",
-              connected: true,
-              sessions: [],
-              nextCursor: "page-2",
-            },
-          ],
-        },
-      ],
-    };
-    const secondPage: SessionsCatalogListResult = {
-      catalogs: [
-        {
-          ...firstPage.catalogs[0]!,
-          hosts: [{ ...firstPage.catalogs[0]!.hosts[0]!, sessions: [selectedSession] }],
-        },
-      ],
     };
     const transcript: SessionsCatalogReadResult = {
       hostId: key.hostId,
@@ -196,8 +212,8 @@ describe("chat pane catalog session lifecycle", () => {
     };
     const request = vi
       .fn()
-      .mockResolvedValueOnce(firstPage)
-      .mockResolvedValueOnce(secondPage)
+      .mockResolvedValueOnce(catalogPage([], "page-2"))
+      .mockResolvedValueOnce(catalogPage([selectedSession], "page-2"))
       .mockResolvedValueOnce(transcript);
     const client = { request } as unknown as GatewayBrowserClient;
     const { pane } = createTestChatPane({ client, sessions: {} as SessionCapability });
@@ -226,40 +242,11 @@ describe("chat pane catalog session lifecycle", () => {
   });
 
   it("discards a catalog read when the pane owner changes", async () => {
-    const key = {
-      catalogId: "codex",
-      hostId: "gateway:local",
-      threadId: "thread-101",
-    } satisfies CatalogSessionKey;
+    const key = catalogKey;
     const read = createDeferred<SessionsCatalogReadResult>();
     const request = vi
       .fn()
-      .mockResolvedValueOnce({
-        catalogs: [
-          {
-            id: "codex",
-            label: "Codex",
-            capabilities: {},
-            hosts: [
-              {
-                hostId: "gateway:local",
-                label: "Gateway",
-                kind: "gateway",
-                connected: true,
-                sessions: [
-                  {
-                    threadId: key.threadId,
-                    status: "idle",
-                    archived: false,
-                    canContinue: true,
-                    canArchive: true,
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      })
+      .mockResolvedValueOnce(catalogPage([{ ...catalogSession }], undefined, {}))
       .mockImplementationOnce(() => read.promise);
     const client = { request } as unknown as GatewayBrowserClient;
     const { pane, state } = createTestChatPane({ client, sessions: {} as SessionCapability });
@@ -305,42 +292,27 @@ describe("chat pane catalog session lifecycle", () => {
     },
   );
 
-  it.each([
-    {
-      name: "raw structured result",
-      item: { type: "toolResult", raw: { result: { output: "x".repeat(750) } } },
-      preview: `${JSON.stringify({ output: "x".repeat(750) }).slice(0, 499)}…`,
-    },
-  ] satisfies Array<{ name: string; item: SessionCatalogTranscriptItem; preview: string }>)(
-    "bounds the visible preview from $name without changing source data",
-    ({ item, preview }) => {
-      const { pane } = createCatalogContinuationPane(vi.fn());
-      const original = structuredClone(item);
+  it("bounds the visible preview from raw structured results without changing source data", () => {
+    const item: SessionCatalogTranscriptItem = {
+      type: "toolResult",
+      raw: { result: { output: "x".repeat(750) } },
+    };
+    const preview = `${JSON.stringify({ output: "x".repeat(750) }).slice(0, 499)}…`;
+    const { pane } = createCatalogContinuationPane(vi.fn());
+    const original = structuredClone(item);
 
-      expect(pane.catalogItemMessage(item)).toMatchObject({
-        content: [{ type: "text", text: `Tool result\n\n${preview}\n\n[Output truncated]` }],
-      });
-      expect(item).toEqual(original);
-    },
-  );
+    expect(pane.catalogItemMessage(item)).toMatchObject({
+      content: [{ type: "text", text: `Tool result\n\n${preview}\n\n[Output truncated]` }],
+    });
+    expect(item).toEqual(original);
+  });
 
-  it.each([
-    {
-      name: "keeps paging when an advancing older page renders nothing new",
-      items: [{ id: "x1", type: "other" }],
-      initialCursor: "cursor-1",
-      nextCursor: "cursor-2",
-      seenCursor: undefined,
-      progressed: true,
-      expectedCursor: "cursor-2",
-      visibleMessages: 0,
-    },
-  ] as const)("$name", async (scenario) => {
+  it("keeps paging when an advancing older page renders nothing new", async () => {
     const readPage: SessionsCatalogReadResult = {
       hostId: "gateway:local",
       threadId: "thread-1",
-      items: [...scenario.items],
-      nextCursor: scenario.nextCursor,
+      items: [{ id: "x1", type: "other" }],
+      nextCursor: "cursor-2",
     };
     const client = {
       request: vi.fn(async () => readPage),
@@ -350,15 +322,11 @@ describe("chat pane catalog session lifecycle", () => {
     Object.defineProperty(pane, "isConnected", { configurable: true, value: false });
     state.sessionKey = buildCatalogSessionKey(key, "main");
     pane.sessionKey = state.sessionKey;
-    pane.history.catalogCursor = scenario.initialCursor;
+    pane.history.catalogCursor = "cursor-1";
     Object.defineProperty(pane, "isConnected", { configurable: true, value: true });
-    if (scenario.seenCursor) {
-      pane.olderCursorsSeen.add(scenario.seenCursor);
-    }
-
-    expect(await pane.loadCatalogSession(key, true)).toBe(scenario.progressed);
-    expect(pane.history.catalogCursor).toBe(scenario.expectedCursor);
-    expect(pane.history.catalogMessages).toHaveLength(scenario.visibleMessages);
+    expect(await pane.loadCatalogSession(key, true)).toBe(true);
+    expect(pane.history.catalogCursor).toBe("cursor-2");
+    expect(pane.history.catalogMessages).toHaveLength(0);
   });
 });
 
@@ -446,98 +414,55 @@ describe("chat pane catalog continuation lifecycle", () => {
     expect(state.chatSending).toBe(false);
   });
 
-  it("does not send a stale catalog draft after the user switches conversations", async () => {
-    const continued = createDeferred<{ sessionKey: string }>();
-    const request = vi.fn(() => continued.promise);
-    const { key, pane, state } = createCatalogContinuationPane(request);
-
-    const pending = pane.continueCatalogSession(key);
-    state.sessionKey = "agent:main:different-conversation";
-    pane.sessionKey = state.sessionKey;
-    pane.catalogLoadGeneration += 1;
-    state.chatMessage = "Draft belonging to the selected conversation";
-    continued.resolve({ sessionKey: "agent:main:stale-continuation" });
-    await pending;
-
-    expect(pane.onPaneSessionChange).not.toHaveBeenCalled();
-    expect(state.handleChatDraftChange).not.toHaveBeenCalled();
-    expect(state.handleSendChat).not.toHaveBeenCalled();
-    expect(state.sessionKey).toBe("agent:main:different-conversation");
-    expect(state.chatMessage).toBe("Draft belonging to the selected conversation");
-    expect(state.chatSending).toBe(false);
-  });
-
-  it("does not apply a catalog continuation after the pane owner changes", async () => {
-    const continued = createDeferred<{ sessionKey: string }>();
-    const request = vi.fn(() => continued.promise);
-    const { key, pane, state } = createCatalogContinuationPane(request);
-    state.assistantAgentId = "main";
-
-    const pending = pane.continueCatalogSession(key);
-    state.sessionKey = buildCatalogSessionKey(key, "other");
-    pane.sessionKey = state.sessionKey;
-    continued.resolve({ sessionKey: "agent:main:stale-owner" });
-    await pending;
-
-    expect(request).toHaveBeenCalledWith("sessions.catalog.continue", {
-      ...key,
-      agentId: "main",
-    });
-    expect(pane.onPaneSessionChange).not.toHaveBeenCalled();
-    expect(state.handleChatDraftChange).not.toHaveBeenCalled();
-    expect(state.handleSendChat).not.toHaveBeenCalled();
-    expect(state.chatSending).toBe(false);
-  });
-
-  it("does not send a stale catalog draft after reconnecting the same Gateway client", async () => {
-    const continued = createDeferred<{ sessionKey: string }>();
-    const request = vi.fn(() => continued.promise);
-    const { key, pane, state } = createCatalogContinuationPane(request);
-
-    const pending = pane.continueCatalogSession(key);
-    pane.connectionGeneration += 1;
-    state.connectionEpoch = pane.connectionGeneration;
-    state.chatMessage = "Draft from the reconnected conversation";
-    continued.resolve({ sessionKey: "agent:main:stale-continuation" });
-    await pending;
-
-    expect(pane.onPaneSessionChange).not.toHaveBeenCalled();
-    expect(state.handleChatDraftChange).not.toHaveBeenCalled();
-    expect(state.handleSendChat).not.toHaveBeenCalled();
-    expect(state.chatMessage).toBe("Draft from the reconnected conversation");
-    expect(state.chatSending).toBe(false);
-  });
-
-  it("does not apply an old catalog continuation after replacing the Gateway client", async () => {
-    const continued = createDeferred<{ sessionKey: string }>();
-    const request = vi.fn(() => continued.promise);
-    const { key, pane, sessions, state } = createCatalogContinuationPane(request);
-    const replacementClient = { request: vi.fn() } as unknown as GatewayBrowserClient;
-
-    const pending = pane.continueCatalogSession(key);
-    state.client = replacementClient;
-    pane.connectedClient = replacementClient;
-    pane.context = createSessionContext(replacementClient, sessions);
-    pane.connectionGeneration += 1;
-    state.connectionEpoch = pane.connectionGeneration;
-    state.chatMessage = "Draft from the replacement Gateway";
-    continued.resolve({ sessionKey: "agent:main:stale-continuation" });
-    await pending;
-
-    expect(pane.onPaneSessionChange).not.toHaveBeenCalled();
-    expect(state.handleChatDraftChange).not.toHaveBeenCalled();
-    expect(state.handleSendChat).not.toHaveBeenCalled();
-    expect(state.client).toBe(replacementClient);
-    expect(state.chatMessage).toBe("Draft from the replacement Gateway");
-    expect(state.chatSending).toBe(false);
-  });
+  it.each(["conversation", "pane owner", "connection epoch", "Gateway client"])(
+    "does not adopt or send a catalog continuation after changing the %s",
+    async (changed) => {
+      const continued = createDeferred<{ sessionKey: string }>();
+      const request = vi.fn(() => continued.promise);
+      const fixture = createCatalogContinuationPane(request);
+      const { key, pane, state, sessions } = fixture;
+      state.assistantAgentId = "main";
+      const pending = pane.continueCatalogSession(key);
+      const replacement = { request: vi.fn() } as unknown as GatewayBrowserClient;
+      if (changed === "conversation" || changed === "pane owner") {
+        state.sessionKey =
+          changed === "conversation"
+            ? "agent:main:different-conversation"
+            : buildCatalogSessionKey(key, "other");
+        pane.sessionKey = state.sessionKey;
+        if (changed === "conversation") {
+          pane.catalogLoadGeneration += 1;
+        }
+      } else {
+        if (changed === "Gateway client") {
+          state.client = replacement;
+          pane.connectedClient = replacement;
+          pane.context = createSessionContext(replacement, sessions);
+        }
+        pane.connectionGeneration += 1;
+        state.connectionEpoch = pane.connectionGeneration;
+      }
+      const draft = `Draft after changing the ${changed}`;
+      state.chatMessage = draft;
+      continued.resolve({ sessionKey: "agent:main:stale-continuation" });
+      await pending;
+      expectNoContinuation(fixture);
+      expect(state.chatMessage).toBe(draft);
+      if (changed === "pane owner") {
+        expect(request).toHaveBeenCalledWith("sessions.catalog.continue", {
+          ...key,
+          agentId: "main",
+        });
+      } else if (changed === "conversation") {
+        expect(state.sessionKey).toBe("agent:main:different-conversation");
+      } else if (changed === "Gateway client") {
+        expect(state.client).toBe(replacement);
+      }
+    },
+  );
 
   it("does not clear a newer scoped send when a stale catalog continuation resolves", async () => {
-    const continued = createDeferred<{ sessionKey: string }>();
-    const request = vi.fn(() => continued.promise);
-    const { key, pane, state } = createCatalogContinuationPane(request);
-
-    const pending = pane.continueCatalogSession(key);
+    const { pane, state, continued, pending } = startContinuation();
     state.sessionKey = "agent:main:different-conversation";
     pane.sessionKey = state.sessionKey;
     pane.catalogLoadGeneration += 1;
@@ -584,11 +509,7 @@ describe("chat pane catalog continuation lifecycle", () => {
   });
 
   it("does not display a rejected catalog continuation in a different conversation", async () => {
-    const continued = createDeferred<{ sessionKey: string }>();
-    const request = vi.fn(() => continued.promise);
-    const { key, pane, state } = createCatalogContinuationPane(request);
-
-    const pending = pane.continueCatalogSession(key);
+    const { pane, state, continued, pending } = startContinuation();
     state.sessionKey = "agent:main:different-conversation";
     pane.sessionKey = state.sessionKey;
     pane.catalogLoadGeneration += 1;

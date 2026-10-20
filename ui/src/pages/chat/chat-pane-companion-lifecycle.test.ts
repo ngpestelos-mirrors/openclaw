@@ -2,6 +2,7 @@
 /* @vitest-environment-options {"url":"http://chat-pane-companion-lifecycle.test/"} */
 
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ModelCatalogEntry } from "../../api/types.ts";
 import { sessionsResult } from "../../lib/sessions/session-capability.test-support.ts";
@@ -25,37 +26,32 @@ describe("chat pane companion connection lifecycle", () => {
     const models: ModelCatalogEntry[] = [
       { id: "fixture-model", name: "Fixture model", provider: "test", available: true },
     ];
-    let releaseHistory!: () => void;
-    const historyReady = new Promise<void>((resolve) => {
-      releaseHistory = resolve;
-    });
-    onTestFinished(() => releaseHistory());
+    const historyReady = createDeferred<void>();
+    onTestFinished(() => historyReady.resolve());
+    const replies: Record<string, () => unknown> = {
+      "agents.list": () => ({
+        defaultId: "main",
+        mainKey: "main",
+        scope: "per-sender",
+        agents: [{ id: "main" }],
+      }),
+      "sessions.subscribe": () => ({ subscribed: true, list: sessionsResult([], 1) }),
+      "sessions.messages.subscribe": () => ({ subscribed: true, key: "agent:main:current" }),
+      "sessions.messages.unsubscribe": () => ({ subscribed: false, key: "agent:main:current" }),
+      "models.authStatus": () => ({ ts: 1, providers: [] }),
+      "models.list": () => ({ commands: [], models, swarmEnabled: false }),
+      "chat.metadata": () => ({ commands: [], models, swarmEnabled: false }),
+    };
     const request = createGatewayRequestMock(async (method) => {
-      switch (method) {
-        case "agents.list":
-          return {
-            defaultId: "main",
-            mainKey: "main",
-            scope: "per-sender",
-            agents: [{ id: "main" }],
-          };
-        case "sessions.subscribe":
-          return { subscribed: true, list: sessionsResult([], 1) };
-        case "sessions.messages.subscribe":
-          return { subscribed: true, key: "agent:main:current" };
-        case "sessions.messages.unsubscribe":
-          return { subscribed: false, key: "agent:main:current" };
-        case "chat.startup":
-          await historyReady;
-          return { messages: [], sessionId: "session-current", hasMore: false, totalMessages: 0 };
-        case "models.authStatus":
-          return { ts: 1, providers: [] };
-        case "models.list":
-        case "chat.metadata":
-          return { commands: [], models, swarmEnabled: false };
-        default:
-          throw new Error(`Unexpected gateway request: ${method}`);
+      if (method === "chat.startup") {
+        await historyReady.promise;
+        return { messages: [], sessionId: "session-current", hasMore: false, totalMessages: 0 };
       }
+      const reply = replies[method];
+      if (Object.hasOwn(replies, method) && reply) {
+        return reply();
+      }
+      throw new Error(`Unexpected gateway request: ${method}`);
     });
     const client = createGatewayBrowserClientFixture({ request });
     const { pane, state } = createTestChatPane({ client });
@@ -68,29 +64,25 @@ describe("chat pane companion connection lifecycle", () => {
       });
       pane.disconnectedCallback();
     });
-    let rejectAnswer!: (error: Error) => void;
+    const answer = createDeferred<{ answer: string; ts: number }>();
     const threads = companionThreads(pane);
+    const earlier = { question: "Earlier question", answer: "Earlier answer", ts: 1 };
     await threads.hydrate(
       "agent:main:current",
-      async () => ({
-        exchanges: [{ question: "Earlier question", answer: "Earlier answer", ts: 1 }],
-      }),
+      async () => ({ exchanges: [{ ...earlier }] }),
       "main",
     );
     const pending = threads.submit(
       "agent:main:current",
       "current question",
-      () =>
-        new Promise((_resolve, reject) => {
-          rejectAnswer = reject;
-        }),
+      () => answer.promise,
       "main",
     );
     threads.setDraft("agent:main:other", "other draft", "main");
 
     // GatewayProtocolClient flushes pending requests before publishing the
     // reconnecting snapshot; Promise rejection settles on the next microtask.
-    rejectAnswer(new Error("gateway closed"));
+    answer.reject(new Error("gateway closed"));
     pane.applyGatewaySnapshot({
       ...pane.context.gateway.snapshot,
       phase: "reconnecting",
@@ -98,14 +90,14 @@ describe("chat pane companion connection lifecycle", () => {
     });
 
     expect(threads.view("agent:main:current", "main").turns).toMatchObject([
-      { question: "Earlier question", status: "answered", answer: "Earlier answer", ts: 1 },
+      { ...earlier, status: "answered" },
       { question: "current question", status: "pending" },
     ]);
     expect(threads.view("agent:main:other", "main").draft).toBe("other draft");
     await pending;
     expect(threads.view("agent:main:current", "main")).toMatchObject({
       turns: [
-        { question: "Earlier question", status: "answered", answer: "Earlier answer", ts: 1 },
+        { ...earlier, status: "answered" },
         { question: "current question", status: "failed", hint: "unavailable", retryable: true },
       ],
     });
@@ -117,7 +109,7 @@ describe("chat pane companion connection lifecycle", () => {
       "agent:main:current",
       async () => ({
         exchanges: [
-          { question: "Earlier question", answer: "Earlier answer", ts: 1 },
+          { ...earlier },
           { question: "current question", answer: "Recovered answer", ts: 2 },
         ],
       }),
@@ -125,7 +117,7 @@ describe("chat pane companion connection lifecycle", () => {
     );
     expect(threads.view("agent:main:current", "main")).toMatchObject({
       turns: [
-        { question: "Earlier question", status: "answered", answer: "Earlier answer", ts: 1 },
+        { ...earlier, status: "answered" },
         { question: "current question", status: "answered", answer: "Recovered answer", ts: 2 },
       ],
     });
@@ -135,7 +127,7 @@ describe("chat pane companion connection lifecycle", () => {
     expect(state.chatModelCatalogError).toBeNull();
     const history = getChatHistoryLoadState(state);
     expect(history.phase).toBe("in-flight");
-    releaseHistory();
+    historyReady.resolve();
     if (history.phase === "in-flight") {
       await history.promise;
     }
@@ -148,14 +140,11 @@ describe("chat pane companion connection lifecycle", () => {
     const replacement = { request: vi.fn() } as unknown as GatewayBrowserClient;
     const { pane } = createTestChatPane({ client });
     const threads = companionThreads(pane);
-    let resolveAnswer!: (value: { answer: string; ts: number }) => void;
+    const answer = createDeferred<{ answer: string; ts: number }>();
     const pending = threads.submit(
       "agent:main:current",
       "replace this question",
-      () =>
-        new Promise((resolve) => {
-          resolveAnswer = resolve;
-        }),
+      () => answer.promise,
       "main",
     );
     threads.setDraft("agent:main:other", "replace this draft", "main");
@@ -171,7 +160,7 @@ describe("chat pane companion connection lifecycle", () => {
       turns: [],
     });
     expect(threads.view("agent:main:other", "main").draft).toBe("");
-    resolveAnswer({ answer: "late answer", ts: 3 });
+    answer.resolve({ answer: "late answer", ts: 3 });
     await pending;
     expect(threads.view("agent:main:current", "main").turns).toMatchObject([]);
   });

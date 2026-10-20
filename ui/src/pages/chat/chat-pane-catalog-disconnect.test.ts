@@ -8,6 +8,7 @@ import type {
 } from "../../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { buildCatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
+import { requestCalls } from "./chat-host.test-support.ts";
 import { createRefreshChatPane } from "./chat-pane-history.test-support.ts";
 import { createGatewayBrowserClientFixture, type TestChatPane } from "./chat-pane.test-support.ts";
 import {
@@ -73,6 +74,17 @@ function pendingLoads(loads: ReturnType<typeof mountCatalogPane>["loads"]) {
   return loads.mock.results.flatMap((result) => (result.type === "return" ? [result.value] : []));
 }
 
+function expectClosed({ pane, context, client }: ReturnType<typeof mountCatalogPane>) {
+  expect(pane.isConnected).toBe(false);
+  expect(pane.state).toBeUndefined();
+  expect(context.gateway.snapshot.client).toBe(client);
+  expect(context.gateway.snapshot.phase).toBe("connected");
+}
+
+function waitForRequest(request: Parameters<typeof requestCalls>[0], method: string) {
+  return vi.waitFor(() => expect(requestCalls(request, method).length).toBeGreaterThan(0));
+}
+
 describe("catalog pane disconnect ownership", () => {
   it.each(["before", "after"] as const)(
     "does not start a transcript read when the pane disconnects %s lookup settles",
@@ -87,13 +99,10 @@ describe("catalog pane disconnect ownership", () => {
         }
         return Promise.resolve({});
       });
-      const { pane, client, context, loads } = mountCatalogPane(request);
+      const fixture = mountCatalogPane(request);
+      const { pane, loads } = fixture;
       try {
-        await vi.waitFor(() =>
-          expect(request.mock.calls.some(([method]) => method === "sessions.catalog.list")).toBe(
-            true,
-          ),
-        );
+        await waitForRequest(request, "sessions.catalog.list");
         const active = pendingLoads(loads);
         expect(active.length).toBeGreaterThan(0);
         expect(pane.isConnected).toBe(true);
@@ -109,13 +118,8 @@ describe("catalog pane disconnect ownership", () => {
         }
         await Promise.all(active);
 
-        expect(pane.isConnected).toBe(false);
-        expect(pane.state).toBeUndefined();
-        expect(context.gateway.snapshot.client).toBe(client);
-        expect(context.gateway.snapshot.phase).toBe("connected");
-        expect
-          .soft(request.mock.calls.filter(([method]) => method === "sessions.catalog.read"))
-          .toHaveLength(0);
+        expectClosed(fixture);
+        expect.soft(requestCalls(request, "sessions.catalog.read")).toHaveLength(0);
         expect.soft(pane.history.catalogMessages).toEqual(messagesBeforeClose);
         expect.soft(pane.history.catalogSession).toEqual(sessionBeforeClose);
       } finally {
@@ -139,23 +143,15 @@ describe("catalog pane disconnect ownership", () => {
         }
         return {};
       });
-      const { pane, client, context, loads } = mountCatalogPane(request);
+      const fixture = mountCatalogPane(request);
+      const { pane, loads } = fixture;
       try {
-        await vi.waitFor(() =>
-          expect(request.mock.calls.some(([method]) => method === "sessions.catalog.read")).toBe(
-            true,
-          ),
-        );
+        await waitForRequest(request, "sessions.catalog.read");
         const active = pendingLoads(loads);
-        const readCount = request.mock.calls.filter(
-          ([method]) => method === "sessions.catalog.read",
-        ).length;
+        const readCount = requestCalls(request, "sessions.catalog.read").length;
         const state = pane.state;
         pane.remove();
-        expect(pane.isConnected).toBe(false);
-        expect(pane.state).toBeUndefined();
-        expect(context.gateway.snapshot.client).toBe(client);
-        expect(context.gateway.snapshot.phase).toBe("connected");
+        expectClosed(fixture);
         const messagesAfterClose = pane.history.catalogMessages;
         const errorAfterClose = state.lastError;
 
@@ -166,9 +162,7 @@ describe("catalog pane disconnect ownership", () => {
         }
         await Promise.all(active);
 
-        expect
-          .soft(request.mock.calls.filter(([method]) => method === "sessions.catalog.read"))
-          .toHaveLength(readCount);
+        expect.soft(requestCalls(request, "sessions.catalog.read")).toHaveLength(readCount);
         expect.soft(pane.history.catalogMessages).toEqual(messagesAfterClose);
         expect.soft(state.lastError).toBe(errorAfterClose);
       } finally {
