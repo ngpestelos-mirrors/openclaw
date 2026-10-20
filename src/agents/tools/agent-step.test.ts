@@ -23,6 +23,14 @@ const peer = vi.hoisted(() => ({
   config: undefined as OpenClawConfig | undefined,
   load: vi.fn(),
 }));
+function sessionEntry(name: string, communication?: SessionEntry["communication"]): SessionEntry {
+  return {
+    sessionId: `${name}-id`,
+    lifecycleRevision: `${name}-v1`,
+    updatedAt: 1,
+    ...(communication ? { communication } : {}),
+  };
+}
 vi.mock("./in-process-gateway.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./in-process-gateway.js")>()),
   getInProcessGatewayToolContext: () =>
@@ -128,41 +136,30 @@ it.each(["direct", "cron-fallback", "receive-only", "ask-send", "send-only"] as 
     const config: OpenClawConfig = {
       tools: { sessions: { visibility: "all" } },
       session: { communication: { send: "always", receive: "always" } },
-      ...(route === "send-only"
-        ? {
-            agents: {
-              entries: {
-                main: { tools: { agentToAgent: { send: ["research"] } } },
-                research: { tools: { agentToAgent: { send: [] } } },
-              },
-            },
-            tools: {
-              sessions: { visibility: "self" },
-              agentToAgent: { enabled: true, allow: ["main", "research"] },
-            },
-          }
-        : {}),
     };
+    if (route === "send-only") {
+      config.agents = {
+        entries: {
+          main: { tools: { agentToAgent: { send: ["research"] } } },
+          research: { tools: { agentToAgent: { send: [] } } },
+        },
+      };
+      config.tools = {
+        sessions: { visibility: "self" },
+        agentToAgent: { enabled: true, allow: ["main", "research"] },
+      };
+    }
     peer.config = config;
     setRuntimeConfigSnapshot(config);
     const peerAgentId = route === "send-only" ? "research" : "main";
     const sourceKey = `agent:${peerAgentId}:peer`;
     const targetKey = "agent:main:requester";
-    const source: SessionEntry = {
-      sessionId: "peer-id",
-      lifecycleRevision: "peer-v1",
-      updatedAt: 1,
-      ...(route === "receive-only" ? { communication: { send: "never" as const } } : {}),
-      ...(route === "ask-send" ? { communication: { send: "ask" as const } } : {}),
-    };
-    const target: SessionEntry = {
-      sessionId: "requester-id",
-      lifecycleRevision: "requester-v1",
-      updatedAt: 1,
-      ...(route === "receive-only" || route === "ask-send"
-        ? { communication: { receive: "never" as const } }
-        : {}),
-    };
+    const restricted = route === "receive-only" || route === "ask-send";
+    const source = sessionEntry(
+      "peer",
+      restricted ? { send: route === "ask-send" ? "ask" : "never" } : undefined,
+    );
+    const target = sessionEntry("requester", restricted ? { receive: "never" } : undefined);
     const rows: Record<string, SessionEntry> = { [sourceKey]: source, [targetKey]: target };
     const storeTarget = (key: string) => ({
       agentId: key === sourceKey ? peerAgentId : "main",
@@ -342,7 +339,7 @@ it.each(["direct", "cron-fallback", "receive-only", "ask-send", "send-only"] as 
         returnedResult: { extraSystemPrompt: expect.stringContaining("returned the result") },
       },
     ]);
-    if (route === "receive-only" || route === "ask-send" || route === "send-only") {
+    if (restricted || route === "send-only") {
       await expect(
         prepareSessionsSendCommunication({
           config,

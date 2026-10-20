@@ -113,7 +113,7 @@ export function readLastComputerActParams(
 export { createComputerTool as createVisionComputerTool };
 
 export function resetComputerToolMocks() {
-  listNodesMock.mockReset();
+  listNodesMock.mockReset().mockResolvedValue([macComputerNode()]);
   callGatewayToolMock.mockReset();
   gatewayComputerStatusMock.mockReset().mockResolvedValue({ configured: false, available: false });
   sleepMock.mockReset().mockImplementation((ms: number, signal?: AbortSignal) => {
@@ -127,7 +127,6 @@ export function resetComputerToolMocks() {
       signal.addEventListener("abort", () => reject(new Error("Aborted")), { once: true });
     });
   });
-  listNodesMock.mockResolvedValue([macComputerNode()]);
   callGatewayToolMock.mockImplementation(async (_method, _opts, body) =>
     (body as ComputerActBody).command === COMPUTER_ACT_COMMAND
       ? { payload: { ok: true } }

@@ -67,36 +67,29 @@ it.each(["cell", "nested"])(
     const read = observeRead();
     const h = createCodeModeHarness();
     applyCodeModeCatalog({ ...h.ctx, tools: [...h.tools, createMainSessionWaitTool()] });
-    let settled = false;
-    const result = expectDefined(h.tools[0], "exec")
-      .execute("required-child-results", {
-        title: "Collect required child results",
-        awaitResults: mode === "cell",
-        code: `return await agents_wait({ids:["first-required", "second-required"]${mode === "nested" ? ", awaitResults: true" : ""}});`,
-      })
-      .then((value) => {
-        settled = true;
-        return value;
-      });
+    const result = expectDefined(h.tools[0], "exec").execute("required-child-results", {
+      title: "Collect required child results",
+      awaitResults: mode === "cell",
+      code: `return await agents_wait({ids:["first-required", "second-required"]${mode === "nested" ? ", awaitResults: true" : ""}});`,
+    });
     try {
       await read;
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(settled).toBe(false);
+      const pending = Symbol("pending");
+      expect(await Promise.race([result, Promise.resolve(pending)])).toBe(pending);
       expect(registryEvents.read).toHaveBeenCalledOnce();
       second.completion = { required: false, resultText: "child failure evidence" };
       publishCompletion(second);
       vi.useRealTimers();
-      await expect(result).resolves.toMatchObject({
-        details: {
-          status: "completed",
-          value: {
-            pending: [],
-            completed: [
-              { runId: first.runId, status: "done" },
-              { runId: second.runId, status: "failed", result: "child failure evidence" },
-            ],
-          },
+      expect((await result).details).toMatchObject({
+        status: "completed",
+        value: {
+          pending: [],
+          completed: [
+            { runId: first.runId, status: "done" },
+            { runId: second.runId, status: "failed", result: "child failure evidence" },
+          ],
         },
       });
       expect(registryEvents.read).toHaveBeenCalledTimes(2);
