@@ -1560,6 +1560,7 @@
   "ui/src/pages/chat/chat-assistant-reply.ts",
   "ui/src/pages/chat/chat-avatar-view.tsx",
   "ui/src/pages/chat/chat-avatar.ts",
+  "ui/src/pages/chat/chat-board-snapshot.ts",
   "ui/src/pages/chat/chat-canonical-location.ts",
   "ui/src/pages/chat/chat-composer-capability-host.tsx",
   "ui/src/pages/chat/chat-composer-memory-fallback.ts",
