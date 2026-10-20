@@ -110,9 +110,9 @@ const diagnostics: Diagnostic[] = [
         : { affectedKey: "gateway.port", message: "Invalid configuration field" }),
     },
     includes: [
-      "gateway.*",
+      "gateway.port",
       "Invalid configuration field",
-      ...(candidate ? ["models.providers.*"] : []),
+      ...(candidate ? ["models.providers.<id>.apiKey"] : []),
     ],
     excludes: /\[redacted-diagnostic\]|private-tenant|private rejected value/u,
   })),

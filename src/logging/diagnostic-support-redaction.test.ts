@@ -48,6 +48,24 @@ describe("diagnostic support redaction", () => {
     "The npm global install layout cannot stage a candidate. Reinstall with npm into its default global layout, then retry the update.";
 
   it.each([
+    "schema migration required",
+    "database schema newer than candidate",
+    "plugin load failed",
+    "port in use",
+    "readiness timeout",
+    "startup crash with signal SIGTERM",
+    "native module missing",
+    "native module ABI mismatch",
+    "startup ran out of memory",
+  ])("admits only the exact startup template %s", (message) => {
+    const context = { env: {}, stateDir: tempDir };
+    expect(redactPublicSupportDiagnosticLine(message, context)).toBe(message);
+    expect(redactPublicSupportDiagnosticLine(`${message} private-tenant`, context)).toBe(
+      "[redacted-diagnostic]",
+    );
+  });
+
+  it.each([
     `'/synthetic/private owner/state.sqlite' private suffix`,
     `'/synthetic/o'brien/customer.sqlite' private suffix`,
     `"/synthetic/private "quoted" owner/state.sqlite" private suffix`,

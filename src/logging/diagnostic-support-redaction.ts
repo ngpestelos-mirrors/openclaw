@@ -8,6 +8,7 @@ import { sanitizeForLog, stripAnsi } from "../../packages/terminal-core/src/ansi
 import { REDACTED_SENTINEL } from "../config/redact-snapshot.js";
 import { isSecretRefShape } from "../config/redact-snapshot.secret-ref.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
+import { isPublicCandidateStartupDiagnostic } from "../infra/update-candidate-startup-failure.js";
 import { replaceRedactPattern } from "./redact-pattern-runtime.js";
 import { AWS_SECRET_ACCESS_KEY_MATCHER, VENDOR_TOKEN_REDACT_PATTERNS } from "./redact-patterns.js";
 import { redactSensitiveText, redactText, resolveRedactOptions } from "./redact.js";
@@ -457,6 +458,9 @@ export function redactPublicSupportDiagnosticLine(
   context: SupportRedactionContext,
 ): string {
   const line = redactSupportDiagnosticLine(value, context);
+  if (isPublicCandidateStartupDiagnostic(line)) {
+    return line;
+  }
   const gatewayStatus =
     /^Gateway readiness was not verified; service status: (running|stopped|unknown)(?=[;.])/u.exec(
       line,

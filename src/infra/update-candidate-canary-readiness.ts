@@ -22,6 +22,8 @@ import {
 } from "./update-candidate-canary-progress.js";
 import { createUpdateFailureFact, type UpdateFailureFact } from "./update-failure-facts.js";
 
+export class UpdateCandidateReadinessTimeoutError extends Error {}
+
 export function observeUpdateCandidateStartup(params: SupportRedactionContext) {
   const milestones = new Map<UpdateCanaryStartupMilestone, number>();
   return {
@@ -135,7 +137,7 @@ export async function waitForUpdateCandidateReadiness(
       throw new Error(params.getExitReason() ?? "The updated Gateway exited before it was ready");
     }
     if (Date.now() >= hardDeadline) {
-      throw new Error(
+      throw new UpdateCandidateReadinessTimeoutError(
         `Candidate still starting after ${(Date.now() - waitStarted) / 1_000} s; milestones reached: ${[...milestones].join(", ") || "none"}`,
       );
     }
@@ -161,12 +163,12 @@ export async function waitForUpdateCandidateReadiness(
           }
           if (Date.now() >= workDeadline) {
             if (lastProgress && (candidatePending || !proxy)) {
-              throw new Error(
+              throw new UpdateCandidateReadinessTimeoutError(
                 `Candidate Gateway startup stalled for ${stallBudgetMs}ms after ${lastProgress.milestone}`,
               );
             }
             if (!failure) {
-              throw new Error("Update validation deadline exceeded");
+              throw new UpdateCandidateReadinessTimeoutError("Update validation deadline exceeded");
             }
             params.capture(failure.message);
             probeFailure = failure;

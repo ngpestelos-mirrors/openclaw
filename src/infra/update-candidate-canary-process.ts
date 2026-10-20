@@ -2,12 +2,116 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { resolveOpenClawCliInvocation } from "../../cli-invocation.mjs";
 import { raceWithTimeout } from "../../packages/retry/src/index.js";
-import { redactSupportDiagnosticLine } from "../logging/diagnostic-support-redaction.js";
+import { parsePublicConfigDiagnosticLines } from "../config/public-validation.js";
+import {
+  redactSupportDiagnosticLine,
+  redactSupportString,
+  type SupportRedactionContext,
+} from "../logging/diagnostic-support-redaction.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { signalProcessTree } from "../process/kill-tree.js";
 import { resolveRuntimeArgs } from "./runtime-worker-url.js";
 import { UPDATE_CANARY_PROGRESS_PREFIX } from "./update-candidate-canary-progress.js";
+import {
+  classifyUpdateCandidateStartupLine,
+  UPDATE_CANDIDATE_STARTUP_CAUSES,
+} from "./update-candidate-startup-failure.js";
+import { createUpdateFailureFact, type UpdateFailureFact } from "./update-failure-facts.js";
 import type { UpdateStepResult } from "./update-step-result.js";
+
+export function createUpdateCandidateLogCapture(context: () => SupportRedactionContext) {
+  const logTail: string[] = [];
+  const stepLogTail: string[] = [];
+  return {
+    logTail,
+    stepLogTail,
+    capture: (chunk: Buffer | string) => {
+      const safe = redactSupportString(String(chunk), context(), {
+        maxLength: Number.MAX_SAFE_INTEGER,
+      });
+      const lines = safe
+        .split(/\r?\n/u)
+        .filter(Boolean)
+        .map((line) => sliceUtf16Safe(line, -512));
+      for (const tail of [logTail, stepLogTail]) {
+        tail.push(...lines);
+        tail.splice(0, Math.max(0, tail.length - 40));
+      }
+      return safe;
+    },
+  };
+}
+
+export function createUpdateCandidateStartupDiagnostics(context: SupportRedactionContext) {
+  const facts: UpdateFailureFact[] = [];
+  let invalidConfig = false;
+  return {
+    onLine(line: string) {
+      const issue = invalidConfig ? parsePublicConfigDiagnosticLines(line)[0] : undefined;
+      const fact = issue
+        ? {
+            check: "config",
+            code: "invalid-config",
+            affectedKey: issue.path,
+            message: issue.message,
+          }
+        : classifyUpdateCandidateStartupLine(line);
+      invalidConfig ||= fact?.code === "candidate-startup-config-invalid";
+      if (issue) {
+        const heading = facts.findIndex(
+          (entry) => entry.code === "candidate-startup-config-invalid",
+        );
+        if (heading >= 0) {
+          facts.splice(heading, 1);
+        }
+      }
+      if (
+        fact &&
+        facts.length < 5 &&
+        !facts.some(
+          (entry) =>
+            entry.code === fact.code &&
+            entry.pluginId === fact.pluginId &&
+            entry.affectedKey === fact.affectedKey,
+        )
+      ) {
+        facts.push(createUpdateFailureFact(fact, context.env));
+      }
+    },
+    failure(
+      step: UpdateStepResult,
+      signal: NodeJS.Signals | null,
+      timedOut: boolean,
+    ): UpdateStepResult {
+      // Read the natural outcome before teardown sends any termination signals.
+      const primary =
+        signal || timedOut
+          ? [
+              createUpdateFailureFact(
+                {
+                  check: "startupz",
+                  code: signal ? "signal" : "candidate-startup-readiness-timeout",
+                  message: signal
+                    ? `startup crash with signal ${signal}`
+                    : UPDATE_CANDIDATE_STARTUP_CAUSES["candidate-startup-readiness-timeout"],
+                },
+                context.env,
+              ),
+            ]
+          : [];
+      const failureFacts = [...primary, ...facts].slice(0, 5);
+      return {
+        ...step,
+        ...(signal
+          ? { exitCode: null, signal, termination: "signal" as const }
+          : timedOut
+            ? { exitCode: null, termination: "timeout" as const }
+            : {}),
+        ...(failureFacts.length ? { failureFacts } : {}),
+      };
+    },
+  };
+}
 
 export function launchCanary(params: {
   entry: string;

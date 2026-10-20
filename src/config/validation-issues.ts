@@ -138,6 +138,26 @@ function extractBindingsSpecificUnionIssue(
   );
 }
 
+function extractNestedUnionIssue(
+  record: z.core.$ZodIssueInvalidUnion,
+): ConfigValidationIssue | null {
+  const branches = record.errors.filter((branch) => branch.some((issue) => issue.path.length > 0));
+  if (
+    branches.length !== 1 ||
+    record.errors.some(
+      (branch) =>
+        branch !== branches[0] &&
+        branch.some((issue) => issue.code !== "invalid_type" || issue.path.length > 0),
+    )
+  ) {
+    return null;
+  }
+  const nested = branches[0]?.find((issue) => issue.path.length > 0);
+  return nested
+    ? mapZodIssueToConfigIssue({ ...nested, path: [...record.path, ...nested.path] })
+    : null;
+}
+
 export function mapZodIssueToConfigIssue(issue: z.core.$ZodIssue): ConfigValidationIssue {
   const pathSegments = toConfigPathSegments(issue.path);
   const path = pathSegments.join(".");
@@ -148,7 +168,8 @@ export function mapZodIssueToConfigIssue(issue: z.core.$ZodIssue): ConfigValidat
   // When an explicit ACP binding fails strict-object checks, Zod collapses the
   // useful ACP branch issue behind a generic union-level "Invalid input".
   if (issue.code === "invalid_union" && !allowedValuesSummary) {
-    const betterIssue = extractBindingsSpecificUnionIssue(issue, pathSegments);
+    const betterIssue =
+      extractBindingsSpecificUnionIssue(issue, pathSegments) ?? extractNestedUnionIssue(issue);
     if (betterIssue) {
       return betterIssue;
     }

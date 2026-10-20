@@ -1,6 +1,7 @@
 import { findRetiredConfigUpgradeRequirement } from "../../commands/doctor/shared/retired-config-formats.js";
 import { isConfigReadFailure } from "../../config/io.invalid-config.js";
 import { formatConfigIssueLines } from "../../config/issue-format.js";
+import { configIssueFactPath, publicConfigIssueMessage } from "../../config/public-validation.js";
 import type { ConfigFileSnapshot } from "../../config/types.openclaw.js";
 import { normalizeSupportDiagnosticErrorCode } from "../../logging/diagnostic-support-redaction.js";
 import { UpdatePreMutationError } from "./shared.js";
@@ -29,10 +30,9 @@ export function createUpdateConfigFailure(
       },
     );
   }
-  const issues = snapshot.issues.map(({ path, pathSegments }) => ({
-    path,
-    pathSegments,
-    message: "Invalid configuration field",
+  const issues = snapshot.issues.map((issue) => ({
+    path: configIssueFactPath(issue),
+    message: publicConfigIssueMessage(issue),
   }));
   const retired = findRetiredConfigUpgradeRequirement(
     snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig,

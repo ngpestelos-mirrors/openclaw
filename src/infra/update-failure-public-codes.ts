@@ -9,6 +9,7 @@ import {
   UPDATE_ENVIRONMENT_FAILURE_REASONS,
 } from "../shared/update-outcome.js";
 import { PACKAGE_REFUSAL_CODES } from "./package-update-refusal.js";
+import { UPDATE_CANDIDATE_STARTUP_CAUSES } from "./update-candidate-startup-failure.js";
 import { UPDATE_PREFLIGHT_DETAILS } from "./update-preflight-details.js";
 import { updateRecoverySchema } from "./update-recovery.js";
 
@@ -22,6 +23,7 @@ export const CANARY_CHECKS = [
 ] as const;
 
 const PUBLIC_CODES = new Set<string>([
+  ...Object.keys(UPDATE_CANDIDATE_STARTUP_CAUSES),
   ...PACKAGE_REFUSAL_CODES,
   ...Object.keys(UPDATE_PREFLIGHT_DETAILS),
   ...Object.keys(SKIPPED_UPDATE_OUTCOMES),

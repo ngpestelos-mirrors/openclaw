@@ -3,7 +3,6 @@ import path from "node:path";
 import { isDeepStrictEqual, stripVTControlCharacters } from "node:util";
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { asOptionalRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
-import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import JSON5 from "json5";
 import { readUpdateTargetCliOptions } from "../cli/update-cli/update-command-cli-options.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -16,9 +15,16 @@ import { readPackageVersion } from "./package-json.js";
 import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
 import { resolveSqliteInspectionBudget } from "./sqlite-readonly-worker.js";
 import * as canaryCmd from "./update-candidate-canary-commands.js";
-import { launchCanary, stopCanary, waitBounded } from "./update-candidate-canary-process.js";
+import {
+  createUpdateCandidateLogCapture,
+  createUpdateCandidateStartupDiagnostics,
+  launchCanary,
+  stopCanary,
+  waitBounded,
+} from "./update-candidate-canary-process.js";
 import { UPDATE_CANARY_PROGRESS_ARGS } from "./update-candidate-canary-progress.js";
 import * as readiness from "./update-candidate-canary-readiness.js";
+import type { CanaryOutcome, CanaryPhase, CanaryResult } from "./update-candidate-canary-types.js";
 import type { UpdateCandidateBundledSource } from "./update-candidate-plugins.js";
 import {
   prepareUpdateCandidateRehearsal,
@@ -46,34 +52,6 @@ import { resolveUpdateDoctorExecutionPolicy } from "./update-runner-doctor.js";
 import { UpdateSnapshotCapacityError } from "./update-snapshot-capacity.js";
 import type { UpdateStepResult } from "./update-step-result.js";
 
-type CanaryPhase = canaryCmd.UpdateCanaryCommand["phase"] | "snapshot" | "startup" | "readiness";
-
-type CanaryOutcome =
-  | { status: "ok" }
-  | {
-      status: "error";
-      reason:
-        | "doctor-failed"
-        | "candidate-checks-timeout"
-        | "candidate-snapshot-failed"
-        | "runtime-verification-failed";
-    };
-
-type CanaryResult = {
-  phase: CanaryPhase;
-  durationMs: number;
-  logTail: string[];
-  steps: UpdateStepResult[];
-  candidateSchemaVersions?: schemaVersions.OpenClawSchemaVersions;
-  gatewayRestartCompletion?: boolean;
-  doctorConfigWrites?: boolean;
-  doctorConfigChanges?: UpdateDoctorConfigChange[];
-  listenerIsolation?: {
-    gateway: { host: "127.0.0.1"; port: number };
-    mcpAppSandbox: "disabled";
-  };
-} & CanaryOutcome;
-
 /** Rehearse the exact candidate against private SQLite snapshots while the serving generation stays up. */
 export async function validateUpdateCandidateCanary(params: {
   root: string;
@@ -97,12 +75,15 @@ export async function validateUpdateCandidateCanary(params: {
   let rehearsal: UpdateCandidateRehearsal | undefined;
   let cleanupUncertain = false;
   const sourceEnv = params.env ?? process.env;
-  const logTail: string[] = [];
-  const stepLogTail: string[] = [];
+  let env: NodeJS.ProcessEnv = { ...sourceEnv };
+  const { capture, logTail, stepLogTail } = createUpdateCandidateLogCapture(() => ({
+    env,
+    stateDir: params.stateDir,
+  }));
   const startupWarnings: string[] = [];
   let activeStep = { name: "candidate-runtime", command: "Checking update runtime" };
   let stepStartedAt = started;
-  let activeLintStep: UpdateStepResult | undefined;
+  let activeCheckStep: UpdateStepResult | undefined;
   const steps: UpdateStepResult[] = [];
   const currentStep = (exitCode: number | null): UpdateStepResult => ({
     ...activeStep,
@@ -175,23 +156,6 @@ export async function validateUpdateCandidateCanary(params: {
     listenerIsolation,
     steps,
   });
-  let env: NodeJS.ProcessEnv = { ...sourceEnv };
-  const capture = (chunk: Buffer | string) => {
-    const safe = redactSupportString(
-      String(chunk),
-      { env, stateDir: params.stateDir },
-      { maxLength: Number.MAX_SAFE_INTEGER },
-    );
-    const lines = safe
-      .split(/\r?\n/u)
-      .filter(Boolean)
-      .map((line) => sliceUtf16Safe(line, -512));
-    for (const tail of [logTail, stepLogTail]) {
-      tail.push(...lines);
-      tail.splice(0, Math.max(0, tail.length - 40));
-    }
-    return safe;
-  };
   const launch = (
     entry: string,
     args: string[],
@@ -328,7 +292,7 @@ export async function validateUpdateCandidateCanary(params: {
     for (const command of commands) {
       const { phase } = command;
       progress.phase = phase;
-      activeLintStep = undefined;
+      activeCheckStep = undefined;
       env.OPENCLAW_UPDATE_IN_PROGRESS = phase === "doctor" ? "1" : "0";
       // Only Doctor traces its existing sections; later children keep the operator's setting.
       env.OPENCLAW_GATEWAY_STARTUP_TRACE = operatorTrace;
@@ -407,7 +371,13 @@ export async function validateUpdateCandidateCanary(params: {
           }
         }
       } finally {
-        await stopCanary({ running, name: command.name, root: params.root, deadline, recordStep });
+        await stopCanary({
+          running,
+          name: command.name,
+          root: params.root,
+          deadline,
+          recordStep,
+        });
         if (doctorResultPath) {
           doctorReceipt = await consumeUpdatePostInstallDoctorResult(
             doctorResultPath,
@@ -440,7 +410,7 @@ export async function validateUpdateCandidateCanary(params: {
           }
         }
       }
-      activeLintStep =
+      activeCheckStep =
         phase === "lint"
           ? {
               ...currentStep(running.child.exitCode),
@@ -453,10 +423,10 @@ export async function validateUpdateCandidateCanary(params: {
             }
           : undefined;
       params.signal?.throwIfAborted();
-      const lintReport = activeLintStep
-        ? lint.applyUpdateDoctorLintReport(activeLintStep, running.stdout(), code, env)
+      const lintReport = activeCheckStep
+        ? lint.applyUpdateDoctorLintReport(activeCheckStep, running.stdout(), code, env)
         : undefined;
-      doctorAdvisory ??= activeLintStep?.advisory;
+      doctorAdvisory ??= activeCheckStep?.advisory;
       if (code === 0 && phase === "plugins") {
         const fail = (message: string) => {
           code = 1;
@@ -519,7 +489,7 @@ export async function validateUpdateCandidateCanary(params: {
           capture("The update did not report its supported database versions");
         }
       }
-      const step: UpdateStepResult = activeLintStep ?? {
+      const step: UpdateStepResult = activeCheckStep ?? {
         ...currentStep(timedOut ? null : code),
         // Keep the check verdict when a later native crash evicts the rolling log tail.
         ...(phase === "doctor" && checksCompletedAt !== undefined
@@ -584,9 +554,16 @@ export async function validateUpdateCandidateCanary(params: {
     remaining();
     const args = ["gateway", "run", ...UPDATE_CANARY_PROGRESS_ARGS, "--bind", "loopback"];
     const startup = readiness.observeUpdateCandidateStartup({ env, stateDir: params.stateDir });
+    const startupDiagnostics = createUpdateCandidateStartupDiagnostics({
+      env,
+      stateDir: params.stateDir,
+    });
     const processExit = new AbortController();
     const running = launch(entry, [...args, "--port", String(port)], {
-      onLine: startup.onLine,
+      onLine: (line) => {
+        startup.onLine(line);
+        startupDiagnostics.onLine(line);
+      },
     });
     const abortExited = () => processExit.abort();
     running.child.once("exit", abortExited);
@@ -635,6 +612,11 @@ export async function validateUpdateCandidateCanary(params: {
       await recordStep(step);
     } catch (error) {
       startupFailure = error;
+      activeCheckStep = startupDiagnostics.failure(
+        currentStep(running.child.exitCode || 1),
+        running.child.signalCode,
+        error instanceof readiness.UpdateCandidateReadinessTimeoutError,
+      );
       throw error;
     } finally {
       await stopCanary({
@@ -662,8 +644,8 @@ export async function validateUpdateCandidateCanary(params: {
     const message = coerceErrorMessage(error);
     const failureLine = capture(`${displayPhase}: ${message} (${durationMs}ms)`);
     let failed = steps.at(-1);
-    if (!failed || (failed.exitCode === 0 && failed !== activeLintStep) || failed.advisory) {
-      failed = activeLintStep ?? currentStep(1);
+    if (!failed || (failed.exitCode === 0 && failed !== activeCheckStep) || failed.advisory) {
+      failed = activeCheckStep ?? currentStep(1);
       steps.push(failed);
     }
     if (error instanceof UpdateSnapshotCapacityError) {
