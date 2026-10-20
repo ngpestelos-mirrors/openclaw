@@ -39,9 +39,8 @@ it.each([
     const gateway = await createFixture("operator.read");
     const registry = createRequestGatewayMethodRegistry();
     gateway.context.getGatewayMethodRegistry = () => registry;
-    const runtime = createPluginRuntime();
     const plugins = createPluginRegistry({
-      runtime,
+      runtime: createPluginRuntime(),
       logger: { info() {}, warn() {}, error() {}, debug() {} },
       activateGlobalSideEffects: false,
     });

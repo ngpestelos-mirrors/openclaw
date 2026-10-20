@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 // Root-owned integration may combine public plugin surfaces with Gateway-owned runtime.
 import { questionGatewayRuntime } from "openclaw/plugin-sdk/question-gateway-runtime";
 import { afterEach, expect, it, vi } from "vitest";
@@ -18,12 +19,9 @@ type TelegramPresentation = {
 };
 
 async function renderButtons(payload: ReturnType<typeof buildAgentHarnessQuestionPromptPayload>) {
-  if (!payload.presentation) {
-    throw new Error("expected a portable question presentation");
-  }
   const rendered = await telegramOutbound.renderPresentation?.({
     payload,
-    presentation: payload.presentation,
+    presentation: expectDefined(payload.presentation, "portable question presentation"),
     ctx: { cfg: {}, to: "42", text: payload.text, payload },
   });
   return (rendered?.channelData?.telegram as TelegramPresentation | undefined)?.buttons;
@@ -88,9 +86,7 @@ it("resolves canonical option C when rendered option A repeats across blocks", a
     const result = await callGatewayHandler(handlers, method, params ?? {}, {
       context: { broadcast: () => undefined },
     });
-    if (!result.ok) {
-      throw new Error(`question Gateway method ${method} rejected its request`);
-    }
+    expect(result.ok, `question Gateway method ${method}`).toBe(true);
     return result.response;
   };
   questionGatewayTransport.dispatch = dispatch;
@@ -101,6 +97,9 @@ it("resolves canonical option C when rendered option A repeats across blocks", a
       header: "Destination",
       question: "Where next?",
       options: optionValues.map((label) => ({ label })),
+      multiSelect: false,
+      isOther: false,
+      isSecret: false,
     };
     await dispatch({
       method: "question.request",
@@ -110,9 +109,6 @@ it("resolves canonical option C when rendered option A repeats across blocks", a
           {
             questionId: "destination",
             ...question,
-            multiSelect: false,
-            isOther: false,
-            isSecret: false,
           },
         ],
         timeoutMs: 15_000,

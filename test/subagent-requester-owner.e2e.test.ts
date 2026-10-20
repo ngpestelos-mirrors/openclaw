@@ -1,5 +1,5 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { expectDefined } from "@openclaw/normalization-core";
+import type { Compilable, Expression } from "kysely";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent } from "../packages/gateway-protocol/src/schema/logs-chat.js";
 import {
@@ -20,16 +20,16 @@ import { loadSessionEntry } from "../src/config/sessions/session-accessor.js";
 import { getSessionKysely } from "../src/config/sessions/session-accessor.sqlite-scope.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import {
-  closeProvider,
-  listenProvider,
   readProviderBody,
   writeToolCall,
 } from "../src/gateway/gateway-provider-fixture.test-support.js";
 import { connectGatewayClient, disconnectGatewayClient } from "../src/gateway/test-helpers.e2e.js";
+import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
 import { executeSqliteQuerySync } from "../src/infra/kysely-sync.js";
 import { extractFirstTextBlock } from "../src/shared/chat-message-content.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../src/state/openclaw-agent-db-readonly.js";
 import { closeOpenClawStateDatabaseForTest } from "../src/state/openclaw-state-db.js";
+import { startOpenAiResponsesModelServer } from "./helpers/openai-responses-model-fixture.js";
 import { writeOpenAiResponsesText } from "./helpers/openai-responses-sse.js";
 import {
   createOpenClawTestInstance,
@@ -52,14 +52,7 @@ const RESTORED_RUN_ID = "run-requester-owner-legacy";
 const RESTORED_REQUESTER_KEY = "requester-owner-legacy-requester";
 const RESTORED_CHILD_RESULT = "REQUESTER-OWNER-LEGACY-CHILD-RESULT";
 
-type ProofModelServer = {
-  bodies: () => readonly string[];
-  close: () => Promise<void>;
-  countRequestsContaining: (marker: string) => number;
-  completionResponseCount: () => number;
-  requestCount: () => number;
-  url: string;
-};
+type ProofModelServer = Awaited<ReturnType<typeof startProofModelServer>>;
 
 const instances: OpenClawTestInstance[] = [];
 const modelServers: ProofModelServer[] = [];
@@ -82,12 +75,28 @@ function writeSession(instance: OpenClawTestInstance, sessionKey: string, sessio
     stateDir: instance.stateDir,
     agentId: REQUESTER_AGENT_ID,
     sessionKey,
-    sessionId,
     defaultSessionId: sessionId,
   });
 }
 
 type Client = Awaited<ReturnType<typeof connectGatewayClient>>;
+async function startClient(
+  instance: OpenClawTestInstance,
+  onEvent?: Parameters<typeof connectGatewayClient>[0]["onEvent"],
+) {
+  await instance.startGateway();
+  return connectGatewayClient({ url: instance.url, token: instance.gatewayToken, onEvent });
+}
+
+function readSessionRows<Row>(
+  query: (db: ReturnType<typeof getSessionKysely>) => Compilable<Row> & Expression<Row>,
+) {
+  return withOpenClawAgentDatabaseReadOnly(
+    ({ db }) => executeSqliteQuerySync<Row>(db, query(getSessionKysely(db))).rows,
+    { agentId: REQUESTER_AGENT_ID },
+  );
+}
+
 function startParent(client: Client, sessionKey: string, idempotencyKey: string) {
   return client.request(
     "agent",
@@ -152,38 +161,29 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
         yieldAfterSpawn: parentGate.promise,
         childReply: childGate.promise,
       });
-      await instance.startGateway();
       const sessionKey = `agent:${REQUESTER_AGENT_ID}:${REQUESTER_KEY}`;
       const statusRunId = "busy-parent-status";
       const statusReply = createDeferred<ChatEvent>();
-      const client = await connectGatewayClient({
-        url: instance.url,
-        token: instance.gatewayToken,
-        onEvent: (event) => {
-          if (event.event !== "chat") {
-            return;
-          }
-          const chat = event.payload as ChatEvent;
-          if (
-            chat.runId === statusRunId &&
-            (chat.state === "final" || chat.state === "error" || chat.state === "aborted")
-          ) {
-            statusReply.resolve(chat);
-          }
-        },
+      const client = await startClient(instance, (event) => {
+        if (event.event !== "chat") {
+          return;
+        }
+        const chat = event.payload as ChatEvent;
+        if (
+          chat.runId === statusRunId &&
+          (chat.state === "final" || chat.state === "error" || chat.state === "aborted")
+        ) {
+          statusReply.resolve(chat);
+        }
       });
       let parent: Promise<unknown> | undefined;
       let parentSettled = false;
       try {
         parent = startParent(client, REQUESTER_KEY, "busy-status-parent-turn");
-        void parent.then(
-          () => {
-            parentSettled = true;
-          },
-          () => {
-            parentSettled = true;
-          },
-        );
+        const onSettled = () => {
+          parentSettled = true;
+        };
+        void parent.then(onSettled, onSettled);
         await vi.waitFor(
           () => {
             expect(modelServer.requestCount(), instance.logs()).toBe(3);
@@ -323,29 +323,12 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
       const sessionKey = `agent:${REQUESTER_AGENT_ID}:${REQUESTER_KEY}`;
       await writeSession(instance, sessionKey, sessionId);
       closeOpenClawStateDatabaseForTest();
-      await instance.startGateway();
       const chatErrors: unknown[] = [];
-      const client = await connectGatewayClient({
-        url: instance.url,
-        token: instance.gatewayToken,
-        onEvent: (event) => {
-          if (event.event === "chat" && (event.payload as { state?: string })?.state === "error") {
-            chatErrors.push(event.payload);
-          }
-        },
+      const client = await startClient(instance, (event) => {
+        if (event.event === "chat" && (event.payload as { state?: string })?.state === "error") {
+          chatErrors.push(event.payload);
+        }
       });
-      const readInputs = () =>
-        withOpenClawAgentDatabaseReadOnly(
-          ({ db }) =>
-            executeSqliteQuerySync(
-              db,
-              getSessionKysely(db)
-                .selectFrom("session_pending_inputs")
-                .selectAll()
-                .where("session_id", "=", sessionId),
-            ).rows,
-          { agentId: REQUESTER_AGENT_ID },
-        );
       try {
         const parent = startParent(client, sessionKey, "private-yield-parent-turn");
         void parent.catch(() => {});
@@ -373,16 +356,11 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
           },
           { interval: 50, timeout: 30_000 },
         );
-        const receipts = withOpenClawAgentDatabaseReadOnly(
-          ({ db }) =>
-            executeSqliteQuerySync(
-              db,
-              getSessionKysely(db)
-                .selectFrom("session_input_completions")
-                .selectAll()
-                .where("session_id", "=", sessionId),
-            ).rows,
-          { agentId: REQUESTER_AGENT_ID },
+        const receipts = readSessionRows((db) =>
+          db
+            .selectFrom("session_input_completions")
+            .selectAll()
+            .where("session_id", "=", sessionId),
         );
         expect(receipts.found).toBe(true);
         if (!receipts.found) {
@@ -410,7 +388,9 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
           ),
         ).toHaveLength(1);
         expect(JSON.stringify(history.messages)).not.toContain("This turn ended before a reply");
-        const inputs = readInputs();
+        const inputs = readSessionRows((db) =>
+          db.selectFrom("session_pending_inputs").selectAll().where("session_id", "=", sessionId),
+        );
         expect(inputs.found && inputs.value.filter((input) => input.state !== "cancelled")).toEqual(
           [],
         );
@@ -425,195 +405,65 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
     },
   );
 
-  it(
-    "preserves the requester owner through a fresh normalized spawn",
+  it.each(["fresh", "restored"] as const)(
+    "preserves requester ownership for a %s completion across Gateway boots",
     { timeout: TEST_TIMEOUT_MS },
-    async () => {
-      const { instance, modelServer } = await createFixture("requester-owner-requester-agent-id");
-      try {
-        await writeSession(instance, REQUESTER_KEY, "requester-owner-requester-session");
-      } finally {
-        closeOpenClawStateDatabaseForTest();
-      }
-
-      await instance.startGateway();
-      const client = await connectGatewayClient({
-        url: instance.url,
-        token: instance.gatewayToken,
-      });
-      try {
-        const parent = startParent(client, REQUESTER_KEY, "requester-owner-parent-turn");
-        void parent.catch(() => {});
-        await vi.waitFor(
-          () => expect(modelServer.countRequestsContaining(CHILD_MARKER)).toBeGreaterThan(0),
-          { interval: 50, timeout: 90_000 },
-        );
-        expect(await parent).toMatchObject({ status: "ok" });
-        instance.state.applyEnv();
-        await waitForRun(instance, { delivery: { status: "delivered" } }, 25_000);
-        const requester = await readHistory(client, REQUESTER_KEY);
-        const other = await readHistory(client, REQUESTER_KEY, OTHER_AGENT_ID);
-        expect(
-          requester.messages.filter((message) => JSON.stringify(message).includes(CHILD_MARKER)),
-        ).toHaveLength(1);
-        expect(other.messages).toEqual([]);
-      } finally {
-        await disconnectGatewayClient(client);
-        await instance.stopGateway();
-      }
-
-      const logs = instance.logs();
-      instance.state.applyEnv();
-      try {
-        const run = expectRun(instance, {
-          requesterAgentId: REQUESTER_AGENT_ID,
-          requesterSessionKey: `agent:${REQUESTER_AGENT_ID}:${REQUESTER_KEY}`,
-          execution: { status: "terminal", outcome: { status: "ok" } },
-          delivery: { status: "delivered" },
-        });
-        expect(run.requesterSettleWake, logs).toBeUndefined();
-      } finally {
-        closeOpenClawStateDatabaseForTest();
-      }
-      expect(logs).not.toContain(ANNOUNCE_FAILURE_MARKER);
-    },
-  );
-
-  it(
-    "delivers a restored unscoped completion once across Gateway restarts",
-    { timeout: TEST_TIMEOUT_MS },
-    async () => {
+    async (kind) => {
+      const restored = kind === "restored";
+      const sessionKey = restored ? RESTORED_REQUESTER_KEY : REQUESTER_KEY;
+      const marker = restored ? RESTORED_CHILD_RESULT : CHILD_MARKER;
       const { instance, modelServer } = await createFixture(
-        "requester-owner-legacy-unscoped-requester",
+        restored
+          ? "requester-owner-legacy-unscoped-requester"
+          : "requester-owner-requester-agent-id",
       );
-      const gatewayConfig = loadConfig();
-      setRuntimeConfigSnapshot(gatewayConfig);
-      const registry =
-        await import("../src/agents/subagents/registry/subagent-registry.test-helpers.js");
-      await runQaGatewayFixture(
-        async () => {
-          await registry.resetSubagentRegistryForTests({ persist: false });
-          const childSessionKey = `agent:${REQUESTER_AGENT_ID}:subagent:requester-owner-legacy`;
-          await writeSession(instance, RESTORED_REQUESTER_KEY, "requester-owner-legacy-session");
-          await writeSession(instance, childSessionKey, "requester-owner-legacy-child-session");
-          const requester = expectDefined(
-            loadSessionEntry({
-              agentId: REQUESTER_AGENT_ID,
-              sessionKey: RESTORED_REQUESTER_KEY,
-            }),
-            "restored requester session",
-          );
-          // Registration owns native child execution and physical-store provenance even for a bare key.
-          // Queue only while preparing stored completion state; no child RPC is dispatched.
-          const profileId = await withSubagentRecoveryOperator(
-            gatewayConfig,
-            async (admittedProfileId) => {
-              await registry.registerSubagentRun({
-                runId: RESTORED_RUN_ID,
-                childSessionKey,
-                requesterSessionKey: RESTORED_REQUESTER_KEY,
-                requesterDisplayKey: RESTORED_REQUESTER_KEY,
-                requesterAgentId: REQUESTER_AGENT_ID,
-                requesterTurnRunId: "requester-owner-restored-parent-turn",
-                completionRequesterSessionId: requester.sessionId,
-                completionRequesterLifecycleRevision: requester.lifecycleRevision,
-                childAgentId: REQUESTER_AGENT_ID,
-                sessionEntry: loadSessionEntry({
-                  agentId: REQUESTER_AGENT_ID,
-                  sessionKey: childSessionKey,
-                }),
-                task: "REQUESTER-OWNER legacy restored completion",
-                cleanup: "keep",
-                expectsCompletionMessage: true,
-                queued: true,
-              });
-              return admittedProfileId;
-            },
-          );
-          const registered = expectDefined(
-            loadSubagentRegistryFromSqlite().get(RESTORED_RUN_ID),
-            "Restored requester fixture registration was not persisted",
-          );
-          expect(registered.requesterStorePath).toBeTruthy();
-          expect(registered.controllerStorePath).toBe(registered.requesterStorePath);
-          expect(registered.operatorRecoverySource).toMatchObject({
-            agentId: REQUESTER_AGENT_ID,
-            sessionKey: RESTORED_REQUESTER_KEY,
-            sessionId: requester.sessionId,
-            sourceRunId: "requester-owner-restored-parent-turn",
-            snapshot: {
-              profileId,
-              scopes: ["operator.write"],
-              grant: null,
-            },
-          });
-          // Retire setup callbacks, not durable ownership, before freezing the completed fixture.
-          await registry.resetSubagentRegistryForTests({ persist: false });
-          const endedAt = Date.now();
-          const restored: SubagentRunRecord = {
-            ...registered,
-            // The parent turn has ended; only its admitted child completion remains owed.
-            requesterTurnRunId: undefined,
-            endedReason: "subagent-complete",
-            execution: {
-              ...registered.execution,
-              status: "terminal",
-              startedAt: registered.createdAt,
-              endedAt,
-              outcome: { status: "ok" },
-            },
-            completion: {
-              required: true,
-              terminalReply: { disposition: "visible", text: RESTORED_CHILD_RESULT },
-              resultText: RESTORED_CHILD_RESULT,
-              capturedAt: endedAt,
-            },
-          };
-          saveSubagentRegistryToSqlite(new Map([[restored.runId, restored]]));
-          const seeded = loadSubagentRegistryFromSqlite().get(RESTORED_RUN_ID);
-          expect(seeded).toMatchObject({
-            requesterAgentId: REQUESTER_AGENT_ID,
-            requesterSessionKey: RESTORED_REQUESTER_KEY,
-            delivery: { status: "pending" },
-          });
-        },
-        () => settleSubagentRegistryPersistenceWork(),
-        () => registry.resetSubagentRegistryForTests({ persist: false }),
-        () => closeOpenClawStateDatabaseForTest(),
-      );
+      if (restored) {
+        await seedRestoredCompletion(instance);
+      } else {
+        try {
+          await writeSession(instance, sessionKey, "requester-owner-requester-session");
+        } finally {
+          closeOpenClawStateDatabaseForTest();
+        }
+      }
 
       let settledRequests: number | undefined;
-      for (let boot = 0; boot < 2; boot += 1) {
-        await instance.startGateway();
-        const client = await connectGatewayClient({
-          url: instance.url,
-          token: instance.gatewayToken,
-        });
+      for (let boot = 0; boot < (restored ? 2 : 1); boot += 1) {
+        const client = await startClient(instance);
         try {
+          if (!restored) {
+            const parent = startParent(client, sessionKey, "requester-owner-parent-turn");
+            void parent.catch(() => {});
+            await vi.waitFor(
+              () => expect(modelServer.countRequestsContaining(marker)).toBeGreaterThan(0),
+              { interval: 50, timeout: 90_000 },
+            );
+            expect(await parent).toMatchObject({ status: "ok" });
+          }
           instance.state.applyEnv();
           await vi.waitFor(
             () => {
               const run = expectRun(
                 instance,
-                {
-                  delivery: { status: "delivered" },
-                  execution: { outcome: { status: "ok" } },
-                },
-                RESTORED_RUN_ID,
+                { delivery: { status: "delivered" } },
+                restored ? RESTORED_RUN_ID : undefined,
               );
-              expect(run.requesterSettleWake).toBeUndefined();
+              if (restored) {
+                expect(run.execution.outcome).toMatchObject({ status: "ok" });
+                expect(run.requesterSettleWake).toBeUndefined();
+              }
             },
             { interval: 50, timeout: 25_000 },
           );
-          const requester = await readHistory(client, RESTORED_REQUESTER_KEY);
-          const other = await readHistory(client, RESTORED_REQUESTER_KEY, OTHER_AGENT_ID);
+          const requester = await readHistory(client, sessionKey);
+          const other = await readHistory(client, sessionKey, OTHER_AGENT_ID);
           expect(
-            requester.messages.filter((message) =>
-              JSON.stringify(message).includes(RESTORED_CHILD_RESULT),
-            ),
+            requester.messages.filter((message) => JSON.stringify(message).includes(marker)),
           ).toHaveLength(1);
           expect(other.messages).toEqual([]);
-          expect(modelServer.countRequestsContaining(RESTORED_CHILD_RESULT)).toBe(1);
+          if (restored) {
+            expect(modelServer.countRequestsContaining(marker)).toBe(1);
+          }
           if (settledRequests !== undefined) {
             expect(modelServer.requestCount()).toBe(settledRequests);
           }
@@ -625,23 +475,131 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
       }
 
       const logs = instance.logs();
-      expect(logs).not.toContain(ANNOUNCE_FAILURE_MARKER);
       instance.state.applyEnv();
       try {
-        const run = loadSubagentRegistryFromSqlite().get(RESTORED_RUN_ID);
-        expect(run, logs).toMatchObject({
-          requesterAgentId: REQUESTER_AGENT_ID,
-          requesterSessionKey: RESTORED_REQUESTER_KEY,
-          delivery: { status: "delivered" },
-        });
+        const run = expectRun(
+          instance,
+          {
+            requesterAgentId: REQUESTER_AGENT_ID,
+            requesterSessionKey: restored
+              ? sessionKey
+              : `agent:${REQUESTER_AGENT_ID}:${sessionKey}`,
+            delivery: { status: "delivered" },
+          },
+          restored ? RESTORED_RUN_ID : undefined,
+        );
+        if (!restored) {
+          expect(run.execution).toMatchObject({ status: "terminal", outcome: { status: "ok" } });
+          expect(run.requesterSettleWake, logs).toBeUndefined();
+        }
       } finally {
         closeOpenClawStateDatabaseForTest();
       }
+      expect(logs).not.toContain(ANNOUNCE_FAILURE_MARKER);
     },
   );
 });
 
+async function seedRestoredCompletion(instance: OpenClawTestInstance) {
+  const gatewayConfig = loadConfig();
+  setRuntimeConfigSnapshot(gatewayConfig);
+  const registry =
+    await import("../src/agents/subagents/registry/subagent-registry.test-helpers.js");
+  await runQaGatewayFixture(
+    async () => {
+      await registry.resetSubagentRegistryForTests({ persist: false });
+      const childSessionKey = `agent:${REQUESTER_AGENT_ID}:subagent:requester-owner-legacy`;
+      await writeSession(instance, RESTORED_REQUESTER_KEY, "requester-owner-legacy-session");
+      await writeSession(instance, childSessionKey, "requester-owner-legacy-child-session");
+      const requester = expectDefined(
+        loadSessionEntry({
+          agentId: REQUESTER_AGENT_ID,
+          sessionKey: RESTORED_REQUESTER_KEY,
+        }),
+        "restored requester session",
+      );
+      // Registration owns native child execution and physical-store provenance even for a bare key.
+      // Queue only while preparing stored completion state; no child RPC is dispatched.
+      const profileId = await withSubagentRecoveryOperator(
+        gatewayConfig,
+        async (admittedProfileId) => {
+          await registry.registerSubagentRun({
+            runId: RESTORED_RUN_ID,
+            childSessionKey,
+            requesterSessionKey: RESTORED_REQUESTER_KEY,
+            requesterDisplayKey: RESTORED_REQUESTER_KEY,
+            requesterAgentId: REQUESTER_AGENT_ID,
+            requesterTurnRunId: "requester-owner-restored-parent-turn",
+            completionRequesterSessionId: requester.sessionId,
+            completionRequesterLifecycleRevision: requester.lifecycleRevision,
+            childAgentId: REQUESTER_AGENT_ID,
+            sessionEntry: loadSessionEntry({
+              agentId: REQUESTER_AGENT_ID,
+              sessionKey: childSessionKey,
+            }),
+            task: "REQUESTER-OWNER legacy restored completion",
+            cleanup: "keep",
+            expectsCompletionMessage: true,
+            queued: true,
+          });
+          return admittedProfileId;
+        },
+      );
+      const registered = expectDefined(
+        loadSubagentRegistryFromSqlite().get(RESTORED_RUN_ID),
+        "Restored requester fixture registration was not persisted",
+      );
+      expect(registered.requesterStorePath).toBeTruthy();
+      expect(registered.controllerStorePath).toBe(registered.requesterStorePath);
+      expect(registered.operatorRecoverySource).toMatchObject({
+        agentId: REQUESTER_AGENT_ID,
+        sessionKey: RESTORED_REQUESTER_KEY,
+        sessionId: requester.sessionId,
+        sourceRunId: "requester-owner-restored-parent-turn",
+        snapshot: {
+          profileId,
+          scopes: ["operator.write"],
+          grant: null,
+        },
+      });
+      // Retire setup callbacks, not durable ownership, before freezing the completed fixture.
+      await registry.resetSubagentRegistryForTests({ persist: false });
+      const endedAt = Date.now();
+      const restored: SubagentRunRecord = {
+        ...registered,
+        // The parent turn has ended; only its admitted child completion remains owed.
+        requesterTurnRunId: undefined,
+        endedReason: "subagent-complete",
+        execution: {
+          ...registered.execution,
+          status: "terminal",
+          startedAt: registered.createdAt,
+          endedAt,
+          outcome: { status: "ok" },
+        },
+        completion: {
+          required: true,
+          terminalReply: { disposition: "visible", text: RESTORED_CHILD_RESULT },
+          resultText: RESTORED_CHILD_RESULT,
+          capturedAt: endedAt,
+        },
+      };
+      saveSubagentRegistryToSqlite(new Map([[restored.runId, restored]]));
+      const seeded = loadSubagentRegistryFromSqlite().get(RESTORED_RUN_ID);
+      expect(seeded).toMatchObject({
+        requesterAgentId: REQUESTER_AGENT_ID,
+        requesterSessionKey: RESTORED_REQUESTER_KEY,
+        delivery: { status: "pending" },
+      });
+    },
+    () => settleSubagentRegistryPersistenceWork(),
+    () => registry.resetSubagentRegistryForTests({ persist: false }),
+    () => closeOpenClawStateDatabaseForTest(),
+  );
+}
+
 function createTestConfig(baseUrl: string): OpenClawConfig {
+  const model = buildMockOpenAiResponsesProvider(`${baseUrl}/v1`, "synthetic").config;
   return {
     logging: { file: "${OPENCLAW_STATE_DIR}/logs/requester-owner-e2e.log" },
     plugins: { enabled: false },
@@ -662,22 +620,10 @@ function createTestConfig(baseUrl: string): OpenClawConfig {
       mode: "replace",
       providers: {
         "requester-owner": {
-          baseUrl: `${baseUrl}/v1`,
+          ...model,
           apiKey: "test-token-placeholder",
-          api: "openai-responses",
           request: { allowPrivateNetwork: true },
-          models: [
-            {
-              id: "synthetic",
-              name: "requester-owner",
-              api: "openai-responses",
-              reasoning: false,
-              input: ["text"],
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              contextWindow: 128_000,
-              maxTokens: 4_096,
-            },
-          ],
+          models: [{ ...model.models[0], name: "requester-owner" }],
         },
       },
     },
@@ -690,98 +636,78 @@ async function startProofModelServer(options?: {
   yieldAfterSpawn: Promise<void>;
   childReply?: Promise<void>;
   placement?: { kind: "local" };
-}): Promise<ProofModelServer> {
+}) {
   const requestBodies: string[] = [];
   let parentCheckedChildren = false;
   let parentYielded = false;
   let completionResponses = 0;
-  const server = createServer((request, response) => {
-    void handleModelRequest(request, response).catch((error: unknown) => {
-      if (!response.headersSent) {
-        response.writeHead(500, { "content-type": "application/json" });
+  const server = await startOpenAiResponsesModelServer({
+    modelId: "requester-owner",
+    bindError: "Requester model fixture did not bind a loopback port",
+    onRequest: async (request, response) => {
+      const body = await readProviderBody(request);
+      requestBodies.push(body);
+      const requestBody = JSON.parse(body) as { tools?: Array<{ type?: string; name?: string }> };
+      const respondWithTool = (name: string, args: Record<string, unknown>) => {
+        expect(requestBody.tools).toEqual(
+          expect.arrayContaining([expect.objectContaining({ type: "function", name })]),
+        );
+        writeToolCall(response, name, args, 8, 4);
+      };
+      const respondWithText = (text: string) =>
+        writeOpenAiResponsesText(response, {
+          text,
+          responseId: `response-${++responseSequence}`,
+          messageId: `message-${responseSequence}`,
+        });
+      if (options?.yieldAfterSpawn && parentCheckedChildren && !parentYielded) {
+        parentYielded = true;
+        respondWithTool("sessions_yield", {});
+        return;
       }
-      response.end(JSON.stringify({ error: { message: String(error) } }));
-    });
-  });
-
-  async function handleModelRequest(
-    request: IncomingMessage,
-    response: ServerResponse,
-  ): Promise<void> {
-    const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    if (request.method === "GET" && url.pathname === "/v1/models") {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ data: [{ id: "requester-owner", object: "model" }] }));
-      return;
-    }
-    if (request.method !== "POST" || url.pathname !== "/v1/responses") {
-      response.writeHead(404).end();
-      return;
-    }
-    const body = await readProviderBody(request);
-    requestBodies.push(body);
-    const requestBody = JSON.parse(body) as { tools?: Array<{ type?: string; name?: string }> };
-    const respondWithTool = (name: string, args: Record<string, unknown>) => {
-      expect(requestBody.tools).toEqual(
-        expect.arrayContaining([expect.objectContaining({ type: "function", name })]),
+      const completion = [RESTORED_CHILD_RESULT, CHILD_MARKER].find((marker) =>
+        body.includes(marker),
       );
-      writeToolCall(response, name, args, 8, 4);
-    };
-    const respondWithText = (text: string) =>
-      writeOpenAiResponsesText(response, {
-        text,
-        responseId: `response-${++responseSequence}`,
-        messageId: `message-${responseSequence}`,
-      });
-    if (options?.yieldAfterSpawn && parentCheckedChildren && !parentYielded) {
-      parentYielded = true;
-      respondWithTool("sessions_yield", {});
-      return;
-    }
-    const completion = [RESTORED_CHILD_RESULT, CHILD_MARKER].find((marker) =>
-      body.includes(marker),
-    );
-    if (completion) {
-      completionResponses += 1;
-      respondWithText(completion);
-      return;
-    }
-
-    if (body.includes(CHILD_TASK) && !body.includes("function_call_output")) {
-      if (options?.childReply) {
-        await options.childReply;
+      if (completion) {
+        completionResponses += 1;
+        respondWithText(completion);
+        return;
       }
-      respondWithText(CHILD_MARKER);
-      return;
-    }
-    if (body.includes(PARENT_PROMPT) && !body.includes("function_call_output")) {
-      respondWithTool("sessions_spawn", {
-        task: CHILD_TASK,
-        label: "requester-owner-child",
-        ...(options?.placement ? { placement: options.placement } : {}),
-        thread: false,
-        mode: "run",
-        ...(options?.yieldAfterSpawn ? { completionTarget: "parent" } : {}),
-      });
-      return;
-    }
-    if (options?.yieldAfterSpawn) {
-      await options.yieldAfterSpawn;
-      parentCheckedChildren = true;
-      respondWithTool("subagents", { action: "list" });
-      return;
-    }
-    respondWithText("REQUESTER-OWNER-PARENT-OK");
-  }
 
-  const url = new URL(await listenProvider(server)).origin;
+      if (body.includes(CHILD_TASK) && !body.includes("function_call_output")) {
+        if (options?.childReply) {
+          await options.childReply;
+        }
+        respondWithText(CHILD_MARKER);
+        return;
+      }
+      if (body.includes(PARENT_PROMPT) && !body.includes("function_call_output")) {
+        respondWithTool("sessions_spawn", {
+          task: CHILD_TASK,
+          label: "requester-owner-child",
+          ...(options?.placement ? { placement: options.placement } : {}),
+          thread: false,
+          mode: "run",
+          ...(options?.yieldAfterSpawn ? { completionTarget: "parent" } : {}),
+        });
+        return;
+      }
+      if (options?.yieldAfterSpawn) {
+        await options.yieldAfterSpawn;
+        parentCheckedChildren = true;
+        respondWithTool("subagents", { action: "list" });
+        return;
+      }
+      respondWithText("REQUESTER-OWNER-PARENT-OK");
+    },
+  });
   return {
     bodies: () => requestBodies,
     countRequestsContaining: (marker) =>
       requestBodies.filter((entry) => entry.includes(marker)).length,
     completionResponseCount: () => completionResponses,
     requestCount: () => requestBodies.length,
-    url,
-    close: () => closeProvider(server),
+    url: server.baseUrl,
+    close: server.close,
   };
 }

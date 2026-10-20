@@ -32,55 +32,25 @@ const qaLabFiles = [
   "extensions/qa-lab/src/session-host-command-state.real-gateway.e2e.test.ts",
   "extensions/qa-lab/src/control-ui-openclaw-delegation.real-gateway.e2e.test.ts",
 ] as const;
-const serialGatewayNames = [
-  "background-work",
-  "chat-collaborator-scroll",
-  "chat-managed-media-order",
-  "chat-session-diff-folding",
-  "chat-steer-deferred-custody",
-  "chat-stop-owned-exec",
-  "chat-tts-supplement",
-  "chat-wait-clock",
-  "command-palette-search",
-  "deepseek-search",
-  "desktop-resize",
-  "device-platform-family",
-  "peer-followup-restart",
-  "provider-browser-login",
-  "session-pr-reader-lifetime",
-  "session-roster-request-rate",
-  "sidebar-running-counts",
-  "task-pull-requests",
-];
-const serialGatewayFiles = serialGatewayNames
+const serialGatewayFiles = `background-work chat-collaborator-scroll chat-managed-media-order
+  chat-session-diff-folding chat-steer-deferred-custody chat-stop-owned-exec chat-tts-supplement
+  chat-wait-clock command-palette-search deepseek-search desktop-resize device-platform-family
+  peer-followup-restart provider-browser-login session-pr-reader-lifetime session-roster-request-rate
+  sidebar-running-counts task-pull-requests`
+  .split(/\s+/u)
   .map((name) => `ui/src/e2e/${name}.real-gateway.e2e.test.ts`)
   .concat("ui/src/e2e/mcp-app-conformance.e2e.test.ts", workboardFile);
-const realGatewayFiles = [
-  "activity-run-inspector.real-gateway",
-  "agent-file-lifecycle.real-gateway",
-  "chat-agent-avatar.real-gateway",
-  "chat-composer-websearch-kill-switch.real-gateway",
-  "chat-flow.catalog-bootstrap",
-  "chat-loading-performance.real-gateway",
-  "chat-project-media.real-gateway",
-  "chat-reconnect-continuity.real-gateway",
-  "chat-stop-finished-run.real-gateway",
-  "chat-thinking-metadata.real-gateway",
-  "chat-widget-sandbox.real-gateway",
-  "command-palette-catalog.real-gateway",
-  "control-ui-auth-transports",
-  "cron-duration-save.real-gateway",
-  "device-alias-rename.real-gateway",
-  "logs-lifecycle",
-  "model-api-keys.real-gateway",
-  "model-catalog-partial-refresh.real-gateway",
-  "model-picker-search.real-gateway",
-  "profile-page.real-gateway",
-  "quota-reset-status.real-gateway",
-  "session-progress-hovercard.real-gateway",
-  "usage-sessions-owner-attribution",
-  "worker-initial-setup.real-gateway",
-]
+const realGatewayFiles = `activity-run-inspector.real-gateway agent-file-lifecycle.real-gateway
+  chat-agent-avatar.real-gateway chat-composer-websearch-kill-switch.real-gateway
+  chat-flow.catalog-bootstrap chat-loading-performance.real-gateway chat-project-media.real-gateway
+  chat-reconnect-continuity.real-gateway chat-stop-finished-run.real-gateway
+  chat-thinking-metadata.real-gateway chat-widget-sandbox.real-gateway
+  command-palette-catalog.real-gateway control-ui-auth-transports cron-duration-save.real-gateway
+  device-alias-rename.real-gateway logs-lifecycle model-api-keys.real-gateway
+  model-catalog-partial-refresh.real-gateway model-picker-search.real-gateway profile-page.real-gateway
+  quota-reset-status.real-gateway session-progress-hovercard.real-gateway
+  usage-sessions-owner-attribution worker-initial-setup.real-gateway`
+  .split(/\s+/u)
   .map((name) => `ui/src/e2e/${name}.e2e.test.ts`)
   .concat(qaLabFiles, serialGatewayFiles);
 const mcpFile = "ui/src/e2e/mcp-app-conformance.e2e.test.ts";
@@ -374,32 +344,29 @@ describe("Control UI E2E resource ownership", () => {
       if (uiE2ePrivateServerTestFiles.includes(entry.file)) {
         expect(entry.project).toBe("ui-e2e-serial-standalone");
       }
+      if (realGatewayFiles.includes(entry.file)) {
+        expect(entry.project).toBe(
+          uiE2ePrivateServerTestFiles.includes(entry.file)
+            ? "ui-e2e-serial-standalone"
+            : "ui-e2e-serial",
+        );
+      }
     }
     expect(result.leases).toEqual(lease(true));
+    expect(
+      result.files.filter(({ file }) => realGatewayFiles.includes(file)).map(({ file }) => file),
+    ).toEqual(realGatewayFiles.toSorted());
     for (const name of new Set(result.files.map((entry) => entry.project))) {
       const selected = probeOwnership({ project: [name] });
       expect(selected.files).toEqual(result.files.filter((entry) => entry.project === name));
       expect(selected.leases).toHaveLength(name.endsWith("standalone") ? 0 : 1);
     }
-    const realGateway = realGatewayFiles;
-    expect(
-      result.files
-        .filter((entry) => realGateway.includes(entry.file))
-        .map(({ file, project }) => ({ file, project })),
-    ).toEqual(
-      realGateway.toSorted().map((file) => ({
-        file,
-        project: uiE2ePrivateServerTestFiles.includes(file)
-          ? "ui-e2e-serial-standalone"
-          : "ui-e2e-serial",
-      })),
-    );
     const skipped = probeOwnership({ skipRealGateway: true });
     expect(skipped.files).toEqual(
-      result.files.filter((entry) => !realGateway.includes(entry.file)),
+      result.files.filter((entry) => !realGatewayFiles.includes(entry.file)),
     );
     expect(skipped.shards.flat().toSorted()).toEqual(
-      inventory.filter((file) => !realGateway.includes(file)),
+      inventory.filter((file) => !realGatewayFiles.includes(file)),
     );
     expect(result.admissions).toEqual([]);
     expect(skipped.admissions).toEqual([]);

@@ -3,6 +3,7 @@ import { globSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { globSync as nativeGlobSync } from "tinyglobby";
+import { withEnvAsync } from "../src/test-utils/env.js";
 import { fullSuiteVitestShards } from "./vitest/vitest.test-shards.mjs";
 
 type VitestConfig = {
@@ -19,41 +20,33 @@ type VitestConfigFactory = (env?: Record<string, string | undefined>) => VitestC
 
 let configImportId = 0;
 
-function toRepoPath(filePath: string): string {
-  return filePath.replaceAll("\\", "/");
-}
+const toRepoPath = (filePath: string) => filePath.replaceAll("\\", "/");
 
-function setIncludeFile(value?: string) {
-  if (value === undefined) {
-    delete process.env.OPENCLAW_VITEST_INCLUDE_FILE;
-  } else {
-    process.env.OPENCLAW_VITEST_INCLUDE_FILE = value;
-  }
-}
-
-async function loadRawVitestConfig(
+export async function listVitestConfigTestFiles(
   configPath: string,
   includeFile?: string,
-): Promise<VitestConfig> {
-  const previousArgv = process.argv;
-  const previousIncludeFile = process.env.OPENCLAW_VITEST_INCLUDE_FILE;
-  process.argv = [previousArgv[0] ?? "node", previousArgv[1] ?? "vitest"];
-  setIncludeFile(includeFile);
-  try {
-    const configUrl = pathToFileURL(path.resolve(process.cwd(), configPath));
-    // Focused runs may have cached a CLI-narrowed default config before the audit clears argv.
-    configUrl.searchParams.set("openclaw-vitest-ownership-audit", String(configImportId++));
-    const mod = (await import(configUrl.href)) as Record<string, unknown>;
-    const defaultConfig = (mod.default ?? {}) as VitestConfig;
-    const factory = Object.entries(mod).find(
-      ([name, value]) =>
-        name !== "default" && /^create.*VitestConfig$/u.test(name) && typeof value === "function",
-    )?.[1] as VitestConfigFactory | undefined;
-    return defaultConfig.test?.projects ? defaultConfig : (factory?.(process.env) ?? defaultConfig);
-  } finally {
-    process.argv = previousArgv;
-    setIncludeFile(previousIncludeFile);
-  }
+): Promise<string[]> {
+  const config = await withEnvAsync({ OPENCLAW_VITEST_INCLUDE_FILE: includeFile }, async () => {
+    const previousArgv = process.argv;
+    process.argv = [previousArgv[0] ?? "node", previousArgv[1] ?? "vitest"];
+    try {
+      const configUrl = pathToFileURL(path.resolve(process.cwd(), configPath));
+      // Focused runs may have cached a CLI-narrowed default config before the audit clears argv.
+      configUrl.searchParams.set("openclaw-vitest-ownership-audit", String(configImportId++));
+      const mod = (await import(configUrl.href)) as Record<string, unknown>;
+      const defaultConfig = (mod.default ?? {}) as VitestConfig;
+      const factory = Object.entries(mod).find(
+        ([name, value]) =>
+          name !== "default" && /^create.*VitestConfig$/u.test(name) && typeof value === "function",
+      )?.[1] as VitestConfigFactory | undefined;
+      return defaultConfig.test?.projects
+        ? defaultConfig
+        : (factory?.(process.env) ?? defaultConfig);
+    } finally {
+      process.argv = previousArgv;
+    }
+  });
+  return listConfigTestFiles(config, includeFile);
 }
 
 async function listConfigTestFiles(config: VitestConfig, includeFile?: string): Promise<string[]> {
@@ -79,13 +72,6 @@ async function listConfigTestFiles(config: VitestConfig, includeFile?: string): 
     dot: true,
     expandDirectories: false,
   }).map((file) => toRepoPath(path.relative(process.cwd(), path.resolve(dir, file))));
-}
-
-export async function listVitestConfigTestFiles(
-  configPath: string,
-  includeFile?: string,
-): Promise<string[]> {
-  return listConfigTestFiles(await loadRawVitestConfig(configPath, includeFile), includeFile);
 }
 
 export async function auditFullSuiteTestFileOwnership(): Promise<{

@@ -60,13 +60,10 @@ it("synthetic ${kind} failure", async ({ annotate }) => {
 });
 `,
   );
-  const env = testRunnerFixtureEnv();
-  for (const key of Object.keys(env)) {
-    if (key.startsWith("VITEST") || key.startsWith("OPENCLAW_")) {
-      delete env[key];
-    }
-  }
-  Object.assign(env, {
+  const env: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(
+      Object.entries(testRunnerFixtureEnv()).filter(([key]) => !/^(VITEST|OPENCLAW_)/u.test(key)),
+    ),
     HOME: root,
     USERPROFILE: root,
     OPENCLAW_STATE_DIR: path.join(root, "state"),
@@ -76,7 +73,7 @@ it("synthetic ${kind} failure", async ({ annotate }) => {
     NO_COLOR: "1",
     FORCE_COLOR: "0",
     ...(kind === "exact-value" ? { EXAMPLE_PROVIDER_KEY: synthetic } : {}),
-  });
+  };
   const child = spawnSync(
     resolveTestNodeExecPath(),
     [
@@ -84,15 +81,9 @@ it("synthetic ${kind} failure", async ({ annotate }) => {
       "run",
       "--config",
       config,
-      ...[
-        "verbose",
-        "default",
-        "dot",
-        "github-actions",
-        "json",
-        "junit",
-        "./scripts/lib/vitest-resource-reporter.mts",
-      ].map((reporter) => `--reporter=${reporter}`),
+      ...`verbose default dot github-actions json junit ./scripts/lib/vitest-resource-reporter.mts`
+        .split(" ")
+        .map((reporter) => `--reporter=${reporter}`),
     ],
     {
       cwd: repoRoot,

@@ -1,19 +1,13 @@
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { spawnNodeEvalSync } from "../src/test-utils/node-process.js";
 import { DEFAULT_VITEST_TEST_TIMEOUT_MS } from "./vitest/vitest.timeouts.ts";
 
 const reporterConfigs = [
   "vitest.config.ts",
-  "test/vitest/vitest.tooling.config.ts",
-  "test/vitest/vitest.cli-process.config.ts",
-  "test/vitest/vitest.unit-fast.config.ts",
-  "test/vitest/vitest.gateway-server-isolated.config.ts",
-  "test/vitest/vitest.ui.config.ts",
-  "test/vitest/vitest.ui-browser.config.ts",
-  "test/vitest/vitest.ui-e2e.config.ts",
-  "test/vitest/vitest.e2e.config.ts",
+  ...`tooling cli-process unit-fast gateway-server-isolated ui ui-browser ui-e2e e2e`
+    .split(" ")
+    .map((name) => `test/vitest/vitest.${name}.config.ts`),
   "ui/vitest.config.ts",
   "ui/vitest.node.config.ts",
 ];
@@ -27,9 +21,7 @@ type ReporterResolution = {
   blobMergeError: string | undefined;
 };
 
-const redactingReporterPath = fileURLToPath(
-  new URL("./vitest/redacting-reporter.ts", import.meta.url),
-);
+const redactingReporterPath = path.join(import.meta.dirname, "vitest/redacting-reporter.ts");
 const customReporterPath = path.resolve("scripts/lib/vitest-resource-reporter.mts");
 const customReporters: ReporterEntry[] = [
   ["json", { outputFile: "custom-report.json" }],
@@ -39,6 +31,7 @@ const customReporters: ReporterEntry[] = [
 function wrappedReporters(reporters: ReporterEntry[]): ReporterEntry[] {
   return [[redactingReporterPath, { reporters }]];
 }
+const wrappedNames = (names: string[]) => wrappedReporters(names.map((name) => [name, {}]));
 
 it.each(["false", "true"])(
   "redacts every reporter selection and preserves overrides with GITHUB_ACTIONS=%s",
@@ -126,7 +119,7 @@ it.each(["false", "true"])(
               )
             ? [...expected, "default"]
             : expected;
-      expect(reporters, config).toEqual(wrappedReporters(names.map((name) => [name, {}])));
+      expect(reporters, config).toEqual(wrappedNames(names));
       expect(cli, `${config} CLI override`).toEqual(wrappedReporters([["json", {}]]));
     }
     expect(resolved.defaults).toHaveLength(reporterConfigs.length);
@@ -136,12 +129,7 @@ it.each(["false", "true"])(
       "Cannot merge reports when `--reporter=blob` is used. Remove blob reporter from the config first.",
     );
     expect(resolved.injectedPty).toEqual(
-      wrappedReporters(
-        (githubActions === "true" ? ["verbose"] : ["verbose", "github-actions"]).map((name) => [
-          name,
-          {},
-        ]),
-      ),
+      wrappedNames(githubActions === "true" ? ["verbose"] : ["verbose", "github-actions"]),
     );
   },
 );
