@@ -25,6 +25,21 @@ import { runDoctorHealthFlow } from "./doctor-health.js";
 const { mocks } = await import("./doctor-health.test-support.js");
 const candidateVersion = "2026.9.4";
 const candidateBuildId = "2026.9.4-synthetic-candidate";
+const runtimeFixture = () => ({ log: vi.fn(), error: vi.fn(), exit: vi.fn() });
+const runDoctor = (runtime = runtimeFixture()) =>
+  runDoctorHealthFlow(runtime, { repair: true, nonInteractive: true });
+const unverifiedState = { kind: "data-at-risk", reason: "gateway-state-unverified" };
+function expectUncalled(...calls: ReturnType<typeof vi.fn>[]) {
+  for (const call of calls) {
+    expect(call).not.toHaveBeenCalled();
+  }
+}
+function expectResult(resultPath: string, result: Record<string, unknown>) {
+  expect(mocks.writeUpdatePostInstallDoctorResult).toHaveBeenCalledWith({
+    resultPath,
+    result: expect.objectContaining(result),
+  });
+}
 
 function managedService(
   state: OpenClawTestState,
@@ -200,10 +215,7 @@ describe("Doctor invoked by the published 2026.6.33 updater", () => {
         };
       });
 
-      await runDoctorHealthFlow(
-        { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
-        { repair: true, nonInteractive: true },
-      );
+      await runDoctor();
 
       expect(events).toEqual(["stop", "verified-stop", "import", "restart", "verified"]);
       expect(mocks.inspectGatewayRestart).not.toHaveBeenCalled();
@@ -227,34 +239,28 @@ describe("Doctor invoked by the published 2026.6.33 updater", () => {
         } else {
           mocks.probePortUsage.mockResolvedValue("busy");
         }
-        const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
-        const run = runDoctorHealthFlow(runtime, { repair: true, nonInteractive: true });
+        const failureFacts = expect.arrayContaining([
+          expect.objectContaining({ check: "gateway-stop", code: "stale-gateway-stop-failed" }),
+        ]);
+        const run = runDoctor();
 
         await expect(run).rejects.toMatchObject({
           name: "DoctorMaintenanceRefusalError",
-          refusal: { kind: "data-at-risk", reason: "gateway-state-unverified" },
-          failureFacts: expect.arrayContaining([
-            expect.objectContaining({ check: "gateway-stop", code: "stale-gateway-stop-failed" }),
-          ]),
+          refusal: unverifiedState,
+          failureFacts,
         });
         await expect(run).rejects.toThrow(formatCliCommand("openclaw gateway restart", state.env));
         await expect(run).rejects.toThrow(
           formatCliCommand("openclaw gateway status --deep", state.env),
         );
         expect(service.stop).toHaveBeenCalledOnce();
-        expect(mocks.config).not.toHaveBeenCalled();
-        expect(mocks.runContributions).not.toHaveBeenCalled();
+        expectUncalled(mocks.config, mocks.runContributions);
         expect(fs.readFileSync(state.configPath)).toEqual(configBefore);
-        expect(mocks.writeUpdatePostInstallDoctorResult).toHaveBeenCalledWith({
-          resultPath,
-          result: expect.objectContaining({
-            status: "error",
-            configHash: "unchanged",
-            maintenanceRefusal: { kind: "data-at-risk", reason: "gateway-state-unverified" },
-            failureFacts: expect.arrayContaining([
-              expect.objectContaining({ check: "gateway-stop", code: "stale-gateway-stop-failed" }),
-            ]),
-          }),
+        expectResult(resultPath, {
+          status: "error",
+          configHash: "unchanged",
+          maintenanceRefusal: unverifiedState,
+          failureFacts,
         });
         expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
       });
@@ -305,27 +311,24 @@ describe("Doctor invoked by the published 2026.6.33 updater", () => {
             waitOutcome: serviceStatus === "running" ? "timeout" : "stopped-free",
           };
         });
-        const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
-        const run = runDoctorHealthFlow(runtime, { repair: true, nonInteractive: true });
+        const runtime = runtimeFixture();
+        const run = runDoctor(runtime);
         if (serviceStatus === "running") {
           await expect(run).resolves.toBeUndefined();
-          expect(mocks.writeUpdatePostInstallDoctorResult).toHaveBeenCalledWith({
-            resultPath,
-            result: expect.objectContaining({
-              status: "ok",
-              warnings: expect.arrayContaining([
-                expect.stringContaining("Gateway started but readiness was not verified"),
-                expect.stringContaining("synthetic readiness failure"),
-                expect.stringContaining(
-                  formatCliCommand("openclaw gateway status --deep", state.env),
-                ),
-                expect.stringContaining(
-                  formatCliCommand("openclaw gateway diagnostics export", state.env),
-                ),
-              ]),
-            }),
+          expectResult(resultPath, {
+            status: "ok",
+            warnings: expect.arrayContaining([
+              expect.stringContaining("Gateway started but readiness was not verified"),
+              expect.stringContaining("synthetic readiness failure"),
+              expect.stringContaining(
+                formatCliCommand("openclaw gateway status --deep", state.env),
+              ),
+              expect.stringContaining(
+                formatCliCommand("openclaw gateway diagnostics export", state.env),
+              ),
+            ]),
           });
-          expect(runtime.error).not.toHaveBeenCalled();
+          expectUncalled(runtime.error);
           expect(runtime.exit).not.toHaveBeenCalledWith(1);
           expect(mocks.outro).toHaveBeenCalledWith("Doctor complete.");
         } else {
@@ -339,17 +342,14 @@ describe("Doctor invoked by the published 2026.6.33 updater", () => {
               expect.objectContaining({ code: "stale-gateway-recovery-command" }),
             ]),
           });
-          expect(mocks.writeUpdatePostInstallDoctorResult).toHaveBeenCalledWith({
-            resultPath,
-            result: expect.objectContaining({
-              status: "error",
-              failureFacts: expect.arrayContaining([
-                expect.objectContaining({
-                  check: "gateway-restoration",
-                  code: "doctor-gateway-rpc-verification-failed",
-                }),
-              ]),
-            }),
+          expectResult(resultPath, {
+            status: "error",
+            failureFacts: expect.arrayContaining([
+              expect.objectContaining({
+                check: "gateway-restoration",
+                code: "doctor-gateway-rpc-verification-failed",
+              }),
+            ]),
           });
           expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
         }
@@ -395,13 +395,12 @@ describe("Doctor invoked by the published 2026.6.33 updater", () => {
         service.readCommand = async () => {
           throw new Error("synthetic native manager unavailable");
         };
-        const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
 
         try {
-          const run = runDoctorHealthFlow(runtime, { repair: true, nonInteractive: true });
+          const run = runDoctor();
           await expect(run).rejects.toMatchObject({
             name: "DoctorMaintenanceRefusalError",
-            refusal: { kind: "data-at-risk", reason: "gateway-state-unverified" },
+            refusal: unverifiedState,
             failureFacts: external
               ? []
               : expect.arrayContaining([
@@ -415,31 +414,25 @@ describe("Doctor invoked by the published 2026.6.33 updater", () => {
             ),
           );
 
-          expect(service.stop).not.toHaveBeenCalled();
-          expect(service.restart).not.toHaveBeenCalled();
-          expect(mocks.config).not.toHaveBeenCalled();
-          expect(mocks.runContributions).not.toHaveBeenCalled();
+          expectUncalled(service.stop, service.restart, mocks.config, mocks.runContributions);
           expect(fs.readFileSync(state.configPath)).toEqual(configBefore);
           expect(fs.readFileSync(lockPath, "utf8")).toBe(lockBefore);
           expect(fs.existsSync(resolveOpenClawStateSqlitePath(state.env))).toBe(false);
-          expect(mocks.writeUpdatePostInstallDoctorResult).toHaveBeenCalledWith({
-            resultPath,
-            result: expect.objectContaining({
-              status: "error",
-              configHash: "unchanged",
-              maintenanceRefusal: { kind: "data-at-risk", reason: "gateway-state-unverified" },
-              failureFacts: external
-                ? [
-                    expect.objectContaining({
-                      check: "doctor",
-                      code: "doctor-failed",
-                      message: expect.stringContaining("Legacy Gateway lock"),
-                    }),
-                  ]
-                : expect.arrayContaining([
-                    expect.objectContaining({ code: "stale-gateway-service-unverified" }),
-                  ]),
-            }),
+          expectResult(resultPath, {
+            status: "error",
+            configHash: "unchanged",
+            maintenanceRefusal: unverifiedState,
+            failureFacts: external
+              ? [
+                  expect.objectContaining({
+                    check: "doctor",
+                    code: "doctor-failed",
+                    message: expect.stringContaining("Legacy Gateway lock"),
+                  }),
+                ]
+              : expect.arrayContaining([
+                  expect.objectContaining({ code: "stale-gateway-service-unverified" }),
+                ]),
           });
           expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
         } finally {

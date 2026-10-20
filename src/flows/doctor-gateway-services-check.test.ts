@@ -13,6 +13,10 @@ vi.mock("../commands/doctor-gateway-services.js", () => ({
   detectExtraGatewayServiceIssues: mocks.detectExtraGatewayServiceIssues,
 }));
 const runtime = { log() {}, error() {}, exit() {} };
+const inspectionError = (source: string) => ({
+  source,
+  message: "Service path could not be inspected.",
+});
 
 function gatewayServicesCheck(): HealthCheck {
   const check = createCoreHealthChecks().find(
@@ -57,12 +61,7 @@ describe("registered Gateway service health", () => {
         empty
           ? {
               services: [],
-              errors: [
-                {
-                  source: "clawdbot-gateway.service",
-                  message: "Service path could not be inspected.",
-                },
-              ],
+              errors: [inspectionError("clawdbot-gateway.service")],
             }
           : {
               services: [
@@ -74,12 +73,7 @@ describe("registered Gateway service health", () => {
                 service("linux", "clawdbot-system.service", "system"),
                 service("darwin", "ai.clawdbot.system", "system"),
               ],
-              errors: [
-                {
-                  source: "clawdbot-backup.service",
-                  message: "Service path could not be inspected.",
-                },
-              ],
+              errors: [inspectionError("clawdbot-backup.service")],
             },
       );
       const ctx = { mode: "fix" as const, runtime, cfg: {}, deep: true, dryRun };

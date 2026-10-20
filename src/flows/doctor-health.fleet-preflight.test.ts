@@ -53,6 +53,20 @@ vi.mock("@openclaw/proc-safe/identity", async (importOriginal) => {
 });
 
 const { mocks } = await import("./doctor-health.test-support.js");
+const runtimeFixture = () => ({ log: vi.fn(), error: vi.fn(), exit: vi.fn() });
+
+function installAdmissionContribution() {
+  const noOp = async () => {};
+  const admission = resolveInitialDoctorHealthContributions({
+    runStructuredHealthRepairs: noOp,
+    runGatewayConfigHealth: noOp,
+    runAuthProfileMigration: noOp,
+    runAuthProfileHealth: noOp,
+    runGatewayAuthHealth: noOp,
+    runLegacyStateHealth: noOp,
+  }).find((contribution) => contribution.id === "doctor:agent-database-admission")!;
+  mocks.runContributions.mockImplementation((ctx) => admission.run(ctx));
+}
 
 beforeEach(() => {
   vi.mocked(processIdentity.readProcessAncestry).mockReset();
@@ -125,7 +139,7 @@ it("preserves original config bytes before Doctor relocates and repairs legacy s
     mocks.packageRoot.mockReturnValue(process.cwd());
     mocks.config.mockReturnValue({});
     mocks.runContributions.mockResolvedValue(undefined);
-    const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+    const runtime = runtimeFixture();
     let captured: ReturnType<typeof readCapturedConfig> | undefined;
     const loadConfig = configFlow.loadAndMaybeMigrateDoctorConfig;
     const repair = vi
@@ -204,7 +218,7 @@ it("reuses the admitted original capture and refuses changed evidence before Doc
       mocks.packageRoot.mockReturnValue(installRoot);
       mocks.config.mockReturnValue({});
       mocks.runContributions.mockResolvedValue(undefined);
-      const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+      const runtime = runtimeFixture();
       await withUpdateCommandExecutor(run.runId, async (executor) => {
         const fence = await executor.enter(installRoot);
         const maintenance = await beginDoctorMaintenance({
@@ -242,6 +256,21 @@ it("reuses the admitted original capture and refuses changed evidence before Doc
         expect(captured.bytes.toString("utf8")).toBe(original);
         const store = resolveUpdateCaptureRoot(state.stateDir);
         const originalEntries = fs.readdirSync(store).toSorted();
+        const expectCaptureIntact = () => {
+          expect(fs.readdirSync(store).toSorted()).toEqual(originalEntries);
+          expect(fs.readFileSync(captured.manifestPath)).toEqual(captured.manifestBytes);
+          expect(fs.readFileSync(captured.payloadPath, "utf8")).toBe(original);
+        };
+        const doctor = (current: string | Buffer, ref = baseline.ref) =>
+          runDoctorHealthFlow(
+            runtime,
+            { repair: true, nonInteractive: true },
+            {
+              inputHash: hashConfigRaw(current.toString()),
+              assertCurrent: fence.assertCurrent,
+              originalRecoveryCapture: { runId: run.runId, installRoot, ref },
+            },
+          );
         const { readProcessAncestry: readAncestry } = await vi.importActual<
           typeof import("@openclaw/proc-safe/identity")
         >("@openclaw/proc-safe/identity");
@@ -261,19 +290,9 @@ it("reuses the admitted original capture and refuses changed evidence before Doc
           vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", inheritedRunId);
           const current = `{ "gateway": { "port": ${port} } }\n`;
           fs.writeFileSync(state.configPath, current);
-          await runDoctorHealthFlow(
-            runtime,
-            { repair: true, nonInteractive: true },
-            {
-              inputHash: hashConfigRaw(current),
-              assertCurrent: fence.assertCurrent,
-              originalRecoveryCapture: { runId: run.runId, installRoot, ref: baseline.ref },
-            },
-          );
+          await doctor(current);
           expect(fs.readFileSync(state.configPath, "utf8")).toBe(current);
-          expect(fs.readdirSync(store).toSorted()).toEqual(originalEntries);
-          expect(fs.readFileSync(captured.manifestPath)).toEqual(captured.manifestBytes);
-          expect(fs.readFileSync(captured.payloadPath, "utf8")).toBe(original);
+          expectCaptureIntact();
         }
         // The real executor, maintenance owner and capture reader must refuse
         // changed retained evidence before config repair or health contributions.
@@ -295,21 +314,11 @@ it("reuses the admitted original capture and refuses changed evidence before Doc
           }
           try {
             await expect(
-              runDoctorHealthFlow(
-                runtime,
-                { repair: true, nonInteractive: true },
-                {
-                  inputHash: hashConfigRaw(current.toString("utf8")),
-                  assertCurrent: fence.assertCurrent,
-                  originalRecoveryCapture: {
-                    runId: run.runId,
-                    installRoot,
-                    ref:
-                      fault === "digest"
-                        ? { ...baseline.ref, manifestSha256: "0".repeat(64) }
-                        : baseline.ref,
-                  },
-                },
+              doctor(
+                current,
+                fault === "digest"
+                  ? { ...baseline.ref, manifestSha256: "0".repeat(64) }
+                  : baseline.ref,
               ),
               fault,
             ).rejects.toThrow(/admitted original update capture/i);
@@ -326,9 +335,7 @@ it("reuses the admitted original capture and refuses changed evidence before Doc
               fs.rmdirSync(candidate);
             }
           }
-          expect(fs.readdirSync(store).toSorted()).toEqual(originalEntries);
-          expect(fs.readFileSync(captured.manifestPath)).toEqual(captured.manifestBytes);
-          expect(fs.readFileSync(captured.payloadPath, "utf8")).toBe(original);
+          expectCaptureIntact();
         }
         expect(
           mocks.runContributions,
@@ -359,17 +366,7 @@ it("reuses the admitted original capture and refuses changed evidence before Doc
             { trigger: "cli", origin: { driver: foreignDriver } },
             { env: state.env },
           );
-          await expect(
-            runDoctorHealthFlow(
-              runtime,
-              { repair: true, nonInteractive: true },
-              {
-                inputHash: hashConfigRaw(current.toString("utf8")),
-                assertCurrent: fence.assertCurrent,
-                originalRecoveryCapture: { runId: run.runId, installRoot, ref: baseline.ref },
-              },
-            ),
-          ).rejects.toMatchObject({
+          await expect(doctor(current)).rejects.toMatchObject({
             name: "DoctorMaintenanceRefusalError",
             refusal: { kind: "data-at-risk", reason: "unreadable-state" },
             cause: { message: expect.stringContaining(`driver PID ${foreignDriver.pid}`) },
@@ -404,21 +401,12 @@ it("shares one fleet preflight with Doctor admission and its health contribution
     }
     await closeOpenClawAgentDatabasesAsync();
     await closeOpenClawStateDatabaseAsync();
-    const noOp = async () => {};
-    const admission = resolveInitialDoctorHealthContributions({
-      runStructuredHealthRepairs: noOp,
-      runGatewayConfigHealth: noOp,
-      runAuthProfileMigration: noOp,
-      runAuthProfileHealth: noOp,
-      runGatewayAuthHealth: noOp,
-      runLegacyStateHealth: noOp,
-    }).find((contribution) => contribution.id === "doctor:agent-database-admission")!;
-    mocks.runContributions.mockImplementation((ctx) => admission.run(ctx));
+    installAdmissionContribution();
     const inspect = vi.spyOn(databasePreflight, "preflightOpenClawDatabaseSchemas");
     try {
       vi.mocked(execFile).mockClear();
       vi.mocked(fork).mockClear();
-      const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+      const runtime = runtimeFixture();
       await runDoctorHealthFlow(runtime, { nonInteractive: true });
 
       expect(mocks.runContributions).toHaveBeenCalledOnce();
@@ -475,16 +463,7 @@ it.each(["hardlink", "relocated-copy"] as const)(
       fs.symlinkSync(originalRoot, sessionAlias, "dir");
       await state.writeConfig(cfg);
       mocks.config.mockReturnValue(cfg);
-      const noOp = async () => {};
-      const admission = resolveInitialDoctorHealthContributions({
-        runStructuredHealthRepairs: noOp,
-        runGatewayConfigHealth: noOp,
-        runAuthProfileMigration: noOp,
-        runAuthProfileHealth: noOp,
-        runGatewayAuthHealth: noOp,
-        runLegacyStateHealth: noOp,
-      }).find((contribution) => contribution.id === "doctor:agent-database-admission")!;
-      mocks.runContributions.mockImplementation((ctx) => admission.run(ctx));
+      installAdmissionContribution();
       const inspect = vi.spyOn(databasePreflight, "preflightOpenClawDatabaseSchemas");
       const loadConfig = configFlow.loadAndMaybeMigrateDoctorConfig;
       const migration = vi
@@ -533,7 +512,7 @@ it.each(["hardlink", "relocated-copy"] as const)(
             code: "agent-database-ownership-mismatch",
           }),
         ]);
-        const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+        const runtime = runtimeFixture();
         await runDoctorHealthFlow(runtime, { nonInteractive: true }, undefined, prepared);
         expect(runtime.error).not.toHaveBeenCalled();
         expect(runtime.exit).not.toHaveBeenCalled();

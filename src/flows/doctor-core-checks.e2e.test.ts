@@ -1,4 +1,3 @@
-// Doctor core check E2E tests cover doctor checks in filesystem-backed scenarios.
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,21 +43,12 @@ metadata: '{"openclaw":{"requires":{"bins":["openclaw-test-missing-skill-bin"]}}
       "utf-8",
     );
     const cfg: OpenClawConfig = {
-      agents: {
-        defaults: {
-          workspace: tmp,
-          skills: ["missing-tool"],
-        },
-      },
+      agents: { defaults: { workspace: tmp, skills: ["missing-tool"] } },
     };
     const check = getCheck("core/doctor/skills-readiness");
+    const ctx = { mode: "fix" as const, runtime, cfg, cwd: tmp };
 
-    const findings = await check.detect({
-      mode: "lint",
-      runtime,
-      cfg,
-      cwd: tmp,
-    });
+    const findings = await check.detect({ ...ctx, mode: "lint" });
     expect(findings).toContainEqual(
       expect.objectContaining({
         checkId: "core/doctor/skills-readiness",
@@ -67,41 +57,17 @@ metadata: '{"openclaw":{"requires":{"bins":["openclaw-test-missing-skill-bin"]}}
       }),
     );
     await expect(
-      check.detect(
-        {
-          mode: "fix",
-          runtime,
-          cfg,
-          cwd: tmp,
-        },
-        { paths: ["skills.entries.other-tool.enabled"] },
-      ),
+      check.detect(ctx, { paths: ["skills.entries.other-tool.enabled"] }),
     ).resolves.toEqual([]);
     await expect(
-      check.detect(
-        {
-          mode: "fix",
-          runtime,
-          cfg,
-          cwd: tmp,
-        },
-        { paths: ["skills.entries.missing-tool.enabled"] },
-      ),
+      check.detect(ctx, { paths: ["skills.entries.missing-tool.enabled"] }),
     ).resolves.toContainEqual(
       expect.objectContaining({
         path: "skills.entries.missing-tool.enabled",
       }),
     );
 
-    const repaired = await check.repair?.(
-      {
-        mode: "fix",
-        runtime,
-        cfg,
-        cwd: tmp,
-      },
-      findings,
-    );
+    const repaired = await check.repair?.(ctx, findings);
     expect(repaired?.config?.skills?.entries?.["missing-tool"]).toEqual({ enabled: false });
     expect(repaired?.changes).toContain("Disabled unavailable skill missing-tool.");
     expect(repaired?.effects).toContainEqual(
