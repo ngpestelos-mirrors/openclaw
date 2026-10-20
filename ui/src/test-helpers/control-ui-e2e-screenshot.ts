@@ -121,8 +121,14 @@ export async function takeControlUiScreenshotFrame(
         ...(options.scrollTo ? [options.scrollTo] : []),
       ]),
     ];
+    const inspect = async () => ({
+      presentation: await inspectControlUiFrameTargets(targets, targetElements),
+      scroll: options.scrollTo
+        ? await inspectControlUiProofScroll(options.scrollTo, false)
+        : undefined,
+    });
     let previous: string | undefined;
-    let settled: Awaited<ReturnType<typeof inspectControlUiFrameTargets>> = [];
+    let settled: Awaited<ReturnType<typeof inspect>> | undefined;
     let requestedScroll: string | null | undefined;
     await expect
       .poll(
@@ -139,10 +145,7 @@ export async function takeControlUiScreenshotFrame(
           await preparation.evaluate((state) => state.prepare());
           await waitForControlUiFrameLayout(targets);
           const images = await preparation.evaluate((state) => state.images());
-          const presentation = await inspectControlUiFrameTargets(targets, targetElements);
-          const scroll = options.scrollTo
-            ? await inspectControlUiProofScroll(options.scrollTo, false)
-            : undefined;
+          const { presentation, scroll } = await inspect();
           const current = JSON.stringify({ images, presentation, scroll });
           const stable = current === previous;
           previous = current;
@@ -158,12 +161,10 @@ export async function takeControlUiScreenshotFrame(
           }
           // A renderer can replace a target while its intersection is pending.
           // Keep the final readiness read inside preparation, not after polling.
-          settled = await inspectControlUiFrameTargets(targets, targetElements);
+          settled = await inspect();
           return (
-            settled.every((target) => target.visible && target.sameTarget) &&
-            JSON.stringify(settled) === JSON.stringify(presentation) &&
-            (!options.scrollTo ||
-              (await inspectControlUiProofScroll(options.scrollTo, false)) === requestedScroll)
+            settled.presentation.every((target) => target.visible && target.sameTarget) &&
+            JSON.stringify(settled) === JSON.stringify({ presentation, scroll })
           );
         },
         { message: "Proof frame did not reach visible, settled targets" },
@@ -178,13 +179,9 @@ export async function takeControlUiScreenshotFrame(
       );
     }
     const frame = await captureControlUiFrame(page, options.elements ?? [], options);
-    expect(
-      await inspectControlUiFrameTargets(targets, targetElements),
-      "Proof content moved or disappeared during frame capture",
-    ).toEqual(settled);
-    if (options.scrollTo) {
-      expect(await inspectControlUiProofScroll(options.scrollTo, false)).toBe(requestedScroll);
-    }
+    expect(await inspect(), "Proof content moved or disappeared during frame capture").toEqual(
+      settled,
+    );
     return frame;
   } finally {
     try {
@@ -472,22 +469,17 @@ async function captureControlUiFrame(
     throw new Error("Proof capture requires a viewport");
   }
   if (options.fullPage) {
-    const extent = await page.evaluate(() => ({
-      width: Math.max(
-        document.body.scrollWidth,
-        document.body.offsetWidth,
-        document.documentElement.clientWidth,
-        document.documentElement.scrollWidth,
-        document.documentElement.offsetWidth,
-      ),
-      height: Math.max(
-        document.body.scrollHeight,
-        document.body.offsetHeight,
-        document.documentElement.clientHeight,
-        document.documentElement.scrollHeight,
-        document.documentElement.offsetHeight,
-      ),
-    }));
+    const extent = await page.evaluate(() => {
+      const maximum = (axis: "Width" | "Height") =>
+        Math.max(
+          document.documentElement[`client${axis}`],
+          ...[document.body, document.documentElement].flatMap((element) => [
+            element[`scroll${axis}`],
+            element[`offset${axis}`],
+          ]),
+        );
+      return { width: maximum("Width"), height: maximum("Height") };
+    });
     expect(extent, "Full-page proof must fit the viewport-frame dimensions").toEqual(viewport);
   }
   const bounds = await Promise.all(elements.map((element) => element.boundingBox()));

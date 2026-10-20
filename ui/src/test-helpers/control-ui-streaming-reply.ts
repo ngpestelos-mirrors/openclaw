@@ -19,16 +19,18 @@ export function createStreamingReplyProbeInitScript(): string {
 }
 
 function installStreamingReplyProbe() {
-  type Delta = {
+  const emptyCounters = {
+    parseCalls: 0,
+    parseChars: 0,
+    parseMs: 0,
+    geometryReads: 0,
+    styleReads: 0,
+  };
+  type Delta = typeof emptyCounters & {
     index: number;
     chars: number;
     at: number;
     taskAndMicrotasksMs?: number;
-    parseCalls: number;
-    parseChars: number;
-    parseMs: number;
-    geometryReads: number;
-    styleReads: number;
   };
   let active = false;
   let startedAt = 0;
@@ -71,11 +73,7 @@ function installStreamingReplyProbe() {
           index: deltas.length + 1,
           chars: payload.message.content[0].text.length,
           at: performance.now() - startedAt,
-          parseCalls: 0,
-          parseChars: 0,
-          parseMs: 0,
-          geometryReads: 0,
-          styleReads: 0,
+          ...emptyCounters,
         };
         deltas.push(current);
         taskEnds.push({ delta: current, at: performance.now() });
@@ -211,6 +209,8 @@ function installStreamingReplyProbe() {
           max: xs.at(-1) ?? 0,
         };
       };
+      const optionalDistribution = (values: Array<number | undefined>) =>
+        distribution(values.filter((value): value is number => value !== undefined));
       const gaps = frames.slice(1).map((at, index) => at - frames[index]!);
       const buckets = Array.from({ length: 4 }, (_, index) => {
         const samples = deltas.slice(
@@ -221,10 +221,8 @@ function installStreamingReplyProbe() {
           fromChars: samples[0]?.chars,
           toChars: samples.at(-1)?.chars,
           count: samples.length,
-          taskAndMicrotasksMs: distribution(
-            samples.flatMap((sample) =>
-              sample.taskAndMicrotasksMs === undefined ? [] : [sample.taskAndMicrotasksMs],
-            ),
+          taskAndMicrotasksMs: optionalDistribution(
+            samples.map((sample) => sample.taskAndMicrotasksMs),
           ),
           parseCalls: samples.reduce((sum, sample) => sum + sample.parseCalls, 0),
           parseChars: samples.reduce((sum, sample) => sum + sample.parseChars, 0),
@@ -256,11 +254,7 @@ function installStreamingReplyProbe() {
         longFrameBlockingMs: longFrames.reduce((sum, item) => sum + item.blocking, 0),
         inputs,
         inputDelayMs: distribution(inputs.map((sample) => sample.delayMs)),
-        inputToNextFrameMs: distribution(
-          inputs.flatMap((sample) =>
-            sample.nextFrameMs === undefined ? [] : [sample.nextFrameMs],
-          ),
-        ),
+        inputToNextFrameMs: optionalDistribution(inputs.map((sample) => sample.nextFrameMs)),
         finalHtml: document.querySelector(".chat-bubble.streaming .chat-text")?.innerHTML ?? null,
       };
     },

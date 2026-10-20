@@ -31,19 +31,14 @@ export function createControlUiMockSessionSubscriptions(
       let observesSessions = false;
       const hasCapability = (capability: string) => capabilities.includes(capability);
       const hasSubscription = (payload: unknown): boolean => {
-        const source = isRecord(payload)
-          ? [payload, payload.suggestion, payload.request].find(
-              (candidate) =>
-                isRecord(candidate) &&
-                typeof candidate.sessionKey === "string" &&
-                candidate.sessionKey.trim(),
-            )
-          : undefined;
-        return (
-          isRecord(source) &&
-          typeof source.sessionKey === "string" &&
-          keys.has(subscriptionKey(source.sessionKey, source.agentId))
+        const candidates = isRecord(payload) ? [payload, payload.suggestion, payload.request] : [];
+        const source = candidates.find(
+          (candidate): candidate is { sessionKey: string; agentId?: unknown } =>
+            isRecord(candidate) &&
+            typeof candidate.sessionKey === "string" &&
+            Boolean(candidate.sessionKey.trim()),
         );
+        return Boolean(source && keys.has(subscriptionKey(source.sessionKey, source.agentId)));
       };
       return {
         hasCapability,

@@ -175,11 +175,7 @@ describe("Team-scale Gateway fixture", () => {
       expect(owner.list({ [flag]: true, limit: 1 }).result.totalCount).toBe(total);
     }
 
-    const secondPage = owner.list({
-      limit: 100,
-      offset: 200,
-      ...rootOnly,
-    }).result;
+    const secondPage = owner.list({ limit: 100, offset: 200, ...rootOnly }).result;
     expect(secondPage.sessions).toHaveLength(100);
     expect(secondPage.sessions[0]?.sessionId).toBe("team-session-171");
     expect(secondPage).toMatchObject({ offset: 200, nextOffset: null, hasMore: false });
