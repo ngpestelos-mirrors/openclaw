@@ -13,14 +13,13 @@ import * as cleanupPolicy from "./subagent-registry-cleanup.js";
 import {
   mutateLifecycleRun,
   readLifecycleRun,
-  type createRunEntry as createLifecycleRunEntry,
+  expectUndefinedFields,
+  type CompleteLifecycleRun,
+  type LifecycleTestDrivers,
   type LifecycleControllerFixtureOptions,
   type LifecycleFixtureWrite,
 } from "./subagent-registry-lifecycle-controller.test-support.js";
-import type {
-  SubagentLifecycleController,
-  SubagentLifecycleOptions,
-} from "./subagent-registry-lifecycle.js";
+import type { SubagentLifecycleOptions } from "./subagent-registry-lifecycle.js";
 import {
   findAuthorizedSwarmCollectorRequest,
   findSwarmCollectorSession,
@@ -31,14 +30,6 @@ import { observeRootWork } from "./subagent-registry.browser-cleanup.test-suppor
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 type LifecycleControllerParams = SubagentLifecycleOptions;
-type CompleteRun = (
-  controller: SubagentLifecycleController,
-  entry: SubagentRunRecord,
-  overrides?: Omit<
-    Partial<Parameters<SubagentLifecycleController["completeSubagentRun"]>[0]>,
-    "runId"
-  >,
-) => Promise<void>;
 
 export function registerLifecycleDeliveryReceiptCases({
   createRunEntry,
@@ -46,19 +37,9 @@ export function registerLifecycleDeliveryReceiptCases({
   completeRun,
   completeAndJoinCleanup,
   waitForLifecycleState,
-}: {
-  createRunEntry: (
-    overrides?: Partial<SubagentRunRecord> & { endedAt?: number },
-  ) => SubagentRunRecord;
-  createLifecycleController: (
-    options: {
-      entry: SubagentRunRecord;
-      runs?: Map<string, SubagentRunRecord>;
-    } & Partial<LifecycleControllerFixtureOptions>,
-  ) => SubagentLifecycleController;
-  completeRun: CompleteRun;
-  completeAndJoinCleanup: CompleteRun;
-  waitForLifecycleState: <T>(assertion: () => T | Promise<T>) => Promise<T>;
+}: LifecycleTestDrivers & {
+  completeRun: CompleteLifecycleRun;
+  completeAndJoinCleanup: CompleteLifecycleRun;
 }) {
   it("authorizes and completes both collectors sharing a raw key across agents", async () => {
     const entries = ["main", "research"].map((childAgentId) =>
@@ -113,7 +94,7 @@ export function registerLifecycleDeliveryReceiptCases({
   const visibleCompletion = {
     triggerCleanup: true,
     terminalReply: { disposition: "visible", text: "final completion reply" },
-  } satisfies Parameters<CompleteRun>[2];
+  } satisfies Parameters<CompleteLifecycleRun>[2];
 
   function createReceiptFixture(
     delivery: SubagentAnnounceDeliveryResult,
@@ -186,8 +167,10 @@ export function registerLifecycleDeliveryReceiptCases({
     await waitForLifecycleState(() =>
       expect(readLifecycleRun(entry).delivery?.announcedAt).toBe(12_300),
     );
-    expect(readLifecycleRun(entry).delivery?.enqueuedAt).toBe(4_100);
-    expect(readLifecycleRun(entry).delivery?.deliveredAt).toBe(12_300);
+    expect(readLifecycleRun(entry).delivery).toMatchObject({
+      enqueuedAt: 4_100,
+      deliveredAt: 12_300,
+    });
     expect(readLifecycleRun(entry).delivery?.lastDropReason).toBeUndefined();
   });
 
@@ -283,9 +266,11 @@ export function registerLifecycleDeliveryReceiptCases({
       try {
         await expect(completeRun(controller, entry, visibleCompletion)).resolves.toBeUndefined();
         await receiptObserved.promise;
-        expect(readLifecycleRun(entry).delivery?.disposition).toBe("retryable");
-        expect(readLifecycleRun(entry).delivery?.lastDropReason).toBeUndefined();
-        expect(readLifecycleRun(entry).delivery?.lastError).toBe(lastError);
+        expect(readLifecycleRun(entry).delivery).toMatchObject({
+          disposition: "retryable",
+          lastError,
+        });
+        expectUndefinedFields(readLifecycleRun(entry).delivery, ["lastDropReason"]);
         expect(readLifecycleRun(entry).cleanupCompletedAt).toBeUndefined();
         expect(persist).toHaveBeenCalledTimes(persistCalls);
         if (persistCalls > 0) {
@@ -359,8 +344,7 @@ export function registerLifecycleDeliveryReceiptCases({
         announcedAt: 12_300,
         deliveredAt: 12_300,
       });
-      expect(readLifecycleRun(entry).delivery?.lastError).toBeUndefined();
-      expect(readLifecycleRun(entry).delivery?.lastDropReason).toBeUndefined();
+      expectUndefinedFields(readLifecycleRun(entry).delivery, ["lastError", "lastDropReason"]);
       expect(readLifecycleRun(entry).cleanupCompletedAt).toBeUndefined();
       expect(persist).toHaveBeenCalledWith(expect.objectContaining({ runIds: [entry.runId] }));
       expect.soft(sentChunks).toEqual([1, 2, 3]);
@@ -382,8 +366,10 @@ export function registerLifecycleDeliveryReceiptCases({
     expect(readLifecycleRun(entry).cleanupCompletedAt).toBeTypeOf("number");
     expect(readLifecycleRun(entry).delivery?.nextAttemptAt).toBeUndefined();
     expect(readLifecycleRun(entry).label).toBe("updated while sending");
-    expect(readLifecycleRun(entry).completion?.fallbackResultText).toBeUndefined();
-    expect(readLifecycleRun(entry).completion?.fallbackCapturedAt).toBeUndefined();
+    expectUndefinedFields(readLifecycleRun(entry).completion, [
+      "fallbackResultText",
+      "fallbackCapturedAt",
+    ]);
     expect(readLifecycleRun(entry).wakeOnDescendantSettle).toBeUndefined();
     expect(cleanupSnapshots.length).toBeGreaterThan(0);
     for (const snapshot of cleanupSnapshots) {
@@ -448,10 +434,12 @@ export function registerLifecycleDeliveryReceiptCases({
       expect(readLifecycleRun(entry).cleanupCompletedAt).toBeTypeOf("number"),
     );
     expect(readLifecycleRun(entry).delivery?.status).toBe("delivered");
-    expect(readLifecycleRun(entry).delivery?.lastError).toBeUndefined();
-    expect(readLifecycleRun(entry).delivery?.payload).toBeUndefined();
-    expect(readLifecycleRun(entry).delivery?.suspendedAt).toBeUndefined();
-    expect(readLifecycleRun(entry).delivery?.suspendedReason).toBeUndefined();
+    expectUndefinedFields(readLifecycleRun(entry).delivery, [
+      "lastError",
+      "payload",
+      "suspendedAt",
+      "suspendedReason",
+    ]);
     expect(runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
   });
 }
@@ -460,11 +448,7 @@ export function registerRequesterAdmissionRetryTests({
   createRunEntry,
   createLifecycleController,
   useRetryTimers,
-}: {
-  createRunEntry: typeof createLifecycleRunEntry;
-  createLifecycleController: (
-    options: LifecycleControllerFixtureOptions,
-  ) => SubagentLifecycleController;
+}: Omit<LifecycleTestDrivers, "waitForLifecycleState"> & {
   useRetryTimers: () => Promise<void>;
 }) {
   it.each(["after cleanup", "during finalization"] as const)(

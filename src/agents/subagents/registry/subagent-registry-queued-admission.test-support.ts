@@ -1,4 +1,6 @@
+import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import {
@@ -58,9 +60,7 @@ export function registerQueuedRegistrationAdmissionCases() {
         cleanupFailedSpawn: cleanup,
       });
       const parent = tryBeginGatewayRootWorkAdmission("composed-original-parent");
-      if (!parent) {
-        throw new Error("missing original parent admission");
-      }
+      assert(parent, "missing original parent admission");
       const activate = await parent.run(async () =>
         AsyncLocalStorage.bind(() => {
           activateSwarmRun({ groupId, runId: entry.runId, lifecycleOwner, ...callbacks });
@@ -68,17 +68,13 @@ export function registerQueuedRegistrationAdmissionCases() {
       );
       parent.release();
       const suspension = tryBeginGatewaySuspendAdmission(() => {});
-      if (!suspension) {
-        throw new Error("missing reversible suspension");
-      }
+      assert(suspension, "missing reversible suspension");
       expect(suspension.commit()).toBe(true);
       let closed = false;
       let closing: Promise<void> | undefined;
       try {
         activate();
-        await new Promise<void>((resolve) => {
-          setImmediate(resolve);
-        });
+        await nextTurn();
         expect(isSwarmRunActive(entry.runId)).toBe(true);
         expect(getActiveGatewayRootWorkCount()).toBe(0);
         expect(launch).not.toHaveBeenCalled();
@@ -100,9 +96,7 @@ export function registerQueuedRegistrationAdmissionCases() {
         expect(rollback).not.toHaveBeenCalled();
         expect(f.writes).toBe(2);
         expect(suspension.release()).toBe(true);
-        await new Promise<void>((resolve) => {
-          setImmediate(resolve);
-        });
+        await nextTurn();
         expect(launch).not.toHaveBeenCalled();
         expect(isSwarmRunActive(entry.runId)).toBe(false);
         expect(getActiveGatewayRootWorkCount()).toBe(0);

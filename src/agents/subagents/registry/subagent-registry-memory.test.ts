@@ -23,6 +23,7 @@ import { isSameSubagentRunOwner } from "./subagent-run-generation.js";
 function createRun(
   runId: string,
   childSessionKey = `agent:main:subagent:${runId}`,
+  overrides: Partial<SubagentRunRecord> = {},
 ): SubagentRunRecord {
   return {
     runId,
@@ -33,12 +34,11 @@ function createRun(
     cleanup: "keep",
     createdAt: 1,
     execution: { status: "running" },
+    ...overrides,
   };
 }
 
-afterEach(() => {
-  subagentRuns.clear();
-});
+afterEach(() => subagentRuns.clear());
 
 describe("completed subagent payload residency", () => {
   function completedRun(): SubagentRunRecord {
@@ -131,11 +131,10 @@ describe("completed subagent payload residency", () => {
 
 describe("subagent run memory indexes", () => {
   it("tracks activation obligations across settlement, reactivation, deletion, and reset", () => {
-    const finished: SubagentRunRecord = {
-      ...createRun("history"),
+    const finished = createRun("history", undefined, {
       execution: { status: "terminal", endedAt: 2, outcome: { status: "ok" } },
       cleanupCompletedAt: 3,
-    };
+    });
     const running = createRun("running");
     const cleanup = { ...finished, runId: "cleanup", cleanupCompletedAt: undefined };
     const wake: SubagentRunRecord = {
@@ -161,73 +160,51 @@ describe("subagent run memory indexes", () => {
     expect(candidates()).toEqual([]);
   });
 
-  it.each(["global", "agent:main:subagent:shared"])(
-    "retains collector authorization beside unresolved rows (%s)",
-    (childSessionKey) => {
-      const collector = {
-        ...createRun("collector-owned", childSessionKey),
-        childAgentId: "main",
-        collect: true,
-        swarmLaunchIdempotencyKey: "launch-owned",
-      };
-      const retained = {
-        ...collector,
-        runId: "collector-unresolved",
-        childAgentId: childSessionKey === "global" ? undefined : "research",
-      };
-      subagentRuns.set(collector.runId, collector);
-      subagentRuns.set(retained.runId, retained);
-      expect(
-        findAuthorizedSwarmCollectorRequest({
-          childSessionKey,
-          childAgentId: "MAIN",
-          idempotencyKey: collector.swarmLaunchIdempotencyKey,
-        }),
-      ).toEqual(collector);
-      expect([...getSubagentRunsForChildSession(childSessionKey, "main")]).toEqual([collector]);
-      expect([...getSubagentChildSessionCandidates(childSessionKey)]).toEqual([
-        collector,
-        retained,
-      ]);
-      expect(subagentRuns.get(retained.runId)).toBe(retained);
-    },
-  );
+  it.each([
+    ["global", "unresolved"],
+    ["agent:main:subagent:shared", "unresolved"],
+    ["global", "replacement"],
+    ["agent:main:subagent:shared", "replacement"],
+  ])("preserves collector authorization for %s with %s rows", (childSessionKey, scenario) => {
+    const first = createRun("collector-first", childSessionKey, {
+      childAgentId: "main",
+      collect: true,
+      swarmLaunchIdempotencyKey: "launch-first",
+    });
+    const second = {
+      ...first,
+      runId: "collector-second",
+      swarmLaunchIdempotencyKey: "launch-second",
+      childAgentId:
+        scenario === "replacement" ? "main" : childSessionKey === "global" ? undefined : "research",
+    };
+    const selected = scenario === "unresolved" ? first : second;
+    const authorize = () =>
+      findAuthorizedSwarmCollectorRequest({
+        childSessionKey,
+        childAgentId: scenario === "unresolved" ? "MAIN" : "main",
+        idempotencyKey: selected.swarmLaunchIdempotencyKey,
+      });
+    subagentRuns.set(first.runId, first);
+    subagentRuns.set(second.runId, second);
+    expect(authorize()).toEqual(selected);
+    if (scenario === "unresolved") {
+      expect([...getSubagentRunsForChildSession(childSessionKey, "main")]).toEqual([first]);
+      expect([...getSubagentChildSessionCandidates(childSessionKey)]).toEqual([first, second]);
+      expect(subagentRuns.get(second.runId)).toBe(second);
+      return;
+    }
 
-  it.each(["global", "agent:main:subagent:shared"])(
-    "preserves collector authorization across replacement and retirement (%s)",
-    (childSessionKey) => {
-      const first = {
-        ...createRun("collector-first", childSessionKey),
-        childAgentId: "main",
-        collect: true,
-        swarmLaunchIdempotencyKey: "launch-first",
-      };
-      const second = {
-        ...first,
-        runId: "collector-second",
-        swarmLaunchIdempotencyKey: "launch-second",
-      };
-      const authorizeSecond = () =>
-        findAuthorizedSwarmCollectorRequest({
-          childSessionKey,
-          childAgentId: "main",
-          idempotencyKey: second.swarmLaunchIdempotencyKey,
-        });
-      subagentRuns.set(first.runId, first);
-      subagentRuns.set(second.runId, second);
-      expect(authorizeSecond()).toEqual(second);
+    subagentRuns.set(first.runId, { ...first, collect: false });
+    expect(authorize()).toEqual(second);
 
-      subagentRuns.set(first.runId, { ...first, collect: false });
-      expect(authorizeSecond()).toEqual(second);
+    subagentRuns.set(first.runId, first);
+    subagentRuns.delete(first.runId);
+    expect(authorize()).toEqual(second);
 
-      subagentRuns.set(first.runId, first);
-      subagentRuns.delete(first.runId);
-      expect(authorizeSecond()).toEqual(second);
-
-      subagentRuns.clear();
-      expect(authorizeSecond()).toBeUndefined();
-    },
-  );
+    subagentRuns.clear();
+    expect(authorize()).toBeUndefined();
+  });
 
   it("tracks distinct scheduler slot aliases across replacement and deletion", () => {
     const first = {
@@ -294,60 +271,39 @@ describe("subagent run memory indexes", () => {
     }
   });
 
-  it("tracks child-session generations across replacement, deletion, and clear", () => {
-    const children = (key: string) => [...getSubagentRunsForChildSession(key)];
-    const first = createRun("run-first", "agent:main:subagent:shared");
-    const second = createRun("run-second", "agent:main:subagent:shared");
-    subagentRuns.set(first.runId, first);
-    subagentRuns.set(second.runId, second);
+  it.each(["child session", "collector group"])(
+    "tracks %s replacement, deletion, and clear",
+    (kind) => {
+      const requesterSessionKey = "agent:main:requester";
+      const isGroup = kind === "collector group";
+      const first = createRun("run-first", "agent:main:subagent:shared", {
+        requesterSessionKey,
+        collect: true,
+        groupId: "swarm:shared",
+        collectorCompletion: { status: "done" },
+      });
+      const second = { ...first, runId: "run-second", collectorCompletion: undefined };
+      const select = (run: SubagentRunRecord) =>
+        isGroup
+          ? [...getSubagentRunsForCollectorGroup(requesterSessionKey, run.groupId!)]
+          : [...getSubagentRunsForChildSession(run.childSessionKey)];
+      const expected = (...runs: SubagentRunRecord[]) =>
+        isGroup ? runs.map((run) => [run.runId, run]) : runs;
+      subagentRuns.set(first.runId, first);
+      subagentRuns.set(second.runId, second);
+      expect(select(first)).toEqual(expected(first, second));
 
-    expect(children(first.childSessionKey)).toEqual([first, second]);
-
-    const replacement = createRun("run-first", "agent:main:subagent:replacement");
-    subagentRuns.set(replacement.runId, replacement);
-    expect(children(first.childSessionKey)).toEqual([second]);
-    expect(children(replacement.childSessionKey)).toEqual([replacement]);
-
-    subagentRuns.delete(second.runId);
-    expect(children(first.childSessionKey)).toEqual([]);
-
-    subagentRuns.clear();
-    expect(children(replacement.childSessionKey)).toEqual([]);
-  });
-
-  it("tracks every collector group member across replacement, deletion, and clear", () => {
-    const requesterSessionKey = "agent:main:requester";
-    const group = (id: string) => [...getSubagentRunsForCollectorGroup(requesterSessionKey, id)];
-    const first = {
-      ...createRun("run-first", "agent:main:subagent:first"),
-      requesterSessionKey,
-      collect: true,
-      groupId: "swarm:shared",
-      collectorCompletion: { status: "done" as const },
-    };
-    const incomplete = {
-      ...createRun("run-incomplete", "agent:main:subagent:incomplete"),
-      requesterSessionKey,
-      collect: true,
-      groupId: "swarm:shared",
-    };
-    subagentRuns.set(first.runId, first);
-    subagentRuns.set(incomplete.runId, incomplete);
-
-    expect(group("swarm:shared")).toEqual([
-      [first.runId, first],
-      [incomplete.runId, incomplete],
-    ]);
-
-    const replacement = { ...first, groupId: "swarm:replacement" };
-    subagentRuns.set(replacement.runId, replacement);
-    expect(group("swarm:shared")).toEqual([[incomplete.runId, incomplete]]);
-    expect(group("swarm:replacement")).toEqual([[replacement.runId, replacement]]);
-
-    subagentRuns.delete(incomplete.runId);
-    expect(group("swarm:shared")).toEqual([]);
-
-    subagentRuns.clear();
-    expect(group("swarm:replacement")).toEqual([]);
-  });
+      const replacement = {
+        ...first,
+        [isGroup ? "groupId" : "childSessionKey"]: "agent:main:replacement",
+      };
+      subagentRuns.set(replacement.runId, replacement);
+      expect(select(first)).toEqual(expected(second));
+      expect(select(replacement)).toEqual(expected(replacement));
+      subagentRuns.delete(second.runId);
+      expect(select(first)).toEqual([]);
+      subagentRuns.clear();
+      expect(select(replacement)).toEqual([]);
+    },
+  );
 });

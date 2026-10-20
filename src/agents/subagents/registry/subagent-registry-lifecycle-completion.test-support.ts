@@ -20,13 +20,11 @@ import {
 import {
   readLifecycleRun,
   mutateLifecycleRun,
-  type createRunEntry,
-  type LifecycleControllerFixtureOptions,
+  expectUndefinedFields,
+  type CompleteLifecycleRun,
+  type LifecycleTestDrivers,
 } from "./subagent-registry-lifecycle-controller.test-support.js";
-import type {
-  SubagentLifecycleController,
-  SubagentLifecycleOptions,
-} from "./subagent-registry-lifecycle.js";
+import type { SubagentLifecycleOptions } from "./subagent-registry-lifecycle.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { SubagentRegistryWriteError, mutateSubagentRuns } from "./subagent-registry-persistence.js";
 import {
@@ -39,13 +37,6 @@ import { holdLiveRequesterTurns } from "./subagent-requester-turn-liveness.test-
 import { getSubagentRunRuntimeKey, isSameSubagentRunOwner } from "./subagent-run-generation.js";
 
 type CompletionPolicyOwners = Map<object, Pick<SubagentLifecycleOptions, "runs">>;
-type CompletionFixture = {
-  createRunEntry: typeof createRunEntry;
-  createLifecycleController: (
-    options: LifecycleControllerFixtureOptions,
-  ) => SubagentLifecycleController;
-  waitForLifecycleState: (assertion: () => void) => Promise<unknown>;
-};
 
 function policyOwner(owners: CompletionPolicyOwners, entries: readonly SubagentRunRecord[]) {
   const first = entries[0];
@@ -68,11 +59,9 @@ function policyReceipt(
       if (!entry) {
         return [];
       }
-      const row = bindSubagentRunRecord(entry);
-      const subagent = rowToSubagentRunRecord(row)!;
       return [
         {
-          subagent,
+          subagent: rowToSubagentRunRecord(bindSubagentRunRecord(entry))!,
           cleanupHandled: entry.cleanupHandled,
         },
       ];
@@ -246,7 +235,7 @@ export function registerPrivateCompletionSettlementTests({
   createLifecycleController,
   waitForLifecycleState,
   completionDeliveryMocks,
-}: CompletionFixture & {
+}: LifecycleTestDrivers & {
   completionDeliveryMocks: {
     blockSubagentCompletionDelivery: Mock<typeof blockSubagentCompletionDelivery>;
   };
@@ -297,22 +286,22 @@ export function registerPrivateCompletionSettlementTests({
         maybeWakeRequesterAfterAllChildrenSettled: async () => false,
       });
       const requesterTurn = holdLiveRequesterTurns("run-requester");
+      const requester = {
+        requesterSessionKey: entry.requesterSessionKey,
+        requesterTurnRunId: "run-requester",
+      };
       try {
         expect(controller.startSubagentAnnounceCleanupFlow(entry)).toBe(false);
         expect(runSubagentAnnounceFlow).not.toHaveBeenCalled();
         expect(readLifecycleRun(entry).cleanupHandled).not.toBe(true);
         expect(readLifecycleRun(entry).completion?.resultText).toBe("private child result");
         if (requesterYielded) {
-          await controller.markRequesterTurnYielded({
-            requesterSessionKey: entry.requesterSessionKey,
-            requesterTurnRunId: "run-requester",
-          });
+          await controller.markRequesterTurnYielded(requester);
         }
         requesterTurn.end("run-requester");
         expect(
           await controller.settleRequesterTurnAfterSessionSpawns({
-            requesterSessionKey: entry.requesterSessionKey,
-            requesterTurnRunId: "run-requester",
+            ...requester,
             requesterYielded,
             acceptedSessionSpawns: [entry, sibling].map((child) => ({
               runId: child.runId,
@@ -325,12 +314,9 @@ export function registerPrivateCompletionSettlementTests({
           expect(readLifecycleRun(entry).cleanupCompletedAt).toBeTypeOf("number"),
         );
         const settled = readLifecycleRun(entry);
-        expect(settled.requesterTurnRunId).toBeUndefined();
+        expectUndefinedFields(settled, ["requesterTurnRunId"]);
         expect(settled.delivery?.status).toBe(requesterYielded ? "pending" : "delivered");
-        expect([settled.delivery?.lastError, settled.delivery?.lastDropReason]).toEqual([
-          undefined,
-          undefined,
-        ]);
+        expectUndefinedFields(settled.delivery, ["lastError", "lastDropReason"]);
         expect(readLifecycleRun(entry).requesterSettleWake?.requesterYieldBatch).toBe(
           requesterYielded ? true : undefined,
         );
@@ -404,15 +390,8 @@ export function registerNativeCompletionAuthorityTest({
   createLifecycleController,
   completeRun,
   helperMocks,
-}: Omit<CompletionFixture, "waitForLifecycleState"> & {
-  completeRun: (
-    controller: SubagentLifecycleController,
-    entry: SubagentRunRecord,
-    options?: Pick<
-      SubagentCompletionRequest,
-      "triggerCleanup" | "terminalReply" | "endedAt" | "recoveryCurrent"
-    >,
-  ) => Promise<void>;
+}: Omit<LifecycleTestDrivers, "waitForLifecycleState"> & {
+  completeRun: CompleteLifecycleRun;
   helperMocks: { persistSubagentSessionTiming: Mock<() => Promise<void>> };
 }) {
   it("emits one progress end event at the canonical terminal transition", async () => {
@@ -533,12 +512,8 @@ export function registerRequesterSettleRetirementTests({
   createLifecycleController,
   waitForLifecycleState,
   completeRun,
-}: CompletionFixture & {
-  completeRun: (
-    controller: SubagentLifecycleController,
-    entry: SubagentRunRecord,
-    options?: Pick<SubagentCompletionRequest, "endedAt" | "triggerCleanup">,
-  ) => Promise<void>;
+}: LifecycleTestDrivers & {
+  completeRun: CompleteLifecycleRun;
 }): void {
   it.each([false, true])(
     "resumes an ancestor after requester-settle retirement (persistence fails: %s)",
