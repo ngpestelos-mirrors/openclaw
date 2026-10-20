@@ -8,35 +8,17 @@ import type {
 } from "../capability-catalog-context.types.js";
 
 // These are actual import traps: descriptor construction must never evaluate host runtime/auth.
-vi.mock("../loader-runtime-load.js", () => {
-  throw new Error("cold catalog imported full plugin loader");
+const rejectRuntimeImport = vi.hoisted(() => () => {
+  throw new Error("cold catalog imported host runtime/auth");
 });
-vi.mock("../capability-provider-runtime.js", () => {
-  throw new Error("cold catalog imported capability runtime");
-});
-vi.mock("../../plugin-sdk/provider-auth.js", () => {
-  throw new Error("cold catalog imported broad auth SDK");
-});
-
-vi.mock("../../realtime-transcription/websocket-session.js", () => {
-  throw new Error("cold catalog imported transcription transport");
-});
-
-vi.mock("../../agents/provider-request-config.js", () => {
-  throw new Error("cold catalog imported provider headers");
-});
-
-vi.mock("../../proxy-capture/runtime.js", () => {
-  throw new Error("cold catalog imported capture runtime");
-});
-
-vi.mock("../../infra/http-body.js", () => {
-  throw new Error("cold catalog imported inbound HTTP runtime");
-});
-
-vi.mock("../../logging/redact.js", () => {
-  throw new Error("cold catalog imported logging redaction");
-});
+vi.mock("../loader-runtime-load.js", rejectRuntimeImport);
+vi.mock("../capability-provider-runtime.js", rejectRuntimeImport);
+vi.mock("../../plugin-sdk/provider-auth.js", rejectRuntimeImport);
+vi.mock("../../realtime-transcription/websocket-session.js", rejectRuntimeImport);
+vi.mock("../../agents/provider-request-config.js", rejectRuntimeImport);
+vi.mock("../../proxy-capture/runtime.js", rejectRuntimeImport);
+vi.mock("../../infra/http-body.js", rejectRuntimeImport);
+vi.mock("../../logging/redact.js", rejectRuntimeImport);
 
 const extensions = fileURLToPath(new URL("../../../extensions/", import.meta.url));
 const families = [
@@ -104,8 +86,10 @@ describe("bundled capability catalog import boundary", () => {
         }
         expect(providers.every((provider) => (ids as string[]).includes(provider.id))).toBe(true);
         for (const provider of providers) {
-          expect(provider.label).toEqual(expect.any(String));
-          expect(provider.isConfigured).toEqual(expect.any(Function));
+          expect(provider).toMatchObject({
+            label: expect.any(String),
+            isConfigured: expect.any(Function),
+          });
         }
       }
       // OpenAI's readiness/control methods are deliberately non-enumerable.

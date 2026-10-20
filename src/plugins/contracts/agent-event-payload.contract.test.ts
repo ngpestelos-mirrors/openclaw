@@ -13,6 +13,19 @@ import { setActivePluginRegistry } from "../runtime.js";
 import { createPluginRecord } from "../status.test-helpers.js";
 import type { OpenClawPluginApi } from "../types.js";
 
+function subscribe(options: Parameters<OpenClawPluginApi["registerAgentEventSubscription"]>[0]) {
+  const { config, registry } = createPluginRegistryFixture();
+  registerTestPlugin({
+    registry,
+    config,
+    record: createPluginRecord({ id: "event-payload" }),
+    register(api) {
+      api.agent.events.registerAgentEventSubscription(options);
+    },
+  });
+  return registry.registry;
+}
+
 async function waitForPluginEventHandlers(): Promise<void> {
   await new Promise<void>((resolve) => {
     setImmediate(resolve);
@@ -35,21 +48,7 @@ describe("agent event subscription payloads", () => {
     "filters event phases before cloning with phases=$phases and payload=$payload",
     async ({ phases, payload }) => {
       const handle = vi.fn();
-      const { config, registry } = createPluginRegistryFixture();
-      registerTestPlugin({
-        registry,
-        config,
-        record: createPluginRecord({ id: "phase-filter" }),
-        register(api) {
-          api.agent.events.registerAgentEventSubscription({
-            id: "events",
-            streams: ["tool"],
-            phases,
-            payload,
-            handle,
-          });
-        },
-      });
+      const registry = subscribe({ id: "events", streams: ["tool"], phases, payload, handle });
       const filtered = Boolean(phases?.length);
       for (const phase of ["start", "update", "result", undefined, 1, null]) {
         let payloadReads = 0;
@@ -62,7 +61,7 @@ describe("agent event subscription payloads", () => {
         };
         handle.mockClear();
         dispatchPluginAgentEventSubscriptions({
-          registry: registry.registry,
+          registry,
           event: { runId: "run-phase-filter", seq: 1, ts: 0, stream: "tool", data },
           isLive: () => true,
         });
@@ -79,19 +78,7 @@ describe("agent event subscription payloads", () => {
     async (payload) => {
       const handle =
         vi.fn<Parameters<OpenClawPluginApi["registerAgentEventSubscription"]>[0]["handle"]>();
-      const { config, registry } = createPluginRegistryFixture();
-      registerTestPlugin({
-        registry,
-        config,
-        record: createPluginRecord({ id: "payload-mode" }),
-        register(api) {
-          api.agent.events.registerAgentEventSubscription({
-            id: "events",
-            payload,
-            handle,
-          });
-        },
-      });
+      const registry = subscribe({ id: "events", payload, handle });
       let payloadReads = 0;
       const primitives = {
         phase: "result",
@@ -127,7 +114,7 @@ describe("agent event subscription payloads", () => {
         data,
       };
       dispatchPluginAgentEventSubscriptions({
-        registry: registry.registry,
+        registry,
         event,
         isLive: () => true,
       });
@@ -148,12 +135,12 @@ describe("agent event subscription payloads", () => {
               },
       });
       expect(payloadReads).toBe(payload === "metadata" ? 0 : 1);
-      expect(delivered === event).toBe(false);
-      expect(delivered.data === data).toBe(false);
+      expect(delivered).not.toBe(event);
+      expect(delivered.data).not.toBe(data);
       delivered.data.phase = "changed";
       expect(data.phase).toBe("result");
       if (payload !== "metadata") {
-        expect(delivered.data.nested === data.nested).toBe(false);
+        expect(delivered.data.nested).not.toBe(data.nested);
       }
       await waitForPluginEventHandlers();
     },

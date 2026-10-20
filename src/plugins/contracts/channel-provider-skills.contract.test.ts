@@ -73,56 +73,40 @@ function listRepositoryOwnedChannelSkillFiles(): string[] {
 }
 
 describe("bundled channel-provider skill contracts", () => {
-  it.each<{
-    label: string;
-    pluginId: "discord" | "slack";
-    config: OpenClawConfig;
-    eligible: boolean;
-    disabled?: boolean;
-  }>([
-    {
-      label: "exposes Discord with only a named-account token",
-      pluginId: "discord",
-      config: {
-        channels: { discord: { accounts: { support: { token: "test-discord-token" } } } },
-      },
-      eligible: true,
+  const discord = (namedAccount = false): OpenClawConfig => ({
+    channels: {
+      discord: namedAccount
+        ? { accounts: { support: { token: "test-discord-token" } } }
+        : { token: "test-discord-token" },
     },
-    {
-      label: "exposes Discord with a root token",
-      pluginId: "discord",
-      config: { channels: { discord: { token: "test-discord-token" } } },
-      eligible: true,
-    },
-    {
-      label: "hides Discord without channel configuration",
-      pluginId: "discord",
-      config: {},
-      eligible: false,
-    },
-    {
-      label: "honors explicit Discord skill disablement",
-      pluginId: "discord",
-      config: {
-        channels: { discord: { token: "test-discord-token" } },
-        skills: { entries: { discord: { enabled: false } } },
-      },
-      eligible: false,
-      disabled: true,
-    },
-    {
-      label: "exposes Slack with only named-account credentials",
-      pluginId: "slack",
-      config: {
+  });
+  type SkillCase = [string, "discord" | "slack", OpenClawConfig, boolean, boolean?];
+  it.each<SkillCase>([
+    ["Discord named-account token", "discord", discord(true), true],
+    ["Discord root token", "discord", discord(), true],
+    ["Discord unconfigured", "discord", {}, false],
+    [
+      "Discord explicitly disabled",
+      "discord",
+      { ...discord(), skills: { entries: { discord: { enabled: false } } } },
+      false,
+      true,
+    ],
+    [
+      "Slack named-account credentials",
+      "slack",
+      {
         channels: {
           slack: {
-            accounts: { support: { botToken: "xoxb-test-token", appToken: "xapp-test-token" } },
+            accounts: {
+              support: { botToken: "xoxb-test-token", appToken: "xapp-test-token" },
+            },
           },
         },
       },
-      eligible: true,
-    },
-  ])("$label", async ({ pluginId, config, eligible, disabled = false }) => {
+      true,
+    ],
+  ])("%s", async (_label, pluginId, config, eligible, disabled = false) => {
     const workspaceDir = resolve(process.cwd(), "extensions", pluginId);
     // Load the shipped asset without discovering operator skills or activating plugin runtimes.
     const entries = loadWorkspaceSkills(workspaceDir, { config, workspaceOnly: true });

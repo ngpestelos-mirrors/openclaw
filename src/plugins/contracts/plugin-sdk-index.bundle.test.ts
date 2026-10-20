@@ -1,4 +1,3 @@
-// Plugin SDK bundle index tests cover bundled SDK export inventory and packaging.
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -67,16 +66,11 @@ describe("plugin-sdk bundled exports", () => {
       config: false,
       dts: false,
       deps: {
-        // Match the production host build contract: Matrix SDK packages stay
-        // external so the heavy runtime surface does not fold multiple
-        // matrix-js-sdk entrypoints into one bundle artifact.
+        // Keep Matrix entrypoints external, matching the production host build.
         neverBundle: ["@lancedb/lancedb", "@matrix-org/matrix-sdk-crypto-nodejs", "matrix-js-sdk"],
       },
-      // Full plugin-sdk coverage belongs to `pnpm build`, package contract
-      // guardrails, and `plugin-sdk-subpaths.test.ts`. This file only keeps the expensive
-      // bundler path honest across representative entrypoint families plus the
-      // Matrix SDK runtime import surface that historically crashed plugin
-      // loading when bare and deep SDK entrypoints mixed.
+      // Subpath/package tests cover the inventory. Mixing bare and deep Matrix
+      // SDK imports historically crashed loading; retain its bundled-runtime proof.
       entry: bundledCoverageEntrySources,
       env: { NODE_ENV: "production" },
       fixedExtension: false,
@@ -87,14 +81,7 @@ describe("plugin-sdk bundled exports", () => {
 
     expect(pluginSdkEntrypoints.length).toBeGreaterThan(bundledRepresentativeEntrypoints.length);
     await Promise.all(
-      bundledRepresentativeEntrypoints.map(async (entry) => {
-        await expectBuiltJsFile(outDir, entry);
-      }),
-    );
-    await Promise.all(
-      Object.keys(matrixRuntimeCoverageEntries).map(async (entry) => {
-        await expectBuiltJsFile(outDir, entry);
-      }),
+      Object.keys(bundledCoverageEntrySources).map((entry) => expectBuiltJsFile(outDir, entry)),
     );
     const builtJsFiles = await listBuiltJsFiles(outDir);
     const filesWithBareMatrixSdkImports = (
@@ -107,17 +94,10 @@ describe("plugin-sdk bundled exports", () => {
     ).filter((filePath): filePath is string => filePath !== null);
     expect(filesWithBareMatrixSdkImports).toStrictEqual([]);
 
-    // Export list and package-specifier coverage already live in
-    // plugin-sdk-package-contract-guardrails.test.ts and plugin-sdk-subpaths.test.ts. Keep this file
-    // focused on the expensive part: can tsdown emit working bundle artifacts?
-    const importResults = await Promise.all(
-      bundledRepresentativeEntrypoints.map(async (entry) => [
-        entry,
-        typeof (await import(pathToFileURL(path.join(outDir, `${entry}.js`)).href)),
-      ]),
-    );
-    expect(Object.fromEntries(importResults)).toEqual(
-      Object.fromEntries(bundledRepresentativeEntrypoints.map((entry) => [entry, "object"])),
-    );
+    for (const entry of bundledRepresentativeEntrypoints) {
+      expect(typeof (await import(pathToFileURL(path.join(outDir, `${entry}.js`)).href))).toBe(
+        "object",
+      );
+    }
   });
 });
