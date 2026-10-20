@@ -265,6 +265,7 @@ export const SessionsFilesGetParamsSchema = closedObject({
 
 export const SessionsFilesGetResultSchema = closedObject({
   sessionKey: NonEmptyString,
+  workspaceId: Type.Optional(NonEmptyString),
   root: Type.Optional(NonEmptyString),
   file: SessionFileEntrySchema,
 });
@@ -314,9 +315,10 @@ export const SessionsFilesAssetsResultSchema = closedObject({
   ),
 });
 
-/** Overwrites one existing session workspace file with hash-based CAS. */
+/** Overwrites an existing file with content and optional managed-source preconditions. */
 export const SessionsFilesSetParamsSchema = closedObject({
   ...SessionsFilesGetParamsSchema.properties,
+  expectedWorkspaceId: Type.Optional(NonEmptyString),
   content: Type.String(),
   expectedHash: SessionFileHashSchema,
 });

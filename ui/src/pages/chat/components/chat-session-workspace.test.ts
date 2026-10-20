@@ -435,6 +435,65 @@ describe("openSessionWorkspaceFile", () => {
     expect(getFile).toHaveBeenLastCalledWith(state.sessionKey, path, { agentId: "main" });
   });
 
+  it("keeps hash-conflict recovery on the originally opened managed source", async () => {
+    let workspaceId = "managed-a";
+    const getFile = vi.fn(async () => ({
+      sessionKey: "agent:main:current",
+      root: "/workspace",
+      workspaceId,
+      file: textFile("notes.md", "before", { hash: "old" }),
+    }));
+    const message = "The file's workspace changed. Reopen the file before saving.";
+    const setFile = vi.fn().mockRejectedValue(
+      new GatewayRequestError({
+        code: "INVALID_REQUEST",
+        message,
+        details: { type: "session_file_source_changed" },
+      }),
+    );
+    const state = createHost({
+      client: {},
+      handleOpenSidebar: createSidebarContentRecorder(),
+      hello: gatewayHelloForMethods(["sessions.files.set"]),
+      sessions: { getFile, setFile },
+    }) as unknown as SessionWorkspaceHost;
+    openSessionWorkspaceFile(state, { path: "notes.md" });
+    const file = await loadedSidebarContent(state);
+    if (file?.kind !== "file" || !file.edit) {
+      throw new Error("Expected an editable file");
+    }
+    expect(await file.edit.fetchLatest()).toMatchObject({ content: "before", hash: "old" });
+    workspaceId = "managed-b";
+    expect(await file.edit.fetchLatest()).toBeNull();
+    expect(await file.edit.save({ content: "retained draft", expectedHash: "old" })).toMatchObject({
+      ok: false,
+      code: "error",
+      message: expect.stringContaining("workspace changed"),
+    });
+    expect(setFile).toHaveBeenLastCalledWith("agent:main:current", "notes.md", "retained draft", {
+      agentId: "main",
+      expectedHash: "old",
+      expectedWorkspaceId: "managed-a",
+    });
+    const reopened = nextWorkspaceUpdate(
+      state,
+      () => state.sessionWorkspaceState?.previews[0]?.content !== file,
+    );
+    openSessionWorkspaceFile(state, { path: "notes.md" });
+    await reopened;
+    const fresh = await loadedSidebarContent(state);
+    if (fresh.kind !== "file" || !fresh.edit) {
+      throw new Error("Expected the freshly opened file");
+    }
+    expect(fresh.draftKey).not.toBe(file.draftKey);
+    await fresh.edit.save({ content: "fresh draft", expectedHash: "old" });
+    expect(setFile).toHaveBeenLastCalledWith("agent:main:current", "notes.md", "fresh draft", {
+      agentId: "main",
+      expectedHash: "old",
+      expectedWorkspaceId: "managed-b",
+    });
+  });
+
   it("preserves existing Review content when the Gateway is disconnected", () => {
     const existingContent = {
       kind: "markdown",

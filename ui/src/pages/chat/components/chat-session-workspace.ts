@@ -289,6 +289,7 @@ function openFile(
                   {
                     agentId,
                     expectedHash,
+                    ...(result.workspaceId ? { expectedWorkspaceId: result.workspaceId } : {}),
                   },
                 );
                 const hash = saved?.file.hash;
@@ -329,6 +330,10 @@ function openFile(
               const latest = await state.sessions.getFile(result.sessionKey, requestPath, {
                 agentId,
               });
+              // A hash-conflict recovery still belongs to the file source that was opened.
+              if (latest?.workspaceId !== result.workspaceId) {
+                return null;
+              }
               const latestFile = latest?.file;
               if (
                 !latestFile ||
@@ -365,6 +370,7 @@ function openFile(
           result.sessionKey,
           result.root ?? "",
           filePath,
+          ...(result.workspaceId ? [result.workspaceId] : []),
         ].join("\u0000"),
         draftContext: {
           sessionKey: result.sessionKey,
