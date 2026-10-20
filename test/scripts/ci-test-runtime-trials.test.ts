@@ -4,9 +4,9 @@ import { glob } from "tinyglobby";
 import { afterEach, expect, it, vi } from "vitest";
 import { runShardPlans } from "../../scripts/ci-run-node-test-shard.mts";
 import {
-  ciTestShardRequiresBun,
-  resolveCiTestRuntimePolicy,
-  resolveCiTestRuntimeSelections,
+  ciTestShardRequiresBun as requiresBun,
+  resolveCiTestRuntimePolicy as runtimePolicy,
+  resolveCiTestRuntimeSelections as selections,
 } from "../../scripts/lib/ci-test-runtime.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
@@ -49,15 +49,10 @@ async function recordRun(
   return { calls, exitCode };
 }
 
-it("keeps the blocked socket reset contract on Node", () => {
-  for (const policy of ["bun-all", "dual-all"] as const) {
-    expect(
-      resolveCiTestRuntimeSelections({ targets: ["src/infra/exec-host.socket.test.ts"] }, policy),
-    ).toEqual([{ runtime: "node" }]);
-  }
-});
+const nodeOnlyFile = "src/infra/exec-host.socket.test.ts";
 
 it.each([
+  nodeOnlyFile,
   "src/gateway/artifact-downloads.test.ts",
   "test/talk-browser-defaults.test.ts",
   "test/scripts/control-ui-cold-load-trace.test.ts",
@@ -68,12 +63,13 @@ it.each([
   "extensions/team-reports/src/render/theme.test.ts",
   "src/infra/owned-directory-observation.test.ts",
   "test/helpers/openclaw-test-instance.test.ts",
-])("runs the fork-fixed contract in %s on Bun", (file) => {
+])("selects the required engines for %s", (file) => {
   for (const policy of ["bun-all", "dual-all"] as const) {
-    expect(resolveCiTestRuntimeSelections({ targets: [file] }, policy)).toEqual([
-      ...(policy === "dual-all" ? [{ runtime: "node" }] : []),
-      { runtime: "bun" },
-    ]);
+    expect(selections({ targets: [file] }, policy)).toEqual(
+      file === nodeOnlyFile
+        ? [{ runtime: "node" }]
+        : [...(policy === "dual-all" ? [{ runtime: "node" }] : []), { runtime: "bun" }],
+    );
   }
 });
 
@@ -110,9 +106,9 @@ it.each([
 it.each(["node", "bun-all", "dual-all"] as const)(
   "accepts %s without changing the default",
   (policy) => {
-    expect(resolveCiTestRuntimePolicy({ OPENCLAW_CI_TEST_RUNTIME_POLICY: policy })).toBe(policy);
-    expect(resolveCiTestRuntimePolicy({})).toBe("node");
-    expect(() => resolveCiTestRuntimePolicy({ OPENCLAW_CI_TEST_RUNTIME_POLICY: "all" })).toThrow(
+    expect(runtimePolicy({ OPENCLAW_CI_TEST_RUNTIME_POLICY: policy })).toBe(policy);
+    expect(runtimePolicy({})).toBe("node");
+    expect(() => runtimePolicy({ OPENCLAW_CI_TEST_RUNTIME_POLICY: "all" })).toThrow(
       "Invalid OPENCLAW_CI_TEST_RUNTIME_POLICY",
     );
   },
@@ -126,16 +122,16 @@ it.each(["bun-all", "dual-all"] as const)(
       includePatterns: ["extensions/future/**/*.test.ts"],
       vitestArgs: ["--retry=1", "--testNamePattern=works"],
     };
-    expect(resolveCiTestRuntimeSelections(selection, policy)).toEqual([
+    expect(selections(selection, policy)).toEqual([
       ...(policy === "dual-all" ? [{ runtime: "node" }] : []),
       { runtime: "bun" },
     ]);
-    expect(ciTestShardRequiresBun(selection, policy)).toBe(true);
+    expect(requiresBun(selection, policy)).toBe(true);
   },
 );
 
 it.each(["bun-all", "dual-all"] as const)(
-  "keeps named process contracts on Node and runs the full remaining selection on Bun under %s",
+  "partitions process discovery and retains failures under %s",
   async (policy) => {
     const { calls, exitCode } = await recordRun(
       group("process", processConfig, [nodeFile, bunFile]),
@@ -173,7 +169,7 @@ it.each(["bun-all", "dual-all"] as const)(
   },
 );
 
-it("preserves include-file selection for unknown configs and does not bypass named exceptions", async () => {
+it("preserves include files and Node exceptions for unknown configs", async () => {
   const scratch = tempDirs.make("all-includes-");
   const includeFile = path.join(scratch, "includes.json");
   writeFileSync(includeFile, JSON.stringify([path.resolve(nodeFile), path.resolve(bunFile)]));
@@ -205,20 +201,18 @@ it("retains Node exceptions when argv overrides a known config", () => {
     configs: ["test/vitest/vitest.extension-memory.config.ts"],
     vitestArgs: ["--config", processConfig],
   };
-  const selected = resolveCiTestRuntimeSelections(selection, "bun-all");
+  const selected = selections(selection, "bun-all");
   expect(selected).toHaveLength(2);
   expect(selected[0]!.runtime).toBe("node");
   expect(selected[0]!.vitestArgs).toContain(path.resolve(nodeFile));
   expect(selected[1]!.runtime).toBe("bun");
   expect(selected[1]!.vitestArgs).toContain(`--exclude=${path.resolve(nodeFile)}`);
-  expect(ciTestShardRequiresBun(selection, "bun-all")).toBe(true);
+  expect(requiresBun(selection, "bun-all")).toBe(true);
 });
 
 it("retains exact Node exceptions and selects broad target remainders on Bun", async () => {
   for (const target of [nodeFile, `./${nodeFile}`, path.resolve(nodeFile)]) {
-    expect(resolveCiTestRuntimeSelections({ targets: [target] }, "bun-all")).toEqual([
-      { runtime: "node" },
-    ]);
+    expect(selections({ targets: [target] }, "bun-all")).toEqual([{ runtime: "node" }]);
   }
   const { calls } = await recordRun(
     { kind: "target", name: "process", target: "src/process" },

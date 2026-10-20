@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
-import { delimiter, join, resolve } from "node:path";
+import { chmodSync } from "node:fs";
+import { delimiter, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { encodeNodeTestGroups } from "../../scripts/lib/ci-node-test-groups-codec.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { scriptFiles } from "./run-vitest.test-support.js";
 
 const tempRoots = useAutoCleanupTempDirTracker(afterEach);
 const run = {
@@ -61,43 +62,35 @@ function execute(
   } = {},
 ) {
   const root = tempRoots.make("ci-shard-refresh-");
-  const out = join(root, "timings.json");
-  writeFileSync(out, `${JSON.stringify(baseline, null, 2)}\n`);
-  const before = readFileSync(out, "utf8");
-  const jobs = options.jobs ?? [job];
-  writeFileSync(
-    join(root, "fixture.json"),
+  const files = scriptFiles(root);
+  const out = files.path("timings.json");
+  files.write("timings.json", `${JSON.stringify(baseline, null, 2)}\n`);
+  const before = files.read("timings.json");
+  files.write(
+    "fixture.json",
     JSON.stringify({
       run,
       after: options.after ?? run,
-      jobs,
+      jobs: options.jobs ?? [job],
       logs: options.logs ?? { "1": log("fixture") },
     }),
   );
-  const gh = join(root, "gh");
-  writeFileSync(
-    gh,
+  files.write(
+    "gh",
     `#!${process.execPath}\nconst fs = require('node:fs'); const path = require('node:path'); const root = __dirname; const fixture = JSON.parse(fs.readFileSync(path.join(root, 'fixture.json'))); const endpoint = process.argv[3]; if (endpoint === '--help') { process.stdout.write('--allow-escape-sequences'); process.exit(0); } let result; if (endpoint.endsWith('/actions/runs/321')) { const counter = path.join(root, 'read'); result = fs.existsSync(counter) ? fixture.after : fixture.run; fs.writeFileSync(counter, '1'); } else if (endpoint.includes('/attempts/1/jobs?')) { result = { total_count: fixture.jobs.length, jobs: fixture.jobs }; } else { const id = /jobs\\/(\\d+)\\/logs$/.exec(endpoint)?.[1]; if (!id || !fixture.logs[id]) process.exit(7); process.stdout.write(fixture.logs[id]); process.exit(0); } process.stdout.write(JSON.stringify(result));\n`,
   );
-  chmodSync(gh, 0o755);
+  chmodSync(files.path("gh"), 0o755);
+  const script = "scripts/ci-shard-timings-refresh.mts";
   const result = spawnSync(
     process.execPath,
-    [
-      "--import",
-      "./scripts/tsx.mjs",
-      "scripts/ci-shard-timings-refresh.mts",
-      "--run",
-      "321",
-      "--out",
-      out,
-    ],
+    ["--import", "./scripts/tsx.mjs", script, "--run", "321", "--out", out],
     {
       cwd: resolve(import.meta.dirname, "../.."),
       env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH}` },
       encoding: "utf8",
     },
   );
-  return { result, before, bytes: readFileSync(out, "utf8") };
+  return { result, before, bytes: files.read("timings.json") };
 }
 
 it.each(["bun-all", "dual-all"])("keeps %s release wall costs separate from Node", (policy) => {
