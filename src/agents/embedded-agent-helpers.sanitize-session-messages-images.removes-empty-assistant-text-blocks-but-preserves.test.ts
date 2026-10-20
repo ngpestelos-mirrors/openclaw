@@ -29,6 +29,7 @@ const replay = {
   v: 1,
   type: "openai-responses-compaction",
   data: "opaque-checkpoint",
+  replayIndex: 1,
   provider: "openai",
   api: "openai-responses",
   model: "gpt-5.4",
@@ -47,21 +48,14 @@ it("sanitizes legacy tool-use IDs alongside tool-call IDs", async () => {
   );
 });
 
-it.each([
-  { hasTool: true, replayIndex: undefined },
-  { hasTool: true, replayIndex: 1 },
-  { hasTool: false, replayIndex: 0 },
-])(
-  "repairs an empty-text checkpoint (tool=$hasTool, index=$replayIndex)",
-  async ({ hasTool, replayIndex }) => {
-    const content = hasTool ? [call("call_1")] : [];
-    const message = assistant([text(""), ...content], {
-      providerReplay: { ...replay, ...(replayIndex === undefined ? {} : { replayIndex }) },
-    });
-    const providerReplay = hasTool ? { ...replay, replayIndex: 0 } : undefined;
-    await check([message], [{ ...message, content: structuredClone(content), providerReplay }]);
-  },
-);
+it.each([true, false])("repairs an empty-text checkpoint (tool=%s)", async (hasTool) => {
+  const content = hasTool ? [call("call_1")] : [];
+  const message = assistant([text(""), ...content], {
+    providerReplay: { ...replay, replayIndex: hasTool ? 1 : 0 },
+  });
+  const providerReplay = hasTool ? { ...replay, replayIndex: 0 } : undefined;
+  await check([message], [{ ...message, content: structuredClone(content), providerReplay }]);
+});
 
 it("drops empty assistant turns while preserving the user turn", async () => {
   const user = { role: "user" as const, content: "hello", timestamp: 0 };
