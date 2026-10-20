@@ -305,15 +305,15 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
             canGrant,
             presentationScope,
             (snapshot, receivedAtMs) => {
-              const state = this.state;
-              if (!state) {
+              const currentState = this.state;
+              if (!currentState) {
                 return;
               }
               const persist = () => {
                 if (gatewayPresentationScope(context.gateway) === presentationScope) {
                   cacheChatBoardSnapshot(
-                    state.chatMessagesBySession,
-                    state,
+                    currentState.chatMessagesBySession,
+                    currentState,
                     session,
                     snapshot,
                     receivedAtMs,
@@ -321,7 +321,7 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
                 }
               };
               // A board write must not invalidate the transcript read sharing this record.
-              const hydration = chatHistoryRequests(state).initialSnapshotHydration;
+              const hydration = chatHistoryRequests(currentState).initialSnapshotHydration;
               if (hydration) {
                 void hydration.promise.then(persist);
               } else {

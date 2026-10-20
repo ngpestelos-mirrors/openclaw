@@ -131,7 +131,7 @@ describe("chat pane board loading states", () => {
     const sessionKey = "agent:main:warm-persistence";
     const { pane, request, snapshot, cleanup } = createGatewayBoardPane(sessionKey);
     const response = createDeferred<typeof snapshot>();
-    const hydration = createDeferred<void>();
+    const hydration = createDeferred();
     pane.state.settings = { ...pane.state.settings, gatewayUrl: "wss://gateway.example" };
     request.mockReturnValue(response.promise);
     chatHistoryRequests(pane.state).initialSnapshotHydration = {

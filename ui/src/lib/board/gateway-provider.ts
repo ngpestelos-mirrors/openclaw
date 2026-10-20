@@ -162,12 +162,13 @@ export class GatewayBoardProvider implements BoardProvider {
           (widget.grantState !== "pending" && widget.grantState !== "rejected"),
       )
       .map((widget) => {
-        const restored = {
-          ...widget,
-          ...(widget.viewTicketTtlMs !== undefined
+        const restored = Object.assign(
+          {},
+          widget,
+          widget.viewTicketTtlMs !== undefined
             ? { viewTicketTtlMs: Math.max(0, widget.viewTicketTtlMs - (now - receivedAtMs)) }
-            : {}),
-        };
+            : {},
+        );
         recordBoardWidgetTicketReceipt(restored, now);
         return restored;
       });

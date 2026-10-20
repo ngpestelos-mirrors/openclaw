@@ -120,7 +120,7 @@ suite.define(() => {
             await expect
               .poll(() =>
                 page.evaluate(
-                  async ({ expectedSessionKey, revision }) => {
+                  async ({ expectedSessionKey, revision: expectedRevision }) => {
                     if (
                       !Object.keys(localStorage).some((key) =>
                         key.startsWith("openclaw.control.bootRecord.v1:"),
@@ -169,7 +169,7 @@ suite.define(() => {
                               typeof record.snapshot.board.snapshot !== "object" ||
                               record.snapshot.board.snapshot === null ||
                               !("revision" in record.snapshot.board.snapshot) ||
-                              record.snapshot.board.snapshot.revision !== revision
+                              record.snapshot.board.snapshot.revision !== expectedRevision
                             ) {
                               return false;
                             }
@@ -208,14 +208,15 @@ suite.define(() => {
               const pane = document.querySelector(".chat-pane-cache__pane--visible");
               const heading = pane?.querySelector(".chat-pane__session-title-text");
               if (heading) {
-                const board = pane?.querySelector("[data-panel-skeleton=board]");
-                const bounds = board?.getBoundingClientRect();
+                const boardSkeleton = pane?.querySelector("[data-panel-skeleton=board]");
+                const bounds = boardSkeleton?.getBoundingClientRect();
                 const transcript = pane?.querySelector(".chat-thread");
                 frames.push({
                   title: heading.textContent?.trim() ?? "",
                   welcome: Boolean(pane?.querySelector(".agent-chat__welcome")),
                   board: Boolean(bounds && bounds.width > 0 && bounds.height > 0),
-                  boardRegion: board?.closest("[data-region]")?.getAttribute("data-region") ?? null,
+                  boardRegion:
+                    boardSkeleton?.closest("[data-region]")?.getAttribute("data-region") ?? null,
                   transcript:
                     transcript?.textContent?.includes("Synthetic mission briefing.") ?? false,
                   transcriptRegion:
@@ -283,7 +284,10 @@ suite.define(() => {
             await skeleton.waitFor({ state: "detached" });
             await gateway.resolveDeferred("board.get");
             await page.evaluate(
-              () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+              () =>
+                new Promise<void>((resolve) => {
+                  requestAnimationFrame(() => resolve());
+                }),
             );
             expect(
               await frame.evaluate((current, expected) => current === expected, warmFrame),
