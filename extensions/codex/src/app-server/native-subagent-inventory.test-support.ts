@@ -47,7 +47,9 @@ export async function fixture() {
     storePath: resolveStorePath(undefined, { agentId: identity.agentId }),
   };
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  onTestFinished(() => vi.useRealTimers());
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
   const historyOwner = (parentThreadId = "parent-thread"): CodexNativeSubagentHistoryOwner => ({
     ...nativeHistoryOwner(parentThreadId),
     sessionId: identity.sessionId,
