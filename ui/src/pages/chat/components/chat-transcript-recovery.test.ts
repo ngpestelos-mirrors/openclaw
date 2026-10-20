@@ -24,12 +24,9 @@ const previewMessage = {
   timestamp: 1_000,
 };
 
-function loadedPane(text: string, id: string) {
-  const load = vi.fn<SidebarFullMessageLoader>().mockResolvedValue(fullMessage(text));
-  return { load, pane: mountTranscript(id, load) };
-}
+const loader = () => vi.fn<SidebarFullMessageLoader>();
 function sequence(...bodies: Promise<FullMessageResult>[]) {
-  const load = vi.fn<SidebarFullMessageLoader>();
+  const load = loader();
   for (const body of bodies) {
     load.mockImplementationOnce(() => body);
   }
@@ -57,6 +54,25 @@ class RecoveryTranscriptElement extends TranscriptTestHost {
     return vi.waitFor(() => expect(this.textContent).toContain(text));
   }
 
+  async search(query: string, expected: string | null) {
+    if (!this.querySelector(".agent-chat__search-bar input")) {
+      toggleTranscriptSearch(this.props.paneId);
+      await this.settleUpdates();
+    }
+    const input = expectDefined(
+      this.querySelector<HTMLInputElement>(".agent-chat__search-bar input"),
+      "transcript search input",
+    );
+    input.value = query;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await this.settleUpdates();
+    if (expected === null) {
+      expect(this.bubble).toBeNull();
+    } else {
+      expect(this.bubble?.textContent).toContain(expected);
+    }
+  }
+
   override disconnectedCallback() {
     // Match the pane-specific production reset before disposing the transcript.
     if (this.resetPresentationOnDisconnect) {
@@ -71,13 +87,14 @@ customElements.define("test-recovery-transcript", RecoveryTranscriptElement);
 function mountTranscript(
   paneId: string,
   loadFullAssistantMessage: SidebarFullMessageLoader,
-  sessionKey = "agent:work:main",
+  changes: Partial<ChatThreadProps> = {},
 ): RecoveryTranscriptElement {
   const pane = document.createElement("test-recovery-transcript") as RecoveryTranscriptElement;
   pane.props = {
-    ...threadProps(paneId, sessionKey, [previewMessage]),
+    ...threadProps(paneId, "agent:work:main", [previewMessage]),
     fullMessageAgentId: "work",
     loadFullAssistantMessage,
+    ...changes,
   };
   document.body.append(pane);
   return pane;
@@ -87,38 +104,15 @@ function click(pane: Element, selector: string) {
   expectDefined(pane.querySelector<HTMLButtonElement>(selector), selector).click();
 }
 
-async function searchTranscript(
-  pane: RecoveryTranscriptElement,
-  query: string,
-  expected: string | null,
-) {
-  if (!pane.querySelector(".agent-chat__search-bar input")) {
-    toggleTranscriptSearch(pane.props.paneId);
-    await pane.settleUpdates();
-  }
-  const input = expectDefined(
-    pane.querySelector<HTMLInputElement>(".agent-chat__search-bar input"),
-    "transcript search input",
-  );
-  input.value = query;
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  await pane.settleUpdates();
-  if (expected === null) {
-    expect(pane.bubble).toBeNull();
-  } else {
-    expect(pane.bubble?.textContent).toContain(expected);
-  }
-}
-
 beforeEach(installTranscriptDomMocks);
 afterEach(resetTranscriptTestDom);
 
 it("updates an unchanged search when a hidden reply finishes recovering", async () => {
   const pending = createDeferred<FullMessageResult>();
-  const load = vi.fn<SidebarFullMessageLoader>().mockImplementation(() => pending.promise);
+  const load = sequence(pending.promise);
   const pane = mountTranscript("recovery-active-search", load);
   await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
-  await searchTranscript(pane, "lunarneedle", null);
+  await pane.search("lunarneedle", null);
 
   pending.resolve(fullMessage("The restored exhibit is lunarneedle."));
   await vi.waitFor(() => expect(pane.bubble?.textContent).toContain("lunarneedle"));
@@ -127,31 +121,19 @@ it("updates an unchanged search when a hidden reply finishes recovering", async 
 
 it("recovers an oversized source group with its tool cards and complete output", async () => {
   const output = "x".repeat(5_000_000) + " OUTPUT_END";
-  const call = {
-    type: "toolCall",
-    id: "large-result",
-    name: "exec",
-    arguments: { command: "check" },
-  };
-  const load = vi.fn<SidebarFullMessageLoader>().mockImplementation(async ({ maxChars }) => ({
+  const tool = { id: "large-result", name: "exec" };
+  const load = loader().mockImplementation(async ({ maxChars }) => ({
     ok: true,
     message: {
       role: "assistant",
       __openclaw: { id: "oversized-tools" },
       content: [
-        call,
-        {
-          type: "toolResult",
-          id: "large-result",
-          name: "exec",
-          text: output.slice(0, maxChars ?? 500_000),
-        },
+        { ...tool, type: "toolCall", arguments: { command: "check" } },
+        { ...tool, type: "toolResult", text: output.slice(0, maxChars ?? 500_000) },
       ],
     },
   }));
-  const pane = mountTranscript("recovery-oversized-tools", load);
-  pane.props = {
-    ...pane.props,
+  const pane = mountTranscript("recovery-oversized-tools", load, {
     showToolCalls: true,
     messages: [
       {
@@ -160,7 +142,7 @@ it("recovers an oversized source group with its tool cards and complete output",
         __openclaw: { id: "oversized-tools", truncated: true, reason: "oversized" },
       },
     ],
-  };
+  });
   await pane.updateComplete;
   await expectDefined(load.mock.results[0]?.value, "full-message load");
   await pane.updateComplete;
@@ -179,7 +161,7 @@ it("recovers an oversized source group with its tool cards and complete output",
 });
 
 it("keeps the preview through bounded retries and recovers on manual retry", async () => {
-  const load = vi.fn<SidebarFullMessageLoader>().mockRejectedValue(new Error("offline"));
+  const load = loader().mockRejectedValue(new Error("offline"));
   const pane = mountTranscript("recovery-unavailable", load);
   await pane.waitForText("Could not load the full message.");
   expect(load).toHaveBeenCalledTimes(3);
@@ -246,7 +228,7 @@ it.each(["reconnect loading", "reconnect loaded", "remount", "prune"] as const)(
 );
 
 it("retires a disconnected pane's bodies without invalidating a surviving split pane", async () => {
-  const load = vi.fn<SidebarFullMessageLoader>().mockResolvedValue(fullMessage("Original answer."));
+  const load = loader().mockResolvedValue(fullMessage("Original answer."));
   const first = mountTranscript("recovery-split-first", load);
   await first.waitForText("Original answer.");
   const sibling = mountTranscript("recovery-split-second", load);
@@ -266,17 +248,15 @@ it("retires a disconnected pane's bodies without invalidating a surviving split 
 });
 
 it.each(["session", "agent"] as const)("scopes recovery to the requested %s", async (scope) => {
-  const load = vi.fn<SidebarFullMessageLoader>().mockResolvedValue(fullMessage("First scope."));
-  const pane = mountTranscript("recovery-routing", load, "global");
+  const load = loader().mockResolvedValue(fullMessage("First scope."));
+  const pane = mountTranscript("recovery-routing", load, { sessionKey: "global" });
   await pane.waitForText("First scope.");
-  await searchTranscript(pane, "First scope", "First scope.");
+  await pane.search("First scope", "First scope.");
 
   load.mockResolvedValue(fullMessage("Second scope."));
-  pane.props = {
-    ...pane.props,
-    ...(scope === "session" ? { sessionKey: "agent:work:other" } : { fullMessageAgentId: "other" }),
-  };
-  await pane.draw();
+  await pane.draw(
+    scope === "session" ? { sessionKey: "agent:work:other" } : { fullMessageAgentId: "other" },
+  );
   expect(pane.bubble).toBeNull();
   toggleTranscriptSearch(pane.props.paneId);
   await pane.waitForText("Second scope.");
@@ -285,12 +265,12 @@ it.each(["session", "agent"] as const)("scopes recovery to the requested %s", as
     agentId: pane.props.fullMessageAgentId,
     messageId: "assistant-full-1",
   });
-  await searchTranscript(pane, "First scope", null);
-  await searchTranscript(pane, "Second scope", "Second scope.");
+  await pane.search("First scope", null);
+  await pane.search("Second scope", "Second scope.");
 });
 
 it("keeps recovered pending-input text until that input leaves the source", async () => {
-  const { load, pane } = loadedPane("Accepted input.", "recovery-pending-input");
+  const load = loader().mockResolvedValue(fullMessage("Accepted input."));
   const pendingInputs: ChatThreadProps["pendingInputs"] = [
     {
       id: "accepted-1",
@@ -303,13 +283,12 @@ it("keeps recovered pending-input text until that input leaves the source", asyn
       },
     },
   ];
-  pane.props.messages = [];
-  pane.props.pendingInputs = pendingInputs;
+  const pane = mountTranscript("recovery-pending-input", load, { messages: [], pendingInputs });
   await pane.waitForText("Accepted input.");
   await pane.draw();
   expect(load).toHaveBeenCalledOnce();
   expect(pane.textContent).toContain("Accepted input.");
-  await searchTranscript(pane, "Accepted input", "Accepted input.");
+  await pane.search("Accepted input", "Accepted input.");
 
   await pane.draw({ pendingInputs: [] });
   load.mockResolvedValue(fullMessage("Revisited input."));
@@ -321,19 +300,21 @@ it("keeps recovered pending-input text until that input leaves the source", asyn
 });
 
 it("stops searching recovered text when the source is no longer capped", async () => {
-  const { load, pane } = loadedPane("Recovered body.", "recovery-replaced-source");
+  const load = loader().mockResolvedValue(fullMessage("Recovered body."));
+  const pane = mountTranscript("recovery-replaced-source", load);
   await pane.waitForText("Recovered body.");
-  await searchTranscript(pane, "Recovered body", "Recovered body.");
+  await pane.search("Recovered body", "Recovered body.");
 
-  pane.props.messages = [
-    {
-      ...previewMessage,
-      content: "Current source body.",
-      __openclaw: { id: "assistant-full-1" },
-    },
-  ];
-  await pane.draw();
+  await pane.draw({
+    messages: [
+      {
+        ...previewMessage,
+        content: "Current source body.",
+        __openclaw: { id: "assistant-full-1" },
+      },
+    ],
+  });
   expect(pane.bubble).toBeNull();
-  await searchTranscript(pane, "Current source body", "Current source body.");
+  await pane.search("Current source body", "Current source body.");
   expect(load).toHaveBeenCalledOnce();
 });

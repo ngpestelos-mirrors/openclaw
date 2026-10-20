@@ -25,6 +25,9 @@ afterEach(() => {
 });
 
 const forwardedSource = { kind: "inter_session", sourceTool: "sessions_send" };
+const streamMessage = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+const messageKeys = (index: ReturnType<typeof projectTurnVideoMessages>, key: string) =>
+  index.get(key)?.map((entry) => entry.key);
 
 function group(key: string, role = "assistant", extra: Partial<MessageGroup> = {}) {
   const message = { role, content: key };
@@ -59,12 +62,9 @@ it("retains turn membership across renders and stream deltas while reading fresh
   expect(boundary).not.toHaveBeenCalled();
   expect(next.get(key)?.map((entry) => entry.message)).toEqual([
     input.messages[0],
-    { role: "assistant", content: [{ type: "text", text: "Second clip" }] },
+    streamMessage("Second clip"),
   ]);
-  expect(firstMessage).toEqual({
-    role: "assistant",
-    content: [{ type: "text", text: "First clip" }],
-  });
+  expect(firstMessage).toEqual(streamMessage("First clip"));
 
   // A full build can preserve its array; its generation still owns invalidation.
   boundary.mockClear();
@@ -73,14 +73,11 @@ it("retains turn membership across renders and stream deltas while reading fresh
   projectTurnVideoMessages(rebuilt);
   expect(boundary).toHaveBeenCalled();
 
-  const replacement = {
-    ...input.messages[0],
-    provenance: forwardedSource,
-  };
+  const replacement = { ...input.messages[0], provenance: forwardedSource };
   const replaced = projectTurnVideoMessages(
     buildCachedChatItems({ ...input, messages: [replacement], stream: "Second clip" }),
   );
-  expect(replaced.get(key)?.map((entry) => entry.key)).toEqual([key]);
+  expect(messageKeys(replaced, key)).toEqual([key]);
 });
 
 it("projects a whole turn across run frames, but never another user turn, divider, or forwarded session", () => {
@@ -98,26 +95,21 @@ it("projects a whole turn across run frames, but never another user turn, divide
     group("forwarded", "assistant", { senderSession: { sessionKey: "other-session" } }),
     group("e"),
   ]);
-  expect(index.get("a")?.map((entry) => entry.key)).toEqual(["a", "b"]);
-  expect(index.get("b")?.map((entry) => entry.key)).toEqual(["a", "b"]);
-  expect(index.get("c")?.map((entry) => entry.key)).toEqual(["c"]);
-  expect(index.get("d")?.map((entry) => entry.key)).toEqual(["d"]);
-  expect(index.get("e")?.map((entry) => entry.key)).toEqual(["e"]);
-  expect(index.has("forwarded")).toBe(false);
-  expect(index.has("tool")).toBe(false);
-  const provenanceOnly = group("forwarded-provenance", "assistant", {
-    messages: [
-      {
-        key: "foreign",
-        hasVisibleContent: true,
-        message: { role: "assistant", content: "Foreign video", provenance: forwardedSource },
-      },
-    ],
-  });
+  expect(["a", "b"].map((key) => messageKeys(index, key))).toEqual([
+    ["a", "b"],
+    ["a", "b"],
+  ]);
+  expect(["c", "d", "e"].map((key) => messageKeys(index, key))).toEqual([["c"], ["d"], ["e"]]);
+  expect([index.has("forwarded"), index.has("tool")]).toEqual([false, false]);
+  const provenanceOnly = group("foreign");
+  provenanceOnly.messages[0]!.message = {
+    role: "assistant",
+    content: "Foreign video",
+    provenance: forwardedSource,
+  };
   const forwarded = projectTurnVideoMessages([a, provenanceOnly, b]);
   expect(forwarded.has("foreign")).toBe(false);
-  expect(forwarded.get("a")?.map((entry) => entry.key)).toEqual(["a"]);
-  expect(forwarded.get("b")?.map((entry) => entry.key)).toEqual(["b"]);
+  expect(["a", "b"].map((key) => messageKeys(forwarded, key))).toEqual([["a"], ["b"]]);
 });
 
 it("keeps duplicate video slots and each sibling message's source authority, but not persisted mirrors", async () => {
@@ -134,18 +126,17 @@ it("keeps duplicate video slots and each sibling message's source authority, but
   );
   vi.stubGlobal("fetch", fetchMock);
   const clip = (label: string) => createAttachmentBlock(source, "video", label, "video/mp4");
-  const message = createAssistantMessage(
+  const clipMessage = (
+    id: string,
+    content: unknown,
+    media?: { path: string; contentType: string }[],
+  ) => createAssistantMessage(content, { __openclaw: { id, ...(media && { media }) } });
+  const message = clipMessage(
+    "first-video-message",
     [clip("Repeated"), { type: "text", text: "Between clips" }, clip("Repeated")],
-    {
-      __openclaw: {
-        id: "first-video-message",
-        media: [{ path: source, contentType: "video/mp4" }],
-      },
-    },
+    [{ path: source, contentType: "video/mp4" }],
   );
-  const sibling = createAssistantMessage([clip("Last")], {
-    __openclaw: { id: "last-video-message" },
-  });
+  const sibling = clipMessage("last-video-message", [clip("Last")]);
   const turn = [
     { key: "first", message },
     { key: "last", message: sibling },
@@ -153,24 +144,22 @@ it("keeps duplicate video slots and each sibling message's source authority, but
   let opened: ImageLightboxItem | undefined;
   document.body.append(container);
   const harness = createMessageGroupHarness(container);
-  const rerender = () =>
-    harness.render(
-      createMessageGroup(message, "assistant", { messages: [{ key: "first", message }] }),
-      {
-        showReasoning: false,
-        showToolCalls: false,
-        assistantName: "OpenClaw",
-        assistantAvatar: null,
-        sessionKey: "agent:main:video-gallery",
-        mediaOwner: rerender,
-        getTurnVideoMessages: () => turn,
-        onOpenImage: (item) => {
-          opened = item;
-        },
-      },
-    );
-  onTestFinished(() => releaseChatMediaResourceOwner(rerender));
-  rerender();
+  const renderedGroup = createMessageGroup(message, "assistant", {
+    messages: [{ key: "first", message }],
+  });
+  onTestFinished(() => releaseChatMediaResourceOwner(harness));
+  harness.render(renderedGroup, {
+    showReasoning: false,
+    showToolCalls: false,
+    assistantName: "OpenClaw",
+    assistantAvatar: null,
+    sessionKey: "agent:main:video-gallery",
+    mediaOwner: harness,
+    getTurnVideoMessages: () => turn,
+    onOpenImage: (item) => {
+      opened = item;
+    },
+  });
   await vi.advanceTimersByTimeAsync(0);
   const players = [...container.querySelectorAll("openclaw-chat-video-player")];
   expect(players).toHaveLength(2);
@@ -186,9 +175,9 @@ it("keeps duplicate video slots and each sibling message's source authority, but
     const disconnect = item!.connectVideo!(video, vi.fn());
     try {
       await vi.advanceTimersByTimeAsync(0);
-      expect(video.src).toContain("mediaTicket=gallery-ticket");
       const params = new URL(video.src).searchParams;
       expect(Object.fromEntries(params)).toMatchObject({
+        mediaTicket: "gallery-ticket",
         source,
         messageId: expectedMessageIds[index],
         sessionKey: "agent:main:video-gallery",
