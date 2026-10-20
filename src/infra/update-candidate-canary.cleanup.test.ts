@@ -700,7 +700,7 @@ describe("canary teardown evidence", () => {
             exitCode: 1,
             failureFacts: [
               {
-                code: "candidate-startup-plugin-load-failed",
+                code: "candidate-startup-failed",
                 message: "plugin load failed",
                 pluginId: "discord",
               },

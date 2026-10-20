@@ -718,7 +718,7 @@ describe("update candidate canary", () => {
           failureFacts: [
             {
               check: "startupz",
-              code: "candidate-startup-readiness-timeout",
+              code: "candidate-startup-failed",
               message: "readiness timeout",
             },
           ],

@@ -5,11 +5,7 @@ import path from "node:path";
 import { valid as validSemver } from "semver";
 import { resolveStateDir } from "../config/paths.js";
 import {
-  projectPublicConfigDiagnosticLines,
-  projectPublicConfigKey,
   publicConfigIssueMessage,
-} from "../config/public-validation.js";
-import {
   redactPublicSupportConfigKey,
   redactPublicSupportDiagnosticLine,
   redactPublicSupportVersion,
@@ -26,10 +22,6 @@ import { VERSION } from "../version.js";
 import { sha256Hex } from "./crypto-digest.js";
 import { prepareGithubIssue, type PreparedGithubIssue } from "./github-issue.js";
 import { PACKAGE_REFUSAL_CODES } from "./package-update-refusal.js";
-import {
-  isPublicCandidateStartupDiagnostic,
-  publicCandidateStartupCause,
-} from "./update-candidate-startup-failure.js";
 import { normalizeUpdateChannel } from "./update-channels.js";
 import { normalizeUpdateDoctorLintFindings } from "./update-doctor-lint.js";
 import {
@@ -311,53 +303,52 @@ async function renderBoundedDiagnostics(
     const npm = facts.find(
       (fact) => (fact.check === "npm" || fact.check === "bun") && fact.npmErrorCode,
     );
-    const configFacts = facts.filter(
-      (fact) => fact.code === "invalid-config" || fact.code === "candidate-config-failed",
+    const publicFacts = await Promise.all(
+      facts.map(async (fact) => {
+        const identifiers = await projectPublicUpdateFailureIdentifiers(fact);
+        const affectedKey = fact.affectedKey
+          ? redactPublicSupportConfigKey(fact.affectedKey, context.configSchema)
+          : undefined;
+        const issueKind = publicConfigIssueMessage({
+          path: fact.affectedKey ?? "",
+          message: fact.message ?? "",
+        });
+        const publicMessage =
+          affectedKey &&
+          (fact.code === "invalid-config" ||
+            fact.code === "candidate-config-failed" ||
+            issueKind !== "Invalid configuration field")
+            ? issueKind
+            : (updatePreflightDetailMessage(fact.code) ??
+              redactPublicSupportDiagnosticLine(fact.message ?? "", context));
+        return {
+          ...identifiers,
+          affectedKey,
+          ...(fact.location ? { location: fact.location } : {}),
+          ...(fact.destination ? { destination: fact.destination } : {}),
+          ...(!refused ? { message: publicMessage } : {}),
+        };
+      }),
     );
-    const configDiagnostics = (
-      await Promise.all(
-        configFacts.map(async (fact) =>
-          fact.affectedKey
-            ? [
-                `${await projectPublicConfigKey(fact.affectedKey)}: ${publicConfigIssueMessage({ path: fact.affectedKey, message: fact.message ?? "" })}`,
-              ]
-            : projectPublicConfigDiagnosticLines(fact.message ?? ""),
-        ),
-      )
-    ).flat();
-    const startupDiagnostics = (
-      await Promise.all(
-        facts.map(async (fact) => {
-          const cause = publicCandidateStartupCause(fact.code);
-          if (!cause) {
-            return fact.code === "signal" &&
-              fact.message &&
-              isPublicCandidateStartupDiagnostic(fact.message)
-              ? fact.message
-              : undefined;
-          }
-          const pluginId =
-            fact.code === "candidate-startup-plugin-load-failed" && fact.pluginId
-              ? (await projectPublicUpdateFailureIdentifiers(fact)).pluginId
-              : undefined;
-          return pluginId && pluginId !== "[redacted-plugin]" ? `${cause}: ${pluginId}` : cause;
-        }),
-      )
-    ).filter(Boolean);
-    const diagnostic = configDiagnostics.length
-      ? truncateUtf8Prefix([...new Set(configDiagnostics)].join("; "), 200)
-      : startupDiagnostics.length
-        ? truncateUtf8Prefix([...new Set(startupDiagnostics)].join("; "), 200)
-        : refused
-          ? "[redacted-diagnostic]"
-          : npm
-            ? [npm.npmErrorCode, npm.packageSpec].filter(Boolean).join(" ")
-            : redactPublicSupportDiagnosticLine(message, context);
+    const diagnostic = refused
+      ? "[redacted-diagnostic]"
+      : npm
+        ? [npm.npmErrorCode, npm.packageSpec].filter(Boolean).join(" ")
+        : truncateUtf8Prefix(
+            (publicFacts.some((fact) => fact.affectedKey)
+              ? publicFacts.filter((fact) => fact.affectedKey)
+              : publicFacts
+            )
+              .filter((fact) => fact.message && fact.message !== "[redacted-diagnostic]")
+              .map(
+                (fact) =>
+                  `${fact.affectedKey ? `${fact.affectedKey}: ` : ""}${fact.message}${fact.pluginId && fact.pluginId !== "[redacted-plugin]" ? `: ${fact.pluginId}` : ""}`,
+              )
+              .join("; "),
+            200,
+          ) || redactPublicSupportDiagnosticLine(message, context);
     const exit = `exit ${step.exitCode ?? "unknown"}`;
-    const publicDetail =
-      diagnostic === "[redacted-diagnostic]"
-        ? facts.map((fact) => updatePreflightDetailMessage(fact.code)).find(Boolean)
-        : diagnostic;
+    const publicDetail = diagnostic === "[redacted-diagnostic]" ? undefined : diagnostic;
     const detail = !publicDetail
       ? exit
       : step.exitCode == null
@@ -366,42 +357,9 @@ async function renderBoundedDiagnostics(
     diagnostics.push(`Failed phase ${phase}: ${detail}${termination}`);
     diagnostics.push(...formatNpmFailureFacts(facts, context));
     diagnostics.push(
-      ...(await Promise.all(
-        facts
-          .filter((fact) => fact.check !== "npm" && fact.check !== "bun")
-          .map(async (fact) =>
-            formatUpdateFailureFact({
-              ...(await projectPublicUpdateFailureIdentifiers(fact)),
-              ...(fact.location ? { location: fact.location } : {}),
-              ...(fact.destination ? { destination: fact.destination } : {}),
-              ...(fact.affectedKey
-                ? {
-                    affectedKey:
-                      fact.code === "invalid-config" || fact.code === "candidate-config-failed"
-                        ? await projectPublicConfigKey(fact.affectedKey)
-                        : redactPublicSupportConfigKey(fact.affectedKey),
-                  }
-                : {}),
-              ...(fact.message && !refused
-                ? {
-                    message:
-                      fact.code === "invalid-config" || fact.code === "candidate-config-failed"
-                        ? fact.affectedKey
-                          ? publicConfigIssueMessage({
-                              path: fact.affectedKey,
-                              message: fact.message,
-                            })
-                          : (await projectPublicConfigDiagnosticLines(fact.message)).join("; ") ||
-                            "Invalid configuration field"
-                        : (updatePreflightDetailMessage(fact.code) ??
-                          (fact.errorName
-                            ? redactSupportDiagnosticLine(fact.message, context)
-                            : redactPublicSupportDiagnosticLine(fact.message, context))),
-                  }
-                : {}),
-            }),
-          ),
-      )),
+      ...publicFacts
+        .filter((fact) => fact.check !== "npm" && fact.check !== "bun")
+        .map(formatUpdateFailureFact),
     );
   }
   return diagnostics;
@@ -431,7 +389,8 @@ export async function prepareUpdateFailureReport(
   };
   const env = options.env ?? process.env;
   const stateDir = options.stateDir ?? resolveStateDir(env);
-  const context = { env, stateDir };
+  const { buildConfigSchemaCore } = await import("../config/schema.js");
+  const context = { env, stateDir, configSchema: buildConfigSchemaCore() };
   const version = sanitizeReportField(VERSION, context);
   const platform = sanitizeReportField(`${process.platform}/${process.arch}`, context);
   const target = resolveUpdateTarget(input, context);

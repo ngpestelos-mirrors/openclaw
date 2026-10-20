@@ -46,6 +46,7 @@ it.each([
     "agents.entries.<id>.model.primary: expected string, got number",
   ],
   ["private-tenant startup failed at private-host.example", "[redacted-diagnostic]"],
+  ["unterminated", "plugin load failed: discord"],
   ["signal", "startup crash with signal SIGTERM"],
   ["timeout", "readiness timeout"],
 ] as const)("reports the closed startup cause for %s", async (diagnostic, expected) => {
@@ -68,7 +69,10 @@ if (args.includes("--fix")) console.log("Doctor complete.");
 else if (args.includes("--lint")) console.log(JSON.stringify({ok:true, checksRun:1, findings:[], warnings:[]}));
 else if (args.includes("plugins")) console.log(JSON.stringify({plugins:[], diagnostics:[]}));
 else if (args.includes("gateway")) {
-  if (${JSON.stringify(diagnostic)} === "timeout") {
+  if (${JSON.stringify(diagnostic)} === "unterminated") {
+    process.stderr.write("plugin load failed: discord: private-tenant");
+    process.exitCode = 1;
+  } else if (${JSON.stringify(diagnostic)} === "timeout") {
     console.error("openclaw-update-canary-progress: entry.bootstrap");
     setInterval(() => {}, 1000);
   } else {

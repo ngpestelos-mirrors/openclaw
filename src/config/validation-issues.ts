@@ -84,19 +84,20 @@ function isRouteTypeMismatchIssue(issue: z.core.$ZodIssue): boolean {
   );
 }
 
-function extractBindingsSpecificUnionIssue(
+function extractSpecificUnionIssue(
   record: z.core.$ZodIssueInvalidUnion,
   parentPathSegments: readonly ConfigPathSegment[],
 ): ConfigValidationIssue | null {
   const issuePath = toConfigPathSegments(record.path);
-  if (issuePath[0] !== "bindings" || typeof issuePath[1] !== "number") {
-    return null;
-  }
+  const binding = issuePath[0] === "bindings" && typeof issuePath[1] === "number";
   let matchingBranchIssue: z.core.$ZodIssue | null = null;
   let sawRouteTypeMismatch = false;
   for (const branch of record.errors) {
-    if (branch.some(isRouteTypeMismatchIssue)) {
+    if (binding && branch.some(isRouteTypeMismatchIssue)) {
       sawRouteTypeMismatch = true;
+      continue;
+    }
+    if (!binding && branch.every((issue) => issue.code === "invalid_type" && !issue.path.length)) {
       continue;
     }
     let branchBestIssue: z.core.$ZodIssue | null = null;
@@ -121,10 +122,10 @@ function extractBindingsSpecificUnionIssue(
     matchingBranchIssue = branchBestIssue;
   }
   if (
-    !sawRouteTypeMismatch ||
+    (binding && !sawRouteTypeMismatch) ||
     !matchingBranchIssue ||
     (toConfigPathSegments(matchingBranchIssue.path).length === 0 &&
-      matchingBranchIssue.code !== "unrecognized_keys")
+      (!binding || matchingBranchIssue.code !== "unrecognized_keys"))
   ) {
     return null;
   }
@@ -132,30 +133,13 @@ function extractBindingsSpecificUnionIssue(
     ...parentPathSegments,
     ...toConfigPathSegments(matchingBranchIssue.path),
   ];
+  if (!binding) {
+    return mapZodIssueToConfigIssue({ ...matchingBranchIssue, path: fullPathSegments });
+  }
   return withConfigIssuePath(
     { path: fullPathSegments.join("."), message: matchingBranchIssue.message },
     fullPathSegments,
   );
-}
-
-function extractNestedUnionIssue(
-  record: z.core.$ZodIssueInvalidUnion,
-): ConfigValidationIssue | null {
-  const branches = record.errors.filter((branch) => branch.some((issue) => issue.path.length > 0));
-  if (
-    branches.length !== 1 ||
-    record.errors.some(
-      (branch) =>
-        branch !== branches[0] &&
-        branch.some((issue) => issue.code !== "invalid_type" || issue.path.length > 0),
-    )
-  ) {
-    return null;
-  }
-  const nested = branches[0]?.find((issue) => issue.path.length > 0);
-  return nested
-    ? mapZodIssueToConfigIssue({ ...nested, path: [...record.path, ...nested.path] })
-    : null;
 }
 
 export function mapZodIssueToConfigIssue(issue: z.core.$ZodIssue): ConfigValidationIssue {
@@ -168,8 +152,7 @@ export function mapZodIssueToConfigIssue(issue: z.core.$ZodIssue): ConfigValidat
   // When an explicit ACP binding fails strict-object checks, Zod collapses the
   // useful ACP branch issue behind a generic union-level "Invalid input".
   if (issue.code === "invalid_union" && !allowedValuesSummary) {
-    const betterIssue =
-      extractBindingsSpecificUnionIssue(issue, pathSegments) ?? extractNestedUnionIssue(issue);
+    const betterIssue = extractSpecificUnionIssue(issue, pathSegments);
     if (betterIssue) {
       return betterIssue;
     }

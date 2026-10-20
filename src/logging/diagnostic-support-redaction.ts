@@ -1,3 +1,4 @@
+import { constants } from "node:os";
 import path from "node:path";
 import { getSystemErrorMap } from "node:util";
 import { isSensitiveUrlQueryParamName } from "@openclaw/net-policy/redact-sensitive-url";
@@ -7,8 +8,11 @@ import { valid as validVersion } from "semver";
 import { sanitizeForLog, stripAnsi } from "../../packages/terminal-core/src/ansi.js";
 import { REDACTED_SENTINEL } from "../config/redact-snapshot.js";
 import { isSecretRefShape } from "../config/redact-snapshot.secret-ref.js";
+import { classifyConfigSchemaPathSegment } from "../config/schema.lookup.js";
+import type { ConfigSchemaResponse } from "../config/schema.shared.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
-import { isPublicCandidateStartupDiagnostic } from "../infra/update-candidate-startup-failure.js";
+import { UPDATE_CANDIDATE_STARTUP_FAILURES } from "../infra/update-preflight-details.js";
+import { tokenizeConcreteConfigPath } from "../shared/dot-path.js";
 import { replaceRedactPattern } from "./redact-pattern-runtime.js";
 import { AWS_SECRET_ACCESS_KEY_MATCHER, VENDOR_TOKEN_REDACT_PATTERNS } from "./redact-patterns.js";
 import { redactSensitiveText, redactText, resolveRedactOptions } from "./redact.js";
@@ -55,6 +59,7 @@ export type SupportRedactionContext = {
   stateDir: string;
   /** Shared only within one export; raw identifiers and their mapping never leave memory. */
   identifierKeys?: Map<string, string>;
+  configSchema?: ConfigSchemaResponse;
 };
 
 type RedactSupportStringOptions = {
@@ -441,15 +446,78 @@ export function redactPublicSupportVersion(version: string): string {
 }
 
 /** Validation paths may include operator-defined keys at any depth. */
-export function redactPublicSupportConfigKey(value: string): string {
+export function redactPublicSupportConfigKey(value: string, schema?: ConfigSchemaResponse): string {
+  if (schema) {
+    if (!value || value === "<root>") {
+      return "<root>";
+    }
+    try {
+      const parts = tokenizeConcreteConfigPath(value).tokens.map(String);
+      if (parts.length > 32) {
+        return "[redacted-key]";
+      }
+      return parts
+        .map((part, index) => {
+          const kind = classifyConfigSchemaPathSegment(schema, parts.slice(0, index), part);
+          if (kind === "property" || kind === "array-index") {
+            return part;
+          }
+          return kind === "record-key" || kind === "invalid-record-key" ? "<id>" : "<key>";
+        })
+        .join(".")
+        .slice(0, 128);
+    } catch {
+      return "[redacted-key]";
+    }
+  }
   const anchor =
-    /^(mcp\.servers|models\.providers|plugins\.entries|skills\.entries|auth\.profiles|cron\.jobs|agents\.list|hooks\.internal\.entries|engines\.node)(?:\.|$)/u.exec(
-      value,
-    )?.[1] ??
-    /^(agents|auth|channels|commands|cron|engines|gateway|hooks|mcp|messages|models|plugins|session|skills|stateDir|tools)(?:\.|$)/u.exec(
+    /^(mcp(?:\.servers)?|models(?:\.providers)?|plugins(?:\.entries)?|skills(?:\.entries)?|auth(?:\.profiles)?|cron(?:\.jobs)?|agents(?:\.list)?|hooks(?:\.internal\.entries)?|engines(?:\.node)?|channels|commands|gateway|messages|session|stateDir|tools)(?:\.|$)/u.exec(
       value,
     )?.[1];
   return anchor ? (value === anchor ? anchor : `${anchor}.*`) : "[redacted-key]";
+}
+
+const CONFIG_TYPES =
+  "string|number|boolean|object|array|null|undefined|bigint|symbol|function|date|nan|int";
+const CONFIG_TYPE_ISSUE = new RegExp(
+  `^(?:Invalid input: )?expected (${CONFIG_TYPES}), (?:received|got) (${CONFIG_TYPES})$`,
+  "u",
+);
+
+/** Only validator vocabulary and this known retired field leave private diagnostics. */
+export function publicConfigIssueMessage(issue: { path: string; message: string }): string {
+  const type = CONFIG_TYPE_ISSUE.exec(issue.message);
+  if (type) {
+    return type[2] === "undefined" ? "missing required" : `expected ${type[1]}, got ${type[2]}`;
+  }
+  if (issue.message === "missing required") {
+    return issue.message;
+  }
+  if (/^(?:Unrecognized keys?: |unrecognized key )/u.test(issue.message)) {
+    const retired =
+      issue.path === "skills.workshop" &&
+      /^(?:Unrecognized key: "approvalPolicy"|unrecognized key approvalPolicy)$/u.test(
+        issue.message,
+      );
+    return `unrecognized key ${retired ? "approvalPolicy" : "<key>"}`;
+  }
+  return "Invalid configuration field";
+}
+
+/** Protocol-1 admission and startup diagnostics carry bounded field lines. */
+export function parsePublicConfigDiagnosticLines(
+  value: string,
+): Array<{ path: string; message: string }> {
+  return value.split(/[\r\n\u2028\u2029]|; /u).flatMap((line) => {
+    const issue = /^(?:- )?(?:.+:\d+ — )?(.+?): (.+)$/u.exec(line);
+    if (!issue?.[1] || !issue[2]) {
+      return [];
+    }
+    const message = publicConfigIssueMessage({ path: issue[1], message: issue[2] });
+    return message !== "Invalid configuration field" || issue[2] === message
+      ? [{ path: issue[1], message }]
+      : [];
+  });
 }
 
 /** Public diagnostics expose recognized causes, never arbitrary prose or executable arguments. */
@@ -458,7 +526,12 @@ export function redactPublicSupportDiagnosticLine(
   context: SupportRedactionContext,
 ): string {
   const line = redactSupportDiagnosticLine(value, context);
-  if (isPublicCandidateStartupDiagnostic(line)) {
+  const startupSignal = /^startup crash with signal (SIG[A-Z0-9]+)$/u.exec(line)?.[1];
+  if (
+    line === "readiness timeout" ||
+    UPDATE_CANDIDATE_STARTUP_FAILURES.some(([, cause]) => cause === line) ||
+    (startupSignal && Object.hasOwn(constants.signals, startupSignal))
+  ) {
     return line;
   }
   const gatewayStatus =
@@ -564,10 +637,10 @@ export function redactPublicSupportDiagnosticLine(
     ) ?? []
   ).map((cause) => cause.replace(/^permission denied$/u, "Permission denied"));
   // Candidate admission's existing text protocol carries only these fixed validation lines.
-  const configFields = value.split(/[\r\n\u2028\u2029]|; /u).flatMap((entry) => {
-    const field = /^(?:- )?(.+): Invalid configuration field$/u.exec(entry)?.[1];
-    return field ? [`${redactPublicSupportConfigKey(field)}: Invalid configuration field`] : [];
-  });
+  const configFields = parsePublicConfigDiagnosticLines(value).map(
+    (issue) =>
+      `${redactPublicSupportConfigKey(issue.path, context.configSchema)}: ${issue.message}`,
+  );
   return truncateUtf16Safe(
     [...new Set([...codes, ...causes, ...configFields])].join("; ") || "[redacted-diagnostic]",
     200,

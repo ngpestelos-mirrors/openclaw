@@ -1,9 +1,12 @@
 import { findRetiredConfigUpgradeRequirement } from "../../commands/doctor/shared/retired-config-formats.js";
 import { isConfigReadFailure } from "../../config/io.invalid-config.js";
 import { formatConfigIssueLines } from "../../config/issue-format.js";
-import { configIssueFactPath, publicConfigIssueMessage } from "../../config/public-validation.js";
 import type { ConfigFileSnapshot } from "../../config/types.openclaw.js";
-import { normalizeSupportDiagnosticErrorCode } from "../../logging/diagnostic-support-redaction.js";
+import {
+  normalizeSupportDiagnosticErrorCode,
+  publicConfigIssueMessage,
+} from "../../logging/diagnostic-support-redaction.js";
+import { formatConcreteConfigPath } from "../../shared/dot-path.js";
 import { UpdatePreMutationError } from "./shared.js";
 
 /** Keep validation fields separate from diagnostics that can contain rejected secret values. */
@@ -31,7 +34,9 @@ export function createUpdateConfigFailure(
     );
   }
   const issues = snapshot.issues.map((issue) => ({
-    path: configIssueFactPath(issue),
+    path: issue.pathSegments?.length
+      ? formatConcreteConfigPath(issue.pathSegments)
+      : issue.path || "<root>",
     message: publicConfigIssueMessage(issue),
   }));
   const retired = findRetiredConfigUpgradeRequirement(

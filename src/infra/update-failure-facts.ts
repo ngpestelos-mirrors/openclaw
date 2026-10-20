@@ -8,8 +8,6 @@ import { resolveStateDir } from "../config/paths.js";
 import {
   parsePublicConfigDiagnosticLines,
   publicConfigIssueMessage,
-} from "../config/public-validation.js";
-import {
   redactPublicSupportDiagnosticLine,
   redactSupportDiagnosticLine,
   redactSupportString,
@@ -205,11 +203,7 @@ export function createUpdateFailureFact(
           .join("; ") || (issueKind !== "Invalid configuration field" ? issueKind : undefined)
       : undefined;
   const diagnostic =
-    configDiagnostic && configDiagnostic !== "[redacted-diagnostic]"
-      ? configDiagnostic
-      : fact.message
-        ? line(fact.message, Number.MAX_SAFE_INTEGER)
-        : undefined;
+    configDiagnostic ?? (fact.message ? line(fact.message, Number.MAX_SAFE_INTEGER) : undefined);
   // Closed recovery facts contain generated basenames, not hostnames.
   const recoveryDiagnostic = diagnostic?.startsWith("Package recovery ")
     ? redactPublicSupportDiagnosticLine(diagnostic, context)
