@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { SecretProviderConfig } from "../config/types.secrets.js";
 import { withSecureTestNodeCommand } from "../secrets/test-node-command.test-support.js";
@@ -13,7 +13,6 @@ import type { HealthCheck, HealthFinding } from "./health-checks.js";
 
 const mocks = vi.hoisted(() => ({
   loadModelCatalog: vi.fn(async () => []),
-  callGateway: vi.fn(),
   detectUnavailableSkills: vi.fn<() => Promise<SkillStatusEntry[]>>(async () => []),
   collectSecurityWarnings: vi.fn<() => Promise<SecurityAuditFinding[]>>(async () => []),
   collectWorkspaceSuggestionNotes: vi.fn<() => string[]>(() => []),
@@ -37,9 +36,6 @@ vi.mock("../agents/prepared-model-catalog.js", () => ({
   loadProviderScopedThinkingCatalog: vi.fn(async () => []),
   readPreparedModelCatalog: mocks.loadModelCatalog,
 }));
-vi.mock("../gateway/call.js", () => ({
-  callGateway: mocks.callGateway,
-}));
 
 const runtime = { log() {}, error() {}, exit() {} };
 const context = (cfg: OpenClawConfig) => ({ mode: "lint" as const, runtime, cfg });
@@ -60,30 +56,41 @@ function gatewayTokenConfig(provider: SecretProviderConfig, id = "value"): OpenC
   };
 }
 
-function getCheck(checks: readonly HealthCheck[], id: string): HealthCheck {
-  const check = checks.find((entry) => entry.id === id);
-  if (!check) {
-    throw new Error(`Missing health check ${id}`);
-  }
-  return check;
-}
+const getCheck = (checks: readonly HealthCheck[], id: string) =>
+  checks.find((entry) => entry.id === id)!;
 
 describe("CORE_HEALTH_CHECKS", () => {
   let tmp: string | undefined;
+  const dirs = useAutoCleanupTempDirTracker(afterEach);
+  async function execRef(script: string[], marker = false) {
+    tmp = dirs.make("openclaw-health-exec-ref-");
+    const markerPath = join(tmp, "exec-ran");
+    const resolverPath = join(tmp, "resolve-token.cjs");
+    await fs.writeFile(resolverPath, script.join("\n"), "utf8");
+    const findings = await withSecureTestNodeCommand(async (command) =>
+      getCheck(CORE_HEALTH_CHECKS, "core/doctor/gateway-auth").detect({
+        ...context(
+          gatewayTokenConfig({
+            source: "exec",
+            command,
+            args: [resolverPath, ...(marker ? [markerPath] : [])],
+            jsonOnly: false,
+            trustedDirs: [dirname(command), tmp!],
+          }),
+        ),
+        cwd: tmp,
+        allowExecSecretRefs: true,
+      }),
+    );
+    return { findings, markerPath };
+  }
   beforeEach(() => {
     mocks.loadModelCatalog.mockClear();
     mocks.loadModelCatalog.mockResolvedValue([]);
-    mocks.callGateway.mockReset();
     mocks.detectUnavailableSkills.mockReset();
     mocks.collectSecurityWarnings.mockReset();
     mocks.collectWorkspaceSuggestionNotes.mockReset();
     tmp = undefined;
-  });
-
-  afterEach(async () => {
-    if (tmp) {
-      await fs.rm(tmp, { force: true, recursive: true });
-    }
   });
 
   it("does not discover unavailable skills without an unambiguous workspace", async () => {
@@ -188,7 +195,7 @@ describe("CORE_HEALTH_CHECKS", () => {
   });
 
   it("does not execute or warn for valid exec SecretRefs during default gateway auth lint checks", async () => {
-    tmp = await fs.mkdtemp(join(tmpdir(), "openclaw-health-exec-ref-"));
+    tmp = dirs.make("openclaw-health-exec-ref-");
     const markerPath = join(tmp, "exec-ran");
     const check = getCheck(CORE_HEALTH_CHECKS, "core/doctor/gateway-auth");
 
@@ -209,11 +216,7 @@ describe("CORE_HEALTH_CHECKS", () => {
   });
 
   it("executes exec SecretRefs when gateway auth lint explicitly allows exec checks", async () => {
-    tmp = await fs.mkdtemp(join(tmpdir(), "openclaw-health-exec-ref-"));
-    const markerPath = join(tmp, "exec-ran");
-    const resolverPath = join(tmp, "resolve-token.cjs");
-    await fs.writeFile(
-      resolverPath,
+    const { findings, markerPath } = await execRef(
       [
         "const fs = require('node:fs');",
         "process.stdin.resume();",
@@ -221,25 +224,8 @@ describe("CORE_HEALTH_CHECKS", () => {
         "  fs.writeFileSync(process.argv[2], 'executed');",
         "  process.stdout.write('resolved-token');",
         "});",
-      ].join("\n"),
-      "utf8",
-    );
-    const check = getCheck(CORE_HEALTH_CHECKS, "core/doctor/gateway-auth");
-
-    const findings = await withSecureTestNodeCommand(async (command) =>
-      check?.detect({
-        mode: "lint",
-        runtime,
-        cfg: gatewayTokenConfig({
-          source: "exec",
-          command,
-          args: [resolverPath, markerPath],
-          jsonOnly: false,
-          trustedDirs: [dirname(command), tmp!],
-        }),
-        cwd: tmp,
-        allowExecSecretRefs: true,
-      }),
+      ],
+      true,
     );
 
     expect(findings).toEqual([]);
@@ -247,30 +233,8 @@ describe("CORE_HEALTH_CHECKS", () => {
   });
 
   it("reports exec SecretRef failures when gateway auth lint explicitly allows exec checks", async () => {
-    tmp = await fs.mkdtemp(join(tmpdir(), "openclaw-health-exec-ref-"));
-    const resolverPath = join(tmp, "fail-token.cjs");
-    await fs.writeFile(
-      resolverPath,
-      ["process.stdin.resume();", "process.stdin.on('end', () => process.exit(12));"].join("\n"),
-      "utf8",
-    );
-    const check = getCheck(CORE_HEALTH_CHECKS, "core/doctor/gateway-auth");
-
-    const findings = await withEnvAsync({ OPENCLAW_GATEWAY_TOKEN: "fallback-token" }, async () =>
-      withSecureTestNodeCommand(async (command) =>
-        check?.detect({
-          mode: "lint",
-          runtime,
-          cfg: gatewayTokenConfig({
-            source: "exec",
-            command,
-            args: [resolverPath],
-            jsonOnly: false,
-            trustedDirs: [dirname(command), tmp!],
-          }),
-          allowExecSecretRefs: true,
-        }),
-      ),
+    const { findings } = await withEnvAsync({ OPENCLAW_GATEWAY_TOKEN: "fallback-token" }, () =>
+      execRef(["process.stdin.resume();", "process.stdin.on('end', () => process.exit(12));"]),
     );
 
     expectFinding(findings, {

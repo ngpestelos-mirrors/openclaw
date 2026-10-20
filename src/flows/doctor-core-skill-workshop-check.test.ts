@@ -15,9 +15,7 @@ const context = (cfg: OpenClawConfig, mode: "doctor" | "lint" = "doctor") => ({
   cfg: { skills: { workshop: workshop() }, ...cfg },
 });
 const lint = (cfg: OpenClawConfig) =>
-  runDoctorLintChecks(context(cfg, "lint"), {
-    checks: [check],
-  });
+  runDoctorLintChecks(context(cfg, "lint"), { checks: [check] });
 const detect = (cfg: OpenClawConfig) => check.detect(context(cfg));
 
 describe("core/doctor/skill-workshop-tool-policy", () => {
@@ -60,7 +58,7 @@ describe("core/doctor/skill-workshop-tool-policy", () => {
   });
 
   it("checks every explicit-roster agent without turning selection into a health error", async () => {
-    const cfg: OpenClawConfig = {
+    const result = await lint({
       agents: {
         ownership: "explicit",
         defaults: { systemAgent: { agentId: "main" } },
@@ -70,9 +68,7 @@ describe("core/doctor/skill-workshop-tool-policy", () => {
           third: { tools: { profile: "coding" } },
         },
       },
-    };
-
-    const result = await lint(cfg);
+    });
 
     expect(result.findings).toEqual([
       expect.objectContaining({
@@ -81,21 +77,16 @@ describe("core/doctor/skill-workshop-tool-policy", () => {
         path: "agents.entries.helper.tools.profile",
       }),
     ]);
-    expect(result.findings).not.toContainEqual(
-      expect.objectContaining({ message: expect.stringContaining("health check threw") }),
-    );
   });
 
   it.each([
     {
-      label: "sole-agent roster",
       cfg: {
         agents: { entries: { solo: { tools: { profile: "messaging" } } } },
       } satisfies OpenClawConfig,
       target: "solo",
     },
     {
-      label: "legacy-default roster",
       cfg: createCanonicalAgentConfigFixture({
         agents: {
           list: [
@@ -106,7 +97,7 @@ describe("core/doctor/skill-workshop-tool-policy", () => {
       }).config,
       target: "owner",
     },
-  ])("preserves normal diagnostics for a $label", async ({ cfg, target }) => {
+  ])("preserves normal diagnostics for roster target $target", async ({ cfg, target }) => {
     const findings = await detect(cfg);
 
     expect(findings).toEqual([expect.objectContaining({ severity: "warning", target })]);

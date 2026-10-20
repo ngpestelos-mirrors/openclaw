@@ -1,4 +1,4 @@
-// Install fixture mocks before importing the real maintenance owners.
+// Register fixture mocks before loading maintenance owners.
 import "./doctor-health.test-support.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -46,35 +46,23 @@ import {
 import { ensureSessionTranscriptArchiveSchema } from "../state/openclaw-agent-session-transcript-archive-schema.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
-import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { useDoctorHealthFixture } from "./doctor-health.fixture.test-support.js";
 import { runDoctorHealthFlow } from "./doctor-health.js";
-
-const { mocks } = await import("./doctor-health.test-support.js");
+const { mocks, createDoctorRuntime, withDoctorState } =
+  await import("./doctor-health.test-support.js");
 
 type DoctorManagedRepairOutcome =
-  | "interactive-ready"
-  | "interactive-declined"
+  | `interactive-${"ready" | "declined"}`
   | "ready"
   | "archive-verification"
-  | "clean-stopped-repair"
-  | "clean-stopped-probe-timeout"
-  | "clean-stopped-owner-unknown"
-  | "clean-stopped-manager-unknown"
-  | "clean-force-repair"
-  | "clean-force-inspect"
-  | "update-no-restart"
-  | "update-no-restart-stopped"
-  | "update-parent-stopped"
-  | "update-legacy"
-  | "repair-failed"
-  | "repair-cancelled"
+  | `clean-stopped-${"repair" | "probe-timeout" | "owner-unknown" | "manager-unknown"}`
+  | `clean-force-${"repair" | "inspect"}`
+  | `update-${"no-restart" | "no-restart-stopped" | "parent-stopped" | "legacy"}`
+  | `repair-${"failed" | "cancelled"}`
   | "store-close-failed"
   | "config-refused"
   | "workspace-cleanup-failed"
-  | "approvals-malformed"
-  | "approvals-conflicting"
-  | "approvals-migrated"
+  | `approvals-${"malformed" | "conflicting" | "migrated"}`
   | "restart-unhealthy"
   | "ancestor-blocked";
 
@@ -93,14 +81,9 @@ async function runManagedRepair(
     openHistoricalAgentDatabase,
   }: ReturnType<typeof useDoctorHealthFixture>,
 ) {
-  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+  await withDoctorState(async (state) => {
+    const { env } = state;
     const is = (...values: DoctorManagedRepairOutcome[]) => values.includes(outcome);
-    const expectUncalled = (...calls: ReturnType<typeof vi.fn>[]) => {
-      for (const call of calls) {
-        expect(call).not.toHaveBeenCalled();
-      }
-    };
-    // These cases own managed agent repair after shared-state initialization.
     materializeSharedStateDatabase(state.env);
     await seedCompletedRuntimePinMigration(state.env);
     const interactive = outcome.startsWith("interactive-");
@@ -110,24 +93,20 @@ async function runManagedRepair(
     const current = clean || archiveVerification;
     const inspectionOnly = outcome === "clean-force-inspect";
     const force = outcome.startsWith("clean-force-");
-    const cfg: OpenClawConfig = {
-      agents: {
-        ownership: "explicit",
-        entries: {
-          main: { workspace: state.workspaceDir },
-          research: { workspace: state.path("research") },
-        },
-      },
+    const entries = {
+      main: { workspace: state.workspaceDir },
+      research: { workspace: state.path("research") },
     };
+    const cfg: OpenClawConfig = { agents: { ownership: "explicit", entries } };
     await state.writeConfig(
       current
         ? cfg
         : {
             agents: {
-              list: [
-                { id: "main", workspace: state.workspaceDir },
-                { id: "research", workspace: state.path("research") },
-              ],
+              list: Object.entries(entries).map(([id, entry]) => ({
+                id,
+                workspace: entry.workspace,
+              })),
             },
           },
     );
@@ -149,7 +128,7 @@ async function runManagedRepair(
       fs.writeFileSync(approvalsPath, approvalsBefore);
       if (outcome === "approvals-conflicting") {
         writeExecApprovalsConfigRow({
-          db: openOpenClawStateDatabase({ env: state.env }).db,
+          db: openOpenClawStateDatabase({ env }).db,
           file: canonicalApprovals,
         });
       }
@@ -162,8 +141,8 @@ async function runManagedRepair(
       );
     }
     const open = current ? openOpenClawAgentDatabase : openHistoricalAgentDatabase;
-    const initial = open({ agentId: "main", env: state.env });
-    const secondary = open({ agentId: "research", env: state.env });
+    const initial = open({ agentId: "main", env });
+    const secondary = open({ agentId: "research", env });
     if (archiveVerification) {
       const bytes = Buffer.from(
         '{"type":"message","message":{"role":"user","content":"retained history"}}\n',
@@ -200,11 +179,7 @@ async function runManagedRepair(
       initial.db.close();
     }
     closeOpenClawAgentDatabasesForTest();
-    const leaseId = claimOpenClawAgentDatabaseLease({
-      agentId: "main",
-      path: initial.path,
-      env: state.env,
-    });
+    const leaseId = claimOpenClawAgentDatabaseLease({ agentId: "main", path: initial.path, env });
     const agentBefore = fs.readFileSync(initial.path);
     const expectUnchanged = () => {
       expect(fs.readFileSync(state.configPath)).toEqual(configBefore);
@@ -223,7 +198,7 @@ async function runManagedRepair(
         : undefined;
     let running = !initiallyStopped;
     if (initiallyStopped) {
-      releaseOpenClawAgentDatabaseLease(leaseId, { env: state.env });
+      releaseOpenClawAgentDatabaseLease(leaseId, { env });
     }
     const pid = outcome === "ancestor-blocked" ? process.pid : process.pid + 1;
     mocks.resident.mockImplementation(() => (running ? { pid } : undefined));
@@ -239,7 +214,7 @@ async function runManagedRepair(
     const stop = vi.fn(async () => {
       events.push("stop");
       running = false;
-      releaseOpenClawAgentDatabaseLease(leaseId, { env: state.env });
+      releaseOpenClawAgentDatabaseLease(leaseId, { env });
     });
     const restart = vi.fn(async () => {
       if (outcome === "repair-cancelled") {
@@ -252,9 +227,7 @@ async function runManagedRepair(
       events.push("restart");
       if (is("ready", "interactive-ready")) {
         for (const agentId of ["main", "research"]) {
-          expect(() =>
-            assertNoOpenClawAgentDatabaseLeases(agentId, { env: state.env }),
-          ).not.toThrow();
+          expect(() => assertNoOpenClawAgentDatabaseLeases(agentId, { env })).not.toThrow();
         }
       }
       // A refusal before schema convergence restores the captured service,
@@ -262,7 +235,7 @@ async function runManagedRepair(
       // the candidate can reopen every migrated database before health passes.
       if (!is("repair-failed", "repair-cancelled", "config-refused")) {
         for (const agentId of ["main", "research"]) {
-          const reopened = openOpenClawAgentDatabase({ agentId, env: state.env });
+          const reopened = openOpenClawAgentDatabase({ agentId, env });
           expect(reopened.db.prepare("PRAGMA user_version").get()?.user_version).toBe(
             OPENCLAW_AGENT_SCHEMA_VERSION,
           );
@@ -336,7 +309,7 @@ async function runManagedRepair(
       if (approvalsCase) {
         const approvals = await migrateLegacyExecApprovals({
           stateDir: state.stateDir,
-          env: state.env,
+          env,
           detected: detectLegacyExecApprovals({
             stateDir: state.stateDir,
             doctorOnlyStateMigrations: true,
@@ -347,8 +320,8 @@ async function runManagedRepair(
       }
       if (is("ready", "interactive-ready", "store-close-failed")) {
         // Later diagnostics reopen runtime handles after the migration closes its own.
-        const reopened = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
-        openOpenClawAgentDatabase({ agentId: "research", env: state.env });
+        const reopened = openOpenClawAgentDatabase({ agentId: "main", env });
+        openOpenClawAgentDatabase({ agentId: "research", env });
         if (outcome === "store-close-failed") {
           vi.spyOn(reopened.db, "close").mockImplementationOnce(() => {
             throw new Error("synthetic database close failure");
@@ -358,11 +331,11 @@ async function runManagedRepair(
       if (outcome === "workspace-cleanup-failed") {
         const migration = await migrateLegacyWorkspaceState({
           stateDir: state.stateDir,
-          env: state.env,
+          env,
           detected: await detectLegacyWorkspaceState({
             cfg: ctx.cfg,
             stateDir: state.stateDir,
-            env: state.env,
+            env,
             homedir: () => state.home,
             doctorOnlyStateMigrations: true,
           }),
@@ -376,7 +349,7 @@ async function runManagedRepair(
         );
       }
     });
-    const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+    const runtime = createDoctorRuntime();
     if (declined) {
       mocks.lint.mockImplementation(async (diagnosticRuntime) => {
         expect(running).toBe(true);
@@ -453,7 +426,6 @@ async function runManagedRepair(
       if (outcome === "update-no-restart") {
         await expect(run).rejects.toThrow("update parent");
         expect(events).toEqual([]);
-        expectUncalled(stop, restart);
         expectUnchanged();
         return;
       }
@@ -461,7 +433,7 @@ async function runManagedRepair(
         await run;
         expect(events).toEqual(["repair"]);
         expect(running).toBe(false);
-        expectUncalled(start, restart, mocks.waitForGatewayHealthyRestart);
+        expect(mocks.waitForGatewayHealthyRestart).not.toHaveBeenCalled();
         expect(runtime.log).toHaveBeenCalledWith(
           expect.stringMatching(/Gateway activation skipped.*inconclusive.*gateway status --deep/s),
         );
@@ -473,7 +445,6 @@ async function runManagedRepair(
         await expect(run).rejects.toThrow("from a shell outside the gateway service");
         await expect(run).rejects.not.toThrow("openclaw update");
         expect(events).toEqual([]);
-        expectUncalled(stop, restart);
         expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
         return;
       }
@@ -500,13 +471,11 @@ async function runManagedRepair(
       }
       if (modernUpdate) {
         expect(events.filter((event) => event !== "repair")).toEqual([]);
-        expectUncalled(stop, restart);
         expectUnchanged();
         return;
       }
       if (declined) {
         expect(events).toEqual([]);
-        expectUncalled(stop, restart);
         expect(runtime.log).toHaveBeenCalledWith(
           "Synthetic diagnostic finding; repairs remain pending.",
         );
@@ -543,9 +512,9 @@ async function runManagedRepair(
           expect(loadExecApprovalsReadOnly().defaults?.security).toBe("full");
         }
         if (outcome === "approvals-conflicting") {
-          expect(
-            readExecApprovalsConfigRow(openOpenClawStateDatabase({ env: state.env }).db)?.raw_json,
-          ).toBe(serializeExecApprovals(canonicalApprovals));
+          expect(readExecApprovalsConfigRow(openOpenClawStateDatabase({ env }).db)?.raw_json).toBe(
+            serializeExecApprovals(canonicalApprovals),
+          );
         }
       }
       if (clean || is("ready", "interactive-ready", "archive-verification", "approvals-migrated")) {
@@ -564,7 +533,7 @@ async function runManagedRepair(
       }
       archiveRepair?.mockRestore();
       archiveTransform?.mockRestore();
-      releaseOpenClawAgentDatabaseLease(leaseId, { env: state.env });
+      releaseOpenClawAgentDatabaseLease(leaseId, { env });
       platform?.mockRestore();
     }
   });

@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { CORE_HEALTH_CHECKS } from "./doctor-core-checks.js";
 import type { HealthFinding } from "./health-checks.js";
@@ -17,9 +17,11 @@ function expectFinding(findings: readonly HealthFinding[], fields: Partial<Healt
 
 describe("core/doctor/bootstrap-size", () => {
   let tmp: string | undefined;
+  const dirs = useAutoCleanupTempDirTracker(afterEach);
   async function workspace(files: Record<string, string>) {
-    tmp = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "openclaw-health-bootstrap-")));
+    tmp = dirs.make("openclaw-health-bootstrap-");
     for (const [name, content] of Object.entries(files)) {
+      await fs.mkdir(dirname(join(tmp, name)), { recursive: true });
       await fs.writeFile(join(tmp, name), content, "utf-8");
     }
     return tmp;
@@ -28,13 +30,7 @@ describe("core/doctor/bootstrap-size", () => {
     return check.detect({ mode: "lint", runtime, cfg, cwd: tmp });
   }
 
-  afterEach(async () => {
-    vi.unstubAllEnvs();
-    if (tmp !== undefined) {
-      await fs.rm(tmp, { recursive: true, force: true });
-      tmp = undefined;
-    }
-  });
+  afterEach(() => vi.unstubAllEnvs());
 
   it("does not create shared state while inspecting bootstrap files", async () => {
     const stateDir = join(await workspace({ "AGENTS.md": "bootstrap" }), "state-root");
@@ -49,9 +45,10 @@ describe("core/doctor/bootstrap-size", () => {
   it("reports a hook-added extra file the total bootstrap budget dropped", async () => {
     // The extra repeats the root basename, so only source-path identity can tell
     // the doctor that this file received no injected bytes at all.
-    const root = await workspace({ "AGENTS.md": "a".repeat(1_000) });
-    await fs.mkdir(join(root, "packages", "core"), { recursive: true });
-    await fs.writeFile(join(root, "packages", "core", "AGENTS.md"), "b".repeat(500), "utf-8");
+    const root = await workspace({
+      "AGENTS.md": "a".repeat(1_000),
+      "packages/core/AGENTS.md": "b".repeat(500),
+    });
 
     const findings = await detect({
       agents: { defaults: { workspace: tmp, bootstrapTotalMaxChars: 1_000 } },
@@ -92,10 +89,7 @@ describe("core/doctor/bootstrap-size", () => {
         cfg: {
           agents: {
             defaults: { bootstrapMaxChars: 20_000 },
-            entries: {
-              alpha: { workspace: tmp, bootstrapMaxChars: 10_000 },
-              beta: {},
-            },
+            entries: { alpha: { workspace: tmp, bootstrapMaxChars: 10_000 }, beta: {} },
           },
         },
       }),
