@@ -81,7 +81,9 @@ async function openPanel(
   );
   return panel;
 }
-const badge = () => document.querySelector(".link-reader-hovercard__state")?.textContent?.trim();
+const card = () => document.querySelector<HTMLElement>(".link-reader-hovercard");
+const badge = () => card()?.querySelector(".link-reader-hovercard__state")?.textContent?.trim();
+const metadata = () => card()?.querySelector(".link-reader-hovercard__metadata")?.textContent;
 beforeEach(() => {
   vi.useFakeTimers();
   vi.stubGlobal("localStorage", createStorageMock());
@@ -95,7 +97,7 @@ afterEach(() => {
 });
 
 it.each(["same", "other-client", "other-agent", "other-session"])(
-  "reconciles detail metadata only in the matching %s scope",
+  "reconciles details only in matching %s scope",
   async (scope) => {
     const request = vi.fn((method: string) =>
       Promise.resolve(method === "github.detail" ? merged : open),
@@ -119,7 +121,7 @@ it.each(["same", "other-client", "other-agent", "other-session"])(
     await leave(anchor);
     await hover(anchor);
     expect(badge()).toBe(scope === "same" ? "Merged" : "Open");
-    expect(document.querySelector(".link-reader-hovercard__metadata")?.textContent).toBe("+42");
+    expect(metadata()).toBe("+42");
     expect(request.mock.calls.filter(([method]) => method === "github.preview")).toHaveLength(1);
   },
 );
@@ -150,9 +152,7 @@ it("labels still-stale metadata and retries only after short backoff", async () 
   const { anchor } = makeProvider(request);
   await hover(anchor);
   expect(badge()).toBe("Open");
-  expect(document.querySelector<HTMLElement>(".link-reader-hovercard")?.dataset.cached).toBe(
-    "true",
-  );
+  expect(card()?.dataset.cached).toBe("true");
   expect(request).toHaveBeenCalledTimes(2);
   await leave(anchor);
   await hover(anchor);
@@ -162,23 +162,8 @@ it("labels still-stale metadata and retries only after short backoff", async () 
   expect(request).toHaveBeenCalledTimes(4);
 });
 
-it("does not let an older pending preview overwrite committed reader details", async () => {
-  const pending = Promise.withResolvers<ControlUiLinkReaderDocument>();
-  const request = vi.fn((method: string) =>
-    method === "github.detail" ? Promise.resolve(merged) : pending.promise,
-  );
-  const { anchor, client } = makeProvider(request);
-  await hover(anchor);
-  await openPanel(client);
-  await waitForSolid(() => expect(badge()).toBe("Merged"));
-  pending.resolve(open);
-  await vi.advanceTimersByTimeAsync(0);
-  expect(badge()).toBe("Merged");
-  expect(anchor.getAttribute("aria-description")).toBe("Merged");
-});
-
 it.each([false, true])(
-  "loads compact metrics without reverting fresh reader status (pending preview: %s)",
+  "keeps fresh details over compact previews (pending: %s)",
   async (pendingPreview) => {
     const pending = Promise.withResolvers<ControlUiLinkReaderDocument>();
     let previewReads = 0;
@@ -197,16 +182,20 @@ it.each([false, true])(
     await waitForSolid(() =>
       expect(panel.querySelector(".lr-state")?.textContent).toContain("Merged"),
     );
+    await waitForSolid(() => expect(badge()).toBe("Merged"));
     pending.resolve(open);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(badge()).toBe("Merged");
+    expect(anchor.getAttribute("aria-description")).toBe("Merged");
     await leave(anchor);
     await hover(anchor);
     expect(badge()).toBe("Merged");
-    expect(document.querySelector(".link-reader-hovercard__metadata")?.textContent).toBe("+42");
+    expect(metadata()).toBe("+42");
     expect(previewReads).toBe(pendingPreview ? 2 : 1);
   },
 );
 
-it("keeps reader facts visible when compact preview enrichment fails", async () => {
+it("keeps reader facts through enrichment failure and recovery", async () => {
   const pending = Promise.withResolvers<ControlUiLinkReaderDocument>();
   let previewResponse = pending.promise;
   const request = vi.fn((method: string) =>
@@ -220,9 +209,7 @@ it("keeps reader facts visible when compact preview enrichment fails", async () 
   pending.reject(new Error("Preview rate limited"));
   await vi.advanceTimersByTimeAsync(0);
   expect(badge()).toBe("Merged");
-  expect(document.querySelector<HTMLElement>(".link-reader-hovercard")?.dataset.cached).toBe(
-    "true",
-  );
+  expect(card()?.dataset.cached).toBe("true");
   await leave(anchor);
   await hover(anchor);
   expect(badge()).toBe("Merged");
@@ -236,6 +223,6 @@ it("keeps reader facts visible when compact preview enrichment fails", async () 
   await leave(anchor, 30_000);
   await hover(anchor);
   expect(badge()).toBe("Merged");
-  expect(document.querySelector(".link-reader-hovercard__metadata")?.textContent).toBe("+42");
+  expect(metadata()).toBe("+42");
   expect(request.mock.calls.filter(([method]) => method === "github.preview")).toHaveLength(3);
 });
