@@ -178,6 +178,44 @@ describe("chat pane board loading states", () => {
     }
   });
 
+  it("discards a retired lease's deferred cache write after a newer board arrives", async () => {
+    const sessionKey = "agent:main:retired-board-cache";
+    const { pane, request, snapshot, cleanup } = createGatewayBoardPane(sessionKey);
+    const response = createDeferred<BoardSnapshot>();
+    const hydration = createDeferred();
+    pane.state.settings = { ...pane.state.settings, gatewayUrl: "wss://gateway.example" };
+    Object.assign(pane.state.client!, {
+      recoveryScope: "admitted-account",
+      recoveryScopeReady: true,
+    });
+    const history = chatHistoryRequests(pane.state);
+    history.initialSnapshotHydration = { sessionKey, connected: false, promise: hydration.promise };
+    request.mockReturnValueOnce(response.promise);
+    const retired = pane.resolveBoardProvider();
+    try {
+      response.resolve(snapshot);
+      await response.promise;
+      expect(retired.hasLoadedSnapshot).toBe(true);
+      pane.releaseBoardProviderLease();
+      history.initialSnapshotHydration = undefined;
+      const newer = { ...snapshot, revision: 2 };
+      const newerResponse = Promise.resolve(newer);
+      request.mockReturnValueOnce(newerResponse);
+      pane.resolveBoardProvider();
+      await newerResponse;
+      const readBoard = () =>
+        readChatSessionSnapshot(pane.state.chatMessagesBySession, pane.state, { sessionKey })?.board
+          ?.snapshot;
+      expect(readBoard()).toEqual(newer);
+      hydration.resolve();
+      await hydration.promise;
+      expect(readBoard()).toEqual(newer);
+    } finally {
+      hydration.resolve();
+      cleanup();
+    }
+  });
+
   it("shows a board skeleton until the snapshot arrives", async () => {
     const sessionKey = "agent:main:pending-board";
     const { pane, request, snapshot, container, draw, cleanup } =

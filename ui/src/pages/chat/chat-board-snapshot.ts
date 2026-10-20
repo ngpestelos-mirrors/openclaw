@@ -1,3 +1,5 @@
+import { chatHistoryRequests } from "./chat-history-state.ts";
+import type { ChatPageHost } from "./chat-state-host.ts";
 import {
   cacheChatSessionSnapshot,
   readChatSessionSnapshot,
@@ -23,6 +25,27 @@ export function cacheChatBoardSnapshot(
     ...(existing ?? { messages: [], pagination: { hasMore: false }, sessionId: null }),
     board: snapshot !== null ? { snapshot, receivedAtMs } : null,
   });
+}
+
+export function cacheChatBoardSnapshotAfterHydration(
+  host: ChatPageHost,
+  target: ChatMessageCacheTarget,
+  snapshot: unknown,
+  receivedAtMs: number,
+  isCurrent: () => boolean,
+): void {
+  const persist = () => {
+    if (isCurrent()) {
+      cacheChatBoardSnapshot(host.chatMessagesBySession, host, target, snapshot, receivedAtMs);
+    }
+  };
+  // A board write must not invalidate the transcript read sharing this record.
+  const hydration = chatHistoryRequests(host).initialSnapshotHydration;
+  if (hydration) {
+    void hydration.promise.then(persist);
+  } else {
+    persist();
+  }
 }
 
 export function mergeStoredChatSessionSnapshot(

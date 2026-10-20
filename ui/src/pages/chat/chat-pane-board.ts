@@ -36,8 +36,7 @@ import {
   resolveUiConversationIdentity,
 } from "../../lib/sessions/session-key.ts";
 import { showToast } from "../../lib/toast.ts";
-import { cacheChatBoardSnapshot } from "./chat-board-snapshot.ts";
-import { chatHistoryRequests } from "./chat-history-state.ts";
+import { cacheChatBoardSnapshotAfterHydration } from "./chat-board-snapshot.ts";
 import { ChatPaneHistory } from "./chat-pane-history.ts";
 import type { ResolvedBoardView } from "./chat-pane-shared.ts";
 import { ensureLazySidebarElement } from "./chat-pane-sidebar-layout.ts";
@@ -294,42 +293,37 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
         this.releaseBoardProviderLease();
         const state = this.state;
         const context = this.context;
+        let active = true;
+        const lease = acquireBoardProviderForSession(
+          session,
+          client,
+          gateway.phase === "connected",
+          canPinWidgets,
+          canPinMcpApps,
+          canMutate,
+          canGrant,
+          presentationScope,
+          (snapshot, receivedAtMs) => {
+            const currentState = this.state;
+            if (!currentState) {
+              return;
+            }
+            cacheChatBoardSnapshotAfterHydration(
+              currentState,
+              session,
+              snapshot,
+              receivedAtMs,
+              () => active && gatewayPresentationScope(context.gateway) === presentationScope,
+            );
+          },
+        );
         this.boardProviderLease = {
-          ...acquireBoardProviderForSession(
-            session,
-            client,
-            gateway.phase === "connected",
-            canPinWidgets,
-            canPinMcpApps,
-            canMutate,
-            canGrant,
-            presentationScope,
-            (snapshot, receivedAtMs) => {
-              const currentState = this.state;
-              if (!currentState) {
-                return;
-              }
-              const persist = () => {
-                if (gatewayPresentationScope(context.gateway) === presentationScope) {
-                  cacheChatBoardSnapshot(
-                    currentState.chatMessagesBySession,
-                    currentState,
-                    session,
-                    snapshot,
-                    receivedAtMs,
-                  );
-                }
-              };
-              // A board write must not invalidate the transcript read sharing this record.
-              const hydration = chatHistoryRequests(currentState).initialSnapshotHydration;
-              if (hydration) {
-                void hydration.promise.then(persist);
-              } else {
-                persist();
-              }
-            },
-          ),
+          ...lease,
           cacheKey: key,
+          release: () => {
+            active = false;
+            lease.release();
+          },
         };
         const cached =
           state && readChatSessionSnapshot(state.chatMessagesBySession, state, session);
