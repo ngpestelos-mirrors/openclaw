@@ -28,34 +28,20 @@ const request: ManagedHandoffSentinelRequest = {
   },
   helper: { pid: 123, startIdentity: "fixture-start" },
 };
+const recordInput = {
+  ...identity,
+  expectedRevision: 123,
+  completedStatus: "error",
+  restored: true,
+  fallbackPayload: { kind: "update", status: "error", ts: 123 },
+  reason: "candidate-failed",
+  triageHint: "Run openclaw update repair",
+  serviceKind: "launchd",
+  handoffFailure: "candidate-failed",
+} as const;
 const record = {
   ...request,
-  operation: {
-    kind: "record",
-    input: {
-      ...identity,
-      expectedRevision: 123,
-      completedStatus: "error",
-      restored: true,
-      fallbackPayload: {
-        kind: "update",
-        status: "error",
-        ts: 123,
-        stats: {
-          handoffId: identity.handoffId,
-          runId: identity.runId,
-          root: identity.root,
-          mode: "unknown",
-          reason: "candidate-failed",
-          steps: [],
-        },
-      },
-      reason: "candidate-failed",
-      triageHint: "Run openclaw update repair",
-      serviceKind: "launchd",
-      handoffFailure: "candidate-failed",
-    },
-  },
+  operation: { kind: "record", input: recordInput },
 } satisfies ManagedHandoffSentinelRequest;
 
 beforeEach(() => {
@@ -88,17 +74,11 @@ describe("internal managed handoff sentinel Gateway boundary", () => {
   });
 
   it.each([
-    {
-      name: "SQL operation",
-      params: { ...request, operation: { kind: "sql", input: "SELECT 1" } },
-    },
-    {
-      name: "connection field",
-      params: { ...request, connection: "postgresql://fixture.invalid/db" },
-    },
-    {
-      name: "caller failure policy",
-      params: {
+    ["SQL operation", { ...request, operation: { kind: "sql", input: "SELECT 1" } }],
+    ["connection field", { ...request, connection: "postgresql://fixture.invalid/db" }],
+    [
+      "caller failure policy",
+      {
         ...request,
         operation: {
           kind: "inspect",
@@ -108,31 +88,31 @@ describe("internal managed handoff sentinel Gateway boundary", () => {
           },
         },
       },
-    },
-    {
-      name: "invalid helper identity",
-      params: {
+    ],
+    [
+      "invalid helper identity",
+      {
         ...request,
         helper: { pid: 123, startIdentity: "fixture", startIdentitySource: "argv-sha256" },
       },
-    },
-    {
-      name: "oversized notice",
-      params: {
+    ],
+    [
+      "oversized notice",
+      {
         ...record,
         operation: {
-          ...record.operation,
+          kind: "record",
           input: {
-            ...record.operation.input,
+            ...recordInput,
             fallbackPayload: {
-              ...record.operation.input.fallbackPayload,
+              ...recordInput.fallbackPayload,
               message: "x".repeat(65_537),
             },
           },
         },
       },
-    },
-  ])("rejects $name before entering the owner", async ({ params }) => {
+    ],
+  ] as const)("rejects %s before entering the owner", async (_name, params) => {
     expect(await invoke(params)).toHaveBeenCalledWith(
       false,
       undefined,

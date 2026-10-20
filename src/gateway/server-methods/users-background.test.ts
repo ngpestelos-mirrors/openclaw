@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { normalizeUserBackgroundImage } from "../../state/user-background-image.js";
@@ -97,26 +98,14 @@ describe("registered private background methods", () => {
     "refuses a pending decode after %s",
     async (revocation) => {
       const owner = client.authenticatedUserProfile!.profileId;
-      let release!: (value: typeof normalized) => void;
-      let started!: () => void;
-      const decoding = new Promise<void>((resolve) => {
-        started = resolve;
-      });
+      const decoding = createDeferred();
+      const decoded = createDeferred<typeof normalized>();
       vi.mocked(normalizeUserBackgroundImage).mockImplementationOnce(() => {
-        started();
-        return new Promise((resolve) => {
-          release = resolve;
-        });
+        decoding.resolve();
+        return decoded.promise;
       });
       const pending = rpc("users.background.upload", { ...empty, imageBase64: "dGVzdA==" });
-      await Promise.race([
-        decoding,
-        pending.then((response) => {
-          throw new Error(
-            "Upload finished before decoding: " + JSON.stringify(response.mock.calls),
-          );
-        }),
-      ]);
+      await awaitGateBeforeSettlement(decoding.promise, pending, "Upload finished before decoding");
       if (revocation === "disconnect") {
         connected = false;
       } else if (revocation === "profile-switch") {
@@ -124,7 +113,7 @@ describe("registered private background methods", () => {
       } else {
         client.connect.scopes = ["operator.read"];
       }
-      release(normalized);
+      decoded.resolve(normalized);
       const response = await pending;
       expect(response.mock.calls[0]?.[0]).toBe(false);
       expect(await getUserBackground(owner)).toEqual({

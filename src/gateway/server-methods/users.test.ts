@@ -72,9 +72,9 @@ async function runUsersHandler(
   params: object,
   client?: object,
   context: object = {},
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; respond?: ReturnType<typeof vi.fn> } = {},
 ) {
-  const respond = vi.fn();
+  const respond = options.respond ?? vi.fn();
   await expectDefined(
     usersHandlers[method],
     `${method} test invariant`,
@@ -86,6 +86,28 @@ async function runUsersHandler(
     ...options,
   } as never);
   return respond;
+}
+
+function expectUnavailable(respond: ReturnType<typeof vi.fn>) {
+  expect(respond).toHaveBeenCalledExactlyOnceWith(
+    false,
+    undefined,
+    expect.objectContaining({ code: "UNAVAILABLE" }),
+  );
+}
+
+function pauseWrite<T>(value: T) {
+  const entered = createDeferred();
+  const release = createDeferred();
+  return {
+    entered,
+    release,
+    run: async () => {
+      entered.resolve();
+      await release.promise;
+      return value;
+    },
+  };
 }
 
 describe("users gateway methods", () => {
@@ -125,45 +147,49 @@ describe("users gateway methods", () => {
     authenticatedUserId: "ada@example.com",
     connect: { scopes: ["operator.write"] },
   };
+  const profileBinding = {
+    profileId: profile.id,
+    displayName: "Ada",
+    hasAvatar: false,
+    updatedAt: 1,
+  };
+  const effects = [
+    ensureProfileIdForEmail,
+    prepareUserProfileRoleAuthority,
+    linkEmail,
+    mergeProfiles,
+    readResidentUserProfileRevision,
+    listProfiles,
+    setCanonicalUserProfileAvatar,
+    setCanonicalUserProfileDisplayName,
+    setUserProfileRole,
+    invalidateOperatorRolePolicy,
+  ];
 
   beforeEach(() => {
-    ensureProfileIdForEmail.mockReset();
-    prepareUserProfileRoleAuthority.mockReset();
+    for (const effect of effects) {
+      effect.mockReset();
+    }
     prepareUserProfileRoleAuthority.mockImplementation(async (profileId: string) => ({
       profileId,
       listItem: disclosedProfile,
       isCurrent: () => true,
     }));
-    linkEmail.mockReset();
-    mergeProfiles.mockReset();
-    listProfiles.mockReset();
-    setCanonicalUserProfileAvatar.mockReset();
-    setCanonicalUserProfileDisplayName.mockReset();
-    setUserProfileRole.mockReset();
-    invalidateOperatorRolePolicy.mockReset();
     disclosedProfile = profile;
-    readResidentUserProfileRevision.mockReset().mockReturnValue(residentProfile);
+    readResidentUserProfileRevision.mockReturnValue(residentProfile);
   });
 
   const malformedRequests = [
-    { method: "users.list", params: {} },
-    { method: "users.self", params: {} },
-    { method: "users.prefs.get", params: { keys: ["ui.theme"] } },
-    { method: "users.prefs.set", params: { entries: { "ui.theme": "claw" } } },
-    {
-      method: "users.linkEmail",
-      params: { email: "ada@example.test", targetProfileId: "profile-1" },
-    },
-    {
-      method: "users.setDisplayName",
-      params: { profileId: "profile-1", displayName: "Ada" },
-    },
-    { method: "users.setRole", params: { profileId: "profile-1", role: null } },
-    {
-      method: "users.setAvatar",
-      params: { profileId: "profile-1", mime: "image/png", avatarBase64: "AQ==" },
-    },
-  ].map(({ method, params }) => ({
+    ["users.list", {}],
+    ["users.self", {}],
+    ["users.prefs.get", { keys: ["ui.theme"] }],
+    ["users.prefs.set", { entries: { "ui.theme": "claw" } }],
+    ["users.linkEmail", { email: "ada@example.test", targetProfileId: "profile-1" }],
+    ["users.setDisplayName", { profileId: "profile-1", displayName: "Ada" }],
+    ["users.setRole", { profileId: "profile-1", role: null }],
+    ["users.setAvatar", { profileId: "profile-1", mime: "image/png", avatarBase64: "AQ==" }],
+  ] as const;
+  const malformed = malformedRequests.map(([method, params]) => ({
     method,
     params: { ...params, unexpected: true },
     schema: true,
@@ -176,7 +202,7 @@ describe("users gateway methods", () => {
     message?: string | RegExp;
     readsConfig?: boolean;
   }>([
-    ...malformedRequests,
+    ...malformed,
     { method: "users.setRole", params: { profileId: profile.id, role: "   " } },
     {
       method: "users.linkEmail",
@@ -227,18 +253,7 @@ describe("users gateway methods", () => {
       if (!readsConfig) {
         expect(getRuntimeConfig).not.toHaveBeenCalled();
       }
-      for (const effect of [
-        ensureProfileIdForEmail,
-        prepareUserProfileRoleAuthority,
-        linkEmail,
-        mergeProfiles,
-        readResidentUserProfileRevision,
-        listProfiles,
-        setCanonicalUserProfileAvatar,
-        setCanonicalUserProfileDisplayName,
-        setUserProfileRole,
-        invalidateOperatorRolePolicy,
-      ]) {
+      for (const effect of effects) {
         expect(effect).not.toHaveBeenCalled();
       }
     },
@@ -246,12 +261,7 @@ describe("users gateway methods", () => {
 
   function connectedProfileClient() {
     return {
-      authenticatedUserProfile: {
-        profileId: profile.id,
-        displayName: "Ada",
-        hasAvatar: false,
-        updatedAt: 1,
-      },
+      authenticatedUserProfile: { ...profileBinding },
       connect: { scopes: ["operator.write"] },
     };
   }
@@ -266,17 +276,10 @@ describe("users gateway methods", () => {
       .fn()
       .mockRejectedValueOnce(new Error("network unavailable"))
       .mockImplementationOnce(async () => {
-        providerClient.authenticatedUserProfile = {
-          profileId: profile.id,
-          displayName: "Ada",
-          hasAvatar: false,
-          updatedAt: 1,
-        };
+        providerClient.authenticatedUserProfile = { ...profileBinding };
         return { profileId: profile.id, updatedAt: profile.updatedAt };
       });
     providerClient.authenticatedGitHubIdentitySync = authenticatedGitHubIdentitySync;
-    disclosedProfile = profile;
-
     expect(await runUsersHandler("users.self", {}, providerClient)).toHaveBeenCalledWith(
       false,
       undefined,
@@ -320,18 +323,17 @@ describe("users gateway methods", () => {
   it.each(["users.linkEmail", "users.merge"] as const)(
     "suppresses %s publications when the administrator changes during the write",
     async (method) => {
-      const entered = createDeferred();
-      const release = createDeferred();
+      const { entered, release, run } = pauseWrite({
+        profile,
+        display,
+        movedAliasKinds: ["email"],
+      });
       const client = {
         connect: { role: "operator", scopes: ["operator.admin"] },
         authenticatedUserProfile: { profileId: "admin-profile" },
       };
       const store = method === "users.merge" ? mergeProfiles : linkEmail;
-      store.mockImplementationOnce(async () => {
-        entered.resolve();
-        await release.promise;
-        return { profile, display, movedAliasKinds: ["email"] };
-      });
+      store.mockImplementationOnce(run);
       const refreshConnectedUserProfile = vi.fn();
       const broadcast = vi.fn();
       const pending = runUsersHandler(
@@ -358,11 +360,7 @@ describe("users gateway methods", () => {
           movedAliasKinds: ["email"],
         });
       } else {
-        expect(respond).toHaveBeenCalledExactlyOnceWith(
-          false,
-          undefined,
-          expect.objectContaining({ code: "UNAVAILABLE" }),
-        );
+        expectUnavailable(respond);
       }
       expect(refreshConnectedUserProfile).not.toHaveBeenCalled();
       expect(broadcast).not.toHaveBeenCalled();
@@ -411,17 +409,12 @@ describe("users gateway methods", () => {
   );
 
   it("refreshes from the current catalog when an older name write returns late", async () => {
-    const entered = createDeferred();
-    const release = createDeferred();
     const firstProfile = { ...profile, displayName: "First name", updatedAt: 2 };
-    setCanonicalUserProfileDisplayName.mockImplementationOnce(async () => {
-      entered.resolve();
-      await release.promise;
-      return {
-        profile: firstProfile,
-        display: { ...display, displayName: "First name", avatarRevision: "2" },
-      };
+    const { entered, release, run } = pauseWrite({
+      profile: firstProfile,
+      display: { ...display, displayName: "First name", avatarRevision: "2" },
     });
+    setCanonicalUserProfileDisplayName.mockImplementationOnce(run);
     const refreshConnectedUserProfile = vi.fn();
     const pending = runUsersHandler(
       "users.setDisplayName",
@@ -624,11 +617,7 @@ describe("users gateway methods", () => {
       expect(respond).toHaveBeenCalledExactlyOnceWith(true, { profile });
       expect(setCanonicalUserProfileDisplayName).toHaveBeenCalledOnce();
     } else {
-      expect(respond).toHaveBeenCalledExactlyOnceWith(
-        false,
-        undefined,
-        expect.objectContaining({ code: "UNAVAILABLE" }),
-      );
+      expectUnavailable(respond);
       expect(setCanonicalUserProfileDisplayName).not.toHaveBeenCalled();
     }
   });
@@ -640,8 +629,6 @@ describe("users gateway methods", () => {
       ),
     ),
   )("settles $method before publishing after $change", async ({ method, change }) => {
-    const entered = createDeferred();
-    const release = createDeferred();
     const connection = new AbortController();
     const client = {
       ...connectedProfileClient(),
@@ -655,25 +642,20 @@ describe("users gateway methods", () => {
     }));
     const avatar = method === "users.setAvatar";
     const store = avatar ? setCanonicalUserProfileAvatar : setCanonicalUserProfileDisplayName;
-    store.mockImplementationOnce(async () => {
-      entered.resolve();
-      await release.promise;
-      return avatar ? { ok: true, value: { profile, display } } : { profile, display };
-    });
+    const { entered, release, run } = pauseWrite(
+      avatar ? { ok: true, value: { profile, display } } : { profile, display },
+    );
+    store.mockImplementationOnce(run);
     const refreshConnectedUserProfile = vi.fn();
     const respond = vi.fn();
-    const pending = Promise.resolve(
-      expectDefined(
-        usersHandlers[method],
-        `${method} test invariant`,
-      )({
-        client,
-        context: { getRuntimeConfig: () => ({}), refreshConnectedUserProfile },
-        params: avatar
-          ? { profileId: profile.id, mime: "image/png", avatarBase64: "AQ==" }
-          : { profileId: profile.id, displayName: "Ada" },
-        respond,
-      } as never),
+    const pending = runUsersHandler(
+      method,
+      avatar
+        ? { profileId: profile.id, mime: "image/png", avatarBase64: "AQ==" }
+        : { profileId: profile.id, displayName: "Ada" },
+      client,
+      { refreshConnectedUserProfile },
+      { respond },
     );
     try {
       await awaitGateBeforeSettlement(entered.promise, pending, "profile write was not awaited");
@@ -703,11 +685,7 @@ describe("users gateway methods", () => {
         updatedAt: profile.updatedAt,
       });
     } else {
-      expect(respond).toHaveBeenCalledExactlyOnceWith(
-        false,
-        undefined,
-        expect.objectContaining({ code: "UNAVAILABLE" }),
-      );
+      expectUnavailable(respond);
       expect(refreshConnectedUserProfile).not.toHaveBeenCalled();
     }
   });
