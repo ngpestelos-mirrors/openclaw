@@ -37,8 +37,8 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { handleReplyAgentRunError } from "./agent-runner-core.js";
+import { createRecoveryControllerFixture } from "./recovery-controller.fixture.test-support.js";
 import { createReplyRestartRecoveryClaimController } from "./restart-recovery-claim.js";
-import { createReplyRecoveryActorFixture } from "./restart-recovery-claim.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => memorySessionActorOwners.reset());
@@ -52,38 +52,18 @@ async function claimFixture(
     storePath: path.join(tempDirs.make("openclaw-reply-claim-"), "sessions.json"),
     sessionKey: "agent:main:main",
   };
-  let entry: InternalSessionEntry = {
-    sessionId: "session",
-    updatedAt: 1,
-    status: undefined,
-    restartRecoveryDeliveryRunId: "recovery-run",
-    ...initial,
-  };
-  await replaceSessionEntry(scope, entry);
-  const getSessionId = overrides.getSessionId ?? (() => entry.sessionId);
-  const actor = createReplyRecoveryActorFixture({ ...scope, getSessionId });
-  const controller = createReplyRestartRecoveryClaimController({
-    ...scope,
-    getSessionId,
-    acquireSessionActor: () => actor.acquireSessionActor(),
-    lifecycleGeneration: getAgentEventLifecycleGeneration(),
-    admissionRunId: "recovery-run",
-    getEntry: () => entry,
-    setEntry: (next) => {
-      entry = next;
-    },
-    isRestartAbort: () => false,
-    resolveDeliveryContext: () => undefined,
-    ...overrides,
-  });
-  return {
-    ...actor,
-    controller,
+  const fixture = await createRecoveryControllerFixture(
     scope,
-    setEntry: (next: InternalSessionEntry) => {
-      entry = next;
+    {
+      sessionId: "session",
+      updatedAt: 1,
+      status: undefined,
+      restartRecoveryDeliveryRunId: "recovery-run",
+      ...initial,
     },
-  };
+    { admissionRunId: "recovery-run", ...overrides },
+  );
+  return { ...fixture, controller: fixture.controller() };
 }
 
 async function restartReply(
@@ -132,62 +112,52 @@ async function withTrackedReply(
           ? resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main", env: state.env })
           : state.statePath("sessions.json"),
     };
-    let entry: InternalSessionEntry = {
+    await using actor = await createRecoveryControllerFixture(scope, {
       sessionId: "old-session",
       updatedAt: 1,
       status: undefined,
       restartRecoveryDeliveryRunId: "old-recovery",
       ...(storage === "memory" ? { incognito: true } : {}),
-    };
-    await replaceSessionEntry(scope, entry);
+    });
     const memory =
       storage === "memory"
         ? memorySessionActorOwners.read({ agentId: scope.agentId, path: scope.storePath })
         : undefined;
     const operation = createReplyOperation({
       ...scope,
-      sessionId: entry.sessionId,
+      sessionId: actor.entry.sessionId,
       resetTriggered: false,
     });
     operation.setPhase("running");
-    await using actor = createReplyRecoveryActorFixture({
-      ...scope,
-      getSessionId: () => operation.sessionId,
-      operation,
-    });
-    const controller = createReplyRestartRecoveryClaimController({
-      ...scope,
-      acquireSessionActor: () => actor.acquireSessionActor(),
-      admissionRunId: "old-recovery",
-      lifecycleGeneration: operation.lifecycleGeneration,
-      getEntry: () => entry,
-      getSessionId: () => operation.sessionId,
-      isRestartAbort: () =>
-        operation.result?.kind === "aborted" && operation.result.code === "aborted_for_restart",
-      resolveDeliveryContext: () => undefined,
-      setEntry: (value) => {
-        entry = value;
+    const controller = actor.controller(
+      {
+        admissionRunId: "old-recovery",
+        lifecycleGeneration: operation.lifecycleGeneration,
+        getSessionId: () => operation.sessionId,
+        isRestartAbort: () =>
+          operation.result?.kind === "aborted" && operation.result.code === "aborted_for_restart",
       },
-    });
+      operation,
+    );
     try {
       await controller.admitUserTurn();
       await test({
         controller,
         operation,
         async confirmArmed() {
-          entry = { ...entry, abortedLastRun: true };
-          await replaceSessionEntry(scope, entry);
+          actor.setEntry({ ...actor.entry, abortedLastRun: true });
+          await replaceSessionEntry(scope, actor.entry);
           expect(await controller.isArmed()).toBe(true);
         },
         async replaceWithSuccessor() {
-          entry = {
+          actor.setEntry({
             sessionId: "successor-session",
             updatedAt: 2,
             status: undefined,
             abortedLastRun: true,
             restartRecoveryDeliveryRunId: "successor-recovery",
-          };
-          await replaceSessionEntry(scope, entry);
+          });
+          await replaceSessionEntry(scope, actor.entry);
         },
         readEntry: () => loadSessionEntry(scope),
         releaseDatabase: () => actor.release(),
@@ -352,55 +322,37 @@ it.each(["active-storage", "retired-storage", "retired-cleanup"] as const)(
 );
 
 describe("restart recovery claim settlement", () => {
-  it.each([
-    { receiptState: undefined, expectedStatus: "done" },
-    { receiptState: "terminal-pending" as const, expectedStatus: "failed" },
-  ])(
-    "clears lifecycle ownership when claim cleanup settles $expectedStatus",
-    async ({ receiptState, expectedStatus }) => {
-      await using fixture = await claimFixture({
-        abortedLastRun: false,
-        lifecycleRunId: "recovery-run",
-        startedAt: 1,
-      });
+  it.each(["done", "failed", "restart"] as const)(
+    "settles lifecycle ownership for %s cleanup",
+    async (outcome) => {
+      let restartAborted = false;
+      await using fixture = await claimFixture(
+        { abortedLastRun: false, lifecycleRunId: "recovery-run", startedAt: 1 },
+        { isRestartAbort: () => restartAborted },
+      );
       const { controller, scope } = fixture;
       await expect(controller.admitUserTurn()).resolves.toBe("admitted");
-      if (receiptState) {
+      if (outcome === "failed") {
         fixture.setEntry(
           (await updateSessionEntry(scope, () => ({
-            restartRecoveryDeliveryReceiptState: receiptState,
+            restartRecoveryDeliveryReceiptState: "terminal-pending",
           }))) as InternalSessionEntry,
         );
-      } else {
+      } else if (outcome === "done") {
         await expect(controller.beginBeforeAgentReply()).resolves.toBe(true);
         await controller.checkpointBeforeAgentReply({ state: "handled-silent" });
+      } else {
+        restartAborted = true;
       }
       await controller.clear();
-
-      const persisted = loadSessionEntry(scope) as InternalSessionEntry;
-      expect(persisted.status).toBe(expectedStatus);
-      expect(persisted.lifecycleRunId).toBeUndefined();
+      const persisted = loadSessionEntry(scope);
+      expect(persisted?.status).toBe(outcome === "restart" ? undefined : outcome);
+      expect(persisted?.lifecycleRunId).toBe(outcome === "restart" ? "recovery-run" : undefined);
+      if (outcome === "restart") {
+        expect(persisted?.restartRecoveryDeliveryRunId).toBe("recovery-run");
+      }
     },
   );
-
-  it("preserves lifecycle ownership when cleanup observes a restart abort", async () => {
-    let restartAborted = false;
-    await using fixture = await claimFixture(
-      { abortedLastRun: false, lifecycleRunId: "recovery-run", startedAt: 1 },
-      { isRestartAbort: () => restartAborted },
-    );
-    const { controller, scope } = fixture;
-    await expect(controller.admitUserTurn()).resolves.toBe("admitted");
-    restartAborted = true;
-    await controller.clear();
-
-    const persisted = loadSessionEntry(scope);
-    expect(persisted).toMatchObject({
-      lifecycleRunId: "recovery-run",
-      restartRecoveryDeliveryRunId: "recovery-run",
-    });
-    expect(persisted?.status).toBeUndefined();
-  });
 
   it.each([
     "restart-handoff",

@@ -1,14 +1,10 @@
 import path from "node:path";
-import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
+import { assert, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelOutboundAdapter } from "../../channels/plugins/types.public.js";
-import { installDeliveryQueueTmpDirHooks } from "../../infra/outbound/delivery-queue.test-helpers.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
-import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
-import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
-import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
+import { installRouteReplyFixture } from "./route-reply.fixture.test-support.js";
 import { routePreparedReply, routeReply } from "./route-reply.js";
 
 const destination = {
@@ -25,12 +21,11 @@ function prepare(payload: ReplyPayload) {
 }
 
 describe("prepared reply routing", () => {
-  const fixtures = installDeliveryQueueTmpDirHooks();
+  const fixtures = installRouteReplyFixture();
   let visible: ReplyPayload[];
   let beforeDelivery: (() => Promise<void>) | undefined;
 
   beforeEach(() => {
-    vi.stubEnv("OPENCLAW_STATE_DIR", fixtures.tmpDir());
     visible = [];
     beforeDelivery = undefined;
     const outbound: ChannelOutboundAdapter = {
@@ -46,27 +41,15 @@ describe("prepared reply routing", () => {
         return { channel: "matrix", messageId: "media-sent" };
       },
     };
-    const plugin = createOutboundTestPlugin({
-      id: "matrix",
-      outbound,
+    fixtures.register(outbound, {
       messaging: {
         transformReplyPayload: ({ payload }) => ({
           ...payload,
           text: `${payload.text} transformed`,
         }),
       },
+      threading: { resolveReplyTransport: () => ({ replyToId: "routed-target", threadId: null }) },
     });
-    plugin.threading = {
-      resolveReplyTransport: () => ({ replyToId: "routed-target", threadId: null }),
-    };
-    setActivePluginRegistry(createTestRegistry([{ pluginId: "matrix", source: "test", plugin }]));
-  });
-
-  afterEach(() => {
-    closeOpenClawAgentDatabasesForTest();
-    vi.unstubAllEnvs();
-    resetPluginRuntimeStateForTest();
-    setActivePluginRegistry(createEmptyPluginRegistry());
   });
 
   it.each(["raw", "prepared"] as const)(
