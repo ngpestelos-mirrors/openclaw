@@ -74,7 +74,5 @@ describe("ensureCustomApiRegistered", () => {
 
     expect(registry.getApiProvider(api)).toBeDefined();
     expect(registry.getApiProvider("openai-responses")).toBeDefined();
-
-    registry.unregisterApiProviders(sourceId);
   });
 });

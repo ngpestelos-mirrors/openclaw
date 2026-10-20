@@ -8,16 +8,13 @@ import { applyDelegationCapability, resolveDelegationCapability } from "./delega
 import { attachToolAllowlistIntersection } from "./tool-policy.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
-function createTool(
-  name: string,
-  execute = vi.fn(async () => ({ content: [], details: {} })),
-): AnyAgentTool {
+function createTool(name: string): AnyAgentTool {
   return {
     name,
     label: name,
     description: name,
     parameters: {} as never,
-    execute,
+    execute: vi.fn(async () => ({ content: [], details: {} })),
   } as unknown as AnyAgentTool;
 }
 
@@ -61,38 +58,34 @@ describe("delegation capability", () => {
       provider: "openai",
       model: "gpt-4.1-mini",
     });
-    const inputProvenance = { kind: "inter_session" as const, sourceTool, sourceSessionKey: child };
     current = state !== "revoked";
-    const params: Parameters<typeof resolveDelegationCapability>[0] = {
-      fallbackActive: true,
-      inputProvenance,
-      disableTools: state === "disabled",
-      toolsAllow: state === "capped" ? ["message"] : undefined,
-      requesterContinuation: {
-        config: {},
-        sessionKey: parent,
-        sessionId: state === "wrong session" ? "new-id" : "parent-id",
-        modelProvider: "openai",
-        modelId: state === "wrong model" ? "gpt-4.1" : "gpt-4.1-mini",
-        trustedInternalHandoff: state === "provenance only" ? undefined : handoff,
-        preparedSessionCapabilityStore:
-          state === "missing lineage"
-            ? {}
-            : {
-                [child]: {
-                  sessionId: "child-id",
-                  spawnedBy: parent,
-                  spawnDepth: 1,
-                  inheritedToolPolicyVersion: 1,
-                  inheritedToolAllow: ["sessions_send", "sessions_spawn"],
-                  inheritedToolDeny: [],
+    expect(
+      resolveDelegationCapability({
+        fallbackActive: true,
+        inputProvenance: { kind: "inter_session", sourceTool, sourceSessionKey: child },
+        disableTools: state === "disabled",
+        toolsAllow: state === "capped" ? ["message"] : undefined,
+        requesterContinuation: {
+          config: {},
+          sessionKey: parent,
+          sessionId: state === "wrong session" ? "new-id" : "parent-id",
+          modelProvider: "openai",
+          modelId: state === "wrong model" ? "gpt-4.1" : "gpt-4.1-mini",
+          trustedInternalHandoff: state === "provenance only" ? undefined : handoff,
+          preparedSessionCapabilityStore:
+            state === "missing lineage"
+              ? {}
+              : {
+                  [child]: {
+                    spawnedBy: parent,
+                    spawnDepth: 1,
+                    inheritedToolPolicyVersion: 1,
+                    inheritedToolAllow: ["sessions_send", "sessions_spawn"],
+                  },
                 },
-              },
-      },
-    };
-    expect(resolveDelegationCapability(params)).toBe(
-      state === "current" ? "host_only" : "report_only",
-    );
+        },
+      }),
+    ).toBe(state === "current" ? "host_only" : "report_only");
   });
 
   it.each([
@@ -137,7 +130,7 @@ describe("delegation capability", () => {
       "message",
       "gateway",
       "sessions_history",
-    ].map((name) => createTool(name));
+    ].map(createTool);
 
     expect(applyDelegationCapability(tools, "report_only").map((tool) => tool.name)).toEqual([
       "message",
@@ -153,15 +146,12 @@ describe("delegation capability", () => {
     const [cron, image] = applyDelegationCapability(tools, "report_only");
 
     const result = { content: [], details: {} };
+    const denied = "New delegation is unavailable";
     await expect(cron?.execute("cron-status", { action: "status" })).resolves.toEqual(result);
     await expect(cron?.execute("cron-remove", { action: "remove" })).resolves.toEqual(result);
-    await expect(cron?.execute("cron-add", { action: "add" })).rejects.toThrow(
-      "New delegation is unavailable",
-    );
+    await expect(cron?.execute("cron-add", { action: "add" })).rejects.toThrow(denied);
     await expect(image?.execute("image-status", { action: "status" })).resolves.toEqual(result);
-    await expect(image?.execute("image-generate", {})).rejects.toThrow(
-      "New delegation is unavailable",
-    );
+    await expect(image?.execute("image-generate", {})).rejects.toThrow(denied);
     expect(tools[0].execute).toHaveBeenCalledTimes(2);
     expect(tools[1].execute).toHaveBeenCalledTimes(1);
   });

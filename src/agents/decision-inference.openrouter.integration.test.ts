@@ -3,26 +3,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import { normalizeModelCatalogProviderRows } from "../../packages/model-catalog-core/src/model-catalog-normalize.js";
-import { setRuntimeConfigSnapshot, clearRuntimeConfigSnapshot } from "../config/config.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
-import type { DecisionRuntimeV2 } from "../decisions/types-v2.js";
-import { withServer } from "../plugin-sdk/test-helpers/http-test-server.js";
-import { loadAndActivateRootPluginRegistry } from "../plugins/loader.js";
-import { resetPluginLoaderTestStateForTest } from "../plugins/loader.test-fixtures.js";
+import { setRuntimeConfigSnapshot } from "../config/config.js";
 import { normalizeManifestModelCatalog } from "../plugins/manifest-decision-catalog.js";
 import { loadPluginManifest } from "../plugins/manifest.js";
-import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
-import {
-  createColdPluginFixture,
-  createColdPluginHermeticEnv,
-} from "../plugins/test-helpers/cold-plugin-fixtures.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import {
-  decisionOptions,
-  readDecisionRequest,
-  trackDecisionUsage,
-} from "./decision-inference.test-support.js";
+import * as harness from "./decision-inference.test-support.js";
 import { modelCatalogRowToEntry } from "./model-catalog-entry.js";
 import { buildAllowedModelSet } from "./model-selection-shared.js";
 import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runtime.test-support.js";
@@ -42,13 +28,7 @@ const modelId = "typesafe/jev-1.13";
 const modelRef = `openrouter/${modelId}`;
 const resolvedModel = "typesafe/jev-1.13-20260917";
 afterEach(async () => {
-  await resetPreparedModelRuntimeSnapshotsForTest();
-  clearRuntimeConfigSnapshot();
-  clearPluginMetadataLifecycleCaches();
-  resetPluginLoaderTestStateForTest();
-  Reflect.deleteProperty(globalThis, traceKey);
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
+  await harness.resetDecisionTestRuntime(traceKey);
 });
 
 it.each([
@@ -64,25 +44,8 @@ it.each([
       await state.cleanup();
     });
     const root = state.root;
-    const consumerRoot = path.join(root, "consumer");
-    const emptyBundled = path.join(root, "bundled");
-    fs.mkdirSync(consumerRoot);
-    fs.mkdirSync(emptyBundled);
     const consumerId = "openrouter-decision-consumer";
-    const consumer = createColdPluginFixture({ rootDir: consumerRoot, pluginId: consumerId });
-    fs.writeFileSync(
-      consumer.runtimeSource,
-      'const trace=globalThis[Symbol.for("openclaw.test.openrouter-decision-path")]; module.exports={id:"openrouter-decision-consumer",register(api){trace.runtime=api.runtime.decisions;}};',
-    );
-    const trace: { runtime?: DecisionRuntimeV2 } = {};
-    Reflect.set(globalThis, traceKey, trace);
-    const received: Array<{
-      url?: string;
-      authorization?: string;
-      tenant?: string;
-      customAuth?: string;
-      body: unknown;
-    }> = [];
+    const { consumerRoot, trace } = harness.createDecisionConsumer(root, consumerId, traceKey);
     let cost: number | undefined = 0.000019992;
     let upstreamProvider: string | undefined = "TypeSafe";
     let status = 200;
@@ -106,30 +69,17 @@ it.each([
       },
       usage: { input_tokens: 476, output_tokens: 70, cost },
     });
-    await withServer(
-      (request, response) => {
-        if (request.url?.endsWith("/models")) {
-          response.writeHead(200, { "content-type": "application/json" });
-          response.end(
-            JSON.stringify({
-              data: [{ id: modelId, architecture: { modality: "text->decisions" } }],
-            }),
-          );
-          return;
-        }
-        readDecisionRequest(request, (body) => {
-          received.push({
-            url: request.url,
-            authorization: request.headers.authorization,
-            tenant: String(request.headers["x-fixture-tenant"] ?? ""),
-            customAuth: request.headers["x-fixture-auth"]?.toString(),
-            body,
-          });
-          response.writeHead(status, { "content-type": "application/json" });
-          response.end(status === 200 ? JSON.stringify(responseBody()) : "synthetic-private-error");
-        });
-      },
-      async (origin) => {
+    await harness.withDecisionServer(
+      (transport) => ({
+        status,
+        body:
+          status === 200
+            ? responseBody()
+            : transport === "http"
+              ? "synthetic-private-error"
+              : { error: "synthetic-private-error" },
+      }),
+      async ({ origin, requests: received, mockFetch }) => {
         const baseUrl =
           route === "canonical" ? "https://openrouter.ai/api/v1" : origin + "/tenant/api/v1";
         let pluginRoot = fileURLToPath(new URL("../../extensions/openrouter", import.meta.url));
@@ -157,82 +107,15 @@ it.each([
           pluginRoot = fixtureRoot;
         } else {
           // Keep the shipped manifest and actual SSRF/host boundary. Only HTTP I/O is synthetic.
-          vi.stubGlobal(
-            "fetch",
-            vi.fn<typeof fetch>(async (url, init) => {
-              const target =
-                typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
-              if (target.endsWith("/models")) {
-                return Response.json({ data: [] });
-              }
-              expect(target).toBe(baseUrl + "/systemone");
-              if (typeof init?.body !== "string") {
-                throw new Error("Expected a JSON string request body");
-              }
-              const headers = new Headers(init.headers);
-              received.push({
-                url: new URL(target).pathname,
-                authorization: headers.get("authorization") ?? undefined,
-                tenant: headers.get("x-fixture-tenant") ?? "",
-                body: JSON.parse(init.body),
-              });
-              return Response.json(
-                status === 200 ? responseBody() : { error: "synthetic-private-error" },
-                { status },
-              );
-            }),
-          );
+          mockFetch(baseUrl + "/systemone");
         }
         const credential =
           auth === "oauth-key" ? "synthetic-oauth-issued-key" : "synthetic-openrouter-credential";
-        const cfg: OpenClawConfig = {
-          diagnostics: { enabled: true },
-          agents: {
-            defaults: {
-              model: "unrelated/not-configured",
-              decisionModel: modelRef + (auth === "oauth-key" ? "@openrouter:oauth-fixture" : ""),
-              workspace: path.join(root, "workspace"),
-              models: {
-                [modelRef]: {
-                  params: { provider: { order: ["typesafe"], require_parameters: true } },
-                },
-              },
-            },
-          },
-          models: {
-            providers: {
-              openrouter: {
-                baseUrl,
-                apiKey: auth === "oauth-key" ? "synthetic-not-selected" : credential,
-                models: [],
-                headers: {
-                  "X-Fixture-Tenant": "synthetic-replaced-tenant",
-                  ...(route === "declared-proxy"
-                    ? { Authorization: "Bearer synthetic-replaced-auth" }
-                    : {}),
-                },
-                params: {
-                  provider: { data_collection: "deny", only: ["typesafe"], allow_fallbacks: false },
-                },
-                request: {
-                  allowPrivateNetwork: true,
-                  headers: { "x-fixture-tenant": "fixture-tenant" },
-                  ...(route === "declared-proxy"
-                    ? {
-                        auth: {
-                          mode: "header" as const,
-                          headerName: "x-fixture-auth",
-                          value: "synthetic-prepared-custom",
-                        },
-                      }
-                    : {}),
-                },
-              },
-            },
-          },
-          plugins: {
+        const cfg = harness.decisionConfig(
+          root,
+          modelRef + (auth === "oauth-key" ? "@openrouter:oauth-fixture" : ""),
+          {
             load: { paths: [pluginRoot, consumerRoot] },
-            slots: { memory: "none" },
             entries: {
               openrouter: { enabled: true },
               [consumerId]: {
@@ -243,6 +126,41 @@ it.each([
                   allowModelOverride: false,
                   allowAuthProfileOverride: false,
                 },
+              },
+            },
+          },
+        );
+        cfg.diagnostics = { enabled: true };
+        cfg.agents!.defaults!.models = {
+          [modelRef]: { params: { provider: { order: ["typesafe"], require_parameters: true } } },
+        };
+        cfg.models = {
+          providers: {
+            openrouter: {
+              baseUrl,
+              apiKey: auth === "oauth-key" ? "synthetic-not-selected" : credential,
+              models: [],
+              headers: {
+                "X-Fixture-Tenant": "synthetic-replaced-tenant",
+                ...(route === "declared-proxy"
+                  ? { Authorization: "Bearer synthetic-replaced-auth" }
+                  : {}),
+              },
+              params: {
+                provider: { data_collection: "deny", only: ["typesafe"], allow_fallbacks: false },
+              },
+              request: {
+                allowPrivateNetwork: true,
+                headers: { "x-fixture-tenant": "fixture-tenant" },
+                ...(route === "declared-proxy"
+                  ? {
+                      auth: {
+                        mode: "header" as const,
+                        headerName: "x-fixture-auth",
+                        value: "synthetic-prepared-custom",
+                      },
+                    }
+                  : {}),
               },
             },
           },
@@ -260,12 +178,10 @@ it.each([
           };
         }
         await withEnvAsync(
-          {
-            ...createColdPluginHermeticEnv(root, { bundledPluginsDir: emptyBundled }),
+          harness.decisionEnv(root, {
             ...state.envVars,
-            OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
             OPENROUTER_API_KEY: undefined,
-          },
+          }),
           async () => {
             if (auth === "oauth-key") {
               // PKCE persists an API key selected through the normal profile owner.
@@ -281,12 +197,7 @@ it.each([
                 },
               });
             }
-            setRuntimeConfigSnapshot(cfg, sourceConfig);
-            const registry = await loadAndActivateRootPluginRegistry({
-              config: cfg,
-              workspaceDir: path.join(root, "workspace"),
-            });
-            expect(registry.diagnostics.filter((item) => item.level === "error")).toEqual([]);
+            const registry = await harness.activateDecisionRegistry(cfg, {}, sourceConfig);
             expect({
               providers: registry.providers.filter((entry) => entry.provider.id === "openrouter")
                 .length,
@@ -294,7 +205,7 @@ it.each([
                 (entry) => entry.host.provider.id === "openrouter",
               ).length,
             }).toEqual({ providers: 1, decisions: 1 });
-            const events = trackDecisionUsage();
+            const events = harness.trackDecisionUsage();
             const runtime = trace.runtime;
             if (!runtime) {
               throw new Error("Missing registered decision SDK");
@@ -302,7 +213,7 @@ it.each([
             // Warm the lazy import before ProviderHost starts its operation deadline.
             await import("./decision-inference.js");
             const options = () =>
-              decisionOptions({
+              harness.decisionOptions({
                 agentId: "main",
                 purpose: "openrouter-native-fixture",
                 rubricVersion: "1",
@@ -323,7 +234,7 @@ it.each([
                 },
               },
             };
-            const evaluate = (overrides: Parameters<typeof decisionOptions>[0] = {}) =>
+            const evaluate = (overrides: Parameters<typeof harness.decisionOptions>[0] = {}) =>
               runtime.evaluateV2(batch, { ...options(), ...overrides });
             const selectModel = (decisionModel: string) =>
               setRuntimeConfigSnapshot({
@@ -356,25 +267,29 @@ it.each([
               },
               provenance: { providerId: "openrouter" },
             });
-            expect(received[0]).toEqual({
-              url: new URL(baseUrl).pathname + "/systemone",
-              authorization: route === "canonical" ? `Bearer ${credential}` : undefined,
-              ...(route === "declared-proxy" ? { customAuth: "synthetic-prepared-custom" } : {}),
-              tenant: "fixture-tenant",
-              body: {
-                model: modelId,
-                state: "Synthetic evidence",
-                questions: {
-                  ...batch.questions,
-                  q: { type: "noul", instructions: "Is it urgent?" },
-                },
-                provider: {
-                  data_collection: "deny",
-                  only: ["typesafe"],
-                  allow_fallbacks: false,
-                  order: ["typesafe"],
-                  require_parameters: true,
-                },
+            expect(received[0]?.url).toBe(baseUrl + "/systemone");
+            expect(
+              ["authorization", "x-fixture-auth", "x-fixture-tenant"].map((name) =>
+                received[0]?.headers.get(name),
+              ),
+            ).toEqual([
+              route === "canonical" ? `Bearer ${credential}` : null,
+              route === "declared-proxy" ? "synthetic-prepared-custom" : null,
+              "fixture-tenant",
+            ]);
+            expect(received[0]?.body).toEqual({
+              model: modelId,
+              state: "Synthetic evidence",
+              questions: {
+                ...batch.questions,
+                q: { type: "noul", instructions: "Is it urgent?" },
+              },
+              provider: {
+                data_collection: "deny",
+                only: ["typesafe"],
+                allow_fallbacks: false,
+                order: ["typesafe"],
+                require_parameters: true,
               },
             });
             expect(events).toHaveLength(1);
@@ -461,6 +376,7 @@ it.each([
           },
         );
       },
+      { data: [{ id: modelId, architecture: { modality: "text->decisions" } }] },
     );
   },
 );

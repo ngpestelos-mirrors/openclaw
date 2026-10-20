@@ -41,7 +41,7 @@ describe("coding-tool exec working directory", () => {
   });
 
   function createExecTool(sandbox?: Parameters<typeof createCoreCodingTools>[0]["sandbox"]) {
-    const tools = createCoreCodingTools({
+    return createCoreCodingTools({
       codingRoot,
       containmentRoot: codingRoot,
       includeBaseCodingTools: false,
@@ -59,26 +59,25 @@ describe("coding-tool exec working directory", () => {
         config: { plugins: { enabled: false } },
       },
       processDefaults: {},
-    });
-    return tools.find((tool) => tool.name === "exec")!;
+    }).find((tool) => tool.name === "exec")!;
   }
 
   it.each([
-    { workdir: undefined, directory: "workspace", pty: false },
-    { workdir: ".", directory: "workspace", pty: true },
-    { workdir: "nested", directory: "workspace/nested", pty: false },
-    { workdir: "~", directory: "workspace/~", pty: false },
-    { workdir: "../sibling", directory: "sibling", pty: false },
-    { workdir: "absolute", directory: "sibling", pty: false },
-  ])("executes in $directory for workdir=$workdir (PTY=$pty)", async (testCase) => {
+    [undefined, "workspace", false],
+    [".", "workspace", true],
+    ["nested", "workspace/nested", false],
+    ["~", "workspace/~", false],
+    ["../sibling", "sibling", false],
+    ["absolute", "sibling", false],
+  ] as const)("executes for workdir=%s in %s (PTY=%s)", async (input, directory, pty) => {
     expect(fs.realpathSync(process.cwd())).not.toBe(codingRoot);
-    const workdir = testCase.workdir === "absolute" ? path.join(root, "sibling") : testCase.workdir;
+    const workdir = input === "absolute" ? path.join(root, "sibling") : input;
     const result = await createExecTool().execute("coding-workdir", {
       command: process.platform === "win32" ? "(Get-Location).Path" : "pwd -P",
       workdir,
-      pty: testCase.pty,
+      pty,
     });
-    const expectedCwd = fs.realpathSync(path.join(root, testCase.directory));
+    const expectedCwd = fs.realpathSync(path.join(root, directory));
     expect(result.details).toMatchObject({ status: "completed", exitCode: 0, cwd: expectedCwd });
     const output = result.content.find((content) => content.type === "text")?.text;
     expect(output?.trim()).toBe(expectedCwd);

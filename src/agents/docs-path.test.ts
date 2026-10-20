@@ -26,9 +26,8 @@ async function writeDocsJson(root: string): Promise<void> {
   await fs.writeFile(path.join(root, "docs", "docs.json"), "{}\n");
 }
 
-async function rejectShell() {
-  throw new Error("Reference discovery must not execute shell commands");
-}
+const rejectShell = () =>
+  Promise.reject(new Error("Reference discovery must not execute shell commands"));
 
 describe("resolveOpenClawReferencePaths", () => {
   it.each(["workspace", "nested", "incomplete", "npm", "git"])(
@@ -44,16 +43,12 @@ describe("resolveOpenClawReferencePaths", () => {
       const references = await resolveOpenClawReferencePaths(
         scenario === "workspace" ? { workspaceDir: root } : { cwd },
       );
-      const expected = {
-        docsPath: hasDocs ? path.join(root, "docs") : null,
-        ...(scenario === "git" || scenario === "npm"
-          ? { sourcePath: scenario === "git" ? root : null }
-          : {}),
-      };
+      const docsPath = hasDocs ? path.join(root, "docs") : null;
+      expect(references.docsPath).toBe(docsPath);
       if (scenario === "git") {
-        expect(references).toEqual(expected);
-      } else {
-        expect(references).toMatchObject(expected);
+        expect(references).toEqual({ docsPath, sourcePath: root });
+      } else if (scenario === "npm") {
+        expect(references.sourcePath).toBeNull();
       }
     },
   );
@@ -91,16 +86,14 @@ describe("resolveOpenClawReferencePaths", () => {
         agentWorkspaceDir: scenario === "read-only" ? root : workspaceDir,
         workspaceAccess: scenario === "read-only" ? "ro" : "rw",
       },
-      dockerOverrides: {
-        tmpfs: scenario === "bind" ? ["/workspace/docs"] : [],
-        binds:
-          scenario === "bind"
-            ? [`${root}/docs:/reference:ro`]
-            : scenario === "shadow"
-              ? [`${workspace}:/workspace/docs:ro`]
-              : [],
-      },
     });
+    sandbox.docker.tmpfs = scenario === "bind" ? ["/workspace/docs"] : [];
+    sandbox.docker.binds =
+      scenario === "bind"
+        ? [`${root}/docs:/reference:ro`]
+        : scenario === "shadow"
+          ? [`${workspace}:/workspace/docs:ro`]
+          : [];
     if (scenario === "remote" || scenario === "remote-alias") {
       sandbox.fsBridge = createRemoteShellSandboxFsBridge({
         sandbox,
@@ -111,12 +104,8 @@ describe("resolveOpenClawReferencePaths", () => {
         },
       });
     } else if (scenario !== "no-bridge") {
-      sandbox.fsBridge = createSandboxFsBridge({
-        sandbox: {
-          ...sandbox,
-          backend: { runShellCommand: rejectShell },
-        },
-      });
+      const context = { ...sandbox, backend: { runShellCommand: rejectShell } };
+      sandbox.fsBridge = createSandboxFsBridge({ sandbox: context });
     }
     const references = await resolveOpenClawReferencePaths({
       workspaceDir: sandbox.workspaceDir,

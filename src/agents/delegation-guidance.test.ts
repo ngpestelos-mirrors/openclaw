@@ -64,14 +64,10 @@ describe("buildDelegationGuidanceSection", () => {
       ...overrides,
     });
 
-  it.each([
-    { hiddenDelegationTool: "`sessions_spawn`", expected: "delegate via `sessions_spawn`" },
-    {
-      hiddenDelegationTool: "native `spawn_agent`",
-      expected: "delegate via native `spawn_agent`",
-    },
-  ])("injects $hiddenDelegationTool", ({ hiddenDelegationTool, expected }) => {
-    expect(buildSection({ hiddenDelegationTool }).join("\n")).toContain(expected);
+  it.each(["`sessions_spawn`", "native `spawn_agent`"])("injects %s", (hiddenDelegationTool) => {
+    expect(buildSection({ hiddenDelegationTool }).join("\n")).toContain(
+      `delegate via ${hiddenDelegationTool}`,
+    );
   });
 
   it.each([

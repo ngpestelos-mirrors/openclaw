@@ -4,20 +4,13 @@ import { fileURLToPath } from "node:url";
 import type { ModelDecisionCapabilities } from "@openclaw/model-catalog-core/model-catalog-types";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { setRuntimeConfigSnapshot, clearRuntimeConfigSnapshot } from "../config/config.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { setRuntimeConfigSnapshot } from "../config/config.js";
 import type { DecisionProviderContextV2 } from "../decisions/provider-context.js";
 import type { DecisionBatchResultV2, DecisionRuntimeV2 } from "../decisions/types-v2.js";
-import type { DecisionRuntimeV1 } from "../decisions/types.js";
 import {
   createContext,
   createOperatorClient,
 } from "../gateway/server-plugin-in-process-dispatch.test-support.js";
-import { resetDiagnosticEventsForTest } from "../infra/diagnostic-events.js";
-import { withServer } from "../plugin-sdk/test-helpers/http-test-server.js";
-import { loadAndActivateRootPluginRegistry } from "../plugins/loader.js";
-import { resetPluginLoaderTestStateForTest } from "../plugins/loader.test-fixtures.js";
-import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import {
   assertProviderAuthAuthority,
   getProviderAuthAuthority,
@@ -25,10 +18,7 @@ import {
 import * as modelRoutes from "../plugins/provider-model-routes.js";
 import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import { getPluginRuntimeGenerationRegistry } from "../plugins/runtime/generation-state.js";
-import {
-  createColdPluginFixture,
-  createColdPluginHermeticEnv,
-} from "../plugins/test-helpers/cold-plugin-fixtures.js";
+import { createColdPluginFixture } from "../plugins/test-helpers/cold-plugin-fixtures.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import * as profileReader from "../state/user-profile-list.js";
 import { withEnvAsync } from "../test-utils/env.js";
@@ -37,17 +27,11 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { VERSION } from "../version.js";
-import { resolveAgentDir, resolveDefaultAgentId } from "./agent-scope.js";
 import { executePreparedDecision } from "./decision-inference.js";
-import {
-  decisionOptions,
-  readDecisionRequest,
-  trackDecisionUsage,
-  unavailable,
-} from "./decision-inference.test-support.js";
+import * as harness from "./decision-inference.test-support.js";
 import * as modelAuth from "./model-auth-provider.js";
-import { acquireAgentRunPreparedModelRuntime } from "./prepared-model-runtime.js";
 import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runtime.test-support.js";
+import { getModelProviderRequestTransport } from "./provider-request-config.js";
 
 const roots = useAutoCleanupTempDirTracker(afterEach);
 const traceKey = Symbol.for("openclaw.test.decision-prepared-path");
@@ -66,22 +50,6 @@ const catalogTransport = {
   baseUrl: "https://catalog.fixture.invalid/v1",
 };
 const nativeModel = { id: "native", name: "Native fixture" };
-function fixtureConfig(
-  root: string,
-  decisionModel: string,
-  plugins: NonNullable<OpenClawConfig["plugins"]>,
-): OpenClawConfig {
-  return {
-    agents: {
-      defaults: {
-        model: "unrelated/not-configured",
-        decisionModel,
-        workspace: path.join(root, "workspace"),
-      },
-    },
-    plugins: { slots: { memory: "none" }, ...plugins },
-  };
-}
 type Trace = {
   calls: number;
   context?: DecisionProviderContextV2;
@@ -90,31 +58,16 @@ type Trace = {
   beforeRequest?: (context: DecisionProviderContextV2) => void;
   fetch?: typeof fetch;
   work?: Promise<void>;
-  authenticated: boolean;
   usage?: DecisionBatchResultV2["usage"];
-  modelKeys?: string[];
-  profileId?: string;
-  agentId?: string;
-  modelContextWindow?: number;
   resultReads?: number;
   resultOverride?: { value: unknown };
-  modelBilling?: unknown;
-  modelBaseUrl?: string;
-  modelHeaders?: Record<string, string>;
-  modelRequest?: unknown;
-  modelApi?: string;
   preparedApi?: string;
   evaluate?: DecisionRuntimeV2["evaluateV2"];
-  evaluateV1?: DecisionRuntimeV1["evaluate"];
 };
 afterEach(async () => {
-  await resetPreparedModelRuntimeSnapshotsForTest();
-  vi.restoreAllMocks();
-  clearRuntimeConfigSnapshot();
-  clearPluginMetadataLifecycleCaches();
-  resetPluginLoaderTestStateForTest();
-  resetDiagnosticEventsForTest();
-  Reflect.deleteProperty(globalThis, traceKey);
+  await harness.resetDecisionTestRuntime(traceKey, () => {
+    vi.restoreAllMocks();
+  });
   await profileState?.cleanup();
   profileState = undefined;
 });
@@ -212,13 +165,12 @@ it.each([
             ? 'normalizeResolvedModel(context) { return { ...context.model, api: "openai-responses" }; }, prepareRuntimeAuth(context) { trace.preparedApi=context.model.api; return { apiKey: context.apiKey, baseUrl: "https://entitlement.fixture.invalid/v1", request: { headers: { "x-fixture-entitlement": "synthetic-entitlement" }, auth: { mode: "header", headerName: "x-fixture-auth", value: "synthetic-exchanged-header" } } }; },'
             : "") +
           "} ,",
-        'async evaluate(batch, context) { trace.calls++; trace.context=context; trace.profileId=context.auth.profileId; trace.agentId=context.agentId; trace.onDispatch?.(); await trace.work; trace.beforeRequest?.(context); if (!context.isAdmissible()) return { status: "unavailable", reason: "unsupported-input" }; await trace.fetch?.("https://dispatch.fixture.invalid/v1/decisions", { method: "POST" }); trace.authenticated = context.auth.apiKey === "synthetic-prepared-token"; trace.modelKeys = Object.keys(context.model); trace.modelContextWindow = context.model.contextWindow; trace.modelBilling=context.model.inference?.decision?.billing; trace.modelBaseUrl=context.model.baseUrl; trace.modelHeaders=context.model.headers; trace.modelRequest=context.model[Symbol.for("openclaw.modelProviderRequestTransport")]; trace.modelApi=context.model.api; let reads = 0; return { status: "ok", get result() { trace.resultReads = ++reads; if (trace.resultOverride) return trace.resultOverride.value; return { model: context.model.id, answers: { q: reads === 1 ? { type: "boolean", answer: null } : { type: "boolean", probabilityTrue: 0.75 } }, usage: trace.usage }; } }; }',
+        'async evaluate(batch, context) { trace.calls++; trace.context=context; trace.onDispatch?.(); await trace.work; trace.beforeRequest?.(context); if (!context.isAdmissible()) return { status: "unavailable", reason: "unsupported-input" }; await trace.fetch?.("https://dispatch.fixture.invalid/v1/decisions", { method: "POST" }); let reads = 0; return { status: "ok", get result() { trace.resultReads = ++reads; if (trace.resultOverride) return trace.resultOverride.value; return { model: context.model.id, answers: { q: reads === 1 ? { type: "boolean", answer: null } : { type: "boolean", probabilityTrue: 0.75 } }, usage: trace.usage }; } }; }',
         "}); trace.evaluate = api.runtime.decisions.evaluateV2; } };",
       ].join("\n"),
     );
     const trace: Trace = {
       calls: 0,
-      authenticated: false,
       usage: { inputTokens: 100, costUsd: 0 },
     };
     Reflect.set(globalThis, traceKey, trace);
@@ -237,7 +189,7 @@ it.each([
         },
       });
     }
-    const cfg = fixtureConfig(
+    const cfg = harness.decisionConfig(
       root,
       id + "/native" + (authScope === "profile" ? "@" + id + ":agent" : ""),
       {
@@ -272,25 +224,17 @@ it.each([
         },
       };
     }
-    const env = {
-      ...createColdPluginHermeticEnv(root, { bundledPluginsDir: emptyBundled }),
+    const env = harness.decisionEnv(root, {
       ...profileState?.envVars,
-      OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
       OPENCLAW_STATE_DIR: profileState?.stateDir ?? path.join(root, "state"),
-    };
+    });
     await withEnvAsync(env, async () => {
-      setRuntimeConfigSnapshot(cfg);
-      const registry = await loadAndActivateRootPluginRegistry({
-        config: cfg,
-        env,
-        workspaceDir: path.join(root, "workspace"),
-      });
-      expect(registry.diagnostics.filter((item) => item.level === "error")).toEqual([]);
+      const registry = await harness.activateDecisionRegistry(cfg, { env });
       const evaluate = trace.evaluate;
       if (!evaluate) {
         throw new Error("Decision registration omitted its runtime capability");
       }
-      const usageEvents = trackDecisionUsage();
+      const usageEvents = harness.trackDecisionUsage();
       if (deadlinePhase) {
         const entered = createDeferredCore();
         const release = createDeferredCore();
@@ -327,7 +271,7 @@ it.each([
           () =>
             evaluate(
               textBatch("synthetic deadline"),
-              decisionOptions({ timeoutMs: 500, signal: controller.signal }),
+              harness.decisionOptions({ timeoutMs: 500, signal: controller.signal }),
             ),
         );
         let settled = false;
@@ -364,7 +308,7 @@ it.each([
           expect(settled).toBe(false);
           expect(providerHost.inspect(cfg).activeRequests).toBe(1);
           release.resolve();
-          expect(await settlement).toEqual({ outcome: unavailable("deadline") });
+          expect(await settlement).toEqual({ outcome: harness.unavailable("deadline") });
           expect(trace.calls).toBe(deadlinePhase === "provider" ? 1 : 0);
           expect(providerHost.inspect(cfg).activeRequests).toBe(0);
           expect(usageEvents).toEqual([]);
@@ -453,51 +397,56 @@ it.each([
             }
           : evaluate;
       const evaluateFixture = () =>
-        invoke(textBatch(), decisionOptions(authScope === "profile" ? { agentId: "main" } : {}));
+        invoke(
+          textBatch(),
+          harness.decisionOptions(authScope === "profile" ? { agentId: "main" } : {}),
+        );
       const outcome = await evaluateFixture();
-      if (authScope.startsWith("plugin-route-") && authScope !== "plugin-route-fresh") {
-        expect(outcome).toEqual(unavailable("unsupported-input"));
-        expect(trace.calls).toBe(0);
-        expect(
-          credentialPreparation.mock.calls.filter(([params]) => params.capability === "decision"),
-        ).toEqual([]);
-        expect(usageEvents).toEqual([]);
-        return;
-      }
-      if (authScope === "plugin-route-fresh") {
-        expect(trace).toMatchObject({
-          modelBaseUrl: "https://selected.fixture.invalid/v1",
-          modelApi: "openai-responses",
-          modelBilling: undefined,
-        });
-      }
-      if (authScope.startsWith("plugin-revoked")) {
+      const rejectedRoute =
+        authScope.startsWith("plugin-route-") && authScope !== "plugin-route-fresh";
+      const revoked = authScope.startsWith("plugin-revoked");
+      if (rejectedRoute || revoked || authScope === "missing") {
         expect(outcome).toEqual(
-          unavailable(
-            authScope === "plugin-revoked-disabled"
+          harness.unavailable(
+            rejectedRoute || authScope === "plugin-revoked-disabled"
               ? "unsupported-input"
               : "credentials-unavailable",
           ),
         );
-        expect(trace.calls).toBe(1);
-        expect(http).not.toHaveBeenCalled();
+        expect(trace.calls).toBe(revoked ? 1 : 0);
         expect(usageEvents).toEqual([]);
-        expect(registry.decisionProviders[0]!.host.inspect(cfg).callable).toBe(true);
+        if (rejectedRoute) {
+          expect(
+            credentialPreparation.mock.calls.filter(([params]) => params.capability === "decision"),
+          ).toEqual([]);
+        }
+        if (revoked) {
+          expect(http).not.toHaveBeenCalled();
+          expect(registry.decisionProviders[0]!.host.inspect(cfg).callable).toBe(true);
+        }
         return;
       }
-      if (authScope === "missing") {
-        expect(outcome).toEqual(unavailable("credentials-unavailable"));
-        expect(trace.calls).toBe(0);
-        expect(usageEvents).toEqual([]);
-        return;
+      if (authScope === "plugin-route-fresh") {
+        expect(trace.context?.model).toMatchObject({
+          baseUrl: "https://selected.fixture.invalid/v1",
+          api: "openai-responses",
+        });
+        expect(trace.context?.model.inference?.decision?.billing).toBeUndefined();
       }
       expect(outcome).toMatchObject({
         status: "ok",
         result: { answers: { q: { answer: null } }, usage: { costUsd: 0 } },
       });
-      expect(trace).toMatchObject({ calls: 1, resultReads: 1, authenticated: true });
+      expect(trace).toMatchObject({
+        calls: 1,
+        resultReads: 1,
+        context: { auth: { apiKey: "synthetic-prepared-token" } },
+      });
       if (authScope === "profile") {
-        expect(trace).toMatchObject({ profileId: id + ":agent", agentId: "main" });
+        expect(trace.context).toMatchObject({
+          auth: { profileId: id + ":agent" },
+          agentId: "main",
+        });
       }
       expect(usageEvents).toMatchObject([
         {
@@ -519,40 +468,40 @@ it.each([
         expect(usageEvents[1]).not.toHaveProperty("costUsd");
       }
       if (authScope === "exchange") {
-        expect(trace).toMatchObject({
-          modelBaseUrl: "https://entitlement.fixture.invalid/v1",
-          preparedApi: "openai-responses",
-          modelBilling: undefined,
-          modelApi: "openai-responses",
-          modelRequest: {
-            headers: { "x-fixture-entitlement": "synthetic-entitlement" },
-            auth: {
-              mode: "header",
-              headerName: "x-fixture-auth",
-              value: "synthetic-exchanged-header",
-            },
+        expect(trace.preparedApi).toBe("openai-responses");
+        expect(trace.context?.model.inference?.decision?.billing).toBeUndefined();
+        expect(getModelProviderRequestTransport(trace.context!.model)).toMatchObject({
+          headers: { "x-fixture-entitlement": "synthetic-entitlement" },
+          auth: {
+            mode: "header",
+            headerName: "x-fixture-auth",
+            value: "synthetic-exchanged-header",
           },
-          modelHeaders: {
+        });
+        expect(trace.context?.model).toMatchObject({
+          baseUrl: "https://entitlement.fixture.invalid/v1",
+          api: "openai-responses",
+          headers: {
             "x-fixture-entitlement": "synthetic-entitlement",
             "x-fixture-auth": "synthetic-exchanged-header",
           },
         });
       } else {
-        expect(trace.modelKeys).not.toContain("cost");
-        expect(trace.modelKeys).not.toContain("maxTokens");
-        expect(trace.modelContextWindow).toBeUndefined();
+        expect(Object.keys(trace.context!.model)).not.toContain("cost");
+        expect(Object.keys(trace.context!.model)).not.toContain("maxTokens");
+        expect(trace.context?.model.contextWindow).toBeUndefined();
       }
       if (authScope === "agent" || authScope === "profile") {
-        expect(trace.modelHeaders).toEqual({
+        expect(trace.context?.model.headers).toEqual({
           "x-provider": "provider",
           "x-model": "model",
           "x-precedence": "request",
           "x-request": "request",
         });
-        expect(trace.modelRequest).toMatchObject({
+        expect(getModelProviderRequestTransport(trace.context!.model)).toMatchObject({
           headers: { "x-precedence": "request", "x-request": "request" },
         });
-        expect(trace.modelApi).toBe("openai-responses");
+        expect(trace.context?.model.api).toBe("openai-responses");
         setRuntimeConfigSnapshot({
           ...cfg,
           agents: {
@@ -564,8 +513,8 @@ it.each([
           },
         });
         await expect(
-          evaluate(textBatch("explicit profile"), decisionOptions()),
-        ).resolves.toMatchObject(unavailable("credentials-unavailable"));
+          evaluate(textBatch("explicit profile"), harness.decisionOptions()),
+        ).resolves.toMatchObject(harness.unavailable("credentials-unavailable"));
         expect(trace.calls).toBe(2);
         setRuntimeConfigSnapshot(cfg);
       }
@@ -576,7 +525,7 @@ it.each([
           { model: "native", answers: {} },
         ]) {
           trace.resultOverride = { value: invalid };
-          expect(await evaluateFixture()).toEqual(unavailable("invalid-response"));
+          expect(await evaluateFixture()).toEqual(harness.unavailable("invalid-response"));
           expect(trace.resultReads).toBe(1);
           expect(usageEvents).toHaveLength(2);
         }
@@ -590,7 +539,7 @@ it.each([
       const controller = new AbortController();
       const pending = evaluate(
         textBatch("synthetic cancellation"),
-        decisionOptions({ signal: controller.signal }),
+        harness.decisionOptions({ signal: controller.signal }),
       );
       let settled = false;
       void pending
@@ -614,42 +563,23 @@ it.each([
 
 it("runs both SDK versions through the source TypeSafe plugin, prepared auth, and loopback transport", async () => {
   const root = roots.make("decision-typesafe-host-");
-  const consumerRoot = path.join(root, "consumer");
-  const emptyBundled = path.join(root, "bundled");
-  fs.mkdirSync(consumerRoot);
-  fs.mkdirSync(emptyBundled);
   const consumerId = "decision-consumer-fixture";
-  const consumer = createColdPluginFixture({ rootDir: consumerRoot, pluginId: consumerId });
-  fs.writeFileSync(
-    consumer.runtimeSource,
-    'const trace=globalThis[Symbol.for("openclaw.test.decision-prepared-path")]; module.exports={id:"decision-consumer-fixture",register(api){trace.evaluate=api.runtime.decisions.evaluateV2;trace.evaluateV1=api.runtime.decisions.evaluate;}};',
-  );
-  const trace: Trace = { calls: 0, authenticated: false };
-  Reflect.set(globalThis, traceKey, trace);
+  const { consumerRoot, trace } = harness.createDecisionConsumer(root, consumerId, traceKey);
   let status = 200;
-  const received: Array<{ url?: string; authorization?: string; body: unknown }> = [];
-  await withServer(
-    (request, response) => {
-      readDecisionRequest(request, (body) => {
-        received.push({
-          url: request.url,
-          authorization: request.headers.authorization,
-          body,
-        });
-        response.writeHead(status, { "content-type": "application/json" });
-        response.end(
-          status === 200
-            ? JSON.stringify({
-                model: "kev-latest",
-                answers: { q: { type: "noul", noul: 0.37 } },
-                usage: { input_tokens: 3, output_tokens: 1 },
-              })
-            : "synthetic-private-provider-body",
-        );
-      });
-    },
-    async (baseUrl) => {
-      const cfg = fixtureConfig(root, "typesafe/kev-latest", {
+  await harness.withDecisionServer(
+    () => ({
+      status,
+      body:
+        status === 200
+          ? {
+              model: "kev-latest",
+              answers: { q: { type: "noul", noul: 0.37 } },
+              usage: { input_tokens: 3, output_tokens: 1 },
+            }
+          : "synthetic-private-provider-body",
+    }),
+    async ({ origin: baseUrl, requests: received }) => {
+      const cfg = harness.decisionConfig(root, "typesafe/kev-latest", {
         load: {
           paths: [
             fileURLToPath(new URL("../../extensions/typesafe", import.meta.url)),
@@ -662,43 +592,28 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
         },
       });
       await withEnvAsync(
-        {
-          ...createColdPluginHermeticEnv(root, { bundledPluginsDir: emptyBundled }),
+        harness.decisionEnv(root, {
           OPENCLAW_COMPATIBILITY_HOST_VERSION: VERSION,
-          OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-          OPENCLAW_STATE_DIR: path.join(root, "state"),
-        },
+        }),
         async () => {
-          setRuntimeConfigSnapshot(cfg);
-          const registry = await loadAndActivateRootPluginRegistry({
-            config: cfg,
-            workspaceDir: path.join(root, "workspace"),
-          });
-          expect(registry.diagnostics.filter((item) => item.level === "error")).toEqual([]);
-          const agentId = resolveDefaultAgentId(cfg);
+          await harness.activateDecisionRegistry(cfg);
           // Retain the prepared caller across SDK assertions: releasing a warm-up
           // lease retires the owner and charges each call for cold catalog setup.
-          await using prepared = await acquireAgentRunPreparedModelRuntime(
-            {
-              config: cfg,
-              agentId,
-              agentDir: resolveAgentDir(cfg, agentId),
-              workspaceDir: path.join(root, "workspace"),
-              loadRuntimePlugins: true,
-              runtimePluginSelections: [{ provider: "typesafe", modelId: "kev-latest", agentId }],
-            },
-            { catalogMode: "static" },
+          await using prepared = await harness.prepareDecisionRuntime(
+            cfg,
+            "typesafe",
+            "kev-latest",
           );
           expect(prepared.snapshot.modelCatalog.entries).toContainEqual(
             expect.objectContaining({ provider: "typesafe", id: "kev-latest" }),
           );
-          const evaluate = trace.evaluate,
-            legacy = trace.evaluateV1;
+          const evaluate = trace.runtime?.evaluateV2,
+            legacy = trace.runtime?.evaluate;
           if (!evaluate || !legacy) {
             throw new Error("Missing registered decision SDK");
           }
           const typesafeOptions = () =>
-            decisionOptions({ purpose: "actual-engine-fixture", rubricVersion: "1" });
+            harness.decisionOptions({ purpose: "actual-engine-fixture", rubricVersion: "1" });
           const batch = textBatch();
           const outcome = await evaluate(batch, { ...typesafeOptions(), reasoning: "auto" });
           expect(outcome).toMatchObject({
@@ -717,18 +632,18 @@ it("runs both SDK versions through the source TypeSafe plugin, prepared auth, an
           for (const reasoning of ["off", "on"] as const) {
             await expect(
               evaluate(batch, { ...typesafeOptions(), reasoning }),
-            ).resolves.toMatchObject(unavailable("unsupported-input"));
+            ).resolves.toMatchObject(harness.unavailable("unsupported-input"));
           }
           for (const rejection of [413, 422]) {
             status = rejection;
             expect(await evaluate(batch, typesafeOptions())).toMatchObject(
-              unavailable("unsupported-input"),
+              harness.unavailable("unsupported-input"),
             );
           }
           expect(received).toHaveLength(4);
           for (const request of received) {
-            expect(request.authorization).toBeUndefined();
-            expect(request.url).toBe("/v1/systemone");
+            expect(request.headers.get("authorization")).toBeNull();
+            expect(request.url).toBe(baseUrl + "/v1/systemone");
             expect(request.body).toMatchObject({
               model: "kev-latest",
               questions: { q: { type: "noul" } },
