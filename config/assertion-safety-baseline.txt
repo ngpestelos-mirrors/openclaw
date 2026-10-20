@@ -1230,7 +1230,7 @@ src/agents/harness/support.ts	1
 src/agents/identity.ts	5
 src/agents/internal-runtime-context.ts	1
 src/agents/lazy-exec-tool.ts	2
-src/agents/lazy-process-tool.ts	2
+src/agents/lazy-process-tool.ts	1
 src/agents/live-cache-regression-policy.ts	2
 src/agents/main-session-recovery/main-session-restart-recovery-checkpoint.ts	3
 src/agents/main-session-recovery/main-session-restart-recovery-resume-policy.ts	18

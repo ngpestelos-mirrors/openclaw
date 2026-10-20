@@ -12,6 +12,7 @@ import {
 import { resetConfigOverrides } from "../../../../src/config/runtime-overrides.js";
 import { clearSessionStoreCacheForTest } from "../../../../src/config/sessions/store-writer-state.js";
 import type { OpenClawConfig } from "../../../../src/config/types.openclaw.js";
+import { captureCronSchedulerWakeForTest } from "../../../../src/cron/service/scheduler-actor.test-support.js";
 import type { CronJob } from "../../../../src/cron/types.js";
 import type { GatewayClient } from "../../../../src/gateway/client.js";
 import type { SessionsListResult } from "../../../../src/gateway/session-utils.types.js";
@@ -62,8 +63,8 @@ type CronEvent = {
   nextRunAtMs?: number;
 };
 
-// Only the host clock is replaced, using the existing Gateway startup seam.
-// Transport, scheduler dispatch, admission, model execution, and actions stay real.
+// Control the host clock and worker timer wake delivery through existing test seams.
+// Scheduler dispatch, admission, model execution, and actions stay real.
 const schedulerClock = vi.hoisted(() => ({
   current: undefined as GatewaySchedulerClock | undefined,
 }));
@@ -351,38 +352,42 @@ it(
         },
         gateway: { auth: { mode: "token", token } },
       };
-      gateway = await startGatewayWithClient({
-        cfg: config,
-        configPath,
-        token,
-        origin: "http://127.0.0.1",
-        clientName: GATEWAY_CLIENT_NAMES.CONTROL_UI,
-        mode: GATEWAY_CLIENT_MODES.WEBCHAT,
-        scopes: ["operator.admin"],
-        onEvent: (event) => {
-          if (event.event !== "cron") {
-            return;
-          }
-          const cron = event.payload as CronEvent;
-          events.push(cron);
-          if (cron.jobId !== jobId) {
-            return;
-          }
-          if (cron.action === "finished") {
-            firstFinished.resolve(cron);
-            if (cron.status !== "ok") {
-              providerFailure.resolve(new Error(cron.error ?? "Scheduled continuation failed"));
+      const cronScheduler = await captureCronSchedulerWakeForTest(async (wakeRegistered) => {
+        gateway = await startGatewayWithClient({
+          cfg: config,
+          configPath,
+          token,
+          origin: "http://127.0.0.1",
+          clientName: GATEWAY_CLIENT_NAMES.CONTROL_UI,
+          mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+          scopes: ["operator.admin"],
+          onEvent: (event) => {
+            if (event.event !== "cron") {
+              return;
             }
-          }
-          if (cron.action === "removed") {
-            removed.resolve(cron);
-          }
-        },
+            const cron = event.payload as CronEvent;
+            events.push(cron);
+            if (cron.jobId !== jobId) {
+              return;
+            }
+            if (cron.action === "finished") {
+              firstFinished.resolve(cron);
+              if (cron.status !== "ok") {
+                providerFailure.resolve(new Error(cron.error ?? "Scheduled continuation failed"));
+              }
+            }
+            if (cron.action === "removed") {
+              removed.resolve(cron);
+            }
+          },
+        });
+        await gateway.server.startupSettled;
+        // Cron starts in post-ready maintenance; retain capture until its actor registers.
+        void clock.advanceBy(500);
+        await observe(wakeRegistered);
+        return gateway;
       });
-      await gateway.server.startupSettled;
-      // Startup dispatch may own background work waiting on a later clock wake.
-      // The scheduler retains those joins; server.close drains them below.
-      void clock.advanceBy(500);
+      gateway = cronScheduler.result;
       const runtimeConfig = getRuntimeConfigSnapshot();
       if (!runtimeConfig) {
         throw new Error("Gateway runtime config was not initialized");
@@ -435,6 +440,7 @@ it(
         throw new Error("Expected a one-shot continuation");
       }
       void clock.advanceTo(Date.parse(before.schedule.at));
+      cronScheduler.notify();
       const first = await observe(firstFinished.promise);
       expect(first, first.error).toMatchObject({ status: "ok", jobId, sessionKey });
       const rearmed = await observer.request<CronJob>("cron.get", { id: jobId });
@@ -455,6 +461,7 @@ it(
         throw new Error("Continuation was not rearmed");
       }
       void clock.advanceTo(nextRunAtMs);
+      cronScheduler.notify();
       await observe(removed.promise);
       expect(step).toBe(8);
       const runs = await observer.request<{
