@@ -111,7 +111,7 @@ describe("Codex native subagent notifications", () => {
     });
   });
 
-  it.each([
+  it.each<{ kind: string; fields: JsonObject }>([
     { kind: "unfinished wait", fields: { status: "inProgress" } },
     { kind: "spawn status", fields: { tool: "spawnAgent" } },
     { kind: "other sender", fields: { senderThreadId: "other-parent" } },

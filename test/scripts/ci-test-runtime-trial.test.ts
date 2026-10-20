@@ -45,7 +45,7 @@ const defaults = [
   ["FRV", "workflow_dispatch", "dual"],
 ] as const;
 
-function manifest(options: Parameters<typeof runCiManifestFixture>[0]) {
+function manifest(options: Omit<Parameters<typeof runCiManifestFixture>[0], "bundledPlanner">) {
   const result = runCiManifestFixture({ ...fixture, ...options });
   expect(result.status, result.output).toBe(0);
   return result.outputs;

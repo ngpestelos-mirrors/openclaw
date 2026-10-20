@@ -37,7 +37,7 @@ export function registerUnverifiedDefinitionRecoveryTests({
   const rollbackOwner = () =>
     vi.importActual<typeof import("./update-command-rollback.js")>("./update-command-rollback.js");
   const unsafeRecovery = () => ({
-    serviceRestartSafe: false,
+    serviceRestartSafe: false as const,
     reason: "runtime-verification-failed" as const,
   });
   const expectRisk = (recovery: unknown, dataAtRisk: string) =>

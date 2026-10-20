@@ -395,14 +395,21 @@ async function createControlUiFramePreparation(page: Page, disableAnimations: bo
 }
 
 async function inspectControlUiProofScroll(target: Locator, shouldCenter: boolean) {
-  return (await target.evaluate(inspectProofGeometry, shouldCenter ? "center" : "read")).scroll;
+  return (
+    await target.evaluate(
+      inspectProofGeometry,
+      shouldCenter ? ("center" as const) : ("read" as const),
+    )
+  ).scroll;
 }
 
 async function waitForControlUiFrameLayout(targets: readonly Locator[]): Promise<void> {
   await expect
     .poll(async () =>
       (
-        await Promise.all(targets.map((target) => target.evaluate(inspectProofGeometry, "settle")))
+        await Promise.all(
+          targets.map((target) => target.evaluate(inspectProofGeometry, "settle" as const)),
+        )
       ).every((result) => result.settled),
     )
     .toBe(true);

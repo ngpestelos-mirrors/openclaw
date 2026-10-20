@@ -12,7 +12,7 @@ import {
   type WorkflowStep,
 } from "./ci-workflow.test-support.js";
 
-function manifest(options: Parameters<typeof runCiManifestFixture>[0]) {
+function manifest(options: Omit<Parameters<typeof runCiManifestFixture>[0], "bundledPlanner">) {
   const result = runCiManifestFixture({ bundledPlanner: true, ...options });
   expect(result.status, result.output).toBe(0);
   return result;

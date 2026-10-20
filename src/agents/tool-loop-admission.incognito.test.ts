@@ -13,7 +13,7 @@ import {
 import { createWarnLogCapture } from "../logging/test-helpers/warn-log-capture.js";
 import { resetAdjustedParamsByToolCallIdForTests } from "./agent-tools.before-tool-call.state.js";
 import type { HookContext } from "./agent-tools.before-tool-call.types.js";
-import { admitSingleToolCallLoop } from "./tool-loop-admission.js";
+import { admitSingleToolCallLoop, admitToolCallBatch } from "./tool-loop-admission.js";
 import { recordToolCall, recordToolCallOutcome } from "./tool-loop-detection.js";
 
 const cases = [
@@ -35,7 +35,7 @@ function resetDiagnostics(enabled: boolean) {
   setDiagnosticsEnabledForProcess(enabled);
 }
 
-describe("single-call admission Incognito logging", () => {
+describe.each(["single", "batch"] as const)("%s admission Incognito logging", (entry) => {
   beforeEach(() => resetDiagnostics(true));
   afterEach(() => resetDiagnostics(false));
 
@@ -95,10 +95,20 @@ describe("single-call admission Incognito logging", () => {
           }
           const [name, args] = repeatedCall(historyCount);
           const toolCallId = "candidate";
-          const intervention = await admitSingleToolCallLoop(
-            { toolName: name, params: args, toolCallId },
-            ctx,
-          );
+          let intervention;
+          if (entry === "single") {
+            intervention = await admitSingleToolCallLoop(
+              { toolName: name, params: args, toolCallId },
+              ctx,
+            );
+          } else {
+            const admission = await admitToolCallBatch(
+              [{ toolCall: { type: "toolCall", id: toolCallId, name, arguments: args }, args }],
+              ctx,
+            );
+            intervention = admission.intervention ?? admission.warnings?.[0];
+            admission.commitReadyCalls?.([{ toolCallId, args }]);
+          }
           expect(intervention).toMatchObject({
             kind: level === "critical" ? "critical-tool-loop" : "tool-loop-warning",
             toolCallId,
@@ -117,8 +127,14 @@ describe("single-call admission Incognito logging", () => {
             count,
           });
           expect(state.toolCallHistory).toHaveLength(
-            Math.min(30, historyCount + (level === "critical" ? 0 : 1)),
+            Math.min(30, historyCount + (entry === "single" && level === "critical" ? 0 : 1)),
           );
+          if (entry === "batch" && level === "critical") {
+            expect(state.toolCallHistory?.at(-1)).toMatchObject({
+              toolCallId,
+              outcomeKind: "tool-loop-veto",
+            });
+          }
           const admissionLog =
             level === "critical" ? `Blocking ${name}` : `Loop warning for ${name}`;
           for (const prefix of [detectorLog, admissionLog]) {

@@ -48,6 +48,7 @@ it.runIf(process.platform === "linux").each(["SIGTERM", "success", "failed"] as 
     const updaterPath = path.join(root, "updater.cjs");
     const resultJson = JSON.stringify({
       root,
+      mode: "npm",
       status: outcome === "failed" ? "error" : "skipped",
       reason: outcome === "failed" ? "candidate-validation-failed" : "already-current",
     });
@@ -145,7 +146,7 @@ socket.end(); process.disconnect?.(); process.stdin.destroy();
         });
         await fs.rm(path.dirname(started.logPath), { recursive: true, force: true });
       }
-      await promisify(server.close).call(server);
+      await promisify(server.close.bind(server))();
     }
   },
 );

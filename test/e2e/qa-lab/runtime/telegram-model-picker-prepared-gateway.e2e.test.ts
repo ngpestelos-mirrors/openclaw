@@ -106,17 +106,17 @@ async function readPickerCall(req: IncomingMessage, res: ServerResponse, missing
   const match = pathname.match(/^\/bot([^/]+)\/([^/]+)$/);
   if (!match) {
     writeJson(res, 404, { ok: false, error: missing });
-    return;
+    return undefined;
   }
   const [, token = "", method = ""] = match;
   const body = await readJson(req);
   if (token !== BOT_TOKEN) {
     writeJson(res, 401, { ok: false, error: "unexpected bot token" });
-    return;
+    return undefined;
   }
   if (method === "getMe") {
     succeed(res, { id: 424242, is_bot: true, first_name: "QA Picker", username: "qa_picker_bot" });
-    return;
+    return undefined;
   }
   return { method, body };
 }

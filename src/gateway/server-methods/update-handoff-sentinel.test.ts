@@ -37,7 +37,16 @@ function record(message?: string): ManagedHandoffSentinelRequest {
       kind: "record",
       input: {
         ...identity,
-        fallbackPayload: { kind: "update", status: "error", ts: 123, message },
+        expectedRevision: 123,
+        completedStatus: "error",
+        restored: true,
+        fallbackPayload: {
+          kind: "update",
+          status: "error",
+          ts: 123,
+          message,
+          stats: { ...identity, mode: "unknown", reason: "candidate-failed", steps: [] },
+        },
         reason: "candidate-failed",
         triageHint: "Run openclaw update repair",
         serviceKind: "launchd",

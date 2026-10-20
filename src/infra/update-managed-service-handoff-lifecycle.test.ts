@@ -49,8 +49,11 @@ const nodeExec = "/usr/local/bin/node";
 const sessionKey = "agent:test:webchat:dm:user-123";
 const success = { updaterExitCode: 0, updaterResult: { status: "ok", mode: "npm" } };
 const transferred = { controlDisconnect: "transferred" } as const;
-const safeRecovery = { serviceRestartSafe: true, version: "1.0.0" };
-const unsafeRecovery = { serviceRestartSafe: false, reason: "runtime-verification-failed" };
+const safeRecovery = { serviceRestartSafe: true, version: "1.0.0" } as const;
+const unsafeRecovery = {
+  serviceRestartSafe: false,
+  reason: "runtime-verification-failed",
+} as const;
 const version = { version: "1.0.0" };
 const cancelled = { status: "skipped", stats: { reason: "managed-service-handoff-cancelled" } };
 

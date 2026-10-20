@@ -73,10 +73,7 @@ export function createManagedHandoffRecoveryFixture(root: string) {
     assert(found.kind === "current", "Expected a retained handoff");
     return found.lease;
   };
-  const mutate = (
-    query: (tables: ReturnType<typeof leaseQueries>) => Compilable<unknown>,
-    key = root,
-  ) => {
+  const mutate = (query: (tables: ReturnType<typeof leaseQueries>) => Compilable, key = root) => {
     database(true, (db) => executeSqliteQuerySync(db, query(leaseQueries(db))));
     return current(key);
   };

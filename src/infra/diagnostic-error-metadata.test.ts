@@ -7,7 +7,7 @@ import {
   diagnosticProviderRequestIdHash,
 } from "./diagnostic-error-metadata.js";
 
-function throwingGetter() {
+function throwingGetter(): never {
   throw new Error("should not read getter");
 }
 
